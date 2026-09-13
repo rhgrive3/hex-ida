@@ -1,6 +1,7 @@
 import { ABIPlugin } from './registry.js';
 import {
   AAPCS64_ABI as CORE_AAPCS64_ABI,
+  AAPCS64_ILP32_ABI as CORE_AAPCS64_ILP32_ABI,
   classifyAAPCS64Arguments as classifyAAPCS64ArgumentsCore,
   classifyAAPCS64CallReturn,
   classifyAAPCS64FunctionReturn,
@@ -69,12 +70,13 @@ function normalizeAAPCS64StackLayout(result, params) {
     if (argument.location !== 'stack') continue;
     const alignment = stackAlignment(params[argument.index ?? index], argument);
     cursor = Math.ceil(cursor / alignment) * alignment;
+    const displacement = cursor - argument.offset;
     argument.offset = cursor;
     argument.alignment = alignment;
-    if (argument.abiClass === 'aggregate' && Array.isArray(argument.pieces)) {
-      argument.pieces = argument.pieces.map((piece) => ({
+    if (Array.isArray(argument.pieces)) {
+      argument.pieces = argument.pieces.map((piece) => piece.stackOffset == null ? piece : ({
         ...piece,
-        stackOffset: argument.offset + Number(piece.byteOffset || 0),
+        stackOffset: piece.stackOffset + displacement,
       }));
     }
     stackArguments.push(argument);
@@ -114,4 +116,25 @@ export const AAPCS64_ABI = new ABIPlugin({
   unwindRules: CORE_AAPCS64_ABI.unwindRules,
   defaultUnknownCallEffects: CORE_AAPCS64_ABI.defaultUnknownCallEffects,
   supported: CORE_AAPCS64_ABI.supported,
+});
+
+export const AAPCS64_ILP32_ABI = new ABIPlugin({
+  id: CORE_AAPCS64_ILP32_ABI.id,
+  semanticVersion: CORE_AAPCS64_ILP32_ABI.semanticVersion,
+  semanticIdentity: CORE_AAPCS64_ILP32_ABI.semanticIdentity,
+  architectureId: CORE_AAPCS64_ILP32_ABI.architectureId,
+  platformPredicate: CORE_AAPCS64_ILP32_ABI.platformPredicate,
+  callingConventions: CORE_AAPCS64_ILP32_ABI.callingConventions,
+  classifyArguments: (insn, opts = {}) => classifyAAPCS64Arguments(insn, { ...opts, dataModel: 'ilp32', pointerBits: 32 }),
+  classifyCallReturn: (insn, opts = {}) => classifyAAPCS64CallReturn(insn, { ...opts, dataModel: 'ilp32', pointerBits: 32 }),
+  classifyFunctionReturn: (opts = {}) => classifyAAPCS64FunctionReturn({ ...opts, dataModel: 'ilp32', pointerBits: 32 }),
+  classifyEntryRegister: CORE_AAPCS64_ILP32_ABI.classifyEntryRegister,
+  callerSaved: CORE_AAPCS64_ILP32_ABI.callerSaved,
+  calleeSaved: CORE_AAPCS64_ILP32_ABI.calleeSaved,
+  stackRules: CORE_AAPCS64_ILP32_ABI.stackRules,
+  redZone: CORE_AAPCS64_ILP32_ABI.redZone,
+  syscallABI: CORE_AAPCS64_ILP32_ABI.syscallABI,
+  unwindRules: CORE_AAPCS64_ILP32_ABI.unwindRules,
+  defaultUnknownCallEffects: CORE_AAPCS64_ILP32_ABI.defaultUnknownCallEffects,
+  supported: CORE_AAPCS64_ILP32_ABI.supported,
 });

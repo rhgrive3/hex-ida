@@ -38,6 +38,10 @@ function makeElf(programHeaders) {
     putU32(view, offset, ph.type ?? PT_GNU_PROPERTY);
     putU64(view, offset + 8, ph.offset ?? PROPERTY_OFFSET);
     putU64(view, offset + 32, ph.filesz ?? 0);
+    // Real linkers publish PT_GNU_PROPERTY with the ELF64 loader-required
+    // alignment; without it the loader (and the parser, see #4349) ignores
+    // the property note entirely.
+    putU64(view, offset + 48, ph.pAlign ?? 8);
   }
   return { bytes, view };
 }

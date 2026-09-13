@@ -1,4 +1,5 @@
-import { createHexToolRegistry as createBaseHexToolRegistry, ToolRegistry } from './registry-base.js';
+import { installScopedAnalysisTools } from './scoped-analysis.js';
+import { buildRelatedFunctionsResult, createHexToolRegistry as createBaseHexToolRegistry, ToolRegistry } from './registry-base.js';
 import { shortHash, stableSerialize } from './paging/cursor.js';
 import { addressText } from '../validation.js';
 
@@ -67,6 +68,10 @@ function markQueryAuthority(value) {
   return value && typeof value === 'object'
     ? { ...value, analysisAuthority:'AnalysisQueryAPI' }
     : value;
+}
+
+function exactPageTotal(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function installQueryOverrides(registry, context) {
@@ -155,7 +160,7 @@ function installQueryOverrides(registry, context) {
       results:rows,
       offset,
       returned:rows.length,
-      total:Number.isFinite(Number(page?.total)) ? Number(page.total) : null,
+      total:exactPageTotal(page?.total),
       complete,
       truncated:!complete,
       reason:complete ? null : (page?.reason || 'result-limit'),
@@ -190,13 +195,47 @@ function installQueryOverrides(registry, context) {
         context.getCallers(functionAddress, { limit, offset:0, signal:registry.executionSignal }),
         context.getCallees(functionAddress, { limit, offset:0, signal:registry.executionSignal }),
       ]);
+      const normalizeSide = (value) => {
+        if (value?.complete === true) return value;
+        const normalized = { ...value, total:null };
+        const nextOffset = value && typeof value === 'object'
+          ? Object.getOwnPropertyDescriptor(value, 'nextOffset')
+          : null;
+        if (nextOffset && Object.prototype.hasOwnProperty.call(nextOffset, 'value')) {
+          Object.defineProperty(normalized, 'nextOffset', { value:nextOffset.value, enumerable:false });
+        }
+        return normalized;
+      };
+      const normalizedCallers = normalizeSide(callers);
+      const normalizedCallees = normalizeSide(callees);
+      const related = buildRelatedFunctionsResult({
+        functionAddress,
+        limit,
+        callers:normalizedCallers,
+        callees:normalizedCallees,
+        cursorFor:(tool, params, offset) => queryPaging(registry, tool, params, null).makeCursor(offset),
+      });
+      const continuations = { ...(related.continuations || {}) };
+      for (const [key, tool, side] of [
+        ['callers', 'get_callers', normalizedCallers],
+        ['callees', 'get_callees', normalizedCallees],
+      ]) {
+        if (side?.complete === true || (Array.isArray(side?.results) && side.results.length > 0)) continue;
+        const nextOffset = Number.isSafeInteger(side?.nextOffset) && side.nextOffset > 0 ? side.nextOffset : null;
+        if (nextOffset == null) { delete continuations[key]; continue; }
+        const address = addressText(functionAddress);
+        continuations[key] = {
+          tool,
+          arguments:{
+            address,
+            limit,
+            cursor:queryPaging(registry, tool, { address }, null).makeCursor(nextOffset),
+          },
+        };
+      }
       return {
-        functionAddress:addressText(functionAddress),
-        callers:pageRows(callers),
-        callees:pageRows(callees),
-        complete:callers?.complete === true && callees?.complete === true,
-        truncated:callers?.complete !== true || callees?.complete !== true,
-        reason:callers?.reason || callees?.reason || null,
+        ...related,
+        ...(Object.keys(continuations).length ? { continuations } : {}),
         analysisAuthority:'AnalysisQueryAPI',
       };
     });
@@ -218,7 +257,7 @@ function installQueryOverrides(registry, context) {
 }
 
 export function createHexToolRegistry(context = {}, options = {}) {
-  return installQueryOverrides(createBaseHexToolRegistry(context, options), context);
+  return installScopedAnalysisTools(installQueryOverrides(createBaseHexToolRegistry(context, options), context), context);
 }
 
 export default createHexToolRegistry;

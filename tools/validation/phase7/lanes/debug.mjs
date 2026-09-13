@@ -39,8 +39,8 @@ export function dwarfImage(variant, { buildId = variant.buildId } = {}) {
   return { identity: { buildId }, debugSections, snapshotId: 'snapshot_debug_corpus' };
 }
 
-export function pdbImage(variant, { codeView = variant.codeView } = {}) {
-  return { identity: { codeView }, pdbBytes: decode(variant.pdb), snapshotId: 'snapshot_debug_corpus' };
+export function pdbImage(variant, { codeView = variant.codeView, imageBase = 0n } = {}) {
+  return { identity: { codeView }, pdbBytes: decode(variant.pdb), imageBase, snapshotId: 'snapshot_debug_corpus' };
 }
 
 function scoreEcosystem({ ecosystem, provider, matched, mismatched, missingCompanion }) {

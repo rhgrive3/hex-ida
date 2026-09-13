@@ -32,16 +32,18 @@ function buildClass({ methodFlags = 0x0009, codeCount = 1 } = {}) {
   u4(0xcafebabe);
   u2(0);
   u2(52);
-  u2(6);
+  u2(8);
   utf8('A');     // #1
   u1(7); u2(1); // #2 Class A
   utf8('m');     // #3
   utf8('()V');   // #4
   utf8('Code');  // #5
+  utf8('java/lang/Object'); // #6
+  u1(7); u2(6); // #7 Class java/lang/Object
 
   u2(0x0021); // class access
   u2(2);      // this_class
-  u2(0);      // super_class (parser permits zero)
+  u2(7);      // super_class
   u2(0);      // interfaces_count
   u2(0);      // fields_count
   u2(1);      // methods_count

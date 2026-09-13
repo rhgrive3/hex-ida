@@ -46,6 +46,10 @@ export function createManagedFieldId(typeId, fieldTokenOrName) {
   return `managed-field:${typ}:${fld}`;
 }
 
+export function isManagedMethodId(value) {
+  return typeof value === 'string' && value.startsWith('managed-method:') && value === value.trim();
+}
+
 export function createVMOperationId(methodId, bytecodeOffset, sequence = 0) {
   const meth = nonEmpty(methodId, 'managed-identity-method-id-required');
   const off = nonNegativeInteger(bytecodeOffset, 'managed-identity-offset-required');

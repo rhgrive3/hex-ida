@@ -12,6 +12,7 @@ import {
   fail,
   nonEmpty,
   object,
+  positiveInteger,
   requiredOrigin,
   serializable,
   sortedUniqueStrings,
@@ -269,12 +270,56 @@ function validateNormalizedFunction(out, options) {
   }
   if (placedNodes.size !== out.nodes.length) fail('semantic-ir-unplaced-node');
 
+  // Same-block uses must follow their definition: a block is a linear node
+  // list, so no control-flow arrangement can make a later node dominate an
+  // earlier one. A use whose definition sits later in the same block is a
+  // non-dominant forward reference and can never be a complete function
+  // boundary obligation (#5410).
+  const nodePositionsByBlock = new Map();
+  for (const block of out.blocks) {
+    const positions = new Map();
+    block.nodeIds.forEach((nodeId, index) => positions.set(nodeId, index));
+    nodePositionsByBlock.set(block.id, positions);
+  }
+
   for (const node of out.nodes) {
     for (const id of node.inputs) if (!valueById.has(id)) fail('semantic-ir-dangling-value-id');
+    const positions = nodePositionsByBlock.get(node.blockId);
+    const usedValueIds = [
+      ...node.inputs,
+      ...(node.memory ? [node.memory.addressExpr.valueId] : []),
+      ...(node.call ? (node.call.memoryRead.accesses ?? []).concat(node.call.memoryWrite.accesses ?? []).map((access) => access.addressExpr.valueId) : []),
+      ...(node.intrinsic ? (node.intrinsic.memoryRead.accesses ?? []).concat(node.intrinsic.memoryWrite.accesses ?? []).map((access) => access.addressExpr.valueId) : []),
+    ];
+    for (const id of usedValueIds) {
+      const value = valueById.get(id);
+      if (!value || value.definitionNodeId == null) continue;
+      const definitionNode = nodeById.get(value.definitionNodeId);
+      if (!definitionNode || definitionNode.blockId !== node.blockId) continue;
+      const definitionPosition = positions.get(definitionNode.id);
+      if (definitionPosition != null && definitionPosition >= positions.get(node.id)) {
+        fail('semantic-ir-value-use-before-definition-in-block');
+      }
+    }
     for (const id of node.outputs) {
       const value = valueById.get(id);
       if (!value) fail('semantic-ir-dangling-value-id');
       if (value.kind !== 'definition' || value.definitionNodeId !== node.id) fail('semantic-ir-output-definition-mismatch');
+    }
+    if (node.kind === 'zext' || node.kind === 'sext') {
+      // Canonical extension type relation (#4576): a zext/sext may exist as a
+      // canonical exact operation only when its declared source/target widths
+      // equal the machine types on both sides. This is the non-bypassable
+      // boundary check; the lowering-side guard stays as defense in depth.
+      const fromBits = positiveInteger(node.attributes?.fromBits, 'semantic-ir-extension-width-attributes-required');
+      const toBits = positiveInteger(node.attributes?.toBits, 'semantic-ir-extension-width-attributes-required');
+      if (toBits < fromBits) fail('semantic-ir-extension-width-relation-invalid');
+      if (node.inputs.length !== 1 || node.outputs.length !== 1) fail('semantic-ir-extension-operand-count-invalid');
+      const extensionInput = valueById.get(node.inputs[0]);
+      const extensionOutput = valueById.get(node.outputs[0]);
+      if (!extensionInput || !extensionOutput) fail('semantic-ir-dangling-value-id');
+      if (extensionInput.machineType.widthBits !== fromBits) fail('semantic-ir-extension-input-width-mismatch');
+      if (extensionOutput.machineType.widthBits !== toBits) fail('semantic-ir-extension-output-width-mismatch');
     }
     if (node.memory && !valueById.has(node.memory.addressExpr.valueId)) fail('semantic-ir-dangling-address-value-id');
     if (node.call) {

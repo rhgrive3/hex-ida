@@ -17,8 +17,10 @@ await testTerminalToolErrorStillFails();
 await testAbortStillCancels();
 await testRecoveryBudgetIsBounded();
 await testWorkerClaimFailureKeepsCleanupObligation();
+await testAmbiguousClaimExplicitReleaseSuccessClearsCleanupObligation();
 await testAbandonedAmbiguousClaimStillReleases();
 await testReleaseFailureKeepsClaimOwnership();
+await testErrorMessageSecretRedaction();
 console.log('Dev Supervisor tool error recovery: ok');
 
 function testClassification() {
@@ -98,7 +100,8 @@ async function testRecoverableToolErrorKeepsRunAlive() {
   assert.ok(errorEntry, 'the failed tool must be returned to the Supervisor as tool-error history');
   assert.equal(errorEntry.tool, 'chatgpt.page.script_source');
   assert.equal(errorEntry.code, 'script-not-loaded');
-  assert.match(errorEntry.message, /not a currently loaded external page script/);
+  assert.ok(errorEntry.message.length <= 512, 'the provider-bound message stays bounded');
+  assert.doesNotMatch(errorEntry.message, /not a currently loaded external page script/, 'raw free-form tool text stays out of provider-bound history');
   assert.equal(errorEntry.recoverable, true);
   assert.equal(errorEntry.arguments.index, 0);
   assert.equal(errorEntry.arguments.needle, 'createProject');
@@ -190,6 +193,39 @@ async function testWorkerClaimFailureKeepsCleanupObligation() {
   assert.equal(harness.settings.lastRun.status, DEV_RUN_STATUS.COMPLETED);
 }
 
+/* #4624: if a failed claim leaves ownership ambiguous and the Supervisor then
+   explicitly releases that slot successfully, final cleanup must not release it
+   a second time. The successful release proves the cleanup obligation settled. */
+async function testAmbiguousClaimExplicitReleaseSuccessClearsCleanupObligation() {
+  const calls = [];
+  const harness = createHarness({
+    client: workerClient({
+      claim: async () => {
+        calls.push('claim');
+        throw Object.assign(new Error('claim transport failed after lease'), { code: 'transport-failure' });
+      },
+      release: async () => { calls.push('release'); return { released: true }; },
+    }),
+    decisions: [
+      { type: 'tool', tool: 'worker.claim', arguments: {}, purpose: 'claim a worker' },
+      { type: 'tool', tool: 'worker.release', arguments: {}, purpose: 'release the ambiguous slot' },
+      { type: 'final', answer: 'settled by explicit release', completedTasks: ['release'], remaining: [] },
+    ],
+  });
+
+  const result = await harness.engine.run({
+    goal: 'explicit release after ambiguous claim',
+    conversationId: 'conversation-4624-success',
+  });
+  assert.equal(result.answer, 'settled by explicit release');
+  assert.deepEqual(
+    calls,
+    ['claim', 'release'],
+    'a successful explicit release must clear the ambiguous-claim obligation so final cleanup never releases twice',
+  );
+  assert.equal(harness.settings.lastRun.status, DEV_RUN_STATUS.COMPLETED);
+}
+
 /* Recovery can now reach a normal ending after an ambiguous claim, so the
    ambiguous slot must still be released — best effort, without failing the run. */
 async function testAbandonedAmbiguousClaimStillReleases() {
@@ -262,6 +298,105 @@ async function testReleaseFailureKeepsClaimOwnership() {
   assert.equal(result.answer, 'release recovered');
   assert.deepEqual(calls, ['claim', 'release', 'release'], 'a failed release must leave the claim owned so the run releases it again');
   assert.equal(harness.settings.lastRun.status, DEV_RUN_STATUS.COMPLETED);
+}
+
+/* #5137: tool-controlled free-form error text is untrusted and cannot be
+   certified secret-free by key-name/value patterns — the issue's exact
+   counterexample (`Authorization failed: <secret>`) matches none of them.
+   Provider-bound history therefore carries only the failure class (code/name)
+   plus fixed guidance; free-form diagnostic text stays in local diagnostics. */
+async function testErrorMessageSecretRedaction() {
+  const secret = 'must-not-leak';
+
+  /* Reviewer-exact minimal counterexample: `Authorization failed: <secret>`
+     defeats every key=value / bearer / token pattern. */
+  const harness = createHarness({
+    client: {
+      enabled: true,
+      pageScripts: async () => {
+        throw Object.assign(new Error(`Authorization failed: ${secret}`), { code: 'provider-error' });
+      },
+    },
+    decisions: [
+      { type: 'tool', tool: 'chatgpt.page.scripts', arguments: { authorization: secret }, purpose: 'inspect scripts' },
+      { type: 'final', answer: 'recovered from the withheld failure', completedTasks: ['inspect'], remaining: [] },
+    ],
+  });
+
+  const result = await harness.engine.run({ goal: 'echo the secret back', conversationId: 'conversation-secret-message' });
+  assert.equal(result.answer, 'recovered from the withheld failure', 'withholding the message must not break recovery');
+
+  const errorEntry = harness.historyAt(1).find((entry) => entry.kind === DEV_TOOL_ERROR_HISTORY_KIND);
+  assert.ok(errorEntry, 'the failed tool must be returned to the Supervisor as tool-error history');
+  assert.equal(errorEntry.code, 'provider-error', 'the safe error code must still reach the Supervisor');
+  assert.equal(errorEntry.arguments.authorization, '[redacted]', 'arguments stay redacted');
+  assert.doesNotMatch(JSON.stringify(harness.historyAt(1)), /must-not-leak/, 'no history field may carry the secret');
+  assert.doesNotMatch(harness.prompts[1], /must-not-leak/, 'the next Supervisor prompt must not contain the secret');
+  assert.ok(errorEntry.message.length <= 512, 'the provider-bound message stays bounded');
+  assert.doesNotMatch(errorEntry.message, /Authorization failed/, 'no raw free-form diagnostic text is provider-bound');
+
+  /* Credential-shaped echoes are equally withheld. */
+  const tokenSecret = 'sk-test-MUST-NOT-LEAK';
+  const tokenHarness = createHarness({
+    client: {
+      enabled: true,
+      pageScripts: async () => {
+        throw Object.assign(new Error(`Authorization failed for token ${tokenSecret}`), { code: 'provider-error' });
+      },
+    },
+    decisions: [
+      { type: 'tool', tool: 'chatgpt.page.scripts', arguments: { authorization: tokenSecret }, purpose: 'inspect scripts' },
+      { type: 'final', answer: 'recovered from the token echo', completedTasks: ['inspect'], remaining: [] },
+    ],
+  });
+  await tokenHarness.engine.run({ goal: 'echo the token back', conversationId: 'conversation-token-message' });
+  assert.doesNotMatch(JSON.stringify(tokenHarness.historyAt(1)), /MUST-NOT-LEAK/, 'credential-shaped echoes stay out of history');
+  assert.doesNotMatch(tokenHarness.prompts[1], /MUST-NOT-LEAK/, 'credential-shaped echoes stay out of the prompt');
+
+  /* Local diagnostics keep the free-form text, bounded (#5137 required
+     assertion 5): the description itself never exceeds its bound. */
+  const described = describeDevToolError(withCode(new Error(`Authorization failed: ${'x'.repeat(5000)}`), 'provider-error'));
+  assert.ok(described.message.length <= 512, 'the local diagnostic description stays bounded');
+  const benign = describeDevToolError(new Error('connection refused after 3 retries'));
+  assert.equal(benign.message, 'connection refused after 3 retries', 'benign non-secret diagnostics stay readable locally');
+
+  /* Terminal error path (#5137 required assertion 6): the raw secret-bearing
+     error stays available to the local caller, but no provider-bound field of
+     any later prompt re-injects it. */
+  let terminalCalls = 0;
+  const terminalHarness = createHarness({
+    client: {
+      enabled: true,
+      pageScripts: async () => {
+        terminalCalls += 1;
+        if (terminalCalls === 1) {
+          throw Object.assign(new Error(`Authorization failed: ${secret}`), { code: 'dev-extension-integrity-mismatch' });
+        }
+        return { scripts: [] };
+      },
+    },
+    decisions: [
+      { type: 'tool', tool: 'chatgpt.page.scripts', arguments: { authorization: secret }, purpose: 'list scripts' },
+      { type: 'tool', tool: 'chatgpt.page.scripts', arguments: {}, purpose: 'observe in a fresh run' },
+      { type: 'final', answer: 'fresh run after terminal failure', completedTasks: [], remaining: [] },
+    ],
+  });
+  let terminalError;
+  await assert.rejects(
+    () => terminalHarness.engine.run({ goal: 'terminal secret', conversationId: 'conversation-terminal-secret' }),
+    (error) => {
+      terminalError = error;
+      return error.code === 'dev-extension-integrity-mismatch';
+    },
+  );
+  assert.match(terminalError.message, /must-not-leak/, 'the raw error stays available to the local caller');
+  assert.equal(terminalHarness.settings.lastRun.status, DEV_RUN_STATUS.FAILED, 'the terminal failure still fails the run');
+  const fresh = await terminalHarness.engine.run({ goal: 'fresh run', conversationId: 'conversation-terminal-secret' });
+  assert.equal(fresh.answer, 'fresh run after terminal failure');
+  for (const [index, prompt] of terminalHarness.prompts.entries()) {
+    if (index === 0) continue; /* the failed run's own prompt predates the tool error */
+    assert.doesNotMatch(prompt, /must-not-leak/, `no provider-bound prompt after the terminal failure may carry the secret (prompt ${index})`);
+  }
 }
 
 function createHarness({ client, decisions, maxToolErrorRecoveries }) {

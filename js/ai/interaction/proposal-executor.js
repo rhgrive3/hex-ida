@@ -41,7 +41,7 @@ export class ProposalExecutor {
     const address = target.address == null ? null : BigInt(target.address);
     switch (proposal.kind) {
       case 'rename': return address == null ? null : (this.app?.notes?.nameOf?.(address) || this.app?.symbols?.nameAt?.(address) || null);
-      case 'comment': return address == null ? null : (this.app?.notes?.comment?.(address) || null);
+      case 'comment': return address == null ? null : commentStateForExpected(this.app?.notes?.comment?.(address), proposal.before);
       case 'type': return address == null ? null : (this.app?.notes?.typeOf?.(address, String(target.key || 'return')) || null);
       case 'struct-field': return findStructField(this.app, target);
       case 'patch': {
@@ -59,8 +59,24 @@ export class ProposalExecutor {
       if (!execution || !same(execution.after, proposal.after)) throw new AIError('tool_failed', 'Patch postcondition does not match the approved bytes.');
       return;
     }
-    const live = await this.currentState({ ...proposal, before: proposal.after });
-    if (!containsValue(live, structFieldExpectation(proposal))) throw new AIError('tool_failed', `Postcondition verification failed for ${proposal.kind}.`);
+    let verdict;
+    try {
+      const live = await this.currentState({ ...proposal, before: proposal.after });
+      verdict = containsValue(live, structFieldExpectation(proposal)) ? 'verified' : 'mismatched';
+    } catch (error) {
+      /* A verification that cannot run is not a verification that failed. The
+         mutation already happened, so recording plain `failed` would contradict
+         the persisted state (failed-but-mutated, #5133). The error carries an
+         explicit indeterminate marker plus the mutation result so the audit
+         trail can distinguish "mutation failed" from "mutation applied but
+         unverifiable". A definitive mismatch stays a hard failure. */
+      throw new AIError('tool_failed', `Postcondition could not be verified for ${proposal.kind}: ${error?.message || error}`, {
+        cause: String(error?.message || error),
+        verification: 'indeterminate',
+        mutationResult: summarizeExecution(execution),
+      });
+    }
+    if (verdict !== 'verified') throw new AIError('tool_failed', `Postcondition verification failed for ${proposal.kind}.`);
   }
 }
 
@@ -94,6 +110,14 @@ async function awaitNoteStoreReady(app) {
 }
 
 function targetObject(target) { return target && typeof target === 'object' ? { ...target } : { address: target }; }
+function summarizeExecution(execution) {
+  try {
+    const text = JSON.stringify(execution ?? null);
+    return text == null ? String(execution) : text.slice(0, 512);
+  } catch {
+    return '[unserializable execution result]';
+  }
+}
 /* The live struct-field record is {offset, name, type}; an after payload may
    spell the field name as `field`/`fieldName` (the capability's value keys).
    Map those onto `name` for the containment check — every other key keeps its
@@ -131,6 +155,14 @@ function byteArray(value) {
   return Array.from(raw);
 }
 function same(a, b) { return JSON.stringify(normalize(a)) === JSON.stringify(normalize(b)); }
+function commentStateForExpected(value, expected) {
+  const live = value ?? null;
+  const liveAbsent = live == null || live === '';
+  const expectedAbsent = expected == null || expected === '';
+  if (liveAbsent && expectedAbsent) return expected ?? null;
+  return live;
+}
+
 function containsValue(actual, expected) {
   if (expected && typeof expected === 'object' && !Array.isArray(expected)) {
     if (!actual || typeof actual !== 'object') return false;

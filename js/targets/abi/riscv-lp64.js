@@ -120,7 +120,7 @@ function vectorDescriptor(parameter) {
   const type = String(parameter?.type || '').toLowerCase();
   const abiClass = String(parameter?.abiClass || parameter?.class || parameter?.kind || '').toLowerCase();
   const vector = parameter?.vector === true || parameter?.isVector === true
-    || /\b(?:vbool|v(?:u?int|float)\d+mf?\d+_t|vector)\b/.test(type)
+    || /\b(?:vbool(?:1|2|4|8|16|32|64)_t|v(?:u?int|float)\d+mf?\d+(?:x\d+)?_t|vector)\b/.test(type)
     || /vector/.test(abiClass);
   if (!vector) return null;
   const mask = parameter?.mask === true || parameter?.vectorMask === true || /\bvbool|mask/.test(`${type} ${abiClass}`);
@@ -134,12 +134,23 @@ function vectorDescriptor(parameter) {
   // 6-register tuple (#5628). The descriptor must never reconcile conflicting
   // evidence or out-of-range NFIELDS silently: both fail closed as `conflict`
   // so placement stays partial instead of minting an exact group (#5628).
-  const tupleMatch = /m(1|2|4|8)x(\d+)(?:_t|\b)/.exec(type);
-  const parsedLmul = tupleMatch ? Number(tupleMatch[1]) : parsed ? Number(parsed[1]) : null;
-  const parsedNf = tupleMatch ? Number(tupleMatch[2]) : null;
+  const tupleMatch = /m(f?)(1|2|4|8)x(\d+)(?:_t|\b)/.exec(type);
+  // A spelling that carries the tuple shape (m<LMUL>x<NFIELDS>_t) but parses to
+  // no valid descriptor (nonstandard m3x2/m9x2) is conflicting evidence — never
+  // a default 1/1 group, and never an integer-convention exact fallback (#6018).
+  // Fractional tuple LMULs (e.g. vint8mf8x2_t) occupy one register per field with
+  // 1-register alignment, so their occupancy multiplier normalizes to 1; the
+  // explicit-metadata conflict comparison still sees that normalized value.
+  const tupleShaped = /mf?\d+x\d+_t/.test(type);
+  const tupleFractional = tupleMatch?.[1] === 'f';
+  const parsedLmul = tupleMatch
+    ? (tupleFractional ? 1 : Number(tupleMatch[2]))
+    : parsed ? Number(parsed[1]) : null;
+  const parsedNf = tupleMatch ? Number(tupleMatch[3]) : null;
   const explicitLmulValid = Number.isInteger(explicitLmul) && [1,2,4,8].includes(explicitLmul);
   let conflict = false;
-  if (explicitLmulRaw != null && !explicitLmulValid) conflict = true;
+  if (tupleShaped && !tupleMatch) conflict = true;
+  else if (explicitLmulRaw != null && !explicitLmulValid) conflict = true;
   else if (explicitLmulValid && parsedLmul != null && parsedLmul !== explicitLmul) conflict = true;
   const lmul = explicitLmulValid ? explicitLmul : parsedLmul ?? 1;
   const explicitNfRaw = parameter?.tupleCount ?? parameter?.nf;
@@ -153,11 +164,27 @@ function vectorDescriptor(parameter) {
   } else {
     conflict = true;
   }
-  if (parsedNf != null && (parsedNf < 1 || parsedNf > 8)) conflict = true;
+  if (parsedNf != null && (parsedNf < 1 || parsedNf > 8 || parsedLmul * parsedNf > 8)) conflict = true;
   const fixedLength = parameter?.fixedLengthVector === true || /fixed[-_ ]?length/.test(abiClass);
-  return conflict
-    ? { mask, lmul, tupleCount, fixedLength, conflict:true }
-    : { mask, lmul, tupleCount, fixedLength };
+  if (mask && fixedLength) conflict = true;
+  const descriptor = { mask, lmul, tupleCount, fixedLength };
+  // The fixed-length variant derives its register group from the type size and
+  // ABI_VLEN, so an explicit LMUL is only *comparison* evidence against that
+  // derived group and is published for this variant alone. Other variants keep
+  // their pinned descriptor shape (#5616).
+  if (fixedLength) descriptor.explicitLmul = explicitLmulValid ? explicitLmul : null;
+  if (conflict) descriptor.conflict = true;
+  return descriptor;
+}
+
+function fixedVectorRegisterGroup(bits, abiVlen) {
+  if (!Number.isSafeInteger(bits) || bits <= 0 || !Number.isSafeInteger(abiVlen) || abiVlen <= 0) return null;
+  const regs = Math.ceil(bits / abiVlen);
+  if (regs <= 1) return 1;
+  if (regs <= 2) return 2;
+  if (regs <= 4) return 4;
+  if (regs <= 8) return 8;
+  return null;
 }
 
 function aggregateMembers(parameter) {
@@ -240,6 +267,16 @@ function parameterClass(parameter) {
   const vector = !aggregate ? vectorDescriptor(parameter) : null;
   const floating = !aggregate && !vector && (parameter?.floating === true || isFloatingType(type) || /\bfp\b/.test(abiClass));
   const declaredBits = parameter?.bits ?? parameter?.sizeBits;
+  // Width aliases must agree when several are declared: a silent `bits`-wins
+  // pick would launder conflicting evidence into an exact placement (#5713).
+  const declaredWidthAliases = [parameter?.bits, parameter?.sizeBits].filter((alias) => alias != null);
+  const widthConflict = declaredWidthAliases.length > 1
+    && new Set(declaredWidthAliases.map((alias) => Number(alias))).size > 1;
+  // Exact placement of a fixed-length vector needs a *declared* width: the
+  // type name alone carries no size, so the riscvTypeBits fallback must not
+  // stand in for one (#5713).
+  const bitsDeclared = !widthConflict && declaredBits != null
+    && Number.isSafeInteger(Number(declaredBits)) && Number(declaredBits) > 0;
   const aggregateLayout = aggregate ? canonicalAggregateLayout(parameter) : null;
   const aggregateLayoutProven = !aggregate || aggregateLayout != null;
   const declaredBitsNumber = Number(aggregateLayout?.bits ?? declaredBits);
@@ -254,7 +291,7 @@ function parameterClass(parameter) {
   // triviality, while any explicit nontrivial evidence selects the sound
   // by-reference convention (#5623).
   const nonTrivialForCalls = aggregate && (parameter?.nonTrivialForCalls === true || parameter?.nonTrivial === true);
-  return { type, abiClass, pointer, aggregate, aggregateLayoutProven, aggregateLayout, floating, vector, bits, bytes, nonTrivialForCalls };
+  return { type, abiClass, pointer, aggregate, aggregateLayoutProven, aggregateLayout, floating, vector, bits, bytes, nonTrivialForCalls, bitsDeclared, widthConflict };
 }
 
 function registerSource(reg, bits = XLEN, extra = {}) {
@@ -262,6 +299,39 @@ function registerSource(reg, bits = XLEN, extra = {}) {
 }
 
 function align(value, alignment) { return Math.ceil(value / alignment) * alignment; }
+
+function stackSlotAlignment(parameter, classified) {
+  const rawAlign = parameter?.alignment ?? parameter?.align
+    ?? parameter?.layout?.alignment ?? parameter?.layout?.align;
+  if (rawAlign != null) {
+    const n = Number(rawAlign);
+    if (!Number.isSafeInteger(n) || n <= 0 || (n & (n - 1)) !== 0) return null;
+    return Math.min(16, Math.max(8, n));
+  }
+  if (classified?.aggregate) {
+    const members = aggregateMembers(parameter);
+    if (members && members.length) {
+      let maxAlign = 8;
+      for (const m of members) {
+        const mAlign = m?.alignment ?? m?.align ?? m?.layout?.alignment ?? m?.layout?.align;
+        if (mAlign != null) {
+          const n = Number(mAlign);
+          if (!Number.isSafeInteger(n) || n <= 0 || (n & (n - 1)) !== 0) return null;
+          if (n > maxAlign) maxAlign = n;
+        } else if (m.bits != null) {
+          const b = Number(m.bits);
+          if (b >= 128) maxAlign = Math.max(maxAlign, 16);
+        }
+      }
+      return Math.min(16, maxAlign);
+    }
+    return 8;
+  }
+  if (classified?.bits != null) {
+    return Number(classified.bits) > 64 ? 16 : 8;
+  }
+  return 8;
+}
 
 /*
  * Aggregate locations are canonical evidence, not a convenience list of
@@ -363,15 +433,39 @@ function createClassifier(profile) {
       arguments_.push({ index, location:'unknown', abiClass:reason, bits:classified.bits,
         partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown', ...extra });
     }
-    function allocateVectorGroup(descriptor) {
+    /* The fixed-length variant derives its register group from the type size
+     * and ABI_VLEN, never from an RVV LMUL spelling (#5616). ABI_VLEN is
+     * provider evidence: it may arrive as classifier options or on the
+     * classification request itself (the guarded ABI entry point passes the
+     * request as the instruction and keeps options separate). */
+    function abiVlenEvidence() {
+      return Number(options?.abiVlen ?? instruction?.abiVlen ?? prototype?.abiVlen);
+    }
+    function allocateVectorGroup(descriptor, bits) {
       if (descriptor.mask && !maskAllocated) { maskAllocated = true; usedVectorRegisters.add('v0'); return ['v0']; }
-      if (descriptor.fixedLength && !(Number(options?.abiVlen) > 0)) return null;
-      const group = descriptor.lmul * descriptor.tupleCount;
+      let group;
+      if (descriptor.fixedLength) {
+        const abiVlen = abiVlenEvidence();
+        if (!(abiVlen > 0)) return null;
+        const vectorBits = Number(bits ?? descriptor.bits);
+        group = fixedVectorRegisterGroup(vectorBits, abiVlen);
+        if (group == null) return null;
+        if (descriptor.explicitLmul != null && descriptor.explicitLmul !== group) {
+          descriptor.conflict = true;
+          return null;
+        }
+      } else {
+        group = descriptor.lmul * descriptor.tupleCount;
+      }
+      // Alignment is the register-group multiplier: for a tuple that is the
+      // LMUL (not LMUL x NFIELDS), for a fixed-length vector it is the derived
+      // group. The span is the full group in both cases.
+      const alignment = descriptor.fixedLength ? group : descriptor.lmul;
       // Re-scan from v8 for every argument: the psABI allocator explicitly
       // allows a later, smaller argument to take a register BELOW the previous
       // argument's allocation when alignment left a hole (#5615).
       let start = 8;
-      while (start <= 23 && ((start % descriptor.lmul) !== 0
+      while (start <= 23 && ((start % alignment) !== 0
         || Array.from({ length:group }, (_unused, index) => start + index).some((reg) => usedVectorRegisters.has(`v${reg}`)))) start += 1;
       if (start + group - 1 > 23) return null;
       for (let reg = start; reg < start + group; reg++) usedVectorRegisters.add(`v${reg}`);
@@ -475,7 +569,7 @@ function createClassifier(profile) {
       : parameters.length;
 
     parameters.forEach((parameter, index) => {
-      const classified = parameterClass(parameter);
+      let classified = parameterClass(parameter);
       const variadicArgument = variadic && (
         parameter?.variadic === true || parameter?.unnamed === true || parameter?.named === false || index >= fixedParameterCount
       );
@@ -494,20 +588,62 @@ function createClassifier(profile) {
         return;
       }
 
-      if (classified.vector) {
-        if (!vectorVariant) {
-          unknownArgument(index, classified, 'vector-calling-convention-unknown', { candidates:['riscv-vector-variant','non-vector-fallback'] });
+      if (classified.vector && !vectorVariant) {
+        /*
+         * psABI base integer calling convention: "Fixed-length vectors are
+         * treated as aggregates." Under the standard convention a fixed-length
+         * vector therefore follows the aggregate size rules (a0-a7 / stack /
+         * by-reference) instead of degrading to 'unknown' (#5713). Scalable
+         * RVV vectors still require the vector variant, and a conflicting
+         * descriptor stays fail-closed (#6018).
+         */
+        if (classified.vector.fixedLength === true && classified.vector.conflict !== true) {
+          if (classified.widthConflict) {
+            unknownArgument(index, classified, 'fixed-vector-width-evidence-conflict', {});
+            return;
+          }
+          if (!(classified.bits > 0 && classified.bitsDeclared)) {
+            unknownArgument(index, classified, 'fixed-length-vector-size-unproven', { vector:classified.vector });
+            return;
+          }
+          // Present the vector to the shared integer-convention aggregate
+          // placement below. FP flattening never applies: the psABI routes
+          // fixed-length vectors through the *integer* convention (#5713).
+          classified = {
+            ...classified,
+            vector:null,
+            aggregate:true,
+            aggregateLayoutProven:true,
+            fixedVectorAggregate:true,
+          };
+        } else {
+          unknownArgument(index, classified,
+            classified.vector.conflict ? 'vector-descriptor-conflict' : 'vector-calling-convention-unknown',
+            classified.vector.conflict ? { vector:classified.vector } : { candidates:['riscv-vector-variant','non-vector-fallback'] });
           return;
         }
+      } else if (classified.vector) {
         // Conflicting or malformed descriptor evidence (spelling vs explicit
         // metadata, out-of-range NFIELDS) must not mint an exact group (#5628).
         if (classified.vector.conflict) {
           unknownArgument(index, classified, 'vector-descriptor-conflict', { vector:classified.vector });
           return;
         }
-        const regs = allocateVectorGroup(classified.vector);
+        if (variadicArgument) {
+          const reg = variadicStackOnly ? undefined : INTEGER_ARGUMENT_REGISTERS[integerIndex];
+          if (reg !== undefined) {
+            integerIndex += 1;
+            useInteger(reg, { purpose:'variadic-vector-by-reference' });
+            arguments_.push({ index, location:'register', reg, abiName:ABI_ALIAS[reg], abiClass:'vector-by-reference', pointer:true, bits:XLEN, bytes:8, pointeeBits:classified.bits, hiddenIndirection:true, variadic:true });
+          } else {
+            const entry = { index, location:'stack', offset:stackOffset, offsetBase:'incoming-stack-arguments', bytes:8, abiClass:'vector-by-reference', pointer:true, bits:XLEN, pointeeBits:classified.bits, hiddenIndirection:true, variadic:true };
+            arguments_.push(entry); stackArguments.push(entry); stackOffset += 8; stackArgsMayContainPointers = true;
+          }
+          return;
+        }
+        const regs = allocateVectorGroup(classified.vector, classified.bits);
         if (!regs) {
-          unknownArgument(index, classified, 'vector-register-allocation-unproven', { vector:classified.vector });
+          unknownArgument(index, classified, classified.vector.conflict ? 'vector-descriptor-conflict' : 'vector-register-allocation-unproven', { vector:classified.vector });
           return;
         }
         regs.forEach((reg) => useVector(reg, { purpose:classified.vector.mask ? 'vector-mask-argument' : 'vector-argument' }));
@@ -555,10 +691,12 @@ function createClassifier(profile) {
           }
           return;
         }
-        /* Hard-float aggregate flattening is exact only with member evidence. */
+        /* Hard-float aggregate flattening is exact only with member evidence.
+         * A fixed-length vector routed through the integer convention is not
+         * an FP-flattening candidate at all (#5713). */
         const needed = bytes > XLEN / 8 ? 2 : 1;
-        const flattening = hardFloat ? flattenAggregate(parameter) : null;
-        if (hardFloat && flattening == null) {
+        const flattening = hardFloat && !classified.fixedVectorAggregate ? flattenAggregate(parameter) : null;
+        if (hardFloat && flattening == null && !classified.fixedVectorAggregate) {
           aggregatePartial = true;
           unknownArgument(index, classified, 'aggregate-hard-float-layout-unproven', { candidates:['fp-flattening','integer-convention'] });
           return;
@@ -674,8 +812,13 @@ function createClassifier(profile) {
           });
           return;
         }
+        const slotAlignment = stackSlotAlignment(parameter, classified);
+        if (slotAlignment == null) {
+          unknownArgument(index, classified, 'aggregate-alignment-invalid');
+          return;
+        }
         const slot = align(bytes, 8);
-        stackOffset = align(stackOffset, needed === 2 ? 16 : 8);
+        stackOffset = align(stackOffset, slotAlignment);
         const pieces = Array.from({ length:needed }, (_unused, piece) => aggregatePiece({
           pieceIndex:piece,
           stackOffset:stackOffset + piece * 8,
@@ -715,7 +858,11 @@ function createClassifier(profile) {
       /* Scalars wider than XLEN and at most 2*XLEN use an argument-register pair. */
       const needed = classified.bits > XLEN ? 2 : 1;
       if (variadicArgument && variadicStackOnly) {
-        const slotAlignment = needed === 2 ? 16 : 8;
+        const slotAlignment = stackSlotAlignment(parameter, classified);
+        if (slotAlignment == null) {
+          unknownArgument(index, classified, 'variadic-alignment-invalid');
+          return;
+        }
         const bytes = align(Math.max(8, Math.ceil(classified.bits / 8)), slotAlignment);
         stackOffset = align(stackOffset, slotAlignment);
         const entry = {
@@ -771,7 +918,11 @@ function createClassifier(profile) {
         return;
       }
 
-      const slotAlignment = needed === 2 ? 16 : 8;
+      const slotAlignment = stackSlotAlignment(parameter, classified);
+      if (slotAlignment == null) {
+        unknownArgument(index, classified, 'scalar-alignment-invalid');
+        return;
+      }
       const bytes = align(Math.max(8, Math.ceil(classified.bits / 8)), slotAlignment);
       stackOffset = align(stackOffset, slotAlignment);
       const entry = {
@@ -916,10 +1067,64 @@ function createClassifier(profile) {
       prototype.callingConvention || options.callingConvention,
     ) === 'riscv-vector-variant';
     if (returnVector) {
-      if (!vectorVariant) return { reg:null, partial:true, location:'unknown', reason:'vector-return-calling-convention-unknown' };
+      if (!vectorVariant) {
+        /*
+         * psABI: a fixed-length vector returns the same way the first named
+         * argument of that type would be passed — an aggregate under the base
+         * integer convention (#5713). <=2*XLEN returns in a0/a1, larger ones
+         * in memory via the hidden result pointer. Scalable vectors still
+         * require the vector variant; conflicting descriptors stay
+         * fail-closed (#6018).
+         */
+        if (returnVector.fixedLength !== true || returnVector.conflict === true) {
+          return returnVector.conflict
+            ? { reg:null, partial:true, location:'unknown', reason:'vector-return-descriptor-conflict', vector:returnVector }
+            : { reg:null, partial:true, location:'unknown', reason:'vector-return-calling-convention-unknown' };
+        }
+        // Prototype-internal width aliases must agree before an exact return
+        // placement is minted. A call-site options.returnBits is the documented
+        // override (#5636) and is not part of the conflict set.
+        const returnWidthAliases = [
+          Object.hasOwn(prototype, 'returnBits') ? prototype.returnBits : null,
+          Object.hasOwn(prototype, 'bits') ? prototype.bits : null,
+        ].filter((alias) => alias != null);
+        if (options?.returnBits == null && returnWidthAliases.length > 1
+          && new Set(returnWidthAliases.map((alias) => Number(alias))).size > 1) {
+          return { reg:null, partial:true, location:'unknown', reason:'fixed-vector-return-width-evidence-conflict' };
+        }
+        if (!(bits > 0 && Number.isSafeInteger(declaredBitsNumber) && declaredBitsNumber > 0)) {
+          return { reg:null, partial:true, location:'unknown', reason:'fixed-vector-return-size-unproven' };
+        }
+        if (bits > 2 * XLEN) return indirectResult();
+        const fixedRegs = bits > XLEN ? INTEGER_RETURN_REGISTERS.slice(0, 2) : INTEGER_RETURN_REGISTERS.slice(0, 1);
+        const fixedPieces = fixedRegs.map((reg, pieceIndex) => aggregatePiece({
+          pieceIndex,
+          reg,
+          bits:Math.min(XLEN, Math.max(1, bits - pieceIndex * XLEN)),
+          bytes:8,
+          byteOffset:pieceIndex * 8,
+          abiClass:'aggregate-integer',
+        }));
+        return {
+          reg:fixedRegs[0], regs:fixedRegs, pieces:fixedPieces, bytes:fixedRegs.length * 8,
+          abiNames:fixedRegs.map((reg) => ABI_ALIAS[reg]), bits, aggregate:true, fixedVectorAggregate:true,
+        };
+      }
       if (returnVector.conflict) return { reg:null, partial:true, location:'unknown', reason:'vector-return-descriptor-conflict', vector:returnVector };
-      if (returnVector.fixedLength && !(Number(options?.abiVlen) > 0)) return { reg:null, partial:true, location:'unknown', reason:'fixed-vector-return-abi-vlen-required' };
-      const count = returnVector.mask ? 1 : returnVector.lmul * returnVector.tupleCount;
+      let count;
+      if (returnVector.fixedLength) {
+        // classifyFunctionReturn passes the whole request as options, so the
+        // request-level ABI_VLEN evidence is already carried here.
+        const abiVlen = Number(options?.abiVlen ?? prototype?.abiVlen);
+        if (!(abiVlen > 0)) return { reg:null, partial:true, location:'unknown', reason:'fixed-vector-return-abi-vlen-required' };
+        count = fixedVectorRegisterGroup(bits, abiVlen);
+        if (count == null) return { reg:null, partial:true, location:'unknown', reason:'vector-return-group-too-large' };
+        if (returnVector.explicitLmul != null && returnVector.explicitLmul !== count) {
+          return { reg:null, partial:true, location:'unknown', reason:'vector-return-descriptor-conflict', vector:returnVector };
+        }
+      } else {
+        count = returnVector.mask ? 1 : returnVector.lmul * returnVector.tupleCount;
+      }
       if (!returnVector.mask && count > VECTOR_ARGUMENT_REGISTERS.length) return { reg:null, partial:true, location:'unknown', reason:'vector-return-group-too-large' };
       const regs = returnVector.mask ? ['v0'] : Array.from({ length:count }, (_unused, index) => `v${8 + index}`);
       return { reg:regs[0], regs, bits, vector:true, mask:returnVector.mask, callingConvention:'riscv-vector-variant' };

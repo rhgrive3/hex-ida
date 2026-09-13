@@ -84,6 +84,7 @@ const STRING_POINTS = 2;
 const API_POINTS = 2;
 const VENDOR_POINTS = 6;
 const MAX_METHODS_PER_CLASS = 60;
+const MAX_STRINGS_TO_SCAN = 4000;
 
 const VENDOR_KIND_TO_CATEGORY = {
   ads: 'ads', analytics: 'system', marketing: 'system',
@@ -98,6 +99,27 @@ const EXTRA_LABEL = {
 export function categoryLabel(id) {
   const extra = EXTRA_LABEL[id];
   return extra ? pick(extra.ja, extra.en) : featureLabelOf(id);
+}
+
+function selectClassificationMethods(cls, limit = MAX_METHODS_PER_CLASS) {
+  const instanceMethods = cls.methods || [];
+  const classMethods = cls.classMethods || [];
+  if (instanceMethods.length === 0) return classMethods.slice(0, limit);
+  if (classMethods.length === 0) return instanceMethods.slice(0, limit);
+
+  const selected = [];
+  const maxLen = Math.max(instanceMethods.length, classMethods.length);
+  for (let i = 0; i < maxLen && selected.length < limit; i++) {
+    if (i < instanceMethods.length) {
+      selected.push(instanceMethods[i]);
+      if (selected.length >= limit) break;
+    }
+    if (i < classMethods.length) {
+      selected.push(classMethods[i]);
+      if (selected.length >= limit) break;
+    }
+  }
+  return selected;
 }
 
 function classifyClass(cls, ctx) {
@@ -127,7 +149,7 @@ function classifyClass(cls, ctx) {
     add(hit.id, hit.weak ? 1 : NAME_POINTS - 1, 'class-name', { name: cls.name });
   }
 
-  const methods = (cls.methods || []).slice(0, MAX_METHODS_PER_CLASS);
+  const methods = selectClassificationMethods(cls, MAX_METHODS_PER_CLASS);
   let stringHits = 0;
   let apiHits = 0;
   for (const m of methods) {
@@ -285,6 +307,59 @@ export function buildAppMap(opts) {
   };
 }
 
+// The xref span must be the string's original UTF-8 byte extent (#5698).
+// Producer contract (worker scanStrings): display text is control-escaped
+// (`\t`/`\r`/`\n`), and the emitted byteLength is the raw run's extent. A
+// non-escape display code point has a determined UTF-8 width (1..4 bytes by
+// code-point range). An escape is ambiguous from the display alone — a real
+// escaped control is 1 raw byte but a literal backslash+letter is 2 — so it
+// counts 1..2. From the display text that gives a provable [minRaw, maxRaw]
+// window; a carried byteLength outside it (or of the wrong type) is a
+// forged/malformed authority and fails closed.
+function producerByteExtentWindow(text) {
+  let minRaw = 0;
+  let maxRaw = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 0x5c && (text[i + 1] === 't' || text[i + 1] === 'r' || text[i + 1] === 'n')) {
+      // Ambiguous from the display alone: a real escaped control is 1 raw
+      // byte, a literal backslash+letter is 2. The window admits both so a
+      // genuine producer extent is never rejected (#5698 completeness).
+      minRaw += 1;
+      maxRaw += 2;
+      i++;
+      continue;
+    }
+    const unit = text.codePointAt(i);
+    if (unit > 0xffff) i++;
+    // A non-escape decoded code point has a determined UTF-8 width: the
+    // producer scanned raw UTF-8, so U+0020..U+007E came from 1 byte,
+    // U+0080..U+07FF from 2, U+0800..U+FFFF from 3, astral from 4. Both
+    // window edges take that exact width — a smaller claimed byteLength
+    // (e.g. a truncated slice) must not become xref authority (#5698).
+    const width = unit <= 0x7f ? 1 : unit <= 0x7ff ? 2 : unit <= 0xffff ? 3 : 4;
+    minRaw += width;
+    maxRaw += width;
+  }
+  return { minRaw, maxRaw };
+}
+
+// Returns the authoritative raw byte span, or null when the entry carries no
+// provable extent (missing byteLength falls back to the provable minimum; a
+// malformed/forged carried value gets no xref authority at all).
+function stringByteSpan(s) {
+  const carried = s.byteLength;
+  if (carried === undefined || carried === null) {
+    const { minRaw } = producerByteExtentWindow(s.text);
+    return minRaw > 0 ? minRaw : null;
+  }
+  if (typeof carried !== 'number' || !Number.isSafeInteger(carried) || carried <= 0) {
+    return null;
+  }
+  const { minRaw, maxRaw } = producerByteExtentWindow(s.text);
+  if (carried < minRaw || carried > maxRaw) return null;
+  return carried;
+}
+
 export function buildStringMap(opts) {
   const o = opts || {};
   const program = o.program;
@@ -292,14 +367,19 @@ export function buildStringMap(opts) {
   const groups = new Map();
   if (!program) return { subsystems: [], hasClasses: false, classCount: 0, byStrings: true };
 
-  let scanned = 0;
+  let inspected = 0;
   for (const s of o.strings || []) {
-    if (scanned >= 4000) break;
+    if (inspected >= MAX_STRINGS_TO_SCAN) break;
+    inspected++;
     const hits = classifyString(s.text);
     if (!hits.length) continue;
-    const users = program.functionsReferencing(s.addr, BigInt(Math.min(s.text.length, 128)), 8);
+    // The xref span is a virtual-address byte range (#5698): use the string's
+    // authoritative raw byte extent; entries without one get no xref
+    // authority rather than an over-inclusive display-derived span.
+    const span = stringByteSpan(s);
+    if (span == null) continue;
+    const users = program.functionsReferencing(s.addr, BigInt(Math.min(span, 128)), 8);
     if (!users.length) continue;
-    scanned++;
     for (const hit of hits) {
       if (!groups.has(hit.id)) groups.set(hit.id, { id: hit.id, funcs: new Map(), score: 0 });
       const g = groups.get(hit.id);

@@ -1,6 +1,11 @@
 import { BudgetExceededError } from '../budgets/index.js';
 import { createSchedulerBudget } from '../budgets/scheduler-budget.js';
-import { assertCanonicalArtifactDescriptor } from '../artifacts/contracts.js';
+import {
+  ArtifactStorageError,
+  assertCanonicalArtifactDescriptor,
+  decodeArtifactPayload,
+  encodeArtifactPayload,
+} from '../artifacts/contracts.js';
 import {
   ANALYSIS_PRIORITY,
   ANALYSIS_SCHEDULER_VERSION,
@@ -77,12 +82,26 @@ function removeSignalListeners(listeners) {
   }
 }
 function requestCompleteness(request) { return request?.completeness ?? 'complete'; }
+function cachedCompletenessCompatible(record, request) {
+  const available = record?.completeness;
+  // ArtifactStore hits always carry a record. Preserve the scheduler's legacy
+  // compatibility with minimal store adapters that expose only hit/payload.
+  if (available == null) return true;
+  const required = requestCompleteness(request);
+  // A complete artifact can satisfy any weaker request. Incomplete states are
+  // not a total order (#3813), so only the exact requested state is reusable.
+  return available === 'complete' || available === required;
+}
 function inflightRequirementsCompatible(producerRequest, consumerRequest) {
   // Only identical completeness requirements share a producer. In particular,
   // bounded/truncated/unsupported are not treated as an ordered lattice.
   return requestCompleteness(producerRequest) === requestCompleteness(consumerRequest);
 }
 function isStorageFailure(error) { return error?.name === 'ArtifactStorageError' || String(error?.code || '').startsWith('artifact-storage-'); }
+function detachedArtifactValue(value) {
+  if (value == null) return value;
+  return decodeArtifactPayload(encodeArtifactPayload(value));
+}
 
 class IndexedMinHeap {
   constructor(compare) { this.items=[]; this.indices=new Map(); this.compareFn=compare; this.comparisons=0; }
@@ -94,6 +113,7 @@ class IndexedMinHeap {
   push(item) { if (this.indices.has(item.artifactId)) throw new Error('scheduler-queue-duplicate'); const index=this.items.length; this.items.push(item); this.indices.set(item.artifactId,index); this.#up(index); }
   pop() { if (!this.items.length) return null; const root=this.items[0]; this.remove(root.artifactId); return root; }
   remove(artifactId) { const index=this.indices.get(requireArtifactId(artifactId)); if (index==null) return null; const removed=this.items[index]; const last=this.items.pop(); this.indices.delete(removed.artifactId); if (index<this.items.length) { this.items[index]=last; this.indices.set(last.artifactId,index); this.#up(index); this.#down(this.indices.get(last.artifactId)); } return removed; }
+  refresh(artifactId) { const id=requireArtifactId(artifactId); const index=this.indices.get(id); if (index==null) return false; this.#up(index); this.#down(this.indices.get(id)); return true; }
 }
 
 function priorityName(value) {
@@ -107,15 +127,16 @@ function priorityName(value) {
 }
 
 export class AnalysisScheduler {
-  constructor({ store, maxConcurrency=2, starvationInterval=8, defaultBudget={}, onEvent=null }={}) {
+  constructor({ store, maxConcurrency=2, starvationInterval=8, terminalHistoryLimit=16384, defaultBudget={}, onEvent=null }={}) {
     if (!store) throw new TypeError('artifact-store-required');
     if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency <= 0) throw new TypeError('scheduler-max-concurrency-invalid');
     if (onEvent != null && typeof onEvent !== 'function') throw new TypeError('scheduler-on-event-invalid');
     const normalizedStarvationInterval = strictSafeInteger(starvationInterval, 8, 'scheduler-starvation-interval-invalid', 1);
-    this.store=store; this.maxConcurrency=maxConcurrency; this.starvationInterval=normalizedStarvationInterval; this.defaultBudget=defaultBudget;
+    const normalizedTerminalHistoryLimit = strictSafeInteger(terminalHistoryLimit, 16384, 'scheduler-terminal-history-limit-invalid');
+    this.store=store; this.maxConcurrency=maxConcurrency; this.starvationInterval=normalizedStarvationInterval; this.terminalHistoryLimit=normalizedTerminalHistoryLimit; this.defaultBudget=defaultBudget;
     this.onEvent = onEvent;
     this.seq = 0;
-    this.inflight=new Map(); this.running=0; this.dispatchEpoch=0; this.dag=new Map(); this.dagEdgeCount=0; this.states=new Map(); this.activeConsumers=0;
+    this.inflight=new Map(); this.running=0; this.dispatchEpoch=0; this.dag=new Map(); this.dagEdgeCount=0; this.dagInbound=new Map(); this.states=new Map(); this.terminalHistory=new Map(); this.terminalRoots=new Set(); this.activeConsumers=0;
     this.queue=new IndexedMinHeap((a,b)=>a.orderKey<b.orderKey?-1:a.orderKey>b.orderKey?1:a.artifactId.localeCompare(b.artifactId));
     this.metrics={ requests:0,cacheHits:0,producerInvocations:0,coalescedRequests:0,queueOperations:0,completedJobs:0,failedJobs:0,cancelledJobs:0,cancelledConsumers:0,orphanCancellations:0,budgetExhaustions:0,dependencyFailures:0,producerFailures:0,storageFailures:0,cycleErrors:0,cycleChecks:0,cycleTraversalSteps:0,dependencyIdentityErrors:0,maxObservedRunning:0,observerFailures:0 };
   }
@@ -198,8 +219,13 @@ export class AnalysisScheduler {
     if (existing) {
       if (inflightRequirementsCompatible(existing.request,request)) {
         this.metrics.coalescedRequests++;
+        const previousConsumerCount=existing.consumerCount;
         const p = this.#attachConsumer(existing,consumerSignals);
+        if (existing.consumerCount > previousConsumerCount) this.#upgradePriority(existing,priority);
         this.#emit('request.coalesced', existing, { consumerCount: existing.consumerCount });
+        if (typeof request.validate === 'function') {
+          return p.then((result)=>this.#validateConsumerResult(result,request,consumerSignals));
+        }
         return p;
       }
       // A distinct completeness requirement cannot share this producer, while
@@ -211,14 +237,38 @@ export class AnalysisScheduler {
     }
 
     const controller=new AbortController();
+    this.terminalHistory.delete(artifactId);
+    this.terminalRoots.delete(artifactId);
     const task={ artifactId,descriptor,request,controller,priority,enqueuedEpoch:null,orderKey:null,state:'waiting-dependency',phase:'dependency',queueResolve:null,queueReject:null,promise:null,settled:false,superseded:false,consumerCount:0 };
     controller.signal.addEventListener('abort',()=>this.#cancelQueuedTask(task),{once:true});
     task.promise=Promise.resolve()
       .then(()=>this.#execute(task,[...ancestry,artifactId]))
       .catch((error)=>{ this.#recordFailure(task,error); throw error; })
-      .finally(()=>{ task.settled=true; if (this.inflight.get(artifactId)===task) this.inflight.delete(artifactId); });
+      .finally(()=>{
+        task.settled=true;
+        if (this.inflight.get(artifactId)===task) {
+          this.inflight.delete(artifactId);
+          this.#rememberTerminal(artifactId);
+        }
+      });
     this.inflight.set(artifactId,task);
-    return this.#attachConsumer(task,consumerSignals);
+    const p=this.#attachConsumer(task,consumerSignals);
+    if (typeof request.validate === 'function') {
+      return p.then((result)=>result?.reused===true
+        ? this.#validateConsumerResult(result,request,consumerSignals)
+        : result);
+    }
+    return p;
+  }
+
+  #upgradePriority(task, incomingPriority) {
+    if (incomingPriority >= task.priority || task.state === 'running') return false;
+    task.priority=incomingPriority;
+    if (task.state === 'ready') {
+      task.orderKey=BigInt(task.enqueuedEpoch)+(BigInt(task.priority)*BigInt(this.starvationInterval));
+      if (!this.queue.refresh(task.artifactId)) throw new Error('scheduler-queue-missing');
+    }
+    return true;
   }
 
   #attachConsumer(task, signals) {
@@ -282,6 +332,56 @@ export class AnalysisScheduler {
     });
   }
 
+  async #validateConsumerResult(result, request, signals) {
+    const active=uniqueSignals(signals);
+    const aborted=active.find((signal)=>signal.aborted);
+    if (aborted) { this.metrics.cancelledConsumers++; throw abortError(aborted); }
+    const controller=new AbortController();
+    const listeners=[];
+    const abortFrom=(signal)=>{
+      if (!controller.signal.aborted) controller.abort(abortError(signal));
+    };
+    try {
+      for (const signal of active) {
+        const listener=()=>abortFrom(signal);
+        listeners.push([signal,listener]);
+        signal.addEventListener('abort',listener,{once:true});
+      }
+      const abortedAfterRegistration=active.find((signal)=>signal.aborted);
+      if (abortedAfterRegistration) abortFrom(abortedAfterRegistration);
+      if (controller.signal.aborted) {
+        this.metrics.cancelledConsumers++;
+        throw abortError(controller.signal);
+      }
+      const validationPayload=detachedArtifactValue(result?.payload);
+      const validationRecord=detachedArtifactValue(result?.record);
+      if (controller.signal.aborted) {
+        this.metrics.cancelledConsumers++;
+        throw abortError(controller.signal);
+      }
+      let verdict;
+      try {
+        verdict=await request.validate(validationPayload,validationRecord,{signal:controller.signal});
+      } catch (error) {
+        if (controller.signal.aborted) {
+          this.metrics.cancelledConsumers++;
+          throw abortError(controller.signal);
+        }
+        throw error;
+      }
+      if (controller.signal.aborted) {
+        this.metrics.cancelledConsumers++;
+        throw abortError(controller.signal);
+      }
+      if (verdict!==true) {
+        throw new ArtifactStorageError('artifact-validation-not-passed','artifact-validation-not-passed',{verdict:String(verdict)});
+      }
+      return result;
+    } finally {
+      removeSignalListeners(listeners);
+    }
+  }
+
   #waitForInflightSlot(task, signals) {
     const active=uniqueSignals(signals);
     const aborted=active.find((signal)=>signal.aborted);
@@ -325,13 +425,23 @@ export class AnalysisScheduler {
     if (task.controller.signal.aborted) throw abortError(task.controller.signal);
 
     task.phase='cache';
-    const cached=await this.store.get(task.descriptor,{signal:task.controller.signal});
+    const requiredCompleteness=requestCompleteness(task.request);
+    const allowIncomplete=requiredCompleteness!=='complete';
+    const cached=await this.store.get(task.descriptor,{signal:task.controller.signal,allowIncomplete});
     if (task.controller.signal.aborted) throw abortError(task.controller.signal);
-    if (cached.status==='hit') {
+    if (cached.status==='hit'&&cachedCompletenessCompatible(cached.record,task.request)) {
       this.metrics.cacheHits++;
-      this.states.set(task.artifactId,'completed');
+      task.state='completed'; this.states.set(task.artifactId,'completed');
       this.#emit('cache.hit', task, { source:'store' });
       return {...cached,state:'completed',reused:true};
+    }
+    if (cached.status==='hit') {
+      // The store has one immutable row per artifactId. A different incomplete
+      // state cannot satisfy this request, so route the observed row through
+      // the store's strict, CAS-safe incompatibility invalidation before the
+      // replacement producer runs. This avoids a stale read/delete race.
+      await this.store.get(task.descriptor,{signal:task.controller.signal});
+      if (task.controller.signal.aborted) throw abortError(task.controller.signal);
     }
     return this.#enqueue(task,dependencyResults);
   }
@@ -340,7 +450,11 @@ export class AnalysisScheduler {
     if (!dependencies.length) return [];
     const waitController=new AbortController();
     const onParentAbort=()=>waitController.abort(abortError(task.controller.signal));
-    if (task.controller.signal.aborted) onParentAbort(); else task.controller.signal.addEventListener('abort',onParentAbort,{once:true});
+    if (task.controller.signal.aborted) onParentAbort();
+    else {
+      task.controller.signal.addEventListener('abort',onParentAbort,{once:true});
+      if (task.controller.signal.aborted) onParentAbort();
+    }
     const promises=dependencies.map((dependency)=>this.#request(dependency,ancestry,waitController.signal));
     try { return await Promise.all(promises); }
     catch (error) {
@@ -362,9 +476,70 @@ export class AnalysisScheduler {
       if (path) { this.metrics.cycleErrors++; throw new SchedulerCycleError([artifactId,...path]); }
     }
     const previous=this.dag.get(artifactId)||[];
+    for (const dependencyId of previous) this.#adjustDagInbound(dependencyId,-1);
     this.dagEdgeCount+=ids.length-previous.length;
     this.dag.set(artifactId,Object.freeze(ids));
-    for (const dependencyId of ids) if (!this.dag.has(dependencyId)) this.dag.set(dependencyId,Object.freeze([]));
+    if (!this.dagInbound.has(artifactId)) this.dagInbound.set(artifactId,0);
+    for (const dependencyId of ids) {
+      this.#adjustDagInbound(dependencyId,1);
+      if (!this.dag.has(dependencyId)) this.dag.set(dependencyId,Object.freeze([]));
+    }
+  }
+
+  #adjustDagInbound(artifactId, delta) {
+    const next=(this.dagInbound.get(artifactId)||0)+delta;
+    if (next<0) throw new Error('scheduler-dag-inbound-underflow');
+    this.dagInbound.set(artifactId,next);
+    if (next===0&&this.#dropOrphanDagPlaceholder(artifactId)) return next;
+    if (next===0&&this.terminalHistory.has(artifactId)&&!this.inflight.has(artifactId)) this.terminalRoots.add(artifactId);
+    else this.terminalRoots.delete(artifactId);
+    return next;
+  }
+
+  #dropOrphanDagPlaceholder(artifactId) {
+    if (this.inflight.has(artifactId)||this.terminalHistory.has(artifactId)||this.states.has(artifactId)) return false;
+    const dependencies=this.dag.get(artifactId);
+    if (!dependencies||dependencies.length!==0) return false;
+    this.dag.delete(artifactId);
+    this.dagInbound.delete(artifactId);
+    this.terminalRoots.delete(artifactId);
+    return true;
+  }
+
+  #rememberTerminal(artifactId) {
+    this.terminalHistory.delete(artifactId);
+    this.terminalHistory.set(artifactId,true);
+    if ((this.dagInbound.get(artifactId)||0)===0) this.terminalRoots.add(artifactId);
+    this.#compactTerminalHistory();
+  }
+
+  #compactTerminalHistory() {
+    while (this.terminalHistory.size>this.terminalHistoryLimit&&this.terminalRoots.size) {
+      const artifactId=this.terminalRoots.values().next().value;
+      this.#evictTerminalClosure(artifactId);
+    }
+  }
+
+  #evictTerminalClosure(rootArtifactId) {
+    const pending=[rootArtifactId];
+    while (pending.length&&this.terminalHistory.size>this.terminalHistoryLimit) {
+      const artifactId=pending.pop();
+      if (!this.terminalHistory.has(artifactId)||this.inflight.has(artifactId)||(this.dagInbound.get(artifactId)||0)!==0) continue;
+      this.terminalHistory.delete(artifactId);
+      this.terminalRoots.delete(artifactId);
+      this.states.delete(artifactId);
+      const dependencies=this.dag.get(artifactId)||[];
+      if (!this.dag.delete(artifactId)) {
+        this.dagInbound.delete(artifactId);
+        continue;
+      }
+      this.dagInbound.delete(artifactId);
+      this.dagEdgeCount-=dependencies.length;
+      for (const dependencyId of dependencies) {
+        const inbound=this.#adjustDagInbound(dependencyId,-1);
+        if (inbound===0&&this.terminalHistory.has(dependencyId)&&!this.inflight.has(dependencyId)) pending.push(dependencyId);
+      }
+    }
   }
 
   #pathBetween(start,target) {
@@ -422,7 +597,7 @@ export class AnalysisScheduler {
     budget.checkCancelled();
     task.phase='publish';
     const published=await this.store.publish(task.descriptor,payload,{ signal,completeness:task.request.completeness??'complete',validate:task.request.validate,creation:task.request.creation });
-    this.metrics.completedJobs++; this.states.set(task.artifactId,'completed'); task.phase='completed';
+    this.metrics.completedJobs++; task.state='completed'; this.states.set(task.artifactId,'completed'); task.phase='completed';
     this.#emit('job.completed', task, { published: true });
     return {...published,state:'completed',reused:false,budget:budget.snapshot()};
   }
@@ -431,12 +606,13 @@ export class AnalysisScheduler {
     if (task.superseded&&task.controller.signal.aborted) {
       this.metrics.cancelledJobs++;
       const phase = task.state === 'running' ? 'running' : (task.state === 'ready' || task.phase === 'ready') ? 'queued' : 'waiting-dependency';
+      task.state='cancelled';
       this.#emit('job.cancelled', task, { phase, superseded:true });
       return;
     }
     if (error instanceof BudgetExceededError) {
       this.metrics.budgetExhaustions++;
-      this.states.set(task.artifactId,'budget-exhausted');
+      task.state='budget-exhausted'; this.states.set(task.artifactId,'budget-exhausted');
       this.#emit('budget.exhausted', task, {
         resource: error.resource ?? null,
         limit: error.limit ?? null,
@@ -446,14 +622,14 @@ export class AnalysisScheduler {
     }
     if (task.controller.signal.aborted) {
       this.metrics.cancelledJobs++;
-      this.states.set(task.artifactId,'cancelled');
       const phase = task.state === 'running' ? 'running' : (task.state === 'ready' || task.phase === 'ready') ? 'queued' : 'waiting-dependency';
+      task.state='cancelled'; this.states.set(task.artifactId,'cancelled');
       this.#emit('job.cancelled', task, { phase });
       return;
     }
     if (error instanceof SchedulerDependencyError) {
       this.metrics.failedJobs++;
-      this.states.set(task.artifactId,'failed');
+      task.state='failed'; this.states.set(task.artifactId,'failed');
       this.#emit('dependency.failed', task, {
         dependencyArtifactId: error.cause?.artifactId || error.artifactId || null,
       });
@@ -462,13 +638,13 @@ export class AnalysisScheduler {
     if (task.phase==='cache'||task.phase==='publish'||isStorageFailure(error)) {
       this.metrics.failedJobs++;
       this.metrics.storageFailures++;
-      this.states.set(task.artifactId,'failed');
+      task.state='failed'; this.states.set(task.artifactId,'failed');
       this.#emit('storage.failed', task, { code: error.code || null });
       return;
     }
     this.metrics.failedJobs++;
     if (task.phase==='producer') this.metrics.producerFailures++;
-    this.states.set(task.artifactId,'failed');
+    task.state='failed'; this.states.set(task.artifactId,'failed');
     this.#emit('job.failed', task, { code: error.code || null, name: error.name || 'Error' });
   }
 
@@ -489,5 +665,5 @@ export class AnalysisScheduler {
 
   dependencyIds(artifactId) { return this.dag.get(requireArtifactId(artifactId))||Object.freeze([]); }
   state(artifactId) { return this.states.get(requireArtifactId(artifactId))||'unknown'; }
-  stats() { return Object.freeze({ schedulerVersion:ANALYSIS_SCHEDULER_VERSION,starvationPolicy:'virtual-deadline-v1',starvationInterval:this.starvationInterval,running:this.running,queued:this.queue.size,inflight:this.inflight.size,activeConsumers:this.activeConsumers,dagNodes:this.dag.size,dagEdges:this.dagEdgeCount,queueComparisons:this.queue.comparisons,producerInvocationCount:this.metrics.producerInvocations,...this.metrics }); }
+  stats() { return Object.freeze({ schedulerVersion:ANALYSIS_SCHEDULER_VERSION,starvationPolicy:'virtual-deadline-v1',starvationInterval:this.starvationInterval,terminalHistoryLimit:this.terminalHistoryLimit,terminalHistoryNodes:this.terminalHistory.size,running:this.running,queued:this.queue.size,inflight:this.inflight.size,activeConsumers:this.activeConsumers,dagNodes:this.dag.size,dagEdges:this.dagEdgeCount,queueComparisons:this.queue.comparisons,producerInvocationCount:this.metrics.producerInvocations,...this.metrics }); }
 }

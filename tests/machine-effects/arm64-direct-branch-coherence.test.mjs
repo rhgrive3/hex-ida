@@ -134,6 +134,9 @@ function targetOf(bundle) {
 // #6067: target authority must not coerce arrays, booleans, or objects through
 // BigInt(). Invalid structured or operand evidence is present evidence and must
 // fail closed rather than being ignored in favor of another source.
+// The operand-shape gate reports `arm64-b-operand-shape-invalid` (the canonical
+// reason pinned across the arm64 control-operand-shape suites); both that and
+// the coherence mismatch are acceptable fail-closed reports here.
 for (const hostile of [[0x1004n], true, { toString: () => '4100' }]) {
   const invalidStructured = branch({ explicitTarget: hostile });
   assert.equal(invalidStructured?.completeness, 'partial');
@@ -141,7 +144,7 @@ for (const hostile of [[0x1004n], true, { toString: () => '4100' }]) {
 
   const invalidOperand = branch({ explicitTarget: 0x1004n, operandTarget: hostile });
   assert.equal(invalidOperand?.completeness, 'partial');
-  assert.match(invalidOperand.unknownEffects?.reason ?? '', /operand-shape-unmodelled|target-evidence-mismatch/);
+  assert.match(invalidOperand.unknownEffects?.reason ?? '', /operand-shape-(?:unmodelled|invalid)|target-evidence-mismatch/);
 }
 
 console.log('ARM64 direct branch target evidence coherence (#6067): PASS');

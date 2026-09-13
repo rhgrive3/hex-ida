@@ -572,6 +572,16 @@ function literalTargetEvidence(decoded, immediateOperandValue, context = null) {
     if (target < MIN_SIGNED_ADDRESS_64 || target > MAX_UNSIGNED_ADDRESS_64) return null;
     return BigInt.asUintN(64, target);
   };
+  // A structured field that is PRESENT but not canonically parseable is still
+  // evidence: silently skipping it would let `literalTarget: [4096]` coexist
+  // with a contradicting encoding word and keep the exact promotion (issue
+  // #6078). `undefined`/`null` mean absent; anything else unparseable fails
+  // the whole coherence gate closed.
+  const structuredEvidence = [decoded?.pcRelTarget, decoded?.literalTarget];
+  for (const raw of structuredEvidence) {
+    if (raw === undefined || raw === null) continue;
+    if (asTargetInteger(raw) == null) return null;
+  }
   const evidence = [];
   const word = arm64DecodedEncodingWord(decoded);
   if (word != null) {

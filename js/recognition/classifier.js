@@ -14,8 +14,11 @@ function libraryBasename(value) {
 function isAppleSystemLibrary(value) {
   const text = String(value || '').replace(/\\/g, '/');
   const base = libraryBasename(text);
+  /* #5438: macOS keeps every framework binary under
+     <Name>.framework/Versions/<V>/<Name> (otool -L output), so the version
+     segment must not disqualify the canonical Foundation pair. */
   if (/^(Foundation|CoreFoundation)$/i.test(base)) {
-    return /(?:^|\/)(?:Foundation|CoreFoundation)\.framework\/(?:Foundation|CoreFoundation)$/i.test(text) || !text.includes('/');
+    return /(?:^|\/)(?:Foundation|CoreFoundation)\.framework\/(?:Versions\/[A-Za-z0-9._-]+\/)?(?:Foundation|CoreFoundation)$/i.test(text) || !text.includes('/');
   }
   if (/^libobjc(?:\.A)?\.dylib$/i.test(base)) return true;
   // Accept canonical Darwin libSystem names such as libSystem.B.dylib and

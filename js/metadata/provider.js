@@ -90,6 +90,25 @@ function strictNonEmptyString(value, code) {
   return text;
 }
 
+function optionalString(value, code) {
+  if (value == null) return null;
+  if (typeof value !== 'string') fail(code);
+  return value;
+}
+
+function metadataAddress(value) {
+  if (typeof value !== 'string') fail('metadata-record-invalid-address');
+  const text = value.trim();
+  if (!/^(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) fail('metadata-record-invalid-address');
+  let address;
+  try {
+    address = BigInt(text);
+  } catch {
+    fail('metadata-record-invalid-address');
+  }
+  return `0x${address.toString(16)}`;
+}
+
 function arrayField(value, code) {
   if (value == null) return [];
   if (!Array.isArray(value)) fail(code);
@@ -224,6 +243,23 @@ function languageRecordMatchesIdentitySource(identity, record) {
   return true;
 }
 
+// A bounded status asserts soundness within an explicit subset, not a complete
+// provider run. Bind that assertion to the same binary and producer; ordinary
+// partial/aborted results must never acquire authority merely by naming IDs.
+function hasBoundedLanguageCoverageProof(result, identity) {
+  const status = result.status;
+  return result.completeness?.complete === false
+    && result.completeness?.capped === false
+    && status.completeness === 'bounded'
+    && status.stopReason === 'evidence-missing'
+    && identity.binaryIdentity != null
+    && identity.expected === identity.binaryIdentity
+    && identity.observed === identity.binaryIdentity
+    && status.snapshotId === identity.binaryIdentity
+    && status.analyzerId === identity.providerId
+    && status.analyzerVersion === identity.providerVersion;
+}
+
 /**
  * True only when one record is explicitly covered by a partial identity.
  * Conjunctive and fail-closed: unverified selectors never become authority.
@@ -233,9 +269,11 @@ export function isLanguageRecordAuthoritative(result, record) {
   if (!identity || !record || !isCanonicalLanguageIdentity(identity)) return false;
   if (!isCanonicalLanguageRecord(record)) return false;
   if (!languageRecordMatchesIdentitySource(identity, record)) return false;
-  if (result?.completeness?.complete !== true || !isCompleteStatus(result?.status) || !isCanonicalAnalysisStatus(result?.status)) return false;
-  if (identity.verdict === 'matched-authoritative') return true;
+  if (!isCanonicalAnalysisStatus(result?.status)) return false;
+  const completeRun = result?.completeness?.complete === true && isCompleteStatus(result.status);
+  if (identity.verdict === 'matched-authoritative') return completeRun;
   if (identity.verdict !== 'matched-partial') return false;
+  if (!completeRun && (!hasBoundedLanguageCoverageProof(result, identity) || record.buildIdentity !== identity.binaryIdentity)) return false;
 
   const coverage = identity.coverage;
   if (!coverage || typeof coverage !== 'object' || Array.isArray(coverage)) return false;
@@ -245,6 +283,7 @@ export function isLanguageRecordAuthoritative(result, record) {
 
   let constrained = false;
   const entityIds = coverageList(coverage.entityIds);
+  if (!completeRun && (!entityIds || entityIds.size === 0)) return false;
   if (entityIds) {
     constrained = true;
     if (typeof record.entityId !== 'string' || !entityIds.has(record.entityId)) return false;
@@ -303,8 +342,8 @@ export function createLanguageMetadataRecord(input = {}) {
   const record = deepFreeze({
     kind,
     entityId: strictNonEmptyString(input.entityId, 'metadata-record-entity-required'),
-    name: input.name == null ? null : String(input.name),
-    address: input.address == null ? null : strictNonEmptyString(input.address, 'metadata-record-invalid-address'),
+    name: optionalString(input.name, 'metadata-record-invalid-name'),
+    address: input.address == null ? null : metadataAddress(input.address),
     sizeBytes: optionalSizeBytes(input.sizeBytes),
     descriptor: input.descriptor ?? null,
     providerId: nonEmpty(input.providerId, 'metadata-record-provider-required'),

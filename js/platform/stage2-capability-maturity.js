@@ -183,9 +183,18 @@ export function stage2Phase12Maturity(options = {}) {
     && profileEvidenceProof(proofs['S2-P12-PATTERNS'], 'S2-P12-PATTERNS', ['patterns:read-only-v1']);
   const collaboration = isValidatedRemoteCollaborationSupport(options.remoteCollaborationProof)
     && profileEvidenceProof(proofs['S2-P12-COLLAB-REMOTE'], 'S2-P12-COLLAB-REMOTE', ['collaboration:remote-security-v1']);
-  const rebuild = isValidatedRebuildProfileSupport(options.rebuildProof)
-    && options.rebuildProof?.formatCoverageComplete === true
-    && ['S2-F6-MACHO', 'S2-F6-ELF', 'S2-F6-PE'].every((id) => profileEvidenceProof(proofs[id], id, id === 'S2-F6-PE' ? ['pe:pe32', 'pe:pe32+'] : [id === 'S2-F6-MACHO' ? 'macho:64' : 'elf:64']));
+  const rebuildProofs = options.rebuildProofs && typeof options.rebuildProofs === 'object' && !Array.isArray(options.rebuildProofs)
+    ? options.rebuildProofs
+    : {};
+  const rebuild = Object.entries(FORMAT_PROFILES).every(([format, profileIds]) => {
+    const proof = rebuildProofs[format];
+    const itemId = `S2-F6-${format.toUpperCase()}`;
+    return isValidatedRebuildProfileSupport(proof)
+      && proof?.format === format
+      && proof?.formatCoverageComplete === true
+      && includesAll(proof?.formatProfileIds, profileIds)
+      && profileEvidenceProof(proofs[itemId], itemId, profileIds);
+  });
   return freeze({
     knowledgePackages: knowledge ? freeze({ status: 'supported', authority: 'local-promotion-only', limitations: freeze([]) }) : base.knowledgePackages,
     capabilityRules: rules ? freeze({ status: 'supported', authority: 'deterministic-evidence-only', limitations: freeze([]) }) : base.capabilityRules,
@@ -206,6 +215,6 @@ export function stage2SupportMatrix(options = {}) {
     architectures: freeze(['arm64', 'arm64e', 'x86_64', 'riscv64'].map((id) => stage2ArchitectureMaturity(id, { ...(options.architectureOptions?.[id] || {}), stage1Proof: stage1ArchitectureProofs[id], runtimeProof: runtimeProofs[id], profileProofs }))),
     formats: freeze(['macho', 'elf', 'pe'].map((id) => stage2FormatMaturity(id, { stage1Proof: stage1FormatProofs[id], rebuildProof: rebuildProofs[id], profileProofs }))),
     managed: freeze(['wasm', 'dex', 'cil', 'jvm'].map((id) => stage2ManagedMaturity(id, { runtimeProof: managedRuntimeProofs[id], profileProofs }))),
-    phase12: stage2Phase12Maturity({ ...(options.phase12 || {}), profileProofs }),
+    phase12: stage2Phase12Maturity({ ...(options.phase12 || {}), rebuildProofs, profileProofs }),
   });
 }

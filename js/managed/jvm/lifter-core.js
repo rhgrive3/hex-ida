@@ -64,6 +64,184 @@ function requireLocalAccess(maxLocals, index, slots, unknownEffects) {
   return true;
 }
 
+// JVMS §6.5 ldc/ldc_w/ldc2_w: the indexed runtime constant pool entry is the
+// pushed value's authority. The entry tag is the value's type (§4.4):
+// ldc/ldc_w accept Integer/Float/Class/String/MethodHandle/MethodType;
+// ldc2_w accepts only Long/Double. Resolving the entry into the produced
+// value keeps compiler-generated constants lossless in the final Semantic IR
+// instead of input-less complete unary nodes with the value and type dropped
+// (#8004). A reference kind (Class/String/MethodHandle/MethodType) is kept
+// distinct from a primitive constant; a CONSTANT_Dynamic's actual value is
+// bootstrap-computed and therefore not statically resolvable, and any entry
+// that cannot be resolved losslessly fails closed (partial), never exact.
+function resolveJvmLdcConstant(jvmClass, cpIndex, isCategory2) {
+  const pool = jvmClass.constantPool;
+  if (!Array.isArray(pool) || !Number.isInteger(cpIndex) || cpIndex <= 0 || cpIndex >= pool.length) return null;
+  const entry = pool[cpIndex];
+  if (!entry || typeof entry.tag !== 'number') return null;
+  const utf8 = (idx) => {
+    if (!Number.isInteger(idx) || idx <= 0 || idx >= pool.length) return null;
+    const item = pool[idx];
+    return item && item.tag === 1 && typeof item.value === 'string' ? item.value : null;
+  };
+  const className = (idx) => {
+    if (!Number.isInteger(idx) || idx <= 0 || idx >= pool.length) return null;
+    const item = pool[idx];
+    return item && item.tag === 7 ? utf8(item.nameIndex) : null;
+  };
+  const primitive = (extra) => ({ constant: entry.value, ...extra });
+  // A JVM reference pushes a 32-bit category-1 managed-heap address; the
+  // machine type must say so at the Semantic IR boundary instead of degrading
+  // to a bare bitvector (#8004).
+  const reference = (extra) => ({
+    type: { kind: 'address', widthBits: 32, addressSpace: 'managed-heap' },
+    stackType: 'reference',
+    ...extra,
+  });
+  // jsonSafe drops non-finite numbers; NaN/±Infinity float constants are
+  // exact knowledge, so they keep their canonical string form instead.
+  const floatPrimitive = (extra) => ({
+    constant: Number.isFinite(entry.value) ? entry.value : String(entry.value),
+    ...extra,
+  });
+  switch (entry.tag) {
+    case 3: // Integer
+      return isCategory2 ? null : primitive({});
+    case 4: // Float
+      return isCategory2 ? null : floatPrimitive({
+        type: { kind: 'float', widthBits: 32, format: 'binary32' },
+      });
+    case 5: // Long
+      return isCategory2 ? primitive({}) : null;
+    case 6: // Double
+      return isCategory2 ? floatPrimitive({
+        type: { kind: 'float', widthBits: 64, format: 'binary64' },
+      }) : null;
+    case 7: { // Class
+      if (isCategory2) return null;
+      const name = utf8(entry.nameIndex);
+      if (name == null) return null;
+      return reference({ valueType: 'class', constant: name });
+    }
+    case 8: { // String
+      if (isCategory2) return null;
+      const value = utf8(entry.stringIndex);
+      if (value == null) return null;
+      return reference({ valueType: 'string', constant: value });
+    }
+    case 15: { // MethodHandle
+      if (isCategory2) return null;
+      if (!Number.isInteger(entry.referenceKind) || entry.referenceKind < 1 || entry.referenceKind > 9) return null;
+      if (!Number.isInteger(entry.referenceIndex) || entry.referenceIndex <= 0 || entry.referenceIndex >= pool.length) return null;
+      const ref = pool[entry.referenceIndex];
+      if (!ref || (ref.tag !== 9 && ref.tag !== 10 && ref.tag !== 11)) return null;
+      // JVMS §4.4.8: the reference kind determines which reference tag the
+      // constant may name. A kind/tag mismatch is invalid bytecode and must
+      // not publish an exact MethodHandle identity (#8004; contract precedent
+      // #5083 — incompatible CP tags never become exact facts).
+      const FIELDREF = 9, METHODREF = 10, INTERFACEMETHODREF = 11;
+      const kindTagOk = {
+        1: [FIELDREF], 2: [FIELDREF], 3: [FIELDREF], 4: [FIELDREF],
+        5: [METHODREF],
+        6: [METHODREF, INTERFACEMETHODREF],
+        7: [METHODREF, INTERFACEMETHODREF],
+        8: [METHODREF],
+        9: [INTERFACEMETHODREF],
+      }[entry.referenceKind].includes(ref.tag);
+      if (!kindTagOk) return null;
+      const owner = className(ref.classIndex);
+      const nameAndType = pool[ref.nameAndTypeIndex];
+      if (owner == null || !nameAndType || nameAndType.tag !== 12) return null;
+      const name = utf8(nameAndType.nameIndex);
+      const descriptor = utf8(nameAndType.descriptorIndex);
+      if (name == null || descriptor == null) return null;
+      return reference({
+        valueType: 'method-handle',
+        referenceKind: entry.referenceKind,
+        constant: `${owner}.${name}:${descriptor}`,
+      });
+    }
+    case 16: { // MethodType
+      if (isCategory2) return null;
+      const descriptor = utf8(entry.descriptorIndex);
+      if (descriptor == null) return null;
+      return reference({ valueType: 'method-type', constant: descriptor });
+    }
+    default: // CONSTANT_Dynamic and non-loadable tags are not losslessly resolvable here
+      return null;
+  }
+}
+
+// JVM local opcodes already carry definitive float/double authority in the
+// bytecode grammar. Preserve that authority at the first VMEffect projection
+// so the shared bridge never has to guess from width alone (#7971).
+function jvmFloatingLocalType(prefix) {
+  if (prefix === 'fload' || prefix === 'fstore') {
+    return { kind: 'float', widthBits: 32, format: 'binary32' };
+  }
+  if (prefix === 'dload' || prefix === 'dstore') {
+    return { kind: 'float', widthBits: 64, format: 'binary64' };
+  }
+  return null;
+}
+
+function withJvmLocalType(value, type) {
+  return type ? { ...value, type } : value;
+}
+
+function collectJvmControlFlowJoins(bytecode, exceptionTable) {
+  const view = new DataView(bytecode.buffer, bytecode.byteOffset, bytecode.byteLength);
+  const joinOffsets = new Set();
+  let dynamicJump = false;
+  let offset = 0;
+  while (offset < bytecode.length) {
+    const boundary = decodeJvmInstructionBoundary(bytecode, offset);
+    if (!boundary.complete || boundary.end <= offset) break;
+    const opcode = bytecode[offset];
+    if (opcode >= 0x99 && opcode <= 0xa8) {
+      joinOffsets.add(offset + view.getInt16(offset + 1, false));
+    } else if (opcode === 0xa9) {
+      dynamicJump = true;
+    } else if (opcode === 0xaa) {
+      let pos = offset + 1;
+      pos += (4 - (pos & 3)) & 3;
+      joinOffsets.add(offset + view.getInt32(pos, false));
+      const low = view.getInt32(pos + 4, false);
+      const high = view.getInt32(pos + 8, false);
+      const count = high - low + 1;
+      if (Number.isSafeInteger(count) && count > 0) {
+        for (let i = 0; i < count; i += 1) joinOffsets.add(offset + view.getInt32(pos + 12 + i * 4, false));
+      }
+    } else if (opcode === 0xab) {
+      let pos = offset + 1;
+      pos += (4 - (pos & 3)) & 3;
+      joinOffsets.add(offset + view.getInt32(pos, false));
+      const pairs = view.getInt32(pos + 4, false);
+      if (Number.isSafeInteger(pairs) && pairs > 0) {
+        for (let i = 0; i < pairs; i += 1) joinOffsets.add(offset + view.getInt32(pos + 8 + i * 8, false));
+      }
+    } else if (opcode === 0xc4 && bytecode[offset + 1] === 0xa9) {
+      dynamicJump = true;
+    }
+    offset = boundary.end;
+  }
+  for (const region of exceptionTable ?? []) {
+    if (Number.isSafeInteger(region?.handlerPc)) joinOffsets.add(region.handlerPc);
+  }
+  return { joinOffsets, dynamicJump };
+}
+
+function jvmProducedValueCategory(value) {
+  if (value?.category === 2) return 2;
+  if (value?.category === 1) return 1;
+  if (value?.typeUnknown === true) return 0;
+  if (value?.type?.kind === 'float' && value.type.widthBits === 64) return 2;
+  if (value?.isNull === true || typeof value?.cpClassIndex === 'number') return 1;
+  if (value?.bits === 64) return 2;
+  if (Number.isSafeInteger(value?.bits)) return 1;
+  return 0;
+}
+
 export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
   const method = jvmClass.methods[methodIdx];
   if (!method) fail('jvm-invalid-method-index');
@@ -100,10 +278,13 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
   const view = new DataView(bytecode.buffer, bytecode.byteOffset, bytecode.byteLength);
   const codeOffset = Number(codeAttr.offset ?? 0);
   const instructionStarts = collectJvmInstructionStarts(bytecode);
+  const { joinOffsets, dynamicJump } = collectJvmControlFlowJoins(bytecode, codeAttr.exceptionTable);
 
   let pc = 0;
   let opSeq = 0;
   let currentStackHeight = 0;
+  const stackCategories = [];
+  let stackModelTrusted = !dynamicJump;
   const bundles = [];
 
   const exceptionRegions = (codeAttr.exceptionTable || []).map((exc, idx) => ({
@@ -118,6 +299,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
     const opOffset = pc;
     const opcode = bytecode[pc++];
     opSeq++;
+    if (joinOffsets.has(opOffset)) stackModelTrusted = false;
 
     const opId = createVMOperationId(methodId, opOffset, opSeq);
 
@@ -191,8 +373,29 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           if (opcode !== 0x12) pc += 2;
           const isCategory2 = opcode === 0x14;
           mnemonic = opcode === 0x12 ? 'ldc' : opcode === 0x13 ? 'ldc_w' : 'ldc2_w';
-          producedValues.push({ bits: isCategory2 ? 64 : 32, cpIndex: cpIdx, category: isCategory2 ? 2 : 1 });
-          currentStackHeight += isCategory2 ? 2 : 1;
+          const resolved = resolveJvmLdcConstant(jvmClass, cpIdx, isCategory2);
+          if (resolved) {
+            producedValues.push({
+              bits: isCategory2 ? 64 : 32,
+              cpIndex: cpIdx,
+              category: isCategory2 ? 2 : 1,
+              ...resolved,
+            });
+            currentStackHeight += isCategory2 ? 2 : 1;
+          } else {
+            // The runtime constant pool entry is the value's authority; an
+            // entry that cannot be resolved losslessly (out-of-range index,
+            // reserved slot, tag/opcode mismatch, broken nested reference) is
+            // invalid bytecode — the fabricated stack value is withheld and
+            // the bundle fails closed instead of publishing an exact
+            // constant that dropped its value (#8004, branch-target
+            // precedent #3899).
+            completeness = 'partial';
+            unknownEffects.push({
+              category: 'other',
+              reason: `jvm-ldc-constant-unresolved:${cpIdx}`,
+            });
+          }
         }
         break;
 
@@ -203,10 +406,11 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const isCategory2 = opcode === 0x16 || opcode === 0x18;
           const names = { 0x15: 'iload', 0x16: 'lload', 0x17: 'fload', 0x18: 'dload', 0x19: 'aload' };
           mnemonic = names[opcode];
+          const valueType = jvmFloatingLocalType(mnemonic);
           if (!requireLocalAccess(codeAttr.maxLocals, locIdx, isCategory2 ? 2 : 1, unknownEffects)) completeness = 'partial';
           else {
-            locationReads.push({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 });
-            producedValues.push({ bits: isCategory2 ? 64 : 32 });
+            locationReads.push(withJvmLocalType({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 }, valueType));
+            producedValues.push(withJvmLocalType({ bits: isCategory2 ? 64 : 32 }, valueType));
             currentStackHeight += isCategory2 ? 2 : 1;
           }
         }
@@ -223,11 +427,12 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const prefix = opcode < 0x1e ? 'iload' : opcode < 0x22 ? 'lload' : opcode < 0x26 ? 'fload' : opcode < 0x2a ? 'dload' : 'aload';
           const locIdx = opcode - base;
           const isCategory2 = prefix === 'lload' || prefix === 'dload';
+          const valueType = jvmFloatingLocalType(prefix);
           mnemonic = `${prefix}_${locIdx}`;
           if (!requireLocalAccess(codeAttr.maxLocals, locIdx, isCategory2 ? 2 : 1, unknownEffects)) completeness = 'partial';
           else {
-            locationReads.push({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 });
-            producedValues.push({ bits: isCategory2 ? 64 : 32 });
+            locationReads.push(withJvmLocalType({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 }, valueType));
+            producedValues.push(withJvmLocalType({ bits: isCategory2 ? 64 : 32 }, valueType));
             currentStackHeight += isCategory2 ? 2 : 1;
           }
         }
@@ -240,10 +445,11 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const isCategory2 = opcode === 0x37 || opcode === 0x39;
           const names = { 0x36: 'istore', 0x37: 'lstore', 0x38: 'fstore', 0x39: 'dstore', 0x3a: 'astore' };
           mnemonic = names[opcode];
+          const valueType = jvmFloatingLocalType(mnemonic);
           if (!requireLocalAccess(codeAttr.maxLocals, locIdx, isCategory2 ? 2 : 1, unknownEffects)) completeness = 'partial';
           else {
-            locationWrites.push({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 });
-            consumedValues.push({ id: 'top' });
+            locationWrites.push(withJvmLocalType({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 }, valueType));
+            consumedValues.push(withJvmLocalType({ id: 'top' }, valueType));
             currentStackHeight -= isCategory2 ? 2 : 1;
           }
         }
@@ -260,22 +466,57 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const prefix = opcode < 0x3f ? 'istore' : opcode < 0x43 ? 'lstore' : opcode < 0x47 ? 'fstore' : opcode < 0x4b ? 'dstore' : 'astore';
           const locIdx = opcode - base;
           const isCategory2 = prefix === 'lstore' || prefix === 'dstore';
+          const valueType = jvmFloatingLocalType(prefix);
           mnemonic = `${prefix}_${locIdx}`;
           if (!requireLocalAccess(codeAttr.maxLocals, locIdx, isCategory2 ? 2 : 1, unknownEffects)) completeness = 'partial';
           else {
-            locationWrites.push({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 });
-            consumedValues.push({ id: 'top' });
+            locationWrites.push(withJvmLocalType({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 }, valueType));
+            consumedValues.push(withJvmLocalType({ id: 'top' }, valueType));
             currentStackHeight -= isCategory2 ? 2 : 1;
           }
         }
         break;
 
-      case 0x57: // pop
-      case 0x58: // pop2
-        mnemonic = opcode === 0x57 ? 'pop' : 'pop2';
-        consumedValues.push({ id: 'top' });
-        currentStackHeight -= opcode === 0x57 ? 1 : 2;
+      case 0x57: { // pop
+        mnemonic = 'pop';
+        const topCategory = stackCategories[stackCategories.length - 1];
+        if (stackModelTrusted && topCategory === 2) {
+          completeness = 'partial';
+          stackModelTrusted = false;
+          unknownEffects.push({ category: 'stack', reason: 'jvm-pop-category2-top-invalid' });
+        } else {
+          consumedValues.push({ id: 'top' });
+        }
+        currentStackHeight -= 1;
         break;
+      }
+
+      case 0x58: { // pop2
+        mnemonic = 'pop2';
+        const topCategory = stackCategories[stackCategories.length - 1];
+        const underCategory = stackCategories[stackCategories.length - 2];
+        if (!stackModelTrusted) {
+          completeness = 'partial';
+          unknownEffects.push({ category: 'stack', reason: 'jvm-pop2-category-unresolved' });
+        } else if (topCategory === 2) {
+          consumedValues.push({ id: 'top', category: 2 });
+        } else if (topCategory === 1 && underCategory === 1) {
+          consumedValues.push({ id: 'top' }, { id: 'under' });
+        } else {
+          completeness = 'partial';
+          stackModelTrusted = false;
+          unknownEffects.push({
+            category: 'stack',
+            reason: topCategory === 0 || underCategory === 0
+              ? 'jvm-pop2-category-unresolved'
+              : topCategory === undefined || underCategory === undefined
+                ? 'jvm-pop2-stack-underflow'
+                : 'jvm-pop2-category1-over-category2',
+          });
+        }
+        currentStackHeight -= 2;
+        break;
+      }
 
       case 0x59: // dup
         mnemonic = 'dup';
@@ -465,6 +706,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
             cpIndex: methIdx,
             dispatchKind: kinds[opcode],
           });
+          stackModelTrusted = false;
         }
         break;
 
@@ -511,8 +753,20 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
       case 0xc2: // monitorenter
       case 0xc3: // monitorexit
         mnemonic = opcode === 0xc2 ? 'monitorenter' : 'monitorexit';
+        // The consumed objectref stays the monitor-identity dataflow edge.
+        // Monitor acquire/release (structured locking order, happens-before)
+        // has no VMEffects representation yet, so the bundle fails closed to
+        // partial instead of publishing exception-free exact semantics
+        // (#7870).
         consumedValues.push({ id: 'obj' });
         currentStackHeight--;
+        completeness = 'partial';
+        unknownEffects.push({
+          category: 'other',
+          reason: opcode === 0xc2
+            ? 'jvm-monitor-acquire-semantics-unrepresented'
+            : 'jvm-monitor-release-semantics-unrepresented',
+        });
         break;
 
       default:
@@ -521,6 +775,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           pc = Math.max(pc, boundary.end);
           mnemonic = `jvm_op_0x${opcode.toString(16)}`;
           completeness = 'partial';
+          stackModelTrusted = false;
           unknownEffects.push({
             category: 'other',
             reason: boundary.complete
@@ -529,6 +784,14 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           });
         }
         break;
+    }
+
+    for (let i = 0; i < consumedValues.length; i += 1) stackCategories.pop();
+    for (const value of producedValues) stackCategories.push(jvmProducedValueCategory(value));
+    if (completeness !== 'exact') stackModelTrusted = false;
+    if (controlEffects.some((effect) =>
+      effect?.kind === 'branch' || effect?.kind === 'return' || effect?.kind === 'throw')) {
+      stackModelTrusted = false;
     }
 
     const origin = createOriginSet({

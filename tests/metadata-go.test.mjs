@@ -385,7 +385,7 @@ function createPclntab12Header({ little = true, minLC = 1, pad1 = 0, pad2 = 0 } 
   typeBuf[22] = 8; // fieldAlign
   typeBuf[23] = 25; // struct
 
-  const desc = parseGoTypeDescriptor(typeBuf, 0, { ptrSize: 8, little: true });
+  const desc = parseGoTypeDescriptor(typeBuf, 0, { ptrSize: 8, little: true, version: '1.23.2' });
   assert.equal(desc.kind, 'struct');
   assert.equal(desc.size, 24);
   assert.equal(desc.ptrdata, 8);
@@ -395,10 +395,11 @@ function createPclntab12Header({ little = true, minLC = 1, pad1 = 0, pad2 = 0 } 
 assert.equal(GO_PCLNTAB_MAGICS[0xfffffff1].version, '1.20+');
 console.log('Go Metadata Provider tests passed.');
 
-// Keep the focused Go section-evidence regression in the required metadata:test
-// denominator.
+// Keep focused Go regressions in the required metadata:test denominator.
+await import('./issue-5373-go-name-uvarint-overflow.mjs');
+await import('./issue-4875-go-abi-type-str-offset.mjs');
 await import('./issue-5877-go-pclntab-section-without-buffer.test.mjs');
+
 await import('./issue-5347-go-rtype-nameoff.test.mjs');
 
-// Keep the Go runtime-type completeness regression in metadata:test.
 await import('./issue-7879-go-runtime-types-completeness.mjs');

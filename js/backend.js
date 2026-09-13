@@ -62,6 +62,21 @@ function semanticFunctionTarget(architecture) {
   return target;
 }
 
+const LEGACY_MACHO_ARCHITECTURES = Object.freeze(['arm64', 'arm64e', 'arm64_32']);
+function isLegacyMachArchitecture(architecture) {
+  return LEGACY_MACHO_ARCHITECTURES.includes(String(architecture || '').toLowerCase());
+}
+
+function requirePrimitiveSafeInteger(value, code) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw new TypeError(code);
+  return value;
+}
+
+function requirePrimitiveString(value, code) {
+  if (typeof value !== 'string') throw new TypeError(code);
+  return value;
+}
+
 function semanticFunctionAddress(value) {
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number') {
@@ -153,6 +168,7 @@ export class Backend {
     this.formatId = 'unknown';
     this.platformInfo = null;
     this.legacyInfo = null;
+    this._activeMachArchitecture = null;
     this.arm64Bridge = false;
     this.onSearchProgress = null;
     this.onScanProgress = null;
@@ -351,7 +367,10 @@ export class Backend {
   _releaseDisassembly(error) {
     if (this._disasmWorker) { this._disasmWorker.terminate(); this._disasmWorker = null; }
     const failure = error || new Error('disassembly worker released');
-    for (const pending of this._disasmPending.values()) pending.reject(failure);
+    for (const pending of this._disasmPending.values()) {
+      pending.cleanup?.();
+      pending.reject(failure);
+    }
     this._disasmPending.clear();
   }
 
@@ -454,8 +473,29 @@ export class Backend {
         result=platformInfo;
       } else {
         const legacy=await step(this._callTo('legacy','open',{file}));
+        const fallbackFormatId = legacyFallbackFormatId(legacy);
+        assertCurrent();
+        if (fallbackFormatId === null) {
+          const error = new Error('Legacy fallback could not determine a supported binary format; open failed.');
+          error.code = 'BACKEND_LEGACY_FORMAT_UNSUPPORTED';
+          throw error;
+        }
         nextLegacy=legacy;
-        if (platformError && legacy.format === 'Raw binary') legacy.warnings=[...(legacy.warnings||[]),platformError.message];
+        if (fallbackFormatId === 'macho') {
+          nextFormat='macho';
+          legacy.formatId = 'macho';
+          for (const slice of legacy.slices || []) slice.capability = legacySliceCapability(slice);
+          legacy.capability = legacy.slices?.[0]?.capability || legacySliceCapability(null);
+          legacy.platform = {
+            compatibility:'legacy-macho', sourceBackedDetection:false, detected:detection,
+            normalizedDyldTruth:false, duplicateUniversalParseAvoided:false,
+            platformSelectedSliceReparseAvoided:false, legacyCompatibilityParseRequired:true,
+            ...(platformError ? { normalizedDyldError: platformError.message } : {}),
+          };
+          nextPlatform = { formatId:'macho', capability:legacy.capability, detection:detection||{formatId:'macho'}, normalizedDyldTruth:false, compatibility:'legacy-macho', fallbackFromPlatformFailure:true };
+        } else {
+          if (platformError && legacy.format === 'Raw binary') legacy.warnings=[...(legacy.warnings||[]),platformError.message];
+        }
         result=legacy;
       }
     }
@@ -517,7 +557,13 @@ export class Backend {
     return Promise.all(jobs).then(() => ({ ok: true }));
   }
 
-  search(params, onProgress) { return this.call('search', params, null, onProgress); }
+  search(params, onProgress) {
+    const architecture = String(params?.architecture || this._activeMachArchitecture || this.platformInfo?.capability?.architecture || '').toLowerCase();
+    if (this.formatId === 'macho' && architecture && !isLegacyMachArchitecture(architecture) && params?.kind !== 'hex' && params?.kind !== 'text') {
+      return this._callTo('platform', 'search', params, null, onProgress);
+    }
+    return this.call('search', params, null, onProgress);
+  }
 
   cancel(request) {
     const requestId = typeof request === 'number' ? request : request?.requestId ?? this.lastRequestId;
@@ -536,6 +582,13 @@ export class Backend {
   }
 
   analyze(sliceIndex, options = {}) {
+    if (this.formatId === 'macho') {
+      const capability = this.legacyInfo?.slices?.[sliceIndex]?.capability
+        || this.platformInfo?.slices?.[sliceIndex]?.capability
+        || this.platformInfo?.capability;
+      const architecture = String(capability?.architecture || '').toLowerCase();
+      if (architecture) this._activeMachArchitecture = architecture;
+    }
     const explicitRoute = Object.hasOwn(options, 'route');
     const route = normalizeAnalysisRoute(options.route ?? this.analysisRoute);
     if (route === ANALYSIS_ORCHESTRATION_ROUTE.CURRENT) return this._analyzeCurrent(sliceIndex, options);
@@ -642,15 +695,22 @@ export class Backend {
    */
   async analyzeSemanticFunction(options = {}) {
     const address = semanticFunctionAddress(options.address);
-    const length = Number(options.length);
-    if (!Number.isSafeInteger(length) || length < 1 || length > X86_SEMANTIC_FUNCTION_MAX_DECODE_BYTES) {
+    const length = requirePrimitiveSafeInteger(options.length, 'semantic-function-bounded-length-required');
+    if (length < 1 || length > X86_SEMANTIC_FUNCTION_MAX_DECODE_BYTES) {
       throw new TypeError('semantic-function-bounded-length-required');
     }
-    const architecture = String(options.architecture || 'x86_64');
+    const architecture = options.architecture == null || options.architecture === ''
+      ? 'x86_64'
+      : requirePrimitiveString(options.architecture, 'semantic-function-architecture-required');
     const target = semanticFunctionTarget(architecture);
-    const abiId = String(options.abiId || '');
+    const abiId = options.abiId == null || options.abiId === ''
+      ? ''
+      : requirePrimitiveString(options.abiId, 'semantic-function-abi-id-required');
     if (!target.abiIds.includes(abiId)) throw new TypeError(`semantic-function-${architecture}-abi-required`);
-    const sliceIndex = Number(options.sliceIndex ?? 0);
+    const sliceIndex = options.sliceIndex == null
+      ? 0
+      : requirePrimitiveSafeInteger(options.sliceIndex, 'semantic-function-slice-index-required');
+    if (sliceIndex < 0) throw new TypeError('semantic-function-slice-index-required');
     const formatMetadata = this.platformInfo?.productDescriptor?.formatMetadata
       || this.platformInfo?.slices?.[sliceIndex]?.info?.descriptor?.formatMetadata
       || {};
@@ -777,13 +837,18 @@ export class Backend {
     return result.payload;
   }
 
-  guessFunctions(regionId, limit, onProgress) { return this.call('guessFunctions', { regionId, limit }, null, onProgress); }
+  guessFunctions(regionId, limit, onProgress, options = {}) {
+    const architecture = String(options.architecture || this._activeMachArchitecture || this.platformInfo?.capability?.architecture || '').toLowerCase();
+    if (this.formatId === 'macho' && architecture && !isLegacyMachArchitecture(architecture)) {
+      return this._callTo('platform', 'guessFunctions', { regionId, limit, architecture }, null, onProgress);
+    }
+    return this.call('guessFunctions', { regionId, limit }, null, onProgress);
+  }
   scanProgram(regionId, onProgress, limits = {}) {
     const architecture = String(limits?.architecture || '').toLowerCase();
     const payload = { regionId, ...limits };
     if (this.formatId === 'macho' && architecture) {
-      const legacyAarch64 = architecture === 'arm64' || architecture === 'arm64e' || architecture === 'arm64_32';
-      return this._callTo(legacyAarch64 ? 'legacy' : 'platform', 'scanProgram', payload, null, onProgress);
+      return this._callTo(isLegacyMachArchitecture(architecture) ? 'legacy' : 'platform', 'scanProgram', payload, null, onProgress);
     }
     return this.call('scanProgram', payload, null, onProgress);
   }
@@ -834,17 +899,20 @@ export class Backend {
     if (uiEpoch !== this.gen) throw new StaleRequestError();
     if (!support?.support?.[architecture]) return { supported: false, architecture, instructions: [] };
     if (this.formatId === 'macho') return { supported: false, architecture, instructions: [], compatibility: 'legacy-viewer' };
-    const read = await awaitCancellableProducer(this._callTo('platform', 'readAt', { addr, len: Math.min(1024 * 1024, options.length || 4096), text: false }), options.signal ?? null);
+    const requestedLength = Number(Math.min(1024 * 1024, options.length || 4096));
+    const read = await awaitCancellableProducer(this._callTo('platform', 'readAt', { addr, len: requestedLength, text: false }), options.signal ?? null);
     if (uiEpoch !== this.gen) throw new StaleRequestError();
     if (!read?.found) return { supported: true, architecture, instructions: [], found: false };
+    const readLength = Number(read.bytes?.length ?? 0);
+    const readComplete = readLength >= requestedLength;
     const formatMetadata = this.platformInfo?.productDescriptor?.formatMetadata || {};
     const riscvIsa = architecture === 'riscv64'
       ? (options.riscvIsa || resolveRiscvIsaProfile(formatMetadata.riscvIsa, addr, { allowAssumed:true }))
       : null;
-    if (riscvIsa?.code === false) return { supported:true, architecture, found:true, instructions:[], region:read.region ?? null, fileOffset:read.fileOffset ?? null, riscvIsa };
+    if (riscvIsa?.code === false) return { supported:true, architecture, found:true, instructions:[], region:read.region ?? null, fileOffset:read.fileOffset ?? null, riscvIsa, requestedLength, readLength, readComplete };
     const result = await awaitCancellableProducer(this._disassembleBytes(read.bytes, addr, architecture, uiEpoch, { riscvIsa, priority: options.priority, signal: options.signal }), options.signal ?? null);
     if (uiEpoch !== this.gen) throw new StaleRequestError();
-    return { supported: true, architecture, found: true, region:read.region ?? null, fileOffset:read.fileOffset ?? null, ...(riscvIsa == null ? {} : { riscvIsa }), ...result };
+    return { supported: true, architecture, found: true, region:read.region ?? null, fileOffset:read.fileOffset ?? null, ...(riscvIsa == null ? {} : { riscvIsa }), ...result, requestedLength, readLength, readComplete };
   }
 
   _disassembleBytes(bytes, address, architecture, uiEpoch = this.gen, decodeContext = {}) {
@@ -855,6 +923,7 @@ export class Backend {
         const pending = this._disasmPending.get(event.data?.id);
         if (!pending) return;
         this._disasmPending.delete(event.data.id);
+        pending.cleanup?.();
         if (pending.uiEpoch !== this.gen) { pending.reject(new StaleRequestError()); return; }
         if (event.data.ok) pending.resolve(event.data); else pending.reject(new Error(event.data.error || 'disassembly failed'));
       };
@@ -868,12 +937,17 @@ export class Backend {
     const id = this._disasmSeq++;
     const copy = bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes);
     const priority = decodeContext.priority || 'current';
+    let cleanupSignal = null;
     const promise = new Promise((resolve, reject) => {
-      this._disasmPending.set(id, { resolve, reject, uiEpoch, priority });
+      this._disasmPending.set(id, {
+        resolve, reject, uiEpoch, priority,
+        cleanup: () => cleanupSignal?.(),
+      });
       try {
         this._disasmWorker.postMessage({ id, architecture, address, bytes: copy, riscvIsa:decodeContext.riscvIsa ?? null, priority }, [copy.buffer]);
       } catch (error) {
         this._disasmPending.delete(id);
+        cleanupSignal?.();
         reject(error);
       }
     });
@@ -881,17 +955,22 @@ export class Backend {
       const pending = this._disasmPending.get(id);
       if (!pending) return;
       this._disasmPending.delete(id);
+      pending.cleanup?.();
       try {
         this._disasmWorker?.postMessage({ t: 'cancel', id });
       } catch {}
       pending.reject(cancelledRequestError('disassembly cancelled'));
     };
-    if (decodeContext.signal) {
-      if (decodeContext.signal.aborted) {
-        promise.cancel();
-      } else {
-        decodeContext.signal.addEventListener('abort', () => promise.cancel(), { once: true });
-      }
+    const signal = decodeContext.signal;
+    if (signal) {
+      const onAbort = () => promise.cancel();
+      cleanupSignal = () => {
+        try { signal.removeEventListener?.('abort', onAbort); } catch {}
+      };
+      try {
+        signal.addEventListener?.('abort', onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      } catch {}
     }
     return promise;
   }
@@ -1036,6 +1115,15 @@ export class Backend {
 
 function normalizeChunk(res) {
   return { bytes: res.bytes, rows: res.rows, mn: res.mn ? res.mn.split('\n') : null, ops: res.ops ? res.ops.split('\n') : null };
+}
+
+function legacyFallbackFormatId(legacy) {
+  if (!legacy || typeof legacy !== 'object') return null;
+  const slices = Array.isArray(legacy.slices) ? legacy.slices : null;
+  if (!slices) return null;
+  if (slices.some((slice) => slice && typeof slice.info === 'object' && slice.info !== null)) return 'macho';
+  if (slices.length === 0 && legacy.raw && typeof legacy.raw === 'object' && legacy.raw.exec === true) return 'unknown';
+  return null;
 }
 
 function legacySliceCapability(slice) {

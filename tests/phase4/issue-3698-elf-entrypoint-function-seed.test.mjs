@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseELF } from '../../js/binary/elf-core.js';
+import { parseELF as parseELFPublic } from '../../js/binary/elf.js';
 
-function elf64({ machine = 183, entry = 0x4000n, vaddr = 0x4000n, filesz = 0x200n, memsz = filesz, flags = 5 }) {
+function elf64({ type = 2, machine = 183, entry = 0x4000n, vaddr = 0x4000n, filesz = 0x200n, memsz = filesz, flags = 5 }) {
   const byteLength = 0x200;
   const bytes = new Uint8Array(byteLength);
   const view = new DataView(bytes.buffer);
@@ -10,7 +11,7 @@ function elf64({ machine = 183, entry = 0x4000n, vaddr = 0x4000n, filesz = 0x200
   view.setUint8(4, 2); // ELFCLASS64
   view.setUint8(5, 1); // ELFDATA2LSB
   view.setUint8(6, 1); // EV_CURRENT
-  view.setUint16(16, 2, true); // ET_EXEC
+  view.setUint16(16, type, true); // e_type
   view.setUint16(18, machine, true);
   view.setUint32(20, 1, true);
   view.setBigUint64(24, entry, true);
@@ -76,4 +77,17 @@ test('AArch64 zero reset vector survives only when executable and file-backed', 
   const nonExecutable = parseELF(elf64({ entry: 0n, vaddr: 0n, flags: 4 }));
   assert.equal(entrySeeds(nonExecutable).length, 0);
   assert.equal(nonExecutable.metadata.entrypointZeroEvidence, 'zero-sentinel-unproven');
+});
+
+test('AArch64 ET_DYN zero entry remains an unproven sentinel even when VA zero is RX', () => {
+  const image = parseELFPublic(elf64({ type: 3, entry: 0n, vaddr: 0n }));
+  assert.equal(entrySeeds(image).length, 0);
+  assert.equal(image.metadata.entrypointZeroEvidence, 'zero-sentinel-unproven');
+});
+
+test('AArch64 ET_DYN keeps a valid nonzero entrypoint', () => {
+  const image = parseELFPublic(elf64({ type: 3, entry: 0x4000n, vaddr: 0x4000n }));
+  assert.equal(entrySeeds(image).length, 1);
+  assert.equal(entrySeeds(image)[0].address, 0x4000n);
+  assert.equal(image.metadata.entrypointZeroEvidence, undefined);
 });

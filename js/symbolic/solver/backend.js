@@ -29,11 +29,17 @@ export class SolverBackend {
     if (!AUTHORITY_VALUES.has(proofAuthority)) {
       throw new TypeError(`SolverBackend: invalid proof authority '${proofAuthority}'`);
     }
+    if (isRemote !== null && typeof isRemote !== 'boolean') {
+      throw new TypeError('SolverBackend: isRemote must be a primitive boolean');
+    }
+    if (isWasm !== null && typeof isWasm !== 'boolean') {
+      throw new TypeError('SolverBackend: isWasm must be a primitive boolean');
+    }
     this.id = id;
     this.version = version;
     this.proofAuthority = proofAuthority;
-    this.isRemote = Boolean(isRemote);
-    this.isWasm = Boolean(isWasm);
+    this.isRemote = isRemote ?? false;
+    this.isWasm = isWasm ?? false;
   }
 
   /**

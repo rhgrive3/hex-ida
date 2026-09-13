@@ -19,6 +19,11 @@ import { parseQuietCommandArgs, runQuietCommand } from "../scripts/run-quiet-com
 
 console.log("Testing Phase test runner contract...");
 
+// A root regression must remain reachable from the canonical npm test gate.
+const packageScripts = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).scripts;
+assert.ok(packageScripts.test.split("&&").map(command => command.trim())
+  .includes("node --test tests/issue-5900-findstrings-cancellation.test.mjs"));
+
 function withTempDir(fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hex-phase-test-"));
   try {
@@ -382,6 +387,82 @@ withTempDir((temp) => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
   console.log("  ok 22 whole-command spawn error");
+}
+
+// 23. closing the log descriptor is part of completion, including spawn errors.
+// NFS keeps an unlinked open file as a .nfs entry, so cleanup after "finish"
+// but before "close" can turn a successful child into ENOTEMPTY.
+{
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hex-quiet-log-close-"));
+  const createWriteStream = fs.createWriteStream;
+  const close = fs.close;
+  const rmSync = fs.rmSync;
+  const logs = [];
+  fs.createWriteStream = (file, options) => {
+    const log = createWriteStream(file, {
+      ...options,
+      fs: {
+        ...fs,
+        close(fd, callback) { setTimeout(() => close(fd, callback), 20); },
+      },
+    });
+    logs.push(log);
+    return log;
+  };
+  fs.rmSync = (directory, options) => {
+    for (const log of logs) {
+      if (path.dirname(log.path) === directory) {
+        assert.equal(log.closed, true, "successful-log cleanup must wait for descriptor close");
+      }
+    }
+    return rmSync(directory, options);
+  };
+  try {
+    for (const outcome of ["success", "failure", "spawn-throw"]) {
+      const spawnError = new Error("synchronous-spawn-failure");
+      const options = {
+        label: `delayed-close-${outcome}`,
+        command: process.execPath,
+        args: ["-e", `console.log('close-marker'); process.exitCode = ${outcome === "failure" ? 7 : 0}`],
+        env: { ...process.env, HEX_TEST_OUTPUT: "quiet" },
+        stdout: captureSink().stream,
+        stderr: captureSink().stream,
+        tempRoot,
+        ...(outcome === "spawn-throw" ? { spawnImpl() { throw spawnError; } } : {}),
+      };
+      if (outcome === "spawn-throw") {
+        await assert.rejects(() => runQuietCommand(options), (error) => error === spawnError);
+      } else {
+        const result = await runQuietCommand(options);
+        assert.equal(result.ok, outcome === "success");
+        assert.equal(result.status, outcome === "failure" ? 7 : 0);
+      }
+      assert.ok(logs.every((log) => log.closed), `${outcome} must settle only after the log closes`);
+    }
+  } finally {
+    fs.createWriteStream = createWriteStream;
+    fs.rmSync = rmSync;
+    await Promise.all(logs.map((log) => log.closed ? null : new Promise((resolve) => log.once("close", resolve))));
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+  console.log("  ok 23 whole-command waits for delayed descriptor close");
+}
+
+// 24. root-level regressions must be reachable from the canonical gate (EP-005).
+{
+  const packageJson = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const commands = packageJson.scripts.test.split("&&").map((command) => command.trim());
+  for (const file of [
+    "issue-4663-symbolic-evidence-scope-metadata.mjs",
+    "issue-4818-hexproj-annotation-address-coercion.mjs",
+    "issue-4964-raw-binary-egress-classification.mjs",
+    "issue-5138-authoritative-partial-not-exact-extent.mjs",
+  ]) {
+    assert.ok(commands.includes(`node tests/${file}`), `${file} must run in npm test`);
+  }
+  assert.ok(packageJson.scripts.check.split("&&").some((command) => command.trim() === "npm test"),
+    "npm run check must run the canonical regression chain");
+  console.log("  ok 24 root-level regression discovery");
 }
 
 console.log("All Phase test runner contract tests PASS!");

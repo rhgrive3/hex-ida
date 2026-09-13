@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './issue-3624-symmetric-short-read.mjs';
 import './issue-4512-diff-abort-registration-race.mjs';
 import { compareFingerprints, diffFunctions, fingerprintFunction } from '../js/diff/index.js';
 import { createSymmetricCodeFunctionSet } from '../js/diff/symmetric-function-set.js';

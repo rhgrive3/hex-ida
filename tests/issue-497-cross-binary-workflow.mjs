@@ -62,8 +62,18 @@ const restore = measure.slice(
   measure.indexOf('name: Restore exact oracle cache'),
   measure.indexOf('name: Validate cached oracle'),
 );
-assert.match(restore, /actions\/cache\/restore@v4/);
+const restoreActionVersion = restore.match(/uses:\s*actions\/cache\/restore@(v\d+)\b/);
+assert.ok(restoreActionVersion, 'oracle cache restore must use a versioned cache action');
 assert.match(restore, /steps\.oracle-key\.outputs\.key/);
+
+const saveOracle = measure.slice(
+  measure.indexOf('name: Save exact oracle cache'),
+  measure.indexOf('name: Publish oracle for this run'),
+);
+const saveActionVersion = saveOracle.match(/uses:\s*actions\/cache\/save@(v\d+)\b/);
+assert.ok(saveActionVersion, 'oracle cache save must use a versioned cache action');
+assert.equal(saveActionVersion[1], restoreActionVersion[1],
+  'oracle cache restore and save must use the same action major version');
 
 const generate = measure.slice(
   measure.indexOf('name: Generate oracle on cache miss'),
@@ -73,8 +83,12 @@ assert.match(generate, /if:\s*steps\.oracle-cache\.outputs\.cache-hit\s*!=\s*'tr
   'oracle generation must run only on an exact cache miss');
 assert.match(generate, /python tests\/oracle\.py/);
 assert.match(generate, /python tests\/oracle-cfg-normalize\.py/);
-assert.match(measure, /name:\s*Publish oracle for this run[\s\S]*actions\/upload-artifact@v4/,
-  'each fixture runner must still publish the exact oracle as evidence');
+const publishStart = measure.indexOf('name: Publish oracle for this run');
+assert.ok(publishStart >= 0, 'each fixture runner must publish the exact oracle as evidence');
+const publishEnd = measure.indexOf('\n      - name:', publishStart + 'name: Publish oracle for this run'.length);
+const publish = measure.slice(publishStart, publishEnd >= 0 ? publishEnd : measure.length);
+assert.match(publish, /uses:\s*actions\/upload-artifact@v\d+\b/,
+  'oracle evidence must use a versioned upload-artifact action');
 assert.doesNotMatch(measure, /Download required oracle/,
   'the fixture runner must consume its local oracle directly without an artifact round trip');
 

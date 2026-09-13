@@ -41,6 +41,7 @@ function loaderStartArray(value, code) {
 const VALIDATED_LOADER_SEED_SOURCES = new Set([
   'function_starts',
   'exception',
+  'dt-init',
   'tls-callback',
   'guard-cf',
   'unwind',
@@ -294,13 +295,37 @@ export function createDebugEvidenceProducer(debugEvidence) {
     id: 'discovery.debug',
     architectureId: null,
     produce() {
-      return (debugEvidence ?? []).map((item) => evidence('debug-symbol', {
-        start: toAddress(item.address),
-        name: item.name ?? null,
-        regions: item.sizeBytes ? [regionFromSize(item.address, item.sizeBytes)].filter(Boolean) : [],
-        confidence: item.confidence,
-        evidenceIds: item.evidenceIds ?? [],
-      })).filter((item) => item.start != null);
+      // A debug record only validates its address as a non-empty string, so a
+      // single malformed symbol must degrade to "no start / no region" and be
+      // filtered like any other unusable row — it must never abort the whole
+      // producer ahead of the start filter (#4930).
+      return (debugEvidence ?? []).map((item) => {
+        const start = toAddress(item.address);
+        const regions = [];
+        if (start != null && item.sizeBytes != null) {
+          const size = toAddress(item.sizeBytes);
+          if (size != null) {
+            const region = regionFromSize(start, size);
+            if (region != null) regions.push(region);
+          }
+        }
+        // `debugFunctionEvidence()` has already applied the provider identity
+        // and partial-coverage gate. Only its canonical `exact` token may keep
+        // the authoritative debug-symbol kind; every other representation is
+        // a weak fact. Select the authority-bearing kind before canonical
+        // evidence construction so `String()` coercion cannot turn a boxed or
+        // structured value into an authority token (#4050).
+        const rawConfidence = item?.confidence;
+        const exact = rawConfidence === 'exact';
+        const confidence = typeof rawConfidence === 'string' ? rawConfidence : null;
+        return evidence(exact ? 'debug-symbol' : 'debug-symbol-heuristic', {
+          start,
+          name: item.name ?? null,
+          regions,
+          confidence,
+          evidenceIds: item.evidenceIds ?? [],
+        });
+      }).filter((item) => item.start != null);
     },
   });
 }
@@ -324,6 +349,27 @@ function patternBytes(value, code) {
     bytes[index] = byte;
   }
   return bytes;
+}
+
+const PATTERN_SCAN_CANCEL_CHECK_INTERVAL = 4096;
+
+function patternScanBudget(options) {
+  const budget = options?.budget;
+  if (budget != null && (typeof budget !== 'object' || Array.isArray(budget))) {
+    throw new TypeError('discovery-pattern-budget-invalid');
+  }
+  const limit = (name) => {
+    const value = budget?.[name];
+    if (value == null) return null;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+      throw new TypeError(`discovery-pattern-budget-${name}-invalid`);
+    }
+    return value;
+  };
+  return {
+    maxComparisons: limit('maxPatternComparisons'),
+    maxEvidence: limit('maxPatternEvidence'),
+  };
 }
 
 /**
@@ -369,23 +415,47 @@ export function createPatternProducer({ id, architectureId, patterns, alignment 
   return Object.freeze({
     id: producerId,
     architectureId: producerArchitectureId,
-    produce(input) {
+    produce(input, options = {}) {
       const bytes = input?.image?.code;
       const base = input?.image?.codeBaseAddress;
       if (!bytes || base == null || compiled.length === 0) return [];
       const canonicalBase = toAddress(base);
       if (canonicalBase == null) return [];
+      const { maxComparisons, maxEvidence } = patternScanBudget(options);
+      const signal = options?.signal;
       const baseAddress = BigInt(canonicalBase);
+      const alignmentWidth = BigInt(alignment);
+      const firstOffset = Number((alignmentWidth - (baseAddress % alignmentWidth)) % alignmentWidth);
       const out = [];
-      for (let offset = 0; offset + 1 <= bytes.length; offset += alignment) {
+      let comparisons = 0;
+      let lastObserved = 0;
+      let stopReason = null;
+      scan:
+      for (let offset = firstOffset; offset + 1 <= bytes.length; offset += alignment) {
         for (const pattern of compiled) {
           if (offset + pattern.bytes.length > bytes.length) continue;
           let matched = true;
           for (let index = 0; index < pattern.bytes.length; index += 1) {
+            comparisons += 1;
+            if (maxComparisons != null && comparisons > maxComparisons) {
+              stopReason = 'budget-exhausted';
+              break scan;
+            }
+            if (comparisons - lastObserved >= PATTERN_SCAN_CANCEL_CHECK_INTERVAL) {
+              lastObserved = comparisons;
+              if (signal?.aborted) {
+                stopReason = 'cancelled';
+                break scan;
+              }
+            }
             const mask = pattern.mask ? pattern.mask[index] : 0xff;
             if ((bytes[offset + index] & mask) !== (pattern.bytes[index] & mask)) { matched = false; break; }
           }
           if (!matched) continue;
+          if (maxEvidence != null && out.length >= maxEvidence) {
+            stopReason = 'budget-exhausted';
+            break scan;
+          }
           out.push(evidence('prologue-candidate', {
             start: (baseAddress + BigInt(offset)).toString(),
             evidenceIds: [`pattern:${pattern.id}:${offset}`],
@@ -393,6 +463,7 @@ export function createPatternProducer({ id, architectureId, patterns, alignment 
           break;
         }
       }
+      if (stopReason != null) return Object.freeze({ evidence: out, truncated: true, stopReason });
       return out;
     },
   });

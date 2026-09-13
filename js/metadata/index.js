@@ -106,6 +106,7 @@ function safeSectionName(s) {
 }
 
 function safeSymbolName(s) {
+  if (typeof s === 'string') return s;
   if (!s || typeof s !== 'object') return '';
   if (typeof s.name === 'string') return s.name;
   if (typeof s.symbol === 'string') return s.symbol;

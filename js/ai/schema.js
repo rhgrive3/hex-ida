@@ -6,6 +6,20 @@ export const AI_SCOPES = Object.freeze(['auto', 'selection', 'function', 'neighb
 export const EVIDENCE_STATUSES = Object.freeze(['verified', 'supported', 'hypothesis', 'unknown']);
 export const HYPOTHESIS_STATUSES = Object.freeze(['open', 'supported', 'rejected', 'verified']);
 export const PROPOSAL_STATUSES = Object.freeze(['pending', 'approved', 'rejected', 'applying', 'applied', 'failed']);
+export const PROPOSAL_KINDS = Object.freeze(['rename', 'comment', 'type', 'struct-field', 'patch', 'project-annotation']);
+export const PROPOSAL_DRAFT_SCHEMA = Object.freeze({
+  type: 'object',
+  required: ['kind', 'target', 'before', 'after', 'evidenceIds'],
+  properties: {
+    kind: { enum: PROPOSAL_KINDS },
+    target: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'object' }] },
+    // Mutation payloads are checked again by ProposalStore.create(), which
+    // owns structured-clone and stale-state fingerprinting for these values.
+    before: {}, after: {},
+    evidenceIds: { type: 'array', minItems: 1, maxItems: 32, items: { type: 'string', minLength: 1 } },
+    reason: { type: 'string', maxLength: 2000 },
+  },
+});
 export const AI_ACTION_KINDS = Object.freeze([
   'open-function', 'open-address', 'show-xrefs', 'show-callers', 'show-callees',
   'show-cfg', 'show-pseudocode', 'open-evidence', 'trace-value', 'run-agent', 'review-proposal',
@@ -84,6 +98,7 @@ export const AI_RESULT_SCHEMA = Object.freeze({
     activity: { type: 'array', items: { type: 'object' } },
     usage: { type: 'object' },
     limits: { type: 'object' },
+    proposals: { type: 'array', items: { type: 'object' } },
   },
 });
 
@@ -109,6 +124,7 @@ export const MODEL_DECISION_SCHEMA = Object.freeze({
         // not discarded; sanitizeActions() still admits only reviewed action
         // objects before anything reaches the executable/UI action surface.
         suggestedActions: { type: 'array', items: { anyOf: [{ type: 'object' }, { type: 'string' }] } },
+        proposals: { type: 'array', maxItems: 8, items: PROPOSAL_DRAFT_SCHEMA },
         followups: { type: 'array', items: { type: 'string' } },
       },
     },

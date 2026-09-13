@@ -22,6 +22,18 @@ const DATA_VIEW_BUFFER_GETTER = Object.getOwnPropertyDescriptor(DataView.prototy
 const DATA_VIEW_BYTE_OFFSET_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteOffset')?.get;
 const DATA_VIEW_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteLength')?.get;
 const ARRAY_BUFFER_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')?.get;
+const MAP_ENTRIES = Map.prototype.entries;
+const SET_VALUES = Set.prototype.values;
+const SUPPORTED_PROPOSAL_STATE_PROTOTYPES = new Set([
+  Array.prototype, Date.prototype, Map.prototype, Set.prototype, RegExp.prototype,
+  ArrayBuffer.prototype, DataView.prototype,
+  ...[
+    Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array,
+    Int32Array, Uint32Array, Float32Array, Float64Array,
+    ...(typeof BigInt64Array === 'function' ? [BigInt64Array] : []),
+    ...(typeof BigUint64Array === 'function' ? [BigUint64Array] : []),
+  ].map((typedArrayConstructor) => typedArrayConstructor.prototype),
+]);
 let proposalSequence = 1;
 
 export class ProposalStore {
@@ -43,7 +55,27 @@ export class ProposalStore {
       throw new AIError('invalid_tool_call', 'A proposal requires deterministic evidence.');
     }
     if (kind === 'struct-field') rejectStructFieldTargetOverride(input.after);
-    const evidenceIds = Array.from(new Set((input.evidenceIds || []).filter((id) => typeof id === 'string' && this.evidenceStore?.has(id))));
+    if (kind === 'project-annotation' && !hasProjectAnnotationTargetId(input.target)) {
+      /* The precondition reader, the mutation writer and the postcondition
+         reader must resolve the exact same annotation identity that was
+         approved. `setProjectAnnotation` fabricates `annotation:<Date.now()>`
+         when `id` is missing, so an id-less proposal mutated a freshly minted
+         record while the postcondition kept looking for the empty id — a
+         failed proposal with an orphan annotation left behind (#5139).
+         Identity is therefore fixed at creation time or the proposal is
+         rejected before any approval is possible. */
+      throw new AIError('invalid_tool_call', 'A project-annotation proposal requires a non-empty string target id.');
+    }
+    // The product EvidenceStore's has() is existence-only, while verified
+    // status is protected by deterministic-verifier authority. When the store
+    // exposes records, require that authority-bearing status and retain only
+    // verified IDs. Minimal injected authority adapters that intentionally
+    // expose only has() keep their existing predicate contract.
+    const evidenceIds = Array.from(new Set((input.evidenceIds || []).filter((id) => {
+      if (typeof id !== 'string') return false;
+      if (typeof this.evidenceStore?.get === 'function') return this.evidenceStore.get(id)?.status === 'verified';
+      return this.evidenceStore?.has?.(id) === true;
+    })));
     if (!evidenceIds.length) throw new AIError('invalid_tool_call', 'A proposal requires deterministic evidence.');
     let id;
     if (Object.prototype.hasOwnProperty.call(input, 'id')) {
@@ -180,6 +212,15 @@ export class ProposalStore {
       return proposalSnapshot(proposal);
     } catch (error) {
       proposal.status = 'failed';
+      /* An indeterminate verification (the mutation applied but its
+         postcondition could not be checked) must not masquerade as
+         "failed = state unchanged". Record the partial outcome on the
+         proposal and in the audit trail so consumers can tell a failed
+         mutation from an applied-but-unverifiable one (#5133). */
+      if (error?.details?.verification === 'indeterminate') {
+        proposal.partial = true;
+        this.audit.push({ type: 'proposal-partial', proposalId: authority.id, timestamp: new Date().toISOString(), reason: String(error?.details?.cause || error?.message || 'postcondition unverifiable').slice(0, 2000) });
+      }
       this.audit.push({ type: 'proposal-failed', proposalId: authority.id, timestamp: new Date().toISOString() });
       throw error;
     } finally {
@@ -225,6 +266,11 @@ function rejectStructFieldTargetOverride(after) {
       throw new AIError('invalid_tool_call', 'A struct-field proposal must not override the approved target through after.');
     }
   }
+}
+
+function hasProjectAnnotationTargetId(target) {
+  const id = target && typeof target === 'object' ? target.id : null;
+  return typeof id === 'string' && id.length > 0;
 }
 
 function structFieldValue(after) {
@@ -402,6 +448,10 @@ function rejectUnstableProposalState(value, seen = new Set()) {
   if (seen.has(value)) return;
   seen.add(value);
   try {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null && !SUPPORTED_PROPOSAL_STATE_PROTOTYPES.has(prototype)) {
+      throw new AIError('tool_failed', 'Proposal state contains an unsupported non-plain object and cannot be snapshotted safely.');
+    }
     const keys = Reflect.ownKeys(value);
     if (keys.some((key) => typeof key === 'symbol')) {
       throw new AIError('tool_failed', 'Proposal state contains symbol-keyed own properties and cannot be fingerprinted safely.');
@@ -412,6 +462,14 @@ function rejectUnstableProposalState(value, seen = new Set()) {
         throw new AIError('tool_failed', 'Proposal state contains accessor-backed state and cannot be snapshotted safely.');
       }
       rejectUnstableProposalState(descriptor.value, seen);
+    }
+    if (prototype === Map.prototype) {
+      for (const [key, item] of MAP_ENTRIES.call(value)) {
+        rejectUnstableProposalState(key, seen);
+        rejectUnstableProposalState(item, seen);
+      }
+    } else if (prototype === Set.prototype) {
+      for (const item of SET_VALUES.call(value)) rejectUnstableProposalState(item, seen);
     }
   } catch (error) {
     if (error instanceof AIError) throw error;

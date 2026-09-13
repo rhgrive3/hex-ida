@@ -217,7 +217,10 @@ function describeScript(node, index, currentOrigin) {
 
 function selectLoadedScript(scripts, args) {
   if (args.index != null) {
-    const index = boundedInteger(args.index, 0, Math.max(0, scripts.length - 1), 0);
+    if (!Number.isSafeInteger(args.index) || args.index < 0 || args.index >= scripts.length) {
+      throw inspectorError('script-not-loaded', 'Requested script is not a currently loaded external page script.');
+    }
+    const index = args.index;
     const node = scripts[index];
     return node ? { node, index } : null;
   }

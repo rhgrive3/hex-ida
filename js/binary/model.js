@@ -92,6 +92,7 @@ export class BinaryImage {
     this.functions = [];
     this.unwindEntries = [];
     this.libraries = [];
+    this.dataInCode = [];
     this.warnings = [];
     this.metadata = meta.metadata || {};
   }
@@ -242,6 +243,78 @@ export class BinaryImage {
     };
   }
 
+  addDataInCodeEntry(entry) {
+    if (!entry || typeof entry !== 'object') throw new TypeError('DataInCode entry must be an object');
+    const offset = Number(entry.offset);
+    const length = Number(entry.length);
+    const kind = Number(entry.kind);
+    const address = entry.address != null ? strictBigIntOrNull(entry.address) : null;
+    const normalized = {
+      offset,
+      length,
+      kind,
+      kindName: entry.kindName || null,
+      address,
+    };
+    this.dataInCode.push(normalized);
+    return normalized;
+  }
+
+  isDataInCode(address) {
+    const a = strictBigIntOrNull(address);
+    if (a === null) return false;
+    for (const entry of this.dataInCode) {
+      if (entry.address == null) continue;
+      if (a >= entry.address && a < entry.address + BigInt(entry.length)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  dataInCodeAt(address) {
+    const a = strictBigIntOrNull(address);
+    if (a === null) return null;
+    for (const entry of this.dataInCode) {
+      if (entry.address == null) continue;
+      if (a >= entry.address && a < entry.address + BigInt(entry.length)) {
+        return entry;
+      }
+    }
+    return null;
+  }
+
+  isInstructionAllowed(address) {
+    const a = strictBigIntOrNull(address);
+    if (a === null || a < 0n) return false;
+
+    const sec = this.sectionAt(a);
+    const seg = this.segmentAt(a);
+    const isExecutable = Boolean(sec ? sec.perms?.execute : seg?.perms?.execute);
+    if (!isExecutable) return false;
+
+    const arch = this.arch;
+    const alignment = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
+    if (a % alignment !== 0n) return false;
+
+    const instructionBytes = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
+    const offStart = this.addressToOffset(a);
+    const offEnd = this.addressToOffset(a + instructionBytes - 1n);
+    if (offStart === null || offEnd === null) return false;
+
+    const instEnd = a + instructionBytes;
+    for (const entry of this.dataInCode) {
+      if (entry.address == null) continue;
+      const dataStart = entry.address;
+      const dataEnd = entry.address + BigInt(entry.length);
+      if (a < dataEnd && instEnd > dataStart) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
   _virtualReadPlan(address, size) {
     let current;
     let remaining;
@@ -389,7 +462,7 @@ export class BinaryImage {
 
 const EXACT_FUNCTION_START_SOURCES = new Set([
   'entrypoint', 'export', 'exception', 'unwind', 'function_starts',
-  'tls-callback', 'guard-cf',
+  'tls-callback', 'guard-cf', 'constructor',
 ]);
 
 export function functionSeed(address, opts = {}) {
@@ -420,7 +493,7 @@ export function functionSeed(address, opts = {}) {
 }
 
 export function mergeFunctionSeeds(input, context = {}) {
-  const rank = { symbol: 5, 'ifunc-resolver': 5, exception: 4, unwind: 4, function_starts: 4, export: 3, entrypoint: 2, heuristic: 1 };
+  const rank = { symbol: 5, 'ifunc-resolver': 5, exception: 4, unwind: 4, function_starts: 4, constructor: 4, export: 3, entrypoint: 2, heuristic: 1 };
   const m = new Map();
   for (const f0 of input || []) {
     if (f0 == null || f0.address == null) continue;

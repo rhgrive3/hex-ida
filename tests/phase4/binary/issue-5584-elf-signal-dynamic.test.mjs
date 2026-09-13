@@ -123,7 +123,7 @@ function buildDynamicElf({ entries = 64, withRelocationsAndSymbols = false, with
     view.setBigUint64(p + 24, BigInt(va), true);
     view.setBigUint64(p + 32, BigInt(filesz), true);
     view.setBigUint64(p + 40, BigInt(filesz), true);
-    view.setBigUint64(p + 48, 0x1000n, true);
+    view.setBigUint64(p + 48, 0x100n, true); // congruent with file offset 0x100
   };
   phdr(0, PT_LOAD, 0x100, 0x1000, loadFilesz);
   phdr(1, PT_DYNAMIC, dynamicOffset, dynamicVa, dynamicSize);
@@ -145,7 +145,7 @@ function buildDynamicElf({ entries = 64, withRelocationsAndSymbols = false, with
     // One R_X86_64_JUMP_SLOT-style RELA entry (type 7 on x86-64, sym 1).
     const rela = new Uint8Array(24);
     const relaView = new DataView(rela.buffer);
-    relaView.setBigUint64(0, 0x2000n, true); // r_offset
+    relaView.setBigUint64(0, 0x1200n, true); // r_offset within the PT_LOAD mapping
     relaView.setBigUint64(8, (1n << 32n) | 7n, true); // sym 1, type 7
     bytes.set(rela, relaOffset);
   }
@@ -242,5 +242,3 @@ test('#5584: the same GNU-hash image yields exact count evidence without cancell
   assert.equal(image.metadata.programDynamicPartial ?? false, false);
   assert.equal(diagnostics.some((d) => d.includes('cancelled')), false, 'no cancellation evidence without an abort');
 });
-
-

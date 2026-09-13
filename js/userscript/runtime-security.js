@@ -16,7 +16,13 @@ export async function signRuntimeSession(payload, signingKey) {
 
 export async function verifyRuntimeSession(value, signingKey, { now = Date.now(), requireUnexpired = true } = {}) {
   const parts = String(value).split('.'); if (parts.length !== 2) return null;
-  const expected = await hmac(parts[0], signingKey, 'sign'), actual = decodeBase64URL(parts[1]);
+  // #5206: a malformed Base64URL signature part throws InvalidCharacterError
+  // from atob(); authentication failure must be reported as null (403 path),
+  // never as an escaping exception (500 path). The payload decode below is
+  // already inside its own try.
+  let actual;
+  try { actual = decodeBase64URL(parts[1]); } catch { return null; }
+  const expected = await hmac(parts[0], signingKey, 'sign');
   if (!constantTimeBytes(expected, actual)) return null;
   try {
     const payload = JSON.parse(new TextDecoder().decode(decodeBase64URL(parts[0])));

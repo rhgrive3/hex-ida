@@ -205,30 +205,164 @@ function canonicalDescriptorString(layer, descriptor) {
   return stableStringify(canonicalDescriptorMaterial(layer, descriptor));
 }
 
-function validateDescriptor(layer, descriptor) {
-  if (descriptor == null || typeof descriptor !== 'object') fail('type-claim-descriptor-required');
-  if (layer === 'structural') {
-    if (descriptor.offset != null) {
-      const offset = toBigInt(descriptor.offset, null);
-      if (offset == null || offset < 0n) fail('structural-offset-invalid');
-    }
-    if (descriptor.sizeBytes != null) {
-      const size = toBigInt(descriptor.sizeBytes, null);
-      if (size == null || size <= 0n) fail('structural-size-invalid');
-    }
-    if (descriptor.alignBytes != null) {
-      const align = toBigInt(descriptor.alignBytes, null);
-      if (align == null || align <= 0n) fail('structural-align-invalid');
-    }
-    if (descriptor.strideBytes != null) {
-      const stride = toBigInt(descriptor.strideBytes, null);
-      if (stride == null || stride <= 0n) fail('structural-stride-invalid');
-    }
-    if (descriptor.length != null) {
-      const len = toBigInt(descriptor.length, null);
-      if (len == null || len < 0n) fail('structural-length-invalid');
-    }
+export function canonicalDependencyIdentity(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text.length > 0 ? text : null;
+}
+
+const STRUCTURAL_IDENTITY_FIELDS = Object.freeze(['targetEntityId', 'elementEntityId']);
+
+function validateStructuralIdentityFields(node) {
+  if (node == null || typeof node !== 'object') return;
+  for (const field of STRUCTURAL_IDENTITY_FIELDS) {
+    const value = node[field];
+    if (value != null && canonicalDependencyIdentity(value) == null) fail('structural-identity-invalid');
   }
+}
+
+const NESTED_STRUCTURAL_TYPE_KEYS = Object.freeze(['memberType', 'elementType', 'pointeeType']);
+
+function validateStructuralDescriptorValue(value, seen = new WeakSet()) {
+  if (value == null || typeof value !== 'object' || seen.has(value)) return;
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    for (const child of value) validateStructuralDescriptorValue(child, seen);
+    return;
+  }
+
+  // Preserve the stricter identity validation added on main after #7636 was
+  // opened while extending the same traversal to nested numeric layout facts.
+  validateStructuralIdentityFields(value);
+  if (value.offset != null) {
+    const offset = toBigInt(value.offset, null);
+    if (offset == null || offset < 0n) fail('structural-offset-invalid');
+  }
+  if (value.sizeBytes != null) {
+    const size = toBigInt(value.sizeBytes, null);
+    if (size == null || size <= 0n) fail('structural-size-invalid');
+  }
+  if (value.alignBytes != null) {
+    const align = toBigInt(value.alignBytes, null);
+    if (align == null || align <= 0n) fail('structural-align-invalid');
+  }
+  if (value.strideBytes != null) {
+    const stride = toBigInt(value.strideBytes, null);
+    if (stride == null || stride <= 0n) fail('structural-stride-invalid');
+  }
+  if (value.length != null) {
+    const len = toBigInt(value.length, null);
+    if (len == null || len < 0n) fail('structural-length-invalid');
+  }
+
+  // Traverse only semantic type edges. Unrelated metadata objects that happen
+  // to contain numeric-looking fields are deliberately outside this contract.
+  for (const key of NESTED_STRUCTURAL_TYPE_KEYS) {
+    validateStructuralDescriptorValue(value[key], seen);
+  }
+  if (Array.isArray(value.members)) validateStructuralDescriptorValue(value.members, seen);
+}
+
+/**
+ * Structural aggregate members are a semantic set ordered by byte offset, not
+ * by producer traversal order. Canonicalization is recursive: nested aggregate
+ * descriptors use the same ordering and exact-deduplication contract as the
+ * root. Distinct same-slot or overlapping members remain separate facts.
+ */
+function canonicalizeStructuralValue(value, seen) {
+  if (value == null || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value);
+
+  if (Array.isArray(value)) {
+    const out = [];
+    seen.set(value, out);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    for (const key of Reflect.ownKeys(descriptors)) {
+      if (key === 'length') continue;
+      const property = descriptors[key];
+      if (!Object.prototype.hasOwnProperty.call(property, 'value')) {
+        Object.defineProperty(out, key, property);
+        continue;
+      }
+      Object.defineProperty(out, key, {
+        ...property,
+        value: canonicalizeStructuralValue(property.value, seen),
+      });
+    }
+    if (descriptors.length) Object.defineProperty(out, 'length', descriptors.length);
+    return out;
+  }
+
+  const out = {};
+  seen.set(value, out);
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const key of Reflect.ownKeys(descriptors)) {
+    const property = descriptors[key];
+    if (!Object.prototype.hasOwnProperty.call(property, 'value')) {
+      Object.defineProperty(out, key, property);
+      continue;
+    }
+    const child = key === 'members' && Array.isArray(property.value)
+      ? canonicalizeStructuralMembersInternal(property.value, seen)
+      : canonicalizeStructuralValue(property.value, seen);
+    Object.defineProperty(out, key, { ...property, value: child });
+  }
+  return out;
+}
+
+function canonicalizeStructuralMembersInternal(members, seen) {
+  if (seen.has(members)) return seen.get(members);
+  const canonical = [];
+  seen.set(members, canonical);
+
+  if (!members.every((member) => member != null && typeof member === 'object' && !Array.isArray(member))) {
+    for (const member of members) canonical.push(canonicalizeStructuralValue(member, seen));
+    return canonical;
+  }
+
+  const sorted = members.map((rawMember) => {
+    const member = canonicalizeStructuralValue(rawMember, seen);
+    return {
+      member,
+      offset: canonicalInteger(member.offset ?? 0),
+      canonical: canonicalDescriptorString('structural', member),
+    };
+  }).sort((left, right) => {
+    if (left.offset != null && right.offset != null) {
+      if (left.offset < right.offset) return -1;
+      if (left.offset > right.offset) return 1;
+    } else if (left.offset != null) {
+      return -1;
+    } else if (right.offset != null) {
+      return 1;
+    }
+    return left.canonical.localeCompare(right.canonical);
+  });
+
+  let previous = null;
+  for (const entry of sorted) {
+    if (entry.canonical === previous) continue;
+    canonical.push(entry.member);
+    previous = entry.canonical;
+  }
+  return canonical;
+}
+
+export function canonicalizeStructuralMembers(members) {
+  if (!Array.isArray(members)) return members;
+  return canonicalizeStructuralMembersInternal(members, new WeakMap());
+}
+
+function canonicalizeStructuralDescriptor(descriptor) {
+  return canonicalizeStructuralValue(descriptor, new WeakMap());
+}
+
+function validateDescriptor(layer, descriptor) {
+  if (descriptor == null || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
+    fail('type-claim-descriptor-required');
+  }
+  if (layer === 'structural') validateStructuralDescriptorValue(descriptor);
 }
 
 /**
@@ -243,10 +377,11 @@ export function createTypeClaim(input = {}) {
   if (!LAYER_SET.has(layer)) fail('type-claim-invalid-layer');
   const descriptor = input.descriptor ?? null;
   if (descriptor == null) fail('type-claim-descriptor-required');
+  const snapshot = snapshotDescriptor(descriptor);
   const claim = {
     layer,
     entityId: nonEmpty(input.entityId, 'type-claim-entity-required'),
-    descriptor: snapshotDescriptor(descriptor),
+    descriptor: layer === 'structural' ? canonicalizeStructuralDescriptor(snapshot) : snapshot,
   };
   validateDescriptor(layer, claim.descriptor);
   claim.key = stableDigest({ layer: claim.layer, entityId: claim.entityId, descriptor: canonicalDescriptorMaterial(layer, claim.descriptor) });
@@ -309,8 +444,11 @@ export function createSoftEvidence(input = {}) {
   if (!SOFT_SET.has(kind)) fail('soft-evidence-invalid-kind');
   const origin = strictNonEmpty(input.origin ?? 'heuristic', 'soft-evidence-origin-required');
   if (!ORIGIN_SET.has(origin)) fail('soft-evidence-invalid-origin');
-  const weight = Number(input.weight ?? 0.5);
-  if (!Number.isFinite(weight) || weight < 0 || weight > 1) fail('soft-evidence-invalid-weight');
+  const rawWeight = input.weight ?? 0.5;
+  if (typeof rawWeight !== 'number' || !Number.isFinite(rawWeight) || rawWeight < 0 || rawWeight > 1) {
+    fail('soft-evidence-invalid-weight');
+  }
+  const weight = rawWeight;
   return deepFreeze({
     kind,
     origin,
@@ -359,6 +497,118 @@ function memberTypesConflict(aType, bType) {
   if (aType.signed != null && bType.signed != null && aType.signed !== bType.signed) return true;
 
   return canonicalDescriptorString('structural', aType) !== canonicalDescriptorString('structural', bType);
+}
+
+function memberFactsConflict(left, right, key = null) {
+  if (stableStringify(left) === stableStringify(right)) return false;
+  if (key != null && NUMERIC_DESCRIPTOR_FIELDS.has(key)) {
+    const a = canonicalInteger(left);
+    const b = canonicalInteger(right);
+    return a == null || b == null || a !== b;
+  }
+  if (left == null || right == null
+    || typeof left !== 'object' || typeof right !== 'object'
+    || Array.isArray(left) || Array.isArray(right)) return true;
+
+  // Missing keys are additive partial facts. A key present on both sides must
+  // carry recursively compatible evidence, matching graph.js reconstruction.
+  for (const [childKey, value] of Object.entries(right)) {
+    if (!Object.hasOwn(left, childKey)) continue;
+    if (memberFactsConflict(left[childKey], value, childKey)) return true;
+  }
+  return false;
+}
+
+function aggregateMembersConflict(aMembers, bMembers) {
+  // Preserve exact/canonically-equivalent member sets, including legacy
+  // descriptors whose nested layout is incomplete. Once the sets differ,
+  // however, compatibility needs interval evidence; an unknown interval must
+  // fail closed rather than mint compatibility from absence of proof.
+  if (!Array.isArray(aMembers) || !Array.isArray(bMembers)) {
+    return canonicalDescriptorString('structural', aMembers) !== canonicalDescriptorString('structural', bMembers);
+  }
+  if (aMembers.every((member) => member != null && typeof member === 'object' && !Array.isArray(member))
+    && bMembers.every((member) => member != null && typeof member === 'object' && !Array.isArray(member))) {
+    const aCanonicalSet = canonicalizeStructuralMembers(aMembers)
+      .map((member) => canonicalDescriptorString('structural', member));
+    const bCanonicalSet = canonicalizeStructuralMembers(bMembers)
+      .map((member) => canonicalDescriptorString('structural', member));
+    if (aCanonicalSet.length === bCanonicalSet.length
+      && aCanonicalSet.every((entry, index) => entry === bCanonicalSet[index])) return false;
+  }
+
+  const prepare = (members) => {
+    const prepared = [];
+    const seen = new Set();
+    for (const member of members) {
+      if (member == null || typeof member !== 'object' || Array.isArray(member)) return null;
+      const canonical = canonicalDescriptorString('structural', member);
+      if (seen.has(canonical)) continue;
+      seen.add(canonical);
+      if (member.offset == null || member.sizeBytes == null) return null;
+      const start = toBigInt(member.offset, null);
+      const size = toBigInt(member.sizeBytes, null);
+      if (start == null || size == null || start < 0n || size <= 0n) return null;
+      prepared.push({ member, canonical, start, size, end: start + size });
+    }
+    prepared.sort((left, right) => {
+      if (left.start < right.start) return -1;
+      if (left.start > right.start) return 1;
+      if (left.end < right.end) return -1;
+      if (left.end > right.end) return 1;
+      return left.canonical.localeCompare(right.canonical);
+    });
+
+    // A differing aggregate claim cannot safely add facts to an already
+    // internally-overlapping set without a union/overlay model. Exact-equal
+    // sets returned above; otherwise keep the previous fail-closed behavior.
+    for (let index = 1; index < prepared.length; index += 1) {
+      if (prepared[index - 1].end > prepared[index].start) return null;
+    }
+    return prepared;
+  };
+
+  const aPrepared = prepare(aMembers);
+  const bPrepared = prepare(bMembers);
+  if (aPrepared == null || bPrepared == null) return true;
+
+  // Both lists are now canonical, deduplicated, and non-overlapping within
+  // themselves, so a two-pointer sweep checks every cross-list overlap in
+  // O(n log n + m log m) rather than bypassing graph comparison budgets with
+  // an unbounded quadratic member-pair loop.
+  let aIndex = 0;
+  let bIndex = 0;
+  while (aIndex < aPrepared.length && bIndex < bPrepared.length) {
+    const aEntry = aPrepared[aIndex];
+    const bEntry = bPrepared[bIndex];
+    if (aEntry.end <= bEntry.start) {
+      aIndex += 1;
+      continue;
+    }
+    if (bEntry.end <= aEntry.start) {
+      bIndex += 1;
+      continue;
+    }
+
+    if (aEntry.canonical !== bEntry.canonical) {
+      if (aEntry.start === bEntry.start) {
+        if (aEntry.size !== bEntry.size) return true;
+        if (aEntry.member.alignBytes != null && bEntry.member.alignBytes != null
+          && numericValuesDiffer(aEntry.member.alignBytes, bEntry.member.alignBytes)) return true;
+        // Same-slot members are merged recursively by graph.js. Make the
+        // contradiction detector reject exactly the overlapping fact keys
+        // that merger cannot reconcile, while still allowing one-sided facts.
+        if (memberFactsConflict(aEntry.member, bEntry.member)) return true;
+      }
+
+      if (aEntry.member.memberType == null || bEntry.member.memberType == null) return true;
+      if (memberTypesConflict(aEntry.member.memberType, bEntry.member.memberType)) return true;
+    }
+
+    if (aEntry.end <= bEntry.end) aIndex += 1;
+    if (bEntry.end <= aEntry.end) bIndex += 1;
+  }
+  return false;
 }
 
 /**
@@ -465,7 +715,7 @@ export function claimsConflict(left, right) {
       return false;
     }
     if (a.members != null && b.members != null) {
-      return canonicalDescriptorString('structural', a.members) !== canonicalDescriptorString('structural', b.members);
+      return aggregateMembersConflict(a.members, b.members);
     }
     if (a.offset != null && b.offset != null && !numericValuesDiffer(a.offset, b.offset)) {
       return canonicalDescriptorString('structural', a) !== canonicalDescriptorString('structural', b);

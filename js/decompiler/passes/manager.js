@@ -10,6 +10,54 @@ function validTimeBudgetMs(value, fallback) {
     : fallback;
 }
 
+function forkValue(value, seen) {
+  if (value === null || typeof value !== 'object') return value;
+  if (typeof value === 'function') return value;
+  const cached = seen.get(value);
+  if (cached !== undefined) return cached;
+  if (value instanceof Date) {
+    const forked = new Date(value.getTime());
+    seen.set(value, forked);
+    return forked;
+  }
+  if (value instanceof RegExp) {
+    const forked = new RegExp(value.source, value.flags);
+    seen.set(value, forked);
+    return forked;
+  }
+  if (value instanceof Map) {
+    const forked = new Map();
+    seen.set(value, forked);
+    for (const [key, entry] of value) forked.set(forkValue(key, seen), forkValue(entry, seen));
+    return forked;
+  }
+  if (value instanceof Set) {
+    const forked = new Set();
+    seen.set(value, forked);
+    for (const entry of value) forked.add(forkValue(entry, seen));
+    return forked;
+  }
+  if (Array.isArray(value)) {
+    const forked = new Array(value.length);
+    seen.set(value, forked);
+    for (let index = 0; index < value.length; index += 1) forked[index] = forkValue(value[index], seen);
+    return forked;
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return value;
+  const forked = {};
+  seen.set(value, forked);
+  for (const key of Object.keys(value)) forked[key] = forkValue(value[key], seen);
+  return forked;
+}
+
+function commitFork(state, forked) {
+  for (const key of Object.keys(state)) {
+    if (!Object.prototype.hasOwnProperty.call(forked, key)) delete state[key];
+  }
+  Object.assign(state, forked);
+}
+
 export class PassManager {
   constructor(passes = [], budget = {}) {
     this.passes = passes.slice();
@@ -64,17 +112,53 @@ export class PassManager {
           validTimeBudgetMs(passBudget.timeBudgetMs, DEFAULT_PASS_BUDGET.timeBudgetMs),
           passRemaining,
         );
-        passBudget.remainingTimeMs = passRemaining;
-        passBudget.deadline = deadline;
+        // #5024: a pass that declares its own timeBudgetMs must actually be bounded
+        // by it. The effective pass deadline is min(global deadline, passStart +
+        // local budget) and deadline/remainingTimeMs/shouldAbort are all derived
+        // from that single value. Passes without a pass-local budget keep the
+        // global deadline contract; deterministic mode keeps ignoring only the
+        // wall-clock valve.
+        const passLocalBudget = pass.budget && pass.budget.timeBudgetMs != null
+          ? validTimeBudgetMs(pass.budget.timeBudgetMs, DEFAULT_PASS_BUDGET.timeBudgetMs)
+          : null;
+        const passStart = clock();
+        const passDeadline = deterministic || passLocalBudget == null
+          ? deadline
+          : Math.min(deadline, passStart + passLocalBudget);
+        passBudget.remainingTimeMs = Math.max(0, passDeadline - clock());
+        passBudget.deadline = passDeadline;
         passBudget.degraded = !!state.degraded;
         passBudget.deterministic = deterministic;
-        passBudget.shouldAbort = () => !deterministic && clock() >= deadline;
+        passBudget.shouldAbort = () => !deterministic && clock() >= passDeadline;
 
-        const result = pass.run(state, passBudget);
-        if (result && result !== state) Object.assign(state, result);
-        const elapsedMs = clock() - start;
-        if (clock() >= deadline) state.degraded = true;
-        state.passMetrics.push({ name: pass.name, elapsedMs, ok: true, degraded: !!state.degraded });
+        if (pass.required) {
+          const result = pass.run(state, passBudget);
+          if (result && result !== state) Object.assign(state, result);
+          const elapsedMs = clock() - start;
+          if (clock() >= passDeadline) state.degraded = true;
+          state.passMetrics.push({ name: pass.name, elapsedMs, ok: true, degraded: !!state.degraded });
+          continue;
+        }
+
+        // #5113: optional passes run on a pass-local fork of the state and commit
+        // atomically on success. Plain data (objects/arrays/Map/Set/Date/RegExp)
+        // is deep-forked with cycles preserved; functions and class instances
+        // keep their identity (live opts/adapters must stay shared). A failed
+        // optional pass contributes nothing: the fork is discarded, the failure
+        // is recorded, and the pipeline continues on the last valid state.
+        const forked = forkValue(state, new Map());
+        try {
+          const result = pass.run(forked, passBudget);
+          if (result && result !== forked) Object.assign(forked, result);
+          commitFork(state, forked);
+          const elapsedMs = clock() - start;
+          if (clock() >= passDeadline) state.degraded = true;
+          state.passMetrics.push({ name: pass.name, elapsedMs, ok: true, degraded: !!state.degraded });
+        } catch (error) {
+          state.warnings.push(`${pass.name}: ${error?.message || String(error)}`);
+          state.passMetrics.push({ name: pass.name, elapsedMs: clock() - start, ok: false, degraded: true });
+          state.degraded = true;
+        }
       } catch (error) {
         state.warnings.push(`${pass.name}: ${error?.message || String(error)}`);
         state.passMetrics.push({ name: pass.name, elapsedMs: clock() - start, ok: false, degraded: true });

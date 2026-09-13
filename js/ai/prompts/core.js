@@ -62,6 +62,8 @@ When ambiguity genuinely blocks correct investigation, ask one short clarifying 
 Reading and investigation need no approval.
 
 Any change to analysis or project state — rename, type change, comment, patch, or any other mutation — must first be presented as a proposal. Apply a proposal only after the user has explicitly approved it.
+
+When a final answer includes a mutation proposal, put it in the typed "proposals" array with kind, target, before, after, evidenceIds, and an optional reason. Use only evidence IDs supplied by Hex. Do not invent a proposal ID, status, or approval token; Hex assigns the ID and the user approval remains a separate step.
 </changes>
 
 <output>

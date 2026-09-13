@@ -1,9 +1,10 @@
 /*
  * Thin authority-boundary wrapper around the deterministic agent tool core.
  * Keep the large implementation byte-identical to current main; only the
- * completeness/range contracts fixed by #4104/#4106/#4275/#4360/#4461 live here.
+ * completeness/range contracts fixed by #4104/#4106/#4275/#4360/#4461/#4989 live here.
  */
 import { irFor } from '../ir.js';
+import { semanticFacts } from '../semantic.js';
 import {
   AgentToolError,
   compactFact,
@@ -159,6 +160,22 @@ function forceIncomplete(result, reason) {
   };
 }
 
+function markExactComplete(result) {
+  if (!result || typeof result !== 'object') return result;
+  const total = Number.isSafeInteger(result.returned) && result.returned >= 0 ? result.returned : null;
+  if (total == null) return result;
+  return {
+    ...result,
+    total,
+    complete:true,
+    truncated:false,
+    reason:null,
+    ...(result.completeness && typeof result.completeness === 'object'
+      ? { completeness:{ ...result.completeness, total, complete:true, coverage:1, reason:null } }
+      : {}),
+  };
+}
+
 export function createAgentTools(context, opts = {}) {
   const ctx = context || {};
   const models = new Map();
@@ -240,12 +257,55 @@ export function createAgentTools(context, opts = {}) {
     };
   }
 
+  const proveExactLimitComplete = async (name, args, result, scope) => {
+    if (scope.scopeTruncated || !result || result.complete === true || result.truncated !== true || result.reason !== 'result-limit') return false;
+    if (name === 'explain_evidence' && typeof ctx.explainEvidence === 'function') return false;
+    // `result.returned` is the exact cap actually used by the core when it emits
+    // reason='result-limit'. Never re-read or coerce caller options here: doing
+    // so would create a second authority-bearing observation after the core pass.
+    const limit = Number.isSafeInteger(result.returned) && result.returned > 0 ? result.returned : null;
+    if (limit == null || !Array.isArray(result.results) || result.results.length !== limit) return false;
+
+    const ids = name === 'explain_evidence'
+      ? new Set(Array.isArray(args[0]) ? args[0] : [args[0]])
+      : null;
+    const want = name === 'find_constant' ? result.value : null;
+    let matches = 0;
+    for (const address of scope.addresses) {
+      let model;
+      try { model = await tools.__loader.get(address); }
+      catch { return false; }
+      let ir;
+      try { ir = model ? irFor(model) : null; }
+      catch { return false; }
+      if (!ir || ir.truncated === true) return false;
+      if (name === 'find_constant') {
+        for (const value of ir.values || []) {
+          if (value.const !== want || !value.def) continue;
+          matches += 1;
+          if (matches > limit) return false;
+        }
+      } else {
+        let facts;
+        try { facts = semanticFacts(ir); }
+        catch { return false; }
+        for (const fact of facts) {
+          if (!(fact.evidence || []).some((evidence) => ids.has(evidence.id))) continue;
+          matches += 1;
+          if (matches > limit) return false;
+        }
+      }
+    }
+    return matches === limit;
+  };
+
   for (const name of ['find_constant', 'explain_evidence']) {
     const original = tools[name];
     tools[name] = async (...args) => {
-      const options = name === 'find_constant' ? args[1] : args[1];
+      const options = args[1];
       const scope = candidateAddresses(ctx, options?.functions, maxFunctions);
       let result = await original(...args);
+      if (await proveExactLimitComplete(name, args, result, scope)) result = markExactComplete(result);
       if (scope.scopeTruncated) result = { ...forceIncomplete(result, 'function-budget'), scopeTruncated:true, scopedFunctions:scope.addresses.length };
       else {
         const reason = scope.addresses.map((addr) => semanticSourceReason(models.get(addr.toString()))).find(Boolean) ?? null;

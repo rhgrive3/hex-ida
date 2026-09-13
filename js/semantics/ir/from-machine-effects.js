@@ -69,6 +69,19 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
   const valueIds = new Set();
   const nodeIdSet = new Set();
   const temporaryDefinitions = new Map();
+  // A MachineEffects operation reads only state defined by strictly earlier
+  // operations. The definition prepass registers every temporary up front, so
+  // resolution must be gated to definitions from strictly earlier operations
+  // or a use-before-definition would be laundered into canonical IR (#5410).
+  const effectOrder = new Map(normalized.effects.map((effect, index) => [effect, index]));
+  let currentEffectIndex = 0;
+
+  function resolvableTemporaryDefinition(key) {
+    const planned = temporaryDefinitions.get(key);
+    if (!planned) return null;
+    if (!(planned.effectIndex < currentEffectIndex)) return null;
+    return planned;
+  }
   const issues = new Map();
   let completeness = semanticCompletenessFromMachineEffects(bundle.completeness);
 
@@ -172,7 +185,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
     if (referenceKey?.startsWith('temporary:')) {
       const previous = temporaryDefinitions.get(referenceKey);
       if (previous && previous.valueId !== id) fail('semantic-ir-lowering-duplicate-temporary-definition');
-      temporaryDefinitions.set(referenceKey, { valueId: id, effect, value, role, ordinal });
+      temporaryDefinitions.set(referenceKey, { valueId: id, effect, value, role, ordinal, effectIndex: effectOrder.get(effect) });
     }
     return id;
   }
@@ -323,7 +336,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
     if (!machineValue || typeof machineValue !== 'object') return unresolved('machine-input-shape-not-representable');
     if (machineValue.kind === 'temporary') {
       const key = machineValueReferenceKey(machineValue);
-      const planned = temporaryDefinitions.get(key);
+      const planned = resolvableTemporaryDefinition(key);
       if (planned) return { valueId: planned.valueId, exact: true };
       const machineType = machineValueMachineType(machineValue, { addressWidthBits });
       const reason = 'temporary-value-has-no-defining-machine-effect';
@@ -392,7 +405,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
 
     if (expression.kind === 'temporary') {
       const key = `temporary:${String(expression.temporaryId ?? '')}`;
-      const planned = temporaryDefinitions.get(key);
+      const planned = resolvableTemporaryDefinition(key);
       if (planned) return { valueId: planned.valueId };
       const type = rawBitvectorType(expression.widthBits);
       const reason = 'address-temporary-has-no-defining-machine-effect';
@@ -450,6 +463,13 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       const toBits = positiveInteger(expression.toBits);
       if (!inner.valueId || fromBits == null || toBits == null || toBits < fromBits) {
         return { valueId: null, reason: inner.reason ?? 'extension-expression-width-invalid' };
+      }
+      const innerValue = values.find((value) => value.id === inner.valueId) ?? null;
+      const innerWidth = positiveInteger(innerValue?.machineType?.widthBits);
+      if (innerWidth == null || innerWidth !== fromBits) {
+        // A declared source width that contradicts (or cannot be proven against)
+        // the lowered input must never become a canonical zext/sext (#4576).
+        return { valueId: null, reason: 'extension-expression-input-width-mismatch' };
       }
       const semanticKind = kind === 'zero-extend' ? 'zext' : 'sext';
       const nodeId = nodeIdFor(effect, `${role}-${semanticKind}`, depth);
@@ -587,6 +607,8 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
     }] : []);
     const outputs = operation.outputs.map((value, index) => createDefinitionValue(effect, nodeId, value, 'value-output', index));
     const classification = classifyMachineValueOpcode(operation.opcode);
+    const isExtensionKind = classification.kind === 'zext' || classification.kind === 'sext';
+    const extensionWidths = isExtensionKind ? valueOperationExtensionWidths(operation) : null;
     const exact = unresolvedInputs.length === 0;
     const origin = effectOrigin(effect, `value-${classification.kind}`, [nodeId, ...outputs]);
     const issueDetail = {
@@ -628,6 +650,44 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       });
       return;
     }
+    if (isExtensionKind && extensionWidths == null) {
+      // Canonical zext/sext requires declared widths that match the machine
+      // types on both sides (#4576). A value-operation extension whose widths
+      // cannot be proven (or whose producer mislabeled a shrink as a widen)
+      // is not a canonical extension: keep the operation observable as a
+      // partial intrinsic instead of minting an unprovable exact claim.
+      addNode({
+        id: nodeId,
+        kind: 'intrinsic',
+        blockId,
+        inputs,
+        outputs,
+        operator: classification.operator,
+        intrinsic: {
+          inputs,
+          outputs,
+          stateReads: [],
+          stateWrites: [],
+          memoryRead: { scope: 'none' },
+          memoryWrite: { scope: 'none' },
+          controlEffects: [],
+          determinism: 'deterministic',
+          symbolicDetail: 'summary-only',
+        },
+        ...partial,
+        completeness: 'partial',
+        unknown: {
+          reason: 'extension-machine-value-width-unproven',
+          categories: ['value'],
+          knownParts: issueDetail,
+        },
+        attributes: machineAttributes(effect, { machineValueOpcode: operation.opcode }),
+        sourceEffectIds: [effect.sourceEffectId],
+        origin,
+      });
+      addIssue('extension-machine-value-width-unproven', ['value'], issueDetail);
+      return;
+    }
     addNode({
       id: nodeId,
       kind: classification.kind,
@@ -636,10 +696,22 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       outputs,
       operator: classification.operator,
       ...partial,
-      attributes: machineAttributes(effect, { machineValueOpcode: operation.opcode }),
+      attributes: machineAttributes(effect, { machineValueOpcode: operation.opcode, ...extensionWidths }),
       sourceEffectIds: [effect.sourceEffectId],
       origin,
     });
+  }
+
+  function valueOperationExtensionWidths(operation) {
+    // A value-operation zext/sext may stay canonical only when the proven
+    // machine types let it declare its exact widths (#4576): exactly one
+    // input and one output, both with positive integer widths, widening.
+    if (!Array.isArray(operation.inputs) || !Array.isArray(operation.outputs)) return null;
+    if (operation.inputs.length !== 1 || operation.outputs.length !== 1) return null;
+    const fromBits = positiveInteger(machineValueMachineType(operation.inputs[0], { addressWidthBits })?.widthBits);
+    const toBits = positiveInteger(machineValueMachineType(operation.outputs[0], { addressWidthBits })?.widthBits);
+    if (fromBits == null || toBits == null || toBits < fromBits) return null;
+    return { fromBits, toBits };
   }
 
   function lowerStateRead(effect, stateValue, resultValue, role) {
@@ -855,8 +927,9 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
     addIssue(reason, all, detail, severity);
   }
 
-  for (const effect of normalized.effects) {
+  for (const [effectIndex, effect] of normalized.effects.entries()) {
     assertNotAborted(options);
+    currentEffectIndex = effectIndex;
     const operation = effect.operation;
     if (operation.kind === 'value') lowerValueOperation(effect);
     else if (operation.kind === 'register-read') lowerStateRead(effect, operation.register, operation.value, 'register-read');
@@ -870,6 +943,9 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
     else if (operation.kind === 'unknown') emitUnknownEffects(effect, operation.reason, operation.categories, operation.metadata ?? null);
     else emitUnknownEffects(effect, 'unsupported-machine-operation-kind', ['other'], { operationKind: operation.kind });
   }
+  // Control and annotation projections run after every operation, so their
+  // temporaries may reference any definition in the bundle.
+  currentEffectIndex = normalized.effects.length;
 
   if (normalized.unknown) {
     emitUnknownEffects({
@@ -936,7 +1012,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
   function resolveControlCondition(effect, condition) {
     if (!condition || typeof condition !== 'object') return null;
     if (condition.kind === 'temporary') {
-      const planned = temporaryDefinitions.get(`temporary:${String(condition.temporaryId ?? '')}`);
+      const planned = resolvableTemporaryDefinition(`temporary:${String(condition.temporaryId ?? '')}`);
       if (planned) return planned.valueId;
       const type = rawBitvectorType(condition.widthBits);
       return createUnknownValue(effect, type, 'control-condition', 'control-condition-temporary-unresolved', condition, 0);
@@ -1009,6 +1085,9 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       }
       const nodeId = nodeIdFor(effect, 'call-control');
       const categories = ['state', 'memory', 'control'];
+      // The function issue below explicitly identifies this call node. Sharing
+      // a reason alone cannot locate an otherwise unrepresented state effect.
+      const reason = 'call-context-effects-not-enriched';
       const origin = effectOrigin(effect, 'abi-neutral-call-projection', [nodeId]);
       addNode({
         id: nodeId,
@@ -1031,13 +1110,13 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
           summarySource: 'machine-effects-abi-neutral-call',
           completeness: 'unknown',
           unknownEffects: {
-            reason: 'ABI and callee effects are outside MachineEffects-to-SemanticIR lowering',
+            reason,
             categories,
           },
         },
         completeness: 'partial',
         unknown: {
-          reason: 'ABI and callee effects are outside MachineEffects-to-SemanticIR lowering',
+          reason,
           categories,
           knownParts: { machineControlEffect: control },
         },
@@ -1045,7 +1124,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
         sourceEffectIds: [effect.sourceEffectId],
         origin,
       });
-      addIssue('call-context-effects-not-enriched', categories, { control });
+      addIssue(reason, categories, { nodeId, control });
       return;
     }
     if (control.kind === 'return') {

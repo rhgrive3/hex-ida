@@ -7,7 +7,7 @@ test('#5293: sget/sput variants have explicit static storage, widths, and value 
   ['I','J','LTest;','Z','B','C','S'].forEach((type,i)=>{
     for(const store of [false,true]){
       const bcode=[0x0060+i+(store?7:0),0,0x000e];const fx=liftDexMethod(0,dexMethod(bcode,{fields:[{classType:'LTest;',type,name:'x'}]}));const b=fx.bundles[0];
-      assert.equal(b.completeness,'exact');assert.ok(b.mnemonic.startsWith(store?'sput':'sget'));
+      assert.equal(b.completeness,'partial');assert.deepEqual(b.unknownEffects,[{category:'calls',reason:'dex-class-initialization-superinterface-authority-unavailable'}]);assert.ok(b.mnemonic.startsWith(store?'sput':'sget'));
       assert.equal(b.memoryEffects[0].space,'static-field');assert.equal(b.locationReads.length,store?1:0);
       const ir=lowerVMEffectsToSemanticIr(fx).semanticIr;assert.ok(ir.nodes.some(n=>n.kind===(store?'store':'load')));
       assert.ok(ir.nodes.some(n=>n.operator==='managed.dex.static-field-address'));

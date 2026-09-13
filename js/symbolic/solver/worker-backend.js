@@ -5,9 +5,11 @@
  */
 
 import { PROOF_AUTHORITY, SolverBackend } from './backend.js';
+import { positiveFiniteBudget } from './budget.js';
 import { ExhaustiveBvBackend } from './exhaustive-backend.js';
 import { SOLVER_STATUS, createSolverResult } from './result.js';
 import { SolverSession } from './session.js';
+import { isCanonicalRequestId } from './worker-protocol.js';
 
 export const WORKER_BACKEND_ID = 'hex-exhaustive-bv-worker';
 export const WORKER_BACKEND_VERSION = '1.0.0';
@@ -41,9 +43,10 @@ class WorkerSolverSession extends SolverSession {
     const onMessage = (event) => {
       const message = event?.data ?? event;
       if (!message || message.type !== 'solver-result') return;
-      const pending = this.pending.get(String(message.requestId));
+      if (!isCanonicalRequestId(message.requestId)) return;
+      const pending = this.pending.get(message.requestId);
       if (!pending) return;
-      this.pending.delete(String(message.requestId));
+      this.pending.delete(message.requestId);
       pending.resolve(message.result);
     };
     const onError = (event) => {
@@ -176,10 +179,10 @@ export class WorkerSolverBackend extends SolverBackend {
     workerFactory = defaultWorkerFactory,
   } = {}) {
     super({ id, version, proofAuthority: PROOF_AUTHORITY.EXACT, isRemote: false, isWasm: false });
-    this.maxBvWidth = Math.max(1, Math.floor(Number(maxBvWidth)));
-    this.maxAssignments = Math.max(1, Math.floor(Number(maxAssignments)));
-    this.maxConstraints = Math.max(1, Math.floor(Number(maxConstraints)));
-    this.maxExprNodes = Math.max(1, Math.floor(Number(maxExprNodes)));
+    this.maxBvWidth = positiveFiniteBudget(maxBvWidth, 8);
+    this.maxAssignments = positiveFiniteBudget(maxAssignments, 1 << 20);
+    this.maxConstraints = positiveFiniteBudget(maxConstraints, 4096);
+    this.maxExprNodes = positiveFiniteBudget(maxExprNodes, 100000);
     this.workerFactory = workerFactory;
   }
 

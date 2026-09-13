@@ -1,9 +1,11 @@
+import { stableDigest } from '../core/identity/index.js';
 import { validatePluginManifest, checkManifestCompatibility, PluginCompatibilityError } from './plugin-manifest.js';
 
 const TYPES = new Set(['format', 'architecture', 'analyzer', 'knowledgeProvider', 'signatureProvider', 'recognitionProvider', 'viewContribution', 'goalProvider']);
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_READ_CALL_BYTES = 1024 * 1024;
 const DEFAULT_READ_TOTAL_BYTES = 8 * 1024 * 1024;
+let budgetScopeNamespaceSequence = 0n;
 
 function deepFreeze(value, seen = new WeakSet()) {
   if (!value || typeof value !== 'object' || seen.has(value)) return value;
@@ -190,8 +192,31 @@ function validateContributionId(id) {
   return id;
 }
 
+const LEGACY_ANALYZER_PLUGIN_PREFIX = 'legacy.analyzer.';
+const LEGACY_ANALYZER_HASHED_PLUGIN_PREFIX = 'legacy.analyzer-hash.';
+const PLUGIN_ID_MAX_LENGTH = 128;
+
+function legacyAnalyzerPluginId(id) {
+  const direct = `${LEGACY_ANALYZER_PLUGIN_PREFIX}${id}`;
+  if (direct.length <= PLUGIN_ID_MAX_LENGTH) return direct;
+
+  // Keep long synthetic IDs in a disjoint namespace so no valid short legacy
+  // analyzer ID can alias the bounded representation. The contribution ID
+  // itself remains untouched and continues to carry the public identity.
+  const digest = stableDigest(id);
+  const retainedLength = PLUGIN_ID_MAX_LENGTH
+    - LEGACY_ANALYZER_HASHED_PLUGIN_PREFIX.length
+    - 1
+    - digest.length;
+  return `${LEGACY_ANALYZER_HASHED_PLUGIN_PREFIX}${id.slice(0, retainedLength)}.${digest}`;
+}
+
 export class PlatformPluginRegistry {
+  #budgetScopeNamespace;
+  #budgetInvocationSequence = 0n;
+
   constructor(options = {}) {
+    this.#budgetScopeNamespace = ++budgetScopeNamespaceSequence;
     this.entries = new Map([...TYPES].map((type) => [type, new Map()]));
     this.plugins = new Map();
     this.failures = [];
@@ -205,7 +230,7 @@ export class PlatformPluginRegistry {
     if (!contribution || typeof contribution !== 'object') throw new TypeError('plugin contribution must be an object');
     const validId = validateContributionId(id);
     const legacyManifest = {
-      id: `legacy.analyzer.${validId}`,
+      id: legacyAnalyzerPluginId(validId),
       name: `Legacy analyzer ${validId}`,
       version: '1.0.0',
       apiVersion: '2.0.0',
@@ -318,17 +343,15 @@ export class PlatformPluginRegistry {
     const signal = rawOptions.signal;
     const invocationController = new AbortController();
 
-    let pluginScope = null;
-    if (context.resourceBudget && typeof context.resourceBudget.scope === 'function') {
-      const sanitized = `${type}.${id}.${method}`.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
-      try {
-        pluginScope = context.resourceBudget.scope(sanitized);
-      } catch {
-        pluginScope = context.resourceBudget;
-      }
-    }
-
     try {
+      let pluginScope = null;
+      if (context.resourceBudget && typeof context.resourceBudget.scope === 'function') {
+        const baseScopeName = `${type}.${id}.${method}`.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+        this.#budgetInvocationSequence += 1n;
+        pluginScope = context.resourceBudget.scope(`${baseScopeName}.r${this.#budgetScopeNamespace}.i${this.#budgetInvocationSequence}`);
+        if (!pluginScope) throw new Error('plugin resource budget scope unavailable');
+      }
+
       const safeContext = Object.freeze({
         binary: safeSnapshot(context.binary), capability: safeSnapshot(context.capability), project: safeSnapshot(context.project),
         read: makeReadCapability(context, pluginScope, record),

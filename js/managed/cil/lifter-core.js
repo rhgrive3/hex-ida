@@ -2,6 +2,7 @@ import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedExceptionRegionId, createManagedMethodId, createVMOperationId } from '../shared/identity.js';
 import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
 import { createCilLocalTypeResolver } from './call-signatures.js';
+import { decodeCilInstructionBoundary } from './instruction-boundary.js';
 
 function fail(code) { throw new TypeError(code); }
 
@@ -40,11 +41,100 @@ function methodTokenText(bodyIndex, methodAuthority) {
   return `0x06${(bodyIndex + 1).toString(16).padStart(6, '0')}`;
 }
 
+const CIL_FIELD_DEF_TABLE = 0x04;
+const CIL_MEMBER_REF_TABLE = 0x0a;
+const CIL_ACCESS_STATIC = 0x0010;
+const CIL_TYPE_BEFORE_FIELD_INIT = 0x00100000;
+
+// Static-field access carries the declaring type's initializer authority
+// (#8048, ECMA-335 I.8.9.5): a non-`beforefieldinit` type triggers its
+// `.cctor` at first static-field access, a `beforefieldinit` type may run it
+// at any point up to the first access. The one-time initialization state is
+// not provable per-instruction, so an access that may trigger a declared
+// initializer fails closed to partial instead of publishing an unconditional
+// pure load/store. An access from inside the declaring type's own `.cctor` is
+// already on the initializing path and must not invent a recursive trigger. A
+// type with no `.cctor` runs no declaring-type initializer code (base-type
+// chain authority is a separate slice).
+function resolveCilStaticFieldInitialization(cilImage, token, currentMethod) {
+  const table = token >>> 24;
+  const rid = token & 0x00ffffff;
+  if (!Number.isSafeInteger(rid) || rid < 1) {
+    return { resolved:false, reason:'cil-static-field-token-unresolved' };
+  }
+  if (table === CIL_MEMBER_REF_TABLE) {
+    return { resolved:false, reason:'cil-static-field-owner-external' };
+  }
+  if (table !== CIL_FIELD_DEF_TABLE) {
+    return { resolved:false, reason:'cil-static-field-token-unresolved' };
+  }
+  if (!Array.isArray(cilImage.methods)) {
+    return { resolved:false, reason:'cil-method-definitions-unavailable' };
+  }
+  const field = (cilImage.fields ?? []).find(
+    (row) => row?.token === `0x${token.toString(16).padStart(8, '0')}`,
+  );
+  if (!field) return { resolved:false, reason:'cil-static-field-row-missing' };
+  const ownerType = (cilImage.types ?? []).find(
+    (row) => row?.token === field.declaringTypeToken,
+  );
+  if (!ownerType) return { resolved:false, reason:'cil-static-field-owner-type-missing' };
+  const initializers = cilImage.methods.filter(
+    (row) => row?.declaringTypeToken === ownerType.token && row?.name === '.cctor',
+  );
+  if (initializers.length > 1) {
+    return { resolved:false, reason:'cil-type-initializer-ambiguous' };
+  }
+  const initializer = initializers[0] ?? null;
+  if (initializer && (initializer.accessFlags & CIL_ACCESS_STATIC) === 0) {
+    return { resolved:false, reason:'cil-type-initializer-not-static' };
+  }
+  const selfInitializing = currentMethod?.name === '.cctor'
+    && currentMethod?.declaringTypeToken === ownerType.token;
+  return {
+    resolved:true,
+    reason:null,
+    declaringTypeToken:ownerType.token,
+    declaringType:`${ownerType.namespace ? `${ownerType.namespace}.` : ''}${ownerType.name}`,
+    initializerPresent:initializer != null,
+    beforeFieldInit:(ownerType.accessFlags & CIL_TYPE_BEFORE_FIELD_INIT) !== 0,
+    selfInitializing,
+  };
+}
+
+function cilTokenText(token) {
+  const numeric = typeof token === 'number' ? token >>> 0 : Number.parseInt(String(token), 16);
+  return Number.isSafeInteger(numeric) ? `0x${(numeric >>> 0).toString(16).padStart(8, '0')}` : null;
+}
+
+function resolveCilCalleeIdentity(cilImage, token) {
+  const tokenText = cilTokenText(token);
+  if (!tokenText) return null;
+  const rows = Array.isArray(cilImage.methods) ? cilImage.methods : [];
+  if (!rows.some((row) => cilTokenText(row?.token) === tokenText)) return null;
+  return { tokenText, methodId: createManagedMethodId(cilImage.moduleId, tokenText) };
+}
+
 export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority = null) {
   const methodBody = cilImage.methodBodies[bodyIndex];
   if (!methodBody) fail('cil-invalid-method-body-index');
 
+  // Native-size width authority (#7775): `O`, `&`, `native int`, and
+  // `native unsigned int` map to the target processor's native pointer size
+  // (ECMA-335 I.12.1.1). A `32BITREQUIRED` image may only be loaded into a
+  // 32-bit process (II.25.3.3.1), so its object references are 32-bit; a
+  // known 64-bit target keeps 64; any other case keeps the width unstated
+  // instead of minting an unsupported 64-bit exact claim.
+  const nativePointerBits = cilImage.requires32Bit === true ? 32
+    : cilImage.requires64Bit === true ? 64
+      : null;
+
   const methodId = createManagedMethodId(cilImage.moduleId, methodTokenText(bodyIndex, methodAuthority));
+  // Enclosing MethodDef identity for initializer self-access discharge (#8048).
+  const currentMethodToken = methodTokenText(bodyIndex, methodAuthority);
+  const currentMethod = (cilImage.methods ?? []).find(
+    (row) => row?.token === currentMethodToken,
+  ) ?? null;
   const returnSignature = methodAuthority?.complete ? methodAuthority?.signature : null;
   const returnStackSlots = returnSignature ? (returnSignature.returnValue === null ? 0 : 1) : null;
   const bytecode = methodBody.bytecode;
@@ -65,6 +155,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
   let opSeq = 0;
   let currentStackHeight = 0;
   const bundles = [];
+  let stoppedOnUnsupported = false;
 
   // Slot-typing authorities (#5353): arguments come from the enclosing
   // MethodDef signature (resolved by the caller into methodAuthority), locals
@@ -137,6 +228,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
     let memoryEffects = [];
     let callEffects = [];
     let controlEffects = [];
+    let possibleExceptions = [];
     let producedValues = [];
     let consumedValues = [];
     let unknownEffects = [];
@@ -247,7 +339,10 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
 
         case 0x14: // ldnull
           mnemonic = 'ldnull';
-          producedValues.push({ bits: 64, isNull: true });
+          // `O` is a native-size type (ECMA-335 I.12.1.1): the width follows
+          // the image's pointer-size authority, or stays unstated when the
+          // target width is unresolved (#7775).
+          producedValues.push({ ...(nativePointerBits == null ? {} : { bits: nativePointerBits }), isNull: true });
           currentStackHeight++;
           break;
 
@@ -316,12 +411,15 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
             pc += 4;
             const kind = opcode === 0x28 ? 'call' : opcode === 0x6f ? 'callvirt' : 'newobj';
             mnemonic = kind;
+            const calleeIdentity = kind === 'call' ? resolveCilCalleeIdentity(cilImage, token) : null;
             callEffects.push({
               token,
+              ...(calleeIdentity ? { target: calleeIdentity.tokenText, targetMethodId: calleeIdentity.methodId } : {}),
               dispatchKind: kind === 'callvirt' ? 'virtual' : kind === 'newobj' ? 'constructor' : 'direct',
             });
             if (kind === 'newobj') {
-              producedValues.push({ bits: 64 });
+              // Constructed-object references are native-size too (#7775).
+              producedValues.push({ ...(nativePointerBits == null ? {} : { bits: nativePointerBits }) });
               currentStackHeight++;
             }
           }
@@ -438,6 +536,19 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
             consumedValues.push({ id: 'rhs', bits: 32 }, { id: 'lhs', bits: 32 });
             producedValues.push({ bits: 32 });
             currentStackHeight--;
+            // ECMA-335 Partition III: integral `div` throws
+            // System.DivideByZeroException (divisor == 0) and
+            // System.ArithmeticException (MIN_VALUE / -1); floating-point `div`
+            // throws neither. This lifter has no typed operand-stack authority,
+            // so the integral-vs-floating distinction that selects the
+            // exception contract cannot be resolved losslessly. Publishing the
+            // integral predicates would let FP division inherit them; staying
+            // exception-free is the #7937 defect. Fail closed instead of
+            // minting exception-free exact semantics.
+            if (opcode === 0x5b) {
+              completeness = 'partial';
+              unknownEffects.push({ category: 'control', reason: 'cil-div-exception-authority-unresolved' });
+            }
           }
           break;
 
@@ -454,7 +565,23 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
             const token = view.getUint32(pc, true);
             pc += 4;
             mnemonic = 'ldstr';
-            producedValues.push({ bits: 64, stringToken: token });
+            // A string reference is an `O` native-size value (#7775). The
+            // token's low bits byte-address the #US heap (II.24.2.4); when
+            // that literal authority is available it must reach the canonical
+            // IR — a token-only projection collapsed distinct literals (#8007).
+            const userString = typeof cilImage.userStrings?.get === 'function'
+              ? cilImage.userStrings.get(token & 0xffffff) ?? null
+              : null;
+            producedValues.push({
+              ...(nativePointerBits == null ? {} : { bits: nativePointerBits }),
+              stringToken: token,
+              ...(typeof userString === 'string' ? {
+                stringRef: userString,
+                // The width authority stays exactly #7775's: the reference is
+                // typed only when the native pointer size is proven.
+                ...(nativePointerBits == null ? {} : { type: { kind: 'address', widthBits: nativePointerBits, addressSpace: 'managed-heap' } }),
+              } : {}),
+            });
             currentStackHeight++;
           }
           break;
@@ -486,6 +613,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
               token,
               isWrite,
             });
+            possibleExceptions.push({ kind: 'null-reference', condition: 'obj==null' });
           }
           break;
 
@@ -504,11 +632,39 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
               producedValues.push({ bits: 32 });
               currentStackHeight++;
             }
+            // Type-initializer authority rides on the static-field effect
+            // (#8048); an access that may trigger a declared `.cctor` is not
+            // an unconditional pure load/store and fails closed to partial.
+            const initialization = resolveCilStaticFieldInitialization(cilImage, token, currentMethod);
+            const typeInitialization = initialization.resolved ? {
+              declaringTypeToken: initialization.declaringTypeToken,
+              declaringType: initialization.declaringType,
+              initializerPresent: initialization.initializerPresent,
+              beforeFieldInit: initialization.beforeFieldInit,
+              initializationRequired: initialization.initializerPresent && !initialization.selfInitializing,
+              initializationProven: false,
+              ...(initialization.initializerPresent && initialization.selfInitializing
+                ? { discharged: 'declaring-type-initializer' }
+                : {}),
+              ...(initialization.initializerPresent && !initialization.selfInitializing
+                ? { triggerTiming: initialization.beforeFieldInit ? 'allowed-before-access' : 'required-at-access' }
+                : {}),
+            } : {
+              declaringTypeResolved: false,
+            };
             memoryEffects.push({
               space: 'static-field',
               token,
               isWrite,
+              typeInitialization,
             });
+            if (!initialization.resolved) {
+              completeness = 'partial';
+              unknownEffects.push({ category: 'calls', reason: initialization.reason });
+            } else if (initialization.initializerPresent && !initialization.selfInitializing) {
+              completeness = 'partial';
+              unknownEffects.push({ category: 'calls', reason: 'cil-type-initialization-unverified' });
+            }
           }
           break;
 
@@ -539,11 +695,17 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
           }
           break;
 
-        default:
+        default: {
+          const boundary = decodeCilInstructionBoundary(bytecode, opOffset);
+          pc = boundary.end;
           mnemonic = `cil_op_0x${opcode.toString(16)}`;
           completeness = 'partial';
           unknownEffects.push({ category: 'other', reason: `unsupported-cil-opcode-0x${opcode.toString(16)}` });
+          if (!boundary.complete) unknownEffects.push({ category:'other', reason:'unsupported-instruction-boundary-unresolved' });
+          unknownEffects.push({ category:'other', reason:'semantic-lifting-stopped-after-unsupported-instruction' });
+          stoppedOnUnsupported = true;
           break;
+        }
       }
     } else {
       // 0xFE prefix opcodes
@@ -620,18 +782,57 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
           controlEffects.push({ kind: 'rethrow' });
           break;
 
-        case 0x16: // volatile.
-        case 0x14: // tail.
-        case 0x12: // unaligned.
-        case 0x1e: // readonly.
-          mnemonic = `prefix_${subOp.toString(16)}`;
+        case 0x12: // unaligned. <alignment:u1>
+          {
+            need(1);
+            const alignment = bytecode[pc++];
+            mnemonic = 'unaligned.';
+            completeness = 'partial';
+            if (alignment !== 1 && alignment !== 2 && alignment !== 4) {
+              unknownEffects.push({ category: 'memory', reason: `cil-unaligned-prefix-alignment-${alignment}` });
+            } else {
+              unknownEffects.push({ category: 'memory', reason: 'cil-unaligned-prefix-unattached' });
+            }
+          }
           break;
 
-        default:
+        case 0x13: // volatile.
+          mnemonic = 'volatile.';
+          completeness = 'partial';
+          unknownEffects.push({ category: 'memory', reason: 'cil-volatile-prefix-unattached' });
+          break;
+
+        case 0x14: // tail.
+          mnemonic = 'tail.';
+          completeness = 'partial';
+          unknownEffects.push({ category: 'control', reason: 'cil-tail-prefix-unattached' });
+          break;
+
+        case 0x16: // constrained. <token:u4>
+          need(4);
+          pc += 4;
+          mnemonic = 'constrained.';
+          completeness = 'partial';
+          unknownEffects.push({ category: 'types', reason: 'cil-constrained-prefix-unattached' });
+          break;
+
+        case 0x1e: // readonly.
+          mnemonic = 'readonly.';
+          completeness = 'partial';
+          unknownEffects.push({ category: 'memory', reason: 'cil-readonly-prefix-unattached' });
+          break;
+
+        default: {
+          const boundary = decodeCilInstructionBoundary(bytecode, opOffset);
+          pc = boundary.end;
           mnemonic = `cil_fe_0x${subOp.toString(16)}`;
           completeness = 'partial';
           unknownEffects.push({ category: 'other', reason: `unsupported-cil-fe-opcode-0x${subOp.toString(16)}` });
+          if (!boundary.complete) unknownEffects.push({ category:'other', reason:'unsupported-instruction-boundary-unresolved' });
+          unknownEffects.push({ category:'other', reason:'semantic-lifting-stopped-after-unsupported-instruction' });
+          stoppedOnUnsupported = true;
           break;
+        }
       }
     }
 
@@ -658,11 +859,12 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
       memoryEffects,
       callEffects,
       controlEffects,
-      possibleExceptions: [],
+      possibleExceptions,
       origin,
       completeness,
       unknownEffects,
     }, options));
+    if (stoppedOnUnsupported) break;
   }
 
   return createVMEffectFunction({

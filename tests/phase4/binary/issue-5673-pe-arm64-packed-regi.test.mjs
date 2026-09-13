@@ -36,8 +36,8 @@ function arm64PdataImage(unwindData, { begin = 0x2000 } = {}) {
   return { bytes, image };
 }
 
-function packedUnwind({ flag = 1, functionLength = 4, regF = 0, regI = 0 } = {}) {
-  return (flag | (functionLength << 2) | (regF << 13) | (regI << 16)) >>> 0;
+function packedUnwind({ flag = 1, functionLength = 4, regF = 0, regI = 0, frameSize = 0 } = {}) {
+  return (flag | (functionLength << 2) | (regF << 13) | (regI << 16) | (frameSize << 23)) >>> 0;
 }
 
 function parse(unwindData, options) {
@@ -60,8 +60,8 @@ for (const regI of [11, 12, 13, 14, 15]) {
 }
 
 // The same packed encoding with a representable RegI still seeds.
-for (const regI of [0, 1, 10]) {
-  const image = parse(packedUnwind({ regI }));
+for (const [regI, frameSize] of [[0, 0], [1, 1], [10, 5]]) {
+  const image = parse(packedUnwind({ regI, frameSize }));
   assert.equal(image.functions.length, 1, `RegI=${regI} remains a valid packed entry`);
   assert.equal(image.functions[0].address, 0x2000n);
   assert.equal(image.functions[0].source, 'exception');
@@ -100,7 +100,7 @@ for (const regI of [0, 1, 10]) {
   writeU32(bytes, 0, 0x2000);
   writeU32(bytes, 4, packedUnwind({ regI: 15 }));
   writeU32(bytes, 8, 0x2004);
-  writeU32(bytes, 12, packedUnwind({ regI: 2 }));
+  writeU32(bytes, 12, packedUnwind({ regI: 2, frameSize: 1 }));
   const image = new BinaryImage(bytes, { format: 'pe', bits: 64, imageBase: 0n });
   image.addSegment({
     name: '.pdata',

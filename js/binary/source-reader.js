@@ -53,7 +53,7 @@ export class SparseByteBuffer {
     const keep = [];
     const merge = [];
     for (const chunk of this.chunks) {
-      if (chunk.end < start || chunk.start > end) keep.push(chunk);
+      if (chunk.end <= start || chunk.start >= end) keep.push(chunk);
       else {
         merge.push(chunk);
         if (chunk.start < mergeStart) mergeStart = chunk.start;

@@ -206,29 +206,34 @@ function parameterAbiClass(param) {
   const type = String(param?.type || param?.name || '').toLowerCase();
   const cls = String(param?.abiClass || param?.class || param?.kind || '').toLowerCase();
   const pointer = param?.pointer === true || param?.isPointer === true || /\*|pointer|ptr|object|class|block|closure/.test(type + ' ' + cls);
-  const hfa = param?.hfa === true || cls.includes('hfa') || cls.includes('homogeneous');
+  const hva = param?.hva === true || cls.includes('hva');
+  const hfa = !hva && (param?.hfa === true || cls.includes('hfa') || cls.includes('homogeneous'));
   const vector = cls.includes('vector') || /vector|simd/.test(type);
-  const fp = hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type);
   // AAPCS64 classification authorities (#3285): member counts and bit widths
   // accept only primitive safe-integer numbers. Structured values fail closed
   // to the defaults instead of laundering through Number().
   const abiCount = (value, fallback) =>
     typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
-  const members = Math.max(1, Math.min(4, abiCount(param?.members ?? param?.elements ?? param?.count, 1)));
-  const bits = Math.max(8, Math.min(128, abiCount(param?.bits ?? param?.sizeBits, fp ? 64 : 64)));
-  // Stage C C.10/C.11: a 16-byte Integral Type needs a consecutive GP
-  // register pair. Only records with an explicit integral authority (int128
-  // type spelling, or an integer class at a proven 128-bit width) may take
-  // the pair path: width alone cannot reclassify composites — a 128-bit
-  // aggregate must keep its own conservative single-register record rather
-  // than consuming an even-aligned pair reserved for Integral Types (#4939).
+  const rawMembers = param?.members ?? param?.elements ?? param?.count;
+  const members = Math.max(1, Math.min(4, abiCount(rawMembers, 1)));
+  // Keep the declared width before the compat display clamp. Large composite
+  // classification needs the original >128-bit fact (#4984).
+  const declaredBits = abiCount(param?.bits ?? param?.sizeBits, 64);
+  const bits = Math.max(8, Math.min(128, declaredBits));
+  const hvaLayoutProven = !hva || (
+    typeof rawMembers === 'number' && Number.isSafeInteger(rawMembers)
+    && rawMembers >= 1 && rawMembers <= 4
+    && (declaredBits === 64 || declaredBits === 128)
+  );
+  const fp = hfa || (hva && hvaLayoutProven) || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type);
   const composite = param?.aggregate === true || members > 1
     || /aggregate|composite|homogeneous|struct|union|class/.test(cls)
     || /^(struct|union|class)[\s_]/.test(type);
   const integral128 = /(?:unsigned\s+)?__int128|int128_t|uint128_t/.test(type + ' ' + cls)
     || (cls.includes('integer') && bits === 128);
-  const wideIntegral = !pointer && !hfa && !vector && !fp && !composite && integral128;
-  return { pointer, hfa, vector, fp, members, bits, wideIntegral };
+  const indirectComposite = !pointer && !hfa && !hva && !vector && !fp && composite && declaredBits > 128;
+  const wideIntegral = !pointer && !hfa && !hva && !vector && !fp && !composite && integral128;
+  return { pointer, hfa, hva, hvaLayoutProven, vector, fp, members, bits, declaredBits, composite, indirectComposite, wideIntegral };
 }
 
 function abiReturnBits(value) {
@@ -253,11 +258,16 @@ export function classifyCallArguments(insn, opts = {}) {
   }
   params.forEach((param,index) => {
     const c=parameterAbiClass(param);
-    const regsNeeded=c.hfa ? c.members : 1;
+    if (c.hva && !c.hvaLayoutProven) {
+      arguments_.push({ index, location:'unknown', abiClass:'hva-unproven', pointer:false,
+        bits:c.declaredBits, aggregate:true, partial:true, reason:'aapcs64-hva-layout-unmodelled' });
+      return;
+    }
+    const regsNeeded=(c.hfa || c.hva) ? c.members : 1;
     if (c.fp && fp + regsNeeded <= 8) {
       const regs=[];
       for(let n=0;n<regsNeeded;n++){const reg=`v${fp++}`;regs.push(reg);srcs.push({t:'reg',reg,bits:c.vector?128:c.bits});}
-      arguments_.push({index,location:'register',regs,reg:regs[0],abiClass:c.hfa?'hfa':c.vector?'vector':'fp',pointer:c.pointer,bits:c.bits});
+      arguments_.push({index,location:'register',regs,reg:regs[0],abiClass:c.hfa?'hfa':c.hva?'hva':c.vector?'vector':'fp',pointer:c.pointer,bits:c.bits});
       return;
     }
     if (c.fp) {
@@ -267,6 +277,19 @@ export function classifyCallArguments(insn, opts = {}) {
       fp = 8;
     }
     if (!c.fp) {
+      if (c.indirectComposite) {
+        const reg = gp < 8 ? `x${gp++}` : null;
+        const entry = reg
+          ? { index, location:'register', reg, abiClass:'aggregate-indirect-copy', pointer:true,
+            bits:64, bytes:8, pointeeBits:c.declaredBits, aggregate:true, callerCopy:true }
+          : { index, location:'stack', offset:stackOffset, bytes:8, abiClass:'aggregate-indirect-copy',
+            pointer:true, bits:64, pointeeBits:c.declaredBits, aggregate:true, callerCopy:true };
+        if (reg) srcs.push({ t:'reg', reg, bits:64, purpose:'aggregate-indirect-copy' });
+        else { stackArguments.push(entry); stackOffset += 8; }
+        arguments_.push(entry);
+        stackArgsMayContainPointers = true;
+        return;
+      }
       if (c.wideIntegral) {
         // AAPCS64 Stage C rules C.10/C.11 (#4939): a 16-byte Integral Type
         // rounds NGRN up to an even register and consumes the consecutive
@@ -286,9 +309,23 @@ export function classifyCallArguments(insn, opts = {}) {
         return;
       }
     }
-    const slots=Math.max(1,Math.ceil((c.hfa?c.members*c.bits:c.bits)/64));
-    const entry={index,location:'stack',offset:stackOffset,bytes:slots*8,abiClass:c.hfa?'hfa':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits};
-    stackArguments.push(entry);arguments_.push(entry);stackOffset+=slots*8;
+    const slots=Math.max(1,Math.ceil(((c.hfa || c.hva)?c.members*c.bits:c.bits)/64));
+    // AAPCS64 Stage C: NSAA is rounded up to the argument's natural alignment
+    // before stack placement (C.4 for HFA/short-vector/quad-FP candidates,
+    // C.14 max(8, natural alignment) otherwise) (#4942). Quad-precision FP is
+    // a canonical classifier record (fp class at a proven 128-bit width), not
+    // broadened metadata. Only primitive declared alignments are honored;
+    // structured evidence is never coerced.
+    const declaredAlign = param?.alignment;
+    const quadFp = c.fp && !c.hfa && !c.hva && !c.vector && c.bits === 128;
+    const naturalAlign = c.hfa || c.hva || c.vector || quadFp
+      ? Math.max(8, Math.ceil(c.bits / 8))
+      : (typeof declaredAlign === 'number' && Number.isSafeInteger(declaredAlign) && declaredAlign > 0
+        ? Math.max(8, declaredAlign)
+        : 8);
+    const alignedOffset = Math.ceil(stackOffset / naturalAlign) * naturalAlign;
+    const entry={index,location:'stack',offset:alignedOffset,bytes:slots*8,abiClass:c.hfa?'hfa':c.hva?'hva':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits};
+    stackArguments.push(entry);arguments_.push(entry);stackOffset=alignedOffset+slots*8;
     if(c.pointer || param?.mayContainPointers === true || param?.containsPointers === true) stackArgsMayContainPointers=true;
   });
   return { srcs, arguments:arguments_, stackArguments, stackArgsUnknown:proto?.variadic===true||proto?.varargs===true, stackArgsMayContainPointers, evidence:'prototype-aapcs64' };
@@ -426,6 +463,7 @@ function lift(insn, opts = {}) {
       returnReason: result?.reason || null,
       returnEvidence: result ? 'prototype' : null,
       clobbers: CALL_CLOBBERS,
+      wideClobbers: CALL_WIDE_CLOBBERS,
     });
     return out;
   }
@@ -667,6 +705,21 @@ const CALL_CLOBBERS = ['x0', 'x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8',
   'x9', 'x10', 'x11', 'x12', 'x13', 'x14', 'x15', 'x16', 'x17', 'x30', 'nzcv',
   ...Array.from({length:8}, (_x,i)=>`v${i}`), ...Array.from({length:16}, (_x,i)=>`v${i+16}`)];
 
+/* v8–v15 are callee-saved only in their bottom 64 bits; the upper half of a
+ * 128-bit value held there is caller-saved (AAPCS64). The single-location IR
+ * cannot split the halves, so a CALL kills a v8–v15 definition only when it
+ * claims more than the callee-saved low half (#4979); a proven ≤64-bit
+ * definition still survives the call. */
+const CALL_WIDE_CLOBBERS = Array.from({length:8}, (_x,i)=>`v${i+8}`);
+
+/* A v8–v15 location is killed by a call only when its reaching definition
+ * claims more than the callee-saved low half. */
+function wideSimdDefReaches(stacks, reg) {
+  const st = stacks.get(reg);
+  const top = st && st.length ? st[st.length - 1] : null;
+  return !!top && Number.isSafeInteger(top.bits) && top.bits > 64;
+}
+
 /* ── SSA ────────────────────────────────────────────────────── */
 
 function immediateDominators(dominators, entry, count) {
@@ -815,6 +868,7 @@ export function buildIR(model, opts) {
       noteDef(p.dstReg, bi);
       for (const w of p.extraWrites || []) noteDef(w, bi);
       for (const c of p.clobbers || []) noteDef(c, bi);
+      for (const c of p.wideClobbers || []) noteDef(c, bi);
       for (const s of p.srcs || []) if (s && s.t === 'reg') allRegs.add(s.reg);
     }
   }
@@ -952,6 +1006,15 @@ export function buildIR(model, opts) {
       const v = newValue(VK.DEF, { def: inst, bits: 64, clobbered: true });
       pushDef(c, v);
     }
+    for (const c of p.wideClobbers || []) {
+      // A CALL keeps only the callee-saved low 64 bits of v8–v15 (#4979): a
+      // definition claiming the full register cannot survive it, while a
+      // proven ≤64-bit low-half definition still does.
+      if (c === p.dstReg || (p.extraWrites || []).includes(c)) continue;
+      if (!wideSimdDefReaches(stacks, c)) continue;
+      const v = newValue(VK.DEF, { def: inst, bits: 64, clobbered: true });
+      pushDef(c, v);
+    }
     ir.instructions.push(inst);
     ir.blocks[p.block].insts.push(inst);
     let list = ir.byRow.get(p.row);
@@ -1018,6 +1081,13 @@ function renameIterative(ir, children, phiSites, lifted, stacks, emit, topOf, pu
       for (const w of p.extraWrites || []) marks.push(w);
       for (const c of p.clobbers || []) {
         if (c === p.dstReg || (p.extraWrites || []).includes(c)) continue;
+        marks.push(c);
+      }
+      for (const c of p.wideClobbers || []) {
+        // Must stay 1:1 with the conditional clobber def in emit(): a marked
+        // register without a pushed value would pop a foreign definition.
+        if (c === p.dstReg || (p.extraWrites || []).includes(c)) continue;
+        if (!wideSimdDefReaches(stacks, c)) continue;
         marks.push(c);
       }
     }
@@ -1174,6 +1244,13 @@ export function pointerProvenance(value, active = null, memo = defaultPointerPro
   return out;
 }
 
+/** Canonical unsigned 64-bit effective address for MK.GLOBAL identity. */
+export function canonicalGlobalAddress(...terms) {
+  let sum = 0n;
+  for (const term of terms) sum += term == null ? 0n : BigInt(term);
+  return BigInt.asUintN(64, sum);
+}
+
 function locationOf(inst, pointerMemo = defaultPointerProvenanceMemo) {
   const a = inst.addr;
   if (!a) return null;
@@ -1186,13 +1263,13 @@ function locationOf(inst, pointerMemo = defaultPointerProvenanceMemo) {
   }
   const base = a.base;
   if (base.const != null) {
-    const address = base.const + a.disp;
+    const address = canonicalGlobalAddress(base.const, a.disp);
     return { key:'global:' + address.toString(16) + ':s' + size, kind:MK.GLOBAL, address, size };
   }
 
   const provenance = pointerProvenance(base, null, pointerMemo);
   if (provenance?.must !== false && provenance?.kind === 'global' && provenance.address != null) {
-    const address = provenance.address + (provenance.offset || 0n) + a.disp;
+    const address = canonicalGlobalAddress(provenance.address, provenance.offset || 0n, a.disp);
     return { key:'global:' + address.toString(16) + ':s' + size, kind:MK.GLOBAL, address, size, provenance };
   }
 
@@ -1656,7 +1733,7 @@ function propagateValues(ir) {
   for (const inst of ir.instructions) {
     if (!inst.addr || !inst.addr.base) continue;
     if (inst.addr.base.const == null || inst.addr.disp == null) continue;
-    inst.globalAddress = inst.addr.base.const + inst.addr.disp;
+    inst.globalAddress = canonicalGlobalAddress(inst.addr.base.const, inst.addr.disp);
   }
 }
 
@@ -1773,7 +1850,7 @@ function prototypeParameterSignature(param) {
   if (!param) return '-';
   return JSON.stringify([
     param.type ?? '', param.name ?? '', param.abiClass ?? '', param.class ?? '', param.kind ?? '',
-    param.pointer ?? '', param.isPointer ?? '', param.hfa ?? '',
+    param.pointer ?? '', param.isPointer ?? '', param.hfa ?? '', param.hva ?? '',
     param.members ?? '', param.elements ?? '', param.count ?? '',
     param.bits ?? '', param.sizeBits ?? '',
     param.mayContainPointers ?? '', param.containsPointers ?? '',

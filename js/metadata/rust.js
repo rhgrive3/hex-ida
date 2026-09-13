@@ -411,7 +411,10 @@ function parseV0Path(str, state, depth = 0) {
  * trailing bytes leave the symbol unparsed instead of silently succeeding.
  */
 export function demangleRustV0(symbol, maxDepth = 32) {
-  const s = String(symbol || '').replace(/^__?R/, '');
+  if (typeof symbol !== 'string') {
+    return { original: symbol, demangled: '', parsed: false, reason: 'not-primitive-string' };
+  }
+  const s = symbol.replace(/^__?R/, '');
   if (!s || s === symbol) {
     return { original: symbol, demangled: symbol, parsed: false, reason: 'not-v0-symbol' };
   }
@@ -557,7 +560,10 @@ export function demangleRustLegacy(symbol) {
  * Demangles any Rust symbol (v0 or legacy).
  */
 export function demangleRustSymbol(symbol) {
-  const text = String(symbol || '');
+  if (typeof symbol !== 'string') {
+    return { original: symbol, demangled: '', parsed: false, reason: 'not-primitive-string' };
+  }
+  const text = symbol;
   if (text.startsWith('_R') || text.startsWith('__R')) {
     return demangleRustV0(text);
   }
@@ -665,7 +671,15 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     const isRustCandidateName = isRustCandidateSymbol;
 
     for (const sym of rawSymbols) {
-      const name = sym.name || sym.symbol || String(sym);
+      const name = typeof sym?.name === 'string' ? sym.name
+        : typeof sym?.symbol === 'string' ? sym.symbol
+        : null;
+      if (name === null) {
+        // Identity evidence must be primitive strings: a structured name can
+        // never be laundered into canonical symbol evidence (#5375).
+        invalidEntries++;
+        continue;
+      }
       const dem = demangleRustSymbol(name);
       if (dem.parsed) {
         let address;
@@ -721,8 +735,11 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     this.cachedParsed = { rustSymbols, vtables };
 
     const complete = unreadable === 0 && invalidEntries === 0 && rustSymbols.length > 0;
+    const hasIdentityBinding = this.binaryIdentity != null;
     const identity = createLanguageMetadataIdentity({
-      verdict: complete ? 'matched-authoritative' : 'matched-partial',
+      verdict: complete
+        ? (hasIdentityBinding ? 'matched-authoritative' : 'identity-unavailable')
+        : 'matched-partial',
       providerId: this.id,
       providerVersion: this.version,
       ecosystem: 'rust',
@@ -733,7 +750,9 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
       architecture: this.architecture,
       platform: this.platform,
       method: 'rust-symbol-demangle',
-      detail: `Rust ${toolchainVersion || 'unknown'} (${rustSymbols.length} symbols)`,
+      detail: hasIdentityBinding
+        ? `Rust ${toolchainVersion || 'unknown'} (${rustSymbols.length} symbols)`
+        : `Rust ${toolchainVersion || 'unknown'} without binary identity binding (${rustSymbols.length} symbols)`,
       coverage: complete ? null : {
         recordKinds: ['symbol', 'type'],
         addresses: rustSymbols.map((s) => s.address).filter((value) => value != null),

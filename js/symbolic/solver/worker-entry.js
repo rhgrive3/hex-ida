@@ -6,6 +6,7 @@
 
 import { ExhaustiveBvBackend } from './exhaustive-backend.js';
 import { WORKER_BACKEND_ID, WORKER_BACKEND_VERSION } from './worker-backend.js';
+import { isCanonicalRequestId } from './worker-protocol.js';
 
 const backend = new ExhaustiveBvBackend({
   id: WORKER_BACKEND_ID,
@@ -20,6 +21,7 @@ self.onmessage = async (event) => {
     return;
   }
   if (message.type !== 'solver-check') return;
+  if (!isCanonicalRequestId(message.requestId)) return;
   const result = await session.check(message.query, { ...(message.options || {}), timeoutMs: 0 });
-  self.postMessage({ type: 'solver-result', requestId: String(message.requestId), token: message.token, result });
+  self.postMessage({ type: 'solver-result', requestId: message.requestId, token: message.token, result });
 };

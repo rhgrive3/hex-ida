@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { ProposalStore } from '../js/ai/proposals.js';
 
 function storeWithEv1() {
-  return new ProposalStore({ evidenceStore: new Map([['ev1', { id: 'ev1' }]]) });
+  return new ProposalStore({ evidenceStore: new Map([['ev1', { id: 'ev1', status: 'verified' }]]) });
 }
 
 function validInput(overrides = {}) {
@@ -65,9 +65,9 @@ test('#6089 array of unknown evidence ids still hits the deterministic-evidence 
 test('#6089 duplicate evidence ids keep dedupe and unknown-id filtering', () => {
   const store = new ProposalStore({
     evidenceStore: new Map([
-      ['ev1', { id: 'ev1' }],
-      ['ev2', { id: 'ev2' }],
-      ['1', { id: '1' }],
+      ['ev1', { id: 'ev1', status: 'verified' }],
+      ['ev2', { id: 'ev2', status: 'verified' }],
+      ['1', { id: '1', status: 'verified' }],
     ]),
   });
   const record = store.create(validInput({ evidenceIds: ['ev1', 'ev1', 'ev2', 'unknown'] }));

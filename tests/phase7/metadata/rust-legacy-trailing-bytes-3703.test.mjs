@@ -41,6 +41,7 @@ test('issue 3703: Rust metadata provider does not promote trailing-garbage legac
   const valid = new RustMetadataProvider({
     symbols: [{ name: '_ZN3fooE', address: 0x1000n }],
     sections: [],
+    binaryIdentity: 'sha256:issue-3703-valid',
   }).probe();
   assert.equal(valid.completeness.parsed, 1);
   assert.equal(valid.completeness.unreadableEntries, 0);

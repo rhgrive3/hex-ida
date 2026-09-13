@@ -125,7 +125,7 @@ test('#7861 the bridge preserves canonical field identity on semantic memory nod
   const storeNode = lower({ opcode: 0xb3, volatileField: true }).semanticIr.nodes.find((n) => n.kind === 'store');
   const loadIdentity = loadNode.attributes.fieldIdentity;
   const storeIdentity = storeNode.attributes.fieldIdentity;
-  assert.deepEqual(loadIdentity, { owner: 'A', name: 'x', descriptor: 'I', static: true });
+  assert.deepEqual(loadIdentity, { kind: 'jvm-field', owner: 'A', name: 'x', descriptor: 'I', static: true });
   assert.deepEqual(storeIdentity, loadIdentity);
   assert.deepEqual(loadNode.attributes.fieldIdentity, storeNode.attributes.fieldIdentity);
 });

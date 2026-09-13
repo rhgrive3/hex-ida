@@ -1,6 +1,14 @@
 // ECMA-335 II.22 / II.24.2.6: one row-layout authority for both metadata readers.
 function fail(code) { throw new TypeError(code); }
 
+export const MAX_METADATA_TABLE = 0x2c;
+const VALID_METADATA_TABLE_MASK = (1n << BigInt(MAX_METADATA_TABLE + 1)) - 1n;
+
+export function validateMetadataTableValidMask(valid, code = 'cil-metadata-valid-mask-invalid') {
+  if (typeof valid !== 'bigint' || valid < 0n || (valid & ~VALID_METADATA_TABLE_MASK) !== 0n) fail(code);
+  return valid;
+}
+
 export function codedIndexSize(rowCounts, tables, tagBits) {
   const maxRows = Math.max(...tables.map((table) => rowCounts[table] || 0));
   return maxRows < (1 << (16 - tagBits)) ? 2 : 4;
@@ -23,7 +31,7 @@ export function metadataRowSize(table, rowCounts, heapSizes) {
     case 0x03: return t(0x04);
     case 0x04: return 2 + s + b;
     case 0x05: return t(0x06);
-    case 0x06: return 8 + s + b + t(0x08);
+    case 0x06: return 8 + s + b + t(rowCounts[0x07] ? 0x07 : 0x08);
     case 0x07: return t(0x08);
     case 0x08: return 4 + s;
     case 0x09: return t(0x02) + c([0x02, 0x01, 0x1b], 2);
@@ -37,10 +45,10 @@ export function metadataRowSize(table, rowCounts, heapSizes) {
     case 0x0f: return 6 + t(0x02);
     case 0x10: return 4 + t(0x04);
     case 0x11: return b;
-    case 0x12: return t(0x02) + t(0x14);
+    case 0x12: return t(0x02) + t(rowCounts[0x13] ? 0x13 : 0x14);
     case 0x13: return t(0x14);
     case 0x14: return 2 + s + c([0x02, 0x01, 0x1b], 2);
-    case 0x15: return t(0x02) + t(0x17);
+    case 0x15: return t(0x02) + t(rowCounts[0x16] ? 0x16 : 0x17);
     case 0x16: return t(0x17);
     case 0x17: return 2 + s + b;
     case 0x18: return 2 + t(0x06) + c([0x14, 0x17], 1);

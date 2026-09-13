@@ -58,6 +58,7 @@ await import('./issue-6178-basename-effect-classification.mjs');
 await import('./issue-6182-security-framework-crypto-classification.mjs');
 await import('./issue-6189-accelerate-vimage-classification.mjs');
 await import('./issue-4625-extra-api-table-immutability.mjs');
+await import('./issue-5064-strtoll-numeric-return-contract.mjs');
 
 // Keep all decompiler/runtime regressions inside `npm run check` without
 // changing package.json or the shared CI workflow.
@@ -67,3 +68,4 @@ await import('./decompiler-switch.mjs');
 await import('./objc-runtime.mjs');
 await import('./objc-metadata.mjs');
 await import('./swift-runtime.mjs');
+await import('./issue-4618-symbolic-width-over-64-fail-closed.mjs');

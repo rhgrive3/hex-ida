@@ -1,4 +1,5 @@
 import { createMachineEffectBundle } from '../../../../semantics/effects/index.js';
+import { arm64RegisterOperand } from './addressing.js';
 import { instructionMnemonic } from './common.js';
 import {
   ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION,
@@ -6,6 +7,7 @@ import {
   liftArm64MachineEffects as liftArm64MachineEffectsBase,
 } from './dispatcher.js';
 import { arm64FpExceptionTrapFault } from './fp-exception-traps.js';
+import { arm64FpAdvSimdAccessTrapFault } from './fp-advsimd-access-traps.js';
 
 export { ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, arm64MachineEffectFamilies };
 
@@ -13,6 +15,32 @@ function registerReadValue(bundle, registerId) {
   const read = bundle?.operations?.find((operation) => operation?.kind === 'register-read'
     && operation?.register?.registerId === registerId);
   return read?.value ?? null;
+}
+
+function isArm64FpAdvSimdBundle(instruction, bundle) {
+  const family = bundle?.metadata?.family;
+  if (family === 'arm64-fp' || family === 'arm64-simd') return true;
+  if (family !== 'arm64-memory') return false;
+  // Memory-family transfers use the same FP/AdvSIMD registers and access controls.
+  const operands = Array.isArray(instruction?.ops) ? instruction.ops
+    : Array.isArray(instruction?.operands) ? instruction.operands : [];
+  return operands.some((operand) => arm64RegisterOperand(operand)?.kind === 'vector');
+}
+
+function decorateArm64FpAdvSimdAccessTrapEffects(instruction, bundle, context = {}) {
+  if (!bundle || !isArm64FpAdvSimdBundle(instruction, bundle)) return bundle;
+  if (bundle.completeness !== 'exact' && bundle.completeness !== 'exact-with-intrinsic') return bundle;
+
+  const existingFaults = Array.isArray(bundle.possibleFaults) ? bundle.possibleFaults : [];
+  const withoutAccessFault = existingFaults.filter((candidate) => candidate?.kind !== 'fp-advsimd-access-trap');
+  const fault = arm64FpAdvSimdAccessTrapFault(instructionMnemonic(instruction), context);
+  if (fault == null && withoutAccessFault.length === existingFaults.length) return bundle;
+
+  const machineEffectsOptions = context.machineEffectsOptions ?? context.options ?? {};
+  return createMachineEffectBundle({
+    ...bundle,
+    possibleFaults:fault == null ? withoutAccessFault : [fault, ...withoutAccessFault],
+  }, machineEffectsOptions);
 }
 
 function decorateArm64FpExceptionTrapEffects(instruction, bundle, context = {}) {
@@ -46,7 +74,8 @@ function decorateArm64FpExceptionTrapEffects(instruction, bundle, context = {}) 
 
 export function liftArm64MachineEffects(decoded, context = {}) {
   const bundle = liftArm64MachineEffectsBase(decoded, context);
-  return decorateArm64FpExceptionTrapEffects(decoded, bundle, context);
+  const withAccessTrap = decorateArm64FpAdvSimdAccessTrapEffects(decoded, bundle, context);
+  return decorateArm64FpExceptionTrapEffects(decoded, withAccessTrap, context);
 }
 
 export const liftExact = liftArm64MachineEffects;

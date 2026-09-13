@@ -36,7 +36,7 @@ export function buildMinimalCil() {
   view.setUint16(cli + 4, 2, true); // MajorRuntimeVersion
   view.setUint16(cli + 6, 5, true); // MinorRuntimeVersion
   view.setUint32(cli + 8, 0x2080, true); // Metadata RVA
-  view.setUint32(cli + 12, 0x80, true); // Metadata size
+  view.setUint32(cli + 12, 0xa0, true); // Metadata size
   view.setUint32(cli + 16, 1, true); // COMIMAGE_FLAGS_ILONLY
 
   const metadata = 0x280;
@@ -48,10 +48,15 @@ export function buildMinimalCil() {
 
   const flags = metadata + 0x1c;
   view.setUint16(flags, 0, true);
-  view.setUint16(flags + 2, 1, true); // one stream
+  view.setUint16(flags + 2, 2, true); // #~ and #Strings streams
   view.setUint32(flags + 4, 0x40, true); // #~ relative offset
   view.setUint32(flags + 8, 0x40, true); // #~ size
   buf.set([0x23, 0x7e, 0], flags + 12); // "#~\0"
+  const stringsHeader = flags + 16;
+  view.setUint32(stringsHeader, 0x80, true); // #Strings relative offset
+  view.setUint32(stringsHeader + 4, 0x20, true); // #Strings size
+  buf.set(new TextEncoder().encode('#Strings\0'), stringsHeader + 8);
+  buf.set(new TextEncoder().encode('\0FixtureType\0FixtureMethod\0'), metadata + 0x80);
 
   const tables = metadata + 0x40;
   buf[tables + 4] = 2; // tables major version
@@ -62,14 +67,14 @@ export function buildMinimalCil() {
   view.setUint32(tables + 24, 1, true); // one TypeDef row
   view.setUint32(tables + 28, 1, true); // one MethodDef row
   // TypeDef row (14 bytes, table order first): Flags, Name, Namespace, Extends, FieldList, MethodList.
-  // Indexes stay 0: this minimal fixture has no #Strings heap (legacy null names).
   view.setUint32(tables + 32, 0, true); // Flags
-  view.setUint16(tables + 36, 0, true); // Name
+  view.setUint16(tables + 36, 1, true); // Name -> FixtureType
   view.setUint16(tables + 38, 0, true); // Namespace
   view.setUint16(tables + 40, 0, true); // Extends = null
   view.setUint16(tables + 42, 1, true); // FieldList
   view.setUint16(tables + 44, 1, true); // MethodList
   view.setUint32(tables + 46, 0x2200, true); // MethodDef RVA -> file 0x400
+  view.setUint16(tables + 54, 13, true); // MethodDef Name -> FixtureMethod
 
   // Tiny method body: ldc.i4.5, stloc.0, ldloc.0, ret, nop.
   const method = 0x400;

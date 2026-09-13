@@ -110,22 +110,27 @@ export async function analyzeModelAt(app, address, end = null, options = {}) {
   return model;
 }
 
+function exactPageTotal(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
 function copyWithMetadata(result, key = 'results') {
   const rows = Array.isArray(result?.value) ? result.value : [];
   const completeness = queryCompleteness(result);
   const page = result?.page || {};
+  const total = exactPageTotal(page.total);
   return {
     [key]:rows,
     offset:Number(page.offset ?? 0),
     returned:Number(page.returned ?? rows.length),
-    total:Number.isFinite(Number(page.total)) ? Number(page.total) : null,
+    total,
     complete:completeness === 'complete' && page.next == null,
     truncated:completeness !== 'complete' || page.next != null,
     reason:queryReason(result),
     completeness:{
       complete:completeness === 'complete' && page.next == null,
       returned:Number(page.returned ?? rows.length),
-      total:Number.isFinite(Number(page.total)) ? Number(page.total) : null,
+      total,
       reason:queryReason(result),
     },
   };
@@ -249,7 +254,7 @@ export function createHexAIContext(app) {
             continue;
           }
           anySupported = true;
-          const regionTotal = Number.isFinite(Number(result?.page?.total)) ? Number(result.page.total) : null;
+          const regionTotal = exactPageTotal(result?.page?.total);
           if (queryCompleteness(result) !== 'complete') {
             complete = false;
             reason ||= queryReason(result) || 'search-incomplete';
@@ -344,7 +349,16 @@ export function createHexAIContext(app) {
     const limit = Math.max(1, safeCount(options.limit, 100, 1_000));
     return withFreshSnapshot(app, async (api, snapshot) => {
       const result = await api[method](snapshot, address, { offset, limit }, { signal:options.signal ?? null });
-      return copyWithMetadata(result);
+      const page = copyWithMetadata(result);
+      if (queryCompleteness(result) !== 'complete') {
+        page.total = null;
+        page.completeness = { ...page.completeness, total:null };
+      }
+      const nextOffset = exactPageTotal(result?.page?.next);
+      if (nextOffset != null && nextOffset > offset && nextOffset <= 1_000_000) {
+        Object.defineProperty(page, 'nextOffset', { value:nextOffset, enumerable:false });
+      }
+      return page;
     }, options);
   };
   define(context, 'getXrefs', { value:(address, options = {}) => graphPage('xrefs', address, options) });

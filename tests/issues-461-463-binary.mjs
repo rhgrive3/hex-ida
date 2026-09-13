@@ -111,6 +111,7 @@ function aarch64GnuPropertyFixture({ namesz = 4, owner = [0x47, 0x4e, 0x55, 0x00
   dv.setUint32(ph, 0x6474e553, true);
   dv.setBigUint64(ph + 8, BigInt(noteOffset), true);
   dv.setBigUint64(ph + 32, BigInt(noteEnd - noteOffset), true);
+  dv.setBigUint64(ph + 48, 8n, true);
   dv.setUint32(noteOffset, namesz, true);
   dv.setUint32(noteOffset + 4, descSize, true);
   dv.setUint32(noteOffset + 8, 5, true);

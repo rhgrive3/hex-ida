@@ -37,7 +37,21 @@ function lowerBoundBig(values, target) {
  * N addresses. This prevents late executable regions/functions from starving.
  */
 function fairFunctionList(symbols, region, max = 20000) {
-  if (!symbols?.funcs?.length || !region) return symbols?.functionList?.(region, max) || [];
+  if (!symbols?.funcs?.length) return [];
+  if (!region) {
+    // SymbolIndex.functionList() returns a plain, silently truncated Array with
+    // no completeness metadata, and readers treat missing metadata fail-open.
+    // Publish the authority explicitly: a list cut at `max` is a sample, not a
+    // complete inventory (#4044).
+    const list = symbols.functionList?.(region, max) || [];
+    const total = Number.isSafeInteger(symbols.functionCount) ? symbols.functionCount : list.length;
+    Object.defineProperties(list, {
+      complete: { value: list.length >= total, enumerable: false },
+      sampled: { value: list.length < total, enumerable: false },
+      totalFunctions: { value: total, enumerable: false },
+    });
+    return list;
+  }
   const lo = region.vmAddr;
   const hi = region.vmAddr + region.size;
   const first = lowerBoundBig(symbols.funcs, lo);
@@ -115,6 +129,59 @@ export function notableFunctions(program, symbols, region, limit = 12) {
  * Keep interesting dead/unreferenced strings visible as data, but mark them
  * explicitly non-actionable. Only proven code xrefs may drive next-step advice.
  */
+// The xref span must be the string's original UTF-8 byte extent (#5698).
+// Producer contract (worker scanStrings): display text is control-escaped
+// (`\t`/`\r`/`\n`), and the emitted byteLength is the raw run's extent. A
+// non-escape display code point has a determined UTF-8 width (1..4 bytes by
+// code-point range). An escape is ambiguous from the display alone — a real
+// escaped control is 1 raw byte but a literal backslash+letter is 2 — so it
+// counts 1..2. From the display text that gives a provable [minRaw, maxRaw]
+// window; a carried byteLength outside it (or of the wrong type) is a
+// forged/malformed authority and fails closed.
+function producerByteExtentWindow(text) {
+  let minRaw = 0;
+  let maxRaw = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 0x5c && (text[i + 1] === 't' || text[i + 1] === 'r' || text[i + 1] === 'n')) {
+      // Ambiguous from the display alone: a real escaped control is 1 raw
+      // byte, a literal backslash+letter is 2. The window admits both so a
+      // genuine producer extent is never rejected (#5698 completeness).
+      minRaw += 1;
+      maxRaw += 2;
+      i++;
+      continue;
+    }
+    const unit = text.codePointAt(i);
+    if (unit > 0xffff) i++;
+    // A non-escape decoded code point has a determined UTF-8 width: the
+    // producer scanned raw UTF-8, so U+0020..U+007E came from 1 byte,
+    // U+0080..U+07FF from 2, U+0800..U+FFFF from 3, astral from 4. Both
+    // window edges take that exact width — a smaller claimed byteLength
+    // (e.g. a truncated slice) must not become xref authority (#5698).
+    const width = unit <= 0x7f ? 1 : unit <= 0x7ff ? 2 : unit <= 0xffff ? 3 : 4;
+    minRaw += width;
+    maxRaw += width;
+  }
+  return { minRaw, maxRaw };
+}
+
+// Returns the authoritative raw byte span, or null when the entry carries no
+// provable extent (missing byteLength falls back to the provable minimum; a
+// malformed/forged carried value gets no xref authority at all).
+function stringByteSpan(s) {
+  const carried = s.byteLength;
+  if (carried === undefined || carried === null) {
+    const { minRaw } = producerByteExtentWindow(s.text);
+    return minRaw > 0 ? minRaw : null;
+  }
+  if (typeof carried !== 'number' || !Number.isSafeInteger(carried) || carried <= 0) {
+    return null;
+  }
+  const { minRaw, maxRaw } = producerByteExtentWindow(s.text);
+  if (carried < minRaw || carried > maxRaw) return null;
+  return carried;
+}
+
 export function findings(strings, program, symbols, limit = 40) {
   const out = [];
   if (!program) return out;
@@ -123,7 +190,14 @@ export function findings(strings, program, symbols, limit = 40) {
     for (const s of strings || []) {
       if (taken >= sig.max || out.length >= limit) break;
       if (!sig.re.test(s.text)) continue;
-      const users = program.functionsReferencing(s.addr, BigInt(Math.max(1, Math.min(s.text.length, 256))), 8);
+      // The xref span is a virtual-address byte range (#5698): use the
+      // string's authoritative raw byte extent; entries without one stay
+      // visible as data but get no xref authority (no over-inclusive
+      // display-derived span), so they cannot be marked referenced.
+      const span = stringByteSpan(s);
+      const users = span == null
+        ? { length: 0, complete: false, map: () => [] }
+        : program.functionsReferencing(s.addr, BigInt(Math.max(1, Math.min(span, 256))), 8);
       const actionable = users.length > 0;
       out.push({
         id: sig.id, level: sig.level, text: s.text, addr: s.addr,
@@ -268,7 +342,11 @@ export async function autoAnalyze(opts) {
 
   if (memo || hasClasses) {
     for (let i = 0; i < goalOrder.length; i++) {
-      if (cancelled()) { report.notes.push('pin-cancelled'); break; }
+      if (cancelled()) {
+        report.notes.push('pin-cancelled');
+        report.unexamined.push(...goalOrder.slice(i).map((id) => goalFromPreset(id)));
+        break;
+      }
       progress({ phase: 'pinpoint', done: i, all });
       if (budget.left <= 0) {
         report.unexamined.push(...goalOrder.slice(i).map((id) => goalFromPreset(id)));
@@ -447,13 +525,15 @@ function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
 
 /*
  * Cache only successful, non-null analysis. Rejections/nulls are retryable.
- * AbortSignal-bearing calls are intentionally not shared: a caller-owned signal
- * must never become the cancellation authority for another caller's analysis.
+ * Option-bearing calls are intentionally never shared (#5068): options enter
+ * the execution semantics but not the addr/end cache identity, and a
+ * caller-owned AbortSignal must never become the cancellation authority
+ * for another caller's analysis.
  */
 export function memoizeAnalysis(analyze) {
   const cache = new Map();
   return (addr, end, options = undefined) => {
-    if (options?.signal) return Promise.resolve().then(() => analyze(addr, end, options));
+    if (options !== undefined) return Promise.resolve().then(() => analyze(addr, end, options));
     // Cache identity is analysis authority (#3309): structured values must
     // not collide with their primitive lookalikes through toString(), or a
     // malformed address would reuse another address's cached analysis.

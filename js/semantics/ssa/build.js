@@ -12,6 +12,7 @@ export const SEMANTIC_SSA_BUILD_DEFAULT_BUDGET = Object.freeze({
 
 const PASS_ID = 'semantic-ssa';
 const SYNTHETIC_UNKNOWN_STATE_KEY = '@unknown-state';
+const FUNCTION_LEVEL_STATE_UNKNOWN_NODE_ID = '@function-level-state-unknown';
 
 function fail(code) { throw new TypeError(code); }
 function positiveInteger(value, code) {
@@ -158,6 +159,19 @@ function isStateUnknown(node) {
   if (node.kind === 'call' && node.call?.unknownEffects?.categories?.includes('state')) return true;
   return false;
 }
+function functionLevelStateEvidenceMissing(ir) {
+  if (ir.completeness === 'complete') return false;
+  const locatedStateUnknowns = new Set();
+  for (const node of ir.nodes) {
+    if (isStateUnknown(node)) locatedStateUnknowns.add(node.id);
+  }
+  // Reasons describe uncertainty, not its identity or position. Only an
+  // explicit reference to a represented state clobber locates this record;
+  // another record with the same reason may still describe a missing region.
+  return ir.unknowns.some((entry) =>
+    (entry.categories.length === 0 || entry.categories.includes('state'))
+    && !locatedStateUnknowns.has(entry.detail?.nodeId));
+}
 function scalarReferences(node, tick) {
   const roles = new Map();
   const add = (valueId, role) => {
@@ -192,6 +206,7 @@ function collectModel(ir, options, tick) {
   const seedCandidates = [];
   const rawEventsByBlock = new Map(ir.blocks.map((block) => [block.id, []]));
   const broadUnknownByBlock = new Map(ir.blocks.map((block) => [block.id, []]));
+  const unlocatedStateUnknown = functionLevelStateEvidenceMissing(ir);
 
   const rememberRef = (ref) => {
     if (!ref) return;
@@ -264,6 +279,24 @@ function collectModel(ir, options, tick) {
     }
   }
 
+  const functionLevelUnknownNode = unlocatedStateUnknown ? deepFreeze({
+    id: FUNCTION_LEVEL_STATE_UNKNOWN_NODE_ID,
+    kind: 'unknown-state-write',
+    blockId: ir.entryBlockId,
+    inputs: [],
+    outputs: [],
+    unknown: { reason: 'function-level-unknowns-may-omit-state-effects', categories: ['state'] },
+    completeness: 'unknown',
+    origin: safeOrigin(ir.origin),
+  }) : null;
+  if (functionLevelUnknownNode) {
+    broadUnknownByBlock.get(ir.entryBlockId).push({
+      blockId: ir.entryBlockId,
+      nodeOrdinal: -1,
+      node: functionLevelUnknownNode,
+    });
+  }
+
   const knownKeys = new Set([...refsByKey.keys(), ...typesByKey.keys(), ...seedCandidates.map((seed) => seed.key)]);
   const broadUnknownCount = [...broadUnknownByBlock.values()].reduce((sum, items) => sum + items.length, 0);
   if (broadUnknownCount && knownKeys.size === 0) knownKeys.add(SYNTHETIC_UNKNOWN_STATE_KEY);
@@ -316,8 +349,21 @@ function collectModel(ir, options, tick) {
     const expanded = [];
     for (const raw of rawEventsByBlock.get(block.id)) {
       tick();
+      // Without position evidence, the missing region may follow any write or
+      // lie between successive reads. Give each state observation its own
+      // conservative definition, including call/intrinsic summary reads.
+      const readClobber = functionLevelUnknownNode && raw.kind === 'read' ? {
+        ...functionLevelUnknownNode,
+        id: `${FUNCTION_LEVEL_STATE_UNKNOWN_NODE_ID}:${raw.node.id}`,
+        blockId: block.id,
+        origin: safeOrigin(ir.origin, raw.node.origin),
+      } : null;
       for (const variant of variantFor(raw.key, raw.machineType)) {
         tick();
+        if (readClobber) expanded.push({
+          ...raw, variant, node: readClobber, phase: -1, kind: 'write',
+          sourceSemanticValueId: null, definitionKind: 'unknown', broadUnknown: true,
+        });
         expanded.push({ ...raw, variant });
       }
     }

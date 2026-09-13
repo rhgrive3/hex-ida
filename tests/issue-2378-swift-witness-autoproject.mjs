@@ -14,12 +14,12 @@ const writeRel=(field,target)=>put(field,rel32(field,target));
 
 const TYPE_SEC=0x1000n,PROTO_SEC=0x1100n,CONF_SEC=0x1200n;
 const TYPE=0x2000n,TYPE_NAME=0x2100n,PROTO=0x3000n,PROTO_NAME=0x3100n,CONF=0x4000n,WIT=0x5000n,IMPL=0x6000n;
-put(TYPE,new Uint8Array(28));put(PROTO,new Uint8Array(32));put(CONF,new Uint8Array(16));put(WIT,new Uint8Array(8));
+put(TYPE,new Uint8Array(28));put(PROTO,new Uint8Array(32));put(CONF,new Uint8Array(16));put(WIT,new Uint8Array(16));
 writeRel(TYPE_SEC,TYPE);writeRel(PROTO_SEC,PROTO);writeRel(CONF_SEC,CONF);
 write32(TYPE,17);writeRel(TYPE+8n,TYPE_NAME);put(TYPE_NAME,cstr('T'));
 write32(PROTO,3);writeRel(PROTO+8n,PROTO_NAME);put(PROTO_NAME,cstr('P'));write32(PROTO+16n,1);write32(PROTO+24n,1);
 writeRel(CONF,PROTO);writeRel(CONF+4n,TYPE);writeRel(CONF+8n,WIT);
-put(WIT,u64(IMPL));
+put(WIT,u64(CONF));put(WIT+8n,u64(IMPL));
 const sections=[{section:'__swift5_types',vmAddr:TYPE_SEC,size:4},{section:'__swift5_protos',vmAddr:PROTO_SEC,size:4},{section:'__swift5_proto',vmAddr:CONF_SEC,size:4}];
 const opts={budget:128,resolvePointer:async(raw)=>raw};
 
@@ -34,9 +34,18 @@ assert.equal(resolved.resolved?.target,IMPL);
 assert.equal(resolved.complete,true);
 
 write32(PROTO+24n,7);
+/* AssociatedTypeAccessFunction (kind 7) is a function requirement per the Swift
+   ABI ProtocolRequirementFlags::Kind enum, so a proof-safe conformance projects
+   its witness table and completes (#5374). */
 const associated=await buildSwiftMetadataModel(read,sections,opts);
-assert.equal(associated.witnessTables.length,0);
-assert.equal(associated.complete,false);
+assert.equal(associated.protocols[0].requirements[0].witnessCallable,true);
+assert.equal(associated.witnessTables.length,1);
+assert.equal(associated.witnessTables[0].source,'conformance');
+assert.equal(associated.witnessTables[0].entries[0].target,IMPL);
+assert.equal(associated.complete,true);
+const associatedResolved=resolveSwiftDispatch(buildSwiftRuntimeIndex(associated),{kind:'witness',typeAddress:TYPE,protocolAddress:PROTO,slot:0});
+assert.equal(associatedResolved.resolved?.target,IMPL);
+assert.equal(associatedResolved.complete,true);
 
 write32(PROTO+24n,1);write32(CONF+12n,1<<8);
 const conditional=await buildSwiftMetadataModel(read,sections,opts);

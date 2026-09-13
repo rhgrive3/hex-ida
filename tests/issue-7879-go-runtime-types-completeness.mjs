@@ -25,8 +25,8 @@ function createPclntab120() {
   buf[5] = 0;
   buf[6] = 1;
   buf[7] = ptrSize;
-  view.setBigUint64(8, 1n, true); // nfunc
-  view.setBigUint64(16, 0n, true); // nfiles
+  view.setBigUint64(8, 1n, true);
+  view.setBigUint64(16, 0n, true);
   view.setBigUint64(24, textStart, true);
   view.setBigUint64(32, BigInt(nameTabStart), true);
   view.setBigUint64(40, BigInt(cutabStart), true);
@@ -68,9 +68,6 @@ assert.deepEqual(result.completeness.reasons, ['go-runtime-types-unscanned']);
 assert.deepEqual(result.identity.coverage?.recordKinds, ['symbol']);
 assert.deepEqual(result.identity.coverage?.addresses, ['0x401000']);
 
-
-// Omitting section descriptors does not prove that the binary has no runtime
-// type metadata; the provider still has not scanned that domain.
 const noSectionEvidence = new GoMetadataProvider({
   pclntabBuffer,
   sections: [],
@@ -80,8 +77,6 @@ assert.equal(noSectionEvidence.identity.verdict, 'matched-partial');
 assert.equal(noSectionEvidence.completeness.complete, false);
 assert.deepEqual(noSectionEvidence.completeness.reasons, ['go-runtime-types-unscanned']);
 
-// Existing function-table budget accounting remains intact while the separate
-// unscanned type domain also keeps the whole provider incomplete.
 const cappedProvider = new GoMetadataProvider({
   pclntabBuffer,
   sections,

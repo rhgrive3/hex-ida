@@ -1,4 +1,4 @@
-import { canonicalAddress, deepFreeze, jsonSafe, stableStringify } from '../../core/identity/index.js';
+import { canonicalAddress, deepFreeze, jsonSafe, normalizeIdentity, stableStringify } from '../../core/identity/index.js';
 import { createOriginSet } from '../../core/identity/origin.js';
 import { analyzeSemanticDominance } from '../cfg/index.js';
 
@@ -162,7 +162,10 @@ export function createMemoryRegionRef(input) {
     if (input.addressSpace != null) out.addressSpace = nonEmpty(input.addressSpace, 'memory-ssa-region-address-space-required');
   } else if (kind === 'tls' || kind === 'io' || kind === 'physical-space') {
     out.addressSpace = nonEmpty(input.addressSpace, 'memory-ssa-region-address-space-required');
-    if (input.rootIdentity != null) out.rootIdentity = jsonSafe(input.rootIdentity);
+    if (input.rootIdentity != null) {
+      try { out.rootIdentity = normalizeIdentity(input.rootIdentity, 'memory-ssa-invalid-region-root-identity'); }
+      catch { fail('memory-ssa-invalid-region-root-identity'); }
+    }
   } else if (kind === 'unknown') {
     if (input.uncertaintyIdentity == null
       || (typeof input.uncertaintyIdentity === 'string' && !input.uncertaintyIdentity.trim())) {
@@ -304,6 +307,13 @@ export function createMemorySsaContract(input, options = {}) {
   for (const region of regions) {
     work();
     if (regionById.has(region.id)) fail('memory-ssa-duplicate-region-id');
+    // A function-local region owned by a different function must never enter
+    // this contract (#5359): stack-fixed regions are function-scoped, so a
+    // foreign functionId would break the function-local stack invariant.
+    // Function-unscoped regions (global/tls/io/unknown) carry functionId null.
+    if (region.functionId != null && region.functionId !== functionId) {
+      fail('memory-ssa-region-function-mismatch');
+    }
     regionById.set(region.id, region);
   }
   const definitionById = new Map();

@@ -23,7 +23,7 @@ import {
 } from './contract.js';
 
 export const LOCAL_SUMMARY_ANALYZER_ID = 'phase7.summary.local';
-export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.2.0';
+export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.2.1';
 
 const DEFAULT_ADDRESS_SPACES = Object.freeze(['memory']);
 
@@ -62,6 +62,17 @@ function integerConstant(value, node) {
     parsed = next;
   }
   return parsed;
+}
+
+function integerConstantForOperand(operand, nodeByOutput, valueById) {
+  if (operand == null || (typeof operand === 'object' && operand !== null) || typeof operand === 'function') return null;
+  const producer = nodeByOutput.get(operand);
+  const value = valueById.get(String(operand));
+  const hasConstantSource = producer != null || value?.metadata?.constant != null;
+  if (hasConstantSource) return integerConstant(value, producer);
+  return typeof operand === 'number' || typeof operand === 'bigint'
+    ? parseIntegerConstant(operand)
+    : null;
 }
 
 // Instruction origin evidence carries the same primitive non-empty string
@@ -374,6 +385,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
           into.push(createMemoryEffect({
             regionId: region.id,
             regionKind: region.kind,
+            ...(region.kind === 'unknown' ? {} : { region }),
             broad: region.kind === 'unknown',
             addressSpaces: [node.memory.addressSpace],
             source: 'proven-summary',
@@ -412,16 +424,17 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
           if (producer.kind === 'copy' || producer.kind === 'bitcast') {
             curr = producer.inputs?.[0];
           } else if (producer.kind === 'binary' && (producer.operator === 'add' || producer.operator === 'sub')) {
-            const rightConst = producer.inputs?.[1];
-            const rightProducer = nodeByOutput.get(rightConst);
-            const rightValue = valueById.get(String(rightConst));
-            const hasConstantSource = rightProducer != null || rightValue?.metadata?.constant != null;
-            const num = hasConstantSource
-              ? integerConstant(rightValue, rightProducer)
-              : (typeof rightConst === 'number' || typeof rightConst === 'bigint' ? parseIntegerConstant(rightConst) : null);
-            if (num != null) {
-              offset += (producer.operator === 'sub' ? -BigInt(num) : BigInt(num));
-              curr = producer.inputs?.[0];
+            const leftOperand = producer.inputs?.[0];
+            const rightOperand = producer.inputs?.[1];
+            const rightConstant = integerConstantForOperand(rightOperand, nodeByOutput, valueById);
+            if (rightConstant != null) {
+              offset += producer.operator === 'sub' ? -rightConstant : rightConstant;
+              curr = leftOperand;
+            } else if (producer.operator === 'add') {
+              const leftConstant = integerConstantForOperand(leftOperand, nodeByOutput, valueById);
+              if (leftConstant == null) break;
+              offset += leftConstant;
+              curr = rightOperand;
             } else break;
           } else break;
         }
@@ -487,6 +500,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       // be laundered into proven-summary by one composition step.
       memoryReadRegions.push(...resolved.memoryReadRegions.map((effect) => createMemoryEffect({ ...effect })));
       memoryWriteRegions.push(...resolved.memoryWriteRegions.map((effect) => createMemoryEffect({ ...effect })));
+      for (const effect of resolved.registerEffects) registerEffects.add(effect);
       for (const unknown of resolved.unknownCallEffects) {
         // Keep the originating call site. Composing a path prefix here would
         // make the effect set grow every time a summary is recomposed, which is
@@ -532,6 +546,19 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
           : nonExhaustiveTargets
           ? 'unresolved-target'
           : targets.length ? 'summary-missing' : 'unresolved-target',
+        targetEntityIds: targets,
+        evidenceIds: evidenceOf(node),
+      }));
+      controlUnknown = true;
+      ensureBroadWrite(node);
+    } else if (node.call.noreturn == null || node.call.mayThrow == null) {
+      // Omitted control knowledge is a missing fact, not a negative proof
+      // (#5854): promoting null here would publish "returns / does not throw"
+      // from raw IR that never carried the fact. Degrade to an unknown call
+      // effect instead of folding in absent knowledge.
+      unknownCallEffects.push(createUnknownCallEffect({
+        callSiteId: node.id,
+        reason: 'summary-incomplete',
         targetEntityIds: targets,
         evidenceIds: evidenceOf(node),
       }));

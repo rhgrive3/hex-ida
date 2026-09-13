@@ -312,12 +312,14 @@ function parseMacho(bytes) {
     if (command === MACHO_LC_SEGMENT_64) {
       if (size < 72) fail('format-safe-macho-segment-command-invalid');
       const segmentName = text(bytes.slice(offset + 8, offset + 24));
+      const vmaddr = boundedNumber(u64(bytes, offset + 24));
+      const vmsize = boundedNumber(u64(bytes, offset + 32));
       const fileOffset = boundedNumber(u64(bytes, offset + 40));
       const fileSize = boundedNumber(u64(bytes, offset + 48));
       const sectionCount = u32(bytes, offset + 64);
       if (size !== 72 + sectionCount * 80) fail('format-safe-macho-segment-section-table-invalid');
       ensureRange(bytes, fileOffset, fileSize, 'format-safe-macho-segment-file-range-invalid');
-      const segment = { commandIndex: index, name: segmentName, fileOffset, fileSize, sectionCount };
+      const segment = { commandIndex: index, name: segmentName, vmaddr, vmsize, fileOffset, fileSize, sectionCount };
       segments.push(segment);
       for (let sectionIndex = 0; sectionIndex < sectionCount; sectionIndex++) {
         const sectionOffset = offset + 72 + sectionIndex * 80;
@@ -590,7 +592,29 @@ function machoSectionSizePlan(source, image, mutation) {
   const next = image.sections.filter((section) => section.segment === segmentName && section.offset > target.offset).sort((left, right) => left.offset - right.offset)[0];
   const nextSectionOffset = next?.offset ?? segment.fileOffset + segment.fileSize;
   if (target.offset + target.size > nextSectionOffset) fail('format-safe-macho-layout-source-overlap');
-  const availableGap = nextSectionOffset - (target.offset + target.size);
+  let availableGap = nextSectionOffset - (target.offset + target.size);
+  /* Mach-O section file offsets and VM addresses are independent invariants:
+     extending within the file gap can still drive the section's VM range into
+     the next section's address range. Sections are identified by their owning
+     LC_SEGMENT_64 command (commandIndex), not by the segment name string, and
+     the source state must be overlap-free against every same-segment section
+     before any extension is planned (#5001). */
+  const segmentSections = image.sections.filter((section) => section.commandIndex === target.commandIndex);
+  for (const section of segmentSections) {
+    if (section === target || !section.size) continue;
+    if (section.address < target.address + target.size && target.address < section.address + section.size) {
+      fail('format-safe-macho-layout-source-vm-overlap');
+    }
+  }
+  const nextByAddress = segmentSections
+    .filter((section) => section.address > target.address)
+    .sort((left, right) => left.address - right.address)[0];
+  if (nextByAddress) {
+    const availableVmGap = nextByAddress.address - (target.address + target.size);
+    if (availableVmGap < availableGap) availableGap = availableVmGap;
+  }
+  const segmentVmAvailable = (segment.vmaddr + segment.vmsize) - (target.address + target.size);
+  if (segmentVmAvailable < availableGap) availableGap = segmentVmAvailable;
   const requestedSize = integerInRange(mutation.size, target.size + 1, target.size + availableGap, 'format-safe-macho-layout-size-invalid');
   const sectionHeaderOffset = target.headerOffset;
   return {
@@ -816,7 +840,9 @@ export function validateFormatSafeMutation({ transaction, original, output } = {
     }
     if (safeState.kind === 'macho-section-size') {
       if (format !== 'macho' || transaction.operations?.length !== 1 || transaction.impact?.layoutMoving !== true) return reject('format-safe-macho-layout-operation-invalid');
-      const expected = machoSectionSizePlan(source, sourceImage, safeState);
+      let expected;
+      try { expected = machoSectionSizePlan(source, sourceImage, safeState); }
+      catch (error) { return reject(String(error?.message || 'format-safe-macho-layout-plan-invalid')); }
       const canonicalExpectedOperations = expected.operations.map((operation) => ({
         ...operation,
         offset: String(operation.offset),
@@ -845,7 +871,8 @@ export function validateFormatSafeMutation({ transaction, original, output } = {
       const sourceSegment = sourceImage.segments.find((item) => item.commandIndex === safeState.segmentCommandIndex);
       const outputSegment = outputImage.segments.find((item) => item.commandIndex === safeState.segmentCommandIndex);
       if (!sourceSegment || !outputSegment || sourceSegment.name !== outputSegment.name || sourceSegment.fileOffset !== outputSegment.fileOffset
-        || sourceSegment.fileSize !== outputSegment.fileSize || sourceSegment.sectionCount !== outputSegment.sectionCount) return reject('format-safe-macho-segment-changed');
+        || sourceSegment.fileSize !== outputSegment.fileSize || sourceSegment.sectionCount !== outputSegment.sectionCount
+        || sourceSegment.vmaddr !== outputSegment.vmaddr || sourceSegment.vmsize !== outputSegment.vmsize) return reject('format-safe-macho-segment-changed');
       const maskedSourceDigest = bytesDigestMasked(source, safeState.sectionHeaderOffset + 40, 8);
       const maskedOutputDigest = bytesDigestMasked(candidate, safeState.sectionHeaderOffset + 40, 8);
       if (maskedSourceDigest !== maskedOutputDigest) return reject('format-safe-macho-unchanged-bytes-differ');

@@ -34,12 +34,16 @@ function makeTypeFixture({ ptrSize, little = true, strOffset = 0x60, equalLow32 
   return bytes;
 }
 
+const CURRENT_VERSION = '1.23.2';
+
 // 64-bit abi.Type: Str is after the Equal and GCData pointer fields.
 {
   const bytes = makeTypeFixture({ ptrSize: 8, equalLow32: 0x70 });
   putEncodedName(bytes, 0x60, 'actual64');
   putEncodedName(bytes, 0x70, 'equal-decoy');
-  const desc = parseGoTypeDescriptor(bytes, 0, { ptrSize: 8, little: true, typesBase: 0 });
+  const desc = parseGoTypeDescriptor(bytes, 0, {
+    ptrSize: 8, little: true, typesBase: 0, version: CURRENT_VERSION,
+  });
   assert.equal(desc?.name, 'actual64');
   assert.equal(desc?.kind, 'struct');
   assert.equal(desc?.size, 24);
@@ -55,7 +59,9 @@ function makeTypeFixture({ ptrSize, little = true, strOffset = 0x60, equalLow32 
   const bytes = makeTypeFixture({ ptrSize: 4, equalLow32: 0x70 });
   putEncodedName(bytes, 0x60, 'actual32');
   putEncodedName(bytes, 0x70, 'equal-decoy');
-  const desc = parseGoTypeDescriptor(bytes, 0, { ptrSize: 4, little: true, typesBase: 0 });
+  const desc = parseGoTypeDescriptor(bytes, 0, {
+    ptrSize: 4, little: true, typesBase: 0, version: CURRENT_VERSION,
+  });
   assert.equal(desc?.name, 'actual32');
 }
 
@@ -64,7 +70,9 @@ function makeTypeFixture({ ptrSize, little = true, strOffset = 0x60, equalLow32 
   const bytes = makeTypeFixture({ ptrSize: 8, little: false, equalLow32: 0x70 });
   putEncodedName(bytes, 0x60, 'big-endian');
   putEncodedName(bytes, 0x70, 'equal-decoy');
-  const desc = parseGoTypeDescriptor(bytes, 0, { ptrSize: 8, little: false, typesBase: 0 });
+  const desc = parseGoTypeDescriptor(bytes, 0, {
+    ptrSize: 8, little: false, typesBase: 0, version: CURRENT_VERSION,
+  });
   assert.equal(desc?.name, 'big-endian');
 }
 
@@ -72,36 +80,85 @@ function makeTypeFixture({ ptrSize, little = true, strOffset = 0x60, equalLow32 
 {
   const bytes = makeTypeFixture({ ptrSize: 8, strOffset: 0x7fffffff, equalLow32: 0x70, kind: 24 });
   putEncodedName(bytes, 0x70, 'wrong-name');
-  const desc = parseGoTypeDescriptor(bytes, 0, { ptrSize: 8, little: true, typesBase: 0 });
+  const desc = parseGoTypeDescriptor(bytes, 0, {
+    ptrSize: 8, little: true, typesBase: 0, version: CURRENT_VERSION,
+  });
   assert.equal(desc?.name, 'go_type_string_0');
 }
 
 // The complete 4-byte NameOff field must be present before decoding a descriptor.
 {
-  const bytes = new Uint8Array(47); // 64-bit abi.Type is 48 bytes through PtrToThis.
+  const bytes = new Uint8Array(47);
   bytes[23] = 24;
-  assert.equal(parseGoTypeDescriptor(bytes, 0, { ptrSize: 8, little: true, typesBase: 0 }), null);
+  assert.equal(parseGoTypeDescriptor(bytes, 0, {
+    ptrSize: 8, little: true, typesBase: 0, version: CURRENT_VERSION,
+  }), null);
 }
 
 // Unsupported pointer-width layouts are not guessed.
 {
   const bytes = new Uint8Array(128);
-  assert.equal(parseGoTypeDescriptor(bytes, 0, { ptrSize: 16, little: true, typesBase: 0 }), null);
+  assert.equal(parseGoTypeDescriptor(bytes, 0, {
+    ptrSize: 16, little: true, typesBase: 0, version: CURRENT_VERSION,
+  }), null);
 }
 
-// Extracted from a real linux/amd64 Go 1.23.2 binary. runtime.types was at
-// file offset 0x91000 and reflect.TypeOf((*main.Sample)(nil)) at 0x96820,
-// so the descriptor is 0x5820 bytes from the types base. Only the exact
-// descriptor and referenced encoded-name bytes are retained here.
+// Layout authority is mandatory. Pointer width or a pclntab generation alone
+// cannot select a runtime type layout.
+{
+  const bytes = makeTypeFixture({ ptrSize: 8 });
+  putEncodedName(bytes, 0x60, 'must-not-guess');
+  assert.equal(parseGoTypeDescriptor(bytes, 0, {
+    ptrSize: 8, little: true, typesBase: 0,
+  }), null);
+  assert.equal(parseGoTypeDescriptor(bytes, 0, {
+    ptrSize: 8, little: true, typesBase: 0, version: '1.20+',
+  }), null);
+  assert.equal(parseGoTypeDescriptor(bytes, 0, {
+    ptrSize: 8, little: true, typesBase: 0, version: '1.15.15',
+  }), null);
+  assert.equal(parseGoTypeDescriptor(bytes, 0, {
+    ptrSize: 8, little: true, typesBase: 0, version: '1.24.0',
+  }), null);
+  assert.equal(parseGoTypeDescriptor(bytes, 0, {
+    ptrSize: 8, little: true, typesBase: 0, version: '1.23rc1',
+  }), null);
+  assert.equal(parseGoTypeDescriptor(bytes, 0, {
+    ptrSize: 8, little: true, typesBase: 0, version: ['1.23.2'],
+  }), null);
+}
+
+// Explicitly supported boundary versions retain the validated layout.
+{
+  const bytes = makeTypeFixture({ ptrSize: 8 });
+  putEncodedName(bytes, 0x60, 'boundary');
+  assert.equal(parseGoTypeDescriptor(bytes, 0, {
+    ptrSize: 8, little: true, typesBase: 0, version: '1.16.0',
+  })?.name, 'boundary');
+  assert.equal(parseGoTypeDescriptor(bytes, 0, {
+    ptrSize: 8, little: true, typesBase: 0, version: '1.23.999',
+  })?.name, 'boundary');
+}
+
+// Extracted from a real linux/amd64 Go 1.23.2 binary. Runtime type layout
+// authority is explicitly bound to that toolchain version.
 {
   const bytes = new Uint8Array(0x5850);
-  bytes.set(Buffer.from('0800000000000000080000000000000009f410bf0808083688944b000000000060484d00000000005028000000000000', 'hex'), 0x5820);
-  bytes.set(Buffer.from('010c2a6d61696e2e53616d706c65000c777269746550616464696e67000c2a5b', 'hex'), 0x2850);
-  const desc = parseGoTypeDescriptor(bytes, 0x5820, { ptrSize: 8, little: true, typesBase: 0 });
+  bytes.set(Buffer.from(
+    '0800000000000000080000000000000009f410bf0808083688944b000000000060484d00000000005028000000000000',
+    'hex',
+  ), 0x5820);
+  bytes.set(Buffer.from(
+    '010c2a6d61696e2e53616d706c65000c777269746550616464696e67000c2a5b',
+    'hex',
+  ), 0x2850);
+  const desc = parseGoTypeDescriptor(bytes, 0x5820, {
+    ptrSize: 8, little: true, typesBase: 0, version: '1.23.2',
+  });
   assert.equal(desc?.kind, 'pointer');
   assert.equal(desc?.name, '*main.Sample');
   assert.equal(desc?.size, 8);
   assert.equal(desc?.ptrdata, 8);
 }
 
-console.log('issue-5347 Go abi.Type NameOff regression passed');
+console.log('issue-5347 Go abi.Type NameOff/version-authority regression passed');

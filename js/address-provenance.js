@@ -30,15 +30,13 @@
     if (!words || !words.KIND) throw new Error('AddressProvenance requires Words');
 
     const pageOf = new Array(32).fill(null);
-    const pageAt = new Int32Array(32);
-    pageAt.fill(-1);
+    const pageAt = new Array(32).fill(-1);
     // A loop-entry kill invalidates the merge state for address construction,
     // but a direct memory access at that first linear visit still observes the
     // incoming value on the preheader path.  Retain that value as an explicit,
     // short-lived fallback instead of silently dropping the memory reference.
     const entryFallbackOf = new Array(32).fill(null);
-    const entryFallbackAt = new Int32Array(32);
-    entryFallbackAt.fill(-1);
+    const entryFallbackAt = new Array(32).fill(-1);
     // enter() advances monotonically, so normalize external boundaries once.
     // Boundary inputs are address collections (#3339): a bare string is not an
     // iterable of addresses and must not decompose into per-character garbage.
@@ -65,9 +63,18 @@
       }
       return [...value];
     };
+    // Boundary elements are the exactness contract: a structured/malformed
+    // element (non-numeric, structured, non-canonical string) must fail
+    // closed with a named error instead of being silently filtered, which
+    // deleted the function boundary itself and let ADR/ADRP provenance leak
+    // past it (#5084).
+    const canonicalBoundary = (value) => {
+      const boundary = asBigInt(value);
+      if (boundary == null) throw new TypeError('address-provenance-boundary-address-invalid');
+      return boundary;
+    };
     const functionStarts = addressCollection(opts.functionStarts)
-      .map(asBigInt)
-      .filter((start) => start != null)
+      .map(canonicalBoundary)
       .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     const startCount = functionStarts.length;
     let startIndex = 0;
@@ -82,10 +89,12 @@
     }
 
     // Full branch entries are retained for the existing forward-target contract.
+    // Non-canonical elements fail closed; only the semantic out-of-range
+    // filter remains after the boundary contract is enforced.
     const branchEntries = new Set(
       addressCollection(opts.branchEntries)
-        .map(asBigInt)
-        .filter((target) => target != null && inRange(target)),
+        .map(canonicalBoundary)
+        .filter((target) => inRange(target)),
     );
 
     // A backward edge is discovered after its target was already visited by a
@@ -142,7 +151,7 @@
 
     function note(reg, value, index) {
       const r = reg, at = index;
-      if (!Number.isInteger(r) || r < 0 || r >= 32 || !Number.isInteger(at)) return;
+      if (!Number.isInteger(r) || r < 0 || r >= 32 || !Number.isSafeInteger(at) || at < 0) return;
       const v = asBigInt(value);
       if (v == null) { kill(r); return; }
       entryFallbackOf[r] = null;

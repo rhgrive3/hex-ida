@@ -68,6 +68,18 @@ export function translateSemanticIR(target, options = {}) {
     }
   }
 
+  function canonicalConstantValue(value) {
+    if (typeof value === 'bigint') return value;
+    if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+    return null;
+  }
+
+  function nonCanonicalConstant(width, entityId, opLabel, meta) {
+    semanticUnknowns++;
+    unsupportedEntities.push({ id: entityId, op: opLabel, reason: 'non-canonical-constant-value' });
+    return createUnknownSemantic(bvSort(width), 'non-canonical-constant-value', meta);
+  }
+
   function translateValue(val, width = defaultWidth) {
     if (!val) {
       semanticUnknowns++;
@@ -75,9 +87,17 @@ export function translateSemanticIR(target, options = {}) {
       return unk;
     }
 
-    const valId = val.id != null ? String(val.id) : null;
-    const memoKey = `${valId || 'anon'}@${fromBlock}@${width}`;
-    if (memo.has(memoKey)) return memo.get(memoKey);
+    let valId = null;
+    if (val.id != null) {
+      if (typeof val.id === 'string' && val.id.trim() !== '') valId = val.id.trim();
+      else {
+        semanticUnknowns++;
+        unsupportedEntities.push({ id: null, op: 'value-id', reason: `invalid-ssa-value-id:${typeof val.id}` });
+        return createUnknownSemantic(bvSort(width), 'invalid-ssa-value-id', { valueIdType: typeof val.id });
+      }
+    }
+    const memoKey = valId != null ? `${valId}@${fromBlock}@${width}` : null;
+    if (memoKey != null && memo.has(memoKey)) return memo.get(memoKey);
 
     if (valId && active.has(valId)) {
       semanticUnknowns++;
@@ -99,8 +119,13 @@ export function translateSemanticIR(target, options = {}) {
     let res = null;
 
     if (val.const != null) {
-      res = createBv(width, val.const);
-      recordOrigin(res, val.origin, `const:${val.const}`);
+      const canonical = canonicalConstantValue(val.const);
+      if (canonical === null) {
+        res = nonCanonicalConstant(width, valId, 'const', { valueId: valId });
+      } else {
+        res = createBv(width, canonical);
+        recordOrigin(res, val.origin, `const:${val.const}`);
+      }
     } else if (val.kind === VK.ARG || val.kind === 'arg') {
       const reg = String(val.reg || val.id || 'arg');
       const argIndex = val.index != null ? val.index : (reg.startsWith('x') ? Number(reg.slice(1)) : null);
@@ -151,7 +176,7 @@ export function translateSemanticIR(target, options = {}) {
     }
 
     if (valId) active.delete(valId);
-    memo.set(memoKey, res);
+    if (memoKey != null) memo.set(memoKey, res);
     return res;
   }
 
@@ -179,7 +204,11 @@ export function translateSemanticIR(target, options = {}) {
           unsupportedEntities.push({ id: inst.id, op: inst.op, reason: 'missing-constant-value' });
           return createUnknownSemantic(bvSort(width), 'missing-constant-value', { instructionId: inst.id });
         }
-        return createBv(width, value);
+        const canonical = canonicalConstantValue(value);
+        if (canonical === null) {
+          return nonCanonicalConstant(width, inst.id, inst.op, { instructionId: inst.id });
+        }
+        return createBv(width, canonical);
       }
 
       case OP.MOV:

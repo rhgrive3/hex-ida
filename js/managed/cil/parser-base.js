@@ -1,10 +1,11 @@
 import { deepFreeze } from '../../core/identity/index.js';
 import { createManagedImageId, createManagedModuleId } from '../shared/identity.js';
+import { CLI_HEADER_SIZE, validateCliHeaderSize } from './cli-header.js';
+import { validateMetadataTableValidMask } from './metadata-layout.js';
 
 function fail(code) { throw new TypeError(code); }
 
 const CLI_DIRECTORY_INDEX = 14;
-const CLI_HEADER_SIZE = 72;
 const METHOD_DEF_TABLE = 0x06;
 const STANDALONE_SIG_TABLE = 0x11;
 const STRICT_UTF8_DECODER = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
@@ -36,6 +37,7 @@ export function align4(offset) {
 
 function parseStringsHeap(bytes, offset, size) {
   checkedRange(bytes, offset, size, 'cil-metadata-strings-out-of-bounds');
+  if (size < 1 || bytes[offset] !== 0) fail('cil-invalid-strings-heap-zero-entry');
   const strings = [];
   let position = offset;
   const end = offset + size;
@@ -117,6 +119,11 @@ function readPeCliLayout(bytes, view) {
   const cliSize = readU32(view, cliDirectoryOffset + 4, 'cil-truncated-cli-directory');
   if (cliRva === 0 || cliSize < CLI_HEADER_SIZE) return Object.freeze({ cliPresent: false });
   const cliOffset = mapRva(cliRva, CLI_HEADER_SIZE, 'cil-cli-header-unmapped');
+  const cliHeaderSize = validateCliHeaderSize(
+    readU32(view, cliOffset, 'cil-truncated-cli-header'),
+    cliSize,
+  );
+  mapRva(cliRva, cliHeaderSize, 'cil-cli-header-unmapped');
   const metadataRva = readU32(view, cliOffset + 8, 'cil-truncated-cli-header');
   const metadataSize = readU32(view, cliOffset + 12, 'cil-truncated-cli-header');
   if (metadataRva === 0 || metadataSize < 20) fail('cil-cli-metadata-directory-invalid');
@@ -126,6 +133,17 @@ function readPeCliLayout(bytes, view) {
   // root unrecoverable and accepted clearly invalid entry tokens (#7735).
   const cliFlags = readU32(view, cliOffset + 16, 'cil-truncated-cli-header');
   const entryPointToken = readU32(view, cliOffset + 20, 'cil-truncated-cli-header');
+  // II.25.3.3.1: the 32BITREQUIRED (0x2) bit is the loader's native
+  // pointer-width authority and must reach the canonical image (#7775).
+  // II.25.2.2: a 32BITREQUIRED image must also carry IMAGE_FILE_32BIT_MACHINE
+  // in the COFF characteristics. A contradiction is a malformed image, not a
+  // preference to resolve.
+  const characteristics = readU16(view, peOffset + 22, 'cil-truncated-pe-coff-header');
+  const machine32 = (characteristics & 0x0100) !== 0;
+  const requires32Bit = (cliFlags & 0x00000002) !== 0;
+  if (requires32Bit && !machine32) fail('cil-32bitrequired-machine-characteristic-mismatch');
+  // 64-bit authority: PE32+ (0x20b optional-header magic) without 32BITREQUIRED.
+  const requires64Bit = !requires32Bit && readU16(view, optionalOffset, 'cil-truncated-pe-optional-header') === 0x20b;
   // The CLI Resources directory (+24/+28) anchors embedded manifest resource
   // payloads. Without it the ManifestResource rows cannot be resolved to
   // bytes and embedded data vanishes from the canonical image (#7753).
@@ -145,6 +163,8 @@ function readPeCliLayout(bytes, view) {
     metadataSize,
     cliFlags,
     entryPointToken,
+    requires32Bit,
+    requires64Bit,
     resources,
   });
 }
@@ -179,7 +199,7 @@ function metadataRowSize(table, rowCounts, heapSizes) {
     case 0x05: // MethodPtr
       return tableIndexSize(rowCounts, METHOD_DEF_TABLE);
     case METHOD_DEF_TABLE: // MethodDef
-      return 4 + 2 + 2 + stringIndexSize + blobIndexSize + tableIndexSize(rowCounts, 0x08);
+      return 4 + 2 + 2 + stringIndexSize + blobIndexSize + tableIndexSize(rowCounts, rowCounts[0x07] ? 0x07 : 0x08);
     case 0x07: // ParamPtr
       return tableIndexSize(rowCounts, 0x08);
     case 0x08: // Param
@@ -217,7 +237,7 @@ function readHeapIndex(view, offset, size, code) {
   return size === 2 ? readU16(view, offset, code) : readU32(view, offset, code);
 }
 
-function parseMetadataTables(bytes, view, tableStream) {
+function parseMetadataTables(bytes, view, tableStream, stringStream = null) {
   if (!tableStream) fail('cil-metadata-tables-missing');
   checkedRange(bytes, tableStream.offset, tableStream.size, 'cil-metadata-tables-out-of-bounds');
   if (tableStream.size < 24) fail('cil-metadata-tables-truncated');
@@ -227,6 +247,7 @@ function parseMetadataTables(bytes, view, tableStream) {
   const validLow = BigInt(readU32(view, start + 8, 'cil-metadata-tables-truncated'));
   const validHigh = BigInt(readU32(view, start + 12, 'cil-metadata-tables-truncated'));
   const valid = validLow | (validHigh << 32n);
+  validateMetadataTableValidMask(valid);
   const rowCounts = new Array(64).fill(0);
   let pos = start + 24;
   for (let table = 0; table < 64; table++) {
@@ -238,6 +259,7 @@ function parseMetadataTables(bytes, view, tableStream) {
 
   const methodRvas = [];
   const standAloneSigBlobIndexes = [];
+  let moduleName = null;
   const blobIndexSize = (heapSizes & 0x04) !== 0 ? 4 : 2;
   for (let table = 0; table <= STANDALONE_SIG_TABLE; table++) {
     const rows = rowCounts[table] || 0;
@@ -246,7 +268,20 @@ function parseMetadataTables(bytes, view, tableStream) {
     if (!Number.isSafeInteger(rowSize) || rowSize < 1 || rows > Math.floor((end - pos) / rowSize)) {
       fail('cil-metadata-table-data-truncated');
     }
-    if (table === METHOD_DEF_TABLE) {
+    if (table === 0x00 && rows > 0) {
+      if (stringStream) {
+        const nameIdx = readHeapIndex(view, pos + 2, (heapSizes & 0x01) !== 0 ? 4 : 2, 'cil-metadata-module-name-truncated');
+        if (nameIdx > 0 && nameIdx < stringStream.size) {
+          const sStart = stringStream.offset + nameIdx;
+          const sEnd = stringStream.offset + stringStream.size;
+          let sPos = sStart;
+          while (sPos < sEnd && bytes[sPos] !== 0) sPos++;
+          if (sPos < sEnd) {
+            try { moduleName = new TextDecoder('utf-8').decode(bytes.subarray(sStart, sPos)); } catch {}
+          }
+        }
+      }
+    } else if (table === METHOD_DEF_TABLE) {
       for (let row = 0; row < rows; row++) {
         methodRvas.push(readU32(view, pos + row * rowSize, 'cil-metadata-method-row-truncated'));
       }
@@ -262,7 +297,7 @@ function parseMetadataTables(bytes, view, tableStream) {
   // Row counts for tables beyond the legacy scan limit (catch-type token RID
   // validation reaches TypeRef at 0x01 / TypeSpec at 0x1b) (#7606).
   const typeDefOrRefCounts = { typeDef: rowCounts[0x02] || 0, typeRef: rowCounts[0x01] || 0, typeSpec: rowCounts[0x1b] || 0 };
-  return Object.freeze({ methodRvas, standAloneSigBlobIndexes, typeDefOrRefCounts });
+  return Object.freeze({ methodRvas, standAloneSigBlobIndexes, typeDefOrRefCounts, moduleName });
 }
 
 function readSignatureCompressed(bytes, offset, code = 'cil-invalid-local-var-signature') {
@@ -499,10 +534,11 @@ function parseMetadataRoot(bytes, view, metadataOffset, metadataSize) {
   const tableStream = streams.find((stream) => stream.name === '#~' || stream.name === '#-');
   const blobStream = streams.find((stream) => stream.name === '#Blob') ?? null;
   const strings = stringStream ? parseStringsHeap(bytes, stringStream.offset, stringStream.size) : [];
-  const tables = parseMetadataTables(bytes, view, tableStream);
+  const tables = parseMetadataTables(bytes, view, tableStream, stringStream);
   return Object.freeze({
     runtimeVersion,
     strings,
+    moduleName: tables.moduleName,
     methodRvas: tables.methodRvas,
     standAloneSigBlobIndexes: tables.standAloneSigBlobIndexes,
     typeDefOrRefCounts: tables.typeDefOrRefCounts,
@@ -579,6 +615,7 @@ function parseMethodBody(bytes, view, offset, metadataInfo = null) {
 
   const flags = readU16(view, offset, 'cil-fat-method-header-truncated');
   if ((flags & 0x03) !== 0x03) fail('cil-invalid-method-header');
+  if (offset % 4 !== 0) fail('cil-fat-method-header-unaligned');
   const headerSize = (flags >> 12) * 4;
   if (headerSize < 12 || headerSize % 4 !== 0) fail('cil-invalid-fat-method-header');
   checkedRange(bytes, offset, headerSize, 'cil-fat-method-header-truncated');
@@ -820,9 +857,10 @@ export function parseCil(bytes, options = {}) {
     }
   }
 
+  const moduleName = metadataInfo?.moduleName || 'Assembly.dll';
   const binaryId = options.binaryId || 'cil-binary';
   const imageId = createManagedImageId(binaryId);
-  const moduleId = createManagedModuleId(imageId, 'Assembly.dll');
+  const moduleId = createManagedModuleId(imageId, moduleName);
 
   // Managed entrypoint authority (ECMA-335 II.15.4.1.2 / II.25.3.3). The
   // COMIMAGE_FLAGS_NATIVE_ENTRYPOINT (0x00000010) branch stores a native RVA
@@ -863,8 +901,17 @@ export function parseCil(bytes, options = {}) {
   return deepFreeze({
     imageId,
     moduleId,
+    moduleName,
     formatVersion: 'cli-ecma-335',
     vmSpecEdition: runtimeVersion,
+    // Native pointer-width authority from the CLI header flags (#7775):
+    // `32BITREQUIRED` means the image only loads in a 32-bit process, so
+    // native-size values (`O`, `&`, `native int`) are 32-bit there. PE32+
+    // without 32BITREQUIRED is a known 64-bit target. Any other case leaves
+    // the width unresolved rather than fabricating 64.
+    requires32Bit: peCli?.requires32Bit === true,
+    requires64Bit: peCli?.requires64Bit === true,
+    cliFlags: peCli?.cliFlags ?? null,
     types,
     methods,
     fields,

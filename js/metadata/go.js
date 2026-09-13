@@ -123,13 +123,16 @@ function readCString(buf, off, maxLen = 1024) {
  * Decodes Go varint / uvarint used in string length and offsets.
  */
 function readUvarint(buf, off) {
-  let val = 0;
+  let value = 0;
   let shift = 0;
   let pos = off;
   while (pos < buf.length && shift < 35) {
     const b = buf[pos++];
-    val |= (b & 0x7f) << shift;
-    if ((b & 0x80) === 0) return { value: val, bytesRead: pos - off };
+    // The decoder is capped at 35 bits, which is safely below Number's 53-bit
+    // integer precision. Arithmetic accumulation preserves bits 32..34; JS
+    // bitwise operators would truncate them to a signed 32-bit value (#5373).
+    value += (b & 0x7f) * (2 ** shift);
+    if ((b & 0x80) === 0) return { value, bytesRead: pos - off };
     shift += 7;
   }
   return null;
@@ -365,27 +368,39 @@ export function parseGoFunctions(buf, header, options = {}) {
   };
 }
 
-/**
- * Returns offsets for the current Go internal/abi.Type layout. The fixed
- * scalar prefix is followed by two pointer-width fields (`Equal`, `GCData`)
- * before the 32-bit `Str NameOff`. We deliberately reject unknown pointer
- * widths instead of guessing a target ABI layout.
- */
-function currentGoAbiTypeLayout(ptrSize) {
-  if (ptrSize !== 4 && ptrSize !== 8) return null;
-  const strOffset = ptrSize * 4 + 8;
-  return { strOffset, minimumSize: strOffset + 8 };
+const GO_TYPE_LAYOUT_CURRENT = Object.freeze({
+  strNameOffset: (ptrSize) => ptrSize * 4 + 8,
+  headerBytes: (ptrSize) => ptrSize * 4 + 16,
+});
+
+// `internal/abi.Type` is not a format that can be selected from pointer width
+// alone. Bind the decoder to the concrete Go toolchain range that this layout
+// has been validated against. Pclntab generations such as "1.20+" are not
+// sufficient authority because they intentionally span future toolchains.
+const GO_TYPE_LAYOUT_MIN_MINOR = 16;
+const GO_TYPE_LAYOUT_MAX_MINOR = 23;
+
+function resolveGoTypeLayout(version) {
+  if (typeof version !== 'string') return null;
+  const match = /^1\.(\d+)(?:\.(\d+))?$/.exec(version);
+  if (!match) return null;
+  const minor = Number(match[1]);
+  const patch = match[2] == null ? 0 : Number(match[2]);
+  if (!Number.isSafeInteger(minor) || !Number.isSafeInteger(patch)) return null;
+  if (minor < GO_TYPE_LAYOUT_MIN_MINOR || minor > GO_TYPE_LAYOUT_MAX_MINOR) return null;
+  return GO_TYPE_LAYOUT_CURRENT;
 }
 
 /**
- * Parses Go type descriptor (_type / internal/abi.Type) at a given buffer offset.
+ * Parses Go type descriptor (_type) at a given buffer offset.
  */
 export function parseGoTypeDescriptor(buf, typeOff, options = {}) {
   const ptrSize = options.ptrSize ?? 8;
   const little = options.little ?? true;
-  const layout = currentGoAbiTypeLayout(ptrSize);
+  const layout = resolveGoTypeLayout(options.version);
 
-  if (!layout || !Number.isSafeInteger(typeOff) || typeOff < 0 || typeOff > buf.length - layout.minimumSize) return null;
+  if (!layout || (ptrSize !== 4 && ptrSize !== 8)) return null;
+  if (!Number.isSafeInteger(typeOff) || typeOff < 0 || typeOff > buf.length - layout.headerBytes(ptrSize)) return null;
 
   const size = Number(readPtr(buf, typeOff, ptrSize, little));
   const ptrdata = Number(readPtr(buf, typeOff + ptrSize, ptrSize, little));
@@ -399,8 +414,7 @@ export function parseGoTypeDescriptor(buf, typeOff, options = {}) {
   const kindId = rawKind & 0x1f;
   const kind = GO_TYPE_KINDS[kindId] || 'unknown';
 
-  // NameOff is relative to moduledata.types in the current abi.Type layout.
-  const nameOff = i32(buf, typeOff + layout.strOffset, little);
+  const nameOff = i32(buf, typeOff + layout.strNameOffset(ptrSize), little);
   let name = null;
   if (Number.isSafeInteger(options.typesBase) && nameOff != null) {
     const strPos = options.typesBase + nameOff;
@@ -553,9 +567,9 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
     const funcResult = parseGoFunctions(this.pclntabBuffer, header, this.options);
     this.cachedFunctions = funcResult;
 
-    // pclntab only proves the function-symbol domain. Runtime type metadata
+    // pclntab proves only the function-symbol domain. Runtime type metadata
     // (moduledata/typelinks) is not enumerated by this provider yet, so a
-    // complete function-table scan must not become whole-provider completeness.
+    // complete function-table scan cannot establish whole-provider completeness.
     const completeness = {
       ...funcResult.completeness,
       complete: false,
@@ -564,9 +578,9 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
         'go-runtime-types-unscanned',
       ],
     };
-
+    const hasIdentityBinding = this.binaryIdentity != null;
     const identity = createLanguageMetadataIdentity({
-      verdict: 'matched-partial',
+      verdict: hasIdentityBinding ? 'matched-partial' : 'identity-unavailable',
       providerId: this.id,
       providerVersion: this.version,
       ecosystem: 'go',
@@ -577,7 +591,9 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
       architecture: this.architecture,
       platform: this.platform,
       method: 'pclntab-magic',
-      detail: `Go ${header.versionName} (${funcResult.functions.length} functions)`,
+      detail: hasIdentityBinding
+        ? `Go ${header.versionName} (${funcResult.functions.length} functions)`
+        : `Go ${header.versionName} without binary identity binding (${funcResult.functions.length} functions)`,
       coverage: {
         recordKinds: ['symbol'],
         addresses: funcResult.functions.map((f) => f.address),

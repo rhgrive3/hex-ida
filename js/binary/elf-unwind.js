@@ -53,7 +53,11 @@ function sameExecutableRange(image, start, range) {
 function instructionAlignment(image) {
   const arch = String(image?.architecture || image?.arch || '').toLowerCase();
   if (arch === 'arm64' || arch === 'aarch64') return 4n;
-  if (arch.includes('riscv')) return 2n;
+  if (arch.includes('riscv')) {
+    const isaAlignment = image?.metadata?.riscvIsa?.file?.instructionAlignment
+      ?? image?.metadata?.riscvFileIsa?.instructionAlignment;
+    return isaAlignment === 4 ? 4n : 2n;
+  }
   if (arch === 'arm' || arch === 'thumb') return 2n;
   return 1n;
 }
@@ -152,6 +156,21 @@ function readCStringBounded(r, p0, end) {
   throw new Error('unterminated CIE augmentation string');
 }
 
+// AArch64 CIE augmentation markers produced by current GNU toolchains:
+// `B` selects the PAC B-key for the frame's return address (GAS
+// `.cfi_b_key_frame`), `G` marks an MTE-tagged frame (GAS
+// `.cfi_mte_tagged_frame`). Neither adds augmentation data. Unknown chars
+// keep failing closed (#4255).
+const AARCH64_CIE_AUGMENTATIONS = new Set(['B', 'G']);
+
+function targetSpecificCieAugmentations(image) {
+  const arch = String(image?.architecture || image?.arch || '').toLowerCase();
+  if (arch === 'arm64' || arch === 'aarch64' || arch.startsWith('arm64_32') || arch === 'aarch64_32') {
+    return AARCH64_CIE_AUGMENTATIONS;
+  }
+  return null;
+}
+
 function parseCie(r, image, domain, address, bits) {
   const header = recordHeader(r, domain, address);
   let p = header.payload;
@@ -190,6 +209,7 @@ function parseCie(r, image, domain, address, bits) {
     const augEnd = p + Number(augLength.value);
     if (augEnd > header.end) throw new Error('CIE augmentation data crosses record boundary');
     const ctx = domainContext(domain, image, bits);
+    const targetAugmentations = targetSpecificCieAugmentations(image);
     for (const ch of augmentation.slice(1)) {
       if (ch === 'L') {
         if (p >= augEnd) throw new Error('truncated CIE LSDA encoding');
@@ -203,6 +223,12 @@ function parseCie(r, image, domain, address, bits) {
         const enc = r.u8(p++);
         const personality = decodeEhValue(r, p, enc, ctx, augEnd);
         p = personality.next;
+      } else if (ch === 'B' || ch === 'G') {
+        // AArch64 target-specific markers: `B` = PAC B-key frame
+        // (.cfi_b_key_frame), `G` = MTE tagged frame (.cfi_mte_tagged_frame).
+        // Neither contributes augmentation data; on any other target they
+        // stay unsupported so records keep failing closed (#4255).
+        if (!targetAugmentations?.has(ch)) throw new Error(`unsupported CIE augmentation '${ch}'`);
       } else if (ch !== 'S') {
         throw new Error(`unsupported CIE augmentation '${ch}'`);
       }
@@ -360,6 +386,7 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
         if (alignment > 1n && decoded.initial % alignment !== 0n) throw new Error('FDE initial location violates target instruction alignment');
         candidates.push({ address:decoded.initial, fdeAddress:row.fde, domainKind:domain.kind });
       } catch (entryError) {
+        if (entryError?.code === 'BINARY_SOURCE_RANGE_MISSING') throw entryError;
         invalidEntries++;
         recordUnverifiedKnownUnwind(image, row.initial, entryError.message, unverifiedSeen);
         warn(image, `entry ${row.index} rejected: ${entryError.message}`);
@@ -446,9 +473,15 @@ function decodeEhValue(r, p0, enc, ctx, end = r.length) {
     throw new Error(`unsupported DW_EH_PE application 0x${application.toString(16)}`);
   }
   if (indirect) {
-    const off = ctx.image.addressToOffset(value);
-    if (off == null || off + BigInt(ptrBytes) > BigInt(r.length)) throw new Error(`DW_EH_PE_indirect target 0x${value.toString(16)} is not readable`);
-    value = ctx.bits === 64 ? r.u64(Number(off)) : BigInt(r.u32(Number(off)));
+    const pointerBytes = ctx.image?.readVirtual?.(value, ptrBytes);
+    if (!(pointerBytes instanceof Uint8Array) || pointerBytes.length !== ptrBytes) {
+      throw new Error(`DW_EH_PE_indirect target 0x${value.toString(16)} is not readable`);
+    }
+    const pointerView = new DataView(pointerBytes.buffer, pointerBytes.byteOffset, pointerBytes.byteLength);
+    const littleEndian = typeof r.littleEndian === 'boolean' ? r.littleEndian : ctx.image?.endian !== 'big';
+    value = ctx.bits === 64
+      ? pointerView.getBigUint64(0, littleEndian)
+      : BigInt(pointerView.getUint32(0, littleEndian));
   }
   return { value, raw, next };
 }

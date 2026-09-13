@@ -1,7 +1,9 @@
 import { RuntimeAnalysisPlatform } from './index.js';
+import { RuntimeProviderPlatform } from './provider-platform.js';
 
 const states = new WeakMap();
 const transitions = new WeakMap();
+const providerStates = new WeakMap();
 
 function currentFileToken(app) {
   return app?.store?.get?.('fileInfo') || null;
@@ -47,6 +49,35 @@ function activeSliceIdentity(app) {
   const arch=activeArchitecture(app);
   const uuid=canonicalSliceUuid(detail.uuid);
   return `slice:${index}:${uuid ?? '-'}:${arch}`;
+}
+
+function providerSourceState(app) {
+  const info = currentFileToken(app), backend = app?.backend ?? null;
+  return { info, backend, file: backend?.file ?? app?.store?.get?.('file') ?? null,
+    slice: activeSliceIdentity(app), index: app?.store?.get?.('sliceIndex') ?? null,
+    generation: backend?.gen ?? null, transportEpoch: backend?.transportEpoch ?? null,
+    binaryId: backend?.binaryId ?? null, hash: info?.hash ?? null, sha256: info?.sha256 ?? null };
+}
+
+/** Bind an existing provider facade to this source. No provider/session is
+ * created or selected and no byte hashing, streaming, or replay is performed. */
+export function bindRuntimeProviderPlatformForApp(app, platform) {
+  if (!app || !(platform instanceof RuntimeProviderPlatform)) throw new TypeError('runtime-provider-platform-required');
+  const source = providerSourceState(app);
+  if (!source.info && !source.file) throw new TypeError('runtime-provider-app-source-required');
+  providerStates.set(app, { platform, source });
+  return platform;
+}
+
+export function existingRuntimeProviderPlatformForApp(app) {
+  const bound = app && providerStates.get(app);
+  if (!bound) return null;
+  const now = providerSourceState(app);
+  if (Object.keys(bound.source).some(key => bound.source[key] !== now[key])) {
+    providerStates.delete(app);
+    return null;
+  }
+  return bound.platform;
 }
 function localSandboxSupportsArchitecture(architecture) {
   if (typeof architecture !== 'string') return false;

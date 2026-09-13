@@ -4,6 +4,8 @@ const MASK64 = 0xffffffffffffffffn;
 const FNV_OFFSET = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
 export const FUNCTION_FINGERPRINT_VERSION = 4;
+// Bump when comparison weights, floors, caps or identity labels change.
+export const FUNCTION_FINGERPRINT_COMPARISON_VERSION = '1.0.0';
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 const RELOCATION_INTEGER_PATTERN = /^[+-]?(?:0[xX][0-9a-fA-F]+|[0-9]+)$/;
 
@@ -137,9 +139,112 @@ function numericOther(op) {
   } catch { return null; }
 }
 
+/* Structured immediate payloads are authority-bearing fingerprint material:
+   only canonical primitives may mint a constant — bigint, finite safe-integer
+   number, or a canonical integer string. BigInt() coercion would launder
+   booleans, arrays and structured values into real immediates, and
+   non-coercible shapes would throw (#5036). */
+function canonicalIntegerValue(raw) {
+  if (typeof raw === 'bigint') return raw;
+  if (typeof raw === 'number' && Number.isSafeInteger(raw)) return BigInt(raw);
+  if (typeof raw === 'string') {
+    const text = raw.trim();
+    // BigInt() rejects signed hex ('-0x10'), so split an optional sign from
+    // the magnitude before parsing and reapply it afterwards (#5036).
+    const match = /^([+-]?)(0[xX][0-9a-fA-F]+|\d+)$/.exec(text);
+    if (match) {
+      try {
+        const magnitude = BigInt(match[2]);
+        return match[1] === '-' ? -magnitude : magnitude;
+      } catch { return null; }
+    }
+  }
+  return null;
+}
+
+const STRUCTURED_SHIFT_OPERATIONS = new Set(['lsl', 'lsr', 'asr', 'ror', 'msl', 'uxtb', 'uxth', 'uxtw', 'uxtx', 'sxtb', 'sxth', 'sxtw', 'sxtx']);
+const STRUCTURED_CONDITION_PATTERN = /^(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al|nv)$/i;
+const STRUCTURED_MEMORY_MODES = new Set(['offset', 'pre', 'post']);
+
+function isStructuredRecord(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+// Validate only fields whose implicit String()/Number() coercion can collapse
+// structured evidence onto a valid canonical operand. Numeric immediate payloads
+// deliberately retain the newer #5036 contract: malformed value/float fields
+// fall back to text instead of making the entire instruction disappear.
+function validStructuredShift(shift) {
+  if (shift == null) return true;
+  if (!isStructuredRecord(shift)) return false;
+  if (shift.op != null && (typeof shift.op !== 'string' || !STRUCTURED_SHIFT_OPERATIONS.has(shift.op.toLowerCase()))) return false;
+  return shift.amount == null || (typeof shift.amount === 'number' && Number.isSafeInteger(shift.amount));
+}
+
+function optionalStructuredText(record, key) {
+  return !Object.hasOwn(record, key) || record[key] == null || typeof record[key] === 'string';
+}
+
+function validRegisterLike(value) {
+  return isStructuredRecord(value)
+    && optionalStructuredText(value, 'text')
+    && validStructuredShift(value.shift);
+}
+
+function validImmediateLike(value) {
+  return isStructuredRecord(value)
+    && optionalStructuredText(value, 'text')
+    && !(value.value != null && value.float != null)
+    && validStructuredShift(value.shift);
+}
+
+function validStructuredOperand(op) {
+  if (!isStructuredRecord(op) || typeof op.k !== 'string') return false;
+  switch (op.k) {
+    case 'reg':
+      return typeof op.text === 'string' && op.text.length > 0 && validStructuredShift(op.shift);
+    case 'imm':
+      return validImmediateLike(op);
+    case 'cond':
+      return typeof op.text === 'string' && STRUCTURED_CONDITION_PATTERN.test(op.text);
+    case 'mem':
+      return optionalStructuredText(op, 'text')
+        && validRegisterLike(op.base)
+        && (op.index == null || validRegisterLike(op.index))
+        && (op.disp == null || validImmediateLike(op.disp))
+        && (op.addressDisp == null || validImmediateLike(op.addressDisp))
+        && (op.writebackDisp == null || validImmediateLike(op.writebackDisp))
+        && validStructuredShift(op.shift)
+        && (!Object.hasOwn(op, 'mode') || op.mode == null || (typeof op.mode === 'string' && STRUCTURED_MEMORY_MODES.has(op.mode)));
+    case 'list':
+      return optionalStructuredText(op, 'text')
+        && Array.isArray(op.regs)
+        && op.regs.every(validRegisterLike);
+    case 'elem':
+    case 'other':
+      return typeof op.text === 'string' && op.text.length > 0;
+    default:
+      return false;
+  }
+}
+
+function validStructuredOperands(operands) {
+  return Array.isArray(operands) && operands.every(validStructuredOperand);
+}
+
+function hasInvalidStructuredOperands(instructions) {
+  return Array.isArray(instructions) && instructions.some((instruction) => (
+    isStructuredRecord(instruction)
+      && Object.hasOwn(instruction, 'parsedOperands')
+      && !validStructuredOperands(instruction.parsedOperands)
+  ));
+}
+
 function canonicalImmediate(op) {
-  if (op?.float != null) return String(op.float);
-  const value = op?.value != null ? BigInt(op.value) : numericOther(op);
+  if (op?.float != null) {
+    return typeof op.float === 'number' && Number.isFinite(op.float) ? String(op.float) : String(op?.text || '');
+  }
+  const value = op?.value != null ? canonicalIntegerValue(op.value) : numericOther(op);
   return value == null ? String(op?.text || '') : '#' + value.toString(10);
 }
 
@@ -164,7 +269,7 @@ function canonicalMem(op, options) {
 function canonicalOperand(op, mnemonic, index, options) {
   const isBranchTarget = BRANCH_MNEMONICS.test(mnemonic) && index === (mnemonic.startsWith('cb') ? 1 : mnemonic.startsWith('tb') ? 2 : 0);
   const isAddressValue = /^adrp?$/.test(mnemonic) && index === 1;
-  const rawNumeric = op?.k === 'imm' ? op.value : numericOther(op);
+  const rawNumeric = op?.k === 'imm' ? canonicalIntegerValue(op.value) : numericOther(op);
   if ((isBranchTarget || isAddressValue) && rawNumeric != null) return isBranchTarget ? '@branch' : '@address';
   if (ADDRESS_MNEMONICS.test(mnemonic) && op?.k !== 'mem' && rawNumeric != null && BigInt(rawNumeric < 0n ? -rawNumeric : rawNumeric) >= 0x1000n) return '@address';
   if (op?.k === 'reg') return canonicalRegister(op, options) + (op.shift ? ',' + canonicalShift(op.shift) : '');
@@ -193,7 +298,10 @@ export function normalizeInstruction(instruction, options = {}) {
     operandText = m?.[2] || '';
   } else {
     mnemonic = String(instruction?.mnemonic || instruction?.op || '').toLowerCase();
-    if (Array.isArray(instruction?.parsedOperands)) structured = instruction.parsedOperands;
+    if (isStructuredRecord(instruction) && Object.hasOwn(instruction, 'parsedOperands')) {
+      if (!validStructuredOperands(instruction.parsedOperands)) return null;
+      structured = instruction.parsedOperands;
+    }
     operandText = typeof instruction?.operands === 'string' ? instruction.operands : String(instruction?.opStr ?? '');
   }
   if (!mnemonic) return null;
@@ -283,6 +391,7 @@ function cfgShape(cfg = {}) {
 }
 function blockHashes(cfg = {}) {
   if (!Array.isArray(cfg.blocks)) return [];
+  if (cfg.blocks.some((block) => hasInvalidStructuredOperands(block?.instructions || block?.insns || []))) return [];
   return cfg.blocks.map((block) => {
     const instructions = normalizeInstructionList(block.instructions || block.insns || []);
     const descriptor = {
@@ -323,10 +432,12 @@ export function fingerprintFunction(fn = {}, options = {}) {
   const architecture = String(fn.architecture || fn.arch || 'unknown').toLowerCase();
   const relocation = normalizeRelocationsDetailed(bytes, fn.relocationOffsets, fn.relocationRanges, architecture);
   const normalizedBytes = relocation.bytes;
-  const instructions = normalizeInstructionList(fn.instructions || [], fn.normalization);
+  const instructionInput = Array.isArray(fn.instructions) ? fn.instructions : [];
+  const structuredOperandsValid = !hasInvalidStructuredOperands(instructionInput);
+  const instructions = structuredOperandsValid ? normalizeInstructionList(instructionInput, fn.normalization) : [];
   const mnemonics = instructions.map((x) => x.mnemonic);
   const operands = instructions.map((x) => `${x.mnemonic} ${x.operands}`.trim());
-  const bagOperands = normalizeInstructionBag(fn.instructions || [], fn.normalization).map((x) => `${x.mnemonic} ${x.operands}`.trim());
+  const bagOperands = structuredOperandsValid ? normalizeInstructionBag(instructionInput, fn.normalization).map((x) => `${x.mnemonic} ${x.operands}`.trim()) : [];
   const cfg = cfgShape(fn.cfg);
   const blocks = blockHashes(fn.cfg);
   const semantic = options.includeSemantic === false ? semanticShape({}) : semanticShape(fn);
@@ -338,10 +449,10 @@ export function fingerprintFunction(fn = {}, options = {}) {
   const size = Math.max(0, Number(fn.size ?? bytes?.length ?? 0));
   const exactBytesHash = bytes?.length ? hashBytes(bytes) : (fn.exactBytesHash || fn.byteHash || null);
   const normalizedBytesHash = normalizedBytes?.length ? hashBytes(normalizedBytes) : (fn.normalizedBytesHash || fn.normalizedByteHash || null);
-  const instructionSequenceHash = mnemonics.length ? nonEmptyHash(mnemonics) : (fn.instructionSequenceHash || null);
-  const instructionBagHash = mnemonics.length ? nonEmptyHash([...mnemonics].sort()) : (fn.instructionBagHash || null);
-  const normalizedOperandsHash = operands.length ? nonEmptyHash(operands) : (fn.normalizedOperandsHash || null);
-  const normalizedOperandBagHash = bagOperands.length ? nonEmptyHash([...bagOperands].sort()) : (fn.normalizedOperandBagHash || null);
+  const instructionSequenceHash = structuredOperandsValid && mnemonics.length ? nonEmptyHash(mnemonics) : (structuredOperandsValid ? (fn.instructionSequenceHash || null) : null);
+  const instructionBagHash = structuredOperandsValid && mnemonics.length ? nonEmptyHash([...mnemonics].sort()) : (structuredOperandsValid ? (fn.instructionBagHash || null) : null);
+  const normalizedOperandsHash = structuredOperandsValid && operands.length ? nonEmptyHash(operands) : (structuredOperandsValid ? (fn.normalizedOperandsHash || null) : null);
+  const normalizedOperandBagHash = structuredOperandsValid && bagOperands.length ? nonEmptyHash([...bagOperands].sort()) : (structuredOperandsValid ? (fn.normalizedOperandBagHash || null) : null);
   const cfgHash = (cfg.blocks || cfg.edges || cfg.exits || cfg.loops || cfg.calls) ? nonEmptyHash({ cfg, blocks }) : (fn.cfgHash || null);
   const semanticHash = options.includeSemantic === false ? null : (Object.values(semantic).some((v) => Array.isArray(v) ? v.length : v != null) ? nonEmptyHash(semantic) : (fn.semanticHash || fn.irHash || null));
   const components = {
@@ -388,17 +499,19 @@ export function fingerprintFunctionFast(fn = {}) {
   const architecture = String(fn.architecture || fn.arch || 'unknown').toLowerCase();
   const relocation = normalizeRelocationsDetailed(bytes, fn.relocationOffsets, fn.relocationRanges, architecture);
   const normalizedBytes = relocation.bytes;
-  const instructions = normalizeInstructionList(fn.instructions || [], fn.normalization);
+  const instructionInput = Array.isArray(fn.instructions) ? fn.instructions : [];
+  const structuredOperandsValid = !hasInvalidStructuredOperands(instructionInput);
+  const instructions = structuredOperandsValid ? normalizeInstructionList(instructionInput, fn.normalization) : [];
   const mnemonics = instructions.map((x) => x.mnemonic), operands = instructions.map((x) => `${x.mnemonic} ${x.operands}`.trim());
-  const bagOperands = normalizeInstructionBag(fn.instructions || [], fn.normalization).map((x) => `${x.mnemonic} ${x.operands}`.trim());
+  const bagOperands = structuredOperandsValid ? normalizeInstructionBag(instructionInput, fn.normalization).map((x) => `${x.mnemonic} ${x.operands}`.trim()) : [];
   const cfg = cfgShape(fn.cfg), blocks = blockHashes(fn.cfg);
   const size = Math.max(0, Number(fn.size ?? bytes?.length ?? 0));
   const exactBytesHash = bytes?.length ? hashBytes(bytes) : (fn.exactBytesHash || fn.byteHash || null);
   const normalizedBytesHash = normalizedBytes?.length ? hashBytes(normalizedBytes) : (fn.normalizedBytesHash || fn.normalizedByteHash || null);
-  const instructionSequenceHash = mnemonics.length ? nonEmptyHash(mnemonics) : (fn.instructionSequenceHash || null);
-  const instructionBagHash = mnemonics.length ? nonEmptyHash([...mnemonics].sort()) : (fn.instructionBagHash || null);
-  const normalizedOperandsHash = operands.length ? nonEmptyHash(operands) : (fn.normalizedOperandsHash || null);
-  const normalizedOperandBagHash = bagOperands.length ? nonEmptyHash([...bagOperands].sort()) : (fn.normalizedOperandBagHash || null);
+  const instructionSequenceHash = structuredOperandsValid && mnemonics.length ? nonEmptyHash(mnemonics) : (structuredOperandsValid ? (fn.instructionSequenceHash || null) : null);
+  const instructionBagHash = structuredOperandsValid && mnemonics.length ? nonEmptyHash([...mnemonics].sort()) : (structuredOperandsValid ? (fn.instructionBagHash || null) : null);
+  const normalizedOperandsHash = structuredOperandsValid && operands.length ? nonEmptyHash(operands) : (structuredOperandsValid ? (fn.normalizedOperandsHash || null) : null);
+  const normalizedOperandBagHash = structuredOperandsValid && bagOperands.length ? nonEmptyHash([...bagOperands].sort()) : (structuredOperandsValid ? (fn.normalizedOperandBagHash || null) : null);
   const cfgHash = (cfg.blocks || cfg.edges || cfg.exits || cfg.loops || cfg.calls) ? nonEmptyHash({cfg,blocks}) : (fn.cfgHash || null);
   return Object.freeze({ schema:'hex.function-fingerprint-fast', version:FUNCTION_FINGERPRINT_VERSION,
     address:fn.address==null?null:BigInt(fn.address), name:fn.name||null, architecture, size, exactBytesHash, byteHash:exactBytesHash, normalizedBytesHash, normalizedByteHash:normalizedBytesHash,

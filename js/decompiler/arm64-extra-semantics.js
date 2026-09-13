@@ -1,3 +1,5 @@
+import { sourceOf } from './ast/nodes.js';
+
 /* Exact late lowering for ARM64 instructions that the legacy/semantic
  * decompilers still preserve as raw __asm. This is deliberately mnemonic-
  * scoped: unknown instructions stay raw assembly rather than being hidden. */
@@ -133,6 +135,13 @@ export function lowerArm64RawAssembly(result) {
   let lowered = 0;
   for (const line of result.lines) {
     if (!line || typeof line.text !== 'string') continue;
+    if (!line.source && line.row != null && /^goto\s+loc_[0-9a-f]+;$/i.test(line.text.trim())) {
+      line.source = sourceOf({
+        address:line.addr ?? null,
+        row:line.row,
+        evidence:[{ reason:'residual compatibility control-flow edge' }],
+      });
+    }
     const payload = asmPayload(line.text);
     if (!payload) continue;
     const semantic = lowerOne(payload);

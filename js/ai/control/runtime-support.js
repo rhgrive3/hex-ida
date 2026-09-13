@@ -1,5 +1,5 @@
 import { AIError } from '../schema.js';
-import { canonicalBindingId, firstBinding, resolveBinaryIdentity } from './snapshot.js';
+import { canonicalBindingId, firstBinding, resolveBinaryIdentity, sameStrongIdentity } from './snapshot.js';
 
 export function requiredScopeForTool(tool) {
   if (['search_functions','search_strings','compare_functions','lookup_known_function'].includes(tool)) return 'binary';
@@ -66,10 +66,21 @@ export function sessionMatchesSnapshot(session, snapshot) {
 }
 export function assertLiveBindingsUnchanged(local, snapshot) {
   const live = resolveBinaryIdentity(local, {});
-  const snapshotIdentity = snapshot.binaryIdentity || null;
-  const sameId = live.id === snapshotIdentity?.id;
-  const bothWeak = !strongIdentity(live, live.id) && !strongIdentity(snapshotIdentity, snapshot.binaryId);
-  const same = sameId || (bothWeak && sameLegacy(live.legacyId, snapshot.legacyBinaryId));
+  const expectedLive = snapshot.binaryIdentitySource === 'request-fallback'
+    ? (snapshot.liveBinaryIdentity || null)
+    : (snapshot.binaryIdentity || null);
+  const expectedId = snapshot.binaryIdentitySource === 'request-fallback'
+    ? expectedLive?.id
+    : snapshot.binaryId;
+  const expectedLegacy = snapshot.binaryIdentitySource === 'request-fallback'
+    ? expectedLive?.legacyId
+    : snapshot.legacyBinaryId;
+  const sameId = live.id === expectedLive?.id;
+  const liveStrong = strongIdentity(live, live.id);
+  const expectedStrong = strongIdentity(expectedLive, expectedId);
+  const same = liveStrong && expectedStrong
+    ? sameStrongIdentity(live, expectedLive, local)
+    : !liveStrong && !expectedStrong && (sameId || sameLegacy(live.legacyId, expectedLegacy));
   if (!same) throw new AIError('scope_violation', 'The binary changed while this AI turn was running; refusing to mix workbench states.');
   const liveProject = firstBinding(local.projectId, local.project?.id, local.project?.binaryHash);
   if (!sameNullableBinding(liveProject, snapshot.projectIdentity)) {
@@ -91,6 +102,7 @@ export function assertLiveBindingsUnchanged(local, snapshot) {
 }
 export function compactCandidate(candidate) { return { address: addressString(candidate.address), name: candidate.name, lexicalScore: candidate.lexicalScore, semanticScore: candidate.semanticScore, graphScore: candidate.graphScore, evidenceScore: candidate.evidenceScore, runtimeScore: candidate.runtimeScore, totalScore: candidate.totalScore, reasons: candidate.reasons }; }
 export function deterministicDecision(plan, request, error = null) {
+  if (error?.type === 'cancelled') return { type: 'final', answer: humanError(error), confidence: 0, evidenceIds: [], hypothesisIds: [], suggestedActions: [], followups: [] };
   const best = plan?.best;
   if (best) { const address = addressString(best.address); return { type: 'final', answer: `最も強い候補は ${best.name || address} です。Hex の決定論的 planner が候補を順位付けし、${best.verification?.verified ? '更新経路を検証しました。' : '追加検証が必要です。'}`, confidence: deterministicConfidence(plan), evidenceIds: plan.evidence || [], hypothesisIds: [], suggestedActions: address ? [{ kind: 'open-function', target: address, label: '候補関数を開く' }] : [], followups: plan.missingEvidence || [] }; }
   return { type: 'final', answer: error ? humanError(error) : (request.mode === 'chat' ? '利用できるローカル根拠だけでは回答を確定できませんでした。' : '有力な候補を特定できませんでした。'), confidence: 0, evidenceIds: [], suggestedActions: [], followups: plan?.missingEvidence || [] };

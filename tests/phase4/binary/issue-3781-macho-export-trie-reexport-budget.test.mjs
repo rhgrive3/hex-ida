@@ -103,7 +103,8 @@ function run(name, payload, limits) {
   assert.equal(status.complete, false);
   assert.equal(status.budgetExceeded, true);
   assert.equal(image.exports.length, 0);
-  assert.equal(budget.used.stringBytes, 0);
+  // The edge label itself is now charged before decoding the imported name (#4154).
+  assert.equal(budget.used.stringBytes, 4);
 }
 
 {

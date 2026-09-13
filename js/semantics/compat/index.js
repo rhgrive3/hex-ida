@@ -7,7 +7,9 @@ import {
   stableDigest,
   stableStringify,
 } from '../../core/identity/index.js';
-import { createOriginSet, mergeOriginSets } from '../../core/identity/origin.js';
+import { appendTransform, createTransformRecord, createOriginSet, mergeOriginSets } from '../../core/identity/origin.js';
+import { abiResultInvalidState, canonicalAbiEvidence } from '../../targets/abi/evidence.js';
+import { createPhysicalStateVariable } from '../ir/normalize-effects.js';
 import { classifySemanticMemoryRegion } from '../../analysis/alias/index-v2.js';
 import { createPhase7AliasSolver } from '../../analysis/alias/solver.js';
 import { createSemanticCfg } from '../cfg/index.js';
@@ -17,6 +19,7 @@ import {
 } from '../effects/index.js';
 import {
   SEMANTIC_IR_SCHEMA_VERSION,
+  SEMANTIC_IR_DEFAULT_BUDGET,
   createSemanticIrFunction,
   lowerMachineEffectBundleToSemanticIr,
 } from '../ir/index.js';
@@ -47,7 +50,7 @@ export const SEMANTIC_V2_MIGRATION_MODES = Object.freeze({
   SHADOW_DIFFERENTIAL: 'semantic-v2-shadow-differential',
 });
 
-export const SEMANTIC_V2_COMPAT_PIPELINE_VERSION = '1.1.0';
+export const SEMANTIC_V2_COMPAT_PIPELINE_VERSION = '1.2.0';
 export const SEMANTIC_V2_COMPAT_PATH = Object.freeze([
   'machine-effects',
   'semantic-ir-v2',
@@ -290,6 +293,230 @@ function canonicalMemoryAccessProof(descriptor, architectureId) {
  * not rediscover CFG structure or parse mnemonics. Stable FunctionId, BlockId,
  * and InstructionId values are minted only through the canonical identity API.
  */
+// Canonical ABI value binding reused from rhgrive3/hex-ida PR #7036,
+// upstream head a0f47590783eb356208c7d833b9264a4f4c69c5f. Only the existing
+// ABI-to-IR binding lane is imported; target resolution and summary closure
+// remain with their respective owners.
+/**
+ * Observe a declared scalar ABI result before SSA, not by searching rendered
+ * register names after projection. The architectural return target stays in
+ * its original control attributes. This adds a value observation, not a claim
+ * about that value's root, a callee's effects, or aggregate reconstruction.
+ */
+function declaredValuesObservable(ir) {
+  if (ir.completeness === 'complete' && ir.unknowns.length === 0) return true;
+  // A typed call's normal-return value can be observed without settling any
+  // of its memory, control or other state effects. Every other frontier stays
+  // closed, and the original partial status/unknowns are never removed.
+  return ir.completeness === 'partial' && ir.unknowns.length > 0
+    && ir.unknowns.every(item => item.reason === 'call-context-effects-not-enriched')
+    && ir.nodes.filter(node => node.kind === 'call').every(node => node.attributes?.abiCallBinding != null);
+}
+
+// AAPCS64's existing classifier spells a declared argument with the explicit
+// possible/mustUse pair; other registered ABIs also publish exact. Preserve
+// both positive contracts without treating a missing/false flag as authority.
+function declaredExactArgument(argument) {
+  return argument?.possible !== true && argument?.mustUse !== false
+    && (argument?.exact === true || argument?.exact === undefined
+      && argument?.possible === false && argument?.mustUse === true);
+}
+
+function bindDeclaredScalarReturns(ir, input, options) {
+  const adapter = input.abiAdapter ?? options.abiAdapter ?? options.compatOptions?.abiAdapter;
+  if (!adapter || !declaredValuesObservable(ir)
+    || !ir.nodes.some(node => node.kind === 'return' && node.inputs.length === 0)) return ir;
+  let classified, locations;
+  try {
+    adapter.observeFunction?.({ semanticIr:ir });
+    classified = adapter.classifyFunctionReturn?.(options.functionReturn ?? {});
+    if (!canonicalAbiEvidence(classified) || abiResultInvalidState(classified)
+      || classified.partial === true || classified.unsupported === true) return ir;
+    locations = adapter.returnLocations?.({ ...(options.functionReturn ?? {}), classified });
+  } catch { return ir; }
+  const identity = classified.abiIdentity;
+  const snapshotId = options.memorySsaOptions?.snapshotId ?? options.snapshotId;
+  if (identity.architectureId !== input.architecturePlugin.id
+    || (identity.binaryId != null && identity.binaryId !== input.binaryId)
+    || (identity.sliceId != null && identity.sliceId !== input.sliceId)
+    || (identity.functionId != null && identity.functionId !== ir.functionId)
+    || (snapshotId != null && identity.snapshotId !== snapshotId)) return ir;
+  if (!Array.isArray(locations) || locations.length !== 1) return ir;
+  const location = locations[0];
+  if (location.kind !== 'register' || location.aggregate === true) return ir;
+  const descriptor = architectureRegisterDescriptors(input.architecturePlugin)
+    .find(reg => reg.id === location.reg && reg.kind === 'gp');
+  const widthBits = descriptor?.physicalBits ?? descriptor?.bits;
+  if (!Number.isSafeInteger(widthBits) || widthBits <= 0
+    || !Number.isSafeInteger(location.bits) || location.bits <= 0 || location.bits > widthBits) return ir;
+  const variable = createPhysicalStateVariable({ kind:'register', registerId:descriptor.physicalId ?? descriptor.id });
+  const nodes = [], values = [...ir.values], before = new Map();
+  for (const node of ir.nodes) {
+    assertNotAborted(options);
+    if (node.kind !== 'return' || node.inputs.length) { nodes.push(node); continue; }
+    const fact = { kind:'abi-return-location', version:1, functionId:ir.functionId,
+      returnNodeId:node.id, abiIdentity:identity, location };
+    const key = stableDigest(fact);
+    const readId = `abi_return_read_${key}`, valueId = `abi_return_value_${key}`;
+    const narrow = location.bits !== widthBits;
+    const truncId = `abi_return_trunc_${key}`, resultId = narrow ? `abi_return_result_${key}` : valueId;
+    const addedIds = narrow ? [readId, truncId] : [readId];
+    const origin = appendTransform(node.origin, createTransformRecord({
+      passId:'semantic-abi-return-binding', passVersion:'1.0.0', ruleId:'declared-scalar-result',
+      proofKind:'canonical-abi-location', consumedEntityIds:[node.id],
+      producedEntityIds:[...addedIds, valueId, ...(narrow ? [resultId] : [])], preconditions:[fact],
+    }));
+    nodes.push({ id:readId, kind:'state-read', blockId:node.blockId,
+      inputs:[], outputs:[valueId], variable, origin });
+    values.push({ id:valueId, kind:'definition', definitionNodeId:readId,
+      machineType:{ kind:'bitvector', widthBits }, origin });
+    if (narrow) {
+      nodes.push({ id:truncId, kind:'trunc', blockId:node.blockId,
+        inputs:[valueId], outputs:[resultId], origin });
+      values.push({ id:resultId, kind:'definition', definitionNodeId:truncId,
+        machineType:{ kind:'bitvector', widthBits:location.bits }, origin });
+    }
+    before.set(node.id, addedIds);
+    nodes.push({ ...node, inputs:[resultId], origin,
+      attributes:{ ...node.attributes, abiReturnBinding:{ ...fact, valueId:resultId } } });
+  }
+  return createSemanticIrFunction({ ...ir, nodes, values,
+    blocks:ir.blocks.map(block => ({ ...block,
+      nodeIds:block.nodeIds.flatMap(id => [...(before.get(id) ?? []), id]) })),
+  }, options.semanticIrOptions ?? {});
+}
+
+/** Exact full-register formal arguments seed the existing SSA entry model. */
+function bindDeclaredEntryArguments(ir, input, options) {
+  const prototype = input.functionPrototype ?? options.functionReturn?.functionPrototype;
+  const adapter = input.abiAdapter ?? options.abiAdapter ?? options.compatOptions?.abiAdapter;
+  if (!prototype || !adapter || !declaredValuesObservable(ir)) return ir;
+  let classified;
+  try { classified = adapter.classifyArguments?.({ functionPrototype:prototype }); }
+  catch { return ir; }
+  if (!canonicalAbiEvidence(classified) || abiResultInvalidState(classified)
+    || classified.partial === true || !Array.isArray(classified.arguments)) return ir;
+  const identity = classified.abiIdentity;
+  const snapshotId = options.memorySsaOptions?.snapshotId ?? options.snapshotId;
+  if (identity.architectureId !== input.architecturePlugin.id
+    || (identity.binaryId != null && identity.binaryId !== input.binaryId)
+    || (identity.sliceId != null && identity.sliceId !== input.sliceId)
+    || (identity.functionId != null && identity.functionId !== ir.functionId)
+    || (snapshotId != null && identity.snapshotId !== snapshotId)) return ir;
+  const descriptors = architectureRegisterDescriptors(input.architecturePlugin);
+  const values = [...ir.values];
+  for (const argument of classified.arguments) {
+    assertNotAborted(options);
+    if (argument.location !== 'register' || !declaredExactArgument(argument) || argument.possible === true
+      || argument.aggregate === true || argument.pieces?.length || argument.regs?.length > 1
+      || !Number.isSafeInteger(argument.index) || argument.index < 0) continue;
+    const descriptor = descriptors.find(reg => reg.id === argument.reg && reg.kind === 'gp');
+    const widthBits = descriptor?.physicalBits ?? descriptor?.bits;
+    if (!Number.isSafeInteger(widthBits) || argument.bits !== widthBits) continue;
+    // A duplicated physical location is a contradiction, not two formals.
+    if (classified.arguments.filter(item => item.reg === argument.reg).length !== 1) continue;
+    const variable = createPhysicalStateVariable({ kind:'register', registerId:descriptor.physicalId ?? descriptor.id });
+    if (!ir.nodes.some(node => node.variable?.key === variable.key)
+      || ir.values.some(value => value.variableKey === variable.key
+        && ['entry', 'undef', 'unknown'].includes(value.kind))) continue;
+    const fact = { kind:'abi-entry-argument', version:1, functionId:ir.functionId,
+      abiIdentity:identity, argumentIndex:argument.index, variableKey:variable.key,
+      location:{ reg:argument.reg, bits:argument.bits, abiClass:argument.abiClass } };
+    const id = `abi_entry_value_${stableDigest(fact)}`;
+    const origin = appendTransform(ir.origin, createTransformRecord({
+      passId:'semantic-abi-entry-binding', passVersion:'1.0.0', ruleId:'declared-register-argument',
+      proofKind:'canonical-abi-location', consumedEntityIds:[ir.functionId], producedEntityIds:[id], preconditions:[fact],
+    }));
+    values.push({ id, kind:'entry', variableKey:variable.key,
+      machineType:{ kind:'bitvector', widthBits }, origin,
+      metadata:{ argumentIndex:argument.index, abiArgumentBinding:fact } });
+  }
+  return values.length === ir.values.length ? ir : createSemanticIrFunction({ ...ir, values }, options.semanticIrOptions ?? {});
+}
+
+/** Bind normal-return scalar values; do not resolve targets or callee effects. */
+function bindDeclaredCallValues(ir, input, options) {
+  const adapter = input.abiAdapter ?? options.abiAdapter ?? options.compatOptions?.abiAdapter;
+  if (!adapter || !ir.nodes.some(node => node.kind === 'call')) return ir;
+  const descriptors = architectureRegisterDescriptors(input.architecturePlugin);
+  const physical = location => {
+    if (location?.aggregate === true) return null;
+    const descriptor = descriptors.find(reg => reg.id === location?.reg && reg.kind === 'gp');
+    const widthBits = descriptor?.physicalBits ?? descriptor?.bits;
+    if (!Number.isSafeInteger(widthBits) || widthBits <= 0 || location.bits !== widthBits) return null;
+    return { widthBits, variable:createPhysicalStateVariable({ kind:'register', registerId:descriptor.physicalId ?? descriptor.id }) };
+  };
+  const nodes = [], values = [...ir.values], replacements = new Map();
+  let addedNodes = 0;
+  for (const node of ir.nodes) {
+    assertNotAborted(options);
+    let raw = null;
+    if (node.kind === 'call' && !node.outputs.length && !node.call.arguments.length && !node.call.returns.length) {
+      try { raw = adapter.classifyCall?.({ node, call:node.call, semanticIr:ir }); } catch { /* unknown */ }
+    }
+    if (!raw || !canonicalAbiEvidence(raw) || abiResultInvalidState(raw) || raw.partial === true
+      || raw.noreturn === true || raw.returnAggregate === true || raw.returnIndirect === true
+      || raw.returnLocations?.length !== 1 || raw.returnLocations[0].kind !== 'register'
+      || !Array.isArray(raw.explicitArguments) || raw.explicitArguments.length > 64
+      || raw.implicitInputs?.length || raw.stackArguments?.length || raw.stackArgsUnknown !== false) {
+      nodes.push(node); continue;
+    }
+    const identity = raw.abiIdentity, snapshotId = options.memorySsaOptions?.snapshotId ?? options.snapshotId;
+    if (identity.architectureId !== input.architecturePlugin.id
+      || (identity.binaryId != null && identity.binaryId !== input.binaryId)
+      || (identity.sliceId != null && identity.sliceId !== input.sliceId)
+      || (identity.functionId != null && identity.functionId !== ir.functionId)
+      || (snapshotId != null && identity.snapshotId !== snapshotId)) { nodes.push(node); continue; }
+    const returned = physical(raw.returnLocations[0]);
+    const args = raw.explicitArguments.map((argument, index) => argument.index === index
+      && argument.location === 'register' && declaredExactArgument(argument) && argument.possible !== true
+      && !argument.pieces?.length && !(argument.regs?.length > 1) ? physical(argument) : null);
+    if (!returned || args.some(argument => !argument)
+      || new Set(args.map(argument => argument.variable.key)).size !== args.length) { nodes.push(node); continue; }
+    // Charge before allocating the expanded graph, not after building an
+    // arbitrarily large set of register observations for the constructor.
+    const growth = args.length + 1;
+    if (ir.nodes.length + addedNodes + growth > (options.semanticIrOptions?.budget?.maxNodes ?? SEMANTIC_IR_DEFAULT_BUDGET.maxNodes)) {
+      fail('semantic-ir-budget-exceeded-maxNodes');
+    }
+    if (values.length + growth > (options.semanticIrOptions?.budget?.maxValues ?? SEMANTIC_IR_DEFAULT_BUDGET.maxValues)) {
+      fail('semantic-ir-budget-exceeded-maxValues');
+    }
+    addedNodes += growth;
+    const fact = { kind:'abi-call-values', version:1, functionId:ir.functionId, callNodeId:node.id,
+      abiIdentity:identity, arguments:raw.explicitArguments, returnLocation:raw.returnLocations[0] };
+    const key = stableDigest(fact), resultId = `abi_call_result_${key}`, writeId = `abi_call_write_${key}`;
+    const readIds = args.map((_, index) => `abi_call_read_${key}_${index}`);
+    const argumentIds = args.map((_, index) => `abi_call_arg_${key}_${index}`);
+    const origin = appendTransform(node.origin, createTransformRecord({
+      passId:'semantic-abi-call-binding', passVersion:'1.0.0', ruleId:'declared-scalar-call-values',
+      proofKind:'canonical-abi-location', consumedEntityIds:[node.id],
+      producedEntityIds:[...readIds, ...argumentIds, resultId, writeId], preconditions:[fact],
+    }));
+    args.forEach((argument, index) => {
+      nodes.push({ id:readIds[index], kind:'state-read', blockId:node.blockId,
+        inputs:[], outputs:[argumentIds[index]], variable:argument.variable, origin });
+      values.push({ id:argumentIds[index], kind:'definition', definitionNodeId:readIds[index],
+        machineType:{ kind:'bitvector', widthBits:argument.widthBits }, origin });
+    });
+    values.push({ id:resultId, kind:'definition', definitionNodeId:node.id,
+      machineType:{ kind:'bitvector', widthBits:returned.widthBits }, origin });
+    nodes.push({ ...node, inputs:[...new Set([...node.inputs, ...argumentIds])], outputs:[resultId],
+      call:{ ...node.call, arguments:argumentIds, returns:[resultId] }, origin,
+      attributes:{ ...node.attributes, abiCallBinding:{ ...fact, argumentValueIds:argumentIds, returnValueId:resultId } } });
+    // SSA still applies the CALL's broad unknown-state write first. Only the
+    // declared result cell receives the fresh call value on normal continuation.
+    nodes.push({ id:writeId, kind:'state-write', blockId:node.blockId,
+      inputs:[resultId], outputs:[], variable:returned.variable, origin });
+    replacements.set(node.id, [...readIds, node.id, writeId]);
+  }
+  return replacements.size === 0 ? ir : createSemanticIrFunction({ ...ir, nodes, values,
+    blocks:ir.blocks.map(block => ({ ...block,
+      nodeIds:block.nodeIds.flatMap(id => replacements.get(id) ?? [id]) })),
+  }, options.semanticIrOptions ?? {});
+}
+
+
 export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   assertNotAborted(options);
   input = object(input, 'semantic-v2-integration-input-required');
@@ -469,7 +696,7 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     const merged = blocks.get(block.id);
     if (merged && block.origin != null) merged.origin = mergeOriginSets(merged.origin ?? createOriginSet({}), block.origin);
   }
-  const ir = createSemanticIrFunction({
+  const machineIr = createSemanticIrFunction({
     functionId,
     entryBlockId: entryRecord.id,
     blocks: [...blocks.values()],
@@ -479,6 +706,9 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     unknowns: [...issues.values()],
     origin: functionOrigin,
   }, options.semanticIrOptions ?? {});
+
+  const callIr = bindDeclaredCallValues(machineIr, input, options);
+  const ir = bindDeclaredEntryArguments(bindDeclaredScalarReturns(callIr, input, options), input, options);
 
   const nodeById = new Map(ir.nodes.map((node) => [node.id, node]));
   const successorMap = new Map();

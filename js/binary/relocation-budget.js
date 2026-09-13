@@ -6,8 +6,7 @@ export const DEFAULT_RELOCATION_BUDGET_LIMITS = Object.freeze({
 });
 
 function positiveLimit(value, fallback) {
-  const n = Number(value);
-  return Number.isSafeInteger(n) && n > 0 ? n : fallback;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
 export function createRelocationBudget({ limits = {}, onLimit = null, signal = null } = {}) {

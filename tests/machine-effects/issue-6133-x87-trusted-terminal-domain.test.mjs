@@ -93,10 +93,14 @@ try {
 
   const rdrand = withReceiverX86FlagDomainEvidence(createX86DecodedInstruction(capstone.decode([0x0f, 0xc7, 0xf0], 0x3010n)[0]));
   const randomEffects = terminalizeTrustedUnit(rdrand, 'issue-6133:rdrand');
-  assert.equal(randomEffects.completeness, 'exact-with-intrinsic');
-  const randomFlags = randomEffects.operations[0].effectSummary.registersWritten;
-  assert.ok(hasRflags(randomFlags));
-  assert.ok(!hasFpswFlags(randomFlags));
+  assert.equal(randomEffects.completeness, 'partial');
+  assert.equal(
+    randomEffects.unknownEffects?.reason,
+    'x86-extended-system-family-requires-dedicated-semantics',
+    'RDRAND must remain fail-closed until its operandless system semantics are dedicated',
+  );
+  assert.equal(randomEffects.metadata?.failClosed, true);
+  assert.equal(randomEffects.metadata?.exactArchitecturalSummary, false);
 
   // A forged or stale flagsKind must not override the architectural identity
   // inferred from the family and decoder groups. Both mismatch directions

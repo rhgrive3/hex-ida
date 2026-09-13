@@ -60,7 +60,7 @@ jobs:
     steps:
       # Never execute PR-head code in this privileged workflow. The evaluator is
       # loaded only from the repository's default branch.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 1
@@ -69,7 +69,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Evaluate exact-head admission evidence
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           DISPATCH_PR_NUMBER: ${{ inputs.pr_number || '' }}
         with:
@@ -130,6 +130,11 @@ jobs:
             const reviews = await github.paginate(github.rest.pulls.listReviews, {
               owner, repo, pull_number: pr.number, per_page: 100,
             });
+            // Current-base review identity: the authoritative base is the live
+            // head of the PR's target branch, not the PR's creation-time base.
+            const { data: baseBranch } = await github.rest.repos.getBranch({
+              owner, repo, branch: pr.base.ref,
+            });
             const statuses = await github.paginate(github.rest.repos.listCommitStatusesForRef, {
               owner, repo, ref: headSha, per_page: 100,
             });
@@ -171,6 +176,9 @@ jobs:
               // AUTO markers are review evidence, not authentication. Only the
               // repository owner is trusted to mint them in this repository.
               trustedAutoReviewers: [owner],
+              // Approvals must be bound to the live target-branch head so a
+              // stale (HEAD, BASE_old) approval cannot survive a base advance.
+              currentBaseSha: baseBranch?.commit?.sha ?? null,
               // These contexts are emitted for every PR in the current CircleCI
               // admission surface. Requiring the full set prevents transient
               // success before a slower status context has even been created.

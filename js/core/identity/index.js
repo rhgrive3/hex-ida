@@ -66,8 +66,9 @@ export function jsonSafe(value, seen = new WeakSet()) {
   else {
     out = {};
     for (const key of Object.keys(value).sort()) {
-      const normalized = jsonSafe(value[key], seen);
-      if (normalized !== null || value[key] === null) {
+      const raw = value[key];
+      const normalized = jsonSafe(raw, seen);
+      if (normalized !== null || raw === null) {
         // Assignment creates the same own data descriptor for a fresh key,
         // without allocating a descriptor on every property. Inherited names
         // (including __proto__, setters and non-writable prototype properties)
@@ -106,6 +107,10 @@ function canonicalWitnessParts(value, seen = new WeakSet()) {
 function compareCanonicalWitnessParts(left, right) {
   return compareCanonicalText(stableStringify(left.normalized), stableStringify(right.normalized))
     || compareCanonicalText(stableStringify(left.witness), stableStringify(right.witness));
+}
+
+export function sameCanonicalIdentityValue(left, right) {
+  return compareCanonicalWitnessParts(canonicalWitnessParts(left), canonicalWitnessParts(right)) === 0;
 }
 
 function canonicalMapEntries(value, seen = new WeakSet()) {
@@ -244,7 +249,13 @@ export function lossyTypeWitness(value, path = '', seen = new WeakSet(), out = [
     } else if (ArrayBuffer.isView(value)) out.push([path, 'bytes']);
     else if (value instanceof ArrayBuffer) out.push([path, 'bytes']);
     else if (value instanceof Date) out.push([path, 'date']);
-    else if (Array.isArray(value)) value.forEach((item, index) => lossyTypeWitness(item, `${path}[${index}]`, seen, out));
+    else if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index++) {
+        const itemPath = `${path}[${index}]`;
+        if (!Object.hasOwn(value, index)) out.push([itemPath, 'array-hole']);
+        else lossyTypeWitness(value[index], itemPath, seen, out);
+      }
+    }
     else for (const key of Object.keys(value).sort()) lossyTypeWitness(value[key], `${path}.${key}`, seen, out);
     seen.delete(value);
   }
@@ -387,7 +398,7 @@ export function validateCanonicalIdentityNumbers(value, seen = new WeakSet()) {
   seen.delete(value);
 }
 
-function normalizeIdentity(value, code) {
+export function normalizeIdentity(value, code) {
   if (value == null) fail(code);
   validateCanonicalIdentityNumbers(value);
   if (typeof value === 'bigint' || typeof value === 'number') return String(value);

@@ -23,8 +23,8 @@ function required(value, code) {
 }
 
 function boundedCount(value, fallback, max, code) {
-  const n = value == null ? fallback : Number(value);
-  if (!Number.isSafeInteger(n) || n < 1 || n > max) throw new TypeError(code);
+  const n = value == null ? fallback : value;
+  if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 1 || n > max) throw new TypeError(code);
   return n;
 }
 
@@ -155,10 +155,6 @@ export function validateManagedRuntimeObservation(binding, observation, options 
   }
   if (observation.payload.moduleIdentity !== binding.runtimeModuleIdentity) {
     return { ok: false, reason: 'managed-runtime-observation-module-mismatch' };
-  }
-  const { observationId, ...payload } = observation;
-  if (observationId !== `runtime-observation:${stableDigest(payload)}`) {
-    return { ok: false, reason: 'managed-runtime-observation-tampered' };
   }
   return { ok: true, observation };
 }
