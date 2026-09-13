@@ -1244,6 +1244,13 @@ export function pointerProvenance(value, active = null, memo = defaultPointerPro
   return out;
 }
 
+/** Canonical unsigned 64-bit effective address for MK.GLOBAL identity. */
+export function canonicalGlobalAddress(...terms) {
+  let sum = 0n;
+  for (const term of terms) sum += term == null ? 0n : BigInt(term);
+  return BigInt.asUintN(64, sum);
+}
+
 function locationOf(inst, pointerMemo = defaultPointerProvenanceMemo) {
   const a = inst.addr;
   if (!a) return null;
@@ -1256,13 +1263,13 @@ function locationOf(inst, pointerMemo = defaultPointerProvenanceMemo) {
   }
   const base = a.base;
   if (base.const != null) {
-    const address = base.const + a.disp;
+    const address = canonicalGlobalAddress(base.const, a.disp);
     return { key:'global:' + address.toString(16) + ':s' + size, kind:MK.GLOBAL, address, size };
   }
 
   const provenance = pointerProvenance(base, null, pointerMemo);
   if (provenance?.must !== false && provenance?.kind === 'global' && provenance.address != null) {
-    const address = provenance.address + (provenance.offset || 0n) + a.disp;
+    const address = canonicalGlobalAddress(provenance.address, provenance.offset || 0n, a.disp);
     return { key:'global:' + address.toString(16) + ':s' + size, kind:MK.GLOBAL, address, size, provenance };
   }
 
@@ -1726,7 +1733,7 @@ function propagateValues(ir) {
   for (const inst of ir.instructions) {
     if (!inst.addr || !inst.addr.base) continue;
     if (inst.addr.base.const == null || inst.addr.disp == null) continue;
-    inst.globalAddress = inst.addr.base.const + inst.addr.disp;
+    inst.globalAddress = canonicalGlobalAddress(inst.addr.base.const, inst.addr.disp);
   }
 }
 
