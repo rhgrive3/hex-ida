@@ -134,6 +134,7 @@ export class Emulator {
   get(reg) {
     const name = this._normalizeReg(reg);
     if (name === 'sp') return this.sp;
+    if (name === 'wsp') return this.sp & MASK32;
     if (name === 'pc') return this.pc;
     if (/^[xw]zr$/.test(name)) return 0n;
     const m = /^([xw])(\d+)$/.exec(name);
@@ -148,6 +149,7 @@ export class Emulator {
     const name = this._normalizeReg(reg);
     const v = BigInt.asUintN(64, BigInt(value));
     if (name === 'sp') { this.sp = v; return; }
+    if (name === 'wsp') { this.sp = BigInt.asUintN(32, v); return; }
     if (name === 'pc') { this.pc = v; return; }
     if (/^[xw]zr$/.test(name)) return;
     const m = /^([xw])(\d+)$/.exec(name);
@@ -446,7 +448,10 @@ export class Emulator {
     const ops = parseOperands(opsStr);
     const R = (op) => this.valueOf(op);
 
-    if (/^(nop|hint|bti|paciasp|pacibsp|autiasp|autibsp|xpaclri|dmb|dsb|isb|prfm|pacia|autia|pacibz)$/.test(mn)) return null;
+    if (/^(nop|hint|bti|dmb|dsb|isb|prfm)$/.test(mn)) return null;
+    if (/^(pac|aut)(ia|ib)(z|sp)?$/.test(mn) || mn === 'xpaclri' || mn === 'retaa' || mn === 'retab') {
+      throw new EmulatorFault('pointer-authentication-unsupported', `pointer authentication命令はまだ実行できません: ${mn}`, { instruction: mn });
+    }
 
     if (mn === 'b') return this.branchTarget(ops);
     if (/^b\.(\w+)$/.test(mn)) {
@@ -494,7 +499,7 @@ export class Emulator {
       }
       return target;
     }
-    if (/^(ret|retaa|retab)$/.test(mn)) {
+    if (mn === 'ret') {
       const target = ops.length ? R(ops[0]) : this.x[30];
       this.callStack.pop();
       return target;
