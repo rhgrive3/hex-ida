@@ -8,6 +8,7 @@ import { relocationFieldWidth } from './elf-relocation-target.js';
 import { parseRiscvAttributes, parseRiscvMappingSymbol } from './riscv-isa.js';
 
 const ET_REL = 1;
+const ET_EXEC = 2;
 const PT_LOAD = 1;
 const PT_GNU_EH_FRAME = 0x6474e550;
 const PN_XNUM = 0xffff;
@@ -145,7 +146,7 @@ export function parseELF(input, options = {}) {
 
   image.imageBase = h.type === ET_REL ? 0n : findImageBase(image);
   if (h.type !== ET_REL && image.entrypoint != null) {
-    const zeroResetVector = image.entrypoint === 0n && image.arch === 'arm64';
+    const zeroResetVector = image.entrypoint === 0n && image.arch === 'arm64' && h.type === ET_EXEC;
     if (image.entrypoint !== 0n || zeroResetVector) {
       const rejection = elfInstructionTargetRejection(image, image.entrypoint);
       if (rejection == null) {
