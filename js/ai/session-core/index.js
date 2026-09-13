@@ -110,6 +110,10 @@ export class InvestigationSessionStore {
     // A queued delete ends this identity generation. Later creates may reserve
     // a new generation, but still wait for this durable deletion in saveQueues.
     this.creating.delete(key);
+    if (typeof this.persistence?.delete !== 'function' && !this.saveQueues.has(key)) {
+      this.sessions.delete(key);
+      return true;
+    }
     return this.enqueueSessionWrite(key, async () => {
       // Delete follows earlier saves in the same queue. Preserve the visible
       // record until durable deletion succeeds, including a failed delete
