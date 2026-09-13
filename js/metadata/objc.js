@@ -163,6 +163,9 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
     this.cachedIndex = buildObjcRuntimeIndex(model);
 
     const isComplete = model.runtimeCompleteness?.complete === true;
+    const coveredEntityIds = isComplete
+      ? []
+      : [...this.types().records, ...this.methods().records].map((record) => record.entityId);
     const hasIdentityBinding = this.binaryIdentity != null;
     // A pointer ABI the provider cannot decode is reported as an explicit
     // reason instead of arriving as an unexplained empty metadata set (#8280).
@@ -191,9 +194,7 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
         : `Objective-C 2.0 without binary identity binding (${model.classes?.length || 0} classes, ${model.protocols?.length || 0} protocols)`,
       coverage: isComplete ? null : {
         recordKinds: ['type', 'method'],
-        addresses: (model.classes || [])
-          .filter((c) => c.address != null)
-          .map((c) => `0x${c.address.toString(16)}`),
+        entityIds: coveredEntityIds,
       },
     });
 

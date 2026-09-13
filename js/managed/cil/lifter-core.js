@@ -2,6 +2,7 @@ import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedExceptionRegionId, createManagedMethodId, createVMOperationId } from '../shared/identity.js';
 import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
 import { createCilLocalTypeResolver } from './call-signatures.js';
+import { cilStackValueWidth } from './stack-width.js';
 import { decodeCilInstructionBoundary } from './instruction-boundary.js';
 
 function fail(code) { throw new TypeError(code); }
@@ -14,6 +15,18 @@ function slotBitsForType(slotType) {
   if (slotType.stackType === 'int32') return 32;
   if (slotType.stackType === 'int64') return 64;
   return null;
+}
+
+// ECMA-335 §III.3: polymorphic integer opcodes take their operand and result
+// width from the evaluation stack, not from the opcode. Only a run of
+// stack pushes with no intervening pop, call, or control transfer proves the
+// shape of the stack top, so width claims are restricted to that run; anything
+// else stays unresolved instead of laundering into a fabricated 32-bit exact
+// effect (#4043).
+function operandWidths(run, count) {
+  if (run.length < count) return null;
+  const top = run.slice(run.length - count);
+  return top.every((bits) => bits != null) ? top : null;
 }
 
 function typedLocationAccess(kind, index, slotType, unknownEffects) {
@@ -154,6 +167,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
   let pc = 0;
   let opSeq = 0;
   let currentStackHeight = 0;
+  let pushWidthRun = [];
   const bundles = [];
   let stoppedOnUnsupported = false;
 
@@ -207,6 +221,15 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
         : {}),
   }));
 
+  // Handler/filter entries are reached by exception dispatch, never by the
+  // linear walk, so the stack shape carried into them is unproven (#4043).
+  const dispatchedEntryOffsets = new Set();
+  for (const region of exceptionRegions) {
+    for (const offset of [region.handlerOffset, region.filterOffset]) {
+      if (Number.isSafeInteger(offset)) dispatchedEntryOffsets.add(offset);
+    }
+  }
+
   while (pc < bytecode.length) {
     const opOffset = pc;
     let opcode = bytecode[pc++];
@@ -232,6 +255,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
     let producedValues = [];
     let consumedValues = [];
     let unknownEffects = [];
+    let stackEffectUnmodeled = false;
 
     if (!isPrefixFE) {
       switch (opcode) {
@@ -533,8 +557,22 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
               0x5f: 'and', 0x60: 'or', 0x61: 'xor', 0x62: 'shl', 0x63: 'shr',
             };
             mnemonic = names[opcode] || 'binop';
-            consumedValues.push({ id: 'rhs', bits: 32 }, { id: 'lhs', bits: 32 });
-            producedValues.push({ bits: 32 });
+            const widths = operandWidths(pushWidthRun, 2);
+            const lhsBits = widths ? widths[0] : null;
+            const rhsBits = widths ? widths[1] : null;
+            const isShift = opcode === 0x62 || opcode === 0x63;
+            const resultBits = widths
+              ? (isShift ? (rhsBits === 32 ? lhsBits : null) : (lhsBits === rhsBits ? lhsBits : null))
+              : null;
+            if (resultBits == null) {
+              consumedValues.push({ id: 'rhs' }, { id: 'lhs' });
+              producedValues.push({});
+              completeness = 'partial';
+              unknownEffects.push({ category: 'stack', reason: 'cil-arithmetic-operand-width-unresolved' });
+            } else {
+              consumedValues.push({ id: 'rhs', bits: rhsBits }, { id: 'lhs', bits: lhsBits });
+              producedValues.push({ bits: resultBits });
+            }
             currentStackHeight--;
             // ECMA-335 Partition III: integral `div` throws
             // System.DivideByZeroException (divisor == 0) and
@@ -554,9 +592,19 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
 
         // unops: neg (0x65), not (0x66)
         case 0x65: case 0x66:
-          mnemonic = opcode === 0x65 ? 'neg' : 'not';
-          consumedValues.push({ id: 'val', bits: 32 });
-          producedValues.push({ bits: 32 });
+          {
+            mnemonic = opcode === 0x65 ? 'neg' : 'not';
+            const widths = operandWidths(pushWidthRun, 1);
+            if (widths == null) {
+              consumedValues.push({ id: 'val' });
+              producedValues.push({});
+              completeness = 'partial';
+              unknownEffects.push({ category: 'stack', reason: 'cil-arithmetic-operand-width-unresolved' });
+            } else {
+              consumedValues.push({ id: 'val', bits: widths[0] });
+              producedValues.push({ bits: widths[0] });
+            }
+          }
           break;
 
         case 0x72: // ldstr
@@ -700,6 +748,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
           pc = boundary.end;
           mnemonic = `cil_op_0x${opcode.toString(16)}`;
           completeness = 'partial';
+          stackEffectUnmodeled = true;
           unknownEffects.push({ category: 'other', reason: `unsupported-cil-opcode-0x${opcode.toString(16)}` });
           if (!boundary.complete) unknownEffects.push({ category:'other', reason:'unsupported-instruction-boundary-unresolved' });
           unknownEffects.push({ category:'other', reason:'semantic-lifting-stopped-after-unsupported-instruction' });
@@ -827,6 +876,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
           pc = boundary.end;
           mnemonic = `cil_fe_0x${subOp.toString(16)}`;
           completeness = 'partial';
+          stackEffectUnmodeled = true;
           unknownEffects.push({ category: 'other', reason: `unsupported-cil-fe-opcode-0x${subOp.toString(16)}` });
           if (!boundary.complete) unknownEffects.push({ category:'other', reason:'unsupported-instruction-boundary-unresolved' });
           unknownEffects.push({ category:'other', reason:'semantic-lifting-stopped-after-unsupported-instruction' });
@@ -834,6 +884,14 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
           break;
         }
       }
+    }
+
+    if (stackEffectUnmodeled || callEffects.length > 0 || controlEffects.length > 0
+      || consumedValues.length > pushWidthRun.length) {
+      pushWidthRun = [];
+    } else {
+      pushWidthRun.length -= consumedValues.length;
+      for (const value of producedValues) pushWidthRun.push(cilStackValueWidth(value));
     }
 
     const origin = createOriginSet({

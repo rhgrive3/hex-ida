@@ -105,6 +105,18 @@ function cancelledRunResult(emulator) {
   };
 }
 function callsFromTrace(trace) {
+  // The emulator records both a generic instruction event and a typed call
+  // event for each BL/BLR. Pair those representations by instruction site so
+  // resume() does not report one executed call twice, while preserving
+  // legacy-only and repeated same-site calls.
+  const typedBySite = new Map();
+  for (const e of trace || []) {
+    if (e?.type !== 'call') continue;
+    const site = e.addr ?? e.address;
+    if (site == null) continue;
+    const key = typeof site === 'bigint' ? site.toString() : String(site);
+    typedBySite.set(key, (typedBySite.get(key) || 0) + 1);
+  }
   const out = [];
   for (const e of trace || []) {
     if (e?.type === 'call') {
@@ -112,6 +124,16 @@ function callsFromTrace(trace) {
       continue;
     }
     if (!/^(bl|blr)\b/i.test(e?.text || '')) continue;
+    const site = e.addr ?? e.address;
+    if (site != null) {
+      const key = typeof site === 'bigint' ? site.toString() : String(site);
+      const remaining = typedBySite.get(key) || 0;
+      if (remaining > 0) {
+        if (remaining === 1) typedBySite.delete(key);
+        else typedBySite.set(key, remaining - 1);
+        continue;
+      }
+    }
     const match = /^bl\s+#?(0x[0-9a-f]+|[0-9]+)/i.exec(e.text || '');
     let target = null; try { if (match) target = BigInt(match[1]); } catch { target = null; }
     out.push({ type:'call', address:e.addr ?? e.address, target, indirect:/^blr\b/i.test(e.text || ''), text:e.text });
@@ -273,7 +295,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const traceBuffer = new TraceRingBuffer(this.options.trace || {});
     const traceState = { suppressMemory:false, runMemoryEvents:null };
     const emu = sandbox.emulator;
-    emu.heap = heapBase;
+    emu.configureHeap({ base: heapBase, size: heapSize });
     let initializing = true;
     const rawLoad = emu.load.bind(emu), rawStore = emu.store.bind(emu);
     emu.load = async (addr,size) => {

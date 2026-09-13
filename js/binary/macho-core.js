@@ -2,7 +2,7 @@ import { ByteView } from './reader.js';
 import { BinaryImage, functionSeed } from './model.js';
 import { parseChainedImports, parseChainedBindingSites, parseClassicBindings, parseExportTrie, resolveMachOPointer } from './macho-dyld.js';
 import { createMachOMetadataBudget, ensureMachOMetadataBudget, markMachOMetadataPartial } from './macho-budget.js';
-import { cpuName, subtypeBase, cpuArchName, sliceArchName, validateFatSlice, validateFatContainer, probePastEndArm64SliceSync, parseInnerMachOHeader } from './macho-fat.js';
+import { cpuName, subtypeBase, cpuArchName, sliceArchName, selectDefaultFatSlice, validateFatSlice, validateFatContainer, probePastEndArm64SliceSync, parseInnerMachOHeader } from './macho-fat.js';
 
 const S_MOD_INIT_FUNC_POINTERS = 0x9;
 const S_MOD_TERM_FUNC_POINTERS = 0xa;
@@ -582,13 +582,18 @@ function isSymbolFunctionCandidate(image, address, requirePureInstructions) {
 
 function parseFunctionStarts(r, dc, image, sharedBudget = null) {
   const budget = ensureMachOMetadataBudget(image, sharedBudget);
-  if (!dc.size || dc.offset > r.length || dc.size > r.length - dc.offset) return;
+  const status = image.metadata.functionStarts = { complete: true, recovered: 0, partialReason: null };
+  if (!dc.size || dc.offset > r.length || dc.size > r.length - dc.offset) {
+    status.complete = false;
+    status.partialReason = 'invalid-or-truncated-payload';
+    markMachOMetadataPartial(image, 'function-starts-invalid-payload');
+    return;
+  }
   let p = dc.offset;
   const end = dc.offset + dc.size;
   let addr = image.imageBase;
   const maxAddress = image.bits === 32 ? 0xffffffffn : 0xffffffffffffffffn;
   const alignment = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32') ? 4n : image.arch === 'arm' ? 2n : 1n;
-  const status = image.metadata.functionStarts = { complete: true, recovered: 0, partialReason: null };
   let terminated = false;
   while (p < end) {
     if (!budget.take({ records:1, operations:1, estimatedHeapBytes:32 }, 'function-start-record')) { status.complete=false; status.partialReason='metadata-budget'; break; }
@@ -713,7 +718,7 @@ function selectFatSlice(bytes, kind, preferredArch, opts = {}) {
   const indexed = requestedIndex == null ? null : all[requestedIndex];
   const want = requestedIndex == null && preferredArch ? all.find((s) => sliceArchName(s) === preferredArch) : null;
   if (requestedIndex == null && preferredArch && !want) throw new Error(`requested Mach-O architecture ${preferredArch} is not present in the universal binary`);
-  const chosen = indexed || want || all.find((s) => sliceArchName(s) === 'arm64e') || all.find((s) => sliceArchName(s) === 'arm64') || all.find((s) => sliceArchName(s) === 'x86_64') || all[0];
+  const chosen = indexed || want || selectDefaultFatSlice(all);
   return chosen ? { ...chosen, all } : null;
 }
 export function parseCompactUnwind(r, image, metadataBudget = null) {
