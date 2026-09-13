@@ -7,6 +7,8 @@ import {
 } from './embed-protocol.js';
 import {
   announceEmbedChildBootstrapReady,
+  isEmbedGeneration,
+  isEmbedSandboxToken,
   normalizeEmbedProvider,
   normalizeSandboxToken,
   readEmbedGeneration,
@@ -70,8 +72,8 @@ export function waitForEmbedParentAttach(options = {}) {
       if (!originAllowed(allowedOrigins, event?.origin)) return;
       const data = event?.data;
       if (!isAttachLike(data)) return;
-      if (String(data.generation || '') !== generation) return;
-      if (sandboxToken && String(data.sandboxToken || '').toLowerCase() !== sandboxToken) return;
+      if (!isEmbedGeneration(data.generation, generation)) return;
+      if (sandboxToken && !isEmbedSandboxToken(data.sandboxToken, sandboxToken)) return;
       if (data.protocol !== EMBED_PROTOCOL || data.version !== EMBED_PROTOCOL_VERSION) {
         settle(new Error('embed parent attach protocol/version mismatch'));
         return;

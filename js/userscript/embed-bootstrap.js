@@ -10,18 +10,44 @@ export const EMBED_PROVIDER_PARAM = '__hex_ai_provider';
 export const DEV_BOOTSTRAP_PARAM = '__hex_dev_bootstrap';
 export const DEFAULT_EMBED_BOOTSTRAP_TIMEOUT_MS = 20000;
 
-export function normalizeEmbedGeneration(value) {
-  const text = String(value ?? '').trim();
-  if (!/^[1-9]\d{0,14}$/.test(text)) throw new TypeError('Invalid Hex embed generation.');
+function coerceEmbedGeneration(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const text = String(value).trim();
+  if (!/^[1-9]\d{0,14}$/.test(text)) return null;
   const number = Number(text);
-  if (!Number.isSafeInteger(number) || number <= 0) throw new TypeError('Invalid Hex embed generation.');
+  if (!Number.isSafeInteger(number) || number <= 0) return null;
   return String(number);
 }
 
-export function normalizeSandboxToken(value) {
-  const text = String(value ?? '').trim();
-  if (!/^[a-f0-9]{64}$/i.test(text)) throw new TypeError('Invalid Hex sandbox token.');
+function coerceSandboxToken(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (!/^[a-f0-9]{64}$/i.test(text)) return null;
   return text.toLowerCase();
+}
+
+export function normalizeEmbedGeneration(value) {
+  const generation = coerceEmbedGeneration(value);
+  if (generation === null) throw new TypeError('Invalid Hex embed generation.');
+  return generation;
+}
+
+export function normalizeSandboxToken(value) {
+  const token = coerceSandboxToken(value);
+  if (token === null) throw new TypeError('Invalid Hex sandbox token.');
+  return token;
+}
+
+export function isEmbedGeneration(value, expectedGeneration) {
+  const received = coerceEmbedGeneration(value);
+  const expected = coerceEmbedGeneration(expectedGeneration);
+  return received !== null && expected !== null && received === expected;
+}
+
+export function isEmbedSandboxToken(value, expectedToken) {
+  const received = coerceSandboxToken(value);
+  const expected = coerceSandboxToken(expectedToken);
+  return received !== null && expected !== null && received === expected;
 }
 
 export function withEmbedGeneration(src, generation) {
@@ -101,8 +127,8 @@ export function waitForEmbedChildBootstrap(options = {}) {
       const data = event?.data;
       if (!isPlainRecord(data) || data.type !== EMBED_BOOTSTRAP_TYPE) return;
       if (data.protocol !== EMBED_PROTOCOL || data.version !== EMBED_PROTOCOL_VERSION) return;
-      if (String(data.generation) !== generation) return;
-      if (sandboxToken && String(data.sandboxToken || '').toLowerCase() !== sandboxToken) return;
+      if (!isEmbedGeneration(data.generation, generation)) return;
+      if (sandboxToken && !isEmbedSandboxToken(data.sandboxToken, sandboxToken)) return;
       settle(null, Object.freeze({ generation, origin: childOrigin, source: expectedSource, sandboxToken }));
     }
     windowRef.addEventListener('message', onMessage);
