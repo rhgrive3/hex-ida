@@ -10,7 +10,11 @@ import fs from 'node:fs';
 
 // #2612: recent verified extraction must not require EvidenceStore.all().
 const evidence = new EvidenceStore();
-evidence.restorePersistedConfirmed(Array.from({ length: 80 }, (_, i) => ({ id:`v${i}`, kind:'test', status:'verified', title:`E${i}` })));
+const persistedConfirmedSession = new InvestigationSessionStore().register({
+  id: 'reopened-verified-projection',
+  confirmedFindings: Array.from({ length: 80 }, (_, i) => ({ id:`v${i}`, kind:'test', status:'verified', title:`E${i}` })),
+});
+evidence.restorePersistedConfirmed(persistedConfirmedSession.confirmedFindings);
 const originalAll = evidence.all.bind(evidence);
 evidence.all = () => { throw new Error('full-store-scan'); };
 const broker = new ContextBroker({}, { maxBytes: 128 * 1024 });
