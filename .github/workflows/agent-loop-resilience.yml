@@ -5,6 +5,7 @@ on:
     paths:
       - 'js/userscript/**'
       - 'js/ai/**'
+      - 'js/core/identity/**'
       - 'tests/dev-agent/agent-loop-resilience.mjs'
       - 'tests/dev-agent/agent-loop-trigger-coverage.mjs'
       - '.github/workflows/agent-loop-resilience.yml'
@@ -13,6 +14,7 @@ on:
     paths:
       - 'js/userscript/**'
       - 'js/ai/**'
+      - 'js/core/identity/**'
       - 'tests/dev-agent/agent-loop-resilience.mjs'
       - 'tests/dev-agent/agent-loop-trigger-coverage.mjs'
       - '.github/workflows/agent-loop-resilience.yml'
