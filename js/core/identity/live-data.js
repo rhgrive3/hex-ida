@@ -173,9 +173,10 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
     if (certifiedHeight != null) { seen.set(value, certifiedHeight); return 1; }
     // Cycles remain ordinary live observations, even if some members are frozen.
     seen.set(value, 1);
+    const ownFrozen = Object.isFrozen(value);
     const entries = ownDataEntries(value,PROJECTION_LIMITS.edges-edges);
     edges += entries.length;
-    records.push({value,prototype:Object.getPrototypeOf(value),entries,arrayLength:Array.isArray(value)?value.length:null});
+    records.push({value,prototype:Object.getPrototypeOf(value),entries,ownFrozen,arrayLength:Array.isArray(value)?value.length:null});
     let cost = 1, height = 1, stable = immutable != null && Object.isFrozen(value);
     for (const [key,child] of entries) {
       if (key.length > PROJECTION_LIMITS.string) throw new TypeError('projection-key-budget');
@@ -233,9 +234,10 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
         return 1;
       }
       if (certifyData(value, depth) != null) return 1;
+      const ownFrozen = Object.isFrozen(value);
       const entries = ownDataEntries(value, PROJECTION_LIMITS.edges - edges);
       edges += entries.length;
-      records.push({ value, depth, prototype:Object.getPrototypeOf(value), entries,
+      records.push({ value, depth, prototype:Object.getPrototypeOf(value), entries, ownFrozen,
         arrayLength:Array.isArray(value) ? value.length : null });
       return 1;
     };
@@ -311,7 +313,18 @@ function captureIrData(roots, shouldAbort, immutable, graph = false, data = null
           byKey.get(key).push({ before:own('before'), after:own('after'), beforePresent, afterPresent });
         }
       }
-      for (const {value,prototype,entries,arrayLength} of records) {
+      for (const {value,prototype,entries,arrayLength,ownFrozen} of records) {
+        // Frozen own data/prototype cannot change. Descendants still have
+        // their own records, including mutable children and cyclic graphs.
+        // Capture this fact BEFORE reading fields: freezing a changed object
+        // later must never refresh the original observation.
+        // Recheck liveness: a frozen target may still be behind a revoked or
+        // throwing Proxy. Object.isFrozen probes its descriptor invariants,
+        // while ordinary frozen objects use the engine's integrity fast path.
+        if (ownFrozen && !changed?.has(value)) {
+          if (!Object.isFrozen(value) || Object.getPrototypeOf(value)!==prototype) return false;
+          continue;
+        }
         if (Object.getPrototypeOf(value)!==prototype) return false;
         const currentLength = arrayLength == null ? null : Object.getOwnPropertyDescriptor(value, 'length')?.value;
         if (arrayLength != null && currentLength !== arrayLength) {

@@ -7391,3 +7391,75 @@ The reviewed X-02 delivery is backed up separately at `684f1f0bb` and has not
 been merged through the still-locked integration checkpoint. ME formal breadth
 requires missing independent inputs; existing RV64 subject/minimization and
 submitted user acceptance work must not be reassigned as new implementation.
+
+## 解析md作業の引き継ぎ（2026-09-13）
+
+ユーザーが作業を引き継ぐための保存です。全要求の完了・統合ゲート通過の宣言ではありません。
+
+### 開始ブランチ
+
+PR #7036: `feat/analysis-roadmap-v8-current-main-20260907`。
+リモートのこのブランチから作業ブランチを切ってください。
+
+```sh
+git fetch origin feat/analysis-roadmap-v8-current-main-20260907
+git switch -c work/analysis-continuation-20260913 origin/feat/analysis-roadmap-v8-current-main-20260907
+```
+
+提出済みの C1/C3、SYM-01、X-03 は取り込み済み成果を使い、作り直しません。
+X-02 の検証済み成果は `feat/x02-apple-matrix-reviewed-20260913`、
+コミット `684f1f0bb9c4809cd9bbaba01f01a4849151cc0b` に別途 push 済みです。
+#7036 へは未結合です。次の部品を結合する前に工程ガードの checkpoint lock を解消してください。
+
+### 今回までの実装
+
+- `fa07353bc`: C4 の条件証明を、実際に評価された分岐入力と接続。
+  分岐ごとの評価済み値、変更検知、期限を検査します。完全な返り値・taint の証明を省略して成功扱いにはしません。
+- x30 の下位2ビットをマスクした ARM64 入力では、戻り先の整列条件を証明し、条件式の表示更新まで通過。
+  これは parsed-row 検証で、表示段階に明示的な1000ms予算を指定しています。
+  枝本体、PHI、CFG辺の削除は未許可です。
+- 最新差分は `js/core/identity/live-data.js` の凍結済みデータの確認処理。
+  観測時から frozen だったオブジェクトの自身のフィールド再走査を省きます。
+  mutable な子は引き続き検査し、Proxy の失効・例外も再確認します。
+  書込み照合の対象は従来の完全な matcher を通します。
+  標準120msでの表示更新が完了する改善は、まだ確認できていません。
+
+### 次の優先作業
+
+1. **C4 の表示処理の性能**：標準120msでは停止します。
+   計測では `live-data.matches` に時間の大半が集中しました。
+   同じ IR/表示履歴の再確認が重複する箇所を調べ、変更・期限・取消し検知を維持して改善してください。
+2. **C4-05 の式検証**：`fa07353bc` の canonical Phase9 は2件失敗。
+   `family-width-matrix` の `factor-mul/bv32:deadline` と、
+   `rule-order` の `factor-mul/bv16/reverse:deadline` です。
+   単独計測では約250〜320msで `partial/cancelled` となり、同じ期限切れは再現していません。
+   原因未確定です。`deadline` をテストの許容理由へ加えるだけでは完了にしないでください。
+3. **C4-03 の表示対応**：追加で回した既存70テスト中3件が失敗します。
+   変更前 `fa07353bc` の隔離 checkout でも同じ3件が失敗しました。
+   `compat-constant-history.test.mjs` の precomputed rendering、
+   `consumer-binding.test.mjs` の actual store/return consumers と query navigation です。
+   消えた演算の元命令から実際の表示行へ逆引きできない状態を調べてください。
+4. **C4 の残りの機能**：flags/NZCV、領域全体・PHI・CFG・メモリ・例外・ループの意味保存変換、
+   recovery/削除・統合ノードの由来対応、式族×幅×順序の受入。
+5. **最終照合と統合**：元の解析mdの23 finding / 21 FR全体を現行の根拠と対応付ける。
+   X-02 は120行の監査を完了していますが、製品不足6行・証拠不足4行・環境対象外2行を残しています。
+
+ME-01 は、保存済み Isla の依存定義と独立したメモリ順序の結果資料が不足しています。
+RV64 subject/minimization や既存 ordering 行列の再作成は不要です。
+実機・環境整備・別issue修正は、これまでの指定どおり対象外です。
+
+### 検証と作業状態
+
+- `fa07353bc`: 重点300件＋解析クエリ28件通過。生成物再ビルド差分ゼロ、lint、
+  モジュール境界、所有権、独立レビュー通過。Phase9全体は上記2件が失敗。
+- frozen 観測変更：失効したProxy、例外を投げるProxy、後からfreezeした変更、
+  mutableな子と循環を含む回帰を追加。対象テストと独立レビューを実施。
+- 今回の frozen 変更後の full Phase9/full Phase8 は未実施です。
+  初期の性能計測で標準120msの停止は解消していません。
+- 完成済みの生成物もブランチに含めます。工程上の状態は **CHECKPOINT-LOCKED** のままです。
+- ユーザーの引き継ぎ要求により、リモート反映後にこちらの実装・調査を停止します。
+
+ローカルの詳細ログ・プロファイルは
+`/mnt/workspace/.dev-state/agent-work/evidence/analysis-roadmap-20260909/`、
+今回の計測とレビューはその下の `c4-proof-performance-20260913/` に保持しています。
+診断スクリプトは既存証拠を上書きしない新しいディレクトリへコピーしてから実行してください。
