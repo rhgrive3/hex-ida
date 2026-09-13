@@ -4,6 +4,7 @@ import {
   legacyPublicStateIdentity, addUse, attachArgs, defaultUnknownInstruction, baseInstruction, targetAddress,
 } from './semantic-ir-v2-to-v1-core.js';
 import { projectLegacyAddress } from './semantic-ir-v2-to-v1-address.js';
+import { SEMANTIC_CONTROL_MAX_TARGETS } from '../ir/nodes.js';
 
 const STRICT_FLOAT_LITERAL = /^[+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)$/;
 
@@ -268,14 +269,14 @@ function deterministicIntrinsicProjection(node, context, inst, setBasic, primary
   }
   if (inputValues.length >= 1) {
     const metadata = operationMetadata(node);
-    const alias = String(metadata.alias ?? '').toLowerCase();
+    const alias = typeof metadata.alias === 'string' ? metadata.alias.toLowerCase() : null;
     if (alias === 'ubfx' || alias === 'sbfx') {
-      const lsb = Number(metadata.immr);
-      const imms = Number(metadata.imms);
-      const fieldWidth = Number.isInteger(lsb) && Number.isInteger(imms) && imms >= lsb ? imms - lsb + 1 : null;
-      const outputBits = Number(primaryOutput?.bits ?? 0);
-      if (!Number.isInteger(lsb) || lsb < 0 || !Number.isInteger(fieldWidth) || fieldWidth <= 0
-          || !Number.isInteger(outputBits) || outputBits <= 0 || lsb + fieldWidth > outputBits) return false;
+      const lsb = metadata.immr;
+      const imms = metadata.imms;
+      const fieldWidth = Number.isSafeInteger(lsb) && Number.isSafeInteger(imms) && imms >= lsb ? imms - lsb + 1 : null;
+      const outputBits = primaryOutput?.bits;
+      if (!Number.isSafeInteger(lsb) || lsb < 0 || !Number.isSafeInteger(imms) || !Number.isSafeInteger(fieldWidth) || fieldWidth <= 0
+          || !Number.isSafeInteger(outputBits) || outputBits <= 0 || lsb + fieldWidth > outputBits) return false;
       setBasic(V1_OP.BFX, 'extract');
       inst.extra.lsb = lsb;
       inst.extra.width = fieldWidth;
@@ -628,6 +629,16 @@ export function projectNode(node, context) {
       inst.returnValueIds = node.inputs.slice();
       break;
     case 'branch': {
+      if (node.targets.length > SEMANTIC_CONTROL_MAX_TARGETS.branch) {
+        const unknown = defaultUnknownInstruction(node, blockIndex, row, options, {
+          reason: 'semantic-ir-v2-control-target-cardinality-not-representable-in-v1',
+          unknownCategories: ['control'],
+          surplusTargets: node.targets.slice(),
+        });
+        Object.assign(inst, unknown, { semanticNodeId: node.id, sourceEntityId: node.id, sourceEffectIds: node.sourceEffectIds.slice(), instructionId: sourceInstructionIds(node.origin)[0] ?? null, sourceInstructionIds: sourceInstructionIds(node.origin), origin: node.origin });
+        attachArgs(inst, inputValues);
+        break;
+      }
       setBasic(V1_OP.BR, null);
       const targetBlockId = node.targets[0] ?? null;
       inst.extra.targetBlockId = targetBlockId;
@@ -637,6 +648,16 @@ export function projectNode(node, context) {
       break;
     }
     case 'conditional-branch': {
+      if (node.targets.length > SEMANTIC_CONTROL_MAX_TARGETS['conditional-branch']) {
+        const unknown = defaultUnknownInstruction(node, blockIndex, row, options, {
+          reason: 'semantic-ir-v2-control-target-cardinality-not-representable-in-v1',
+          unknownCategories: ['control'],
+          surplusTargets: node.targets.slice(),
+        });
+        Object.assign(inst, unknown, { semanticNodeId: node.id, sourceEntityId: node.id, sourceEffectIds: node.sourceEffectIds.slice(), instructionId: sourceInstructionIds(node.origin)[0] ?? null, sourceInstructionIds: sourceInstructionIds(node.origin), origin: node.origin });
+        attachArgs(inst, inputValues);
+        break;
+      }
       const conditionValueId = node.inputs[0] ?? null;
       const semanticConditionValue = conditionValueId == null ? null : valuesById.get(conditionValueId) ?? null;
       const zero = conditionValueId == null ? null : zeroCondition(conditionValueId, context);
