@@ -240,7 +240,7 @@ function testWithdrawingAWrongExpectation() {
   const gate = new DevSelfUpdateGate();
   gate.requireActivation({ expectedCommit: NEW_COMMIT, expectedBuildId: NEW_BUILD, reason: 'typo' });
   assert.equal(gate.blocks('chatgpt.page.snapshot'), true);
-  const cleared = gate.requireActivation({ clear: true, reason: 'withdrew a wrong expectation' });
+  const cleared = gate.clearActivationExpectation('withdrew a wrong expectation');
   assert.equal(cleared.state, DEV_SELF_UPDATE_STATE.IDLE);
   assert.equal(cleared.reason, 'withdrew a wrong expectation');
   assert.equal(gate.blocks('chatgpt.page.snapshot'), false);

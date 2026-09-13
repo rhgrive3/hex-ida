@@ -4,6 +4,15 @@ import {
   legacyPublicStateIdentity, addUse, attachArgs, defaultUnknownInstruction, baseInstruction, targetAddress,
 } from './semantic-ir-v2-to-v1-core.js';
 import { projectLegacyAddress } from './semantic-ir-v2-to-v1-address.js';
+import { dataArityContract } from '../ir/nodes.js';
+
+function inputArityMismatch(node) {
+  const contract = dataArityContract(node.kind, node.operator);
+  if (!contract) return false;
+  const [min, max] = contract.inputs;
+  if (node.inputs.length > (max == null ? Number.POSITIVE_INFINITY : max)) return true;
+  return node.completeness === 'complete' && node.inputs.length < min;
+}
 
 const STRICT_FLOAT_LITERAL = /^[+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)$/;
 
@@ -353,6 +362,19 @@ export function projectNode(node, context) {
       sourceInstructionIds: sourceInstructionIds(node.origin),
       origin: node.origin,
     });
+    inst.dst = primaryOutput;
+    attachArgs(inst, inputValues);
+    if (primaryOutput && primaryOutput.def == null) primaryOutput.def = inst;
+    return [inst];
+  }
+
+  if (inputArityMismatch(node)) {
+    const unknown = defaultUnknownInstruction(node, blockIndex, row, options, {
+      reason: 'semantic-ir-v2-input-arity-not-representable-in-v1',
+      unknownCategories: ['value'],
+      canonicalInputValueIds: node.inputs.slice(),
+    });
+    Object.assign(inst, unknown, { semanticNodeId: node.id, sourceEntityId: node.id, sourceEffectIds: node.sourceEffectIds.slice(), instructionId: sourceInstructionIds(node.origin)[0] ?? null, sourceInstructionIds: sourceInstructionIds(node.origin), origin: node.origin });
     inst.dst = primaryOutput;
     attachArgs(inst, inputValues);
     if (primaryOutput && primaryOutput.def == null) primaryOutput.def = inst;
