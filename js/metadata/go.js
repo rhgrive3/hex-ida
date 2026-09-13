@@ -2,7 +2,8 @@
  * HEX-C3-03 — Go Runtime Metadata Provider.
  *
  * Implements toolchain-aware Go runtime metadata extraction from `.gopclntab`,
- * `.gosymtab`, `.go.buildinfo`, and moduledata structures.
+ * build-version discovery, and bounded type-descriptor decoding. Runtime type
+ * enumeration through moduledata/typelinks is not implemented yet.
  *
  * Supported Go pclntab formats:
  * - Go 1.2  (magic: 0xfffffffb)
@@ -368,13 +369,26 @@ export function parseGoFunctions(buf, header, options = {}) {
 }
 
 /**
- * Parses Go type descriptor (_type) at a given buffer offset.
+ * Returns offsets for the current Go internal/abi.Type layout. The fixed
+ * scalar prefix is followed by two pointer-width fields (`Equal`, `GCData`)
+ * before the 32-bit `Str NameOff`. We deliberately reject unknown pointer
+ * widths instead of guessing a target ABI layout.
+ */
+function currentGoAbiTypeLayout(ptrSize) {
+  if (ptrSize !== 4 && ptrSize !== 8) return null;
+  const strOffset = ptrSize * 4 + 8;
+  return { strOffset, minimumSize: strOffset + 8 };
+}
+
+/**
+ * Parses Go type descriptor (_type / internal/abi.Type) at a given buffer offset.
  */
 export function parseGoTypeDescriptor(buf, typeOff, options = {}) {
   const ptrSize = options.ptrSize ?? 8;
   const little = options.little ?? true;
+  const layout = currentGoAbiTypeLayout(ptrSize);
 
-  if (typeOff < 0 || typeOff + ptrSize * 4 + 8 > buf.length) return null;
+  if (!layout || !Number.isSafeInteger(typeOff) || typeOff < 0 || typeOff > buf.length - layout.minimumSize) return null;
 
   const size = Number(readPtr(buf, typeOff, ptrSize, little));
   const ptrdata = Number(readPtr(buf, typeOff + ptrSize, ptrSize, little));
@@ -388,12 +402,12 @@ export function parseGoTypeDescriptor(buf, typeOff, options = {}) {
   const kindId = rawKind & 0x1f;
   const kind = GO_TYPE_KINDS[kindId] || 'unknown';
 
-  // In Go 1.7+, str is a name offset (int32 or ptr)
-  const nameOff = i32(buf, typeOff + ptrSize * 2 + 8, little);
+  // NameOff is relative to moduledata.types in the current abi.Type layout.
+  const nameOff = i32(buf, typeOff + layout.strOffset, little);
   let name = null;
-  if (options.typesBase != null && nameOff != null) {
+  if (Number.isSafeInteger(options.typesBase) && nameOff != null) {
     const strPos = options.typesBase + nameOff;
-    if (strPos >= 0 && strPos + 2 < buf.length) {
+    if (Number.isSafeInteger(strPos) && strPos >= 0 && strPos <= buf.length - 2) {
       // Go name structure has 1 byte header flag followed by length varint
       const lenInfo = readUvarint(buf, strPos + 1);
       if (lenInfo && strPos + 1 + lenInfo.bytesRead + lenInfo.value <= buf.length) {
@@ -542,8 +556,20 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
     const funcResult = parseGoFunctions(this.pclntabBuffer, header, this.options);
     this.cachedFunctions = funcResult;
 
+    // pclntab only proves the function-symbol domain. Runtime type metadata
+    // (moduledata/typelinks) is not enumerated by this provider yet, so a
+    // complete function-table scan must not become whole-provider completeness.
+    const completeness = {
+      ...funcResult.completeness,
+      complete: false,
+      reasons: [
+        ...(funcResult.completeness.reasons ?? []),
+        'go-runtime-types-unscanned',
+      ],
+    };
+
     const identity = createLanguageMetadataIdentity({
-      verdict: funcResult.completeness.complete ? 'matched-authoritative' : 'matched-partial',
+      verdict: 'matched-partial',
       providerId: this.id,
       providerVersion: this.version,
       ecosystem: 'go',
@@ -555,8 +581,8 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
       platform: this.platform,
       method: 'pclntab-magic',
       detail: `Go ${header.versionName} (${funcResult.functions.length} functions)`,
-      coverage: funcResult.completeness.complete ? null : {
-        recordKinds: ['symbol', 'type'],
+      coverage: {
+        recordKinds: ['symbol'],
         addresses: funcResult.functions.map((f) => f.address),
       },
     });
@@ -570,7 +596,7 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
       counts: {
         symbols: funcResult.functions.length,
       },
-      completeness: funcResult.completeness,
+      completeness,
     });
   }
 
