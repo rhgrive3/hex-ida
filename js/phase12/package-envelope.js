@@ -292,7 +292,10 @@ export function parseBoundedPackageInput(value, options = {}) {
   if (bytes.byteLength > maxBytes) throw new PackageValidationError('package-input-too-large', 'package input exceeds pre-parse byte budget');
   scanJsonBudget(bytes, options);
   let parsed;
-  try { parsed = JSON.parse(new TextDecoder().decode(bytes)); }
+  let text;
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+  catch (error) { throw new PackageValidationError('package-input-invalid-utf8', error.message); }
+  try { parsed = JSON.parse(text); }
   catch (error) { throw new PackageValidationError('package-json-malformed', error.message); }
   const limits = normalizedPackageLimits(options);
   countEntries(parsed, limits);
@@ -443,11 +446,11 @@ export function importPhase12Package(value, options = {}) {
 
 export function resolvePackageDependencies(envelope, dependencies = []) {
   const checked = validateEnvelopeShape(envelope);
-  const available = new Map((dependencies || []).map((item) => [item.packageId, item]));
+  const available = new Map(normalizeDependencies(dependencies).map((item) => [item.packageId, item]));
   const resolved = [];
   for (const dependency of checked.dependencies) {
     const found = available.get(dependency.packageId);
-    if (!found || found.contentHash !== dependency.contentHash || String(found.packageVersion) !== dependency.packageVersion) {
+    if (!found || found.contentHash !== dependency.contentHash || found.packageVersion !== dependency.packageVersion) {
       throw new PackageValidationError('package-dependency-not-pinned', `dependency ${dependency.packageId} is not resolved to its exact identity`);
     }
     resolved.push(Object.freeze({ packageId: dependency.packageId, contentHash: dependency.contentHash, packageVersion: dependency.packageVersion }));
