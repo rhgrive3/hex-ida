@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   apply:
-    if: github.event.head_commit.message == 'chore: trigger Fixer2 #3698 remote apply'
+    if: ${{ github.event.head_commit.message == 'chore: trigger Fixer2 #3698 remote apply' }}
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
