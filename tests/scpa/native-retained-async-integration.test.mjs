@@ -9,12 +9,18 @@ import { RuntimeProviderPlatform } from '../../js/runtime/provider-platform.js';
 import { bindRuntimeProviderPlatformForApp, existingRuntimeProviderPlatformForApp } from '../../js/runtime/app-runtime.js';
 import { CAPTURED_ASYNC_EVENT_SCHEMA } from '../../js/runtime/captured-async.js';
 
+// The expected identity is derived from the host-owned ELF bytes below. It is
+// deliberately not read from the imported recording passed to TraceProvider.
+const verifyOwnedTraceModule = expected => module => module.binaryId === expected.binaryId
+  && module.sliceId === expected.sliceId;
+
 // A test-owned offline recording is opened through the actual TraceProvider
 // before binding the public app adapter. The query only borrows retained data.
 async function retainedApp(t) {
   const bytes = fs.readFileSync(new URL('./fixtures/threaded-integer.elf', import.meta.url));
   const hash = createHash('sha256').update(bytes).digest('hex'), binaryId = 'bin_sha256_' + hash;
   const file = new Blob([bytes]), sliceId = createSliceId({ binaryId, index: 0, architecture: 'arm64' });
+  const verifyModuleIdentity = verifyOwnedTraceModule(Object.freeze({ binaryId, sliceId }));
   const capability = { architecture: 'arm64', endianness: 'little' };
   const values = { file, fileInfo: { formatId: 'elf', sha256: hash,
     slices: [{ descriptor: { formatMetadata: { endian: 'little' } } }] },
@@ -37,8 +43,10 @@ async function retainedApp(t) {
     events: events.map(event => ({ eventId: event.id, kind: 'trace-marker', moduleBindingKey: 'main', moduleGeneration: 1,
       observationMode: 'observed', completeness: 'complete', payload: {
         scpaAsync: { schema: CAPTURED_ASYNC_EVENT_SCHEMA, event, contracts, relations }, privateUnrelatedPayload: 'must-remain-private' } })) };
-  const open = async id => {
-    const platform = new RuntimeProviderPlatform(); platform.registerTrace(recording, { id });
+  const open = async (id, recordingToOpen = recording) => {
+    const platform = new RuntimeProviderPlatform(); platform.registerTrace(recordingToOpen, {
+      id, verifyModuleIdentity: verifyModuleIdentity,
+    });
     const session = await platform.openSession(id); t.after(() => platform.closeAll());
     return { platform, session };
   };
@@ -48,7 +56,7 @@ async function retainedApp(t) {
   const api = new AnalysisQueryAPI(createAppAnalysisQueryAdapter(app)), snapshot = await api.scopedSnapshot();
   const request = session => ({ runtimeSessionId: session.runtimeSessionId, fromEventId: 'retained:0', toEventId: 'retained:2',
     lifetime: { ...object, useEventId: 'retained:1' } });
-  return { ...retained, app, api, snapshot, open, request, codeReads: () => codeReads,
+  return { ...retained, app, api, snapshot, open, recording, request, codeReads: () => codeReads,
     query: (session = retained.session, options = {}) => api.asyncEventOrder(snapshot, request(session), { limits: { deadlineMs: 2000 }, ...options }) };
 }
 
@@ -70,6 +78,20 @@ test('public QueryAPI reads the already retained trace and keeps event order con
   assert.equal(value.runtimeExecutionRequested, false); assert.equal(value.canonicalTruthChanged, false);
   assert.equal(value.releaseQualified, false); assert.equal(JSON.stringify(value).includes('must-remain-private'), false);
   assert.deepEqual([...f.platform.sessions], before); assert.equal(f.platform.current, f.session); assert.equal(f.codeReads(), 0);
+});
+
+test('jointly changed recording and module identities do not bypass host-owned binding', { timeout: 10000 }, async t => {
+  const f = await retainedApp(t);
+  const alteredRecording = structuredClone(f.recording);
+  alteredRecording.binaryId = 'bin_sha256_attacker';
+  alteredRecording.sliceId = 'slice-attacker';
+  alteredRecording.modules[0].binaryId = alteredRecording.binaryId;
+  alteredRecording.modules[0].sliceId = alteredRecording.sliceId;
+  const altered = await f.open('owned-retained-api-altered', alteredRecording);
+  const module = altered.session.modules.active()[0];
+  assert.equal(module.identityState, 'unresolved');
+  assert.equal(module.binaryId, null);
+  assert.equal(module.sliceId, null);
 });
 
 test('public runtime address observations remain unsupported without a retained address-role owner', { timeout: 10000 }, async t => {
