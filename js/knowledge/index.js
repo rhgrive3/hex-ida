@@ -1,3 +1,5 @@
+import { queryScopedKnowledgeIndex, readScopedKnowledgeRecords, invalidateScopedKnowledgeIndex } from './scoped-index.js';
+import { readScopedKnowledgePage, cancelScopedKnowledgePage } from './scoped-pages.js';
 import { compareFingerprints, fingerprintFunction } from '../fingerprint/index.js';
 import { recognizeLibraries } from '../signature/index.js';
 import { FunctionMatchIndex } from '../recognition/matcher.js';
@@ -115,7 +117,7 @@ export class KnowledgeDB {
     };
     record.searchTerms = searchTermsOf(record);
     if (this.memory) this.memory.set(id, clone(record)); else await this.#put('functions', record);
-    this.revision++;
+    this.revision++; invalidateScopedKnowledgeIndex(this);
     return record;
   }
 
@@ -128,7 +130,7 @@ export class KnowledgeDB {
       targetHash:targetFingerprint?.hash || null, targetSemanticHash:targetFingerprint?.semanticHash || null, targetNormalizedBytesHash:targetFingerprint?.normalizedBytesHash || null,
       targetAddress:targetAddress == null ? null : addrText(targetAddress), targetSize:targetFingerprint?.size || null, reason:input.reason || 'rejected', updatedAt:Date.now() };
     if (this.negativeMemory) this.negativeMemory.set(key, clone(record)); else await this.#put('negative', record);
-    this.revision++;
+    this.revision++; invalidateScopedKnowledgeIndex(this);
     return record;
   }
 
@@ -260,13 +262,23 @@ export class KnowledgeDB {
     });
   }
 
+  /** One-use, scope/revision-bound pages over the canonical database. */
+  async scopedPage(options = {}) {
+    return readScopedKnowledgePage(this, options, () => this.#dbOpen());
+  }
+  cancelScopedPage(cursor) { return cancelScopedKnowledgePage(this, cursor); }
+  async scopedIndexedCandidates(fingerprint, options = {}) {
+    return queryScopedKnowledgeIndex(this, fingerprint, options,
+      (ids, context) => readScopedKnowledgeRecords(this, ids, context, () => this.#dbOpen()));
+  }
+
   async clear() {
-    if (this.memory) { this.memory.clear(); this.negativeMemory?.clear(); this.revision++; return; }
+    if (this.memory) { this.memory.clear(); this.negativeMemory?.clear(); this.revision++; invalidateScopedKnowledgeIndex(this); return; }
     const db = await this.#dbOpen(); const tx = db.transaction(['functions','negative'],'readwrite');
     const done = transactionPromise(tx);
     await Promise.all([done, ...['functions', 'negative'].map(async (name) =>
       requestPromise(tx.objectStore(name).clear()))]);
-    this.revision++;
+    this.revision++; invalidateScopedKnowledgeIndex(this);
   }
 
   #memoryCandidates(fp) {

@@ -82,6 +82,16 @@ function removeSignalListeners(listeners) {
   }
 }
 function requestCompleteness(request) { return request?.completeness ?? 'complete'; }
+function cachedCompletenessCompatible(record, request) {
+  const available = record?.completeness;
+  // ArtifactStore hits always carry a record. Preserve the scheduler's legacy
+  // compatibility with minimal store adapters that expose only hit/payload.
+  if (available == null) return true;
+  const required = requestCompleteness(request);
+  // A complete artifact can satisfy any weaker request. Incomplete states are
+  // not a total order (#3813), so only the exact requested state is reusable.
+  return available === 'complete' || available === required;
+}
 function inflightRequirementsCompatible(producerRequest, consumerRequest) {
   // Only identical completeness requirements share a producer. In particular,
   // bounded/truncated/unsupported are not treated as an ordered lattice.
@@ -103,6 +113,7 @@ class IndexedMinHeap {
   push(item) { if (this.indices.has(item.artifactId)) throw new Error('scheduler-queue-duplicate'); const index=this.items.length; this.items.push(item); this.indices.set(item.artifactId,index); this.#up(index); }
   pop() { if (!this.items.length) return null; const root=this.items[0]; this.remove(root.artifactId); return root; }
   remove(artifactId) { const index=this.indices.get(requireArtifactId(artifactId)); if (index==null) return null; const removed=this.items[index]; const last=this.items.pop(); this.indices.delete(removed.artifactId); if (index<this.items.length) { this.items[index]=last; this.indices.set(last.artifactId,index); this.#up(index); this.#down(this.indices.get(last.artifactId)); } return removed; }
+  refresh(artifactId) { const id=requireArtifactId(artifactId); const index=this.indices.get(id); if (index==null) return false; this.#up(index); this.#down(this.indices.get(id)); return true; }
 }
 
 function priorityName(value) {
@@ -208,7 +219,9 @@ export class AnalysisScheduler {
     if (existing) {
       if (inflightRequirementsCompatible(existing.request,request)) {
         this.metrics.coalescedRequests++;
+        const previousConsumerCount=existing.consumerCount;
         const p = this.#attachConsumer(existing,consumerSignals);
+        if (existing.consumerCount > previousConsumerCount) this.#upgradePriority(existing,priority);
         this.#emit('request.coalesced', existing, { consumerCount: existing.consumerCount });
         if (typeof request.validate === 'function') {
           return p.then((result)=>this.#validateConsumerResult(result,request,consumerSignals));
@@ -246,6 +259,16 @@ export class AnalysisScheduler {
         : result);
     }
     return p;
+  }
+
+  #upgradePriority(task, incomingPriority) {
+    if (incomingPriority >= task.priority || task.state === 'running') return false;
+    task.priority=incomingPriority;
+    if (task.state === 'ready') {
+      task.orderKey=BigInt(task.enqueuedEpoch)+(BigInt(task.priority)*BigInt(this.starvationInterval));
+      if (!this.queue.refresh(task.artifactId)) throw new Error('scheduler-queue-missing');
+    }
+    return true;
   }
 
   #attachConsumer(task, signals) {
@@ -402,13 +425,23 @@ export class AnalysisScheduler {
     if (task.controller.signal.aborted) throw abortError(task.controller.signal);
 
     task.phase='cache';
-    const cached=await this.store.get(task.descriptor,{signal:task.controller.signal});
+    const requiredCompleteness=requestCompleteness(task.request);
+    const allowIncomplete=requiredCompleteness!=='complete';
+    const cached=await this.store.get(task.descriptor,{signal:task.controller.signal,allowIncomplete});
     if (task.controller.signal.aborted) throw abortError(task.controller.signal);
-    if (cached.status==='hit') {
+    if (cached.status==='hit'&&cachedCompletenessCompatible(cached.record,task.request)) {
       this.metrics.cacheHits++;
-      this.states.set(task.artifactId,'completed');
+      task.state='completed'; this.states.set(task.artifactId,'completed');
       this.#emit('cache.hit', task, { source:'store' });
       return {...cached,state:'completed',reused:true};
+    }
+    if (cached.status==='hit') {
+      // The store has one immutable row per artifactId. A different incomplete
+      // state cannot satisfy this request, so route the observed row through
+      // the store's strict, CAS-safe incompatibility invalidation before the
+      // replacement producer runs. This avoids a stale read/delete race.
+      await this.store.get(task.descriptor,{signal:task.controller.signal});
+      if (task.controller.signal.aborted) throw abortError(task.controller.signal);
     }
     return this.#enqueue(task,dependencyResults);
   }
@@ -564,7 +597,7 @@ export class AnalysisScheduler {
     budget.checkCancelled();
     task.phase='publish';
     const published=await this.store.publish(task.descriptor,payload,{ signal,completeness:task.request.completeness??'complete',validate:task.request.validate,creation:task.request.creation });
-    this.metrics.completedJobs++; this.states.set(task.artifactId,'completed'); task.phase='completed';
+    this.metrics.completedJobs++; task.state='completed'; this.states.set(task.artifactId,'completed'); task.phase='completed';
     this.#emit('job.completed', task, { published: true });
     return {...published,state:'completed',reused:false,budget:budget.snapshot()};
   }
@@ -573,12 +606,13 @@ export class AnalysisScheduler {
     if (task.superseded&&task.controller.signal.aborted) {
       this.metrics.cancelledJobs++;
       const phase = task.state === 'running' ? 'running' : (task.state === 'ready' || task.phase === 'ready') ? 'queued' : 'waiting-dependency';
+      task.state='cancelled';
       this.#emit('job.cancelled', task, { phase, superseded:true });
       return;
     }
     if (error instanceof BudgetExceededError) {
       this.metrics.budgetExhaustions++;
-      this.states.set(task.artifactId,'budget-exhausted');
+      task.state='budget-exhausted'; this.states.set(task.artifactId,'budget-exhausted');
       this.#emit('budget.exhausted', task, {
         resource: error.resource ?? null,
         limit: error.limit ?? null,
@@ -588,14 +622,14 @@ export class AnalysisScheduler {
     }
     if (task.controller.signal.aborted) {
       this.metrics.cancelledJobs++;
-      this.states.set(task.artifactId,'cancelled');
       const phase = task.state === 'running' ? 'running' : (task.state === 'ready' || task.phase === 'ready') ? 'queued' : 'waiting-dependency';
+      task.state='cancelled'; this.states.set(task.artifactId,'cancelled');
       this.#emit('job.cancelled', task, { phase });
       return;
     }
     if (error instanceof SchedulerDependencyError) {
       this.metrics.failedJobs++;
-      this.states.set(task.artifactId,'failed');
+      task.state='failed'; this.states.set(task.artifactId,'failed');
       this.#emit('dependency.failed', task, {
         dependencyArtifactId: error.cause?.artifactId || error.artifactId || null,
       });
@@ -604,13 +638,13 @@ export class AnalysisScheduler {
     if (task.phase==='cache'||task.phase==='publish'||isStorageFailure(error)) {
       this.metrics.failedJobs++;
       this.metrics.storageFailures++;
-      this.states.set(task.artifactId,'failed');
+      task.state='failed'; this.states.set(task.artifactId,'failed');
       this.#emit('storage.failed', task, { code: error.code || null });
       return;
     }
     this.metrics.failedJobs++;
     if (task.phase==='producer') this.metrics.producerFailures++;
-    this.states.set(task.artifactId,'failed');
+    task.state='failed'; this.states.set(task.artifactId,'failed');
     this.#emit('job.failed', task, { code: error.code || null, name: error.name || 'Error' });
   }
 

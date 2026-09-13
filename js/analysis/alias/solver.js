@@ -151,6 +151,11 @@ export function createPhase7AliasSolver({ ir, cfg, ssa, options = {} } = {}) {
     pointsToRun = candidate.recovery == null
       ? baseline
       : { ...baseline, recovery: { ...candidate.recovery, publicationAllowed: false } };
+    // Escape facts belong to the points-to map that is actually published. A
+    // rejected refinement restores the baseline map, so proofs cached against
+    // the rejected candidate must not survive into baseline alias answers
+    // (#5215).
+    escapeRun = null;
     return pointsToRun;
   }
 

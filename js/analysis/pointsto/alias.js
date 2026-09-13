@@ -209,7 +209,7 @@ export function pointsToAlias(left, right, options = {}) {
         const hasBareAbsolute = isBareAbsolute(a) || isBareAbsolute(b);
         const aNonEscaping = nonEscaping.has(a.rootKey) || (a.rootEntityId && nonEscaping.has(a.rootEntityId));
         const bNonEscaping = nonEscaping.has(b.rootKey) || (b.rootEntityId && nonEscaping.has(b.rootEntityId));
-        if (!hasBareAbsolute && (aNonEscaping || bNonEscaping)) {
+        if (!hasBareAbsolute && (aNonEscaping && bNonEscaping)) {
           relations.push('no');
           reasonCodes.add('distinct-non-escaping-allocation');
           continue;

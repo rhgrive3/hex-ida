@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+// Run without a paths filter so a newly migrated dependency cannot skip its own check.
+import './issue-458-ghidra-trigger.mjs';
+import './dev-agent/agent-loop-trigger-coverage.mjs';
 
 const read = (name) => fs.readFileSync(`.github/workflows/${name}`, 'utf8');
 const noPr = (name) => assert.doesNotMatch(read(name), /^  pull_request:/m, `${name} must not auto-run on PR synchronization`);

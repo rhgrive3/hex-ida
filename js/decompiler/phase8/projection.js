@@ -1,3 +1,4 @@
+import { beginScopedTransformCapture, finishScopedTransformCapture } from './scoped-transform-capture.js';
 import { expr, mapChildren, mergeSource, sourceOf } from '../ast/nodes.js';
 import { expressionReadability, printExpression, printProgram } from '../pretty/c.js';
 import {
@@ -270,6 +271,7 @@ function boundAnalysisIdentity(result, analysis, supplied) {
  */
 export function applyPhase8Projection(result, analysis, opts = {}) {
   if (!result?.semantic || !result.semanticAst || !result.cAst || !analysis) return result;
+  const capture = beginScopedTransformCapture(result, opts.scopedTransformEvidence);
   const records = [];
   const names = inductionNames(analysis);
   const transform = (expression) => transformExpression(expression, names, records);
@@ -327,5 +329,6 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     result:withLines, snapshotId:resolvedIdentity?.identity?.snapshotId ?? null,
     budget:opts.renderProvenanceBudget, shouldAbort:opts.shouldAbort,
   });
-  return { ...withLines, renderProvenance };
+  const scopedTransforms = finishScopedTransformCapture(capture, withLines);
+  return { ...withLines, renderProvenance, ...(scopedTransforms ? { scopedTransforms } : {}) };
 }

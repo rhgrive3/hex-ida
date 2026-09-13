@@ -7,10 +7,8 @@ export const AI_QUOTA = Object.freeze({
   leaseMs: 120_000,
 });
 
-const MAX_SESSION_ID = 128;
-
 export function normalizeQuotaSessionId(value) {
-  const text = typeof value === 'string' ? value.trim().slice(0, MAX_SESSION_ID) : '';
+  const text = typeof value === 'string' ? value.trim() : '';
   return text || 'anonymous';
 }
 

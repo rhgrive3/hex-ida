@@ -31,6 +31,8 @@ import { deepFreeze, stableDigest, stableStringify } from '../../core/identity/i
 import { ANALYSIS_STATUS_SCHEMA_VERSION, createAnalysisStatus, isCompleteStatus, weakestCompleteness } from '../status.js';
 import {
   TYPE_LAYERS,
+  canonicalDependencyIdentity,
+  canonicalizeStructuralMembers,
   claimsConflict,
   createContradiction,
   createHardConstraint,
@@ -40,7 +42,7 @@ import {
 import { condenseTypeGraph } from './scc.js';
 
 export const TYPE_GRAPH_ANALYZER_ID = 'phase7.types.constraint-graph';
-export const TYPE_GRAPH_ANALYZER_VERSION = '1.1.0';
+export const TYPE_GRAPH_ANALYZER_VERSION = '1.1.1';
 export const TYPE_RESULT_SCHEMA_VERSION = 1;
 export const TYPE_GRAPH_RESULT_SCHEMA_VERSION = 1;
 
@@ -185,46 +187,72 @@ function softIdentity(evidence) {
   });
 }
 
+function addDependencyIdentity(deps, value) {
+  const identity = canonicalDependencyIdentity(value);
+  if (identity != null) deps.add(identity);
+}
+
+const TYPE_DEPENDENCY_IDENTITY_KEYS = Object.freeze(['targetEntityId', 'elementEntityId']);
+const TYPE_DEPENDENCY_CHILD_KEYS = Object.freeze(['elementType', 'pointeeType', 'memberType', 'members']);
+const MAX_TYPE_DEPENDENCY_NODES = 4096;
+const MAX_TYPE_DEPENDENCY_DEPTH = 256;
+
+function walkTypeDependencies(root) {
+  const deps = new Set();
+  let exhausted = false;
+  if (!root || typeof root !== 'object') return { deps, exhausted };
+  const visited = new Set();
+  const stack = [[root, 0]];
+  let nodes = 0;
+  while (stack.length) {
+    const [node, depth] = stack.pop();
+    if (!node || typeof node !== 'object' || visited.has(node)) continue;
+    if (depth > MAX_TYPE_DEPENDENCY_DEPTH || nodes >= MAX_TYPE_DEPENDENCY_NODES) {
+      exhausted = true;
+      continue;
+    }
+    visited.add(node);
+    nodes += 1;
+    if (Array.isArray(node)) {
+      for (const child of node) stack.push([child, depth + 1]);
+      continue;
+    }
+    for (const key of TYPE_DEPENDENCY_IDENTITY_KEYS) addDependencyIdentity(deps, node[key]);
+    for (const key of TYPE_DEPENDENCY_CHILD_KEYS) {
+      const child = node[key];
+      if (child && typeof child === 'object') stack.push([child, depth + 1]);
+    }
+  }
+  return { deps, exhausted };
+}
+
 function extractDependencies(claim) {
   const deps = new Set();
   const d = claim?.descriptor;
-  if (!d || typeof d !== 'object') return deps;
+  if (!d || typeof d !== 'object') return { deps, exhausted: false };
 
-  if (typeof d.targetEntityId === 'string' && d.targetEntityId.trim()) {
-    deps.add(d.targetEntityId.trim());
+  addDependencyIdentity(deps, d.targetEntityId);
+  addDependencyIdentity(deps, d.elementEntityId);
+  if (typeof d.entityId === 'string' && d.entityId.trim() && d.entityId !== claim.entityId) deps.add(d.entityId.trim());
+
+  let exhausted = false;
+  for (const root of [d.memberType, ...(Array.isArray(d.members) ? d.members : [])]) {
+    const walked = walkTypeDependencies(root);
+    for (const dep of walked.deps) deps.add(dep);
+    exhausted = exhausted || walked.exhausted;
   }
-  if (typeof d.elementEntityId === 'string' && d.elementEntityId.trim()) {
-    deps.add(d.elementEntityId.trim());
-  }
-  if (typeof d.entityId === 'string' && d.entityId.trim() && d.entityId !== claim.entityId) {
-    deps.add(d.entityId.trim());
-  }
-  if (d.memberType && typeof d.memberType === 'object') {
-    if (typeof d.memberType.targetEntityId === 'string' && d.memberType.targetEntityId.trim()) {
-      deps.add(d.memberType.targetEntityId.trim());
-    }
-    if (typeof d.memberType.elementEntityId === 'string' && d.memberType.elementEntityId.trim()) {
-      deps.add(d.memberType.elementEntityId.trim());
-    }
-    if (d.memberType.elementType?.targetEntityId) {
-      deps.add(String(d.memberType.elementType.targetEntityId).trim());
-    }
-  }
-  if (Array.isArray(d.members)) {
-    for (const member of d.members) {
-      if (member?.memberType?.targetEntityId) deps.add(String(member.memberType.targetEntityId).trim());
-      if (member?.memberType?.elementEntityId) deps.add(String(member.memberType.elementEntityId).trim());
-      if (member?.memberType?.elementType?.targetEntityId) deps.add(String(member.memberType.elementType.targetEntityId).trim());
-    }
-  }
-  return deps;
+  return { deps, exhausted };
+}
+
+function memberDependencyIdentities(member) {
+  const walked = walkTypeDependencies(member);
+  return walked.deps;
 }
 
 function isMemberRecursive(member, entityId, sccMembers = []) {
-  const target = member?.memberType?.targetEntityId ?? member?.targetEntityId ?? null;
-  const elementTarget = member?.memberType?.elementType?.targetEntityId ?? member?.memberType?.elementEntityId ?? null;
-  if (target === entityId || (target && sccMembers.includes(target))) return true;
-  if (elementTarget === entityId || (elementTarget && sccMembers.includes(elementTarget))) return true;
+  for (const identity of memberDependencyIdentities(member)) {
+    if (identity === entityId || sccMembers.includes(identity)) return true;
+  }
   return member?.isRecursive === true || member?.memberType?.isRecursive === true;
 }
 
@@ -316,13 +344,9 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       }
     }
 
-    const members = [...membersByOffset.values()]
-      .sort((left, right) => {
-        if (left.offset < right.offset) return -1;
-        if (left.offset > right.offset) return 1;
-        return stableStringify(left.member).localeCompare(stableStringify(right.member));
-      })
-      .map((entry) => entry.member);
+    const members = canonicalizeStructuralMembers(
+      [...membersByOffset.values()].map((entry) => entry.member),
+    );
 
     const sccMembers = sccContext?.sccMembers ?? [entityId];
     const isRecursive = sccContext?.isRecursive === true
@@ -338,6 +362,9 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       return m;
     });
 
+    // Absence of size evidence means unknown, not a zero-byte aggregate.
+    // Keep size nullable until an explicit aggregate fact or complete member
+    // extents prove it (#5190).
     let maxAlign = explicitAlign ?? 1n;
     for (const m of updatedMembers) {
       let mAlign = null;
@@ -350,13 +377,21 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       if (mAlign > maxAlign) maxAlign = mAlign;
     }
 
-    let calculatedSize = explicitSize ?? 0n;
+    let calculatedSize = explicitSize;
     if (updatedMembers.length > 0) {
       let maxOffsetSpan = 0n;
+      let allExtentsKnown = true;
       for (const m of updatedMembers) {
         const offset = exactStructuralInteger(m.offset, 0n);
-        const size = exactStructuralInteger(m.sizeBytes, 0n);
-        if (offset == null || size == null) return null;
+        if (offset == null) return null;
+        if (m.sizeBytes == null) {
+          allExtentsKnown = false;
+          // Even without an extent, a start beyond the explicit bound conflicts.
+          if (explicitSize != null && offset > explicitSize) return null;
+          continue;
+        }
+        const size = exactStructuralInteger(m.sizeBytes);
+        if (size == null) return null;
         const span = offset + size;
         if (span > maxOffsetSpan) maxOffsetSpan = span;
       }
@@ -366,19 +401,20 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       if (explicitSize != null && maxOffsetSpan > explicitSize) return null;
       calculatedSize = explicitSize != null
         ? explicitSize
+        : !allExtentsKnown ? null
         : maxAlign > 1n
           ? ((maxOffsetSpan + maxAlign - 1n) / maxAlign) * maxAlign
           : maxOffsetSpan;
     }
 
-    const calculatedSizeWire = structuralIntegerWire(calculatedSize);
-    const maxAlignWire = structuralIntegerWire(maxAlign);
     const structDescriptor = {
       kind: 'struct',
       members: updatedMembers,
-      sizeBytes: calculatedSizeWire,
-      totalSizeBytes: calculatedSizeWire,
-      alignBytes: maxAlignWire,
+      ...(calculatedSize == null ? {} : {
+        sizeBytes: structuralIntegerWire(calculatedSize),
+        totalSizeBytes: structuralIntegerWire(calculatedSize),
+      }),
+      alignBytes: structuralIntegerWire(maxAlign),
       isRecursive,
       recursiveIdentity: isRecursive ? entityId : null,
       sccMembers: sccMembers.length > 1 ? sccMembers : (isRecursive ? [entityId] : null),
@@ -422,6 +458,7 @@ export class TypeConstraintGraph {
     this.entities = new Map();
     /** entityId -> Set<dependentEntityId> */
     this.dependencies = new Map();
+    this.dependencyTruncated = new Set();
     this.userConstraintDigests = new Set();
   }
 
@@ -441,7 +478,8 @@ export class TypeConstraintGraph {
   }
 
   #recordDependencies(claim) {
-    const deps = extractDependencies(claim);
+    const { deps, exhausted } = extractDependencies(claim);
+    if (exhausted) this.dependencyTruncated.add(claim.entityId);
     if (deps.size === 0) return;
     if (!this.dependencies.has(claim.entityId)) {
       this.dependencies.set(claim.entityId, new Set());
@@ -570,6 +608,7 @@ export class TypeConstraintGraph {
       }
       if (solved.stopReason === 'budget-exhausted') stopReason = stopReason ?? 'budget-exhausted';
     }
+    if (this.dependencyTruncated.has(entityId)) stopReason = stopReason ?? 'budget-exhausted';
     return createTypeResult({
       entityId,
       status: stopReason === 'cancelled'
@@ -974,7 +1013,7 @@ export function reconstructStructuralType(graphOrResult, entityId, options = {})
 
   const members = (selected.members ?? []).map((m) => deepFreeze({
     offset: exactLayout(m.offset),
-    sizeBytes: exactLayout(m.sizeBytes),
+    sizeBytes: exactLayout(m.sizeBytes, null),
     alignBytes: exactLayout(m.alignBytes, defaultAlign(m.sizeBytes)),
     name: m.fieldName ?? m.name ?? null,
     type: deepFreeze(m.memberType ?? { kind: 'unknown' }),
@@ -991,7 +1030,7 @@ export function reconstructStructuralType(graphOrResult, entityId, options = {})
       ? exactLayout(selected.sizeBytes, null)
       : null;
 
-  if (members.length > 0) {
+  if (members.length > 0 && members.every((m) => m.sizeBytes != null)) {
     let maxOffsetSpan = exactAdd(members[0].offset, members[0].sizeBytes);
     for (const m of members) {
       const span = exactAdd(m.offset, m.sizeBytes);

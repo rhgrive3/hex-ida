@@ -138,7 +138,10 @@ export function selfRegisters(model) {
     if (insn.memory && insn.memory.kind === 'store' && insn.memory.stack) {
       const src = regKeyOf(insn.ops[0]);
       const key = locationKey(insn.memory);
-      if (src && live.has(src) && key) { open('@' + key, insn.row); set.add('@' + key); }
+      if (key) {
+        if (src && live.has(src)) { open('@' + key, insn.row); set.add('@' + key); }
+        else close('@' + key, insn.row);
+      }
     }
     if (insn.memory && insn.memory.kind === 'load' && insn.memory.stack) {
       const key = locationKey(insn.memory);

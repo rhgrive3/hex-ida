@@ -16,17 +16,19 @@ export function createAgentProfileEngine({ standardEngine, settings, supervisor 
     runProof: (options) => dev.runBootstrapProof(options),
   });
 
-  return new Proxy(standardEngine, {
-    get(target, property, receiver) {
-      if (property === 'devBootstrap') return devBootstrap;
-      if (property !== 'run') {
-        const value = Reflect.get(target, property, receiver);
-        return typeof value === 'function' ? value.bind(target) : value;
-      }
-      return async (input = {}) => {
-        if (input.mode !== 'agent' || settings.agentProfile !== AGENT_PROFILE.DEV) return target.run(input);
-        return dev.run(input);
-      };
+  const routeRun = async (input = {}) => {
+    if (input.mode !== 'agent' || settings.agentProfile !== AGENT_PROFILE.DEV) return standardEngine.run(input);
+    return dev.run(input);
+  };
+  const surface = Object.create(Object.getPrototypeOf(standardEngine));
+  Object.defineProperty(surface, 'run', { value: routeRun, writable: true, enumerable: false, configurable: true });
+  Object.defineProperty(surface, 'devBootstrap', { value: devBootstrap, writable: false, enumerable: false, configurable: true });
+
+  return new Proxy(surface, {
+    get(target, property) {
+      if (property === 'run' || property === 'devBootstrap') return target[property];
+      const value = Reflect.get(standardEngine, property, standardEngine);
+      return typeof value === 'function' ? value.bind(standardEngine) : value;
     },
   });
 }

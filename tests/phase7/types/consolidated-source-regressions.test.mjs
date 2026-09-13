@@ -69,17 +69,16 @@ test('#3470 dependency enumeration failure marks SCC condensation truncated', ()
   assert.equal(result.isRecursiveMap.get('A'), false);
 });
 
-test('#3470 self-edge dependency failure marks SCC condensation truncated', () => {
+test('#3470/#4535 an empty dependency enumeration is materialized once as a leaf', () => {
   let calls = 0;
   const result = condenseTypeGraph(['A'], () => {
     calls += 1;
-    if (calls === 1) return [];
-    throw new Error('self-edge probe failed');
+    return [];
   });
 
-  assert.equal(calls, 2);
+  assert.equal(calls, 1);
   assert.equal(result.cancelled, false);
-  assert.equal(result.truncated, true);
+  assert.equal(result.truncated, false);
   assert.deepEqual(result.components, [['A']]);
   assert.equal(result.isRecursiveMap.get('A'), false);
 });

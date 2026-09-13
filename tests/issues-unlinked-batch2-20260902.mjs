@@ -253,13 +253,13 @@ function schedulerDescriptor(name, upstreamArtifactIds = []) {
 {
   const { buildObjcRuntimeIndex, resolveObjcDispatch } = await import('../js/apple/objc-runtime.js');
   const index = buildObjcRuntimeIndex({
-    runtimeCompleteness: { categories: { complete: true } },
+    runtimeCompleteness: { classes: { complete: true }, categories: { complete: true } },
     classes: [{ name: 'A', methods: [{ selector: 'f', addr: ['4096'] }] }],
   });
   const result = resolveObjcDispatch(index, { receiverType: 'A', selector: 'f' });
   assert.equal(result.resolved, null, 'structured IMP must not resolve dispatch');
   const good = buildObjcRuntimeIndex({
-    runtimeCompleteness: { categories: { complete: true } },
+    runtimeCompleteness: { classes: { complete: true }, categories: { complete: true } },
     classes: [{ name: 'B', methods: [{ selector: 'f', imp: 4096 }] }],
   });
   const ok = resolveObjcDispatch(good, { receiverType: 'B', selector: 'f' });

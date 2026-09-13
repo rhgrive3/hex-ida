@@ -26,6 +26,20 @@ function canonicalAddressKey(value) {
   return typeof value === 'bigint' && value >= 0n ? value.toString() : null;
 }
 
+function canonicalMetadataAddress(value) {
+  let big = null;
+  if (typeof value === 'bigint') big = value;
+  else if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) big = BigInt(value);
+  else if (typeof value === 'string') {
+    const text = value.trim();
+    if (/^(?:0|[1-9][0-9]*|0x[0-9a-fA-F]+)$/.test(text)) {
+      try { big = BigInt(text); } catch { big = null; }
+    }
+  }
+  if (big == null || big < 0n || big > 18446744073709551615n) return null;
+  return big;
+}
+
 export class SymbolIndex {
   static canonicalizeFunctionStarts(raw) {
     if (raw == null) return new BigUint64Array(0);
@@ -437,9 +451,11 @@ export class SymbolIndex {
     for (let i = 0; i < this.addrs.length; i++) have.add(this.addrs[i]);
     const fresh = [];
     for (const e of entries) {
-      if (!e || e.addr == null || !e.name || have.has(e.addr)) continue;
-      have.add(e.addr);
-      fresh.push(e);
+      if (!e || e.addr == null || !e.name) continue;
+      const addr = canonicalMetadataAddress(e.addr);
+      if (addr == null || have.has(addr)) continue;
+      have.add(addr);
+      fresh.push({ addr, name: e.name, provenance: e.provenance });
     }
     if (!fresh.length) return 0;
 
@@ -481,9 +497,11 @@ export class SymbolIndex {
     const all = Array.from(have);
     let added = 0;
     for (const a of list) {
-      if (a == null || have.has(a)) continue;
-      have.add(a); all.push(a); added++;
-      this.functionProvenance.set(a.toString(), { ...provenance });
+      if (a == null) continue;
+      const addr = canonicalMetadataAddress(a);
+      if (addr == null || have.has(addr)) continue;
+      have.add(addr); all.push(addr); added++;
+      this.functionProvenance.set(addr.toString(), { ...provenance });
     }
     if (!added) return 0;
     all.sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));

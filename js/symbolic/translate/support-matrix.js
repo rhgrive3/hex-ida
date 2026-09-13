@@ -32,19 +32,34 @@ export const COMPLETENESS_STATUS = Object.freeze({
   UNSUPPORTED: 'unsupported',
 });
 
-export function createAssumption({ id, kind, statement, source, originIds = [], trust = ASSUMPTION_TRUST.SEMANTIC_FACT }) {
-  if (!id || !kind || !statement) {
-    throw new TypeError('createAssumption: id, kind, and statement are required');
+function requireAssumptionString(value, field) {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new TypeError(`createAssumption: ${field} must be a non-empty string`);
   }
+  return value;
+}
+
+export function createAssumption({ id, kind, statement, source, originIds = [], trust = ASSUMPTION_TRUST.SEMANTIC_FACT }) {
+  requireAssumptionString(id, 'id');
+  requireAssumptionString(kind, 'kind');
+  requireAssumptionString(statement, 'statement');
+  const resolvedSource = source === undefined ? 'translator' : requireAssumptionString(source, 'source');
   if (!Object.values(ASSUMPTION_TRUST).includes(trust)) {
     throw new TypeError(`createAssumption: unknown trust classification '${trust}'`);
   }
+  if (!Array.isArray(originIds)) {
+    throw new TypeError('createAssumption: originIds must be an array of non-empty strings');
+  }
+  const normalizedOriginIds = Array.from(
+    { length: originIds.length },
+    (_, index) => requireAssumptionString(originIds[index], 'originIds entry'),
+  );
   return Object.freeze({
-    id: String(id),
-    kind: String(kind),
-    statement: String(statement),
-    source: String(source || 'translator'),
-    originIds: Object.freeze([...originIds]),
+    id,
+    kind,
+    statement,
+    source: resolvedSource,
+    originIds: Object.freeze(normalizedOriginIds),
     trust,
   });
 }

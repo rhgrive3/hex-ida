@@ -266,7 +266,7 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
         pop(I32); stack.push(I32); break;
       case 0x46: case 0x47: case 0x48: case 0x49: case 0x4a: case 0x4b: case 0x4c: case 0x4d:
         pop(I32); pop(I32); stack.push(I32); break;
-      case 0x6a: case 0x6b: case 0x6c: case 0x6d: case 0x6e: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75: case 0x76:
+      case 0x6a: case 0x6b: case 0x6c: case 0x6d: case 0x6e: case 0x6f: case 0x70: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75: case 0x76:
         pop(I32); pop(I32); stack.push(I32); break;
       case 0x7c: case 0x7d: case 0x7e:
         pop(I64); pop(I64); stack.push(I64); break;

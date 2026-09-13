@@ -232,7 +232,7 @@ function normalizeLocationSpec(field) {
 function matchesLocation(f, normalized) {
   const loc = f && f.location;
   if (!loc) return false;
-  if (normalized.key != null && loc.key !== normalized.key && !textOf(loc.key).includes(textOf(normalized.key))) return false;
+  if (normalized.key != null && loc.key !== normalized.key) return false;
   if (normalized.offset != null && loc.disp !== normalized.offset) return false;
   if (normalized.address != null && loc.address !== normalized.address) return false;
   return true;

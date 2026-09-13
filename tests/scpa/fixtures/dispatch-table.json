@@ -1,0 +1,34 @@
+{
+  "schema": "scpa-owned-assembled-fixture/v1",
+  "source": "dispatch-table.s",
+  "binary": "dispatch-table.elf",
+  "sourceSha256": "3901e9772a32b38e49b86fd2b1a301fa99ff2c15e460708e93c45df5b548d3bf",
+  "binarySha256": "aedecf4c61ea3b6f4ab99f777b1ecc259614f8d849a4fad194534320218e095f",
+  "assembler": "LLVM 20.1.2 AArch64 C API",
+  "assemblerObjectSha256": "3b7c71bf3a04a4508aae6554242c1822e44d2148bf1d9d037dc12c39c9e815c2",
+  "container": "Minimal ELF wrapper; relocation-free assembler output and original function extents",
+  "rebuild": [
+    "timeout",
+    "40s",
+    "python",
+    "dispatch-table.build.py"
+  ],
+  "expectedFunctions": [
+    {
+      "name": "entry",
+      "start": "0x1000",
+      "end": "0x1024"
+    },
+    {
+      "name": "callee",
+      "start": "0x1030",
+      "end": "0x1038"
+    },
+    {
+      "name": "copy_word",
+      "start": "0x1038",
+      "end": "0x1040"
+    }
+  ],
+  "claim": "Test-owned assembled ELF fixture; not compiler-twin, native execution, competitor, browser, or physical-device evidence."
+}

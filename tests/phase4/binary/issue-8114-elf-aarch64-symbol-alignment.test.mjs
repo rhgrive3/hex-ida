@@ -31,6 +31,12 @@ function sectionlessDynamicFixture({ machine = EM_AARCH64, value = 0x400182n, sy
   const bytes = makeSectionlessElf64Fixture();
   const view = new DataView(bytes.buffer);
   view.setUint16(18, machine, true);
+  if (machine === EM_AARCH64) {
+    // The shared sectionless fixture carries an x86-64 JUMP_SLOT (type 7).
+    // Keep this symbol-alignment fixture structurally valid after AArch64
+    // relocation-width validation by using R_AARCH64_JUMP_SLOT (1026).
+    view.setBigUint64(0x3a8, (1n << 32n) | 1026n, true);
+  }
   // dynsym[1] lives at 0x358 in the shared fixture. SHN_ABS gives the
   // sectionless PT_DYNAMIC path a known defined symbol identity while the
   // executable PT_LOAD remains the canonical function-owner authority.

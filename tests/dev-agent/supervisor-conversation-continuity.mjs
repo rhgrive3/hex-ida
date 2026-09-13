@@ -174,7 +174,7 @@ async function testWorkerSendRefreshesLatestSupervisorAnchorAfterVirtualization(
   assert.deepEqual(harness.claimAnchor(), harness.turnA, 'claim must initially capture Supervisor turn A');
 
   harness.setSupervisorAnchors([harness.turnB, harness.turnC]);
-  const result = await coordinator.send({ workerId: 'send-anchor-worker', instruction: 'run delegated task' });
+  const result = await coordinator.send({ runId: 'send-anchor-run', workerId: 'send-anchor-worker', instruction: 'run delegated task' });
 
   assert.equal(result.status, 'COMPLETED');
   assert.equal(controller.currentConversation().id, supervisor.id);
@@ -194,7 +194,7 @@ async function testWorkerFollowupRefreshesLatestSupervisorAnchorAfterVirtualizat
   harness.seedWorkerConversation();
   harness.setSupervisorAnchors([harness.turnB, harness.turnC]);
 
-  const result = await coordinator.followup({ workerId: 'followup-anchor-worker', text: 'continue delegated task' });
+  const result = await coordinator.followup({ runId: 'followup-anchor-run', workerId: 'followup-anchor-worker', text: 'continue delegated task' });
 
   assert.equal(result.status, 'COMPLETED');
   assert.equal(navigation.at(-2).conversation.id, worker.id, 'followup must first return to the retained Worker conversation');
@@ -215,7 +215,7 @@ async function testReleaseAdoptsAlreadyRoutedSupervisorSurfaceAfterVirtualizatio
   harness.setSupervisorAnchors([harness.turnB]);
   harness.setStrictSupervisorUnavailable(true);
 
-  const released = await coordinator.release({ workerId: 'release-anchor-worker' });
+  const released = await coordinator.release({ runId: 'release-anchor-run', workerId: 'release-anchor-worker' });
 
   assert.equal(released.claimed, false);
   assert.equal(released.role, 'available');

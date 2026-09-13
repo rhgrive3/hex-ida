@@ -1,5 +1,5 @@
 import { stableStringify } from '../core/identity/index.js';
-import { createRemoteCollaborationEnvelope } from './remote-authority.js';
+import { containsRawBinaryBytes, createRemoteCollaborationEnvelope } from './remote-authority.js';
 
 export const REMOTE_CANONICAL_TRANSPORT_SCHEMA = 'hex-remote-canonical-transport/v1';
 export const REMOTE_CANONICAL_RESPONSE_SCHEMA = 'hex-remote-canonical-transport-response/v1';
@@ -14,7 +14,8 @@ const DEFAULT_MAX_VERIFIED_BINDINGS = 256;
 const DEFAULT_MAX_VERIFIED_BINDING_BYTES = 4 * 1024 * 1024;
 
 function required(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new TypeError(code);
+  const text = value.trim();
   if (!text) throw new TypeError(code);
   return text;
 }
@@ -316,6 +317,10 @@ export class RemoteCanonicalHttpTransport {
     const deadline = createAuthorizationDeadline(timeoutMs, signal);
     try {
       deadline.assertActive();
+      if (input.egress?.rawBinaryBytes !== true && input.egress?.derivedDataOnly !== false
+        && Array.isArray(input.operations) && input.operations.some((operation) => containsRawBinaryBytes(operation))) {
+        throw new Error('remote-transport-raw-binary-egress-forbidden');
+      }
       const provisional = createRemoteCollaborationEnvelope({ ...input, transportProof:{ authenticated:false, confidentiality:'unverified', integrity:'unverified' } });
       if (provisional.egress?.userAuthorized !== true) throw new Error('remote-transport-egress-authorization-required');
       if (provisional.egress?.rawBinaryBytes === true) throw new Error('remote-transport-raw-binary-egress-forbidden');

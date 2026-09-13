@@ -53,6 +53,16 @@ function canonicalEnabledIndexSet(values) {
   }
   return enabled;
 }
+function canonicalRestoredDefinitions(definitions) {
+  if (!Array.isArray(definitions) || definitions.length === 0) return null;
+  for (const def of definitions) {
+    if (!def || typeof def !== 'object' || Array.isArray(def)) return null;
+    if (canonicalPluginIndex(def.index) == null) return null;
+    if (def.name !== undefined && typeof def.name !== 'string') return null;
+    if (def.description !== undefined && typeof def.description !== 'string') return null;
+  }
+  return definitions;
+}
 let fallbackInstallSeq = 1;
 
 let scriptSandboxPromise = null;
@@ -145,68 +155,71 @@ export class PluginHost {
       if (!Array.isArray(list)) return;
       const legacySeen = new Set();
       for (const p of list) {
-        if (!p || typeof p.source !== 'string') continue;
-        /* A present-but-malformed installationId would alias a canonical
-           installation's Map key; skipping the entry beats laundering it (#5655). */
-        if (p.installationId != null && canonicalInstallationId(p.installationId) == null) continue;
-        // v3 manifest fast path: restore registry directly without sandbox execution
-        if (p.v === 3 && Array.isArray(p.definitions) && p.definitions.length > 0 && p.installationId) {
-          // #6080: the fast path is only sound while the persisted definitions
-          // are provably the discovery result of the persisted source. A
-          // manifest without (or failing) the source/definitions binding falls
-          // back to real discovery so the executed defs[index] always matches
-          // the displayed metadata.
-          // #5482: the fast path is likewise bound by install()'s source byte
-          // cap — an oversized persisted source must never restore directly
-          // into the canonical registry just because its digest is
-          // self-consistent.
-          if (!manifestIsBound(p) || sourceBytes(p.source) > MAX_PLUGIN_SOURCE_BYTES) {
-            await this.install(p.source, p.origin || '保存されたもの', {
-              silent: true,
-              installationId: p.installationId,
-              enabledIndexes: Array.isArray(p.enabledIndexes) ? p.enabledIndexes : null,
+        try {
+          if (!p || typeof p.source !== 'string') continue;
+          /* A present-but-malformed installationId would alias a canonical
+             installation's Map key; skipping the entry beats laundering it (#5655). */
+          if (p.installationId != null && canonicalInstallationId(p.installationId) == null) continue;
+          // v3 manifest fast path: restore registry directly without sandbox execution
+          if (p.v === 3 && Array.isArray(p.definitions) && p.definitions.length > 0 && p.installationId) {
+            const definitions = canonicalRestoredDefinitions(p.definitions);
+            // #6080: the fast path is only sound while the persisted definitions
+            // are provably the discovery result of the persisted source. A
+            // manifest without (or failing) the source/definitions binding falls
+            // back to real discovery so the executed defs[index] always matches
+            // the displayed metadata.
+            // #5482: the fast path is likewise bound by install()'s source byte
+            // cap — an oversized persisted source must never restore directly
+            // into the canonical registry just because its digest is
+            // self-consistent.
+            if (definitions == null || !manifestIsBound(p)
+              || sourceBytes(p.source) > MAX_PLUGIN_SOURCE_BYTES) {
+              await this.install(p.source, p.origin || '保存されたもの', {
+                silent: true,
+                installationId: p.installationId,
+                enabledIndexes: Array.isArray(p.enabledIndexes) ? p.enabledIndexes : null,
+              });
+              continue;
+            }
+            const installationId = canonicalInstallationId(p.installationId, newInstallId());
+            const enabled = canonicalEnabledIndexSet(p.enabledIndexes)
+              ?? new Set(definitions.map((def) => def.index));
+            const all = definitions.map((def) => ({
+              id: `${installationId}:${def.index}`,
+              installationId,
+              name: def.name,
+              description: def.description,
+              index: def.index,
+              source: p.source,
+              origin: p.origin || '保存されたもの',
+            }));
+            const added = all.filter((plugin) => enabled.has(plugin.index));
+            this.plugins.push(...added);
+            this.installations.set(installationId, {
+              v: 3,
+              installationId,
+              source: p.source,
+              origin: p.origin || '保存されたもの',
+              definitions,
+              enabledIndexes: Array.from(enabled),
+              sourceDigest: p.sourceDigest,
+              definitionsDigest: p.definitionsDigest,
             });
             continue;
           }
-          const installationId = canonicalInstallationId(p.installationId, newInstallId());
-          const definitions = p.definitions.filter((def) => canonicalPluginIndex(def?.index) != null);
-          const enabled = canonicalEnabledIndexSet(p.enabledIndexes)
-            ?? new Set(definitions.map((def) => def.index));
-          const all = definitions.map((def) => ({
-            id: `${installationId}:${def.index}`,
-            installationId,
-            name: def.name,
-            description: def.description,
-            index: def.index,
-            source: p.source,
-            origin: p.origin || '保存されたもの',
-          }));
-          const added = all.filter((plugin) => enabled.has(plugin.index));
-          this.plugins.push(...added);
-          this.installations.set(installationId, {
-            v: 3,
-            installationId,
-            source: p.source,
-            origin: p.origin || '保存されたもの',
-            definitions: p.definitions,
-            enabledIndexes: Array.from(enabled),
-            sourceDigest: p.sourceDigest,
-            definitionsDigest: p.definitionsDigest,
-          });
-          continue;
-        }
 
-        /* v1/v2 legacy fallback */
-        if (!p.installationId) {
-          const legacyKey = `${p.origin || ''}\u0000${p.source}`;
-          if (legacySeen.has(legacyKey)) continue;
-          legacySeen.add(legacyKey);
-        }
-        await this.install(p.source, p.origin || '保存されたもの', {
-          silent: true,
-          installationId: p.installationId || newInstallId(),
-          enabledIndexes: Array.isArray(p.enabledIndexes) ? p.enabledIndexes : null,
-        });
+          /* v1/v2 legacy fallback */
+          if (!p.installationId) {
+            const legacyKey = `${p.origin || ''}\u0000${p.source}`;
+            if (legacySeen.has(legacyKey)) continue;
+            legacySeen.add(legacyKey);
+          }
+          await this.install(p.source, p.origin || '保存されたもの', {
+            silent: true,
+            installationId: p.installationId || newInstallId(),
+            enabledIndexes: Array.isArray(p.enabledIndexes) ? p.enabledIndexes : null,
+          });
+        } catch { continue; }
       }
     } catch { /* corrupted plugin storage is isolated */ }
   }

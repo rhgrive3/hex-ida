@@ -45,7 +45,7 @@ test('base query adapter search publishes backend unsupported as unsupported (#5
   assert.equal(result.page.returned, 0);
 });
 
-test('a supported search is unchanged: rows are complete, caps stay partial (#5840, #5833)', async () => {
+test('a supported search is unchanged: rows are complete, caps stay bounded (#5840, #5833, #3953)', async () => {
   const app = demandApp((query) => {
     if (query.kind !== 'hex' && query.kind !== 'text') return workerUnsupportedShape();
     return Promise.resolve({ cancelled: false, results: [{ addr: 1n }], scanned: 1, capped: false });
@@ -59,9 +59,9 @@ test('a supported search is unchanged: rows are complete, caps stay partial (#58
   const capped = demandApp(() => Promise.resolve({ cancelled: false, results: [], scanned: 1, capped: true }));
   installDemandDrivenAnalysis(capped);
   const cappedSnapshot = await capped.analysisQueries.snapshot();
-  const partial = await capped.analysisQueries.search(cappedSnapshot, { regionId: 'p0_s0', kind: 'hex', bytes: [0] }, {});
-  assert.equal(partial.status.completeness, 'partial');
-  assert.equal(partial.status.reason, 'search-result-cap');
+  const cappedResult = await capped.analysisQueries.search(cappedSnapshot, { regionId: 'p0_s0', kind: 'hex', bytes: [0] }, {});
+  assert.equal(cappedResult.status.completeness, 'truncated');
+  assert.equal(cappedResult.status.reason, 'search-result-cap');
 });
 
   

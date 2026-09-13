@@ -93,7 +93,10 @@ export function assertNotAborted(options) {
 }
 export function budgetLimit(options, key) {
   const fallback = SEMANTIC_IR_DEFAULT_BUDGET[key];
-  return options?.budget?.[key] == null ? fallback : positiveInteger(options.budget[key], `semantic-ir-invalid-budget-${key}`);
+  if (options?.budget?.[key] == null) return fallback;
+  const value = options.budget[key];
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) fail(`semantic-ir-invalid-budget-${key}`);
+  return value;
 }
 export function assertWithinBudget(length, options, key) {
   if (length > budgetLimit(options, key)) fail(`semantic-ir-budget-exceeded-${key}`);

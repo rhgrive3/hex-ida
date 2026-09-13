@@ -1,3 +1,4 @@
+import { scopedAnalysisHost, scopedImmutableSourceIdentity } from './scoped-host.js';
 import { analyzeFunctionCached, supportsArm64SemanticAnalysis } from '../../analyze.js';
 import { buildOverlay } from '../../narrate.js';
 import { decompile } from '../../decompile.js';
@@ -172,7 +173,13 @@ function paged(values, page, completeness = 'complete', status = {}) {
   const items = source.slice(offset, offset + limit);
   return {
     value:items,
-    page:{ offset, limit, returned:items.length, total:source.length, next:offset + items.length < source.length ? offset + items.length : null },
+    page:{
+      offset,
+      limit,
+      returned:items.length,
+      total:completeness === 'complete' ? source.length : null,
+      next:offset + items.length < source.length ? offset + items.length : null,
+    },
     status:{ ...status, completeness, paged:true },
   };
 }
@@ -267,10 +274,11 @@ function normalizePlatform(value) {
   return p;
 }
 
+const EMPTY_DESCRIPTOR_METADATA = Object.freeze({});
 function descriptorMetadata(app) {
   const slice = currentSlice(app);
   const descriptor = slice?.info?.descriptor ?? slice?.descriptor ?? currentInfo(app)?.productDescriptor ?? app?.backend?.platformInfo?.productDescriptor;
-  return descriptor?.formatMetadata ?? {};
+  return descriptor?.formatMetadata ?? EMPTY_DESCRIPTOR_METADATA;
 }
 
 // The legacy ARM64 model keeps this callback for presentation consumers, but
@@ -293,12 +301,30 @@ function legacyPresentationModel(model) {
   return Object.freeze(presentation);
 }
 
+function presentationMatchesSelection(app, start) {
+  if (typeof app?.symbols?.functionAt !== 'function') return true;
+  const row = storeValue(app, 'selectedRow');
+  if (typeof row !== 'number' || !Number.isSafeInteger(row) || row < 0) return true;
+  if (typeof app?.viewer?.rowAddress !== 'function') return true;
+  let selected;
+  try { selected = BigInt(app.viewer.rowAddress(row)); } catch { return true; }
+  let selectedFunction;
+  let targetFunction;
+  try {
+    selectedFunction = app.symbols.functionAt(selected);
+    targetFunction = app.symbols.functionAt(BigInt(start));
+  } catch { return true; }
+  if (selectedFunction?.start == null || targetFunction?.start == null) return true;
+  try { return BigInt(selectedFunction.start) === BigInt(targetFunction.start); } catch { return true; }
+}
+
 function applyLegacyPresentation(app, value) {
   if (!value?.model) return;
   const start = value.startAddr ?? value.startAddress ?? value.model?.startAddress;
   if (start == null) return;
   const region = executableRegion(app, start);
   if (!region) return;
+  if (!presentationMatchesSelection(app, start)) return;
   const model = legacyPresentationModel(value.model);
   app.semantic = { regionId:region.id, model, result:value };
   if (storeValue(app, 'currentRegion') === region) {
@@ -345,7 +371,10 @@ export function createAppAnalysisQueryAdapter(app) {
   let metadataTask = null;
 
   const metadataSummary = () => {
-    const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0);
+    const epoch = identityGeneration(
+      app?.backend?.gen ?? app?.analysisEpoch ?? 0,
+      'analysis-query-epoch-invalid',
+    );
     if (metadataEpoch === epoch && metadataTask) return metadataTask;
     metadataEpoch = epoch;
     metadataTask = typeof app?.backend?.binaryMetadata === 'function'
@@ -417,7 +446,7 @@ export function createAppAnalysisQueryAdapter(app) {
       const maxRow = Math.max(0, Number(maxRowExact));
       const endRow = Math.min(Number(endRowExact), maxRow);
       if (startRow < 0 || endRow < startRow) return unsupported(id, 'function-range-empty');
-      const value = await analyzeFunctionCached(app.backend, range.region, startRow, endRow, symbols, options.onProgress, options);
+      const value = await analyzeFunctionCached(app.backend, range.region, startRow, endRow, symbols, options.onProgress, { ...options, architecture });
       const completeness = value?.truncated ? 'truncated' : range.complete === false ? 'partial' : 'complete';
       const queryValue = value?.model ? { ...value, model:cloneableLegacyModel(value.model) } : value;
       const enriched = {
@@ -482,6 +511,18 @@ export function createAppAnalysisQueryAdapter(app) {
       const fileInfo = currentInfo(app);
       const project = storeValue(app, 'project') ?? app?.workspace?.project ?? app?.project ?? null;
       let binaryId = app?.backend?.binaryId ?? fileInfo?.binaryId ?? fileInfo?.sha256 ?? fileInfo?.hash ?? project?.binaryHash ?? project?.binary?.hash ?? null;
+      if (options.scopedSourceIdentity === true) {
+        // Scoped queries never force a full-file hash and do not treat a
+        // display/project hash as proof of the current source's contents.
+        const local = scopedImmutableSourceIdentity(app, app?.backend?.file ?? storeValue(app, 'file'));
+        if (!local) {
+          const error = new Error('scoped-analysis-disabled-or-source-unavailable');
+          error.code = 'ANALYSIS_QUERY_SCOPED_SOURCE_UNAVAILABLE';
+          throw error;
+        }
+        const verified = app?.backend?.binaryId;
+        binaryId = typeof verified === 'string' && /^bin_sha256_[0-9a-f]{64}$/.test(verified) ? verified : local;
+      }
       if (!binaryId && typeof app?.backend?.ensureBinaryId === 'function') {
         try { binaryId = await app.backend.ensureBinaryId({ signal:options.signal ?? null, onProgress:options.onIdentityProgress ?? options.onProgress }); }
         catch (error) { if (options.signal?.aborted || error?.name === 'AbortError' || error?.stale) throw error; }
@@ -612,8 +653,14 @@ export function createAppAnalysisQueryAdapter(app) {
         const decoded = await app.backend.disassembleAt(start, { architecture:architectureOf(app), length, signal:options.signal ?? null });
         if (decoded?.supported && decoded?.found) {
           const rows = (decoded.instructions || []).map((insn, i) => ({ id:insn.instructionId ?? `${functionId(insn.address ?? start)}:${i}`, address:insn.address == null ? null : BigInt(insn.address), size:Number(insn.length ?? insn.size ?? 0), mnemonic:String(insn.mnemonic ?? insn.instructionFamily ?? ''), operands:String(insn.opStr ?? insn.operands ?? ''), raw:insn }));
-          const completeness = truncated ? 'truncated' : !rangeComplete ? 'partial' : 'complete';
-          return paged(rows, page, completeness, { reason:truncated ? 'instruction-read-budget' : rangeReason });
+          const shortRead = decoded.readComplete === false;
+          const completeness = truncated ? 'truncated' : shortRead ? 'truncated' : !rangeComplete ? 'partial' : 'complete';
+          return paged(
+            rows,
+            page,
+            completeness,
+            { reason:truncated ? 'instruction-read-budget' : shortRead ? 'instruction-read-short' : rangeReason },
+          );
         }
       }
       const result = await loadFunction(request.functionId ?? start, options);
@@ -673,7 +720,7 @@ export function createAppAnalysisQueryAdapter(app) {
         // itself, but stop when the producer's entire prefix is already below
         // the requested offset: there is no evidence for another page and an
         // unconditional cursor would create an infinite empty continuation.
-        const canProbeBeyondPrefix = result.page.total >= result.page.offset;
+        const canProbeBeyondPrefix = sourceRows.length >= result.page.offset;
         if (canProbeBeyondPrefix) {
           const next = nextPageOffset(
             result.page.offset,
@@ -700,14 +747,15 @@ export function createAppAnalysisQueryAdapter(app) {
       const cumulativeLimit = cumulativePageLimit(offset, limit);
       if (cumulativeLimit == null) return unsupportedPage(id, page, 'page-range-overflow');
       const source = program.calleesOf(range.start, range.end, cumulativeLimit);
+      const sourceRows = Array.from(source || []);
       // The scan only covers the validated range; an unproven function extent
       // (analysis window or region clip) keeps the query partial (#5991).
       const rangeIncomplete = range.complete === false;
       const queryLimited = source?.queryLimited === true;
       const reason = source?.incompleteReason ?? (queryLimited ? 'query-limit' : (rangeIncomplete ? (range.reason ?? 'function-extent-unproven') : null));
-      const result = paged(Array.from(source || []), page, source?.complete === false || queryLimited || rangeIncomplete ? 'partial' : 'complete', { reason });
+      const result = paged(sourceRows, page, source?.complete === false || queryLimited || rangeIncomplete ? 'partial' : 'complete', { reason });
       if (queryLimited && result.page.next == null) {
-        const canProbeBeyondPrefix = result.page.total >= result.page.offset;
+        const canProbeBeyondPrefix = sourceRows.length >= result.page.offset;
         if (canProbeBeyondPrefix) {
           const next = nextPageOffset(
             result.page.offset,
@@ -738,10 +786,10 @@ export function createAppAnalysisQueryAdapter(app) {
         ...Array.from(refs).map((x) => ({ kind:'reference', site:x.site, target:x.target, refKind:x.kind ?? null })),
         ...Array.from(calls).map((x) => ({ kind:'call', site:x.site, target:address, caller:x.caller ?? null })),
       ].sort((a, b) => BigInt(a.site) < BigInt(b.site) ? -1 : BigInt(a.site) > BigInt(b.site) ? 1 : 0);
-      const complete = refs.complete !== false && calls.complete !== false;
       const queryLimited = refs.queryLimited === true || calls.queryLimited === true;
+      const complete = refs.complete !== false && calls.complete !== false && !queryLimited;
       return paged(rows, page, complete ? 'complete' : 'partial', {
-        reason:refs.incompleteReason ?? calls.incompleteReason ?? null,
+        reason:refs.incompleteReason ?? calls.incompleteReason ?? (queryLimited ? 'query-limit' : null),
         ...(queryLimited ? { truncationReason:'query-limit' } : {}),
       });
     },
@@ -847,12 +895,31 @@ export function createAppAnalysisQueryAdapter(app) {
       // "the backend cannot run this search" is not a complete empty result
       // (#5840, #5833).
       if (value?.unsupported === true) return unsupportedPage(null, page, value?.unsupportedReason ?? 'search-kind-unsupported');
-      return paged(value?.results || [], page, value?.capped || value?.cancelled ? 'partial' : 'complete', { reason:value?.cancelled ? 'cancelled' : value?.capped ? 'search-result-cap' : null });
+      return paged(value?.results || [], page, value?.cancelled ? 'partial' : value?.capped ? 'truncated' : 'complete', { reason:value?.cancelled ? 'cancelled' : value?.capped ? 'search-result-cap' : null });
     },
 
     async causalPath(_snapshot, source, sink, options = {}) {
       return typeof app?.queryCausalPath === 'function' ? wrap(await app.queryCausalPath(source, sink, options)) : unsupported(source?.functionId ?? source ?? null, 'causal-path-producer-unavailable');
     },
+  };
+
+  // This opt-in branch is deliberately lazy. Existing query methods and the
+  // default decoder/decompiler path retain their prior owners and behavior.
+  const scopedMethods = ['taskIdiomView', 'inspectConditionalModel', 'checkLoopInvariant', 'asyncEventOrder', 'portableIntegerChecks', 'demandQuery', 'investigateDemand', 'demandInvestigationFrontier', 'resumeDemandQuery', 'explainDemandResult', 'replayDemandResult', 'blockCaptures', 'investigationFrontier', 'typeEvidence', 'interproceduralQuery', 'abiInputBindings', 'abiPlacementEvidence', 'explainTransformChain', 'runtimeObservations', 'scopedCapabilities', 'semanticQuery', 'resumeSemanticQuery', 'dispatchTargets',
+    'applePointerView', 'appleMetadataView', 'knowledgeMatches', 'objectMemory', 'rangeValueCatalog', 'callGraphSlice', 'resumeCallGraphSlice', 'referenceSlice', 'replayReferenceSlice', 'refineValueFacts', 'summarySlice', 'resumeSummarySlice', 'proofSlice', 'replayProof', 'cancelScopedQuery'];
+  for (const method of scopedMethods) adapter[method] = async (snapshot, request = {}, options = {}) => {
+    if (!scopedAnalysisHost(app)?.configuration.enabled) return unsupported(null, 'scoped-analysis-disabled');
+    const { dispatchScopedAppQuery } = await import('./scoped-app.js');
+    return dispatchScopedAppQuery(app, snapshot, method, request, options, {
+      file: () => storeValue(app, 'file'), architecture: () => architectureOf(app), format: () => formatOf(app),
+      sliceIndex: () => validSliceIndex(storeValue(app, 'sliceIndex')),
+      artifactVersions: () => artifactVersions(app), metadata: () => descriptorMetadata(app),
+      regions: () => storeValue(app, 'regions'),
+      capability: () => storeValue(app, 'capability') ?? currentSlice(app)?.capability ?? currentInfo(app)?.capability,
+      projectRevision: () => identityGeneration((storeValue(app, 'project') ?? app?.workspace?.project ?? app?.project)?.revision
+        ?? app?.projectRevision ?? app?.workspace?.bindingRevision ?? 0, 'analysis-query-project-revision-invalid'),
+      rangeFor: (id) => rangeFor(app, id),
+    });
   };
 
   installRoutes(app, directFetch);

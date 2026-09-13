@@ -14,10 +14,7 @@ const detect = measure.indexOf('name: Detect real fixture configuration');
 const requireAll = measure.indexOf('name: Require all real fixture URLs');
 assert.ok(detect >= 0, 'fixture detection step must exist in each target runner');
 assert.ok(requireAll > detect, 'fail-closed requirement must run after detection');
-const failClosedGate = measure.slice(
-  requireAll,
-  measure.indexOf('\n\n      - name: Build exact oracle cache key', requireAll),
-);
+const failClosedGate = measure.slice(requireAll, measure.indexOf('\n\n      - name: Build exact oracle cache key', requireAll));
 assert.match(failClosedGate, /if:\s*steps\.fixtures\.outputs\.enabled\s*!=\s*'true'/);
 assert.match(failClosedGate, /exit 1/);
 assert.doesNotMatch(failClosedGate, /continue-on-error:\s*true/);
@@ -66,9 +63,19 @@ const restore = measure.slice(
   measure.indexOf('name: Restore exact oracle cache'),
   measure.indexOf('name: Validate cached oracle'),
 );
-assert.match(restore, /actions\/cache\/restore@v4/);
+const restoreActionVersion = restore.match(/uses:\s*actions\/cache\/restore@(v\d+)\b/);
+assert.ok(restoreActionVersion, 'oracle cache restore must use a versioned cache action');
 assert.match(restore, /steps\.oracle-key\.outputs\.key/);
 assert.doesNotMatch(restore, /restore-keys:/, 'oracle cache reuse must remain exact-only');
+
+const saveOracle = measure.slice(
+  measure.indexOf('name: Save exact oracle cache'),
+  measure.indexOf('name: Publish oracle for this run'),
+);
+const saveActionVersion = saveOracle.match(/uses:\s*actions\/cache\/save@(v\d+)\b/);
+assert.ok(saveActionVersion, 'oracle cache save must use a versioned cache action');
+assert.equal(saveActionVersion[1], restoreActionVersion[1],
+  'oracle cache restore and save must use the same action major version');
 
 const generate = measure.slice(
   measure.indexOf('name: Generate oracle on cache miss'),
@@ -78,8 +85,12 @@ assert.match(generate, /if:\s*steps\.oracle-cache\.outputs\.cache-hit\s*!=\s*'tr
   'oracle generation must run only on an exact cache miss');
 assert.match(generate, /python tests\/oracle\.py/);
 assert.match(generate, /python tests\/oracle-cfg-normalize\.py/);
-assert.match(measure, /name:\s*Publish oracle for this run[\s\S]*actions\/upload-artifact@v4/,
-  'each fixture runner must still publish the exact oracle as evidence');
+const publishStart = measure.indexOf('name: Publish oracle for this run');
+assert.ok(publishStart >= 0, 'each fixture runner must publish the exact oracle as evidence');
+const publishEnd = measure.indexOf('\n      - name:', publishStart + 'name: Publish oracle for this run'.length);
+const publish = measure.slice(publishStart, publishEnd >= 0 ? publishEnd : measure.length);
+assert.match(publish, /uses:\s*actions\/upload-artifact@v\d+\b/,
+  'oracle evidence must use a versioned upload-artifact action');
 assert.doesNotMatch(measure, /Download required oracle/,
   'the fixture runner must consume its local oracle directly without an artifact round trip');
 
@@ -252,19 +263,16 @@ assert.match(aggregate, /needs:\s*measure/,
   'the final required gate must wait for the three fixture runners');
 assert.match(aggregate, /MEASURE_RESULT:\s*\$\{\{ needs\.measure\.result \}\}/,
   'the final gate must inspect the complete fixture matrix result');
-assert.match(aggregate,
-  /name:\s*Workflow contract regression[\s\S]*issue-497-cross-binary-workflow\.mjs/,
+assert.match(aggregate, /name:\s*Workflow contract regression[\s\S]*issue-497-cross-binary-workflow\.mjs/,
   'workflow contract validation must still run in the required final job');
 assert.match(aggregate,
   /name:\s*Accuracy merge regression[\s\S]*accuracy-pseudoc-parallel\.mjs --self-test/,
   'the elastic worker configuration self-test must run in the final required job');
 assert.match(aggregate, /name:\s*Syntax lint[\s\S]*npm run lint/,
   'repository syntax lint must remain in the required final job');
-assert.match(aggregate,
-  /name:\s*Core tests for standalone manual validation[\s\S]*github\.event_name == 'workflow_dispatch'[\s\S]*npm test/,
+assert.match(aggregate, /name:\s*Core tests for standalone manual validation[\s\S]*github\.event_name == 'workflow_dispatch'[\s\S]*npm test/,
   'manual release validation must still include the broad core test suite');
-assert.match(aggregate,
-  /name:\s*Validate downloaded accuracy partitions[\s\S]*accuracy-result-validate\.mjs/,
+assert.match(aggregate, /name:\s*Validate downloaded accuracy partitions[\s\S]*accuracy-result-validate\.mjs/,
   'the final merge must validate every downloaded partition first');
 assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-BattleCats\.json/);
 assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-YWP\.json/);
@@ -277,6 +285,6 @@ assert.match(aggregate, /name:\s*accuracy\s*\n\s*if:\s*always\(\)/,
 assert.match(workflow, /push:\s*\n\s*branches:\s*\[[^\]]*\bmain\b[^\]]*\]/,
   'main must seed exact oracle/result caches for later pull requests');
 assert.match(workflow, /cancel-in-progress:\s*true/,
-  'the pre-existing workflow-local stale-run cancellation contract must remain unchanged');
+  'stale accuracy runs should be cancelled when a newer revision supersedes them');
 
 console.log('issue #497 bounded-local cross-binary workflow gate regression passed');

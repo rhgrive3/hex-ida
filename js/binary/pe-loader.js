@@ -1,8 +1,11 @@
 import { functionSeed } from './model.js';
+import { parseSafeSEHLoadConfig } from './pe-safeseh.js';
+import { parseArmntExceptionFunctions } from './pe-armnt-exception.js';
 import {
   createPEMetadataBudget,
   mappedFileRangeForRva,
   mappedFileSpanForRva,
+  peExactMappingOwner,
   parseExceptionFunctions as parseExceptionFunctionsCore,
   parseBaseRelocations as parseBaseRelocationsCore,
   parseLoadConfig as parseLoadConfigCore,
@@ -17,6 +20,8 @@ export {
   directory,
   peMachineName,
   resolveCoffSectionName,
+  PE_SECTION_MAPPING_SOURCE,
+  PE_LOW_ALIGNMENT_RAW_IDENTITY_SOURCE,
 } from './pe-loader-core.js';
 
 export {
@@ -51,19 +56,31 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
   if (!dir || !dir.rva || dir.size < 4) return parseLoadConfigCore(r, dir, image, sharedBudget);
   const budget = ensureBudget(image, sharedBudget);
   const head = mappedFileSpanForRva(image, dir.rva, 4);
-  if (head) {
-    const internalSize = r.u32(head.start);
-    if (internalSize > dir.size) {
-      budget.partial(
-        'load-config:size-mismatch',
-        `PE load-config Size ${internalSize} exceeds directory size ${dir.size}`,
-      );
-    }
+  const internalSize = head ? r.u32(head.start) : 0;
+  if (head && internalSize > dir.size) {
+    budget.partial(
+      'load-config:size-mismatch',
+      `PE load-config Size ${internalSize} exceeds directory size ${dir.size}`,
+    );
   }
+  const parseSafeSEH = () => {
+    if (!head) return;
+    parseSafeSEHLoadConfig(
+      r,
+      head.start,
+      Math.min(internalSize, dir.size),
+      image,
+      budget,
+      mappedFileRangeForRva,
+      mappedFileSpanForRva,
+    );
+  };
 
   const sectionAt = image.sectionAt;
   if (typeof sectionAt !== 'function') {
-    return parseLoadConfigCore(r, dir, image, budget);
+    const result = parseLoadConfigCore(r, dir, image, budget);
+    parseSafeSEH();
+    return result;
   }
 
   // The core already decides whether a GuardCF target is publishable by asking
@@ -95,7 +112,9 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
     return sec;
   };
 
-  return parseLoadConfigCore(r, dir, loadConfigImage, budget);
+  const result = parseLoadConfigCore(r, dir, loadConfigImage, budget);
+  parseSafeSEH();
+  return result;
 }
 
 export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = null) {
@@ -107,7 +126,7 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
   const directorySize = dir.size;
   const recordSize = machine === 0x8664
     ? 12
-    : (machine === 0xaa64 || machine === 0xa641 ? 8 : null);
+    : (machine === 0x01c4 || machine === 0xaa64 || machine === 0xa641 ? 8 : null);
   const validDirectorySize = typeof directorySize === 'number'
     && Number.isSafeInteger(directorySize)
     && directorySize >= 0;
@@ -122,7 +141,9 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
       `PE exception directory size ${directorySize} is not a multiple of ${recordSize}`,
     );
   }
-  const result = parseExceptionFunctionsCore(r, dir, image, machine, budget);
+  const result = machine === 0x01c4
+    ? parseArmntExceptionFunctions(r, dir, image, budget)
+    : parseExceptionFunctionsCore(r, dir, image, machine, budget);
   const invalidAfter = image.metadata?.exceptionDirectory?.invalidRecords || 0;
   if (invalidAfter > invalidBefore) {
     budget.partial(
@@ -140,7 +161,7 @@ function loadedImageSpanForAddress(image, address, size, { writable = false } = 
   if (start < image.imageBase) return false;
   const sizeOfImage = image.metadata?.sizeOfImage;
   if (Number.isSafeInteger(sizeOfImage) && sizeOfImage >= 0 && finish > image.imageBase + BigInt(sizeOfImage)) return false;
-  const owners = [...(image.sections || []), ...(image.segments || [])];
+  const owners = [...(image.sections || []), ...(image.segments || [])].filter(peExactMappingOwner);
   let cursor = start;
   while (cursor < finish) {
     let coveredTo = cursor;
@@ -288,6 +309,20 @@ function mappedCStringAtOffset(r, start, end, budget, label) {
   return value;
 }
 
+function validPEForwarderTarget(value) {
+  // The library identifier may itself contain dots, so the final dot owns the target suffix.
+  const separator = value.lastIndexOf('.');
+  if (separator <= 0 || separator === value.length - 1) return false;
+  const target = value.slice(separator + 1);
+  if (target[0] !== '#') return true;
+  if (target.length === 1) return false;
+  for (let i = 1; i < target.length; i++) {
+    const code = target.charCodeAt(i);
+    if (code < 0x30 || code > 0x39) return false;
+  }
+  return true;
+}
+
 export function parseExports(r, dir, image, sharedBudget = null) {
   if (!dir || !dir.rva || dir.size < 40) return;
   const budget=ensureBudget(image,sharedBudget);
@@ -332,6 +367,7 @@ export function parseExports(r, dir, image, sharedBudget = null) {
       const forwarderEnd=Math.min(forwarderRange.end,forwarderRange.start+(dirEnd-frva));
       const forwarder=mappedCStringAtOffset(r,forwarderRange.start,forwarderEnd,budget,'PE export forwarder');
       if(!forwarder)continue;
+      if(!validPEForwarderTarget(forwarder)){budget.partial('exports:forwarder-target-format','Ignored malformed PE export forwarder target');continue;}
       for(const name of publicNames)image.exports.push({name,address:0n,ordinal:baseOrdinal+i,kind:'forwarder',forwarder,source:'PE-export'});
       continue;
     }

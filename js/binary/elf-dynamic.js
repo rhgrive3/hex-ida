@@ -2,8 +2,10 @@ import { functionSeed } from './model.js';
 import { createDynamicSymbolBudget } from './dynamic-symbol-budget.js';
 import { createRelocationBudget } from './relocation-budget.js';
 import { collectAndroidPackedRelocations, collectRelrRelocations, parseDynamicSymbolVersions } from './elf-extended.js';
-import { elfInstructionStartAlignmentRejection, mappedELFFileRangeForVa, mappedELFFileSpanForVa } from './elf-mapping.js';
+import { elfInstructionStartAlignmentRejection, elfInstructionTargetRejection, mappedELFFileRangeForVa, mappedELFFileSpanForVa } from './elf-mapping.js';
+import { relocationFieldWidth } from './elf-relocation-target.js';
 
+const ET_REL = 1;
 const PT_DYNAMIC = 2;
 const DT_NULL = 0n;
 const DT_NEEDED = 1n;
@@ -16,6 +18,7 @@ const DT_RELASZ = 8n;
 const DT_RELAENT = 9n;
 const DT_STRSZ = 10n;
 const DT_SYMENT = 11n;
+const DT_INIT = 12n;
 const DT_SONAME = 14n;
 const DT_SYMTAB_SHNDX = 34n;
 const DT_SYMTABSZ = 39n;
@@ -26,6 +29,7 @@ const SHN_COMMON = 0xfff2;
 const SHN_XINDEX = 0xffff;
 const STB_GNU_UNIQUE = 10;
 const STT_GNU_IFUNC = 10;
+export const STO_AARCH64_VARIANT_PCS = 0x80;
 const DT_REL = 17n;
 const DT_RELSZ = 18n;
 const DT_RELENT = 19n;
@@ -90,8 +94,8 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   const needsStringTable = (tags.get(DT_NEEDED)?.length || 0) > 0 || one(DT_SONAME) != null || symtab != null;
   const defaultSyment = BigInt(bits === 64 ? 24 : 16);
   const syment = one(DT_SYMENT) ?? defaultSyment;
-  const symentValid = syment >= defaultSyment;
-  if (!symentValid) markDynamicPartial(image, `DT_SYMENT ${syment} is smaller than ${defaultSyment}`);
+  const symentValid = syment === defaultSyment;
+  if (!symentValid) markDynamicPartial(image, `DT_SYMENT ${syment} does not match ${defaultSyment}`);
   if (needsStringTable && (strtab == null || strsz == null)) markDynamicPartial(image, 'dynamic string table address/size is missing');
   const strSizeRaw = strsz == null ? null : toSafeNumber(strsz);
   if (strsz != null && strSizeRaw == null) {
@@ -123,6 +127,22 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   if (soname != null) {
     const name = stringAt(soname);
     if (name) image.metadata.soname = name;
+  }
+
+  const dtInitVa = one(DT_INIT);
+  if (dtInitVa != null && dtInitVa !== 0n && Number(image?.metadata?.type) !== ET_REL) {
+    const rejection = elfInstructionTargetRejection(image, dtInitVa);
+    if (rejection == null) {
+      image.functions.push(functionSeed(dtInitVa, {
+        source: 'dt-init',
+        confidence: 0.9,
+        exactFunctionStart: true,
+        functionStartEvidence: 'ELF PT_DYNAMIC DT_INIT loader-invoked initializer in validated executable mapping with file-backed instruction bytes',
+      }));
+      image.metadata.dtInit = { address: dtInitVa, source: 'PT_DYNAMIC' };
+    } else {
+      markDynamicPartial(image, `DT_INIT 0x${dtInitVa.toString(16)} ${rejection}`);
+    }
   }
 
   const relocationBudget = createRelocationBudget({
@@ -262,11 +282,16 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
     const ifunc = type === STT_GNU_IFUNC && defined === true && !common;
     const riscvVariantCcFlag = Number(image?.metadata?.machine) === 243 && (other & 0x80) !== 0;
     const riscvVariantCc = riscvVariantCcFlag && type === 2;
+    const aarch64VariantPcsFlag = Number(image?.metadata?.machine) === 183 && (other & 0x80) !== 0;
+    const aarch64VariantPcs = aarch64VariantPcsFlag && type === 2;
     // STT_TLS: a defined TLS symbol's st_value is its TLS offset, not a
     // virtual address (ELF gABI). Keep it out of the VA domain and
     // image.exports as a canonical address (#5843).
     const tls = type === 6;
-    const sym = { name, address: tls ? null : unallocatedOrUndefined ? 0n : value, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, stOther: other, processorSpecificOther: other & ~3, riscvVariantCcFlag, riscvVariantCc, callingConvention: riscvVariantCc ? 'riscv-vector-variant' : null, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(tls ? { tlsOffset: value } : {}), ...(common ? { commonAlignment: value, commonSize: size, allocation: 'common-unallocated' } : {}), addressDomain: tls ? 'tls-offset' : common ? 'common-unallocated' : 'virtual', ...(ifunc ? { resolverAddress:value, resolution:'runtime-resolver' } : {}) };
+    const isArm32 = Number(image?.metadata?.machine) === 40 || image?.arch === 'arm';
+    const isThumb = isArm32 && (type === 2 || type === STT_GNU_IFUNC) && (value & 1n) === 1n;
+    const effectiveValue = isThumb ? (value & ~1n) : value;
+    const sym = { name, address: tls ? null : unallocatedOrUndefined ? 0n : effectiveValue, originalValue: value, isThumb, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, stOther: other, processorSpecificOther: other & ~3, riscvVariantCcFlag, riscvVariantCc, aarch64VariantPcsFlag, aarch64VariantPcs, callingConvention: aarch64VariantPcs ? 'aarch64-variant-pcs' : riscvVariantCc ? 'riscv-vector-variant' : null, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(tls ? { tlsOffset: value } : {}), ...(common ? { commonAlignment: value, commonSize: size, allocation: 'common-unallocated' } : {}), addressDomain: tls ? 'tls-offset' : common ? 'common-unallocated' : 'virtual', ...(ifunc ? { resolverAddress:effectiveValue, resolution:'runtime-resolver' } : {}) };
     out.push(sym);
     if (!name) continue;
     image.symbols.push(sym);
@@ -280,12 +305,12 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
       // TLS exports keep their name/visibility fact but never mint a VA (#5843).
       image.exports.push(tls
         ? { name, address: null, kind, tlsOffset: value, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' }
-        : { name, address: value, kind, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' });
+        : { name, address: effectiveValue, kind, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' });
     }
-    if (defined === true && !common && (type === 2 || type === STT_GNU_IFUNC) && value !== 0n) {
+    if (defined === true && !common && (type === 2 || type === STT_GNU_IFUNC) && effectiveValue !== 0n) {
       if (budget && !budget.claimOutput(1, 128, 'PT_DYNAMIC function seeds')) break;
       const owner = (() => {
-        const start=value, extent=size||0n;
+        const start=effectiveValue, extent=size||0n;
         const section=typeof image.sectionAt==='function'?image.sectionAt(start):null;
         if(section?.perms?.execute && (extent===0n || extent<=section.address+section.size-start))return section;
         const segment=typeof image.segmentAt==='function'?image.segmentAt(start):null;
@@ -293,12 +318,12 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
         return null;
       })();
       if (owner) {
-        const alignmentRejection = elfInstructionStartAlignmentRejection(image, value);
+        const alignmentRejection = elfInstructionStartAlignmentRejection(image, effectiveValue);
         if (alignmentRejection) {
           markDynamicPartial(image, `ignored PT_DYNAMIC ${type === STT_GNU_IFUNC ? 'STT_GNU_IFUNC resolver' : 'STT_FUNC'} ${name}: ${alignmentRejection}`);
           continue;
         }
-        image.functions.push(functionSeed(value, {
+        image.functions.push(functionSeed(effectiveValue, {
           size: size || null,
           name: type === STT_GNU_IFUNC ? `${name}$resolver` : name,
           source: type === STT_GNU_IFUNC ? 'ifunc-resolver' : 'symbol',
@@ -310,12 +335,16 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
           // #6061: the section-backed symbol parser propagates the RISC-V
           // variant-cc calling-convention evidence into function seeds; the
           // PT_DYNAMIC path must mint identical evidence for the same byte.
-          callingConvention: riscvVariantCc ? 'riscv-vector-variant' : null,
-          abiMetadata: riscvVariantCc ? { riscvVariantCc: true, stOther: other } : null,
+          callingConvention: aarch64VariantPcs ? 'aarch64-variant-pcs' : riscvVariantCc ? 'riscv-vector-variant' : null,
+          abiMetadata: aarch64VariantPcs ? { aarch64VariantPcs: true, stOther: other } : riscvVariantCc ? { riscvVariantCc: true, stOther: other } : null,
         }));
         if (riscvVariantCc) {
           if (!Array.isArray(image.metadata.riscvVariantCcFunctions)) image.metadata.riscvVariantCcFunctions = [];
-          image.metadata.riscvVariantCcFunctions.push({ name, address: value, symbolIndex: i, tableIndex: -1, stOther: other, callingConvention: 'riscv-vector-variant' });
+          image.metadata.riscvVariantCcFunctions.push({ name, address: effectiveValue, symbolIndex: i, tableIndex: -1, stOther: other, callingConvention: 'riscv-vector-variant' });
+        }
+        if (aarch64VariantPcs) {
+          if (!Array.isArray(image.metadata.aarch64VariantPcsFunctions)) image.metadata.aarch64VariantPcsFunctions = [];
+          image.metadata.aarch64VariantPcsFunctions.push({ name, address: value, symbolIndex: i, tableIndex: -1, stOther: other, callingConvention: 'aarch64-variant-pcs' });
         }
       }
       else markDynamicPartial(image, `ignored PT_DYNAMIC ${type === STT_GNU_IFUNC ? 'STT_GNU_IFUNC resolver' : 'STT_FUNC'} ${name} outside executable mapping/extent`);
@@ -324,31 +353,40 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
   return out;
 }
 
-function applyVersionMetadata(image, versions, budget = null) {
+export function applyVersionMetadata(image, versions, budget = null) {
   if (!versions?.size || budget?.stopped) return;
   const importByIndex = new Map();
   const exportByIndex = new Map();
-  for (const imp of image.imports) {
+  const keyOf = (tableIndex, symbolIndex) => `${tableIndex ?? ''}:${symbolIndex}`;
+  for (const imp of image.imports || []) {
     if (imp.symbolIndex == null) continue;
     if (budget && (!budget.step(1, 'version import index') || !budget.claimOutput(1, 48, 'version import index'))) return;
-    if (!importByIndex.has(imp.symbolIndex)) importByIndex.set(imp.symbolIndex, imp);
+    const key = keyOf(imp.tableIndex, imp.symbolIndex);
+    if (!importByIndex.has(key)) importByIndex.set(key, imp);
+    if ((imp.tableIndex == null || imp.tableIndex === -1) && !importByIndex.has(String(imp.symbolIndex))) {
+      importByIndex.set(String(imp.symbolIndex), imp);
+    }
   }
-  for (const ex of image.exports) {
+  for (const ex of image.exports || []) {
     if (ex.symbolIndex == null) continue;
     if (budget && (!budget.step(1, 'version export index') || !budget.claimOutput(1, 48, 'version export index'))) return;
-    if (!exportByIndex.has(ex.symbolIndex)) exportByIndex.set(ex.symbolIndex, ex);
+    const key = keyOf(ex.tableIndex, ex.symbolIndex);
+    if (!exportByIndex.has(key)) exportByIndex.set(key, ex);
+    if ((ex.tableIndex == null || ex.tableIndex === -1) && !exportByIndex.has(String(ex.symbolIndex))) {
+      exportByIndex.set(String(ex.symbolIndex), ex);
+    }
   }
-  for (const sym of image.symbols) {
+  for (const sym of image.symbols || []) {
     if (budget && !budget.step(1, 'version metadata apply')) return;
     if (sym.source !== 'dynsym' && sym.source !== 'PT_DYNAMIC') continue;
     const ver = versions.get(sym.index);
     if (!ver) continue;
     sym.versionIndex = ver.index; sym.version = ver.name; sym.versionHidden = ver.hidden; sym.versionLibrary = ver.library;
     if (sym.defined === false && sym.name) {
-      const imp = importByIndex.get(sym.index);
+      const imp = importByIndex.get(keyOf(sym.tableIndex, sym.index)) || ((sym.tableIndex == null || sym.tableIndex === -1) ? importByIndex.get(String(sym.index)) : null);
       if (imp && imp.name === sym.name && imp.version == null) { imp.version = ver.name; imp.versionLibrary = ver.library; imp.versionIndex = ver.index; }
     } else if (sym.defined === true && sym.name) {
-      const ex = exportByIndex.get(sym.index);
+      const ex = exportByIndex.get(keyOf(sym.tableIndex, sym.index)) || ((sym.tableIndex == null || sym.tableIndex === -1) ? exportByIndex.get(String(sym.index)) : null);
       if (ex && ex.name === sym.name && ex.address === sym.address && ex.version == null) { ex.version = ver.name; ex.versionIndex = ver.index; }
     }
   }
@@ -361,14 +399,17 @@ function collectDynamicRelocations(r, tags, image, bits, budget) {
   const addTable = (va, size, ent, rela, source) => {
     if (budget.stopped || va == null || size == null || size <= 0n) return;
     const n = toSafeNumber(size);
-    const minimum = BigInt(bits === 64 ? (rela ? 24 : 16) : (rela ? 12 : 8));
-    const requested = ent ?? minimum;
-    if (requested < minimum) { markDynamicPartial(image, `${source} entry size ${requested} is smaller than ${minimum}`); return; }
+    const standard = BigInt(bits === 64 ? (rela ? 24 : 16) : (rela ? 12 : 8));
+    const requested = ent ?? standard;
+    if (requested !== standard) { markDynamicPartial(image, `${source} entry size ${requested} does not match the supported ${standard}-byte ${rela ? 'Rela' : 'Rel'} layout`); return; }
     const e = toSafeNumber(requested);
     const span = n == null ? null : mappedELFFileSpanForVa(image, va, n);
     if (!span || e == null || e <= 0) { markDynamicPartial(image, `${source} table crosses a file-backed PT_LOAD boundary`); return; }
     const off = span.start;
     if (!budget.claimInput(n, source)) return;
+    if (n % e !== 0) {
+      markDynamicPartial(image, `${source} size ${n} is not a multiple of entry size ${e}`);
+    }
     const count = Math.floor(n / e);
     for (let i = 0; i < count && !budget.stopped; i++) {
       if (!budget.step()) break;
@@ -420,6 +461,15 @@ function attachDynamicRelocations(image, relocs, symbols) {  const byIndex = new
   const importKey = (name, version, library) => [name || '', version || '', library || ''].join('\0');
   const importByName = new Map(image.imports.filter((x) => x.name).map((x) => [importKey(x.name, x.version, x.versionLibrary), x]));
   for (const rel of relocs) {
+    const owner = image.segmentAt(rel.address);
+    if (!owner) { markDynamicPartial(image, `${rel.source} relocation target is outside every loaded PT_LOAD memory span`); continue; }
+    // RELR carries no machine relocation type; its implicit relative relocation
+    // remains governed by the RELR decoder/mapping checks rather than this
+    // type-width table. Explicit REL/RELA-style records must have known width
+    // on recognized machines.
+    const width = rel.type == null ? undefined : relocationFieldWidth(Number(image.metadata.machine), rel.type, image.bits);
+    if (width === null) { markDynamicPartial(image, `${rel.source} relocation type ${rel.type} has no supported target-field width for machine ${image.metadata.machine}`); continue; }
+    if (typeof width === 'bigint' && width > 0n && rel.address + width > owner.address + owner.size) { markDynamicPartial(image, `${rel.source} relocation target field crosses the end of its loaded PT_LOAD memory span`); continue; }
     const sym = byIndex.get(rel.symIndex) || null;
     const item = {
       address: rel.address,
@@ -459,7 +509,7 @@ function dynamicSymbolsFromImage(image, limit = Number.MAX_SAFE_INTEGER) {
 export function dynamicSymbolFileCapacity(r, image, tags, symtabVa, syment) {
   const range=mappedELFFileRangeForVa(image,symtabVa),ent=toSafeNumber(syment);if(!range||ent==null||ent<=0)return 0;
   let end=range.end;
-  const pointerTags=[4n,5n,7n,17n,23n,36n,0x6000000fn,0x60000011n,0x6ffffef5n,0x6ffffff0n,0x6ffffffcn,0x6ffffffen];
+  const pointerTags=[4n,5n,7n,17n,23n,DT_SYMTAB_SHNDX,36n,0x6000000fn,0x60000011n,0x6ffffef5n,0x6ffffff0n,0x6ffffffcn,0x6ffffffen];
   for(const tag of pointerTags)for(const va of tags.get(tag)||[]){if(va===symtabVa)continue;const candidate=mappedELFFileRangeForVa(image,va);if(candidate&&candidate.segment===range.segment&&candidate.start>range.start&&candidate.start<end)end=candidate.start;}
   return Math.max(0,Math.floor((end-range.start)/ent));
 }
@@ -480,7 +530,10 @@ function symbolCountFromGnuHash(r, hashVa, image, bits, { signal = null, onMalfo
   const end=range ? Math.min(range.end,r.length) : 0;
   if(!range||range.start+16>end){markDynamicPartial(image,'DT_GNU_HASH header is not fully file-backed');return 0;}
   const off=range.start;
-  const nbuckets=r.u32(off),symOffset=r.u32(off+4),bloomSize=r.u32(off+8);if(!nbuckets||nbuckets>10_000_000||bloomSize>10_000_000)return 0;const word=bits===64?8:4;
+  const nbuckets=r.u32(off),symOffset=r.u32(off+4),bloomSize=r.u32(off+8);
+  const bloomSizeBig=BigInt(bloomSize);
+  if(!bloomSize||(bloomSizeBig&(bloomSizeBig-1n))!==0n){markDynamicPartial(image,`DT_GNU_HASH bloom_size ${bloomSize} is not a non-zero power of two`);onMalformed?.();return 0;}
+  if(!nbuckets||nbuckets>10_000_000||bloomSize>10_000_000)return 0;const word=bits===64?8:4;
   const bucketsOff=off+16+bloomSize*word,chainsOff=bucketsOff+nbuckets*4;if(!Number.isSafeInteger(bucketsOff)||!Number.isSafeInteger(chainsOff)||chainsOff>end){markDynamicPartial(image,'DT_GNU_HASH header/buckets cross a file-backed PT_LOAD boundary');return 0;}
   let max=null,malformedBucket=false,remainingSteps=Math.min(10_000_000,Math.max(4096,nbuckets*64));
   for(let i=0;i<nbuckets;i++){if(cancelled()){markDynamicPartial(image,'DT_GNU_HASH traversal was cancelled');return 0;}const bucket=r.u32(bucketsOff+i*4);if(!bucket)continue;if(bucket<symOffset){malformedBucket=true;continue;}let idx=bucket,p=chainsOff+(idx-symOffset)*4;for(;p+4<=end;idx++,p+=4){if(cancelled()){markDynamicPartial(image,'DT_GNU_HASH traversal was cancelled');return 0;}if(--remainingSteps<0){markDynamicPartial(image,'GNU hash chain traversal exceeded the global budget');return 0;}const chain=r.u32(p);if(max==null||idx>max)max=idx;if(chain&1)break;}if(p+4>end){markDynamicPartial(image,'DT_GNU_HASH chain crosses a file-backed PT_LOAD boundary');return 0;}}
@@ -494,7 +547,11 @@ export function dynamicSymbolKind(type) {
 
 export function resolveDynamicSectionIndex(r, image, tags, symbolIndex, rawIndex) {
   if (rawIndex !== SHN_XINDEX) {
-    if (rawIndex === SHN_UNDEF || rawIndex === SHN_ABS || rawIndex === SHN_COMMON || (rawIndex > 0 && rawIndex < SHN_LORESERVE)) return { known:true, index:rawIndex, source:'st_shndx' };
+    if (rawIndex === SHN_UNDEF || rawIndex === SHN_ABS || rawIndex === SHN_COMMON) return { known:true, index:rawIndex, source:'st_shndx' };
+    if (rawIndex > 0 && rawIndex < SHN_LORESERVE) {
+      if (dynamicSectionTableAdmits(image, rawIndex)) return { known:true, index:rawIndex, source:'st_shndx' };
+      return { known:false, index:null, source:'st_shndx', reason:`out-of-range-section-index-${rawIndex}` };
+    }
     return { known:false, index:null, source:'st_shndx', reason:`unsupported-reserved-${rawIndex}` };
   }
   const tableVa = tags.get(DT_SYMTAB_SHNDX)?.[0] ?? null;
@@ -503,8 +560,41 @@ export function resolveDynamicSectionIndex(r, image, tags, symbolIndex, rawIndex
   const byteOffset = symbolIndex * 4;
   if (!range || !Number.isSafeInteger(byteOffset) || byteOffset < 0 || range.start + byteOffset + 4 > range.end || range.start + byteOffset + 4 > r.length) return { known:false, index:null, source:'DT_SYMTAB_SHNDX', reason:'truncated-companion' };
   const candidate = r.u32(range.start + byteOffset);
-  if (candidate === SHN_UNDEF || candidate === SHN_ABS || candidate === SHN_COMMON || (candidate > 0 && candidate < SHN_LORESERVE)) return { known:true, index:candidate, source:'DT_SYMTAB_SHNDX' };
-  return { known:false, index:null, source:'DT_SYMTAB_SHNDX', reason:`invalid-extended-index-${candidate}` };
+  // SHN_XINDEX stores the *actual* 32-bit section index. Unlike the direct
+  // 16-bit st_shndx field, an actual index may legitimately be >=
+  // SHN_LORESERVE when the ELF has an extended section table (#4197).
+  if (candidate === SHN_UNDEF) return { known:true, index:candidate, source:'DT_SYMTAB_SHNDX' };
+  if ((candidate === SHN_ABS || candidate === SHN_COMMON) && dynamicSectionTableIsGenuinelySectionless(image)) {
+    return { known:true, index:candidate, source:'DT_SYMTAB_SHNDX' };
+  }
+  if (candidate > 0 && dynamicSectionTableAdmits(image, candidate, { requireActualSection: true })) {
+    return { known:true, index:candidate, source:'DT_SYMTAB_SHNDX' };
+  }
+  return { known:false, index:null, source:'DT_SYMTAB_SHNDX', reason:`out-of-range-section-index-${candidate}` };
+}
+
+function dynamicSectionTableAdmits(image, index, { requireActualSection = false } = {}) {
+  const sections = image?.sections;
+  const table = image?.metadata?.elfSectionTableAuthority;
+  if (table?.declared === true && table?.valid !== true) return false;
+  if (Array.isArray(sections) && sections.length > 0) {
+    return sections.some((section) => section?.index === index);
+  }
+  if (requireActualSection) {
+    // Legacy sectionless PT_DYNAMIC policy permits normal-range section
+    // identities even without section headers; extended/reserved identities
+    // require an actual section entry.
+    return dynamicSectionTableIsGenuinelySectionless(image) && index < SHN_LORESERVE;
+  }
+  return dynamicSectionTableIsGenuinelySectionless(image);
+}
+
+function dynamicSectionTableIsGenuinelySectionless(image) {
+  const sections = image?.sections;
+  const table = image?.metadata?.elfSectionTableAuthority;
+  if (table?.declared === true) return false;
+  if (table?.declared === false) return true;
+  return !Array.isArray(sections) || sections.length === 0;
 }
 
 export function symbolCountFromSymtabSize(sizeValue, symtabVa, syment, image) {

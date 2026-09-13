@@ -16,7 +16,7 @@ const RISCV_PROFILE_SELECTORS = new Set(['lp64', 'lp64f', 'lp64d']);
 
 const STRICT_PROTOTYPE_METADATA_ABIS = new Set([
   'sysv-amd64', 'microsoft-x64', 'microsoft-vectorcall', 'darwin-arm64',
-  'lp64', 'lp64f', 'lp64d',
+  'lp64', 'lp64f', 'lp64d', 'aapcs64-ilp32',
 ]);
 const ABI_STRING_METADATA_FIELDS = new Set([
   'type', 'name', 'kind', 'abiClass', 'class',

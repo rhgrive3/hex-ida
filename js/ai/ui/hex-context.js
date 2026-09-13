@@ -1,3 +1,4 @@
+import { scopedAnalysisHost } from '../../analysis/query/scoped-host.js';
 /* Final QueryAPI correctness layer for the first-party AI context.
  * The reviewed implementation lives in hex-context-query-base.js. This facade
  * preserves its surface while fixing completeness/cancellation propagation that
@@ -70,6 +71,25 @@ export async function analyzeModelAt(app, address, end = null, options = {}) {
 export function createHexAIContext(app) {
   const context = createBaseHexAIContext(app);
   if (context?.analysisAuthority !== QUERY_AUTHORITY || !app?.analysisQueries) return context;
+
+  const scopedMethods = new Set(['taskIdiomView', 'inspectConditionalModel', 'checkLoopInvariant', 'asyncEventOrder', 'portableIntegerChecks', 'blockCaptures', 'investigationFrontier', 'typeEvidence', 'interproceduralQuery', 'abiInputBindings', 'abiPlacementEvidence', 'explainTransformChain', 'runtimeObservations', 'scopedCapabilities', 'semanticQuery', 'resumeSemanticQuery', 'dispatchTargets',
+    'applePointerView', 'knowledgeMatches', 'objectMemory', 'rangeValueCatalog', 'callGraphSlice', 'resumeCallGraphSlice', 'referenceSlice', 'replayReferenceSlice', 'refineValueFacts', 'summarySlice', 'resumeSummarySlice', 'proofSlice', 'replayProof', 'cancelScopedQuery']);
+  define(context, 'runScopedAnalysis', async (method, request, options = {}) => {
+    if (!scopedMethods.has(method)) throw new TypeError('scoped-ai-method-not-allowed');
+    abortIfNeeded(options.signal);
+    if (!scopedAnalysisHost(app)?.configuration.enabled) return {
+      value: { status:'unsupported', reason:'scoped-analysis-disabled', exact:false },
+      completeness:'unsupported', analysisAuthority:QUERY_AUTHORITY,
+    };
+    const api = app.analysisQueries;
+    if (typeof api?.scopedSnapshot !== 'function' || typeof api[method] !== 'function') throw new TypeError('scoped-ai-query-api-unavailable');
+    const snapshot = await api.scopedSnapshot({ signal:options.signal ?? null });
+    // Do not auto-retry consumed cursors. Staleness is an explicit restart
+    // obligation; retrying could duplicate results or reset a query budget.
+    const result = await api[method](snapshot, request, { signal:options.signal ?? null, limits:options.limits ?? {} });
+    abortIfNeeded(options.signal);
+    return { ...result, analysisAuthority:QUERY_AUTHORITY };
+  });
 
   // The reviewed base predates the repository-wide exact AbortSignal.reason
   // invariant. Restore explicit falsy reasons at every inherited async Query

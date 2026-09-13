@@ -45,6 +45,7 @@ export function validateMemorySsa(memorySsa, options = {}) {
   const definitionIds = new Set(contract.definitions.map((definition) => definition.id));
   const definitionById = new Map(contract.definitions.map((definition) => [definition.id, definition]));
   const useIds = new Set(contract.uses.map((use) => use.id));
+  const useById = new Map(contract.uses.map((use) => [use.id, use]));
   const regionIds = new Set(contract.regions.map((region) => region.id));
   if (memorySsa.useDefLinks != null) {
     const expected = contract.reachingDefinitionLinks
@@ -97,6 +98,8 @@ export function validateMemorySsa(memorySsa, options = {}) {
       }
       if (item.entityKind === 'use' && !useIds.has(id)) fail('memory-ssa-validate-access-metadata-kind-mismatch');
       if (item.entityKind === 'definition' && !definitionIds.has(id)) fail('memory-ssa-validate-access-metadata-kind-mismatch');
+      const entity = item.entityKind === 'use' ? useById.get(id) : definitionById.get(id);
+      if (!entity || entity.regionId !== item.regionId) fail('memory-ssa-validate-access-metadata-region-mismatch');
 
       // Keep the original strict-identity membership semantics while building
       // the coverage index during the validation pass. The previous validator

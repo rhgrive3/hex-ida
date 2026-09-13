@@ -24,6 +24,10 @@ const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_REQUEST_ID_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_RECENT_REQUEST_ID_LIMIT = 4096;
 const MAX_DETAILS_DEPTH = 4;
+const FALLBACK_ERROR_PAYLOAD = Object.freeze({
+  code: 'RPC_INTERNAL_ERROR',
+  message: 'Remote RPC handler failed.',
+});
 const TOKEN_RE = /^[A-Za-z0-9._:~-]+$/;
 const NONCE_RE = /^[a-f0-9]{64}$/;
 
@@ -299,7 +303,12 @@ export function createRpcServer(port, options = {}) {
   }
 
   function sendSanitizedError(id, method, error, wasCancelled) {
-    const payload = sanitizeRemoteError(error, wasCancelled);
+    let payload;
+    try {
+      payload = sanitizeRemoteError(error, wasCancelled);
+    } catch {
+      payload = wasCancelled ? { code: 'RPC_CANCELLED', message: 'RPC request was cancelled.' } : FALLBACK_ERROR_PAYLOAD;
+    }
     safePost(port, { ...envelope('error', id, method), error: payload });
   }
 
@@ -417,15 +426,33 @@ function sanitizeDetails(value, depth = 0, seen = new WeakSet()) {
   if (typeof Error !== 'undefined' && value instanceof Error) return undefined;
   if (seen.has(value)) return undefined;
   seen.add(value);
-  if (Array.isArray(value)) return value.slice(0, 64).map((item) => sanitizeDetails(item, depth + 1, seen));
-  if (!isPlainRecord(value)) return undefined;
-  const out = Object.create(null);
-  for (const key of Object.keys(value).slice(0, 64)) {
-    if (/^(?:stack|cause)$/i.test(key)) continue;
-    const clean = sanitizeDetails(value[key], depth + 1, seen);
-    if (clean !== undefined) out[key] = clean;
+  try {
+    if (Array.isArray(value)) {
+      const out = [];
+      const limit = Math.min(value.length, 64);
+      for (let index = 0; index < limit; index += 1) {
+        out.push(sanitizeDetails(ownDataValue(value, index), depth + 1, seen));
+      }
+      return out;
+    }
+    if (!isPlainRecord(value)) return undefined;
+    const out = Object.create(null);
+    for (const key of Object.keys(value).slice(0, 64)) {
+      if (/^(?:stack|cause)$/i.test(key)) continue;
+      const clean = sanitizeDetails(ownDataValue(value, key), depth + 1, seen);
+      if (clean !== undefined) out[key] = clean;
+    }
+    return out;
+  } finally {
+    // Only ancestors are cycles; sibling references must be visited again.
+    seen.delete(value);
   }
-  return out;
+}
+
+function ownDataValue(target, key) {
+  const descriptor = Object.getOwnPropertyDescriptor(target, key);
+  if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) return undefined;
+  return descriptor.value;
 }
 
 function remoteError(payload) {
@@ -458,15 +485,13 @@ function validToken(value, min, max) {
 }
 function normalizeTimeout(value, fallback) {
   if (value == null) return fallback;
-  const number = Number(value);
-  if (!Number.isFinite(number) || number < 0) throw new TypeError('RPC timeout must be a non-negative finite number.');
-  return Math.floor(number);
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new TypeError('RPC timeout must be a non-negative finite number.');
+  return Math.floor(value);
 }
 function normalizePositiveInteger(value, fallback) {
   if (value == null) return fallback;
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 0) throw new TypeError('RPC request id cache limit must be a non-negative safe integer.');
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new TypeError('RPC request id cache limit must be a non-negative safe integer.');
+  return value;
 }
 function safeNow(now) {
   const value = Number(now());

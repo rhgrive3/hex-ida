@@ -367,14 +367,34 @@ export function parseGoFunctions(buf, header, options = {}) {
   };
 }
 
+const GO_TYPE_LAYOUT_CURRENT = Object.freeze({
+  strNameOffset: (ptrSize) => ptrSize * 4 + 8,
+  headerBytes: (ptrSize) => ptrSize * 4 + 16,
+});
+
+const GO_TYPE_LAYOUTS_BY_VERSION = Object.freeze({
+  '1.16': GO_TYPE_LAYOUT_CURRENT,
+  '1.18': GO_TYPE_LAYOUT_CURRENT,
+  '1.20+': GO_TYPE_LAYOUT_CURRENT,
+});
+
+function resolveGoTypeLayout(version) {
+  if (version == null) return GO_TYPE_LAYOUT_CURRENT;
+  if (typeof version !== 'string') return null;
+  if (!Object.hasOwn(GO_TYPE_LAYOUTS_BY_VERSION, version)) return null;
+  return GO_TYPE_LAYOUTS_BY_VERSION[version];
+}
+
 /**
  * Parses Go type descriptor (_type) at a given buffer offset.
  */
 export function parseGoTypeDescriptor(buf, typeOff, options = {}) {
   const ptrSize = options.ptrSize ?? 8;
   const little = options.little ?? true;
+  const layout = resolveGoTypeLayout(options.version);
 
-  if (typeOff < 0 || typeOff + ptrSize * 4 + 8 > buf.length) return null;
+  if (!layout) return null;
+  if (typeOff < 0 || typeOff + layout.headerBytes(ptrSize) > buf.length) return null;
 
   const size = Number(readPtr(buf, typeOff, ptrSize, little));
   const ptrdata = Number(readPtr(buf, typeOff + ptrSize, ptrSize, little));
@@ -388,8 +408,7 @@ export function parseGoTypeDescriptor(buf, typeOff, options = {}) {
   const kindId = rawKind & 0x1f;
   const kind = GO_TYPE_KINDS[kindId] || 'unknown';
 
-  // In Go 1.7+, str is a name offset (int32 or ptr)
-  const nameOff = i32(buf, typeOff + ptrSize * 2 + 8, little);
+  const nameOff = i32(buf, typeOff + layout.strNameOffset(ptrSize), little);
   let name = null;
   if (options.typesBase != null && nameOff != null) {
     const strPos = options.typesBase + nameOff;
@@ -542,8 +561,12 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
     const funcResult = parseGoFunctions(this.pclntabBuffer, header, this.options);
     this.cachedFunctions = funcResult;
 
+    const goComplete = funcResult.completeness.complete;
+    const hasIdentityBinding = this.binaryIdentity != null;
     const identity = createLanguageMetadataIdentity({
-      verdict: funcResult.completeness.complete ? 'matched-authoritative' : 'matched-partial',
+      verdict: goComplete
+        ? (hasIdentityBinding ? 'matched-authoritative' : 'identity-unavailable')
+        : 'matched-partial',
       providerId: this.id,
       providerVersion: this.version,
       ecosystem: 'go',
@@ -554,8 +577,10 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
       architecture: this.architecture,
       platform: this.platform,
       method: 'pclntab-magic',
-      detail: `Go ${header.versionName} (${funcResult.functions.length} functions)`,
-      coverage: funcResult.completeness.complete ? null : {
+      detail: hasIdentityBinding
+        ? `Go ${header.versionName} (${funcResult.functions.length} functions)`
+        : `Go ${header.versionName} without binary identity binding (${funcResult.functions.length} functions)`,
+      coverage: goComplete ? null : {
         recordKinds: ['symbol', 'type'],
         addresses: funcResult.functions.map((f) => f.address),
       },

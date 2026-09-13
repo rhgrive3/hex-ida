@@ -37,7 +37,21 @@ function lowerBoundBig(values, target) {
  * N addresses. This prevents late executable regions/functions from starving.
  */
 function fairFunctionList(symbols, region, max = 20000) {
-  if (!symbols?.funcs?.length || !region) return symbols?.functionList?.(region, max) || [];
+  if (!symbols?.funcs?.length) return [];
+  if (!region) {
+    // SymbolIndex.functionList() returns a plain, silently truncated Array with
+    // no completeness metadata, and readers treat missing metadata fail-open.
+    // Publish the authority explicitly: a list cut at `max` is a sample, not a
+    // complete inventory (#4044).
+    const list = symbols.functionList?.(region, max) || [];
+    const total = Number.isSafeInteger(symbols.functionCount) ? symbols.functionCount : list.length;
+    Object.defineProperties(list, {
+      complete: { value: list.length >= total, enumerable: false },
+      sampled: { value: list.length < total, enumerable: false },
+      totalFunctions: { value: total, enumerable: false },
+    });
+    return list;
+  }
   const lo = region.vmAddr;
   const hi = region.vmAddr + region.size;
   const first = lowerBoundBig(symbols.funcs, lo);
@@ -328,7 +342,11 @@ export async function autoAnalyze(opts) {
 
   if (memo || hasClasses) {
     for (let i = 0; i < goalOrder.length; i++) {
-      if (cancelled()) { report.notes.push('pin-cancelled'); break; }
+      if (cancelled()) {
+        report.notes.push('pin-cancelled');
+        report.unexamined.push(...goalOrder.slice(i).map((id) => goalFromPreset(id)));
+        break;
+      }
       progress({ phase: 'pinpoint', done: i, all });
       if (budget.left <= 0) {
         report.unexamined.push(...goalOrder.slice(i).map((id) => goalFromPreset(id)));
@@ -507,13 +525,15 @@ function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
 
 /*
  * Cache only successful, non-null analysis. Rejections/nulls are retryable.
- * AbortSignal-bearing calls are intentionally not shared: a caller-owned signal
- * must never become the cancellation authority for another caller's analysis.
+ * Option-bearing calls are intentionally never shared (#5068): options enter
+ * the execution semantics but not the addr/end cache identity, and a
+ * caller-owned AbortSignal must never become the cancellation authority
+ * for another caller's analysis.
  */
 export function memoizeAnalysis(analyze) {
   const cache = new Map();
   return (addr, end, options = undefined) => {
-    if (options?.signal) return Promise.resolve().then(() => analyze(addr, end, options));
+    if (options !== undefined) return Promise.resolve().then(() => analyze(addr, end, options));
     // Cache identity is analysis authority (#3309): structured values must
     // not collide with their primitive lookalikes through toString(), or a
     // malformed address would reuse another address's cached analysis.

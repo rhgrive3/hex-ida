@@ -402,11 +402,10 @@ export class SingleConversationWorkerCoordinator {
 
   assertClaim(args = {}) {
     if (!this.claimed) throw workerError(DEV_WORKER_FAILURE.WORKER_UNAVAILABLE, 'No logical Worker is currently claimed.');
-    if (args.workerId != null && String(args.workerId) !== this.claimed.workerId) {
-      throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'The requested workerId does not own the single-tab Worker slot.');
-    }
-    if (args.runId != null && String(args.runId) !== this.claimed.runId) {
-      throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'The requested runId does not own the single-tab Worker slot.');
+    const runId = required(args.runId, 'runId');
+    const workerId = required(args.workerId, 'workerId');
+    if (runId !== this.claimed.runId || workerId !== this.claimed.workerId) {
+      throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'The requested claim identity does not own the single-tab Worker slot.');
     }
     return this.claimed;
   }
