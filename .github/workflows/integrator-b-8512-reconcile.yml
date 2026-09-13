@@ -27,9 +27,9 @@ jobs:
           EXPECTED_H0=50a6c430340de5bc606b35bbfa3591827b667006
           EXPECTED_B0=fe8c10cce2cd0de6860daf7792f22acd3316d338
           WORKFLOW=.github/workflows/integrator-b-8512-reconcile.yml
-          test "$(git rev-parse HEAD^)" = "$EXPECTED_H0"
+          git merge-base --is-ancestor "$EXPECTED_H0" HEAD
           test "$(git diff --name-only "$EXPECTED_H0" HEAD)" = "$WORKFLOW"
-          git fetch --no-tags origin main
+          git fetch --no-tags origin "main:refs/remotes/origin/main"
           test "$(git rev-parse origin/main)" = "$EXPECTED_B0"
           git merge --no-commit --no-ff "$EXPECTED_B0"
           rm "$WORKFLOW"
