@@ -261,7 +261,7 @@ export class Emulator {
     const page = (address / BigInt(PAGE)) * BigInt(PAGE);
     const key = page.toString();
     if (this.mem.has(key) || this.loaded.has(key)) return;
-    if (page >= STACK_TOP - BigInt(STACK_SIZE) && page < STACK_TOP + BigInt(PAGE)) {
+    if (page >= STACK_TOP - BigInt(STACK_SIZE) && page < STACK_TOP) {
       this.loaded.set(key, new Uint8Array(PAGE));
       this.loadedValid.set(key, PAGE);
       this.syntheticPages.add(key);
