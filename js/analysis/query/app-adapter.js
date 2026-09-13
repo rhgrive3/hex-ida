@@ -301,12 +301,30 @@ function legacyPresentationModel(model) {
   return Object.freeze(presentation);
 }
 
+function presentationMatchesSelection(app, start) {
+  if (typeof app?.symbols?.functionAt !== 'function') return true;
+  const row = storeValue(app, 'selectedRow');
+  if (typeof row !== 'number' || !Number.isSafeInteger(row) || row < 0) return true;
+  if (typeof app?.viewer?.rowAddress !== 'function') return true;
+  let selected;
+  try { selected = BigInt(app.viewer.rowAddress(row)); } catch { return true; }
+  let selectedFunction;
+  let targetFunction;
+  try {
+    selectedFunction = app.symbols.functionAt(selected);
+    targetFunction = app.symbols.functionAt(BigInt(start));
+  } catch { return true; }
+  if (selectedFunction?.start == null || targetFunction?.start == null) return true;
+  try { return BigInt(selectedFunction.start) === BigInt(targetFunction.start); } catch { return true; }
+}
+
 function applyLegacyPresentation(app, value) {
   if (!value?.model) return;
   const start = value.startAddr ?? value.startAddress ?? value.model?.startAddress;
   if (start == null) return;
   const region = executableRegion(app, start);
   if (!region) return;
+  if (!presentationMatchesSelection(app, start)) return;
   const model = legacyPresentationModel(value.model);
   app.semantic = { regionId:region.id, model, result:value };
   if (storeValue(app, 'currentRegion') === region) {
