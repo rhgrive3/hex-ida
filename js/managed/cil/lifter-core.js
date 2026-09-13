@@ -2,6 +2,7 @@ import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedExceptionRegionId, createManagedMethodId, createVMOperationId } from '../shared/identity.js';
 import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
 import { createCilLocalTypeResolver } from './call-signatures.js';
+import { decodeCilInstructionBoundary } from './instruction-boundary.js';
 
 function fail(code) { throw new TypeError(code); }
 
@@ -154,6 +155,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
   let opSeq = 0;
   let currentStackHeight = 0;
   const bundles = [];
+  let stoppedOnUnsupported = false;
 
   // Slot-typing authorities (#5353): arguments come from the enclosing
   // MethodDef signature (resolved by the caller into methodAuthority), locals
@@ -693,11 +695,17 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
           }
           break;
 
-        default:
+        default: {
+          const boundary = decodeCilInstructionBoundary(bytecode, opOffset);
+          pc = boundary.end;
           mnemonic = `cil_op_0x${opcode.toString(16)}`;
           completeness = 'partial';
           unknownEffects.push({ category: 'other', reason: `unsupported-cil-opcode-0x${opcode.toString(16)}` });
+          if (!boundary.complete) unknownEffects.push({ category:'other', reason:'unsupported-instruction-boundary-unresolved' });
+          unknownEffects.push({ category:'other', reason:'semantic-lifting-stopped-after-unsupported-instruction' });
+          stoppedOnUnsupported = true;
           break;
+        }
       }
     } else {
       // 0xFE prefix opcodes
@@ -774,18 +782,57 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
           controlEffects.push({ kind: 'rethrow' });
           break;
 
-        case 0x16: // volatile.
-        case 0x14: // tail.
-        case 0x12: // unaligned.
-        case 0x1e: // readonly.
-          mnemonic = `prefix_${subOp.toString(16)}`;
+        case 0x12: // unaligned. <alignment:u1>
+          {
+            need(1);
+            const alignment = bytecode[pc++];
+            mnemonic = 'unaligned.';
+            completeness = 'partial';
+            if (alignment !== 1 && alignment !== 2 && alignment !== 4) {
+              unknownEffects.push({ category: 'memory', reason: `cil-unaligned-prefix-alignment-${alignment}` });
+            } else {
+              unknownEffects.push({ category: 'memory', reason: 'cil-unaligned-prefix-unattached' });
+            }
+          }
           break;
 
-        default:
+        case 0x13: // volatile.
+          mnemonic = 'volatile.';
+          completeness = 'partial';
+          unknownEffects.push({ category: 'memory', reason: 'cil-volatile-prefix-unattached' });
+          break;
+
+        case 0x14: // tail.
+          mnemonic = 'tail.';
+          completeness = 'partial';
+          unknownEffects.push({ category: 'control', reason: 'cil-tail-prefix-unattached' });
+          break;
+
+        case 0x16: // constrained. <token:u4>
+          need(4);
+          pc += 4;
+          mnemonic = 'constrained.';
+          completeness = 'partial';
+          unknownEffects.push({ category: 'types', reason: 'cil-constrained-prefix-unattached' });
+          break;
+
+        case 0x1e: // readonly.
+          mnemonic = 'readonly.';
+          completeness = 'partial';
+          unknownEffects.push({ category: 'memory', reason: 'cil-readonly-prefix-unattached' });
+          break;
+
+        default: {
+          const boundary = decodeCilInstructionBoundary(bytecode, opOffset);
+          pc = boundary.end;
           mnemonic = `cil_fe_0x${subOp.toString(16)}`;
           completeness = 'partial';
           unknownEffects.push({ category: 'other', reason: `unsupported-cil-fe-opcode-0x${subOp.toString(16)}` });
+          if (!boundary.complete) unknownEffects.push({ category:'other', reason:'unsupported-instruction-boundary-unresolved' });
+          unknownEffects.push({ category:'other', reason:'semantic-lifting-stopped-after-unsupported-instruction' });
+          stoppedOnUnsupported = true;
           break;
+        }
       }
     }
 
@@ -817,6 +864,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
       completeness,
       unknownEffects,
     }, options));
+    if (stoppedOnUnsupported) break;
   }
 
   return createVMEffectFunction({

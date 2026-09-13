@@ -487,7 +487,7 @@
           "classification": "EXACT",
           "check": {
             "type": "source-collection",
-            "path": "js/pattern/index.js",
+            "path": "js/pattern/index-core.js",
             "start": "const PRIMITIVES = new Map([",
             "end": "]);",
             "regex": "\\['([^']+)'",
@@ -499,7 +499,7 @@
           "classification": "EXACT",
           "check": {
             "type": "source-includes",
-            "path": "js/pattern/index.js",
+            "path": "js/pattern/index-core.js",
             "markers": ["if (!['const', 'ref', 'eq', 'ne', 'lt', 'lte', 'gt', 'gte', 'and', 'or', 'not'].includes(op))"]
           }
         },
@@ -508,7 +508,7 @@
           "classification": "EXACT",
           "check": {
             "type": "source-collection",
-            "path": "js/pattern/index.js",
+            "path": "js/pattern/index-core.js",
             "start": "function validateType(type, depth = 0, names = new Set())",
             "end": "export function typeCheckPattern(parsed)",
             "regex": "type\\.kind === '([^']+)'",
@@ -520,7 +520,7 @@
           "classification": "EXACT",
           "check": {
             "type": "source-collection",
-            "path": "js/pattern/index.js",
+            "path": "js/pattern/index-core.js",
             "start": "function readType(type, offset, space, ctx, values, depth = 0)",
             "end": "export function evaluatePattern(compiled, byteSource, options = {})",
             "regex": "type\\.kind === '([^']+)'",
@@ -532,7 +532,7 @@
           "classification": "EXACT",
           "check": {
             "type": "source-includes",
-            "path": "js/pattern/index.js",
+            "path": "js/pattern/index-core.js",
             "markers": [
               "take('identifier', 'struct')",
               "take('identifier').value",
@@ -548,7 +548,7 @@
           "classification": "EXACT",
           "check": {
             "type": "source-includes",
-            "path": "js/pattern/index.js",
+            "path": "js/pattern/index-core.js",
             "markers": ["base === 'ptr' || base === 'pointer' ? 'pointer' : 'offset'"]
           }
         },
@@ -557,7 +557,7 @@
           "classification": "EXACT",
           "check": {
             "type": "source-includes",
-            "path": "js/pattern/index.js",
+            "path": "js/pattern/index-core.js",
             "markers": ["space: 'file'", "targetAddressSpace: options.targetAddressSpace || 'file'"]
           }
         },
@@ -566,7 +566,7 @@
           "classification": "EXACT",
           "check": {
             "type": "source-includes",
-            "path": "js/pattern/index.js",
+            "path": "js/pattern/index-core.js",
             "markers": [
               "return { status: 'partial'",
               "return { status: 'complete'",
@@ -579,7 +579,7 @@
           "classification": "EXACT",
           "check": {
             "type": "source-includes",
-            "path": "js/pattern/index.js",
+            "path": "js/pattern/index-core.js",
             "markers": [
               "function provenance(ctx, offset, length, space = 'file')",
               "patternId: ctx.patternId",
@@ -594,7 +594,7 @@
           "classification": "EXACT",
           "check": {
             "type": "source-includes",
-            "path": "js/pattern/index.js",
+            "path": "js/pattern/index-core.js",
             "markers": ["if (pattern.snapshotId && pattern.snapshotId !== source.snapshotId) throw new Error('pattern-source-snapshot-mismatch');"]
           }
         },
@@ -622,7 +622,7 @@
           "reason": "Pattern language is read-only in the current production truth; it cannot mutate the binary or project canonical state.",
           "check": {
             "type": "source-includes",
-            "path": "js/pattern/index.js",
+            "path": "js/pattern/index-core.js",
             "markers": ["mutation: 'unsupported'", "authority: 'L2-evidence'"]
           }
         },
@@ -632,7 +632,7 @@
           "reason": "Pattern evaluation has no network or ambient JavaScript execution authority; both dimensions remain explicitly unsupported.",
           "check": {
             "type": "source-includes",
-            "path": "js/pattern/index.js",
+            "path": "js/pattern/index-core.js",
             "markers": ["network: 'unsupported'", "arbitraryJavaScript: 'unsupported'"]
           }
         }
@@ -659,7 +659,7 @@
             "type": "export-value",
             "module": "js/collaboration/index.js",
             "export": "CHECKPOINT_SCHEMA_VERSION",
-            "expected": "hex-project-checkpoint-v1"
+            "expected": "hex-project-checkpoint-v2"
           }
         },
         {
@@ -902,7 +902,7 @@
                   "AES-GCM",
                   "Ed25519",
                   "remoteCanonicalTransportBinding(envelope)",
-                  "this.#verifiedBindings.get(proofIdentity) === stableStringify(remoteCanonicalTransportBinding(envelope))",
+                  "entry.binding !== stableStringify(remoteCanonicalTransportBinding(envelope))",
                   "remote-transport-response-signature-rejected"
                 ]
               },

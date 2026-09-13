@@ -116,11 +116,17 @@ function conditionCode(node) {
   return attrs.conditionCode ?? op.conditionCode ?? op.condition ?? bundle.conditionCode ?? bundle.condition ?? null;
 }
 
+function exactPredicateToken(value) {
+  if (typeof value !== 'string') return null;
+  const token = value.trim().toLowerCase();
+  return token || null;
+}
+
 function comparisonPredicate(node) {
   const attrs = node?.attributes || {};
   const op = operationMetadata(node);
   const direct = attrs.predicate ?? op.predicate ?? attrs.comparison ?? null;
-  if (direct != null) return String(direct).toLowerCase();
+  if (direct != null) return exactPredicateToken(direct);
   const text = String(node?.operator ?? '').toLowerCase();
   const parts = text.split(/[.:/]/);
   return parts.length > 1 ? parts.at(-1) : null;
@@ -251,7 +257,24 @@ function hasRegisterStateWriteForValue(valueId, context) {
     && candidate.variable?.physicalIdentity?.kind === 'register');
 }
 
+// A deterministic value projection is only a faithful stand-in for the
+// intrinsic when the intrinsic declares no effects beyond its value
+// computation. Any declared state/memory/control effect must take the
+// conservative intrinsic path so clobbers, memory barriers and physical
+// state invalidation are preserved instead of silently discarded (#5386).
+function intrinsicDeclaresSideEffects(intrinsic) {
+  if (!intrinsic || typeof intrinsic !== 'object') return true;
+  if (intrinsic.determinism !== 'deterministic') return true;
+  if ((intrinsic.stateReads?.length ?? 0) > 0) return true;
+  if ((intrinsic.stateWrites?.length ?? 0) > 0) return true;
+  if (intrinsic.memoryRead?.scope != null && intrinsic.memoryRead.scope !== 'none') return true;
+  if (intrinsic.memoryWrite?.scope != null && intrinsic.memoryWrite.scope !== 'none') return true;
+  if ((intrinsic.controlEffects?.length ?? 0) > 0) return true;
+  return false;
+}
+
 function deterministicIntrinsicProjection(node, context, inst, setBasic, primaryOutput, inputValues) {
+  if (intrinsicDeclaresSideEffects(node.intrinsic)) return false;
   const op = node.operator;
   if (op === 'not-bool') { setBasic(V1_OP.UN, 'not'); return true; }
   if (op === 'and-bool') { setBasic(V1_OP.BIN, 'and'); return true; }
@@ -690,7 +713,7 @@ export function projectNode(node, context) {
     }
     case 'intrinsic': {
       const carrier = comparisonCarrierByNodeId.get(node.id) ?? null;
-      const addSub = addWithCarryOperands(node, context);
+      const addSub = intrinsicDeclaresSideEffects(node.intrinsic) ? null : addWithCarryOperands(node, context);
       if (addSub) {
         const resultIsWritten = node.outputs?.[0] && hasRegisterStateWriteForValue(node.outputs[0], context);
         const args = [addSub.lhs, addSub.rhs];

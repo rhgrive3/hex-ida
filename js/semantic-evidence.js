@@ -8,18 +8,23 @@
 import { GROUP, fuse, adapterEvidence } from './evidence.js';
 
 function boundedStrength(v) {
-  if (v == null || !Number.isFinite(Number(v))) return 0;
-  return Math.max(0, Math.min(1, Number(v)));
+  if (typeof v !== 'number' || !Number.isFinite(v)) return 0;
+  return Math.max(0, Math.min(1, v));
 }
 function boundedLikelihoodRatio(value, fallback) {
   if (value == null) return fallback;
   const n = Number(value);
   return Number.isFinite(n) ? Math.max(1, n) : fallback;
 }
+function primitiveVerificationOrigin(v) {
+  return typeof v === 'string' && v.trim() !== '';
+}
 function isExplicitSemanticProof(f, e) {
-  const grade=String(f?.proofGrade || e?.proofGrade || f?.grade || e?.grade || '').toLowerCase();
-  return f?.verified === true || e?.verified === true || !!(f?.verificationOrigin || e?.verificationOrigin)
-    || ['verified','proof','proof-grade','deterministic'].includes(grade);
+  if (f?.verified === true || e?.verified === true) return true;
+  if (primitiveVerificationOrigin(f?.verificationOrigin) || primitiveVerificationOrigin(e?.verificationOrigin)) return true;
+  const rawGrade = f?.proofGrade || e?.proofGrade || f?.grade || e?.grade || '';
+  if (typeof rawGrade !== 'string') return false;
+  return ['verified','proof','proof-grade','deterministic'].includes(rawGrade.toLowerCase());
 }
 function runtimeCompleted(r) {
   if (!r || typeof r !== 'object') return false;
@@ -73,6 +78,38 @@ export function semanticEvidenceItems(facts, opts) {
   return out;
 }
 
+const CANONICAL_ORDINAL_TEXT = /^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/;
+
+function canonicalOrdinalIdentity(kind, value) {
+  let address = null;
+  if (typeof value === 'bigint') address = value;
+  else if (typeof value === 'number' && Number.isSafeInteger(value)) address = BigInt(value);
+  else if (typeof value === 'string' && CANONICAL_ORDINAL_TEXT.test(value.trim())) {
+    try { address = BigInt(value.trim()); } catch { address = null; }
+  }
+  if (address == null || address < 0n) return null;
+  return kind + ':' + address.toString();
+}
+
+function canonicalTextIdentity(kind, value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text ? kind + ':' + text : null;
+}
+
+function fieldIdentityKey(t) {
+  if (t.address != null) return canonicalOrdinalIdentity('field:addr', t.address);
+  if (t.offset != null) return canonicalOrdinalIdentity('field:offset', t.offset);
+  if (t.key != null) return canonicalTextIdentity('field:key', t.key);
+  return null;
+}
+
+function branchIdentityKey(b) {
+  if (b.address != null) return canonicalOrdinalIdentity('branch:addr', b.address);
+  if (b.row != null) return canonicalOrdinalIdentity('branch:row', b.row);
+  return null;
+}
+
 /**
  * Runtime/sandbox verification is an independent RUNTIME origin. The code prefix
  * is understood by evidence.groupOf(), so it cannot be double-counted as the
@@ -90,18 +127,16 @@ export function runtimeEvidenceItems(runtimeResult, opts) {
   const seen = new Set();
   for (const t of touched) {
     if (!t || typeof t !== 'object') continue;
-    const identity = t.address != null ? t.address : t.offset != null ? t.offset : t.key;
-    if (identity == null) continue;
-    const key = 'field:' + String(identity);
+    const key = fieldIdentityKey(t);
+    if (key == null) continue;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(adapterEvidence('runtime-field-verified', strength, { ...t, group: GROUP.RUNTIME }, lr));
   }
   for (const b of branches) {
     if (!b || typeof b !== 'object') continue;
-    const identity = b.address != null ? b.address : b.row;
-    if (identity == null) continue;
-    const key = 'branch:' + String(identity);
+    const key = branchIdentityKey(b);
+    if (key == null) continue;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(adapterEvidence('runtime-branch-verified', strength, { ...b, group: GROUP.RUNTIME }, Math.max(1, Math.sqrt(lr))));

@@ -163,6 +163,11 @@ export function compareOperationId(a, b) {
 }
 
 function compareOperations(a, b) { return compareOperationId(a.operationId, b.operationId); }
+function checkpointPayloadDigest(state, operationIds, pendingOperations, resolutionOperations = []) {
+  return payloadDigest(resolutionOperations.length
+    ? { state, operationIds, pendingOperations, resolutionOperations }
+    : { state, operationIds, pendingOperations });
+}
 
 export function orderOperations(operations = [], existingIds = new Set()) {
   const unique = new Map();
@@ -207,6 +212,10 @@ function validateRestoredStateFactKeys(state, projectIdentity, binaryIdentity) {
     const targetEntityId = required(record?.targetEntityId, 'changelog-state-target-entity-invalid');
     const factKind = required(record?.factKind, 'changelog-state-fact-kind-invalid');
     if (key !== factKey(targetEntityId, factKind) || record?.key !== key) throw new TypeError('changelog-state-fact-key-invalid');
+    if (record?.resolutionOperationId != null) {
+      const resolutionOperationId = required(record.resolutionOperationId, 'changelog-state-resolution-operation-id-invalid');
+      if (resolutionOperationId !== record.resolutionOperationId) throw new TypeError('changelog-state-resolution-operation-id-invalid');
+    }
   }
   const tombstones = state.tombstones ?? [];
   if (!Array.isArray(tombstones)) throw new TypeError('changelog-state-tombstones-invalid');
@@ -216,6 +225,25 @@ function validateRestoredStateFactKeys(state, projectIdentity, binaryIdentity) {
     if (tombstone?.key !== factKey(targetEntityId, factKind)) throw new TypeError('changelog-state-fact-key-invalid');
   }
   return state;
+}
+
+function validateRestoredResolutionAuthority(state, operations, projectIdentity, binaryIdentity) {
+  for (const record of Object.values(state.facts ?? {})) {
+    if (record?.resolutionOperationId == null) continue;
+    const resolutionOperationId = required(record.resolutionOperationId, 'changelog-state-resolution-operation-id-invalid');
+    const resolvedOperationId = required(record.resolvedOperationId, 'changelog-state-resolved-operation-id-invalid');
+    if (resolvedOperationId !== record.resolvedOperationId) throw new TypeError('changelog-state-resolved-operation-id-invalid');
+    const operation = operations.get(resolutionOperationId);
+    if (!operation
+      || operation.action !== 'resolve'
+      || operation.projectIdentity !== projectIdentity
+      || (operation.binaryIdentity ?? null) !== binaryIdentity
+      || operation.targetEntityId !== record.targetEntityId
+      || operation.factKind !== record.factKind
+      || operation.payload?.operationId !== resolvedOperationId) {
+      throw new TypeError('changelog-state-resolution-operation-provenance-invalid');
+    }
+  }
 }
 
 function permanentlyBlockedOp(log, operationId) {
@@ -233,6 +261,7 @@ export class ChangeLog {
     for (const input of options.operations ?? []) {
       rememberRestoredOperation(this.operations, requireCanonicalProjectOperation(input));
     }
+    validateRestoredResolutionAuthority(this.state, this.operations, this.projectIdentity, this.binaryIdentity);
     this.pending = new Map();
     for (const [key, input] of options.pending ?? []) {
       const operation = requireCanonicalProjectOperation(input);
@@ -298,8 +327,12 @@ export class ChangeLog {
     }
     if (operation.action === 'resolve') {
       if (!current || !current.values.some((item) => item.operationId === operation.payload?.operationId)) return { status: 'rejected', reason: 'resolution-target-missing' };
-      current.resolvedOperationId = operation.payload.operationId;
-      current.stateFingerprint = factStateFingerprint(current);
+      const previousResolutionOperationId = current.resolutionOperationId ?? null;
+      if (previousResolutionOperationId == null || compareOperationId(operation.operationId, previousResolutionOperationId) > 0) {
+        current.resolvedOperationId = operation.payload.operationId;
+        current.resolutionOperationId = operation.operationId;
+        current.stateFingerprint = factStateFingerprint(current);
+      }
       this.operations.set(operation.operationId, operation);
       return { status: 'applied', operationId: operation.operationId, effect: 'resolution' };
     }
@@ -418,14 +451,25 @@ export class ChangeLog {
 
   checkpoint() {
     const pendingOperations = [...this.pending.values()].sort(compareOperations).map((operation) => clone(operation));
+    const state = cloneState(this.state);
+    const operationIds = [...this.operations.keys()].sort();
+    const resolutionOperations = Object.values(this.state.facts ?? {})
+      .filter((record) => record?.resolutionOperationId != null)
+      .map((record) => {
+        const operation = this.operations.get(record.resolutionOperationId);
+        if (!operation) throw new TypeError('changelog-state-resolution-operation-provenance-invalid');
+        return clone(operation);
+      })
+      .sort(compareOperations);
     return deepFreeze({
       schemaVersion: CHECKPOINT_SCHEMA_VERSION,
       projectIdentity: this.projectIdentity,
       binaryIdentity: this.binaryIdentity,
-      state: cloneState(this.state),
-      operationIds: [...this.operations.keys()].sort(),
+      state,
+      operationIds,
       pendingOperations,
-      digest: this.digest(),
+      resolutionOperations,
+      digest: checkpointPayloadDigest(state, operationIds, pendingOperations, resolutionOperations),
     });
   }
 
@@ -481,6 +525,7 @@ function normalizeCheckpoint(checkpoint, { projectIdentity, binaryIdentity = nul
   const state = cloneState(checkpoint.state);
   const operationIds = normalizeCheckpointOperationIds(checkpoint.operationIds);
   const pendingInput = checkpoint.pendingOperations;
+  const resolutionInput = checkpoint.resolutionOperations ?? [];
   const digest = checkpoint.digest;
 
   assertIdentityMatch(checkpointProjectIdentity, projectIdentity, 'checkpoint-project-identity-mismatch');
@@ -498,8 +543,21 @@ function normalizeCheckpoint(checkpoint, { projectIdentity, binaryIdentity = nul
     binaryIdentity: binaryIdentity || null,
     appliedOperationIds: new Set(operationIds),
   });
-  const expectedDigest = payloadDigest({ state, operationIds, pendingOperations });
+  if (!Array.isArray(resolutionInput)) throw new TypeError('checkpoint-resolution-operations-invalid');
+  const resolutionMap = new Map();
+  for (const input of resolutionInput) {
+    const operation = requireCanonicalProjectOperation(input);
+    if (operation.action !== 'resolve' || !operationIds.includes(operation.operationId)) throw new TypeError('checkpoint-resolution-operation-invalid');
+    if (operation.projectIdentity !== projectIdentity) throw new TypeError('checkpoint-resolution-project-identity-mismatch');
+    if ((operation.binaryIdentity ?? null) !== (binaryIdentity || null)) throw new TypeError('checkpoint-resolution-binary-identity-mismatch');
+    rememberRestoredOperation(resolutionMap, operation);
+  }
+  const resolutionOperations = [...resolutionMap.values()].sort(compareOperations);
+  const expectedDigest = checkpointPayloadDigest(state, operationIds, pendingOperations, resolutionOperations);
   if (typeof digest !== 'string' || digest !== expectedDigest) throw new TypeError('checkpoint-digest-mismatch');
+
+  const authorityOperations = new Map(resolutionOperations.map((operation) => [operation.operationId, operation]));
+  validateRestoredResolutionAuthority(state, authorityOperations, projectIdentity, binaryIdentity || null);
 
   return Object.freeze({
     schemaVersion,
@@ -508,12 +566,14 @@ function normalizeCheckpoint(checkpoint, { projectIdentity, binaryIdentity = nul
     state,
     operationIds: Object.freeze(operationIds),
     pendingOperations: Object.freeze(pendingOperations),
+    resolutionOperations: Object.freeze(resolutionOperations),
     digest,
   });
 }
 
 function checkpointOperationPlaceholders(checkpoint) {
-  return checkpoint.operationIds.map((operationId) => ({
+  const resolutions = new Map((checkpoint.resolutionOperations ?? []).map((operation) => [operation.operationId, operation]));
+  return checkpoint.operationIds.map((operationId) => resolutions.get(operationId) ?? ({
     operationId,
     schemaVersion: CHANGELOG_SCHEMA_VERSION,
     projectIdentity: checkpoint.projectIdentity,

@@ -1,4 +1,4 @@
-import { stableStringify } from '../../core/identity/index.js';
+import { sameCanonicalIdentityValue } from '../../core/identity/index.js';
 import { isPreciseMemoryRegion } from './regions-v2.js';
 
 function widthBytes(region) {
@@ -114,7 +114,7 @@ export function aliasMemoryRegions(a, b) {
       if (!spaceA || !spaceB) return 'unknown';
       if (spaceA !== spaceB) return 'no';
       if (a.rootIdentity == null || b.rootIdentity == null) return 'unknown';
-      if (stableStringify(a.rootIdentity) !== stableStringify(b.rootIdentity)) return 'unknown';
+      if (!sameCanonicalIdentityValue(a.rootIdentity, b.rootIdentity)) return 'unknown';
       const wa = widthBytes(a), wb = widthBytes(b);
       return wa != null && wb != null && wa === wb ? 'must' : 'may';
     }

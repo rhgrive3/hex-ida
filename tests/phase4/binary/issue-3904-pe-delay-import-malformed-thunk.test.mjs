@@ -85,7 +85,7 @@ function fixture({ bits = 32, attrs = 1, thunk = BigInt(rva(NAME_OFFSET)), thunk
       size: BigInt(bytes.length),
       fileOffset: 0n,
       fileSize: BigInt(bytes.length),
-      perms: { read: true, write: false, execute: false },
+      perms: { read: true, write: true, execute: false },
     }],
     segments: [],
     metadata: {},

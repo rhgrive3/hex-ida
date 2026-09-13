@@ -80,6 +80,26 @@ await assertStale({ pattern: /alpha/g }, { pattern: /beta/i }, 'nested RegExp so
     /non-plain/,
     'custom class instances must be rejected, never plain-objectified',
   );
+  assert.throws(
+    () => storeWith().create({ kind: 'rename', target: {}, before: { nested: new Custom() }, after: 'x', evidenceIds: ['ev_6250'] }),
+    /non-plain/,
+    'nested custom class instances must be rejected before snapshotting',
+  );
+  assert.throws(
+    () => storeWith().create({ kind: 'rename', target: {}, before: new Map([['nested', new Custom()]]), after: 'x', evidenceIds: ['ev_6250'] }),
+    /non-plain/,
+    'custom class instances inside Map entries must be rejected before snapshotting',
+  );
+  let customMapIteratorCalled = false;
+  class CustomMap extends Map {
+    entries() { customMapIteratorCalled = true; return super.entries(); }
+  }
+  assert.throws(
+    () => storeWith().create({ kind: 'rename', target: {}, before: new CustomMap([['key', 'value']]), after: 'x', evidenceIds: ['ev_6250'] }),
+    /non-plain/,
+    'Map subclasses must be rejected before invoking overridden methods',
+  );
+  assert.equal(customMapIteratorCalled, false);
   // Boxed primitives carry state in internal slots and enumerate empty.
   assert.throws(
     () => storeWith().create({ kind: 'rename', target: {}, before: new String('secret'), after: 'x', evidenceIds: ['ev_6250'] }),

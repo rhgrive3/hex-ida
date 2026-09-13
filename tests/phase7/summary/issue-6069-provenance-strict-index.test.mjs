@@ -41,24 +41,37 @@ test('6069 structured provenance rejected', () => {
   );
 });
 
-test('6069 canonical indices and BigInt-compatible offsets accepted', () => {
+test('6069 canonical indices and BigInt-compatible offsets accepted; non-canonical indices rejected', () => {
   let s = sw({ kind: 'arg', argIndex: 1, returnIndex: 0, offset: 8 });
   assert.equal(s.returnProvenance[0].argIndex, 1);
   assert.equal(s.returnProvenance[0].returnIndex, 0);
   assert.equal(s.returnProvenance[0].offset, '8');
 
-  s = sw({ kind: 'arg', argIndex: 2n, returnIndex: '4', offset: '0x20' });
+  assert.throws(
+    () => sw({ kind: 'arg', argIndex: 2n, returnIndex: 4, offset: '0x20' }),
+    /function-summary-invalid-return-provenance-arg-index/,
+  );
+  assert.throws(
+    () => sw({ kind: 'arg', argIndex: 2, returnIndex: '4', offset: '0x20' }),
+    /function-summary-invalid-return-provenance-return-index/,
+  );
+  assert.throws(
+    () => sw({ kind: 'arg', argIndex: 2, returnIndex: 5n, offset: '0b1000' }),
+    /function-summary-invalid-return-provenance-return-index/,
+  );
+
+  s = sw({ kind: 'arg', argIndex: 2, returnIndex: 4, offset: '0x20' });
   assert.equal(s.returnProvenance[0].argIndex, 2);
   assert.equal(s.returnProvenance[0].returnIndex, 4);
   assert.equal(s.returnProvenance[0].offset, '32');
 
-  s = sw({ kind: 'arg', returnIndex: 5n, offset: '0b1000' });
+  s = sw({ kind: 'arg', argIndex: 2, returnIndex: 5, offset: '0b1000' });
   assert.equal(s.returnProvenance[0].returnIndex, 5);
   assert.equal(s.returnProvenance[0].offset, '8');
 
-  s = sw({ kind: 'arg', offset: '0o10' });
+  s = sw({ kind: 'arg', argIndex: 0, offset: '0o10' });
   assert.equal(s.returnProvenance[0].offset, '8');
 
-  s = sw({ kind: 'arg', offset: '+16' });
+  s = sw({ kind: 'arg', argIndex: 0, offset: '+16' });
   assert.equal(s.returnProvenance[0].offset, '16');
 });

@@ -71,6 +71,7 @@ function fixture({
   dv.setUint16(fixups + 40, 0x1000, true);
   dv.setUint16(fixups + 42, 2, true);
   dv.setUint16(fixups + 56, 1, true);
+  dv.setUint16(fixups + 58, SLOT_OFFSET, true);
   new TextEncoder().encodeInto('_target\0', thin.subarray(fixups + 68));
 
   return { file: new Blob([thin]), stub: stubAddr, slot };

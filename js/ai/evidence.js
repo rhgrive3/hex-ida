@@ -2,6 +2,7 @@ import { EVIDENCE_STATUSES } from './schema.js';
 import { addressText, jsonSafe } from './validation.js';
 import { evidenceStoreToCanonicalGraph } from '../core/evidence/compat.js';
 import { stableDigest } from '../core/identity/index.js';
+import { isPersistedConfirmedEnvelope } from './session-core/persisted-confirmed.js';
 
 const DETERMINISTIC_VERIFICATION = Symbol('deterministic-verification');
 
@@ -228,8 +229,9 @@ export class EvidenceStore {
   }
 
   restorePersistedConfirmed(initial = []) {
+    const authority = isPersistedConfirmedEnvelope(initial) ? DETERMINISTIC_VERIFICATION : null;
     for (const evidence of Array.isArray(initial) ? initial : []) {
-      this.add(evidence, evidence?.status === 'verified' ? DETERMINISTIC_VERIFICATION : null);
+      this.add(evidence, evidence?.status === 'verified' ? authority : null);
     }
     return this;
   }

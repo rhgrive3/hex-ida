@@ -192,36 +192,67 @@ function addDependencyIdentity(deps, value) {
   if (identity != null) deps.add(identity);
 }
 
+const TYPE_DEPENDENCY_IDENTITY_KEYS = Object.freeze(['targetEntityId', 'elementEntityId']);
+const TYPE_DEPENDENCY_CHILD_KEYS = Object.freeze(['elementType', 'pointeeType', 'memberType', 'members']);
+const MAX_TYPE_DEPENDENCY_NODES = 4096;
+const MAX_TYPE_DEPENDENCY_DEPTH = 256;
+
+function walkTypeDependencies(root) {
+  const deps = new Set();
+  let exhausted = false;
+  if (!root || typeof root !== 'object') return { deps, exhausted };
+  const visited = new Set();
+  const stack = [[root, 0]];
+  let nodes = 0;
+  while (stack.length) {
+    const [node, depth] = stack.pop();
+    if (!node || typeof node !== 'object' || visited.has(node)) continue;
+    if (depth > MAX_TYPE_DEPENDENCY_DEPTH || nodes >= MAX_TYPE_DEPENDENCY_NODES) {
+      exhausted = true;
+      continue;
+    }
+    visited.add(node);
+    nodes += 1;
+    if (Array.isArray(node)) {
+      for (const child of node) stack.push([child, depth + 1]);
+      continue;
+    }
+    for (const key of TYPE_DEPENDENCY_IDENTITY_KEYS) addDependencyIdentity(deps, node[key]);
+    for (const key of TYPE_DEPENDENCY_CHILD_KEYS) {
+      const child = node[key];
+      if (child && typeof child === 'object') stack.push([child, depth + 1]);
+    }
+  }
+  return { deps, exhausted };
+}
+
 function extractDependencies(claim) {
   const deps = new Set();
   const d = claim?.descriptor;
-  if (!d || typeof d !== 'object') return deps;
+  if (!d || typeof d !== 'object') return { deps, exhausted: false };
 
   addDependencyIdentity(deps, d.targetEntityId);
   addDependencyIdentity(deps, d.elementEntityId);
-  if (typeof d.entityId === 'string' && d.entityId.trim() && d.entityId !== claim.entityId) {
-    deps.add(d.entityId.trim());
+  if (typeof d.entityId === 'string' && d.entityId.trim() && d.entityId !== claim.entityId) deps.add(d.entityId.trim());
+
+  let exhausted = false;
+  for (const root of [d.memberType, ...(Array.isArray(d.members) ? d.members : [])]) {
+    const walked = walkTypeDependencies(root);
+    for (const dep of walked.deps) deps.add(dep);
+    exhausted = exhausted || walked.exhausted;
   }
-  if (d.memberType && typeof d.memberType === 'object') {
-    addDependencyIdentity(deps, d.memberType.targetEntityId);
-    addDependencyIdentity(deps, d.memberType.elementEntityId);
-    addDependencyIdentity(deps, d.memberType.elementType?.targetEntityId);
-  }
-  if (Array.isArray(d.members)) {
-    for (const member of d.members) {
-      addDependencyIdentity(deps, member?.memberType?.targetEntityId);
-      addDependencyIdentity(deps, member?.memberType?.elementEntityId);
-      addDependencyIdentity(deps, member?.memberType?.elementType?.targetEntityId);
-    }
-  }
-  return deps;
+  return { deps, exhausted };
+}
+
+function memberDependencyIdentities(member) {
+  const walked = walkTypeDependencies(member);
+  return walked.deps;
 }
 
 function isMemberRecursive(member, entityId, sccMembers = []) {
-  const target = member?.memberType?.targetEntityId ?? member?.targetEntityId ?? null;
-  const elementTarget = member?.memberType?.elementType?.targetEntityId ?? member?.memberType?.elementEntityId ?? null;
-  if (target === entityId || (target && sccMembers.includes(target))) return true;
-  if (elementTarget === entityId || (elementTarget && sccMembers.includes(elementTarget))) return true;
+  for (const identity of memberDependencyIdentities(member)) {
+    if (identity === entityId || sccMembers.includes(identity)) return true;
+  }
   return member?.isRecursive === true || member?.memberType?.isRecursive === true;
 }
 
@@ -427,6 +458,7 @@ export class TypeConstraintGraph {
     this.entities = new Map();
     /** entityId -> Set<dependentEntityId> */
     this.dependencies = new Map();
+    this.dependencyTruncated = new Set();
     this.userConstraintDigests = new Set();
   }
 
@@ -446,7 +478,8 @@ export class TypeConstraintGraph {
   }
 
   #recordDependencies(claim) {
-    const deps = extractDependencies(claim);
+    const { deps, exhausted } = extractDependencies(claim);
+    if (exhausted) this.dependencyTruncated.add(claim.entityId);
     if (deps.size === 0) return;
     if (!this.dependencies.has(claim.entityId)) {
       this.dependencies.set(claim.entityId, new Set());
@@ -575,6 +608,7 @@ export class TypeConstraintGraph {
       }
       if (solved.stopReason === 'budget-exhausted') stopReason = stopReason ?? 'budget-exhausted';
     }
+    if (this.dependencyTruncated.has(entityId)) stopReason = stopReason ?? 'budget-exhausted';
     return createTypeResult({
       entityId,
       status: stopReason === 'cancelled'

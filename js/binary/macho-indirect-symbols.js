@@ -166,7 +166,10 @@ export function applyMachOIndirectSymbols(thinInput, image, opts={}) {
   const tableSize=dc.nindirectsyms*4;
   if (!Number.isSafeInteger(tableSize) || dc.indirectsymoff>r.length || tableSize>r.length-dc.indirectsymoff) { partial('table-range-invalid','LC_DYSYMTAB indirect symbol table exceeds Mach-O input'); return image; }
 
-  const ptrSize=kind.bits===64 ? 8n : 4n;
+  // ARM64_32 uses the 64-bit Mach-O container/nlist layout but a 32-bit
+  // native pointer ABI. Keep structural width (`kind.bits`) separate from
+  // indirect pointer-section entry width.
+  const ptrSize=image.arch==='arm64_32' ? 4n : (kind.bits===64 ? 8n : 4n);
   const symbolCache=new Map();
   const symbolAt=(index) => {
     if (symbolCache.has(index)) return symbolCache.get(index);

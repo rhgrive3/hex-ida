@@ -41,6 +41,8 @@ function enrichCallBundle(bundle, resolveSignature, nativePointerBits = null) {
       parameterCount:stackEffect.parameterCount,
       hasThis:stackEffect.hasThis,
       returnsValue:stackEffect.returnsValue,
+      callTargetResolved:stackEffect.callTargetResolved,
+      ...(stackEffect.callTargetResolved ? {} : { callTargetReason:stackEffect.callTargetReason }),
     } : {
       signatureReason:stackEffect.reason,
     }),
@@ -53,11 +55,19 @@ function enrichCallBundle(bundle, resolveSignature, nativePointerBits = null) {
   const producedValues = stackEffect.producedValues.map((value) => attachNativeWidth(value, nativePointerBits));
 
   if (stackEffect.complete) {
+    const targetUnresolved = stackEffect.callTargetResolved === false;
     return {
       ...bundle,
       consumedValues:stackEffect.consumedValues,
       producedValues,
       callEffects,
+      ...(targetUnresolved ? {
+        completeness:bundle.completeness === 'unknown' ? 'unknown' : 'partial',
+        unknownEffects:[
+          ...(bundle.unknownEffects || []),
+          { category:'calls', reason:stackEffect.callTargetReason || 'cil-call-target-owner-external' },
+        ],
+      } : {}),
     };
   }
 

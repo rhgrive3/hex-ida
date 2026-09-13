@@ -1425,7 +1425,7 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
       if (kind === Words.KIND.LITERAL) {
         const t = Words.literalTarget(w, pc);
         if (t != null) addRef(pc, t, 1);
-        provenance.kill(w & 0x1f);
+        if (!Words.isPrefetchLiteral(w)) provenance.kill(w & 0x1f);
         continue;
       }
 
@@ -1445,7 +1445,7 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
         // writing d8/q8 must not destroy an address held in x8.  Integer pair
         // loads/RMWs may overwrite two GP results, while exclusive stores also
         // write a separate status register.
-        if (memWrite.load && !memWrite.vector) {
+        if (memWrite.load && !memWrite.vector && !memWrite.prefetch) {
           provenance.kill(memWrite.reg);
           if (memWrite.pair && memWrite.reg2 != null) provenance.kill(memWrite.reg2);
         }
@@ -1455,7 +1455,7 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
       }
       if (kind === Words.KIND.FARITH || kind === Words.KIND.FMUL || kind === Words.KIND.SIMD ||
           (kind === Words.KIND.CSEL && Words.isFpCondSelect?.(w))) continue;
-      if (WRITES_LOW_REG[kind]) provenance.kill(w & 0x1f);
+      if (WRITES_LOW_REG[kind] && !Words.isPrefetchLiteral(w)) provenance.kill(w & 0x1f);
     }
 
     pos += n * 4;
@@ -1488,7 +1488,7 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
   };
 
   function addRef(pc, target, k) {
-    if (target == null || target <= 0n || refsCapped) return;
+    if (target == null || refsCapped) return;
     void lo; void hi;
     if (nRefs === refFrom.length && !growRefs()) refsCapped = memoryCapped = true;
     if (nRefs < refFrom.length) {
@@ -2193,7 +2193,7 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
             if (out.length >= cap) break;
           }
         }
-        if (memWrite.load && !memWrite.vector) {
+        if (memWrite.load && !memWrite.vector && !memWrite.prefetch) {
           provenance.kill(memWrite.reg);
           if (memWrite.pair && memWrite.reg2 != null) provenance.kill(memWrite.reg2);
         }
@@ -2203,7 +2203,7 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
       }
       if (kind === Words.KIND.FARITH || kind === Words.KIND.FMUL || kind === Words.KIND.SIMD ||
           (kind === Words.KIND.CSEL && Words.isFpCondSelect?.(w))) continue;
-      if (WRITES_LOW_REG[kind]) provenance.kill(w & 0x1f);
+      if (WRITES_LOW_REG[kind] && !Words.isPrefetchLiteral(w)) provenance.kill(w & 0x1f);
     }
     pos += words * 4;
     scanProgress(requestId, epoch, pos, total, out.length);

@@ -125,14 +125,29 @@ export function groupOf(item) {
  * 証拠から数え直す。それも無理なら 0 を返す ＝ 確定を名乗らせない。
  * 分からないときに緩いほうへ倒さない。
  */
+const CANONICAL_GROUPS = new Set(Object.values(GROUP));
+
 export function independentGroupCount(fusion) {
   if (!fusion) return 0;
-  if (Number.isFinite(fusion.independentGroups)) return fusion.independentGroups;
-  if (Array.isArray(fusion.groups)) return fusion.groups.length;
   if (Array.isArray(fusion.items)) {
     const seen = new Set();
     for (const it of fusion.items) if (it && it.applied > 0) seen.add(groupOf(it));
     return seen.size;
+  }
+  if (Array.isArray(fusion.groups)) {
+    const distinct = new Set();
+    for (const g of fusion.groups) {
+      if (typeof g !== 'string' || !CANONICAL_GROUPS.has(g)) return 0;
+      distinct.add(g);
+    }
+    if (fusion.independentGroups !== undefined) {
+      if (!Number.isSafeInteger(fusion.independentGroups) || fusion.independentGroups < 0) return 0;
+      if (fusion.independentGroups !== distinct.size) return 0;
+    }
+    return distinct.size;
+  }
+  if (Number.isSafeInteger(fusion.independentGroups) && fusion.independentGroups >= 0) {
+    return fusion.independentGroups;
   }
   return 0;
 }
@@ -474,12 +489,16 @@ export function adapterEvidence(code, strength, detail, lr) {
 }
 
 function finiteStrength(value, fallback = 0) {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : fallback;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.min(1, value));
 }
 function finitePositiveLr(value, fallback = 1) {
-  const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return fallback;
+  return value;
+}
+function countAuthority(value, fallback) {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+  return fallback;
 }
 
 /**
@@ -521,9 +540,19 @@ export function evidence(code, strength, detail, lr) {
  * @param {number} users   その文言を参照している関数の数
  * @param {number} score   matchText の当てはまり（1 以上なら強い一致）
  */
+function observationCount(value, absent) {
+  if (value == null || value === 0) return absent;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) return null;
+  return value;
+}
+
 export function exclusiveLR(total, users, score, text) {
-  const n = Math.max(2, total || 0);
-  const k = Math.max(1, users || 1);
+  const totalC = observationCount(total, 0);
+  const usersC = observationCount(users, 1);
+  if (totalC === null || usersC === null) return 0;
+  const n = Math.max(2, totalC);
+  const k = Math.max(1, usersC);
+  if (typeof score !== 'number' || !Number.isFinite(score)) return 0;
   if (k > EXCLUSIVE_MAX_USERS) return 0;        // 何十か所からも使われる語は名指しではない
   if (!namesBehaviour(text)) return 0;
   /*
@@ -571,8 +600,11 @@ function namesBehaviour(text) {
  * 体力の形をした値は、盾でも残弾でも耐久度でもありうる。だから割引は大きい。
  */
 export function rarityLR(total, matching) {
-  const n = Math.max(2, total || 0);
-  const k = Math.max(1, matching || 1);
+  const totalC = observationCount(total, 0);
+  const matchingC = observationCount(matching, 1);
+  if (totalC === null || matchingC === null) return 0;
+  const n = Math.max(2, totalC);
+  const k = Math.max(1, matchingC);
   if (k >= n) return 0;
   return Math.max(1, Math.min(1e4, (n / k) * SHAPE_FITS_GOAL));
 }
@@ -633,8 +665,9 @@ export function fuse(items, opts) {
    * 「5 個のうちどれか」を前提にすると、ろくな根拠がなくても 20% から始まってしまう。
    * 実際には「この目的の値は、このバイナリには無い」ことの方が多い。
    */
-  const absent = o.absent != null ? o.absent : 40;
-  const n = Math.max(2, (o.candidates != null ? o.candidates : 200) + absent);
+  const absent = countAuthority(o.absent, 40);
+  const candidates = countAuthority(o.candidates, 200);
+  const n = Math.max(2, candidates + absent);
   const prior = o.prior != null
     ? Math.max(1e-9, Math.min(0.5, o.prior))
     : 1 / n;
