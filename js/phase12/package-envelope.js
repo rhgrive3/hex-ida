@@ -292,7 +292,10 @@ export function parseBoundedPackageInput(value, options = {}) {
   if (bytes.byteLength > maxBytes) throw new PackageValidationError('package-input-too-large', 'package input exceeds pre-parse byte budget');
   scanJsonBudget(bytes, options);
   let parsed;
-  try { parsed = JSON.parse(new TextDecoder().decode(bytes)); }
+  let text;
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+  catch (error) { throw new PackageValidationError('package-input-invalid-utf8', error.message); }
+  try { parsed = JSON.parse(text); }
   catch (error) { throw new PackageValidationError('package-json-malformed', error.message); }
   const limits = normalizedPackageLimits(options);
   countEntries(parsed, limits);
