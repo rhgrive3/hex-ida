@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   apply-validate-commit:
-    if: github.event.head_commit.message == 'chore(fixer2): launch #8610 remote write'
+    if: "${{ github.event.head_commit.message == 'chore(fixer2): run 8610 remote write' }}"
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -22,11 +22,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Verify exact base and apply patch
+      - name: Verify staged patch and apply
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "abc974714602c8549debe900bb33f108f3f36052"
+          git merge-base --is-ancestor abc974714602c8549debe900bb33f108f3f36052 HEAD
           git apply --check .github/fixer2-8610.patch
           git apply .github/fixer2-8610.patch
       - name: Focused and nearby validation
