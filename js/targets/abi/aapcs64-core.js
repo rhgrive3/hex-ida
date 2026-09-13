@@ -55,6 +55,27 @@ function scalarLayout(parameter, pointerBits = null) {
   return { bits, bytes:pointerBits !== null ? bits / 8 : sizes[0] ?? null };
 }
 
+function aggregateAlignmentEvidence(parameter) {
+  // Direct alignment keeps precedence over nested evidence. Absence permits
+  // the ABI default; malformed or conflicting evidence leaves placement unknown.
+  const aliases = ['alignment', 'align', 'alignmentBytes'];
+  const directAlias = aliases.find((alias) => Object.hasOwn(parameter ?? {}, alias));
+  const owners = [];
+  if (directAlias === undefined) {
+    if (nestedRecord(parameter?.layout)) owners.push(parameter.layout);
+    if (nestedRecord(parameter?.returnAggregate)) owners.push(parameter.returnAggregate);
+    if (nestedRecord(parameter?.returnAggregate?.layout)) owners.push(parameter.returnAggregate.layout);
+  }
+  const values = directAlias !== undefined ? [parameter[directAlias]] : owners.flatMap((owner) => aliases
+    .filter((alias) => Object.hasOwn(owner, alias))
+    .map((alias) => owner[alias]));
+  if (!values.length) return undefined;
+  // Natural alignments are powers of two. Check the primitive before doing
+  // arithmetic so caller-owned coercion hooks cannot become layout evidence.
+  if (values.some((value) => typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0
+    || (BigInt(value) & (BigInt(value) - 1n)) !== 0n)) return null;
+  return values.every((value) => value === values[0]) ? values[0] : null;
+}
 function parameterAbiClass(param, options = {}) {
   const type = String(param?.type || param?.name || '').toLowerCase();
   const cls = String(param?.abiClass || param?.class || param?.kind || '').toLowerCase();
@@ -122,14 +143,16 @@ function parameterAbiClass(param, options = {}) {
       : scalar?.bits ?? 0;
   const bits = rawBits;
   const wideIntegral = !pointer && !aggregate && !fp && bits === 128;
-  const declaredAlignment = Number(param?.alignment ?? param?.align ?? param?.alignmentBytes);
+  const declaredAlignment = homogeneous || aggregate ? aggregateAlignmentEvidence(param)
+    : Number(param?.alignment ?? param?.align ?? param?.alignmentBytes);
+  const alignmentInvalid = (homogeneous || aggregate) && declaredAlignment === null;
   const alignment = Number.isFinite(declaredAlignment) && declaredAlignment > 0
     ? Math.min(16, Math.max(1, Math.floor(declaredAlignment)))
     : wideIntegral ? 16 : 8;
   const mayContainPointers = param?.mayContainPointers === true || param?.containsPointers === true;
   return {
     pointer, hfa, hva, homogeneous, homogeneousLayoutProven, aggregateLayoutProven, vector, aggregate, fp,
-    members, elementBits, elementBytes:homogeneousElementBytes, bits, wideIntegral, alignment,
+    members, elementBits, elementBytes:homogeneousElementBytes, bits, wideIntegral, alignment, alignmentInvalid,
     aggregateLayout:layoutEvidence,
     aggregateBytes:aggregate ? layoutEvidence?.bytes ?? (bits > 0 ? Math.ceil(bits / 8) : null) : null,
     aggregateMetadataInvalid,
@@ -203,10 +226,11 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
   }
   params.forEach((param,index) => {
     const c=parameterAbiClass(param, opts);
-    if (allocationUncertain || (!c.scalableClass && !c.scalarLayoutProven)) {
-      const entry={index,location:'unknown',abiClass:allocationUncertain ? 'argument-layout-unproven' : 'scalar-layout-unproven',
+    if (allocationUncertain || c.alignmentInvalid || (!c.scalableClass && !c.scalarLayoutProven)) {
+      const entry={index,location:'unknown',
+        abiClass:allocationUncertain ? 'argument-layout-unproven' : c.alignmentInvalid ? 'aggregate-alignment-unproven' : 'scalar-layout-unproven',
         partial:true,possible:true,mustUse:false,exact:false,certainty:'unknown',
-        reason:allocationUncertain ? 'preceding-argument-layout-not-proven' : 'scalar-width-size-not-proven'};
+        reason:allocationUncertain ? 'preceding-argument-layout-not-proven' : c.alignmentInvalid ? 'aggregate-alignment-unproven' : 'scalar-width-size-not-proven'};
       allocationUncertain = true;
       arguments_.push(entry);unsupported.push(entry);return;
     }
