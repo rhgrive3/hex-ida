@@ -145,7 +145,11 @@ export function parseELF(input, options = {}) {
   const metadataBudget = createELFMetadataBudget(image, { signal: options.signal, limits: options.metadataLimits });
 
   const symbolTables = rawSections.filter((s) => s.type === SHT_SYMTAB || s.type === SHT_DYNSYM);
-  for (const s of symbolTables) parseSymbols(r, s, rawSections, image, bits, h.type, metadataBudget);
+  let dynsymAuthoritative = false;
+  for (const s of symbolTables) {
+    const complete = parseSymbols(r, s, rawSections, image, bits, h.type, metadataBudget);
+    if (s.type === SHT_DYNSYM && complete) dynsymAuthoritative = true;
+  }
   if (image.arch === 'riscv64') {
     const mappings = image.symbols
       .filter((symbol) => symbol?.defined === true && typeof symbol.name === 'string')
@@ -178,12 +182,11 @@ export function parseELF(input, options = {}) {
     if (s.type === SHT_REL || s.type === SHT_RELA) parseRelocations(r, s, rawSections, image, bits, h.type, metadataBudget);
     else if (s.type === SHT_DYNAMIC) parseDynamic(r, s, rawSections, image, bits, metadataBudget);
   }
-  const hasDynsym = rawSections.some((s) => s.type === SHT_DYNSYM);
   const hasRelocations = rawSections.some((s) => s.type === SHT_REL || s.type === SHT_RELA);
   const hasDynamic = rawSections.some((s) => s.type === SHT_DYNAMIC);
   parseProgramDynamic(r, programHeaders, image, bits, {
     signal: options.signal,
-    symbols: !hasDynsym,
+    symbols: !dynsymAuthoritative,
     relocations: !hasRelocations,
     sectionDynamicPresent: hasDynamic,
   });
@@ -483,37 +486,55 @@ function nameSections(r, sections, h, image) {
 
 function parseSymbols(r, table, sections, image, bits, elfType, budget) {
   const str = sections[table.link];
-  if (!str || str.type !== SHT_STRTAB || !table.entsize) return;
+  if (!str) {
+    budget.partial(`symbols:${table.index}:string-table-link`, `ELF symbol table ${table.index} links to missing section ${table.link}`);
+    return false;
+  }
+  if (str.type !== SHT_STRTAB) {
+    budget.partial(`symbols:${table.index}:string-table-type`, `ELF symbol table ${table.index} links to section ${table.link}, which is not SHT_STRTAB`);
+    return false;
+  }
+  if (!table.entsize) {
+    budget.partial(`symbols:${table.index}:entry-size`, `ELF symbol table ${table.index} has zero entry size`);
+    return false;
+  }
   const minEnt = BigInt(bits === 64 ? 24 : 16);
-  if (table.entsize < minEnt) { budget.partial(`symbols:${table.index}:entry-size`, `ELF symbol table ${table.index} entry size ${table.entsize} is smaller than ${minEnt}`); return; }
+  if (table.entsize < minEnt) { budget.partial(`symbols:${table.index}:entry-size`, `ELF symbol table ${table.index} entry size ${table.entsize} is smaller than ${minEnt}`); return false; }
+  let authoritative = table.size >= table.entsize;
   const tableStart = safeOffset(table.offset), ent = safeOffset(table.entsize);
   const strStart = safeOffset(str.offset), strBytes = safeOffset(str.size);
   if (tableStart == null || ent == null || strStart == null || strBytes == null || tableStart > r.length || strStart > r.length || strBytes > r.length-strStart) {
-    budget.partial(`symbols:${table.index}:file-span`, `ELF symbol/string table ${table.index} exceeds the file`); return;
+    budget.partial(`symbols:${table.index}:file-span`, `ELF symbol/string table ${table.index} exceeds the file`); return false;
   }
   const declaredBig = table.size / table.entsize;
   const fileCapacity = Math.floor((r.length-tableStart)/ent);
   const declared = declaredBig > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(declaredBig);
   const count = Math.min(declared,fileCapacity);
-  if (declaredBig > BigInt(fileCapacity)) budget.partial(`symbols:${table.index}:truncated`, `ELF symbol table ${table.index} exceeds its file-backed capacity`);
+  if (declaredBig > BigInt(fileCapacity)) {
+    authoritative = false;
+    budget.partial(`symbols:${table.index}:truncated`, `ELF symbol table ${table.index} exceeds its file-backed capacity`);
+  }
   const xindex = sections.find((sec) => sec.type === SHT_SYMTAB_SHNDX && sec.link === table.index) || null;
   const xindexValid = !!xindex && xindex.entsize === 4n
     && xindex.size === BigInt(count) * 4n
     && xindex.offset <= BigInt(r.length) && xindex.size <= BigInt(r.length) - xindex.offset;
-  if (xindex && !xindexValid) budget.partial(`symbols:${table.index}:xindex-malformed`, `ELF SHT_SYMTAB_SHNDX for table ${table.index} is malformed`);
+  if (xindex && !xindexValid) {
+    authoritative = false;
+    budget.partial(`symbols:${table.index}:xindex-malformed`, `ELF SHT_SYMTAB_SHNDX for table ${table.index} is malformed`);
+  }
 
   for (let i=0;i<count;i++) {
-    if (!budget.take({inputBytes:ent,records:1,objects:1,operations:2,estimatedHeapBytes:224},`symbols-${table.index}`)) break;
+    if (!budget.take({inputBytes:ent,records:1,objects:1,operations:2,estimatedHeapBytes:224},`symbols-${table.index}`)) { authoritative = false; break; }
     const p=tableStart+i*ent;
     let nameOff,info,other,shndx,value,size;
     if(bits===64){nameOff=r.u32(p);info=r.u8(p+4);other=r.u8(p+5);shndx=r.u16(p+6);value=r.u64(p+8);size=r.u64(p+16);}
     else{nameOff=r.u32(p);value=BigInt(r.u32(p+4));size=BigInt(r.u32(p+8));info=r.u8(p+12);other=r.u8(p+13);shndx=r.u16(p+14);}
-    if (BigInt(nameOff) >= str.size || nameOff >= strBytes) continue;
+    if (BigInt(nameOff) >= str.size || nameOff >= strBytes) { authoritative = false; budget.partial(`symbols:${table.index}:name-offset`, `ELF symbol ${i} in table ${table.index} has a string-table offset outside its linked SHT_STRTAB`); continue; }
     const maxName=Math.min(strBytes-nameOff,1<<20,Math.max(1,Math.floor(budget.remainingStringBytes/2)+1));
     const name=terminatedStringInTable(r,strStart,strBytes,nameOff,maxName);
-    if(name==null){budget.partial(`symbols:${table.index}:unterminated-name`,`ELF symbol ${i} in table ${table.index} references a string without a NUL terminator in its string table`);continue;}
+    if(name==null){authoritative=false;budget.partial(`symbols:${table.index}:unterminated-name`,`ELF symbol ${i} in table ${table.index} references a string without a NUL terminator in its string table`);continue;}
     if(!name)continue;
-    if(!budget.take({inputBytes:Math.min(maxName,name.length+1),stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'symbol-name'))break;
+    if(!budget.take({inputBytes:Math.min(maxName,name.length+1),stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'symbol-name')){authoritative=false;break;}
     const bind=info>>>4,type=info&0xf;
     let resolvedShndx=shndx,sectionIdentityKnown=true;
     if(shndx===SHN_XINDEX){
@@ -546,22 +567,23 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
       ...(tls?{tlsOffset:value}:{}),...(common?{commonAlignment:value,commonSize:size,allocation:'common-unallocated'}:{}),sectionRelative:elfType===ET_REL&&normal?{sectionIndex:resolvedShndx,offset:value}:null,addressDomain:tls?'tls-offset':common?'common-unallocated':elfType===ET_REL&&normal?(address==null?'section-relative-unmapped':'section-relative-synthetic'):'virtual'};
     image.symbols.push(sym);
     const externallyVisible=bind===1||bind===2||bind===STB_GNU_UNIQUE;
-    if(defined===false&&externallyVisible){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'symbol-import'))break;image.imports.push({name,library:null,ordinal:null,weak:bind===2,symbolIndex:i,tableIndex:table.index,source:'elf-dynsym',sites:[]});}
+    if(defined===false&&externallyVisible){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'symbol-import')){authoritative=false;break;}image.imports.push({name,library:null,ordinal:null,weak:bind===2,symbolIndex:i,tableIndex:table.index,source:'elf-dynsym',sites:[]});}
     if(defined===true&&externallyVisible&&(sym.visibility===0||sym.visibility===3)){
       // TLS exports keep their name/visibility fact but never mint a VA:
       // a defined TLS symbol's value is a TLS offset, not an address (#5843).
-      if(tls){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:144},'symbol-export'))break;image.exports.push({name,address:null,kind,tlsOffset:value,symbolIndex:i,tableIndex:table.index,source:sym.source});}
-      else if(address!=null){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:144},'symbol-export'))break;image.exports.push({name,address,kind,symbolIndex:i,tableIndex:table.index,source:sym.source});}
+      if(tls){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:144},'symbol-export')){authoritative=false;break;}image.exports.push({name,address:null,kind,tlsOffset:value,symbolIndex:i,tableIndex:table.index,source:sym.source});}
+      else if(address!=null){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:144},'symbol-export')){authoritative=false;break;}image.exports.push({name,address,kind,symbolIndex:i,tableIndex:table.index,source:sym.source});}
     }
     if(defined===true&&(type===2||type===STT_GNU_IFUNC)&&address!=null&&address!==0n){
       const owner=executableELFRange(image,address,size||0n,normal?resolvedShndx:null);
       if(owner){
         const alignmentRejection=elfInstructionStartAlignmentRejection(image,address);
         if(alignmentRejection){budget.partial(`symbols:${table.index}:function-alignment`,`Ignored ELF ${type===STT_GNU_IFUNC?'STT_GNU_IFUNC resolver':'STT_FUNC'} ${name}: ${alignmentRejection}`);continue;}
-        if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'symbol-function'))break;image.functions.push(functionSeed(address,{size:size||null,name:type===STT_GNU_IFUNC?`${name}$resolver`:name,source:type===STT_GNU_IFUNC?'ifunc-resolver':'symbol',confidence:0.995,exactFunctionStart:true,functionStartEvidence:type===STT_GNU_IFUNC?'ELF STT_GNU_IFUNC resolver with validated executable section extent':elfType===ET_REL?'ELF ET_REL STT_FUNC with validated executable section-relative extent':'ELF STT_FUNC with validated executable section extent',callingConvention:riscvVariantCc?'riscv-vector-variant':null,abiMetadata:riscvVariantCc?{riscvVariantCc:true,stOther:other}:null}));if(riscvVariantCc){if(!Array.isArray(image.metadata.riscvVariantCcFunctions))image.metadata.riscvVariantCcFunctions=[];image.metadata.riscvVariantCcFunctions.push({name,address,symbolIndex:i,tableIndex:table.index,stOther:other,callingConvention:'riscv-vector-variant'});}}
+        if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'symbol-function')){authoritative=false;break;}image.functions.push(functionSeed(address,{size:size||null,name:type===STT_GNU_IFUNC?`${name}$resolver`:name,source:type===STT_GNU_IFUNC?'ifunc-resolver':'symbol',confidence:0.995,exactFunctionStart:true,functionStartEvidence:type===STT_GNU_IFUNC?'ELF STT_GNU_IFUNC resolver with validated executable section extent':elfType===ET_REL?'ELF ET_REL STT_FUNC with validated executable section-relative extent':'ELF STT_FUNC with validated executable section extent',callingConvention:riscvVariantCc?'riscv-vector-variant':null,abiMetadata:riscvVariantCc?{riscvVariantCc:true,stOther:other}:null}));if(riscvVariantCc){if(!Array.isArray(image.metadata.riscvVariantCcFunctions))image.metadata.riscvVariantCcFunctions=[];image.metadata.riscvVariantCcFunctions.push({name,address,symbolIndex:i,tableIndex:table.index,stOther:other,callingConvention:'riscv-vector-variant'});}}
       else image.warnings.push(`Ignored ELF ${type===STT_GNU_IFUNC?'STT_GNU_IFUNC resolver':'STT_FUNC'} ${name} outside its canonical executable extent`);
     }
   }
+  return authoritative;
 }
 
 
