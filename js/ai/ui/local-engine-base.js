@@ -11,6 +11,8 @@
  * Agent : deterministic goal planner (js/query/planner.js) with live activity.
  */
 import { runDeterministicAgent } from '../../agent/runtime.js';
+import { plannerGoalWithTargetHint } from '../context/planner-target-hint.js';
+import { compactUntrustedTarget } from '../context/broker.js';
 import { streamGemini } from '../../gemini.js';
 import { addrHex } from '../../format.js';
 import { pick } from '../../i18n.js';
@@ -130,6 +132,7 @@ async function runChat({ app, question, mode, style, scope, context, signal, onA
   const payload = {
     question: (compactGuidance(prompt) + '\n\n' + question).slice(0, 6000),
     thinkingLevel: style === 'analyst' ? 'high' : 'medium',
+    untrustedTarget: compactUntrustedTarget(context.untrustedTarget),
     currentFunction: { address, name: activeFn ? activeFn.name : null, assembly, pseudocode: null },
     xrefs: [], callers: [], callees: [], strings: [], globals: [],
   };
@@ -189,7 +192,8 @@ async function runAgent({ app, localContext, question, mode, style, signal, onAc
   // dominant first-answer cost and could outlive a cancelled Assistant turn.
   onActivity({ label: pick('候補を探索', 'Searching candidates'), state: 'running' });
   const started = Date.now();
-  const result = await runDeterministicAgent(question, localContext || {}, {
+  const plannerGoal = plannerGoalWithTargetHint(question, context?.untrustedTarget);
+  const result = await runDeterministicAgent(plannerGoal, localContext || {}, {
     maxFunctions: 24, maxDisassembly: 40000, timeoutMs: 20000,
     signal,
     isCancelled: () => !!(signal && signal.aborted),

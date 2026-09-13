@@ -1,4 +1,5 @@
 import { PROPOSAL_DRAFT_SCHEMA } from '../schema.js';
+import { compactUntrustedTarget } from '../context/broker.js';
 import { boundedText, byteLength, HttpError, MAX_CONTEXT_CHARS } from './worker-transport.js';
 
 const MAX_QUESTION_CHARS = 6000;
@@ -130,6 +131,8 @@ export function normalizeRequest(value) {
   const thinkingLevel = value.thinkingLevel == null ? 'high' : value.thinkingLevel; if (typeof thinkingLevel !== 'string' || !THINKING_LEVELS.has(thinkingLevel)) throw new HttpError(422, 'invalid_thinking_level', 'thinkingLevel must be minimal, low, medium, or high.');
   const currentFunction = normalizeCurrentFunction(value.currentFunction);
   const context = { question, currentFunction, xrefs: normalizeList(value.xrefs, 60), callers: normalizeList(value.callers, 60), callees: normalizeList(value.callees, 60), strings: normalizeList(value.strings, 60), globals: normalizeList(value.globals, 60) };
+  const untrustedTarget = compactUntrustedTarget(value.untrustedTarget);
+  if (untrustedTarget) context.untrustedTarget = untrustedTarget;
   if (JSON.stringify(context).length > MAX_CONTEXT_CHARS) throw new HttpError(413, 'request_too_large', 'The selected analysis context is too large.');
   return { thinkingLevel, context };
 }

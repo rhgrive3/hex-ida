@@ -87,6 +87,7 @@ export function createAiEngine(app, options = {}) {
       if (engine && typeof engine.turn === 'function') {
         const runCore = () => engine.turn({
           goal: question, mode, style, scope, sessionId, task: prompt.task,
+          untrustedTarget: context?.untrustedTarget ?? null,
           conversationId: conversationKey, provider: input.provider || null,
           model: input.model || null, reasoning: input.reasoning || null,
         }, { signal, onActivity: (event) => onActivity && onActivity(event) });
