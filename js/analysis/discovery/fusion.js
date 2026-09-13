@@ -284,7 +284,7 @@ function fuseExtent(evidence) {
       const byEnd = BigInt(left.end) < BigInt(right.end) ? -1 : BigInt(left.end) > BigInt(right.end) ? 1 : 0;
       return byEnd || compareText(left.ownership, right.ownership);
     });
-    return { regions, state: authoritative.length > 0 ? 'exact' : 'heuristic', conflicts: [] };
+    return { regions, state: 'unknown', conflicts: [], partialKnown: true };
   }
   const considered = complete.length > 0 ? complete : pool;
 
@@ -367,6 +367,9 @@ export function fuseFunctionCandidates(evidence, options = {}) {
   const canonical = [];
   const candidateStarts = new Set();
   for (let index = 0; index < evidence.length; index += 1) {
+    if (options.signal?.aborted) {
+      return { candidates: [], status: status('partial', 'cancelled') };
+    }
     const item = canonicalEvidence(evidence[index]);
     canonical.push(item);
     if (item.start == null) continue;
@@ -378,7 +381,13 @@ export function fuseFunctionCandidates(evidence, options = {}) {
 
   const byStart = new Map();
   const orderedEvidence = canonical.sort(compareEvidence);
+  if (options.signal?.aborted) {
+    return { candidates: [], status: status('partial', 'cancelled') };
+  }
   for (const item of orderedEvidence) {
+    if (options.signal?.aborted) {
+      return { candidates: [], status: status('partial', 'cancelled') };
+    }
     if (item.start == null) continue;
     const key = primitiveInteger(item.start, 'discovery-fusion-invalid-start').toString();
     if (!byStart.has(key)) byStart.set(key, { items: [], overflow: false });
@@ -395,6 +404,9 @@ export function fuseFunctionCandidates(evidence, options = {}) {
   let evidenceOverflow = false;
   const starts = [...byStart.keys()].sort((left, right) => (BigInt(left) < BigInt(right) ? -1 : 1));
   for (const start of starts) {
+    if (options.signal?.aborted) {
+      return { candidates: [], status: status('partial', 'cancelled') };
+    }
     const entry = byStart.get(start);
     const fullBucket = entry.items;
     evidenceOverflow ||= entry.overflow;
@@ -441,6 +453,7 @@ export function fuseFunctionCandidates(evidence, options = {}) {
         extentEvidence: bucket.filter((item) => item.regions.length > 0),
         startState,
         extentState: extent.state,
+        allowRegionsWithUnknownExtent: extent.partialKnown === true && extent.regions.length > 0,
         conflicts,
         architectureId: bucket.find((item) => item.architectureId)?.architectureId ?? options.architectureId ?? null,
       }));
@@ -472,6 +485,7 @@ function reconcileOverlaps(candidates, { signal = null } = {}) {
 
   const regions = [];
   for (let i = 0; i < n; i++) {
+    if (candidates[i].extentState === 'unknown') continue;
     for (const r of candidates[i].regions) {
       regions.push({
         candidateIndex: i,
@@ -485,6 +499,7 @@ function reconcileOverlaps(candidates, { signal = null } = {}) {
   const starts = candidates.map((c, i) => ({ candidateIndex: i, start: BigInt(c.start) }));
   starts.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
   const sharedAtStart = candidates.map((candidate) => {
+    if (candidate.extentState === 'unknown') return false;
     const start = BigInt(candidate.start);
     let covered = false;
     for (const region of candidate.regions) {

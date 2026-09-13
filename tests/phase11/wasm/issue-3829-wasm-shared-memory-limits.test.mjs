@@ -38,13 +38,13 @@ assert.throws(
 );
 
 const unsharedNoMax = parseWasm(definedMemory(0x00));
-assert.deepEqual(unsharedNoMax.memories[0], { min: 1, max: null, shared: false, flags: 0 });
+assert.deepEqual(unsharedNoMax.memories[0], { min: 1, max: null, shared: false, addressType: 'i32', flags: 0 });
 
 const unsharedWithMax = parseWasm(definedMemory(0x01, 1, 2));
-assert.deepEqual(unsharedWithMax.memories[0], { min: 1, max: 2, shared: false, flags: 1 });
+assert.deepEqual(unsharedWithMax.memories[0], { min: 1, max: 2, shared: false, addressType: 'i32', flags: 1 });
 
 const sharedWithMax = parseWasm(definedMemory(0x03, 1, 2));
-assert.deepEqual(sharedWithMax.memories[0], { min: 1, max: 2, shared: true, flags: 3 });
+assert.deepEqual(sharedWithMax.memories[0], { min: 1, max: 2, shared: true, addressType: 'i32', flags: 3 });
 
 const importedSharedWithMax = parseWasm(importedMemory(0x03, 1, 2));
 assert.deepEqual(importedSharedWithMax.imports[0].desc, {
@@ -52,6 +52,7 @@ assert.deepEqual(importedSharedWithMax.imports[0].desc, {
   min: 1,
   max: 2,
   shared: true,
+  addressType: 'i32',
   flags: 3,
 });
 

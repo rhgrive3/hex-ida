@@ -226,7 +226,7 @@ function collectAddressTargets(value, tool = "") {
   for (const [key, item] of Object.entries(value)) {
     if ((ADDRESS_KEYS.has(key) || /Address$/.test(key)) && typeof item === "string" && addressText(item)) {
       out.push({ address:addressText(item), kind:"address" });
-    } else if (TOOL_FUNCTION_ADDRESS_ARRAY_KEYS.get(tool)?.has(key) && Array.isArray(item)) {
+    } else if ((key === "functions" && Array.isArray(item)) || (TOOL_FUNCTION_ADDRESS_ARRAY_KEYS.get(tool)?.has(key) && Array.isArray(item))) {
       for (const address of item) {
         if (typeof address === "string" && addressText(address)) out.push({ address:addressText(address), kind:"function" });
       }

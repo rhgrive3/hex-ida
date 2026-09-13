@@ -79,9 +79,12 @@ export class EmulatorFault extends Error {
 }
 
 function normalizeMemorySize(size) {
-  const n = Number(size);
-  if (!Number.isSafeInteger(n) || n < 1 || n > 1024 * 1024) throw new EmulatorFault('invalid-memory-size', 'memory size must be an integer in 1..1048576', { size });
-  return n;
+  if (typeof size === 'bigint') {
+    if (size < 1n || size > 1048576n) throw new EmulatorFault('invalid-memory-size', 'memory size must be an integer in 1..1048576', { size });
+    return Number(size);
+  }
+  if (typeof size !== 'number' || !Number.isSafeInteger(size) || size < 1 || size > 1024 * 1024) throw new EmulatorFault('invalid-memory-size', 'memory size must be an integer in 1..1048576', { size });
+  return size;
 }
 
 function isConditionalBranchMnemonic(mn) { return /^(b\.\w+|cbz|cbnz|tbz|tbnz)$/i.test(mn || ''); }
@@ -134,6 +137,7 @@ export class Emulator {
   get(reg) {
     const name = this._normalizeReg(reg);
     if (name === 'sp') return this.sp;
+    if (name === 'wsp') return this.sp & MASK32;
     if (name === 'pc') return this.pc;
     if (/^[xw]zr$/.test(name)) return 0n;
     const m = /^([xw])(\d+)$/.exec(name);
@@ -148,6 +152,7 @@ export class Emulator {
     const name = this._normalizeReg(reg);
     const v = BigInt.asUintN(64, BigInt(value));
     if (name === 'sp') { this.sp = v; return; }
+    if (name === 'wsp') { this.sp = BigInt.asUintN(32, v); return; }
     if (name === 'pc') { this.pc = v; return; }
     if (/^[xw]zr$/.test(name)) return;
     const m = /^([xw])(\d+)$/.exec(name);
@@ -446,7 +451,19 @@ export class Emulator {
     const ops = parseOperands(opsStr);
     const R = (op) => this.valueOf(op);
 
-    if (/^(nop|hint|bti|paciasp|pacibsp|autiasp|autibsp|xpaclri|dmb|dsb|isb|prfm|pacia|autia|pacibz)$/.test(mn)) return null;
+    // Pointer-authentication aliases occupy part of the HINT encoding space.
+    // Treating those immediates as no-ops would fabricate an unsupported
+    // authenticated state transition (#4099).
+    if (mn === 'hint') {
+      const hint = ops.length === 1 && ops[0]?.k === 'imm' ? ops[0].value : null;
+      if (hint != null && new Set([7n, 8n, 10n, 12n, 14n, 24n, 25n, 26n, 27n, 28n, 29n, 30n, 31n]).has(hint)) {
+        throw new EmulatorFault('pointer-authentication-unsupported', `pointer authentication HINTはまだ実行できません: #${hint}`, { instruction: mn, hint });
+      }
+    }
+    if (/^(nop|hint|bti|dmb|dsb|isb|prfm)$/.test(mn)) return null;
+    if (/^(pac|aut)(ia|ib)(z|sp)?$/.test(mn) || mn === 'xpaclri' || mn === 'retaa' || mn === 'retab') {
+      throw new EmulatorFault('pointer-authentication-unsupported', `pointer authentication命令はまだ実行できません: ${mn}`, { instruction: mn });
+    }
 
     if (mn === 'b') return this.branchTarget(ops);
     if (/^b\.(\w+)$/.test(mn)) {
@@ -494,7 +511,7 @@ export class Emulator {
       }
       return target;
     }
-    if (/^(ret|retaa|retab)$/.test(mn)) {
+    if (mn === 'ret') {
       const target = ops.length ? R(ops[0]) : this.x[30];
       this.callStack.pop();
       return target;

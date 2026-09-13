@@ -542,8 +542,12 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
     const funcResult = parseGoFunctions(this.pclntabBuffer, header, this.options);
     this.cachedFunctions = funcResult;
 
+    const goComplete = funcResult.completeness.complete;
+    const hasIdentityBinding = this.binaryIdentity != null;
     const identity = createLanguageMetadataIdentity({
-      verdict: funcResult.completeness.complete ? 'matched-authoritative' : 'matched-partial',
+      verdict: goComplete
+        ? (hasIdentityBinding ? 'matched-authoritative' : 'identity-unavailable')
+        : 'matched-partial',
       providerId: this.id,
       providerVersion: this.version,
       ecosystem: 'go',
@@ -554,8 +558,10 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
       architecture: this.architecture,
       platform: this.platform,
       method: 'pclntab-magic',
-      detail: `Go ${header.versionName} (${funcResult.functions.length} functions)`,
-      coverage: funcResult.completeness.complete ? null : {
+      detail: hasIdentityBinding
+        ? `Go ${header.versionName} (${funcResult.functions.length} functions)`
+        : `Go ${header.versionName} without binary identity binding (${funcResult.functions.length} functions)`,
+      coverage: goComplete ? null : {
         recordKinds: ['symbol', 'type'],
         addresses: funcResult.functions.map((f) => f.address),
       },

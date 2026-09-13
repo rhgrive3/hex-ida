@@ -226,7 +226,7 @@ let diamond;
   const blocks = ['entry'];
   const values = [entryValue('seed_a', bit32, 'state.a'), definitionValue('read_value', 'read_after_unknown', bit32)];
   const nodes = [unknownStateWrite('unknown_write', 'entry'), stateRead('read_after_unknown', 'entry', 'state.a', 'read_value')];
-  const ir = semanticFunction({ blocks, nodes, values, completeness: 'partial', unknowns: [{ reason: 'state effect unavailable', categories: ['state'] }] });
+  const ir = semanticFunction({ blocks, nodes, values, completeness: 'partial', unknowns: [{ reason: 'state effect unavailable', categories: ['state'], detail: { nodeId: 'unknown_write' } }] });
   const cfg = semanticCfg({ blocks, edges: [] });
   const ssa = buildSemanticSsa(ir, cfg);
   const reaching = getDefinitionForUse(ssa, renamedUse(ssa, 'read_after_unknown'));

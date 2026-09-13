@@ -47,8 +47,7 @@ const FRAMEWORK_HINTS = [
 
 // Malformed external bounds must not disable collection caps.
 function finiteOr(value, fallback) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
 /** その名前がどのライブラリのものか（推測）。 */

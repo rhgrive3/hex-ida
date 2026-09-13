@@ -237,7 +237,7 @@ function readHeapIndex(view, offset, size, code) {
   return size === 2 ? readU16(view, offset, code) : readU32(view, offset, code);
 }
 
-function parseMetadataTables(bytes, view, tableStream) {
+function parseMetadataTables(bytes, view, tableStream, stringStream = null) {
   if (!tableStream) fail('cil-metadata-tables-missing');
   checkedRange(bytes, tableStream.offset, tableStream.size, 'cil-metadata-tables-out-of-bounds');
   if (tableStream.size < 24) fail('cil-metadata-tables-truncated');
@@ -259,6 +259,7 @@ function parseMetadataTables(bytes, view, tableStream) {
 
   const methodRvas = [];
   const standAloneSigBlobIndexes = [];
+  let moduleName = null;
   const blobIndexSize = (heapSizes & 0x04) !== 0 ? 4 : 2;
   for (let table = 0; table <= STANDALONE_SIG_TABLE; table++) {
     const rows = rowCounts[table] || 0;
@@ -267,7 +268,20 @@ function parseMetadataTables(bytes, view, tableStream) {
     if (!Number.isSafeInteger(rowSize) || rowSize < 1 || rows > Math.floor((end - pos) / rowSize)) {
       fail('cil-metadata-table-data-truncated');
     }
-    if (table === METHOD_DEF_TABLE) {
+    if (table === 0x00 && rows > 0) {
+      if (stringStream) {
+        const nameIdx = readHeapIndex(view, pos + 2, (heapSizes & 0x01) !== 0 ? 4 : 2, 'cil-metadata-module-name-truncated');
+        if (nameIdx > 0 && nameIdx < stringStream.size) {
+          const sStart = stringStream.offset + nameIdx;
+          const sEnd = stringStream.offset + stringStream.size;
+          let sPos = sStart;
+          while (sPos < sEnd && bytes[sPos] !== 0) sPos++;
+          if (sPos < sEnd) {
+            try { moduleName = new TextDecoder('utf-8').decode(bytes.subarray(sStart, sPos)); } catch {}
+          }
+        }
+      }
+    } else if (table === METHOD_DEF_TABLE) {
       for (let row = 0; row < rows; row++) {
         methodRvas.push(readU32(view, pos + row * rowSize, 'cil-metadata-method-row-truncated'));
       }
@@ -283,7 +297,7 @@ function parseMetadataTables(bytes, view, tableStream) {
   // Row counts for tables beyond the legacy scan limit (catch-type token RID
   // validation reaches TypeRef at 0x01 / TypeSpec at 0x1b) (#7606).
   const typeDefOrRefCounts = { typeDef: rowCounts[0x02] || 0, typeRef: rowCounts[0x01] || 0, typeSpec: rowCounts[0x1b] || 0 };
-  return Object.freeze({ methodRvas, standAloneSigBlobIndexes, typeDefOrRefCounts });
+  return Object.freeze({ methodRvas, standAloneSigBlobIndexes, typeDefOrRefCounts, moduleName });
 }
 
 function readSignatureCompressed(bytes, offset, code = 'cil-invalid-local-var-signature') {
@@ -520,10 +534,11 @@ function parseMetadataRoot(bytes, view, metadataOffset, metadataSize) {
   const tableStream = streams.find((stream) => stream.name === '#~' || stream.name === '#-');
   const blobStream = streams.find((stream) => stream.name === '#Blob') ?? null;
   const strings = stringStream ? parseStringsHeap(bytes, stringStream.offset, stringStream.size) : [];
-  const tables = parseMetadataTables(bytes, view, tableStream);
+  const tables = parseMetadataTables(bytes, view, tableStream, stringStream);
   return Object.freeze({
     runtimeVersion,
     strings,
+    moduleName: tables.moduleName,
     methodRvas: tables.methodRvas,
     standAloneSigBlobIndexes: tables.standAloneSigBlobIndexes,
     typeDefOrRefCounts: tables.typeDefOrRefCounts,
@@ -842,9 +857,10 @@ export function parseCil(bytes, options = {}) {
     }
   }
 
+  const moduleName = metadataInfo?.moduleName || 'Assembly.dll';
   const binaryId = options.binaryId || 'cil-binary';
   const imageId = createManagedImageId(binaryId);
-  const moduleId = createManagedModuleId(imageId, 'Assembly.dll');
+  const moduleId = createManagedModuleId(imageId, moduleName);
 
   // Managed entrypoint authority (ECMA-335 II.15.4.1.2 / II.25.3.3). The
   // COMIMAGE_FLAGS_NATIVE_ENTRYPOINT (0x00000010) branch stores a native RVA
@@ -885,6 +901,7 @@ export function parseCil(bytes, options = {}) {
   return deepFreeze({
     imageId,
     moduleId,
+    moduleName,
     formatVersion: 'cli-ecma-335',
     vmSpecEdition: runtimeVersion,
     // Native pointer-width authority from the CLI header flags (#7775):

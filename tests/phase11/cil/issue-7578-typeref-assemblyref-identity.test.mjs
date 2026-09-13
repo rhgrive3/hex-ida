@@ -6,16 +6,29 @@ import { parseCil, probeCil } from '../../../js/managed/cil/parser.js';
 import { CilFrontend } from '../../../js/managed/cil/frontend.js';
 
 const utf8 = (s) => [...new TextEncoder().encode(s), 0];
+const MODULE_NAME = 'issue-7578.netmodule';
+const MODULE_GUID = Uint8Array.from([
+  0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+  0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+]);
+const LEADING_STRINGS = ['Base', 'N', 'LibA', 'LibB', 'en-US', MODULE_NAME];
 
 const STR = (() => {
   const strings = [0];
   const index = {};
-  for (const s of ['Base', 'N', 'LibA', 'LibB', 'en-US']) {
+  for (const s of LEADING_STRINGS) {
     index[s] = strings.length;
     strings.push(...utf8(s));
   }
   return index;
 })();
+
+const moduleRow = () => {
+  const bytes = new Uint8Array(10), v = new DataView(bytes.buffer);
+  v.setUint16(2, STR[MODULE_NAME], true);
+  v.setUint16(4, 1, true);
+  return bytes;
+};
 
 const BLOB = (() => {
   const bytes = [0, 3, 0, 0, 1, 2, 6, 8];
@@ -60,14 +73,15 @@ const assemblyRefRows = ({ corruptNameIndex, corruptPublicKeyIndex, corruptHashI
 const baseFixture = (typeRefBytes, assemblyRefBytes) => buildCil({
   methods: [{ name: 'Run', body: [0x2a] }],
   types: [{ name: 'Derived', namespace: 'N', methodList: 1, fieldList: 1, extends: 5 }],
-  leadingStrings: ['Base', 'N', 'LibA', 'LibB', 'en-US'],
+  leadingStrings: LEADING_STRINGS,
   blobs: [[0x01, 0x02], [0xaa], [0x03, 0x04], [0xbb, 0xcc]],
   extraRows: [
-    [0x00, { count: 1, bytes: new Uint8Array(10) }],
+    [0x00, { count: 1, bytes: moduleRow() }],
     [0x1a, { count: 1, bytes: new Uint8Array(2) }],
     [0x23, { count: 2, bytes: assemblyRefBytes ?? assemblyRefRows() }],
     [0x01, { count: 1, bytes: typeRefBytes }],
   ],
+  extraStreams: [{ name: '#GUID', bytes: MODULE_GUID }],
 }).bytes;
 
 const SCOPE_MODULE = (1 << 2) | 0;
@@ -92,6 +106,9 @@ assert.deepEqual(probeCil(bBytes), probe);
 
 const a = parseCil(aBytes, { binaryId: 'same' });
 const b = parseCil(bBytes, { binaryId: 'same' });
+
+assert.equal(a.module?.name, MODULE_NAME);
+assert.deepEqual(a.module?.mvidBytes, MODULE_GUID);
 
 assert.ok(Array.isArray(a.typeRefs), 'image.typeRefs must exist');
 assert.ok(Array.isArray(b.typeRefs), 'image.typeRefs must exist');
@@ -202,14 +219,15 @@ for (const [i, scope] of [SCOPE_MODULE, SCOPE_MODULEREF, SCOPE_ASSEMBLYREF_A, SC
 }
 const kinds = parseCil(buildCil({
   methods: [{ name: 'Run', body: [0x2a] }],
-  leadingStrings: ['Base', 'N', 'LibA', 'LibB', 'en-US'],
+  leadingStrings: LEADING_STRINGS,
   blobs: [[0x01, 0x02], [0xaa], [0x03, 0x04], [0xbb, 0xcc]],
   extraRows: [
-    [0x00, { count: 1, bytes: new Uint8Array(10) }],
+    [0x00, { count: 1, bytes: moduleRow() }],
     [0x1a, { count: 1, bytes: new Uint8Array(2) }],
     [0x23, { count: 1, bytes: assemblyRefRows().subarray(0, 20) }],
     [0x01, { count: 4, bytes: scopeKinds }],
   ],
+  extraStreams: [{ name: '#GUID', bytes: MODULE_GUID }],
 }).bytes, { binaryId: 'kinds' });
 assert.deepEqual(kinds.typeRefs.map((row) => row.resolutionScope), [
   { table: 0x00, rid: 1, token: '0x00000001' },
