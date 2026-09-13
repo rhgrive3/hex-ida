@@ -297,4 +297,85 @@ assert.ok(
   'GitHub manual fallback must validate the exact gate-repair subset after routing it',
 );
 
+const consolidatedOwner3Branch = 'consolidated-owner3';
+const consolidatedOwner3OwnedFiles = [
+  '.github/workflows/phase7-ownership.yml',
+  'js/analysis/summary/contract-core.js',
+  'js/analysis/summary/interprocedural.js',
+  'js/analysis/summary/local-core.js',
+  'tests/phase7/corpus/summaries.mjs',
+  'tests/phase7/ownership/cross-lane-routing.test.mjs',
+  'tests/phase7/summary/contract.test.mjs',
+  'tests/phase7/summary/interprocedural.test.mjs',
+  'tests/phase7/summary/issue-4064-overlapping-memory-effects.test.mjs',
+  'tests/phase7/summary/issue-5346-exhaustive-indirect-candidates.test.mjs',
+  'tests/phase7/summary/issue-5752-intrinsic-scope-completeness.test.mjs',
+  'tools/validation/phase7/cross-lane-inventory.mjs',
+];
+const consolidatedOwner3ForeignFiles = CROSS_LANE_ROUTES[consolidatedOwner3Branch];
+assert.deepEqual(
+  [...consolidatedOwner3ForeignFiles],
+  [
+    '.circleci/config.yml',
+    'js/dynamic/experiments.js',
+    'js/managed/shared/bridge-v2.js',
+    'js/managed/shared/bridge.js',
+    'tests/issue-4772-unknown-call-broad-read.mjs',
+    'tests/issue-6249-unknown-target-dedupe.mjs',
+    'tests/phase10/issue-4310-compile-experiment-input-coercion.test.mjs',
+    'tests/phase10/issue-4312-observed-offset-coercion.test.mjs',
+    'tests/phase10/issue-4313-compare-expected-bits-coercion.test.mjs',
+  ],
+  'the owner3 consolidation route must enumerate the exact member foreign union plus CircleCI config',
+);
+const consolidatedOwner3Inventory = [...consolidatedOwner3OwnedFiles, ...consolidatedOwner3ForeignFiles];
+assert.deepEqual(
+  validateCrossLaneInventory(consolidatedOwner3Branch, consolidatedOwner3Inventory),
+  [...consolidatedOwner3OwnedFiles].sort((left, right) => Buffer.from(left).compare(Buffer.from(right))),
+  'the exact owner3 consolidation route must return only Phase 7-owned files',
+);
+assert.throws(
+  () => validateCrossLaneInventory(consolidatedOwner3Branch, [...consolidatedOwner3Inventory, 'js/semantics/ir/nodes.js']),
+  /unexpected foreign paths/,
+  'the owner3 consolidation route must reject an unlisted foreign path',
+);
+assert.throws(
+  () => validateCrossLaneInventory(`${consolidatedOwner3Branch}-suffix`, consolidatedOwner3Inventory),
+  /no exact Phase 7 cross-lane route/,
+  'a similar owner3 consolidation branch name must not activate the route',
+);
+assert.throws(
+  () => validateCrossLaneInventory(consolidatedOwner3Branch, consolidatedOwner3ForeignFiles),
+  /no Phase 7-owned paths/,
+  'the owner3 consolidation route must fail closed without Phase 7 evidence',
+);
+
+const consolidatedOwner3CircleciRoute = routeBlock(
+  circleciWorkflow,
+  `              ${consolidatedOwner3Branch})`,
+  '              *)',
+);
+assert.ok(consolidatedOwner3CircleciRoute.includes('node tools/validation/phase7/cross-lane-inventory.mjs'));
+assert.ok(consolidatedOwner3CircleciRoute.includes('--branch "$CIRCLE_BRANCH"'));
+assert.ok(consolidatedOwner3CircleciRoute.includes('node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"'));
+assert.ok(
+  consolidatedOwner3CircleciRoute.indexOf('cross-lane-inventory.mjs')
+    < consolidatedOwner3CircleciRoute.indexOf('phase7-ownership.mjs --files-json'),
+  'CircleCI must validate the exact owner3 consolidation subset after routing it',
+);
+
+const consolidatedOwner3GithubRoute = routeBlock(
+  githubWorkflow,
+  `          elif [[ "$HEAD_REF" == "${consolidatedOwner3Branch}" ]]; then`,
+  '          elif [[',
+);
+assert.ok(consolidatedOwner3GithubRoute.includes('node tools/validation/phase7/cross-lane-inventory.mjs'));
+assert.ok(consolidatedOwner3GithubRoute.includes('--branch "$HEAD_REF"'));
+assert.ok(consolidatedOwner3GithubRoute.includes('node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"'));
+assert.ok(
+  consolidatedOwner3GithubRoute.indexOf('cross-lane-inventory.mjs')
+    < consolidatedOwner3GithubRoute.indexOf('phase7-ownership.mjs --files-json'),
+  'GitHub manual fallback must validate the exact owner3 consolidation subset after routing it',
+);
+
 console.log('phase7 cross-lane ownership routing: PASS');

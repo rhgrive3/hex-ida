@@ -13,6 +13,7 @@ const OBJC_PROTOCOL_LANE = 'fix/objc-protocol-class-properties-3979';
 const ANALYSIS_BATCH_LANE = 'fix/analysis-batch-20260907-l62';
 const INTEGRATION_BATCH_LANE = 'dev-agent-hardening/integration/issue-batch-20260909';
 const MAIN_GATE_BATCH_LANE = 'fix/main-gate-recovery-20260913';
+const CONSOLIDATED_OWNER3_LANE = 'consolidated-owner3';
 
 // This is an exact, short-lived integration route for #6975. The PR carries a
 // Phase 7 production-path regression alongside the ABI/Phase 6 owner slice.
@@ -111,6 +112,23 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     'tools/validation/phase8/decompile-corpus.mjs',
     'tools/validation/phase8/metrics.mjs',
     'tools/validation/phase8/verify.mjs',
+  ]),
+  // This is an exact, short-lived integration route for the owner3 EP-013
+  // consolidation (#8436 + #8487). It carries the Phase 7 analysis/summary
+  // fix for #4772 alongside the managed-bridge consumer edits and the
+  // Phase 10 dynamic-experiment coercion slice (#4310, #4312, #4313).
+  // Foreign paths are enumerated so adding an unrelated file cannot silently
+  // turn this into a general Phase 7 ownership exemption.
+  [CONSOLIDATED_OWNER3_LANE]: Object.freeze([
+    '.circleci/config.yml',
+    'js/dynamic/experiments.js',
+    'js/managed/shared/bridge-v2.js',
+    'js/managed/shared/bridge.js',
+    'tests/issue-4772-unknown-call-broad-read.mjs',
+    'tests/issue-6249-unknown-target-dedupe.mjs',
+    'tests/phase10/issue-4310-compile-experiment-input-coercion.test.mjs',
+    'tests/phase10/issue-4312-observed-offset-coercion.test.mjs',
+    'tests/phase10/issue-4313-compare-expected-bits-coercion.test.mjs',
   ]),
 });
 
