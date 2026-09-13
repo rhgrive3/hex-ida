@@ -440,7 +440,11 @@
       "js/semantics/memoryssa/proof-core.js",
       "js/targets/abi/evidence.js",
       "js/targets/abi/riscv-lp64.js",
-      "tests/semantic-v2/issue-5862-alias-proof-issuer-relation-strict.test.mjs"
+      "tests/semantic-v2/issue-5862-alias-proof-issuer-relation-strict.test.mjs",
+      "tests/scpa/x02-apple-version-matrix.test.mjs",
+      "tests/scpa/fixtures/x02-apple-version-matrix.json",
+      "tests/scpa/fixtures/x02-apple-version-fixtures.mjs",
+      "docs/analysis-x02-acceptance.md"
     ]
   }
 }

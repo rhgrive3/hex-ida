@@ -290,3 +290,30 @@ test('next C1 recursive lane uses the existing canonical summary inventory', () 
   }
   assert.throws(() => validateRoadmapInventory(BRANCH, 'phase7', [...files, 'js/analysis/summary/alternate-equations.js']), /undeclared roadmap path/);
 });
+
+
+test('X-02 user acceptance reserves exact corpus paths without widening Apple runtime ownership', () => {
+  const manifest = loadRoadmapManifest(), assignments = validateRoadmapManifest(manifest);
+  const files = [
+    'tests/scpa/x02-apple-version-matrix.test.mjs',
+    'tests/scpa/fixtures/x02-apple-version-matrix.json',
+    'tests/scpa/fixtures/x02-apple-version-fixtures.mjs',
+    'docs/analysis-x02-acceptance.md',
+  ];
+  const union = [...assignments.keys()];
+  for (const phase of ['phase7', 'phase8']) {
+    assert.deepEqual(validateRoadmapInventory(BRANCH, phase, union), [...manifest.owners[phase]].sort());
+    for (const file of files) {
+      assert.equal(assignments.get(file), 'integration');
+      const missing = structuredClone(manifest);
+      missing.owners.integration = missing.owners.integration.filter(path => path !== file);
+      assert.throws(() => validateRoadmapInventory(BRANCH, phase, union, missing), /undeclared roadmap path/);
+    }
+    for (const foreign of ['js/binary/macho-dyld.js', 'js/metadata/swift.js', 'js/metadata/objc.js',
+      'tests/scpa/fixtures/x02-unreviewed.mjs']) {
+      assert.throws(() => validateRoadmapInventory(BRANCH, phase, [...union, foreign]), /undeclared roadmap path/);
+      const widened = structuredClone(manifest); widened.owners.integration.push(foreign);
+      assert.throws(() => validateRoadmapManifest(widened), /outside integration owner/);
+    }
+  }
+});

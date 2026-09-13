@@ -9,6 +9,10 @@ export const BRANCH = 'feat/analysis-roadmap-v8-current-main-20260907';
 const SPECIAL_PATHS = Object.freeze({
   semanticCompat: ['js/core/identity/live-data.js', 'js/core/identity/origin.js', 'tests/core-origin-canonical-reuse.test.mjs', 'js/ir-core.js', 'js/ir-base.js', 'js/decompiler/semantic.js', 'js/decompiler/semantic-views.js', 'js/semantics/compat/index.js', 'js/semantics/compat/legacy-value-ranges.js', 'js/semantics/compat/semantic-ir-v2-to-v1.js', 'js/semantics/compat/semantic-ir-v2-to-v1-core.js', 'js/semantics/compat/semantic-ir-v2-to-v1-finalize.js', 'js/semantics/compat/semantic-ir-v2-to-v1-memory.js', 'js/semantics/compat/semantic-ir-v2-to-v1-nodes.js'],
   integration: [
+    'tests/scpa/x02-apple-version-matrix.test.mjs',
+    'tests/scpa/fixtures/x02-apple-version-matrix.json',
+    'tests/scpa/fixtures/x02-apple-version-fixtures.mjs',
+    'docs/analysis-x02-acceptance.md',
     'docs/analysis-c1-acceptance.md',
     'docs/analysis-c3-acceptance.md',
     'js/targets/abi/aapcs64.js',
