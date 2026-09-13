@@ -120,8 +120,14 @@ function unchangedRegions(original, output, touched) {
 function validatorResult(validator, status, reason = null) {
   return { validator, status, ...(reason ? { reason } : {}) };
 }
+const VALIDATOR_SUCCESS_STATUSES = new Set(['passed', 'valid']);
+const VALIDATOR_FAILURE_STATUSES = new Set(['failed', 'invalid', 'rejected', 'error', 'unsupported', 'unavailable']);
 function validatorPassed(result) {
-  return result === true || result?.ok === true || result?.status === 'passed' || result?.status === 'valid';
+  if (result === true) return true;
+  if (!result || typeof result !== 'object') return false;
+  if (result.ok === false || VALIDATOR_FAILURE_STATUSES.has(result.status)) return false;
+  if (VALIDATOR_SUCCESS_STATUSES.has(result.status)) return true;
+  return result.ok === true && result.status === undefined;
 }
 
 async function runValidatorOracle(name, output, plan, materialized, options) {
