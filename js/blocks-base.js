@@ -17,7 +17,7 @@
  *   どの推測にも evidence[] と confidence を必ず付ける。
  *   分からないものは kind:'unknown' のまま残す。無理に名前を付けない。
  */
-import { parseOperands, categoryOf } from './arm64.js';
+import { parseOperands, categoryOf, arm64ReadsDestination } from './arm64.js';
 import { analyzeGraph } from './controlflow.js';
 
 /* ────────────────────────────────────────────────────────────
@@ -479,8 +479,9 @@ export function makeInstruction(raw) {
 
   const wIdx = writeIndexes(base, parsed);
   const reads = new Set();
+  const destIsRead = arm64ReadsDestination(base);
   for (let i = 0; i < parsed.length; i++) {
-    if (wIdx.includes(i) && parsed[i].k === 'reg') continue;
+    if (wIdx.includes(i) && parsed[i].k === 'reg' && !(i === 0 && destIsRead)) continue;
     collectReads(parsed[i], reads);
   }
   // 書き込みつきのメモリ参照は、ベースレジスタを読みかつ書く

@@ -8,7 +8,7 @@
  */
 import { CHUNK_ROWS } from './backend.js';
 import { stableDigest, jsonSafe } from './core/identity/index.js';
-import { parseOperands, isCall, isReturn, categoryOf, referenceTarget } from './arm64.js';
+import { parseOperands, isCall, isReturn, categoryOf, referenceTarget, arm64ReadsDestination } from './arm64.js';
 import { arm64EncodingWord } from './targets/architecture/arm64/encoding-word.js';
 import { analysisAbortSignalMethods } from './analysis/producer-wait.js';
 import { pick } from './i18n.js';
@@ -94,7 +94,6 @@ const NO_DEST_MNEMONICS = new Set([
   'nop', 'svc', 'brk', 'hlt', 'hint', 'bti', 'dmb', 'dsb', 'isb',
   'prfm', 'msr', 'drps', 'eret', 'eretaa', 'eretab',
 ]);
-const ATOMIC_READ_WRITE_DEST_RE = /^cas(?:al|a|l)?(?:b|h)?$/;
 
 function destIndex(mn) {
   const b = mn.toLowerCase();
@@ -110,7 +109,7 @@ function destIndex(mn) {
 }
 
 function destinationIsRead(mn, index) {
-  return index === 0 && ATOMIC_READ_WRITE_DEST_RE.test(mn.toLowerCase());
+  return index === 0 && arm64ReadsDestination(mn);
 }
 
 function readRegs(op, into) {
