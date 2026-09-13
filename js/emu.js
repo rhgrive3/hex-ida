@@ -68,6 +68,7 @@ async function awaitAbortable(operation, signal) {
 const STACK_SIZE = 1 << 20;
 const HEAP_BASE = 0x0000600000000000n;
 const HEAP_SIZE = 0x100000n;
+const MAX_SYNTHETIC_HEAP_SIZE = 16n * 1024n * 1024n;
 
 export class EmulatorFault extends Error {
   constructor(code, message, details = null) {
@@ -115,6 +116,8 @@ export class Emulator {
     this.traceTruncated = false;
     this.traceDropped = 0;
     this.heapBase = this.io.heapBase != null ? BigInt(this.io.heapBase) : HEAP_BASE;
+    this.heapSize = this._heapConfig ? this._heapConfig.size : HEAP_SIZE;
+    if (this._heapConfig) this.heapBase = this._heapConfig.base;
     this.heap = this.heapBase;
     this.heapAllocations = 0;
     this.log = [];
@@ -155,6 +158,29 @@ export class Emulator {
     const n = Number(m[2]);
     if (!Number.isInteger(n) || n < 0 || n > 30) throw new EmulatorFault('invalid-register', `unknown register: ${reg}`, { register: reg });
     this.x[n] = m[1] === 'w' ? (v & MASK32) : v;
+  }
+
+  configureHeap(range = {}) {
+    const reject = (reason) => {
+      throw new EmulatorFault('invalid-heap-range', `synthetic heap range rejected: ${reason}`, { base: range?.base, size: range?.size });
+    };
+    if (!range || typeof range !== 'object' || Array.isArray(range)) reject('an object with base and size is required');
+    const toWord = (value, name) => {
+      if (typeof value === 'bigint') { if (value < 0n) reject(`${name} must be non-negative`); return value; }
+      if (Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+      reject(`${name} must be a non-negative bigint or safe integer`);
+      return null;
+    };
+    const base = toWord(range.base, 'base');
+    const size = toWord(range.size, 'size');
+    if (size < 1n || size > MAX_SYNTHETIC_HEAP_SIZE) reject(`size must be within 1..${MAX_SYNTHETIC_HEAP_SIZE} bytes`);
+    if (base + size > (1n << 64n)) reject('heap range must stay inside 64-bit address space');
+    if (this.heapAllocations > 0) reject('allocations were already made from the synthetic heap');
+    this._heapConfig = { base, size };
+    this.heapBase = base;
+    this.heap = base;
+    this.heapSize = size;
+    return { base, size };
   }
 
   _syncHeapBase() {
@@ -205,7 +231,7 @@ export class Emulator {
       return;
     }
     this._syncHeapBase();
-    if (page >= this.heapBase && page < this.heapBase + HEAP_SIZE) {
+    if (page >= this.heapBase && page < this.heapBase + this.heapSize) {
       this.loaded.set(key, new Uint8Array(PAGE));
       this.loadedValid.set(key, PAGE);
       this.syntheticPages.add(key);
@@ -987,9 +1013,9 @@ export class Emulator {
     const MAX_HOOK_BYTES=65536n;
     const allocate=async(size,zero=false)=>{
       this._syncHeapBase();
-      if (size < 0n || size > HEAP_SIZE) throw new EmulatorFault('heap-exhausted','synthetic allocation exceeds 1 MiB',{size});
+      if (size < 0n || size > this.heapSize) throw new EmulatorFault('heap-exhausted','synthetic allocation exceeds heap size',{size});
       const addr=this.heap, next=addr+((size+15n)&~15n);
-      if (next > this.heapBase + HEAP_SIZE) throw new EmulatorFault('heap-exhausted','synthetic heap exceeded 1 MiB',{heapBase:this.heapBase,heap:next});
+      if (next > this.heapBase + this.heapSize) throw new EmulatorFault('heap-exhausted','synthetic heap exceeded heap size',{heapBase:this.heapBase,heap:next});
       this.heap=next; this.heapAllocations++;
       if (zero) for (let i=0n;i<size;i++) { await this.ensure(addr+i); this.writeByte(addr+i,0); }
       return addr;

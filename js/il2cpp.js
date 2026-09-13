@@ -111,15 +111,23 @@ function headerContext(buffer) {
   return{u8,dv,version,pair:(name)=>pairs.get(name),pairs};
 }
 
-function makeStringAt(ctx){
+const STRING_SCAN_CHUNK_BYTES = 512;
+function makeStringAt(ctx, budget){
   const table=ctx.pair('string');
   return(index)=>{
     if(!Number.isInteger(index)||index<0||index>=table.size)return null;
-    const base=table.offset+index,maxEnd=Math.min(table.end,base+512);
-    let end=base;while(end<maxEnd&&ctx.u8[end]!==0)end++;
-    if(end>=maxEnd||ctx.u8[end]!==0)return null;
-    if(end===base)return '';
-    return utf8(ctx.u8.subarray(base,end));
+    const base=table.offset+index;
+    let cursor=base,limit=Math.min(table.end,base+STRING_SCAN_CHUNK_BYTES);
+    for(;;){
+      while(cursor<limit&&ctx.u8[cursor]!==0)cursor++;
+      if(cursor<limit)break;
+      if(limit>=table.end)return null;
+      const from=limit;
+      limit=Math.min(table.end,limit+STRING_SCAN_CHUNK_BYTES);
+      budget.check(1,0,limit-from);
+    }
+    if(cursor===base)return '';
+    return utf8(ctx.u8.subarray(base,cursor));
   };
 }
 
@@ -136,7 +144,7 @@ function scoreLayout(ctx, layout, budget) {
   const typeDefs=ctx.pair('typeDefinitions'), methodDefs=ctx.pair('methods');
   const typeCount=recordCount(typeDefs,layout.type), methodCount=recordCount(methodDefs,layout.method);
   if(typeCount==null||methodCount==null||typeCount>200000||methodCount>500000)return null;
-  const stringAt=makeStringAt(ctx), tokenAt=ctx.version>=27?24:40;
+  const stringAt=makeStringAt(ctx,budget), tokenAt=ctx.version>=27?24:40;
   let validTypeNames=0, validOwners=0, validMethodNames=0, validTokens=0;
   const ti=sampleIndices(typeCount), mi=sampleIndices(methodCount);
   for(const i of ti){ budget.check(1); const o=typeDefs.offset+i*layout.type; if(o+8>typeDefs.end)return null; if(stringAt(ctx.dv.getInt32(o,true)))validTypeNames++; }
@@ -151,7 +159,7 @@ function scoreLayout(ctx, layout, budget) {
   return { layout, score, typeCount, methodCount };
 }
 function parseLayout(ctx,layout,budget){
-  const {dv,version}=ctx,stringAt=makeStringAt(ctx),warnings=[];
+  const {dv,version}=ctx,stringAt=makeStringAt(ctx,budget),warnings=[];
   const typeDefs=ctx.pair('typeDefinitions'),methodDefs=ctx.pair('methods');
   const typeCount=recordCount(typeDefs,layout.type),methodCount=recordCount(methodDefs,layout.method);
   if(typeCount==null||methodCount==null||typeCount>200000||methodCount>500000)return null;
@@ -236,7 +244,7 @@ function chooseLayout(ctx,candidates,budget){
 }
 
 async function parseLayoutAsync(ctx,layout,budget,options={}){
-  const {dv,version}=ctx,stringAt=makeStringAt(ctx),warnings=[];
+  const {dv,version}=ctx,stringAt=makeStringAt(ctx,budget),warnings=[];
   const typeDefs=ctx.pair('typeDefinitions'),methodDefs=ctx.pair('methods');
   const typeCount=recordCount(typeDefs,layout.type),methodCount=recordCount(methodDefs,layout.method);
   if(typeCount==null||methodCount==null||typeCount>200000||methodCount>500000)return null;

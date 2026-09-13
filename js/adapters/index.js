@@ -272,7 +272,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const traceBuffer = new TraceRingBuffer(this.options.trace || {});
     const traceState = { suppressMemory:false, runMemoryEvents:null };
     const emu = sandbox.emulator;
-    emu.heap = heapBase;
+    emu.configureHeap({ base: heapBase, size: heapSize });
     let initializing = true;
     const rawLoad = emu.load.bind(emu), rawStore = emu.store.bind(emu);
     emu.load = async (addr,size) => {
