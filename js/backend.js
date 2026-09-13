@@ -62,6 +62,11 @@ function semanticFunctionTarget(architecture) {
   return target;
 }
 
+const LEGACY_MACHO_ARCHITECTURES = Object.freeze(['arm64', 'arm64e', 'arm64_32']);
+function isLegacyMachArchitecture(architecture) {
+  return LEGACY_MACHO_ARCHITECTURES.includes(String(architecture || '').toLowerCase());
+}
+
 function requirePrimitiveSafeInteger(value, code) {
   if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw new TypeError(code);
   return value;
@@ -163,6 +168,7 @@ export class Backend {
     this.formatId = 'unknown';
     this.platformInfo = null;
     this.legacyInfo = null;
+    this._activeMachArchitecture = null;
     this.arm64Bridge = false;
     this.onSearchProgress = null;
     this.onScanProgress = null;
@@ -530,7 +536,13 @@ export class Backend {
     return Promise.all(jobs).then(() => ({ ok: true }));
   }
 
-  search(params, onProgress) { return this.call('search', params, null, onProgress); }
+  search(params, onProgress) {
+    const architecture = String(params?.architecture || this._activeMachArchitecture || this.platformInfo?.capability?.architecture || '').toLowerCase();
+    if (this.formatId === 'macho' && architecture && !isLegacyMachArchitecture(architecture) && params?.kind !== 'hex' && params?.kind !== 'text') {
+      return this._callTo('platform', 'search', params, null, onProgress);
+    }
+    return this.call('search', params, null, onProgress);
+  }
 
   cancel(request) {
     const requestId = typeof request === 'number' ? request : request?.requestId ?? this.lastRequestId;
@@ -549,6 +561,13 @@ export class Backend {
   }
 
   analyze(sliceIndex, options = {}) {
+    if (this.formatId === 'macho') {
+      const capability = this.legacyInfo?.slices?.[sliceIndex]?.capability
+        || this.platformInfo?.slices?.[sliceIndex]?.capability
+        || this.platformInfo?.capability;
+      const architecture = String(capability?.architecture || '').toLowerCase();
+      if (architecture) this._activeMachArchitecture = architecture;
+    }
     const explicitRoute = Object.hasOwn(options, 'route');
     const route = normalizeAnalysisRoute(options.route ?? this.analysisRoute);
     if (route === ANALYSIS_ORCHESTRATION_ROUTE.CURRENT) return this._analyzeCurrent(sliceIndex, options);
@@ -797,13 +816,18 @@ export class Backend {
     return result.payload;
   }
 
-  guessFunctions(regionId, limit, onProgress) { return this.call('guessFunctions', { regionId, limit }, null, onProgress); }
+  guessFunctions(regionId, limit, onProgress, options = {}) {
+    const architecture = String(options.architecture || this._activeMachArchitecture || this.platformInfo?.capability?.architecture || '').toLowerCase();
+    if (this.formatId === 'macho' && architecture && !isLegacyMachArchitecture(architecture)) {
+      return this._callTo('platform', 'guessFunctions', { regionId, limit, architecture }, null, onProgress);
+    }
+    return this.call('guessFunctions', { regionId, limit }, null, onProgress);
+  }
   scanProgram(regionId, onProgress, limits = {}) {
     const architecture = String(limits?.architecture || '').toLowerCase();
     const payload = { regionId, ...limits };
     if (this.formatId === 'macho' && architecture) {
-      const legacyAarch64 = architecture === 'arm64' || architecture === 'arm64e' || architecture === 'arm64_32';
-      return this._callTo(legacyAarch64 ? 'legacy' : 'platform', 'scanProgram', payload, null, onProgress);
+      return this._callTo(isLegacyMachArchitecture(architecture) ? 'legacy' : 'platform', 'scanProgram', payload, null, onProgress);
     }
     return this.call('scanProgram', payload, null, onProgress);
   }
