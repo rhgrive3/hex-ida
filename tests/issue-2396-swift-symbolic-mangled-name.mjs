@@ -31,7 +31,7 @@ function putAscii(mem, at, text) { for (let i = 0; i < text.length; i++) mem[at 
   const controlAt = start + prefix.length;
   mem[controlAt] = 0x01;
   const target = 0x180;
-  putI32(mem, controlAt + 1, target - controlAt); // contains zero bytes in the payload
+  putI32(mem, controlAt + 1, target - (controlAt + 1)); // contains zero bytes in the payload
   mem[controlAt + 5] = 'V'.charCodeAt(0);
   mem[controlAt + 6] = 0;
 
@@ -50,7 +50,7 @@ function putAscii(mem, at, text) { for (let i = 0; i < text.length; i++) mem[at 
   assert.equal(info.symbolicReferences[0].candidateTarget, BigInt(target));
   assert.equal(info.symbolicReferences[0].resolvedTarget, BigInt(target));
   assert.equal(info.referencesResolved, true);
-  assert.deepEqual(info.rawBytes.slice(prefix.length, prefix.length + 5), [0x01, target - controlAt, 0, 0, 0], 'NUL bytes inside the symbolic payload are preserved instead of terminating the name');
+  assert.deepEqual(info.rawBytes.slice(prefix.length, prefix.length + 5), [0x01, target - (controlAt + 1), 0, 0, 0], 'NUL bytes inside the symbolic payload are preserved instead of terminating the name');
 }
 
 {
@@ -97,7 +97,7 @@ function putAscii(mem, at, text) { for (let i = 0; i < text.length; i++) mem[at 
   const controlAt = typeAt + 1;
   mem[controlAt] = 0x01;
   const target = 0x420;
-  putI32(mem, controlAt + 1, target - controlAt);
+  putI32(mem, controlAt + 1, target - (controlAt + 1));
   mem[controlAt + 5] = 'V'.charCodeAt(0);
   mem[controlAt + 6] = 0;
   mem[target] = 0x11; // mapped descriptor evidence for the fixture
