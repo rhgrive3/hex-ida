@@ -255,8 +255,9 @@ export class Emulator {
     return { start: base, size: len, kind };
   }
 
-  async ensure(addr) {
+  async ensure(addr, faultAddress = addr) {
     const address = BigInt(addr);
+    const fault = BigInt(faultAddress);
     const page = (address / BigInt(PAGE)) * BigInt(PAGE);
     const key = page.toString();
     if (this.mem.has(key) || this.loaded.has(key)) return;
@@ -274,7 +275,7 @@ export class Emulator {
       return;
     }
     if (typeof this.io.read !== 'function') {
-      throw new EmulatorFault('unmapped-memory', `no backing memory for 0x${address.toString(16)}`, { address, page });
+      throw new EmulatorFault('unmapped-memory', `no backing memory for 0x${fault.toString(16)}`, { address: fault, page });
     }
     let bytes;
     const runSignal = this._runSignal;
@@ -287,10 +288,10 @@ export class Emulator {
       bytes = runSignal ? await awaitAbortable(operation, runSignal) : await operation;
     } catch (error) {
       if (runSignal?.aborted) throw abortError(runSignal);
-      throw new EmulatorFault('memory-read-failed', `backing read failed at 0x${page.toString(16)}`, { address, page, cause:String(error && error.message || error) });
+      throw new EmulatorFault('memory-read-failed', `backing read failed at 0x${page.toString(16)}`, { address: fault, page, cause:String(error && error.message || error) });
     }
     if (!(bytes instanceof Uint8Array) || bytes.length === 0) {
-      throw new EmulatorFault('unmapped-memory', `backing memory is unavailable at 0x${page.toString(16)}`, { address, page });
+      throw new EmulatorFault('unmapped-memory', `backing memory is unavailable at 0x${page.toString(16)}`, { address: fault, page });
     }
     const valid = Math.min(PAGE, bytes.length);
     this.loaded.set(key, padTo(bytes, PAGE));
@@ -363,8 +364,9 @@ export class Emulator {
     const n = normalizeMemorySize(size);
     const start = BigInt(addr);
     const end = start + BigInt(n - 1);
-    for (let p = (start / BigInt(PAGE)) * BigInt(PAGE); p <= end; p += BigInt(PAGE)) {
-      await this.ensure(p);
+    const firstPage = (start / BigInt(PAGE)) * BigInt(PAGE);
+    for (let p = firstPage; p <= end; p += BigInt(PAGE)) {
+      await this.ensure(p, p === firstPage ? start : p);
     }
     let v = 0n;
     for (let i = n - 1; i >= 0; i--) v = (v << 8n) | BigInt(this.byteAt(start + BigInt(i)));
@@ -383,8 +385,9 @@ export class Emulator {
        below would fail open and writeByte() would mint undeclared mem
        backing. An interior page without backing fails closed here. */
     const end = start + BigInt(n - 1);
-    for (let p = (start / BigInt(PAGE)) * BigInt(PAGE); p <= end; p += BigInt(PAGE)) {
-      await this.ensure(p);
+    const firstPage = (start / BigInt(PAGE)) * BigInt(PAGE);
+    for (let p = firstPage; p <= end; p += BigInt(PAGE)) {
+      await this.ensure(p, p === firstPage ? start : p);
     }
     /* #7968: admit every byte of the store before committing any of it — a
        range that straddles the write-authority boundary fails closed without

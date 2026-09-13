@@ -13,10 +13,10 @@ const MAX_CONTEXT_CHARS = 2048;
 const MAX_INLINE_SCRIPT_MATCHES = 5;
 const MAX_INLINE_CONTEXT_CHARS = 1024;
 const MAX_INLINE_EXCERPT_CHARS = 8 * 1024;
-const SENSITIVE_ATTRIBUTE = /(?:token|auth|session|csrf|nonce|secret|password|credential|cookie)/i;
-const SENSITIVE_INLINE_NEEDLE = /(?:token|auth|session|csrf|nonce|secret|password|credential|cookie|storage)/i;
+const SENSITIVE_ATTRIBUTE = /(?:token|auth|session|csrf|nonce|secret|password|credential|cookie|api[-_]?key)/i;
+const SENSITIVE_INLINE_NEEDLE = /(?:token|auth|session|csrf|nonce|secret|password|credential|cookie|storage|api[-_]?key)/i;
 const SAFE_HTML_ATTRIBUTE = /^(?:id|class|role|title|name|type|placeholder|href|for|tabindex|disabled|checked|selected|aria-[\w-]+|data-[\w-]+)$/i;
-const SENSITIVE_SCRIPT_ASSIGNMENT = /((?:["']?)[\w$.-]*(?:token|auth|session|csrf|nonce|secret|password|credential|cookie|storage)[\w$.-]*(?:["']?)\s*[:=]\s*)(["'`])([^"'`\r\n]{0,2048})(["'`])/gi;
+const SENSITIVE_SCRIPT_ASSIGNMENT = /((?:["']?)[\w$.-]*(?:token|auth|session|csrf|nonce|secret|password|credential|cookie|storage|api[-_]?key)[\w$.-]*(?:["']?)\s*[:=]\s*)(["'`])([^"'`\r\n]{0,2048})(["'`])/gi;
 const BEARER_VALUE = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi;
 
 export class ParentPageInspector {

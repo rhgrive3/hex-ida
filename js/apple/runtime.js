@@ -56,12 +56,16 @@ function objcImpAddressKey(address) {
 }
 
 /** Resolve an Objective-C IMP/function pointer without pretending duplicate IMPs are unique. */
-export function resolveObjcIMP(objcIndex, address, { receiverType = null, selector = null } = {}) {
+export function resolveObjcIMP(objcIndex, address, { receiverType = null, selector = null, classMethod = null } = {}) {
   if (!objcIndex || address == null) return { resolved: null, candidates: [], confidence: 0 };
   const addressKey = objcImpAddressKey(address);
   if (addressKey == null) return { resolved: null, candidates: [], confidence: 0 };
   let candidates = (objcIndex.methodsByIMP?.get(addressKey) || []).slice();
   if (selector) candidates = candidates.filter((m) => m.selector === selector);
+  if (classMethod != null) {
+    if (typeof classMethod !== 'boolean') return { resolved: null, candidates: [], confidence: 0 };
+    candidates = candidates.filter((m) => m.classMethod === classMethod);
+  }
   if (receiverType != null) {
     if (typeof receiverType !== 'string') return { resolved: null, candidates: [], confidence: 0 };
     // Canonical class identity: the dispatch path normalizes spellings like
@@ -121,7 +125,11 @@ export function resolveAppleCall(index, call = {}) {
     : runtimeOriginForSymbol(name);
   const explicitSelector = typeof call.selector === 'string' && call.selector.length > 0 ? call.selector : null;
   const indirectTarget = call.impTarget ?? call.functionPointer ?? ((call.kind === 'imp' || call.kind === 'function-pointer') ? call.target : null);
-  const imp = indirectTarget != null ? resolveObjcIMP(index?.objc, indirectTarget, { receiverType: call.receiverType, selector: explicitSelector }) : null;
+  const imp = indirectTarget != null ? resolveObjcIMP(index?.objc, indirectTarget, {
+    receiverType: call.receiverType,
+    selector: explicitSelector,
+    classMethod: call.classMethod,
+  }) : null;
   if (origin === 'unknown' && imp?.candidates?.length) origin = 'objc';
 
   // ObjC IMP evidence is origin inference for unknown origins only (the guard
@@ -144,7 +152,7 @@ export function resolveAppleCall(index, call = {}) {
   const hasDispatchEvidence = msgSendEntry || explicitMessage || selector != null
     || (selectorResolution?.candidates?.length ?? 0) > 0 || (imp?.candidates?.length ?? 0) > 0;
   if ((origin === 'objc' || msgSendEntry || explicitMessage) && hasDispatchEvidence) {
-    if (imp?.candidates?.length && !msgSendEntry) {
+    if (imp && !msgSendEntry && (imp.candidates?.length || call.classMethod != null)) {
       return {
         runtime: 'objc', kind: 'imp', imp,
         resolved: imp.resolved,

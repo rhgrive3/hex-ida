@@ -55,6 +55,8 @@ function normalizePerms(p) {
 
 function minBigInt(a, b) { return a < b ? a : b; }
 
+export const MAX_VIRTUAL_READ_BYTES = 64 * 1024 * 1024;
+
 export class BinaryImage {
   constructor(input, meta = {}) {
     if (input == null) this.bytes = null;
@@ -321,7 +323,7 @@ export class BinaryImage {
     current = strictBigIntOrNull(address);
     remaining = strictBigIntOrNull(size);
     if (current === null || remaining === null) return null;
-    if (current < 0n || remaining < 0n || remaining > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    if (current < 0n || remaining < 0n || remaining > BigInt(MAX_VIRTUAL_READ_BYTES)) return null;
     if (remaining === 0n) return [];
     const chunks = [];
     while (remaining > 0n) {
