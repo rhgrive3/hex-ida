@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { parseMetadata, parseMetadataAuto, parseMetadataAutoAsync } from '../js/il2cpp.js';
+import { parseMetadata, parseMetadataAuto, parseMetadataAutoAsync } from '../../../js/il2cpp.js';
 
 const REQUIRED_HEADER_BYTES = 184;
 
