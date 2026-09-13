@@ -159,11 +159,13 @@ export function* x86Long64IntegerEncodingCases() {
       { owner:'memory', operandWidthBits:widthBits, immediateWidthBits:encodedWidthBits, form:'memory-immediate', semanticClass:'mov-group-immediate' });
   }
 
-  // MOVZX/MOVSX fixed-source-width opcodes. Capstone 5 intentionally exposes
-  // the operand-size=16 same-width forms; the effect is still an exact copy.
+  // MOVZX/MOVSX fixed-source-width opcodes. The 16-bit source forms require a
+  // wider destination; Capstone may decode the 66h bytes, but the locked
+  // integer denominator must exclude the architecturally invalid 16->16
+  // register and memory shapes (#5553).
   for (const [family,opcode,sourceWidthBits] of [['movzx',0xb6,8],['movzx',0xb7,16],['movsx',0xbe,8],['movsx',0xbf,16]]) {
     for (const widthBits of [16,32,64]) {
-      if (widthBits < sourceWidthBits) continue;
+      if (widthBits < sourceWidthBits || (sourceWidthBits === 16 && widthBits === 16)) continue;
       for (const r of [0,1]) for (const b of [0,1]) for (let regField = 0; regField < 8; regField++) for (let rmField = 0; rmField < 8; rmField++) {
         yield item(`${family}:0f${opcode.toString(16)}:w${widthBits}:src${sourceWidthBits}:r${r}:b${b}:reg${regField}:rm${rmField}`, family,
           bytes(prefix(widthBits,{r,b}),0x0f,opcode,modrm(3,regField,rmField)),

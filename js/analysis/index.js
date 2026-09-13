@@ -32,6 +32,13 @@ import {
 
 export const PHASE7_ANALYSIS_CONTRACT_VERSION = '1.1.0';
 
+function requiredSnapshotId(value) {
+  if (typeof value !== 'string') throw new TypeError('phase7-analysis-snapshot-required');
+  const snapshotId = value.trim();
+  if (!snapshotId) throw new TypeError('phase7-analysis-snapshot-required');
+  return snapshotId;
+}
+
 /**
  * Creates the analysis surface for one function's semantic artifacts.
  *
@@ -45,10 +52,12 @@ export function createAnalysisSurface({
   cfg,
   ssa,
   memorySsa,
-  snapshotId = 'snapshot-unbound',
+  snapshotId: rawSnapshotId,
   resolveRegion = null,
   options = {},
 } = {}) {
+  const snapshotId = requiredSnapshotId(rawSnapshotId);
+
   // MemorySSA answers are only published as complete when the binding itself
   // is complete (issues #3127/#3129). The binding-declared completeness is the
   // authority; the legacy option is a fallback, never an override.

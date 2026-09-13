@@ -12,6 +12,7 @@ function requireSessionId(value) {
   return value;
 }
 
+
 function requireBindingId(value, field) {
   if (value == null) return null;
   if (typeof value !== 'string') throw new TypeError(`AI ${field} must be a non-empty string or null`);
@@ -174,8 +175,8 @@ export class InvestigationSessionStore {
         try { session = createInvestigationSession(loaded); }
         catch (error) {
           // Persisted binding identities are an authority boundary. Quarantine
-          // malformed structured/coercible ids instead of laundering them into
-          // the requested session's binary/project namespace (#4301).
+          // malformed/coercible identities rather than laundering them into
+          // the requested binary/project namespace (#4301).
           if (isBindingIdError(error)) return null;
           throw error;
         }
@@ -250,8 +251,12 @@ export class InvestigationSessionStore {
     }
     candidate.binaryId = requireBindingId(candidate.binaryId, 'binaryId');
     candidate.projectId = requireBindingId(candidate.projectId, 'projectId');
-    candidate.updatedAt = new Date().toISOString();
-    const ownedCandidate = freezeOwned(candidate);
+    // update() is a second session-construction boundary, not a raw object
+    // patcher. Re-run the same canonicalizer used by create/register/load so
+    // enum and collection invariants cannot be bypassed by a later patch
+    // (#4584). createInvestigationSession preserves candidate.createdAt and
+    // refreshes updatedAt while normalizing every persisted field.
+    const ownedCandidate = freezeOwned(createInvestigationSession(candidate));
     await this.persist(ownedCandidate);
     this.sessions.set(id, ownedCandidate);
     return ownedCandidate;

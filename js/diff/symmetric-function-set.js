@@ -151,7 +151,7 @@ export async function createSymmetricCodeFunctionSet({
   const normalizedChunk = normalizeChunkBytes(chunkBytes);
   for (const [region, rows] of byRegion) {
     rows.sort((a, b) => a.address < b.address ? -1 : a.address > b.address ? 1 : 0);
-    const start = BigInt(region.vmAddr);
+    const start = rows[0].address;
     const lastEnd = rows.reduce((end, row) => row.end > end ? row.end : end, start);
     let cursor = start;
     let rowIndex = 0;

@@ -537,9 +537,9 @@
               "denominator": {
                 "schemaVersion": "x86-long64-integer-denominator/v1",
                 "denominatorId": "x86_64:long-64:effect-family:integer:v1",
-                "encodingCaseCount": 57294,
-                "integerOwnedCaseCount": 56666,
-                "memoryDelegationCaseCount": 628,
+                "encodingCaseCount": 56780,
+                "integerOwnedCaseCount": 56154,
+                "memoryDelegationCaseCount": 626,
                 "operandWidths": [
                   8,
                   16,

@@ -23,7 +23,7 @@ test('issue-5999: compressed encoding + compressedInstructions:false is rejected
       compressedInstructions: false,
       instructionId: 'issue-5999:c-nop',
     }),
-    /riscv64-decoded-instruction-compressed-capability-conflict/,
+    /riscv64-decoded-instruction-compressed-profile-contradiction/,
   );
 });
 
@@ -37,7 +37,7 @@ test('issue-5999: mode rv64imc with compressedInstructions:false is rejected eve
       instructionAlignment: 2,
       compressedInstructions: false,
     }),
-    /riscv64-decoded-instruction-compressed-capability-conflict/,
+    /riscv64-decoded-instruction-compressed-profile-contradiction/,
   );
 });
 

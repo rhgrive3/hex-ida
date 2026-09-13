@@ -28,7 +28,7 @@ function recording(moduleOverrides = {}) {
 }
 
 async function bindingFor(moduleOverrides) {
-  const provider = new TraceProvider(recording(moduleOverrides), { id: 'trace:issue-4918' });
+  const provider = new TraceProvider(recording(moduleOverrides), { id: 'trace:issue-4918', verifyModuleIdentity: () => true });
   const session = await provider.openSession();
   const [binding] = session.modules.active();
   await session.close();

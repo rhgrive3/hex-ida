@@ -10,7 +10,12 @@ import {
   createUnknownCallEffect,
   summaryIsPure,
 } from '../../../js/analysis/summary/contract.js';
-import { solveInterproceduralSummaries } from '../../../js/analysis/summary/interprocedural.js';
+import {
+  LIBRARY_MODEL_PROVENANCE_SCHEMA,
+  LIBRARY_MODEL_SCHEMA,
+  LIBRARY_MODEL_VERSION,
+  solveInterproceduralSummaries,
+} from '../../../js/analysis/summary/interprocedural.js';
 
 const completeStatus = () => createAnalysisStatus({
   snapshotId: 'snapshot_issue_5851',
@@ -40,6 +45,37 @@ const broadFallbackRead = () => createMemoryEffect({
   addressSpaces: ['memory'],
   source: 'unknown-call-fallback',
 });
+
+function libraryModel(targetEntityId, overrides = {}) {
+  return {
+    modelSchema: LIBRARY_MODEL_SCHEMA,
+    modelVersion: LIBRARY_MODEL_VERSION,
+    targetEntityId,
+    snapshotId: 'snapshot-unbound',
+    completeness: 'complete',
+    stopReason: null,
+    current: true,
+    provenance: {
+      schema: LIBRARY_MODEL_PROVENANCE_SCHEMA,
+      providerId: 'test-library-provider',
+      providerVersion: '1.0.0',
+      evidenceIds: [`model:${targetEntityId}`],
+    },
+    memoryReadRegions: [],
+    memoryWriteRegions: [{
+      regionId: 'region_model',
+      regionKind: 'global-absolute',
+      broad: false,
+      addressSpaces: ['memory'],
+      source: 'library-model',
+      evidenceIds: [`effect:${targetEntityId}:write`],
+    }],
+    escapes: [],
+    noreturn: false,
+    mayThrow: false,
+    ...overrides,
+  };
+}
 
 const pureCallee = (functionId) => createFunctionSummary({
   functionId,
@@ -126,6 +162,8 @@ test('#5851 an incomplete callee keeps the caller fallback conservative', () => 
   const localA = callerWithFallback('A', 'B');
   const localB = createFunctionSummary({
     functionId: 'B',
+    memoryReadRegions: [broadFallbackRead()],
+    memoryWriteRegions: [broadFallbackWrite()],
     unknownCallEffects: [createUnknownCallEffect({
       callSiteId: 'unresolved_B', reason: 'unresolved-target',
     })],
@@ -140,6 +178,8 @@ test('#5851 an incomplete callee keeps the caller fallback conservative', () => 
   assert.ok(summary.unknownCallEffects.some((unknown) => unknown.callSiteId === 'unresolved_B'));
   assert.ok(summary.memoryWriteRegions.some((effect) => effect.broad),
     'an incomplete callee must not let the caller drop its broad fallback');
+  assert.ok(summary.memoryReadRegions.some((effect) => effect.broad),
+    'an incomplete callee must not let the caller drop its broad read fallback');
   assert.notEqual(summary.status.completeness, 'complete');
 });
 
@@ -266,16 +306,7 @@ test('#5851 a library-model-covered external call keeps its conservative treatme
   // summary: the site was never solved, so the local fallback must stay in
   // place and the boundary remains explicitly unresolved.
   const localA = callerWithFallback('A', 'ext');
-  const model = {
-    memoryWriteRegions: [createMemoryEffect({
-      regionId: 'region_model',
-      regionKind: 'global-absolute',
-      addressSpaces: ['memory'],
-      source: 'library-model',
-    })],
-    noreturn: false,
-    mayThrow: false,
-  };
+  const model = libraryModel('ext');
 
   const summary = solveInterproceduralSummaries({
     roots: ['A'],
@@ -283,12 +314,36 @@ test('#5851 a library-model-covered external call keeps its conservative treatme
     libraryModels: new Map([['ext', model]]),
   }).summaries.get('A');
 
-  assert.ok(summary.memoryWriteRegions.some((effect) => effect.regionId === 'region_model'),
+  const modelWrite = summary.memoryWriteRegions.find((effect) => effect.regionId === 'region_model');
+  assert.ok(modelWrite,
     'the model write must be applied');
+  assert.ok(modelWrite.evidenceIds.includes('model:ext'));
+  assert.ok(modelWrite.evidenceIds.includes('effect:ext:write'));
   assert.ok(summary.unknownCallEffects.some((unknown) => unknown.callSiteId === 'call_ext'),
     'an unsolved, model-covered call keeps its unresolved boundary');
   assert.ok(summary.memoryWriteRegions.some((effect) => effect.broad),
     'the local fallback stays because the call site was not solved');
+  assert.notEqual(summary.status.completeness, 'complete');
+});
+
+test('#6074 an invalid library-model envelope keeps the unresolved fallback fail-closed', () => {
+  const localA = callerWithFallback('A', 'ext');
+  const model = libraryModel('ext', { modelSchema: 'not-phase7-library-model' });
+
+  const summary = solveInterproceduralSummaries({
+    roots: ['A'],
+    localSummaries: new Map([['A', localA]]),
+    libraryModels: new Map([['ext', model]]),
+  }).summaries.get('A');
+
+  assert.equal(summary.memoryWriteRegions.some((effect) => effect.regionId === 'region_model'), false,
+    'a malformed model must not contribute unvalidated effects');
+  assert.ok(summary.memoryReadRegions.some((effect) => effect.broad),
+    'a malformed model must keep the broad read fallback');
+  assert.ok(summary.memoryWriteRegions.some((effect) => effect.broad),
+    'a malformed model must keep the broad write fallback');
+  assert.ok(summary.unknownCallEffects.some((unknown) => unknown.callSiteId === 'call_ext'),
+    'a malformed model must keep the unresolved call boundary');
   assert.notEqual(summary.status.completeness, 'complete');
 });
 
