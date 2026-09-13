@@ -22,7 +22,7 @@ export async function runClosureBrowserCases({includeWorker=false}={}) {
     const output=ir.instructions.find(i=>i.extra?.stateWrite&&i.dst?.reg==='x2').dst;
     const context={...identity,...S.projectedMemoryAccessContext(ir),addressSpace:'memory'};
     const models=S.createTaintModels({id:'browser-closure',version:'1',provenance:'production-machine',sources:[{id:'input',valueId:S.semanticValueIdentity(input)}],sinks:[{id:'output',valueId:S.semanticValueIdentity(output)}]});
-    const r=S.queryTaint(ir,{identity:context,models,memory:{addressBits:64,wrapping:'modular',accessSemantics:'canonical-normal-completion'},execution:{symbolicArgs:{0:256n}}});
+    const r=S.queryTaint(ir,{identity:context,models,memory:{addressBits:64,wrapping:'modular',accessSemantics:'canonical-normal-completion'},execution:{symbolicArgs:{0:256n,x30:4096n}}});
     require(r.status==='complete',r.reason);require(r.sinks[0].taint.sources.includes('input')&&r.evidence.proofScope.assumptions.length>0,'taint or scope missing');return r.metrics;
   });
   const memory={addressBits:1,wrapping:'modular',initialBytes:[[0n,0],[1n,0]]};

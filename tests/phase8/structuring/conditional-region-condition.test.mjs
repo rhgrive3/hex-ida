@@ -64,13 +64,14 @@ test('production text-row PHIs and BV1 predicates execute before the remaining p
   // Use the production solver tier for actual 64-bit inputs; the exhaustive
   // floor used by the small synthetic fixtures has a finite assignment budget.
   const output = await optimizeSemanticDecompilation(projection, { ...options, identity, backendTier:'tiered', conditionalBranch:branch });
-  // Register assignments are now bound to canonical SSA. Possible machine
-  // faults remain a separate full-region obligation at the public boundary.
+  // Register assignments are now bound to canonical SSA. The public query has
+  // no concrete x30 binding, so terminal normal completion or the wider machine
+  // effects remain an explicit unresolved obligation at this boundary.
   assert.ok(f.ir.blocks.some(block => block.phis.some(phi => phi.args.length > 0)));
   assert.equal(output.proofOptimization.status, 'partial');
   // A finite public query may exhaust its deadline before reaching that node;
   // either refusal must retain the exact original view and IR.
-  assert.ok(['unproved-machine-effects', 'deadline-exceeded'].includes(output.proofOptimization.reason),
+  assert.ok(['return-control-normal-completion-unproved', 'unproved-machine-effects', 'deadline-exceeded'].includes(output.proofOptimization.reason),
     output.proofOptimization.reason);
   assert.equal(output.proofOptimization.adopted, 0);
   assert.equal(output.cAst, projection.cAst);

@@ -38,7 +38,7 @@ export async function runAnalysisBrowserCases() {
   });
   await run('machine-division-policy-reaches-production-execution',()=>{
     const ir=machineIR(['udiv w0, w1, w2','ret']),inst=ir.instructions.find(i=>i.sub==='udiv');
-    const result=S.symbolicExecute(ir,{captureValues:true,symbolicArgs:{x1:4n,x2:0n},byteMemory:{identity}});
+    const result=S.symbolicExecute(ir,{captureValues:true,symbolicArgs:{x1:4n,x2:0n,x30:4096n},byteMemory:{identity}});
     check(result.status==='complete',result.reason);
     const translated=S.translate.translateSemanticIR(inst,{ir,identity,executionSnapshot:result.paths[0].snapshot});
     check(translated.expression?.value===0n,'declared division policy was dropped');return result.metrics;
