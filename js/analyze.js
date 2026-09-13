@@ -263,11 +263,6 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         res.returns++;
       } else if (/^b\./.test(b) || b === 'cbz' || b === 'cbnz' || b === 'tbz' || b === 'tbnz') {
         res.condBranches++;
-        const t = referenceTarget(b, opsStr);
-        if (t != null && t <= addr) res.loops.push({ from: addr, to: t });
-      } else if (b === 'b') {
-        const t = referenceTarget(b, opsStr);
-        if (t != null && t <= addr) res.loops.push({ from: addr, to: t });
       }
 
       // Consume the previous ADRP fact before invalidating a destination. This
@@ -301,13 +296,6 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   res.argRegs = Array.from(argsRead).sort((a, b) => a - b);
   res.savesCallee = Array.from(calleeSaved).sort((a, b) => a - b);
   res.setsReturnValue = lastX0Write >= 0;
-  const seen = new Set();
-  res.loops = res.loops.filter((l) => {
-    const k = l.from + ':' + l.to;
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
   const name = symbols && symbols.nameAt ? symbols.nameAt(res.startAddr) : null;
   res.model = buildSemanticModel(rawInsns, {
     startRow, endRow: end, name,
@@ -328,6 +316,16 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   res.stringRefs = stringRefCandidates
     .filter((c) => !crossesJoin(c.defRow, c.row))
     .map((c) => (c.load ? { row: c.row, addr: c.addr, load: true } : { row: c.row, addr: c.addr }));
+  const loopSeen = new Set();
+  res.loops = [];
+  for (const e of res.model?.backEdges || []) {
+    const from = region.vmAddr + BigInt(e.from) * 4n;
+    const to = region.vmAddr + BigInt(e.to) * 4n;
+    const key = from + ':' + to;
+    if (loopSeen.has(key)) continue;
+    loopSeen.add(key);
+    res.loops.push({ from, to });
+  }
   if ((truncated || modelRowsDropped) && res.model) res.model.truncated = true;
   res.truncated = truncated || !!res.model?.truncated;
   res.requestedRows = requestedRows;
