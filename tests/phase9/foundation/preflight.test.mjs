@@ -41,7 +41,12 @@ test('P9-0 is pinned to the verified Phase 8 handoff', () => {
 });
 
 test('live upstream analysis contracts are explicitly pinned rather than reimplemented', () => {
-  assert.equal(PHASE7_ANALYSIS_CONTRACT_VERSION, preflight.contracts.analysisBoundary.contractVersion);
+  assert.equal(preflight.contracts.analysisBoundary.contractVersion, '1.0.0',
+    'historical Phase 9 handoff contract identity must remain unchanged');
+  assert.equal(PHASE7_ANALYSIS_CONTRACT_VERSION, '1.1.0',
+    'live Phase 7 analysis contract must be checked independently');
+  assert.notEqual(PHASE7_ANALYSIS_CONTRACT_VERSION, preflight.contracts.analysisBoundary.contractVersion,
+    'historical handoff and live contract versions must remain an explicit boundary');
   assert.equal(ANALYSIS_STATUS_SCHEMA_VERSION, preflight.contracts.analysisStatus.schemaVersion);
   assert.equal(ANALYSIS_STATUS_CONTRACT_VERSION, preflight.contracts.analysisStatus.contractVersion);
   for (const reason of ['cancelled', 'timeout', 'budget-exhausted', 'memory-limit', 'dependency-missing', 'dependency-mismatch']) {
