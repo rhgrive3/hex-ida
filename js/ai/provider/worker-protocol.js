@@ -99,8 +99,10 @@ export function normalizeAIInteraction(value, allowedTools) {
   if (Array.isArray(value?.steps)) steps.push(...value.steps);
   if (Array.isArray(value?.output)) steps.push(...value.output);
   if (Array.isArray(value?.response?.steps)) steps.push(...value.response.steps);
-  const call = steps.find((step) => step && (step.type === 'function_call' || step.type === 'tool_call'));
-  if (!call) throw new Error('The model did not return a complete function call.');
+  const callSteps = steps.filter((step) => step && (step.type === 'function_call' || step.type === 'tool_call'));
+  if (callSteps.length === 0) throw new Error('The model did not return a complete function call.');
+  if (callSteps.length > 1) throw new Error('The model returned multiple tool calls in one turn; the Hex turn protocol requires exactly one.');
+  const call = callSteps[0];
   // A tool/function name is a string identity in the tool schema the Worker
   // publishes. `String()` coercion let a 1-element array (`['submit_hex_result']`)
   // launder into that exact name and claim final-result or tool authority
