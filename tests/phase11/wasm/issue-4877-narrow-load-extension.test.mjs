@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { liftWasmFunction } from '../../../js/managed/wasm/lifter.js';
 import { lowerVMEffectsToSemanticIr } from '../../../js/managed/shared/bridge-v2.js';
 import { validateSemanticIrFunction } from '../../../js/semantics/ir/function.js';
+import { projectSemanticIrV2ToLegacyV1 } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
+import { propagateScalarConstants } from '../../../js/semantics/compat/semantic-ir-v2-to-v1-finalize.js';
 
 console.log('[phase11] running WASM narrow-load extension regression for #4877...');
 
@@ -32,10 +34,10 @@ function moduleWith(opcode) {
 }
 
 const CASES = [
-  { opcode: 0x2c, mnemonic: 'i32.load8_s', sourceBits: 8, extension: 'sign', semanticKind: 'sext' },
-  { opcode: 0x2d, mnemonic: 'i32.load8_u', sourceBits: 8, extension: 'zero', semanticKind: 'zext' },
-  { opcode: 0x2e, mnemonic: 'i32.load16_s', sourceBits: 16, extension: 'sign', semanticKind: 'sext' },
-  { opcode: 0x2f, mnemonic: 'i32.load16_u', sourceBits: 16, extension: 'zero', semanticKind: 'zext' },
+  { opcode: 0x2c, mnemonic: 'i32.load8_s', sourceBits: 8, extension: 'sign', semanticKind: 'sext', raw: 0x80n, result: 0xffffff80n },
+  { opcode: 0x2d, mnemonic: 'i32.load8_u', sourceBits: 8, extension: 'zero', semanticKind: 'zext', raw: 0x80n, result: 0x80n },
+  { opcode: 0x2e, mnemonic: 'i32.load16_s', sourceBits: 16, extension: 'sign', semanticKind: 'sext', raw: 0x8000n, result: 0xffff8000n },
+  { opcode: 0x2f, mnemonic: 'i32.load16_u', sourceBits: 16, extension: 'zero', semanticKind: 'zext', raw: 0x8000n, result: 0x8000n },
 ];
 
 for (const expected of CASES) {
@@ -82,6 +84,16 @@ for (const expected of CASES) {
   const drop = lowered.semanticIr.nodes.find((node) => node.metadata?.mnemonic === 'drop');
   assert.deepEqual(drop?.inputs, extension.outputs,
     'downstream stack consumers must observe the extended i32 value, never the raw byte/halfword');
+
+  // Supply the known memory value at the raw-load boundary, then evaluate the
+  // actual generated extension through the canonical scalar folder.
+  const projected = projectSemanticIrV2ToLegacyV1(lowered.semanticIr);
+  const projectedLoad = projected.instructions.find((inst) => inst.semanticNodeId === load.id);
+  const projectedExtension = projected.instructions.find((inst) => inst.semanticNodeId === extension.id);
+  projectedLoad.dst.const = expected.raw;
+  propagateScalarConstants(projected);
+  assert.equal(projectedExtension.dst.const, expected.result,
+    `${expected.mnemonic} must preserve the required 32-bit value, not just its extension label`);
 }
 
 // Full-width loads already produce their final value and must not acquire an

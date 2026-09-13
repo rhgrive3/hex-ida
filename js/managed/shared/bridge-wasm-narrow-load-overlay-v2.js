@@ -1,6 +1,7 @@
 import { deepFreeze } from '../../core/identity/index.js';
 import { createSemanticIrFunction } from '../../semantics/ir/function.js';
-import { buildSemanticSsa } from '../../semantics/ssa/build.js';
+import { assertNotAborted, positiveInteger } from '../../semantics/ir/common.js';
+import { buildSemanticSsa, SEMANTIC_SSA_BUILD_DEFAULT_BUDGET } from '../../semantics/ssa/build.js';
 
 const NARROW_LOADS = Object.freeze({
   0x2c: Object.freeze({ mnemonic: 'i32.load8_s', sourceBits: 8, resultBits: 32, extension: 'sign', kind: 'sext' }),
@@ -36,25 +37,57 @@ function narrowLoadContract(bundle) {
 export function overlayWasmNarrowLoadExtensions(fn, lowered, options = {}) {
   if (fn?.frontendId !== 'wasm') return lowered;
 
+  const maximum = positiveInteger(
+    options.budget?.maxWorkItems ?? SEMANTIC_SSA_BUILD_DEFAULT_BUDGET.maxWorkItems,
+    'managed-wasm-narrow-load-invalid-budget-maxWorkItems',
+  );
+  let work = 0;
+  const step = () => {
+    assertNotAborted(options);
+    if (++work > maximum) fail('managed-wasm-narrow-load-budget-exceeded-maxWorkItems');
+  };
+  assertNotAborted(options);
   const contracts = new Map();
   for (const bundle of fn.bundles ?? []) {
+    step();
     const contract = narrowLoadContract(bundle);
     if (contract) contracts.set(bundle.operationId, contract);
   }
   if (contracts.size === 0) return lowered;
 
   const old = lowered.semanticIr;
-  const nodes = [...old.nodes];
-  const values = [...old.values];
-  const blocks = old.blocks.map((block) => ({ ...block, nodeIds: [...block.nodeIds] }));
-  const nodeIndex = new Map(nodes.map((node, index) => [node.id, index]));
-  const valueIndex = new Map(values.map((value, index) => [value.id, index]));
-  const blockIndex = new Map(blocks.map((block, index) => [block.id, index]));
+  const nodes = [];
+  const nodeIndex = new Map();
+  const loadByEffect = new Map();
+  // Charge both nodes and provenance edges: one pass establishes the relation
+  // without rescanning the function for every narrow-load effect.
+  for (const node of old.nodes) {
+    step();
+    nodeIndex.set(node.id, nodes.length);
+    nodes.push(node);
+    if (node.kind !== 'load') continue;
+    for (const operationId of node.sourceEffectIds ?? []) {
+      step();
+      if (!contracts.has(operationId)) continue;
+      if (loadByEffect.has(operationId) && loadByEffect.get(operationId) !== node) {
+        fail('managed-wasm-narrow-load-semantic-node-mismatch');
+      }
+      loadByEffect.set(operationId, node);
+    }
+  }
+  const values = [];
+  const valueIndex = new Map();
+  for (const value of old.values) {
+    step();
+    valueIndex.set(value.id, values.length);
+    values.push(value);
+  }
+  const extensionsAfter = new Map();
 
   for (const [operationId, contract] of contracts) {
-    const matches = nodes.filter((node) => node.kind === 'load' && node.sourceEffectIds?.includes(operationId));
-    if (matches.length !== 1) fail('managed-wasm-narrow-load-semantic-node-mismatch');
-    const load = matches[0];
+    step();
+    const load = loadByEffect.get(operationId);
+    if (!load) fail('managed-wasm-narrow-load-semantic-node-mismatch');
     if (load.outputs.length !== 1
         || load.memory?.widthBits !== contract.sourceBits
         || load.completeness !== 'complete') {
@@ -101,14 +134,27 @@ export function overlayWasmNarrowLoadExtensions(fn, lowered, options = {}) {
     };
     nodes.push(extension);
     nodeIndex.set(extensionId, nodes.length - 1);
-
-    const blockPosition = blockIndex.get(load.blockId);
-    if (blockPosition == null) fail('managed-wasm-narrow-load-block-missing');
-    const ids = blocks[blockPosition].nodeIds;
-    const loadPosition = ids.indexOf(load.id);
-    if (loadPosition < 0) fail('managed-wasm-narrow-load-block-missing');
-    ids.splice(loadPosition + 1, 0, extensionId);
+    extensionsAfter.set(load.id, extension);
   }
+
+  // Rebuild block order once; repeated indexOf/splice would also be quadratic
+  // for a valid straight-line function containing many narrow loads.
+  const blocks = [];
+  for (const block of old.blocks) {
+    step();
+    const nodeIds = [];
+    for (const id of block.nodeIds) {
+      step();
+      nodeIds.push(id);
+      const extension = extensionsAfter.get(id);
+      if (!extension) continue;
+      if (extension.blockId !== block.id) fail('managed-wasm-narrow-load-block-missing');
+      nodeIds.push(extension.id);
+      extensionsAfter.delete(id);
+    }
+    blocks.push({ ...block, nodeIds });
+  }
+  if (extensionsAfter.size) fail('managed-wasm-narrow-load-block-missing');
 
   const semanticIr = createSemanticIrFunction({
     functionId: old.functionId,
