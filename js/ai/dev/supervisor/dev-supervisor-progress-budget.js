@@ -1,4 +1,4 @@
-import { DevSupervisorEngineV0 as BaseDevSupervisorEngineV0 } from './dev-supervisor-engine-v0.js';
+import { DevSupervisorEngineV0 as BaseDevSupervisorEngineV0, devSupervisorHardMaxDecisions } from './dev-supervisor-engine-v0.js';
 
 /*
  * The base engine's maxDecisions loop is a safety budget for decisions that do
@@ -15,6 +15,7 @@ export class ProgressBudgetDevSupervisorEngineV0 extends BaseDevSupervisorEngine
   constructor(options = {}) {
     super(options);
     this.progressDecisionWindow = this.maxDecisions;
+    this.progressDecisionCeiling = Math.max(devSupervisorHardMaxDecisions(), this.progressDecisionWindow);
     this.progressDecisionCount = 0;
     this.progressRunActive = false;
 
@@ -46,7 +47,10 @@ export class ProgressBudgetDevSupervisorEngineV0 extends BaseDevSupervisorEngine
 
   markToolProgress() {
     if (!this.progressRunActive) return;
-    this.maxDecisions = this.progressDecisionCount + this.progressDecisionWindow;
+    this.maxDecisions = Math.min(
+      this.progressDecisionCount + this.progressDecisionWindow,
+      this.progressDecisionCeiling,
+    );
   }
 
   async executeWithinToolBoundary(operation) {

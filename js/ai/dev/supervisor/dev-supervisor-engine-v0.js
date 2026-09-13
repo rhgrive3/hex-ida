@@ -39,6 +39,10 @@ const MAX_DECISIONS = 16;
 const HARD_MAX_DECISIONS = 256;
 const HARD_MAX_TOOL_ERROR_RECOVERIES = 64;
 
+export function devSupervisorHardMaxDecisions() {
+  return HARD_MAX_DECISIONS;
+}
+
 function assertValidBudget(value, { name, min = 1, max, defaultValue }) {
   if (value === undefined) return defaultValue;
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) {
