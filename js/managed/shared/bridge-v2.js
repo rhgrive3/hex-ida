@@ -6,6 +6,7 @@ import * as legacy from './bridge.js';
 import { lowerVMEffectsToSemanticIr as lowerCore } from './bridge-lowering-v2.js';
 import { overlayDexLowering } from './bridge-dex-overlay-v2.js';
 import { overlayJvmControlLowering } from './bridge-jvm-control-overlay-v2.js';
+import { overlayWasmNarrowLoadExtensions } from './bridge-wasm-narrow-load-overlay-v2.js';
 import { assertVMEffectFunctionBundleOwnership } from './vm-effects.js';
 import { overlayWasmSelect, projectWasmSelectView } from './bridge-wasm-select-overlay-v2.js';
 import { isManagedExternalCall } from './call-classification.js';
@@ -59,7 +60,8 @@ export function lowerVMEffectsToSemanticIr(value, options = {}) {
   assertVMEffectFunctionBundleOwnership(value);
   const representable = maskUnrepresentableEffects(value);
   const lowered = overlayJvmControlLowering(representable, overlayWasmSelect(representable, lowerCore(representable, options), options), options);
-  const overlaid = overlayDexLowering(representable, lowered);
+  const wasmLowered = overlayWasmNarrowLoadExtensions(representable, lowered, options);
+  const overlaid = overlayDexLowering(representable, wasmLowered);
   const hasUnrepresentedFunctionExit = representable.bundles?.some((bundle) =>
     bundle.controlEffects?.some((effect) => effect.kind === 'switch'
       && (effect.caseKinds?.some((kind) => kind === 'function-exit')
