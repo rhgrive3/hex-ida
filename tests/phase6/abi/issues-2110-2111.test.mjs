@@ -39,3 +39,32 @@ test('#2111 FP/SIMD stack fallbacks align NSAA', () => {
   assert.equal(withStackLead.arguments[8].offset,0);
   assert.equal(withStackLead.arguments.at(-1).offset,16);
 });
+
+test('#2111 nested canonical HVA layout preserves natural alignment at spill', () => {
+  const fpExhaust = Array.from({length:8},()=>({type:'double',bits:64}));
+  const gpAndStackLead = Array.from({length:9},()=>({type:'uint64_t',bits:64}));
+  const hva = {
+    type:'aggregate',
+    hva:true,
+    layout:{
+      bits:256,
+      bytes:32,
+      alignment:16,
+      members:[
+        {bits:128,bytes:16,byteOffset:0,alignment:16},
+        {bits:128,bytes:16,byteOffset:16,alignment:16},
+      ],
+    },
+  };
+  const result = classify([...fpExhaust, ...gpAndStackLead, hva, {type:'uint64_t',bits:64}]);
+  const lead = result.arguments[16];
+  const spilled = result.arguments[17];
+  const tail = result.arguments[18];
+  assert.equal(lead.offset, 0);
+  assert.equal(spilled.homogeneousLayoutProven, true);
+  assert.equal(spilled.alignment, 16);
+  assert.equal(spilled.offset, 16);
+  assert.equal(spilled.bytes, 32);
+  assert.deepEqual(spilled.pieces.map((piece)=>piece.stackOffset), [16,32]);
+  assert.equal(tail.offset, 48);
+});
