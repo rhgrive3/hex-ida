@@ -632,8 +632,14 @@ export function createAppAnalysisQueryAdapter(app) {
         const decoded = await app.backend.disassembleAt(start, { architecture:architectureOf(app), length, signal:options.signal ?? null });
         if (decoded?.supported && decoded?.found) {
           const rows = (decoded.instructions || []).map((insn, i) => ({ id:insn.instructionId ?? `${functionId(insn.address ?? start)}:${i}`, address:insn.address == null ? null : BigInt(insn.address), size:Number(insn.length ?? insn.size ?? 0), mnemonic:String(insn.mnemonic ?? insn.instructionFamily ?? ''), operands:String(insn.opStr ?? insn.operands ?? ''), raw:insn }));
-          const completeness = truncated ? 'truncated' : !rangeComplete ? 'partial' : 'complete';
-          return paged(rows, page, completeness, { reason:truncated ? 'instruction-read-budget' : rangeReason });
+          const shortRead = decoded.readComplete === false;
+          const completeness = truncated ? 'truncated' : shortRead ? 'truncated' : !rangeComplete ? 'partial' : 'complete';
+          return paged(
+            rows,
+            page,
+            completeness,
+            { reason:truncated ? 'instruction-read-budget' : shortRead ? 'instruction-read-short' : rangeReason },
+          );
         }
       }
       const result = await loadFunction(request.functionId ?? start, options);

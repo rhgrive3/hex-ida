@@ -854,17 +854,20 @@ export class Backend {
     if (uiEpoch !== this.gen) throw new StaleRequestError();
     if (!support?.support?.[architecture]) return { supported: false, architecture, instructions: [] };
     if (this.formatId === 'macho') return { supported: false, architecture, instructions: [], compatibility: 'legacy-viewer' };
-    const read = await awaitCancellableProducer(this._callTo('platform', 'readAt', { addr, len: Math.min(1024 * 1024, options.length || 4096), text: false }), options.signal ?? null);
+    const requestedLength = Number(Math.min(1024 * 1024, options.length || 4096));
+    const read = await awaitCancellableProducer(this._callTo('platform', 'readAt', { addr, len: requestedLength, text: false }), options.signal ?? null);
     if (uiEpoch !== this.gen) throw new StaleRequestError();
     if (!read?.found) return { supported: true, architecture, instructions: [], found: false };
+    const readLength = Number(read.bytes?.length ?? 0);
+    const readComplete = readLength >= requestedLength;
     const formatMetadata = this.platformInfo?.productDescriptor?.formatMetadata || {};
     const riscvIsa = architecture === 'riscv64'
       ? (options.riscvIsa || resolveRiscvIsaProfile(formatMetadata.riscvIsa, addr, { allowAssumed:true }))
       : null;
-    if (riscvIsa?.code === false) return { supported:true, architecture, found:true, instructions:[], region:read.region ?? null, fileOffset:read.fileOffset ?? null, riscvIsa };
+    if (riscvIsa?.code === false) return { supported:true, architecture, found:true, instructions:[], region:read.region ?? null, fileOffset:read.fileOffset ?? null, riscvIsa, requestedLength, readLength, readComplete };
     const result = await awaitCancellableProducer(this._disassembleBytes(read.bytes, addr, architecture, uiEpoch, { riscvIsa, priority: options.priority, signal: options.signal }), options.signal ?? null);
     if (uiEpoch !== this.gen) throw new StaleRequestError();
-    return { supported: true, architecture, found: true, region:read.region ?? null, fileOffset:read.fileOffset ?? null, ...(riscvIsa == null ? {} : { riscvIsa }), ...result };
+    return { supported: true, architecture, found: true, region:read.region ?? null, fileOffset:read.fileOffset ?? null, ...(riscvIsa == null ? {} : { riscvIsa }), ...result, requestedLength, readLength, readComplete };
   }
 
   _disassembleBytes(bytes, address, architecture, uiEpoch = this.gen, decodeContext = {}) {
