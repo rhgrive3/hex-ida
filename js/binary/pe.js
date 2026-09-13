@@ -218,6 +218,7 @@ export function parsePE(input, options = {}) {
   image.addSegment({ name: 'headers', address: imageBase, size: BigInt(sizeOfHeaders), fileOffset: 0n, fileSize: BigInt(Math.min(sizeOfHeaders, bytes.length)), perms: { read: true, write: false, execute: false }, source: 'PE-headers' });
   const secBase = opt + sizeOptional;
   if (secBase + numberOfSections * 40 > r.length) throw new Error('PE section table is invalid');
+  let prevSectionLayout = null;
   for (let i = 0; i < numberOfSections; i++) {
     const p = secBase + i * 40;
     // Executable-image section-table names are literal 8-byte fields. The
@@ -293,6 +294,36 @@ export function parsePE(input, options = {}) {
         endRva: endRva.toString(), beyondRvaDomain, beyondSizeOfImage,
       });
       image.warnings.push(`PE section ${name || `#${i + 1}`} virtual range RVA 0x${virtualAddress.toString(16)}+0x${virtualExtent.toString(16)} exceeds ${beyondRvaDomain ? 'the 32-bit RVA domain' : `SizeOfImage 0x${sizeOfImage.toString(16)}`}; excluded from canonical mapping`);
+      continue;
+    }
+    // PE image section-layout contract (#4135): every section VirtualAddress is
+    // a multiple of SectionAlignment, the source section table is RVA-ascending,
+    // and virtual extents do not overlap. A violated section is excluded from
+    // canonical mapping and the image is marked partial, so exact downstream
+    // evidence is never promoted from a mapping no Windows loader would build.
+    // Every in-range section advances the running layout bound so ordering is
+    // judged against the declared source table, which finalize()'s address sort
+    // would otherwise hide.
+    const previous = prevSectionLayout;
+    const misaligned = sectionAlignment > 0 && virtualAddress % sectionAlignment !== 0;
+    const outOfOrder = previous !== null && startRva < previous.end;
+    prevSectionLayout = previous === null || endRva > previous.end
+      ? { start: startRva, end: endRva }
+      : { start: startRva, end: previous.end };
+    const violatesLayout = misaligned || outOfOrder;
+    if (violatesLayout) {
+      const layoutReason = misaligned ? 'pe:section-virtual-address-misaligned'
+        : startRva < previous.start ? 'pe:section-table-not-ascending'
+        : 'pe:section-virtual-range-overlap';
+      image.metadata.peMetadata ||= { complete: true, reasons: [] };
+      image.metadata.peMetadata.complete = false;
+      if (!image.metadata.peMetadata.reasons.includes(layoutReason)) image.metadata.peMetadata.reasons.push(layoutReason);
+      image.metadata.peSectionsWithInvalidVirtualLayout ||= [];
+      image.metadata.peSectionsWithInvalidVirtualLayout.push({
+        sectionIndex: i + 1, name, virtualAddress, virtualSize, sizeOfImage,
+        endRva: endRva.toString(), misaligned,
+      });
+      image.warnings.push(`PE section ${name || `#${i + 1}`} violates the image section-layout contract (${layoutReason}): RVA 0x${virtualAddress.toString(16)} extent 0x${virtualExtent.toString(16)}; excluded from canonical mapping`);
       continue;
     }
     image.addSegment({ name, address, size: virtualExtent, fileOffset: effectiveFileOffset, fileSize: mappedFileSize, perms, flags, source: 'PE-section' });
