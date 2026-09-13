@@ -300,9 +300,10 @@ export class Emulator {
   async load(addr, size) {
     const n = normalizeMemorySize(size);
     const start = BigInt(addr);
-    await this.ensure(start);
     const end = start + BigInt(n - 1);
-    if (end / BigInt(PAGE) !== start / BigInt(PAGE)) await this.ensure(end);
+    for (let p = (start / BigInt(PAGE)) * BigInt(PAGE); p <= end; p += BigInt(PAGE)) {
+      await this.ensure(p);
+    }
     let v = 0n;
     for (let i = n - 1; i >= 0; i--) v = (v << 8n) | BigInt(this.byteAt(start + BigInt(i)));
     return v;
