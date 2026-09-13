@@ -1488,7 +1488,7 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
   };
 
   function addRef(pc, target, k) {
-    if (target == null || target <= 0n || refsCapped) return;
+    if (target == null || refsCapped) return;
     void lo; void hi;
     if (nRefs === refFrom.length && !growRefs()) refsCapped = memoryCapped = true;
     if (nRefs < refFrom.length) {
