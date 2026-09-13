@@ -1,0 +1,66 @@
+name: Owner11 current main sync
+
+on:
+  push:
+    branches:
+      - consolidate/owner11-20260913-2058
+    paths:
+      - .github/workflows/owner11-current-main-sync.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync-main:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Merge current main without semantic weakening
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch --no-tags --depth=2 origin main
+          git merge --no-edit origin/main
+
+      - name: Focused post-main regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 45s node --test tests/phase12/integration/issue-4590-session-proposal-hydration.test.mjs
+          timeout 45s node --test tests/phase12/integration/issue-4590-session-proposal-execution-authority.test.mjs
+          timeout 45s node --test tests/phase12/integration/issue-4666-unknown-semantic-detail-deep-freeze.test.mjs
+          timeout 45s node tests/issue-5085-sandbox-host-status-id-collision.mjs
+          timeout 60s node tests/userscript-chatgpt-sandbox-host.mjs
+          timeout 90s node tests/check.mjs
+
+      - name: Remove transient workflow and verify final diff set
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/owner11-current-main-sync.yml
+          git add -A
+          git diff --cached --check
+          git commit -m "chore(consolidation): finalize owner11 on current main"
+          python - <<'PY'
+          import subprocess
+          expected = {
+            'js/ai/control/turn-executor.js', 'js/ai/proposals.js', 'js/ai/runtime.js',
+            'js/symbolic/expr/factory.js', 'js/userscript/chatgpt-sandbox-host.js',
+            'tests/issue-5085-sandbox-host-status-id-collision.mjs',
+            'tests/phase12/integration/issue-4590-session-proposal-execution-authority.test.mjs',
+            'tests/phase12/integration/issue-4590-session-proposal-hydration.test.mjs',
+            'tests/phase12/integration/issue-4666-unknown-semantic-detail-deep-freeze.test.mjs',
+            'tests/userscript-chatgpt-sandbox-host.mjs',
+            'userscript/hex.user.template.js', 'userscript/release-version.json',
+          }
+          actual = {p for p in subprocess.check_output(['git','diff','--name-only','origin/main...HEAD'], text=True).splitlines() if p}
+          if actual != expected:
+              raise SystemExit(f'final diff mismatch: missing={sorted(expected-actual)} extra={sorted(actual-expected)}')
+          PY
+          git push origin HEAD:consolidate/owner11-20260913-2058
