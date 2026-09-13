@@ -331,7 +331,18 @@ function composeReturn(wrapper, callee) {
   if (!r || !r.trusted) return null;
   const call = wrapper.calls[0];
   if (r.kind === 'constant') return r;
-  if (r.kind === 'argument') return actualForArgument(call, r.index);
+  if (r.kind === 'argument') {
+    const actual = actualForArgument(call, r.index);
+    if (actual.kind === 'unknown') return null;
+    if (actual.kind === 'argument') {
+      const index = actual.index == null
+        ? (/^x[0-7]$/.test(String(actual.reg || '')) ? Number(String(actual.reg).slice(1)) : null)
+        : actual.index;
+      if (index == null) return null;
+      return { ...actual, index, trusted: true, via: 'callee-summary' };
+    }
+    return { ...actual, trusted: true, via: 'callee-summary' };
+  }
   if (r.kind === 'argument-arithmetic') {
     const actual = actualForArgument(call, r.argument);
     if (actual.kind === 'constant') {
