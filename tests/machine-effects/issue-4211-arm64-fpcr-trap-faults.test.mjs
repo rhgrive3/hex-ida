@@ -23,11 +23,14 @@ function fpTrap(bundle) {
   return bundle.possibleFaults.find((fault) => fault.kind === 'arm64-floating-point-exception');
 }
 
-function assertOnlyFpTrap(bundle, label) {
-  assert.equal(bundle.possibleFaults.length, 1, `${label}: exactly one modeled fault is expected`);
-  assert.equal(bundle.possibleFaults[0]?.kind, 'arm64-floating-point-exception', `${label}: unexpected additional fault kind`);
-  assert.equal(bundle.possibleFaults[0]?.condition?.kind, 'arm64-fp-exception-trap', `${label}: canonical FP trap condition`);
-  return bundle.possibleFaults[0];
+function assertFpTrap(bundle, label) {
+  const accessFaults = bundle.possibleFaults.filter((fault) => fault?.kind === 'fp-advsimd-access-trap');
+  const fpFaults = bundle.possibleFaults.filter((fault) => fault?.kind === 'arm64-floating-point-exception');
+  assert.equal(accessFaults.length, 1, `${label}: exactly one architectural FP/AdvSIMD access fault is expected`);
+  assert.equal(fpFaults.length, 1, `${label}: exactly one modeled FP exception fault is expected`);
+  assert.equal(fpFaults[0]?.condition?.kind, 'arm64-fp-exception-trap', `${label}: canonical FP trap condition`);
+  assert.equal(accessFaults[0]?.detail?.ordering, 'before-fp-simd-execution', `${label}: access check precedes FP execution`);
+  return fpFaults[0];
 }
 
 function exceptionTerm(fault, exceptionClass) {
@@ -36,7 +39,7 @@ function exceptionTerm(fault, exceptionClass) {
 
 test('#4211 scalar FDIV exposes the DZE-controlled synchronous FP trap alternative', () => {
   const bundle = lift('fdiv', 's0, s1, s2');
-  const fault = assertOnlyFpTrap(bundle, 'scalar-fdiv');
+  const fault = assertFpTrap(bundle, 'scalar-fdiv');
   const dz = exceptionTerm(fault, 'divide-by-zero');
   assert.ok(dz, 'FDIV must retain the divide-by-zero exception class');
   assert.equal(dz.trapEnableBit, 'DZE');
@@ -51,7 +54,7 @@ test('#4211 scalar FDIV exposes the DZE-controlled synchronous FP trap alternati
 });
 
 test('#4211 DZE=0 is representable by a named FPCR guard rather than an unconditional trap', () => {
-  const fault = assertOnlyFpTrap(lift('fdiv', 's0, s1, s2'), 'dzee-guard');
+  const fault = assertFpTrap(lift('fdiv', 's0, s1, s2'), 'dzee-guard');
   const dz = exceptionTerm(fault, 'divide-by-zero');
   assert.equal(dz.trapEnableBit, 'DZE');
   assert.equal(dz.trapEnableBitIndex, 9);
@@ -61,7 +64,7 @@ test('#4211 DZE=0 is representable by a named FPCR guard rather than an uncondit
 
 test('#4211 FCMPE exposes the IOE-controlled invalid-operation trap without losing NZCV/FPSR normal semantics', () => {
   const bundle = lift('fcmpe', 's0, s1');
-  const fault = assertOnlyFpTrap(bundle, 'fcmpe');
+  const fault = assertFpTrap(bundle, 'fcmpe');
   const invalid = exceptionTerm(fault, 'invalid-operation');
   assert.ok(invalid);
   assert.equal(invalid.trapEnableBit, 'IOE');
@@ -71,7 +74,7 @@ test('#4211 FCMPE exposes the IOE-controlled invalid-operation trap without losi
 });
 
 test('#4211 arithmetic retains overflow/underflow/inexact trap controls', () => {
-  const fault = assertOnlyFpTrap(lift('fmul', 'd0, d1, d2'), 'fmul');
+  const fault = assertFpTrap(lift('fmul', 'd0, d1, d2'), 'fmul');
   for (const [exceptionClass, bit, bitIndex] of [
     ['overflow', 'OFE', 10],
     ['underflow', 'UFE', 11],
@@ -86,20 +89,24 @@ test('#4211 arithmetic retains overflow/underflow/inexact trap controls', () => 
 
 test('#4211 vector FP uses the same FPCR trap policy while status-free FP bit operations do not', () => {
   const vector = lift('fdiv', 'v0.4s, v1.4s, v2.4s');
-  const fault = assertOnlyFpTrap(vector, 'vector-fdiv');
+  const fault = assertFpTrap(vector, 'vector-fdiv');
   assert.ok(exceptionTerm(fault, 'divide-by-zero'));
   assert.ok(exceptionTerm(fault, 'overflow'));
   assert.equal(fault.detail.normalCompletionEffectsCommitOnFault, false);
 
   const scalarMove = lift('fmov', 's0, s1');
-  assert.deepEqual(scalarMove.possibleFaults, [], 'bit-preserving FMOV does not gain a spurious fault');
+  assert.equal(fpTrap(scalarMove), undefined, 'bit-preserving FMOV does not gain a numeric FP exception fault');
+  assert.equal(scalarMove.possibleFaults.filter((fault) => fault?.kind === 'fp-advsimd-access-trap').length, 1,
+    'bit-preserving FMOV still performs the architectural FP/AdvSIMD access check');
   const vectorNeg = lift('fneg', 'v0.4s, v1.4s');
-  assert.deepEqual(vectorNeg.possibleFaults, [], 'status-free vector FNEG does not gain a spurious fault');
+  assert.equal(fpTrap(vectorNeg), undefined, 'status-free vector FNEG does not gain a numeric FP exception fault');
+  assert.equal(vectorNeg.possibleFaults.filter((fault) => fault?.kind === 'fp-advsimd-access-trap').length, 1,
+    'status-free vector FNEG still performs the architectural FP/AdvSIMD access check');
 });
 
 test('#4211 conditional FCCMPE faults only on the executed compare arm', () => {
   const bundle = lift('fccmpe', 's0, s1, #0, eq');
-  const fault = assertOnlyFpTrap(bundle, 'fccmpe');
+  const fault = assertFpTrap(bundle, 'fccmpe');
   const invalid = exceptionTerm(fault, 'invalid-operation');
   assert.ok(invalid);
   const guard = fault?.condition?.executionCondition;
@@ -112,10 +119,10 @@ test('#4211 conditional FCCMPE faults only on the executed compare arm', () => {
 
 test('#4211 only FRINTX exposes an inexact trap among scalar FRINT forms', () => {
   for (const mnemonic of ['frinta','frintm','frintn','frintp','frinti','frintz']) {
-    const fault = assertOnlyFpTrap(lift(mnemonic, 's0, s1'), mnemonic);
+    const fault = assertFpTrap(lift(mnemonic, 's0, s1'), mnemonic);
     assert.equal(exceptionTerm(fault, 'inexact'), undefined,
       `${mnemonic} uses exact=FALSE and must not expose IXE`);
   }
-  const exact = assertOnlyFpTrap(lift('frintx', 's0, s1'), 'frintx');
+  const exact = assertFpTrap(lift('frintx', 's0, s1'), 'frintx');
   assert.ok(exceptionTerm(exact, 'inexact'), 'FRINTX uses exact=TRUE and can expose IXE');
 });
