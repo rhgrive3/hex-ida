@@ -116,11 +116,17 @@ function conditionCode(node) {
   return attrs.conditionCode ?? op.conditionCode ?? op.condition ?? bundle.conditionCode ?? bundle.condition ?? null;
 }
 
+function exactPredicateToken(value) {
+  if (typeof value !== 'string') return null;
+  const token = value.trim().toLowerCase();
+  return token || null;
+}
+
 function comparisonPredicate(node) {
   const attrs = node?.attributes || {};
   const op = operationMetadata(node);
   const direct = attrs.predicate ?? op.predicate ?? attrs.comparison ?? null;
-  if (direct != null) return String(direct).toLowerCase();
+  if (direct != null) return exactPredicateToken(direct);
   const text = String(node?.operator ?? '').toLowerCase();
   const parts = text.split(/[.:/]/);
   return parts.length > 1 ? parts.at(-1) : null;
