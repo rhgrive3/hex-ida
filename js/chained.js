@@ -7,6 +7,8 @@
  * the Node accuracy harness use the exact same recovery path.
  */
 
+import { chainedPointerReservedBitsReason } from './binary/macho-chained-pointer.js';
+
 const MH_MAGIC_64 = 0xfeedfacf;
 const FAT_MAGIC = 0xcafebabe;
 const FAT_MAGIC_64 = 0xcafebabf;
@@ -289,6 +291,7 @@ function stubSlot(code, off, pc, stubSize) {
 }
 
 function bindOrdinal(raw, pointerFormat) {
+  if (chainedPointerReservedBitsReason(raw, pointerFormat)) return null;
   if (PTR_64.has(pointerFormat)) {
     if (((raw >> 63n) & 1n) === 0n) return null;
     return Number(raw & 0xffffffn);
@@ -391,6 +394,7 @@ async function chainMembers(st, page, chainStart, seg, read64, base) {
     if (fileOff + 8n > base + seg.fileoff + seg.filesize) return null;
     const ptr = await read64(fileOff);
     if (ptr == null) return null;
+    if (chainedPointerReservedBitsReason(ptr, st.pointerFormat)) return null;
     members.add(address);
     const d = chainNext(ptr, st.pointerFormat);
     if (d == null) return null;

@@ -1,8 +1,10 @@
 import { ByteView } from './reader.js';
 
+const CPU_TYPE_X86_64 = 0x01000007;
 const CPU_TYPE_ARM = 12;
 const CPU_TYPE_ARM64 = 0x0100000c;
 const CPU_TYPE_ARM64_32 = 0x0200000c;
+const CPU_SUBTYPE_X86_64_H = 8;
 const CPU_SUBTYPE_ARM_V7K = 12;
 const CPU_SUBTYPE_ARM64E = 2;
 const CPU_SUBTYPE_ARM64E_ABI_V0 = 0x80000002;
@@ -46,8 +48,16 @@ function uses16KPages(inner) {
   return false;
 }
 
+export function cpuArchName(cpu, subtype) {
+  const base = cpuName(cpu);
+  const sub = subtypeBase(subtype);
+  if (base === 'arm64' && sub === CPU_SUBTYPE_ARM64E) return 'arm64e';
+  if ((cpu >>> 0) === CPU_TYPE_X86_64 && sub === CPU_SUBTYPE_X86_64_H) return 'x86_64h';
+  return base;
+}
+
 export function sliceArchName(slice) {
-  return cpuName(slice.cpu) === 'arm64' && subtypeBase(slice.subtype) === 2 ? 'arm64e' : cpuName(slice.cpu);
+  return cpuArchName(slice.cpu, slice.subtype);
 }
 
 export function parseInnerMachOHeader(bytes) {

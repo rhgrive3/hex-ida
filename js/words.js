@@ -68,6 +68,14 @@
     return (value & (sign - 1n)) - (value & sign);
   }
 
+  /**
+   * A64 の address は 64-bit の bit pattern であって符号つき JS BigInt ではない。
+   * 低 address から下へ飛ぶ命令（B/BL/ADR/ADRP/LDR literal）を素朴に足すと
+   * -4n のような負値になり、program scan の address truth として公開される
+   * 値が 0xffff... 側の 64-bit target と食い違う (#4032)。
+   */
+  function canonical64(value) { return BigInt.asUintN(64, value); }
+
   const rd = (w) => w & 0x1f;
   const rn = (w) => (w >>> 5) & 0x1f;
   const rm = (w) => (w >>> 16) & 0x1f;
@@ -77,7 +85,7 @@
   /** b / bl の飛び先。違う命令なら null。 */
   function branchImm26(w, pc) {
     if (masked(w, 0x7c000000) !== 0x14000000) return null;
-    return pc + (signExtend(BigInt(w >>> 0) & 0x3ffffffn, 26) << 2n);
+    return canonical64(pc + (signExtend(BigInt(w >>> 0) & 0x3ffffffn, 26) << 2n));
   }
 
   function isCallImm(w) { return masked(w, 0xfc000000) === 0x94000000; }
@@ -103,16 +111,16 @@
   /** 条件つき分岐の飛び先。 */
   function condBranchTarget(w, pc) {
     const bw = BigInt(w >>> 0);
-    if (masked(w, 0xff000010) === 0x54000000) return pc + (signExtend((bw >> 5n) & 0x7ffffn, 19) << 2n);
-    if (masked(w, 0x7e000000) === 0x34000000) return pc + (signExtend((bw >> 5n) & 0x7ffffn, 19) << 2n);
-    if (masked(w, 0x7e000000) === 0x36000000) return pc + (signExtend((bw >> 5n) & 0x3fffn, 14) << 2n);
+    if (masked(w, 0xff000010) === 0x54000000) return canonical64(pc + (signExtend((bw >> 5n) & 0x7ffffn, 19) << 2n));
+    if (masked(w, 0x7e000000) === 0x34000000) return canonical64(pc + (signExtend((bw >> 5n) & 0x7ffffn, 19) << 2n));
+    if (masked(w, 0x7e000000) === 0x36000000) return canonical64(pc + (signExtend((bw >> 5n) & 0x3fffn, 14) << 2n));
     return null;
   }
 
   /** ldr (literal) — 手近に置かれた定数を読む形。 */
   function literalTarget(w, pc) {
     if (masked(w, 0x3b000000) !== 0x18000000) return null;
-    return pc + (signExtend((BigInt(w >>> 0) >> 5n) & 0x7ffffn, 19) << 2n);
+    return canonical64(pc + (signExtend((BigInt(w >>> 0) >> 5n) & 0x7ffffn, 19) << 2n));
   }
 
   /** この語が「どこかのアドレスを指している」なら、その先。分からなければ null。 */
@@ -133,8 +141,8 @@
     const immlo = (bw >> 29n) & 0x3n;
     const immhi = (bw >> 5n) & 0x7ffffn;
     const imm = signExtend((immhi << 2n) | immlo, 21);
-    if (w & 0x80000000) return { reg: rd(w), value: (pc & ~0xfffn) + (imm << 12n), page: true };
-    return { reg: rd(w), value: pc + imm, page: false };
+    if (w & 0x80000000) return { reg: rd(w), value: canonical64((pc & ~0xfffn) + (imm << 12n)), page: true };
+    return { reg: rd(w), value: canonical64(pc + imm), page: false };
   }
 
   /**
@@ -146,9 +154,13 @@
    * 返すのは {rn, rd, imm, load}。組でないものは null。
    */
   function pairedOffset(w) {
-    // ADD (immediate, 64-bit, shift 0)
-    if (((w >>> 23) & 0x1ff) === 0x122 && !((w >>> 22) & 1)) {
-      return { rn: rn(w), rd: rd(w), imm: BigInt((w >>> 10) & 0xfff), load: false };
+    // ADD (immediate, 64-bit)。bit22 の sh は LSL #12 形式を選び、ADRP の後で
+    // 4095 を超える page offset を表す正規の書き方。ここを shift 0 だけに
+    // 限定すると、その組がまるごと ProgramIndex から落ちる (#3936)。
+    if (((w >>> 23) & 0x1ff) === 0x122) {
+      const shift = (w >>> 22) & 1;
+      const imm = BigInt((w >>> 10) & 0xfff) << BigInt(shift ? 12 : 0);
+      return { rn: rn(w), rd: rd(w), imm, load: false };
     }
     // LDR/LDRB/LDRH/STR… (immediate, unsigned offset) — 倍率は転送サイズで決まる
     if (masked(w, 0x3b000000) === 0x39000000) {
@@ -296,6 +308,7 @@ acquire, release,
       const load = ((w >>> 22) & 1) === 1;
       const opc = (w >>> 30) & 3;
       const vector = ((w >>> 26) & 1) === 1;
+      if (opc === 3) return null;
       const signedWordPair = !vector && load && opc === 1; // LDPSW: two 32-bit words -> X regs
       // Integer opc=0 => W pair, opc=1 => LDPSW, opc=2 => X pair.
       // SIMD opc=0/1/2 => S/D/Q pairs.
