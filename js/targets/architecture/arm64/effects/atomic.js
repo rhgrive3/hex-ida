@@ -103,6 +103,7 @@ function hasOperandShape(decoded, shape) {
   });
 }
 function isGpOrZero(reg) { return !!reg && (reg.kind === 'gp' || reg.zero === true || reg.kind === 'zero'); }
+function isZeroRegister(reg) { return !!reg && (reg.zero === true || reg.kind === 'zero'); }
 function zeroDisplacement(addressing) {
   const raw = addressing?.metadata?.addressDisplacement;
   return raw == null || BigInt(raw) === 0n;
@@ -123,11 +124,13 @@ function registerMatchesSizeSuffix(reg, sizeSuffix) {
   return reg.bits === 32 || reg.bits === 64;
 }
 
-function orderingFromSuffix(suffix = '') {
+function orderingFromSuffix(suffix = '', acquireSuppressed = false) {
+  const hasAcquire = (suffix === 'a' || suffix === 'al') && !acquireSuppressed;
+  const hasRelease = suffix === 'l' || suffix === 'al';
   return {
-    read:suffix === 'a' || suffix === 'al' ? 'acquire' : 'relaxed',
-    write:suffix === 'l' || suffix === 'al' ? 'release' : 'relaxed',
-    summary:suffix === 'al' ? 'acq-rel' : suffix === 'a' ? 'acquire' : suffix === 'l' ? 'release' : 'relaxed',
+    read:hasAcquire ? 'acquire' : 'relaxed',
+    write:hasRelease ? 'release' : 'relaxed',
+    summary:hasAcquire && hasRelease ? 'acq-rel' : hasAcquire ? 'acquire' : hasRelease ? 'release' : 'relaxed',
   };
 }
 function widthFromSuffixOrReg(sizeSuffix, reg) {
@@ -293,7 +296,7 @@ function exclusiveLoad(decoded, context, match) {
   }
   if (!isBaseOnly(addr)) return partial(decoded, context, 'exclusive loads require base-only addressing');
 
-  const acquire = mnemonicOf(decoded).startsWith('ldaxr');
+  const acquire = mnemonicOf(decoded).startsWith('ldaxr') && !isZeroRegister(dest);
   const ordering = acquire ? 'acquire' : 'relaxed';
   const memAccess = access(ctx, addr.addressExpr, widthBits, ordering);
   const raw = arm64Temporary('exclusive.load.raw', widthBits);
@@ -426,7 +429,7 @@ function atomicRmw(decoded, context, { family, suffix = '', sizeSuffix = '' }) {
   }
   if (!isBaseOnly(addr)) return partial(decoded, context, `${family} requires base-only addressing`);
 
-  const order = orderingFromSuffix(suffix);
+  const order = orderingFromSuffix(suffix, isZeroRegister(result));
   const readAccess = access(ctx, addr.addressExpr, widthBits, order.read);
   const writeAccess = access(ctx, addr.addressExpr, widthBits, order.write);
   let sourceRead;
@@ -479,7 +482,7 @@ function compareSwap(decoded, context, match) {
   }
   if (!isBaseOnly(addr)) return partial(decoded, context, 'CAS requires base-only addressing');
 
-  const order = orderingFromSuffix(suffix);
+  const order = orderingFromSuffix(suffix, isZeroRegister(expected));
   const readAccess = access(ctx, addr.addressExpr, widthBits, order.read);
   const writeAccess = access(ctx, addr.addressExpr, widthBits, order.write);
   let expectedRead;
