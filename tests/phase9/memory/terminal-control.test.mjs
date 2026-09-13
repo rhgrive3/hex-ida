@@ -70,11 +70,13 @@ test('actual A64 MOVZ/RET instruction words produce exact aligned and misaligned
 });
 
 test('symbolic x30 retains both faulting and normal valuations without a guessed alignment', () => {
-  const result = run(machineIR(['ret']));
+  const ir = machineIR(['ret']), result = run(ir);
   assert.equal(result.status, 'partial', result.reason);
   assert.equal(result.reason, 'return-control-normal-completion-unproved');
   assert.equal(result.terminalControlCoverage, 'complete');
   assert.deepEqual(result.paths, []);
+  assert.equal(isExecutionResult(result, identity, ir), true, 'issued/current identifies the producer, not normal completion');
+  assert.equal(isExecutionSnapshot(result.terminalControlObservations[0], identity, ir), false);
   const control = result.terminalControlObservations[0].control;
   assert.equal(control.target.kind, 'fresh_symbol');
   assert.equal(result.terminalControlObservations[0].constraints.length, 0, 'normal return must not be assumed as a path condition');
@@ -144,6 +146,24 @@ test('unsupported faults and unbound fault channels stay explicit failures', () 
   }
 });
 
+test('absent fault entries do not make a partial or unknown return bundle exact', () => {
+  for (const mutate of [
+    ret => { ret.extra.attributes.machineEffects.bundleCompleteness = 'partial'; },
+    ret => { delete ret.extra.attributes.machineEffects.bundleCompleteness; },
+    ret => { ret.extra.attributes.machineEffects.unknownEffects = { categories:['faults'] }; },
+    ret => { ret.extra.unknownEffects = true; },
+    ret => { ret.unknownEffects = { categories:['control'] }; },
+  ]) {
+    const ir = mutableFaultIR();
+    retOf(ir).extra.attributes.machineEffects.possibleFaults = [];
+    mutate(retOf(ir));
+    const result = run(ir);
+    assert.equal(result.status, 'partial');
+    assert.deepEqual(result.paths, []);
+    assert.notEqual(result.terminalControlCoverage, 'complete');
+  }
+});
+
 test('fault descriptor changes revoke both issued results and path snapshots', () => {
   for (const mutate of [
     machine => { machine.possibleFaults = []; },
@@ -153,6 +173,7 @@ test('fault descriptor changes revoke both issued results and path snapshots', (
     machine => { machine.possibleFaults[0].kind = 'other'; },
     machine => { machine.mode = 'other'; },
     machine => { machine.possibleFaults.meta = 'changed'; },
+    machine => { machine.unknownEffects = { categories:['faults'] }; },
   ]) {
     const ir = mutableFaultIR(), result = run(ir);
     assert.equal(result.status, 'complete', result.reason);

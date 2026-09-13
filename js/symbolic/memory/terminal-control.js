@@ -23,6 +23,10 @@ export function readReturnControl(inst, memory) {
   const attributes = queryRecord(extra.attributes ?? {}, guard, 128);
   const machine = queryRecord(attributes.machineEffects ?? {}, guard, 128);
   const rawControl = queryRecord(attributes.machineControlEffect ?? {}, guard);
+  if (attributes.machineEffects != null && machine.bundleCompleteness !== 'exact') fail('incomplete-return-control-effects');
+  for (const source of [inst, extra, attributes, machine]) {
+    if (source.unknownEffects != null && source.unknownEffects !== false) fail('unknown-return-control-effects');
+  }
   const binding = extra.returnControlTarget;
   if (binding == null) {
     if (inst.returnTargetValue != null || extra.returnControlTargetValueId != null
