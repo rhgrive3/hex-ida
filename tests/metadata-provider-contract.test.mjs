@@ -362,5 +362,6 @@ await import('./issue-4812-metadata-identity-authority-verification.mjs');
 await import('./issue-4343-metadata-provider-ecosystem-match.mjs');
 await import('./issue-4845-metadata-page-record-shape-validation.mjs');
 await import('./issue-5008-metadata-record-address-validation.mjs');
+await import('./issue-5092-objc-category-methods.mjs');
 
 console.log('Language Metadata Provider Contract tests passed.');

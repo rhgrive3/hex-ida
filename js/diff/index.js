@@ -47,23 +47,25 @@ export function diffFunctions(beforeFunctions, afterFunctions, options = {}) {
     const semanticChange=semanticSummary(m.before,m.after);
     return {...m,status:statusFor(changeType),changeType,semanticChange};
   });
-  const matchingIncomplete = matched.truncated === true
-    || matched.ambiguous === true
+  const graphIncomplete = matched.truncated === true
     || matched.matching?.truncated === true
     || matched.matching?.candidateGraphIncomplete === true;
+  const matchingIncomplete = graphIncomplete || matched.ambiguous === true;
   const incompleteReason = matched.matching?.budget?.reason
     || matched.matching?.truncatedComponents?.[0]?.reason
     || (matched.matching?.candidateGraphIncomplete ? 'candidate-graph-incomplete' : 'matching-incomplete');
+  const collisionReason = 'ambiguous-candidate-collision';
 
   let deleted=[];
   let added=[];
   let unresolved=[];
-  if (matchingIncomplete) {
+  if (graphIncomplete) {
     // Matcher budgets are a trust boundary. With an incomplete global graph we
     // cannot prove that any unmatched before/after is truly deleted/new. Even
-    // when truncation is component-local, matcher.js currently exposes only
-    // aggregate unresolved counts, not stable member identities; conservatively
-    // keep every unmatched function unresolved rather than invent certainty.
+    // when truncation is component-local, an unmatched function may still have
+    // an unseen counterpart elsewhere in the graph, so member identities cannot
+    // localize the doubt; conservatively keep every unmatched function
+    // unresolved rather than invent certainty.
     const unresolvedBefore=(matched.deleted||[]).map((before)=>({
       before,after:null,status:'unresolved',changeType:'unresolved',confidence:0,
       semanticChange:null,reason:incompleteReason,side:'before',
@@ -74,8 +76,16 @@ export function diffFunctions(beforeFunctions, afterFunctions, options = {}) {
     }));
     unresolved=[...unresolvedBefore,...unresolvedAfter];
   } else {
-    deleted=(matched.deleted||[]).map((before)=>({before,after:null,status:'deleted',changeType:'deleted',confidence:1,semanticChange:null}));
-    added=(matched.new||[]).map((after)=>({before:null,after,status:'new',changeType:'new',confidence:1,semanticChange:null}));
+    const contestedBefore=new Set(matched.unresolvedBefore||[]);
+    const contestedAfter=new Set(matched.unresolvedAfter||[]);
+    const contested=(matched.deleted||[]).filter((before)=>contestedBefore.has(before));
+    const contestedNew=(matched.new||[]).filter((after)=>contestedAfter.has(after));
+    deleted=(matched.deleted||[]).filter((before)=>!contestedBefore.has(before)).map((before)=>({before,after:null,status:'deleted',changeType:'deleted',confidence:1,semanticChange:null}));
+    added=(matched.new||[]).filter((after)=>!contestedAfter.has(after)).map((after)=>({before:null,after,status:'new',changeType:'new',confidence:1,semanticChange:null}));
+    unresolved=[
+      ...contested.map((before)=>({before,after:null,status:'unresolved',changeType:'unresolved',confidence:0,semanticChange:null,reason:collisionReason,side:'before'})),
+      ...contestedNew.map((after)=>({before:null,after,status:'unresolved',changeType:'unresolved',confidence:0,semanticChange:null,reason:collisionReason,side:'after'})),
+    ];
   }
   const changes=[...matches,...deleted,...added,...unresolved].sort(byAddress);
   return {

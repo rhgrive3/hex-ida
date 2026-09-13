@@ -110,6 +110,41 @@ export async function materializeRebuildPlan(plan, source, options = {}) {
   return { status: 'materialized', planId: plan.planId, sourceHash: hashBytes(original), outputHash: hashBytes(output), bytes: output, touched, temporary: true, publication: 'not-published' };
 }
 
+function bytesEqual(left, right) {
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) if (left[i] !== right[i]) return false;
+  return true;
+}
+
+function canonicalTouchedRanges(plan) {
+  return plan.operations.map((operation) => {
+    const offset = Number(BigInt(operation.offset));
+    const length = operation.before.length;
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length <= 0) throw new TypeError('rebuild-operation-offset-invalid');
+    return { offset, length };
+  });
+}
+
+function planDerivedOutput(plan, original) {
+  const output = original.slice();
+  for (const operation of plan.operations) {
+    const offset = Number(BigInt(operation.offset));
+    const before = Uint8Array.from(operation.before), after = Uint8Array.from(operation.after);
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset + before.length > original.length) throw new TypeError('rebuild-operation-out-of-range');
+    for (let i = 0; i < before.length; i++) if (original[offset + i] !== before[i]) throw new TypeError('rebuild-expected-original-state-mismatch');
+    output.set(after, offset);
+  }
+  return output;
+}
+
+function touchedRangesMatchCanonical(touched, canonical) {
+  if (!Array.isArray(touched) || !Array.isArray(canonical) || touched.length !== canonical.length) return false;
+  const order = (left, right) => left[0] - right[0] || left[1] - right[1];
+  const observed = touched.map((range) => [Number(range?.offset), Number(range?.length)]).sort(order);
+  const expected = canonical.map((range) => [range.offset, range.length]).sort(order);
+  return observed.every((entry, index) => entry[0] === expected[index][0] && entry[1] === expected[index][1]);
+}
+
 function unchangedRegions(original, output, touched) {
   const ranges = [...touched].sort((a, b) => a.offset - b.offset); let cursor = 0;
   for (const range of ranges) { for (let i = cursor; i < range.offset; i++) if (original[i] !== output[i]) return false; cursor = range.offset + range.length; }
@@ -152,25 +187,51 @@ export async function validateRebuildOutput(plan, materialized, options = {}) {
   if (!materialized || materialized.status !== 'materialized') return canonicalValidation({ status: 'invalid', reason: 'materialization-not-complete', planId: plan?.planId || null });
   const output = materialized.bytes;
   const results = new Map();
+  let original = null;
+  let canonicalTouched = null;
+  let derivedOutput = null;
+  let planBindingReason = null;
+  if (options.original != null) {
+    try {
+      original = await sourceBytes(options.original);
+    } catch (error) {
+      planBindingReason = error?.message || String(error);
+    }
+    if (original != null) {
+      try {
+        canonicalTouched = canonicalTouchedRanges(plan);
+        derivedOutput = planDerivedOutput(plan, original);
+      } catch (error) {
+        canonicalTouched = null;
+        derivedOutput = null;
+        planBindingReason = error?.message || String(error);
+      }
+    }
+  }
 
   const sourcePreconditionPassed = materialized.planId === plan.planId
     && typeof materialized.sourceHash === 'string'
-    && materialized.sourceHash === plan.sourceHash;
+    && materialized.sourceHash === plan.sourceHash
+    && (original == null || materialized.sourceHash === hashBytes(original));
   results.set('source-precondition', validatorResult('source-precondition', sourcePreconditionPassed ? 'passed' : 'failed', sourcePreconditionPassed ? null : 'materialized-source-precondition-unproven'));
 
   let structurePassed = false;
+  let structureReason = 'materialized-structure-invalid';
   try {
     const outputBytes = bytes(output);
     const touched = Array.isArray(materialized.touched) ? materialized.touched : null;
-    structurePassed = !!touched && hashBytes(outputBytes) === materialized.outputHash
+    const selfReported = !!touched && hashBytes(outputBytes) === materialized.outputHash
       && touched.every((range) => Number.isSafeInteger(range?.offset) && Number.isSafeInteger(range?.length) && range.offset >= 0 && range.length >= 0 && range.offset <= outputBytes.length && range.length <= outputBytes.length - range.offset);
+    structurePassed = selfReported && (canonicalTouched == null
+      || (touchedRangesMatchCanonical(touched, canonicalTouched) && bytesEqual(outputBytes, derivedOutput)));
+    if (selfReported && !structurePassed) structureReason = 'materialized-output-not-plan-derived';
   } catch {}
-  results.set('structure', validatorResult('structure', structurePassed ? 'passed' : 'failed', structurePassed ? null : 'materialized-structure-invalid'));
+  results.set('structure', validatorResult('structure', structurePassed ? 'passed' : 'failed', structurePassed ? null : structureReason));
 
   if (options.original != null) {
     try {
-      const original = await sourceBytes(options.original);
-      const passed = unchangedRegions(original, output, materialized.touched || []);
+      if (planBindingReason != null) throw new TypeError(planBindingReason);
+      const passed = unchangedRegions(original, bytes(output), canonicalTouched);
       results.set('unchanged-regions', validatorResult('unchanged-regions', passed ? 'passed' : 'failed', passed ? null : 'promised-unchanged-region-differed'));
     } catch (error) {
       results.set('unchanged-regions', validatorResult('unchanged-regions', 'failed', error?.message || String(error)));

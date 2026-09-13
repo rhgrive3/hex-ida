@@ -5,6 +5,7 @@ import { checkedRange, fail } from './validation-utils.js';
 import { readDexUleb128 as readUleb128 } from './leb128.js';
 import { dexPrototypeShorty, dexTypeInfo } from './descriptor.js';
 import { dexDefinitionCodeError, dexMethodDefinitions } from './method-definitions.js';
+import { validateDexIntegrity } from './integrity.js';
 
 function requireOptionalDataItemOffset(limit, offset, alignment, minSize, code) {
   if (offset === 0) return;
@@ -326,6 +327,7 @@ export function parseDex(bytes, options = {}) {
 
   dexMethodDefinitions({ methods, classes });
   validateDexMap(u8);
+  validateDexIntegrity(u8);
 
   const binaryId=options.binaryId||'dex-binary'; const imageId=createManagedImageId(binaryId); const moduleId=createManagedModuleId(imageId,'classes.dex');
   return deepFreeze({imageId,moduleId,formatVersion:probe.formatVersion,vmSpecEdition:probe.vmSpecEdition,strings,types,protos,fields,methods,classes,dataSection:{offset:dataStart,size:dataEnd-dataStart},rawBytes:u8});

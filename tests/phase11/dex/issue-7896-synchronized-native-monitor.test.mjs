@@ -11,6 +11,7 @@ import { liftDexMethod } from '../../../js/managed/dex/lifter-base.js';
 import { DexFrontend } from '../../../js/managed/dex/frontend.js';
 import { lowerVMEffectsToSemanticIr } from '../../../js/managed/shared/bridge-v2.js';
 import { buildMinimalDex } from './dex-parser.test.mjs';
+import { applyDexIntegrity } from '../fixtures/dex-integrity.mjs';
 
 console.log('[phase11] running dex synchronized native monitor regression #7896...');
 
@@ -37,7 +38,7 @@ function fixture(flags, codeOff = 0) {
   const b = buildMinimalDex();
   b.fill(0, 0x120, 0x140);
   b.set([0, 0, 1, 0, 0, ...uleb(flags), ...uleb(codeOff)], 0x120);
-  return b;
+  return applyDexIntegrity(b);
 }
 
 function lift(flags, codeOff = 0) {

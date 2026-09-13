@@ -212,17 +212,20 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
   const solved = solveCandidateMatching(eligible, budget);
   const selected = solved.selected;
   const usedBefore = new Set(), usedAfter = new Set(), matches = [];
+  const contestedBefore = new Set(), contestedAfter = new Set();
   for (const c of selected) {
     // Ambiguity is evidence about the original candidate distribution, not a
     // side-effect of assignment order. Keep candidates even when another match
     // consumes their after-function.
-    const forwardAlternatives = (eligibleByBefore.get(c.i) || []).filter((x) => x.j !== c.j && x.confidence >= c.confidence - ambiguityWindow)
-      .slice(0, 4).map((x) => ({ side:'after', index:x.j, address:after[x.j].address, confidence:x.confidence, identity:x.identity, reasons:x.reasons }));
-    const reverseAlternatives = (eligibleByAfter.get(c.j) || []).filter((x) => x.i !== c.i && x.confidence >= c.confidence - ambiguityWindow)
-      .slice(0, 4).map((x) => ({ side:'before', index:x.i, address:before[x.i].address, confidence:x.confidence, identity:x.identity, reasons:x.reasons }));
+    const forwardCompetitors = (eligibleByBefore.get(c.i) || []).filter((x) => x.j !== c.j && x.confidence >= c.confidence - ambiguityWindow);
+    const reverseCompetitors = (eligibleByAfter.get(c.j) || []).filter((x) => x.i !== c.i && x.confidence >= c.confidence - ambiguityWindow);
+    const forwardAlternatives = forwardCompetitors.slice(0, 4).map((x) => ({ side:'after', index:x.j, address:after[x.j].address, confidence:x.confidence, identity:x.identity, reasons:x.reasons }));
+    const reverseAlternatives = reverseCompetitors.slice(0, 4).map((x) => ({ side:'before', index:x.i, address:before[x.i].address, confidence:x.confidence, identity:x.identity, reasons:x.reasons }));
     const alternatives = [...forwardAlternatives, ...reverseAlternatives]
       .sort((a,b)=>b.confidence-a.confidence || String(a.side).localeCompare(String(b.side)) || a.index-b.index).slice(0, 4);
     const ambiguous = alternatives.length > 0;
+    for (const x of reverseCompetitors) contestedBefore.add(x.i);
+    for (const x of forwardCompetitors) contestedAfter.add(x.j);
     matches.push({ before: before[c.i], after: after[c.j], confidence: c.confidence, identity: c.identity, reasons: c.reasons, evidence: c.evidence, ambiguous, candidates: alternatives });
     usedBefore.add(c.i); usedAfter.add(c.j);
     if (!ambiguous && c.confidence >= 0.82 && before[c.i].address != null && after[c.j].address != null) anchors.set(String(before[c.i].address), String(after[c.j].address));
@@ -236,15 +239,22 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
   const matchingBudget = budget.snapshot();
   const truncatedComponents = solved.truncatedComponents.slice(0, 32);
   const truncated = matchingBudget.truncated || solved.truncatedComponents.length > 0;
+  const unresolvedBeforeIndexes = new Set(contestedBefore);
+  const unresolvedAfterIndexes = new Set(contestedAfter);
+  if (truncated) {
+    for (const i of solved.ambiguousLeft) unresolvedBeforeIndexes.add(i);
+    for (const j of solved.ambiguousRight) unresolvedAfterIndexes.add(j);
+  }
+  const ambiguous = truncated || unresolvedBeforeIndexes.size > 0 || unresolvedAfterIndexes.size > 0;
   return {
     matches, deleted, new: added,
     candidatesEvaluated: all.length,
     candidateComparisons: matchingBudget.candidateEvaluations,
     indexBuckets: index.buckets.size,
     truncated,
-    ambiguous: truncated,
-    unresolvedBefore: truncated ? before.filter((_x, i) => solved.ambiguousLeft.has(i)) : [],
-    unresolvedAfter: truncated ? after.filter((_x, i) => solved.ambiguousRight.has(i)) : [],
+    ambiguous,
+    unresolvedBefore: before.filter((_x, i) => unresolvedBeforeIndexes.has(i) && !usedBefore.has(i)),
+    unresolvedAfter: after.filter((_x, i) => unresolvedAfterIndexes.has(i) && !usedAfter.has(i)),
     matching: {
       truncated,
       candidateGraphIncomplete: false,

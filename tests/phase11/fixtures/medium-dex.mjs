@@ -1,4 +1,5 @@
 // Small self-contained DEX builders; no production parser/validator is used here.
+import { applyDexIntegrity } from './dex-integrity.mjs';
 export function uleb(value) {
   let n = BigInt(value), out = [];
   do { const b = Number(n & 127n); n >>= 7n; out.push(b | (n ? 128 : 0)); } while (n);
@@ -117,5 +118,5 @@ export function buildDex(options = {}) {
   fields.forEach((f,i)=>{const p=layout.fields+i*8;v.setUint16(p,ti(f.classType),true);v.setUint16(p+2,ti(f.type),true);v.setUint32(p+4,si(f.name),true);});
   methods.forEach((m,i)=>{let p=layout.protos+i*12;v.setUint32(p,si(m.shorty??shorty(m)),true);v.setUint32(p+4,ti(m.returnType),true);v.setUint32(p+8,paramsOffsets[i],true);p=layout.methods+i*8;v.setUint16(p,ti(m.classType),true);v.setUint16(p+2,i,true);v.setUint32(p+4,si(m.name),true);});
   data.set([100,101,120,10,48,51,57,0]);v.setUint32(32,pos,true);v.setUint32(36,0x70,true);v.setUint32(40,0x12345678,true);v.setUint32(52,mapOff,true);v.setUint32(104,pos-dataStart,true);v.setUint32(108,dataStart,true);
-  return { bytes:data.slice(0,pos), layout };
+  return { bytes:applyDexIntegrity(data.slice(0,pos)), layout };
 }

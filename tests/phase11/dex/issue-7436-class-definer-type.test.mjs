@@ -4,6 +4,7 @@ import test from 'node:test';
 import { parseDex } from '../../../js/managed/dex/parser.js';
 import { DexFrontend } from '../../../js/managed/dex/frontend.js';
 import { buildDex } from '../fixtures/medium-dex.mjs';
+import { applyDexIntegrity } from '../fixtures/dex-integrity.mjs';
 
 // #7436: class_def_item.class_idx (and non-NO_INDEX superclass_idx) must be
 // class types. Primitives and arrays are legal type_ids for other roles, but a
@@ -20,7 +21,7 @@ function withSuperclass({ classNames, fields, superType }) {
   assert.ok(typeIndex >= 0, `fixture type ${superType} must exist in the type table`);
   const view = new DataView(bytes.buffer);
   view.setUint32(layout.classes + 8, typeIndex, true);
-  return bytes;
+  return applyDexIntegrity(bytes);
 }
 
 test('#7436 a class type is still accepted as the class-def definer', () => {
