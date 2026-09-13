@@ -139,3 +139,32 @@ test('#6039 return fallback agrees with first-named-argument placement', () => {
   assert.deepEqual(returnResult.regs, argument.regs);
   assert.deepEqual(returnResult.regs, ['x10', 'x11']);
 });
+
+test('#6039 overlapping multi-member union uses integer convention for return and first named argument', () => {
+  const aggregate = canonicalAggregate('union U', [f64(0), u64(0)]);
+  const result = classifyReturn(RISCV_LP64D_ABI, aggregate);
+  assert.equal(result.partial, undefined);
+  assert.equal(result.reg, 'x10');
+  assert.deepEqual(result.regs, ['x10']);
+
+  const argument = RISCV_LP64D_ABI.classifyArguments({ callPrototype:{ args:[{
+    type:aggregate.returnType,
+    aggregate:true,
+    bits:aggregate.returnBits,
+    layout:aggregate.layout,
+  }] } }).arguments[0];
+  assert.equal(argument.partial, undefined);
+  assert.equal(argument.abiClass, 'aggregate-integer-registers');
+  assert.deepEqual(argument.regs, ['x10']);
+});
+
+test('#6039 overlapping union without trustworthy total extent stays fail-closed', () => {
+  const result = classifyReturn(RISCV_LP64D_ABI, {
+    returnType:'union U',
+    aggregate:true,
+    returnBits:64,
+    layout:{ bits:64, members:[f64(0), u64(0)], padding:[] },
+  });
+  assert.equal(result.partial, true);
+  assert.match(result.reason, /layout-unproven/);
+});

@@ -262,14 +262,15 @@ function parameterClass(parameter) {
   const bitsDeclared = !widthConflict && declaredBits != null
     && Number.isSafeInteger(Number(declaredBits)) && Number(declaredBits) > 0;
   const aggregateLayout = aggregate ? canonicalAggregateLayout(parameter) : null;
-  const aggregateLayoutProven = !aggregate || aggregateLayout != null;
-  const declaredBitsNumber = Number(aggregateLayout?.bits ?? declaredBits);
+  const aggregateExtent = aggregateLayout ?? (aggregate ? aggregateUnionExtent(parameter) : null);
+  const aggregateLayoutProven = !aggregate || aggregateExtent != null;
+  const declaredBitsNumber = Number(aggregateExtent?.bits ?? declaredBits);
   const rawBits = aggregate
     ? aggregateLayoutProven ? declaredBitsNumber : 0
     : Number(declaredBits ?? (pointer ? XLEN : riscvTypeBits(type, XLEN)));
   const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? Math.min(1_000_000, rawBits) : 0;
   const bytes = aggregate
-    ? aggregateLayout?.bytes ?? (bits > 0 ? Math.ceil(bits / 8) : 0)
+    ? aggregateExtent?.bytes ?? (bits > 0 ? Math.ceil(bits / 8) : 0)
     : bits > 0 ? Math.ceil(bits / 8) : 0;
   // C++ call-triviality evidence: positive proof only. Absence cannot prove
   // triviality, while any explicit nontrivial evidence selects the sound
@@ -282,6 +283,47 @@ function aggregateIsUnion(parameter) {
   const type = String(parameter?.returnType || parameter?.type || parameter?.name || '').trim().toLowerCase();
   const abiClass = String(parameter?.abiClass || parameter?.class || parameter?.kind || '').trim().toLowerCase();
   return /\bunion\b/.test(`${type} ${abiClass}`);
+}
+
+function aggregateUnionExtent(parameter) {
+  if (!aggregateIsUnion(parameter) || parameter == null || typeof parameter !== 'object' || Array.isArray(parameter)) return null;
+  if (Object.hasOwn(parameter, 'layout')
+    && (parameter.layout == null || typeof parameter.layout !== 'object' || Array.isArray(parameter.layout))) return null;
+  if (Object.hasOwn(parameter, 'returnAggregate') && parameter.returnAggregate != null
+    && typeof parameter.returnAggregate !== 'boolean'
+    && (typeof parameter.returnAggregate !== 'object' || Array.isArray(parameter.returnAggregate))) return null;
+
+  const owners = [parameter];
+  const addOwner = (owner) => {
+    if (owner == null || typeof owner !== 'object' || Array.isArray(owner) || owners.includes(owner)) return;
+    owners.push(owner);
+  };
+  addOwner(parameter.layout);
+  if (parameter.returnAggregate && typeof parameter.returnAggregate === 'object') {
+    addOwner(parameter.returnAggregate);
+    addOwner(parameter.returnAggregate.layout);
+  }
+
+  const exactPositiveAlias = (aliases) => {
+    let value = null;
+    let present = false;
+    for (const owner of owners) {
+      for (const alias of aliases) {
+        if (!Object.hasOwn(owner, alias)) continue;
+        present = true;
+        const candidate = owner[alias];
+        if (typeof candidate !== 'number' || !Number.isSafeInteger(candidate) || candidate <= 0) return null;
+        if (value != null && candidate !== value) return null;
+        value = candidate;
+      }
+    }
+    return present ? value : null;
+  };
+
+  const bits = exactPositiveAlias(['bits', 'sizeBits', 'returnBits']);
+  const bytes = exactPositiveAlias(['bytes', 'sizeBytes']);
+  if (bits == null || bytes == null || Math.ceil(bits / 8) > bytes) return null;
+  return { bits, bytes };
 }
 
 /*
@@ -302,9 +344,11 @@ function collectFlattenLeaves(member, offset, abiFlen) {
       leaves:[{ member:classifiedMember, byteOffset:offset, bytes:Math.ceil(classifiedMember.bits / 8) }],
     };
   }
+  if (aggregateIsUnion(member)) {
+    return aggregateUnionExtent(member) ? { state:'ineligible' } : { state:'unknown' };
+  }
   const nestedCanonical = canonicalAggregateLayout(member);
   if (!nestedCanonical) return { state:'unknown' };
-  if (aggregateIsUnion(member)) return { state:'ineligible' };
   const leaves = [];
   for (const nested of nestedCanonical.members) {
     const nestedResult = collectFlattenLeaves(nested, offset + nested.byteOffset, abiFlen);
@@ -315,6 +359,9 @@ function collectFlattenLeaves(member, offset, abiFlen) {
 }
 
 function flattenAggregate(parameter, abiFlen) {
+  if (aggregateIsUnion(parameter)) {
+    return aggregateUnionExtent(parameter) ? { eligible:false, known:true } : null;
+  }
   const canonical = canonicalAggregateLayout(parameter);
   const members = canonical?.members ?? aggregateMembers(parameter);
   if (!members) return null;
@@ -323,7 +370,6 @@ function flattenAggregate(parameter, abiFlen) {
     ? { bytes:canonical.bytes, members:canonical.members }
     : aggregateMemberLayout(members, classifiedMembers);
   if (!layout) return null;
-  if (aggregateIsUnion(parameter)) return { eligible:false, known:true };
   if (members.length < 1 || members.length > 2) return { eligible:false, known:true };
 
   const leaves = [];
@@ -957,8 +1003,9 @@ function createClassifier(profile) {
     const aggregateLayout = aggregate
       ? canonicalAggregateLayout(aggregateLayoutParameter)
       : null;
-    const aggregateLayoutProven = !aggregate || aggregateLayout != null;
-    const canonicalDeclaredBits = aggregateLayout?.bits ?? declaredBitsNumber;
+    const aggregateExtent = aggregateLayout ?? (aggregate ? aggregateUnionExtent(aggregateLayoutParameter) : null);
+    const aggregateLayoutProven = !aggregate || aggregateExtent != null;
+    const canonicalDeclaredBits = aggregateExtent?.bits ?? declaredBitsNumber;
     if ((prototype.indirectResult === true || abiClass === 'indirect') && aggregate && !aggregateLayoutProven) {
       return { reg:null, bits:null, bytes:null, aggregate:true, partial:true, location:'unknown',
         reason:`${profile.id}-aggregate-return-size-layout-unproven` };
@@ -977,9 +1024,9 @@ function createClassifier(profile) {
       return { reg:null, bits:null, bytes:null, aggregate:true, partial:true, location:'unknown',
         reason:`${profile.id}-aggregate-return-size-layout-unproven` };
     }
-    if (aggregate && aggregateLayout?.bytes > Math.ceil(bits / 8)) {
-      if (aggregateLayout.bytes > 2 * XLEN / 8) return indirectResult();
-      return { reg:null, bits, bytes:aggregateLayout.bytes, aggregate:true, partial:true, location:'unknown',
+    if (aggregate && aggregateExtent?.bytes > Math.ceil(bits / 8)) {
+      if (aggregateExtent.bytes > 2 * XLEN / 8) return indirectResult();
+      return { reg:null, bits, bytes:aggregateExtent.bytes, aggregate:true, partial:true, location:'unknown',
         reason:`${profile.id}-padded-aggregate-return-layout-not-represented` };
     }
     const returnVector = vectorDescriptor({ type, abiClass, ...(prototype.returnVector || {}), vector:prototype.vectorReturn === true || prototype.returnVector?.vector === true, mask:prototype.returnVector?.mask, lmul:prototype.returnVector?.lmul, tupleCount:prototype.returnVector?.tupleCount, fixedLengthVector:prototype.returnVector?.fixedLengthVector });
