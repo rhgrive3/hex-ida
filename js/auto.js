@@ -507,13 +507,15 @@ function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
 
 /*
  * Cache only successful, non-null analysis. Rejections/nulls are retryable.
- * AbortSignal-bearing calls are intentionally not shared: a caller-owned signal
- * must never become the cancellation authority for another caller's analysis.
+ * Option-bearing calls are intentionally never shared (#5068): options enter
+ * the execution semantics but not the addr/end cache identity, and a
+ * caller-owned AbortSignal must never become the cancellation authority
+ * for another caller's analysis.
  */
 export function memoizeAnalysis(analyze) {
   const cache = new Map();
   return (addr, end, options = undefined) => {
-    if (options?.signal) return Promise.resolve().then(() => analyze(addr, end, options));
+    if (options !== undefined) return Promise.resolve().then(() => analyze(addr, end, options));
     // Cache identity is analysis authority (#3309): structured values must
     // not collide with their primitive lookalikes through toString(), or a
     // malformed address would reuse another address's cached analysis.

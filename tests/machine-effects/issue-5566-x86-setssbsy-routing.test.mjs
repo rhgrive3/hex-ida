@@ -69,7 +69,7 @@ for (const fakeSet of ['setunknown', 'setxyz', 'setfoo']) {
 
 assert.match(indexSource, /instructionFamily\.startsWith\('set'\)\s*&&\s*!isCanonicalSetccFamily\(instructionFamily\)/);
 assert.match(indexSource, /const systemSet = liftX86SystemEffects\(instruction, context\)/);
-assert.match(indexSource, /ownerId:'system', result:terminalize\(instruction, 'system', systemSet, context\)/);
+assert.match(indexSource, /ownerId:'system', result:terminalize\(instruction, 'system', systemSet, context, decoded\)/);
 assert.match(indexSource, /x86-extended-system-family-requires-dedicated-semantics/);
 
 // Exercise the actual decoder provenance used by terminalization as well.

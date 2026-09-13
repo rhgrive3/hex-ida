@@ -661,8 +661,20 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
       case 0xc2: // monitorenter
       case 0xc3: // monitorexit
         mnemonic = opcode === 0xc2 ? 'monitorenter' : 'monitorexit';
+        // The consumed objectref stays the monitor-identity dataflow edge.
+        // Monitor acquire/release (structured locking order, happens-before)
+        // has no VMEffects representation yet, so the bundle fails closed to
+        // partial instead of publishing exception-free exact semantics
+        // (#7870).
         consumedValues.push({ id: 'obj' });
         currentStackHeight--;
+        completeness = 'partial';
+        unknownEffects.push({
+          category: 'other',
+          reason: opcode === 0xc2
+            ? 'jvm-monitor-acquire-semantics-unrepresented'
+            : 'jvm-monitor-release-semantics-unrepresented',
+        });
         break;
 
       default:
