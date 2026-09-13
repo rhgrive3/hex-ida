@@ -590,6 +590,8 @@ export function createRebuildTransaction(input = {}) {
   expectedOriginalState.sourceHash = sourceHash;
   const relocationBindings = input.relocationBindings ?? declaredImpact.relocationBindings ?? [];
   if (!Array.isArray(relocationBindings)) throw new TypeError('rebuild-v2-relocation-bindings-invalid');
+  const sections = input.sections ?? declaredImpact.sections ?? [];
+  if (!Array.isArray(sections)) throw new TypeError('rebuild-v2-sections-invalid');
   const impact = {
     layoutMoving: sizeDelta !== 0 || declaredImpact.layoutMoving === true,
     relocations: declaredImpact.relocations === true || relocationBindings.length > 0,
@@ -597,7 +599,7 @@ export function createRebuildTransaction(input = {}) {
     unwind: declaredImpact.unwind === true,
     importsExports: declaredImpact.importsExports === true,
     signature: declaredImpact.signature === true,
-    sections: clone(declaredImpact.sections || []),
+    sections: clone(sections),
     relocationBindings: clone(relocationBindings),
   };
   const requireIndependentOracle = input.requireIndependentOracle === true;
@@ -860,15 +862,15 @@ async function executeExternal(name, fn, context) {
     // success tokens. A result that says both `ok:false` and `status:'passed'`
     // is a contradiction, and contradictions must never count as passed.
     if (!result) return validatorResult(name, true, false, 'validator-rejected', null);
+    if (name === 'independent-differential') {
+      const contractFailure = independentOracleResultFailure(result, context);
+      if (contractFailure) return validatorResult(name, true, false, contractFailure, result);
+    }
     if (result.ok === false) return validatorResult(name, true, false, result?.reason || 'validator-reported-failure', result);
     if (result.status === 'failed' || result.status === 'invalid' || result.status === 'rejected') {
       return validatorResult(name, true, false, result?.reason || `validator-status-${result.status}`, result);
     }
     if (result.ok !== true && result.status !== 'passed' && result.status !== 'valid') return validatorResult(name, true, false, result?.reason || 'validator-rejected', result || null);
-    if (name === 'independent-differential') {
-      const contractFailure = independentOracleResultFailure(result, context);
-      if (contractFailure) return validatorResult(name, true, false, contractFailure, result);
-    }
     const identityFailure = formatIdentityMismatch(result, context.transaction, context.expectedOutputHash);
     if (identityFailure) return validatorResult(name, true, false, identityFailure, result);
     const relocationFailure = name === 'relocations' ? relocationResultFailure(result) : null;
