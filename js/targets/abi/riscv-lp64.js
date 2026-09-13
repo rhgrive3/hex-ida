@@ -629,6 +629,18 @@ function createClassifier(profile) {
           unknownArgument(index, classified, 'vector-descriptor-conflict', { vector:classified.vector });
           return;
         }
+        if (variadicArgument) {
+          const reg = variadicStackOnly ? undefined : INTEGER_ARGUMENT_REGISTERS[integerIndex];
+          if (reg !== undefined) {
+            integerIndex += 1;
+            useInteger(reg, { purpose:'variadic-vector-by-reference' });
+            arguments_.push({ index, location:'register', reg, abiName:ABI_ALIAS[reg], abiClass:'vector-by-reference', pointer:true, bits:XLEN, bytes:8, pointeeBits:classified.bits, hiddenIndirection:true, variadic:true });
+          } else {
+            const entry = { index, location:'stack', offset:stackOffset, offsetBase:'incoming-stack-arguments', bytes:8, abiClass:'vector-by-reference', pointer:true, bits:XLEN, pointeeBits:classified.bits, hiddenIndirection:true, variadic:true };
+            arguments_.push(entry); stackArguments.push(entry); stackOffset += 8; stackArgsMayContainPointers = true;
+          }
+          return;
+        }
         const regs = allocateVectorGroup(classified.vector, classified.bits);
         if (!regs) {
           unknownArgument(index, classified, classified.vector.conflict ? 'vector-descriptor-conflict' : 'vector-register-allocation-unproven', { vector:classified.vector });
