@@ -1,5 +1,6 @@
 import { ensureMachOMetadataBudget } from './macho-budget.js';
 import { functionSeed } from './model.js';
+import { chainedPointerReservedBitsReason } from './macho-chained-pointer.js';
 
 const CHAINED_POINTER_SITES = new WeakMap();
 const CHAINED_POINTER_COVERAGE = new WeakMap();
@@ -352,6 +353,7 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
           const raw = width === 4 ? BigInt(r.u32(Number(expectedOff))) : r.u64(Number(expectedOff));
           const d = decodeChainedPointer(raw, pointerFormat, image.imageBase);
           if (!d) { markUnsupportedChainedFormat(image, pointerFormat); fail(`segment ${segIndex} pointer format ${pointerFormat} could not be decoded`); break; }
+          if (d.invalidReason) { fail(`segment ${segIndex} pointer format ${pointerFormat} has ${d.invalidReason}`); break; }
           rememberChainedPointerSite(image, address, raw, pointerFormat, d);
           if (d.bind) {
             const imp = d.ordinal >= 0 && d.ordinal < imports.length ? imports[d.ordinal] : null;
@@ -395,6 +397,8 @@ function markUnsupportedChainedFormat(image, format) {
 }
 function decodeChainedPointer(raw, format, imageBase = null) {
   const base = imageBase == null ? null : BigInt(imageBase);
+  const invalidReason = chainedPointerReservedBitsReason(raw, format);
+  if (invalidReason) return { invalidReason };
   if (format === 3) {
     const bind = !!((raw >> 31n) & 1n);
     const next = Number((raw >> 26n) & 0x1fn);
