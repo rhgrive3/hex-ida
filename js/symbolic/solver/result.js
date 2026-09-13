@@ -6,6 +6,8 @@
  * conflated with UNSAT or proved results.
  */
 
+import { isVerificationQuery } from '../verify/query.js';
+
 export const SOLVER_STATUS = Object.freeze({
   SAT: 'sat',
   UNSAT: 'unsat',
@@ -98,7 +100,13 @@ export function isValidSolverResult(result, { query = null, backend = null } = {
   if (backend) {
     if (result.backend !== String(backend.id) || result.backendVersion !== String(backend.version)) return false;
   }
-  if (query?.queryHash && result.queryHash !== String(query.queryHash)) return false;
+  if (query?.queryHash) {
+    // Query identity is verified against recomputed canonical content, not an
+    // echoed caller string, so copying one forged hash into query and result
+    // cannot validate (#3963).
+    if (!isVerificationQuery(query)) return false;
+    if (result.queryHash !== String(query.queryHash)) return false;
+  }
   if (result.lifecycle?.publishable === false && (result.status === SOLVER_STATUS.SAT || result.status === SOLVER_STATUS.UNSAT)) return false;
   if (result.status !== SOLVER_STATUS.SAT && result.model != null) return false;
   return true;
