@@ -172,7 +172,7 @@ function parseThin(bytes, opts) {
         requireExactCommandSize(cmdsize, 48, 'LC_DYLD_INFO');
         dyldInfos.push(parseDyldInfo(r, p));
       }
-      else if (cmd === LC_BUILD_VERSION && cmdsize >= 24) parseBuildVersion(r, p, image);
+      else if (cmd === LC_BUILD_VERSION && cmdsize >= 24) parseBuildVersion(r, p, cmdsize, image);
       else if (cmd === LC_ENCRYPTION_INFO || cmd === LC_ENCRYPTION_INFO_64) {
         // encryption_info_command is 20 bytes; the 64-bit variant adds a pad
         // field (24). cryptid != 0 marks an encrypted (App Store FairPlay)
@@ -424,7 +424,12 @@ function parseDylib(r, p, cmdsize, image, isId) {
   if (isId) image.metadata.installName = name;
   else if (name) image.libraries.push(name);
 }
-function parseBuildVersion(r, p, image) {
+function parseBuildVersion(r, p, cmdsize, image) {
+  const ntools = r.u32(p + 20);
+  const required = 24 + ntools * 8;
+  if (!Number.isSafeInteger(required) || required > cmdsize) {
+    throw new Error(`invalid LC_BUILD_VERSION ntools ${ntools}; requires at least ${required} bytes, got ${cmdsize}`);
+  }
   const platform = r.u32(p + 8);
   const minos = r.u32(p + 12);
   const sdk = r.u32(p + 16);
