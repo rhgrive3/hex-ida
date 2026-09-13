@@ -12,6 +12,7 @@ const LANE = 'codex/lane5-6633-abi-a8b2';
 const OBJC_PROTOCOL_LANE = 'fix/objc-protocol-class-properties-3979';
 const ANALYSIS_BATCH_LANE = 'fix/analysis-batch-20260907-l62';
 const INTEGRATION_BATCH_LANE = 'dev-agent-hardening/integration/issue-batch-20260909';
+const MAIN_GATE_BATCH_LANE = 'fix/main-gate-recovery-20260913';
 
 // This is an exact, short-lived integration route for #6975. The PR carries a
 // Phase 7 production-path regression alongside the ABI/Phase 6 owner slice.
@@ -62,6 +63,54 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     'tests/phase4/issue-4510-macho-source-cache-result-ownership.test.mjs',
     'tests/plugin-platform-invocation-lifetime-4511.mjs',
     'tests/project-roundtrip.mjs',
+  ]),
+  [MAIN_GATE_BATCH_LANE]: Object.freeze([
+    '.circleci/config.yml',
+    '.github/workflows/phase8-ownership.yml',
+    'js/binary/macho-dyld.js',
+    'js/semantics/memoryssa/build.js',
+    'js/targets/abi/aapcs64-core.js',
+    'js/targets/architecture/riscv64/decoded-instruction.js',
+    'tests/machine-effects/issue-5566-x86-setssbsy-routing.test.mjs',
+    'tests/machine-effects/issue-5999-riscv64-compressed-capability-conflict.test.mjs',
+    'tests/machine-effects/issue-6133-x87-trusted-terminal-domain.test.mjs',
+    'tests/machine-effects/x86-long64-integer-denominator.test.mjs',
+    'tests/machine-effects/a2-denominator-inventory.json',
+    'tests/phase11/cil/cil-parser.test.mjs',
+    'tests/phase11/dex/dex-class-data-field-index-3729.test.mjs',
+    'tests/phase11/dex/dex-validation-1143.test.mjs',
+    'tests/phase12/run.mjs',
+    'tests/phase4/binary/issue-3787-chained-stub-section-containment.test.mjs',
+    'tests/phase4/binary/issue-3904-pe-delay-import-malformed-thunk.test.mjs',
+    'tests/phase4/binary/issue-4155-macho-source-cache-metadata-limits.test.mjs',
+    'tests/phase4/binary/issue-4746-pe-delay-import-reserved-attrs.test.mjs',
+    'tests/phase4/binary/issue-5584-elf-signal-dynamic.test.mjs',
+    'tests/phase4/binary/pe-utf8-cstring-budget-6286.test.mjs',
+    'tests/phase4/foundation/runner-completion.test.mjs',
+    'tests/phase4/integration/issues-2502-2522-demand-analysis.test.mjs',
+    'tests/phase4/issue-3695-pe-import-descriptor-termination.test.mjs',
+    'tests/phase4/run.mjs',
+    'tests/phase8/abi/hex-c3-02-boundaries.test.mjs',
+    'tests/phase8/corpus/explicit-compiler-abi.test.mjs',
+    'tests/phase8/ownership/cross-lane-routing.test.mjs',
+    'tests/phase9/foundation/preflight.test.mjs',
+    'tests/phase9/verify/equivalence.test.mjs',
+    'tests/scpa/native-reference-navigation.test.mjs',
+    'tests/scpa/native-retained-async-integration.test.mjs',
+    'tests/scpa/native-retained-async.test.mjs',
+    'tests/scpa/store-producer.test.mjs',
+    'tests/scpa/transform-native.test.mjs',
+    'tests/semantic-v2/issue-4534-ssa-definition-binding.test.mjs',
+    'tests/semantic-v2/issue-5414-5865-ssa-link-budget.test.mjs',
+    'tests/semantic-v2/memoryssa-cfg.test.mjs',
+    'tools/validation/machine-effects/x86-long64-integer-denominator.mjs',
+    'tools/validation/phase12/denominator-inventory.json',
+    'tools/validation/stage2/profile-denominators.lock.json',
+    'tools/validation/phase8/cross-lane-inventory.mjs',
+    'tools/validation/phase8/decoded-function-adapter.mjs',
+    'tools/validation/phase8/decompile-corpus.mjs',
+    'tools/validation/phase8/metrics.mjs',
+    'tools/validation/phase8/verify.mjs',
   ]),
 });
 

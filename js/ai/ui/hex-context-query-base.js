@@ -349,7 +349,16 @@ export function createHexAIContext(app) {
     const limit = Math.max(1, safeCount(options.limit, 100, 1_000));
     return withFreshSnapshot(app, async (api, snapshot) => {
       const result = await api[method](snapshot, address, { offset, limit }, { signal:options.signal ?? null });
-      return copyWithMetadata(result);
+      const page = copyWithMetadata(result);
+      if (queryCompleteness(result) !== 'complete') {
+        page.total = null;
+        page.completeness = { ...page.completeness, total:null };
+      }
+      const nextOffset = exactPageTotal(result?.page?.next);
+      if (nextOffset != null && nextOffset > offset && nextOffset <= 1_000_000) {
+        Object.defineProperty(page, 'nextOffset', { value:nextOffset, enumerable:false });
+      }
+      return page;
     }, options);
   };
   define(context, 'getXrefs', { value:(address, options = {}) => graphPage('xrefs', address, options) });

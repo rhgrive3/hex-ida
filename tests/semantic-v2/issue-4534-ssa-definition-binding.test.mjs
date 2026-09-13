@@ -21,7 +21,7 @@ function origin(id, producedId = null) {
 
 function irFor(blocks) {
   const nodes = blocks.flatMap(({ id: blockId, nodeIds }) => nodeIds.map((id) => ({
-    id, kind: 'return', blockId, inputs: [], outputs: [], origin: origin(id),
+    id, kind: 'copy', blockId, inputs: [], outputs: [], origin: origin(id),
   })));
   return {
     schemaVersion: 2,

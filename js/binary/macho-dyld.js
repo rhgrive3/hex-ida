@@ -3,10 +3,49 @@ import { functionSeed } from './model.js';
 
 const CHAINED_POINTER_SITES = new WeakMap();
 const CHAINED_POINTER_COVERAGE = new WeakMap();
+const CHAINED_POINTER_REVISIONS = new WeakMap();
+export const MACHO_POINTER_SITE_VIEW_VERSION = '1.1.0';
+function advancePointerMetadata(image) {
+  CHAINED_POINTER_REVISIONS.set(image, (CHAINED_POINTER_REVISIONS.get(image) ?? 0n) + 1n);
+}
+/** Version of the existing loader-owned fixup site/coverage projection. */
+export function machOPointerMetadataRevision(image) {
+  return (CHAINED_POINTER_REVISIONS.get(image) ?? 0n).toString();
+}
+/** Read-only metadata description. A reconstructed encoded target is NOT proof
+ * that AUT succeeds, that a memory load occurred, or that execution can call it.
+ * Retained key/diversity fields are encoded metadata, not the runtime PAC key
+ * or the final discriminator after storage-address blending.
+ */
+export function describeMachOPointerSite(image, rawValue, addressValue) {
+  let raw, address;
+  try { raw = BigInt(rawValue); address = BigInt(addressValue); } catch { return null; }
+  if (!image || raw < 0n || raw > 0xffffffffffffffffn || address < 0n || address > 0xffffffffffffffffn) return null;
+  const revision = machOPointerMetadataRevision(image);
+  const site = CHAINED_POINTER_SITES.get(image)?.get(address) ?? null;
+  const coverage = chainedPointerCoverageAt(image, address);
+  const base = { schema: 'macho-pointer-site-view/v1', version: MACHO_POINTER_SITE_VIEW_VERSION, revision,
+    storageAddress: address, rawValue: raw, coverage: coverage ? Object.freeze({ ...coverage }) : null,
+    authority: 'loader-metadata-projection', authenticationVerified: false, executionTargetExact: false };
+  if (site && site.raw !== raw) return Object.freeze({ ...base, status: 'stale-raw-word', decoded: null });
+  if (site) {
+    const decoded = site.decoded;
+    return Object.freeze({ ...base, status: 'recorded-site', pointerFormat: site.pointerFormat,
+      decoded: decoded ? Object.freeze({ bind: decoded.bind === true, ordinal: decoded.ordinal ?? null,
+        addend: decoded.addend ?? null, target: decoded.target ?? null, next: decoded.next ?? null,
+        stride: decoded.stride ?? null, authenticated: decoded.authenticated ?? null,
+        authenticationKey: decoded.authenticationKey ?? null, discriminator: decoded.discriminator ?? null,
+        addressDiversity: decoded.addressDiversity ?? null }) : null });
+  }
+  return Object.freeze({ ...base, status: coverage && !coverage.complete ? 'incomplete-owned-page' : 'no-recorded-fixup',
+    pointerFormat: null, decoded: null });
+}
+
 
 function rememberChainedPointerSite(image, address, raw, pointerFormat, decoded) {
   let sites = CHAINED_POINTER_SITES.get(image);
   if (!sites) { sites = new Map(); CHAINED_POINTER_SITES.set(image, sites); }
+  advancePointerMetadata(image);
   sites.set(BigInt(address), { raw: BigInt(raw), pointerFormat, decoded });
 }
 
@@ -19,6 +58,7 @@ function rememberChainedPointerCoverage(image, start, end) {
   const key = `${rangeStart.toString(16)}:${rangeEnd.toString(16)}`;
   // Re-observing a declared page starts conservatively. Only a full successful
   // walk below may promote this ownership range to complete.
+  advancePointerMetadata(image);
   ranges.set(key, { start: rangeStart, end: rangeEnd, complete: false });
   return key;
 }
@@ -26,7 +66,7 @@ function rememberChainedPointerCoverage(image, start, end) {
 function markChainedPointerCoverageComplete(image, key) {
   if (key == null) return;
   const range = CHAINED_POINTER_COVERAGE.get(image)?.get(key);
-  if (range) range.complete = true;
+  if (range && !range.complete) { advancePointerMetadata(image); range.complete = true; }
 }
 
 function chainedPointerCoverageAt(image, address) {
@@ -390,11 +430,16 @@ function decodeChainedPointer(raw, format, imageBase = null) {
       if (a & 0x40000) a -= 0x80000;
       addend = BigInt(a);
     }
+    // dyld_chained_ptr_arm64e_auth_{rebase,bind,bind24}: retain exactly
+    // diversity[47:32], addrDiv[48], key[50:49]. Other pointer layouts
+    // do NOT reuse these fields. Nothing here authenticates a pointer.
+    const authentication = auth ? { authenticationKey: Number((raw >> 49n) & 3n),
+      discriminator: Number((raw >> 32n) & 0xffffn), addressDiversity: !!((raw >> 48n) & 1n) } : {};
     const stride = format === 7 || format === 10 ? 4 : 8;
-    if (bind) return { bind, ordinal, addend, next, stride, target: null, authenticated: auth };
+    if (bind) return { bind, ordinal, addend, next, stride, target: null, authenticated: auth, ...authentication };
     if (auth) {
       const target = base == null ? null : base + (raw & 0xffffffffn);
-      return { bind, ordinal: -1, addend: 0n, next, stride, target, authenticated: true };
+      return { bind, ordinal: -1, addend: 0n, next, stride, target, authenticated: true, ...authentication };
     }
     const target = raw & 0x7ffffffffffn;
     const high8 = (raw >> 43n) & 0xffn;
@@ -669,7 +714,13 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
             const ex = { name: prefix, address, kind, flags, source: 'exports-trie' };
             if (flags & 0x10) { const resolverX = r.uleb(p, 10, terminalEnd); p = resolverX.next; ex.resolver = image.imageBase + resolverX.value; }
             if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'export-trie-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;} image.exports.push(ex);
-            if (exportKind === 0) { const sec = image.sectionAt(address); if (sec && sec.perms.execute) if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'export-function')){markPartial('shared metadata function budget exceeded','budgetExceeded');return;} image.functions.push(functionSeed(address, { name: prefix, source: 'export', confidence: 0.9 })); }
+            if (exportKind === 0) {
+              const sec = image.sectionAt(address);
+              if (sec && sec.perms.execute && image.addressToOffset(address) != null) {
+                if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'export-function')){markPartial('shared metadata function budget exceeded','budgetExceeded');return;}
+                image.functions.push(functionSeed(address, { name: prefix, source: 'export', confidence: 0.9 }));
+              }
+            }
           }
         }
       }

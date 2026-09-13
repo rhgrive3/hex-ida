@@ -25,14 +25,10 @@ import { isVerificationQuery } from '../verify/query.js';
 import { PROOF_AUTHORITY, SolverBackend } from './backend.js';
 import { SOLVER_STATUS, createSolverResult } from './result.js';
 import { SolverSession } from './session.js';
+import { positiveFiniteBudget } from './budget.js';
 
 export const EXHAUSTIVE_BACKEND_ID = 'hex-exhaustive-bv';
 export const EXHAUSTIVE_BACKEND_VERSION = '1.0.0';
-
-function positiveFiniteBudget(...values) {
-  const value = values.find((candidate) => typeof candidate === 'number' && Number.isFinite(candidate));
-  return Math.max(1, Math.floor(value));
-}
 
 function childExpressions(expr) {
   if (!expr || typeof expr !== 'object') return [];
