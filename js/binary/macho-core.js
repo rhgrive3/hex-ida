@@ -499,6 +499,13 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
     const ntype = type & 0x0e;
     const external = !!(type & 1);
     const isUndefinedType = ntype === 0;
+    const sectionOrdinalKnown = image.sections.length === 0
+      || (sect >= 1 && image.sections.some((section) => section.index === sect));
+    if (ntype === 0x0e && !sectionOrdinalKnown) {
+      markMachOMetadataPartial(image, 'symbol-invalid-section-index');
+      budget.warn(`Mach-O symbol ${i} has n_type N_SECT but n_sect ${sect} resolves to no parsed section`);
+      continue;
+    }
     // For N_UNDF with non-zero n_value, Mach-O defines a tentative/common
     // symbol: n_value is the requested byte size, never a VM address.
     const commonSymbol = isUndefinedType && value !== 0n;
