@@ -178,6 +178,7 @@ function countReferences(nodes, values, blocks) {
       count = addReferenceCount(count, arrayLength(node[key]));
     }
     if (node.memory) count = addReferenceCount(count, 1);
+    if (node.metadata?.returnControlTarget?.valueId != null) count = addReferenceCount(count, 1);
     count = addReferenceCount(count, summaryReferenceCount(node.call));
     count = addReferenceCount(count, summaryReferenceCount(node.intrinsic));
   }
@@ -208,6 +209,7 @@ function countRawReferences(blocks, values, nodes, seen) {
       count = addReferenceCount(count, arrayLength(nodeView[key]));
     }
     if (nodeView.memory != null) count = addReferenceCount(count, 1);
+    if (nodeView.metadata?.returnControlTarget?.valueId != null) count = addReferenceCount(count, 1);
     count = addReferenceCount(count, summaryReferenceCount(nodeView.call, seen));
     count = addReferenceCount(count, summaryReferenceCount(nodeView.intrinsic, seen));
   }
@@ -272,6 +274,13 @@ function validateNormalizedFunction(out, options) {
 
   for (const node of out.nodes) {
     for (const id of node.inputs) if (!valueById.has(id)) fail('semantic-ir-dangling-value-id');
+    if (node.metadata?.returnControlTarget?.state === 'resolved') {
+      const target = valueById.get(node.metadata.returnControlTarget.valueId);
+      if (!target) fail('semantic-ir-dangling-return-control-target-value-id');
+      if (target.machineType.kind !== 'bitvector' && target.machineType.kind !== 'address') {
+        fail('semantic-ir-invalid-return-control-target-machine-type');
+      }
+    }
     for (const id of node.outputs) {
       const value = valueById.get(id);
       if (!value) fail('semantic-ir-dangling-value-id');

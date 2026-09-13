@@ -35,6 +35,7 @@ function valueFeedsAddressOrCall(projected, root) {
     seen.add(value.id);
     for (const inst of projected.instructions) {
       if (inst.addr?.base === value || inst.addr?.index === value || inst.loc?.base === value) return true;
+      if (inst.returnTargetValue === value) return true;
       const consumes = (inst.args || []).some((arg) => arg?.value === value);
       if (!consumes) continue;
       if (inst.op === V1_OP.CALL) return true;
@@ -164,6 +165,7 @@ function compactProjectedState(projected, observer = null) {
   for (const inst of projected.instructions) {
     for (const [index, arg] of (inst.args || []).entries()) if (arg?.value) replace(arg, 'value', inst, `args:${index}`);
     if (inst.conditionValue) replace(inst, 'conditionValue', inst, 'conditionValue');
+    if (inst.returnTargetValue) replace(inst, 'returnTargetValue', inst, 'returnTargetValue');
     if (inst.addr?.base) replace(inst.addr, 'base', inst, 'addr:base');
     if (inst.addr?.index) replace(inst.addr, 'index', inst, 'addr:index');
     if (inst.loc?.base) replace(inst.loc, 'base', inst, 'loc:base');
@@ -183,6 +185,7 @@ function rebuildDefUse(projected) {
     if (inst.dst) inst.dst.def = inst;
     for (const arg of inst.args || []) if (arg?.value) addUse(arg.value, inst);
     if (inst.conditionValue) addUse(inst.conditionValue, inst);
+    if (inst.returnTargetValue) addUse(inst.returnTargetValue, inst);
     if (inst.addr?.base) addUse(inst.addr.base, inst);
     if (inst.addr?.index) addUse(inst.addr.index, inst);
     for (const incoming of inst.incoming || []) if (incoming?.value) addUse(incoming.value, inst);

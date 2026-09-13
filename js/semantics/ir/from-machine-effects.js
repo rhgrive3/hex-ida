@@ -1,6 +1,7 @@
 import { stableDigest, stableStringify } from '../../core/identity/index.js';
 import { mergeOriginSets } from '../../core/identity/origin.js';
 import { createSemanticIrFunction } from './function.js';
+import { SEMANTIC_RETURN_CONTROL_TARGET_SCHEMA } from './nodes.js';
 import {
   createLoweringOrigin,
   createPhysicalStateVariable,
@@ -1109,10 +1110,29 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
     }
     if (control.kind === 'return') {
       const nodeId = nodeIdFor(effect, 'return-control');
+      let returnControlTarget = null;
+      if (control.target != null) {
+        const unboundTemporary = control.target.kind === 'temporary'
+          && !temporaryDefinitions.has(`temporary:${String(control.target.temporaryId ?? '')}`);
+        const valueId = unboundTemporary ? null : resolveControlCondition(effect, control.target);
+        const value = valueId == null ? null : values.find(candidate => candidate.id === valueId);
+        if (value
+          && (value.machineType.kind === 'bitvector' || value.machineType.kind === 'address')) {
+          returnControlTarget = { schema: SEMANTIC_RETURN_CONTROL_TARGET_SCHEMA, state: 'resolved', valueId };
+        } else {
+          returnControlTarget = { schema: SEMANTIC_RETURN_CONTROL_TARGET_SCHEMA,
+            state: 'unavailable', reason: 'return-control-target-not-representable' };
+          addIssue(returnControlTarget.reason, ['control'], { control });
+        }
+      }
       addNode({
         id: nodeId,
         kind: 'return',
         blockId,
+        ...(returnControlTarget == null ? {} : { metadata: { returnControlTarget } }),
+        ...(returnControlTarget?.state !== 'unavailable' ? {} : {
+          completeness: 'partial', unknown: { reason: returnControlTarget.reason, categories: ['control'] },
+        }),
         attributes: machineAttributes(effect, { machineControlEffect: control }),
         sourceEffectIds: [effect.sourceEffectId],
         origin: effectOrigin(effect, 'return-control-projection', [nodeId]),

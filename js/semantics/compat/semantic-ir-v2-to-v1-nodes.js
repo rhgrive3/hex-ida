@@ -632,6 +632,14 @@ export function projectNode(node, context) {
     case 'return':
       setBasic(V1_OP.RET, null);
       inst.returnValueIds = node.inputs.slice();
+      if (node.metadata?.returnControlTarget) {
+        inst.extra.returnControlTarget = node.metadata.returnControlTarget;
+        if (node.metadata.returnControlTarget.state === 'resolved') {
+          inst.extra.returnControlTargetValueId = node.metadata.returnControlTarget.valueId;
+          inst.returnTargetValue = valuesById.get(node.metadata.returnControlTarget.valueId);
+          if (inst.returnTargetValue) addUse(inst.returnTargetValue, inst);
+        }
+      }
       break;
     case 'branch': {
       setBasic(V1_OP.BR, null);

@@ -451,7 +451,7 @@ function definitionShape(definition, extraSkip = [], memo = null, digests = null
   const cached = definitionCache?.get(definition)?.get(cacheKey);
   if (cached != null) return cached;
   const shape = semanticObject(definition, new Set(), new Set([
-    'args', 'incoming', 'addr', 'loc', 'conditionValue', 'selectorValue', 'extra', 'origin',
+    'args', 'incoming', 'addr', 'loc', 'conditionValue', 'selectorValue', 'returnTargetValue', 'extra', 'origin',
     'memUse', 'memDef', 'memDefs', 'memKills', 'reachingStore', 'unknownAliasBarrier',
     ...NON_SEMANTIC_KEYS, ...extraSkip,
   ]), '$.definition', memo);
@@ -464,6 +464,7 @@ function definitionShape(definition, extraSkip = [], memo = null, digests = null
   shape.addrIndexId = token(definition.addr?.index?.id ?? definition.addr?.index);
   shape.conditionValueId = token(definition.conditionValue?.id);
   shape.selectorValueId = token(definition.selectorValue?.id);
+  if (Object.hasOwn(definition, 'returnTargetValue')) shape.returnTargetValueId = token(definition.returnTargetValue?.id);
   shape.extraDigest = semanticDigest(definition.extra, memo, digests, '$.definition.extra');
   shape.originDigest = semanticDigest(definition.origin, memo, digests, '$.definition.origin', true);
   shape.location = memoryLocationShape(definition.loc, memo, digests);

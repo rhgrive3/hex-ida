@@ -4,7 +4,7 @@ import { analyzeSemanticDominance, createSemanticCfg, deterministicTraversal } f
 import { createSemanticIrFunction } from '../ir/function.js';
 import { createSemanticSsaContract, SEMANTIC_SSA_DEFAULT_BUDGET } from './contract.js';
 
-export const SEMANTIC_SSA_BUILD_VERSION = '1.0.0';
+export const SEMANTIC_SSA_BUILD_VERSION = '1.1.0';
 export const SEMANTIC_SSA_BUILD_DEFAULT_BUDGET = Object.freeze({
   ...SEMANTIC_SSA_DEFAULT_BUDGET,
   maxWorkItems: 4194304,
@@ -169,6 +169,9 @@ function scalarReferences(node, tick) {
     roles.set(id, set);
   };
   for (const valueId of node.inputs) add(valueId, 'input');
+  if (node.metadata?.returnControlTarget?.state === 'resolved') {
+    add(node.metadata.returnControlTarget.valueId, 'return-target');
+  }
   if (node.memory) add(node.memory.addressExpr.valueId, 'memory-address');
   if (node.call) {
     for (const valueId of node.call.targetValueIds) add(valueId, 'call-target');

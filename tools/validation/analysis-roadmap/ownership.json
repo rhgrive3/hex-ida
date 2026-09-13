@@ -174,7 +174,8 @@
       "js/decompiler/phase8/proof-plan.js",
       "tests/phase8/abi/c3-combined-acceptance.test.mjs",
       "tests/phase8/abi/hex-c3-02-boundaries.test.mjs",
-      "tests/phase8/abi/hex-c3-02-required-profile-matrix.mjs"
+      "tests/phase8/abi/hex-c3-02-required-profile-matrix.mjs",
+      "js/decompiler/phase8/analysis-identity.js"
     ],
     "symbolic": [
       "js/symbolic/egraph/graph.js",
@@ -444,7 +445,13 @@
       "tests/scpa/x02-apple-version-matrix.test.mjs",
       "tests/scpa/fixtures/x02-apple-version-matrix.json",
       "tests/scpa/fixtures/x02-apple-version-fixtures.mjs",
-      "docs/analysis-x02-acceptance.md"
+      "docs/analysis-x02-acceptance.md",
+      "js/semantics/ir/nodes.js",
+      "js/semantics/ir/function.js",
+      "js/semantics/ir/from-machine-effects.js",
+      "js/semantics/ir/normalize-effects.js",
+      "js/semantics/ssa/build.js",
+      "tests/semantic-v2/c4-return-control-target.test.mjs"
     ]
   }
 }

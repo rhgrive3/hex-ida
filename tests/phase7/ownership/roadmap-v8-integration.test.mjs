@@ -8,7 +8,7 @@ test('v8 ownership validates the complete declared component union before select
   const files = [...validateRoadmapManifest(manifest).keys()];
   for (const phase of ['phase7', 'phase8']) {
     assert.deepEqual(validateRoadmapInventory(BRANCH, phase, files), [...manifest.owners[phase]].sort());
-    for (const foreign of ['js/semantics/ssa/build.js', 'js/core/identity/index.js', 'js/targets/abi/registry.js',
+    for (const foreign of ['js/semantics/ssa/validate.js', 'js/core/identity/index.js', 'js/targets/abi/registry.js',
       'js/symbolic/unreviewed.js', 'tests/phase9/unknown.test.mjs', 'package.json', '../js/analysis/index.js']) {
       assert.throws(() => validateRoadmapInventory(BRANCH, phase, [...files, foreign]), /undeclared/);
     }
@@ -141,7 +141,7 @@ test('v8 ownership is wired in both CircleCI and permanent exact-SHA fallbacks',
   }
 });
 
-test('ME-01 matrix owns exact validation paths without claiming sibling semantic producers', () => {
+test('ME-01 matrix owns exact validation paths without widening unassigned semantic contracts', () => {
   const manifest = loadRoadmapManifest();
   const assignments = validateRoadmapManifest(manifest);
   const files = [
@@ -158,7 +158,7 @@ test('ME-01 matrix owns exact validation paths without claiming sibling semantic
     assert.throws(() => validateRoadmapInventory(BRANCH, 'phase8', [...assignments.keys()], missing), /undeclared roadmap path/);
   }
   for (const file of ['tools/validation/machine-effects/external-oracles.mjs',
-    'js/semantics/ir/from-machine-effects.js', 'specs/003-oracle-mask-matrix/unreviewed.md']) {
+    'js/semantics/ir/types.js', 'specs/003-oracle-mask-matrix/unreviewed.md']) {
     const widened = structuredClone(manifest);
     widened.owners.integration.push(file);
     assert.throws(() => validateRoadmapManifest(widened), /outside integration owner/);
@@ -311,6 +311,33 @@ test('X-02 user acceptance reserves exact corpus paths without widening Apple ru
     }
     for (const foreign of ['js/binary/macho-dyld.js', 'js/metadata/swift.js', 'js/metadata/objc.js',
       'tests/scpa/fixtures/x02-unreviewed.mjs']) {
+      assert.throws(() => validateRoadmapInventory(BRANCH, phase, [...union, foreign]), /undeclared roadmap path/);
+      const widened = structuredClone(manifest); widened.owners.integration.push(foreign);
+      assert.throws(() => validateRoadmapManifest(widened), /outside integration owner/);
+    }
+  }
+});
+
+
+test('C4 return-target integration owns its exact canonical boundary without widening other contracts', () => {
+  const manifest = loadRoadmapManifest(), assignments = validateRoadmapManifest(manifest);
+  const files = [
+    'js/semantics/ir/nodes.js', 'js/semantics/ir/function.js',
+    'js/semantics/ir/from-machine-effects.js', 'js/semantics/ir/normalize-effects.js',
+    'js/semantics/ssa/build.js', 'tests/semantic-v2/c4-return-control-target.test.mjs',
+    'js/decompiler/phase8/analysis-identity.js',
+  ];
+  const union = [...assignments.keys()];
+  for (const phase of ['phase7', 'phase8']) {
+    assert.deepEqual(validateRoadmapInventory(BRANCH, phase, union), [...manifest.owners[phase]].sort());
+    for (const file of files) {
+      const owner = file === 'js/decompiler/phase8/analysis-identity.js' ? 'phase8' : 'integration';
+      assert.equal(assignments.get(file), owner);
+      const missing = structuredClone(manifest);
+      missing.owners[owner] = missing.owners[owner].filter(path => path !== file);
+      assert.throws(() => validateRoadmapInventory(BRANCH, phase, union, missing), /undeclared roadmap path/);
+    }
+    for (const foreign of ['js/semantics/ir/types.js', 'js/semantics/ssa/validate.js', 'js/semantics/cfg/index.js']) {
       assert.throws(() => validateRoadmapInventory(BRANCH, phase, [...union, foreign]), /undeclared roadmap path/);
       const widened = structuredClone(manifest); widened.owners.integration.push(foreign);
       assert.throws(() => validateRoadmapManifest(widened), /outside integration owner/);

@@ -619,7 +619,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     semanticIrVersion: ir.contractVersion,
     compat: {
       projection: 'semantic-ir-v2-to-v1',
-      version: '1.1.4',
+      version: '1.2.0',
       semanticFunctionId: ir.functionId,
       scalarSsa: !!ssa,
       memorySsa: !!memorySsa,
@@ -720,7 +720,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
 }
 
 export const SEMANTIC_IR_V2_V1_COMPAT = Object.freeze({
-  contractVersion: '1.1.4',
+  contractVersion: '1.2.0',
   legacyOps: V1_OP,
   legacyValueKinds: V1_VK,
   legacyMemoryKinds: V1_MK,

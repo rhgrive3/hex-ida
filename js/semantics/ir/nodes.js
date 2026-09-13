@@ -23,6 +23,26 @@ const MEMORY_NODE_KINDS = new Set(['load', 'store']);
 const VARIABLE_NODE_KINDS = new Set(['state-read', 'state-write']);
 const CONTROL_NODE_KINDS = new Set(['branch', 'conditional-branch', 'switch']);
 
+// Versioned semantic extension: a machine return destination is a scalar use,
+// distinct from the ABI result values carried by a return node's inputs.
+export const SEMANTIC_RETURN_CONTROL_TARGET_SCHEMA = 'semantic-return-control-target/v1';
+
+function normalizeReturnControlTarget(input, node) {
+  input = object(input, 'semantic-ir-invalid-return-control-target');
+  if (node.kind !== 'return') fail('semantic-ir-return-control-target-not-allowed');
+  if (input.schema !== SEMANTIC_RETURN_CONTROL_TARGET_SCHEMA) fail('semantic-ir-return-control-target-schema-mismatch');
+  if (input.state === 'resolved') {
+    assertAllowedKeys(input, new Set(['schema', 'state', 'valueId']), 'semantic-ir-unexpected-return-control-target-field');
+    return { schema: input.schema, state: input.state,
+      valueId: nonEmpty(input.valueId, 'semantic-ir-invalid-return-control-target-value-id') };
+  }
+  if (input.state !== 'unavailable') fail('semantic-ir-invalid-return-control-target-state');
+  assertAllowedKeys(input, new Set(['schema', 'state', 'reason']), 'semantic-ir-unexpected-return-control-target-field');
+  if (node.completeness === 'complete' || node.unknown == null) fail('semantic-ir-return-control-target-unknown-hidden');
+  return { schema: input.schema, state: input.state,
+    reason: nonEmpty(input.reason, 'semantic-ir-return-control-target-reason-required') };
+}
+
 export function createSemanticValue(input) {
   input = object(input, 'semantic-ir-invalid-value');
   assertAllowedKeys(input, new Set([
@@ -117,6 +137,16 @@ export function createSemanticNode(input) {
   if (!SEMANTIC_SETS.unknownOperations.has(kind) && out.completeness !== 'complete' && out.unknown == null) {
     fail('semantic-ir-partial-node-requires-unknown-detail');
   }
-  if (input.metadata != null) out.metadata = serializable(input.metadata, 'semantic-ir-invalid-node-metadata');
+  if (input.metadata != null) {
+    const metadata = input.metadata;
+    out.metadata = serializable(metadata, 'semantic-ir-invalid-node-metadata');
+    if (Object.hasOwn(Object(metadata), 'returnControlTarget')) {
+      // Serialization must not silently drop a named field on an array, Date,
+      // or other metadata payload before the reserved contract is checked.
+      object(out.metadata, 'semantic-ir-invalid-return-control-target-metadata');
+      if (!Object.hasOwn(out.metadata, 'returnControlTarget')) fail('semantic-ir-return-control-target-metadata-lost');
+      out.metadata.returnControlTarget = normalizeReturnControlTarget(out.metadata.returnControlTarget, out);
+    }
+  }
   return deepFreeze(out);
 }

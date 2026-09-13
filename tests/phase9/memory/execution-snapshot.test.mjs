@@ -25,6 +25,27 @@ test('snapshot rejects forged, foreign IR/target, stale identity, width mismatch
   ir.instructions[0].args[0].value.const=0n;
   assert.equal(translate.translateSemanticIR(target,{ir,identity,executionSnapshot:snapshot}).status,'unsupported');
 });
+test('issued snapshots reject changes to a separate return target and its typed binding',()=>{
+  for (const change of ['operand','value','binding','state']) {
+    const ir=partialStoreFixture();
+    const ret=ir.instructions.find(inst=>inst.op==='ret');
+    assert.ok(ret);
+    ret.returnTargetValue={id:'return-target',bits:64,kind:'const',const:0x4000n};
+    ret.extra={...(ret.extra ?? {}),returnControlTargetValueId:'return-target',
+      returnControlTarget:{schema:'semantic-return-control-target/v1',state:'resolved',valueId:'return-target'}};
+    const {result}=run(ir);
+    const snapshot=result.paths[0]?.snapshot;
+    assert.ok(snapshot,`${change}: initial execution issues a snapshot`);
+    const target=ir.instructions[2];
+    const options={ir,identity,executionSnapshot:snapshot};
+    assert.equal(translate.translateSemanticIR(target,options).status,'exact_with_assumptions');
+    if(change==='operand')ret.returnTargetValue={...ret.returnTargetValue};
+    if(change==='value')ret.returnTargetValue.const=0x4004n;
+    if(change==='binding')ret.extra.returnControlTargetValueId='different-target';
+    if(change==='state')ret.extra.returnControlTarget.state='unavailable';
+    assert.equal(translate.translateSemanticIR(target,options).status,'unsupported',change);
+  }
+});
 test('path snapshots preserve path-specific phi values and constraints, not a merged fiction',()=>{
   const ir=integrationFixture();
   const result=symbolicExecute(ir,{captureValues:true,byteMemory:{identity:taintIdentity,addressBits:8,wrapping:'modular'}});

@@ -51,7 +51,7 @@ export const SEMANTIC_V2_MIGRATION_MODES = Object.freeze({
   SHADOW_DIFFERENTIAL: 'semantic-v2-shadow-differential',
 });
 
-export const SEMANTIC_V2_COMPAT_PIPELINE_VERSION = '1.5.1';
+export const SEMANTIC_V2_COMPAT_PIPELINE_VERSION = '1.6.0';
 export const SEMANTIC_V2_COMPAT_PATH = Object.freeze([
   'machine-effects',
   'semantic-ir-v2',

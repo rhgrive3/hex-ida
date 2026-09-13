@@ -1,5 +1,26 @@
 # Analysis roadmap v8 integration checkpoint
 
+## 2026-09-13: C4 の machine return target を canonical SSA へ接続
+
+ユーザーの C1 パッチは `1931f30099a1c86dfb649cf6e8c57770b2b3b483` で結合し、
+そのコミットの重点 63 件・全 Phase 7 2192 件・関係する下流 89 件が通過しました。
+C1 の独立レビューと、後続の X-02 担当予約の独立レビューも完了しています。
+ユーザーの次の開始点は公開済み `6b58b97aad4615e614066901ca2e1413fc23db91` に固定し、
+担当 4 ファイルと作業内容は `docs/analysis-x02-acceptance.md` に維持します。
+
+C4 では実際の ARM64 `RET x30` について、MachineEffects にある戻り先の参照を
+Semantic IR の versioned `metadata.returnControlTarget` として保持します。
+ABI 返り値の `node.inputs` と別の SSA `return-target` use を作り、
+表示用 RET の `returnTargetValue`、状態 alias の置換、最終 def-use 再構築まで引き継ぎます。
+未知の明示 target は `unavailable` と node/function の `partial` に残し、
+参照の型・dangling・raw/normalized reference budget を canonical constructor で検査します。
+lowering と SSA の pass version は 1.1.0、compat は 1.2.0、pipeline は 1.6.0 へ更新します。
+
+今回検証する範囲は戻り先依存関係の保持です。RET の PC alignment fault、terminal PC の
+意味検証、全領域・例外・メモリ・ループの変換受入は引き続き残っています。
+検査・独立レビュー・生成物・公開コミットの記録は永続 evidence の
+`c4-control-target-20260913` に保存します。統合全体は **CHECKPOINT-LOCKED** を維持します。
+
 ## 2026-09-13: ユーザー C1-02 再帰返り値パッチの取り込み
 
 `hex-ida-c1-02-recursive-return-20260913.patch` と検証 ZIP を受領しました。
