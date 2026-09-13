@@ -32,11 +32,13 @@ jobs:
         run: |
           set -euo pipefail
           B0=e78e09c85ca4ddf125818d96f2238557e7624973
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           rc=0
           git merge --no-commit --no-ff "$B0" || rc=$?
-          test "$rc" -eq 0 -o "$rc" -eq 1
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then exit "$rc"; fi
           conflicts="$(git diff --name-only --diff-filter=U)"
-          test -z "$conflicts" -o "$conflicts" = "js/binary/macho-dyld.js"
+          if [ -n "$conflicts" ] && [ "$conflicts" != "js/binary/macho-dyld.js" ]; then exit 23; fi
       - name: Apply verified PR-unique delta to current-main source
         shell: bash
         run: |
