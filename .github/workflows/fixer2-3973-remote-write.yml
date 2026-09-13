@@ -1,0 +1,56 @@
+name: fixer2-3973-remote-write
+
+on:
+  push:
+    branches:
+      - "fixer2/issue-3973-elf-section-entry-remainder"
+    paths:
+      - ".github/workflows/fixer2-3973-remote-write.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Validate baseline and apply patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object js/binary/elf-core.js)" = "f33346f5b99849a8d0ca8861deae9db764e718d2"
+          test ! -e tests/phase4/binary/issue-3973-elf-section-fixed-entry-remainder.test.mjs
+          git apply --check .fixer2/issue-3973.patch
+          git apply .fixer2/issue-3973.patch
+          test "$(git hash-object js/binary/elf-core.js)" = "90050744a7ed62e7f05c681c1a494bc0b6267ae1"
+          test "$(git hash-object tests/phase4/binary/issue-3973-elf-section-fixed-entry-remainder.test.mjs)" = "b402d13617b7cfb83a20ecb3932e57855f578c4e"
+      - name: Focused and nearby validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check js/binary/elf-core.js
+          node --check tests/phase4/binary/issue-3973-elf-section-fixed-entry-remainder.test.mjs
+          node --test tests/phase4/binary/issue-3973-elf-section-fixed-entry-remainder.test.mjs
+          node --test tests/phase4/binary/issue-3968-elf-sht-dynamic-sh-link.test.mjs
+          node --test tests/phase4/binary/issue-3977-elf-relocation-sh-link.test.mjs
+          node --test tests/phase4/binary/issue-4488-elf-relocation-symbol-index.test.mjs
+          node --test tests/phase4/binary/issue-4659-elf-dt-syment-exact-size.test.mjs
+          npm run binary:test
+          npm run lint
+      - name: Commit desired diff and remove staging files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/binary/elf-core.js tests/phase4/binary/issue-3973-elf-section-fixed-entry-remainder.test.mjs
+          git rm .fixer2/issue-3973.patch .github/workflows/fixer2-3973-remote-write.yml
+          git commit -m "fix(binary): reject ELF fixed-entry section remainders (#3973)"
+          git push origin HEAD:fixer2/issue-3973-elf-section-entry-remainder
