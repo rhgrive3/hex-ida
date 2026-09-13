@@ -451,6 +451,13 @@ function decodeChainedPointer(raw, format, imageBase = null) {
   return null;
 }
 
+function classicBindPointerSize(image) {
+  // ARM64_32 uses the 64-bit Mach-O container format but a 32-bit native
+  // pointer ABI. Keep image.bits as file-class authority and derive the
+  // classic dyld bind slot width from the target ABI instead.
+  return image?.arch === 'arm64_32' ? 4n : image?.bits === 64 ? 8n : 4n;
+}
+
 export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=null){
   const budget=ensureMachOMetadataBudget(image,sharedBudget);
   image.metadata.dyldBindings ||= { complete:true, streams:{} };
@@ -461,7 +468,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     image.warnings.push(`${source}: binding stream is truncated`);return invalid;
   }
   const BIND_OPCODE_MASK = 0xf0, BIND_IMMEDIATE_MASK = 0x0f, BIND_SYMBOL_FLAGS_KNOWN_MASK = 0x09;
-  const ptrSize = image.bits === 64 ? 8n : 4n;
+  const ptrSize = classicBindPointerSize(image);
   let p = dc.offset;
   const end = dc.offset + dc.size;
   // Classic bind state mirrors dyld's BindOpcodes state machine: only
@@ -488,10 +495,10 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     return true;
   };
   const snapshotImport = () => ({ name: symbol, library: dylibForOrdinal(image, libOrdinal), ordinal: libOrdinal, weak: !!(symbolFlags & 1), symbolFlags, nonWeakDefinition: !!(symbolFlags & 8), addend, type, source, sites: [] });
-  const validLocation = () => {
+  const validLocation = (width = ptrSize) => {
     if (!locationSet) return false;
     const seg = segments[segIndex];
-    return !!seg && segOffset >= 0n && segOffset <= seg.size && ptrSize <= seg.size - segOffset;
+    return !!seg && segOffset >= 0n && segOffset <= seg.size && width <= seg.size - segOffset;
   };
   const bind = () => {
     if (!symbol) { fail('bind encountered before a symbol was set'); return; }
@@ -516,7 +523,10 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
   };
   const applyThreaded = () => {
     if (!threadedTable) { fail('threaded APPLY encountered before ordinal table'); return; }
-    if (!validLocation()) { fail('threaded APPLY starts outside its segment'); return; }
+    // BIND_OPCODE_THREADED encodes 64-bit chain words even when a target's
+    // ordinary native pointer ABI differs. Do not let ARM64_32's 4-byte
+    // classic-bind slot width weaken this separate chain-word bounds proof.
+    if (!validLocation(8n)) { fail('threaded APPLY starts outside its segment'); return; }
     const seg = segments[segIndex];
     let address = seg.address + segOffset;
     for (let guard = 0; guard < 100000; guard++) {
@@ -537,7 +547,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
       }
       if (!delta) { status.threadedApplies++; return; }
       address += BigInt(delta * 8);
-      if (address < seg.address || address + ptrSize > seg.address + seg.size) { fail('threaded binding delta leaves segment'); return; }
+      if (address < seg.address || address + 8n > seg.address + seg.size) { fail('threaded binding delta leaves segment'); return; }
     }
     fail('threaded binding chain exceeded the 100000-entry budget');
   };
