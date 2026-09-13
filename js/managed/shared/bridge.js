@@ -35,6 +35,17 @@ function managedUnaryOperator(mnemonic) {
   return wasm?.[1] || null;
 }
 
+const MANAGED_COMPARE_MNEMONIC_TOKENS = new Set(['cmp', 'cmpl', 'cmpg', 'eqz', 'ceq', 'clt', 'cgt', 'eq', 'ne', 'lt', 'gt', 'le', 'ge']);
+
+function managedMnemonicIsCompare(mnemonic) {
+  const text = typeof mnemonic === 'string' ? mnemonic.trim().toLowerCase() : '';
+  if (!text) return false;
+  for (const token of text.split(/[^a-z0-9]+/)) {
+    if (token && MANAGED_COMPARE_MNEMONIC_TOKENS.has(token)) return true;
+  }
+  return false;
+}
+
 function managedUnaryOperatorForNode(node, mnemonic) {
   const mnemonicOperator = managedUnaryOperator(mnemonic);
   if (node?.operator == null) return mnemonicOperator;
@@ -102,6 +113,36 @@ function managedDivisionRemainderOperatorForNode(node, frontendId, mnemonic) {
 function safeIdent(s, fallback = 'value') {
   const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_$]/g, '_').replace(/^([0-9])/, '_$1');
   return x || fallback;
+}
+
+function managedStateKey(variable) {
+  if (!variable || typeof variable !== 'object') return null;
+  if (typeof variable.key !== 'string' || !variable.key.trim()) return null;
+  return variable.key.trim();
+}
+
+function isManagedOperandStackState(variable, frontendId) {
+  const key = managedStateKey(variable);
+  const frontend = typeof frontendId === 'string' ? frontendId.trim() : '';
+  return key != null && frontend !== '' && key.startsWith(`vm:${frontend}:stack:`);
+}
+
+function managedStateIdent(variable, frontendId) {
+  const key = managedStateKey(variable);
+  if (!key) return null;
+  const frontend = typeof frontendId === 'string' ? frontendId.trim() : '';
+  const prefix = frontend ? `vm:${frontend}:` : '';
+  const displayKey = prefix && key.startsWith(prefix) ? key.slice(prefix.length) : key;
+  const indexed = /^([A-Za-z][A-Za-z0-9_]*):([0-9]+)$/.exec(displayKey);
+  if (indexed) return `${indexed[1]}_${indexed[2]}`;
+  // Keep arbitrary canonical state keys injective after turning them into a C
+  // identifier. Escaping every non-alphanumeric code point (including '$'
+  // and '_') prevents distinct keys from collapsing through sanitization.
+  let encoded = '';
+  for (const ch of displayKey) {
+    encoded += /^[A-Za-z0-9]$/.test(ch) ? ch : `$${ch.codePointAt(0).toString(16)}$`;
+  }
+  return encoded ? `state_${encoded}` : null;
 }
 
 function normalizeMachineType(t) {
@@ -334,9 +375,9 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
         const mn = (b.mnemonic || '').toLowerCase();
         if (mn.includes('add') || mn.includes('sub') || mn.includes('mul') || mn.includes('div') || mn.includes('and') || mn.includes('or') || mn.includes('xor') || mn.includes('shl') || mn.includes('shr') || mn.includes('rem')) {
           nodeKind = 'binary';
-        } else if (mn.includes('cmp') || mn.includes('eq') || mn.includes('ne') || mn.includes('lt') || mn.includes('gt') || mn.includes('le') || mn.includes('ge')) {
+        } else if (managedMnemonicIsCompare(mn)) {
           nodeKind = 'compare';
-        } else if (mn.includes('const')) {
+        } else if (mn.includes('const') || (frontendId === 'jvm' && (mn === 'bipush' || mn === 'sipush'))) {
           nodeKind = 'const';
         } else {
           nodeKind = opOutputs.length > 0 ? 'unary' : 'barrier';
@@ -855,6 +896,21 @@ export function analyzeManagedInterprocedural(methods, options = {}) {
   });
 }
 
+function jvmReferenceConstantExpr(metadata, bits) {
+  if (typeof metadata?.constant !== 'string') return null;
+  if (metadata.valueType === 'string') {
+    return expr.variable(JSON.stringify(metadata.constant), bits);
+  }
+  const intrinsic = {
+    class: 'jvm_class_ref',
+    'method-handle': 'jvm_method_handle_ref',
+    'method-type': 'jvm_method_type_ref',
+  }[metadata.valueType];
+  return intrinsic
+    ? expr.intrinsic(intrinsic, [expr.variable(JSON.stringify(metadata.constant), bits)], bits)
+    : null;
+}
+
 /**
  * M5 — Shared Managed Decompiler.
  * Uses shared decompiler AST and printProgram to produce clean, semantically structured pseudo-C.
@@ -892,10 +948,10 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
       exprMemo.set(valId, s);
       return s;
     }
-    if (val.metadata?.valueType === 'string' && val.metadata?.constant != null) {
-      const s = expr.variable(JSON.stringify(val.metadata.constant), val.machineType?.widthBits || 32);
-      exprMemo.set(valId, s);
-      return s;
+    const jvmReference = jvmReferenceConstantExpr(val.metadata, val.machineType?.widthBits || 32);
+    if (jvmReference) {
+      exprMemo.set(valId, jvmReference);
+      return jvmReference;
     }
     if (val.metadata?.isNull === true) {
       const z = expr.variable('null', val.machineType?.widthBits || 32);
@@ -927,8 +983,9 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
         exprMemo.set(valId, res);
         return res;
       }
-      if (val.metadata?.valueType === 'string' && val.metadata?.constant != null) {
-        res = expr.variable(JSON.stringify(val.metadata.constant), bits);
+      const jvmReference = jvmReferenceConstantExpr(val.metadata, bits);
+      if (jvmReference) {
+        res = jvmReference;
         exprMemo.set(valId, res);
         return res;
       }
@@ -996,8 +1053,15 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
     } else if (n.kind === 'intrinsic' || n.kind === 'barrier') {
       const args = (n.inputs || []).map(buildValueExpr);
       res = expr.intrinsic(n.metadata?.mnemonic || 'unsupported_intrinsic', args, bits);
+    } else if (n.kind === 'copy') {
+      res = n.completeness === 'complete' && n.inputs?.length === 1
+        ? buildValueExpr(n.inputs[0])
+        : expr.intrinsic('unsupported_copy', (n.inputs || []).map(buildValueExpr), bits);
     } else if (n.kind === 'state-read') {
-      res = expr.variable(safeIdent(val.id || `v_${valId}`));
+      const stateName = n.completeness === 'complete' ? managedStateIdent(n.variable, frontendId) : null;
+      res = stateName
+        ? expr.variable(stateName, bits)
+        : expr.intrinsic('unsupported_state_read', [], bits);
     } else {
       res = expr.variable(safeIdent(val.id || `v_${valId}`));
     }
@@ -1047,6 +1111,20 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
           body.push({ kind: 'call_assign', indent: isLoop ? 2 : 1, text: `${safeIdent(outVal)} = ${callee}(${args});` });
         } else {
           body.push({ kind: 'call_stmt', indent: isLoop ? 2 : 1, text: `${callee}(${args});` });
+        }
+      } else if (n.kind === 'state-write') {
+        // Stack snapshots are bridge-internal checkpoints for stack VMs, not
+        // source-level assignments. Rendering them can place a synthetic write
+        // after a terminal return; handle them explicitly without exposing that
+        // implementation state in pseudocode.
+        if (isManagedOperandStackState(n.variable, frontendId)) continue;
+        const stateName = n.completeness === 'complete' ? managedStateIdent(n.variable, frontendId) : null;
+        if (stateName && n.inputs?.length === 1) {
+          const value = printExpression(buildValueExpr(n.inputs[0]));
+          body.push({ kind: 'state-write', indent: isLoop ? 2 : 1, text: `${stateName} = ${value};`, source: n.origin });
+        } else {
+          const args = (n.inputs || []).map((i) => printExpression(buildValueExpr(i))).join(', ');
+          body.push({ kind: 'unsupported', indent: isLoop ? 2 : 1, text: `unsupported_state_write(${args});`, source: n.origin });
         }
       } else if (n.kind === 'store') {
         const base = n.inputs[0] ? printExpression(buildValueExpr(n.inputs[0])) : 'base';

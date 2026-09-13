@@ -109,12 +109,14 @@ function branchTrace(trace, finalPc = null) {
     if (!cur || !isConditionalBranchText(cur.text)) continue;
     const next = i + 1 < trace.length ? trace[i + 1].addr : finalPc;
     if (next == null) continue;
-    out.push({
-      address: cur.addr,
-      text: cur.text,
-      next,
-      taken: next !== cur.addr + 4n,
-    });
+    const authoritative = !!cur.branch && cur.branch.conditional === true && typeof cur.branch.taken === 'boolean';
+    const ambiguous = !authoritative && next === cur.addr + 4n;
+    let taken = true;
+    if (authoritative) taken = cur.branch.taken;
+    else if (ambiguous) taken = null;
+    const record = { address: cur.addr, text: cur.text, next, taken };
+    if (ambiguous) record.ambiguous = true;
+    out.push(record);
   }
   return out;
 }
@@ -246,7 +248,8 @@ export class FunctionSandbox {
   async run(opts) {
     const o = opts || {};
     const maxSteps = boundedStepBudget(o.maxSteps);
-    const result = await this.emulator.run(maxSteps, o.onProgress);
+    const signal = o.signal == null ? null : o.signal;
+    const result = await this.emulator.run(maxSteps, o.onProgress, { signal });
     const after = await snapshot(this.emulator, this.watch);
     const beforeBy = new Map(this.before.map((x) => [x.address.toString() + ':' + x.size, x]));
     const touchedFields = [];

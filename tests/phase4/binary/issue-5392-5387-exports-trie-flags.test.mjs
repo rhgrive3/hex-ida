@@ -11,6 +11,7 @@ import { parseExportTrie } from '../../../js/binary/macho-dyld.js';
 function run(trie) {
   const image = new BinaryImage(trie, { format: 'macho', bits: 64, imageBase: 0x100000000n });
   image.addSegment({ name: '__TEXT', address: 0x100000000n, size: 0x1000n, fileOffset: 0n, fileSize: 0x1000n, perms: { read: true, execute: true } });
+  image.addSection({ name: '__text', segment: '__TEXT', address: 0x100000000n, size: 0x1000n, fileOffset: 0n, fileSize: 0x1000n, perms: { read: true, execute: true } });
   // #5532: positive reexport ordinals are bounded by the dependency count,
   // so declare enough dylibs for the fixtures that use them.
   image.libraries = ['libA.dylib', 'libB.dylib', 'libC.dylib', 'libD.dylib', 'libE.dylib'];

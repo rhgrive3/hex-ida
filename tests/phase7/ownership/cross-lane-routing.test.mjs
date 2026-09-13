@@ -232,4 +232,69 @@ assert.ok(
   'GitHub manual fallback must derive the subset with the cross-lane helper before validating it',
 );
 
+const mainGateBranch = 'fix/main-gate-recovery-20260913';
+const mainGateOwnedFiles = [
+  '.github/workflows/phase7-ownership.yml',
+  'js/analysis/debug/dwarf.js',
+  'tests/phase7/corpus/fixtures.mjs',
+  'tests/phase7/debug/issue-4657-dwarf-pointer-completeness.test.mjs',
+  'tests/phase7/helpers/fixtures.mjs',
+  'tests/phase7/summary/issue-5851-call-fallback-replacement.test.mjs',
+  'tests/phase7/summary/issue-6069-provenance-strict-index.test.mjs',
+  'tests/phase7/types/consolidated-source-regressions.test.mjs',
+  'tests/phase7/ownership/cross-lane-routing.test.mjs',
+  'tools/validation/phase7/cross-lane-inventory.mjs',
+  'userscript/hex.user.template.js',
+  'userscript/release-version.json',
+];
+const mainGateInventory = [...mainGateOwnedFiles, ...CROSS_LANE_ROUTES[mainGateBranch]];
+assert.deepEqual(
+  validateCrossLaneInventory(mainGateBranch, mainGateInventory),
+  [...mainGateOwnedFiles].sort((left, right) => Buffer.from(left).compare(Buffer.from(right))),
+  'the exact gate-repair route must return only Phase 7-owned files',
+);
+assert.throws(
+  () => validateCrossLaneInventory(mainGateBranch, [...mainGateInventory, 'js/semantics/ir/nodes.js']),
+  /unexpected foreign paths/,
+  'the gate-repair route must reject an unlisted foreign path',
+);
+assert.throws(
+  () => validateCrossLaneInventory(`${mainGateBranch}-similar`, mainGateInventory),
+  /no exact Phase 7 cross-lane route/,
+  'a similar gate-repair branch name must not activate the route',
+);
+assert.throws(
+  () => validateCrossLaneInventory(mainGateBranch, CROSS_LANE_ROUTES[mainGateBranch]),
+  /no Phase 7-owned paths/,
+  'the gate-repair route must fail closed without Phase 7 evidence',
+);
+
+const mainGateCircleciRoute = routeBlock(
+  circleciWorkflow,
+  `              ${mainGateBranch})`,
+  '              *)',
+);
+assert.ok(mainGateCircleciRoute.includes('node tools/validation/phase7/cross-lane-inventory.mjs'));
+assert.ok(mainGateCircleciRoute.includes('--branch "$CIRCLE_BRANCH"'));
+assert.ok(mainGateCircleciRoute.includes('node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"'));
+assert.ok(
+  mainGateCircleciRoute.indexOf('cross-lane-inventory.mjs')
+    < mainGateCircleciRoute.indexOf('phase7-ownership.mjs --files-json'),
+  'CircleCI must validate the exact gate-repair subset after routing it',
+);
+
+const mainGateGithubRoute = routeBlock(
+  githubWorkflow,
+  `          elif [[ "$HEAD_REF" == "${mainGateBranch}" ]]; then`,
+  '          elif [[',
+);
+assert.ok(mainGateGithubRoute.includes('node tools/validation/phase7/cross-lane-inventory.mjs'));
+assert.ok(mainGateGithubRoute.includes('--branch "$HEAD_REF"'));
+assert.ok(mainGateGithubRoute.includes('node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"'));
+assert.ok(
+  mainGateGithubRoute.indexOf('cross-lane-inventory.mjs')
+    < mainGateGithubRoute.indexOf('phase7-ownership.mjs --files-json'),
+  'GitHub manual fallback must validate the exact gate-repair subset after routing it',
+);
+
 console.log('phase7 cross-lane ownership routing: PASS');

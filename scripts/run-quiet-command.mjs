@@ -89,6 +89,9 @@ export async function runQuietCommand({
   const directory = fs.mkdtempSync(path.join(tempRoot, `hex-${safeLabel(label)}-`));
   const logPath = path.join(directory, 'full.log');
   const log = fs.createWriteStream(logPath, { flags: 'wx', mode: 0o600 });
+  // 'finish' flushes writes but can precede descriptor close. NFS cleanup
+  // must wait for 'close' so an open log cannot leave a transient .nfs entry.
+  const logClosed = new Promise((resolve) => log.once('close', resolve));
   let tail = Buffer.alloc(0);
   let logError = null;
   log.on('error', (error) => { logError = error; });
@@ -101,7 +104,8 @@ export async function runQuietCommand({
       stdio: ['inherit', 'pipe', 'pipe'],
     });
   } catch (error) {
-    await new Promise((resolve) => log.end(resolve));
+    log.end();
+    await logClosed;
     throw error;
   }
 
@@ -121,7 +125,8 @@ export async function runQuietCommand({
     tail = appendTail(tail, diagnostic);
     log.write(diagnostic);
   }
-  await new Promise((resolve) => log.end(resolve));
+  log.end();
+  await logClosed;
 
   if (logError) throw logError;
   const durationMs = Number(process.hrtime.bigint() - started) / 1e6;

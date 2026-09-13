@@ -5,6 +5,7 @@ import { createMachOMetadataBudget, ensureMachOMetadataBudget, markMachOMetadata
 import { validateFatSlice, validateFatContainer, probePastEndArm64SliceSync, parseInnerMachOHeader } from './macho-fat.js';
 
 const S_MOD_INIT_FUNC_POINTERS = 0x9;
+const S_MOD_TERM_FUNC_POINTERS = 0xa;
 const S_INIT_FUNC_OFFSETS = 0x16;
 
 export const DICE_KIND_DATA = 1;
@@ -47,6 +48,9 @@ const LC_ENCRYPTION_INFO = 0x21;
 const LC_ENCRYPTION_INFO_64 = 0x2c;
 const LC_DYLD_EXPORTS_TRIE = 0x80000033;
 const LC_DYLD_CHAINED_FIXUPS = 0x80000034;
+const ARM_THREAD_STATE = 1;
+const ARM_THREAD_STATE_COUNT = 17;
+const ARM_THREAD_STATE_PC_OFFSET = 60;
 const ARM_THREAD_STATE64 = 6;
 const ARM_THREAD_STATE64_COUNT = 68;
 const ARM_THREAD_STATE64_PC_OFFSET = 256;
@@ -229,7 +233,7 @@ function parseThin(bytes, opts) {
     if (!linkeditData.exportsTrie && info.export.size) parseExportTrie(r, info.export, image, metadataBudget);
   }
   if (linkeditData.exportsTrie) parseExportTrie(r, linkeditData.exportsTrie, image, metadataBudget);
-  parseModInitFunctions(r, image, bits, metadataBudget);
+  parseModLifecycleFunctions(r, image, bits, metadataBudget);
   parseInitFuncOffsets(r, image, metadataBudget);
 
   const namesByAddr = new Map();
@@ -441,9 +445,9 @@ function parseThreadEntrypoint(r, p, cmdsize, cpu, bits) {
     const stateBytes = count * 4;
     if (!Number.isSafeInteger(stateBytes) || stateBytes < 0 || state + stateBytes > end) return null;
     const arch = cpuName(cpu);
-    if (arch === 'arm64' && flavor === ARM_THREAD_STATE64 && count === ARM_THREAD_STATE64_COUNT) return r.u64(state + ARM_THREAD_STATE64_PC_OFFSET);
+    if ((arch === 'arm64' || arch === 'arm64_32') && flavor === ARM_THREAD_STATE64 && count === ARM_THREAD_STATE64_COUNT) return r.u64(state + ARM_THREAD_STATE64_PC_OFFSET);
     if (arch === 'x86_64' && flavor === X86_THREAD_STATE64 && count === X86_THREAD_STATE64_COUNT) return r.u64(state + X86_THREAD_STATE64_RIP_OFFSET);
-    if (arch === 'arm' && bits === 32 && flavor === 1 && stateBytes >= 64) return BigInt(r.u32(state + 60));
+    if (arch === 'arm' && bits === 32 && flavor === ARM_THREAD_STATE && count === ARM_THREAD_STATE_COUNT) return BigInt(r.u32(state + ARM_THREAD_STATE_PC_OFFSET));
     q = state + stateBytes;
   }
   return null;
@@ -476,12 +480,20 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
     const value = bits === 64 ? r.u64(p + 8) : BigInt(r.u32(p + 8));
     if (type & 0xe0) continue;
     let name = '';
-    if (strx < st.strsize) {
-      const span = r.bytes.subarray(st.stroff + strx, st.stroff + st.strsize);
-      if (span.indexOf(0) !== -1) {
-        name = r.cstring(st.stroff + strx, st.strsize - strx);
-      }
+    if (strx >= st.strsize) {
+      markMachOMetadataPartial(image, 'symbol-name-index-out-of-range');
+      budget.warn(`Mach-O symbol ${i} has n_strx ${strx} outside string table`);
+      continue;
     }
+    const span = r.bytes.subarray(st.stroff + strx, st.stroff + st.strsize);
+    if (span.indexOf(0) === -1) {
+      markMachOMetadataPartial(image, 'symbol-name-not-terminated');
+      budget.warn(`Mach-O symbol ${i} name has no NUL terminator before string-table end`);
+      continue;
+    }
+    // An empty name at n_strx==0 is the string-table sentinel, not a malformed
+    // symbol. Keep the existing behavior for any other valid empty entry too.
+    name = r.cstring(st.stroff + strx, st.strsize - strx);
     if (!name) continue;
     if (!budget.take({ stringBytes:name.length*2, estimatedHeapBytes:name.length*2+32 }, 'symbol-name')) break;
     const ntype = type & 0x0e;
@@ -921,22 +933,36 @@ export function parseCompactUnwind(r, image, metadataBudget = null) {
   status.recovered = ranges.length;
 }
 
-function parseModInitFunctions(r, image, bits, metadataBudget) {
-  const modInitSections = image.sections.filter((s) => (s.flags & 0xff) === S_MOD_INIT_FUNC_POINTERS);
-  if (modInitSections.length === 0) return;
+function parseModLifecycleFunctions(r, image, bits, metadataBudget) {
+  const lifecycleSections = image.sections.filter((section) => {
+    const type = section.flags & 0xff;
+    return type === S_MOD_INIT_FUNC_POINTERS || type === S_MOD_TERM_FUNC_POINTERS;
+  });
+  if (lifecycleSections.length === 0) return;
 
-  image.metadata.initializers ||= [];
   const ptrSize = bits === 64 ? 8 : 4;
   const ptrSizeBig = BigInt(ptrSize);
   const arch = image.arch;
   const alignment = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
   const instructionBytes = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
-  const recoveredTargets = new Set();
+  const recoveredInitializers = new Set();
+  const recoveredTerminators = new Set();
 
-  for (const sec of modInitSections) {
+  for (const sec of lifecycleSections) {
+    const isTerminator = (sec.flags & 0xff) === S_MOD_TERM_FUNC_POINTERS;
+    const metadataKey = isTerminator ? 'terminators' : 'initializers';
+    const budgetLabel = isTerminator ? 'mod-term' : 'mod-init';
+    const source = isTerminator ? 'terminator' : 'constructor';
+    const noun = isTerminator ? 'terminator' : 'constructor';
+    const evidence = isTerminator
+      ? 'Mach-O S_MOD_TERM_FUNC_POINTERS loader-invoked terminator in validated executable mapping with file-backed instruction bytes'
+      : 'Mach-O S_MOD_INIT_FUNC_POINTERS loader-invoked constructor in validated executable mapping with file-backed instruction bytes';
+    const kindTargets = isTerminator ? recoveredTerminators : recoveredInitializers;
+    image.metadata[metadataKey] ||= [];
+
     if (sec.size % ptrSizeBig !== 0n) {
       metadataBudget.partial(
-        'mod-init:truncated-section',
+        `${budgetLabel}:truncated-section`,
         `Mach-O section ${sec.name} size ${sec.size} is not a multiple of pointer width ${ptrSize}`,
       );
     }
@@ -949,24 +975,24 @@ function parseModInitFunctions(r, image, bits, metadataBudget) {
     const safeCount = Math.min(count, Math.floor(fileAvailable / ptrSize));
     if (safeCount < count) {
       metadataBudget.partial(
-        'mod-init:file-truncated',
+        `${budgetLabel}:file-truncated`,
         `Mach-O section ${sec.name} file data is truncated or zero-fill`,
       );
     }
 
     for (let i = 0; i < safeCount; i++) {
-      if (!metadataBudget.take({ inputBytes: ptrSize, records: 1, objects: 1, operations: 1, estimatedHeapBytes: 64 }, 'mod-init')) {
+      if (!metadataBudget.take({ inputBytes: ptrSize, records: 1, objects: 1, operations: 1, estimatedHeapBytes: 64 }, budgetLabel)) {
         break;
       }
       const slotVa = sec.address + BigInt(i * ptrSize);
       const slotFileOff = secFileOffset + i * ptrSize;
       const raw = bits === 64 ? r.u64(slotFileOff) : BigInt(r.u32(slotFileOff));
 
-      // Resolve under Mach-O pointer/rebase/chained-fixup authority
+      // Resolve under Mach-O pointer/rebase/chained-fixup authority.
       const resolved = resolveMachOPointer(image, raw, { address: slotVa });
 
       let isValid = false;
-      let target = resolved;
+      const target = resolved;
       let failureReason = null;
 
       if (target == null) {
@@ -991,8 +1017,7 @@ function parseModInitFunctions(r, image, bits, metadataBudget) {
         }
       }
 
-      // Record in metadata
-      image.metadata.initializers.push({
+      image.metadata[metadataKey].push({
         address: target,
         raw,
         slotAddress: slotVa,
@@ -1002,28 +1027,29 @@ function parseModInitFunctions(r, image, bits, metadataBudget) {
 
       if (isValid) {
         const targetStr = target.toString();
-        if (!recoveredTargets.has(targetStr)) {
-          recoveredTargets.add(targetStr);
+        if (!kindTargets.has(targetStr)) {
+          kindTargets.add(targetStr);
           image.functions.push(functionSeed(target, {
-            source: 'constructor',
+            source,
             confidence: 0.95,
             exactFunctionStart: true,
-            functionStartEvidence: 'Mach-O S_MOD_INIT_FUNC_POINTERS loader-invoked constructor in validated executable mapping with file-backed instruction bytes',
+            functionStartEvidence: evidence,
           }));
         }
       } else {
         metadataBudget.partial(
-          `mod-init:${failureReason}`,
-          `Ignored Mach-O constructor pointer at 0x${slotVa.toString(16)} (raw 0x${raw.toString(16)}): ${failureReason}`,
+          `${budgetLabel}:${failureReason}`,
+          `Ignored Mach-O ${noun} pointer at 0x${slotVa.toString(16)} (raw 0x${raw.toString(16)}): ${failureReason}`,
         );
       }
     }
   }
 }
 
+
 function parseInitFuncOffsets(r, image, metadataBudget) {
-  const initOffsetSections = image.sections.filter((s) => (s.flags & 0xff) === S_INIT_FUNC_OFFSETS);
-  if (initOffsetSections.length === 0) return;
+  const sections = image.sections.filter((section) => (section.flags & 0xff) === S_INIT_FUNC_OFFSETS);
+  if (sections.length === 0) return;
 
   image.metadata.initializers ||= [];
   const entrySize = 4;
@@ -1032,27 +1058,26 @@ function parseInitFuncOffsets(r, image, metadataBudget) {
   const alignment = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
   const instructionBytes = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
   const addressLimit = 1n << BigInt(image.bits);
-  const recoveredTargets = new Set();
+  const recovered = new Set();
 
-  for (const sec of initOffsetSections) {
+  for (const sec of sections) {
     if (sec.size % entrySizeBig !== 0n) {
       metadataBudget.partial(
         'init-offsets:truncated-section',
         `Mach-O section ${sec.name} size ${sec.size} is not a multiple of S_INIT_FUNC_OFFSETS entry width 4`,
       );
     }
-
     const declaredCount = sec.size / entrySizeBig;
     const secFileOffset = sec.fileOffset != null ? Number(sec.fileOffset) : null;
-    const availableInput = secFileOffset != null && Number.isSafeInteger(secFileOffset) && secFileOffset >= 0 && secFileOffset <= r.length
+    const secFileSize = sec.fileSize != null ? BigInt(sec.fileSize) : 0n;
+    const inputAvailable = secFileOffset != null && Number.isSafeInteger(secFileOffset)
+      && secFileOffset >= 0 && secFileOffset <= r.length
       ? BigInt(r.length - secFileOffset)
       : 0n;
-    const declaredFileSize = sec.fileSize != null ? BigInt(sec.fileSize) : 0n;
-    const availableFileBytes = availableInput < declaredFileSize ? availableInput : declaredFileSize;
-    const availableCount = availableFileBytes / entrySizeBig;
-    const safeCountBig = declaredCount < availableCount ? declaredCount : availableCount;
+    const availableBytes = inputAvailable < secFileSize ? inputAvailable : secFileSize;
+    const safeCountBig = declaredCount < availableBytes / entrySizeBig
+      ? declaredCount : availableBytes / entrySizeBig;
     const safeCount = Number(safeCountBig);
-
     if (safeCountBig < declaredCount) {
       metadataBudget.partial(
         'init-offsets:file-truncated',
@@ -1060,47 +1085,47 @@ function parseInitFuncOffsets(r, image, metadataBudget) {
       );
     }
 
-    for (let i = 0; i < safeCount; i++) {
-      if (!metadataBudget.take({ inputBytes:entrySize, records:1, objects:1, operations:1, estimatedHeapBytes:64 }, 'init-offsets')) break;
-
-      const slotVa = sec.address + BigInt(i * entrySize);
-      const slotFileOff = secFileOffset + i * entrySize;
-      const raw = BigInt(r.u32(slotFileOff));
-      const computedTarget = image.imageBase + raw;
-      const target = computedTarget < addressLimit ? computedTarget : null;
-      let isValid = false;
+    for (let index = 0; index < safeCount; index += 1) {
+      if (!metadataBudget.take({ inputBytes: entrySize, records: 1, objects: 1, operations: 1, estimatedHeapBytes: 64 }, 'init-offsets')) break;
+      const slotAddress = sec.address + BigInt(index * entrySize);
+      const raw = BigInt(r.u32(secFileOffset + index * entrySize));
+      const sum = image.imageBase + raw;
+      const target = sum < addressLimit ? sum : null;
+      let valid = false;
       let failureReason = null;
 
       if (target == null) {
         failureReason = 'address-out-of-domain';
       } else {
-        const mapping = image.resolveVirtualMapping(target);
-        if (!mapping) {
+        const targetSec = image.sectionAt(target);
+        const targetSeg = image.segmentAt(target);
+        const executable = Boolean(targetSec ? targetSec.perms?.execute : targetSeg?.perms?.execute);
+        if (!targetSeg && !targetSec) {
           failureReason = 'unmapped';
-        } else if (!mapping.mapping?.perms?.execute) {
+        } else if (!executable) {
           failureReason = 'non-executable';
         } else if (target % alignment !== 0n) {
           failureReason = 'misaligned';
-        } else if (mapping.kind !== 'file' || mapping.available < instructionBytes) {
-          failureReason = 'not-file-backed';
         } else {
-          isValid = true;
+          const mapping = image.resolveVirtualMapping(target);
+          if (mapping?.kind !== 'file' || mapping.available < instructionBytes) failureReason = 'not-file-backed';
+          else valid = true;
         }
       }
 
       image.metadata.initializers.push({
         address: target,
         raw,
-        slotAddress: slotVa,
+        slotAddress,
         section: sec.name,
         encoding: 'S_INIT_FUNC_OFFSETS',
-        valid: isValid,
+        valid,
       });
 
-      if (isValid) {
-        const targetKey = target.toString();
-        if (!recoveredTargets.has(targetKey)) {
-          recoveredTargets.add(targetKey);
+      if (valid) {
+        const key = target.toString();
+        if (!recovered.has(key)) {
+          recovered.add(key);
           image.functions.push(functionSeed(target, {
             source: 'constructor',
             confidence: 0.95,
@@ -1111,7 +1136,7 @@ function parseInitFuncOffsets(r, image, metadataBudget) {
       } else {
         metadataBudget.partial(
           `init-offsets:${failureReason}`,
-          `Ignored Mach-O initializer offset at 0x${slotVa.toString(16)} (raw 0x${raw.toString(16)}): ${failureReason}`,
+          `Ignored Mach-O initializer offset at 0x${slotAddress.toString(16)} (raw 0x${raw.toString(16)}): ${failureReason}`,
         );
       }
     }
@@ -1163,3 +1188,4 @@ function parseDataInCode(r, dc, image, metadataBudget) {
     });
   }
 }
+
