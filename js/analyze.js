@@ -104,8 +104,10 @@ const NO_DEST_MNEMONICS = new Set([
   'ret', 'retaa', 'retab', 'cbz', 'cbnz', 'tbz', 'tbnz',
   'nop', 'svc', 'brk', 'hlt', 'hint', 'bti', 'dmb', 'dsb', 'isb',
   'prfm', 'msr', 'drps', 'eret', 'eretaa', 'eretab',
+  'rmif', 'setf8', 'setf16',
 ]);
 const ATOMIC_READ_WRITE_DEST_RE = /^cas(?:al|a|l)?(?:b|h)?$/;
+const ATOMIC_PAIR_READ_WRITE_DEST_RE = /^casp(?:al|a|l)?$/;
 
 function destIndex(mn) {
   const b = mn.toLowerCase();
@@ -121,7 +123,10 @@ function destIndex(mn) {
 }
 
 function destinationIsRead(mn, index) {
-  return index === 0 && ATOMIC_READ_WRITE_DEST_RE.test(mn.toLowerCase());
+  const b = mn.toLowerCase();
+  if (ATOMIC_READ_WRITE_DEST_RE.test(b)) return index === 0;
+  if (ATOMIC_PAIR_READ_WRITE_DEST_RE.test(b)) return index === 0 || index === 1;
+  return false;
 }
 
 function readRegs(op, into) {
@@ -221,7 +226,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
 
       const di = destIndex(mn);
       const destReg = di >= 0 && ops[di]?.k === 'reg' && ops[di]?.cls === 'gp' ? ops[di].num : null;
-      const pairDestReg = /^(ldp|ldpsw|ldnp)$/.test(b) && ops[1]?.k === 'reg' && ops[1]?.cls === 'gp'
+      const pairDestReg = (/^(ldp|ldpsw|ldnp)$/.test(b) || ATOMIC_PAIR_READ_WRITE_DEST_RE.test(b)) && ops[1]?.k === 'reg' && ops[1]?.cls === 'gp'
         ? ops[1].num
         : null;
       const reads = new Set();
