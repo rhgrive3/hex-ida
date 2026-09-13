@@ -182,7 +182,8 @@ test('#4590 evidence and hypothesis restore semantics are unchanged', async () =
   const { persisted, evidenceId } = await seededPersistence();
   const stores = resumed(persisted);
   assert.equal(stores.evidenceStore.has(evidenceId), true);
-  assert.equal(stores.evidenceStore.get(evidenceId).status, 'verified');
+  // Raw persisted confirmedFindings carry no deterministic authority envelope; current main fails closed to supported.
+  assert.equal(stores.evidenceStore.get(evidenceId).status, 'supported');
   assert.deepEqual(stores.hypothesisStore.all().map((item) => item.id), ['h-4590']);
 
   const findingsOnly = { id: 's-findings', binaryId: BINARY, confirmedFindings: copy(persisted.confirmedFindings) };
