@@ -816,7 +816,13 @@ export class Backend {
     return result.payload;
   }
 
-  guessFunctions(regionId, limit, onProgress) { return this.call('guessFunctions', { regionId, limit }, null, onProgress); }
+  guessFunctions(regionId, limit, onProgress, options = {}) {
+    const architecture = String(options.architecture || this._activeMachArchitecture || this.platformInfo?.capability?.architecture || '').toLowerCase();
+    if (this.formatId === 'macho' && architecture && !isLegacyMachArchitecture(architecture)) {
+      return this._callTo('platform', 'guessFunctions', { regionId, limit, architecture }, null, onProgress);
+    }
+    return this.call('guessFunctions', { regionId, limit }, null, onProgress);
+  }
   scanProgram(regionId, onProgress, limits = {}) {
     const architecture = String(limits?.architecture || '').toLowerCase();
     const payload = { regionId, ...limits };
