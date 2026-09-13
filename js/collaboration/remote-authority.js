@@ -447,8 +447,8 @@ export function remoteCollaborationSupport({
   expectedCommitSha = null,
   expectedTreeSha = null,
 } = {}) {
-  const commitSha = String(expectedCommitSha || '').toLowerCase();
-  const treeSha = String(expectedTreeSha || '').toLowerCase();
+  const commitSha = typeof expectedCommitSha === 'string' ? expectedCommitSha.toLowerCase() : '';
+  const treeSha = typeof expectedTreeSha === 'string' ? expectedTreeSha.toLowerCase() : '';
   const exactIdentity = /^[0-9a-f]{40}$/.test(commitSha) && /^[0-9a-f]{40}$/.test(treeSha);
   const brandedProfile = isValidatedStage2CapabilityProof(profileProof, {
     itemId: 'S2-P12-COLLAB-REMOTE',
