@@ -390,3 +390,11 @@ node --test tests/phase12/rebuild/f6-macho-layout-cell.test.mjs
 ```
 
 実行前のTMPDIR/TMP/TEMP・npm cacheにはrepo外の永続ディレクトリを指定する。`evidence/commands.jsonl` のenvironmentOverridesが今回の実行値。配布ZIPにはnode_modules、cache、temp、.git、実credentialを含めない。
+
+### 11. 統合候補での環境判定の再検証（2026-09-13）
+
+受領した元の4ファイルは `d3960ef9dac462bfa67f5f691b13309eebd9d700` にそのまま保存した。元のsource manifestは `f51fe505e941dc64483b7cf9a52f74206be5ea4c` の全4,682ファイルと一致し、統合候補は `5a7c98d8c4916f832c4c96cb510ffc8325df9941` を基点とする。上記の120/120・1525/1525および表中のログは提出環境の記録であり、統合候補の結果ではない。
+
+元の候補を再実行すると119/120で、H-02のみ、提出環境の `independent-oracle-tool-unavailable` と統合環境の `independent-oracle-tool-version-mismatch` の違いで失敗した。行列の統合revision 1では、指定版が使えない理由としてこの2値だけを明示的に許可する。指定版、available=false、oracleの失敗、environment-excluded分類は保持する。インストール済み実行ファイル・実際のversion・失敗理由は実行結果へ記録し、異なる版の実行を独立検証の成功として扱わない。
+
+120行、全入力identity、全行の分類は変更しない。行列とテストのidentityを更新したため、元の成功ログを新しい候補の証拠として流用せず再実行する。正しいLLVM版が利用可能な環境、Apple実機、実物corpusが増えた環境の受入はこのローカルauditの対象外であり、別の証拠を必要とする。

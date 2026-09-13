@@ -25,7 +25,7 @@ import { inputFor, hashBytes, REAL_MACHO_PATH } from './fixtures/x02-apple-versi
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const matrixBytes = fs.readFileSync(new URL('./fixtures/x02-apple-version-matrix.json', import.meta.url));
-const MATRIX_SHA256 = '2a16ed855540e54b6478bd29c6e43ef906eaf4f4167c37bafc53943b68b2f6d4';
+const MATRIX_SHA256 = 'c95ea2ba89d072fe9110565072462d5efca496b72a66ff365d8b8d15a95274ad';
 assert.equal(hashBytes(matrixBytes), MATRIX_SHA256, 'Frozen denominator changed: audit and re-freeze explicitly, never silently drop rows');
 const matrix = JSON.parse(matrixBytes);
 const dispositions = ['pass', 'product-gap', 'evidence-gap', 'environment-excluded'];
@@ -388,7 +388,14 @@ async function observe(t,row,bytes) {
   if(['G','H'].includes(row.family)) {
     const {transaction,materialized}=await rebuilt(bytes),output=materialized.bytes;
     if(row.check==='llvm-environment') {
-      const tool=inspectLlvmReadobj();assert.equal(LLVM_READOBJ_EXPECTED_VERSION,e.requiredVersion);assert.equal(tool.expectedVersion,e.requiredVersion);assert.equal(tool.available,e.available);assert.equal(tool.reason,e.reason);
+      const tool=inspectLlvmReadobj();
+      assert.equal(LLVM_READOBJ_EXPECTED_VERSION,e.requiredVersion);
+      assert.equal(tool.expectedVersion,e.requiredVersion);
+      assert.equal(e.available,false);assert.equal(tool.available,false);
+      assert.deepEqual(e.unavailableReasons,['independent-oracle-tool-unavailable','independent-oracle-tool-version-mismatch']);
+      assert.ok(e.unavailableReasons.includes(tool.reason), 'Pinned oracle must fail closed with an explicit unavailability reason');
+      if(tool.reason==='independent-oracle-tool-unavailable')assert.equal(tool.executable,null);
+      else {assert.ok(tool.executable);assert.equal(tool.version?.includes(e.requiredVersion)??false,false);}
       const result=await createLlvmReadobjOracle()({transaction,original:bytes,output});assert.equal(result.ok,false);
       return {classification:'environment-excluded',observedStatus:'unavailable',details:{tool,result,independentOraclePassed:false}};
     }

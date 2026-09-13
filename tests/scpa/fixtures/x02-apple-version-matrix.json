@@ -8158,7 +8158,11 @@
         "description": "Independent Mach-O oracle must use exactly Ubuntu LLVM version 18.1.3.",
         "requiredVersion": "Ubuntu LLVM version 18.1.3",
         "available": false,
-        "reason": "independent-oracle-tool-unavailable"
+        "unavailableReasons": [
+          "independent-oracle-tool-unavailable",
+          "independent-oracle-tool-version-mismatch"
+        ],
+        "donorObservedReason": "independent-oracle-tool-unavailable"
       },
       "oracle": {
         "kind": "pinned-real-fixture-manifest+literal-layout-contract",
@@ -8174,7 +8178,7 @@
       "options": {},
       "check": "llvm-environment",
       "gap": {
-        "reason": "No llvm-readobj/llvm-readobj-18 executable is available in this environment.",
+        "reason": "The required pinned LLVM executable is unavailable when absent or when the installed version does not match; neither state proves independent parsing.",
         "candidatePaths": [
           "tools/validation/rebuild-independent-oracle.mjs"
         ],
@@ -8306,5 +8310,10 @@
       "check": "deterministic",
       "inputByteLength": 568
     }
-  ]
+  ],
+  "integrationRevision": {
+    "revision": 1,
+    "donorMatrixSha256": "2a16ed855540e54b6478bd29c6e43ef906eaf4f4167c37bafc53943b68b2f6d4",
+    "change": "H02 accepts the two explicit pinned-tool unavailability reasons; all 120 input identities, required LLVM version and row dispositions remain unchanged. Reverification required."
+  }
 }
