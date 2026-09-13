@@ -401,8 +401,8 @@ export function createApi(app, out, options = {}) {
 
     async loadStrings(context = null) { return investigationServiceFor(app).collectStrings({ signal:signalOf(context) }); },
 
-    /** 文字列を検索する。 */
-    findStrings(query, limit = 200, context = null) {
+    /** 文字列を検索する。既定で最大10,000件を走査し、256件ごとにyieldする。 */
+    async findStrings(query, limit = 200, context = null) {
       if (limit && typeof limit === 'object' && !Array.isArray(limit)) {
         context = limit;
         limit = limit.limit ?? 200;
@@ -415,28 +415,31 @@ export function createApi(app, out, options = {}) {
       const results = [];
       const maxScanned = Number.isSafeInteger(context?.maxScanned) && context.maxScanned > 0
         ? context.maxScanned
-        : Number.POSITIVE_INFINITY;
+        : 10_000;
+      const total = source.length;
       let scanned = 0;
-      for (const s of source) {
+      while (scanned < total && scanned < maxScanned) {
         throwIfAborted(signal);
-        if (scanned >= maxScanned) break;
-        scanned++;
+        const s = source[scanned++];
         const text = s?.text;
-        if (typeof text !== 'string') continue;
-        if (!q || text.toLowerCase().includes(q)) {
+        if (typeof text === 'string' && (!q || text.toLowerCase().includes(q))) {
           results.push(s);
           if (results.length >= max) break;
         }
+        if (scanned % 256 === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          throwIfAborted(signal);
+        }
       }
       throwIfAborted(signal);
-      const complete = scanned < source.length && scanned >= maxScanned ? false : (results.length < max || scanned >= source.length);
+      const complete = scanned >= total;
       Object.assign(results, {
         complete,
         completeness: complete ? 'complete' : 'partial',
         scanned,
-        total: source.length,
-        capped: results.length >= max && source.length > results.length,
-        reason: complete ? null : (scanned >= maxScanned && source.length > scanned ? 'scan-budget-exhausted' : 'result-limit'),
+        total,
+        capped: results.length >= max && total > results.length,
+        reason: complete ? null : (scanned >= maxScanned ? 'scan-budget-exhausted' : 'result-limit'),
       });
       return results;
     },

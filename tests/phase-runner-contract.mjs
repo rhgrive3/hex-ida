@@ -19,6 +19,11 @@ import { parseQuietCommandArgs, runQuietCommand } from "../scripts/run-quiet-com
 
 console.log("Testing Phase test runner contract...");
 
+// A root regression must remain reachable from the canonical npm test gate.
+const packageScripts = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).scripts;
+assert.ok(packageScripts.test.split("&&").map(command => command.trim())
+  .includes("node --test tests/issue-5900-findstrings-cancellation.test.mjs"));
+
 function withTempDir(fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hex-phase-test-"));
   try {

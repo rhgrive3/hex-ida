@@ -5,8 +5,6 @@ import { decodeCilCustomAttributeValue } from './custom-attribute-values.js';
 import { stableStringify } from '../../core/identity/index.js';
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 function fail(code) { throw new TypeError(code); }
-
-<<<<<<< HEAD
 // ECMA-335 II.23.4 marshalling-descriptor constants (`NATIVE_TYPE_xxx`). The
 // value is what actually changes the managed/native call boundary, so it is
 // decoded as evidence and never replaced by a name guess.
@@ -66,7 +64,8 @@ function decodeMarshalSpec(raw) {
   }
   if (raw.length !== 1) fail(code);
   return { nativeType, nativeTypeName: name };
-=======
+}
+
 function formatCilGuid(bytes, offset) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const d1 = view.getUint32(offset, true);
@@ -74,7 +73,6 @@ function formatCilGuid(bytes, offset) {
   const d3 = view.getUint16(offset + 6, true);
   const rest = [...bytes.subarray(offset + 8, offset + 16)].map((b) => b.toString(16).padStart(2, '0')).join('');
   return `${d1.toString(16).padStart(8, '0')}-${d2.toString(16).padStart(4, '0')}-${d3.toString(16).padStart(4, '0')}-${rest.slice(0, 4)}-${rest.slice(4)}`.toLowerCase();
->>>>>>> a9c65318a (fix(batch): LP64 stack alignment, findStrings cancellation, ELF32 ILP32, STO_AARCH64_VARIANT_PCS, and CIL Module table (#5621, #5900, #8428, #8366, #7689))
 }
 
 // Read only definitions, but use the complete, already-bounds-checked table layout.
@@ -660,8 +658,6 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     if ((field.accessFlags & 0x0100) === 0) fail('cil-fieldrva-field-flag-missing');
     field.rva = row.rva;
   }
-
-<<<<<<< HEAD
   // II.22.17 FieldMarshal: the managed -> native marshalling descriptor for a
   // Field or Param. The HasFieldMarshal flag alone only proves a descriptor
   // exists; without decoding it, two images whose native call boundary differs

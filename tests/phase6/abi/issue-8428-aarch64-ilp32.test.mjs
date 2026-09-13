@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parseELF } from '../../../js/binary/elf.js';
 import { resolveABIPlugin, AAPCS64_ABI, AAPCS64_ILP32_ABI } from '../../../js/targets/abi/index.js';
+import { classifyAAPCS64Arguments as classifyCore } from '../../../js/targets/abi/aapcs64-core.js';
+import { normalizeAbiPieces } from '../../../js/targets/abi/evidence.js';
 
 function createElf32AArch64() {
   const b = new Uint8Array(52);
@@ -141,6 +143,38 @@ test('issue #8428: ELFCLASS32 AArch64 distinguishes ILP32 data model from LP64',
     assert.equal(ret.bits, 64);
   });
 
+  await t.test('consecutive ILP32 spilled copies keep every piece at its normalized stack offset', () => {
+    const copy = { type:'struct Big', aggregate:true, bits:256,
+      members:[0,8,16,24].map(byteOffset => ({ type:'uint64', bits:64, byteOffset })) };
+    const insn = { callPrototype:{ args:[...Array.from({ length:8 }, () => ({ type:'uint64', bits:64 })), copy, copy, copy] } };
+    for (const result of [classifyCore(insn, { dataModel:'ilp32', pointerBits:32 }), AAPCS64_ILP32_ABI.classifyArguments(insn)]) {
+      const copies = result.arguments.slice(8);
+      assert.equal(result.partial, false);
+      assert.deepEqual(copies.map(entry => entry.offset), [0,8,16]);
+      assert.deepEqual(copies.map(entry => entry.pieces[0].stackOffset), [0,8,16]);
+      for (const entry of copies) {
+        assert.equal(entry.bits, 32);
+        assert.equal(entry.bytes, 4);
+        assert.ok(normalizeAbiPieces(entry, entry.pieces));
+        assert.equal(result.stackArguments.find(stack => stack.index === entry.index), entry);
+      }
+    }
+  });
+
+  await t.test('whole-aggregate spill normalization moves consecutive indirect-copy pieces too', () => {
+    const pair = { type:'struct Pair', aggregate:true, bits:128,
+      members:[0,8].map(byteOffset => ({ type:'uint64', bits:64, byteOffset })) };
+    const copy = { type:'struct Big', aggregate:true, bits:256,
+      members:[0,8,16,24].map(byteOffset => ({ type:'uint64', bits:64, byteOffset })) };
+    const insn = { callPrototype:{ args:[...Array.from({ length:7 }, () => ({ type:'uint64', bits:64 })), pair, copy, copy, copy] } };
+    const result = AAPCS64_ILP32_ABI.classifyArguments(insn);
+    const copies = result.arguments.slice(8);
+    assert.equal(result.arguments[7].location, 'stack');
+    assert.deepEqual(copies.map(entry => entry.offset), [16,24,32]);
+    assert.deepEqual(copies.map(entry => entry.pieces[0].stackOffset), [16,24,32]);
+    assert.ok(copies.every(entry => normalizeAbiPieces(entry, entry.pieces)));
+  });
+
   await t.test('resolveABIPlugin selects ILP32 when bits: 32 or abiId: "aapcs64-ilp32"', () => {
     const resolvedByBits = resolveABIPlugin({
       architecture: 'arm64',
@@ -155,5 +189,47 @@ test('issue #8428: ELFCLASS32 AArch64 distinguishes ILP32 data model from LP64',
       abiId: 'aapcs64-ilp32',
     });
     assert.equal(resolvedById.id, 'aapcs64-ilp32');
+  });
+
+  await t.test('unsupported ILP32 variant PCS never resolves or classifies as standard AAPCS64', () => {
+    const callingConvention = 'aarch64-ilp32-variant-pcs';
+    assert.equal(AAPCS64_ILP32_ABI.callingConventions().includes(callingConvention), false);
+
+    const resolved = resolveABIPlugin({
+      architecture: 'arm64',
+      platform: 'linux',
+      bits: 32,
+      callingConvention,
+    });
+    assert.equal(resolved.id, 'unknown');
+    assert.equal(resolved.supported, false);
+
+    const argsInsn = {
+      callPrototype: {
+        callingConvention,
+        args: [{ type: 'uint64', bits: 64 }],
+      },
+    };
+    for (const result of [classifyCore(argsInsn), AAPCS64_ILP32_ABI.classifyArguments(argsInsn)]) {
+      assert.equal(result.unsupported, true);
+      assert.equal(result.partial, true);
+      assert.equal(result.stackArgsUnknown, true);
+      assert.deepEqual(result.arguments, []);
+    }
+
+    const returnInsn = {
+      callPrototype: { callingConvention, returnType: 'uint64', bits: 64 },
+    };
+    const callReturn = AAPCS64_ILP32_ABI.classifyCallReturn(returnInsn);
+    assert.equal(callReturn.unsupported, true);
+    assert.equal(callReturn.partial, true);
+    assert.equal(callReturn.reg, null);
+
+    const functionReturn = AAPCS64_ILP32_ABI.classifyFunctionReturn({
+      functionPrototype: { callingConvention, returnType: 'uint64', bits: 64 },
+    });
+    assert.equal(functionReturn.unsupported, true);
+    assert.equal(functionReturn.partial, true);
+    assert.equal(functionReturn.reg, null);
   });
 });

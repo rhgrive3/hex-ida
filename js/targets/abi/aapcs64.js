@@ -70,12 +70,13 @@ function normalizeAAPCS64StackLayout(result, params) {
     if (argument.location !== 'stack') continue;
     const alignment = stackAlignment(params[argument.index ?? index], argument);
     cursor = Math.ceil(cursor / alignment) * alignment;
+    const displacement = cursor - argument.offset;
     argument.offset = cursor;
     argument.alignment = alignment;
-    if (argument.abiClass === 'aggregate' && Array.isArray(argument.pieces)) {
-      argument.pieces = argument.pieces.map((piece) => ({
+    if (Array.isArray(argument.pieces)) {
+      argument.pieces = argument.pieces.map((piece) => piece.stackOffset == null ? piece : ({
         ...piece,
-        stackOffset: argument.offset + Number(piece.byteOffset || 0),
+        stackOffset: piece.stackOffset + displacement,
       }));
     }
     stackArguments.push(argument);
