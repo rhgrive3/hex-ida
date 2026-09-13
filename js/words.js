@@ -303,12 +303,25 @@ acquire, release,
       }
     }
 
-    // Pair (ldp / stp / ldnp / stnp / ldpsw) — 7-bit signed scaled offset.
+    // Pair (ldp / stp / ldnp / stnp / ldpsw / stgp) — 7-bit signed scaled offset.
     if (masked(w, 0x3a000000) === 0x28000000) {
       const load = ((w >>> 22) & 1) === 1;
       const opc = (w >>> 30) & 3;
       const vector = ((w >>> 26) & 1) === 1;
+      const index = (w >>> 23) & 3;
+      const mode = index === 1 ? 'post' : index === 3 ? 'pre' : 'offset';
       if (opc === 3) return null;
+      // FEAT_MTE STGP: opc=01, VR=0, L=0. It stores two 64-bit registers plus
+      // the allocation tag and scales its signed offset by the 16-byte tag
+      // granule, not by 4 like an integer W pair (#3975).
+      if (opc === 1 && !vector && !load) {
+        const imm7 = Number(signExtend(BigInt((w >>> 15) & 0x7f), 7));
+        return {
+          load: false, store: true, size: 16, elementSize: 8, pair: true, vector: false,
+          signed: false, signExtendTo: null, tag: true,
+          base: rn(w), reg: rd(w), reg2: (w >>> 10) & 0x1f, disp: BigInt(imm7 * 16), mode,
+        };
+      }
       const signedWordPair = !vector && load && opc === 1; // LDPSW: two 32-bit words -> X regs
       // Integer opc=0 => W pair, opc=1 => LDPSW, opc=2 => X pair.
       // SIMD opc=0/1/2 => S/D/Q pairs.
@@ -318,7 +331,7 @@ acquire, release,
         load, store: !load, size: elementSize * 2, elementSize, pair: true, vector,
         signed: signedWordPair, signExtendTo: signedWordPair ? 8 : null,
         base: rn(w), reg: rd(w), reg2: (w >>> 10) & 0x1f, disp: BigInt(imm7 * elementSize),
-        mode: ((w >>> 23) & 3) === 1 ? 'post' : ((w >>> 23) & 3) === 3 ? 'pre' : 'offset',
+        mode,
       };
     }
     // Unsigned immediate (the most common scalar/SIMD form).
