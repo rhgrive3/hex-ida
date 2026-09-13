@@ -64,16 +64,37 @@ export class CursorCodec {
   }
 }
 
-export function stableSerialize(value, depth = 0) {
-  if (depth > 8) return '"[depth]"';
+const IDENTITY_DEPTH_LIMIT = 1024;
+
+export function stableSerialize(value, depth = 0, ancestors = null) {
+  if (depth > IDENTITY_DEPTH_LIMIT) throw new TypeError('identity-serialize-depth-limit');
   if (typeof value === 'bigint') return JSON.stringify(`0x${value.toString(16)}`);
   if (value == null || typeof value === 'number' || typeof value === 'boolean' || typeof value === 'string') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map((item) => stableSerialize(item, depth + 1)).join(',')}]`;
+  if (Array.isArray(value)) {
+    const path = enterAncestorPath(value, ancestors);
+    try {
+      return `[${value.map((item) => stableSerialize(item, depth + 1, path)).join(',')}]`;
+    } finally {
+      path.delete(value);
+    }
+  }
   if (typeof value === 'object') {
-    const keys = Object.keys(value).sort();
-    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key], depth + 1)}`).join(',')}}`;
+    const path = enterAncestorPath(value, ancestors);
+    try {
+      const keys = Object.keys(value).sort();
+      return `{${keys.map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key], depth + 1, path)}`).join(',')}}`;
+    } finally {
+      path.delete(value);
+    }
   }
   return JSON.stringify(String(value));
+}
+
+function enterAncestorPath(value, ancestors) {
+  const path = ancestors || new Set();
+  if (path.has(value)) throw new TypeError('identity-serialize-cycle');
+  path.add(value);
+  return path;
 }
 
 export function shortHash(value) {

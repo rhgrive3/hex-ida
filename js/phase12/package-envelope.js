@@ -500,14 +500,17 @@ export function validateProviderOutput(value, options = {}) {
     if (!value.provenance || typeof value.provenance !== 'object' || Array.isArray(value.provenance)) throw new PackageValidationError('provider-output-provenance-required');
     if (!['complete', 'partial', 'truncated'].includes(value.completeness)) throw new PackageValidationError('provider-output-completeness-invalid');
     if (value.completeness !== 'complete' && value.unique === true) throw new PackageValidationError('provider-output-incomplete-unique-invalid');
+    if (value.targetIdentity != null) required(value.targetIdentity, 'provider-output-target-identity-invalid');
     for (const item of entries) {
       if (!item || typeof item !== 'object') throw new PackageValidationError('provider-output-item-invalid');
       for (const key of Object.keys(item)) {
         if (!ALLOWED_ITEM_FIELDS.has(key)) throw new PackageValidationError('provider-output-item-unknown-field', `unknown item field: ${key}`);
       }
       if (typeof item.id !== 'string' || item.id.trim() === '' || item.targetIdentity == null) throw new PackageValidationError('provider-output-item-identity-required');
+      required(item.targetIdentity, 'provider-output-item-target-identity-invalid');
       if (value.targetIdentity != null && item.targetIdentity !== value.targetIdentity) throw new PackageValidationError('provider-output-item-target-mismatch');
     }
+    if (options.targetIdentity != null) required(options.targetIdentity, 'provider-output-target-identity-invalid');
     if (options.targetIdentity != null && value.targetIdentity !== options.targetIdentity) throw new PackageValidationError('provider-output-target-mismatch');
     return { ok: true, value: deepFreeze(value) };
   } catch (error) { return { ok: false, error: error.message, code: error.code }; }
