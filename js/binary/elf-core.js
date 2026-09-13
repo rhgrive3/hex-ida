@@ -103,13 +103,14 @@ export function parseELF(input, options = {}) {
     if (fileSpanInvalid) {
       image.warnings.push(`ELF section ${s.index} (${s.name || 'unnamed'}) has a file span beyond EOF and is excluded from virtual mapping authority`);
     }
+    const relocatableMappingInvalid = h.type === ET_REL && s.syntheticAddr == null;
     image.addSection({
       name: s.name || `section_${s.index}`, segment: null,
       address: h.type === ET_REL ? (s.syntheticAddr ?? 0n) : s.addr, size: s.size, fileOffset: s.offset,
       fileSize: noBits ? 0n : s.size,
       perms: { read: !!(s.flags & SHF_ALLOC), write: !!(s.flags & SHF_WRITE), execute: !!(s.flags & SHF_EXECINSTR) },
       flags: s.flags, type: s.type, index: s.index,
-      source: h.type === ET_REL ? 'ET_REL-synthetic-section' : fileSpanInvalid || mappingInconsistent ? 'unmapped-section' : 'section-header',
+      source: relocatableMappingInvalid ? 'unmapped-section' : h.type === ET_REL ? 'ET_REL-synthetic-section' : fileSpanInvalid || mappingInconsistent ? 'unmapped-section' : 'section-header',
     });
   }
 
@@ -148,7 +149,7 @@ export function parseELF(input, options = {}) {
       .filter(Boolean)
       .sort((left, right) => left.address < right.address ? -1 : left.address > right.address ? 1 : 0);
     const sections = rawSections
-      .filter((section) => (section.flags & SHF_EXECINSTR) !== 0n && section.size > 0n)
+      .filter((section) => (section.flags & SHF_EXECINSTR) !== 0n && section.size > 0n && (h.type !== ET_REL || section.syntheticAddr != null))
       .map((section) => ({
         sectionIndex:section.index,
         start:h.type === ET_REL ? (section.syntheticAddr ?? 0n) : section.addr,
@@ -207,14 +208,21 @@ function alignDown(value, alignment) {
   return value - (value % a);
 }
 
+function validELFSectionAlignment(alignment) {
+  return alignment <= 1n || (alignment & (alignment - 1n)) === 0n;
+}
+
 function assignRelocatableSectionAddresses(sections, image) {
   let cursor = 0x100000000n;
-  const MAX_ALIGN = 0x1000000n;
   for (const sec of sections) {
     if (sec.index === 0 || sec.size <= 0n) { sec.syntheticAddr = 0n; continue; }
     const requested = sec.addralign > 0n ? sec.addralign : 1n;
-    const alignment = requested > MAX_ALIGN ? MAX_ALIGN : requested;
-    cursor = alignUp(cursor, alignment);
+    if (!validELFSectionAlignment(requested)) {
+      sec.syntheticAddr = null;
+      markELFMetadataPartial(image, `section-addralign:${sec.index}`, `ELF ET_REL section ${sec.index} has invalid sh_addralign ${sec.addralign}; synthetic address authority was withheld`);
+      continue;
+    }
+    cursor = alignUp(cursor, requested);
     sec.syntheticAddr = cursor;
     cursor += sec.size > 0n ? sec.size : 1n;
   }
@@ -240,8 +248,8 @@ function symbolAddressForELF(elfType, value, sectionIndex, sections, extendedSec
     : normalSectionIndex(sectionIndex, sections);
   if (!valid) return null;
   const sec = sections[sectionIndex];
-  if (value > sec.size) return null;
-  return (sec.syntheticAddr ?? 0n) + value;
+  if (value > sec.size || sec.syntheticAddr == null) return null;
+  return sec.syntheticAddr + value;
 }
 
 function readHeader(r, bits) {
@@ -522,8 +530,9 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     const ifunc=type===STT_GNU_IFUNC&&defined===true&&!common;
     const riscvVariantCcFlag=image.metadata.machine===EM_RISCV&&(other&STO_RISCV_VARIANT_CC)!==0;
     const riscvVariantCc=riscvVariantCcFlag&&type===2;
-    const sym={name,address:tls?null:(sectionIdentityKnown?(address??0n):null),originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCcFlag,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??value,resolution:'runtime-resolver'}:{}),
-      ...(tls?{tlsOffset:value}:{}),...(common?{commonAlignment:value,commonSize:size,allocation:'common-unallocated'}:{}),sectionRelative:elfType===ET_REL&&normal?{sectionIndex:resolvedShndx,offset:value}:null,addressDomain:tls?'tls-offset':common?'common-unallocated':elfType===ET_REL&&normal?'section-relative-synthetic':'virtual'};
+    const canonicalAddress=tls?null:sectionIdentityKnown?(elfType===ET_REL&&normal&&address==null?null:(address??0n)):null;
+    const sym={name,address:canonicalAddress,originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCcFlag,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??(elfType===ET_REL&&normal?null:value),resolution:'runtime-resolver'}:{}),
+      ...(tls?{tlsOffset:value}:{}),...(common?{commonAlignment:value,commonSize:size,allocation:'common-unallocated'}:{}),sectionRelative:elfType===ET_REL&&normal?{sectionIndex:resolvedShndx,offset:value}:null,addressDomain:tls?'tls-offset':common?'common-unallocated':elfType===ET_REL&&normal?(address==null?'section-relative-unmapped':'section-relative-synthetic'):'virtual'};
     image.symbols.push(sym);
     const externallyVisible=bind===1||bind===2||bind===STB_GNU_UNIQUE;
     if(defined===false&&externallyVisible){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'symbol-import'))break;image.imports.push({name,library:null,ordinal:null,weak:bind===2,symbolIndex:i,tableIndex:table.index,source:'elf-dynsym',sites:[]});}
@@ -605,11 +614,12 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
     else{offset=BigInt(r.u32(p));const raw=r.u32(p+4);symIndex=raw>>>8;type=raw&0xff;if(sec.type===SHT_RELA)addend=BigInt(r.i32(p+8));}
     let address=offset,fileOffset=image.addressToOffset(offset),addressDomain='virtual';
     if(elfType===ET_REL){
+      if(target.syntheticAddr==null){budget.partial(`relocations:${sec.index}:target-section-alignment`,`ELF ET_REL relocation target section ${target.index} has no canonical synthetic address because its sh_addralign is invalid`);continue;}
       if(offset>=target.size){budget.partial(`relocations:${sec.index}:offset-range`,`ELF ET_REL relocation offset ${offset} is outside target section ${target.index}`);continue;}
       const fieldWidth=relocationFieldWidth(Number(image.metadata.machine),type,bits);
       if(fieldWidth===null){budget.partial(`relocations:${sec.index}:field-width-unknown`,`ELF ET_REL relocation type ${type} has no supported target-field width for machine ${image.metadata.machine}`);continue;}
       if(fieldWidth!==undefined&&fieldWidth>0n&&fieldWidth>target.size-offset){budget.partial(`relocations:${sec.index}:target-span`,`ELF ET_REL relocation type ${type} has a ${fieldWidth}-byte target field crossing target section ${target.index}`);continue;}
-      address=(target.syntheticAddr??0n)+offset;addressDomain='section-relative-synthetic';fileOffset=target.type===8?null:target.offset+offset;
+      address=target.syntheticAddr+offset;addressDomain='section-relative-synthetic';fileOffset=target.type===8?null:target.offset+offset;
     }else{
       const owner=image.segmentAt(offset);
       if(!owner){budget.partial(`relocations:${sec.index}:unmapped-target`,`ELF relocation section ${sec.index} has a relocation target outside every loaded PT_LOAD memory span`);continue;}
