@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { gmFetch, installUserscriptNetworkBridge } from '../js/userscript/network.js';
+import './issue-5015-gmfetch-binary-byte-exact.mjs';
 
 const originalFetch = globalThis.fetch;
 const originalGM = globalThis.GM;
