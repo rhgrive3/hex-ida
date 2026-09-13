@@ -10,6 +10,11 @@ on:
 permissions:
   contents: write
 
+env:
+  EXPECTED_H0: 50a6c430340de5bc606b35bbfa3591827b667006
+  EXPECTED_B0: fe8c10cce2cd0de6860daf7792f22acd3316d338
+  WORKFLOW: .github/workflows/integrator-b-8512-reconcile.yml
+
 jobs:
   reconcile:
     runs-on: ubuntu-latest
@@ -20,20 +25,29 @@ jobs:
           ref: fixer2/issue-3961-dynsym-fallback
           fetch-depth: 0
           persist-credentials: false
-      - name: Guard exact tuple, reconcile, and validate
+      - name: Verify staging topology
         shell: bash
         run: |
           set -euo pipefail
-          EXPECTED_H0=50a6c430340de5bc606b35bbfa3591827b667006
-          EXPECTED_B0=fe8c10cce2cd0de6860daf7792f22acd3316d338
-          WORKFLOW=.github/workflows/integrator-b-8512-reconcile.yml
           git merge-base --is-ancestor "$EXPECTED_H0" HEAD
           test "$(git diff --name-only "$EXPECTED_H0" HEAD)" = "$WORKFLOW"
+      - name: Fetch and verify live main
+        shell: bash
+        run: |
+          set -euo pipefail
           git fetch --no-tags origin "main:refs/remotes/origin/main"
           test "$(git rev-parse origin/main)" = "$EXPECTED_B0"
+      - name: Merge current main and remove staging workflow
+        shell: bash
+        run: |
+          set -euo pipefail
           git merge --no-commit --no-ff "$EXPECTED_B0"
           rm "$WORKFLOW"
           git add -A
+      - name: Verify non-lossy final diff
+        shell: bash
+        run: |
+          set -euo pipefail
           test "$(git diff --cached --name-only "$EXPECTED_B0" | sort)" = $'js/binary/elf-core.js\ntests/phase4/binary/issue-3961-elf-malformed-dynsym-fallback.test.mjs'
           test "$(git hash-object tests/phase4/binary/issue-3961-elf-malformed-dynsym-fallback.test.mjs)" = "3c347ed1e9bb42fda2ace6f5f2f45eaa388146a6"
           read -r add del path < <(git diff --cached --numstat "$EXPECTED_B0" -- js/binary/elf-core.js)
@@ -41,6 +55,10 @@ jobs:
           read -r add del path < <(git diff --cached --numstat "$EXPECTED_B0" -- tests/phase4/binary/issue-3961-elf-malformed-dynsym-fallback.test.mjs)
           test "$add" = 164 && test "$del" = 0 && test "$path" = tests/phase4/binary/issue-3961-elf-malformed-dynsym-fallback.test.mjs
           git diff --cached --check
+      - name: Validate focused and owner gates
+        shell: bash
+        run: |
+          set -euo pipefail
           node --check js/binary/elf-core.js
           node --check tests/phase4/binary/issue-3961-elf-malformed-dynsym-fallback.test.mjs
           node tests/phase4/binary/issue-3961-elf-malformed-dynsym-fallback.test.mjs
@@ -52,6 +70,10 @@ jobs:
           npm run binary:test
           npm run binary:gate
           npm run lint
+      - name: Commit reconciled tree
+        shell: bash
+        run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "chore(integrator-b): reconcile #8512 with current main"
