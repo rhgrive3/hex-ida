@@ -28,9 +28,11 @@
  */
 
 import { deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
-import { createAnalysisStatus, isCompleteStatus, weakestCompleteness } from '../status.js';
+import { ANALYSIS_STATUS_SCHEMA_VERSION, createAnalysisStatus, isCompleteStatus, weakestCompleteness } from '../status.js';
 import {
   TYPE_LAYERS,
+  canonicalDependencyIdentity,
+  canonicalizeStructuralMembers,
   claimsConflict,
   createContradiction,
   createHardConstraint,
@@ -40,7 +42,7 @@ import {
 import { condenseTypeGraph } from './scc.js';
 
 export const TYPE_GRAPH_ANALYZER_ID = 'phase7.types.constraint-graph';
-export const TYPE_GRAPH_ANALYZER_VERSION = '1.1.0';
+export const TYPE_GRAPH_ANALYZER_VERSION = '1.1.1';
 export const TYPE_RESULT_SCHEMA_VERSION = 1;
 export const TYPE_GRAPH_RESULT_SCHEMA_VERSION = 1;
 
@@ -185,36 +187,31 @@ function softIdentity(evidence) {
   });
 }
 
+function addDependencyIdentity(deps, value) {
+  const identity = canonicalDependencyIdentity(value);
+  if (identity != null) deps.add(identity);
+}
+
 function extractDependencies(claim) {
   const deps = new Set();
   const d = claim?.descriptor;
   if (!d || typeof d !== 'object') return deps;
 
-  if (typeof d.targetEntityId === 'string' && d.targetEntityId.trim()) {
-    deps.add(d.targetEntityId.trim());
-  }
-  if (typeof d.elementEntityId === 'string' && d.elementEntityId.trim()) {
-    deps.add(d.elementEntityId.trim());
-  }
+  addDependencyIdentity(deps, d.targetEntityId);
+  addDependencyIdentity(deps, d.elementEntityId);
   if (typeof d.entityId === 'string' && d.entityId.trim() && d.entityId !== claim.entityId) {
     deps.add(d.entityId.trim());
   }
   if (d.memberType && typeof d.memberType === 'object') {
-    if (typeof d.memberType.targetEntityId === 'string' && d.memberType.targetEntityId.trim()) {
-      deps.add(d.memberType.targetEntityId.trim());
-    }
-    if (typeof d.memberType.elementEntityId === 'string' && d.memberType.elementEntityId.trim()) {
-      deps.add(d.memberType.elementEntityId.trim());
-    }
-    if (d.memberType.elementType?.targetEntityId) {
-      deps.add(String(d.memberType.elementType.targetEntityId).trim());
-    }
+    addDependencyIdentity(deps, d.memberType.targetEntityId);
+    addDependencyIdentity(deps, d.memberType.elementEntityId);
+    addDependencyIdentity(deps, d.memberType.elementType?.targetEntityId);
   }
   if (Array.isArray(d.members)) {
     for (const member of d.members) {
-      if (member?.memberType?.targetEntityId) deps.add(String(member.memberType.targetEntityId).trim());
-      if (member?.memberType?.elementEntityId) deps.add(String(member.memberType.elementEntityId).trim());
-      if (member?.memberType?.elementType?.targetEntityId) deps.add(String(member.memberType.elementType.targetEntityId).trim());
+      addDependencyIdentity(deps, member?.memberType?.targetEntityId);
+      addDependencyIdentity(deps, member?.memberType?.elementEntityId);
+      addDependencyIdentity(deps, member?.memberType?.elementType?.targetEntityId);
     }
   }
   return deps;
@@ -226,6 +223,33 @@ function isMemberRecursive(member, entityId, sccMembers = []) {
   if (target === entityId || (target && sccMembers.includes(target))) return true;
   if (elementTarget === entityId || (elementTarget && sccMembers.includes(elementTarget))) return true;
   return member?.isRecursive === true || member?.memberType?.isRecursive === true;
+}
+
+const STRUCTURAL_NUMERIC_FACT_KEYS = new Set(['widthBits', 'sizeBytes', 'alignBytes', 'offset', 'strideBytes', 'length']);
+const MEMBER_FACT_CONFLICT = Symbol('member-fact-conflict');
+
+function mergeCompatibleMemberFacts(left, right, key = null) {
+  if (stableStringify(left) === stableStringify(right)) return left;
+  if (key != null && STRUCTURAL_NUMERIC_FACT_KEYS.has(key)) {
+    const a = exactStructuralInteger(left);
+    const b = exactStructuralInteger(right);
+    return a != null && b != null && a === b ? left : MEMBER_FACT_CONFLICT;
+  }
+  if (left == null || right == null
+    || typeof left !== 'object' || typeof right !== 'object'
+    || Array.isArray(left) || Array.isArray(right)) return MEMBER_FACT_CONFLICT;
+
+  const merged = { ...left };
+  for (const [childKey, value] of Object.entries(right)) {
+    if (!Object.hasOwn(merged, childKey)) {
+      merged[childKey] = value;
+      continue;
+    }
+    const combined = mergeCompatibleMemberFacts(merged[childKey], value, childKey);
+    if (combined === MEMBER_FACT_CONFLICT) return MEMBER_FACT_CONFLICT;
+    merged[childKey] = combined;
+  }
+  return merged;
 }
 
 function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
@@ -281,19 +305,17 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       const key = offset.toString();
       const existing = membersByOffset.get(key);
       if (existing) {
-        if (stableStringify(existing.member) !== stableStringify(member)) return null;
+        const merged = mergeCompatibleMemberFacts(existing.member, member);
+        if (merged === MEMBER_FACT_CONFLICT) return null;
+        membersByOffset.set(key, { offset, member: merged });
       } else {
         membersByOffset.set(key, { offset, member });
       }
     }
 
-    const members = [...membersByOffset.values()]
-      .sort((left, right) => {
-        if (left.offset < right.offset) return -1;
-        if (left.offset > right.offset) return 1;
-        return stableStringify(left.member).localeCompare(stableStringify(right.member));
-      })
-      .map((entry) => entry.member);
+    const members = canonicalizeStructuralMembers(
+      [...membersByOffset.values()].map((entry) => entry.member),
+    );
 
     const sccMembers = sccContext?.sccMembers ?? [entityId];
     const isRecursive = sccContext?.isRecursive === true
@@ -309,6 +331,9 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       return m;
     });
 
+    // Absence of size evidence means unknown, not a zero-byte aggregate.
+    // Keep size nullable until an explicit aggregate fact or complete member
+    // extents prove it (#5190).
     let maxAlign = explicitAlign ?? 1n;
     for (const m of updatedMembers) {
       let mAlign = null;
@@ -321,13 +346,21 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       if (mAlign > maxAlign) maxAlign = mAlign;
     }
 
-    let calculatedSize = explicitSize ?? 0n;
+    let calculatedSize = explicitSize;
     if (updatedMembers.length > 0) {
       let maxOffsetSpan = 0n;
+      let allExtentsKnown = true;
       for (const m of updatedMembers) {
         const offset = exactStructuralInteger(m.offset, 0n);
-        const size = exactStructuralInteger(m.sizeBytes, 0n);
-        if (offset == null || size == null) return null;
+        if (offset == null) return null;
+        if (m.sizeBytes == null) {
+          allExtentsKnown = false;
+          // Even without an extent, a start beyond the explicit bound conflicts.
+          if (explicitSize != null && offset > explicitSize) return null;
+          continue;
+        }
+        const size = exactStructuralInteger(m.sizeBytes);
+        if (size == null) return null;
         const span = offset + size;
         if (span > maxOffsetSpan) maxOffsetSpan = span;
       }
@@ -337,19 +370,20 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       if (explicitSize != null && maxOffsetSpan > explicitSize) return null;
       calculatedSize = explicitSize != null
         ? explicitSize
+        : !allExtentsKnown ? null
         : maxAlign > 1n
           ? ((maxOffsetSpan + maxAlign - 1n) / maxAlign) * maxAlign
           : maxOffsetSpan;
     }
 
-    const calculatedSizeWire = structuralIntegerWire(calculatedSize);
-    const maxAlignWire = structuralIntegerWire(maxAlign);
     const structDescriptor = {
       kind: 'struct',
       members: updatedMembers,
-      sizeBytes: calculatedSizeWire,
-      totalSizeBytes: calculatedSizeWire,
-      alignBytes: maxAlignWire,
+      ...(calculatedSize == null ? {} : {
+        sizeBytes: structuralIntegerWire(calculatedSize),
+        totalSizeBytes: structuralIntegerWire(calculatedSize),
+      }),
+      alignBytes: structuralIntegerWire(maxAlign),
       isRecursive,
       recursiveIdentity: isRecursive ? entityId : null,
       sccMembers: sccMembers.length > 1 ? sccMembers : (isRecursive ? [entityId] : null),
@@ -809,6 +843,14 @@ function solveLayer(entityId, layer, bucket, { signal, maxComparisons, maxContra
 
 export function createTypeResult(input = {}) {
   const layers = input.layers ?? {};
+  // The exported constructor is the boundary every serialized, cached or
+  // plugin-supplied TypeResult passes through. Layer names and confidence
+  // values come from the module's own vocabularies — a malformed envelope must
+  // fail closed here instead of flowing into the certainty authority (#4733).
+  for (const [layer, solved] of Object.entries(layers)) {
+    if (!TYPE_LAYERS.includes(layer)) fail('type-result-layer-unknown');
+    if (!TYPE_CONFIDENCE.includes(solved?.confidence)) fail('type-result-confidence-invalid');
+  }
   const contradictions = Object.values(layers).flatMap((layer) => layer.contradictions ?? []);
   const status = input.status;
   if (!status) fail('type-result-status-required');
@@ -937,7 +979,7 @@ export function reconstructStructuralType(graphOrResult, entityId, options = {})
 
   const members = (selected.members ?? []).map((m) => deepFreeze({
     offset: exactLayout(m.offset),
-    sizeBytes: exactLayout(m.sizeBytes),
+    sizeBytes: exactLayout(m.sizeBytes, null),
     alignBytes: exactLayout(m.alignBytes, defaultAlign(m.sizeBytes)),
     name: m.fieldName ?? m.name ?? null,
     type: deepFreeze(m.memberType ?? { kind: 'unknown' }),
@@ -954,7 +996,7 @@ export function reconstructStructuralType(graphOrResult, entityId, options = {})
       ? exactLayout(selected.sizeBytes, null)
       : null;
 
-  if (members.length > 0) {
+  if (members.length > 0 && members.every((m) => m.sizeBytes != null)) {
     let maxOffsetSpan = exactAdd(members[0].offset, members[0].sizeBytes);
     for (const m of members) {
       const span = exactAdd(m.offset, m.sizeBytes);
@@ -986,19 +1028,49 @@ export function reconstructStructuralType(graphOrResult, entityId, options = {})
  * It requires an uncontradicted hard constraint *and* a sound status, so a
  * cancelled or budget-limited solve can never present a certain type.
  */
+
+/**
+ * The lightweight completeness predicate is not a status validator: a forged
+ * `{completeness:'complete', stopReason:null}` object satisfies it while
+ * carrying none of the canonical AnalysisStatus identity created by
+ * `createAnalysisStatus()`. The certainty accessors therefore require those
+ * identity fields as well, so a malformed or forged envelope can never be
+ * read as an authoritative answer (#4733).
+ */
+function hasCanonicalStatusIdentity(status) {
+  return !!status
+    && status.schemaVersion === ANALYSIS_STATUS_SCHEMA_VERSION
+    && typeof status.snapshotId === 'string' && status.snapshotId.length > 0
+    && typeof status.analyzerId === 'string' && status.analyzerId.length > 0
+    && typeof status.analyzerVersion === 'string' && status.analyzerVersion.length > 0;
+}
+
+/**
+ * P7-INV-005: `certain` is only ever backed by uncontradicted hard
+ * constraints. `solveLayer()` guarantees that invariant for its own output;
+ * enforcing it again at the certainty accessors keeps a forged or truncated
+ * serialized layer (borrowed confidence, empty hard evidence) from minting an
+ * authoritative conclusion (#4733).
+ */
+function provedCertainLayer(solved) {
+  return solved?.confidence === 'certain'
+    && Array.isArray(solved.contradictions) && solved.contradictions.length === 0
+    && Array.isArray(solved.hardConstraints) && solved.hardConstraints.length > 0;
+}
+
 export function selectedTypeIfCertain(result, layer) {
   const solved = result?.layers?.[layer];
   if (!solved) return null;
-  if (!isCompleteStatus(result.status)) return null;
-  if (solved.contradictions.length > 0) return null;
-  if (solved.confidence !== 'certain') return null;
+  if (!hasCanonicalStatusIdentity(result.status) || !isCompleteStatus(result.status)) return null;
+  if (!provedCertainLayer(solved)) return null;
   return solved.selected;
 }
 
 /** Counts conclusions presented as certain, for the false-certainty metric. */
 export function certainConclusions(result) {
-  if (!isCompleteStatus(result?.status)) return [];
+  const status = result?.status;
+  if (!hasCanonicalStatusIdentity(status) || !isCompleteStatus(status)) return [];
   return Object.entries(result.layers ?? {})
-    .filter(([, solved]) => solved.confidence === 'certain' && solved.contradictions.length === 0)
+    .filter(([, solved]) => provedCertainLayer(solved))
     .map(([layer, solved]) => ({ layer, claim: solved.selected }));
 }

@@ -1,0 +1,33 @@
+{
+  "schema": "scpa-owned-assembled-fixture/v1",
+  "source": "threaded-integer.s",
+  "binary": "threaded-integer.elf",
+  "sourceSha256": "db824a47f277989f2cc9d9045283ffd9a2dd149e16ac532c6bdbf6952d02c546",
+  "binarySha256": "6a13ea68b580d8c8ac8b9c27378872c55cbedd44207ef33906222ff2f393fee2",
+  "compiler": "clang version 17.0.0 (https://github.com/swiftlang/llvm-project.git 10999b6d034fe318f3d56c83bddb6572593a8bb0)\nTarget: x86_64-unknown-linux-gnu\nThread model: posix\nInstalledDir: /usr/local/swift/usr/bin",
+  "rebuild": [
+    "clang",
+    "--target=aarch64-linux-gnu",
+    "-fuse-ld=lld",
+    "-nostdlib",
+    "-Wl,-Ttext=0x1000",
+    "-Wl,-e,entry",
+    "-Wl,--build-id=none",
+    "threaded-integer.s",
+    "-o",
+    "threaded-integer.elf"
+  ],
+  "expectedFunctions": [
+    {
+      "name": "entry",
+      "start": "0x1000",
+      "end": "0x1010"
+    },
+    {
+      "name": "callee",
+      "start": "0x1010",
+      "end": "0x1018"
+    }
+  ],
+  "claim": "Test-owned assembled ELF fixture; not multi-language compiler-twin, competitor, browser, or physical-device evidence."
+}

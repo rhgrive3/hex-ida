@@ -29,14 +29,18 @@ export class CapabilityExecutor {
   }
 
   verifyBinding(entry, args, runtimePlatform = null) {
-    const binaryId = this.currentBinaryId();
-    if (args.binaryId != null && binaryId != null && String(args.binaryId) !== String(binaryId)) throw new AIError('scope_violation', 'Capability target belongs to a different binary.');
+    const binaryId = optionalBindingId(this.currentBinaryId(), 'Current binary identity', 'tool_failed');
+    const requestedBinaryId = optionalBindingId(args.binaryId, 'Capability binary identity');
+    if (requestedBinaryId != null && binaryId != null && requestedBinaryId !== binaryId) throw new AIError('scope_violation', 'Capability target belongs to a different binary.');
     if (!entry.runtimeBound) return;
     const session = runtimePlatform?.currentSession?.(false);
     if (!session) throw new AIError('tool_failed', 'No runtime session is available.');
-    if (args.runtimeSessionId == null || String(args.runtimeSessionId) !== String(session.id)) throw new AIError('scope_violation', 'Runtime session identity does not match the requested action.');
-    if (binaryId != null && session.binaryHash != null && String(binaryId) !== String(session.binaryHash)) throw new AIError('scope_violation', 'Runtime session is bound to a different binary.');
-    if (args.binaryId != null && session.binaryHash && String(args.binaryId) !== String(session.binaryHash)) throw new AIError('scope_violation', 'Runtime action is bound to a different binary.');
+    const requestedSessionId = requiredBindingId(args.runtimeSessionId, 'Runtime session identity');
+    const sessionId = requiredBindingId(session.id, 'Active runtime session identity', 'tool_failed');
+    if (requestedSessionId !== sessionId) throw new AIError('scope_violation', 'Runtime session identity does not match the requested action.');
+    const sessionBinaryId = optionalBindingId(session.binaryHash, 'Runtime session binary identity', 'tool_failed');
+    if (binaryId != null && sessionBinaryId != null && binaryId !== sessionBinaryId) throw new AIError('scope_violation', 'Runtime session is bound to a different binary.');
+    if (requestedBinaryId != null && sessionBinaryId != null && requestedBinaryId !== sessionBinaryId) throw new AIError('scope_violation', 'Runtime action is bound to a different binary.');
   }
 
   verifyScope(entry, options = {}) {
@@ -125,6 +129,20 @@ export class CapabilityExecutor {
     this.reverts.set(String(patch.offset), metadata);
     return { reverted: true, patch: metadata };
   }
+}
+
+function requiredBindingId(value, label, errorType = 'scope_violation') {
+  const id = optionalBindingId(value, label, errorType);
+  if (id == null) throw new AIError(errorType, `${label} must be a non-empty canonical string.`);
+  return id;
+}
+
+function optionalBindingId(value, label, errorType = 'scope_violation') {
+  if (value == null) return null;
+  if (typeof value !== 'string' || !value || value !== value.trim()) {
+    throw new AIError(errorType, `${label} must be a non-empty canonical string.`);
+  }
+  return value;
 }
 
 function snapshotApprovedArguments(value) {
@@ -231,8 +249,23 @@ function setNote(app, kind, args, after = null) {
     }
     throw new AIError('tool_failed', `${label} annotation could not be persisted.`);
   }
-  after?.(); app.viewer?.setSymbols?.(app.symbols); app.updateChrome?.();
-  return { ok: true, address: address.toString(), value };
+  after?.();
+  const refreshWarning = refreshDisplay(app);
+  return { ok: true, address: address.toString(), value, ...(refreshWarning ? { refreshWarning } : {}) };
+}
+
+/* The display refresh (viewer symbols + chrome) is not part of the canonical
+   mutation: notes/symbols state is already committed and persisted when it
+   runs. A refresh failure must therefore surface as a warning on a successful
+   result instead of failing an applied mutation — otherwise a `failed`
+   proposal would be recorded while the mutation persisted (#5132). In the
+   rollback path it stays best-effort so it can never mask the original
+   failure. */
+function refreshDisplay(app) {
+  const warnings = [];
+  try { app.viewer?.setSymbols?.(app.symbols); } catch (error) { warnings.push(`viewer symbols refresh failed: ${error?.message || error}`); }
+  try { app.updateChrome?.(); } catch (error) { warnings.push(`chrome refresh failed: ${error?.message || error}`); }
+  return warnings.length ? warnings.join('; ') : null;
 }
 
 // annotation.rename commits two coupled mutations (notes.setName +
@@ -263,11 +296,14 @@ function renameSymbol(app, args) {
     } catch (rollbackError) {
       throw new AIError('tool_failed', `Rename failed and the note mutation could not be rolled back: ${rollbackError?.message || rollbackError}`, { cause: String(error?.message || error) });
     }
-    app.viewer?.setSymbols?.(app.symbols); app.updateChrome?.();
+    // Best effort only: a rollback-path refresh failure must never mask the
+    // original rename failure.
+    try { app.viewer?.setSymbols?.(app.symbols); } catch { /* ignore */ }
+    try { app.updateChrome?.(); } catch { /* ignore */ }
     throw error;
   }
-  app.viewer?.setSymbols?.(app.symbols); app.updateChrome?.();
-  return { ok: true, address: address.toString(), value };
+  const refreshWarning = refreshDisplay(app);
+  return { ok: true, address: address.toString(), value, ...(refreshWarning ? { refreshWarning } : {}) };
 }
 
 function setType(app, args) {
