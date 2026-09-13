@@ -6,7 +6,7 @@ import { PdbDebugInfoProvider } from '../../../js/analysis/debug/pdb.js';
 const GUID = 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE';
 
 function buildMinimalPdb(guid = GUID, age = 1) {
-  const blockSize = 64;
+  const blockSize = 512;
   const blockCount = 6;
   const bytes = new Uint8Array(blockSize * blockCount);
   const view = new DataView(bytes.buffer);

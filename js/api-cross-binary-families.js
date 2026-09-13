@@ -45,7 +45,7 @@ const EXTRA_API_TABLE = [
   { id:'libc_strcat_chk', re:/^_?__strcat_chk$/, cat:'string', args:['dst','src','object_size'], ret:'ptr', effect:'copy' },
 
   // strtoll/strtoull can store the first unparsed character through endptr.
-  { id:'libc_strto', re:/^_?str(?:toll|toull)$/, cat:'string', args:null, ret:null, effect:'write' },
+  { id:'libc_strto', re:/^_?str(?:toll|toull)$/, cat:'string', args:null, ret:'number', effect:'write' },
 
   // Locale/ctype helpers that do not mutate caller-visible or process-global state.
   { id:'libc_locale', re:/^_?(?:__maskrune|__toupper|localeconv)$/, cat:'runtime', args:null, ret:null, effect:'read' },

@@ -3,14 +3,18 @@ name: Agent loop resilience
 on:
   pull_request:
     paths:
-      - 'js/userscript/dev/**'
+      - 'js/userscript/**'
+      - 'js/ai/**'
       - 'tests/dev-agent/agent-loop-resilience.mjs'
+      - 'tests/dev-agent/agent-loop-trigger-coverage.mjs'
       - '.github/workflows/agent-loop-resilience.yml'
   push:
     branches: [main]
     paths:
-      - 'js/userscript/dev/**'
+      - 'js/userscript/**'
+      - 'js/ai/**'
       - 'tests/dev-agent/agent-loop-resilience.mjs'
+      - 'tests/dev-agent/agent-loop-trigger-coverage.mjs'
       - '.github/workflows/agent-loop-resilience.yml'
   workflow_dispatch:
 
