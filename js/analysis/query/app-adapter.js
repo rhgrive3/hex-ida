@@ -291,6 +291,18 @@ function cloneableLegacyModel(model) {
   return data;
 }
 
+// The decompiler keeps a closure on semantic IR for in-process def-use lookups.
+// Query snapshots publish the serializable IR, while the live callback remains
+// owned by the producer. Other unclonable query data still fails closed.
+function cloneableDecompilerProjection(value) {
+  if (!value || typeof value !== 'object'
+    || !value.ir || typeof value.ir !== 'object'
+    || typeof value.ir.defUse !== 'function') return value;
+  const ir = { ...value.ir };
+  delete ir.defUse;
+  return { ...value, ir };
+}
+
 function legacyPresentationModel(model) {
   if (!model || typeof model !== 'object' || typeof model.blockOfRow === 'function') return model;
   if (!Array.isArray(model.semantic)) return model;
@@ -868,13 +880,19 @@ export function createAppAnalysisQueryAdapter(app) {
     async decompile(_snapshot, id, options = {}) {
       if (typeof app?.getDecompile === 'function') {
         const value = await app.getDecompile(id, options);
-        if (value != null) return wrap(value);
+        if (value != null) return wrap(cloneableDecompilerProjection(value));
       }
       const result = await loadFunction(id, options);
-      if (result?.value?.decompiler) return wrap(result.value.decompiler, result.status?.completeness);
+      if (result?.value?.decompiler) {
+        return wrap(cloneableDecompilerProjection(result.value.decompiler), result.status?.completeness);
+      }
       if (!result?.value?.model) return unsupported(id, 'decompiler-projection-unavailable');
       const address = addressOf(id) ?? result.value.startAddr ?? result.value.startAddress;
-      return wrap(decompile(result.value.model, { name:address == null ? null : app?.symbols?.nameAt?.(address), addr:address }), result.status?.completeness);
+      const projection = decompile(result.value.model, {
+        name:address == null ? null : app?.symbols?.nameAt?.(address),
+        addr:address,
+      });
+      return wrap(cloneableDecompilerProjection(projection), result.status?.completeness);
     },
 
     async search(_snapshot, query, page = {}, options = {}) {

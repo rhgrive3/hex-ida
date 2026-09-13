@@ -1,3 +1,4 @@
+import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 import assert from 'node:assert/strict';
 import {
   parseDevSupervisorDecision,
@@ -57,7 +58,7 @@ import { DEV_RUN_STATUS } from '../../js/ai/dev/run/dev-run.js';
     },
   });
   const storage = { getItem: () => null, setItem() {} };
-  const settings = new DevAgentUiSettings({ storage });
+  const settings = new DevAgentUiSettings({ authProvider: new AllowAllAdminProvider(), storage });
   settings.setAgentProfile(AGENT_PROFILE.DEV);
   const engine = new DevSupervisorEngineV0({ supervisor, settings, bridge });
   const result = await engine.run({ goal: 'demo', conversationId: 'c-blocking' });

@@ -1,7 +1,7 @@
 const PROTOCOL = 'hex.dev.bootstrap-host-v1';
 const MAX_HANDOFF_BYTES = 16 * 1024;
 
-export function installDevBootstrapHost({ host, runtimeIdentity, windowRef = globalThis.window } = {}) {
+export function installDevBootstrapHost({ host, runtimeIdentity, authorize = null, windowRef = globalThis.window } = {}) {
   if (!host || typeof host.reload !== 'function') throw new TypeError('Dev bootstrap host requires a reloadable sandbox host.');
   const identity = normalizeRuntimeIdentity(runtimeIdentity);
   let handoff = null;
@@ -18,7 +18,16 @@ export function installDevBootstrapHost({ host, runtimeIdentity, windowRef = glo
     };
   }
 
+  let authorizationPending = false;
   function onMessage(event) {
+    if (!authorize) { handleMessage(event); return; }
+    const current = currentFrameIdentity();
+    if (closed || authorizationPending || event?.origin !== 'null' || !current || event.source !== current.iframe.contentWindow || event.data?.protocol !== PROTOCOL || !['hex.dev.bootstrap.handoff-request', 'hex.dev.bootstrap.reload-request'].includes(event.data?.type)) return;
+    authorizationPending = true;
+    void Promise.resolve().then(() => authorize()).then(() => handleMessage(event)).catch(() => {}).finally(() => { authorizationPending = false; });
+  }
+
+  function handleMessage(event) {
     if (closed || event?.origin !== 'null') return;
     const current = currentFrameIdentity();
     if (!current || event.source !== current.iframe.contentWindow) return;

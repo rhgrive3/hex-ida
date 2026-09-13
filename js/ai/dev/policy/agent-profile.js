@@ -10,13 +10,17 @@ export function assertAgentProfile(value) {
   return profile;
 }
 
+function canUseDev(identity) {
+  return identity?.capabilities?.canUseDevAgent === true || (identity?.capabilities == null && identity?.admin === true);
+}
+
 export function availableAgentProfiles(identity = {}) {
-  return Object.freeze(identity.admin === true
+  return Object.freeze(canUseDev(identity)
     ? [AGENT_PROFILE.STANDARD, AGENT_PROFILE.DEV]
     : [AGENT_PROFILE.STANDARD]);
 }
 
 export function canSelectAgentProfile(identity, profile) {
   const normalized = assertAgentProfile(profile);
-  return normalized === AGENT_PROFILE.STANDARD || identity?.admin === true;
+  return normalized === AGENT_PROFILE.STANDARD || canUseDev(identity);
 }

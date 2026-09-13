@@ -2,6 +2,8 @@ import { DurableObject } from 'cloudflare:workers';
 import worker from './worker.js';
 import { AI_QUOTA, acquireQuotaState, releaseQuotaState } from './js/ai/quota.js';
 import { RUNTIME_BUILD } from './.runtime-build/runtime-secrets.js';
+import { PRIVILEGED_BUILD } from './.runtime-build/privileged-assets.js';
+import { createAuthHandler } from './js/auth/server/router.js';
 import { DEPLOYMENT_COMMIT } from './js/userscript/deployment-identity.generated.js';
 import { CHATGPT_ORIGINS, isAllowedRequestOrigin } from './js/userscript/request-origin-policy.js';
 import {
@@ -9,11 +11,12 @@ import {
   signRuntimeSession, validateRuntimeBootstrap, verifyRuntimeSession,
 } from './js/userscript/runtime-security.js';
 
+const handleAuth = createAuthHandler({ privileged: PRIVILEGED_BUILD });
 const QUOTA_STATE_KEY = 'quota';
 const USER_SCRIPT_TEMPLATE = '/userscript/hex.user.template.js';
 const BOOTSTRAP_MAX_BYTES = 16 * 1024;
 const SESSION_TTL_MS = 2 * 60 * 1000;
-const PRIVATE_PREFIXES = ['/.runtime/', '/userscript-assets/', '/js/', '/css/', '/scripts/', '/tests/', '/.github/', '/userscript/'];
+const PRIVATE_PREFIXES = ['/.runtime-build/', '/migrations/', '/.wrangler/', '/.git/', '/node_modules/', '/auth-assets/', '/.runtime/', '/userscript-assets/', '/js/', '/css/', '/scripts/', '/tests/', '/.github/', '/userscript/'];
 const PRIVATE_FILES = new Set(['/package.json', '/package-lock.json', '/worker-entry.js', '/worker.js', '/wrangler.jsonc']);
 
 export class AIQuota extends DurableObject {
@@ -64,6 +67,12 @@ export class RuntimeBootstrap extends DurableObject {
 export default {
   async fetch(request, env, executionCtx) {
     const url = new URL(request.url);
+    if (url.pathname.includes('%')) {
+      let decoded; try { decoded = decodeURIComponent(url.pathname); } catch { return new Response('Not Found', { status: 404 }); }
+      if (decoded !== url.pathname && (isPrivatePath(decoded) || /^\/(?:admin|auth|_privileged|api\/(?:admin|auth))(?:\/|$)/.test(decoded))) return new Response('Not Found', { status: 404, headers: securityHeaders() });
+    }
+    const authResponse = await handleAuth(request, env);
+    if (authResponse) return authResponse;
     if (url.pathname === '/hex.user.js') return serveUserscript(request, env, url, false);
     if (url.pathname === '/hex.meta.js') return serveUserscript(request, env, url, true);
     if (url.pathname === '/embed/chatgpt') return serveChatGPTEmbed(request, env, url);
@@ -166,7 +175,12 @@ async function wrapContentKey(clientJwk, sessionId) {
 }
 
 function runtimeState(env) { if (!env.RUNTIME_BOOTSTRAP) throw new Error('RUNTIME_BOOTSTRAP binding is unavailable'); return env.RUNTIME_BOOTSTRAP.get(env.RUNTIME_BOOTSTRAP.idFromName('runtime-v1')); }
-function isPrivatePath(path) { return PRIVATE_FILES.has(path) || PRIVATE_PREFIXES.some((prefix) => path.startsWith(prefix)); }
+function isPrivatePath(path) {
+  let decoded;
+  try { decoded = decodeURIComponent(path); } catch { return true; }
+  if (decoded.includes('%') || decoded.includes('\\') || decoded.includes('\0')) return true;
+  return PRIVATE_FILES.has(decoded) || PRIVATE_PREFIXES.some((prefix) => decoded === prefix.slice(0, -1) || decoded.startsWith(prefix));
+}
 async function asset(env, url, path) { if (!env.ASSETS?.fetch) return new Response(null, { status: 503 }); return env.ASSETS.fetch(new Request(new URL(path, url.origin), { method: 'GET' })); }
 function methodNotAllowed(allow) { return new Response('Method Not Allowed', { status: 405, headers: { ...securityHeaders(), allow } }); }
 function securityHeaders() { return { 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'cross-origin-resource-policy': 'same-site' }; }

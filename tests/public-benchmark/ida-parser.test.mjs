@@ -1,0 +1,6 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {parseIdaFunctions} from '../../tools/validation/public-benchmark/ida-parser.mjs';
+import {compareCase} from '../../tools/validation/public-benchmark/compare.mjs';
+import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
+test('IDA parser preserves addresses and bodies',()=>{const rows=parseIdaFunctions('/* Function: foo @ 0x10 */\nint foo(){return 1;}\n/* Function: bar @ 0x20 */\nvoid bar(){}');assert.equal(rows.length,2);assert.equal(rows[0].address,0x10n);assert.match(rows[0].pseudocode,/return 1/);});
+test('comparison denominator preserves missing functions',()=>{const root=fs.mkdtempSync(path.join(os.tmpdir(),'hex-pubbench-'));fs.mkdirSync(path.join(root,'reference'),{recursive:true});fs.writeFileSync(path.join(root,'reference','r.c'),'/* Function: a @ 0x10 */\nint a(){return 1;}\n/* Function: b @ 0x20 */\nint b(){return 2;}');const c=compareCase({caseEntry:{id:'x',reference:{path:'reference/r.c'}},hexResult:{functions:[{address:'16',name:'a',state:'PASS',pseudocode:'int a(){return 1;}'},{address:'48',name:'c',state:'PASS',pseudocode:'int c(){return 3;}'}]},suiteRoot:root});assert.equal(c.denominator,3);assert.equal(c.matchedByAddress,1);assert.equal(c.hexCoverage,2/3);assert.equal(c.idaCoverage,2/3);});
