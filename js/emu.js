@@ -87,6 +87,37 @@ function normalizeMemorySize(size) {
   return size;
 }
 
+const REGISTER_EXTEND_WIDTH = {
+  sxtb: 8, sxth: 16, sxtw: 32, sxtx: 64,
+  uxtb: 8, uxth: 16, uxtw: 32, uxtx: 64,
+};
+
+function applyRegisterModifier(v, op) {
+  const name = String(op.shift.op).toLowerCase();
+  const amount = op.shift.amount == null ? null : Number(op.shift.amount);
+  const extendWidth = Object.prototype.hasOwnProperty.call(REGISTER_EXTEND_WIDTH, name)
+    ? REGISTER_EXTEND_WIDTH[name] : null;
+  if (extendWidth != null) {
+    const shift = amount == null ? 0 : amount;
+    if (!Number.isSafeInteger(shift) || shift < 0 || shift > 4) {
+      throw new EmulatorFault('illegal-shift-amount', `${name} requires an immediate shift in 0..4`, { operand: op, amount: op.shift.amount });
+    }
+    const masked = BigInt.asUintN(extendWidth, v);
+    const extended = name[0] === 's' ? BigInt.asIntN(extendWidth, masked) : masked;
+    return extended << BigInt(shift);
+  }
+  if (amount == null) return v;
+  if (!Number.isSafeInteger(amount) || amount < 0) {
+    throw new EmulatorFault('illegal-shift-amount', `register modifier ${name} needs a non-negative immediate shift`, { operand: op, amount: op.shift.amount });
+  }
+  const s = BigInt(amount);
+  const width = op.bits === 32 ? 32 : 64;
+  if (name === 'lsl') return v << s;
+  if (name === 'lsr') return v >> s;
+  if (name === 'asr') return BigInt.asIntN(width, v) >> s;
+  throw new EmulatorFault('unsupported-shift', `unsupported register modifier: ${name}`, { operand: op });
+}
+
 function isConditionalBranchMnemonic(mn) { return /^(b\.\w+|cbz|cbnz|tbz|tbnz)$/i.test(mn || ''); }
 
 export class Emulator {
@@ -719,27 +750,9 @@ export class Emulator {
       return BigInt.asUintN(64, v);
     }
     if (op.k === 'reg') {
-      let v = this.get(op.text);
-      if (op.shift && op.shift.amount != null) {
-        const s = BigInt(op.shift.amount);
-        const o = op.shift.op;
-        if (o === 'lsl') v = v << s;
-        else if (o === 'lsr') v = v >> s;
-        else if (o === 'asr') v = BigInt.asIntN(op.bits === 32 ? 32 : 64, v) >> s;
-        else if (o === 'sxtw') v = BigInt.asUintN(64, BigInt.asIntN(32, v) << s);
-        else if (o === 'uxtw') v = (v & MASK32) << s;
-        else if (o === 'sxtb') v = BigInt.asUintN(64, BigInt.asIntN(8, v) << s);
-        else if (o === 'uxtb') v = (v & 0xffn) << s;
-      } else if (op.shift && op.shift.op) {
-        const o = op.shift.op;
-        if (o === 'sxtw') v = BigInt.asUintN(64, BigInt.asIntN(32, v));
-        else if (o === 'uxtw') v = v & MASK32;
-        else if (o === 'sxtb') v = BigInt.asUintN(64, BigInt.asIntN(8, v));
-        else if (o === 'uxtb') v = v & 0xffn;
-        else if (o === 'sxth') v = BigInt.asUintN(64, BigInt.asIntN(16, v));
-        else if (o === 'uxth') v = v & 0xffffn;
-      }
-      return BigInt.asUintN(64, v);
+      const v = this.get(op.text);
+      if (!op.shift || !op.shift.op) return BigInt.asUintN(64, v);
+      return BigInt.asUintN(64, applyRegisterModifier(v, op));
     }
     throw new EmulatorFault('unsupported-operand', `unsupported operand kind: ${op.k || 'unknown'}`, { operand:op });
   }
@@ -831,6 +844,7 @@ export class Emulator {
   }
 
   fpSize(op) {
+    if (op?.bits === 128 || /^q\d+$/i.test(op?.text || '')) return 16;
     return op?.bits === 32 || /^s\d+$/i.test(op?.text || '') ? 4 : 8;
   }
 
@@ -1060,17 +1074,26 @@ function isWide(op) {
   return op.bits !== 32;
 }
 
+const REGISTER_ACCESS_BYTES = new Set([1, 2, 4, 8, 16]);
+
+function registerAccessSize(op) {
+  if (!op || op.k !== 'reg') return 8;
+  const bytes = op.bits / 8;
+  if (REGISTER_ACCESS_BYTES.has(bytes)) return bytes;
+  throw new EmulatorFault('unsupported-access-width', `unsupported register access width: ${op.bits} bits`, { operand: op });
+}
+
 function loadSize(mn, dst) {
   if (/^(ldrb|ldrsb|ldurb|ldursb|ldxrb|ldaxrb|ldarb)$/.test(mn)) return 1;
   if (/^(ldrh|ldrsh|ldurh|ldursh|ldxrh|ldaxrh|ldarh)$/.test(mn)) return 2;
   if (/^(ldrsw|ldursw)$/.test(mn)) return 4;
-  return isWide(dst) ? 8 : 4;
+  return registerAccessSize(dst);
 }
 
 function storeSize(mn, src) {
   if (/^(strb|sturb|stxrb|stlxrb|stlrb)$/.test(mn)) return 1;
   if (/^(strh|sturh|stxrh|stlxrh|stlrh)$/.test(mn)) return 2;
-  return isWide(src) ? 8 : 4;
+  return registerAccessSize(src);
 }
 
 function isFloatReg(op) { return !!op && op.k === 'reg' && (op.cls === 'fp' || op.cls === 'vec'); }
