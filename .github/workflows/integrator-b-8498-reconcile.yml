@@ -66,18 +66,31 @@ jobs:
           git add js/binary/macho-dyld.js tests/phase4/binary/issue-8495-macho-arm64_32-classic-bind-pointer-width.test.mjs
           git rm .github/workflows/integrator-b-8498-reconcile.yml
           git diff --check --cached
-      - name: Validate reconciled binary lane
+      - name: Validate syntax and direct #8495 regression
         shell: bash
         run: |
           set -euo pipefail
           node --check js/binary/macho-dyld.js
           node --check tests/phase4/binary/issue-8495-macho-arm64_32-classic-bind-pointer-width.test.mjs
           node --test tests/phase4/binary/issue-8495-macho-arm64_32-classic-bind-pointer-width.test.mjs
-          node tests/phase4/binary/issue-4296-macho-threaded-bind-file-mapping.test.mjs
-          node tests/phase4/binary/issue-5388-macho-chained-pointer-reserved-bits.test.mjs
-          node tests/phase4/binary/issue-3744-macho-classic-bind-dylib-ordinal.test.mjs
-          node tests/phase4/binary/issue-3746-macho-weak-bind-ordinal.test.mjs
+      - name: Validate threaded-binding neighbors
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tests/issue-4296-macho-threaded-binding-span.mjs
+          node tests/phase4/binary/issue-4296-macho-threaded-binding-span.test.mjs
+          node tests/issue-5388-chained-fixups-chain-membership.mjs
           node --test tests/phase4/binary/issue-4228-macho-arm64_32-thread-entry.test.mjs
+      - name: Validate classic-bind ordinal neighbors
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tests/phase4/binary/issue-3744-macho-classic-bind-dylib-ordinal.test.mjs
+          node tests/phase4/binary/issue-3746-macho-weak-bind-ordinal-opcodes.test.mjs
+      - name: Validate binary owner gate and lint
+        shell: bash
+        run: |
+          set -euo pipefail
           npm run binary:test
           npm run lint
       - name: Commit and push non-force reconcile
