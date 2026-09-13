@@ -1,0 +1,725 @@
+{
+  "purpose": "Recovery only: preserves commit ancestry of user-authorized stale worktree cleanup. This is not an integration merge. Recreate each worktree from its recorded head. Dirty worktree contents are not included here.",
+  "worktrees": [
+    {
+      "path": "/mnt/workspace/hex-audit-7495.tNQY59",
+      "head": "6f7e04680c859c9b8bcbb99600d3106a6ae69665",
+      "activity": 1788887288.0580163
+    },
+    {
+      "path": "/mnt/workspace/hex-b42-main",
+      "head": "7cfdc318fd900809e91464bc623032b5c61ed135",
+      "activity": 1788869520.4877205
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-3685-7368-live-verify",
+      "head": "b8650e196e0a802ea229dc095e2aec989bf10036",
+      "activity": 1788860551.6173456
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-3888-base",
+      "head": "de3d7b5f1631f7b2f775824565e683fa1030f066",
+      "activity": 1788880400.2759082
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-3888-candidate-11cb",
+      "head": "61598a0c85cb7807c1aef59978654f0b21a1b9d4",
+      "activity": 1788880182.6647525
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-4259-actual-edeb",
+      "head": "edeb7d578c0ba85d86db8d66a009c3befd6d09ed",
+      "activity": 1788880402.09661
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-4259-base",
+      "head": "f321c3ce0469602ccf5103df083425bd978edaf2",
+      "activity": 1788874944.8985837
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-4259-base-replay",
+      "head": "f321c3ce0469602ccf5103df083425bd978edaf2",
+      "activity": 1788875552.594775
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-4259-c889-base",
+      "head": "c889bd4150ef2dd28a8065a24b526d07f1eb64c4",
+      "activity": 1788876137.7874882
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-4259-candidate-c889",
+      "head": "3d3d8b92417c456d1e6468d0433679e017d5a35b",
+      "activity": 1788876441.8731632
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-4439-baseline",
+      "head": "3dbee2803274ca2cc8b6b4f522041e6d0a730b03",
+      "activity": 1788880405.4110384
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-4481-actual-99148",
+      "head": "99148e0382783638d51b7116cf79984144bf7f39",
+      "activity": 1788873129.5351462
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-4481-merge-current",
+      "head": "7754b5952fa2a1351770756b73992be37bc4d24e",
+      "activity": 1788872888.221846
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-4487-base",
+      "head": "cd6977879b3cd4412f24e22a098d4221b2fabf67",
+      "activity": 1788875023.7649472
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-5025-main-f460",
+      "head": "1ed255f23b4d9c7380f472e154e5218831608318",
+      "activity": 1788878845.9235103
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-5161-actual-f85c",
+      "head": "f85c817bb43255402c985d970683b961132bb0a6",
+      "activity": 1788871791.5785215
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-5161-merge-59f",
+      "head": "59f4480032e3aa14fe4e5b6d56af553c71b5b0fd",
+      "activity": 1788871508.4233568
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-5636-base-review",
+      "head": "83fb8ee9ca33860ff5bf6429c293306f6d5f3269",
+      "activity": 1788869542.6924675
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-5716-current-main-candidate",
+      "head": "fde7f66cb3a49af752b19098e1d52900ddae5b2c",
+      "activity": 1788867499.0244446
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-5716-final-candidate",
+      "head": "3a24135711a8e9111ab1f9fab0df4439cc8e8d99",
+      "activity": 1788867070.6354363
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-5716-merge-candidate",
+      "head": "312e94f302e268b53f6cb932a05e56515d79d605",
+      "activity": 1788866895.1188877
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-5716-race-candidate",
+      "head": "68857494635f18c9235c7ae4d026ba620e669f38",
+      "activity": 1788867285.011867
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-5997-actual217",
+      "head": "217c940886a5ff80f5cdffb49b9dcf9f76a994ec",
+      "activity": 1788880424.804856
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-5997-base-b52",
+      "head": "b52e40b4e49d922ce4b204e841ab9a0ed01fafb5",
+      "activity": 1788869556.8082383
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-5997-candidate-b52",
+      "head": "939292a3015c76961bd6230c9917b6f41d9ca010",
+      "activity": 1788869557.5617943
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-7024-baseline",
+      "head": "a298e6f23995c44125ca572b56d60bb2c00e2bc2",
+      "activity": 1788869560.4517145
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-7024-tail-handoff",
+      "head": "e7ed1c5091834a0c1c886b21b169f9807ebc29ff",
+      "activity": 1788841920.365201
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-7074",
+      "head": "8236f94d34b7e3714dc1aa85fee4e6d33cdb54e2",
+      "activity": 1788842107.1396115
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-7348-base53ef-diagnose",
+      "head": "53efb1ce22db1f60552a7c83e0c9a83cb54a40a8",
+      "activity": 1788866492.9728913
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-7348-paired",
+      "head": "d7bec7f9eec496207fcfc77006a266741f083ee7",
+      "activity": 1788864673.9722452
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-7348-paired-main9c4",
+      "head": "cf0ef7934df00fef144df1019d4159ef4f222ee5",
+      "activity": 1788865435.7494655
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-7413-query-base",
+      "head": "ab232ec3d5bd0fcf8ba01bf2c9ffcdb12150428c",
+      "activity": 1788880431.5257208
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-7422-negative",
+      "head": "a0b0aa06fececfe764edf1e87a229533169efa91",
+      "activity": 1788874653.6803758
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-7498-base-404537",
+      "head": "404537698d019abe9c1c685718689a34ff5ebb4d",
+      "activity": 1788888689.139888
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-browser-7331-pinned",
+      "head": "dcab50899585c098961d425441c3c199e3915776",
+      "activity": 1788858743.354655
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-c3-02-7361",
+      "head": "742a2aab015aeb4561327e937361197c1a912495",
+      "activity": 1788862062.3565986
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-c3-02-fixture",
+      "head": "83fb8ee9ca33860ff5bf6429c293306f6d5f3269",
+      "activity": 1788867082.8355653
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-c3-baseline-cb9",
+      "head": "cb9cde4efd59ff54709a88f85a41e7e2a3394f96",
+      "activity": 1788862650.7531233
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-c3-integration",
+      "head": "828f26ca34d395e40f60248d565788a18b4e0ba8",
+      "activity": 1788865660.954826
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-combined-7413-7422",
+      "head": "72051ac6e7fa29ab767058ccdb557b1ebe190634",
+      "activity": 1788872109.0097435
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-combined-7413-7422-current",
+      "head": "f174e6d2168c29708958c2d89708959aaf639783",
+      "activity": 1788872579.2888331
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-phase8-native-baseline-bd03",
+      "head": "bd03d1a860863814dbdcc00559709794d460189d",
+      "activity": 1788835243.1714168
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-search-4900-audit",
+      "head": "c25eef232b26f5443c5bcb55cc18da8a55c50a0f",
+      "activity": 1788842110.2508245
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-ui-3685-repair",
+      "head": "2f2be1e8534cfc3f7659169eec3a8685fa30e0f6",
+      "activity": 1788880460.62164
+    },
+    {
+      "path": "/mnt/workspace/hex-goal-ui-3708-baseline-bUuAJ2",
+      "head": "0c65798d6948831e1fa97f064d3e783cef41a405",
+      "activity": 1788861234.9021192
+    },
+    {
+      "path": "/mnt/workspace/hex-ida-4366-isolated",
+      "head": "1f8884e3e14f02b346b0fe2dc3ea918ccc03e94d",
+      "activity": 1788919764.246614
+    },
+    {
+      "path": "/mnt/workspace/hex-ida-4519-baseline",
+      "head": "404537698d019abe9c1c685718689a34ff5ebb4d",
+      "activity": 1788892194.2555141
+    },
+    {
+      "path": "/mnt/workspace/hex-l5-b49-main",
+      "head": "404537698d019abe9c1c685718689a34ff5ebb4d",
+      "activity": 1788887868.0908644
+    },
+    {
+      "path": "/mnt/workspace/hex-lane5-baseline-l105",
+      "head": "e4b44a3844a1760dfa3d654230f78b28b3fb7044",
+      "activity": 1788880496.1531982
+    },
+    {
+      "path": "/mnt/workspace/hex-recovery-stage-a",
+      "head": "821529bc9b6efc193c7e17106d73df1d5efce94f",
+      "activity": 1788723323.658192
+    },
+    {
+      "path": "/mnt/workspace/hex-recovery-stage-a-active",
+      "head": "821529bc9b6efc193c7e17106d73df1d5efce94f",
+      "activity": 1788725217.0576298
+    },
+    {
+      "path": "/mnt/workspace/hex-recovery-stage-a-g5",
+      "head": "e5813a156868369b61a08daf1c1eba34e7848a52",
+      "activity": 1788748859.2006161
+    },
+    {
+      "path": "/mnt/workspace/hex-recovery-stage-a-live",
+      "head": "9200b14622658af426b50ab8aaa53fd6a9bd663c",
+      "activity": 1788743736.2315323
+    },
+    {
+      "path": "/mnt/workspace/hex-review-4439-actual",
+      "head": "bdf7f37e76c05d909e7bc3fc7ffebfd9fe699583",
+      "activity": 1788873892.4184833
+    },
+    {
+      "path": "/mnt/workspace/hex-review-4439-base",
+      "head": "d1b192dfeff5dff0eb2b51e1fe2848cdd4efef58",
+      "activity": 1788880519.2666018
+    },
+    {
+      "path": "/mnt/workspace/hex-review-4492-base",
+      "head": "d0f9ca19345eb40a44314efc980fd533f38afc96",
+      "activity": 1788880452.533638
+    },
+    {
+      "path": "/mnt/workspace/hex-review-5997-current",
+      "head": "408be3b7cfb5a3d23873b3fc3d5c6e49de870d98",
+      "activity": 1788868995.2968125
+    },
+    {
+      "path": "/mnt/workspace/hex-review-7361-baseline",
+      "head": "bc5176d8498f2431b2513a8515ee44ed523069e0",
+      "activity": 1788860347.0209475
+    },
+    {
+      "path": "/mnt/workspace/hex-review-7361-baseline-new",
+      "head": "0c65798d6948831e1fa97f064d3e783cef41a405",
+      "activity": 1788860877.0858498
+    },
+    {
+      "path": "/mnt/workspace/hex-review-7361-c3",
+      "head": "032cd768685e1487b6dcf69a81d2c61ec1448287",
+      "activity": 1788865362.8580353
+    },
+    {
+      "path": "/mnt/workspace/hex-review-7361-source-final",
+      "head": "cfccf8da89539c78652195bf4586ee5f4fdb728e",
+      "activity": 1788880567.5865786
+    },
+    {
+      "path": "/mnt/workspace/hex-review-7413-current",
+      "head": "683bc0f15a5c8710a964411fbee9f2316bb90f6d",
+      "activity": 1788870064.6852243
+    },
+    {
+      "path": "/mnt/workspace/hex-review-7413-integrated",
+      "head": "12b96d8a3c7689cd50e9feaec341739840f6e88a",
+      "activity": 1788870411.9339075
+    },
+    {
+      "path": "/mnt/workspace/hex-review-7416-main",
+      "head": "ab232ec3d5bd0fcf8ba01bf2c9ffcdb12150428c",
+      "activity": 1788870064.881882
+    },
+    {
+      "path": "/mnt/workspace/hex-review-7426-actual",
+      "head": "7754b5952fa2a1351770756b73992be37bc4d24e",
+      "activity": 1788872968.7980547
+    },
+    {
+      "path": "/mnt/workspace/hex-review-7426-parent",
+      "head": "d389eb513757d0b466c947e00c803ea547624ce8",
+      "activity": 1788872715.516543
+    },
+    {
+      "path": "/mnt/workspace/hex-review-7429-actual",
+      "head": "3dbee2803274ca2cc8b6b4f522041e6d0a730b03",
+      "activity": 1788873741.0977511
+    },
+    {
+      "path": "/mnt/workspace/hex-review-7429-base",
+      "head": "8867e4b0b7b63c1f87b4b17f9375a4c83b53f9e6",
+      "activity": 1788880578.9877048
+    },
+    {
+      "path": "/mnt/workspace/hex-review-7432-parent",
+      "head": "52152da6bcfc4bbc4590b2e9351139796aa8a8e7",
+      "activity": 1788873776.3299863
+    },
+    {
+      "path": "/mnt/workspace/hex-review-7449-parent",
+      "head": "1355e9401f3d33855e6d646ecddf54d7c3776a75",
+      "activity": 1788880581.544968
+    },
+    {
+      "path": "/mnt/workspace/hex-review-combined-5586-5997",
+      "head": "05d1c927202e6d8b14223479af71bcef409f5db5",
+      "activity": 1788869093.529541
+    },
+    {
+      "path": "/mnt/workspace/hex-roadmap-base-404537",
+      "head": "404537698d019abe9c1c685718689a34ff5ebb4d",
+      "activity": 1788893150.068221
+    },
+    {
+      "path": "/mnt/workspace/hex-roadmap-v8-repair.kPhcD5",
+      "head": "b64d71cf985f5c07daf6fb160544339e14d7a0d1",
+      "activity": 1788899993.5493414
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-baseline-a67b-reconciled",
+      "head": "6dd204d7f9381e25c21929053f5217e275a60187",
+      "activity": 1788682235.377356
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-baseline-cc494-resumed",
+      "head": "554196db937bcd8e9fcc54dcd095e9054b9b64fb",
+      "activity": 1788686106.084776
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-baseline-elf-fixture-8da",
+      "head": "63a617dda26fbaab3e5ae2d160a01edde2f05a76",
+      "activity": 1788693432.004795
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-baseline-final-cc494",
+      "head": "ac8b8232a442b8e24bc984cacb06960c18319d86",
+      "activity": 1788688177.3160365
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-baseline-fixtures",
+      "head": "35a6d48b69f9cfae5fc0307f02e6efdae8ea796b",
+      "activity": 1788672924.5095193
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-baseline-main-d572",
+      "head": "8da2cdc101cd2502731066c64c6858a505499c79",
+      "activity": 1788692559.337604
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-current-main",
+      "head": "c2c384cc781416485b49bb256e8265948a554e48",
+      "activity": 1788629652.948058
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-dependency-diagnostic",
+      "head": "9c70539000b15e476223535d02e023208c998770",
+      "activity": 1788634343.8262522
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-governance-docs-6e3a",
+      "head": "2f39c2b26c49439f369b213b362b1ec95c516c8f",
+      "activity": 1788694728.3863354
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-live-main",
+      "head": "f6dde2fd727bc42bdc7ebf798d494903edf83b56",
+      "activity": 1788636170.927473
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-main185c-baseline",
+      "head": "185c3a5a71b4a0dc889b0de8f53732f575831a62",
+      "activity": 1788664304.875047
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-main185c-diagnostic",
+      "head": "a6c6cf11f8d06b3411f4e80fb17fbe1a1565a5fd",
+      "activity": 1788842123.400531
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-memoryssa-canonical-successor-2a",
+      "head": "1c9066e3ad8c951e150600c8c365e194fd46eeab",
+      "activity": 1788680646
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-metadata-fixture",
+      "head": "3ffa8e1ecc50f15a1d6a6e674146a34820e58803",
+      "activity": 1788671815.152734
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-owner6832-6391-phase6-diagnostic",
+      "head": "6391a5fd62e884791a069b058accebcb77461406",
+      "activity": 1788669849.148117
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-producer-governance-correction-8397016",
+      "head": "6e3a5d8af8b526896fd844a9a83234d050f32f29",
+      "activity": 1788691630.4498646
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-producer-governance-correction-99f",
+      "head": "8397016cdd74719bb99337dd709d5776571b04c7",
+      "activity": 1788686561.0008564
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-producer-governance-draft",
+      "head": "99f69392af6d03ed48b454c5b4fd0ff0a7c999f2",
+      "activity": 1788678372.7611544
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-producer-oracle-review",
+      "head": "99f69392af6d03ed48b454c5b4fd0ff0a7c999f2",
+      "activity": 1788680133.0136685
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-producer-scope",
+      "head": "f8b8f1bc27e743c2b7f09d7407bd5242c5df357b",
+      "activity": 1788670205.9448822
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-scheduler-6832-review",
+      "head": "b542894d442c05801724e345cf42e2af3994b0a7",
+      "activity": 1788667000.4500594
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-scheduler-dag-guard-8398",
+      "head": "249d8c7fc0e8d007c8a066664fb669d250eec59b",
+      "activity": 1788686608.8723388
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-scheduler-fixtures",
+      "head": "860ec5df1ea59d040b35277c9068722c087e6408",
+      "activity": 1788664766.264797
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-scheduler-metadata-diagnostic",
+      "head": "56a5cfd61daf987c6ba4665974247bc978317aa1",
+      "activity": 1788672075.8254697
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t011-2a-author-correction",
+      "head": "6df010e8bd04e4418f8f6efb7448998c041d5a69",
+      "activity": 1788680641
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t011-2a-combined-verification",
+      "head": "2a2459409959aa64262280184be118bb8c18f504",
+      "activity": 1788680930.7976286
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t011-6df-combined-review",
+      "head": "7866b8d9494a48d1b548951a75f42513fedbc4e0",
+      "activity": 1788681610.3938818
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t011-candidate",
+      "head": "f8b7979e03df8b46997e9e77305c267853b7ec4b",
+      "activity": 1788627036.6093326
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t011-corrected-candidate",
+      "head": "18edb83f21352d35622ef9401137012dae02040b",
+      "activity": 1788627568.0869677
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t011-current-candidate",
+      "head": "b5d90a6bca8cb5edddfbfbd643ea09324324e0b4",
+      "activity": 1788635327.134899
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t011-current-owner",
+      "head": "2830628033cf92172ff37609257a02c3e749a659",
+      "activity": 1788635209.047873
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t011-current-review",
+      "head": "c2c384cc781416485b49bb256e8265948a554e48",
+      "activity": 1788635119.4836025
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t011-final-candidate",
+      "head": "f970e0278700ee6fd5df398663f263cfbc6ff5ba",
+      "activity": 1788629125.0122063
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t011-final-fix-786",
+      "head": "e449e3b505ce0764e701c0383fcbc9e3f5e4ed63",
+      "activity": 1788714255.6347587
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t011-fix",
+      "head": "2a2459409959aa64262280184be118bb8c18f504",
+      "activity": 1788674319.6020567
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t011-owner",
+      "head": "3bf089983c2e656033ef9922b3f4ce4824f99d90",
+      "activity": 1788629008.667314
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t012-candidate",
+      "head": "7a7e2b68d78dc6d5ff5f1a20387966c378054fd2",
+      "activity": 1788627063.001534
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t012-current-main-repair",
+      "head": "19eaa4d861476a46c4aff4c4c00ed8cb640cd92e",
+      "activity": 1788715189.8092375
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t013-candidate",
+      "head": "85c1a8057b8e9873325c1fce7115eb67fd160dc8",
+      "activity": 1788628204.0351613
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t013-margin",
+      "head": "632a8a4de9aed727595f74738bd5e06e66e7b07f",
+      "activity": 1788667297.4906192
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t013-performance",
+      "head": "8ffc09fbe855c80a96d9357a519ba1d79d6accca",
+      "activity": 1788641585.2443113
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t014-candidate",
+      "head": "9bfcb30370851fbcb51d13e1bde37485c316a440",
+      "activity": 1788628267.2870317
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t015-candidate",
+      "head": "2bb62e08725a01646f6c424634ff2825aaadf7a7",
+      "activity": 1788628296.5591826
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t016-candidate",
+      "head": "5968629c766a6eeb1804577f7ace14907b5ebc1e",
+      "activity": 1788724272.9080763
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t017-alias-v2-evidence-fc55",
+      "head": "93d2894dcaf2a4e877be1802a62a818d5f7377d6",
+      "activity": 1788699229.412585
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t017-current-diagnostic",
+      "head": "c2c384cc781416485b49bb256e8265948a554e48",
+      "activity": 1788842139.9839122
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t017-latest-main",
+      "head": "0b51fc8eb4ff7fad1c0ab563194f8a7044a0c1c3",
+      "activity": 1788644842.636715
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t017-luna-implementation-20260907",
+      "head": "c665aacc14955dfd85640f39be21d745b1f21026",
+      "activity": 1788716741.116873
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t017-owner",
+      "head": "fc55bb7b545cc127e2214c6b330431b3e7e3df96",
+      "activity": 1788640913.2167304
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t017-real59-63a",
+      "head": "63a617dda26fbaab3e5ae2d160a01edde2f05a76",
+      "activity": 1788695389.6865287
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t052-review",
+      "head": "c2c384cc781416485b49bb256e8265948a554e48",
+      "activity": 1788634436.1261046
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t053-candidate",
+      "head": "4b772af951ef0fb7692a2e552e0c5d7baafbdc09",
+      "activity": 1788626774.2240157
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t053-current",
+      "head": "cc5a261fa5af607a63c59fe55cce50b8ae7bcb4f",
+      "activity": 1788725092
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t054-candidate",
+      "head": "759116aa289537463fb7067cec1cc697f4b71be6",
+      "activity": 1788767497.9343965
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t055-candidate",
+      "head": "ee637784e5fe21c192712121e82adbbaafe5122e",
+      "activity": 1788767498.5703816
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t056-candidate",
+      "head": "3d3c9c471a82963944c4a21b7055a6c9309fe623",
+      "activity": 1788736153.783741
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t061-current-main",
+      "head": "22b20128f00a53b75ef2cd9ee07decc1a414fae7",
+      "activity": 1788660917.4809954
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t061-governance",
+      "head": "a7a92a33870d08dabe830cba2159ad973617e907",
+      "activity": 1788644624.9392517
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t061-live",
+      "head": "44416c0f24f28059482c5b72e0c40bae620978cb",
+      "activity": 1788742816.0347471
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t061-main185c",
+      "head": "7fa10a3b5de07c60d64e177654df6a4a83b56076",
+      "activity": 1788664119.4166164
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t061-main185c-code",
+      "head": "f8b8f1bc27e743c2b7f09d7407bd5242c5df357b",
+      "activity": 1788664179.9830773
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t061-product",
+      "head": "0836ddb3fb00f0118be980e1f9d511334af00c4c",
+      "activity": 1788662279.3225482
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t061-review-fix",
+      "head": "f500710e36cb5112a4f52790267b760326bce9a7",
+      "activity": 1788660921.6430812
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-t061-scheduler-diagnostic",
+      "head": "9f54747f9bb0757c845264dc5a66ded0e7b0e545",
+      "activity": 1788713974.250438
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-utf16-fixture",
+      "head": "7b9a9017c9027c94fb4f68d7c8ab226e807b7b1a",
+      "activity": 1788672476.9395947
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-vscode-environment-sync",
+      "head": "05502230cc44430ad83b87fa14d2d8684c845514",
+      "activity": 1788696943.090107
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-x86-26d-baseline-diagnostic",
+      "head": "f16add91ed75f4a8bb2a099c5508351567b16c85",
+      "activity": 1788678368.170308
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-x86-baseline-diagnostic",
+      "head": "0a02a49ec00e1310f329b60ce2656942c768390a",
+      "activity": 1788673381.0081737
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-x86-f16-generated",
+      "head": "0ad15fab2944e9d049ac3312a586685ebcd39455",
+      "activity": 1788679623.3101418
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-x86-successor-6852",
+      "head": "26d9943f324ad002d8f06c0572e7d89ddc325c0c",
+      "activity": 1788676642.2192435
+    },
+    {
+      "path": "/mnt/workspace/hex-stage-a-x86-value-evaluator-63a",
+      "head": "e3b64834e8089d167a28ec6f06686914e4964202",
+      "activity": 1788697584.3039463
+    }
+  ]
+}
