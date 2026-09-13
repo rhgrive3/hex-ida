@@ -55,6 +55,44 @@ function normalizePerms(p) {
 
 function minBigInt(a, b) { return a < b ? a : b; }
 
+export const DEFAULT_MAX_VIRTUAL_READ_BYTES = 16 * 1024 * 1024;
+export const DEFAULT_MAX_VIRTUAL_READ_CHUNK_BYTES = 1024 * 1024;
+const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+
+export class BinaryImageResourceLimitError extends RangeError {
+  constructor(requested, limit) {
+    const requestedBytes = BigInt(requested);
+    const limitBytes = BigInt(limit);
+    super(`virtual read materialization ${requestedBytes} bytes exceeds the ${limitBytes}-byte limit; use readVirtualChunks()`);
+    this.name = 'BinaryImageResourceLimitError';
+    this.code = 'BINARY_VIRTUAL_READ_RESOURCE_LIMIT';
+    this.resource = 'residentBytes';
+    this.requested = requestedBytes;
+    this.limit = limitBytes;
+  }
+}
+
+function virtualReadLimit(value, fallback, field) {
+  if (value == null) return BigInt(fallback);
+  let limit = null;
+  if (typeof value === 'bigint') limit = value;
+  else if (typeof value === 'number' && Number.isSafeInteger(value)) limit = BigInt(value);
+  if (limit === null || limit < 0n || limit > MAX_SAFE_INTEGER_BIGINT) {
+    throw new TypeError(`${field} must be a non-negative safe integer or bigint`);
+  }
+  return limit;
+}
+
+function throwIfSignalAborted(signal) {
+  if (!signal?.aborted) return;
+  if (typeof signal.throwIfAborted === 'function') signal.throwIfAborted();
+  if (signal.reason !== undefined) throw signal.reason;
+  const error = new Error('virtual read was aborted');
+  error.name = 'AbortError';
+  error.code = 'ABORT_ERR';
+  throw error;
+}
+
 export class BinaryImage {
   constructor(input, meta = {}) {
     if (input == null) this.bytes = null;
@@ -83,6 +121,15 @@ export class BinaryImage {
       defaultFileSize = this.source.size;
     }
     this.fileSize = canonicalMappingBigInt(meta.fileSize, defaultFileSize, 'Image fileSize');
+    this.maxVirtualReadBytes = virtualReadLimit(
+      meta.maxVirtualReadBytes,
+      DEFAULT_MAX_VIRTUAL_READ_BYTES,
+      'maxVirtualReadBytes',
+    );
+    if (meta.resourceBudget != null && typeof meta.resourceBudget?.remaining !== 'function') {
+      throw new TypeError('resourceBudget must expose remaining(resource)');
+    }
+    this.resourceBudget = meta.resourceBudget || null;
     this.segments = [];
     this.sections = [];
     this.imports = [];
@@ -315,13 +362,40 @@ export class BinaryImage {
     return true;
   }
 
-  _virtualReadPlan(address, size) {
-    let current;
-    let remaining;
-    current = strictBigIntOrNull(address);
-    remaining = strictBigIntOrNull(size);
+  _virtualReadRequest(address, size) {
+    const current = strictBigIntOrNull(address);
+    const remaining = strictBigIntOrNull(size);
     if (current === null || remaining === null) return null;
-    if (current < 0n || remaining < 0n || remaining > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    if (current < 0n || remaining < 0n || remaining > MAX_SAFE_INTEGER_BIGINT) return null;
+    return { address: current, size: remaining };
+  }
+
+  _virtualReadMaterializationLimit() {
+    let limit = this.maxVirtualReadBytes;
+    if (!this.resourceBudget) return limit;
+    const remaining = this.resourceBudget.remaining('residentBytes');
+    if (remaining === Infinity) return limit;
+    const budgetRemaining = typeof remaining === 'bigint'
+      ? remaining
+      : (typeof remaining === 'number' && Number.isSafeInteger(remaining) ? BigInt(remaining) : null);
+    if (budgetRemaining === null || budgetRemaining < 0n || budgetRemaining > MAX_SAFE_INTEGER_BIGINT) {
+      throw new TypeError('resourceBudget.remaining(\'residentBytes\') must return a non-negative safe integer, bigint, or Infinity');
+    }
+    limit = minBigInt(limit, budgetRemaining);
+    return limit;
+  }
+
+  _assertVirtualReadMaterialization(size) {
+    if (size === 0n) return;
+    const limit = this._virtualReadMaterializationLimit();
+    if (size > limit) throw new BinaryImageResourceLimitError(size, limit);
+  }
+
+  _virtualReadPlan(address, size) {
+    const request = this._virtualReadRequest(address, size);
+    if (!request) return null;
+    let current = request.address;
+    let remaining = request.size;
     if (remaining === 0n) return [];
     const chunks = [];
     while (remaining > 0n) {
@@ -346,10 +420,12 @@ export class BinaryImage {
 
   readVirtual(address, size) {
     if (!this.bytes) return null;
-    const plan = this._virtualReadPlan(address, size);
+    const request = this._virtualReadRequest(address, size);
+    if (!request) return null;
+    const plan = this._virtualReadPlan(request.address, request.size);
     if (!plan) return null;
-    const total = plan.reduce((sum, chunk) => sum + Number(chunk.length), 0);
-    const out = new Uint8Array(total);
+    this._assertVirtualReadMaterialization(request.size);
+    const out = new Uint8Array(Number(request.size));
     let cursor = 0;
     for (const chunk of plan) {
       const length = Number(chunk.length);
@@ -366,10 +442,12 @@ export class BinaryImage {
     const resident = this.readVirtual(address, size);
     if (resident) return resident;
     if (!this.source) return null;
-    const plan = this._virtualReadPlan(address, size);
+    const request = this._virtualReadRequest(address, size);
+    if (!request) return null;
+    const plan = this._virtualReadPlan(request.address, request.size);
     if (!plan) return null;
-    const total = plan.reduce((sum, chunk) => sum + Number(chunk.length), 0);
-    const out = new Uint8Array(total);
+    this._assertVirtualReadMaterialization(request.size);
+    const out = new Uint8Array(Number(request.size));
     const sourceReadLimit = Number.isSafeInteger(this.source.maxReadLength) && this.source.maxReadLength > 0
       ? BigInt(this.source.maxReadLength)
       : null;
@@ -391,6 +469,77 @@ export class BinaryImage {
       }
     }
     return out;
+  }
+
+  async *readVirtualChunks(address, size, options = {}) {
+    const request = this._virtualReadRequest(address, size);
+    if (!request || (!this.bytes && !this.source)) return;
+    const requestedChunkLimit = virtualReadLimit(
+      options.maxChunkLength,
+      DEFAULT_MAX_VIRTUAL_READ_CHUNK_BYTES,
+      'maxChunkLength',
+    );
+    if (request.size > 0n && requestedChunkLimit === 0n) {
+      throw new BinaryImageResourceLimitError(request.size, 0n);
+    }
+    const materializationLimit = this._virtualReadMaterializationLimit();
+    if (request.size > 0n && materializationLimit === 0n) {
+      throw new BinaryImageResourceLimitError(request.size, 0n);
+    }
+    const chunkLimit = minBigInt(requestedChunkLimit, materializationLimit);
+    const plan = this._virtualReadPlan(request.address, request.size);
+    if (!plan) return;
+
+    // Prove every file-backed span before yielding anything. Streaming must not publish a
+    // valid prefix and only later discover that a subsequent virtual chunk points outside
+    // the resident/source file backing.
+    const residentLength = this.bytes == null
+      ? null
+      : (Number.isSafeInteger(this.bytes.length)
+        ? BigInt(this.bytes.length)
+        : (typeof this.bytes.size === 'bigint' ? this.bytes.size : null));
+    const sourceLength = typeof this.source?.size === 'bigint' ? this.source.size : null;
+    const sourceBackingSize = sourceLength == null ? this.fileSize : minBigInt(this.fileSize, sourceLength);
+    for (const chunk of plan) {
+      if (chunk.kind !== 'file') continue;
+      const backingSize = residentLength ?? sourceBackingSize;
+      if (chunk.offset < 0n || backingSize == null || chunk.offset > backingSize || chunk.length > backingSize - chunk.offset) return;
+    }
+
+    const sourceReadLimit = !this.bytes && Number.isSafeInteger(this.source?.maxReadLength) && this.source.maxReadLength > 0
+      ? BigInt(this.source.maxReadLength)
+      : null;
+    const signal = options.signal || null;
+    for (const chunk of plan) {
+      let done = 0n;
+      while (done < chunk.length) {
+        throwIfSignalAborted(signal);
+        const remaining = chunk.length - done;
+        let take = minBigInt(remaining, chunkLimit);
+        if (sourceReadLimit != null) take = minBigInt(take, sourceReadLimit);
+        if (take <= 0n) throw new BinaryImageResourceLimitError(remaining, 0n);
+        const length = Number(take);
+        if (chunk.kind === 'zero') {
+          yield new Uint8Array(length);
+          done += take;
+          continue;
+        }
+        const offset = chunk.offset + done;
+        if (this.bytes) {
+          const off = Number(offset);
+          if (!Number.isSafeInteger(off) || off < 0) return;
+          const bytes = this.bytes.subarray(off, off + length);
+          if (!bytes || bytes.length !== length) return;
+          yield bytes;
+        } else {
+          const bytes = await this.source.readExactly(offset, take, { signal });
+          throwIfSignalAborted(signal);
+          if (!bytes || bytes.length !== length) return;
+          yield bytes;
+        }
+        done += take;
+      }
+    }
   }
 
   attachSource(source, { discardBytes = false } = {}) {
@@ -620,7 +769,11 @@ function dedupeImports(input) {
       const seen = new Set();
       i.sites = i.sites.filter((s) => {
         const scalar = (value) => typeof value === 'bigint' ? value.toString() : value == null ? '' : String(value);
-        const key = [scalar(s.address), scalar(s.offset), s.kind || '', scalar(s.type), scalar(s.addend), scalar(s.pointerFormat), s.weak ? '1' : '0'].join(':');
+        const key = [
+          scalar(s.address), scalar(s.offset), s.kind || '', scalar(s.type), scalar(s.addend),
+          scalar(s.pointerFormat), s.weak ? '1' : '0', scalar(s.recordFileOffset), scalar(s.recordIndex),
+          scalar(s.recordEncoding),
+        ].join(':');
         if (seen.has(key)) return false;
         seen.add(key); return true;
       });
