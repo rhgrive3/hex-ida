@@ -1,6 +1,7 @@
 import { codedIndexSize, tableIndexSize, cilMetadataToken } from './metadata-layout.js';
 import { readCilMetadataBlob } from './call-signature-metadata.js';
 import { parseCilMethodSignature, parseCilTypeSpecSignature } from './call-signature-types.js';
+import { decodeCilCustomAttributeValue } from './custom-attribute-values.js';
 import { stableStringify } from '../../core/identity/index.js';
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 function fail(code) { throw new TypeError(code); }
@@ -726,28 +727,37 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     const constructorTable = customAttributeTypeTables.get(constructorTag);
     failIf(constructorTable == null || constructorRid < 1 || constructorRid > counts[constructorTable], 'cil-customattribute-constructor-invalid');
     const constructorToken = cilMetadataToken(constructorTable, constructorRid);
-    let constructorName = null, ownerName = null;
+    let constructorName = null, ownerName = null, constructorSignatureBlobIndex = null;
     if (constructorTable === 0x0a) {
       const memberRef = memberRefByToken.get(constructorToken);
       failIf(memberRef == null, 'cil-customattribute-constructor-invalid');
       constructorName = memberRef.name;
       ownerName = memberRef.declaringTypeName;
+      constructorSignatureBlobIndex = memberRef.signatureBlobIndex;
     } else {
       const method = methods[constructorRid - 1];
       failIf(method == null, 'cil-customattribute-constructor-invalid');
       constructorName = method.name;
       ownerName = declaringTypeName(0x06, constructorRid);
+      constructorSignatureBlobIndex = method.signatureBlobIndex;
     }
     let rawValue = null, prolog = null, numNamed = null;
+    if (constructorName !== '.ctor') fail('cil-customattribute-constructor-invalid');
+    if (!blobHeap) fail('cil-customattribute-constructor-signature-missing');
+    const constructorSignatureBytes = readCilMetadataBlob(blobHeap, constructorSignatureBlobIndex,
+      'cil-customattribute-constructor-signature-invalid');
+    const customAttributeContext = {
+      assembly, assemblyRefs, types, typeRefs, fields, blobHeap,
+      typeDefOrRefRowCounts:typeSpecRowCounts(),
+    };
     if (valueBlobIndex !== 0) {
       if (!blobHeap) fail('cil-customattribute-value-blob-missing');
       rawValue = readCilMetadataBlob(blobHeap, valueBlobIndex, 'cil-customattribute-value-blob-invalid');
-      // II.23.3 custom attribute values start with the 0x0001 prolog followed by
-      // the named-argument count; a shorter payload cannot be a valid value.
-      if (rawValue.length < 4 || rawValue[0] !== 0x01 || rawValue[1] !== 0x00) fail('cil-customattribute-value-invalid');
-      prolog = 0x0001;
-      numNamed = rawValue[2] | (rawValue[3] << 8);
     }
+    const decodedValue = decodeCilCustomAttributeValue(rawValue ?? new Uint8Array(0), constructorSignatureBytes,
+      customAttributeContext);
+    prolog = decodedValue.prolog;
+    numNamed = decodedValue.numNamed;
     return {
       parentToken: cilMetadataToken(parentTable, parentRid),
       parent: { table: parentTable, rid: parentRid },

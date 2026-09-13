@@ -92,13 +92,16 @@ function paramRows(specs) {
 
 function fixture({
   marshalSpec = [0x14], attributeValue, customAttribute = true, methodSignature,
-  fieldFlags = 0x1006, fieldMarshal, paramMarshal, params,
+  constructorSignature = [0x20, 0x00, 0x01],
+  customAttributeValueIndex, fieldFlags = 0x1006, fieldMarshal, paramMarshal, params,
 } = {}) {
+  const rawAttributeValue = attributeValue ?? [0x01, 0x00, 0x00, 0x00];
   const blobIndex = attributeValueBlobIndex(marshalSpec);
+  const constructorSignatureBlobIndex = blobIndex + 1 + rawAttributeValue.length;
   const extraRows = [
     [0x23, { count: 1, bytes: assemblyRefRows() }],
     [0x01, { count: 2, bytes: typeRefRows() }],
-    [0x0a, { count: 1, bytes: memberRefRows() }],
+    [0x0a, { count: 1, bytes: memberRefRows(constructorSignatureBlobIndex) }],
   ];
   if (params) extraRows.push([0x08, { count: params.length, bytes: paramRows(params) }]);
   const marshalRows = [];
@@ -111,7 +114,7 @@ function fixture({
     extraRows.push([0x0c, { count: 1, bytes: customAttributeRow({
       parentBase: HAS_CUSTOM_ATTRIBUTE_FIELD(1),
       typeBase: CUSTOM_ATTRIBUTE_TYPE_MEMBERREF(1),
-      valueBlobIndex: blobIndex,
+      valueBlobIndex: customAttributeValueIndex ?? blobIndex,
     }) }]);
   }
   const built = buildCil({
@@ -119,7 +122,7 @@ function fixture({
     types: [{ name: 'Holder', namespace: 'Fixture', methodList: 1, fieldList: 1 }],
     fields: [{ name: 'X', flags: fieldFlags }],
     leadingStrings: STRINGS,
-    blobs: [marshalSpec, attributeValue ?? [0x01, 0x00, 0x00, 0x00]],
+    blobs: [marshalSpec, rawAttributeValue, constructorSignature],
     extraRows,
   });
   return built.bytes;
@@ -291,18 +294,43 @@ const PROBE = { supported: true, confidence: 1, formatVersion: 'pe-cli', vmSpecE
 }
 
 {
-  // Non-empty payloads keep the prolog and the named-argument count even when
-  // this decoder cannot interpret the fixed/named arguments themselves.
-  const image = parseCil(fixture({ attributeValue: [0x01, 0x00, 0x02, 0x00, 0x51, 0x01] }));
+  // The CLI's empty-blob form is valid only for constructors with no fixed
+  // arguments; it cannot be used to skip signature-bound payload validation.
+  const image = parseCil(fixture({ customAttributeValueIndex: 0 }));
+  assert.equal(image.customAttributes[0].prolog, null);
+  assert.equal(image.customAttributes[0].numNamed, 0);
+  assert.equal(image.customAttributes[0].rawValue, null);
+  assert.throws(() => parseStrict(fixture({
+    constructorSignature: [0x20, 0x01, 0x01, 0x08],
+    customAttributeValueIndex: 0,
+  })), /cil-customattribute-value-invalid/);
+}
+
+{
+  // Fixed Int32 arguments precede NumNamed. Reading bytes 2..3 as the count
+  // would incorrectly publish 5 instead of zero for this value.
+  const image = parseCil(fixture({
+    constructorSignature: [0x20, 0x01, 0x01, 0x08],
+    attributeValue: [0x01, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00],
+  }));
   assert.equal(image.customAttributes[0].prolog, 0x0001);
-  assert.equal(image.customAttributes[0].numNamed, 2);
-  assert.deepEqual([...image.customAttributes[0].rawValue], [0x01, 0x00, 0x02, 0x00, 0x51, 0x01]);
+  assert.equal(image.customAttributes[0].numNamed, 0);
+  assert.deepEqual([...image.customAttributes[0].rawValue], [0x01, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00]);
+}
+
+{
+  // A named property has its discriminator, declared type, SerString name,
+  // and complete serialized value after the count.
+  const image = parseCil(fixture({
+    attributeValue: [0x01, 0x00, 0x01, 0x00, 0x54, 0x08, 0x01, 0x58, 0x07, 0x00, 0x00, 0x00],
+  }));
+  assert.equal(image.customAttributes[0].numNamed, 1);
 }
 
 {
   // MethodDef constructors are legal and keep their own token identity.
   const withMethodDefCtor = parseCil(buildCil({
-    methods: [{ name: 'Run', body: [0x2a] }],
+    methods: [{ name: '.ctor', signature: [0x20, 0x00, 0x01], body: [0x2a] }],
     types: [{ name: 'Holder', namespace: 'Fixture', methodList: 1, fieldList: 1 }],
     fields: [{ name: 'X', flags: 0x1006 }],
     leadingStrings: STRINGS,
@@ -318,24 +346,27 @@ const PROBE = { supported: true, confidence: 1, formatVersion: 'pe-cli', vmSpecE
   }).bytes);
   assert.equal(withMethodDefCtor.customAttributes[0].constructorToken, '0x06000001');
   assert.deepEqual(withMethodDefCtor.customAttributes[0].constructor, {
-    table: 0x06, rid: 1, name: 'Run', declaringType: 'Fixture.Holder',
+    table: 0x06, rid: 1, name: '.ctor', declaringType: 'Fixture.Holder',
   });
-  assert.equal(withMethodDefCtor.customAttributes[0].attributeTypeName, 'Fixture.Holder::Run');
+  assert.equal(withMethodDefCtor.customAttributes[0].attributeTypeName, 'Fixture.Holder::.ctor');
 }
 
 {
   // Fail-closed structural constraints (II.22.10).
   const buildOne = (override, attributeValue = [0x01, 0x00, 0x00, 0x00]) => {
+    const marshalSpec = [0x14];
+    const constructorSignature = [0x20, 0x00, 0x01];
+    const constructorSignatureBlobIndex = BLOB_BASE_BYTES + 1 + marshalSpec.length + 1 + attributeValue.length;
     const built = buildCil({
       methods: [{ name: 'Run', body: [0x2a] }],
       types: [{ name: 'Holder', namespace: 'Fixture', methodList: 1, fieldList: 1 }],
       fields: [{ name: 'X', flags: 0x1006 }],
       leadingStrings: STRINGS,
-      blobs: [[0x14], attributeValue],
+      blobs: [marshalSpec, attributeValue, constructorSignature],
       extraRows: [
         [0x23, { count: 1, bytes: assemblyRefRows() }],
         [0x01, { count: 2, bytes: typeRefRows() }],
-        [0x0a, { count: 1, bytes: memberRefRows() }],
+        [0x0a, { count: 1, bytes: memberRefRows(constructorSignatureBlobIndex) }],
         [0x0d, { count: 1, bytes: fieldMarshalRow(HAS_FIELD_MARSHAL_FIELD(1), MARSHAL_BLOB_INDEX) }],
         [0x0c, { count: 1, bytes: customAttributeRow(override) }],
       ],
@@ -376,6 +407,19 @@ const PROBE = { supported: true, confidence: 1, formatVersion: 'pe-cli', vmSpecE
       valueBlobIndex: attributeValueBlobIndex([0x14]),
     }, value)), /cil-customattribute-value-invalid/, `value ${value.join(',')} must be rejected`);
   }
+  // Fixed constructor arguments must fit before NumNamed is read.
+  assert.throws(() => parseStrict(fixture({
+    constructorSignature: [0x20, 0x01, 0x01, 0x08],
+    attributeValue: [0x01, 0x00, 0x05, 0x00],
+  })), /cil-customattribute-value-invalid/);
+  // A declared named argument must include its complete serialized value.
+  assert.throws(() => parseStrict(fixture({
+    attributeValue: [0x01, 0x00, 0x01, 0x00, 0x54, 0x08, 0x01, 0x58, 0x07, 0x00, 0x00],
+  })), /cil-customattribute-value-invalid/);
+  // A static method cannot serve as a custom attribute constructor.
+  assert.throws(() => parseStrict(fixture({
+    constructorSignature: [0x00, 0x00, 0x01],
+  })), /cil-customattribute-constructor-signature-invalid/);
 }
 
 console.log('issue #7557/#7556 FieldMarshal + CustomAttribute canonical authority: ok');
