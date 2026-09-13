@@ -1,5 +1,12 @@
 # Explicit solver-backed Phase 8 scalar projection
 
+> 2026-09-13 local delta: generic normal-return PC is now a separate observable in
+> `queryMemoryEquivalence` (PC scope v3; old no-PC scopes v1/v2 retained). This does not authorize
+> native state/fault or whole-region transforms. Canonical add-with-carry numeric/C/V def-use is
+> preserved by compat v1.3.0; full flag state/region adoption remains incomplete.
+> See [local handover](analysis-local-handover.md). Full integration remains **CHECKPOINT-LOCKED**.
+
+
 Ordinary `decompile()` stays synchronous. Optional solver/e-graph code is loaded
 on demand by the asynchronous proof entry, not by the Phase 8 pass registry.
 The default UI and query adapter currently call synchronous `decompile()`.

@@ -5,6 +5,22 @@ import { h, uiButton } from './primitives.js';
 
 const EMPTY = Object.freeze([]);
 
+// The render ledger intentionally retains typed BigInt addresses for audit/replay,
+// while navigation outcomes cross a UI/query boundary and must be JSON-safe.
+// Keep the canonical ledger record untouched and publish only a shallow origin
+// view with decimal address identities when necessary.
+function navigationWitness(record) {
+  const addresses = record?.origin?.addresses;
+  if (!Array.isArray(addresses) || !addresses.some(value => typeof value === 'bigint')) return record;
+  return Object.freeze({
+    ...record,
+    origin:Object.freeze({
+      ...record.origin,
+      addresses:Object.freeze(addresses.map(value => typeof value === 'bigint' ? value.toString() : value)),
+    }),
+  });
+}
+
 /** Navigation over the existing C4-03 map, not a new semantic identity/index.
  * The outer AnalysisQueryAPI snapshot and the inner IR snapshot are distinct:
  * the former guards the lifetime of the latter's immutable query projection.
@@ -52,7 +68,7 @@ export function createDecompilerNavigation(query, { currentSnapshot, isCurrent =
       for (const witness of renderRecordWitnesses(record)) {
         if (record.kind !== 'state-consumer-group' || witness.producedRefs.some(ref => refs.includes(ref))
             || originKey && (witness.originHistory.consumedRefs.includes(originKey) || witness.originHistory.producedRefs.includes(originKey))) {
-          transforms.push(witness);
+          transforms.push(navigationWitness(witness));
         }
       }
     }

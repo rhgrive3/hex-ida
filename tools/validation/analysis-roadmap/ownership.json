@@ -308,7 +308,8 @@
       "tests/phase9/solver/tiered-sym01-rescue.test.mjs",
       "tests/phase9/solver/worker-lifecycle.test.mjs",
       "js/symbolic/memory/terminal-control.js",
-      "tests/phase9/memory/terminal-control.test.mjs"
+      "tests/phase9/memory/terminal-control.test.mjs",
+      "tests/phase9/memory/terminal-control-equivalence.test.mjs"
     ],
     "semanticCompat": [
       "js/core/identity/live-data.js",
@@ -453,7 +454,18 @@
       "js/semantics/ir/from-machine-effects.js",
       "js/semantics/ir/normalize-effects.js",
       "js/semantics/ssa/build.js",
-      "tests/semantic-v2/c4-return-control-target.test.mjs"
+      "tests/semantic-v2/c4-return-control-target.test.mjs",
+      "docs/解析ツール改善.md.txt",
+      "js/metadata/objc.js",
+      "js/targets/architecture/arm64/effects/common.js",
+      "js/targets/architecture/arm64/effects/integer.js",
+      "tests/arm64-direct-branch-target-alignment.test.mjs",
+      "tests/machine-effects/arm64-adr-strict-address-evidence.test.mjs",
+      "tests/machine-effects/arm64-literal-memory-encoding.test.mjs",
+      "docs/analysis-local-acceptance-audit.json",
+      "docs/analysis-local-handover.md",
+      "docs/解析ツール改善.md",
+      "tests/semantic-v2/repair-v1-add-with-carry-def-use.test.mjs"
     ]
   }
 }

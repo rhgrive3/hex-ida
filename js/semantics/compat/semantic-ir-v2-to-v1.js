@@ -597,6 +597,13 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   const stateProjection = buildStateProjectionIndex(ssa);
   preserveExactStateWriteSourceIdentity(ir, producerByValueId, stateProjection, valuesById);
   const comparisonCarrierByNodeId = addComparisonCarriers(ir, values, valuesById);
+  const canonicalValueUseIds = new Set(ir.nodes.flatMap(node => [
+    ...(node.inputs || []), node.metadata?.returnControlTarget?.valueId,
+  ]).filter(Boolean));
+  for (const use of ssa?.uses || []) {
+    if (use.semanticValueId) canonicalValueUseIds.add(use.semanticValueId);
+    if (use.proof?.sourceSemanticValueId) canonicalValueUseIds.add(use.proof.sourceSemanticValueId);
+  }
   const projected = {
     name: options.name ?? ir.functionId,
     functionId: ir.functionId,
@@ -619,7 +626,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     semanticIrVersion: ir.contractVersion,
     compat: {
       projection: 'semantic-ir-v2-to-v1',
-      version: '1.2.0',
+      version: '1.3.0',
       semanticFunctionId: ir.functionId,
       scalarSsa: !!ssa,
       memorySsa: !!memorySsa,
@@ -658,6 +665,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
       const instructions = projectNode(node, {
         blockIndex: block.index,
         row,
+        values,
         valuesById,
         ir,
         ssa,
@@ -666,6 +674,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
         producerByValueId,
         stateProjection,
         comparisonCarrierByNodeId,
+        canonicalValueUseIds,
         physicalStateCurrent,
         blockBySemanticId,
         options,
@@ -720,7 +729,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
 }
 
 export const SEMANTIC_IR_V2_V1_COMPAT = Object.freeze({
-  contractVersion: '1.2.0',
+  contractVersion: '1.3.0',
   legacyOps: V1_OP,
   legacyValueKinds: V1_VK,
   legacyMemoryKinds: V1_MK,

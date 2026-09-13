@@ -117,6 +117,34 @@ function targetOf(bundle) {
   assert.equal(bl?.completeness, 'exact', bl?.unknownEffects?.reason);
   assert.equal(targetOf(bl), target.toString());
 }
+// Decoder target spellings may be sign-extended host integers. The published
+// absolute address is still the canonical unsigned A64 value.
+{
+  const target = 0xfffffffffffffff0n;
+  const signExtended = branch({ rawBytes:[0xf8,0xff,0xff,0x17], explicitTarget:undefined, operandTarget:-16n, address:0x10n });
+  assert.equal(signExtended?.completeness, 'exact', signExtended?.unknownEffects?.reason);
+  assert.equal(targetOf(signExtended), target.toString());
+}
+// PC+4 is architectural 64-bit arithmetic as well. Conditional fallthrough and
+// direct-call continuation must wrap at the top of the address space instead of
+// publishing the impossible host integer 2^64.
+{
+  const top = 0xfffffffffffffffcn;
+  const conditional = branch({ mnemonic:'b.eq', rawBytes:[0,0,0,0x54], explicitTarget:top, operandTarget:top, address:top });
+  assert.equal(conditional?.completeness, 'exact', conditional?.unknownEffects?.reason);
+  assert.equal(conditional.controlEffect.fallthrough?.value, '0');
+
+  const call = branch({ mnemonic:'bl', rawBytes:[1,0,0,0x94], explicitKind:'callTarget', explicitTarget:0n, operandTarget:0n, address:top });
+  assert.equal(call?.completeness, 'exact', call?.unknownEffects?.reason);
+  assert.equal(call.controlEffect.fallthrough?.value, '0');
+}
+// Structured instruction addresses are not sign-extended target spellings.
+// Out-of-domain addresses fail closed rather than being reduced modulo 2^64.
+{
+  const invalid = branch({ explicitTarget:0x1004n, operandTarget:0x1004n, address:(1n << 64n) + 0x1000n });
+  assert.equal(invalid?.completeness, 'partial');
+  assert.equal(invalid.unknownEffects?.reason, 'arm64-b-address-unavailable-for-encoding');
+}
 // Canonicalization is equivalence-only: a genuinely different aligned target
 // remains contradictory instead of being laundered into the encoded edge.
 {

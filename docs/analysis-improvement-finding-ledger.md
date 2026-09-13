@@ -1,11 +1,12 @@
 # Analysis Improvement Finding Closure Ledger
 
-> Current campaign checkpoint (2026-09-13): PR #7036,
-> `feat/analysis-roadmap-v8-current-main-20260907`, worktree `/mnt/workspace/hex-roadmap-v8-integration`.
-> The table and campaign authority below retain historical acceptance scopes; they are not a current completion percentage.
-> In particular, the historical C1-02 completion does not cover recursive returned-value discovery.
-> Current integration, C1 ownership and outstanding C4 obligations are recorded in
-> [the integration checkpoint](analysis-roadmap-v8-integration-checkpoint.md). Full roadmap acceptance remains **CHECKPOINT-LOCKED**.
+> **Current local checkpoint — 2026-09-13:** attached ZIP; upstream identity unverified.
+> The table below is a historical ledger, not the current implementation inventory or completion percentage.
+> Recursive C1-02 discovery is already present in the supplied integration tree and was reused, not rebuilt.
+> See [current implementation/acceptance](解析ツール改善.md),
+> [all 23 findings / 21 tasks](analysis-local-acceptance-audit.json), and
+> [local evidence handover](analysis-local-handover.md).
+> The original denominator and historical receipts remain intact. Full acceptance is **CHECKPOINT-LOCKED**.
 
 ## Campaign authority
 
@@ -36,7 +37,7 @@ fail-closed regressions, Spec Kit convergence, actual changed-file ownership rev
 proof, candidate merge-tree proof, required CI, expected-head merge, and post-merge live-main
 verification. Denominators and tests may not be weakened.
 
-## Current ledger
+## Historical ledger (retained; not current closure authority)
 
 `—` means no implementation artifact exists yet, not that the field is inapplicable.
 

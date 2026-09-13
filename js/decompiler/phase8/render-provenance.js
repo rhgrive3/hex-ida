@@ -159,7 +159,12 @@ function canonicalOrigins(raw) {
   const typed = sourceOf(raw);
   return {
     rows: canonicalList(typed.rows, true),
-    addresses: canonicalList(typed.addresses, false),
+    // Keep addresses typed while records/entities are being associated. The
+    // transform ledger is an audit/replay boundary and sourceOf intentionally
+    // rejects stringified addresses; converting BigInt here used to erase the
+    // producer address on the next typed normalization. Public entity origins
+    // are JSON-safe'd only in freezeOrigins below.
+    addresses: canonicalLedgerAddresses(typed.addresses),
     ir: canonicalList(typed.ir, false),
     ssaRefs: [
       ...canonicalList(typed.ssaDefs.map((value) => `def:${value}`), false),
@@ -172,7 +177,7 @@ function mergeOrigins(left, right) {
   const rightCanonical = canonicalOrigins(right);
   return {
     rows:canonicalList([...left.rows, ...rightCanonical.rows], true),
-    addresses:canonicalList([...left.addresses, ...rightCanonical.addresses], false),
+    addresses:canonicalLedgerAddresses([...left.addresses, ...rightCanonical.addresses]),
     ir:canonicalList([...left.ir, ...rightCanonical.ir], false),
     ssaRefs:canonicalList([...left.ssaRefs, ...rightCanonical.ssaRefs], false),
   };
@@ -230,7 +235,7 @@ function truncateOrigins(origins, cap) {
 function freezeOrigins(origins) {
   return Object.freeze({
     rows:Object.freeze(origins.rows),
-    addresses:Object.freeze(origins.addresses),
+    addresses:Object.freeze(canonicalList(origins.addresses, false)),
     ir:Object.freeze(origins.ir),
     ssaRefs:Object.freeze(origins.ssaRefs),
   });
@@ -266,7 +271,7 @@ function expressionHistoryRecord(record, cap) {
     // These origins feed a line only through an observed producer binding.
     origin:{
       rows:canonicalList([...boundedBefore.rows, ...boundedAfter.rows], true),
-      addresses:canonicalList([...boundedBefore.addresses, ...boundedAfter.addresses], false),
+      addresses:canonicalLedgerAddresses([...boundedBefore.addresses, ...boundedAfter.addresses]),
       ir:canonicalList([...boundedBefore.ir, ...boundedAfter.ir], false),
       ssaDefs:canonicalList(refs.filter(ref => ref.startsWith('def:')).map(ref => ref.slice(4)), false),
       ssaUses:canonicalList(refs.filter(ref => ref.startsWith('use:')).map(ref => ref.slice(4)), false),
@@ -705,7 +710,12 @@ export function buildRenderProvenance({ result, snapshotId = null, budget = null
     ...record,
     ...(record.originHistory ? { renderedBinding:entityRefs.size ? 'producer-bound' : 'unresolved' } : {}),
     origin:Object.freeze({
-      addresses:Object.freeze(canonicalLedgerAddresses(typedOrigin.addresses)),
+      // Expression histories are public/query payloads and retain serializable
+      // decimal address identities. Association already happened above using
+      // the typed internal record, so stringify only after the typed boundary.
+      addresses:Object.freeze(record.originHistory
+        ? canonicalList(typedOrigin.addresses, false)
+        : canonicalLedgerAddresses(typedOrigin.addresses)),
       rows:Object.freeze(canonicalList(typedOrigin.rows, true)),
       ir:Object.freeze(canonicalList(typedOrigin.ir, false)),
       ssaDefs:Object.freeze(canonicalList(typedOrigin.ssaDefs, false)),

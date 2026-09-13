@@ -1,7 +1,7 @@
 /** Exact finite-byte execution equivalence, not general SMT Array/effect theory.
  * The executor supplies both path sets. All bytes in a <=16-byte domain, or
  * every modified concrete byte, or every symbolic write-address expression,
- * plus returns form one Bool obligation. For each valuation the written bytes
+ * plus ABI returns and explicit normal-completion return targets form one Bool obligation. For each valuation the written bytes
  * are covered by these terms; outside that set both memories equal the SAME
  * initial byte function. This is exact over the full BV1..64 address space,
  * not finite sampling and not a claim of general Array-sort backend support.
@@ -15,6 +15,7 @@ import { createByteMemory, assertMemoryExpr, isMemoryInitialSymbol } from '../me
 import { createQueryGuard, QueryFailure, boundedLimit, sameMemoryIdentity } from '../memory/query-state.js';
 import { isExecutionResult, executionWriteFootprint, executionSymbolicWriteFootprint, observeExecutionBytes } from '../memory/execution-snapshot.js';
 import { semanticValueIdentity } from '../memory/value-identity.js';
+import { TERMINAL_CONTROL_SCHEMA } from '../memory/terminal-control.js';
 import { inspectMemoryExpressions, boundedExpressionEvaluationCost } from '../memory/expression-contract.js';
 import { symbolicExecute } from '../executor.js';
 import { createBool, createFreshSymbol, bvSort, createCompare, createConnective, computeStructuralHash, evaluateExpr } from '../expr/index.js';
@@ -45,9 +46,16 @@ function equals(a,b,guard) {
 }
 function checkEffects(ir,execution,guard) {
   if(execution.assumptions?.length)throw new QueryFailure('conditional-machine-effects-outside-proof-scope');
-  // This verifier compares ABI values and bytes. A return control target is a
-  // separate observable even on generic IR without MachineEffects metadata.
-  if(execution.paths.some(path=>path.terminalControl))throw new QueryFailure('terminal-control-outside-proof-scope');
+  // Complete generic paths may carry a separate normal-return PC. Do not
+  // silently extend this to exception state, conditional completion or native
+  // effects: these still need their own canonical proof before adoption.
+  for(const path of execution.paths) {
+    guard.take('workItems');
+    const control=path.terminalControl;
+    if(control && (control.schemaVersion!==TERMINAL_CONTROL_SCHEMA || control.kind!=='return'
+        || control.faults.length || control.normalCompletionCondition.kind!=='const'
+        || control.normalCompletionCondition.value!==true))throw new QueryFailure('unmodeled-terminal-control-effects');
+  }
   for(const block of ir.blocks)for(const group of [block.phis ?? [], block.insts])for(const inst of group) {
     guard.take('workItems');
     // A generic scalar/byte program has no unobserved physical register or
@@ -69,6 +77,12 @@ function firstDivergence(before,after,model,guard) {
       if(address.status!=='value'||typeof address.value!=='bigint')throw new QueryFailure('invalid-address-model');
       return Object.freeze({kind:'memory-byte',address:address.value,before:b.value,after:a.value});
     }
+  }
+  if(left.terminalControl && right.terminalControl) {
+    guard.take('workItems');
+    const b=evaluateExpr(left.terminalControl.target,model),a=evaluateExpr(right.terminalControl.target,model);
+    if(b.status!=='value'||a.status!=='value')throw new QueryFailure('invalid-terminal-control-model');
+    if(b.value!==a.value)return Object.freeze({kind:'return-target',before:b.value,after:a.value});
   }
   return Object.freeze({kind:'return-value',before:left.returnValue?evaluateExpr(left.returnValue,model).value:null,
     after:right.returnValue?evaluateExpr(right.returnValue,model).value:null});
@@ -139,6 +153,11 @@ export async function queryMemoryEquivalence(request={}) {
     if(after.status!=='complete'||!isExecutionResult(after,guard.identity,afterIr))throw new QueryFailure(`after:${after.reason??'incomplete-execution'}`);
     checkEffects(beforeIr,before,guard);checkEffects(afterIr,after,guard);
     if(!before.paths.length||!after.paths.length)throw new QueryFailure('missing-terminal-path');
+    const hasTerminalControl=before.paths.some(path=>path.terminalControl)||after.paths.some(path=>path.terminalControl);
+    // An omitted target is unknown, not a wildcard or permission to narrow the
+    // observable set. Every terminal path on both sides must supply the PC.
+    if(hasTerminalControl && (!before.paths.every(path=>path.terminalControl)
+        || !after.paths.every(path=>path.terminalControl)))throw new QueryFailure('terminal-control-presence-mismatch');
     let addresses;
     if(proofMode==='finite-domain')addresses=Object.freeze(Array.from({length:domainBytes},(_,i)=>BigInt(i)));
     else {
@@ -169,6 +188,7 @@ export async function queryMemoryEquivalence(request={}) {
       const b=beforePaths[i],a=afterPaths[j];
       if(b.memoryObservations.length!==addresses.length||a.memoryObservations.length!==addresses.length)throw new QueryFailure('missing-memory-observable');
       const equal=[equals(b.returnValue,a.returnValue,guard)];
+      if(hasTerminalControl)equal.push(equals(b.terminalControl.target,a.terminalControl.target,guard));
       for(let k=0;k<addresses.length;k++) {guard.take('workItems');equal.push(equals(b.memoryObservations[k].expression,a.memoryObservations[k].expression,guard));}
       guard.take('obligationNodes',3);
       obligations.push(createConnective('implies',conjunction([pathGuardsB[i],pathGuardsA[j]]),conjunction(equal)));
@@ -181,12 +201,13 @@ export async function queryMemoryEquivalence(request={}) {
     // well as the final obligation, even when a byte compares equal to itself.
     let observationCount=0;
     for(const paths of [beforePaths,afterPaths])for(const path of paths) {
-      observationCount+=path.memoryObservations.length+(path.returnValue?1:0);
+      observationCount+=path.memoryObservations.length+(path.returnValue?1:0)+(path.terminalControl?1:0);
     }
     guard.take('workItems',1+preconditions.length+addressTerms.length+observationCount);
     const inspectedRoots=[obligation,...preconditions,...addressTerms];
     for(const paths of [beforePaths,afterPaths])for(const path of paths) {
       if(path.returnValue)inspectedRoots.push(path.returnValue);
+      if(path.terminalControl)inspectedRoots.push(path.terminalControl.target);
       for(const observation of path.memoryObservations)inspectedRoots.push(observation.expression);
     }
     const collected=inspectMemoryExpressions(inspectedRoots,{maxExprNodes:25000,maxExprDepth:128,guard});
@@ -210,7 +231,7 @@ export async function queryMemoryEquivalence(request={}) {
     guard.take('workItems',1+inspectedRoots.length+pathGuardsB.length+pathGuardsA.length);
     const roots=[tautology,...inspectedRoots,...pathGuardsB,...pathGuardsA];
     guard.take('reservedEvaluations',boundedExpressionEvaluationCost(roots,guard)*(wide?4:(2**symbolBits)*4));
-    scope=Object.freeze({kind:'finite-byte-execution',version:proofMode==='symbolic-writes'?2:1,identity:guard.identity,geometry,domainBytes,proofMode,
+    scope=Object.freeze({kind:'finite-byte-execution',version:hasTerminalControl?3:proofMode==='symbolic-writes'?2:1,identity:guard.identity,geometry,domainBytes,proofMode,
       observedAddresses:proofMode==='symbolic-writes'?Object.freeze(addresses.filter(a=>a.kind==='const').map(a=>a.value)):addresses,
       observedAddressTerms:proofMode==='symbolic-writes'?addresses:Object.freeze([]),
       addressCoverage:proofMode==='symbolic-writes'?'all-addresses':(proofMode==='finite-domain'?'finite-domain':'concrete-write-footprint'),
@@ -218,7 +239,8 @@ export async function queryMemoryEquivalence(request={}) {
       outsideFootprint:proofMode!=='finite-domain'?'unchanged-identical-initial-function':'entire-domain-observed',
       initialBytes:Object.freeze(initialBytes),inputs:Object.freeze(inputRecords),preconditions,
       beforePathCount:before.paths.length,afterPathCount:after.paths.length,
-      effects:Object.freeze(['terminal-return','all-terminal-memory-bytes']),unmodeledEffects:'rejected',
+      effects:Object.freeze(['terminal-return','all-terminal-memory-bytes',...(hasTerminalControl?['terminal-control-target']:[])]),
+      ...(hasTerminalControl?{terminalControlSchemaVersion:TERMINAL_CONTROL_SCHEMA}:{}),unmodeledEffects:'rejected',
       obligationHash:computeStructuralHash(obligation)});
     const backend=wide?new TieredBvBackend({maxExprNodes:25000,maxVariables:32768,maxClauses:131072,maxDecisions:8192,maxPropagations:500000}):new ExhaustiveBvBackend({maxAssignments:4096,maxExprNodes:25000});
     session=backend.createSession({timeoutMs:Math.max(1,Math.floor(guard.remainingMilliseconds())),signal:request.signal});

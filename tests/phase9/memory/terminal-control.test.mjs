@@ -366,6 +366,6 @@ test('ABI/byte equivalence cannot ignore a different generic terminal PC', async
   const result = await queryMemoryEquivalence({ identity, beforeIr:attachTarget(partialStoreFixture(), 0x1000n),
     afterIr:attachTarget(partialStoreFixture(), 0x2000n), backendTier:'tiered', memory:{ addressBits:64 }, timeoutMs:5000 });
   assert.equal(result.eligible, false);
-  assert.equal(result.verdict, 'unknown');
-  assert.equal(result.reason, 'terminal-control-outside-proof-scope');
+  assert.equal(result.verdict, 'refuted');
+  assert.deepEqual(result.firstDivergence, { kind:'return-target', before:0x1000n, after:0x2000n });
 });

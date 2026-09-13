@@ -130,7 +130,7 @@ test('135-case import declares its exact compatibility, semantic-version and reg
     missing.owners[owner] = missing.owners[owner].filter(path => path !== file);
     assert.throws(() => validateRoadmapInventory(BRANCH, 'phase8', union, missing), /undeclared roadmap path/);
   }
-  for (const file of ['js/targets/architecture/arm64/effects/common.js',
+  for (const file of ['js/targets/architecture/arm64/effects/flags.js',
     'js/semantics/ir/contract.js', 'tools/validation/machine-effects/unreviewed.mjs']) {
     const widened = structuredClone(manifest);
     widened.owners.integration.push(file);
@@ -322,7 +322,7 @@ test('X-02 user acceptance reserves exact corpus paths without widening Apple ru
       missing.owners.integration = missing.owners.integration.filter(path => path !== file);
       assert.throws(() => validateRoadmapInventory(BRANCH, phase, union, missing), /undeclared roadmap path/);
     }
-    for (const foreign of ['js/binary/macho-dyld.js', 'js/metadata/swift.js', 'js/metadata/objc.js',
+    for (const foreign of ['js/binary/macho-dyld.js', 'js/metadata/swift.js',
       'tests/scpa/fixtures/x02-unreviewed.mjs']) {
       assert.throws(() => validateRoadmapInventory(BRANCH, phase, [...union, foreign]), /undeclared roadmap path/);
       const widened = structuredClone(manifest); widened.owners.integration.push(foreign);
@@ -355,5 +355,43 @@ test('C4 return-target integration owns its exact canonical boundary without wid
       const widened = structuredClone(manifest); widened.owners.integration.push(foreign);
       assert.throws(() => validateRoadmapManifest(widened), /outside integration owner/);
     }
+  }
+});
+
+// Imported runtime, tests and acceptance records form one checked inventory.
+test('local handover and ARM64 import require every exact path without broadening sibling ownership', () => {
+  const manifest = loadRoadmapManifest(), assignments = validateRoadmapManifest(manifest);
+  const expected = {
+  "integration": [
+    "docs/解析ツール改善.md.txt",
+    "js/metadata/objc.js",
+    "js/targets/architecture/arm64/effects/common.js",
+    "js/targets/architecture/arm64/effects/integer.js",
+    "tests/arm64-direct-branch-target-alignment.test.mjs",
+    "tests/machine-effects/arm64-adr-strict-address-evidence.test.mjs",
+    "tests/machine-effects/arm64-literal-memory-encoding.test.mjs",
+    "docs/analysis-local-acceptance-audit.json",
+    "docs/analysis-local-handover.md",
+    "docs/解析ツール改善.md",
+    "tests/semantic-v2/repair-v1-add-with-carry-def-use.test.mjs"
+  ],
+  "symbolic": [
+    "tests/phase9/memory/terminal-control-equivalence.test.mjs"
+  ]
+};
+  const union = [...assignments.keys()];
+  for (const [owner, files] of Object.entries(expected)) for (const file of files) {
+    assert.equal(assignments.get(file), owner);
+    const missing = structuredClone(manifest);
+    missing.owners[owner] = missing.owners[owner].filter(path => path !== file);
+    for (const phase of ['phase7', 'phase8']) {
+      assert.throws(() => validateRoadmapInventory(BRANCH, phase, union, missing), /undeclared roadmap path/);
+    }
+  }
+  for (const file of ['js/metadata/swift.js', 'js/targets/architecture/arm64/effects/flags.js',
+    'tests/semantic-v2/unreviewed.test.mjs', 'docs/analysis-unreviewed.md']) {
+    const widened = structuredClone(manifest);
+    widened.owners.integration.push(file);
+    assert.throws(() => validateRoadmapManifest(widened), /outside integration owner/);
   }
 });

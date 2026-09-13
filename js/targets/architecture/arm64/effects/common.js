@@ -97,6 +97,27 @@ export function canonicalAddressValue(value) {
   return null;
 }
 
+const MIN_SIGNED_ADDRESS_64 = -(1n << 63n);
+const MAX_UNSIGNED_ADDRESS_64 = (1n << 64n) - 1n;
+
+// Instruction addresses are architectural PCs, not decoder spellings.  They
+// must already be canonical unsigned A64 addresses; accepting an oversized PC
+// and later taking a modulo-2^64 displacement can launder malformed structured
+// evidence into an exact effect.
+export function canonicalArm64InstructionAddress(value) {
+  const address = canonicalAddressValue(value);
+  return address != null && address >= 0n && address <= MAX_UNSIGNED_ADDRESS_64 ? address : null;
+}
+
+// Decoder-facing absolute targets can legitimately arrive sign-extended. Keep
+// that compatibility while rejecting values outside the one-sign-extension
+// envelope, then publish/compare the architectural unsigned 64-bit address.
+export function canonicalArm64TargetAddress(value) {
+  const target = canonicalAddressValue(value);
+  if (target == null || target < MIN_SIGNED_ADDRESS_64 || target > MAX_UNSIGNED_ADDRESS_64) return null;
+  return BigInt.asUintN(64, target);
+}
+
 // Canonical target evidence carried by an ADR/ADRP target operand.
 export function adrTargetOperandValue(op) {
   if (op?.k === 'imm') return canonicalAddressValue(op.value);

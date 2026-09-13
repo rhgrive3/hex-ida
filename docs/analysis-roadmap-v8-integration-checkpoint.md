@@ -1,5 +1,63 @@
 # Analysis roadmap v8 integration checkpoint
 
+## 2026-09-14: ローカル引き継ぎと ARM64 ソースの再照合
+
+PR #7036 の `53b6d2a7ef0695e63111689f7d36598724722f49` を入力に、ローカル引き継ぎの
+19 ファイルと、その後の ARM64 10 ファイルを候補ツリーへ取り込みました。
+ARM64 ZIP の添付 patch は render-provenance の変更前内容が実際の入力 ZIP と一致しません。
+そのため添付 patch を直接適用せず、両 ZIP の source の差分を再構成しました。
+日本語ファイル名の ZIP encoding 差は正規化し、実在する 4692 source ファイルを照合しています。
+
+ADR/ADRP の数値 operand が 64-bit 範囲外でも、別の正常な pcRelTarget があると
+exact になる残件を再現しました。元の数値証拠の存在を保ったまま domain 検査し、
+矛盾を消さず partial とする修正と、公開 dispatcher / integer family 両入口の回帰を追加します。
+新しい source/test/docs は既存所有権の正確なパスへ追加し、各パス欠落と隣接パスの
+無断追加を拒否する回帰を保持します。
+
+開発候補の重点 14 ファイル、追加 ADR 回帰、所有権 19 検査、userscript build は通過しました。
+canonical `npm run check` は machine-effects の 13 ファイルで失敗しています。
+ARM64 の 2 分母は変更前後とも LLVM の CSSC 非対応 / objdump 出力不一致で同じ失敗です。
+そのほか browser revision 不足、x86 の MOV extension 回帰、dirty tree の独立 SHA 証拠などが残ります。
+これらは成功に読み替えません。正確なコミットでの再検査・独立レビュー・生成物再現性は
+永続 evidence `roadmap-resume-20260914` に記録し、全体は **CHECKPOINT-LOCKED** を維持します。
+
+X-02 の別レーン `684f1f0` にある 120 行は PR #7036 にまだ統合されていません。
+今回の 59 機能検査はその置換ではありません。元の 23 finding / 21 FR、全 C4/ME/Apple、
+現 main との統合、公開/実機/独立受入は引き続き対象です。
+
+## 2026-09-13: 添付 ZIP からのローカル実装・検証
+
+今回の正本はユーザー添付 `hex-ida-feat-analysis-roadmap-v8-current-main-20260907 (3).zip`。
+SHA-256 は `adb2d73eeb0695f380824fad1028ad77eed07fffa04bccdac16caff9edb0a9fa`。
+ZIP には upstream Git 履歴がなく、下の過去 SHA を remote で再検証していない。
+ローカル import commit は `5729136d80c8f478c4d22621eed9d6850083dafe` であり upstream SHA ではない。
+最新の入口は [解析実装・受入の現況](解析ツール改善.md)、詳細は
+[ローカル引き継ぎ](analysis-local-handover.md) と [全23/21照合](analysis-local-acceptance-audit.json)。
+
+今回修正した runtime は、generic normal-return の PC observable の同値検証、
+canonical add-with-carry 数値結果と C/V の別 def-use、既存 ObjC provider から category/protocol への
+配線・address・cache 世代管理の 3 領域。新しい solver、pointer parser、ABI/type graph は作っていない。
+C1/C3 と SYM-01/X-03 の入力内の既存成果はそのまま再利用する。
+compat は 1.3.0、compat pipeline は 1.7.0、ObjC provider は 1.1.0。
+PC を比較する proof scope は version 3 とし、従来の PC なし scope 1/2 は保持する。
+
+X-02 の今回の有限検査は 49 入力・59 機能 case と 2 manifest 検査。
+末尾の引き継ぎにある別 remote `684f1f0bb9c4809cd9bbaba01f01a4849151cc0b` の
+120 行の成果は入力 ZIP に同梱されていない。今回取得/統合/独立レビューしたとは扱わず、
+この新規有限 matrix でその分母を置き換えない。旧 4 パス予約は当時の担当境界として履歴を保持する。
+今回のユーザー依頼は全ローカル統合のため shared runtime の原因修正も含むが、remote との重複確認は未実施。
+
+**残件を消して完了にしない。** 標準 120ms、flags/NZCV の状態証明、領域全体・PHI/CFG 削除、
+メモリ/例外/ループ、元の表示逆引き不良、ME の独立資料/実機、Apple version/cache/auth/signing、
+LLVM 18.1.3 oracle と全 canonical gate が残る。
+`transformAuthorization:false` と **CHECKPOINT-LOCKED** を維持する。
+生成 userscript は今回の source から再ビルドできておらず、入力の旧成果を保持するだけである。
+
+実行結果は配布 ZIP の `evidence/verified-results.json`、全ログは `evidence/logs/` と
+`evidence/tmp/`。開始時・中間・修正後を分離し、古い PASS を現 runtime の証拠に転記しない。
+自己レビューのみ実施し、独立 reviewer、remote CI/merge、実機 activation は実施していない。
+作業場所は本環境の `/mnt/data/`。旧環境の `/mnt/workspace/` に保存したとの主張はしない。
+
 ## 2026-09-13: C4 の native RET fault を入口経路の検証へ接続
 
 `035a577ffdf0bb71830106b3c0381d9866802db3` から、実行した RET の block/index を

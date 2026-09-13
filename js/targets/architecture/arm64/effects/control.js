@@ -24,11 +24,21 @@ export function isArm64ControlEffectMnemonic(mnemonic) {
 }
 
 function addressRef(address) {
-  return { kind: 'absolute-address', value: BigInt(address).toString(), widthBits: 64 };
+  // A64 control addresses are 64-bit architectural values. Decoder-facing
+  // evidence may spell a wrapped target as a sign-extended negative integer,
+  // and fallthrough/link arithmetic can cross 2^64. Never publish those host
+  // integer spellings as distinct absolute addresses.
+  return { kind:'absolute-address', value:BigInt.asUintN(64, BigInt(address)).toString(), widthBits:64 };
 }
 
 function instructionAddress(instruction) {
-  return instruction?.address == null ? null : strictTargetInteger(instruction.address);
+  if (instruction?.address == null) return null;
+  const address = strictTargetInteger(instruction.address);
+  // Unlike a decoder's sign-extended *target* spelling, the instruction's own
+  // address is structured absolute-address authority and must already be in
+  // the unsigned A64 domain. Reject over/underflow instead of modulo-laundering
+  // malformed evidence into an exact edge.
+  return address != null && address >= 0n && address <= MAX_UNSIGNED_ADDRESS_64 ? address : null;
 }
 
 function fallthroughRef(instruction) {
@@ -38,8 +48,8 @@ function fallthroughRef(instruction) {
 
 function sameAbsoluteTarget(target, reference) {
   if (target == null || reference?.kind !== 'absolute-address' || reference.value == null) return false;
-  const left = strictTargetInteger(target);
-  const right = strictTargetInteger(reference.value);
+  const left = canonicalAbsoluteTarget64(target);
+  const right = canonicalAbsoluteTarget64(reference.value);
   return left != null && right != null && left === right;
 }
 

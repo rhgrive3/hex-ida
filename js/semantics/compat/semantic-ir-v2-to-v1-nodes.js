@@ -229,7 +229,14 @@ function clearPhysicalState(variable, context) {
 }
 
 function addWithCarryOperands(node, context) {
-  if (node.operator !== 'add-with-carry' || (node.inputs || []).length < 3) return null;
+  const intrinsic = node.intrinsic;
+  if (node.operator !== 'add-with-carry' || node.inputs?.length !== 3 || node.outputs?.length !== 3
+      || intrinsic?.inputs?.length !== 3 || intrinsic.outputs?.length !== 3
+      || intrinsic.inputs.some((id, index) => id !== node.inputs[index])
+      || intrinsic.outputs.some((id, index) => id !== node.outputs[index])
+      || intrinsic.determinism !== 'deterministic' || intrinsic.stateReads?.length !== 0
+      || intrinsic.stateWrites?.length !== 0 || intrinsic.controlEffects?.length !== 0
+      || intrinsic.memoryRead?.scope !== 'none' || intrinsic.memoryWrite?.scope !== 'none') return null;
   const metadata = operationMetadata(node);
   const subtract = metadata.subtract === true;
   const carry = constForValue(node.inputs[2], context);
@@ -242,7 +249,12 @@ function addWithCarryOperands(node, context) {
   }
   const lhs = context.valuesById.get(node.inputs[0]) ?? null;
   const rhs = context.valuesById.get(rhsId) ?? null;
-  return lhs && rhs ? { lhs, rhs, subtract } : null;
+  const carryInput = context.valuesById.get(node.inputs[2]);
+  const result = context.valuesById.get(node.outputs[0]);
+  if (!lhs || !rhs || !result || lhs.bits !== rhs.bits || lhs.bits !== result.bits
+      || carryInput?.bits !== 1 || context.valuesById.get(node.outputs[1])?.bits !== 1
+      || context.valuesById.get(node.outputs[2])?.bits !== 1) return null;
+  return { lhs, rhs, subtract };
 }
 
 function hasRegisterStateWriteForValue(valueId, context) {
@@ -316,6 +328,75 @@ function appendComparisonInstruction(node, context, inst, carrier, args, sub, ro
   };
   carrier.def = cmp;
   return cmp;
+}
+
+/** Expand the secondary results of the canonical add-with-carry intrinsic.
+ * The input on the right is the actual canonical addend (already inverted for
+ * subtraction), not a mnemonic-derived operand. For every incoming carry bit,
+ * carry-out is msb((a & b) | ((a | b) & ~sum)); signed overflow is
+ * msb(~(a ^ b) & (a ^ sum)). This is only a pure BV lowering, not an authority
+ * for state writes, conditional execution, exceptions, or transform adoption.
+ */
+function appendAddWithCarryResults(node, context, sum, outputs, instructions, represented) {
+  const [a, b] = node.inputs.map(id => context.valuesById.get(id));
+  const width = sum?.bits;
+  if (!sum || !a || !b || !Number.isInteger(width) || width < 1 || width > 64
+      || a.bits !== width || b.bits !== width || outputs[1]?.bits !== 1 || outputs[2]?.bits !== 1) return;
+  const needed = outputs.slice(1, 3).map(value => context.canonicalValueUseIds.has(value.semanticValueId));
+  for (let i = 0; i < 2; i++) {
+    if (needed[i]) continue;
+    // Retain the source identity, but do not execute work for a result with no
+    // canonical consumer. A later request for this omitted value is explicitly
+    // undefined in this projection, never a new unconstrained argument.
+    outputs[i + 1].kind = 'undef';
+    outputs[i + 1].compatOmitted = 'unused-add-with-carry-result';
+    represented.add(outputs[i + 1].semanticValueId);
+  }
+  if (!needed.some(Boolean)) return;
+  const temporary = (suffix) => {
+    const values = context.values;
+    const value = {
+      id: values.length, vid: values.length + 1, kind: 'def', reg: null, stateKey: null,
+      version: 0, bits: width, def: null, uses: [], const: null, range: null,
+      signed: null, nullable: null, type: null, label: `add-with-carry:${node.id}:${suffix}`,
+      semanticValueId: null, semanticSsaValueId: null, sourceEntityId: node.id,
+      machineType: { kind: 'bitvector', widthBits: width }, origin: node.origin,
+      compatDerived: 'add-with-carry-result',
+    };
+    values.push(value);
+    return value;
+  };
+  const emit = (suffix, op, sub, args, dst = temporary(suffix), extra = {}) => {
+    const inst = baseInstruction(node, context.blockIndex, context.row, context.options);
+    inst.semanticNodeId = `${node.id}:add-with-carry:${suffix}`;
+    inst.op = op; inst.sub = sub; inst.dst = dst; inst.bits = dst.bits;
+    attachArgs(inst, args);
+    inst.extra = { semanticNodeId: node.id, widthBits: dst.bits,
+      attributes: node.attributes || {}, completeness: node.completeness,
+      compatSource: 'exact-add-with-carry-result', ...extra };
+    dst.def = inst;
+    instructions.push(inst);
+    return dst;
+  };
+  if (needed[0]) {
+    const both = emit('both', V1_OP.BIN, 'and', [a, b]);
+    const either = emit('either', V1_OP.BIN, 'or', [a, b]);
+    const invertedSum = emit('inverted-sum', V1_OP.UN, 'not', [sum]);
+    const propagated = emit('propagated', V1_OP.BIN, 'and', [either, invertedSum]);
+    const carries = emit('carries', V1_OP.BIN, 'or', [both, propagated]);
+    emit('carry-out', V1_OP.BFX, 'extract', [carries], outputs[1],
+      { lsb: width - 1, width: 1, signed: false, bitfieldKind: 'ubfx' });
+    represented.add(outputs[1].semanticValueId);
+  }
+  if (needed[1]) {
+    const signDifference = emit('sign-difference', V1_OP.BIN, 'xor', [a, b]);
+    const sameSigns = emit('same-signs', V1_OP.UN, 'not', [signDifference]);
+    const resultDifference = emit('result-difference', V1_OP.BIN, 'xor', [a, sum]);
+    const overflow = emit('overflow-bits', V1_OP.BIN, 'and', [sameSigns, resultDifference]);
+    emit('overflow', V1_OP.BFX, 'extract', [overflow], outputs[2],
+      { lsb: width - 1, width: 1, signed: false, bitfieldKind: 'ubfx' });
+    represented.add(outputs[2].semanticValueId);
+  }
 }
 
 export function projectNode(node, context) {
@@ -706,9 +787,14 @@ export function projectNode(node, context) {
       const carrier = comparisonCarrierByNodeId.get(node.id) ?? null;
       const addSub = addWithCarryOperands(node, context);
       if (addSub) {
-        const resultIsWritten = node.outputs?.[0] && hasRegisterStateWriteForValue(node.outputs[0], context);
+        const resultValueId = node.outputs?.[0] ?? null;
+        const resultIsWritten = resultValueId != null && hasRegisterStateWriteForValue(resultValueId, context);
+        const resultIsConsumed = resultValueId != null && context.ir.nodes.some((candidate) =>
+          candidate.id !== node.id && candidate.inputs?.includes(resultValueId));
         const args = [addSub.lhs, addSub.rhs];
-        if (carrier && !resultIsWritten) {
+        // N/Z consumers still use the numeric result even when the ISA discards
+        // the destination register (CMP/CMN). A display carrier has another ID.
+        if (carrier && !resultIsWritten && !resultIsConsumed && outputValues.length < 3) {
           setBasic(V1_OP.CMP, addSub.subtract ? 'sub' : 'add', args, carrier);
           inst.bits = Math.max(1, ...args.map((value) => value.bits || 1));
           inst.extra.comparison = 'semantic-flag-result';
@@ -722,7 +808,8 @@ export function projectNode(node, context) {
             if (cmp) extraInstructions.push(cmp);
           }
         }
-        for (const value of outputValues) representedExtraValueIds.add(value.semanticValueId);
+        appendAddWithCarryResults(node, context, primaryOutput, outputValues,
+          extraInstructions, representedExtraValueIds);
       } else if (!deterministicIntrinsicProjection(node, context, inst, setBasic, primaryOutput, inputValues)) {
         setBasic(V1_OP.CLOBBER, null);
         inst.extra.intrinsic = node.intrinsic;
@@ -759,7 +846,6 @@ export function projectNode(node, context) {
   const extras = [];
   for (const extraOutput of outputValues.slice(1)) {
     if (representedExtraValueIds.has(extraOutput.semanticValueId)) {
-      if (extraOutput.def == null && extraInstructions[0]) extraOutput.def = extraInstructions[0];
       continue;
     }
     const extra = defaultUnknownInstruction(node, blockIndex, row, options, {
