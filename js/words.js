@@ -80,6 +80,10 @@
   const rn = (w) => (w >>> 5) & 0x1f;
   const rm = (w) => (w >>> 16) & 0x1f;
 
+  const isPrefetchImmediate = (w) => masked(w, 0xffc00000) === 0xf9800000;
+  const isPrefetchLiteral = (w) => masked(w, 0x3b000000) === 0x18000000
+    && ((w >>> 30) & 3) === 3 && ((w >>> 26) & 1) === 0;
+
   /* ── 分岐 ───────────────────────────────────────────────── */
 
   /** b / bl の飛び先。違う命令なら null。 */
@@ -166,14 +170,16 @@
     if (masked(w, 0x3b000000) === 0x39000000) {
       const scale = transferScale(w);
       const isLoad = transferIsLoad(w);
+      const prefetch = isPrefetchImmediate(w);
       return {
         rn: rn(w), rd: rd(w),
         imm: BigInt((w >>> 10) & 0xfff) << BigInt(scale),
-        load: isLoad, store: !isLoad,
+        load: isLoad, store: !isLoad && !prefetch,
+        prefetch,
         // SIMD/FP loads write vN/dN/sN, not xN/wN.  Consumers that track
         // general-purpose register provenance must not invalidate xN merely
         // because the architectural register number is encoded in the same bits.
-        gpDest: ((w >>> 26) & 1) === 0,
+        gpDest: !prefetch && ((w >>> 26) & 1) === 0,
       };
     }
     return null;
@@ -338,8 +344,10 @@ acquire, release,
     if (masked(w, 0x3b000000) === 0x39000000) {
       const scale = transferScale(w);
       const load = transferIsLoad(w);
+      const prefetch = isPrefetchImmediate(w);
       return {
-        load, store: !load, size: 1 << scale, vector: ((w >>> 26) & 1) === 1, base: rn(w), reg: rd(w),
+        load, store: !load, size: 1 << scale, vector: ((w >>> 26) & 1) === 1,
+        prefetch, gpDest: !prefetch && ((w >>> 26) & 1) === 0, base: rn(w), reg: rd(w),
         disp: BigInt((w >>> 10) & 0xfff) << BigInt(scale),
       };
     }
@@ -608,7 +616,7 @@ acquire, release,
     KIND, KIND_NAME,
     masked, signExtend,
     branchImm26, condBranchTarget, literalTarget, wordTarget, pcRelTarget, pairedOffset,
-    memoryAccess, compareImmediate,
+    memoryAccess, compareImmediate, isPrefetchImmediate, isPrefetchLiteral,
     isCallImm, isBranchImm, isCondBranch, isIndirectCall, isRet, isBr,
     isCompare, isMultiply, isDivide, isShiftOp, isFpMulDiv, isFpAddSub, isFpCondSelect, isSimd, isMoveWide,
     isNop,
