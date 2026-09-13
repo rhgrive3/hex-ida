@@ -7,6 +7,7 @@ import {
   isX87RflagsInstruction,
   X87_FAMILIES,
 } from './extended-state-helpers.js';
+import { hasReceiverRevalidatedX86Row } from '../runtime-provenance.js';
 
 const CAPSTONE_ABI = 'capstone-5-wasm32-x86-detail/v1';
 const DECODER_SEMANTIC = 'capstone-5-x86-structured-v2';
@@ -245,8 +246,11 @@ function memorySets(instruction, family) {
   return { reads, writes };
 }
 
-function memorySummary(accesses) {
-  return accesses.length ? { scope:'accesses', accesses } : { scope:'none' };
+function memorySummary(accesses, { conservativeAll = false } = {}) {
+  if (accesses.length) return { scope:'accesses', accesses };
+  return conservativeAll
+    ? { scope:'all', spaces:['memory'], detail:{ reason:'x86-trusted-receiver-implicit-memory-conservative' } }
+    : { scope:'none' };
 }
 
 function hiddenState(ownerId, family, registersRead, registersWritten, instruction) {
@@ -261,7 +265,7 @@ function hiddenState(ownerId, family, registersRead, registersWritten, instructi
   }
 }
 
-function promotedControlEffect(partial, instruction, ownerId) {
+function promotedControlEffect(partial, instruction, ownerId, receiverAuthorized) {
   const current = partial?.controlEffect;
   if (current && current.kind !== 'unknown') return current;
   const groups = new Set((instruction.detail?.groups || []).map((group) => String(group?.name || '').toLowerCase()));
@@ -269,12 +273,20 @@ function promotedControlEffect(partial, instruction, ownerId) {
   if (groups.has('ret')) return { kind:'return', target:{ kind:'decoder-defined', family:instruction.instructionFamily } };
   if (groups.has('jump')) return { kind:'indirect', target:{ kind:'decoder-defined', family:instruction.instructionFamily } };
   if (groups.has('int')) return { kind:'trap', reason:`x86-${instruction.instructionFamily}-architectural-control-transfer` };
-  // IRET/IRETD/IRETQ are interrupt *returns*: the decoder group name is
-  // classification metadata, not a trap direction (#5563). No dedicated
-  // return-state proof exists yet, so no control effect may be promoted from
-  // the group; the upstream fail-closed `unknown` control must be kept.
-  if (groups.has('iret')) return null;
-  if (ownerId === 'control') return null;
+  // IRET/IRETD/IRETQ are interrupt returns, never traps. Only the dedicated
+  // receiver's private byte-revalidation authority may close their opaque
+  // stack/state restoration as a summary-only return. Unit/public projections
+  // remain fail-closed, preserving #5563.
+  if (groups.has('iret')) return receiverAuthorized
+    ? { kind:'return', target:{ kind:'decoder-defined', family:instruction.instructionFamily } }
+    : null;
+  if (ownerId === 'control') {
+    const family = String(instruction.instructionFamily || '').toLowerCase();
+    if (receiverAuthorized && (family === 'ud0' || family === 'ud1')) {
+      return { kind:'trap', reason:`x86-${family}-invalid-opcode` };
+    }
+    return null;
+  }
   return { kind:'fallthrough' };
 }
 
@@ -306,28 +318,28 @@ function possibleFaults(partial, memory, ownerId, family) {
  * architecturally implicit memory/state surfaces that Capstone does not encode
  * as ordinary operands.
  */
-export function closeTrustedX86Partial(instruction, ownerId, partial, context = {}) {
+export function closeTrustedX86Partial(instruction, ownerId, partial, context = {}, provenanceSource = null) {
   if (!partial || partial.completeness !== 'partial' || !trusted(instruction)) return partial;
+  const receiverAuthorized = hasReceiverRevalidatedX86Row(provenanceSource);
 
   const family = String(instruction.instructionFamily || '').toLowerCase();
   const memory = memorySets(instruction, family);
   if (!memory) return partial;
 
-  // An operandless system instruction can still carry architecturally implicit
-  // memory (SAVEPREVSSP pops/pushes shadow-stack tokens, IRET/RET far returns
-  // read the return stack frame; #5569). The decoder operand surface plus the
-  // small proven implicit set above is the only access evidence available
-  // here, so an empty surface never proves memory absence. Until a dedicated
-  // per-family proof exists, keep the system owner's fail-closed partial
-  // instead of minting a `memory:none` exact-with-intrinsic summary.
-  if (ownerId === 'system' && memory.reads.length === 0 && memory.writes.length === 0) {
-    return partial;
-  }
+  // Operandless system instructions can carry implicit memory (shadow stack,
+  // interrupt frames, enclave/VM state, etc.). Empty decoder operands therefore
+  // cannot prove `memory:none`. Public/unit projections keep the historical
+  // fail-closed partial (#5569); only a byte-revalidated receiver row may close
+  // with a conservative all-memory summary. INT delivery uses the same rule.
+  const implicitMemoryUnproven = (ownerId === 'system' || family === 'int')
+    && memory.reads.length === 0 && memory.writes.length === 0;
+  if (implicitMemoryUnproven && !receiverAuthorized) return partial;
+  const conservativeImplicitMemory = implicitMemoryUnproven && receiverAuthorized;
 
   const domain = flagDomain(instruction, family);
   if (!domain.valid) return partial;
 
-  const controlEffect = promotedControlEffect(partial, instruction, ownerId);
+  const controlEffect = promotedControlEffect(partial, instruction, ownerId, receiverAuthorized);
   if (!controlEffect) return partial;
 
   const registers = decoderRegisterSets(instruction);
@@ -351,8 +363,8 @@ export function closeTrustedX86Partial(instruction, ownerId, partial, context = 
     outputs:[],
     registersRead:[...registers.reads],
     registersWritten:[...registers.writes],
-    memoryRead:memorySummary(memory.reads),
-    memoryWrite:memorySummary(memory.writes),
+    memoryRead:memorySummary(memory.reads, { conservativeAll:conservativeImplicitMemory }),
+    memoryWrite:memorySummary(memory.writes, { conservativeAll:conservativeImplicitMemory }),
     controlEffects:controlEffect.kind === 'fallthrough' ? [] : [controlEffect],
     determinism,
     symbolicDetail:'summary-only',

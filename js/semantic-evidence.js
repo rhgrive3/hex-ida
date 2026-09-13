@@ -13,8 +13,8 @@ function boundedStrength(v) {
 }
 function boundedLikelihoodRatio(value, fallback) {
   if (value == null) return fallback;
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(1, n) : fallback;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(1, value);
 }
 function primitiveVerificationOrigin(v) {
   return typeof v === 'string' && v.trim() !== '';

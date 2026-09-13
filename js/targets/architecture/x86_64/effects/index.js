@@ -95,7 +95,7 @@ function rawVectorPrefixPartial(instruction, ownerId, result, context) {
   });
 }
 
-const STRUCTURED_FAIL_CLOSED_REASON = /^(?:x86-int-delivery-state-unmodelled|x86-extended-system-family-requires-dedicated-semantics|x86-(?:fp-)?vector-prefix-metadata-malformed|x86-cmpxchg-structured-implicit-accumulator-missing|x86-string-(?:prefix-state-unmodelled|f2-repeat-prefix-not-proven-for-this-family|implicit-state-unmodelled|address-size-unmodelled|operand-shape-unmodelled))$/;
+const STRUCTURED_FAIL_CLOSED_REASON = /^(?:x86-(?:fp-)?vector-prefix-metadata-malformed|x86-cmpxchg-structured-implicit-accumulator-missing|x86-string-(?:prefix-state-unmodelled|f2-repeat-prefix-not-proven-for-this-family|implicit-state-unmodelled|address-size-unmodelled|operand-shape-unmodelled))$/;
 
 function terminalize(instruction, ownerId, result, context, provenanceSource) {
   // Structured vector-prefix metadata is semantic authority for VEX/EVEX
@@ -124,7 +124,7 @@ function terminalize(instruction, ownerId, result, context, provenanceSource) {
   // inside the dedicated receiver revalidation worker. Public structured parser
   // calls and transported/copy-only records cannot mint this private brand.
   if (!hasReceiverRevalidatedX86Row(provenanceSource)) return result;
-  return closeTrustedX86Partial(instruction, ownerId, result, context);
+  return closeTrustedX86Partial(instruction, ownerId, result, context, provenanceSource);
 }
 
 function dispatchWithDecoderSource(decoded, context, provenanceSource) {

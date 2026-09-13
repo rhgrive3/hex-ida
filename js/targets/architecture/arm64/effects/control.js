@@ -24,21 +24,11 @@ export function isArm64ControlEffectMnemonic(mnemonic) {
 }
 
 function addressRef(address) {
-  // A64 control addresses are 64-bit architectural values. Decoder-facing
-  // evidence may spell a wrapped target as a sign-extended negative integer,
-  // and fallthrough/link arithmetic can cross 2^64. Never publish those host
-  // integer spellings as distinct absolute addresses.
-  return { kind:'absolute-address', value:BigInt.asUintN(64, BigInt(address)).toString(), widthBits:64 };
+  return { kind: 'absolute-address', value: BigInt.asUintN(64, BigInt(address)).toString(), widthBits: 64 };
 }
 
 function instructionAddress(instruction) {
-  if (instruction?.address == null) return null;
-  const address = strictTargetInteger(instruction.address);
-  // Unlike a decoder's sign-extended *target* spelling, the instruction's own
-  // address is structured absolute-address authority and must already be in
-  // the unsigned A64 domain. Reject over/underflow instead of modulo-laundering
-  // malformed evidence into an exact edge.
-  return address != null && address >= 0n && address <= MAX_UNSIGNED_ADDRESS_64 ? address : null;
+  return instruction?.address == null ? null : strictTargetInteger(instruction.address);
 }
 
 function fallthroughRef(instruction) {
@@ -48,8 +38,8 @@ function fallthroughRef(instruction) {
 
 function sameAbsoluteTarget(target, reference) {
   if (target == null || reference?.kind !== 'absolute-address' || reference.value == null) return false;
-  const left = canonicalAbsoluteTarget64(target);
-  const right = canonicalAbsoluteTarget64(reference.value);
+  const left = strictTargetInteger(target);
+  const right = strictTargetInteger(reference.value);
   return left != null && right != null && left === right;
 }
 
@@ -205,34 +195,12 @@ function isIndirectControlRegister(operand) {
     && operand.extend == null;
 }
 
-const LEGACY_DIRECT_CALL_SYMBOL = /^[A-Za-z_.$][A-Za-z0-9_.$@]{0,255}$/;
-
-function legacySymbolicDirectCallTarget(instruction, operand) {
-  // A failed encoding read is not proof that this is a text-only record:
-  // malformed or contradictory bytes/words must never enable this fallback.
-  if (instruction?.callTarget != null || [instruction?.word, instruction?.encodingWord,
-    instruction?.rawBytes, instruction?.bytes].some(value => value != null)) return null;
-  if (operand?.k !== 'other' || operand.shift != null || operand.extend != null || typeof operand.text !== 'string') return null;
-  const symbol = operand.text.trim();
-  if (!LEGACY_DIRECT_CALL_SYMBOL.test(symbol)) return null;
-  // This compatibility path is only for the assembly-text semantic model. A
-  // decoder-origin record must resolve BL from its imm26/address evidence rather
-  // than trusting presentation text as a control-flow target.
-  if (typeof instruction?.operands !== 'string' || instruction.operands.trim() !== symbol) return null;
-  return symbol;
-}
-
-function symbolicCodeReference(name) {
-  return { kind:'symbolic-code-reference', name };
-}
-
 function directTargetOperandShapeValid(instruction, operand, kind = 'branch') {
   if (operand?.shift != null || operand?.extend != null) return false;
   if (operand?.k === 'imm' && operand.value != null) return immediateOf(operand) != null;
   if (operand?.k === 'other' && typeof operand.text === 'string' && /^#?(?:0x[0-9a-f]+|\d+)$/i.test(operand.text.trim())) return true;
   const explicit = kind === 'call' ? instruction?.callTarget : instruction?.branchTarget;
-  if (operand?.k === 'other' && explicit != null) return true;
-  return kind === 'call' && legacySymbolicDirectCallTarget(instruction, operand) != null;
+  return operand?.k === 'other' && explicit != null;
 }
 
 function isBranchTestRegister(operand) {
@@ -308,24 +276,18 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
 
   if (mnemonic === 'bl') {
     const target = directTargetOf(instruction, 'call');
-    const symbolicTarget = target == null ? legacySymbolicDirectCallTarget(instruction, ops[0]) : null;
-    if (target == null && symbolicTarget == null) {
-      return ctx.partial('arm64-bl-target-unavailable', ['control','registers'], undefined, { kind: 'unknown', reason: 'arm64-bl-target-unavailable' });
-    }
-    const controlTarget = target != null ? addressRef(target) : symbolicCodeReference(symbolicTarget);
+    if (target == null) return ctx.partial('arm64-bl-target-unavailable', ['control','registers'], undefined, { kind: 'unknown', reason: 'arm64-bl-target-unavailable' });
     const address = instructionAddress(instruction);
     if (address == null) {
-      return ctx.partial('arm64-bl-link-address-unavailable', ['registers'], undefined, { kind: 'call', target: controlTarget });
+      return ctx.partial('arm64-bl-link-address-unavailable', ['registers'], undefined, { kind: 'call', target: addressRef(target) });
     }
-    if (target != null) {
-      const encoding = directBranchEncodingStatus(instruction, target, mnemonic);
-      if (!encoding.valid) return ctx.partial(encoding.reason, ['control','registers'], undefined, { kind:'unknown', reason:encoding.reason });
-    }
+    const encoding = directBranchEncodingStatus(instruction, target, mnemonic);
+    if (!encoding.valid) return ctx.partial(encoding.reason, ['control','registers'], undefined, { kind:'unknown', reason:encoding.reason });
     const fallthrough = fallthroughRef(instruction);
     ctx.writeRegister(gpRegister(30), ctx.constant(64, address + ARM64_INSTRUCTION_BYTES));
     return ctx.finish({
-      controlEffect: { kind: 'call', target: controlTarget, ...(fallthrough ? { fallthrough } : {}) },
-      metadata: { family: 'control', operation: 'bl', direct: true, abiSemantics: false, ...(symbolicTarget ? { symbolicTarget } : {}) },
+      controlEffect: { kind: 'call', target: addressRef(target), ...(fallthrough ? { fallthrough } : {}) },
+      metadata: { family: 'control', operation: 'bl', direct: true, abiSemantics: false },
     });
   }
 
