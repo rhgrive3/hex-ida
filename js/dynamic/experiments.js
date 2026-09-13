@@ -111,12 +111,15 @@ export function compileExperiment(hypothesis, options = {}) {
   const inputs = options.inputs || generateDifferentialInputs({ bits:fieldSize <= 4 ? 32 : 64, signed, boundary:hypothesis.boundary ?? hypothesis.clampMin ?? hypothesis.clampMax, pointer:pointerInput, limit:options.limit ?? 12 });
   const cases = [];
   for (const item of inputs) {
+    if (item == null || typeof item !== 'object') throw new DebugAdapterError('invalid-experiment-input', 'each experiment input must be an object');
     if (item.kind !== 'scalar' && !(pointerInput && item.kind === 'pointer')) continue;
-    const args = Array.from({length:Math.max(argIndex + 1, 2)}, () => 0n); args[0] = objectBase; args[argIndex] = BigInt(item.value);
-    const expected = item.kind === 'scalar' && fieldOffset != null ? relationExpected(hypothesis, initial, item.value, fieldBits, signed) : null;
+    const value = strictMachineInteger(item.value);
+    if (value == null) throw new DebugAdapterError('invalid-experiment-input', 'experiment input value must be a machine integer (exact BigInt, safe number, or integer string)');
+    const args = Array.from({length:Math.max(argIndex + 1, 2)}, () => 0n); args[0] = objectBase; args[argIndex] = value;
+    const expected = item.kind === 'scalar' && fieldOffset != null ? relationExpected(hypothesis, initial, value, fieldBits, signed) : null;
     cases.push({
       id:`${hypothesis.id || 'hypothesis'}:${item.id}`,
-      input:{ arguments:args, scalar:BigInt(item.value) },
+      input:{ arguments:args, scalar:value },
       initialState:{ objectBase, fields:fieldOffset == null ? [] : [{ offset:fieldOffset, size:fieldSize, value:initial }] },
       watch:fieldOffset == null ? [] : [{ name:hypothesis.fieldName || null, offset:fieldOffset, size:fieldSize }],
       expected: expected == null ? null : { field:{ offset:fieldOffset, value:expected, bits:fieldBits, signed } },
