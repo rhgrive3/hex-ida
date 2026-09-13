@@ -1067,9 +1067,9 @@ function parseModLifecycleFunctions(r, image, bits, metadataBudget) {
   });
   if (lifecycleSections.length === 0) return;
 
-  const ptrSize = bits === 64 ? 8 : 4;
-  const ptrSizeBig = BigInt(ptrSize);
   const arch = image.arch;
+  const ptrSize = arch === 'arm64_32' ? 4 : bits === 64 ? 8 : 4;
+  const ptrSizeBig = BigInt(ptrSize);
   const alignment = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
   const instructionBytes = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
   const recoveredInitializers = new Set();
@@ -1113,7 +1113,7 @@ function parseModLifecycleFunctions(r, image, bits, metadataBudget) {
       }
       const slotVa = sec.address + BigInt(i * ptrSize);
       const slotFileOff = secFileOffset + i * ptrSize;
-      const raw = bits === 64 ? r.u64(slotFileOff) : BigInt(r.u32(slotFileOff));
+      const raw = ptrSize === 8 ? r.u64(slotFileOff) : BigInt(r.u32(slotFileOff));
 
       // Resolve under Mach-O pointer/rebase/chained-fixup authority.
       const resolved = resolveMachOPointer(image, raw, { address: slotVa });
