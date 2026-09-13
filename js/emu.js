@@ -363,8 +363,12 @@ export class Emulator {
     const n = normalizeMemorySize(size);
     const start = BigInt(addr);
     const end = start + BigInt(n - 1);
-    for (let p = (start / BigInt(PAGE)) * BigInt(PAGE); p <= end; p += BigInt(PAGE)) {
-      await this.ensure(p);
+    const pageSize = BigInt(PAGE);
+    const firstPage = (start / pageSize) * pageSize;
+    // ensure() also records its argument as the fault address, so pass the
+    // effective address for the first page and each later page's first byte.
+    for (let p = firstPage; p <= end; p += pageSize) {
+      await this.ensure(p === firstPage ? start : p);
     }
     let v = 0n;
     for (let i = n - 1; i >= 0; i--) v = (v << 8n) | BigInt(this.byteAt(start + BigInt(i)));
@@ -383,8 +387,10 @@ export class Emulator {
        below would fail open and writeByte() would mint undeclared mem
        backing. An interior page without backing fails closed here. */
     const end = start + BigInt(n - 1);
-    for (let p = (start / BigInt(PAGE)) * BigInt(PAGE); p <= end; p += BigInt(PAGE)) {
-      await this.ensure(p);
+    const pageSize = BigInt(PAGE);
+    const firstPage = (start / pageSize) * pageSize;
+    for (let p = firstPage; p <= end; p += pageSize) {
+      await this.ensure(p === firstPage ? start : p);
     }
     /* #7968: admit every byte of the store before committing any of it — a
        range that straddles the write-authority boundary fails closed without
