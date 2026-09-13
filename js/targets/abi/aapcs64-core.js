@@ -42,6 +42,24 @@ function aggregateBoolean(parameter, key) {
   return { present:true, value:normalized.every((value) => value === normalized[0]) ? normalized[0] : null };
 }
 
+function nestedAggregateAlignment(parameter) {
+  // Direct alignment metadata keeps its existing precedence. Only recover a
+  // natural alignment carried by the already-proven nested physical layout.
+  const aliases = ['alignment', 'align', 'alignmentBytes'];
+  if (aliases.some((alias) => Object.hasOwn(parameter ?? {}, alias))) return null;
+  const owners = [];
+  if (nestedRecord(parameter?.layout)) owners.push(parameter.layout);
+  if (nestedRecord(parameter?.returnAggregate)) owners.push(parameter.returnAggregate);
+  if (nestedRecord(parameter?.returnAggregate?.layout)) owners.push(parameter.returnAggregate.layout);
+  const values = owners.flatMap((owner) => aliases
+    .filter((alias) => Object.hasOwn(owner, alias))
+    .map((alias) => owner[alias]));
+  if (!values.length) return null;
+  const normalized = values.map((value) => Number(value));
+  if (normalized.some((value) => !Number.isSafeInteger(value) || value <= 0)) return null;
+  return normalized.every((value) => value === normalized[0]) ? normalized[0] : null;
+}
+
 function parameterAbiClass(param) {
   const type = String(param?.type || param?.name || '').toLowerCase();
   const cls = String(param?.abiClass || param?.class || param?.kind || '').toLowerCase();
@@ -108,7 +126,8 @@ function parameterAbiClass(param) {
       : Number.isFinite(explicitBits) && explicitBits > 0 ? explicitBits : int128 ? 128 : 64;
   const bits = rawBits > 0 ? Math.max(8, Math.min(1 << 20, Math.floor(rawBits))) : 0;
   const wideIntegral = !pointer && !aggregate && !fp && bits === 128;
-  const declaredAlignment = Number(param?.alignment ?? param?.align ?? param?.alignmentBytes);
+  const declaredAlignment = Number(param?.alignment ?? param?.align ?? param?.alignmentBytes
+    ?? (layoutEvidence ? nestedAggregateAlignment(param) : null));
   const alignment = Number.isFinite(declaredAlignment) && declaredAlignment > 0
     ? Math.min(16, Math.max(1, Math.floor(declaredAlignment)))
     : wideIntegral ? 16 : 8;
