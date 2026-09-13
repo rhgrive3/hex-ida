@@ -105,6 +105,7 @@ export class JvmFrontend {
             ? 'valid'
             : 'partial',
         semanticEffect: semanticStatus === 'valid' ? 'complete' : 'partial',
+        resolution: status === 'valid' ? 'complete' : 'partial',
       },
       errors: verification.errors,
       warnings: verification.warnings,

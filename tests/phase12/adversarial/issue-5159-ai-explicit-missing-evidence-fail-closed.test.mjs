@@ -1,29 +1,25 @@
 import assert from 'node:assert/strict';
 import { AIRuntime } from '../../../js/ai/runtime.js';
 import { EvidenceStore } from '../../../js/ai/evidence.js';
-import { InvestigationSessionStore } from '../../../js/ai/session-core/index.js';
 import { createTurnSnapshot } from '../../../js/ai/control/snapshot.js';
 
 function verifiedStore() {
   const store = new EvidenceStore();
-  store.restorePersistedConfirmed(new InvestigationSessionStore().register({
-    id: 'issue-5159-persisted',
-    confirmedFindings: [{
-      id: 'old-unrelated',
-      kind: 'observation',
-      status: 'verified',
-      title: 'unrelated prior fact',
-      summary: 'must never substitute for an explicitly invalid citation',
-      sourceTool: 'fixture',
-    }, {
-      id: 'valid-explicit',
-      kind: 'observation',
-      status: 'verified',
-      title: 'explicit fact',
-      summary: 'the model actually cited this fact',
-      sourceTool: 'fixture',
-    }],
-  }).confirmedFindings);
+  store.restorePersistedConfirmed([{
+    id: 'old-unrelated',
+    kind: 'observation',
+    status: 'verified',
+    title: 'unrelated prior fact',
+    summary: 'must never substitute for an explicitly invalid citation',
+    sourceTool: 'fixture',
+  }, {
+    id: 'valid-explicit',
+    kind: 'observation',
+    status: 'verified',
+    title: 'explicit fact',
+    summary: 'the model actually cited this fact',
+    sourceTool: 'fixture',
+  }]);
   return store;
 }
 

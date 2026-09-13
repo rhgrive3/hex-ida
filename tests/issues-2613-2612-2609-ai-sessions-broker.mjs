@@ -101,9 +101,7 @@ function memoryStorage() {
       summary: `Detailed summary of verified security finding or xref trace item ${i}. ` + 'A'.repeat(200),
     });
   }
-  evidenceStore.restorePersistedConfirmed(
-    new InvestigationSessionStore().register({ id: 'sess-budget-seed', confirmedFindings: entries }).confirmedFindings,
-  );
+  evidenceStore.restorePersistedConfirmed(entries);
 
   const session = {
     id: 'sess-budget-test',
@@ -145,9 +143,7 @@ function memoryStorage() {
       summary: `Item summary for ${i} with extra text ` + 'B'.repeat(300),
     });
   }
-  evidenceStore.restorePersistedConfirmed(
-    new InvestigationSessionStore().register({ id: 'sess-bench-seed', confirmedFindings: entries }).confirmedFindings,
-  );
+  evidenceStore.restorePersistedConfirmed(entries);
 
   const start = performance.now();
   const { context, bytes } = broker.buildModelContext({

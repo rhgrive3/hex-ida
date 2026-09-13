@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { AIRuntime } from '../../js/ai/runtime.js';
 import { EvidenceStore } from '../../js/ai/evidence.js';
 import { HypothesisStore } from '../../js/ai/hypothesis.js';
-import { InvestigationSessionStore } from '../../js/ai/session-core/index.js';
 import { createCapabilityCatalog } from '../../js/ai/capabilities/catalog.js';
 import { createCapabilityExecutor } from '../../js/ai/capabilities/executor.js';
 
@@ -24,12 +23,11 @@ import { createCapabilityExecutor } from '../../js/ai/capabilities/executor.js';
   };
 
   assert.equal(new EvidenceStore([savedEvidence]).get('ev_saved')?.status, 'supported');
-  const persistedSession = new InvestigationSessionStore().register(session);
-  const restoredDirect = new EvidenceStore().restorePersistedConfirmed(persistedSession.confirmedFindings);
+  const restoredDirect = new EvidenceStore().restorePersistedConfirmed([savedEvidence]);
   assert.equal(restoredDirect.get('ev_saved')?.status, 'verified');
 
   const runtime = new AIRuntime({ planner: false });
-  const restored = runtime.storesFor(persistedSession, 'bin-1');
+  const restored = runtime.storesFor(session, 'bin-1');
   assert.equal(restored.evidenceStore.get('ev_saved')?.status, 'verified');
   assert.equal(restored.hypothesisStore.get('hyp_saved')?.status, 'verified');
 

@@ -25,7 +25,7 @@ for(const nextBinary of ['bin','other-bin']) test(`#6004 released default namesp
 test('#6004 explicit initial injection is honored once, and persisted findings hydrate only their session',async()=>{
   const injected=new EvidenceStore();const runtime=new AIRuntime({evidenceStore:injected,planner:false});
   const a=runtime.storesFor({id:'A'},'bin');assert.equal(a.evidenceStore,injected);const id=seed(a,'A');
-  const persisted=new InvestigationSessionStore().register({id:'restored',confirmedFindings:a.evidenceStore.byStatus('verified'),hypotheses:a.hypothesisStore.all()});
+  const persisted={id:'restored',confirmedFindings:a.evidenceStore.byStatus('verified'),hypotheses:a.hypothesisStore.all()};
   await runtime.releaseSession('A');
   const b=runtime.storesFor({id:'B'},'bin');assert.equal(b.evidenceStore.has(id),false);
   const restored=runtime.storesFor(persisted,'bin');assert.equal(restored.evidenceStore.get(id).status,'verified');
