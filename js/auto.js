@@ -37,7 +37,21 @@ function lowerBoundBig(values, target) {
  * N addresses. This prevents late executable regions/functions from starving.
  */
 function fairFunctionList(symbols, region, max = 20000) {
-  if (!symbols?.funcs?.length || !region) return symbols?.functionList?.(region, max) || [];
+  if (!symbols?.funcs?.length) return [];
+  if (!region) {
+    // SymbolIndex.functionList() returns a plain, silently truncated Array with
+    // no completeness metadata, and readers treat missing metadata fail-open.
+    // Publish the authority explicitly: a list cut at `max` is a sample, not a
+    // complete inventory (#4044).
+    const list = symbols.functionList?.(region, max) || [];
+    const total = Number.isSafeInteger(symbols.functionCount) ? symbols.functionCount : list.length;
+    Object.defineProperties(list, {
+      complete: { value: list.length >= total, enumerable: false },
+      sampled: { value: list.length < total, enumerable: false },
+      totalFunctions: { value: total, enumerable: false },
+    });
+    return list;
+  }
   const lo = region.vmAddr;
   const hi = region.vmAddr + region.size;
   const first = lowerBoundBig(symbols.funcs, lo);

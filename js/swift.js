@@ -21,6 +21,38 @@ async function cstring(read, addr, max = MAX_NAME) {
   try { return new TextDecoder('utf-8', { fatal: true }).decode(b.subarray(0, end)); } catch { return null; }
 }
 
+// Swift native pointer width is an architectural ABI fact, not a container
+// property: arm64_32 is a 64-bit Mach-O file class (MH_MAGIC_64,
+// LC_SEGMENT_64, nlist_64) with 4-byte native pointers (watchOS ILP32). Swift
+// absolute symbolic references, indirect relative references, and witness-table
+// entries are all `sizeof(void*)` words, so a known architecture must never be
+// silently parsed with the LP64 default (#8309).
+const SWIFT_ARCH_POINTER_BYTES = new Map([
+  ['arm64', 8], ['arm64e', 8], ['x86_64', 8], ['ppc64', 8],
+  ['arm64_32', 4], ['arm', 4], ['armv6', 4], ['armv7', 4], ['armv7s', 4], ['armv7k', 4],
+  ['x86', 4], ['i386', 4], ['ppc', 4],
+]);
+
+// Strict canonical lookup for a declared architecture. An unrecognized ABI is
+// not silently widened to LP64: callers get a typed failure instead.
+export function swiftNativePointerBytes(architecture) {
+  if (architecture == null) return null;
+  const bytes = SWIFT_ARCH_POINTER_BYTES.get(String(architecture).trim().toLowerCase());
+  if (bytes == null) throw new TypeError('swift-unknown-pointer-abi');
+  return bytes;
+}
+
+// Effective pointer width for a parser call: an explicit primitive width wins
+// (schema-validated, #5871); otherwise the architecture's ABI width; only a call
+// with no ABI information at all falls back to LP64. `null` means the ABI is
+// declared but unsupported, so the caller must fail closed instead of reading a
+// possibly fabricated 8-byte pointer.
+function swiftPointerBytesFor(options = {}) {
+  if ((options.pointerBytes ?? options.pointerSize) != null) return canonicalPointerBytes(options);
+  if (options.architecture == null) return 8;
+  return SWIFT_ARCH_POINTER_BYTES.get(String(options.architecture).trim().toLowerCase()) ?? null;
+}
+
 function swiftSymbolicReferencePayloadBytes(kind, pointerBytes = 8) {
   if (kind >= 0x01 && kind <= 0x17) return 4;
   if (kind >= 0x18 && kind <= 0x1f) return pointerBytes === 4 ? 4 : 8;
@@ -47,7 +79,8 @@ function swiftMangledFragment(bytes) {
 export async function readSwiftMangledName(read, address, options = {}) {
   if (address == null || typeof read !== 'function') return { complete:false, reason:'unreadable', text:null, rawBytes:[], fragments:[], symbolicReferences:[] };
   const maxBytes = normalizeBudget(options.maxBytes, MAX_NAME, 4096);
-  const pointerBytes = canonicalPointerBytes(options);
+  const pointerBytes = swiftPointerBytesFor(options);
+  if (pointerBytes == null) return { complete:false, reason:'unknown-pointer-abi', text:null, rawBytes:[], fragments:[], symbolicReferences:[] };
   let bytes;
   try { bytes = await read(BigInt(address), maxBytes, true); } catch { bytes = null; }
   if (!bytes || !bytes.length) return { complete:false, reason:'unreadable', text:null, rawBytes:[], fragments:[], symbolicReferences:[] };
@@ -312,7 +345,8 @@ async function parseSwiftProtocolRequirements(read,protocol,budget=4096){
 }
 
 async function resolveAbsolutePointer(read,address,options={}) {
-  const b=await exact(read,address,8); if(!b)return null; const raw=u64(b);
+  const pointerBytes=swiftPointerBytesFor(options); if(pointerBytes==null)return null;
+  const b=await exact(read,address,pointerBytes); if(!b)return null; const raw=pointerBytes===4?BigInt(u32(b,0)):u64(b);
   const resolver=options.resolvePointer||options.binaryImage?.resolvePointer||options.binaryImage?.decodePointer;
   if(typeof resolver==='function'){try{const v=await resolver(raw,{address:BigInt(address)});return v==null?null:BigInt(v);}catch{return null;}}
   return options.allowRawPointers===true ? (raw||null) : null;
@@ -363,8 +397,10 @@ export async function parseSwiftVTable(read,address,count,budget=4096){const n=M
 export async function parseSwiftWitnessTable(read,address,count,budget=4096,options={}){
   if (budget && typeof budget === 'object') { options=budget; budget=4096; }
   const n=Math.min(normalizeBudget(count,0,100000),normalizeBudget(budget,4096,100000)),out=[];let at=BigInt(address);
+  const pointerBytes=swiftPointerBytesFor(options); if(pointerBytes==null)return out;
+  const stride=BigInt(pointerBytes);
   const resolver=options.resolvePointer||options.binaryImage?.resolvePointer||options.binaryImage?.decodePointer;
-  for(let i=0;i<n;i++,at+=8n){const b=await exact(read,at,8);if(!b)break;const raw=u64(b);let target=null;
+  for(let i=0;i<n;i++,at+=stride){const b=await exact(read,at,pointerBytes);if(!b)break;const raw=pointerBytes===4?BigInt(u32(b,0)):u64(b);let target=null;
     if(raw){if(typeof resolver==='function'){try{const v=await resolver(raw,{address:at});target=v==null?null:BigInt(v);}catch{target=null;}}else if(options.allowRawPointers===true)target=raw;}
     out.push({index:i,target,rawTarget:raw||null,resolved:target!=null});
   }return out;
@@ -393,6 +429,10 @@ const SWIFT_WITNESS_TABLE_FIRST_REQUIREMENT_OFFSET=1n;
 export async function buildSwiftMetadataModel(read,sections,opts={}){
   const signal=opts.signal??null;
   if(signal?.aborted)return null;
+  // Native pointer width is one authority for the whole model: conformance
+  // indirect pointers, absolute type references and witness-table entries all
+  // use the same architectural width (#8309).
+  const pointerBytes=swiftPointerBytesFor(opts);
   const get=typeof opts.reader==='function'?opts.reader:pagedReader(read,opts.pageBytes||65536,opts.maxPages||96,{signal});
   const budget=normalizeBudget(opts.budget,DEFAULT_BUDGET,100000), typeSec=sectionRange(sections,['__swift5_types']), protoSec=sectionRange(sections,['__swift5_protos']), confSec=sectionRange(sections,['__swift5_proto']);
   const typeScan=await relativePointerSection(get,typeSec,budget,(r,a)=>parseSwiftNominalDescriptor(r,a,opts),{signal}), protoScan=await relativePointerSection(get,protoSec,budget,parseSwiftProtocolDescriptor,{signal}), confScan=await relativePointerSection(get,confSec,budget,(r,a)=>parseSwiftConformanceDescriptor(r,a,opts),{signal});
@@ -442,11 +482,12 @@ export async function buildSwiftMetadataModel(read,sections,opts={}){
     if(signal?.aborted)return null;
     if(c.witnessTable==null||seedAddresses.has(c.witnessTable.toString()))continue;
     const protocol=protocols.find((p)=>p.address.toString()===c.protocol?.toString()),type=c.typeReferenceKind<=1&&c.typeRef!=null?types.find((t)=>t.address.toString()===c.typeRef.toString()):null;
+    if(pointerBytes==null){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: native pointer ABI is unknown, so witness table layout is not proof-safe for automatic projection.`);continue;}
     if(!protocol||!type||c.conditionalRequirements!==0||c.resilientWitnesses===true||protocol.requirementsComplete!==true){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: witness table layout is not proof-safe for automatic projection.`);continue;}
     const requirements=protocol.requirements||[];
     if(requirements.length!==Number(protocol.numRequirements)||requirements.some((r)=>r.witnessCallable!==true)){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: non-callable protocol requirements prevent exact witness projection.`);continue;}
     if(!requirements.length)continue;
-    const seed={address:c.witnessTable,count:requirements.length,entriesAddress:c.witnessTable+SWIFT_WITNESS_TABLE_FIRST_REQUIREMENT_OFFSET*8n,typeAddress:type.address,typeName:type.name,protocolAddress:protocol.address,protocolName:protocol.name,source:'conformance'};
+    const seed={address:c.witnessTable,count:requirements.length,entriesAddress:c.witnessTable+SWIFT_WITNESS_TABLE_FIRST_REQUIREMENT_OFFSET*BigInt(pointerBytes),typeAddress:type.address,typeName:type.name,protocolAddress:protocol.address,protocolName:protocol.name,source:'conformance'};
     witnessSeeds.push(seed);seedAddresses.add(c.witnessTable.toString());
   }
   for(const w of witnessSeeds){

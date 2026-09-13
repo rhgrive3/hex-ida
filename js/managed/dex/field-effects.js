@@ -155,6 +155,8 @@ export function dexFieldEffects({ opcode, formatByte, fieldIndex, image, method 
       volatility:isVolatile, atomic:isVolatile,
       ordering:isVolatile ? (isWrite ? 'release' : 'acquire') : 'unknown',
       ...(isStatic ? { classInitialization } : { receiverNullException:true }) }],
+    completeness:'exact',
+    unknownEffects:[],
     ...(isStatic && classInitialization.initializationRequired ? {
       completeness:'partial',
       unknownEffects:[{ category:'calls', reason:classInitialization.superclassAuthority === 'unresolved'

@@ -1318,6 +1318,9 @@ export class App {
           budget:20000,
           signal:controller.signal,
           resolvePointer:(raw,context)=>this.backend.resolvePointer(raw,{...context,sliceIndex:slice}),
+          // ARM64_32 is a 64-bit Mach-O class with 4-byte native pointers: the
+          // architecture is the canonical ABI authority for Swift pointer reads (#8309).
+          architecture:this.store.get('architecture'),
         });
         if (controller.signal.aborted || epoch !== this.backend.gen || this.store.get('sliceIndex') !== slice) return null;
         this.swiftModel = model; this.swiftRuntime = buildSwiftRuntimeIndex(model);

@@ -75,9 +75,17 @@ export function translateSemanticIR(target, options = {}) {
       return unk;
     }
 
-    const valId = val.id != null ? String(val.id) : null;
-    const memoKey = `${valId || 'anon'}@${fromBlock}@${width}`;
-    if (memo.has(memoKey)) return memo.get(memoKey);
+    let valId = null;
+    if (val.id != null) {
+      if (typeof val.id === 'string' && val.id.trim() !== '') valId = val.id.trim();
+      else {
+        semanticUnknowns++;
+        unsupportedEntities.push({ id: null, op: 'value-id', reason: `invalid-ssa-value-id:${typeof val.id}` });
+        return createUnknownSemantic(bvSort(width), 'invalid-ssa-value-id', { valueIdType: typeof val.id });
+      }
+    }
+    const memoKey = valId != null ? `${valId}@${fromBlock}@${width}` : null;
+    if (memoKey != null && memo.has(memoKey)) return memo.get(memoKey);
 
     if (valId && active.has(valId)) {
       semanticUnknowns++;
@@ -151,7 +159,7 @@ export function translateSemanticIR(target, options = {}) {
     }
 
     if (valId) active.delete(valId);
-    memo.set(memoKey, res);
+    if (memoKey != null) memo.set(memoKey, res);
     return res;
   }
 

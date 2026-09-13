@@ -14,7 +14,27 @@ export const MAX_SANDBOX_STEPS = 1000000;
 // backing limit (see setup below) and the adapter-layer maximum.
 export const MAX_SANDBOX_OBJECT_SIZE = 16 * 1024 * 1024;
 
-function asBig(v) { return typeof v === 'bigint' ? v : BigInt(v || 0); }
+const CANONICAL_CONCRETE_RE = /^(?:[+-]?[0-9]+|0[xX][0-9a-fA-F]+)$/;
+
+function asConcrete(v, what) {
+  if (typeof v === 'bigint') return v;
+  if (typeof v === 'number') {
+    if (!Number.isSafeInteger(v)) throw new TypeError(`${what} must be a bigint, a safe integer, or a canonical numeric string`);
+    return BigInt(v);
+  }
+  if (typeof v === 'string') {
+    const text = v.trim();
+    if (!CANONICAL_CONCRETE_RE.test(text)) throw new TypeError(`${what} must be a bigint, a safe integer, or a canonical numeric string`);
+    return BigInt(text);
+  }
+  throw new TypeError(`${what} must be a bigint, a safe integer, or a canonical numeric string`);
+}
+
+function asConcreteAddress(v, what) {
+  const n = asConcrete(v, what);
+  if (n < 0n) throw new RangeError(`${what} must be a non-negative address`);
+  return n;
+}
 
 function boundedStepBudget(value) {
   if (value == null) return DEFAULT_SANDBOX_STEPS;
@@ -39,7 +59,7 @@ function normalizeWatch(watch, objectBase) {
   for (const w of list) {
     if (!w) continue;
     const size = Math.max(1, Number(w.size || 8));
-    const addr = w.address != null ? asBig(w.address) : objectBase + asBig(w.offset || 0);
+    const addr = w.address != null ? asConcreteAddress(w.address, 'watch address') : objectBase + asConcrete(w.offset === undefined ? 0n : w.offset, 'watch offset');
     out.push({ name: w.name || null, address: addr, offset: addr - objectBase, size });
   }
   return out;
@@ -51,8 +71,8 @@ function watchesFromOptions(o, objectBase) {
   if (o.objectMemory && typeof o.objectMemory === 'object') {
     return Object.keys(o.objectMemory).map((offset) => ({
       name: null,
-      address: objectBase + BigInt(offset),
-      offset: BigInt(offset),
+      address: objectBase + asConcrete(offset, 'objectMemory offset'),
+      offset: asConcrete(offset, 'objectMemory offset'),
       size: 8,
     }));
   }
@@ -126,7 +146,7 @@ export class FunctionSandbox {
     this.emulator = new Emulator(io || {});
     this._initialHeapBase = this.emulator.heap;
     this._setupCount = 0;
-    this.objectBase = opts && opts.objectBase != null ? asBig(opts.objectBase) : DEFAULT_OBJECT_BASE;
+    this.objectBase = opts && opts.objectBase != null ? asConcreteAddress(opts.objectBase, 'objectBase') : DEFAULT_OBJECT_BASE;
     this.maxObjectSize = boundedObjectSize(opts && opts.maxObjectSize);
     this.watch = [];
     this.before = [];
@@ -135,23 +155,38 @@ export class FunctionSandbox {
 
   async setup(address, opts) {
     const o = opts || {};
+    const signal = o.signal && typeof o.signal === 'object' && typeof o.signal.addEventListener === 'function' ? o.signal : null;
+    const previousRunSignal = this.emulator._runSignal;
+    try {
+      return await this._setupWithBackingIo(address, o, signal);
+    } catch (error) {
+      if (signal && signal.aborted && error && (error.name === 'AbortError' || error.code === 'ABORT_ERR')) {
+        throw Object.assign(new Error('sandbox setup cancelled'), { code: 'sandbox-setup-cancelled' });
+      }
+      throw error;
+    } finally {
+      this.emulator._runSignal = previousRunSignal;
+    }
+  }
+
+  async _setupWithBackingIo(address, o, signal) {
     // #5268: setup is the longest launch phase (mapping + memory stores); an
     // aborted signal must stop the remaining setup work, not just be observed
     // by the caller afterwards. Each checkpoint re-samples signal.aborted.
-    const signal = o.signal && typeof o.signal === 'object' && typeof o.signal.addEventListener === 'function' ? o.signal : null;
     const throwIfCancelled = () => {
       if (signal && signal.aborted) {
         throw Object.assign(new Error('sandbox setup cancelled'), { code: 'sandbox-setup-cancelled' });
       }
     };
     throwIfCancelled();
-    const args = (o.args || []).map(asBig);
-    const objectBase = o.objectBase != null ? asBig(o.objectBase) : this.objectBase;
+    const args = (o.args || []).map((v) => asConcrete(v, 'args'));
+    const objectBase = o.objectBase != null ? asConcreteAddress(o.objectBase, 'objectBase') : this.objectBase;
     this.objectBase = objectBase;
     if (o.objectAsArg0 !== false && args.length === 0) args.push(objectBase);
     else if (o.objectAsArg0 !== false && args[0] == null) args[0] = objectBase;
     const firstSetupHeapOverride = this._setupCount === 0 && this.emulator.heap !== this._initialHeapBase ? this.emulator.heap : null;
     this.emulator.reset();
+    if (signal) this.emulator._runSignal = signal;
     if (firstSetupHeapOverride != null) {
       this.emulator.heapBase = firstSetupHeapOverride;
       this.emulator.heap = firstSetupHeapOverride;
@@ -170,15 +205,15 @@ export class FunctionSandbox {
       remaining -= chunkSize;
     }
     throwIfCancelled();
-    this.emulator.setup(asBig(address), args);
+    this.emulator.setup(asConcreteAddress(address, 'address'), args);
 
-    for (const [reg, value] of Object.entries(o.registers || {})) this.emulator.set(reg, asBig(value));
+    for (const [reg, value] of Object.entries(o.registers || {})) this.emulator.set(reg, asConcrete(value, 'register value'));
 
     if (Array.isArray(o.objectMemory)) {
       for (const item of o.objectMemory) {
         throwIfCancelled();
         if (!item) continue;
-        const itemOffset = asBig(item.offset || 0);
+        const itemOffset = asConcrete(item.offset === undefined ? 0n : item.offset, 'objectMemory offset');
         // itemSize authority (#5318): only an omitted size defaults to 8; an
         // explicit size must be a primitive positive safe integer, otherwise
         // numeric-string/fractional coercion or a 0/negative value could
@@ -196,7 +231,7 @@ export class FunctionSandbox {
         if (itemOffset < 0n || itemOffset + BigInt(itemSize) > BigInt(this.maxObjectSize)) {
           throw new RangeError(`objectMemory offset ${itemOffset} (+${itemSize}) is outside the sandbox object region (maxObjectSize=${this.maxObjectSize})`);
         }
-        await this.emulator.store(objectBase + itemOffset, itemSize, asBig(item.value));
+        await this.emulator.store(objectBase + itemOffset, itemSize, asConcrete(item.value, 'objectMemory value'));
       }
     } else if (o.objectMemory && typeof o.objectMemory === 'object') {
       for (const [offset, value] of Object.entries(o.objectMemory)) {
@@ -204,22 +239,22 @@ export class FunctionSandbox {
         // objectMemory initializers are bounded by the same object region that
         // mapZero/modifiedRanges use: an offset beyond maxObjectSize must not
         // fall through into the synthetic heap backing (#5318).
-        const itemOffset = asBig(offset);
+        const itemOffset = asConcrete(offset, 'objectMemory offset');
         const itemSize = 8;
         if (itemOffset < 0n || itemOffset + BigInt(itemSize) > BigInt(this.maxObjectSize)) {
           throw new RangeError(`objectMemory offset ${itemOffset} (+${itemSize}) is outside the sandbox object region (maxObjectSize=${this.maxObjectSize})`);
         }
-        await this.emulator.store(objectBase + itemOffset, itemSize, asBig(value));
+        await this.emulator.store(objectBase + itemOffset, itemSize, asConcrete(value, 'objectMemory value'));
       }
     }
 
     for (const item of o.stackMemory || []) {
       throwIfCancelled();
       if (!item) continue;
-      await this.emulator.store(this.emulator.sp + asBig(item.offset || 0), Number(item.size || 8), asBig(item.value));
+      await this.emulator.store(this.emulator.sp + asConcrete(item.offset === undefined ? 0n : item.offset, 'stackMemory offset'), Number(item.size || 8), asConcrete(item.value, 'stackMemory value'));
     }
     throwIfCancelled();
-    for (const bp of o.breakpoints || []) this.emulator.breakpoints.add(asBig(bp).toString());
+    for (const bp of o.breakpoints || []) this.emulator.breakpoints.add(asConcreteAddress(bp, 'breakpoint').toString());
 
     throwIfCancelled();
     this.watch = watchesFromOptions(o, objectBase);
@@ -238,10 +273,10 @@ export class FunctionSandbox {
     };
   }
 
-  setRegister(reg, value) { this.emulator.set(reg, asBig(value)); }
+  setRegister(reg, value) { this.emulator.set(reg, asConcrete(value, 'register value')); }
   getRegister(reg) { return this.emulator.get(reg); }
-  addBreakpoint(address) { this.emulator.breakpoints.add(asBig(address).toString()); }
-  removeBreakpoint(address) { this.emulator.breakpoints.delete(asBig(address).toString()); }
+  addBreakpoint(address) { this.emulator.breakpoints.add(asConcreteAddress(address, 'breakpoint').toString()); }
+  removeBreakpoint(address) { this.emulator.breakpoints.delete(asConcreteAddress(address, 'breakpoint').toString()); }
 
   async step() { return this.emulator.step(); }
 

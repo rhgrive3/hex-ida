@@ -52,8 +52,13 @@ export const F6_BOUNDED_OPERATION_CELLS = Object.freeze([
 const BYTE_HASH_RE = /^bytes:[0-9a-f]{32}$/;
 const VALID_REBUILD_PROFILE_SUPPORT = new WeakSet();
 
+// Identity-bearing fields must be primitive strings. String(value) makes
+// ['elf'], {toString(){return 'elf'}} and 'elf' indistinguishable, so a
+// structured input would be minted into the canonical transactionId of a
+// publishable rebuild proposal (#3969).
 function required(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new TypeError(code);
+  const text = value.trim();
   if (!text) throw new TypeError(code);
   return text;
 }

@@ -155,5 +155,5 @@ export function overlayCilMetadata(bytes,parsed){
   row.fileOffset=off;
  }
 
- return deepFreeze({...parsed,runtimeVersion:meta.runtimeVersion,vmSpecEdition:meta.runtimeVersion,types:defs.types,fields:defs.fields,params:defs.params,properties,events:defs.events,methodSemantics:defs.methodSemantics,methods,methodBodies,manifestResources,typeSpecs:defs.typeSpecs,assembly:defs.assembly,typeRefs:defs.typeRefs,assemblyRefs:defs.assemblyRefs,userStrings,...(genericMetadata.genericParams.length?{genericParams:genericMetadata.genericParams}:{}),...(genericMetadata.genericParamConstraints.length?{genericParamConstraints:genericMetadata.genericParamConstraints}:{})});
+ return deepFreeze({...parsed,runtimeVersion:meta.runtimeVersion,vmSpecEdition:meta.runtimeVersion,types:defs.types,fields:defs.fields,params:defs.params,properties,events:defs.events,methodSemantics:defs.methodSemantics,methods,methodBodies,manifestResources,typeSpecs:defs.typeSpecs,assembly:defs.assembly,typeRefs:defs.typeRefs,memberRefs:defs.memberRefs,assemblyRefs:defs.assemblyRefs,fieldMarshals:defs.fieldMarshals,customAttributes:defs.customAttributes,userStrings,...(genericMetadata.genericParams.length?{genericParams:genericMetadata.genericParams}:{}),...(genericMetadata.genericParamConstraints.length?{genericParamConstraints:genericMetadata.genericParamConstraints}:{})});
 }

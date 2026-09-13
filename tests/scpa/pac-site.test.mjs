@@ -34,7 +34,9 @@ for (const diversity of [0n,1n,65535n]) test(`PAC diversity boundary ${diversity
   assert.equal(view.decoded.authenticationKey,0); assert.equal(view.decoded.addressDiversity,false);
 });
 test('unauthenticated and unsupported layouts do not acquire auth fields from overlapping bits',()=>{
-  for(const format of [1,2,6,7,9,10,12]) {
+  // Formats 2/6 reserve bits 44..50, so using bits 48..50 there is
+  // structurally invalid rather than a valid unauthenticated control (#4216).
+  for(const format of [1,7,9,10,12]) {
     const {view}=loaded(format,0x7n<<48n);
     assert.equal(view.decoded.authenticationKey,null); assert.equal(view.decoded.discriminator,null);
   }
