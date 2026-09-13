@@ -330,7 +330,41 @@ const cache = new LRU(CACHE_MAX);
 const analysisInflight = new Map();
 const textInflight = new Map();
 
-function cacheKey(region, startRow, endRow, symbols, maxRows = MAX_INSTRUCTIONS) {
+// Text resolution completeness is tracked per analyzed model. A transient
+// backend read failure must not be recorded as "texts resolved", otherwise the
+// same cached entry would never retry and the missing strings stay missing
+// forever (#5360).
+const modelTextsComplete = new WeakMap();
+export function modelTextsCompleteFor(model) {
+  return !!model && modelTextsComplete.get(model) === true;
+}
+
+// Cache and single-flight identity must be bound to the analysis producer, not
+// only to region shape: two backends can expose identical region metadata while
+// serving different bytes, and a region-only key would return the first
+// backend's result for the second one (#5357).
+const backendNamespaces = new WeakMap();
+let backendNamespaceSeq = 0;
+function backendIdentityPart(backend) {
+  if (backend == null) return 'none';
+  if (typeof backend !== 'object' && typeof backend !== 'function') return 'primitive:' + String(backend);
+  let namespace = backendNamespaces.get(backend);
+  if (namespace == null) {
+    namespace = ++backendNamespaceSeq;
+    backendNamespaces.set(backend, namespace);
+  }
+  // A backend that also exposes a stable binary id gets that identity folded in,
+  // so reloading a different binary into the same backend object cannot reuse
+  // the previous binary's analysis. Volatile analysis epochs are deliberately
+  // excluded: they change during a session and would defeat caching.
+  const binaryId = backend.binaryId;
+  const stableId = typeof binaryId === 'string' || typeof binaryId === 'number' || typeof binaryId === 'bigint'
+    ? String(binaryId)
+    : null;
+  return stableId == null ? 'ns' + namespace : 'ns' + namespace + ':' + stableId;
+}
+
+function cacheKey(backend, region, startRow, endRow, symbols, maxRows = MAX_INSTRUCTIONS) {
   const symbolGen = symbols && symbols.gen != null ? symbols.gen : 0;
   const regionRevision = region?.revision ?? region?.gen ?? region?.generation ?? 0;
   // Region identity is cache authority (#3311): structured values must not
@@ -341,7 +375,7 @@ function cacheKey(region, startRow, endRow, symbols, maxRows = MAX_INSTRUCTIONS)
     if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return String(value);
     try { return 'structured:' + stableDigest(jsonSafe(value)); } catch { return 'structured:opaque'; }
   };
-  return [symbolGen, identityPart(region?.id), identityPart(region?.vmAddr), identityPart(region?.size), identityPart(regionRevision), startRow, endRow, 'rows=' + maxRows].join(':');
+  return [backendIdentityPart(backend), symbolGen, identityPart(region?.id), identityPart(region?.vmAddr), identityPart(region?.size), identityPart(regionRevision), startRow, endRow, 'rows=' + maxRows].join(':');
 }
 
 function makeShared(map, key, producer) {
@@ -469,7 +503,9 @@ async function ensureTextsForKey(key, backend, res, signal) {
   if (!entry) {
     entry = makeShared(textInflight, key, async (producerSignal) => {
       await resolveModelTexts(backend, res.model, MODEL_TEXTS, { signal: producerSignal });
-      res.textsResolved = true;
+      // Only a complete resolution is final. An incomplete one leaves the entry
+      // unresolved so a later request retries instead of retrying never (#5360).
+      res.textsResolved = modelTextsCompleteFor(res.model);
       return res;
     });
   }
@@ -481,7 +517,7 @@ export async function analyzeFunctionCached(backend, region, startRow, endRow, s
   analysisAbortSignalMethods(signal);
   throwIfAborted(signal);
   const budget = rowBudget(opts);
-  const key = cacheKey(region, startRow, endRow, symbols, budget);
+  const key = cacheKey(backend, region, startRow, endRow, symbols, budget);
   const wantTexts = opts.texts !== false;
   let res = cache.get(key);
   if (res) {
@@ -533,7 +569,10 @@ async function mapBounded(items, limit, mapper, signal) {
 export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opts = {}) {
   const signal = opts?.signal || null;
   throwIfAborted(signal);
-  if (!model || !backend || !model.addressRefs.length) return model;
+  if (!model || !backend || !model.addressRefs.length) {
+    if (model) modelTextsComplete.set(model, true);
+    return model;
+  }
   const wanted = [];
   const seen = new Set();
   for (const r of model.addressRefs) {
@@ -543,11 +582,16 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
     wanted.push(r.addr);
     if (wanted.length >= limit) break;
   }
+  // Transient backend failures are tolerated per reference, but they make the
+  // resolution incomplete: the caller must be able to tell "no text here" from
+  // "the read failed" so it can retry later (#5360).
+  let readFailures = 0;
   const read = async (addr) => {
     try {
       return await awaitAbortable(backend.readAt(addr, 120, true, { signal }), signal);
     } catch (error) {
       if (isAbort(error, signal)) throw error;
+      readFailures += 1;
       return null;
     }
   };
@@ -577,7 +621,9 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
     });
   }
   throwIfAborted(signal);
-  return attachTexts(model, texts, indirect);
+  const resolved = attachTexts(model, texts, indirect);
+  modelTextsComplete.set(resolved, readFailures === 0);
+  return resolved;
 }
 
 function looksLikeText(g) {

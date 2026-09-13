@@ -82,12 +82,26 @@ export function findValueUpdates(model, opts) {
   return rememberUpdates(model, out, opts);
 }
 
-function distinctCandidateLocations(updates) {
+// Candidate distinctness is canonical memory/object identity, not the legacy
+// display key. `x19@32` is only the physical-register spelling plus a
+// displacement, so two different SSA objects reached through a reused physical
+// register would count as one location and let an unscoped propagated
+// comparison through the ambiguity gate (#5365). SSA-backed updates expose the
+// canonical Memory-SSA key as `irKey`; the display key is only a fallback.
+export function candidateLocationIdentity(loc) {
+  if (loc.irKey != null) return 'ir:' + String(loc.irKey);
+  if (loc.key != null) return String(loc.key);
+  return null;
+}
+
+export function distinctCandidateLocations(updates) {
   const keys = new Set();
   for (const u of updates || []) {
     const loc = u && u.location;
-    if (!loc || loc.stack || loc.key == null) continue;
-    keys.add(String(loc.key));
+    if (!loc || loc.stack) continue;
+    const identity = candidateLocationIdentity(loc);
+    if (identity == null) continue;
+    keys.add(identity);
     if (keys.size > 1) break;
   }
   return keys.size;
