@@ -21,6 +21,7 @@
 
 import { createPassDescriptor, createPassResult } from './contract.js';
 import { analysisIdentityMatches, canonicalAnalysisIdentity } from './analysis-identity.js';
+import { readonlyMap, frozenEntries } from './readonly-map.js';
 
 export const GVN_PASS = createPassDescriptor({
   id: 'phase8.gvn',
@@ -446,13 +447,13 @@ export function runGvnPass(context = {}, budget = {}, area = null) {
   const congruentClasses = [...classes.values()].filter((members) => members.length > 1);
   const facts = Object.freeze({
     passVersion: GVN_PASS.version,
-    numbers,
-    classes,
+    numbers: readonlyMap(numbers),
+    classes: readonlyMap([...classes].map(([number, members]) => [number, Object.freeze([...members])])),
     congruentClassCount: congruentClasses.length,
-    reuseCandidates: Object.freeze(reuseCandidates),
+    reuseCandidates: frozenEntries(reuseCandidates),
     // Why each value could not be numbered with anything else. A missed reuse
     // with no reason recorded is indistinguishable from a reuse nobody looked for.
-    singletonReasons,
+    singletonReasons: readonlyMap(singletonReasons),
     completeness: budgetExhausted ? 'partial' : 'complete',
   });
   area.stage('valueNumbers', facts);

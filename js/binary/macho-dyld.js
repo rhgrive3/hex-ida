@@ -3,10 +3,49 @@ import { functionSeed } from './model.js';
 
 const CHAINED_POINTER_SITES = new WeakMap();
 const CHAINED_POINTER_COVERAGE = new WeakMap();
+const CHAINED_POINTER_REVISIONS = new WeakMap();
+export const MACHO_POINTER_SITE_VIEW_VERSION = '1.1.0';
+function advancePointerMetadata(image) {
+  CHAINED_POINTER_REVISIONS.set(image, (CHAINED_POINTER_REVISIONS.get(image) ?? 0n) + 1n);
+}
+/** Version of the existing loader-owned fixup site/coverage projection. */
+export function machOPointerMetadataRevision(image) {
+  return (CHAINED_POINTER_REVISIONS.get(image) ?? 0n).toString();
+}
+/** Read-only metadata description. A reconstructed encoded target is NOT proof
+ * that AUT succeeds, that a memory load occurred, or that execution can call it.
+ * Retained key/diversity fields are encoded metadata, not the runtime PAC key
+ * or the final discriminator after storage-address blending.
+ */
+export function describeMachOPointerSite(image, rawValue, addressValue) {
+  let raw, address;
+  try { raw = BigInt(rawValue); address = BigInt(addressValue); } catch { return null; }
+  if (!image || raw < 0n || raw > 0xffffffffffffffffn || address < 0n || address > 0xffffffffffffffffn) return null;
+  const revision = machOPointerMetadataRevision(image);
+  const site = CHAINED_POINTER_SITES.get(image)?.get(address) ?? null;
+  const coverage = chainedPointerCoverageAt(image, address);
+  const base = { schema: 'macho-pointer-site-view/v1', version: MACHO_POINTER_SITE_VIEW_VERSION, revision,
+    storageAddress: address, rawValue: raw, coverage: coverage ? Object.freeze({ ...coverage }) : null,
+    authority: 'loader-metadata-projection', authenticationVerified: false, executionTargetExact: false };
+  if (site && site.raw !== raw) return Object.freeze({ ...base, status: 'stale-raw-word', decoded: null });
+  if (site) {
+    const decoded = site.decoded;
+    return Object.freeze({ ...base, status: 'recorded-site', pointerFormat: site.pointerFormat,
+      decoded: decoded ? Object.freeze({ bind: decoded.bind === true, ordinal: decoded.ordinal ?? null,
+        addend: decoded.addend ?? null, target: decoded.target ?? null, next: decoded.next ?? null,
+        stride: decoded.stride ?? null, authenticated: decoded.authenticated ?? null,
+        authenticationKey: decoded.authenticationKey ?? null, discriminator: decoded.discriminator ?? null,
+        addressDiversity: decoded.addressDiversity ?? null }) : null });
+  }
+  return Object.freeze({ ...base, status: coverage && !coverage.complete ? 'incomplete-owned-page' : 'no-recorded-fixup',
+    pointerFormat: null, decoded: null });
+}
+
 
 function rememberChainedPointerSite(image, address, raw, pointerFormat, decoded) {
   let sites = CHAINED_POINTER_SITES.get(image);
   if (!sites) { sites = new Map(); CHAINED_POINTER_SITES.set(image, sites); }
+  advancePointerMetadata(image);
   sites.set(BigInt(address), { raw: BigInt(raw), pointerFormat, decoded });
 }
 
@@ -19,6 +58,7 @@ function rememberChainedPointerCoverage(image, start, end) {
   const key = `${rangeStart.toString(16)}:${rangeEnd.toString(16)}`;
   // Re-observing a declared page starts conservatively. Only a full successful
   // walk below may promote this ownership range to complete.
+  advancePointerMetadata(image);
   ranges.set(key, { start: rangeStart, end: rangeEnd, complete: false });
   return key;
 }
@@ -26,7 +66,7 @@ function rememberChainedPointerCoverage(image, start, end) {
 function markChainedPointerCoverageComplete(image, key) {
   if (key == null) return;
   const range = CHAINED_POINTER_COVERAGE.get(image)?.get(key);
-  if (range) range.complete = true;
+  if (range && !range.complete) { advancePointerMetadata(image); range.complete = true; }
 }
 
 function chainedPointerCoverageAt(image, address) {
@@ -390,11 +430,16 @@ function decodeChainedPointer(raw, format, imageBase = null) {
       if (a & 0x40000) a -= 0x80000;
       addend = BigInt(a);
     }
+    // dyld_chained_ptr_arm64e_auth_{rebase,bind,bind24}: retain exactly
+    // diversity[47:32], addrDiv[48], key[50:49]. Other pointer layouts
+    // do NOT reuse these fields. Nothing here authenticates a pointer.
+    const authentication = auth ? { authenticationKey: Number((raw >> 49n) & 3n),
+      discriminator: Number((raw >> 32n) & 0xffffn), addressDiversity: !!((raw >> 48n) & 1n) } : {};
     const stride = format === 7 || format === 10 ? 4 : 8;
-    if (bind) return { bind, ordinal, addend, next, stride, target: null, authenticated: auth };
+    if (bind) return { bind, ordinal, addend, next, stride, target: null, authenticated: auth, ...authentication };
     if (auth) {
       const target = base == null ? null : base + (raw & 0xffffffffn);
-      return { bind, ordinal: -1, addend: 0n, next, stride, target, authenticated: true };
+      return { bind, ordinal: -1, addend: 0n, next, stride, target, authenticated: true, ...authentication };
     }
     const target = raw & 0x7ffffffffffn;
     const high8 = (raw >> 43n) & 0xffn;
@@ -415,7 +460,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     image.metadata.dyldBindings.complete=false;image.metadata.dyldBindings.streams[source]=invalid;
     image.warnings.push(`${source}: binding stream is truncated`);return invalid;
   }
-  const BIND_OPCODE_MASK = 0xf0, BIND_IMMEDIATE_MASK = 0x0f;
+  const BIND_OPCODE_MASK = 0xf0, BIND_IMMEDIATE_MASK = 0x0f, BIND_SYMBOL_FLAGS_KNOWN_MASK = 0x09;
   const ptrSize = image.bits === 64 ? 8n : 4n;
   let p = dc.offset;
   const end = dc.offset + dc.size;
@@ -427,6 +472,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
   let libOrdinal = source === 'weak-bind' ? -3 : 0, symbol = '', symbolFlags = 0, type = source === 'lazy-bind' ? 1 : 0, addend = 0n, segIndex = 0, segOffset = 0n, locationSet = false;
   let libraryOrdinalSet = source === 'weak-bind';
   let threadedTable = null, threadedTableLimit = 0;
+  let sawDone = false;
   const status = { source, complete: true, decodedBinds: 0, threadedApplies: 0, unsupportedOpcodes: [] };
   image.metadata.dyldBindings ||= { complete: true, streams: {} };
   image.metadata.dyldBindings.streams[source] = status;
@@ -510,6 +556,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     }
     if (op === 0x00) {
       if (source === 'lazy-bind') { symbol = ''; symbolFlags = 0; libOrdinal = 0; libraryOrdinalSet = false; addend = 0n; continue; }
+      sawDone = true;
       break;
     } else if (op === 0x10) {
       if (source === 'weak-bind') { fail('dylib ordinal opcode is not allowed in weak-bind stream'); break; }
@@ -524,6 +571,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
       libOrdinal = imm === 0 ? 0 : signExtend(imm | 0xf0, 8); libraryOrdinalSet = true;
     }
     else if (op === 0x40) {
+      if ((imm & ~BIND_SYMBOL_FLAGS_KNOWN_MASK) !== 0) { fail(`reserved symbol flags 0x${imm.toString(16)}`); break; }
       const x = rawCString(r, p, end);
       // The symbol C-string is a variable-length cost: charge its raw bytes to
       // inputBytes and the decoded string to the shared string budget before
@@ -565,6 +613,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     fail(`bounded stream operand is truncated: ${e.message}`);
   }
   if (threadedTable && threadedTable.length !== threadedTableLimit) fail(`threaded ordinal table expected ${threadedTableLimit} entries, decoded ${threadedTable.length}`);
+  if (source !== 'lazy-bind' && status.complete && !sawDone) fail('binding stream ended without BIND_OPCODE_DONE');
   return status;
 }
 
@@ -580,7 +629,7 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
   const status = { complete: true, nodes: 0, edges: 0, cycleDetected: false, budgetExceeded: false };
   image.metadata.exportTrie = status;
   const markPartial = (message, field) => { status.complete = false; if (field) status[field] = true; image.warnings.push(`exports trie: ${message}`); };
-  const walk = (nodeOff, prefix, depth) => {
+  const walk = (nodeOff, path, depth) => {
     if (depth > 256) { markPartial('depth budget exceeded', 'budgetExceeded'); return; }
     if (!Number.isSafeInteger(nodeOff) || nodeOff < 0 || base + nodeOff >= end) { markPartial('child node offset is outside trie'); return; }
     if (active.has(nodeOff)) { markPartial(`cycle detected at node 0x${nodeOff.toString(16)}`, 'cycleDetected'); return; }
@@ -593,15 +642,25 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
       if (!Number.isSafeInteger(terminalSize) || terminalSize < 0 || p + terminalSize > end) { markPartial('terminal payload is truncated'); return; }
       const terminalEnd = p + terminalSize;
       if (term.value) {
-        const flagsX = r.uleb(p, 10, terminalEnd); p = flagsX.next; const flags = Number(flagsX.value);
+        const flagsX = r.uleb(p, 10, terminalEnd); p = flagsX.next;
+        // Flag bits must be tested on the exact ULEB128 BigInt BEFORE any
+        // Number() conversion: a rounded double loses the low REEXPORT/STUB
+        // bits (mod 2^32) and even silences the high-bit guard, mis-decoding
+        // the terminal layout while keeping complete:true (#5030). After the
+        // >=6 guard the value is <= 0x3f, so Number() is exact below.
+        const flagsBig = flagsX.value;
+        const flags = Number(flagsBig);
         // Apple dyld's ExportsTrie.cpp rejects terminals with bits >= 6 set
         // ("unknown exports flag bits"). Laundering them into regular
         // exports would mint export metadata the container cannot mean
         // (#5392).
-        if ((flags >>> 6) !== 0) {
-          markPartial(`unknown exports flag bits 0x${flags.toString(16)}`);
+        if ((flagsBig >> 6n) !== 0n) {
+          markPartial(`unknown exports flag bits 0x${flagsBig.toString(16)}`);
         } else if (flags & 0x08) {
-          const ord = r.uleb(p, 10, terminalEnd); p = ord.next; const importedX = rawCString(r, p, terminalEnd);
+          const ord = r.uleb(p, 10, terminalEnd); p = ord.next;
+          const importedX = readBudgetedExportTrieCString(r, p, terminalEnd, budget, 'export-trie-reexport-string');
+          if (!importedX) { markPartial('shared metadata re-export string budget exceeded', 'budgetExceeded'); return; }
+          p = importedX.next;
           const imported = importedX.text || null;
           const ordinal = Number(ord.value);
           // A positive library ordinal is a 1-based index into the dependent
@@ -612,8 +671,9 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
           if (ordinal > 0 && ordinal > libraryCount) {
             markPartial(`reexport ordinal ${ordinal} exceeds dependency count ${libraryCount}`);
           } else {
-            const retainedStringBytes = (prefix.length + (imported?.length || 0)) * 2;
-            if(!budget.take({objects:1,operations:1,stringBytes:retainedStringBytes,estimatedHeapBytes:retainedStringBytes+160},'export-trie-reexport-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;}
+            const prefix = materializeExportTriePath(path, budget);
+            if (prefix == null) { markPartial('shared metadata path string budget exceeded', 'budgetExceeded'); return; }
+            if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'export-trie-reexport-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;}
             image.exports.push({ name: prefix, address: 0n, kind: 'reexport', flags, ordinal, imported, source: 'exports-trie' });
           }
         } else {
@@ -632,11 +692,15 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
               const tableIndexX = r.uleb(p, 10, terminalEnd); p = tableIndexX.next;
               if (tableIndexX.value == null) {
                 markPartial('function-variant terminal is missing its variant table index');
-              } else if (!budget.take({objects:1,operations:1,stringBytes:prefix.length*2,estimatedHeapBytes:prefix.length*2+160},'export-trie-output')) {
-                markPartial('shared metadata output budget exceeded','budgetExceeded');
               } else {
-                image.exports.push({ name: prefix, address: null, kind: 'function-variant', flags, defaultImplementationOffset: addrX.value, variantTableIndex: Number(tableIndexX.value), source: 'exports-trie' });
-                markPartial(`function-variant export ${prefix} recorded without variant-table resolution`);
+                const prefix = materializeExportTriePath(path, budget);
+                if (prefix == null) { markPartial('shared metadata path string budget exceeded', 'budgetExceeded'); return; }
+                if (!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'export-trie-output')) {
+                  markPartial('shared metadata output budget exceeded','budgetExceeded');
+                } else {
+                  image.exports.push({ name: prefix, address: null, kind: 'function-variant', flags, defaultImplementationOffset: addrX.value, variantTableIndex: Number(tableIndexX.value), source: 'exports-trie' });
+                  markPartial(`function-variant export ${prefix} recorded without variant-table resolution`);
+                }
               }
             } else {
             const addrX = r.uleb(p, 10, terminalEnd); p = addrX.next;
@@ -645,10 +709,18 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
             // address (dyld ExportsTrie semantics, #4366).
             const address = exportKind === 2 ? addrX.value : image.imageBase + addrX.value;
             const kind = exportKind === 1 ? 'thread-local' : exportKind === 2 ? 'absolute' : 'export';
+            const prefix = materializeExportTriePath(path, budget);
+            if (prefix == null) { markPartial('shared metadata path string budget exceeded', 'budgetExceeded'); return; }
             const ex = { name: prefix, address, kind, flags, source: 'exports-trie' };
             if (flags & 0x10) { const resolverX = r.uleb(p, 10, terminalEnd); p = resolverX.next; ex.resolver = image.imageBase + resolverX.value; }
-            if(!budget.take({objects:1,operations:1,stringBytes:prefix.length*2,estimatedHeapBytes:prefix.length*2+160},'export-trie-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;} image.exports.push(ex);
-            if (exportKind === 0) { const sec = image.sectionAt(address); if (sec && sec.perms.execute) if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'export-function')){markPartial('shared metadata function budget exceeded','budgetExceeded');return;} image.functions.push(functionSeed(address, { name: prefix, source: 'export', confidence: 0.9 })); }
+            if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'export-trie-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;} image.exports.push(ex);
+            if (exportKind === 0) {
+              const sec = image.sectionAt(address);
+              if (sec && sec.perms.execute && image.addressToOffset(address) != null) {
+                if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'export-function')){markPartial('shared metadata function budget exceeded','budgetExceeded');return;}
+                image.functions.push(functionSeed(address, { name: prefix, source: 'export', confidence: 0.9 }));
+              }
+            }
           }
         }
       }
@@ -656,16 +728,110 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
       const children = r.u8(p++);
       for (let i = 0; i < children; i++) {
         if(!budget.take({records:1,operations:1,estimatedHeapBytes:32},'export-trie-edge')){markPartial('shared metadata edge budget exceeded','budgetExceeded');return;} status.edges++;
-        const edgeX = rawCString(r, p, end); const edge = edgeX.text; p = edgeX.next;
+        const edgeX = readBudgetedExportTrieCString(r, p, end, budget, 'export-trie-edge-string');
+        if (!edgeX) { markPartial('shared metadata edge string budget exceeded', 'budgetExceeded'); return; }
+        const edge = edgeX.text; p = edgeX.next;
         if (p >= end) { markPartial('child offset is truncated'); return; }
-        const child = r.uleb(p, 10, end); p = child.next; walk(Number(child.value), prefix + edge, depth + 1);
+        const child = r.uleb(p, 10, end); p = child.next;
+        path.push(edge);
+        try { walk(Number(child.value), path, depth + 1); }
+        finally { path.pop(); }
       }
     } finally { active.delete(nodeOff); }
   };
-  try { walk(0, '', 0); } catch (e) {
+  try { walk(0, [], 0); } catch (e) {
     if (e?.code === 'BINARY_SOURCE_RANGE_MISSING') throw e; markPartial(e.message);
   }
   return status;
+}
+
+function stopExportTrieBudget(budget, key, label) {
+  return budget.take({ [key]: budget.remaining(key) + 1 }, label);
+}
+
+function utf8CodeUnitsAt(r, p, end) {
+  const b0 = r.u8(p);
+  const cont = (value) => value >= 0x80 && value <= 0xbf;
+  if (b0 < 0x80) return { width: 1, units: 1 };
+  if (b0 >= 0xc2 && b0 <= 0xdf && p + 1 < end) {
+    const b1 = r.u8(p + 1);
+    if (cont(b1)) return { width: 2, units: 1 };
+  } else if (b0 >= 0xe0 && b0 <= 0xef && p + 2 < end) {
+    const b1 = r.u8(p + 1), b2 = r.u8(p + 2);
+    const validB1 = b0 === 0xe0 ? b1 >= 0xa0 && b1 <= 0xbf
+      : b0 === 0xed ? b1 >= 0x80 && b1 <= 0x9f
+        : cont(b1);
+    if (validB1 && cont(b2)) return { width: 3, units: 1 };
+  } else if (b0 >= 0xf0 && b0 <= 0xf4 && p + 3 < end) {
+    const b1 = r.u8(p + 1), b2 = r.u8(p + 2), b3 = r.u8(p + 3);
+    const validB1 = b0 === 0xf0 ? b1 >= 0x90 && b1 <= 0xbf
+      : b0 === 0xf4 ? b1 >= 0x80 && b1 <= 0x8f
+        : cont(b1);
+    if (validB1 && cont(b2) && cont(b3)) return { width: 4, units: 2 };
+  }
+  // TextDecoder({fatal:false}) replaces malformed input. Advancing one byte
+  // at a time can only overestimate the resulting UTF-16 length, so it is a
+  // safe pre-allocation bound without accepting an oversized string (#4154).
+  return { width: 1, units: 1 };
+}
+
+function readBudgetedExportTrieCString(r, start, end, budget, label) {
+  if (!budget.take({ operations: 1 }, `${label}-scan`)) return null;
+  const inputRemaining = budget.remaining('inputBytes');
+  const stringRemaining = budget.remaining('stringBytes');
+  const heapRemaining = budget.remaining('estimatedHeapBytes');
+  const scanEnd = start + Math.min(end - start, inputRemaining);
+  const maxStringUnits = Math.floor(stringRemaining / 2);
+  const maxHeapUnits = Math.floor(Math.max(0, heapRemaining - 32) / 2);
+  let p = start, utf16Units = 0, nextScanCheck = start + 4096;
+  while (p < scanEnd) {
+    if (p >= nextScanCheck) {
+      if (!budget.take({ operations: 1 }, `${label}-scan`)) return null;
+      nextScanCheck = p + 4096;
+    }
+    if (r.u8(p) === 0) {
+      const inputBytes = p + 1 - start;
+      const stringBytes = utf16Units * 2;
+      const estimatedHeapBytes = stringBytes + 32;
+      if (!budget.take({ inputBytes, stringBytes, estimatedHeapBytes }, label)) return null;
+      const raw = r.slice(start, p - start);
+      const text = new TextDecoder('utf-8', { fatal: false }).decode(raw);
+      return { text, next: p + 1, bytes: inputBytes };
+    }
+    const next = utf8CodeUnitsAt(r, p, scanEnd);
+    const nextUnits = utf16Units + next.units;
+    if (nextUnits > maxStringUnits) {
+      stopExportTrieBudget(budget, 'stringBytes', label);
+      return null;
+    }
+    if (nextUnits > maxHeapUnits) {
+      stopExportTrieBudget(budget, 'estimatedHeapBytes', label);
+      return null;
+    }
+    utf16Units = nextUnits;
+    p += next.width;
+  }
+  if (scanEnd < end) {
+    stopExportTrieBudget(budget, 'inputBytes', label);
+    return null;
+  }
+  throw new Error('unterminated C string');
+}
+
+function materializeExportTriePath(path, budget) {
+  if (!path.length) return '';
+  if (path.length === 1) return path[0];
+  let units = 0;
+  for (const segment of path) {
+    units += segment.length;
+    if (!Number.isSafeInteger(units)) {
+      stopExportTrieBudget(budget, 'stringBytes', 'export-trie-path');
+      return null;
+    }
+  }
+  const stringBytes = units * 2;
+  if (!budget.take({ operations: 1, stringBytes, estimatedHeapBytes:stringBytes+32 }, 'export-trie-path')) return null;
+  return path.join('');
 }
 
 function rawCString(r, p, end) {

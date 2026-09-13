@@ -83,6 +83,7 @@
     "tests/runtime-module-binding-contract.mjs",
     "js/program.js",
     "tests/issue-2059-program-merge.mjs",
+    "tests/issue-4801-vm-effect-validator-creator-parity.mjs",
     "js/adapters/index.js",
     "js/address-provenance.js",
     "js/ai/evidence.js",
@@ -107,7 +108,8 @@
     "tests/compiler-truth/extended.mjs",
     "tests/compiler-truth/language-matrix.mjs",
     "tests/compiler-truth/run-core.mjs",
-    "tests/compiler-truth/run.mjs"
+    "tests/compiler-truth/run.mjs",
+    "tests/issue-8004-ldc-resolved-constant.mjs"
   ],
   "forbiddenPrefixes": [
     "js/binary/",

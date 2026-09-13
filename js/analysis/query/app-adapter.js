@@ -1,3 +1,4 @@
+import { scopedAnalysisHost, scopedImmutableSourceIdentity } from './scoped-host.js';
 import { analyzeFunctionCached, supportsArm64SemanticAnalysis } from '../../analyze.js';
 import { buildOverlay } from '../../narrate.js';
 import { decompile } from '../../decompile.js';
@@ -172,7 +173,13 @@ function paged(values, page, completeness = 'complete', status = {}) {
   const items = source.slice(offset, offset + limit);
   return {
     value:items,
-    page:{ offset, limit, returned:items.length, total:source.length, next:offset + items.length < source.length ? offset + items.length : null },
+    page:{
+      offset,
+      limit,
+      returned:items.length,
+      total:completeness === 'complete' ? source.length : null,
+      next:offset + items.length < source.length ? offset + items.length : null,
+    },
     status:{ ...status, completeness, paged:true },
   };
 }
@@ -267,10 +274,11 @@ function normalizePlatform(value) {
   return p;
 }
 
+const EMPTY_DESCRIPTOR_METADATA = Object.freeze({});
 function descriptorMetadata(app) {
   const slice = currentSlice(app);
   const descriptor = slice?.info?.descriptor ?? slice?.descriptor ?? currentInfo(app)?.productDescriptor ?? app?.backend?.platformInfo?.productDescriptor;
-  return descriptor?.formatMetadata ?? {};
+  return descriptor?.formatMetadata ?? EMPTY_DESCRIPTOR_METADATA;
 }
 
 // The legacy ARM64 model keeps this callback for presentation consumers, but
@@ -396,9 +404,26 @@ export function createAppAnalysisQueryAdapter(app) {
       if (!app?.backend || !range.region || !storeValue(app, 'canDisassemble') || !symbols?.functionCount) return unsupported(id, 'arm64-function-producer-unavailable');
       const alignment = Number(storeValue(app, 'instructionAlignment') ?? storeValue(app, 'capability')?.instructionAlignment ?? 4);
       if (alignment !== 4) return unsupported(id, 'arm64-legacy-producer-requires-4-byte-instructions');
-      const startRow = Number((range.start - BigInt(range.region.vmAddr)) / 4n);
-      const maxRow = Math.max(0, Number(BigInt(range.region.size) / 4n) - 1);
-      const endRow = Math.min(Number((range.end - BigInt(range.region.vmAddr) + 3n) / 4n) - 1, maxRow);
+      // BigInt division floors, so an unaligned function start would silently
+      // analyze the preceding instruction row and publish it as the canonical
+      // result for the unaligned address. Match `App.analyzeFunctionAt()` and
+      // fail closed instead (#4969).
+      const delta = range.start - BigInt(range.region.vmAddr);
+      if (delta < 0n || delta % 4n !== 0n) return unsupported(id, 'arm64-function-start-unaligned');
+      // Legacy row indices are JavaScript numbers end to end. A row index
+      // beyond MAX_SAFE_INTEGER silently rounds to a neighboring instruction
+      // row, so the producer would analyze and publish a different function
+      // than the one requested (#5062); such ranges must fail closed.
+      const rowOffset = delta / 4n;
+      const endRowExact = (range.end - BigInt(range.region.vmAddr) + 3n) / 4n - 1n;
+      const maxRowExact = BigInt(range.region.size) / 4n - 1n;
+      const MAX_ROW = BigInt(Number.MAX_SAFE_INTEGER);
+      if (rowOffset > MAX_ROW || endRowExact > MAX_ROW || maxRowExact > MAX_ROW) {
+        return unsupported(id, 'function-row-index-unrepresentable');
+      }
+      const startRow = Number(rowOffset);
+      const maxRow = Math.max(0, Number(maxRowExact));
+      const endRow = Math.min(Number(endRowExact), maxRow);
       if (startRow < 0 || endRow < startRow) return unsupported(id, 'function-range-empty');
       const value = await analyzeFunctionCached(app.backend, range.region, startRow, endRow, symbols, options.onProgress, options);
       const completeness = value?.truncated ? 'truncated' : range.complete === false ? 'partial' : 'complete';
@@ -465,6 +490,18 @@ export function createAppAnalysisQueryAdapter(app) {
       const fileInfo = currentInfo(app);
       const project = storeValue(app, 'project') ?? app?.workspace?.project ?? app?.project ?? null;
       let binaryId = app?.backend?.binaryId ?? fileInfo?.binaryId ?? fileInfo?.sha256 ?? fileInfo?.hash ?? project?.binaryHash ?? project?.binary?.hash ?? null;
+      if (options.scopedSourceIdentity === true) {
+        // Scoped queries never force a full-file hash and do not treat a
+        // display/project hash as proof of the current source's contents.
+        const local = scopedImmutableSourceIdentity(app, app?.backend?.file ?? storeValue(app, 'file'));
+        if (!local) {
+          const error = new Error('scoped-analysis-disabled-or-source-unavailable');
+          error.code = 'ANALYSIS_QUERY_SCOPED_SOURCE_UNAVAILABLE';
+          throw error;
+        }
+        const verified = app?.backend?.binaryId;
+        binaryId = typeof verified === 'string' && /^bin_sha256_[0-9a-f]{64}$/.test(verified) ? verified : local;
+      }
       if (!binaryId && typeof app?.backend?.ensureBinaryId === 'function') {
         try { binaryId = await app.backend.ensureBinaryId({ signal:options.signal ?? null, onProgress:options.onIdentityProgress ?? options.onProgress }); }
         catch (error) { if (options.signal?.aborted || error?.name === 'AbortError' || error?.stale) throw error; }
@@ -656,7 +693,7 @@ export function createAppAnalysisQueryAdapter(app) {
         // itself, but stop when the producer's entire prefix is already below
         // the requested offset: there is no evidence for another page and an
         // unconditional cursor would create an infinite empty continuation.
-        const canProbeBeyondPrefix = result.page.total >= result.page.offset;
+        const canProbeBeyondPrefix = sourceRows.length >= result.page.offset;
         if (canProbeBeyondPrefix) {
           const next = nextPageOffset(
             result.page.offset,
@@ -680,13 +717,26 @@ export function createAppAnalysisQueryAdapter(app) {
         return unsupported(id, program.queryIncompleteReason || 'unsupported-program-analysis');
       }
       const { offset, limit } = pageOf(page);
-      const source = program.calleesOf(range.start, range.end, Math.min(MAX_PAGE, offset + limit));
+      const cumulativeLimit = cumulativePageLimit(offset, limit);
+      if (cumulativeLimit == null) return unsupportedPage(id, page, 'page-range-overflow');
+      const source = program.calleesOf(range.start, range.end, cumulativeLimit);
+      const sourceRows = Array.from(source || []);
       // The scan only covers the validated range; an unproven function extent
       // (analysis window or region clip) keeps the query partial (#5991).
       const rangeIncomplete = range.complete === false;
-      const reason = source?.incompleteReason ?? (rangeIncomplete ? (range.reason ?? 'function-extent-unproven') : null);
-      const result = paged(Array.from(source || []), page, source?.complete === false || rangeIncomplete ? 'partial' : 'complete', { reason });
-      if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned;
+      const queryLimited = source?.queryLimited === true;
+      const reason = source?.incompleteReason ?? (queryLimited ? 'query-limit' : (rangeIncomplete ? (range.reason ?? 'function-extent-unproven') : null));
+      const result = paged(sourceRows, page, source?.complete === false || queryLimited || rangeIncomplete ? 'partial' : 'complete', { reason });
+      if (queryLimited && result.page.next == null) {
+        const canProbeBeyondPrefix = sourceRows.length >= result.page.offset;
+        if (canProbeBeyondPrefix) {
+          const next = nextPageOffset(
+            result.page.offset,
+            result.page.returned > 0 ? result.page.returned : result.page.limit,
+          );
+          if (next != null) result.page.next = next;
+        }
+      }
       return result;
     },
 
@@ -709,10 +759,10 @@ export function createAppAnalysisQueryAdapter(app) {
         ...Array.from(refs).map((x) => ({ kind:'reference', site:x.site, target:x.target, refKind:x.kind ?? null })),
         ...Array.from(calls).map((x) => ({ kind:'call', site:x.site, target:address, caller:x.caller ?? null })),
       ].sort((a, b) => BigInt(a.site) < BigInt(b.site) ? -1 : BigInt(a.site) > BigInt(b.site) ? 1 : 0);
-      const complete = refs.complete !== false && calls.complete !== false;
       const queryLimited = refs.queryLimited === true || calls.queryLimited === true;
+      const complete = refs.complete !== false && calls.complete !== false && !queryLimited;
       return paged(rows, page, complete ? 'complete' : 'partial', {
-        reason:refs.incompleteReason ?? calls.incompleteReason ?? null,
+        reason:refs.incompleteReason ?? calls.incompleteReason ?? (queryLimited ? 'query-limit' : null),
         ...(queryLimited ? { truncationReason:'query-limit' } : {}),
       });
     },
@@ -818,12 +868,31 @@ export function createAppAnalysisQueryAdapter(app) {
       // "the backend cannot run this search" is not a complete empty result
       // (#5840, #5833).
       if (value?.unsupported === true) return unsupportedPage(null, page, value?.unsupportedReason ?? 'search-kind-unsupported');
-      return paged(value?.results || [], page, value?.capped || value?.cancelled ? 'partial' : 'complete', { reason:value?.cancelled ? 'cancelled' : value?.capped ? 'search-result-cap' : null });
+      return paged(value?.results || [], page, value?.cancelled ? 'partial' : value?.capped ? 'truncated' : 'complete', { reason:value?.cancelled ? 'cancelled' : value?.capped ? 'search-result-cap' : null });
     },
 
     async causalPath(_snapshot, source, sink, options = {}) {
       return typeof app?.queryCausalPath === 'function' ? wrap(await app.queryCausalPath(source, sink, options)) : unsupported(source?.functionId ?? source ?? null, 'causal-path-producer-unavailable');
     },
+  };
+
+  // This opt-in branch is deliberately lazy. Existing query methods and the
+  // default decoder/decompiler path retain their prior owners and behavior.
+  const scopedMethods = ['taskIdiomView', 'inspectConditionalModel', 'checkLoopInvariant', 'asyncEventOrder', 'portableIntegerChecks', 'demandQuery', 'investigateDemand', 'demandInvestigationFrontier', 'resumeDemandQuery', 'explainDemandResult', 'replayDemandResult', 'blockCaptures', 'investigationFrontier', 'typeEvidence', 'interproceduralQuery', 'abiInputBindings', 'abiPlacementEvidence', 'explainTransformChain', 'runtimeObservations', 'scopedCapabilities', 'semanticQuery', 'resumeSemanticQuery', 'dispatchTargets',
+    'applePointerView', 'appleMetadataView', 'knowledgeMatches', 'objectMemory', 'rangeValueCatalog', 'callGraphSlice', 'resumeCallGraphSlice', 'referenceSlice', 'replayReferenceSlice', 'refineValueFacts', 'summarySlice', 'resumeSummarySlice', 'proofSlice', 'replayProof', 'cancelScopedQuery'];
+  for (const method of scopedMethods) adapter[method] = async (snapshot, request = {}, options = {}) => {
+    if (!scopedAnalysisHost(app)?.configuration.enabled) return unsupported(null, 'scoped-analysis-disabled');
+    const { dispatchScopedAppQuery } = await import('./scoped-app.js');
+    return dispatchScopedAppQuery(app, snapshot, method, request, options, {
+      file: () => storeValue(app, 'file'), architecture: () => architectureOf(app), format: () => formatOf(app),
+      sliceIndex: () => validSliceIndex(storeValue(app, 'sliceIndex')),
+      artifactVersions: () => artifactVersions(app), metadata: () => descriptorMetadata(app),
+      regions: () => storeValue(app, 'regions'),
+      capability: () => storeValue(app, 'capability') ?? currentSlice(app)?.capability ?? currentInfo(app)?.capability,
+      projectRevision: () => identityGeneration((storeValue(app, 'project') ?? app?.workspace?.project ?? app?.project)?.revision
+        ?? app?.projectRevision ?? app?.workspace?.bindingRevision ?? 0, 'analysis-query-project-revision-invalid'),
+      rangeFor: (id) => rangeFor(app, id),
+    });
   };
 
   installRoutes(app, directFetch);

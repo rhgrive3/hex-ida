@@ -10,6 +10,10 @@ const RUNTIME_TOOLS = new Set(['get_runtime_observations','verify_runtime_hypoth
 const TOOL_NON_ADDRESS_KEYS = new Map([
   ['inspect_function_region', new Set(['start'])],
 ]);
+const TOOL_FUNCTION_ADDRESS_ARRAY_KEYS = new Map([
+  ['find_constant', new Set(['functions'])],
+  ['explain_evidence', new Set(['functions'])],
+]);
 
 export class ScopeController {
   constructor(snapshot, requestedScope = 'auto', { onExpand } = {}) {
@@ -47,6 +51,7 @@ export class ScopeController {
     if (PROJECT_TOOLS.has(tool) && effective !== 'project') return false;
     if (RUNTIME_TOOLS.has(tool) && effective !== 'runtime') return false;
     if (effective === 'function' || effective === 'selection' || effective === 'neighborhood') {
+      for (const address of collectFunctionAddresses(args, '', tool)) if (!this.scopeContainsFunction(effective, address)) return false;
       for (const address of collectAddresses(args, '', tool)) if (!this.scopeContainsAddress(effective, address)) return false;
     }
     return true;
@@ -71,11 +76,19 @@ export class ScopeController {
     if (effective === 'selection') return false;
     if (['binary','project','runtime'].includes(effective)) return true;
     if (sameAddress(this.snapshot.currentFunction?.address, address)) return true;
-    return effective === 'neighborhood' && (this.snapshot.neighborhood || []).some((item) => sameAddress(item, address));
+    if (effective !== 'neighborhood') return false;
+    // createTurnSnapshot() deliberately seeds the current cursor into the generic
+    // address neighborhood. That cursor may be an interior instruction, so it
+    // must not become function-identity authority merely by exact membership.
+    if (sameAddress(this.snapshot.currentAddress, address)) return false;
+    return (this.snapshot.neighborhood || []).some((item) => sameAddress(item, address));
   }
 
   assertToolCall(tool, args = {}) {
     if (!this.scopeAllowsTool(this.effectiveScope, tool, args)) throw new AIError('scope_violation', `${tool} is outside ${this.effectiveScope} scope.`);
+    for (const address of collectFunctionAddresses(args, '', tool)) {
+      if (!this.scopeContainsFunction(this.effectiveScope, address)) throw new AIError('scope_violation', `Function ${addressText(address)} is outside ${this.effectiveScope} scope.`);
+    }
     for (const address of collectAddresses(args, '', tool)) {
       if (!this.scopeContainsAddress(this.effectiveScope, address)) throw new AIError('scope_violation', `Address ${addressText(address)} is outside ${this.effectiveScope} scope.`);
     }
@@ -105,7 +118,7 @@ export function scopeAllowsTool(snapshot, scope, tool, args) { return new ScopeC
 function atLeast(scope, minimum) { return (RANK[scope] ?? -1) >= RANK[minimum]; }
 function collectAddresses(value, key = '', tool = '') {
   const out = [];
-  if (TOOL_NON_ADDRESS_KEYS.get(tool)?.has(key)) return out;
+  if (TOOL_NON_ADDRESS_KEYS.get(tool)?.has(key) || TOOL_FUNCTION_ADDRESS_ARRAY_KEYS.get(tool)?.has(key)) return out;
   if (isAddressKey(key)) {
     if (value != null) out.push(value);
     return out;
@@ -113,6 +126,21 @@ function collectAddresses(value, key = '', tool = '') {
   if (Array.isArray(value)) { for (const item of value) out.push(...collectAddresses(item, key, tool)); return out; }
   if (!value || typeof value !== 'object') return out;
   for (const [childKey, child] of Object.entries(value)) out.push(...collectAddresses(child, childKey, tool));
+  return out;
+}
+function collectFunctionAddresses(value, key = '', tool = '') {
+  const out = [];
+  if (TOOL_FUNCTION_ADDRESS_ARRAY_KEYS.get(tool)?.has(key)) {
+    if (!Array.isArray(value)) return value == null ? out : [value];
+    for (const item of value) if (item != null) out.push(item);
+    return out;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) out.push(...collectFunctionAddresses(item, key, tool));
+    return out;
+  }
+  if (!value || typeof value !== 'object') return out;
+  for (const [childKey, child] of Object.entries(value)) out.push(...collectFunctionAddresses(child, childKey, tool));
   return out;
 }
 function isAddressKey(key) {

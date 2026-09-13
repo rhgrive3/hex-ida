@@ -7,6 +7,7 @@ import { compileBytePattern } from './byte-search.js';
 import { boundedOffset, checkedChunkIndex, chunkLength, exactExternalInteger, regionSize, utf8Len, isExactFunctionSeed } from './worker-validation.js';
 import { analysisFromBinaryImage, emptyAnalysis } from './analysis-result.js';
 import { analyzeDecodedSemanticFunction } from '../targets/architecture/x86_64/semantic-function.js';
+import { analyzeSemanticFunction } from '../analysis/semantic-function.js';
 import { resolveMachOPointer } from '../binary/macho-dyld.js';
 
 const ROW_BYTES = 4;
@@ -91,7 +92,8 @@ self.onmessage = async (event) => {
     finally { if (requestKey != null && active.get(requestKey)?.controller === controller) active.delete(requestKey); }
   };
   try {
-    const result = serialized ? (openChain = openChain.then(execute, execute)) : openChain.then(execute);
+    const result = serialized ? openChain.then(execute, execute) : openChain.then(execute);
+    if (serialized) openChain = result.then(() => undefined, () => undefined);
     const resolved = await result.finally(() => scheduled.delete(scheduledEntry));
     post({ t: 'ok', id: msg.id, epoch: msg.epoch, result: resolved }, resolved?.__transfer);
   } catch (error) {
@@ -116,17 +118,70 @@ async function handle(msg, signal) {
     case 'setRegions': return setRegions(msg.regions);
     case 'chunk': return getChunk(msg, signal);
     case 'analyze': return analyzeImage(msg, signal);
-    case 'semanticFunction': return analyzeDecodedSemanticFunction(msg.input, { signal });
+    case 'semanticFunction': {
+      const scoped = msg.scopedCanonicalProjection === true || msg.scopedLocalProjection != null;
+      if (msg.scopedCanonicalProjection != null && typeof msg.scopedCanonicalProjection !== 'boolean') {
+        throw new TypeError('scoped-canonical-projection-flag');
+      }
+      // Other architectures preserve their original route and defaults.
+      if (scoped && msg.input?.architecture !== 'arm64') throw new TypeError('scoped-local-arm64-required');
+      const rangeRequest = ['ranges', 'range-values'].includes(msg.scopedLocalProjection?.kind);
+      const flowRequest = msg.scopedLocalProjection?.kind === 'flow-inputs';
+      const demandRequest = msg.scopedLocalProjection?.kind === 'demand';
+      const transformRequest = msg.scopedLocalProjection?.kind === 'transforms';
+      let canonicalOwner = null;
+      const pending = scoped
+        ? analyzeSemanticFunction(msg.input, { signal, canonicalProjectionOnly: true,
+          ...(rangeRequest || flowRequest || demandRequest || transformRequest ? { captureCanonicalOwner: (owner) => { canonicalOwner = owner; } } : {}) })
+        : analyzeDecodedSemanticFunction(msg.input, { signal });
+      if (msg.scopedLocalProjection == null) return pending;
+      const result = await pending;
+      if (flowRequest || rangeRequest || demandRequest || transformRequest) {
+        try {
+          if (transformRequest) {
+            const { projectScopedTransformOwners } = await import('../analysis/scoped-transform-projection.js');
+            return { ...result, scopedLocal: await projectScopedTransformOwners(canonicalOwner, result,
+              msg.scopedLocalProjection, { signal, limits: msg.scopedWorkLimits }) };
+          }
+          if (demandRequest) {
+            const { projectScopedDemandOwners } = await import('../analysis/scoped-demand-projection.js');
+            return { ...result, scopedLocal: await projectScopedDemandOwners(canonicalOwner, result,
+              msg.scopedLocalProjection, { signal, limits: msg.scopedWorkLimits }) };
+          }
+          if (flowRequest) {
+            const { projectScopedFlowInputs } = await import('../analysis/scoped-flow-projection.js');
+            return { ...result, scopedLocal: await projectScopedFlowInputs(canonicalOwner, result,
+              msg.scopedLocalProjection, { signal, limits: msg.scopedWorkLimits }) };
+          }
+          const { projectScopedRangeOwner } = await import('../analysis/scoped-range-projection.js');
+          return { ...result, scopedLocal: await projectScopedRangeOwner(canonicalOwner, result,
+            msg.scopedLocalProjection, { signal, limits: msg.scopedWorkLimits }) };
+        } catch (error) {
+          const { serializeScopedWorkerStop } = await import('../core/budgets/scoped-worker.js');
+          const scopedStop = serializeScopedWorkerStop(error, { kind: msg.scopedLocalProjection.kind,
+            worldId: msg.scopedLocalProjection.worldId, snapshotId: msg.scopedLocalProjection.snapshotId,
+            binaryId: msg.input.binaryId });
+          if (!scopedStop) throw error;
+          return { scopedStop }; // no partial pipeline can be cached as success
+        }
+      }
+      // Optional work stays on this existing isolated worker, not Safari's UI
+      // thread. Only the result just produced here enters the local owners.
+      const { projectScopedLocalOwners } = await import('../analysis/scoped-local-projection.js');
+      if (signal.aborted) throw signal.reason ?? new Error('Scoped local projection cancelled.');
+      return { ...result, scopedLocal: projectScopedLocalOwners(result, msg.scopedLocalProjection, { signal }) };
+    }
     case 'strings': return scanStrings(msg, signal);
     case 'search': return runSearch(msg, signal);
     case 'readAt': return readAtAddress(msg, signal);
     case 'resolvePointer': return resolvePointer(msg, signal);
+    case 'scopedApplePointer': return scopedApplePointer(msg, signal);
     case 'guessFunctions': return genericFunctionSeeds();
     case 'xrefs': return { results: [], cancelled: false, capped: false, unsupported: true };
     case 'scanProgram': return emptyProgramScan(msg.regionId);
     case 'fieldAccess': return msg.offsets ? { groups: Object.fromEntries((msg.offsets || []).map((x) => [String(x), []])), unsupported: true } : { results: [], unsupported: true };
     case 'valueShapes': return { groups: [], unsupported: true };
-    case 'metadata': return metadataPage(msg);
+    case 'metadata': return metadataPage(msg, signal);
     case 'hash': return { hash: await hashByteSource(source, { signal, onProgress: ({ done, total }) => self.postMessage({ t: 'analysisProgress', requestId: msg.id, epoch: msg.epoch, phase: 'hash', done, total }) }) };
     case 'memoryStats': return memoryStats();
     case 'cleanupMemory': source?.clear?.(); return memoryStats();
@@ -208,7 +263,6 @@ async function openFile(msg, signal) {
   }
 }
 
-
 async function pointerImageForSlice(sliceIndex, signal) {
   if (!image || image.format !== 'macho' || !image.metadata?.fat?.slices?.length || sliceIndex == null) return image;
   const index = Number(sliceIndex);
@@ -222,6 +276,20 @@ async function pointerImageForSlice(sliceIndex, signal) {
   if (signal.aborted) throw new Error('Pointer resolution cancelled');
   pointerImages.set(index, selected);
   return selected;
+}
+
+async function scopedApplePointer(msg, signal) {
+  const index = msg.sliceIndex;
+  if (!Number.isSafeInteger(index) || index < 0) throw new TypeError('scoped-pointer-slice-index');
+  const ownerImage = image, ownerSource = source, ownerFile = file, epoch = currentEpoch;
+  const fatIndex = selectedFatSliceIndex(ownerImage);
+  // Never hide a full metadata reparse in an eight-byte query.
+  const selected = fatIndex < 0 ? (index === 0 ? ownerImage : null) : pointerImages.get(index) ?? null;
+  const { projectScopedWorkerPointer } = await import('../analysis/apple/scoped-worker-pointer.js');
+  return projectScopedWorkerPointer(msg.request, { image: selected, source: ownerSource,
+    signal, limits: msg.scopedWorkLimits,
+    isCurrent: () => !signal.aborted && currentEpoch === epoch && image === ownerImage && file === ownerFile && source === ownerSource,
+  });
 }
 
 async function resolvePointer(msg, signal) {
@@ -300,15 +368,21 @@ async function scanStrings(msg, signal) {
   const regionBytes = regionSize(region.size);
   const total = msg.maxBytes == null ? regionBytes : boundedOffset(msg.maxBytes, regionBytes, 'maxBytes');
   const out = [];
-  let pos = 0n, runStart = null, runBytes = [], runChars = 0;
+  let pos = 0n, runStart = null, runBytes = [], runChars = 0, runDropped = 0;
   const flush = () => {
     if (runStart != null && runBytes.length) {
+      const byteLength = runBytes.length + runDropped;
       const text = decoder.decode(new Uint8Array(runBytes)).replace(/\t/g, '\\t').replace(/\n/g, '\\n');
-      if (runChars >= minLength) out.push({ addr: BigInt(region.vmAddr) + runStart, offset: exactExternalInteger(runStart), text });
+      if (runChars >= minLength) {
+        const entry = { addr: BigInt(region.vmAddr) + runStart, offset: exactExternalInteger(runStart), text, byteLength };
+        if (runDropped > 0) entry.truncated = true;
+        out.push(entry);
+      }
     }
     runStart = null;
     runBytes = [];
     runChars = 0;
+    runDropped = 0;
   };
   let carry = new Uint8Array(0), carryAt = 0n;
   while (pos < total && out.length < cap) {
@@ -329,9 +403,13 @@ async function scanStrings(msg, signal) {
       const n = utf8Len(buffer, i);
       if (n === -1 && !last) break;
       if (n <= 0) { flush(); if (out.length >= cap) break; continue; }
-      if (runStart == null) { runStart = base + BigInt(i); runBytes = []; }
+      if (runStart == null) { runStart = base + BigInt(i); runBytes = []; runDropped = 0; }
       runChars++;
-      if (runBytes.length < MAX_STRING_CHARS * 4) for (let k = 0; k < n; k++) runBytes.push(buffer[i + k]);
+      if (runDropped === 0 && runBytes.length + n <= MAX_STRING_CHARS * 4) {
+        for (let k = 0; k < n; k++) runBytes.push(buffer[i + k]);
+      } else {
+        runDropped += n;
+      }
       i += n - 1;
     }
     carry = i < buffer.length ? buffer.slice(i) : new Uint8Array(0);
@@ -439,17 +517,35 @@ async function readAtAddress(msg, signal) {
   return result;
 }
 
-function metadataPage(msg) {
+function metadataPageInteger(value, fallback, minimum, label) {
+  const resolved = value ?? fallback;
+  if (typeof resolved !== 'number' || !Number.isSafeInteger(resolved) || resolved < minimum) {
+    throw new RangeError(`metadata ${label} must be a ${minimum === 0 ? 'non-negative' : 'positive'} safe integer`);
+  }
+  return resolved === 0 ? 0 : resolved;
+}
+
+async function metadataPage(msg, signal) {
   if (!image) throw new Error('No parsed universal binary is open.');
+  const selected = await pointerImageForSlice(msg.sliceIndex, signal);
+  if (!selected) throw new Error('Invalid Mach-O slice index.');
   const collections = {
-    segments: image.segments, sections: image.sections, imports: image.imports, exports: image.exports,
-    symbols: image.symbols, relocations: image.relocations, functions: image.functions, libraries: image.libraries,
+    segments: selected.segments, sections: selected.sections, imports: selected.imports, exports: selected.exports,
+    symbols: selected.symbols, relocations: selected.relocations, functions: selected.functions, libraries: selected.libraries,
   };
-  if (msg.kind === 'summary') return { summary: image.summary(), metadata: image.metadata, capability: descriptor?.capability || null };
+  if (msg.kind === 'summary') {
+    const capability = selected === image
+      ? descriptor?.capability || null
+      : describeBinaryImage(selected, {
+        name:file?.name || 'binary',
+        engine:{ arm64:selected.arch === 'arm64' || selected.arch === 'arm64e', arm64e:selected.arch === 'arm64e', verified:false },
+      }).capability;
+    return { summary:selected.summary(), metadata:selected.metadata, capability };
+  }
   const list = collections[msg.kind];
   if (!list) throw new Error(`Unknown metadata kind: ${msg.kind}`);
-  const start = Math.max(0, Number(msg.start) || 0);
-  const limit = Math.min(5000, Math.max(1, Number(msg.limit) || 500));
+  const start = metadataPageInteger(msg.start, 0, 0, 'start');
+  const limit = Math.min(5000, metadataPageInteger(msg.limit, 500, 1, 'limit'));
   return { kind: msg.kind, start, total: list.length, items: list.slice(start, start + limit), next: start + limit < list.length ? start + limit : null };
 }
 

@@ -2,7 +2,8 @@ import { functionSeed } from './model.js';
 import { createDynamicSymbolBudget } from './dynamic-symbol-budget.js';
 import { createRelocationBudget } from './relocation-budget.js';
 import { collectAndroidPackedRelocations, collectRelrRelocations, parseDynamicSymbolVersions } from './elf-extended.js';
-import { mappedELFFileRangeForVa, mappedELFFileSpanForVa } from './elf-mapping.js';
+import { elfInstructionStartAlignmentRejection, mappedELFFileRangeForVa, mappedELFFileSpanForVa } from './elf-mapping.js';
+import { relocationFieldWidth } from './elf-relocation-target.js';
 
 const PT_DYNAMIC = 2;
 const DT_NULL = 0n;
@@ -90,8 +91,8 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   const needsStringTable = (tags.get(DT_NEEDED)?.length || 0) > 0 || one(DT_SONAME) != null || symtab != null;
   const defaultSyment = BigInt(bits === 64 ? 24 : 16);
   const syment = one(DT_SYMENT) ?? defaultSyment;
-  const symentValid = syment >= defaultSyment;
-  if (!symentValid) markDynamicPartial(image, `DT_SYMENT ${syment} is smaller than ${defaultSyment}`);
+  const symentValid = syment === defaultSyment;
+  if (!symentValid) markDynamicPartial(image, `DT_SYMENT ${syment} does not match ${defaultSyment}`);
   if (needsStringTable && (strtab == null || strsz == null)) markDynamicPartial(image, 'dynamic string table address/size is missing');
   const strSizeRaw = strsz == null ? null : toSafeNumber(strsz);
   if (strsz != null && strSizeRaw == null) {
@@ -292,16 +293,32 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
         if(segment?.perms?.execute && (extent===0n || extent<=segment.address+segment.size-start))return segment;
         return null;
       })();
-      if (owner) image.functions.push(functionSeed(value, {
-        size: size || null,
-        name: type === STT_GNU_IFUNC ? `${name}$resolver` : name,
-        source: type === STT_GNU_IFUNC ? 'ifunc-resolver' : 'symbol',
-        confidence: 0.995,
-        exactFunctionStart: true,
-        functionStartEvidence: type === STT_GNU_IFUNC
-          ? 'ELF PT_DYNAMIC STT_GNU_IFUNC resolver in validated executable mapping and extent'
-          : 'ELF PT_DYNAMIC STT_FUNC in validated executable mapping and extent',
-      }));
+      if (owner) {
+        const alignmentRejection = elfInstructionStartAlignmentRejection(image, value);
+        if (alignmentRejection) {
+          markDynamicPartial(image, `ignored PT_DYNAMIC ${type === STT_GNU_IFUNC ? 'STT_GNU_IFUNC resolver' : 'STT_FUNC'} ${name}: ${alignmentRejection}`);
+          continue;
+        }
+        image.functions.push(functionSeed(value, {
+          size: size || null,
+          name: type === STT_GNU_IFUNC ? `${name}$resolver` : name,
+          source: type === STT_GNU_IFUNC ? 'ifunc-resolver' : 'symbol',
+          confidence: 0.995,
+          exactFunctionStart: true,
+          functionStartEvidence: type === STT_GNU_IFUNC
+            ? 'ELF PT_DYNAMIC STT_GNU_IFUNC resolver in validated executable mapping and extent'
+            : 'ELF PT_DYNAMIC STT_FUNC in validated executable mapping and extent',
+          // #6061: the section-backed symbol parser propagates the RISC-V
+          // variant-cc calling-convention evidence into function seeds; the
+          // PT_DYNAMIC path must mint identical evidence for the same byte.
+          callingConvention: riscvVariantCc ? 'riscv-vector-variant' : null,
+          abiMetadata: riscvVariantCc ? { riscvVariantCc: true, stOther: other } : null,
+        }));
+        if (riscvVariantCc) {
+          if (!Array.isArray(image.metadata.riscvVariantCcFunctions)) image.metadata.riscvVariantCcFunctions = [];
+          image.metadata.riscvVariantCcFunctions.push({ name, address: value, symbolIndex: i, tableIndex: -1, stOther: other, callingConvention: 'riscv-vector-variant' });
+        }
+      }
       else markDynamicPartial(image, `ignored PT_DYNAMIC ${type === STT_GNU_IFUNC ? 'STT_GNU_IFUNC resolver' : 'STT_FUNC'} ${name} outside executable mapping/extent`);
     }
   }
@@ -345,9 +362,9 @@ function collectDynamicRelocations(r, tags, image, bits, budget) {
   const addTable = (va, size, ent, rela, source) => {
     if (budget.stopped || va == null || size == null || size <= 0n) return;
     const n = toSafeNumber(size);
-    const minimum = BigInt(bits === 64 ? (rela ? 24 : 16) : (rela ? 12 : 8));
-    const requested = ent ?? minimum;
-    if (requested < minimum) { markDynamicPartial(image, `${source} entry size ${requested} is smaller than ${minimum}`); return; }
+    const standard = BigInt(bits === 64 ? (rela ? 24 : 16) : (rela ? 12 : 8));
+    const requested = ent ?? standard;
+    if (requested !== standard) { markDynamicPartial(image, `${source} entry size ${requested} does not match the supported ${standard}-byte ${rela ? 'Rela' : 'Rel'} layout`); return; }
     const e = toSafeNumber(requested);
     const span = n == null ? null : mappedELFFileSpanForVa(image, va, n);
     if (!span || e == null || e <= 0) { markDynamicPartial(image, `${source} table crosses a file-backed PT_LOAD boundary`); return; }
@@ -404,6 +421,10 @@ function attachDynamicRelocations(image, relocs, symbols) {  const byIndex = new
   const importKey = (name, version, library) => [name || '', version || '', library || ''].join('\0');
   const importByName = new Map(image.imports.filter((x) => x.name).map((x) => [importKey(x.name, x.version, x.versionLibrary), x]));
   for (const rel of relocs) {
+    const owner = image.segmentAt(rel.address);
+    if (!owner) { markDynamicPartial(image, `${rel.source} relocation target is outside every loaded PT_LOAD memory span`); continue; }
+    const width = relocationFieldWidth(Number(image.metadata.machine), rel.type, image.bits);
+    if (typeof width === 'bigint' && width > 0n && rel.address + width > owner.address + owner.size) { markDynamicPartial(image, `${rel.source} relocation target field crosses the end of its loaded PT_LOAD memory span`); continue; }
     const sym = byIndex.get(rel.symIndex) || null;
     const item = {
       address: rel.address,

@@ -26,7 +26,59 @@ function abortError(signal, message = 'Analysis query aborted') {
   const error = new Error(message); error.name = 'AbortError'; return error;
 }
 function abortIfNeeded(signal) { if (signal?.aborted) throw abortError(signal); }
+function waitForSearchRequest(request, signal) {
+  const task = Promise.resolve(request);
+  if (signal?.aborted) {
+    try { request?.cancel?.(); } catch { /* cancellation is best-effort */ }
+    void task.catch(() => {});
+    return Promise.reject(abortError(signal, 'Search aborted'));
+  }
+  if (!signal?.addEventListener) return task;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener?.('abort', onAbort);
+      fn(value);
+    };
+    const onAbort = () => {
+      if (settled) return;
+      try { request?.cancel?.(); } catch { /* cancellation is best-effort */ }
+      finish(reject, abortError(signal, 'Search aborted'));
+    };
+    signal.addEventListener('abort', onAbort, { once:true });
+    task.then((value) => finish(resolve, value), (error) => finish(reject, error));
+    if (signal.aborted && !settled) onAbort();
+  });
+}
 function optionalCallback(value) { return typeof value === 'function' ? value : null; }
+// Demand-driven cache/single-flight identities are analysis authority. JavaScript
+// numeric coercion collapses distinct raw states (for example ['7'] and 7) onto
+// one producer key, so validate the identity before it can select or populate a
+// cached artifact (#4020). Missing generations keep the legacy zero default.
+function nonNegativeIdentity(value, code) {
+  if (value == null) return 0;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new TypeError(code);
+  return value;
+}
+function demandAnalysisEpoch(app) {
+  return nonNegativeIdentity(app?.backend?.gen ?? app?.analysisEpoch ?? 0, 'demand-analysis-epoch-invalid');
+}
+function demandSymbolGeneration(app) {
+  return nonNegativeIdentity(app?.symbols?.gen ?? 0, 'demand-symbol-generation-invalid');
+}
+function demandKnowledgeRevision(app) {
+  return nonNegativeIdentity(app?.knowledge?.revision ?? 0, 'demand-knowledge-revision-invalid');
+}
+function recognitionSliceIndex(app) {
+  const value = storeValue(app, 'sliceIndex');
+  if (value == null || value === -1) return -1;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError('demand-slice-index-invalid');
+  }
+  return value;
+}
 function addressOf(value) {
   // Same canonical address-domain contract as the query adapter: an address
   // is a non-negative integer regardless of representation. Only the number
@@ -43,12 +95,15 @@ function addressOf(value) {
   return null;
 }
 function pageOf(page = {}) {
-  const rawOffset = Number(page.offset ?? page.start ?? 0);
-  const rawLimit = Number(page.limit ?? page.size ?? 200);
+  const rawOffset = page.offset ?? page.start ?? 0;
+  const rawLimit = page.limit ?? page.size ?? 200;
   return {
-    offset: Number.isSafeInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0,
-    limit: Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(MAX_PAGE, rawLimit) : 200,
+    offset: typeof rawOffset === 'number' && Number.isSafeInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0,
+    limit: typeof rawLimit === 'number' && Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(MAX_PAGE, rawLimit) : 200,
   };
+}
+function cumulativePageLimit(offset, limit) {
+  return offset > Number.MAX_SAFE_INTEGER - limit ? null : offset + limit;
 }
 function paged(values, page, completeness = 'complete', status = {}) {
   const source = Array.from(values || []);
@@ -119,7 +174,24 @@ function pruneSettledCache(cache) {
 // retention contract (#5267) without reaching into the closure.
 const discoveryProducersByApp = new WeakMap();
 function waitForShared(entry, signal, onDetach = null) {
-  abortIfNeeded(signal); entry.waiters++;
+  // A producer can be created before the caller reaches this shared-waiter
+  // boundary (for example a region scan). If that caller was aborted in the
+  // gap, it never becomes a waiter; retire a genuinely unowned producer here
+  // rather than leaving zero-consumer work alive. Existing waiters protect a
+  // shared producer from a pre-aborted joiner (#4749).
+  if (signal?.aborted) {
+    if (!entry.settled && entry.waiters === 0) {
+      entry.cancelled = true;
+      // This path intentionally leaves no consumer attached to the shared
+      // producer. Observe its eventual cancellation rejection before invoking
+      // cancel so a zero-waiter producer cannot escape as an unhandled promise.
+      void Promise.resolve(entry.promise).catch(() => {});
+      try { entry.cancel?.(); } catch { /* cancellation is best-effort */ }
+      try { entry.request?.cancel?.(); } catch { /* cancellation is best-effort */ }
+    }
+    throw abortError(signal);
+  }
+  entry.waiters++;
   return new Promise((resolve, reject) => {
     let settled = false;
     const detach = () => {
@@ -172,7 +244,7 @@ function mergeShapeMaps(maps, reasons = []) {
   return out;
 }
 function recognitionInputKey(app) {
-  return [Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0), Number(app?.symbols?.gen ?? 0), Number(app?.knowledge?.revision ?? 0), objectId(app?.fields), objectId(app?.objcModel), objectId(app?.objcRuntime), objectId(app?.swiftModel), objectId(app?.swiftRuntime)].join(':');
+  return [demandAnalysisEpoch(app), demandSymbolGeneration(app), demandKnowledgeRevision(app), objectId(app?.fields), objectId(app?.objcModel), objectId(app?.objcRuntime), objectId(app?.swiftModel), objectId(app?.swiftRuntime)].join(':');
 }
 
 
@@ -206,7 +278,13 @@ function installWorkerBackedIdentity(app) {
   backend.ensureBinaryId = function ensureBinaryIdFromPlatformWorker(options = {}) {
     if (this.binaryId) return Promise.resolve(this.binaryId);
     if (!this.file) return Promise.reject(new Error('binary-id-file-unavailable'));
+    // Do not create the first shared producer for a caller that has already
+    // left. Cache hits remain usable without starting any new work (#4749).
+    abortIfNeeded(options.signal);
     let entry = this._binaryIdEntry;
+    // #4611: a single-flight entry whose last waiter aborted is cancelled but
+    // may not have settled yet; the owner must not hand it to a new caller.
+    if (entry?.cancelled) entry = null;
     if (!entry) {
       const file = this.file; const epoch = this.gen;
       const controller = new AbortController();
@@ -249,17 +327,25 @@ function installDemandRecognition(app) {
   const originalApplySlice = typeof app.applySlice === 'function' ? app.applySlice.bind(app) : null;
   const originalObjc = typeof app.ensureObjc === 'function' ? app.ensureObjc.bind(app) : null;
   const originalSwift = typeof app.ensureSwift === 'function' ? app.ensureSwift.bind(app) : null;
-  const bootstrapEpochs = new Set(); let acceptedKey = null;
-  const invalidate = (before) => { const after = recognitionInputKey(app); if (before !== after && app.recognition) app.recognition = null; if (before !== after) acceptedKey = null; };
+  const bootstrapEpochs = new Map(); let acceptedKey = null;
+  const beginBootstrap = (epoch) => bootstrapEpochs.set(epoch, (bootstrapEpochs.get(epoch) ?? 0) + 1);
+  const endBootstrap = (epoch) => { const owners = bootstrapEpochs.get(epoch) ?? 0; if (owners <= 1) bootstrapEpochs.delete(epoch); else bootstrapEpochs.set(epoch, owners - 1); };
+  const invalidate = (before) => {
+    let after;
+    try { after = recognitionInputKey(app); }
+    catch (error) { app.recognition = null; acceptedKey = null; throw error; }
+    if (before !== after && app.recognition) app.recognition = null;
+    if (before !== after) acceptedKey = null;
+  };
   if (originalObjc) app.ensureObjc = async function (...args) { const before = recognitionInputKey(app); try { return await originalObjc(...args); } finally { invalidate(before); } };
   if (originalSwift) app.ensureSwift = async function (...args) { const before = recognitionInputKey(app); try { return await originalSwift(...args); } finally { invalidate(before); } };
   app.ensureRecognition = async function demandRecognition(options = {}) {
-  const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0);
+  const epoch = demandAnalysisEpoch(app);
   if (bootstrapEpochs.has(epoch) && options.force !== true) return app.recognition ?? null;
   for (let attempt = 0; attempt < 2; attempt++) {
     abortIfNeeded(options.signal);
     const metadata = [];
-    const sliceIndex = Number(storeValue(app, 'sliceIndex') ?? -1);
+    const sliceIndex = recognitionSliceIndex(app);
     if (originalObjc && sliceIndex >= 0) metadata.push(app.ensureObjc(sliceIndex));
     if (originalSwift) metadata.push(app.ensureSwift());
     if (metadata.length) await Promise.allSettled(metadata);
@@ -270,7 +356,9 @@ function installDemandRecognition(app) {
     acceptedKey = null;
     const value = await originalRecognition(options);
     abortIfNeeded(options.signal);
-    const after = recognitionInputKey(app);
+    let after;
+    try { after = recognitionInputKey(app); }
+    catch (error) { app.recognition = null; acceptedKey = null; throw error; }
     if (value && after === key) {
       acceptedKey = key;
       return value;
@@ -282,8 +370,13 @@ function installDemandRecognition(app) {
   throw error;
 };
 if (originalApplySlice) app.applySlice = function demandApplySlice(...args) {
-    const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0); bootstrapEpochs.add(epoch);
-    const result = originalApplySlice(...args); const clearBootstrap = () => bootstrapEpochs.delete(epoch); void Promise.resolve(app.symbolsReady).then(clearBootstrap, clearBootstrap); return result;
+    const epoch = demandAnalysisEpoch(app); beginBootstrap(epoch);
+    try {
+      const result = originalApplySlice(...args); const clearBootstrap = () => endBootstrap(epoch); void Promise.resolve(app.symbolsReady).then(clearBootstrap, clearBootstrap); return result;
+    } catch (error) {
+      endBootstrap(epoch);
+      throw error;
+    }
   };
   return () => `${RUNTIME_VERSION}:${acceptedKey ?? recognitionInputKey(app)}`;
 }
@@ -294,7 +387,7 @@ function installMultiRegionShapes(app) {
     const onProgress = optionalCallback(typeof progressOrOptions === 'function' ? progressOrOptions : progressOrOptions?.onProgress);
     const signal = typeof progressOrOptions === 'object' ? progressOrOptions?.signal ?? null : null;
     abortIfNeeded(signal);
-    const epoch = Number(app.backend.gen ?? app.analysisEpoch ?? 0); const regions = executableRegions(app);
+    const epoch = demandAnalysisEpoch(app); const regions = executableRegions(app);
     if (!regions.length) return null;
     const key = `${epoch}:${regions.map((r) => r.id).join('|')}`;
     if (app.shapes && combinedKey === key) return app.shapes;
@@ -324,14 +417,14 @@ function installMultiRegionShapes(app) {
                 (error) => { producerController.signal.removeEventListener('abort', onProducerAbort); reject(error); },
               );
             });
-            if (value && !value.cancelled) regionCache.set(cacheKey, value);
+            if (value && !value.cancelled && epoch === demandAnalysisEpoch(app)) regionCache.set(cacheKey, value);
           } catch (error) { if (producerController.signal.aborted || error?.name === 'AbortError') throw error; reasons.push(`${region.id}:shape-scan-failed`); continue; }
           finally { producerController.signal.removeEventListener('abort', onAbort); }
         }
         if (!value || value.cancelled) { reasons.push(`${region.id}:shape-scan-cancelled`); continue; }
         folded.push(foldShapes(value));
       }
-      if (epoch !== Number(app.backend.gen ?? app.analysisEpoch ?? 0)) return null;
+      if (epoch !== demandAnalysisEpoch(app)) return null;
       const merged = mergeShapeMaps(folded, reasons);
       // Partial results remain visible to this caller but are not pinned as the
       // epoch-wide canonical shapes. Missing regions can therefore be retried.
@@ -355,16 +448,17 @@ function installCancellableFunctionDiscovery(app) {
         try { await app.symbolsReady; } catch { /* symbol seeds are optional */ }
       }
       abortIfNeeded(options.signal);
+      const epoch = demandAnalysisEpoch(app);
       const symbols = app.symbols;
       if (!symbols || symbols.functionStartsComplete === true || symbols.functionDiscovery?.complete === true) return symbols;
       const targets = executableRegions(app);
       if (region?.exec === true && canonicalRegionId(region) != null && !targets.some((item) => item.id === region.id)) targets.push(region);
       const unique = dedupeRegions(targets);
       if (!unique.length) return symbols;
-      const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0);
       const key = `${epoch}:${unique.map((item) => item.id).join('|')}`;
       if (symbols.functionDiscovery?.attempted === true && symbols.functionDiscovery?.regionSetKey === unique.map((item) => item.id).join('|')) return symbols;
       let entry = producers.get(key);
+      if (entry?.cancelled) entry = null;
       if (!entry) {
         const producerController = new AbortController();
         entry = {
@@ -390,7 +484,7 @@ function installCancellableFunctionDiscovery(app) {
           };
           for (let index = 0; index < unique.length; index++) {
             abortIfNeeded(producerController.signal);
-            if (epoch !== Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0)) throw Object.assign(new Error('stale function discovery'), { stale:true });
+            if (epoch !== demandAnalysisEpoch(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
             const item = unique[index], size = BigInt(item.size);
             const share = remaining > 0 && remainingBytes > 0n
               ? Math.max(1, Math.min(remaining, Number((BigInt(remaining) * size + remainingBytes - 1n) / remainingBytes)))
@@ -406,6 +500,7 @@ function installCancellableFunctionDiscovery(app) {
             producerController.signal.addEventListener('abort', onAbort, { once:true });
             try {
               const result = await request;
+              if (epoch !== demandAnalysisEpoch(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
               if (result?.starts?.length) {
                 symbols.addFunctions(result.starts, { source:'heuristic', confidence:0.55, confirmed:false });
                 symbols.guessed = true;
@@ -420,7 +515,7 @@ function installCancellableFunctionDiscovery(app) {
             remainingBytes -= size;
           }
           abortIfNeeded(producerController.signal);
-          if (epoch !== Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0)) throw Object.assign(new Error('stale function discovery'), { stale:true });
+          if (epoch !== demandAnalysisEpoch(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
           const complete = results.length === unique.length && results.every((item) => item.complete === true);
           const regionSetKey = unique.map((item) => item.id).join('|');
           symbols.functionDiscovery = {
@@ -468,11 +563,12 @@ function installCancellableFunctionDiscovery(app) {
 function installDemandQueryAPI(app, recognitionVersion) {
   const base = createBaseQueryAdapter(app); const regionScans = new Map();
   const scanRegion = async (region, options = {}, localCount = 1) => {
-    const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0);
+    const epoch = demandAnalysisEpoch(app);
     const limits = regionScanLimits(localCount);
     const profile = `${limits.callLimit}:${limits.refLimit}:${limits.kindLimit}`;
     const key = `${epoch}:${region.id}:${profile}`;
     let entry = regionScans.get(key);
+    if (entry?.cancelled) entry = null;
     if (!entry) {
       const request = app.backend.scanProgram(region.id, options.onProgress, { ...limits, analysisPriority:options.priority || 'interactive' });
       entry = { request, promise:null, settled:false, waiters:0 };
@@ -528,7 +624,10 @@ function installDemandQueryAPI(app, recognitionVersion) {
       const { program, reason, scannedRegionIds, unscannedRegionIds } = await localProgram(id, 'callers', options);
       if (!program?.callersOf) return unsupported(reason || 'program-index-unavailable');
       if (graphUnsupported(program)) return unsupported(program.queryIncompleteReason || reason || 'unsupported-program-analysis');
-      const { offset, limit } = pageOf(page); const source = program.callersOf(addressOf(id), Math.min(MAX_PAGE, offset + limit));
+      const { offset, limit } = pageOf(page);
+      const cumulativeLimit = cumulativePageLimit(offset, limit);
+      if (cumulativeLimit == null) return paged([], page, 'unsupported', { reason:'page-range-overflow', scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
+      const source = program.callersOf(addressOf(id), cumulativeLimit);
       const relationReason=source?.incompleteReason ?? reason ?? null;
       const result = paged(Array.from(source || []), page, source?.complete === false || reason ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
       if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned; return result;
@@ -539,15 +638,25 @@ function installDemandQueryAPI(app, recognitionVersion) {
       const { program, reason, scannedRegionIds, unscannedRegionIds } = await localProgram(address, 'callees', options);
       if (!program?.calleesOf) return unsupported(reason || 'program-index-unavailable');
       if (graphUnsupported(program)) return unsupported(program.queryIncompleteReason || reason || 'unsupported-program-analysis');
-      const { offset, limit } = pageOf(page); const source = program.calleesOf(range.start, range.end, Math.min(MAX_PAGE, offset + limit));
+      const { offset, limit } = pageOf(page);
+      const cumulativeLimit = offset > Number.MAX_SAFE_INTEGER - limit ? null : offset + limit;
+      if (cumulativeLimit == null) {
+        return { value:[], page:{ offset, limit, returned:0, total:0, next:null }, status:{ completeness:'unsupported', reason:'page-range-overflow', paged:true } };
+      }
+      const source = program.calleesOf(range.start, range.end, cumulativeLimit);
       // The scan only covers the validated range. When the function extent
       // itself is unproven (analysis window or region clip), the scan cannot
       // be complete no matter how the local scan ended (#5991).
       const rangeIncomplete = range.complete === false;
-      const relationReason = source?.incompleteReason ?? (rangeIncomplete ? (range.reason ?? 'function-extent-unproven') : null) ?? reason ?? null;
-      const incomplete = source?.complete === false || !!reason || rangeIncomplete;
-      const result = paged(Array.from(source || []), page, incomplete ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-function', scannedRegionIds, unscannedRegionIds });
-      if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned; return result;
+      const queryLimited = source?.queryLimited === true;
+      const relationReason = source?.incompleteReason ?? (queryLimited ? 'query-limit' : (rangeIncomplete ? (range.reason ?? 'function-extent-unproven') : null)) ?? reason ?? null;
+      const incomplete = source?.complete === false || queryLimited || !!reason || rangeIncomplete;
+      const sourceRows = Array.from(source || []);
+      const result = paged(sourceRows, page, incomplete ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-function', scannedRegionIds, unscannedRegionIds });
+      if (queryLimited && result.page.next == null && sourceRows.length >= result.page.offset) {
+        result.page.next = result.page.offset + (result.page.returned > 0 ? result.page.returned : result.page.limit);
+      }
+      return result;
     },
     async xrefs(_snapshot, id, page = {}, options = {}) {
       const address = addressOf(id); if (address == null) return unsupported('function-address-invalid');
@@ -562,11 +671,7 @@ function installDemandQueryAPI(app, recognitionVersion) {
     async search(_snapshot, query, page = {}, options = {}) {
       if (!query || typeof query !== 'object' || typeof app?.backend?.search !== 'function') return unsupported('typed-search-producer-unavailable');
       abortIfNeeded(options.signal); const request = app.backend.search(query, options.onProgress);
-      const value = await new Promise((resolve, reject) => {
-        const onAbort = () => { request.cancel?.(); reject(abortError(options.signal, 'Search aborted')); };
-        options.signal?.addEventListener('abort', onAbort, { once:true });
-        Promise.resolve(request).then(resolve, reject).finally(() => options.signal?.removeEventListener('abort', onAbort));
-      });
+      const value = await waitForSearchRequest(request, options.signal);
       abortIfNeeded(options.signal);
       // An explicit backend `unsupported` must survive the query boundary:
       // "the backend cannot run this search" is not a complete empty result
@@ -574,7 +679,7 @@ function installDemandQueryAPI(app, recognitionVersion) {
       if (value?.unsupported === true) {
         return unsupported(value?.unsupportedReason ?? 'search-kind-unsupported');
       }
-      const completeness = value?.capped || value?.cancelled ? 'partial' : 'complete';
+      const completeness = value?.cancelled ? 'partial' : value?.capped ? 'truncated' : 'complete';
       return paged(value?.results || [], page, completeness, { reason:value?.cancelled ? 'cancelled' : value?.capped ? 'search-result-cap' : null });
     },
   };

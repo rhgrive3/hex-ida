@@ -115,7 +115,7 @@ export function normalizeRiscvIsaString(input) {
   // cannot masquerade as the compressed C extension.
   const compactRun = /^([ieg](?:(?![zsx])[a-z])*)/.exec(firstToken)?.[1] || '';
   const compressedInstructions = compactRun.includes('c')
-    || tokens.some((token) => /^c(?:\d|$)/.test(token) || /^zca(?:\d|$)/.test(token));
+    || tokens.some((token) => /^c(?:\d|$)/.test(token) || /^zc(?:a|e)(?:\d|$)/.test(token));
   return Object.freeze({
     canonical,
     xlen,

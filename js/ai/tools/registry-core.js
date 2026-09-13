@@ -6,6 +6,16 @@ import { completenessOf, projectBounded } from "./projections/index.js";
 export const COST_WEIGHT = Object.freeze({ cheap: 1, medium: 4, expensive: 12 });
 export const TOOL_TIMEOUT_MS = Object.freeze({ cheap: 20_000, medium: 45_000, expensive: 60_000 });
 export const ADDRESS_KEYS = new Set(["address", "functionAddress", "from", "to", "start", "end", "target"]);
+const TOOL_FUNCTION_ADDRESS_ARRAY_KEYS = new Map([
+  ["find_constant", new Set(["functions"])],
+  ["explain_evidence", new Set(["functions"])],
+]);
+
+// These zero-argument tools are deterministic for one immutable turn snapshot,
+// but their result depends on UI state that is not part of ObservationStore's
+// analysis binding. Keep them observable/evidence-producing without allowing
+// cross-turn cache reuse (#4065).
+const SNAPSHOT_DEPENDENT_UNKEYED_TOOLS = new Set(["get_current_function", "get_selection_context"]);
 
 function boundaryIdentity(value) {
   if (value == null || value === '') return null;
@@ -53,8 +63,11 @@ export class ToolRegistry {
       description: "", inputSchema: { type: "object" }, outputSchema: null, cost: "cheap",
       scopeSupport: ["auto", "binary", "project"], mutability: "read-only", needsApproval: false,
       category: "discovery", preferredPrerequisites: [], resultKind: "observation",
-      deterministic: true, storeResult: true, modelProjection: projectBounded,
+      deterministic: true, cacheable: true, storeResult: true, modelProjection: projectBounded,
       ...definition,
+      // Reserved snapshot-dependent reads must never be made reusable by a
+      // custom definition; their UI snapshot is absent from the cache key.
+      cacheable: SNAPSHOT_DEPENDENT_UNKEYED_TOOLS.has(definition.name) ? false : (definition.cacheable ?? true),
     }));
     return this;
   }
@@ -90,13 +103,13 @@ export class ToolRegistry {
     try {
       assertSchema(args, tool.inputSchema, "invalid_tool_call");
       this.assertScope(tool, args, scope);
-      await this.assertAddresses(args, scope, execution.signal);
+      await this.assertAddresses(tool.name, args, scope, execution.signal);
       if (tool.mutability !== "read-only" || tool.needsApproval) throw new AIError("approval_required", `${name} cannot execute from the model tool loop.`);
       this.activity({ type: "tool-start", tool: name, label: `${name} を実行中` });
       let record = null;
       let raw;
       let cached = false;
-      if (tool.storeResult !== false && tool.deterministic !== false) {
+      if (tool.storeResult !== false && tool.deterministic !== false && tool.cacheable !== false) {
         record = this.observationStore.getCached(name, args, {}, scope, scopeBoundary);
         if (record) { raw = record.fullResult; cached = true; this.accounting.cacheHits++; }
       }
@@ -110,6 +123,7 @@ export class ToolRegistry {
             tool: name, arguments: jsonSafe(args), fullResult: raw,
             functionIdentity: args.functionAddress ?? args.address ?? null,
             deterministic: tool.deterministic !== false,
+            cacheable: tool.cacheable !== false,
             // Record the turn scope that acquired this data (#5641): detail
             // retrieval must not re-expose it inside a narrower explicit turn.
             effectiveScope: scope,
@@ -176,8 +190,9 @@ export class ToolRegistry {
     if (typeof this.context.scopeAllowsTool === "function" && !this.context.scopeAllowsTool(scope, tool.name, args)) throw new AIError("scope_violation", `${tool.name} was rejected by the local scope boundary.`);
   }
 
-  async assertAddresses(args, scope, signal) {
-    for (const address of collectAddresses(args)) {
+  async assertAddresses(tool, args, scope, signal) {
+    for (const target of collectAddressTargets(args, tool)) {
+      const { address, kind } = target;
       if (typeof this.context.addressExists === "function") {
         const exists = await raceAbort(
           Promise.resolve().then(() => this.context.addressExists(address, { signal })),
@@ -185,12 +200,17 @@ export class ToolRegistry {
         );
         if (exists !== true) throw new AIError("invalid_tool_call", `Address does not exist: ${address}`);
       }
-      if (scope !== "auto" && typeof this.context.scopeContainsAddress === "function") {
-        const contained = await raceAbort(
-          Promise.resolve().then(() => this.context.scopeContainsAddress(scope, address, { signal })),
-          signal,
-        );
-        if (!contained) throw new AIError("scope_violation", `Address ${address} is outside ${scope} scope.`);
+      if (scope !== "auto") {
+        const contains = kind === "function" && typeof this.context.scopeContainsFunction === "function"
+          ? this.context.scopeContainsFunction
+          : this.context.scopeContainsAddress;
+        if (typeof contains === "function") {
+          const contained = await raceAbort(
+            Promise.resolve().then(() => contains.call(this.context, scope, address, { signal })),
+            signal,
+          );
+          if (!contained) throw new AIError("scope_violation", `${kind === "function" ? "Function" : "Address"} ${address} is outside ${scope} scope.`);
+        }
       }
     }
   }
@@ -200,14 +220,25 @@ export class ToolRegistry {
   }
 }
 
-export function collectAddresses(value) {
+function collectAddressTargets(value, tool = "") {
   const out = [];
   if (!value || typeof value !== "object") return out;
   for (const [key, item] of Object.entries(value)) {
-    if ((ADDRESS_KEYS.has(key) || /Address$/.test(key)) && typeof item === "string" && addressText(item)) out.push(addressText(item));
-    else if (item && typeof item === "object") out.push(...collectAddresses(item));
+    if ((ADDRESS_KEYS.has(key) || /Address$/.test(key)) && typeof item === "string" && addressText(item)) {
+      out.push({ address:addressText(item), kind:"address" });
+    } else if (TOOL_FUNCTION_ADDRESS_ARRAY_KEYS.get(tool)?.has(key) && Array.isArray(item)) {
+      for (const address of item) {
+        if (typeof address === "string" && addressText(address)) out.push({ address:addressText(address), kind:"function" });
+      }
+    } else if (item && typeof item === "object") {
+      out.push(...collectAddressTargets(item, tool));
+    }
   }
   return out;
+}
+
+export function collectAddresses(value, tool = "") {
+  return collectAddressTargets(value, tool).map((target) => target.address);
 }
 
 export function summarizeToolResult(name, result) {

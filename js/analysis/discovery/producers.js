@@ -41,6 +41,7 @@ function loaderStartArray(value, code) {
 const VALIDATED_LOADER_SEED_SOURCES = new Set([
   'function_starts',
   'exception',
+  'dt-init',
   'tls-callback',
   'guard-cf',
   'unwind',
@@ -294,13 +295,37 @@ export function createDebugEvidenceProducer(debugEvidence) {
     id: 'discovery.debug',
     architectureId: null,
     produce() {
-      return (debugEvidence ?? []).map((item) => evidence('debug-symbol', {
-        start: toAddress(item.address),
-        name: item.name ?? null,
-        regions: item.sizeBytes ? [regionFromSize(item.address, item.sizeBytes)].filter(Boolean) : [],
-        confidence: item.confidence,
-        evidenceIds: item.evidenceIds ?? [],
-      })).filter((item) => item.start != null);
+      // A debug record only validates its address as a non-empty string, so a
+      // single malformed symbol must degrade to "no start / no region" and be
+      // filtered like any other unusable row — it must never abort the whole
+      // producer ahead of the start filter (#4930).
+      return (debugEvidence ?? []).map((item) => {
+        const start = toAddress(item.address);
+        const regions = [];
+        if (start != null && item.sizeBytes != null) {
+          const size = toAddress(item.sizeBytes);
+          if (size != null) {
+            const region = regionFromSize(start, size);
+            if (region != null) regions.push(region);
+          }
+        }
+        // `debugFunctionEvidence()` has already applied the provider identity
+        // and partial-coverage gate. Only its canonical `exact` token may keep
+        // the authoritative debug-symbol kind; every other representation is
+        // a weak fact. Select the authority-bearing kind before canonical
+        // evidence construction so `String()` coercion cannot turn a boxed or
+        // structured value into an authority token (#4050).
+        const rawConfidence = item?.confidence;
+        const exact = rawConfidence === 'exact';
+        const confidence = typeof rawConfidence === 'string' ? rawConfidence : null;
+        return evidence(exact ? 'debug-symbol' : 'debug-symbol-heuristic', {
+          start,
+          name: item.name ?? null,
+          regions,
+          confidence,
+          evidenceIds: item.evidenceIds ?? [],
+        });
+      }).filter((item) => item.start != null);
     },
   });
 }
@@ -376,8 +401,10 @@ export function createPatternProducer({ id, architectureId, patterns, alignment 
       const canonicalBase = toAddress(base);
       if (canonicalBase == null) return [];
       const baseAddress = BigInt(canonicalBase);
+      const alignmentWidth = BigInt(alignment);
+      const firstOffset = Number((alignmentWidth - (baseAddress % alignmentWidth)) % alignmentWidth);
       const out = [];
-      for (let offset = 0; offset + 1 <= bytes.length; offset += alignment) {
+      for (let offset = firstOffset; offset + 1 <= bytes.length; offset += alignment) {
         for (const pattern of compiled) {
           if (offset + pattern.bytes.length > bytes.length) continue;
           let matched = true;

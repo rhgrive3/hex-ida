@@ -5,6 +5,7 @@ import { parseDelayImports } from '../../../js/binary/pe-loader.js';
 
 const IMAGE_BASE = 0x400000n;
 const DIRECTORY_RVA = 0x1000;
+const HMOD_OFFSET = 0x60;
 const LIBRARY_OFFSET = 0x80;
 const THUNK_OFFSET = 0xa0;
 const IAT_OFFSET = 0xc0;
@@ -53,6 +54,7 @@ function fixture({ bits = 32, attrs = 1, thunk = BigInt(rva(NAME_OFFSET)), thunk
   const field = (offset) => attrs & 1 ? rva(offset) : Number(IMAGE_BASE) + rva(offset);
   writeU32(bytes, 0, attrs);
   writeU32(bytes, 4, field(LIBRARY_OFFSET));
+  writeU32(bytes, 8, field(HMOD_OFFSET));
   writeU32(bytes, 12, field(IAT_OFFSET));
   writeU32(bytes, 16, field(THUNK_OFFSET));
   bytes.set(Buffer.from('delay.dll\0', 'ascii'), LIBRARY_OFFSET);
@@ -83,7 +85,7 @@ function fixture({ bits = 32, attrs = 1, thunk = BigInt(rva(NAME_OFFSET)), thunk
       size: BigInt(bytes.length),
       fileOffset: 0n,
       fileSize: BigInt(bytes.length),
-      perms: { read: true, write: false, execute: false },
+      perms: { read: true, write: true, execute: false },
     }],
     segments: [],
     metadata: {},

@@ -190,7 +190,10 @@ export function repairCanonicalPostTestLoop(result, blockAddress) {
 
     result.lines.splice(range.start, range.end - range.start, ...replacement);
     result.pseudocode = result.lines.map((l) => `${'    '.repeat(Math.max(0, l.indent || 0))}${l.text || ''}`).join('\n');
-    result.warnings = (result.warnings || []).filter((w) => !/control-flow edge/.test(w));
+    // Warnings are currently aggregate strings without edge identity. A successful
+    // repair proves only this loop/back-edge was rewritten, so deleting every
+    // control-flow warning would hide unrelated unresolved edges (#5135). Preserve
+    // them fail-closed until diagnostics carry enough identity for scoped removal.
     result.ctx = { ...(result.ctx || {}), loopRepair: iv0.discoveredFrom || 'ssa-post-test' };
     return result;
   }

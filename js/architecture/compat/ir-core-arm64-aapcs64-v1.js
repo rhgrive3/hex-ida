@@ -216,27 +216,16 @@ function parameterAbiClass(param) {
     typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
   const rawMembers = param?.members ?? param?.elements ?? param?.count;
   const members = Math.max(1, Math.min(4, abiCount(rawMembers, 1)));
-  // Keep the declared ABI width before the compatibility display clamp.  The
-  // AAPCS64 large-composite rule needs to distinguish >16-byte values from a
-  // real 16-byte value; clamping first erases that decision authority (#4984).
+  // Keep the declared width before the compat display clamp. Large composite
+  // classification needs the original >128-bit fact (#4984).
   const declaredBits = abiCount(param?.bits ?? param?.sizeBits, 64);
   const bits = Math.max(8, Math.min(128, declaredBits));
-  // HVA is homogeneous aggregate authority, not ordinary-composite authority.
-  // This compat owner only has enough shape information to place 1..4 fixed
-  // 64/128-bit short-vector members. Other HVA records fail closed below
-  // instead of being laundered through the >16-byte caller-copy rule (#4984).
   const hvaLayoutProven = !hva || (
     typeof rawMembers === 'number' && Number.isSafeInteger(rawMembers)
     && rawMembers >= 1 && rawMembers <= 4
     && (declaredBits === 64 || declaredBits === 128)
   );
   const fp = hfa || (hva && hvaLayoutProven) || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type);
-  // Stage C C.10/C.11: a 16-byte Integral Type needs a consecutive GP
-  // register pair. Only records with an explicit integral authority (int128
-  // type spelling, or an integer class at a proven 128-bit width) may take
-  // the pair path: width alone cannot reclassify composites — a 128-bit
-  // aggregate must keep its own conservative single-register record rather
-  // than consuming an even-aligned pair reserved for Integral Types (#4939).
   const composite = param?.aggregate === true || members > 1
     || /aggregate|composite|homogeneous|struct|union|class/.test(cls)
     || /^(struct|union|class)[\s_]/.test(type);
@@ -270,11 +259,8 @@ export function classifyCallArguments(insn, opts = {}) {
   params.forEach((param,index) => {
     const c=parameterAbiClass(param);
     if (c.hva && !c.hvaLayoutProven) {
-      arguments_.push({
-        index, location:'unknown', abiClass:'hva-unproven', pointer:false,
-        bits:c.declaredBits, aggregate:true, partial:true,
-        reason:'aapcs64-hva-layout-unmodelled',
-      });
+      arguments_.push({ index, location:'unknown', abiClass:'hva-unproven', pointer:false,
+        bits:c.declaredBits, aggregate:true, partial:true, reason:'aapcs64-hva-layout-unmodelled' });
       return;
     }
     const regsNeeded=(c.hfa || c.hva) ? c.members : 1;
@@ -292,18 +278,12 @@ export function classifyCallArguments(insn, opts = {}) {
     }
     if (!c.fp) {
       if (c.indirectComposite) {
-        // AAPCS64: a non-homogeneous Composite Type larger than 16 bytes is
-        // copied to caller memory and the argument is replaced by a pointer to
-        // that copy.  Allocate the pointer as one ordinary 64-bit GP/stack
-        // argument while retaining the original aggregate width as pointee
-        // evidence; never expose the earlier 128-bit clamp as the value (#4984).
         const reg = gp < 8 ? `x${gp++}` : null;
         const entry = reg
           ? { index, location:'register', reg, abiClass:'aggregate-indirect-copy', pointer:true,
             bits:64, bytes:8, pointeeBits:c.declaredBits, aggregate:true, callerCopy:true }
-          : { index, location:'stack', offset:stackOffset, bytes:8,
-            abiClass:'aggregate-indirect-copy', pointer:true, bits:64,
-            pointeeBits:c.declaredBits, aggregate:true, callerCopy:true };
+          : { index, location:'stack', offset:stackOffset, bytes:8, abiClass:'aggregate-indirect-copy',
+            pointer:true, bits:64, pointeeBits:c.declaredBits, aggregate:true, callerCopy:true };
         if (reg) srcs.push({ t:'reg', reg, bits:64, purpose:'aggregate-indirect-copy' });
         else { stackArguments.push(entry); stackOffset += 8; }
         arguments_.push(entry);
@@ -330,8 +310,22 @@ export function classifyCallArguments(insn, opts = {}) {
       }
     }
     const slots=Math.max(1,Math.ceil(((c.hfa || c.hva)?c.members*c.bits:c.bits)/64));
-    const entry={index,location:'stack',offset:stackOffset,bytes:slots*8,abiClass:c.hfa?'hfa':c.hva?'hva':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits};
-    stackArguments.push(entry);arguments_.push(entry);stackOffset+=slots*8;
+    // AAPCS64 Stage C: NSAA is rounded up to the argument's natural alignment
+    // before stack placement (C.4 for HFA/short-vector/quad-FP candidates,
+    // C.14 max(8, natural alignment) otherwise) (#4942). Quad-precision FP is
+    // a canonical classifier record (fp class at a proven 128-bit width), not
+    // broadened metadata. Only primitive declared alignments are honored;
+    // structured evidence is never coerced.
+    const declaredAlign = param?.alignment;
+    const quadFp = c.fp && !c.hfa && !c.hva && !c.vector && c.bits === 128;
+    const naturalAlign = c.hfa || c.hva || c.vector || quadFp
+      ? Math.max(8, Math.ceil(c.bits / 8))
+      : (typeof declaredAlign === 'number' && Number.isSafeInteger(declaredAlign) && declaredAlign > 0
+        ? Math.max(8, declaredAlign)
+        : 8);
+    const alignedOffset = Math.ceil(stackOffset / naturalAlign) * naturalAlign;
+    const entry={index,location:'stack',offset:alignedOffset,bytes:slots*8,abiClass:c.hfa?'hfa':c.hva?'hva':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits};
+    stackArguments.push(entry);arguments_.push(entry);stackOffset=alignedOffset+slots*8;
     if(c.pointer || param?.mayContainPointers === true || param?.containsPointers === true) stackArgsMayContainPointers=true;
   });
   return { srcs, arguments:arguments_, stackArguments, stackArgsUnknown:proto?.variadic===true||proto?.varargs===true, stackArgsMayContainPointers, evidence:'prototype-aapcs64' };
@@ -469,6 +463,7 @@ function lift(insn, opts = {}) {
       returnReason: result?.reason || null,
       returnEvidence: result ? 'prototype' : null,
       clobbers: CALL_CLOBBERS,
+      wideClobbers: CALL_WIDE_CLOBBERS,
     });
     return out;
   }
@@ -710,6 +705,21 @@ const CALL_CLOBBERS = ['x0', 'x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8',
   'x9', 'x10', 'x11', 'x12', 'x13', 'x14', 'x15', 'x16', 'x17', 'x30', 'nzcv',
   ...Array.from({length:8}, (_x,i)=>`v${i}`), ...Array.from({length:16}, (_x,i)=>`v${i+16}`)];
 
+/* v8–v15 are callee-saved only in their bottom 64 bits; the upper half of a
+ * 128-bit value held there is caller-saved (AAPCS64). The single-location IR
+ * cannot split the halves, so a CALL kills a v8–v15 definition only when it
+ * claims more than the callee-saved low half (#4979); a proven ≤64-bit
+ * definition still survives the call. */
+const CALL_WIDE_CLOBBERS = Array.from({length:8}, (_x,i)=>`v${i+8}`);
+
+/* A v8–v15 location is killed by a call only when its reaching definition
+ * claims more than the callee-saved low half. */
+function wideSimdDefReaches(stacks, reg) {
+  const st = stacks.get(reg);
+  const top = st && st.length ? st[st.length - 1] : null;
+  return !!top && Number.isSafeInteger(top.bits) && top.bits > 64;
+}
+
 /* ── SSA ────────────────────────────────────────────────────── */
 
 function immediateDominators(dominators, entry, count) {
@@ -858,6 +868,7 @@ export function buildIR(model, opts) {
       noteDef(p.dstReg, bi);
       for (const w of p.extraWrites || []) noteDef(w, bi);
       for (const c of p.clobbers || []) noteDef(c, bi);
+      for (const c of p.wideClobbers || []) noteDef(c, bi);
       for (const s of p.srcs || []) if (s && s.t === 'reg') allRegs.add(s.reg);
     }
   }
@@ -995,6 +1006,15 @@ export function buildIR(model, opts) {
       const v = newValue(VK.DEF, { def: inst, bits: 64, clobbered: true });
       pushDef(c, v);
     }
+    for (const c of p.wideClobbers || []) {
+      // A CALL keeps only the callee-saved low 64 bits of v8–v15 (#4979): a
+      // definition claiming the full register cannot survive it, while a
+      // proven ≤64-bit low-half definition still does.
+      if (c === p.dstReg || (p.extraWrites || []).includes(c)) continue;
+      if (!wideSimdDefReaches(stacks, c)) continue;
+      const v = newValue(VK.DEF, { def: inst, bits: 64, clobbered: true });
+      pushDef(c, v);
+    }
     ir.instructions.push(inst);
     ir.blocks[p.block].insts.push(inst);
     let list = ir.byRow.get(p.row);
@@ -1061,6 +1081,13 @@ function renameIterative(ir, children, phiSites, lifted, stacks, emit, topOf, pu
       for (const w of p.extraWrites || []) marks.push(w);
       for (const c of p.clobbers || []) {
         if (c === p.dstReg || (p.extraWrites || []).includes(c)) continue;
+        marks.push(c);
+      }
+      for (const c of p.wideClobbers || []) {
+        // Must stay 1:1 with the conditional clobber def in emit(): a marked
+        // register without a pushed value would pop a foreign definition.
+        if (c === p.dstReg || (p.extraWrites || []).includes(c)) continue;
+        if (!wideSimdDefReaches(stacks, c)) continue;
         marks.push(c);
       }
     }
