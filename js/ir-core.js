@@ -22,6 +22,9 @@ import {
   projectedRegisterStateBindingCandidate,
   projectedRegisterStateBindingCandidates,
   projectedCanonicalStateObligations,
+  projectedCanonicalFaultObligations,
+  projectedReturnFaultBindingCandidate,
+  projectedReturnFaultBindingCandidates,
 } from './semantics/compat/index.js';
 import {
   canonicalMemoryForwardingContextForLoad,
@@ -48,6 +51,31 @@ const expectedFacadeStackEscapes = new WeakMap();
 const facadeProjectedConstants = new WeakMap();
 const facadeProjectedMemoryOperands = new WeakMap();
 const facadeRegisterStateBindings = new WeakMap();
+const facadeReturnFaultBindings = new WeakMap();
+
+/** Canonical bundle membership only. No predicate is discharged by this API. */
+export function prepareCanonicalReturnFaultBindings(projected, identity) {
+  const unavailable = Object.freeze({ status:'unavailable' });
+  const records = new Map(projectedReturnFaultBindingCandidates(projected).map(record => [record.source, record]));
+  for (const [source, record] of facadeReturnFaultBindings.get(projected) ?? []) records.set(source, record);
+  const obligations = projectedCanonicalFaultObligations(projected) ?? [];
+  const nodes = new Set([...records.values()].map(record => record.canonicalNode));
+  if (obligations.some(node => !nodes.has(node))) return unavailable;
+  if (!records.size) return null;
+  const contexts = [...new Set([...records.values()].map(record => record.context))];
+  const contextCurrent = () => identity && contexts.every(context => Object.keys(context).every(key => identity[key] === context[key]));
+  const checks = [...new Set([...records.values()].map(record => record.isCurrent))];
+  const workItems = records.size * 16 + obligations.length * 2 + checks.reduce((sum, check) => sum + check.workItems, 0);
+  if (!Number.isSafeInteger(workItems)) return unavailable;
+  try { if (!contextCurrent()) return unavailable; } catch { return unavailable; }
+  return Object.freeze({ status:'prepared', size:records.size, observationCount:checks.length, workItems,
+    get:source => records.get(source) ?? null,
+    isCurrent() {
+      try { return contextCurrent() && checks.every(check => check())
+        && [...records.values()].every(record => record.bindingCurrent()); }
+      catch { return false; }
+    } });
+}
 
 /** Local canonical register assignment only; not a fault or region proof. */
 export function readCanonicalRegisterStateBinding(projected, instruction, identity) {
@@ -176,8 +204,10 @@ export function readFacadeStateNormalization(projected) {
 
 function observeFacadeArguments(inst, history) {
   if (!history || history.unavailable) return null;
-  const fields = ['args', 'extra', 'returnReg', 'returnEvidence'].map(key => ({ object:inst, key,
-    before:Object.getOwnPropertyDescriptor(inst, key)?.value }));
+  const fields = ['args', 'extra', 'returnReg', 'returnEvidence'].map(key => {
+    const descriptor = Object.getOwnPropertyDescriptor(inst, key);
+    return { object:inst, key, before:descriptor?.value, beforePresent:descriptor != null };
+  });
   const args = fields[0].before, length = args && Object.getOwnPropertyDescriptor(args, 'length')?.value;
   if (!Array.isArray(args) || !Number.isSafeInteger(length) || length > 512) { history.unavailable = true; return null; }
   const values = new Set();
@@ -1465,6 +1495,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
     { read:projectedConstantTransitionCandidate, candidates:new Map(), target:facadeProjectedConstants },
     { read:projectedMemoryOperandTransitionCandidate, candidates:new Map(), target:facadeProjectedMemoryOperands },
     { read:projectedRegisterStateBindingCandidate, candidates:new Map(), target:facadeRegisterStateBindings },
+    { read:projectedReturnFaultBindingCandidate, candidates:new Map(), target:facadeReturnFaultBindings },
   ];
   const operationChecks = new Map();
   for (const source of result.legacyV1.instructions) {

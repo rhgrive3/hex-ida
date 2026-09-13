@@ -456,7 +456,9 @@ function executePaths(ir, opts) {
   for (const [id, value] of phiUpdates) state.values.set(id, value);
 
 
-    for (const inst of block.insts || []) {
+    const instructions = block.insts || [];
+    for (let instructionIndex = 0; instructionIndex < instructions.length; instructionIndex++) {
+      const inst = instructions[instructionIndex];
       state.executingInstruction = inst;
       if (state.byteMemory) {
         state.byteMemory.check();
@@ -541,7 +543,8 @@ function executePaths(ir, opts) {
         if (state.byteMemory && value) state.byteMemory.validateExpression(value);
         const control = state.byteMemory ? readReturnControl(inst, state.byteMemory) : null;
         const terminalControl = control ? observeReturnControl(control,
-          evalValue(control.value, state, ir, opts, memo, new Set()), state.byteMemory) : null;
+          evalValue(control.value, state, ir, opts, memo, new Set()), state.byteMemory,
+          { blockIndex:state.block, instructionIndex }) : null;
         const observations = state.byteMemory ? observeTerminalMemory(opts._memoryObservations, state, opts) : null;
         paths.push({
           ...(observations ? {memoryObservations:observations} : {}),

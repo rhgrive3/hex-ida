@@ -6,7 +6,7 @@ import { queryArray, queryRecord } from '../../symbolic/memory/data-input.js';
 import { createQueryGuard, sameMemoryIdentity } from '../../symbolic/memory/query-state.js';
 
 const issued = new WeakMap();
-const LIMITS = Object.freeze({ workItems:262144, allocationUnits:262144, queries:3 });
+const LIMITS = Object.freeze({ workItems:262144, allocationUnits:262144, queries:4 });
 const OPTION_KEYS = new Set(['identity', 'timeoutMs', 'limits', 'signal', 'isCancelled', 'getCurrentIdentity', 'now',
   'addressBits', 'endian', 'backendTier', 'maxPaths', 'maxSteps', 'maxBranches', 'maxBlockVisits']);
 const ORDINARY = new Set(['branch', 'fallthrough', 'conditional-true', 'conditional-false']);
@@ -63,7 +63,7 @@ export async function prepareConditionalRegionReachability(structure, ir, option
     if (visited !== structure.blocks.length) return reject('loop-reachability-proof-required');
     const [{ symbolicExecute }, { isExecutionResult, isExecutionSnapshot }, { validateExecutionContract },
       { verifyConditionalEdgeFeasibility }, { createProductionSolverRegistry }, expr, { scalarOperation },
-      { prepareCanonicalRegisterStateBindings }] = await Promise.all([
+      { prepareCanonicalRegisterStateBindings, prepareCanonicalReturnFaultBindings }] = await Promise.all([
       import('../../symbolic/executor.js'), import('../../symbolic/memory/execution-snapshot.js'),
       import('../../symbolic/memory/execution-contract.js'), import('../../symbolic/verify/edge-feasibility.js'),
       import('../../symbolic/solver/registry.js'), import('../../symbolic/expr/index.js'),
@@ -85,11 +85,14 @@ export async function prepareConditionalRegionReachability(structure, ir, option
     // index. Require their unique exact canonical CBR identity before matching.
     const branchIndex = [], stateBindings = prepareCanonicalRegisterStateBindings(ir, guard.identity);
     if (stateBindings?.status === 'unavailable') return reject('unproved-state-effects');
+    const faultBindings = prepareCanonicalReturnFaultBindings(ir, guard.identity), faultBundles = new Set(), faultSources = new Set();
+    if (faultBindings?.status === 'unavailable') return reject('unproved-machine-effects');
     if (stateBindings) guard.take('allocationUnits', stateBindings.size + stateBindings.observationCount);
+    if (faultBindings) guard.take('allocationUnits', faultBindings.size + faultBindings.observationCount);
+    const bindingWork = (stateBindings?.workItems ?? 0) + (faultBindings?.workItems ?? 0);
     const stateCurrent = () => {
-      if (!stateBindings) return true;
-      guard.take('workItems', stateBindings.workItems);
-      return stateBindings.isCurrent();
+      guard.take('workItems', bindingWork);
+      return (!stateBindings || stateBindings.isCurrent()) && (!faultBindings || faultBindings.isCurrent());
     };
     if (!stateCurrent()) return reject('unproved-state-effects');
     for (const block of structure.blocks) for (const inst of queryArray(queryRecord(block, guard, 128).insts, guard)) {
@@ -110,13 +113,17 @@ export async function prepareConditionalRegionReachability(structure, ir, option
             ? extra.stateRead !== binding.state || extra.stateWrite != null
             : extra.stateWrite !== binding.state || extra.stateRead != null)) return reject('unproved-state-effects');
         }
-        if (['possibleFaults', 'faults'].some(key => source[key] != null && queryArray(source[key], guard).length)) {
-          return reject('unproved-machine-effects');
+        for (const key of ['possibleFaults', 'faults']) if (source[key] != null && queryArray(source[key], guard).length) {
+          const binding = faultBindings?.get(inst);
+          if (source !== machine || key !== 'possibleFaults' || !binding) return reject('unproved-machine-effects');
+          if (faultSources.has(inst)) return reject('duplicate-fault-source');
+          guard.take('allocationUnits'); faultSources.add(inst);
+          if (!faultBundles.has(binding.bundle)) guard.take('allocationUnits');
+          faultBundles.add(binding.bundle);
         }
         if (source.undefinedResult != null) return reject('unproved-undefined-result');
       }
-      if (machine && (machine.bundleCompleteness !== 'exact'
-          || machine.possibleFaults != null && queryArray(machine.possibleFaults, guard).length)) return reject('unproved-machine-effects');
+      if (machine && machine.bundleCompleteness !== 'exact') return reject('unproved-machine-effects');
       if (['load', 'store'].includes(current.op)) {
         const memory = extra.memoryAccess == null ? null : queryRecord(extra.memoryAccess, guard);
         if (!memory || extra.completeness !== 'complete' || memory.atomic !== false || memory.volatility !== false
@@ -154,6 +161,10 @@ export async function prepareConditionalRegionReachability(structure, ir, option
       }
       guard.take('allocationUnits'); branchIndex.push({ instruction:inst, row:current.row, address:addressKey(current.address) });
     }
+    for (const bundle of faultBundles) {
+      guard.take('workItems', bundle.members.length);
+      if (bundle.members.some(member => !faultSources.has(member.source))) return reject('incomplete-fault-source-inventory');
+    }
     const timeout = () => Math.max(0, Math.floor(guard.remainingMilliseconds()));
     if (!stateCurrent()) return reject('unproved-state-effects');
     const used = guard.metrics();
@@ -161,7 +172,7 @@ export async function prepareConditionalRegionReachability(structure, ir, option
     // precede final capture publication and cannot refund that unseen work.
     const executionLimits = {
       workItems:Math.min(250000, Math.max(0, guard.limits.workItems - used.workItems
-        - Math.max(4096, (stateBindings?.workItems ?? 0) * 5))),
+        - 4096 - bindingWork * (faultBundles.size ? 6 : 5))),
       allocationUnits:Math.max(0, guard.limits.allocationUnits - used.allocationUnits - 4096),
     };
     guard.take('workItems', executionLimits.workItems); guard.take('allocationUnits', executionLimits.allocationUnits);
@@ -176,27 +187,44 @@ export async function prepareConditionalRegionReachability(structure, ir, option
     // Charge/check caller lifecycle first, then validate both observations so
     // callbacks cannot mutate an already-checked execution behind this read.
     const executionCurrent = () => isExecutionResult(execution, guard.identity, ir)
-      && (!stateBindings || stateBindings.isCurrent());
+      && (!stateBindings || stateBindings.isCurrent()) && (!faultBindings || faultBindings.isCurrent());
     const checkedExecutionCurrent = () => {
-      if (stateBindings) guard.take('workItems', stateBindings.workItems);
+      guard.take('workItems', bindingWork);
       return executionCurrent();
     };
     guard.check();
-    if (!checkedExecutionCurrent() || execution.status !== 'complete' || execution.truncated || !execution.paths.length) {
+    const terminalMode = faultBundles.size > 0;
+    const paths = terminalMode ? execution.terminalControlObservations : execution.paths;
+    const acceptedStatus = execution.status === 'complete' || terminalMode && execution.status === 'partial'
+      && execution.reason === 'return-control-normal-completion-unproved';
+    if (!checkedExecutionCurrent() || !acceptedStatus || execution.truncated || !paths?.length
+        || terminalMode && execution.terminalControlCoverage !== 'complete') {
       return reject(execution.reason ?? 'incomplete-execution');
     }
     if (execution.assumptions.length || execution.memoryObservationRequests.length) return reject('conditional-execution-assumptions');
-    const terms = [], armTerms = { yes:[], no:[] }, traversals = { yes:[], no:[] };
-    for (const [pathIndex, path] of execution.paths.entries()) {
+    const terms = [], faultTerms = [], armTerms = { yes:[], no:[] }, traversals = { yes:[], no:[] };
+    for (const [pathIndex, path] of paths.entries()) {
       guard.take('workItems');
-      if (path.status !== 'complete' || !isExecutionSnapshot(path.snapshot, guard.identity, ir)
-          || path.snapshot.assumptions.length || path.constraints.length !== path.takenBranches.length) {
+      if ((!terminalMode && (path.status !== 'complete' || !isExecutionSnapshot(path.snapshot, guard.identity, ir)
+          || path.snapshot.assumptions.length)) || path.constraints.length !== path.takenBranches.length) {
         return reject('incomplete-path-binding');
       }
       const conditions = queryArray(path.constraints, guard);
       if (conditions.some(condition => condition.sort?.kind !== 'bool')) return reject('nonboolean-path-condition');
       const term = conditions.length ? expr.createConnective('and', ...conditions) : expr.createBool(true);
       guard.take('allocationUnits', conditions.length + 1); terms.push(term);
+      if (terminalMode) {
+        const control = path.control, endpoint = control.endpoint;
+        const ret = ir.blocks[endpoint.blockIndex]?.insts[endpoint.instructionIndex];
+        const binding = faultBindings.get(ret), bundle = binding?.bundle;
+        if (path.pathIndex !== pathIndex || !bundle || !faultBundles.has(bundle) || bundle.source !== ret
+            || ret.returnTargetValue !== bundle.target || control.sourceValueId !== bundle.sourceValueId
+            || !control.faults.length || control.faults.length !== bundle.machineBundle.possibleFaults.length
+            || control.faults.some((fault, index) => fault.kind !== bundle.machineBundle.possibleFaults[index].kind
+              || fault.condition.sort?.kind !== 'bool')) return reject('unbound-terminal-fault');
+        guard.take('workItems', control.faults.length); guard.take('allocationUnits', control.faults.length * 2);
+        for (const fault of control.faults) faultTerms.push(expr.createConnective('and', term, fault.condition));
+      }
       const roles = new Set();
       let targetVisits = 0;
       for (const step of path.takenBranches) {
@@ -220,12 +248,19 @@ export async function prepareConditionalRegionReachability(structure, ir, option
         options:{ signal:submitted.signal, timeoutMs:timeout(), architecture:guard.identity.architecture,
           semanticIrVersion:guard.identity.semanticsVersion, bitWidth:addressBits,
           proofScope:{ kind:'canonical-executor-entry-path-union', identity:guard.identity,
-            branchId:data.id, terminalPaths:execution.paths.length, assumptions:[] } },
+            branchId:data.id, terminalPaths:paths.length, assumptions:[] } },
       });
       guard.check();
       if (!readConditionalRegionStructure(structure, ir, guard.identity, checkedExecutionCurrent)) guard.fail('stale-proof-input');
       return result;
     };
+    // Check faults over the original path domain. Never append normal-return
+    // predicates to preconditions, which would simply assume away the fault.
+    let faultProof = null;
+    if (terminalMode) {
+      faultProof = await verify(union(faultTerms), structure.functionEntry.index);
+      if (faultProof.verdict !== 'proved') return reject('unproved-terminal-fault-infeasibility');
+    }
     // A complete-looking but empty feasible domain must not mint two vacuous
     // unreachable-arm decisions. SAT models are checked by the existing judge.
     const domain = await verify(union(terms), structure.functionEntry.index);
@@ -245,7 +280,8 @@ export async function prepareConditionalRegionReachability(structure, ir, option
     const complete = arms.every(arm => arm.verdict === 'proved' || arm.verdict === 'refuted' && arm.counterexampleValidated);
     const result = freeze({ version:1, status:complete ? 'complete' : 'partial',
       scope:'acyclic-canonical-executor-entry-path-feasibility', transformAuthorization:false,
-      semanticRegionValidation:'required', arms:freeze(arms), terminalPathCount:execution.paths.length,
+      semanticRegionValidation:'required', arms:freeze(arms), terminalPathCount:paths.length,
+      ...(faultProof ? { terminalFaultQueryHash:faultProof.queryHash, terminalFaultVerdict:faultProof.verdict } : {}),
       domainQueryHash:domain.queryHash, assumptions:freeze([]) });
     if (complete) issued.set(result, { structure, ir, guard, executionCurrent });
     return result;

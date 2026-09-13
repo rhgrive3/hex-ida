@@ -1,5 +1,29 @@
 # Analysis roadmap v8 integration checkpoint
 
+## 2026-09-13: C4 の native RET fault を入口経路の検証へ接続
+
+`035a577ffdf0bb71830106b3c0381d9866802db3` から、実行した RET の block/index を
+terminal control 観測へ保持します。同じ target ValueId を持つ複数 RET を区別し、
+命令の差し替え・移動で既存の実行証拠を失効させます。
+
+canonical lowering の所有箇所で、実 MachineEffects bundle と生成 node の対応を記録します。
+別の private binding が RET・SSA の return-target use・最終 target・複製された fault の
+全 member を結び付けます。ABI facade は実際の変更記録を通じてこれを引き継ぎます。
+新設フィールドには変更前の不存在も記録します。状態 read の alias も、既存の
+`resolve-state-alias` 記録が元の SSA use と一致する場合だけ引き継ぎます。
+
+C4 reachability は全 terminal 観測が揃った場合に、元の経路条件と fault 条件の論理積を
+全経路で集め、その成立不能を既存 solver で証明します。その後も入口 domain の SAT と
+両 arm の判定を行います。正常終了を前提に追加せず、標準 query 枠は最大 4 回です。
+masked/aligned x30 は正の検査、4097・無制約 x30・不完全探索・不足予算は否定検査に含めます。
+記述のコピー、隠された fault、追加した RET から証拠を作れないことも検査します。
+
+これは入口からの分岐到達性の証明です。全領域の意味検証・公開変換経路での採用・
+PHI/削除対応・メモリ/例外/ループ、ME と X-02 の正の要求は引き続き残ります。
+`transformAuthorization:false` と **CHECKPOINT-LOCKED** を維持します。旧 head の全 Phase 9
+失敗を今回の成功に読み替えません。検査・レビュー・公開 SHA は永続
+`c4-terminal-control-20260913` の evidence に記録します。X-02 の固定開始点と担当 4 パスは維持します。
+
 ## 2026-09-13: RET の経路別 control 観測と normal completion の判定
 
 `f51fe505e941dc64483b7cf9a52f74206be5ea4c` で保持した canonical return target を、

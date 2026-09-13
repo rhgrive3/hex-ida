@@ -77,12 +77,14 @@ export function readReturnControl(inst, memory) {
   return Object.freeze({ value:inst.returnTargetValue, sourceValueId:target.valueId, faults:Object.freeze(faults) });
 }
 
-export function observeReturnControl(control, target, memory) {
+export function observeReturnControl(control, target, memory, endpoint) {
   if (!control) return null;
   memory.validateExpression(target);
   if (target?.kind === 'unknown_semantic' || target?.sort?.kind !== 'bv'
       || target.sort.width !== control.value.bits) fail('unsupported-return-control-target');
-  memory.chargeExecution(control.faults.length * 6 + 1, control.faults.length * 6 + 1);
+  if (!Number.isSafeInteger(endpoint?.blockIndex) || endpoint.blockIndex < 0
+      || !Number.isSafeInteger(endpoint?.instructionIndex) || endpoint.instructionIndex < 0) fail('invalid-terminal-control-endpoint');
+  memory.chargeExecution(control.faults.length * 6 + 4, control.faults.length * 6 + 4);
   const faults = control.faults.map(fault => {
     const masked = createBinary('and', target, createBv(target.sort.width, BigInt(fault.alignmentBytes - 1)));
     const condition = foldMemoryScalarExpression(createCompare('ne', masked, createBv(target.sort.width, 0n)), target.sort.width);
@@ -94,5 +96,9 @@ export function observeReturnControl(control, target, memory) {
     : createBool(true);
   memory.validateExpression(normalCompletionCondition);
   return Object.freeze({ schemaVersion:TERMINAL_CONTROL_SCHEMA, kind:'return', scope:'terminal-control-observation', sourceValueId:control.sourceValueId,
+    // Actual execution coordinates, not labels inferred from a shared ValueId,
+    // row or address. Consumers must validate the issued execution's currentness
+    // before resolving this position in its observed block/instruction arrays.
+    endpoint:Object.freeze({ blockIndex:endpoint.blockIndex, instructionIndex:endpoint.instructionIndex }),
     target, faults:Object.freeze(faults), normalCompletionCondition });
 }

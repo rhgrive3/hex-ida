@@ -38,6 +38,8 @@ test('canonical byte execution retains a separate ABI return and control target'
   assert.deepEqual(control.faults, []);
   assert.equal(control.normalCompletionCondition.value, true);
   assert.ok(Object.isFrozen(control) && Object.isFrozen(control.faults));
+  assert.ok(Object.isFrozen(control.endpoint));
+  assert.equal(ir.blocks[control.endpoint.blockIndex].insts[control.endpoint.instructionIndex], retOf(ir));
   assert.ok(path.snapshot.values.some(value => value.valueId === 'terminal-target' && value.expression === control.target));
   assert.ok(isExecutionResult(result, identity, ir));
 });
@@ -102,6 +104,37 @@ test('a return target follows the selected predecessor and current SSA value', (
     assert.equal(Object.hasOwn(observation, 'snapshot'), false);
     assert.equal(Object.hasOwn(observation, 'returnValue'), false);
     assert.equal(observation.control.normalCompletionCondition.value, observation.control.target.value === 0x1000n);
+  }
+});
+
+test('terminal coordinates distinguish different RETs sharing one target identity and revoke after relocation', () => {
+  for (const mutate of [
+    (ir, block, offset) => { block.insts[offset] = { ...block.insts[offset] }; },
+    (ir, block) => { block.insts = block.insts.slice(); },
+    (ir, block) => { block.index += 10; },
+    (ir, block) => { ir.blocks[block.index] = { ...block }; },
+  ]) {
+    const ir = machineIR(['cbz x0, #0x1010', 'mov x30, #4096', 'ret', 'nop', 'mov x30, #4097', 'ret']);
+    const returns = ir.instructions.filter(inst => inst.op === 'ret');
+    for (const ret of returns) {
+      // Source labels may be shared after projection. They cannot identify the
+      // terminal instruction; its executed position still must do so.
+      ret.extra.returnControlTarget = { schema:'semantic-return-control-target/v1', state:'resolved', valueId:'shared-target' };
+      ret.extra.returnControlTargetValueId = 'shared-target';
+    }
+    const result = run(ir);
+    assert.equal(result.status, 'partial', result.reason);
+    assert.equal(result.terminalControlCoverage, 'complete');
+    assert.equal(result.terminalControlObservations.length, 2);
+    const endpoints = result.terminalControlObservations.map(item => item.control.endpoint);
+    const resolved = endpoints.map(endpoint => ir.blocks[endpoint.blockIndex].insts[endpoint.instructionIndex]);
+    assert.equal(new Set(resolved).size, 2);
+    assert.ok(resolved.every(ret => returns.includes(ret)));
+    assert.ok(result.terminalControlObservations.every(item => item.control.sourceValueId === 'shared-target'));
+    assert.ok(isExecutionResult(result, identity, ir));
+    const endpoint = endpoints[0], block = ir.blocks[endpoint.blockIndex];
+    mutate(ir, block, endpoint.instructionIndex);
+    assert.equal(isExecutionResult(result, identity, ir), false);
   }
 });
 

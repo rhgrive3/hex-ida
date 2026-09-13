@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { conditionalRegionFixture as example, textRowConditionalRegionFixture } from '../helpers/conditional-region-fixture.mjs';
-import { readCanonicalRegisterStateBinding, prepareCanonicalRegisterStateBindings } from '../../../js/ir-core.js';
+import { buildIR, readCanonicalRegisterStateBinding, prepareCanonicalRegisterStateBindings, prepareCanonicalReturnFaultBindings } from '../../../js/ir-core.js';
+import { buildSemanticModel } from '../../../js/blocks.js';
 import { buildSemanticV2CompatibilityPipeline, projectedRegisterStateContext, projectedRegisterStateBindingCandidate } from '../../../js/semantics/compat/index.js';
 import { createMachineEffectBundle } from '../../../js/semantics/effects/index.js';
 import { projectSemanticIrV2ToLegacyV1 } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
@@ -10,6 +11,133 @@ import { prepareConditionalRegionStructure } from '../../../js/decompiler/phase8
 import { identity } from '../helpers/proof-fixtures.mjs';
 import { prepareConditionalRegionReachability, readConditionalRegionReachability } from '../../../js/decompiler/phase8/conditional-region-reachability.js';
 import { discoverPhase8Tests } from '../run.mjs';
+import { ARM64_ARCHITECTURE } from '../../../js/targets/architecture/index.js';
+import { parseOperands } from '../../../js/arm64.js';
+
+function nativeReturnRegion(target = 'and x30, x30, #0xfffffffffffffffc') {
+  // Parsed rows through the production model/SSA/facade. No compiler claim.
+  const lines = [target, 'eor w1, w0, w0', 'cbnz w1, #0x1014',
+    'mov w0, #1', 'b #0x1018', 'mov w0, #2', 'ret'];
+  const rows = lines.map((text, row) => {
+    const [mn, ...ops] = text.split(' ');
+    return { mn, ops:ops.join(' '), row, address:0x1000n + BigInt(row * 4) };
+  });
+  const options = { startRow:0, endRow:rows.length - 1, semanticMigrationMode:'semantic-v2-compat',
+    rowOfAddress:address => rows.find(row => row.address === BigInt(address))?.row ?? null,
+    addrOfRow:row => rows[row]?.address ?? null };
+  const ir = buildIR(buildSemanticModel(rows, options), options);
+  const context = { ...identity, ...projectedRegisterStateContext(ir) };
+  const seed = decompileSemantic({ name:'native-return-region', instructions:ir.instructions, calls:[] },
+    { ir, deterministicTransforms:true, phase8PrepareRegionProof:true });
+  const region = readSemanticConditionalRegions(seed)?.regions.find(item => item.selection.header === 0);
+  const structure = prepareConditionalRegionStructure(region?.record, ir, { identity:context, timeoutMs:5000 });
+  return { ir, identity:context, structure, run:extra => prepareConditionalRegionReachability(structure, ir,
+    { identity:context, addressBits:64, timeoutMs:5000, backendTier:'tiered', ...extra }) };
+}
+
+test('native RET fault copies retain canonical bundle and SSA witnesses across actual ABI facade writes', () => {
+  const f = nativeReturnRegion(), bindings = prepareCanonicalReturnFaultBindings(f.ir, f.identity);
+  assert.equal(bindings.status, 'prepared');
+  assert.ok(bindings.isCurrent(), 'new ABI return fields must have an absent-to-own writer history');
+  const copies = f.ir.instructions.filter(inst => inst.extra?.attributes?.machineEffects?.possibleFaults?.length);
+  assert.equal(copies.length, 4);
+  assert.equal(bindings.size, copies.length);
+  const records = copies.map(inst => bindings.get(inst)), bundle = records[0].bundle;
+  assert.ok(records.every(record => record.bundle === bundle));
+  assert.equal(bundle.source.op, 'ret');
+  assert.equal(bundle.source.returnTargetValue, bundle.target);
+  assert.equal(bundle.ssaUse.sourceEntityId, bundle.canonicalReturn.id);
+  assert.equal(bundle.ssaUse.proof.sourceSemanticValueId, bundle.sourceValueId);
+  assert.ok(bundle.ssaUse.proof.roles.includes('return-target'));
+  assert.equal(bundle.machineBundle.controlEffect.kind, 'return');
+  assert.equal(bundle.machineBundle.instructionId, bundle.instructionId);
+  const state = prepareCanonicalRegisterStateBindings(f.ir, f.identity);
+  assert.ok(state.isCurrent());
+  const read = copies.find(inst => inst.extra.stateRead), readBinding = state.get(read);
+  assert.equal(readBinding.ssaAlias.kind, 'resolve-state-alias');
+  assert.equal(readBinding.ssaAlias.before.semanticSsaValueId, readBinding.ssaFact.valueId);
+  assert.equal(readBinding.ssaAlias.after, read.args[0].value);
+  assert.deepEqual(records.map(record => record.canonicalNode.kind).sort(), ['const','return','state-read','state-write']);
+  assert.equal(prepareCanonicalReturnFaultBindings({ ...f.ir }, f.identity), null);
+  assert.equal(bindings.get({ ...bundle.source }), null);
+  assert.equal(prepareCanonicalReturnFaultBindings(f.ir, { ...f.identity, snapshotId:'other' }).status, 'unavailable');
+  bundle.source.extra = { ...bundle.source.extra, attributes:{ ...bundle.source.extra.attributes } };
+  assert.equal(bindings.isCurrent(), false);
+});
+
+test('C4 discharges aligned native RET faults over the original domain before proving either arm', async () => {
+  for (const target of ['and x30, x30, #0xfffffffffffffffc', 'mov x30, #4096']) {
+    const f = nativeReturnRegion(target);
+    assert.equal(f.structure.status, 'complete', f.structure.reason);
+    const result = await f.run();
+    assert.equal(result.status, 'complete', result.reason);
+    assert.equal(result.terminalFaultVerdict, 'proved');
+    assert.equal(typeof result.terminalFaultQueryHash, 'string');
+    assert.deepEqual(result.arms.map(arm => arm.verdict), ['proved', 'refuted']);
+    assert.equal(result.arms[1].counterexampleValidated, true);
+    assert.equal(result.terminalPathCount, 2);
+    assert.deepEqual(result.assumptions, []);
+    assert.equal(result.transformAuthorization, false, 'region deletion still needs its own semantic proof');
+    assert.equal(readConditionalRegionReachability(result, f.ir, f.identity), result);
+    f.ir.instructions.find(inst => inst.op === 'ret').returnTargetValue = { id:'foreign', kind:'const', bits:64, const:4097n };
+    assert.equal(readConditionalRegionReachability(result, f.ir, f.identity), null);
+  }
+});
+
+test('reprojecting canonical RET or copied SSA cannot mint a return-fault binding', () => {
+  const decoded = { address:0x1000n, size:4, length:4, mode:'a64', mnemonic:'ret', operands:'x30',
+    opStr:'x30', ops:parseOperands('x30'), instructionCode:0xd65f03c0, rawBytes:Uint8Array.of(0xc0, 0x03, 0x5f, 0xd6) };
+  const result = buildSemanticV2CompatibilityPipeline({ architecturePlugin:ARM64_ARCHITECTURE,
+    decoderSemanticVersion:'c4-return-fault-word-test', binaryId:'return-fault-binary', sliceId:'return-fault-slice',
+    addressWidthBits:64, entryBlockKey:'entry', blocks:[{ key:'entry', startAddress:0x1000n,
+      instructions:[{ decoded }], successors:[] }] });
+  const context = projectedRegisterStateContext(result.legacyV1);
+  const issued = prepareCanonicalReturnFaultBindings(result.legacyV1, context);
+  assert.equal(issued.size, 4); assert.ok(issued.isCurrent());
+  for (const ssa of [result.ssa, structuredClone(result.ssa)]) {
+    const copy = projectSemanticIrV2ToLegacyV1(result.semanticIr, { cfg:result.cfg, ssa, memorySsa:result.memorySsa });
+    assert.equal(copy.instructions.filter(inst => inst.extra?.attributes?.machineEffects?.possibleFaults?.length).length, 4);
+    assert.equal(prepareCanonicalReturnFaultBindings(copy, context), null);
+    assert.equal(issued.get(copy.instructions.find(inst => inst.op === 'ret')), null);
+  }
+});
+
+test('C4 refuses faulting and unconstrained RETs, incomplete exploration and insufficient query budgets', async () => {
+  for (const target of ['mov x30, #4097', 'mov x30, x0']) {
+    const f = nativeReturnRegion(target), result = await f.run();
+    assert.equal(result.status, 'partial');
+    assert.equal(result.reason, 'unproved-terminal-fault-infeasibility');
+    assert.deepEqual(result.arms, []);
+    assert.equal(readConditionalRegionReachability(result, f.ir, f.identity), null);
+  }
+  for (const extra of [{ maxPaths:1 }, { limits:{ queries:3 } }, { limits:{ queries:0 } }]) {
+    const f = nativeReturnRegion(), result = await f.run(extra);
+    assert.equal(result.status, 'partial');
+    assert.deepEqual(result.arms, []);
+  }
+});
+
+test('hidden or copied native fault descriptions cannot refresh the canonical association', async () => {
+  for (const mutate of [
+    ret => { ret.extra = { ...ret.extra, attributes:{ ...ret.extra.attributes,
+      machineEffects:{ ...ret.extra.attributes.machineEffects, possibleFaults:[] } } }; },
+    ret => { ret.extra = { ...ret.extra, faults:['authentication-fault'] }; },
+    ret => { ret.extra = { ...ret.extra, returnControlTarget:{ ...ret.extra.returnControlTarget } }; },
+  ]) {
+    const f = nativeReturnRegion(), ret = f.ir.instructions.find(inst => inst.op === 'ret');
+    mutate(ret);
+    const bindings = prepareCanonicalReturnFaultBindings(f.ir, f.identity);
+    assert.equal(bindings.isCurrent(), false);
+    const result = await f.run();
+    assert.equal(result.status, 'partial');
+    assert.deepEqual(result.arms, []);
+  }
+  const f = nativeReturnRegion(), ret = f.ir.instructions.find(inst => inst.op === 'ret');
+  const counterfeit = { ...ret, extra:{ ...ret.extra } };
+  f.ir.blocks[ret.block].insts.push(counterfeit);
+  f.ir.instructions.push(counterfeit);
+  assert.equal((await f.run()).status, 'partial', 'an appended duplicate cannot borrow the issued RET bundle');
+});
 
 test('actual production state reads and writes bind the original canonical SSA assignments', () => {
   const { ir, identity:context } = textRowConditionalRegionFixture();
