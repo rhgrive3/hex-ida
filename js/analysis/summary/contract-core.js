@@ -13,13 +13,14 @@
  * `completeness: 'complete'` cannot coexist.
  */
 
-import { deepFreeze, stableDigest } from '../../core/identity/index.js';
+import { deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
 import { aliasMemoryRegions } from '../alias/legacy-safety-floor.js';
 import { deriveMemoryRegion, isPreciseMemoryRegion } from '../alias/regions-v2.js';
 import { createAnalysisStatus, isCompleteStatus } from '../status.js';
+import { canonicalReturnEquations, returnEquationSourceMatches } from './return-equations.js';
 
-export const FUNCTION_SUMMARY_SCHEMA_VERSION = 3;
-export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.3.0';
+export const FUNCTION_SUMMARY_SCHEMA_VERSION = 4;
+export const FUNCTION_SUMMARY_CONTRACT_VERSION = '1.4.0';
 
 /**
  * Where an effect's authority comes from, in the priority order P7-INV-004
@@ -79,6 +80,14 @@ function list(values, code) {
 
 function sortedIds(values, code) {
   return [...new Set(list(values, code).map((value) => nonEmpty(value, code)))].sort();
+}
+
+// Call records are a set of site-bound effects, not execution order. Canonical
+// ordering keeps node traversal / serialization permutations out of identity.
+function compareCallRecords(a, b) {
+  if (a.callSiteId !== b.callSiteId) return a.callSiteId < b.callSiteId ? -1 : 1;
+  const left = stableStringify(a), right = stableStringify(b);
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function booleanKnowledge(value, code) {
@@ -380,6 +389,7 @@ export function summaryIdentityMatches(summary, {
     // kind-specific identity shape the producer emits (#5956).
     return isCanonicalReturnProvenance(value);
   })) return false;
+  if (!returnEquationSourceMatches(summary)) return false;
   if (functionId != null && (typeof functionId !== 'string' || summary.functionId !== functionId)) return false;
   const status = summary.status;
   if (!status || typeof status !== 'object' || Array.isArray(status)) return false;
@@ -405,7 +415,7 @@ export function createFunctionSummary(input = {}) {
   // completeness and stop-reason consistency checks at the summary boundary.
   const status = createAnalysisStatus(input.status ?? {});
 
-  const unknownCallEffects = list(input.unknownCallEffects, 'function-summary-invalid-unknown-calls').map(createUnknownCallEffect);
+  const unknownCallEffects = list(input.unknownCallEffects, 'function-summary-invalid-unknown-calls').map(createUnknownCallEffect).sort(compareCallRecords);
   const memoryReadRegions = list(input.memoryReadRegions, 'function-summary-invalid-read-regions').map(createMemoryEffect);
   const memoryWriteRegions = list(input.memoryWriteRegions, 'function-summary-invalid-write-regions').map(createMemoryEffect);
   const returnProvenance = canonicalReturnProvenance(
@@ -419,14 +429,16 @@ export function createFunctionSummary(input = {}) {
     inputs: sortedIds(input.inputs, 'function-summary-invalid-inputs'),
     returnValues: sortedIds(input.returnValues, 'function-summary-invalid-return-values'),
     returnProvenance: deepFreeze(returnProvenance),
+    returnSourceDigest: input.returnSourceDigest == null ? null
+      : nonEmpty(input.returnSourceDigest, 'function-summary-invalid-return-source-digest'),
     registerEffects: sortedIds(input.registerEffects, 'function-summary-invalid-register-effects'),
     memoryReadRegions: deepFreeze(memoryReadRegions),
     memoryWriteRegions: deepFreeze(memoryWriteRegions),
     escapes: deepFreeze(list(input.escapes, 'function-summary-invalid-escapes')),
     allocations: sortedIds(input.allocations, 'function-summary-invalid-allocations'),
     frees: sortedIds(input.frees, 'function-summary-invalid-frees'),
-    directCalls: deepFreeze(list(input.directCalls, 'function-summary-invalid-direct-calls').map(createDirectCall)),
-    indirectCallSets: deepFreeze(list(input.indirectCallSets, 'function-summary-invalid-indirect-calls').map(createIndirectCallSet)),
+    directCalls: deepFreeze(list(input.directCalls, 'function-summary-invalid-direct-calls').map(createDirectCall).sort(compareCallRecords)),
+    indirectCallSets: deepFreeze(list(input.indirectCallSets, 'function-summary-invalid-indirect-calls').map(createIndirectCallSet).sort(compareCallRecords)),
     unknownCallEffects: deepFreeze(unknownCallEffects),
     noreturn: booleanKnowledge(input.noreturn ?? 'unknown', 'function-summary-invalid-noreturn'),
     mayThrow: booleanKnowledge(input.mayThrow ?? 'unknown', 'function-summary-invalid-may-throw'),
@@ -434,6 +446,8 @@ export function createFunctionSummary(input = {}) {
     semanticFacts: deepFreeze(list(input.semanticFacts, 'function-summary-invalid-semantic-facts')),
     status,
   };
+
+  summary.returnEquations = canonicalReturnEquations(input.returnEquations, summary, createReturnProvenance);
 
   // An unresolved call is not purity. A summary that carries one may not also
   // claim it looked at everything.
@@ -471,6 +485,8 @@ export function functionSummaryDigest(summary) {
     inputs: summary.inputs,
     returnValues: summary.returnValues,
     returnProvenance: summary.returnProvenance,
+    returnEquations: summary.returnEquations,
+    returnSourceDigest: summary.returnSourceDigest,
     registerEffects: summary.registerEffects,
     memoryReadRegions: summary.memoryReadRegions,
     memoryWriteRegions: summary.memoryWriteRegions,

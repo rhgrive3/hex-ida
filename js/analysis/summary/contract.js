@@ -7,15 +7,12 @@
 import { canonicalAddress, createFunctionId, deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
 import { isCompleteStatus } from '../status.js';
 import * as core from './contract-core.js';
+import { canonicalReturnEquations, returnEquationSourceMatches } from './return-equations.js';
 
 export * from './contract-core.js';
 
-// Single contract-version source of truth: the core canonical constructor owns
-// the version identity (the #5242 root/allocation `addressSpace` requirement
-// bumped it to 1.3.0). Redeclaring a stale constant here re-stamped core-built
-// summaries with an older wire version while identity validation compared
-// against the same stale value — version-keyed cache/consumer layers could not
-// distinguish the incompatible envelope from a legacy 1.2 summary.
+// The core constructor is the single wire-version authority. Schema 4 / 1.4
+// includes source-bound return equations; a 1.3 envelope must be recomputed.
 export const FUNCTION_SUMMARY_CONTRACT_VERSION = core.FUNCTION_SUMMARY_CONTRACT_VERSION;
 const CANONICAL_SUMMARIES = new WeakSet();
 const RETURN_PROVENANCE_FIELDS = new Set([
@@ -180,6 +177,8 @@ function validateSummaryInput(input) {
   if (input.functionId != null) nonEmptyString(input.functionId, 'function-summary-function-id-required');
   for (const field of ['inputs','returnValues','registerEffects','allocations','frees']) validateStringList(input[field], `function-summary-invalid-${field}`);
   for (const value of denseArray(input.returnProvenance, 'function-summary-invalid-return-provenance')) validateReturnProvenance(value);
+  if (input.returnSourceDigest != null) nonEmptyString(input.returnSourceDigest, 'function-summary-invalid-return-source-digest');
+  canonicalReturnEquations(input.returnEquations, input, value => { validateReturnProvenance(value); return value; });
   for (const value of denseArray(input.memoryReadRegions, 'function-summary-invalid-read-regions')) {
     validateMemoryEffectInput(value);
     if (value.broad !== true && value.regionId == null) throw new TypeError('function-summary-unresolved-memory-region');
@@ -310,11 +309,13 @@ export function summaryIdentityMatches(summary, expected = {}) {
       canonical = createFunctionSummary(summary);
       if (!sameCanonicalValue(summary, canonical)) return false;
     }
+    if (!returnEquationSourceMatches(canonical)) return false;
     if (expected.functionId != null && (typeof expected.functionId !== 'string' || canonical.functionId !== expected.functionId)) return false;
     const status = canonical.status;
     if (expected.snapshotId != null && (typeof expected.snapshotId !== 'string' || status.snapshotId !== expected.snapshotId)) return false;
     if (expected.analyzerId != null && (typeof expected.analyzerId !== 'string' || status.analyzerId !== expected.analyzerId)) return false;
     if (expected.analyzerVersion != null && (typeof expected.analyzerVersion !== 'string' || status.analyzerVersion !== expected.analyzerVersion)) return false;
+    if (expected.digest != null && (typeof expected.digest !== 'string' || core.functionSummaryDigest(canonical) !== expected.digest)) return false;
     return true;
   } catch { return false; }
 }

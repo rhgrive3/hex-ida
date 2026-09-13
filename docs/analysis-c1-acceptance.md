@@ -121,3 +121,166 @@ timeout -k 2s 20s node --test tests/scpa/object-lifetime.test.mjs
 checkpointは末尾の今回追記だけを移植。alias solver・exact issuer map・test fixtureのversionを一体で統合し、
 古い1.1.0の証拠を再承認しない。共有semantic/ABI境界とC4側fixtureの同時変更はfinal manifestの一覧で照合する。
 **CHECKPOINT-LOCKED維持。remote操作は一切実施していない。**
+
+
+---
+
+# 2026-09-13 C1-02 recursive returned-value discovery — ローカル実装・受入
+
+**この節が今回のC1-02 laneの最新記録。前半の「C1-02 PARTIAL」「summary production無変更」は開始ZIP時点の履歴である。**
+C1-02の再帰的な返り値発見を既存canonical production ownerへ接続した。
+**C1-02 recursive lane: COMPLETE（以下の有限契約・反例・実測範囲）。**
+同梱の最終レビュー記録で同一配布diffに対するfull reviewが3回連続ゼロ指摘であることも終了条件とする。
+統合全体・native whole-program acceptance・releaseの完了は意味しない。**CHECKPOINT-LOCKEDは維持。**
+
+## 基点・最終identity・既存成果
+
+- 唯一の基点: 添付 `hex-ida-roadmap-v8-user-c1-c3-final-20260913.zip` の全bytes。
+  Git履歴がないため作成したlocal synthetic **base SHA `48249390d511340db800320081d6a0c5a0abd868`**。
+  base treeは `28a5f2aceecc83feba32fe874d58bf4592f3b7ba`。upstream SHAとは区別する。
+- **final source/test SHA: `7b45320b7f9dd4321b7656a9cb481bc6f645666e`**。
+  実装接続commit `3bd27cdfa7737de6a4defc67511288fada1a0fbf` と、全return経路の修正commitからなる。
+  本MDだけの後続commitを含む配布HEAD、patch SHA-256、各fileのbase/final hashは同梱 `manifest.json` に記録する。
+  MD自身にそのMDを含むcommit SHAを書き込む自己参照は行わない。下の全gateは上記source/test SHAの実行証拠である。
+- 再利用: `df98376aea3e298620ced7fe99f9ceed1b7d0caa` のtransfer/substitution/local equation/SCC hook、
+  `12b873ca095922c826b2062f2dcf032f65f3ef5c` の96セルproducer/target/wrapper行列。
+  古いbranchのmerge、blind cherry-pick、古いファイル全体の上書きは行っていない。
+- `git fetch origin` はDNS失敗。指定commitの `git show --stat/--name-only` はobject不在で実行不能だったため、
+  GitHub read connectorで実際のcommit metadata/patch/raw sourceを取得して照合した。
+  `analysis-c1-recursive-cea67` は404だったが、上のexact commitsは取得できた。
+- read-onlyで観測した#7036 head `0b8e65d122340a0bcba6175b15aa61cd5fc85587` のSCC sourceはZIPと同一blob。
+  main `943b13d5abc8c2aed2d489fd7eea2671761c8236` も収束後のlocal返り値再公開のままで、return-equations.jsはない。
+  open PRの関連語検索とこれらの実sourceを照合。全open PRの全fileを読んだとは主張しない。
+  詳細は同梱 `upstream/read-only-audit.md`。**GitHubへのwriteはゼロ。**
+- taskが引用したcheckpoint見出しそのものはZIPにない。実在する末尾の2026-09-13 sole-start C1/C3節を使用した。
+  checkpoint/ledgerの内容やlockをこのlaneから変更していない。
+
+## first deterministic divergence・root cause・修正
+
+開始時は、実際のlocal producerが返した再帰callのunknownを、SCC収束後もそのまま再公開していた。
+`composeSummary` の `unconverged ? [] : local.returnProvenance` ではcallee由来の返り値を発見できない。
+最終テストを保持し、このhookだけ元のlocal再公開に戻したcounterfactualでは、13件中12件がsemantic assertionでFAIL。
+最初の差は自己再帰の返り値にunknownが残ること。元へ戻した同じ13件は全PASS。
+unknown-native-leafの拒否側1件は両方でPASSであり、単なるimport/構文エラーを反証としていない。
+
+`return-equations.js` はcanonical artifactのshape/coverage検証と単一transferの補助だけを持つ。
+Semantic IR → local summary → **既存SCC loop** → FunctionSummary → caller/points-toというowner境界を維持する。
+既存DemandSummarySessionも同じcomposeSummaryを使用し、元からあるprivate SCC/atomic publicationへ接続した。
+新しいsummary engine、第二SCC solver、points-to/alias/MemorySSA engineは作っていない。
+
+local factsと未解決call equationsを分け、全return site/position/alternativeを保存する。
+calleeのarg/root/allocation/unknownを実引数の全SSA alternativeへ代入し、offset・addressSpace・allocationSiteIdを保持する。
+無根拠な循環のprivate bottomは、既存loop内でunknownへ再評価してから公開する。noreturn証明にはしない。
+異なる根拠はsafe union、未知経路を含むunionは未知のまま。複数return位置を混同しない。
+void/短いreturnと値を返すreturnの混在は、全経路のposition proofがないためpartial/unknownとし、exactを公開しない。
+
+検査中に見つけた追加の実反例は、同一関数・同一snapshotの古いequations差し替え、call記録順序によるdigest差、
+reachable void returnの欠落。いずれも専用red/green証拠と恒久regressionを追加した。
+unknown-call-effectsの反例は、broad writeと未確定controlを備えた**有効なpartial契約**であることをassertしてから拒否を検証する。
+不正なenvelopeを拒否しただけの結果と混同しない。
+
+## 正例・最小反例・production-path coverage
+
+| 検査 | 分母・期待・結果 | 実際の入口とfixture境界 |
+|---|---|---|
+| 再利用recursive行列 | 3 kinds × self/mutual × 8 modes × wrapper depth 0/2 = 96セル。24正例/72拒否側、全PASS | 全SCC/wrapper/callerはcanonical IR/CFG/SSA/MemorySSA constructorsと実local producer。root/allocationの非再帰leafだけ明示summaryを供給 |
+| 直接/有限間接call | direct、1/2 exhaustive candidate、同根/異根、arg swap、safe union、wrapper chain、複数return位置がPASS | completenessはfixtureが宣言した有限target universe。native indirect universeの発見証明ではない |
+| 独立source-path oracle | 256個の2関数graph、512 root検査。240 finite/272 conservative、false exact 0。map/root順序反転も一致 | test-onlyの(function, argument permutation)有限path列挙。production summaryを正解生成に使用しない |
+| downstream | arg/root/allocation × little/big × 8 memory modes = 48セル。ordinaryのみloaded/fieldのrootとoffsetを保持、他はTOP | 実caller points-to → store → 既存MemorySSA → load → field。root/allocation leafは上記宣言境界 |
+| native hybrid | RV64 `a0 += 1; ret` のdecoder/ABI/lowering/SSA/local producer → inner wrapper → 相互再帰 → outer wrapper → store/loadがPASS。loaded offset 9、field 17 | leafだけ実命令bytes。再帰本体/wrapper/callerはcanonical IR source fixture。完成済みrecursive summaryの注入なし |
+| native closest counterexample | `a0 = 7; ret` のleafはargument/root証拠にならず、同じ下流がTOP | 同じ実decoder経路。native全program/全再帰命令のdecode証明とは呼ばない |
+| envelope/evidence拒否 | incomplete candidates、missing summary、stale snapshot/digest/source、partial/cancelled、valid unknown effects、old schema/version、malformed/dropped/sparse/ambiguous equationsを拒否 | actual solver → actual callerでTOP。constructor/identityの拒否とcaller結果の両方を検査 |
+| 循環/全return | 異根はunion、unknown reachable returnはTOP、無根拠self/mutualはunknown、offset成長は16iterationでtruncated。mixed-arity/voidを落とさない | 実local producerと既存SCC。unknownをnoreturn/exactへ昇格しない |
+| counterfactual | 最終test・他productionを保持してhookのみ外すと13件中12FAIL/1PASS、復元後13/13PASS | `counterfactual-only-change.patch` と `results/counterfactual-final-{reverted,fixed}.log`。counterfactual変更は配布sourceに含めない |
+
+Node test件数と内部セル数は別の分母であり、合算してcoverageを水増ししない。
+fixtureで構成したcanonical IRから実producerを通した証拠と、宣言済み非再帰leaf summaryの証拠を区別する。
+**全native recursive binaryのend-to-end証明やwhole-program completenessではない。**
+
+## version・digest・invalidation・予算・determinism
+
+FunctionSummary schema **3→4**、contract **1.3.0→1.4.0**。C1.4という節番号に合わせた変更ではない。
+source-bound equationsと独立したreturnSourceDigestがcanonical envelopeに追加され、旧wireのexact shape/意味とは非互換なためである。
+coreを唯一のversion authorityにし、public producer/validator/consumerが同じ値を使う。local/interprocedural analyzerは1.4.0。
+`issue-5242-contract-version-source-of-truth.test.mjs` の既存assertionを弱めず、旧1.2/1.3/schema3拒否も追加した。
+
+開始時すでにdigestへ含まれていたreturnValues/returnProvenance/allocations/calls/status等は維持。
+returnEquationsとreturnSourceDigestもhashする。source identityはfunction/snapshotと、順序正規化したproducer IRのdigestに結び付く。
+引数位置とblock内命令順序は並べ替えない。unordered node/value/block table・target set・call recordだけ正規化する。
+同じlocal factsでも再帰call引数が変わればsource digestが変わり、古いequationsの差し替えは拒否される。
+semantic return変更→summary digest変更→caller calleeSummaryIds/root変更を検査。
+expectedSummaryDigestsで古い候補identityも拒否する。serialized/unbranded summaryも再canonical化して検証し、private brandへの依存を避ける。
+既存のversionless・unboundな**effect-only**入力互換は維持するが、旧versionや返り値factsを自動upgradeしない。
+
+同期solverの28 cancellation checkpointsを全点停止して検査（うち19点はSCC開始後）。active SCCの公開は0。
+work budget 0〜96の97セルでは20 exhausted/77 complete、exhausted時のactive SCC公開は0。
+既存iteration cap、graph node/edge capに加え、transfer workを共有ResourceBudgetへ課金する。
+localは4096 equation rows/sites、256 arguments、65536 payload work、SCCは512 return factsで保守的に打ち切る。
+予算は実時間保証ではない。source/graph構築には既存の別capも適用される。
+Demandのpause/resumeでもprovisional SCCを公開せず、cancel/budget/stale hostで止める。収束済み別componentとactive componentは区別する。
+JSON replay、node/SSA/target/map/root順序反転、同一入力再実行でcanonical result/digestを照合した。
+
+## exact source-head test receipts
+
+実行Nodeは22.16.0。全commandを有限timeoutで実行し、log・exit code・SHA-256・source file hashを
+同梱 `test-results.jsonl` に保存した。下表のlog名は `results/` 配下。groupはfocused/combinedを含むため合算しない。
+
+| gate | 結果 | log |
+|---|---|---|
+| focused | 63/63 PASS; exit 0; 9.408s | `focused-final-source.log` |
+| combined | 192/192 PASS; exit 0; 4.071s | `combined-final-source.log` |
+| summary | 528/528 PASS; exit 0; 22.668s | `summary-final-source.log` |
+| pointsto | 270/270 PASS; exit 0; 9.143s | `pointsto-final-source.log` |
+| alias | 95/95 PASS; exit 0; 5.094s | `alias-final-source.log` |
+| lifetime | 9/9 PASS; exit 0; 0.629s | `lifetime-final-source.log` |
+| scpa | 25/25 PASS; exit 0; 15.159s | `scpa-final-source.log` |
+| lint | PASS; exit 0; 1.367s | `lint-final-source.log` |
+| module-boundaries | PASS; exit 0; 0.246s | `module-boundaries-final-source.log` |
+| ownership | PASS; exit 0; 0.158s | `ownership-final-source.log` |
+| phase7 | 2187 PASS / 1 FAIL（baseline-red）; exit 1; 98.441s | `phase7-final-source.log` |
+
+## baseline-red / ownership外への引継ぎ
+
+broad Phase7唯一の失敗は `tests/phase7/ownership/c1-01-inventory.test.mjs:94`、
+`the actual HEX-C1-01 branch inventory stays inside its exact allowlist`。
+最初のdeterministic divergenceはhistorical inventory用
+`git diff 852fcc559711eac680f6853644d390fdb5c1b7f8 66664d4b5ec29ad503c785e50f3d2ff78df1dbe3` が
+`fatal: bad object 852fcc559711eac680f6853644d390fdb5c1b7f8`、exit128で失敗すること。
+**無変更の開始base worktreeと候補の両方で同一testが2PASS/1FAIL**。新規解析regressionではなくZIPにGit履歴がないことによるbaseline-red。
+`baseline-ownership-history.log` / `candidate-ownership-history.log` に比較証拠を保存。
+full Phase7をPASSとは記載しない。missing歴史objectを捏造したり、環境変数で空diffへ差し替えたり、gateを弱めたりしない。
+
+integration ownerに必要な入力: 上記2つの実Git commit/treeが取得可能な履歴。
+期待結果: historical C1-01 inventoryをそのまま再検証できること。現在のC1-02 9-path auditとは別の検査である。
+ownership外である理由: historical runner/manifest/Git環境をこのlaneは変更しないというtask指定。
+
+native全再帰binary/全indirect target探索、root/allocation leafの実heap/layout由来証明、free/reuse/TLSのruntime identity、
+generated userscript再build、CI/release、独立verifier、実機受入はこの有限証拠から推論しない。
+入力/期待: canonical native CALL/return/targetとheap/layout根拠を各ownerが提供し、同じsummary入口へ接続して再検証する。
+現在のproof boundaryは上のnative leafと宣言leafであり、これを架空の全program failureやPASSには置き換えない。
+対象ownerはABI/semantic/MemorySSA/alias/runner/integrationで、本laneの許可path外。C3-01/C3-02の再実装はしていない。
+
+## changed-file inventory / review
+
+今回のrepo差分は次の**9 pathのみ**。このMD以外のsource/testは上記final source/test SHAで固定した。
+
+```text
+js/analysis/summary/contract-core.js
+js/analysis/summary/contract.js
+js/analysis/summary/interprocedural.js
+js/analysis/summary/local-core.js
+js/analysis/summary/local.js
+js/analysis/summary/return-equations.js
+tests/phase7/summary/c1-02-recursive-return-discovery.test.mjs
+tests/phase7/summary/issue-5242-contract-version-source-of-truth.test.mjs
+docs/analysis-c1-acceptance.md
+```
+
+最終配布物にはbase→配布HEADのactual diffと9-path hash inventory、実行receipt、
+`reviews.json` / `reviews.md` の3連続full review記録を含める。各回で18項目すべて
+（soundness、SCC、local/discovery分離、候補完全性、unknown/矛盾、停止/予算、version、digest、stale、順序、
+producer→consumer配線、正例、最小反例、回帰、scope、重複実装、既存成果再利用、docsの実測一致）を再確認する。
+有効な指摘が出た時点で連続ゼロをリセットし、修正・関連gate再実行後にやり直した。
+レビューは同一assistantによるfresh full self-reviewであり、独立sub-agent/CodeRabbitレビューを実施したとは記載しない。
+局所回帰のfalseNoAlias/falseMustAlias/semantic mismatch/根拠なしunknown→exact/stale publicationは0。
+これは上記有限corpusのassertion結果であって、全programに対する数学的証明ではない。

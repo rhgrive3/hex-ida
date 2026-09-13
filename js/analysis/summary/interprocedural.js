@@ -31,22 +31,26 @@ import { assertScopedAnalysisWork as assertSummaryWork, workStopStatus as summar
 import { ResourceBudget as SummaryResourceBudget, BudgetExceededError as SummaryBudgetExceededError } from '../../core/budgets/index.js';
 import { snapshotContractData as strictSummaryData, recordFields as strictSummaryFields, exactInteger as strictSummaryInteger,
   exactString as strictSummaryString, stringSet as strictSummaryStrings } from '../../core/identity/structured.js';
-import { summaryIdentityMatches as summaryIdentityMatchesForDemand } from './contract.js';
+import { summaryIdentityMatches } from './contract.js';
 import {
   EFFECT_SOURCES,
   createFunctionSummary,
   createMemoryEffect,
   createUnknownCallEffect,
   functionSummaryDigest,
+  RETURN_SUMMARY_CANDIDATE_LIMIT,
 } from './contract.js';
 
+import { substituteReturnAlternatives, RETURN_FACT_LIMIT } from './return-equations.js';
+
 export const INTERPROCEDURAL_ANALYZER_ID = 'phase7.summary.interprocedural';
-export const INTERPROCEDURAL_ANALYZER_VERSION = '1.3.1';
+export const INTERPROCEDURAL_ANALYZER_VERSION = '1.4.0';
 
 export const INTERPROCEDURAL_DEFAULT_BUDGET = Object.freeze({
   maxIterationsPerComponent: 16,
   maxComponents: 4096,
   maxEffectsPerSummary: 512,
+  maxWorkItems: 2000000,
 });
 
 function fail(code) { throw new TypeError(code); }
@@ -427,6 +431,7 @@ function unionKnowledge(values) {
 export function solveInterproceduralSummaries({
   roots,
   localSummaries,
+  expectedSummaryDigests = new Map(),
   libraryModels = new Map(),
   budget = {},
   snapshotId = 'snapshot-unbound',
@@ -434,7 +439,7 @@ export function solveInterproceduralSummaries({
   signal = null,
 } = {}) {
   const limits = { ...INTERPROCEDURAL_DEFAULT_BUDGET, ...budget };
-  const locals = localSummaries instanceof Map ? localSummaries : new Map(Object.entries(localSummaries ?? {}));
+  const sources = localSummaries instanceof Map ? localSummaries : new Map(Object.entries(localSummaries ?? {}));
   const models = libraryModels instanceof Map ? libraryModels : new Map(Object.entries(libraryModels ?? {}));
   if (!Array.isArray(roots) || roots.length === 0) fail('interprocedural-roots-required');
 
@@ -450,6 +455,47 @@ export function solveInterproceduralSummaries({
   if (signal?.aborted) {
     return { summaries: new Map(), components: [], status: status('partial', 'cancelled'), iterations: 0 };
   }
+
+  if (!(expectedSummaryDigests instanceof Map)) fail('interprocedural-expected-digests-required-map');
+  if (!Number.isSafeInteger(limits.maxWorkItems) || limits.maxWorkItems < 0) fail('interprocedural-invalid-work-budget');
+  const workBudget = new SummaryResourceBudget({ workUnits:limits.maxWorkItems }, { name:'interprocedural-summary' });
+  const checkpoint = () => {
+    if (signal?.aborted) throw new SummaryWorkStopped('cancelled', 'summary-cancelled');
+    workBudget.consume('workUnits');
+  };
+  // Pin only the reachable source summaries. Invalid/stale envelopes are
+  // explicit conservative placeholders, never re-stamped as exact facts.
+  const pinned = new Map();
+  const locals = {
+    has:id => sources.has(id),
+    get(id) {
+      if (pinned.has(id)) return pinned.get(id);
+      let source = sources.get(id);
+      if (!source || source.functionId !== id) return null;
+      // #6208's legacy API also accepts versionless EFFECT-only constructor
+      // inputs. Never upgrade old wire versions, equation data or return facts.
+      if (snapshotId === 'snapshot-unbound' && source.schemaVersion == null && source.contractVersion == null
+        && source.returnEquations == null && !source.returnValues?.length && !source.returnProvenance?.length) {
+        try { source = createFunctionSummary(source); } catch { /* rejected below */ }
+      }
+      // Preserve the legacy unbound effect-only API. It cannot certify a
+      // return from a different snapshot: composeReturns still requires an
+      // exact snapshot match. Explicit snapshot callers always reject stale
+      // sources before graph discovery or effect composition.
+      const expected = { functionId:id, ...(snapshotId === 'snapshot-unbound' ? {} : { snapshotId }) };
+      const digestValid = !expectedSummaryDigests.has(id)
+        || typeof expectedSummaryDigests.get(id) === 'string';
+      if (expectedSummaryDigests.has(id)) expected.digest = expectedSummaryDigests.get(id);
+      const local = digestValid && summaryIdentityMatches(source, expected)
+        ? createFunctionSummary(source)
+        : createFunctionSummary({ functionId:id, unknownCallEffects:[createUnknownCallEffect({
+          callSiteId:id, reason:'summary-stale', targetEntityIds:[id] })],
+        memoryReadRegions:[broadEffect('unknown-call-fallback')],
+        memoryWriteRegions:[broadEffect('unknown-call-fallback')], status:status('partial', 'evidence-missing') });
+      pinned.set(id, local);
+      return local;
+    },
+  };
 
   // A summary is usable for a function only when the map key and the
   // producer-declared identity agree. A mis-keyed reachable callee is treated
@@ -498,6 +544,7 @@ export function solveInterproceduralSummaries({
     let iterations = 0;
     let changed = true;
     let converged = true;
+    let groundUnresolved = false;
     const componentDigests = new Map();
 
     // Members of a recursive component start at the bottom of the effect
@@ -507,21 +554,40 @@ export function solveInterproceduralSummaries({
     // only the fixed point is ever published. A component that does not reach
     // one is republished conservatively below, never left in its optimistic
     // intermediate state.
-    while (changed) {
-      if (iterations >= limits.maxIterationsPerComponent) { converged = false; break; }
-      iterations += 1;
-      totalIterations += 1;
-      changed = false;
-      for (const functionId of component) {
-        const next = composeSummary({ functionId, locals, models, solved, component, limits, status, snapshotId });
-        const digest = functionSummaryDigest(next);
-        if (componentDigests.get(functionId) !== digest) {
-          componentDigests.set(functionId, digest);
-          solved.set(functionId, next);
+    try {
+      while (changed) {
+        checkpoint();
+        if (iterations >= limits.maxIterationsPerComponent) { converged = false; break; }
+        iterations += 1;
+        totalIterations += 1;
+        changed = false;
+        for (const functionId of component) {
+          checkpoint();
+          const next = composeSummary({ functionId, locals, models, solved, component, limits, status, snapshotId, checkpoint, groundUnresolved });
+          const digest = functionSummaryDigest(next);
+          if (componentDigests.get(functionId) !== digest) {
+            componentDigests.set(functionId, digest);
+            solved.set(functionId, next);
+            changed = true;
+          }
+        }
+        if (!changed && recursive && !groundUnresolved
+          && component.some(id => hasEmptyReturnPositions(solved.get(id)))) {
+          // Bottom is private, not a proof of noreturn. Revisit these empty
+          // positions as unknown in THIS SCC transfer before publication.
+          groundUnresolved = true;
           changed = true;
         }
+        if (!recursive) break;
       }
-      if (!recursive) break;
+      checkpoint();
+    } catch (error) {
+      if (!(error instanceof SummaryBudgetExceededError) && !(error instanceof SummaryWorkStopped)) throw error;
+      // A stop in the middle of an SCC must not leak its optimistic members.
+      for (const id of component) solved.delete(id);
+      const cancelled = signal?.aborted || error.status === 'cancelled';
+      return { summaries:solved, components, iterations:totalIterations,
+        status:status(cancelled ? 'partial' : 'truncated', cancelled ? 'cancelled' : 'budget-exhausted') };
     }
 
     if (!converged) {
@@ -554,7 +620,63 @@ export function solveInterproceduralSummaries({
   };
 }
 
-function composeSummary({ functionId, locals, models, solved, component, limits, status, snapshotId, unconverged = false }) {
+function hasEmptyReturnPositions(summary) {
+  if (!summary?.returnEquations) return false;
+  const positions = new Set(summary.returnProvenance.map(fact => fact.returnIndex ?? 0));
+  return summary.returnEquations.sites.some(site => !positions.has(site.returnIndex));
+}
+
+// Reused df98376ae transfer: the local equation describes expressions; only
+// the canonical SCC's current callee state can discover their return roots.
+function composeReturns(local, locals, solved, component, snapshotId, checkpoint, groundUnresolved) {
+  const unknowns = () => [...new Set([
+    ...local.returnProvenance.map(fact => fact.returnIndex ?? 0),
+    ...(local.returnEquations?.sites ?? []).map(site => site.returnIndex),
+  ])].sort((a, b) => a - b).map(returnIndex => ({ kind:'unknown', returnIndex }));
+  if (!summaryIdentityMatches(local, { functionId:local.functionId, snapshotId })
+    || local.status.completeness !== 'complete' || local.unknownCallEffects.length) return unknowns();
+  if (!local.returnEquations) return local.returnProvenance;
+  const facts = new Map();
+  const add = fact => { facts.set(JSON.stringify(fact), fact); };
+  const direct = new Map(local.directCalls.map(call => [call.callSiteId, call]));
+  const indirect = new Map(local.indirectCallSets.map(call => [call.callSiteId, call]));
+  for (const row of local.returnEquations.rows) {
+    checkpoint();
+    if (row.kind === 'fact') { add(row.fact); }
+    else {
+      const call = direct.get(row.callSiteId), set = indirect.get(row.callSiteId);
+      const targets = call?.targetEntityIds ?? set?.candidateEntityIds ?? [];
+      if ((!call && !set?.exhaustive) || !targets.length || targets.length > RETURN_SUMMARY_CANDIDATE_LIMIT) {
+        add({ kind:'unknown', returnIndex:row.returnIndex });
+      } else for (const target of targets) {
+        checkpoint();
+        if (!summaryIdentityMatches(locals.get(target), { functionId:target, snapshotId })) {
+          add({ kind:'unknown', returnIndex:row.returnIndex }); continue;
+        }
+        const callee = solved.get(target);
+        if (!callee && component.includes(target)) continue; // private bottom
+        if (!summaryIdentityMatches(callee, { functionId:target, snapshotId })
+          || callee.status.completeness !== 'complete' || callee.unknownCallEffects.length) {
+          add({ kind:'unknown', returnIndex:row.returnIndex }); continue;
+        }
+        const alternatives = callee.returnProvenance.filter(fact => (fact.returnIndex ?? 0) === row.callReturnIndex);
+        if (!alternatives.length && (groundUnresolved || !component.includes(target)
+          || !callee.returnEquations?.sites.some(site => site.returnIndex === row.callReturnIndex))) {
+          add({ kind:'unknown', returnIndex:row.returnIndex });
+        }
+        for (const alternative of alternatives) {
+          for (const fact of substituteReturnAlternatives(alternative, row.arguments, row.returnIndex, row.offset, checkpoint)) add(fact);
+          if (facts.size > RETURN_FACT_LIMIT) return unknowns();
+        }
+      }
+    }
+    if (facts.size > RETURN_FACT_LIMIT) return unknowns();
+  }
+  return [...facts.values()];
+}
+
+function composeSummary({ functionId, locals, models, solved, component, limits, status, snapshotId, unconverged = false,
+  checkpoint = () => {}, groundUnresolved = false }) {
   const local = locals.get(functionId);
   if (!local) fail('interprocedural-missing-local-summary');
   if (local.functionId !== functionId) fail('interprocedural-local-summary-identity-mismatch');
@@ -728,11 +850,11 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     functionId,
     inputs: local.inputs,
     returnValues: local.returnValues,
-    // Return provenance is a local return-expression fact. Composition must
-    // preserve it exactly once the component converges; otherwise the solved
-    // A3 summary becomes less informative than its local input. An unconverged
-    // optimistic state is never allowed to publish exact provenance.
-    returnProvenance: unconverged ? [] : local.returnProvenance,
+    // Unknown effects and nonconvergence cannot publish strong return facts.
+    returnProvenance: unconverged || hasUnknown ? []
+      : composeReturns(local, locals, solved, component, snapshotId, checkpoint, groundUnresolved),
+    returnEquations: local.returnEquations,
+    returnSourceDigest: local.returnSourceDigest,
     registerEffects: local.registerEffects,
     memoryReadRegions: mergeEffects(reads, limits.maxEffectsPerSummary),
     memoryWriteRegions: mergeEffects(writes, limits.maxEffectsPerSummary),
@@ -746,7 +868,8 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     mayThrow: hasUnknown ? 'unknown' : unionKnowledge(mayThrow),
     stackDelta: local.stackDelta,
     semanticFacts: local.semanticFacts,
-    status: calleeStatuses.length ? mergeAnalysisStatus(localStatus, calleeStatuses) : localStatus,
+    status: mergeAnalysisStatus(localStatus,
+      [...(replaceCallFallbacks ? [] : [status(local.status.completeness, local.status.stopReason)]), ...calleeStatuses]),
   });
 }
 
@@ -816,7 +939,7 @@ export class DemandSummarySession {
     const activeValues = new Map();
     const solved = { get: (id) => activeValues.get(id) ?? this.#settled.get(id) };
     this.#active = { members, values: activeValues, solved, digests: new Map(), sizes: new Map(),
-      position: 0, iteration: 1, changed: false, conservative: false,
+      position: 0, iteration: 1, changed: false, conservative: false, groundUnresolved: false,
       recursive: members.length > 1 || this.#successors.get(members[0]).includes(members[0]) };
     this.#iterations++;
   }
@@ -893,7 +1016,8 @@ export class DemandSummarySession {
         this.#charge(work, 'workUnits', weight); this.#consume('transfers');
         const next = composeSummary({ functionId, locals: this.#locals, models: this.#models,
           solved: active.solved, component: active.members, limits: this.#limits,
-          status: this.#statusFactory, snapshotId: this.#snapshotId, unconverged: active.conservative });
+          status: this.#statusFactory, snapshotId: this.#snapshotId, unconverged: active.conservative,
+          groundUnresolved:active.groundUnresolved, checkpoint:() => this.#charge(work, 'workUnits') });
         let bounded;
         try { bounded = strictSummaryData(next, { allowBigInt: true, maxBytes: 1048576, maxNodes: 32768 }); }
         catch (error) {
@@ -909,6 +1033,12 @@ export class DemandSummarySession {
         }
         active.position++; transferred++; this.#transfers++;
         if (active.position === active.members.length) {
+          if (!active.conservative && active.recursive && !active.changed && !active.groundUnresolved
+            && active.members.some(id => hasEmptyReturnPositions(active.values.get(id)))) {
+            active.groundUnresolved = true;
+            active.changed = true;
+          }
+          work.checkpoint(); this.#current();
           if (active.conservative || !active.recursive || !active.changed) this.#publishComponent();
           else {
             active.position = 0; active.changed = false;
@@ -973,7 +1103,7 @@ export async function prepareDemandSummarySession({ roots, localSummaries, libra
     work.charge('nodes'); work.charge('workUnits'); work.charge('residentBytes', 1024);
     if (locals.size >= caps.maxNodes) return { status: 'budget-exhausted', reason: 'demand-summary-node-cap', session: null };
     const id = queue[cursor++], source = localSummaries.get(id);
-    if (!summaryIdentityMatchesForDemand(source, { functionId: id, snapshotId })) {
+    if (!summaryIdentityMatches(source, { functionId: id, snapshotId })) {
       if (pinnedRoots.includes(id)) return { status: 'unsupported', reason: 'demand-summary-root-identity', session: null };
       continue;
     }
@@ -988,7 +1118,7 @@ export async function prepareDemandSummarySession({ roots, localSummaries, libra
     if (edges > caps.maxEdges) return { status: 'budget-exhausted', reason: 'demand-summary-edge-cap', session: null };
     const adjacent = [];
     for (const target of targets) {
-      if (summaryIdentityMatchesForDemand(localSummaries.get(target), { functionId: target, snapshotId })) {
+      if (summaryIdentityMatches(localSummaries.get(target), { functionId: target, snapshotId })) {
         adjacent.push(target);
         if (!queued.has(target)) { queued.add(target); queue.push(target); work.charge('queueOperations'); }
       } else if (!localSummaries.has(target) && libraryModels.has(target)) {

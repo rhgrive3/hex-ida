@@ -1,5 +1,27 @@
 # Analysis roadmap v8 integration checkpoint
 
+## 2026-09-13: ユーザー C1-02 再帰返り値パッチの取り込み
+
+`hex-ida-c1-02-recursive-return-20260913.patch` と検証 ZIP を受領しました。
+patch SHA-256 は `d009907d9b65ce2c035a63a2da38b1bf6e60c800c11f9647423e104fbec81309`、
+evidence ZIP は `c4fa90be728b10b50173b2282a67e9b73b4b86259940c64f022d018ba88f6375` です。
+予約済みの runtime 6、test 2、受入 MD 1 の計 **9 ファイル**について、変更前 blob が
+統合 `92661f5defc77dcc2987526245bfb981affa4f2c` と一致し、適用後も全 final blob/hash が
+同梱 manifest と一致することを確認しました。C4 の次の control-target 変更はまだ含めません。
+
+既存 SCC と local producer に返り値 equations を接続し、再帰・相互再帰・wrapper を通した
+arg/root/allocation の代入、offset、複数返り値位置、unknown/void 経路の保持を取り込みました。
+同梱の重点 63 件、独立 source-path oracle、native leaf を使う hybrid 経路などの証拠は
+`docs/analysis-c1-acceptance.md` の最新節にあります。最終ログ 16 本の hash を照合しています。
+同梱の 3 回レビューは self-review であり、統合側の独立レビューと区別します。
+同梱 Phase 7 は 2187 PASS / 1 FAIL（ZIP に必要な Git 履歴がない）で、全 PASS とは扱いません。
+統合コミットの再検査・生成物・独立レビュー・公開 SHA は永続 evidence の
+`user-c1-recursive-import-20260913` に記録します。
+
+この取り込みでユーザーの C1-02 成果を重複実装しません。下の「次のユーザー C1 作業」は
+過去の割当です。C4・ME・X-02 と元の 23 finding / 21 FR の受入照合は継続し、
+統合全体・release の **CHECKPOINT-LOCKED** は維持します。
+
 ## 2026-09-13: canonical 状態操作の全件照合と X-02 の残件確認
 
 PR **#7036** へ `53c177e4390abb3ef2e717ac06347b0b5c9ed533` まで通常 push し、
