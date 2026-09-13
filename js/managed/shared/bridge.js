@@ -1071,10 +1071,22 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
   }
 
   const body = [];
+  const cfgBlockById = new Map((cfg.blocks || []).map((block) => [block.id, block]));
   const renderedControlTargets = new Set();
   for (const n of semanticIr.nodes) {
-    if (n.kind !== 'branch') continue;
-    for (const target of n.targets || []) renderedControlTargets.add(target);
+    if (n.kind !== 'branch' && n.kind !== 'switch') continue;
+    for (const target of n.targets || []) {
+      if (typeof target === 'string' && target.length > 0) renderedControlTargets.add(target);
+    }
+    if (n.kind === 'switch') {
+      const cfgBlock = cfgBlockById.get(n.blockId);
+      for (const successor of cfgBlock?.successors || []) {
+        if ((successor.kind === 'switch-case' || successor.kind === 'switch-default')
+            && typeof successor.to === 'string' && successor.to.length > 0) {
+          renderedControlTargets.add(successor.to);
+        }
+      }
+    }
   }
 
   const loopHeaders = new Set();
@@ -1169,6 +1181,57 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
           body.push({ kind: 'goto', indent: isLoop ? 3 : 2, text: `goto ${n.targets[0]};` });
         }
         body.push({ kind: 'if_close', indent: isLoop ? 2 : 1, text: '}' });
+      } else if (n.kind === 'switch') {
+        const selector = n.inputs?.[0] ? printExpression(buildValueExpr(n.inputs[0])) : 'selector';
+        const cfgBlock = cfgBlockById.get(n.blockId);
+        const caseEdges = [];
+        const defaultEdges = [];
+        for (const successor of cfgBlock?.successors || []) {
+          if (typeof successor?.to !== 'string' || successor.to.length === 0) continue;
+          if (successor.kind === 'switch-case') caseEdges.push(successor.to);
+          else if (successor.kind === 'switch-default') defaultEdges.push(successor.to);
+        }
+
+        const dispatchParts = [];
+        const roleTargets = new Set();
+        for (let index = 0; index < caseEdges.length; index++) {
+          const target = caseEdges[index];
+          roleTargets.add(target);
+          // The CFG proves that this is a case edge, but it does not publish
+          // the source-language case value. Preserve the ordinal edge without
+          // inventing a value such as `case 0:` (#4028).
+          dispatchParts.push(`case_edge(${index}, ${target})`);
+        }
+        for (const target of defaultEdges) {
+          roleTargets.add(target);
+          dispatchParts.push(`default_edge(${target})`);
+        }
+
+        // Some callers can provide a valid Semantic IR switch with targets but
+        // without CFG edge-role metadata. Keep every target (including
+        // duplicates) as an explicitly unknown-role edge rather than silently
+        // converting the switch to layout fallthrough.
+        if (caseEdges.length === 0 && defaultEdges.length === 0) {
+          for (let index = 0; index < (n.targets || []).length; index++) {
+            const target = n.targets[index];
+            if (typeof target !== 'string' || target.length === 0) continue;
+            dispatchParts.push(`target_edge(${index}, ${target})`);
+          }
+        } else {
+          for (const target of n.targets || []) {
+            if (typeof target !== 'string' || target.length === 0 || roleTargets.has(target)) continue;
+            dispatchParts.push(`target_edge(${dispatchParts.length}, ${target})`);
+          }
+        }
+
+        body.push({
+          kind: 'switch',
+          indent: isLoop ? 2 : 1,
+          text: dispatchParts.length > 0
+            ? `switch_dispatch(${selector}, ${dispatchParts.join(', ')});`
+            : `switch_unknown(${selector});`,
+          source: n.origin,
+        });
       } else if (n.kind === 'trap') {
         // A language-level throw renders the actual thrown operand (#7311);
         // only a genuine runtime trap keeps the fabricated exception form.
