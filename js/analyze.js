@@ -167,6 +167,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   const first = Math.floor(startRow / CHUNK_ROWS);
   const last = Math.floor(end / CHUNK_ROWS);
   const pageOf = new Map();
+  const stringRefCandidates = [];
 
   for (let c = first; c <= last; c++) {
     throwIfAborted(signal);
@@ -262,11 +263,6 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         res.returns++;
       } else if (/^b\./.test(b) || b === 'cbz' || b === 'cbnz' || b === 'tbz' || b === 'tbnz') {
         res.condBranches++;
-        const t = referenceTarget(b, opsStr);
-        if (t != null && t <= addr) res.loops.push({ from: addr, to: t });
-      } else if (b === 'b') {
-        const t = referenceTarget(b, opsStr);
-        if (t != null && t <= addr) res.loops.push({ from: addr, to: t });
       }
 
       // Consume the previous ADRP fact before invalidating a destination. This
@@ -281,13 +277,13 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         const offset = arm64AddSubImmediateValue(imm);
         if (src?.k === 'reg' && offset != null) {
           const p = pageOf.get(src.num);
-          if (p && row - p.row <= 8) res.stringRefs.push({ row, addr: p.value + offset });
+          if (p && row - p.row <= 8) stringRefCandidates.push({ row, defRow: p.row, addr: p.value + offset });
         }
       } else if (b === 'ldr') {
         const mem = ops.find((x) => x.k === 'mem');
         if (mem?.base && mem.disp?.value != null) {
           const p = pageOf.get(mem.base.num);
-          if (p && row - p.row <= 8) res.stringRefs.push({ row, addr: p.value + mem.disp.value, load: true });
+          if (p && row - p.row <= 8) stringRefCandidates.push({ row, defRow: p.row, addr: p.value + mem.disp.value, load: true });
         }
       }
       if (destReg != null) pageOf.delete(destReg);
@@ -300,13 +296,6 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   res.argRegs = Array.from(argsRead).sort((a, b) => a - b);
   res.savesCallee = Array.from(calleeSaved).sort((a, b) => a - b);
   res.setsReturnValue = lastX0Write >= 0;
-  const seen = new Set();
-  res.loops = res.loops.filter((l) => {
-    const k = l.from + ':' + l.to;
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
   const name = symbols && symbols.nameAt ? symbols.nameAt(res.startAddr) : null;
   res.model = buildSemanticModel(rawInsns, {
     startRow, endRow: end, name,
@@ -318,6 +307,25 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       return Number(rel / 4n);
     },
   });
+  const joinRows = new Set();
+  for (const bb of res.model?.basicBlocks || []) if (bb.isJoin) joinRows.add(bb.startRow);
+  const crossesJoin = (from, to) => {
+    for (let r = from + 1; r <= to; r++) if (joinRows.has(r)) return true;
+    return false;
+  };
+  res.stringRefs = stringRefCandidates
+    .filter((c) => !crossesJoin(c.defRow, c.row))
+    .map((c) => (c.load ? { row: c.row, addr: c.addr, load: true } : { row: c.row, addr: c.addr }));
+  const loopSeen = new Set();
+  res.loops = [];
+  for (const e of res.model?.backEdges || []) {
+    const from = region.vmAddr + BigInt(e.from) * 4n;
+    const to = region.vmAddr + BigInt(e.to) * 4n;
+    const key = from + ':' + to;
+    if (loopSeen.has(key)) continue;
+    loopSeen.add(key);
+    res.loops.push({ from, to });
+  }
   if ((truncated || modelRowsDropped) && res.model) res.model.truncated = true;
   res.truncated = truncated || !!res.model?.truncated;
   res.requestedRows = requestedRows;
