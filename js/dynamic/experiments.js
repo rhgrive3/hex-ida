@@ -96,8 +96,15 @@ function relationExpected(hypothesis, initial, input, bits, signed) {
   return normalizeInteger(result, bits, signed);
 }
 
+function explicitIdentifier(value, name) {
+  if (value == null) return null;
+  if (typeof value !== 'string' || value.trim() === '') throw new DebugAdapterError('invalid-hypothesis', `${name} must be a non-empty string`);
+  return value;
+}
+
 export function compileExperiment(hypothesis, options = {}) {
   if (!hypothesis || typeof hypothesis !== 'object') throw new DebugAdapterError('invalid-hypothesis','hypothesis must be an object');
+  const hypothesisId = explicitIdentifier(hypothesis.id, 'hypothesis.id');
   const functionAddress = asAddress(hypothesis.functionAddress ?? hypothesis.function ?? options.functionAddress, 'functionAddress');
   const fieldOffset = hypothesis.fieldOffset == null ? null : asAddress(hypothesis.fieldOffset, 'fieldOffset');
   const fieldSize = integerInRange(hypothesis.fieldSize, 8, 1, 8, 'fieldSize');
@@ -115,7 +122,7 @@ export function compileExperiment(hypothesis, options = {}) {
     const args = Array.from({length:Math.max(argIndex + 1, 2)}, () => 0n); args[0] = objectBase; args[argIndex] = BigInt(item.value);
     const expected = item.kind === 'scalar' && fieldOffset != null ? relationExpected(hypothesis, initial, item.value, fieldBits, signed) : null;
     cases.push({
-      id:`${hypothesis.id || 'hypothesis'}:${item.id}`,
+      id:`${hypothesisId ?? 'hypothesis'}:${item.id}`,
       input:{ arguments:args, scalar:BigInt(item.value) },
       initialState:{ objectBase, fields:fieldOffset == null ? [] : [{ offset:fieldOffset, size:fieldSize, value:initial }] },
       watch:fieldOffset == null ? [] : [{ name:hypothesis.fieldName || null, offset:fieldOffset, size:fieldSize }],
@@ -123,7 +130,7 @@ export function compileExperiment(hypothesis, options = {}) {
     });
   }
   return {
-    id:String(hypothesis.id || `experiment:${functionAddress.toString(16)}`),
+    id:hypothesisId ?? `experiment:${functionAddress.toString(16)}`,
     hypothesis:{ ...hypothesis, functionAddress, fieldOffset },
     // An explicit hypothesis binding wins over an options override so callers
     // cannot silently re-label a hypothesis onto a different binary; identity
