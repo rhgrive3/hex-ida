@@ -95,6 +95,21 @@
     return s;
   }
 
+  // Mach-O string-table entries are NUL-terminated and are bounded only by the
+  // string table itself: the format has no 1024-byte symbol-name cap. Read to
+  // the first NUL inside the table and fail closed when the entry is not
+  // terminated, instead of laundering a fixed-length prefix as a complete name
+  // (#3806).
+  function cstrNul(u8, off) {
+    if (off < 0 || off >= u8.length) return null;
+    let end = off;
+    while (end < u8.length && u8[end] !== 0) end++;
+    if (end >= u8.length) return null;
+    let s = '';
+    for (let i = off; i < end; i++) s += String.fromCharCode(u8[i]);
+    return s;
+  }
+
   function ver32(v) {
     return ((v >>> 16) & 0xffff) + '.' + ((v >>> 8) & 0xff) + '.' + (v & 0xff);
   }
@@ -250,7 +265,15 @@
       if (off + 8 > end) { info.diagnostics.push('truncated load-command header'); break; }
       const cmd = dv.getUint32(off, true);
       const cmdsize = dv.getUint32(off + 4, true);
-      if (cmdsize < 8 || off + cmdsize > end) { info.diagnostics.push('invalid load-command size'); break; }
+      // mach-o/loader.h requires cmdsize to be a multiple of 4 for 32-bit and
+      // 8 for 64-bit images. Without this the next command offset becomes
+      // unaligned and arbitrary trailing bytes can be re-read as commands, so a
+      // violation stops the stream instead of publishing a clean parse (#3849).
+      const cmdAlign = is64 ? 8 : 4;
+      if (cmdsize < 8 || (cmdsize % cmdAlign) !== 0 || off + cmdsize > end) {
+        info.diagnostics.push('invalid load-command size/alignment');
+        break;
+      }
       const commandEnd = off + cmdsize;
       info.commands.push({ cmd, name: LC_NAMES[cmd] || ('0x' + (cmd >>> 0).toString(16)), size: cmdsize });
       const minimum = commandMinSize(cmd);
@@ -297,13 +320,19 @@
             const reserved2=dv.getUint32(q,true);
             const type=sflags&0xff;
             const zerofill=type===S_ZEROFILL||type===S_GB_ZEROFILL||type===S_THREAD_LOCAL_ZEROFILL;
+            // A section inside an RX segment is VM-executable, but that alone does
+            // not make it an instruction/code section. Keep the two authorities
+            // separate so a data section in __TEXT (__cstring, __const, ...) is not
+            // handed to the function/instruction scanners as code (#3795).
+            const vmExec=!!(initprot&4);
+            const codeSection=!!(sflags&(S_ATTR_PURE_INSTRUCTIONS|S_ATTR_SOME_INSTRUCTIONS))||type===S_SYMBOL_STUBS;
             const secEnd=addr+size, secFileEnd=offset+size;
             const vmInside=addr>=vmaddr && secEnd>=addr && secEnd<=vmEnd;
             const fileInside=zerofill || (offset>=fileoff && secFileEnd>=offset && secFileEnd<=fileEnd && secFileEnd<=sliceSize);
             const valid=validMapping && vmInside && fileInside;
             if (!valid) info.diagnostics.push((ssegname||segname)+','+sectname+': section outside parent/slice range');
             seg.sections.push({name:sectname,segment:ssegname||segname,addr,size,offset,align,flags:sflags,type,reserved1,reserved2,
-              zerofill,exec:!!(sflags&(S_ATTR_PURE_INSTRUCTIONS|S_ATTR_SOME_INSTRUCTIONS))||!!(initprot&4),cstrings:type===S_CSTRING_LITERALS,
+              zerofill,exec:vmExec&&codeSection,vmExec,code:codeSection,cstrings:type===S_CSTRING_LITERALS,
               stubs:type===S_SYMBOL_STUBS,pointers:type===S_LAZY_SYMBOL_POINTERS||type===S_NON_LAZY_SYMBOL_POINTERS,validMapping:valid});
           }
           if (segname==='__TEXT' && validMapping) { textVM=vmaddr; textFileOff=fileoff; }
@@ -418,7 +447,8 @@
       types[i] = symBuf[o + 4];
       sects[i] = symBuf[o + 5];
       values[i] = is64 ? dv.getBigUint64(o + 8, true) : BigInt(dv.getUint32(o + 8, true));
-      names[i] = strx > 0 && strx < strBuf.length ? cstr(strBuf, strx, 1024) : '';
+      const name = strx > 0 && strx < strBuf.length ? cstrNul(strBuf, strx) : null;
+      names[i] = name == null ? '' : name;
     }
     return { names, values, types, sects };
   }
