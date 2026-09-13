@@ -34,7 +34,7 @@ replaceOnce(
 
 for (const [path, expected] of [
   ['js/binary/elf-core.js', 'bd8c29a6ff7d37b72c189450fd5b9f5e334bdb1f'],
-  ['tests/phase4/binary/issue-4227-elf-et-rel-addralign.test.mjs', '7d0a5171f20cbe2a4ac71013946390f9e0468e3e'],
+  ['tests/phase4/binary/issue-4227-elf-et-rel-addralign.test.mjs', '724967f6f55caf2bd0317e325f61e72bb1b70a2a'],
 ]) {
   const actual = execFileSync('git', ['hash-object', path], { encoding: 'utf8' }).trim();
   if (actual !== expected) throw new Error(`${path}: blob mismatch ${actual} != ${expected}`);
