@@ -56,6 +56,7 @@ export function parseELF(input, options = {}) {
   const h = readHeader(r, bits);
   validateHeaderTableSizes(r, h, bits);
   resolveExtendedProgramHeaderCount(r, h, bits);
+  validateHeaderTablePresence(h);
   const image = new BinaryImage(bytes, {
     format: 'elf', arch: elfMachineName(h.machine, bits), bits,
     endian: littleEndian ? 'little' : 'big', platform: elfOsAbi(r.u8(7)),
@@ -87,6 +88,7 @@ export function parseELF(input, options = {}) {
         }
       }
     }
+    if (riscvFileIsa) image.metadata.riscvFileIsa = riscvFileIsa;
   }
   if (h.type === ET_REL) assignRelocatableSectionAddresses(rawSections, image);
   for (const s of rawSections) {
@@ -281,6 +283,11 @@ function validateHeaderTableSizes(r, h, bits) {
   if (h.shoff !== 0n && h.shentsize < minSection) throw new Error(`ELF e_shentsize ${h.shentsize} is smaller than ${minSection}`);
   if (h.phnum === PN_XNUM && h.shoff === 0n) throw new Error('ELF PN_XNUM requires section header 0');
   void r;
+}
+
+function validateHeaderTablePresence(h) {
+  if (h.phoff === 0n && h.phnum !== 0) throw new Error(`ELF e_phnum ${h.phnum} requires a non-zero e_phoff`);
+  if (h.shoff === 0n && h.shnum !== 0) throw new Error(`ELF e_shnum ${h.shnum} requires a non-zero e_shoff`);
 }
 
 function resolveExtendedProgramHeaderCount(r, h, bits) {
@@ -512,9 +519,10 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     const maxName=Math.min(strBytes-nameOff,1<<20,Math.max(1,Math.floor(budget.remainingStringBytes/2)+1));
     const name=terminatedStringInTable(r,strStart,strBytes,nameOff,maxName);
     if(name==null){budget.partial(`symbols:${table.index}:unterminated-name`,`ELF symbol ${i} in table ${table.index} references a string without a NUL terminator in its string table`);continue;}
-    if(!name)continue;
-    if(!budget.take({inputBytes:Math.min(maxName,name.length+1),stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'symbol-name'))break;
     const bind=info>>>4,type=info&0xf;
+    const isAnonymousSectionSym = !name && type === 3 && i > 0;
+    if(!name && !isAnonymousSectionSym)continue;
+    if(name && !budget.take({inputBytes:Math.min(maxName,name.length+1),stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'symbol-name'))break;
     let resolvedShndx=shndx,sectionIdentityKnown=true;
     if(shndx===SHN_XINDEX){
       resolvedShndx=null;sectionIdentityKnown=false;
@@ -532,7 +540,10 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     // virtual address (ELF gABI). It must never enter the VA domain or
     // image.exports as a canonical address (#5843).
     const tls=type===6;
-    const address=sectionIdentityKnown&&!tls?symbolAddressForELF(elfType,value,resolvedShndx,sections,extendedSectionIndex):null;
+    const isArm32=Number(image.metadata.machine)===40||image.arch==='arm';
+    const isThumb=isArm32&&(type===2||type===STT_GNU_IFUNC)&&(value&1n)===1n;
+    const effectiveValue=isThumb?(value&~1n):value;
+    const address=sectionIdentityKnown&&!tls?symbolAddressForELF(elfType,effectiveValue,resolvedShndx,sections,extendedSectionIndex):null;
     // STB_GNU_UNIQUE (10) is a process-wide unique global binding (GNU ELF
     // ABI): it must stay in the export/linkage truth, not be lumped into an
     // anonymous `bind-N` bucket (#5844).
@@ -542,10 +553,10 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     const riscvVariantCcFlag=image.metadata.machine===EM_RISCV&&(other&STO_RISCV_VARIANT_CC)!==0;
     const riscvVariantCc=riscvVariantCcFlag&&type===2;
     const canonicalAddress=tls?null:sectionIdentityKnown?(elfType===ET_REL&&normal&&address==null?null:(address??0n)):null;
-    const sym={name,address:canonicalAddress,originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCcFlag,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??(elfType===ET_REL&&normal?null:value),resolution:'runtime-resolver'}:{}),
-      ...(tls?{tlsOffset:value}:{}),...(common?{commonAlignment:value,commonSize:size,allocation:'common-unallocated'}:{}),sectionRelative:elfType===ET_REL&&normal?{sectionIndex:resolvedShndx,offset:value}:null,addressDomain:tls?'tls-offset':common?'common-unallocated':elfType===ET_REL&&normal?(address==null?'section-relative-unmapped':'section-relative-synthetic'):'virtual'};
+    const sym={name:name||'',address:canonicalAddress,originalValue:value,isThumb,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,stOther:other,processorSpecificOther:other&~3,riscvVariantCcFlag,riscvVariantCc,callingConvention:riscvVariantCc?'riscv-vector-variant':null,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??(elfType===ET_REL&&normal?null:effectiveValue),resolution:'runtime-resolver'}:{}),
+      ...(tls?{tlsOffset:value}:{}),...(common?{commonAlignment:value,commonSize:size,allocation:'common-unallocated'}:{}),sectionRelative:elfType===ET_REL&&normal?{sectionIndex:resolvedShndx,offset:effectiveValue}:null,addressDomain:tls?'tls-offset':common?'common-unallocated':elfType===ET_REL&&normal?(address==null?'section-relative-unmapped':'section-relative-synthetic'):'virtual'};
     image.symbols.push(sym);
-    const externallyVisible=bind===1||bind===2||bind===STB_GNU_UNIQUE;
+    const externallyVisible=Boolean(name)&&(bind===1||bind===2||bind===STB_GNU_UNIQUE);
     if(defined===false&&externallyVisible){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'symbol-import'))break;image.imports.push({name,library:null,ordinal:null,weak:bind===2,symbolIndex:i,tableIndex:table.index,source:'elf-dynsym',sites:[]});}
     if(defined===true&&externallyVisible&&(sym.visibility===0||sym.visibility===3)){
       // TLS exports keep their name/visibility fact but never mint a VA:
@@ -641,7 +652,7 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
     if(symIndex!==0&&linkedSymbolTable&&symbolEntryCount==null)continue;
     if(symIndex!==0&&symbolEntryCount!=null&&BigInt(symIndex)>=symbolEntryCount){budget.partial(`relocations:${sec.index}:symbol-index-range`,`ELF relocation section ${sec.index} references symbol index ${symIndex} outside its associated table count ${symbolEntryCount}`);continue;}
     const sym=byIndex.get(symIndex)||null;
-    image.relocations.push({address,fileOffset,type,symbol:sym?sym.name:null,symbolIndex:symIndex,addend,section:sec.name,source:sec.type===SHT_RELA?'RELA':'REL',symbolTableIndex:sec.link,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null,addressDomain});
+    image.relocations.push({address,fileOffset,type,symbol:(sym&&sym.name)?sym.name:null,symbolIndex:symIndex,addend,section:sec.name,source:sec.type===SHT_RELA?'RELA':'REL',symbolTableIndex:sec.link,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null,addressDomain});
     if(sym&&sym.defined===false){const imp=image.imports.find((x)=>x.symbolIndex===symIndex&&x.tableIndex===sec.link&&x.name===sym.name&&x.library==null);if(imp){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:96},'relocation-import-site'))break;imp.sites.push({address,offset:fileOffset,kind:'relocation',type,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null});}}
   }
 }
@@ -694,6 +705,7 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
     budget.partial(`dynamic-section:${sec.index}:span`, `ELF SHT_DYNAMIC/string table exceeds the file`);
   }
 
+  let sawNull = false;
   let dtInitHandled = false;
   for (let i = 0; i < count; i++) {
     if (!budget.take({ inputBytes: ent, records: 1, operations: 1, estimatedHeapBytes: 32 }, 'SHT_DYNAMIC')) break;
@@ -704,7 +716,10 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
     if (tag === DT_RISCV_VARIANT_CC && Number(image?.metadata?.machine) === EM_RISCV) {
       image.metadata.riscvVariantCcTagPresent = true;
     }
-    if (tag === 0n) break;
+    if (tag === 0n) {
+      sawNull = true;
+      break;
+    }
 
     if (tag === DT_INIT && val !== 0n && !dtInitHandled && Number(image.metadata.type) !== ET_REL) {
       dtInitHandled = true;
@@ -748,6 +763,13 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
       if (tag === 1n && name) image.libraries.push(name);
       else if (tag === 14n && name) image.metadata.soname = name;
     }
+  }
+
+  if (!sawNull) {
+    budget.partial(
+      `dynamic-section:${sec.index}:unterminated`,
+      `ELF SHT_DYNAMIC ${sec.index} has no DT_NULL terminator within its readable entries`,
+    );
   }
 }
 function findImageBase(image) {

@@ -29,7 +29,7 @@ import { decompile, decompiledText } from './decompile.js';
 import { decompilerSourceRows, formatDecompilerSource, fullDecompilerSourceText, hasSingleDecompilerInstruction, primaryDecompilerAddress } from './decompiler/provenance.js';
 import { cfgGraph, callGraph, renderGraph, graphLegend } from './graphview.js';
 import { inferTypes, recoverStruct, TypeStore, structToC, BASIC_TYPES, typeJa } from './types.js';
-import { readableName, shortName, isMangled, findCxxClasses, readVtable } from './rtti.js';
+import { readableName, shortName, isMangled, findCxxClasses, readVtable, rttiPointerContextForSlice } from './rtti.js';
 import { importList, importsByFramework, exportList, findGlobals } from './linkage.js';
 import { assemble, suggestPatches, parseHexBytes, hexOf, validatePatchRange } from './patch.js';
 import { runScript, SAMPLES, makeEmulator } from './script.js';
@@ -835,15 +835,20 @@ async function showVtable(app, cls) {
   const status = el('div', 'hint', '読み込んでいます…');
   sheet.body.append(status);
   const read = (a, len) => app.backend.readAt(a, len).then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
-  const pointerContext = app.pointerResolutionContextFor?.(cls.vtable) ?? {};
+  const pointerContext = rttiPointerContextForSlice(
+    app.currentSlice?.(),
+    app.pointerResolutionContextFor?.(cls.vtable) ?? {},
+  );
   const vt = await readVtable(read, cls.vtable, app.symbols, 64, pointerContext);
   if (!vt || !vt.slots.length) { status.textContent = '仮想関数の表を読めませんでした。'; return; }
   status.remove();
 
+  const sampleOffset = 0x10;
+  const sampleSlot = sampleOffset / vt.pointerBytes;
   sheet.body.append(el('div', 'hint',
-    '仮想関数の一覧です。番号が「何番目のスロットか」で、\n' +
-    'コードの中で `ldr x8, [x0]` → `ldr x8, [x8, #0x10]` → `blr x8` と呼ばれていたら、\n' +
-    'それは 0x10 ÷ 8 = 2 番のスロット、つまり下の 2 番の関数です。'));
+    `仮想関数の各スロットは ${vt.pointerBytes} バイトです。\n` +
+    `間接呼出しが vptr から byte offset 0x${sampleOffset.toString(16)} を読んでいたら、\n` +
+    `0x${sampleOffset.toString(16)} ÷ ${vt.pointerBytes} = ${sampleSlot} 番のスロットです。`));
 
   const l = list();
   for (const s of vt.slots) {
