@@ -197,7 +197,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
   };
   await assert.rejects(
     waitForAppProducer(entry, signal),
-    (error) => error?.name === 'AbortError' && error?.code === 'ABORT_ERR',
+    (error) => error === 'late-consumer-abort',
     'post-subscribe re-check must collect the late abort',
   );
   assert.equal(entry.waiters, 0, 'late-aborted consumer must detach exactly once');
