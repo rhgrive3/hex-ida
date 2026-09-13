@@ -62,41 +62,42 @@ function buildType({ ptrSize, equalValue = DECOY_NAME_OFF, gcdataValue = 0 }) {
 
 const current64 = buildType({ ptrSize: 8 });
 const current32 = buildType({ ptrSize: 4 });
+const CURRENT_VERSION = '1.23.2';
 
 function nameOf(buf, options) {
   return parseGoTypeDescriptor(buf, 0, options)?.name;
 }
 
 assert.equal(
-  nameOf(current64, { ptrSize: 8, little: true, typesBase: TYPES_BASE }),
+  nameOf(current64, { ptrSize: 8, little: true, typesBase: TYPES_BASE, version: CURRENT_VERSION }),
   REAL_NAME,
   '64-bit Str (NameOff) must be read at +40, after Equal and GCData',
 );
 assert.equal(
-  nameOf(current32, { ptrSize: 4, little: true, typesBase: TYPES_BASE }),
+  nameOf(current32, { ptrSize: 4, little: true, typesBase: TYPES_BASE, version: CURRENT_VERSION }),
   REAL_NAME,
   '32-bit Str (NameOff) must be read at +24, after Equal and GCData',
 );
 assert.equal(
-  nameOf(current64, { ptrSize: 8, little: true, typesBase: TYPES_BASE, version: '1.20+' }),
+  nameOf(current64, { ptrSize: 8, little: true, typesBase: TYPES_BASE, version: '1.20.0' }),
   REAL_NAME,
 );
 assert.equal(
-  nameOf(current32, { ptrSize: 4, little: true, typesBase: TYPES_BASE, version: '1.16' }),
+  nameOf(current32, { ptrSize: 4, little: true, typesBase: TYPES_BASE, version: '1.16.0' }),
   REAL_NAME,
 );
 
 for (const ptrSize of [8, 4]) {
   const both = buildType({ ptrSize, equalValue: DECOY_NAME_OFF, gcdataValue: DECOY_NAME_OFF });
   assert.equal(
-    nameOf(both, { ptrSize, little: true, typesBase: TYPES_BASE }),
+    nameOf(both, { ptrSize, little: true, typesBase: TYPES_BASE, version: CURRENT_VERSION }),
     REAL_NAME,
     'Equal and GCData contents must never be reinterpreted as NameOff',
   );
-  assert.notEqual(nameOf(both, { ptrSize, little: true, typesBase: TYPES_BASE }), DECOY_NAME);
+  assert.notEqual(nameOf(both, { ptrSize, little: true, typesBase: TYPES_BASE, version: CURRENT_VERSION }), DECOY_NAME);
 }
 
-const desc64 = parseGoTypeDescriptor(current64, 0, { ptrSize: 8, little: true, typesBase: TYPES_BASE });
+const desc64 = parseGoTypeDescriptor(current64, 0, { ptrSize: 8, little: true, typesBase: TYPES_BASE, version: CURRENT_VERSION });
 assert.equal(desc64.kind, 'int');
 assert.equal(desc64.size, 8);
 assert.equal(desc64.ptrdata, 0);
@@ -105,28 +106,44 @@ assert.equal(desc64.align, 8);
 assert.equal(desc64.fieldAlign, 8);
 
 assert.equal(
-  parseGoTypeDescriptor(current64.subarray(0, 40), 0, { ptrSize: 8, little: true, typesBase: TYPES_BASE }),
+  parseGoTypeDescriptor(current64.subarray(0, 40), 0, { ptrSize: 8, little: true, typesBase: TYPES_BASE, version: CURRENT_VERSION }),
   null,
   'a 64-bit header shorter than 48 bytes cannot carry Str/PtrToThis and must fail closed',
 );
 assert.equal(
-  parseGoTypeDescriptor(current32.subarray(0, 24), 0, { ptrSize: 4, little: true, typesBase: TYPES_BASE }),
+  parseGoTypeDescriptor(current32.subarray(0, 24), 0, { ptrSize: 4, little: true, typesBase: TYPES_BASE, version: CURRENT_VERSION }),
   null,
   'a 32-bit header shorter than 32 bytes cannot carry Str/PtrToThis and must fail closed',
 );
 assert.notEqual(
-  parseGoTypeDescriptor(current64.subarray(0, 48), 0, { ptrSize: 8, little: true }),
+  parseGoTypeDescriptor(current64.subarray(0, 48), 0, { ptrSize: 8, little: true, version: CURRENT_VERSION }),
   null,
   'the exact current-layout 64-bit header length must stay accepted',
 );
 assert.notEqual(
-  parseGoTypeDescriptor(current32.subarray(0, 32), 0, { ptrSize: 4, little: true }),
+  parseGoTypeDescriptor(current32.subarray(0, 32), 0, { ptrSize: 4, little: true, version: CURRENT_VERSION }),
   null,
   'the exact current-layout 32-bit header length must stay accepted',
 );
 assert.ok(
-  nameOf(current64.subarray(0, 48), { ptrSize: 8, little: true }).startsWith('go_type_int_'),
+  nameOf(current64.subarray(0, 48), { ptrSize: 8, little: true, version: CURRENT_VERSION }).startsWith('go_type_int_'),
   'without a types base the descriptor keeps its explicit synthetic name',
+);
+
+assert.equal(
+  parseGoTypeDescriptor(current64, 0, { ptrSize: 8, little: true, typesBase: TYPES_BASE }),
+  null,
+  'pointer width alone must not select an abi.Type layout',
+);
+assert.equal(
+  parseGoTypeDescriptor(current64, 0, { ptrSize: 8, little: true, typesBase: TYPES_BASE, version: '1.20+' }),
+  null,
+  'pclntab generation labels are not concrete runtime type-layout authority',
+);
+assert.equal(
+  parseGoTypeDescriptor(current64, 0, { ptrSize: 8, little: true, typesBase: TYPES_BASE, version: '1.24.0' }),
+  null,
+  'toolchains beyond the validated layout range must fail closed',
 );
 
 assert.equal(

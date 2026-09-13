@@ -2,7 +2,8 @@
  * HEX-C3-03 — Go Runtime Metadata Provider.
  *
  * Implements toolchain-aware Go runtime metadata extraction from `.gopclntab`,
- * `.gosymtab`, `.go.buildinfo`, and moduledata structures.
+ * build-version discovery, and bounded type-descriptor decoding. Runtime type
+ * enumeration through moduledata/typelinks is not implemented yet.
  *
  * Supported Go pclntab formats:
  * - Go 1.2  (magic: 0xfffffffb)
@@ -372,17 +373,22 @@ const GO_TYPE_LAYOUT_CURRENT = Object.freeze({
   headerBytes: (ptrSize) => ptrSize * 4 + 16,
 });
 
-const GO_TYPE_LAYOUTS_BY_VERSION = Object.freeze({
-  '1.16': GO_TYPE_LAYOUT_CURRENT,
-  '1.18': GO_TYPE_LAYOUT_CURRENT,
-  '1.20+': GO_TYPE_LAYOUT_CURRENT,
-});
+// `internal/abi.Type` is not a format that can be selected from pointer width
+// alone. Bind the decoder to the concrete Go toolchain range that this layout
+// has been validated against. Pclntab generations such as "1.20+" are not
+// sufficient authority because they intentionally span future toolchains.
+const GO_TYPE_LAYOUT_MIN_MINOR = 16;
+const GO_TYPE_LAYOUT_MAX_MINOR = 23;
 
 function resolveGoTypeLayout(version) {
-  if (version == null) return GO_TYPE_LAYOUT_CURRENT;
   if (typeof version !== 'string') return null;
-  if (!Object.hasOwn(GO_TYPE_LAYOUTS_BY_VERSION, version)) return null;
-  return GO_TYPE_LAYOUTS_BY_VERSION[version];
+  const match = /^1\.(\d+)(?:\.(\d+))?$/.exec(version);
+  if (!match) return null;
+  const minor = Number(match[1]);
+  const patch = match[2] == null ? 0 : Number(match[2]);
+  if (!Number.isSafeInteger(minor) || !Number.isSafeInteger(patch)) return null;
+  if (minor < GO_TYPE_LAYOUT_MIN_MINOR || minor > GO_TYPE_LAYOUT_MAX_MINOR) return null;
+  return GO_TYPE_LAYOUT_CURRENT;
 }
 
 /**
@@ -393,8 +399,8 @@ export function parseGoTypeDescriptor(buf, typeOff, options = {}) {
   const little = options.little ?? true;
   const layout = resolveGoTypeLayout(options.version);
 
-  if (!layout) return null;
-  if (typeOff < 0 || typeOff + layout.headerBytes(ptrSize) > buf.length) return null;
+  if (!layout || (ptrSize !== 4 && ptrSize !== 8)) return null;
+  if (!Number.isSafeInteger(typeOff) || typeOff < 0 || typeOff > buf.length - layout.headerBytes(ptrSize)) return null;
 
   const size = Number(readPtr(buf, typeOff, ptrSize, little));
   const ptrdata = Number(readPtr(buf, typeOff + ptrSize, ptrSize, little));
@@ -410,9 +416,9 @@ export function parseGoTypeDescriptor(buf, typeOff, options = {}) {
 
   const nameOff = i32(buf, typeOff + layout.strNameOffset(ptrSize), little);
   let name = null;
-  if (options.typesBase != null && nameOff != null) {
+  if (Number.isSafeInteger(options.typesBase) && nameOff != null) {
     const strPos = options.typesBase + nameOff;
-    if (strPos >= 0 && strPos + 2 < buf.length) {
+    if (Number.isSafeInteger(strPos) && strPos >= 0 && strPos <= buf.length - 2) {
       // Go name structure has 1 byte header flag followed by length varint
       const lenInfo = readUvarint(buf, strPos + 1);
       if (lenInfo && strPos + 1 + lenInfo.bytesRead + lenInfo.value <= buf.length) {
@@ -561,12 +567,20 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
     const funcResult = parseGoFunctions(this.pclntabBuffer, header, this.options);
     this.cachedFunctions = funcResult;
 
-    const goComplete = funcResult.completeness.complete;
+    // pclntab proves only the function-symbol domain. Runtime type metadata
+    // (moduledata/typelinks) is not enumerated by this provider yet, so a
+    // complete function-table scan cannot establish whole-provider completeness.
+    const completeness = {
+      ...funcResult.completeness,
+      complete: false,
+      reasons: [
+        ...(funcResult.completeness.reasons ?? []),
+        'go-runtime-types-unscanned',
+      ],
+    };
     const hasIdentityBinding = this.binaryIdentity != null;
     const identity = createLanguageMetadataIdentity({
-      verdict: goComplete
-        ? (hasIdentityBinding ? 'matched-authoritative' : 'identity-unavailable')
-        : 'matched-partial',
+      verdict: hasIdentityBinding ? 'matched-partial' : 'identity-unavailable',
       providerId: this.id,
       providerVersion: this.version,
       ecosystem: 'go',
@@ -580,8 +594,8 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
       detail: hasIdentityBinding
         ? `Go ${header.versionName} (${funcResult.functions.length} functions)`
         : `Go ${header.versionName} without binary identity binding (${funcResult.functions.length} functions)`,
-      coverage: goComplete ? null : {
-        recordKinds: ['symbol', 'type'],
+      coverage: {
+        recordKinds: ['symbol'],
         addresses: funcResult.functions.map((f) => f.address),
       },
     });
@@ -595,7 +609,7 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
       counts: {
         symbols: funcResult.functions.length,
       },
-      completeness: funcResult.completeness,
+      completeness,
     });
   }
 

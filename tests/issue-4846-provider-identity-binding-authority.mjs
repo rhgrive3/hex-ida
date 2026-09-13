@@ -160,15 +160,33 @@ const CASES = [
   { ecosystem: 'swift', make: swiftFixture(), page: (p) => p.types(), typeRecords: true },
   { ecosystem: 'objc', make: objcFixture(), page: (p) => p.types(), typeRecords: true },
   { ecosystem: 'rust', make: rustFixture(), page: (p) => p.symbols(), typeRecords: false },
-  { ecosystem: 'go', make: goFixture(), page: (p) => p.symbols(), typeRecords: false },
+  {
+    ecosystem: 'go',
+    make: goFixture(),
+    page: (p) => p.symbols(),
+    typeRecords: false,
+    expectedComplete: false,
+    expectedBoundVerdict: 'matched-partial',
+    expectedRecordAuthority: false,
+    expectedFunctionConfidence: 'heuristic',
+  },
 ];
 
-for (const { ecosystem, make, page, typeRecords } of CASES) {
+for (const {
+  ecosystem,
+  make,
+  page,
+  typeRecords,
+  expectedComplete = true,
+  expectedBoundVerdict = 'matched-authoritative',
+  expectedRecordAuthority = true,
+  expectedFunctionConfidence = 'exact',
+} of CASES) {
   const unboundProvider = make(null);
   const unbound = await unboundProvider.probe();
   const unboundRecords = page(unboundProvider).records;
 
-  assert.equal(unbound.completeness.complete, true, `${ecosystem}: fixture model must be fully parsed`);
+  assert.equal(unbound.completeness.complete, expectedComplete, `${ecosystem}: fixture completeness matches provider authority`);
   assert.ok(unboundRecords.length > 0, `${ecosystem}: fixture must emit records`);
   assert.equal(unbound.identity.binaryIdentity, null, `${ecosystem}: fixture must be identity-unbound`);
   assert.equal(unbound.identity.verdict, 'identity-unavailable', `${ecosystem}: unbound complete model must fail closed`);
@@ -188,11 +206,12 @@ for (const { ecosystem, make, page, typeRecords } of CASES) {
   const bound = await boundProvider.probe();
   const boundRecords = page(boundProvider).records;
 
-  assert.equal(bound.identity.verdict, 'matched-authoritative', `${ecosystem}: proven identity binding stays authoritative`);
+  assert.equal(bound.identity.verdict, expectedBoundVerdict, `${ecosystem}: bound verdict matches provider completeness`);
   assert.equal(bound.authoritative, true, `${ecosystem}: proven identity binding must remain authoritative`);
-  assert.ok(
+  assert.equal(
     boundRecords.every((record) => isLanguageRecordAuthoritative(bound, record)),
-    `${ecosystem}: bound records stay authoritative`,
+    expectedRecordAuthority,
+    `${ecosystem}: record authority matches declared provider completeness`,
   );
   if (typeRecords) {
     assert.ok(
@@ -204,7 +223,7 @@ for (const { ecosystem, make, page, typeRecords } of CASES) {
   const functionRecords = boundRecords.filter((record) => (record.kind === 'symbol' || record.kind === 'method') && record.address != null);
   if (functionRecords.length > 0) {
     const exact = languageMetadataFunctionEvidence(bound, { records: functionRecords });
-    assert.ok(exact.some((entry) => entry.confidence === 'exact'), `${ecosystem}: bound evidence is exact`);
+    assert.ok(exact.some((entry) => entry.confidence === expectedFunctionConfidence), `${ecosystem}: bound evidence confidence matches provider completeness`);
     const unboundExact = languageMetadataFunctionEvidence(unbound, { records: unboundRecords.filter((record) => (record.kind === 'symbol' || record.kind === 'method') && record.address != null) });
     assert.ok(unboundExact.length > 0 && unboundExact.every((entry) => entry.confidence === 'heuristic'), `${ecosystem}: unbound evidence stays heuristic`);
   }
