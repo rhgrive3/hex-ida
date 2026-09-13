@@ -5,8 +5,18 @@ function abortError(signal) {
   error.name='AbortError'; error.code='ABORT_ERR'; return error;
 }
 function cloneOptions(options) {
-  const matchBudget={...(options.matchBudget||{})}; delete matchBudget.signal;
-  return { mode:options.mode||'fast', threshold:options.threshold, matchBudget };
+  const matchBudget = { ...(options.matchBudget || {}) };
+  delete matchBudget.signal;
+  return {
+    mode: options.mode || 'fast',
+    threshold: options.threshold,
+    ambiguityWindow: options.ambiguityWindow,
+    neighborhoodIterations: options.neighborhoodIterations,
+    maxCandidates: options.maxCandidates,
+    maxBucketScan: options.maxBucketScan,
+    allowSimilar: options.allowSimilar,
+    matchBudget,
+  };
 }
 export function runDiffInWorker(before, after, options = {}) {
   const signal=options.signal??null;

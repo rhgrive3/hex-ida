@@ -318,6 +318,9 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       return Number(rel / 4n);
     },
   });
+  if (res.model) {
+    res.model.architecture = opts.architecture ?? opts.arch ?? backend?.architecture ?? backend?.arch ?? region?.architecture ?? region?.arch ?? 'arm64';
+  }
   if ((truncated || modelRowsDropped) && res.model) res.model.truncated = true;
   res.truncated = truncated || !!res.model?.truncated;
   res.requestedRows = requestedRows;
@@ -497,12 +500,17 @@ export function clearAnalysisCache() {
   cancelShared(textInflight, 'analysis-cache-cleared');
 }
 
-async function ensureTextsForKey(key, backend, res, signal) {
+async function ensureTextsForKey(key, backend, res, signal, opts = {}) {
   if (res.textsResolved) return res;
   let entry = textInflight.get(key);
   if (!entry) {
     entry = makeShared(textInflight, key, async (producerSignal) => {
-      await resolveModelTexts(backend, res.model, MODEL_TEXTS, { signal: producerSignal });
+      await resolveModelTexts(backend, res.model, MODEL_TEXTS, {
+        signal: producerSignal,
+        architecture: opts.architecture ?? opts.arch ?? res.model?.architecture ?? backend?.architecture ?? backend?.arch,
+        pointerBytes: opts.pointerBytes ?? backend?.pointerBytes,
+        pointerBits: opts.pointerBits ?? backend?.pointerBits,
+      });
       // Only a complete resolution is final. An incomplete one leaves the entry
       // unresolved so a later request retries instead of retrying never (#5360).
       res.textsResolved = modelTextsCompleteFor(res.model);
@@ -539,7 +547,7 @@ export async function analyzeFunctionCached(backend, region, startRow, endRow, s
   }
   if (wantTexts && !res.textsResolved) {
     try {
-      await ensureTextsForKey(key, backend, res, signal);
+      await ensureTextsForKey(key, backend, res, signal, opts);
     } catch (error) {
       if (isAbort(error, signal)) throw error;
       /* keep analysis */
@@ -566,6 +574,39 @@ async function mapBounded(items, limit, mapper, signal) {
   return out;
 }
 
+export function resolvePointerBytes(context = {}) {
+  let opts = context;
+  if (typeof context === 'string') {
+    opts = { architecture: context };
+  } else if (typeof context === 'number') {
+    opts = { pointerBytes: context };
+  }
+  if (!opts || typeof opts !== 'object') {
+    return 8;
+  }
+  const rawBytes = opts.pointerBytes ?? opts.pointerSize;
+  const rawBits = opts.pointerBits;
+  const bytes = rawBytes === 4 || rawBytes === 8 ? rawBytes : null;
+  const bits = rawBits === 32 ? 4 : rawBits === 64 ? 8 : null;
+  if ((rawBytes != null && bytes == null) || (rawBits != null && bits == null) || (bytes != null && bits != null && bytes !== bits)) {
+    return null;
+  }
+  if (bits != null) return bits;
+  if (bytes != null) return bytes;
+
+  const rawArch = opts.architecture ?? opts.arch ?? opts.cpu ?? null;
+  if (rawArch != null) {
+    if (typeof rawArch !== 'string') return null;
+    const arch = rawArch.trim().toLowerCase();
+    if (arch === 'arm64_32') return 4;
+    if (arch === 'arm64' || arch === 'arm64e') return 8;
+    // Declared unknown architecture must fail closed
+    return null;
+  }
+  // Context-free legacy caller maintains historical LP64 8-byte width
+  return 8;
+}
+
 export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opts = {}) {
   const signal = opts?.signal || null;
   throwIfAborted(signal);
@@ -573,6 +614,12 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
     if (model) modelTextsComplete.set(model, true);
     return model;
   }
+  const pointerContext = {
+    architecture: opts?.architecture ?? opts?.arch ?? model?.architecture ?? model?.arch ?? backend?.architecture ?? backend?.arch ?? null,
+    pointerBytes: opts?.pointerBytes ?? model?.pointerBytes ?? backend?.pointerBytes ?? null,
+    pointerBits: opts?.pointerBits ?? model?.pointerBits ?? backend?.pointerBits ?? null,
+  };
+  const pointerBytes = resolvePointerBytes(pointerContext);
   const wanted = [];
   const seen = new Set();
   for (const r of model.addressRefs) {
@@ -602,10 +649,12 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
   const deref = [];
   got.forEach((g, i) => {
     if (looksLikeText(g)) { texts.set(wanted[i].toString(), g.text); return; }
-    if (g && g.found && g.bytes && g.bytes.length >= 8) deref.push({ i, bytes: g.bytes });
+    if (pointerBytes != null && g && g.found && g.bytes && g.bytes.length >= pointerBytes) {
+      deref.push({ i, bytes: g.bytes });
+    }
   });
   if (deref.length) {
-    const ptrs = deref.map((d) => pointerAt(d.bytes));
+    const ptrs = deref.map((d) => pointerAt(d.bytes, pointerContext));
     const got2 = await mapBounded(
       ptrs,
       MODEL_TEXT_READ_CONCURRENCY,
@@ -633,12 +682,47 @@ function looksLikeText(g) {
   return /[\p{L}\p{N}]/u.test(g.text);
 }
 
-function pointerAt(bytes) {
-  let v = 0n;
-  for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(bytes[i]);
-  if (v === 0n) return null;
-  if (v < 0x0001000000000000n) return v;
-  return v & 0x0000000fffffffffn;
+export function pointerAt(bytes, opts = {}) {
+  if (!bytes || bytes.length < 4) return null;
+  let context = opts;
+  if (typeof opts === 'string') {
+    context = { architecture: opts };
+  } else if (typeof opts === 'number') {
+    context = { pointerBytes: opts };
+  }
+  const pointerBytes = resolvePointerBytes(context);
+  if (pointerBytes == null) return null;
+
+  if (pointerBytes === 4) {
+    if (bytes.length < 4) return null;
+    let v = 0n;
+    for (let i = 3; i >= 0; i--) v = (v << 8n) | BigInt(bytes[i]);
+    return v === 0n ? null : v;
+  }
+
+  if (pointerBytes === 8) {
+    if (bytes.length < 8) return null;
+    let v = 0n;
+    for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(bytes[i]);
+    if (v === 0n) return null;
+    if (v < 0x0001000000000000n) return v;
+
+    const rawArch = context?.architecture ?? context?.arch ?? context?.cpu ?? null;
+    let arch = '';
+    if (rawArch != null) {
+      if (typeof rawArch !== 'string') return null;
+      arch = rawArch.trim().toLowerCase();
+    }
+    // ARM64 / ARM64e allow PAC / TBI in top 16 bits; strip PAC/tag to lower 48-bit canonical VA.
+    if (arch === 'arm64' || arch === 'arm64e' || !arch) {
+      const canonical = v & 0x0000ffffffffffffn;
+      return canonical === 0n ? null : canonical;
+    }
+    // Non-ARM architectures without PAC/TBI support cannot canonicalize high bits (fail closed).
+    return null;
+  }
+
+  return null;
 }
 
 const HINTS = [
