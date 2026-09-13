@@ -103,6 +103,36 @@ export const VM_UNKNOWN_CATEGORIES = Object.freeze([
   'other',
 ]);
 
+
+export const VM_COMPARE_PREDICATES = Object.freeze(['eq', 'ne', 'lt', 'gt', 'le', 'ge']);
+export const VM_ORDERED_COMPARE_PREDICATES = Object.freeze(['lt', 'gt', 'le', 'ge']);
+export const VM_COMPARE_SIGNEDNESS = Object.freeze(['signed', 'unsigned']);
+export const VM_COMPARE_ARITIES = Object.freeze([1, 2]);
+const COMPARE_DESCRIPTOR_KEYS = new Set(['predicate', 'signedness', 'operandBits', 'arity']);
+const COMPARE_SETS = Object.freeze({
+  predicates: new Set(VM_COMPARE_PREDICATES),
+  ordered: new Set(VM_ORDERED_COMPARE_PREDICATES),
+  signedness: new Set(VM_COMPARE_SIGNEDNESS),
+  arities: new Set(VM_COMPARE_ARITIES),
+});
+function normalizeCompareDescriptor(value, consumedCount) {
+  const input = object(value, 'vm-effect-invalid-compare-descriptor');
+  assertAllowedKeys(input, COMPARE_DESCRIPTOR_KEYS, 'vm-effect-compare-unexpected-key');
+  const { predicate, arity, operandBits } = input;
+  if (typeof predicate !== 'string' || !COMPARE_SETS.predicates.has(predicate)) fail('vm-effect-compare-invalid-predicate');
+  if (typeof arity !== 'number' || !Number.isSafeInteger(arity) || !COMPARE_SETS.arities.has(arity)) fail('vm-effect-compare-invalid-arity');
+  if (arity !== consumedCount) fail('vm-effect-compare-arity-mismatch');
+  let signedness = null;
+  if (input.signedness != null) {
+    if (typeof input.signedness !== 'string' || !COMPARE_SETS.signedness.has(input.signedness)) fail('vm-effect-compare-invalid-signedness');
+    signedness = input.signedness;
+  }
+  if (COMPARE_SETS.ordered.has(predicate) && signedness == null) fail('vm-effect-compare-signedness-required');
+  if (!COMPARE_SETS.ordered.has(predicate) && signedness != null) fail('vm-effect-compare-signedness-not-allowed');
+  if (typeof operandBits !== 'number' || !Number.isSafeInteger(operandBits) || operandBits <= 0) fail('vm-effect-compare-invalid-operand-bits');
+  return deepFreeze({ predicate, signedness, operandBits, arity });
+}
+
 const SETS = Object.freeze({
   completeness: new Set(VM_EFFECT_COMPLETENESS),
   locations: new Set(VM_LOCATION_KINDS),
@@ -226,7 +256,7 @@ export function createVMEffectBundle(input, options = {}) {
     'profileId', 'methodId', 'operationId', 'bytecodeOffset', 'opcode', 'mnemonic',
     'consumedValues', 'producedValues', 'locationReads', 'locationWrites',
     'memoryEffects', 'callEffects', 'controlEffects', 'possibleExceptions',
-    'origin', 'completeness', 'unknownEffects', 'metadata',
+    'origin', 'completeness', 'unknownEffects', 'metadata', 'compare',
   ]), 'vm-effect-bundle-unexpected-key');
 
   const frontendId = nonEmpty(input.frontendId, 'vm-effect-frontend-id-required');
@@ -261,6 +291,7 @@ export function createVMEffectBundle(input, options = {}) {
   const profileId = optionalString(input.profileId, 'vm-effect-invalid-profile-id');
   const mnemonic = optionalString(input.mnemonic, 'vm-effect-invalid-mnemonic');
   const opcode = input.opcode != null ? nonNegativeInteger(input.opcode, 'vm-effect-invalid-opcode') : null;
+  const compare = input.compare == null ? null : normalizeCompareDescriptor(input.compare, consumedValues.length);
 
   const out = {
     schemaVersion,
@@ -285,6 +316,7 @@ export function createVMEffectBundle(input, options = {}) {
     completeness,
     unknownEffects: deepFreeze(unknownEffects),
     metadata: input.metadata ? deepFreeze(jsonSafe(input.metadata)) : Object.freeze({}),
+    ...(compare ? { compare } : {}),
   };
 
   return deepFreeze(out);
@@ -315,6 +347,7 @@ export function validateVMEffectBundle(bundle) {
   array(bundle.callEffects ?? [], 'vm-effect-invalid-call-effects');
   array(bundle.controlEffects ?? [], 'vm-effect-invalid-control-effects');
   array(bundle.possibleExceptions ?? [], 'vm-effect-invalid-exceptions');
+  if (bundle.compare != null) normalizeCompareDescriptor(bundle.compare, (bundle.consumedValues ?? []).length);
   const unknownEffects = unknownEffectsForValidation(bundle);
   for (const effect of unknownEffects) validateUnknownEffect(effect);
   if ((bundle.completeness === 'partial' || bundle.completeness === 'unknown') && unknownEffects.length === 0) {

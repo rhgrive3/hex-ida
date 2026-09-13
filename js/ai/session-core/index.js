@@ -13,6 +13,19 @@ function requireSessionId(value) {
   return value;
 }
 
+
+function requireBindingId(value, field) {
+  if (value == null) return null;
+  if (typeof value !== 'string') throw new TypeError(`AI ${field} must be a non-empty string or null`);
+  const text = value.trim();
+  if (!text) throw new TypeError(`AI ${field} must be a non-empty string or null`);
+  return text;
+}
+
+function isBindingIdError(error) {
+  return error instanceof TypeError && /^AI (binaryId|projectId) must be a non-empty string or null$/.test(error.message);
+}
+
 export function createInvestigationMemory(input = {}) {
   return {
     goal: String(input.goal || ''),
@@ -31,9 +44,9 @@ export function createInvestigationSession(input = {}) {
   const hasExplicitId = input.id != null;
   return {
     id: hasExplicitId ? requireSessionId(input.id) : `ai_${Date.now().toString(36)}_${sessionSequence++}`,
-    binaryId: input.binaryId == null ? null : String(input.binaryId),
+    binaryId: requireBindingId(input.binaryId, 'binaryId'),
     binaryIdentity: input.binaryIdentity && typeof input.binaryIdentity === 'object' ? cloneOwned(input.binaryIdentity) : null,
-    projectId: input.projectId == null ? null : String(input.projectId),
+    projectId: requireBindingId(input.projectId, 'projectId'),
     conversationId: input.conversationId == null ? null : String(input.conversationId),
     mode: AI_MODES.includes(input.mode) ? input.mode : 'chat',
     style: AI_STYLES.includes(input.style) ? input.style : 'analyst',
@@ -159,7 +172,15 @@ export class InvestigationSessionStore {
         // project, and conversation bindings onto the requested id and let
         // later updates persist against the wrong session (#4413).
         if (typeof loaded.id !== 'string' || loaded.id !== key) return null;
-        const session = createInvestigationSession(loaded);
+        let session;
+        try { session = createInvestigationSession(loaded); }
+        catch (error) {
+          // Persisted binding identities are an authority boundary. Quarantine
+          // malformed/coercible identities rather than laundering them into
+          // the requested binary/project namespace (#4301).
+          if (isBindingIdError(error)) return null;
+          throw error;
+        }
         if (session.id !== key) return null;
         const owned = freezeOwned(session);
         this.sessions.set(key, owned);
@@ -226,8 +247,11 @@ export class InvestigationSessionStore {
     // Identity upgrades must update both representations atomically. Otherwise
     // a legacy/weak session can accept a strong hash on this turn but be
     // rejected on the next turn because binaryId still contains filename:slice.
-    if (!Object.prototype.hasOwnProperty.call(patch, 'binaryId') && patch.binaryIdentity?.id) candidate.binaryId = String(patch.binaryIdentity.id);
-    if (candidate.binaryId != null) candidate.binaryId = String(candidate.binaryId);
+    if (!Object.prototype.hasOwnProperty.call(patch, 'binaryId') && patch.binaryIdentity?.id != null) {
+      candidate.binaryId = requireBindingId(patch.binaryIdentity.id, 'binaryId');
+    }
+    candidate.binaryId = requireBindingId(candidate.binaryId, 'binaryId');
+    candidate.projectId = requireBindingId(candidate.projectId, 'projectId');
     // update() is a second session-construction boundary, not a raw object
     // patcher. Re-run the same canonicalizer used by create/register/load so
     // enum and collection invariants cannot be bypassed by a later patch
@@ -240,7 +264,13 @@ export class InvestigationSessionStore {
   }
 
   async persist(session) { if (this.persistence && typeof this.persistence.save === 'function') await this.persistence.save(stripSecrets(session)); }
-  list(binaryId = null) { return Array.from(this.sessions.values()).filter((session) => binaryId == null || session.binaryId === String(binaryId)); }
+  list(binaryId = null) {
+    if (binaryId == null) return Array.from(this.sessions.values());
+    let bindingId;
+    try { bindingId = requireBindingId(binaryId, 'binaryId'); }
+    catch (error) { if (isBindingIdError(error)) return []; throw error; }
+    return Array.from(this.sessions.values()).filter((session) => session.binaryId === bindingId);
+  }
 }
 
 export function stripSecrets(value, seen = new Set()) {
