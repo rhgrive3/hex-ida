@@ -286,7 +286,7 @@ export class Backend {
     if (!message) return;
     if (message.t === 'searchProgress' || message.t === 'scanProgress' || message.t === 'analysisProgress') {
       const pending = this.pending.get(message.requestId);
-      if (!pending || pending.uiEpoch !== this.gen) return;
+      if (!pending || pending.uiEpoch !== this.gen || pending.transportEpoch !== this.transportEpoch || message.epoch !== pending.transportEpoch) return;
       if (pending.onProgress) pending.onProgress(message);
       else if (message.t === 'searchProgress' && this.onSearchProgress) this.onSearchProgress(message);
       else if (message.t === 'scanProgress' && this.onScanProgress) this.onScanProgress(message);
@@ -302,7 +302,7 @@ export class Backend {
     const pending = this.pending.get(message.id);
     if (!pending || pending.workerName !== workerName) return;
     this.pending.delete(message.id);
-    if (pending.uiEpoch !== this.gen || message.epoch !== pending.transportEpoch) {
+    if (pending.uiEpoch !== this.gen || pending.transportEpoch !== this.transportEpoch || message.epoch !== pending.transportEpoch) {
       pending.reject(new StaleRequestError());
       return;
     }
