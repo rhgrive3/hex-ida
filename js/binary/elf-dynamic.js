@@ -343,31 +343,40 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
   return out;
 }
 
-function applyVersionMetadata(image, versions, budget = null) {
+export function applyVersionMetadata(image, versions, budget = null) {
   if (!versions?.size || budget?.stopped) return;
   const importByIndex = new Map();
   const exportByIndex = new Map();
-  for (const imp of image.imports) {
+  const keyOf = (tableIndex, symbolIndex) => `${tableIndex ?? ''}:${symbolIndex}`;
+  for (const imp of image.imports || []) {
     if (imp.symbolIndex == null) continue;
     if (budget && (!budget.step(1, 'version import index') || !budget.claimOutput(1, 48, 'version import index'))) return;
-    if (!importByIndex.has(imp.symbolIndex)) importByIndex.set(imp.symbolIndex, imp);
+    const key = keyOf(imp.tableIndex, imp.symbolIndex);
+    if (!importByIndex.has(key)) importByIndex.set(key, imp);
+    if ((imp.tableIndex == null || imp.tableIndex === -1) && !importByIndex.has(String(imp.symbolIndex))) {
+      importByIndex.set(String(imp.symbolIndex), imp);
+    }
   }
-  for (const ex of image.exports) {
+  for (const ex of image.exports || []) {
     if (ex.symbolIndex == null) continue;
     if (budget && (!budget.step(1, 'version export index') || !budget.claimOutput(1, 48, 'version export index'))) return;
-    if (!exportByIndex.has(ex.symbolIndex)) exportByIndex.set(ex.symbolIndex, ex);
+    const key = keyOf(ex.tableIndex, ex.symbolIndex);
+    if (!exportByIndex.has(key)) exportByIndex.set(key, ex);
+    if ((ex.tableIndex == null || ex.tableIndex === -1) && !exportByIndex.has(String(ex.symbolIndex))) {
+      exportByIndex.set(String(ex.symbolIndex), ex);
+    }
   }
-  for (const sym of image.symbols) {
+  for (const sym of image.symbols || []) {
     if (budget && !budget.step(1, 'version metadata apply')) return;
     if (sym.source !== 'dynsym' && sym.source !== 'PT_DYNAMIC') continue;
     const ver = versions.get(sym.index);
     if (!ver) continue;
     sym.versionIndex = ver.index; sym.version = ver.name; sym.versionHidden = ver.hidden; sym.versionLibrary = ver.library;
     if (sym.defined === false && sym.name) {
-      const imp = importByIndex.get(sym.index);
+      const imp = importByIndex.get(keyOf(sym.tableIndex, sym.index)) || ((sym.tableIndex == null || sym.tableIndex === -1) ? importByIndex.get(String(sym.index)) : null);
       if (imp && imp.name === sym.name && imp.version == null) { imp.version = ver.name; imp.versionLibrary = ver.library; imp.versionIndex = ver.index; }
     } else if (sym.defined === true && sym.name) {
-      const ex = exportByIndex.get(sym.index);
+      const ex = exportByIndex.get(keyOf(sym.tableIndex, sym.index)) || ((sym.tableIndex == null || sym.tableIndex === -1) ? exportByIndex.get(String(sym.index)) : null);
       if (ex && ex.name === sym.name && ex.address === sym.address && ex.version == null) { ex.version = ver.name; ex.versionIndex = ver.index; }
     }
   }

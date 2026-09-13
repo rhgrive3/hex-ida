@@ -10,6 +10,30 @@ function isExecutableMappedAddress(image, address) {
   return false;
 }
 
+function isExecutableMappedExtent(image, address, size) {
+  if (size == null || size <= 0n) return isExecutableMappedAddress(image, address);
+  let cur = address;
+  const end = address + size;
+  while (cur < end) {
+    const sec = image.sectionAt?.(cur);
+    if (sec && sectionHasMappedAddress(sec) && sec.perms?.execute && sec.size > 0n) {
+      const next = sec.address + sec.size;
+      if (next <= cur) return false;
+      cur = next;
+      continue;
+    }
+    const seg = image.segmentAt?.(cur);
+    if (seg && seg.perms?.execute && seg.size > 0n) {
+      const next = seg.address + seg.size;
+      if (next <= cur) return false;
+      cur = next;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
 export function auditBinary(image) {
   const issues = [];
   const stats = {
@@ -46,7 +70,7 @@ export function auditBinary(image) {
     const key = f.address.toString();
     if (functionAddresses.has(key)) issues.push(issue('error', 'duplicate-function', `duplicate function at ${hex(f.address)}`));
     functionAddresses.add(key);
-    if (isExecutableMappedAddress(image, f.address)) stats.executableFunctions++;
+    if (isExecutableMappedExtent(image, f.address, f.size)) stats.executableFunctions++;
     else {
       stats.unmappedFunctions++;
       if (f.source !== 'entrypoint') issues.push(issue('warning', 'function-outside-exec', `${hex(f.address)} (${f.source}) is outside executable mapped memory`));

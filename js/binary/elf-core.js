@@ -67,7 +67,8 @@ export function parseELF(input, options = {}) {
   const rawSections = parseSectionHeaders(r, h, bits, image);
   nameSections(r, rawSections, h, image);
   let riscvFileIsa = null;
-  if (image.arch === 'riscv64') {
+  const isRiscv = Number(h.machine) === EM_RISCV || image.arch === 'riscv64' || image.arch === 'riscv32';
+  if (isRiscv) {
     const namedAttributeSections = rawSections.filter((section) => section.name === '.riscv.attributes');
     const attributes = namedAttributeSections.find((section) => section.type === SHT_RISCV_ATTRIBUTES) || null;
     if (namedAttributeSections.some((section) => section.type !== SHT_RISCV_ATTRIBUTES)) {
@@ -146,7 +147,7 @@ export function parseELF(input, options = {}) {
 
   const symbolTables = rawSections.filter((s) => s.type === SHT_SYMTAB || s.type === SHT_DYNSYM);
   for (const s of symbolTables) parseSymbols(r, s, rawSections, image, bits, h.type, metadataBudget);
-  if (image.arch === 'riscv64') {
+  if (isRiscv) {
     const mappings = image.symbols
       .filter((symbol) => symbol?.defined === true && typeof symbol.name === 'string')
       .map((symbol) => {
