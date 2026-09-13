@@ -38,6 +38,77 @@ const MAX_PROPS = 400;
 const IVAR_STRIDE_MIN = 32;     // ivar_t = offset* + name* + type* + alignment + size
 const MAX_IVARS = 400;
 
+/* ── ポインタ幅（pointer ABI）────────────────────────────
+ *
+ * arm64_32（watchOS）は AArch64 命令セットのまま ILP32 ポインタ ABI を使う。
+ * Mach-O のファイルクラスは 64 ビットでも、Objective-C ランタイム構造体の
+ * ポインタは 4 バイトで、ポインタ表の 1 エントリも 4 バイトになる。
+ *
+ * ここを 8 バイト固定で読むと、正しい 1 エントリの __objc_classlist が
+ * 「declared 0 件 + 4 バイト端数」になり、クラス・プロトコル・カテゴリが
+ * 丸ごと消える（#8280）。明示された幅が最優先、無ければ宣言された
+ * アーキテクチャ、どちらも無いときだけ LP64 を既定にする。宣言済みで
+ * 未知の ABI は 8 バイトへ黙って広げず fail-closed にする。
+ */
+const OBJC_ARCH_POINTER_BYTES = new Map([
+  ['arm64', 8], ['arm64e', 8], ['x86_64', 8], ['x86_64h', 8], ['ppc64', 8],
+  ['arm64_32', 4], ['arm', 4], ['armv6', 4], ['armv7', 4], ['armv7s', 4], ['armv7k', 4],
+  ['i386', 4], ['x86', 4], ['ppc', 4],
+]);
+
+export function resolveObjcPointerBytes(...sources) {
+  for (const source of sources) {
+    if (!source || typeof source !== 'object') continue;
+    const raw = source.pointerBytes ?? source.pointerSize;
+    if (raw == null) continue;
+    return raw === 4 || raw === 8
+      ? { bytes:raw, provenance:'explicit' }
+      : { bytes:null, reason:'objc-pointer-abi-invalid' };
+  }
+  for (const source of sources) {
+    if (!source || typeof source !== 'object') continue;
+    const architecture = source.architecture ?? source.arch ?? null;
+    if (architecture == null || architecture === '') continue;
+    const key = String(architecture).trim().toLowerCase();
+    const bytes = OBJC_ARCH_POINTER_BYTES.get(key);
+    return bytes == null
+      ? { bytes:null, reason:'objc-pointer-abi-unsupported', architecture:key }
+      : { bytes, provenance:'architecture', architecture:key };
+  }
+  return { bytes:PTR, provenance:'default-lp64' };
+}
+
+function pointerBytesOf(get) { return get?.pointerBytes === 4 ? 4 : PTR; }
+
+// A pointer field inside an already-read structure is a native word: 4 bytes on
+// ILP32, 8 on LP64. Wide reads must never span two 4-byte components.
+function readWord(get, buffer, offset) {
+  return pointerBytesOf(get) === 4 ? BigInt(u32(buffer, offset)) : u64(buffer, offset);
+}
+
+// Objective-C runtime structure layout for a native pointer width.
+function legacyLayout(pointerBytes) {
+  const ilp32 = pointerBytes === 4;
+  return {
+    pointerBytes,
+    alignmentMask:~(BigInt(pointerBytes) - 1n),
+    classIsa:0,
+    classSuper:pointerBytes,
+    classData:pointerBytes * 4,
+    classSize:pointerBytes * 5,
+    roInstanceSize:8,
+    roName:ilp32 ? 16 : 24,
+    roMethods:ilp32 ? 20 : 32,
+    roIvars:ilp32 ? 28 : 48,
+    roProps:ilp32 ? 36 : 64,
+    roSize:ilp32 ? 40 : 72,
+    propStride:ilp32 ? 8 : 16,
+    ivarStrideMin:ilp32 ? 20 : 32,
+    ivarTypeOffset:pointerBytes * 2,
+    ivarSizeOffset:ilp32 ? 16 : 28,
+  };
+}
+
 const REL_FLAG = 0x80000000;    // relative/small method entries
 const DIRECT_SEL_FLAG = 0x40000000; // selector field points directly at cstring
 const ENTSIZE_MASK = 0xfffc;
@@ -256,8 +327,8 @@ function markLegacyPartial(status, reason, field = null) {
 function cleanPointer(get, value) { return sanitizePointer(value, get.base, get.pointerFormat); }
 
 async function pointer(get, addr) {
-  const b = await get(addr, PTR);
-  return b ? cleanPointer(get, u64(b, 0)) : null;
+  const b = await get(addr, pointerBytesOf(get));
+  return b ? cleanPointer(get, readWord(get, b, 0)) : null;
 }
 
 /**
@@ -279,12 +350,16 @@ async function readMethods(get, listAddr, out, className, prefix, budget, comple
   if (!count) return;
   if (count > 20000) { markLegacyPartial(completeness, 'method-list-count-invalid', 'incompleteMethodLists'); return; }
   const { relative, directSelector, stride } = decodeMethodListHeader(entsize);
-  if (relative ? stride < 12 : stride < 24) { markLegacyPartial(completeness, 'method-list-stride-invalid', 'incompleteMethodLists'); return; }
+  // A non-relative entry is three native pointers; ILP32 therefore accepts the
+  // 12-byte layout that a fixed 24-byte minimum rejected (#8280).
+  const pointerBytes = pointerBytesOf(get);
+  const entryWidth = relative ? 12 : pointerBytes * 3;
+  if (stride < entryWidth) { markLegacyPartial(completeness, 'method-list-stride-invalid', 'incompleteMethodLists'); return; }
 
   let scanned = 0;
   for (let i = 0; i < count && out.length < budget; i++) {
     const entry = listAddr + 8n + BigInt(i) * BigInt(stride);
-    const width = relative ? 12 : 24;
+    const width = entryWidth;
     const b = await get(entry, width);
     if (!b || b.length < width) { markLegacyPartial(completeness, 'method-entry-unreadable', 'incompleteMethodLists'); return; }
     scanned++;
@@ -306,8 +381,8 @@ async function readMethods(get, listAddr, out, className, prefix, budget, comple
         continue;
       }
     } else {
-      nameAddr = cleanPointer(get, u64(b, 0));
-      imp = cleanPointer(get, u64(b, 16));
+      nameAddr = cleanPointer(get, readWord(get, b, 0));
+      imp = cleanPointer(get, readWord(get, b, pointerBytes * 2));
     }
     if (imp == null) { markLegacyPartial(completeness, 'method-imp-unresolved', 'incompleteMethodLists'); continue; }
     let implementationProven=!get.requireImplementationProof,implementationValidationReason=null;
@@ -399,12 +474,13 @@ async function readIvars(get, listAddr, instanceSize, completeness = null) {
   const entsize = u32(head, 0);
   const count = u32(head, 4);
   if (!count || count > MAX_IVARS) return out;
+  const layout = legacyLayout(pointerBytesOf(get));
   const stride = entsize & 0xffff;
-  if (stride < IVAR_STRIDE_MIN) return out;
+  if (stride < layout.ivarStrideMin) return out;
 
   for (let i = 0; i < count; i++) {
     const entry = listAddr + 8n + BigInt(i) * BigInt(stride);
-    const b = await get(entry, IVAR_STRIDE_MIN);
+    const b = await get(entry, layout.ivarStrideMin);
     if (!b) break;
     /*
      * 位置そのものではなく「位置が書いてある場所」も覚えておく。
@@ -419,12 +495,12 @@ async function readIvars(get, listAddr, instanceSize, completeness = null) {
      * 「self の何を読んでいるか」が永久に分からない。分かるのは
      * **どの位置変数を読んだか**で、それはこのアドレスで引ける。
      */
-    const offsetVar = cleanPointer(get, u64(b, 0));
+    const offsetVar = cleanPointer(get, readWord(get, b, 0));
     const offset = await ivarOffset(get, offsetVar);
-    const name = await cstring(get, cleanPointer(get, u64(b, 8)));
+    const name = await cstring(get, cleanPointer(get, readWord(get, b, layout.pointerBytes)));
     if (!name) continue;                      // 名前が読めないものだけ採らない
-    const typeEnc = await cstring(get, cleanPointer(get, u64(b, 16)));
-    const rawSize = u32(b, 28);
+    const typeEnc = await cstring(get, cleanPointer(get, readWord(get, b, layout.ivarTypeOffset)));
+    const rawSize = u32(b, layout.ivarSizeOffset);
     const size = rawSize > 0 && rawSize <= 4096 ? rawSize : null;
     if (offset == null) {
       markLegacyPartial(completeness, 'ivar-offset-unresolved', 'invalidIvars');
@@ -507,16 +583,17 @@ async function readProperties(get, listAddr) {
   const entsize = u32(head, 0);
   const count = u32(head, 4);
   if (!count || count > MAX_PROPS) return out;
+  const layout = legacyLayout(pointerBytesOf(get));
   const stride = entsize & 0xffff;
-  if (stride < PROP_STRIDE) return out;
+  if (stride < layout.propStride) return out;
 
   for (let i = 0; i < count; i++) {
     const entry = listAddr + 8n + BigInt(i) * BigInt(stride);
-    const b = await get(entry, PROP_STRIDE);
+    const b = await get(entry, layout.propStride);
     if (!b) break;
-    const name = await cstring(get, cleanPointer(get, u64(b, 0)));
+    const name = await cstring(get, cleanPointer(get, readWord(get, b, 0)));
     if (!name) continue;
-    const attrText = await cstring(get, cleanPointer(get, u64(b, 8)));
+    const attrText = await cstring(get, cleanPointer(get, readWord(get, b, layout.pointerBytes)));
     const attrs = parsePropertyAttributes(attrText);
     out.push({
       name,
@@ -537,23 +614,24 @@ async function readClass(get, classAddr, out, seen, meta, completeness = null) {
   if (classAddr == null || seen.has(classAddr.toString())) return null;
   seen.add(classAddr.toString());
 
-  const cls = await get(classAddr, CLASS_SIZE);
-  if (!cls || cls.length < CLASS_SIZE) { markLegacyPartial(completeness, 'class-unreadable'); return null; }
-  const roAddr = cleanPointer(get, u64(cls, CLASS_DATA) & ~7n);
+  const layout = legacyLayout(pointerBytesOf(get));
+  const cls = await get(classAddr, layout.classSize);
+  if (!cls || cls.length < layout.classSize) { markLegacyPartial(completeness, 'class-unreadable'); return null; }
+  const roAddr = cleanPointer(get, readWord(get, cls, layout.classData) & layout.alignmentMask);
   if (roAddr == null) { markLegacyPartial(completeness, 'class-ro-unresolved'); return null; }
   /*
    * 短くても受け取る。baseProperties まで読めるとうれしいが、そこまで
    * 載っていない表もある。「プロパティが読めない」を理由にクラスごと
    * 捨ててしまうと、いちばん大事な ivar の名前まで失う。
    */
-  const ro = await get(roAddr, RO_SIZE, true);
-  if (!ro || ro.length < RO_IVARS + PTR) { markLegacyPartial(completeness, 'class-ro-unreadable'); return null; }
+  const ro = await get(roAddr, layout.roSize, true);
+  if (!ro || ro.length < layout.roIvars + layout.pointerBytes) { markLegacyPartial(completeness, 'class-ro-unreadable'); return null; }
 
-  const name = await cstring(get, cleanPointer(get, u64(ro, RO_NAME)));
+  const name = await cstring(get, cleanPointer(get, readWord(get, ro, layout.roName)));
   if (!name) { markLegacyPartial(completeness, 'class-name-invalid'); return null; }
 
   const before = out.length;
-  await readMethods(get, cleanPointer(get, u64(ro, RO_METHODS)), out, name,
+  await readMethods(get, cleanPointer(get, readWord(get, ro, layout.roMethods)), out, name,
     meta ? '+' : '-', MAX_METHODS, completeness);
   const methods = out.slice(before);
 
@@ -561,8 +639,8 @@ async function readClass(get, classAddr, out, seen, meta, completeness = null) {
     name,
     addr: classAddr,
     meta: !!meta,
-    superAddr: cleanPointer(get, u64(cls, CLASS_SUPER)),
-    instanceSize: u32(ro, RO_INSTANCE_SIZE),
+    superAddr: cleanPointer(get, readWord(get, cls, layout.classSuper)),
+    instanceSize: u32(ro, layout.roInstanceSize),
     methods,
     ivars: [],
     properties: [],
@@ -571,19 +649,19 @@ async function readClass(get, classAddr, out, seen, meta, completeness = null) {
   // ivar とプロパティはインスタンス側にしかない（クラスメソッド側には持たせない）
   if (!meta) {
     try {
-      info.ivars = await readIvars(get, cleanPointer(get, u64(ro, RO_IVARS)), info.instanceSize, completeness);
+      info.ivars = await readIvars(get, cleanPointer(get, readWord(get, ro, layout.roIvars)), info.instanceSize, completeness);
     } catch { info.ivars = []; }
     try {
       // 表が短くて baseProperties まで届かないことがある。届かなければ空のまま。
-      if (ro.length >= RO_PROPS + PTR) {
-        info.properties = await readProperties(get, cleanPointer(get, u64(ro, RO_PROPS)));
+      if (ro.length >= layout.roProps + layout.pointerBytes) {
+        info.properties = await readProperties(get, cleanPointer(get, readWord(get, ro, layout.roProps)));
       }
     } catch { info.properties = []; }
   }
 
   // isa はメタクラス。そちらにクラスメソッド（+）が入っている。
   if (!meta) {
-    const isa = cleanPointer(get, u64(cls, CLASS_ISA));
+    const isa = cleanPointer(get, readWord(get, cls, layout.classIsa));
     if (isa != null) {
       const metaInfo = await readClass(get, isa, out, seen, true, completeness);
       if (metaInfo && metaInfo.methods) info.classMethods = metaInfo.methods;
@@ -615,6 +693,19 @@ export async function buildObjcModel(read, classList, onProgress, imageBase, poi
     return { classes, names, count: 0, completeness: { classes: classesCompleteness, complete: true } };
   }
 
+  const pointerAbi = resolveObjcPointerBytes(options, classList);
+  if (pointerAbi.bytes == null) {
+    // A declared but unsupported pointer ABI must not be silently read as LP64.
+    const classesCompleteness = newLegacyCompleteness(true, 0);
+    classesCompleteness.complete = false;
+    classesCompleteness.sizeValid = false;
+    classesCompleteness.misalignedBytes = null;
+    classesCompleteness.reasons.push(pointerAbi.reason);
+    return { classes: [], names: [], count: 0, pointerBytes: null,
+      pointerAbiReason: pointerAbi.reason,
+      completeness: { classes: classesCompleteness, complete: false } };
+  }
+  const PTR = pointerAbi.bytes;
   const size = BigInt(classList.size);
   const sizeValid = size >= 0n && size <= BigInt(Number.MAX_SAFE_INTEGER);
   const declared = sizeValid ? Number(size / BigInt(PTR)) : 0;
@@ -628,6 +719,7 @@ export async function buildObjcModel(read, classList, onProgress, imageBase, poi
   if (classesCompleteness.capped) markLegacyPartial(classesCompleteness, 'class-budget');
 
   const get = pagedReader(read, 65536, 96, { signal: options?.signal });
+  get.pointerBytes = PTR;
   get.base = imageBase != null
     ? BigInt(imageBase)
     : (classList.vmAddr / 0x100000000n) * 0x100000000n;
@@ -675,7 +767,7 @@ export async function buildObjcModel(read, classList, onProgress, imageBase, poi
     c.superName = parent ? parent.name : null;
   }
   return {
-    classes, names, count: classes.length,
+    classes, names, count: classes.length, pointerBytes: PTR,
     completeness: { classes: classesCompleteness, complete: classesCompleteness.complete === true },
   };
 }
