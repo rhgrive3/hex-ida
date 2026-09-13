@@ -330,6 +330,19 @@ function parseArm64XdataDescriptor(r, image, begin, xdataRva, budget) {
   return { size:bytes, xdataRva, version, hasHandler, packedEpilog, epilogCount, codeWords };
 }
 
+function arm64PackedFrameFields(unwindData) {
+  const regF = (unwindData >>> 13) & 0x7;
+  const regI = (unwindData >>> 16) & 0xf;
+  const home = (unwindData >>> 20) & 0x1;
+  const cr = (unwindData >>> 21) & 0x3;
+  const frameSize = (unwindData >>> 23) & 0x1ff;
+  const integerSaveBytes = regI * 8 + (cr === 1 ? 8 : 0);
+  const fpSaveBytes = regF === 0 ? 0 : (regF + 1) * 8;
+  const mandatoryBytes = integerSaveBytes + fpSaveBytes + (home ? 64 : 0);
+  const saveAreaBytes = Math.ceil(mandatoryBytes / 16) * 16;
+  return { regF, regI, home, cr, frameSize, frameBytes:frameSize * 16, saveAreaBytes };
+}
+
 export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = null) {
   if(!dir||!dir.rva||!dir.size)return; const budget=ensureBudget(image,sharedBudget);
   const span=mappedFileSpanForRva(image,dir.rva,dir.size); if(!span){budget.partial('exception:directory-span','PE exception directory crosses a mapped boundary');return;}
@@ -381,10 +394,13 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
       if(begin%4!==0){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-pdata-alignment',`Ignored ARM64 exception entry at unaligned RVA 0x${begin.toString(16)} (AArch64 instructions are 4-byte aligned)`);previousBegin=begin;continue;}
       const flag=unwindData&3; let descriptor=null;
       if(flag===1||flag===2){const functionLength=(unwindData>>>2)&0x7ff;if(!functionLength){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-packed-length',`Ignored zero-length ARM64 packed unwind entry at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
-        // Packed unwind encodes RegI as the count of saved nonvolatile integer
-        // registers x19-x28; only 10 such registers exist, so values 11-15
-        // cannot describe a valid function prologue (#5673).
-        const packedRegI=(unwindData>>>16)&0xf;if(packedRegI>10){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-packed-registers',`Ignored ARM64 packed unwind entry with invalid RegI ${packedRegI} (x19-x28 hold at most 10 registers) at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
+        // Decode the packed frame as one structural unit: individual fields can
+        // be representable while their combination is impossible.  Windows'
+        // canonical packed-unwind reconstruction requires FrameSize to cover
+        // the rounded integer/FP save area plus the optional x0-x7 home area.
+        const packed=arm64PackedFrameFields(unwindData);
+        if(packed.regI>10){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-packed-registers',`Ignored ARM64 packed unwind entry with invalid RegI ${packed.regI} (x19-x28 hold at most 10 registers) at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
+        if(packed.frameBytes<packed.saveAreaBytes){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-packed-frame-size',`Ignored ARM64 packed unwind entry whose FrameSize ${packed.frameBytes} byte(s) cannot contain the mandatory ${packed.saveAreaBytes}-byte save/home area at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
         const bytes=functionLength*4;if((previousEnd!=null&&begin<previousEnd)||!executableRvaRange(image,begin,bytes)){image.warnings.push(`Ignored overlapping/unmapped ARM64 exception range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;previousBegin=begin;continue;}descriptor={size:bytes,fragment:flag===2,encoding:flag===2?'packed-fragment':'packed'};}
       else if(flag===0){descriptor=parseArm64XdataDescriptor(r,image,begin,unwindData>>>0,budget);}
       else{invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-reserved-flag',`Ignored reserved ARM64 packed unwind flag at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
