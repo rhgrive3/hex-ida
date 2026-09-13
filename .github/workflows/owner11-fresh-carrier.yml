@@ -48,16 +48,18 @@ jobs:
             fi
           done
 
-      - name: Focused semantic regressions
-        shell: bash
-        run: |
-          set -euo pipefail
-          timeout 45s node tests/issue-5085-sandbox-host-status-id-collision.mjs
-          timeout 60s node tests/userscript-chatgpt-sandbox-host.mjs
-          timeout 45s node --test tests/phase12/integration/issue-4590-session-proposal-hydration.test.mjs
-          timeout 45s node --test tests/phase12/integration/issue-4590-session-proposal-execution-authority.test.mjs
-          timeout 45s node --test tests/phase12/integration/issue-4666-unknown-semantic-detail-deep-freeze.test.mjs
-          timeout 90s node tests/check.mjs
+      - name: Test 5085 status ownership
+        run: timeout 45s node tests/issue-5085-sandbox-host-status-id-collision.mjs
+      - name: Test sandbox host siblings
+        run: timeout 60s node tests/userscript-chatgpt-sandbox-host.mjs
+      - name: Test 4590 proposal hydration
+        run: timeout 45s node --test tests/phase12/integration/issue-4590-session-proposal-hydration.test.mjs
+      - name: Test 4590 execution authority
+        run: timeout 45s node --test tests/phase12/integration/issue-4590-session-proposal-execution-authority.test.mjs
+      - name: Test 4666 structural identity
+        run: timeout 45s node --test tests/phase12/integration/issue-4666-unknown-semantic-detail-deep-freeze.test.mjs
+      - name: Syntax lint
+        run: timeout 90s node tests/check.mjs
 
       - name: Commit clean semantic carrier
         shell: bash
