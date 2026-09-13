@@ -443,11 +443,11 @@ export function importPhase12Package(value, options = {}) {
 
 export function resolvePackageDependencies(envelope, dependencies = []) {
   const checked = validateEnvelopeShape(envelope);
-  const available = new Map((dependencies || []).map((item) => [item.packageId, item]));
+  const available = new Map(normalizeDependencies(dependencies).map((item) => [item.packageId, item]));
   const resolved = [];
   for (const dependency of checked.dependencies) {
     const found = available.get(dependency.packageId);
-    if (!found || found.contentHash !== dependency.contentHash || String(found.packageVersion) !== dependency.packageVersion) {
+    if (!found || found.contentHash !== dependency.contentHash || found.packageVersion !== dependency.packageVersion) {
       throw new PackageValidationError('package-dependency-not-pinned', `dependency ${dependency.packageId} is not resolved to its exact identity`);
     }
     resolved.push(Object.freeze({ packageId: dependency.packageId, contentHash: dependency.contentHash, packageVersion: dependency.packageVersion }));
