@@ -30,6 +30,7 @@ function callerSummary(targetEntityIds) {
       effectSource: 'unknown-call-fallback',
     }],
     memoryWriteRegions: [{ regionKind: 'unknown', broad: true, addressSpaces: ['memory'], source: 'unknown-call-fallback' }],
+    memoryReadRegions: [{ regionKind: 'unknown', broad: true, addressSpaces: ['memory'], source: 'unknown-call-fallback' }],
     unknownCallEffects: [createUnknownCallEffect({
       callSiteId: 'call-1',
       reason: 'summary-missing',
@@ -90,6 +91,7 @@ test('issue-6249: evidence ids union across same site and reason', () => {
       { callSiteId: 'call-1', targetEntityIds: ['ext_b'], summaryId: null, effectSource: 'unknown-call-fallback' },
     ],
     memoryWriteRegions: [{ regionKind: 'unknown', broad: true, addressSpaces: ['memory'], source: 'unknown-call-fallback' }],
+    memoryReadRegions: [{ regionKind: 'unknown', broad: true, addressSpaces: ['memory'], source: 'unknown-call-fallback' }],
     unknownCallEffects: [createUnknownCallEffect({
       callSiteId: 'call-1',
       reason: 'library-model-missing',
@@ -122,6 +124,7 @@ test('issue-6249: distinct reasons and call sites stay separate effects', () => 
       { callSiteId: 'call-2', targetEntityIds: ['ext_c'], summaryId: null, effectSource: 'unknown-call-fallback' },
     ],
     memoryWriteRegions: [{ regionKind: 'unknown', broad: true, addressSpaces: ['memory'], source: 'unknown-call-fallback' }],
+    memoryReadRegions: [{ regionKind: 'unknown', broad: true, addressSpaces: ['memory'], source: 'unknown-call-fallback' }],
     unknownCallEffects: [
       createUnknownCallEffect({ callSiteId: 'call-1', reason: 'summary-missing', targetEntityIds: ['ext_b'] }),
       createUnknownCallEffect({ callSiteId: 'call-2', reason: 'library-model-missing', targetEntityIds: ['ext_c'] }),

@@ -648,6 +648,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
         continue;
       }
       writes.push([broadEffect('unknown-call-fallback')]);
+      reads.push([broadEffect('unknown-call-fallback')]);
       unknowns.push(createUnknownCallEffect({
         callSiteId: call.callSiteId,
         reason: locals.has(target) ? 'summary-missing' : 'library-model-missing',
@@ -679,6 +680,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
         continue;
       }
       writes.push([broadEffect('unknown-call-fallback')]);
+      reads.push([broadEffect('unknown-call-fallback')]);
       unknowns.push(createUnknownCallEffect({
         callSiteId: set.callSiteId,
         reason: locals.has(candidate) ? 'summary-missing' : 'library-model-missing',
@@ -689,6 +691,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     }
     if (!set.exhaustive) {
       writes.push([broadEffect('unknown-call-fallback')]);
+      reads.push([broadEffect('unknown-call-fallback')]);
       if (!unknowns.some((unknown) => unknown.callSiteId === set.callSiteId)) {
         unknowns.push(createUnknownCallEffect({ callSiteId: set.callSiteId, reason: 'indirect-incomplete-target-set' }));
       }

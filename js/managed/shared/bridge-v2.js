@@ -94,6 +94,7 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
     if(!memoryReads.some((effect)=>effect.broad))memoryReads.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
     if(!memoryWrites.some((effect)=>effect.broad))memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
   }
+  if(unknownCallEffects.length>0&&!memoryReads.some((effect)=>effect.broad))memoryReads.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds:unknownCallEffects.map(u=>u.callSiteId)}));
   const status=createAnalysisStatus({snapshotId:options.snapshotId||'managed-summary-v1',analyzerId:'managed.method.summary',analyzerVersion:'1.0.0',completeness,stopReason:completeness==='complete'?null:'evidence-missing'});
   // Confirmed direct calls are canonical summary effects, not bridge-side
   // trivia: createFunctionSummary() hashes them into the dependency digest,

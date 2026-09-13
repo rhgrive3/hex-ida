@@ -446,6 +446,10 @@ export function createFunctionSummary(input = {}) {
     && !memoryWriteRegions.some((effect) => effect.broad)) {
     fail('function-summary-unknown-call-requires-broad-write-effect');
   }
+  if (unknownCallEffects.length > 0
+    && !memoryReadRegions.some((effect) => effect.broad)) {
+    fail('function-summary-unknown-call-requires-broad-read-effect');
+  }
   if (unknownCallEffects.length > 0 && summary.noreturn !== 'unknown' && summary.mayThrow !== 'unknown') {
     // Control-flow facts are as unresolvable as memory facts when the callee is
     // unknown; claiming both are settled contradicts the unresolved call.

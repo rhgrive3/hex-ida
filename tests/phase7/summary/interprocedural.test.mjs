@@ -232,6 +232,7 @@ test('indirect candidates retain nested unknown-call provenance and union all co
   });
   const unknown = createFunctionSummary({
     functionId: 'fn_unknown',
+    memoryReadRegions: [{ regionKind: 'unknown', broad: true, source: 'unknown-call-fallback' }],
     memoryWriteRegions: [{ regionKind: 'unknown', broad: true, source: 'unknown-call-fallback' }],
     unknownCallEffects: [{
       callSiteId: 'nested.call',
