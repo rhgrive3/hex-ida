@@ -43,46 +43,104 @@ function fixture() {
 function ilp32Image() {
   const f = fixture();
   const classList = 0x200;
-  const cls = 0x1000;
-  const ro = 0x1200;
+  const classAddr = 0x1000;
+  const classRo = 0x1200;
   const methodList = 0x1400;
+  const ivarList = 0x1600;
+  const ivarOffset = 0x1a00;
+  const classProperties = 0x1700;
   const className = 0x1800;
   const selector = 0x1900;
-  const imp = 0x2100;
+  const ivarName = 0x1a20;
+  const ivarType = 0x1a40;
+  const propertyName = 0x1a60;
+  const propertyAttributes = 0x1a80;
 
   // __objc_classlist: one 4-byte class pointer.
-  f.p32(classList, cls);
-  // class_t: isa(0) = 0 (no metaclass), data at 4 * pointerBytes = 16.
-  f.p32(cls + 16, ro);
-  // class_ro_t: instanceSize@8, name@20, baseMethods@24, ivars@32.
-  f.p32(ro + 8, 0x20);
-  f.p32(ro + 20, className);
-  f.p32(ro + 24, methodList);
-  f.p32(ro + 32, 0);
+  f.p32(classList, classAddr);
+  // Compiler-emitted class_t is 20 bytes; data is at +0x10 on ARM64_32.
+  f.p32(classAddr + 16, classRo);
+  // class_ro_t: instanceSize@8, name@16, methods@20, ivars@28,
+  // baseProperties@36. These offsets match clang's arm64_32 output.
+  f.p32(classRo + 8, 0x20);
+  f.p32(classRo + 16, className);
+  f.p32(classRo + 20, methodList);
+  f.p32(classRo + 28, ivarList);
+  f.p32(classRo + 36, classProperties);
   f.str(className, 'ILP32Victim');
   // method_list_t: entsize 12 (no REL flag), one entry of three 4-byte pointers.
   f.p32(methodList, 12);
   f.p32(methodList + 4, 1);
   f.p32(methodList + 8, selector);
   f.p32(methodList + 12, 0);
-  f.p32(methodList + 16, imp);
+  f.p32(methodList + 16, 0x2100);
   f.str(selector, 'doThing:');
 
-  const protoList = 0x300;
-  const proto = 0x2400;
-  const protoName = 0x2800;
+  // ivar_list_t and property_list_t use the same 4-byte native pointer ABI.
+  f.p32(ivarList, 20);
+  f.p32(ivarList + 4, 1);
+  f.p32(ivarList + 8, ivarOffset);
+  f.p32(ivarList + 12, ivarName);
+  f.p32(ivarList + 16, ivarType);
+  f.p32(ivarList + 20, 4);
+  f.p32(ivarList + 24, 4);
+  f.p32(ivarOffset, 16);
+  f.str(ivarName, 'count');
+  f.str(ivarType, 'i');
+  f.p32(classProperties, 8);
+  f.p32(classProperties + 4, 1);
+  f.p32(classProperties + 8, propertyName);
+  f.p32(classProperties + 12, propertyAttributes);
+  f.str(propertyName, 'count');
+  f.str(propertyAttributes, 'Ti,N,V_count');
+
+  const protocolList = 0x300;
+  const protocol = 0x2400;
+  const protocolName = 0x2800;
+  const protocolProperties = 0x1b00;
+  const protocolClassProperties = 0x1b20;
   // __objc_protolist: one 4-byte protocol_t pointer.
-  f.p32(protoList, proto);
-  // protocol_t: name@4, inherited list@8, methods@12..., size@32, flags@36.
-  f.p32(proto + 4, protoName);
-  f.p32(proto + 32, 36);
-  f.p32(proto + 36, 0);
-  f.str(protoName, 'ILP32Protocol');
+  f.p32(protocolList, protocol);
+  // protocol_t: name@4, protocols@8, methods@12.., instanceProperties@28,
+  // size@32, flags@36, and classProperties@48 (clang emits size 52).
+  f.p32(protocol + 4, protocolName);
+  f.p32(protocol + 28, protocolProperties);
+  f.p32(protocol + 32, 52);
+  f.p32(protocol + 36, 0);
+  f.p32(protocol + 48, protocolClassProperties);
+  f.str(protocolName, 'ILP32Protocol');
+  for (const list of [protocolProperties, protocolClassProperties]) {
+    f.p32(list, 8);
+    f.p32(list + 4, 0);
+  }
+
+  const categoryList = 0x400;
+  const category = 0x2c00;
+  const categoryName = 0x2e00;
+  const categoryProperties = 0x2d00;
+  const categoryClassProperties = 0x2d20;
+  // category_t: name@0, class@4, and 4-byte method/protocol/property pointers.
+  f.p32(categoryList, category);
+  f.p32(category, categoryName);
+  f.p32(category + 4, classAddr);
+  f.p32(category + 20, categoryProperties);
+  f.p32(category + 24, categoryClassProperties);
+  f.str(categoryName, 'ILP32Category');
+  for (const list of [categoryProperties, categoryClassProperties]) {
+    f.p32(list, 8);
+    f.p32(list + 4, 0);
+  }
 
   return {
     read: f.read,
     classList: { vmAddr: BigInt(classList), size: 4n },
-    protocolList: { vmAddr: BigInt(protoList), size: 4n },
+    protocolList: { vmAddr: BigInt(protocolList), size: 4n },
+    categoryList: { vmAddr: BigInt(categoryList), size: 4n },
+    classAddress: BigInt(classAddr),
+    protocolProperties: BigInt(protocolProperties),
+    protocolClassProperties: BigInt(protocolClassProperties),
+    categoryProperties: BigInt(categoryProperties),
+    categoryClassProperties: BigInt(categoryClassProperties),
   };
 }
 
@@ -116,6 +174,10 @@ test('#8280 legacy model decodes the 4-byte class list and 12-byte method entry 
   assert.equal(model.classes[0].name, 'ILP32Victim');
   assert.equal(model.classes[0].methods.length, 1, 'a 12-byte non-relative entry is a valid ILP32 method');
   assert.equal(model.classes[0].methods[0].sel, 'doThing:');
+  assert.equal(model.classes[0].ivars[0]?.name, 'count');
+  assert.equal(model.classes[0].ivars[0]?.offset, 16);
+  assert.equal(model.classes[0].properties[0]?.name, 'count');
+  assert.equal(model.classes[0].properties[0]?.ivar, '_count');
   assert.equal(model.completeness.classes.declared, 1);
   assert.equal(model.completeness.classes.misalignedBytes, 0);
   assert.equal(model.completeness.complete, true);
@@ -146,23 +208,34 @@ test('#8280 an unknown declared ABI fails closed instead of widening to LP64', a
 
 test('#8280 extended protocol parser reads 4-byte pointers on ILP32', async () => {
   const ilp32 = ilp32Image();
-  const sections = { protocolList: ilp32.protocolList, categoryList: null };
+  const sections = { protocolList: ilp32.protocolList, categoryList: ilp32.categoryList };
+  const options = { architecture: 'arm64_32', classes: [{ addr: ilp32.classAddress, name: 'ILP32Victim' }] };
 
-  const ilp32Result = await parseObjcExtendedMetadata(ilp32.read, sections, { architecture: 'arm64_32' });
+  const ilp32Result = await parseObjcExtendedMetadata(ilp32.read, sections, options);
   assert.equal(ilp32Result.pointerBytes, 4);
   assert.equal(ilp32Result.protocols.length, 1);
   assert.equal(ilp32Result.protocols[0].name, 'ILP32Protocol');
+  assert.equal(ilp32Result.protocols[0].instancePropertiesAddress, ilp32.protocolProperties);
+  assert.equal(ilp32Result.protocols[0].classPropertiesAddress, ilp32.protocolClassProperties);
+  assert.equal(ilp32Result.categories.length, 1);
+  assert.equal(ilp32Result.categories[0].name, 'ILP32Category');
+  assert.equal(ilp32Result.categories[0].className, 'ILP32Victim');
+  assert.equal(ilp32Result.categories[0].instancePropertiesAddress, ilp32.categoryProperties);
+  assert.equal(ilp32Result.categories[0].classPropertiesAddress, ilp32.categoryClassProperties);
   assert.equal(ilp32Result.completeness.protocols.declared, 1);
   assert.equal(ilp32Result.completeness.protocols.misalignedBytes, 0);
   assert.equal(ilp32Result.completeness.complete, true);
 
-  const byWidth = await parseObjcExtendedMetadata(ilp32.read, sections, { pointerBytes: 4 });
+  const byWidth = await parseObjcExtendedMetadata(ilp32.read, sections, { ...options, pointerBytes: 4 });
   assert.equal(byWidth.protocols[0]?.name, 'ILP32Protocol');
+  assert.equal(byWidth.categories[0]?.name, 'ILP32Category');
 
   // LP64 control: the same 4-byte section is a misaligned remainder.
   const lp64 = await parseObjcExtendedMetadata(ilp32.read, sections, {});
   assert.equal(lp64.protocols.length, 0);
+  assert.equal(lp64.categories.length, 0);
   assert.equal(lp64.completeness.protocols.misalignedBytes, 4);
+  assert.equal(lp64.completeness.categories.misalignedBytes, 4);
   assert.equal(lp64.completeness.complete, false);
 
   // Declared but unsupported / invalid ABI must publish an explicit reason and
@@ -173,6 +246,7 @@ test('#8280 extended protocol parser reads 4-byte pointers on ILP32', async () =
   ]) {
     const failed = await parseObjcExtendedMetadata(ilp32.read, sections, opts);
     assert.equal(failed.protocols.length, 0);
+    assert.equal(failed.categories.length, 0);
     assert.equal(failed.pointerBytes, null);
     assert.equal(failed.pointerAbiReason, reason);
     assert.equal(failed.completeness.complete, false);
@@ -186,6 +260,7 @@ test('#8280 runtime facade passes the declared architecture to both parsers', as
     ilp32.classList,
     {
       protocolList: ilp32.protocolList,
+      categoryList: ilp32.categoryList,
       architecture: 'arm64_32',
       executableRanges: [{ vmAddr: 0x2000n, size: 0x1000n }],
     },
@@ -197,5 +272,7 @@ test('#8280 runtime facade passes the declared architecture to both parsers', as
   assert.equal(model.classes[0].name, 'ILP32Victim');
   assert.equal(model.protocols.length, 1);
   assert.equal(model.protocols[0].name, 'ILP32Protocol');
+  assert.equal(model.categories.length, 1);
+  assert.equal(model.categories[0].className, 'ILP32Victim');
   assert.equal(model.runtimeCompleteness.complete, true);
 });
