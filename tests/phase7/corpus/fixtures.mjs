@@ -96,7 +96,10 @@ function provenanceLoss(options) {
   const c32 = f.constant('c32', 32);
   const p0 = f.binary('p0', 'add', sp, c0);
   const narrowed = f.cast('narrowed', 'trunc', p0, { widthBits: 32 });
-  const widened = f.cast('widened', 'zext', narrowed, { widthBits: 64 });
+  const widened = f.cast('widened', 'zext', narrowed, {
+    widthBits: 64,
+    attributes: { fromBits: 32, toBits: 64 },
+  });
   const other = f.binary('other', 'add', sp, c32);
   f.store('st_lost', widened, null, { widthBits: 32 });
   f.store('st_other', other, null, { widthBits: 32 });

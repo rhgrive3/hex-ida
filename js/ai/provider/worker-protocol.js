@@ -1,6 +1,8 @@
+import { PROPOSAL_DRAFT_SCHEMA } from '../schema.js';
 import { boundedText, byteLength, HttpError, MAX_CONTEXT_CHARS } from './worker-transport.js';
 
 const MAX_QUESTION_CHARS = 6000;
+export const MAX_SESSION_ID_CHARS = 128;
 const THINKING_LEVELS = new Set(['minimal', 'low', 'medium', 'high']);
 const AI_MODES = new Set(['chat', 'agent']);
 const AI_STYLES = new Set(['beginner', 'analyst']);
@@ -33,7 +35,17 @@ export function normalizeAITurnRequest(value) {
   const intent = boundedText(value.intent || value.context?.request?.intent, 100), task = boundedText(value.task || value.context?.request?.task, 100);
   const serialized = JSON.stringify({ messages, context, tools, requestedScope, effectiveScope, intent, task });
   if (byteLength(serialized) > MAX_CONTEXT_CHARS) throw new HttpError(413, 'request_too_large', 'The bounded AI context is too large.');
-  return { sessionId: boundedText(value.sessionId, 200) || null, mode, style, scope: effectiveScope, requestedScope, effectiveScope, intent: intent || null, task: task || null, goal, messages, context, tools };
+  let sessionId = null;
+  if (value.sessionId != null && value.sessionId !== '') {
+    if (typeof value.sessionId !== 'string') {
+      throw new HttpError(422, 'invalid_session_id', 'sessionId must be a string.');
+    }
+    if (value.sessionId.length > MAX_SESSION_ID_CHARS) {
+      throw new HttpError(422, 'invalid_session_id', `sessionId must not exceed ${MAX_SESSION_ID_CHARS} characters.`);
+    }
+    sessionId = value.sessionId;
+  }
+  return { sessionId, mode, style, scope: effectiveScope, requestedScope, effectiveScope, intent: intent || null, task: task || null, goal, messages, context, tools };
 }
 
 export function normalizeAITools(value) {
@@ -76,7 +88,8 @@ export function finalResultTool() {
       answer: { type: 'string', maxLength: 30000 }, confidence: { type: 'number', minimum: 0, maximum: 1 },
       evidenceIds: { type: 'array', items: { type: 'string' } }, hypothesisIds: { type: 'array', items: { type: 'string' } },
       hypotheses: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, claim: { type: 'string' }, confidence: { type: 'number' }, status: { type: 'string' }, supportEvidenceIds: { type: 'array', items: { type: 'string' } }, contradictionEvidenceIds: { type: 'array', items: { type: 'string' } }, missingEvidence: { type: 'array', items: { type: 'string' } } } } },
-      suggestedActions: { type: 'array', items: { type: 'object', required: ['kind'], properties: { kind: { type: 'string' }, target: { type: 'string' }, label: { type: 'string' }, evidenceId: { type: 'string' } } } }, followups: { type: 'array', items: { type: 'string' } },
+      suggestedActions: { type: 'array', items: { type: 'object', required: ['kind'], properties: { kind: { type: 'string' }, target: { type: 'string' }, label: { type: 'string' }, evidenceId: { type: 'string' } } } },
+      proposals: { type: 'array', maxItems: 8, items: PROPOSAL_DRAFT_SCHEMA }, followups: { type: 'array', items: { type: 'string' } },
     },
   } };
 }
@@ -100,7 +113,7 @@ export function normalizeAIInteraction(value, allowedTools) {
   if (!isObject(args)) throw new Error('The model function arguments must be an object.');
   if (name === 'submit_hex_result') {
     const answer = boundedText(args.answer, 30000).trim(); if (!answer) throw new Error('The final answer is empty.');
-    return { type: 'final', answer, confidence: finiteConfidence(args.confidence), evidenceIds: stringList(args.evidenceIds, 100), hypothesisIds: stringList(args.hypothesisIds, 100), hypotheses: normalizeList(args.hypotheses, 30), suggestedActions: normalizeList(args.suggestedActions, 30), followups: stringList(args.followups, 20) };
+    return { type: 'final', answer, confidence: finiteConfidence(args.confidence), evidenceIds: stringList(args.evidenceIds, 100), hypothesisIds: stringList(args.hypothesisIds, 100), hypotheses: normalizeList(args.hypotheses, 30), suggestedActions: normalizeList(args.suggestedActions, 30), proposals: normalizeList(args.proposals, 8), followups: stringList(args.followups, 20) };
   }
   if (!allowedTools.includes(name)) throw new Error('The model requested an unknown tool.');
   return { type: 'tool', tool: name, arguments: sanitizeValue(args, 0), purpose: boundedText(call.purpose, 1000) };

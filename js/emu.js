@@ -84,6 +84,8 @@ function normalizeMemorySize(size) {
   return n;
 }
 
+function isConditionalBranchMnemonic(mn) { return /^(b\.\w+|cbz|cbnz|tbz|tbnz)$/i.test(mn || ''); }
+
 export class Emulator {
   constructor(io) {
     this.io = io || {};
@@ -118,10 +120,12 @@ export class Emulator {
     this.log = [];
     this.breakpoints = new Set();
     this._runSignal = null;
+    this._branchTraceEvent = null;
   }
 
   _normalizeReg(reg) {
-    const name = String(reg || '').toLowerCase();
+    if (typeof reg !== 'string') throw new EmulatorFault('invalid-register', 'register selector must be a string', { register: reg });
+    const name = reg.toLowerCase();
     if (name === 'fp') return 'x29';
     if (name === 'lr') return 'x30';
     return name;
@@ -378,21 +382,28 @@ export class Emulator {
       return { ok: false, text: '', reason: this.stopped };
     }
     const text = (insn.mn + ' ' + (insn.ops || '')).trim();
-    if (this.trace.length < TRACE_MAX) this.trace.push({ addr: at, text });
+    let traceEvent = null;
+    if (this.trace.length < TRACE_MAX) { traceEvent = { addr: at, text }; this.trace.push(traceEvent); }
     else { this.traceTruncated = true; this.traceDropped++; }
     this.steps++;
 
     let next = at + 4n;
     this._runSignal = signal;
+    this._branchTraceEvent = isConditionalBranchMnemonic(insn.mn) ? traceEvent : null;
     try {
       const jumped = await this.execute(insn.mn.toLowerCase(), insn.ops || '', at);
       if (jumped != null) next = jumped;
     } catch (err) {
       if (signal?.aborted) throw abortError(signal);
       this.stopped = (err && err.message) || String(err);
+      // Keep the structured EmulatorFault.code resident on the emulator so a
+      // later step()/stepInto() after this fault still classifies by code
+      // instead of re-deriving the taxonomy from the message wording (#5838).
+      this.faultCode = (err && err.code) || null;
       return { ok: false, text, reason: this.stopped, code:err && err.code || null };
     } finally {
       this._runSignal = null;
+      this._branchTraceEvent = null;
     }
     this.pc = next;
     if (this.pc === 0n) this.stopped = '最初の呼び出し元まで戻ってきました（実行おわり）。';
@@ -440,18 +451,24 @@ export class Emulator {
     if (mn === 'b') return this.branchTarget(ops);
     if (/^b\.(\w+)$/.test(mn)) {
       const cc = /^b\.(\w+)$/.exec(mn)[1];
-      return this.cond(cc) ? this.branchTarget(ops) : null;
+      const taken = this.cond(cc);
+      this._recordConditionalBranch(ops, taken);
+      return taken ? this.branchTarget(ops) : null;
     }
     if (mn === 'cbz' || mn === 'cbnz') {
       const v = R(ops[0]);
       const zero = v === 0n;
-      return (mn === 'cbz' ? zero : !zero) ? this.branchTarget(ops) : null;
+      const taken = mn === 'cbz' ? zero : !zero;
+      this._recordConditionalBranch(ops, taken);
+      return taken ? this.branchTarget(ops) : null;
     }
     if (mn === 'tbz' || mn === 'tbnz') {
       const v = R(ops[0]);
       const bit = ops[1] && ops[1].value != null ? ops[1].value : 0n;
       const set = ((v >> bit) & 1n) === 1n;
-      return (mn === 'tbnz' ? set : !set) ? this.branchTarget(ops) : null;
+      const taken = mn === 'tbnz' ? set : !set;
+      this._recordConditionalBranch(ops, taken);
+      return taken ? this.branchTarget(ops) : null;
     }
     if (mn === 'bl' || mn === 'blr') {
       const target = mn === 'bl' ? this.branchTarget(ops) : R(ops[0]);
@@ -666,6 +683,12 @@ export class Emulator {
       if (ops[i].k === 'reg') return this.get(ops[i].text);
     }
     return null;
+  }
+
+  _recordConditionalBranch(ops, taken) {
+    const event = this._branchTraceEvent;
+    if (!event) return;
+    event.branch = { conditional: true, taken, target: taken ? this.branchTarget(ops) : null };
   }
 
   valueOf(op) {

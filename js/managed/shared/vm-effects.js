@@ -120,17 +120,62 @@ function array(value, code) {
   return value;
 }
 function nonEmpty(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') fail(code);
+  const text = value.trim();
   if (!text) fail(code);
   return text;
 }
+function optionalString(value, code) {
+  if (value == null || value === '') return null;
+  if (typeof value !== 'string') fail(code);
+  return value;
+}
 function nonNegativeInteger(value, code) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 0) fail(code);
-  return number;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) fail(code);
+  return value;
 }
 function assertAllowedKeys(input, allowed, code) {
   for (const key of Object.keys(input)) if (!allowed.has(key)) fail(`${code}:${key}`);
+}
+function validateUnknownEffect(value) {
+  const effect = object(value, 'vm-effect-invalid-unknown-effect');
+  const categoryDescriptor = Object.getOwnPropertyDescriptor(effect, 'category');
+  if (!categoryDescriptor || !Object.prototype.hasOwnProperty.call(categoryDescriptor, 'value')) {
+    fail('vm-effect-invalid-unknown-category');
+  }
+  const category = categoryDescriptor.value;
+  if (typeof category !== 'string' || !SETS.unknownCategories.has(category)) {
+    fail('vm-effect-invalid-unknown-category');
+  }
+  return effect;
+}
+function normalizeUnknownEffect(value) {
+  object(value, 'vm-effect-invalid-unknown-effect');
+  const normalized = jsonSafe(value);
+  validateUnknownEffect(normalized);
+  return normalized;
+}
+function unknownEffectsForValidation(bundle) {
+  const descriptor = Object.getOwnPropertyDescriptor(bundle, 'unknownEffects');
+  if (!descriptor) {
+    if ('unknownEffects' in bundle) fail('vm-effect-invalid-unknown-effects');
+    return [];
+  }
+  if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+    fail('vm-effect-invalid-unknown-effects');
+  }
+  const effects = descriptor.value;
+  if (effects == null) return [];
+  array(effects, 'vm-effect-invalid-unknown-effects');
+  const stable = new Array(effects.length);
+  for (let index = 0; index < effects.length; index += 1) {
+    const elementDescriptor = Object.getOwnPropertyDescriptor(effects, String(index));
+    if (!elementDescriptor || !Object.prototype.hasOwnProperty.call(elementDescriptor, 'value')) {
+      fail('vm-effect-invalid-unknown-effect');
+    }
+    stable[index] = elementDescriptor.value;
+  }
+  return stable;
 }
 function assertNotAborted(options) {
   if (options?.signal?.aborted) {
@@ -142,9 +187,8 @@ function assertNotAborted(options) {
 
 function budgetValue(options, key) {
   const raw = options?.budget?.[key] ?? VM_EFFECT_DEFAULT_BUDGET[key];
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value < 0) fail(`vm-effect-invalid-budget-${key}`);
-  return value;
+  if (typeof raw !== 'number' || !Number.isSafeInteger(raw) || raw < 0) fail(`vm-effect-invalid-budget-${key}`);
+  return raw;
 }
 
 export function createVMEffectBudgetTracker(options = {}) {
@@ -159,9 +203,8 @@ export function createVMEffectBudgetTracker(options = {}) {
   const checkpoint = () => assertNotAborted(options);
   const charge = (field, count, limit, code) => {
     checkpoint();
-    const n = Number(count);
-    if (!Number.isSafeInteger(n) || n < 0) fail('vm-effect-invalid-budget-charge');
-    const next = field + n;
+    if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) fail('vm-effect-invalid-budget-charge');
+    const next = field + count;
     if (next > limit) fail(code);
     return next;
   };
@@ -201,30 +244,35 @@ export function createVMEffectBundle(input, options = {}) {
   const callEffects = array(input.callEffects ?? [], 'vm-effect-invalid-call-effects');
   const controlEffects = array(input.controlEffects ?? [], 'vm-effect-invalid-control-effects');
   const possibleExceptions = array(input.possibleExceptions ?? [], 'vm-effect-invalid-exceptions');
+  const unknownEffects = array(input.unknownEffects ?? [], 'vm-effect-invalid-unknown-effects')
+    .map((effect) => normalizeUnknownEffect(effect));
 
-  if (completeness === 'partial' || completeness === 'unknown') {
-    if (!input.unknownEffects || !Array.isArray(input.unknownEffects) || input.unknownEffects.length === 0) {
-      fail('vm-effect-partial-must-specify-unknown-effects');
-    }
+  if ((completeness === 'partial' || completeness === 'unknown') && unknownEffects.length === 0) {
+    fail('vm-effect-partial-must-specify-unknown-effects');
   }
 
-  const schemaVersion = Number(input.schemaVersion ?? VM_EFFECTS_SCHEMA_VERSION);
-  if (schemaVersion !== VM_EFFECTS_SCHEMA_VERSION) fail('vm-effect-schema-version-mismatch');
+  const schemaVersion = input.schemaVersion ?? VM_EFFECTS_SCHEMA_VERSION;
+  if (typeof schemaVersion !== 'number' || schemaVersion !== VM_EFFECTS_SCHEMA_VERSION) fail('vm-effect-schema-version-mismatch');
 
-  const contractVersion = String(input.contractVersion ?? VM_EFFECTS_CONTRACT_VERSION);
-  if (contractVersion !== VM_EFFECTS_CONTRACT_VERSION) fail('vm-effect-contract-version-mismatch');
+  const contractVersion = input.contractVersion ?? VM_EFFECTS_CONTRACT_VERSION;
+  if (typeof contractVersion !== 'string' || contractVersion !== VM_EFFECTS_CONTRACT_VERSION) fail('vm-effect-contract-version-mismatch');
+
+  const frontendSemanticVersion = nonEmpty(input.frontendSemanticVersion ?? '1.0.0', 'vm-effect-invalid-frontend-semantic-version');
+  const profileId = optionalString(input.profileId, 'vm-effect-invalid-profile-id');
+  const mnemonic = optionalString(input.mnemonic, 'vm-effect-invalid-mnemonic');
+  const opcode = input.opcode != null ? nonNegativeInteger(input.opcode, 'vm-effect-invalid-opcode') : null;
 
   const out = {
     schemaVersion,
     contractVersion,
     frontendId,
-    frontendSemanticVersion: String(input.frontendSemanticVersion ?? '1.0.0'),
-    profileId: input.profileId ? String(input.profileId) : null,
+    frontendSemanticVersion,
+    profileId,
     methodId,
     operationId,
     bytecodeOffset,
-    opcode: input.opcode != null ? Number(input.opcode) : null,
-    mnemonic: input.mnemonic ? String(input.mnemonic) : null,
+    opcode,
+    mnemonic,
     consumedValues: deepFreeze(consumedValues.map((v) => jsonSafe(v))),
     producedValues: deepFreeze(producedValues.map((v) => jsonSafe(v))),
     locationReads: deepFreeze(locationReads.map((r) => jsonSafe(r))),
@@ -235,7 +283,7 @@ export function createVMEffectBundle(input, options = {}) {
     possibleExceptions: deepFreeze(possibleExceptions.map((e) => jsonSafe(e))),
     origin: createOriginSet(input.origin ?? { operationIds: [operationId] }),
     completeness,
-    unknownEffects: input.unknownEffects ? deepFreeze(input.unknownEffects.map((u) => jsonSafe(u))) : Object.freeze([]),
+    unknownEffects: deepFreeze(unknownEffects),
     metadata: input.metadata ? deepFreeze(jsonSafe(input.metadata)) : Object.freeze({}),
   };
 
@@ -243,10 +291,49 @@ export function createVMEffectBundle(input, options = {}) {
 }
 
 export function validateVMEffectBundle(bundle) {
-  if (!bundle || typeof bundle !== 'object') fail('vm-effect-bundle-invalid');
-  if (!bundle.operationId || !bundle.methodId || !bundle.frontendId) fail('vm-effect-bundle-missing-identity');
+  bundle = object(bundle, 'vm-effect-bundle-invalid');
+  nonEmpty(bundle.operationId, 'vm-effect-bundle-missing-identity');
+  nonEmpty(bundle.methodId, 'vm-effect-bundle-missing-identity');
+  nonEmpty(bundle.frontendId, 'vm-effect-bundle-missing-identity');
   if (!SETS.completeness.has(bundle.completeness)) fail('vm-effect-bundle-invalid-completeness');
+  if (typeof bundle.schemaVersion !== 'number' || bundle.schemaVersion !== VM_EFFECTS_SCHEMA_VERSION) {
+    fail('vm-effect-schema-version-mismatch');
+  }
+  if (typeof bundle.contractVersion !== 'string' || bundle.contractVersion !== VM_EFFECTS_CONTRACT_VERSION) {
+    fail('vm-effect-contract-version-mismatch');
+  }
+  nonNegativeInteger(bundle.bytecodeOffset, 'vm-effect-invalid-bytecode-offset');
+  if (bundle.opcode != null) nonNegativeInteger(bundle.opcode, 'vm-effect-invalid-opcode');
+  nonEmpty(bundle.frontendSemanticVersion, 'vm-effect-invalid-frontend-semantic-version');
+  if (bundle.profileId != null && typeof bundle.profileId !== 'string') fail('vm-effect-invalid-profile-id');
+  if (bundle.mnemonic != null && typeof bundle.mnemonic !== 'string') fail('vm-effect-invalid-mnemonic');
+  array(bundle.consumedValues ?? [], 'vm-effect-invalid-consumed-values');
+  array(bundle.producedValues ?? [], 'vm-effect-invalid-produced-values');
+  array(bundle.locationReads ?? [], 'vm-effect-invalid-location-reads');
+  array(bundle.locationWrites ?? [], 'vm-effect-invalid-location-writes');
+  array(bundle.memoryEffects ?? [], 'vm-effect-invalid-memory-effects');
+  array(bundle.callEffects ?? [], 'vm-effect-invalid-call-effects');
+  array(bundle.controlEffects ?? [], 'vm-effect-invalid-control-effects');
+  array(bundle.possibleExceptions ?? [], 'vm-effect-invalid-exceptions');
+  const unknownEffects = unknownEffectsForValidation(bundle);
+  for (const effect of unknownEffects) validateUnknownEffect(effect);
+  if ((bundle.completeness === 'partial' || bundle.completeness === 'unknown') && unknownEffects.length === 0) {
+    fail('vm-effect-partial-must-specify-unknown-effects');
+  }
   return true;
+}
+
+function validateFunctionBundleOwnership(fn, bundle) {
+  if (bundle.methodId !== fn.methodId) fail('vm-effect-function-bundle-method-mismatch');
+  if (bundle.frontendId !== fn.frontendId) fail('vm-effect-function-bundle-frontend-mismatch');
+  if (fn.profileId != null && bundle.profileId != null && bundle.profileId !== fn.profileId) {
+    fail('vm-effect-function-bundle-profile-mismatch');
+  }
+}
+
+export function assertVMEffectFunctionBundleOwnership(fn, bundles = fn?.bundles) {
+  if (!Array.isArray(bundles)) return;
+  for (const bundle of bundles) validateFunctionBundleOwnership(fn, bundle);
 }
 
 export function createVMEffectFunction(input, options = {}) {
@@ -260,6 +347,7 @@ export function createVMEffectFunction(input, options = {}) {
 
   const methodId = nonEmpty(input.methodId, 'vm-effect-method-id-required');
   const frontendId = nonEmpty(input.frontendId, 'vm-effect-frontend-id-required');
+  const profileId = optionalString(input.profileId, 'vm-effect-invalid-profile-id');
   const bundles = array(input.bundles ?? [], 'vm-effect-function-bundles-required');
   const exceptionRegions = array(input.exceptionRegions ?? [], 'vm-effect-function-exceptions-invalid');
   if (bundles.length > budgetValue(options, 'maxOperations')) fail('vm-effect-resource-limit-operations');
@@ -309,14 +397,17 @@ export function createVMEffectFunction(input, options = {}) {
     resolutionCompleteness = 'complete';
   }
 
+  const functionIdentity = { methodId, frontendId, profileId };
+  assertVMEffectFunctionBundleOwnership(functionIdentity, outBundles);
+
   const out = {
     methodId,
-    profileId: input.profileId ? String(input.profileId) : null,
+    profileId,
     frontendId,
     entryState: input.entryState ? deepFreeze(jsonSafe(input.entryState)) : Object.freeze({}),
     bundles: deepFreeze(outBundles),
     exceptionRegions: deepFreeze(exceptionRegions.map((r) => jsonSafe(r))),
-    validationReportId: input.validationReportId ? String(input.validationReportId) : null,
+    validationReportId: optionalString(input.validationReportId, 'vm-effect-invalid-validation-report-id'),
     aggregateCompleteness,
     resolutionCompleteness: input.resolutionCompleteness != null ? resolutionCompleteness : 'complete',
     origin: createOriginSet(input.origin ?? { parentEntityIds: [methodId] }),
@@ -327,9 +418,16 @@ export function createVMEffectFunction(input, options = {}) {
 }
 
 export function validateVMEffectFunction(fn) {
-  if (!fn || typeof fn !== 'object') fail('vm-effect-function-invalid');
-  if (!fn.methodId || !fn.frontendId || !Array.isArray(fn.bundles)) fail('vm-effect-function-invalid-structure');
+  fn = object(fn, 'vm-effect-function-invalid');
+  if (fn.methodId != null && typeof fn.methodId !== 'string') fail('vm-effect-function-invalid-structure');
+  if (fn.frontendId != null && typeof fn.frontendId !== 'string') fail('vm-effect-function-invalid-structure');
+  nonEmpty(fn.methodId, 'vm-effect-function-missing-identity');
+  nonEmpty(fn.frontendId, 'vm-effect-function-missing-identity');
+  array(fn.bundles, 'vm-effect-function-invalid-structure');
+  if (fn.profileId != null && typeof fn.profileId !== 'string') fail('vm-effect-function-invalid-structure');
+  if (fn.validationReportId != null && typeof fn.validationReportId !== 'string') fail('vm-effect-function-invalid-structure');
   for (const b of fn.bundles) validateVMEffectBundle(b);
+  array(fn.exceptionRegions ?? [], 'vm-effect-function-exceptions-invalid');
   // #5404: the aggregate field is part of the validated contract, not free text.
   if (!VM_EFFECT_COMPLETENESS.includes(fn.aggregateCompleteness)) fail('vm-effect-aggregate-completeness-invalid');
   if (!VM_EFFECT_RESOLUTION_COMPLETENESS.includes(fn.resolutionCompleteness)) fail('vm-effect-resolution-completeness-invalid');
@@ -344,5 +442,6 @@ export function validateVMEffectFunction(fn) {
   if (AGGREGATE_STRENGTH[fn.aggregateCompleteness] > AGGREGATE_STRENGTH[derived]) {
     fail('vm-effect-aggregate-completeness-contradiction');
   }
+  assertVMEffectFunctionBundleOwnership(fn);
   return true;
 }

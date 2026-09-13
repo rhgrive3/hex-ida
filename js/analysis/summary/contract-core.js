@@ -13,7 +13,7 @@
  * `completeness: 'complete'` cannot coexist.
  */
 
-import { deepFreeze, stableDigest } from '../../core/identity/index.js';
+import { deepFreeze, lossyTypeWitness, stableDigest } from '../../core/identity/index.js';
 import { aliasMemoryRegions } from '../alias/legacy-safety-floor.js';
 import { deriveMemoryRegion, isPreciseMemoryRegion } from '../alias/regions-v2.js';
 import { createAnalysisStatus, isCompleteStatus } from '../status.js';
@@ -174,6 +174,7 @@ export function createMemoryEffect(input = {}) {
   const regionId = input.regionId == null ? null : nonEmpty(input.regionId, 'function-summary-invalid-region-id');
   const regionKind = nonEmpty(input.regionKind ?? 'unknown', 'function-summary-invalid-region-kind');
   const broad = input.broad === true;
+  if (!broad && regionId == null) fail('function-summary-unresolved-memory-region');
   if (broad && input.region != null) fail('function-summary-broad-effect-cannot-carry-region-proof');
   const region = input.region == null ? null : canonicalSummaryRegion(input.region, regionId, regionKind);
   if (input.region != null && region == null) fail('function-summary-invalid-region-proof');
@@ -463,7 +464,7 @@ export function functionSummaryDigest(summary) {
   // The digest is the semantic dependency identity. Every consumer-visible
   // FunctionSummary field belongs here; otherwise a callee can change meaning
   // without invalidating callers or advancing a recursive fixed point.
-  return stableDigest({
+  const payload = {
     schemaVersion: summary.schemaVersion,
     contractVersion: summary.contractVersion,
     functionId: summary.functionId,
@@ -487,7 +488,19 @@ export function functionSummaryDigest(summary) {
     // Hash the canonical envelope as one unit so a future status field cannot
     // be silently omitted from dependency identity / fixed-point convergence.
     status: summary.status,
+  };
+  // #4654: `escapes`/`semanticFacts` carry producer-shaped structured values
+  // through the canonical constructor, and `jsonSafe` silently drops an object
+  // property whose value is undefined/function/symbol/non-finite (and folds
+  // -0 to 0, bigint to string). Two consumer-visible summaries could digest
+  // identically through that lossy normalization. Fold the same type witness
+  // `createEntityId()`/`createEvidenceId()` use into the dependency identity,
+  // only when lossy values are present so JSON-safe digests stay stable.
+  const semanticWitness = lossyTypeWitness({
+    escapes: summary.escapes,
+    semanticFacts: summary.semanticFacts,
   });
+  return stableDigest(semanticWitness ? { ...payload, semanticValueTypes: semanticWitness } : payload);
 }
 
 /**

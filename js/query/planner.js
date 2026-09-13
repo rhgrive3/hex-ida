@@ -13,6 +13,9 @@ const POOL_ORDER = Object.freeze(['lexical', 'string', 'graph', 'recognition', '
 const POOL_SHARE = Object.freeze({ lexical: 0.29, string: 0.17, graph: 0.21, recognition: 0.17, runtime: 0.06, semantic: 0.06, exploration: 0.04 });
 const MAX_CANDIDATE_ANALYSIS_FAILURE_DIAGNOSTICS = 8;
 const MAX_CANDIDATE_ANALYSIS_FAILURE_CODE = 128;
+const MAX_EXPECTED_CALL_HINTS = 8;
+const MAX_EXPECTED_CALL_MATCHES = 2;
+const EXPECTED_CALL_CALLER_LIMIT = 12;
 
 function asAddr(v) {
   if (typeof v === 'bigint') return v >= 0n ? v : null;
@@ -242,6 +245,24 @@ function uniqueTerms(query) {
   }
   return out.slice(0, 16);
 }
+function expectedCallHints(query) {
+  const raw = Array.isArray(query?.expect?.calls) ? query.expect.calls : [];
+  const hints = [];
+  const seen = new Set();
+  let total = 0;
+  let malformed = false;
+  for (const value of raw) {
+    if (typeof value !== 'string') { malformed = true; continue; }
+    const call = value.trim();
+    const key = call.toLowerCase();
+    if (!call) { malformed = true; continue; }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    total += 1;
+    if (hints.length < MAX_EXPECTED_CALL_HINTS) hints.push(call);
+  }
+  return { hints, total, malformed };
+}
 function explicitBudget(value, fallback, minimum = 0) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
   return Math.max(minimum, Math.floor(value));
@@ -457,8 +478,8 @@ function searchCompleteness(result, requestedLimit) {
     : nested?.reason ?? result?.reason ?? (complete ? null : 'result-limit');
   return { complete, coverage, reason, returned, total };
 }
-function noteSearch(b, tool, term, result) {
-  const report = { tool, term, ...searchCompleteness(result, b.maxSearchResults) };
+function noteSearch(b, tool, term, result, requestedLimit = b.maxSearchResults) {
+  const report = { tool, term, ...searchCompleteness(result, requestedLimit) };
   b.searchReports.push(report);
   if (!report.complete) b.searchIncomplete = true;
   return report.coverage;
@@ -549,6 +570,64 @@ async function candidatePools(query, tools, ctx, b) {
     }
   }
 
+  // Goal Compiler call hints are structural discovery evidence, not merely a
+  // post-shortlist score bonus. Resolve a bounded set through the existing
+  // function/symbol search surface, then enumerate each resolved callee's
+  // callers. Both producer stages feed the same completeness accounting used
+  // by lexical/string discovery, so capped symbol or caller queries cannot be
+  // promoted to complete candidate coverage.
+  const expectedCallSource = expectedCallHints(query);
+  const expectedCalls = expectedCallSource.hints;
+  if (expectedCallSource.malformed || expectedCallSource.total > expectedCalls.length) {
+    const report = {
+      tool: 'expected_call_hints',
+      term: 'query.expect.calls',
+      complete: false,
+      coverage: expectedCallSource.malformed
+        ? 0.65
+        : expectedCallSource.total ? expectedCalls.length / expectedCallSource.total : 1,
+      reason: expectedCallSource.malformed ? 'malformed-expected-call-hint' : 'expected-call-hint-limit',
+      returned: expectedCalls.length,
+      total: expectedCallSource.total,
+    };
+    b.searchReports.push(report);
+    b.searchIncomplete = true;
+  }
+  const expectedMatchLimit = Math.max(1, Math.min(MAX_EXPECTED_CALL_MATCHES, b.maxSearchResults));
+  const expectedCallerLimit = EXPECTED_CALL_CALLER_LIMIT;
+  for (const expected of expectedCalls) {
+    if (expired(b)) break;
+    const callees = await invokeTool(tools, 'search_functions', b, expected, { limit: expectedMatchLimit });
+    if (expired(b)) break;
+    const calleeCoverage = noteSearch(b, 'search_functions', `expected-call:${expected}`, callees, expectedMatchLimit);
+    for (const row of callees.results || []) {
+      const callee = resultAddress(row);
+      if (callee == null) continue;
+      const callers = await invokeTool(tools, 'get_callers', b, callee, { limit: expectedCallerLimit });
+      if (expired(b)) break;
+      const callerCoverage = noteSearch(
+        b,
+        'get_callers',
+        `expected-call-caller:${expected}@${callee}`,
+        callers,
+        expectedCallerLimit,
+      );
+      const coverage = calleeCoverage * callerCoverage;
+      for (const caller of callers.results || []) {
+        addCandidate(
+          pools,
+          'graph',
+          caller.addr ?? caller.function ?? caller.functionAddress,
+          `expected-call:${expected}`,
+          expected,
+          10,
+          coverage,
+          sourcePoolCap(b, 'graph'),
+        );
+      }
+    }
+  }
+
   const priors = Array.isArray(ctx.candidateFunctions) ? ctx.candidateFunctions : [];
   const priorIdentities = Object.fromEntries(POOL_ORDER.map((name) => [name, new Set()]));
   for (const c of priors) {
@@ -594,6 +673,7 @@ async function expandCallNeighborhood(pools, tools, b) {
     if (expired(b)) break;
     const callers = await invokeTool(tools, 'get_callers', b, c.address, { limit: 12 });
     if (expired(b)) break;
+    const callerCoverage = noteSearch(b, 'get_callers', `caller@${c.address}`, callers, 12);
     for (const row of callers.results || []) {
       addCandidate(
         pools,
@@ -602,12 +682,13 @@ async function expandCallNeighborhood(pools, tools, b) {
         'caller',
         null,
         2,
-        1,
+        callerCoverage,
         graphCap,
       );
     }
     const callees = await invokeTool(tools, 'get_callees', b, c.address, { limit: 12 });
     if (expired(b)) break;
+    const calleeCoverage = noteSearch(b, 'get_callees', `callee@${c.address}`, callees, 12);
     for (const row of callees.results || []) {
       addCandidate(
         pools,
@@ -616,7 +697,7 @@ async function expandCallNeighborhood(pools, tools, b) {
         'callee',
         null,
         1,
-        1,
+        calleeCoverage,
         graphCap,
       );
     }
@@ -694,6 +775,7 @@ function sourceCompleteness(pools, b) {
 }
 
 async function analyzeCandidates(query, pools, tools, b) {
+  const expectedCalls = expectedCallHints(query).hints;
   const merged = quotaMerge(pools, b.maxFunctions);
   b.candidateCount = merged.all.size;
   b.shortlistLimited = merged.all.size > b.maxFunctions;
@@ -731,9 +813,9 @@ async function analyzeCandidates(query, pools, tools, b) {
       complete: semanticReport.complete, coverage: semanticReport.coverage, reason: semanticReport.reason,
       returned: semanticReport.returned, total: semanticReport.total,
     };
-    if (query.expect && query.expect.calls && query.expect.calls.length && c.summary) {
+    if (expectedCalls.length && c.summary) {
       const names = (c.summary.calls || []).map((x) => lower(x.name || x.selector || ''));
-      if (query.expect.calls.some((expected) => names.some((n) => n.includes(lower(expected))))) c.score += 20;
+      if (expectedCalls.some((expected) => names.some((n) => n.includes(lower(expected))))) c.score += 20;
     }
     analyzed.push(c);
   }
