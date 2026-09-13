@@ -168,3 +168,26 @@ test('#6039 overlapping union without trustworthy total extent stays fail-closed
   assert.equal(result.partial, true);
   assert.match(result.reason, /layout-unproven/);
 });
+
+test('#6039 union extent rejects members outside the declared object span', () => {
+  const invalidMembers = [
+    ['oversized', { type:'__int128', bits:128, bytes:16, byteOffset:0 }],
+    ['offset-overrun', { type:'uint32_t', bits:32, bytes:4, byteOffset:6 }],
+  ];
+  for (const [label, invalidMember] of invalidMembers) {
+    const aggregate = canonicalAggregate('union U', [invalidMember, u64(0)]);
+    const result = classifyReturn(RISCV_LP64D_ABI, aggregate);
+    assert.equal(result.partial, true, `${label}: return must remain partial`);
+    assert.match(result.reason, /layout-unproven|flattening-not-proven/, `${label}: return reason`);
+
+    const argument = RISCV_LP64D_ABI.classifyArguments({ callPrototype:{ args:[{
+      type:aggregate.returnType,
+      aggregate:true,
+      bits:aggregate.returnBits,
+      layout:aggregate.layout,
+    }] } }).arguments[0];
+    assert.equal(argument.partial, true, `${label}: argument must remain partial`);
+    assert.equal(argument.exact, false, `${label}: argument must not mint exact placement`);
+    assert.equal(argument.location, 'unknown', `${label}: argument location must stay unknown`);
+  }
+});

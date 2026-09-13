@@ -323,6 +323,51 @@ function aggregateUnionExtent(parameter) {
   const bits = exactPositiveAlias(['bits', 'sizeBits', 'returnBits']);
   const bytes = exactPositiveAlias(['bytes', 'sizeBytes']);
   if (bits == null || bytes == null || Math.ceil(bits / 8) > bytes) return null;
+
+  const memberSpan = (member) => {
+    if (member == null || typeof member !== 'object' || Array.isArray(member)) return null;
+    if (Object.hasOwn(member, 'layout')
+      && (member.layout == null || typeof member.layout !== 'object' || Array.isArray(member.layout))) return null;
+    const memberOwners = [member];
+    if (member.layout && typeof member.layout === 'object') memberOwners.push(member.layout);
+    const exactAlias = (aliases, { positive = true } = {}) => {
+      let value = null;
+      let present = false;
+      for (const owner of memberOwners) {
+        for (const alias of aliases) {
+          if (!Object.hasOwn(owner, alias)) continue;
+          present = true;
+          const candidate = owner[alias];
+          if (typeof candidate !== 'number' || !Number.isSafeInteger(candidate)
+            || (positive ? candidate <= 0 : candidate < 0)) return { valid:false, present:true, value:null };
+          if (value != null && candidate !== value) return { valid:false, present:true, value:null };
+          value = candidate;
+        }
+      }
+      return { valid:true, present, value };
+    };
+    const offset = exactAlias(['byteOffset', 'offsetBytes', 'offset'], { positive:false });
+    const memberBits = exactAlias(['bits', 'sizeBits']);
+    const memberBytes = exactAlias(['bytes', 'sizeBytes', 'length']);
+    if (!offset.valid || !offset.present || !memberBits.valid || !memberBytes.valid
+      || (!memberBits.present && !memberBytes.present)) return null;
+    const spanBytes = memberBytes.present ? memberBytes.value : Math.ceil(memberBits.value / 8);
+    if (memberBits.present && Math.ceil(memberBits.value / 8) > spanBytes) return null;
+    return { offset:offset.value, bytes:spanBytes };
+  };
+
+  for (const owner of owners) {
+    for (const alias of ['members', 'fields', 'elements']) {
+      if (!Object.hasOwn(owner, alias)) continue;
+      const descriptors = owner[alias];
+      if (typeof descriptors === 'number' && Number.isSafeInteger(descriptors) && descriptors >= 0) continue;
+      if (!Array.isArray(descriptors) || descriptors.length === 0) return null;
+      for (const member of descriptors) {
+        const span = memberSpan(member);
+        if (!span || span.bytes > bytes || span.offset > bytes - span.bytes) return null;
+      }
+    }
+  }
   return { bits, bytes };
 }
 
