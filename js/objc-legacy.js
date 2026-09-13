@@ -34,6 +34,7 @@ const CLASS_SIZE = 40;
 
 const PROP_STRIDE = 16;         // property_t = name* + attributes*
 const MAX_PROPS = 400;
+const MAX_PROTOCOLS = 400;
 
 const IVAR_STRIDE_MIN = 32;     // ivar_t = offset* + name* + type* + alignment + size
 const MAX_IVARS = 400;
@@ -99,6 +100,7 @@ function legacyLayout(pointerBytes) {
     roInstanceSize:8,
     roName:ilp32 ? 16 : 24,
     roMethods:ilp32 ? 20 : 32,
+    roProtocols:ilp32 ? 24 : 40,
     roIvars:ilp32 ? 28 : 48,
     roProps:ilp32 ? 36 : 64,
     roSize:ilp32 ? 40 : 72,
@@ -312,7 +314,7 @@ async function cstring(get, addr) {
 function newLegacyCompleteness(present, declared = 0) {
   return {
     present: !!present, declared, scanned: 0, parsed: 0, capped: false,
-    unreadableSlots: 0, invalidEntries: 0, invalidIvars: 0, incompleteMethodLists: 0,
+    unreadableSlots: 0, invalidEntries: 0, invalidIvars: 0, invalidProtocols: 0, incompleteMethodLists: 0,
     misalignedBytes: 0, sizeValid: true, reasons: [], complete: !present,
   };
 }
@@ -609,6 +611,30 @@ async function readProperties(get, listAddr) {
   return out;
 }
 
+async function readProtocolList(get, listAddr, completeness = null) {
+  const out = [];
+  if (listAddr == null) return out;
+  const pointerBytes = pointerBytesOf(get);
+  const head = await get(listAddr, pointerBytes);
+  if (!head || head.length < pointerBytes) { markLegacyPartial(completeness, 'protocol-list-unreadable', 'invalidProtocols'); return out; }
+  const declared = readWord(get, head, 0);
+  if (declared === 0n) return out;
+  if (declared > BigInt(MAX_PROTOCOLS)) { markLegacyPartial(completeness, 'protocol-list-capped', 'invalidProtocols'); return out; }
+  for (let i = 0; i < Number(declared); i++) {
+    const slot = listAddr + BigInt(pointerBytes) + BigInt(i * pointerBytes);
+    const raw = await get(slot, pointerBytes);
+    if (!raw || raw.length < pointerBytes) { markLegacyPartial(completeness, 'protocol-entry-unreadable', 'invalidProtocols'); continue; }
+    const address = cleanPointer(get, readWord(get, raw, 0));
+    if (address == null) { markLegacyPartial(completeness, 'protocol-pointer-unresolved', 'invalidProtocols'); continue; }
+    const nameCell = await get(address, pointerBytes * 2);
+    const name = nameCell ? await cstring(get, cleanPointer(get, readWord(get, nameCell, pointerBytes))) : null;
+    if (!name) { markLegacyPartial(completeness, 'protocol-name-invalid', 'invalidProtocols'); continue; }
+    out.push({ name, address });
+  }
+  if (out.length !== Number(declared)) markLegacyPartial(completeness, 'protocol-list-incomplete', 'invalidProtocols');
+  return out;
+}
+
 /** クラス 1 つぶん（インスタンスメソッドとクラスメソッドの両方）。 */
 async function readClass(get, classAddr, out, seen, meta, completeness = null) {
   if (classAddr == null || seen.has(classAddr.toString())) return null;
@@ -657,6 +683,11 @@ async function readClass(get, classAddr, out, seen, meta, completeness = null) {
         info.properties = await readProperties(get, cleanPointer(get, readWord(get, ro, layout.roProps)));
       }
     } catch { info.properties = []; }
+    try {
+      if (ro.length >= layout.roProtocols + layout.pointerBytes) {
+        info.protocols = await readProtocolList(get, cleanPointer(get, readWord(get, ro, layout.roProtocols)), completeness);
+      }
+    } catch { info.protocols = []; }
   }
 
   // isa はメタクラス。そちらにクラスメソッド（+）が入っている。
