@@ -129,7 +129,9 @@ export class SwiftMetadataProvider extends LanguageMetadataProvider {
       });
     }
 
-    const model = await buildSwiftMetadataModel(this.readAt, this.sections, this.options);
+    // The provider knows the binary architecture; Swift pointer-sized ABI reads
+    // must derive their width from it instead of defaulting to LP64 (#8309).
+    const model = await buildSwiftMetadataModel(this.readAt, this.sections, { architecture: this.architecture, ...this.options });
     if (!model || this.options.signal?.aborted === true) {
       return createLanguageMetadataResult({
         providerId: this.id,
