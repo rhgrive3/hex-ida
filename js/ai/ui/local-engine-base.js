@@ -12,6 +12,7 @@
  */
 import { runDeterministicAgent } from '../../agent/runtime.js';
 import { plannerGoalWithTargetHint } from '../context/planner-target-hint.js';
+import { compactUntrustedTarget } from '../context/broker.js';
 import { streamGemini } from '../../gemini.js';
 import { addrHex } from '../../format.js';
 import { pick } from '../../i18n.js';
@@ -131,6 +132,7 @@ async function runChat({ app, question, mode, style, scope, context, signal, onA
   const payload = {
     question: (compactGuidance(prompt) + '\n\n' + question).slice(0, 6000),
     thinkingLevel: style === 'analyst' ? 'high' : 'medium',
+    untrustedTarget: compactUntrustedTarget(context.untrustedTarget),
     currentFunction: { address, name: activeFn ? activeFn.name : null, assembly, pseudocode: null },
     xrefs: [], callers: [], callees: [], strings: [], globals: [],
   };

@@ -76,6 +76,62 @@ const hostileBuilt = broker.buildModelContext({
 assert.equal(coerced, 0, 'untrusted target payloads must not invoke coercion hooks');
 assert.deepEqual(hostileBuilt.context.untrustedTarget, { kind: 'binary-string', trust: 'untrusted-data' });
 
+// ContextBroker must apply the same own-data-only boundary as the planner hint.
+function buildTarget(target) {
+  return broker.buildModelContext({
+    request: { mode: 'agent', scope: 'binary', effectiveScope: 'binary', untrustedTarget: target },
+    session: { investigationMemory: { goal: 'Inspect selected target.' }, messages: [] },
+    budgetBytes: 4096,
+  }).context.untrustedTarget;
+}
+
+const targetData = { kind: 'binary-string', address: '0x1234', text: 'selected text', name: 'selected name', label: 'selected label' };
+for (const key of Object.keys(targetData)) {
+  for (const throws of [false, true]) {
+    let accessed = 0;
+    const target = { ...targetData };
+    Object.defineProperty(target, key, {
+      enumerable: true,
+      get() {
+        accessed++;
+        if (throws) throw new Error('target accessor must not run');
+        return targetData[key];
+      },
+    });
+    const compacted = buildTarget(target);
+    assert.equal(accessed, 0, `${key}: ${throws ? 'throwing' : 'returning'} accessor must never run`);
+    if (key === 'kind') {
+      assert.equal(compacted, undefined, 'an accessor cannot supply the required target kind');
+    } else {
+      const expected = { ...targetData, trust: 'untrusted-data' };
+      delete expected[key];
+      assert.deepEqual(compacted, expected, `${key}: omit the accessor while retaining valid own data`);
+    }
+  }
+}
+
+assert.equal(buildTarget(Object.create(targetData)), undefined, 'inherited data cannot supply the required target kind');
+assert.deepEqual(buildTarget(Object.assign(Object.create(targetData), { kind: 'binary-string' })), {
+  kind: 'binary-string', trust: 'untrusted-data',
+}, 'inherited payload data must not enter model context');
+
+let inheritedAccesses = 0;
+const accessorPrototype = {};
+for (const key of Object.keys(targetData)) {
+  Object.defineProperty(accessorPrototype, key, {
+    get() { inheritedAccesses++; throw new Error('inherited target accessor must not run'); },
+  });
+}
+assert.equal(buildTarget(Object.create(accessorPrototype)), undefined);
+const ownKind = Object.create(accessorPrototype, { kind: { value: 'binary-string' } });
+assert.deepEqual(buildTarget(ownKind), { kind: 'binary-string', trust: 'untrusted-data' });
+assert.equal(inheritedAccesses, 0, 'neither inherited kind nor payload accessors may run');
+
+const frozenTarget = Object.freeze({ kind: ' binary-string ', address: ' 0x1234 ', text: ' selected text ', name: '', label: ' selected label ' });
+assert.deepEqual(buildTarget(frozenTarget), {
+  kind: 'binary-string', trust: 'untrusted-data', address: '0x1234', text: ' selected text ', name: '', label: ' selected label ',
+}, 'frozen own data must retain kind/address trimming and untrimmed payload strings');
+
 // Prove the production AI bridge preserves the separated target instead of
 // silently dropping it before AIRuntime/ContextBroker can enforce the boundary.
 {

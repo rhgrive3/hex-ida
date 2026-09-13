@@ -85,19 +85,23 @@ export class ContextBroker {
   }
 }
 
-export { UNTRUSTED_NOTICE };
+export { UNTRUSTED_NOTICE, compactUntrustedTarget };
 
 function compactUntrustedTarget(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const kind = typeof value.kind === 'string' ? value.kind.trim().slice(0, 64) : '';
+  const ownString = (key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && Object.hasOwn(descriptor, 'value') && typeof descriptor.value === 'string'
+      ? descriptor.value : undefined;
+  };
+  const kind = (ownString('kind') ?? '').trim().slice(0, 64);
   if (!kind) return undefined;
   const out = { kind, trust: 'untrusted-data' };
-  if (typeof value.address === 'string') {
-    const address = value.address.trim().slice(0, 128);
-    if (address) out.address = address;
-  }
+  const address = ownString('address')?.trim().slice(0, 128);
+  if (address) out.address = address;
   for (const [key, max] of [['text', 2048], ['name', 1024], ['label', 1024]]) {
-    if (typeof value[key] === 'string') out[key] = value[key].slice(0, max);
+    const text = ownString(key);
+    if (text !== undefined) out[key] = text.slice(0, max);
   }
   return out;
 }
