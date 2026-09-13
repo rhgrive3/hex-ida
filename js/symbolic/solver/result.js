@@ -37,6 +37,42 @@ export function isSolverFailure(result) {
   return status !== SOLVER_STATUS.SAT && status !== SOLVER_STATUS.UNSAT;
 }
 
+const MODEL_IMMUTABLE = 'SolverResult model is an immutable published snapshot';
+
+class ImmutableSolverModelMap extends Map {
+  set() { throw new TypeError(MODEL_IMMUTABLE); }
+  delete() { throw new TypeError(MODEL_IMMUTABLE); }
+  clear() { throw new TypeError(MODEL_IMMUTABLE); }
+}
+
+function isPlainModelObject(value) {
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function immutableModelValue(value) {
+  if (value === null || typeof value !== 'object') return value;
+  if (value instanceof Map) {
+    const copy = new ImmutableSolverModelMap();
+    for (const [key, entryValue] of value) Map.prototype.set.call(copy, key, immutableModelValue(entryValue));
+    return Object.freeze(copy);
+  }
+  if (Array.isArray(value)) return Object.freeze(value.map(immutableModelValue));
+  if (isPlainModelObject(value)) {
+    const copy = {};
+    for (const key of Object.keys(value)) {
+      Object.defineProperty(copy, key, {
+        value: immutableModelValue(value[key]),
+        enumerable: true,
+        writable: false,
+        configurable: false,
+      });
+    }
+    return Object.freeze(copy);
+  }
+  return Object.freeze(value);
+}
+
 export function createSolverResult({
   status,
   model = null,
@@ -51,14 +87,10 @@ export function createSolverResult({
     throw new TypeError(`createSolverResult: invalid solver status '${status}'`);
   }
 
-  // Model is only permitted when status is SAT
+  // Model is only permitted when status is SAT; publish an owned immutable snapshot (#3986)
   let normalizedModel = null;
-  if (status === SOLVER_STATUS.SAT && model) {
-    if (model instanceof Map) {
-      normalizedModel = new Map(model);
-    } else if (typeof model === 'object') {
-      normalizedModel = { ...model };
-    }
+  if (status === SOLVER_STATUS.SAT && model && typeof model === 'object') {
+    normalizedModel = immutableModelValue(model);
   }
 
   const normalizedLifecycle = Object.freeze({
