@@ -355,8 +355,25 @@ const CALL_MN = /^(bl|blr|blraa|blrab|blraaz|blrabz)$/;
 const RET_MN = /^(ret|retaa|retab)$/;
 const COND_BRANCH = /^(b\.[a-z]{2}|cbz|cbnz|tbz|tbnz)$/;
 const COMPARE_MN = /^(cmp|cmn|tst|ccmp|ccmn|fcmp|fcmpe)$/;
-const LOAD_MN = /^(ldr|ldrb|ldrh|ldrsb|ldrsh|ldrsw|ldur|ldurb|ldurh|ldursb|ldursh|ldursw|ldp|ldpsw|ldnp|ldar|ldarb|ldarh|ldxr|ldaxr|ldtr)$/;
-const STORE_MN = /^(str|strb|strh|stur|sturb|sturh|stp|stnp|stlr|stlrb|stlrh|sttr|stxr|stlxr)$/;
+const LOAD_MN = /^(ldr|ldrb|ldrh|ldrsb|ldrsh|ldrsw|ldur|ldurb|ldurh|ldursb|ldursh|ldursw|ldp|ldpsw|ldnp|ldar|ldarb|ldarh|ldxr|ldaxr|ldtr|ld1|ld2|ld3|ld4)$/;
+const STORE_MN = /^(str|strb|strh|stur|sturb|sturh|stp|stnp|stlr|stlrb|stlrh|sttr|stxr|stlxr|st1|st2|st3|st4)$/;
+const STRUCT_LOAD_MN = /^ld[1-4]$/;
+const STRUCT_STORE_MN = /^st[1-4]$/;
+
+function structureTransferSize(ops) {
+  const list = ops.find((o) => o.k === 'list');
+  if (!list || !Array.isArray(list.regs) || !list.regs.length) return null;
+  let total = 0;
+  for (const reg of list.regs) {
+    if (!reg || reg.k !== 'reg' || reg.cls !== 'vec') return null;
+    const m = /^(\d+)([bhsd])$/i.exec(String(reg.arr || ''));
+    const elem = m ? { b: 1, h: 2, s: 4, d: 8 }[m[2].toLowerCase()] : null;
+    const lanes = m ? Number(m[1]) : null;
+    if (elem == null || !Number.isSafeInteger(lanes) || lanes <= 0) return null;
+    total += lanes * elem;
+  }
+  return total;
+}
 
 /** レジスタを 1 つの鍵にする。zr は値を持たないので追跡しない。 */
 function regKey(op) {
@@ -427,6 +444,7 @@ function accessSize(base, ops) {
   if (/^(ldrb|ldrsb|strb|sturb|ldurb|ldursb|ldarb|stlrb)$/.test(base)) return 1;
   if (/^(ldrh|ldrsh|strh|sturh|ldurh|ldursh|ldarh|stlrh)$/.test(base)) return 2;
   if (/^(ldrsw|ldursw)$/.test(base)) return 4;
+  if (STRUCT_LOAD_MN.test(base) || STRUCT_STORE_MN.test(base)) return structureTransferSize(ops);
   const reg = ops.find((o) => o.k === 'reg');
   const w = reg && reg.bits ? reg.bits / 8 : 8;
   if (base === 'ldp' || base === 'stp' || base === 'ldnp' || base === 'stnp') return w * 2;
@@ -478,9 +496,13 @@ export function makeInstruction(raw) {
   };
 
   const wIdx = writeIndexes(base, parsed);
+  const structLoad = STRUCT_LOAD_MN.test(base);
   const reads = new Set();
   for (let i = 0; i < parsed.length; i++) {
-    if (wIdx.includes(i) && parsed[i].k === 'reg') continue;
+    if (wIdx.includes(i)) {
+      if (parsed[i].k === 'reg') continue;
+      if (parsed[i].k === 'list' && structLoad) continue;
+    }
     collectReads(parsed[i], reads);
   }
   // 書き込みつきのメモリ参照は、ベースレジスタを読みかつ書く
@@ -490,7 +512,12 @@ export function makeInstruction(raw) {
   }
   const writes = new Set();
   for (const i of wIdx) {
-    const k = regKey(parsed[i]);
+    const op = parsed[i];
+    if (op && op.k === 'list' && structLoad) {
+      for (const r of op.regs || []) { const k = regKey(r); if (k) writes.add(k); }
+      continue;
+    }
+    const k = regKey(op);
     if (k) writes.add(k);
   }
   for (const op of parsed) {
