@@ -5,6 +5,67 @@ import { stableStringify } from '../../core/identity/index.js';
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 function fail(code) { throw new TypeError(code); }
 
+// ECMA-335 II.23.4 marshalling-descriptor constants (`NATIVE_TYPE_xxx`). The
+// value is what actually changes the managed/native call boundary, so it is
+// decoded as evidence and never replaced by a name guess.
+const MARSHAL_NATIVE_INTRINSICS = new Map([
+  [0x02, 'BOOLEAN'], [0x03, 'I1'], [0x04, 'U1'], [0x05, 'I2'], [0x06, 'U2'],
+  [0x07, 'I4'], [0x08, 'U4'], [0x09, 'I8'], [0x0a, 'U8'], [0x0b, 'R4'], [0x0c, 'R8'],
+  [0x14, 'LPSTR'], [0x15, 'LPWSTR'], [0x1f, 'INT'], [0x20, 'UINT'], [0x26, 'FUNC'],
+]);
+const MARSHAL_NATIVE_ARRAY = 0x2a;
+const MARSHAL_NATIVE_MAX = 0x50;
+
+// ECMA-335 II.23.2 compressed unsigned integer. Bounds-checked; a truncated or
+// non-minimal encoding is malformed evidence, not a value to guess at (#7557).
+function readCompressedUnsigned(bytes, offset, code) {
+  if (!(bytes instanceof Uint8Array) || !Number.isSafeInteger(offset) || offset < 0 || offset >= bytes.length) fail(code);
+  const first = bytes[offset];
+  if ((first & 0x80) === 0) return { value: first, next: offset + 1 };
+  if ((first & 0xc0) === 0x80) {
+    if (offset + 1 >= bytes.length) fail(code);
+    const value = ((first & 0x3f) << 8) | bytes[offset + 1];
+    if (value < 0x80) fail(code);
+    return { value, next: offset + 2 };
+  }
+  if ((first & 0xe0) === 0xc0) {
+    if (offset + 3 >= bytes.length) fail(code);
+    const value = ((first & 0x1f) * 0x1000000) + (bytes[offset + 1] << 16) + (bytes[offset + 2] << 8) + bytes[offset + 3];
+    if (value < 0x4000) fail(code);
+    return { value, next: offset + 4 };
+  }
+  fail(code);
+}
+
+// II.23.4 MarshalSpec ::= NativeIntrinsic | ARRAY ArrayElemType [ParamNum [NumElem]].
+// A recognised intrinsic carries no payload, so trailing bytes are malformed; an
+// unrecognised (future/extension) native type keeps its raw authority instead of
+// being dropped or guessed.
+function decodeMarshalSpec(raw) {
+  const code = 'cil-fieldmarshal-marshal-spec-invalid';
+  if (!(raw instanceof Uint8Array) || raw.length < 1) fail(code);
+  // NativeType and ArrayElemType are fixed single-byte enum values. Only
+  // ParamNum and NumElem use compressed unsigned integers (II.23.4).
+  const nativeType = raw[0];
+  if (nativeType === MARSHAL_NATIVE_ARRAY) {
+    if (raw.length < 2) fail(code);
+    const arrayElementType = raw[1];
+    if (arrayElementType !== MARSHAL_NATIVE_MAX && !MARSHAL_NATIVE_INTRINSICS.has(arrayElementType)) fail(code);
+    let paramNum = null, numElem = null, pos = 2;
+    if (pos < raw.length) { const read = readCompressedUnsigned(raw, pos, code); paramNum = read.value; pos = read.next; }
+    if (pos < raw.length) { const read = readCompressedUnsigned(raw, pos, code); numElem = read.value; pos = read.next; }
+    if (pos !== raw.length) fail(code);
+    return { nativeType, nativeTypeName: 'ARRAY', arrayElementType,
+      arrayElementTypeName: MARSHAL_NATIVE_INTRINSICS.get(arrayElementType) ?? 'MAX', paramNum, numElem };
+  }
+  const name = MARSHAL_NATIVE_INTRINSICS.get(nativeType);
+  if (name == null) {
+    return { nativeType, nativeTypeName: null, payload: raw.subarray(1) };
+  }
+  if (raw.length !== 1) fail(code);
+  return { nativeType, nativeTypeName: name };
+}
+
 // Read only definitions, but use the complete, already-bounds-checked table layout.
 export function readCilDefinitions(bytes, view, layout, stringsStream, blobStream = null) {
   const { rowCounts: counts, tableOffsets: offsets, rowSizes, heapSizes } = layout;
@@ -553,5 +614,166 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     field.rva = row.rva;
   }
 
-  return { types, methods, fields, manifestResources, typeSpecs, typeRefs, assemblyRefs, assembly, params, properties, events, methodSemantics, interfaceImpls, methodImpls, implMaps, moduleRefs, fieldRvas };
+  // II.22.17 FieldMarshal: the managed -> native marshalling descriptor for a
+  // Field or Param. The HasFieldMarshal flag alone only proves a descriptor
+  // exists; without decoding it, two images whose native call boundary differs
+  // (LPSTR vs LPWSTR) collapse into one canonical projection (#7557).
+  const fieldMarshalTables = [0x04, 0x08];
+  const hasFieldMarshalSize = codedIndexSize(counts, fieldMarshalTables, 1);
+  // One truth: the semantic decode must agree with the physical row layout.
+  if (counts[0x0d] && hasFieldMarshalSize + b !== rowSizes[0x0d]) fail('cil-fieldmarshal-row-layout-mismatch');
+  const fieldMarshals = readRows(0x0d, pos => {
+    const parentBase = index(pos, hasFieldMarshalSize);
+    const nativeTypeBlobIndex = index(pos + hasFieldMarshalSize, b);
+    const tag = parentBase & 0x1, rid = parentBase >>> 1, table = fieldMarshalTables[tag];
+    failIf(table == null || rid < 1 || rid > counts[table], 'cil-fieldmarshal-parent-invalid');
+    if (!blobHeap) fail('cil-fieldmarshal-blob-missing');
+    const rawMarshalSpec = readCilMetadataBlob(blobHeap, nativeTypeBlobIndex, 'cil-fieldmarshal-native-type-blob-invalid');
+    return {
+      parentToken: cilMetadataToken(table, rid),
+      parent: { table, rid, kind: table === 0x04 ? 'field' : 'param' },
+      nativeTypeBlobIndex,
+      rawMarshalSpec,
+      marshalSpec: decodeMarshalSpec(rawMarshalSpec),
+    };
+  });
+  if (new Set(fieldMarshals.map(row => row.parentToken)).size !== fieldMarshals.length) {
+    fail('cil-fieldmarshal-parent-duplicate');
+  }
+  // A row and its HasFieldMarshal flag are one authority: neither direction of
+  // the contradiction may survive into the canonical image (II.22.17).
+  for (const row of fieldMarshals) {
+    if (row.parent.table === 0x04) {
+      const field = fields[row.parent.rid - 1];
+      if (field == null) fail('cil-fieldmarshal-parent-invalid');
+      if ((field.accessFlags & 0x1000) === 0) fail('cil-fieldmarshal-field-flag-missing');
+      field.marshalSpec = row.marshalSpec;
+      field.rawMarshalSpec = row.rawMarshalSpec;
+      field.fieldMarshalToken = row.token;
+    } else {
+      const param = params[row.parent.rid - 1];
+      if (param == null) fail('cil-fieldmarshal-parent-invalid');
+      if ((param.flags & 0x2000) === 0) fail('cil-fieldmarshal-param-flag-missing');
+      param.marshalSpec = row.marshalSpec;
+      param.rawMarshalSpec = row.rawMarshalSpec;
+      param.fieldMarshalToken = row.token;
+    }
+  }
+  for (const field of fields) {
+    if ((field.accessFlags & 0x1000) !== 0 && field.marshalSpec == null) fail('cil-fieldmarshal-row-missing');
+  }
+  for (const param of params) {
+    if ((param.flags & 0x2000) !== 0 && param.marshalSpec == null) fail('cil-fieldmarshal-row-missing');
+  }
+
+  // II.22.21 MemberRef: the constructor authority a CustomAttribute row points
+  // at, and the declaring-type identity needed to recognise CLI-defined
+  // attributes such as System.ThreadStaticAttribute (#7556).
+  const memberRefParentTables = [0x02, 0x01, 0x1a, 0x06, 0x1b];
+  const memberRefParentSize = codedIndexSize(counts, memberRefParentTables, 3);
+  if (counts[0x0a] && memberRefParentSize + s + b !== rowSizes[0x0a]) fail('cil-memberref-row-layout-mismatch');
+  const methodOwner = new Map();
+  for (let i = 0; i < types.length; i++) {
+    const first = types[i].methodList || 1;
+    const last = types[i + 1]?.methodList ?? methods.length + 1;
+    for (let rid = first; rid < last && rid <= methods.length; rid++) methodOwner.set(rid, types[i]);
+  }
+  const declaringTypeName = (table, rid) => {
+    let name = null, namespace = '';
+    if (table === 0x01) { const row = typeRefs[rid - 1]; name = row?.name ?? null; namespace = row?.namespace ?? ''; }
+    else if (table === 0x02) { const row = types[rid - 1]; name = row?.name ?? null; namespace = row?.namespace ?? ''; }
+    else if (table === 0x1a) { name = moduleRefs[rid - 1]?.name ?? null; }
+    else if (table === 0x06) { const row = methodOwner.get(rid); name = row?.name ?? null; namespace = row?.namespace ?? ''; }
+    if (name == null) return null;
+    return [namespace, name].filter(part => part != null && part !== '').join('.') || null;
+  };
+  const memberRefs = readRows(0x0a, pos => {
+    const parentBase = index(pos, memberRefParentSize);
+    const tag = parentBase & 0x7, rid = parentBase >>> 3, table = memberRefParentTables[tag];
+    failIf(table == null || rid < 1 || rid > counts[table], 'cil-memberref-parent-invalid');
+    const name = text(index(pos + memberRefParentSize, s));
+    failIf(name == null || name.length === 0, 'cil-memberref-name-required');
+    return {
+      parentToken: cilMetadataToken(table, rid),
+      parent: { table, rid },
+      declaringTypeName: declaringTypeName(table, rid),
+      name,
+      signatureBlobIndex: index(pos + memberRefParentSize + s, b),
+    };
+  });
+
+  // II.22.10 CustomAttribute: Parent + constructor + opaque value payload. A
+  // runtime-affecting CLI-defined attribute is unrecoverable without all three,
+  // so nothing here may be silently defaulted (#7556).
+  const hasCustomAttributeTables = [0x06, 0x04, 0x01, 0x02, 0x08, 0x09, 0x0a, 0x00, 0x0e, 0x17, 0x14,
+    0x11, 0x1a, 0x1b, 0x20, 0x23, 0x26, 0x27, 0x28, 0x2a, 0x2c, 0x2b];
+  const hasCustomAttributeSize = codedIndexSize(counts, hasCustomAttributeTables, 5);
+  // CustomAttributeType tags: 2 = MethodDef, 3 = MemberRef (II.24.2.6).
+  const customAttributeTypeSize = codedIndexSize(counts, [0x06, 0x0a], 3);
+  if (counts[0x0c] && hasCustomAttributeSize + customAttributeTypeSize + b !== rowSizes[0x0c]) {
+    fail('cil-customattribute-row-layout-mismatch');
+  }
+  const customAttributeTypeTables = new Map([[2, 0x06], [3, 0x0a]]);
+  const memberRefByToken = new Map(memberRefs.map(row => [row.token, row]));
+  const customAttributes = readRows(0x0c, pos => {
+    const parentBase = index(pos, hasCustomAttributeSize);
+    const typeBase = index(pos + hasCustomAttributeSize, customAttributeTypeSize);
+    const valueBlobIndex = index(pos + hasCustomAttributeSize + customAttributeTypeSize, b);
+    const parentTag = parentBase & 0x1f, parentRid = parentBase >>> 5;
+    const parentTable = hasCustomAttributeTables[parentTag];
+    failIf(parentTable == null || parentRid < 1 || parentRid > counts[parentTable], 'cil-customattribute-parent-invalid');
+    const constructorTag = typeBase & 0x7, constructorRid = typeBase >>> 3;
+    const constructorTable = customAttributeTypeTables.get(constructorTag);
+    failIf(constructorTable == null || constructorRid < 1 || constructorRid > counts[constructorTable], 'cil-customattribute-constructor-invalid');
+    const constructorToken = cilMetadataToken(constructorTable, constructorRid);
+    let constructorName = null, ownerName = null;
+    if (constructorTable === 0x0a) {
+      const memberRef = memberRefByToken.get(constructorToken);
+      failIf(memberRef == null, 'cil-customattribute-constructor-invalid');
+      constructorName = memberRef.name;
+      ownerName = memberRef.declaringTypeName;
+    } else {
+      const method = methods[constructorRid - 1];
+      failIf(method == null, 'cil-customattribute-constructor-invalid');
+      constructorName = method.name;
+      ownerName = declaringTypeName(0x06, constructorRid);
+    }
+    let rawValue = null, prolog = null, numNamed = null;
+    if (valueBlobIndex !== 0) {
+      if (!blobHeap) fail('cil-customattribute-value-blob-missing');
+      rawValue = readCilMetadataBlob(blobHeap, valueBlobIndex, 'cil-customattribute-value-blob-invalid');
+      // II.23.3 custom attribute values start with the 0x0001 prolog followed by
+      // the named-argument count; a shorter payload cannot be a valid value.
+      if (rawValue.length < 4 || rawValue[0] !== 0x01 || rawValue[1] !== 0x00) fail('cil-customattribute-value-invalid');
+      prolog = 0x0001;
+      numNamed = rawValue[2] | (rawValue[3] << 8);
+    }
+    return {
+      parentToken: cilMetadataToken(parentTable, parentRid),
+      parent: { table: parentTable, rid: parentRid },
+      constructorToken,
+      constructor: { table: constructorTable, rid: constructorRid, name: constructorName, declaringType: ownerName },
+      attributeTypeName: ownerName != null && constructorName != null ? `${ownerName}::${constructorName}` : null,
+      valueBlobIndex,
+      prolog,
+      numNamed,
+      rawValue,
+    };
+  });
+
+  // An attribute is authority for its Parent, so the owning canonical row also
+  // carries it (the same way a Field carries its FieldRVA). Parent kinds without
+  // a decoded row array stay represented by the canonical table alone.
+  const customAttributeParents = {
+    0x01: typeRefs, 0x02: types, 0x04: fields, 0x06: methods, 0x08: params,
+    0x0a: memberRefs, 0x14: events, 0x17: properties, 0x1a: moduleRefs,
+    0x1b: typeSpecs, 0x23: assemblyRefs, 0x28: manifestResources,
+  };
+  for (const attribute of customAttributes) {
+    const owner = customAttributeParents[attribute.parent.table]?.[attribute.parent.rid - 1];
+    if (owner == null) continue;
+    owner.attributes = [...(owner.attributes ?? []), attribute];
+  }
+
+  return { types, methods, fields, manifestResources, typeSpecs, typeRefs, memberRefs, assemblyRefs, assembly, params, properties, events, methodSemantics, interfaceImpls, methodImpls, implMaps, moduleRefs, fieldRvas, fieldMarshals, customAttributes };
 }
