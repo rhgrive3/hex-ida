@@ -827,6 +827,7 @@ export class Emulator {
   }
 
   fpSize(op) {
+    if (op?.bits === 128 || /^q\d+$/i.test(op?.text || '')) return 16;
     return op?.bits === 32 || /^s\d+$/i.test(op?.text || '') ? 4 : 8;
   }
 
@@ -1056,17 +1057,26 @@ function isWide(op) {
   return op.bits !== 32;
 }
 
+const REGISTER_ACCESS_BYTES = new Set([1, 2, 4, 8, 16]);
+
+function registerAccessSize(op) {
+  if (!op || op.k !== 'reg') return 8;
+  const bytes = op.bits / 8;
+  if (REGISTER_ACCESS_BYTES.has(bytes)) return bytes;
+  throw new EmulatorFault('unsupported-access-width', `unsupported register access width: ${op.bits} bits`, { operand: op });
+}
+
 function loadSize(mn, dst) {
   if (/^(ldrb|ldrsb|ldurb|ldursb|ldxrb|ldaxrb|ldarb)$/.test(mn)) return 1;
   if (/^(ldrh|ldrsh|ldurh|ldursh|ldxrh|ldaxrh|ldarh)$/.test(mn)) return 2;
   if (/^(ldrsw|ldursw)$/.test(mn)) return 4;
-  return isWide(dst) ? 8 : 4;
+  return registerAccessSize(dst);
 }
 
 function storeSize(mn, src) {
   if (/^(strb|sturb|stxrb|stlxrb|stlrb)$/.test(mn)) return 1;
   if (/^(strh|sturh|stxrh|stlxrh|stlrh)$/.test(mn)) return 2;
-  return isWide(src) ? 8 : 4;
+  return registerAccessSize(src);
 }
 
 function isFloatReg(op) { return !!op && op.k === 'reg' && (op.cls === 'fp' || op.cls === 'vec'); }
