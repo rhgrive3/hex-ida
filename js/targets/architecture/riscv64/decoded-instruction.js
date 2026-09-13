@@ -52,6 +52,13 @@ const UINT8_ARRAY_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(
   'byteLength',
 )?.get;
 
+const UINT8_ARRAY_CONSTRUCTOR = Uint8Array;
+const UINT8_ARRAY_SET = UINT8_ARRAY_CONSTRUCTOR.prototype.set;
+const UINT8_ARRAY_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(UINT8_ARRAY_CONSTRUCTOR.prototype),
+  'byteLength',
+)?.get;
+
 function isUint8ArrayView(value) {
   if (value instanceof Uint8Array) return true;
   if (!ArrayBuffer.isView(value)) return false;
