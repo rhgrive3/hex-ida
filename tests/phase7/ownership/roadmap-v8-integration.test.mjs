@@ -351,6 +351,9 @@ test('X-02 user acceptance reserves exact corpus paths without widening Apple ru
     'tests/scpa/x02-apple-version-matrix.test.mjs',
     'tests/scpa/fixtures/x02-apple-version-matrix.json',
     'tests/scpa/fixtures/x02-apple-version-fixtures.mjs',
+    'tests/scpa/x02-prior120-apple-version-matrix.test.mjs',
+    'tests/scpa/fixtures/x02-prior120-apple-version-matrix.json',
+    'tests/scpa/fixtures/x02-prior120-apple-version-fixtures.mjs',
     'docs/analysis-x02-acceptance.md',
   ];
   const union = [...assignments.keys()];

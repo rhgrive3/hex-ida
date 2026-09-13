@@ -1,5 +1,19 @@
 # Analysis roadmap v8 integration checkpoint
 
+## 2026-09-14: 元のX-02検査120行をcanonical探索へ追加
+
+`684f1f0bb9c4809cd9bbaba01f01a4849151cc0b` の元JSONとfixture helperを同一byteで保持し、
+`x02-prior120-*` の別検査群として組み込みました。現在の59機能caseはそのままです。
+参照名2か所と、mainに追加済みのissue-8280 fixtureを含める厳密な一覧検査のみ調整しました。
+追加3パスは所有権manifest・policy・否定検査に列挙し、canonical SCPAの再帰探索でも確認しています。
+`9ba6a0a` 作業ツリーの重点202件とcanonical SCPAは通過し、独立レビューも完了しました。
+120行の分類は108 pass / 6 product-gap / 4 evidence-gap / 2 environment-excludedです。
+詳細と由来は [X-02受入記録](analysis-x02-acceptance.md) を参照してください。
+
+これにより元120行の未統合という残件を解消します。実機・署名・version横断などの未達を
+成功に読み替えず、全23 finding / 21 FRとreleaseの **CHECKPOINT-LOCKED** は維持します。
+以下の「未統合」は各過去checkpoint時点の記録です。
+
 ## 2026-09-14: main 再統合と実行環境の復旧
 
 `6ace26e6e` で main `adbede3310` を再統合し、`30eb1880f` で C1 の型・要約契約、

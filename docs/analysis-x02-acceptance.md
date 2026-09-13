@@ -188,3 +188,23 @@ PASS/exit receipt を保持しており、存在しない全成功ログが保�
 
 担当パスの重複確認: 2026-09-13、ページング済みオープン PR 103 件・変更ファイル 1,638 件の
 一覧に対して新規 4 パスは一致なし。後日の変更まで重複なしと保証するものではありません。
+# 2026-09-14: 元の120行を追加のcanonical検査として統合
+
+元の `684f1f0bb9c4809cd9bbaba01f01a4849151cc0b` から、検査・JSON・fixture helperを
+`tests/scpa/x02-prior120-apple-version-matrix.test.mjs` と同名のfixture群へ追加しました。
+既存の59機能caseと2manifest検査は変更していません。元のJSONのSHA-256は
+`c95ea2ba89d072fe9110565072462d5efca496b72a66ff365d8b8d15a95274ad`、helperは
+`2448aec993b4b7151f05ae5be4fb03574649926f2b9eab23d90dc851962e2b2a` で、双方をそのまま保持します。
+
+元の検査への変更は、fixture参照2か所の名前変更と、現在の厳密なMach-O一覧へ
+`tests/phase12/integration/fixtures/issue-8280-arm64_32-objc.o` を追加する調整のみです。
+追加fixtureの由来は `3389040ff402493b277410f9f3c11518f585fcb3`、blobは
+`b650274f3acd6f038b8c63238880f145c3f4233a`。一覧の完全一致を維持し、未知の追加を除外しません。
+このfixtureを署名・arm64e・実機の証拠には使いません。
+
+`9ba6a0a` に適用した作業ツリーでは、120行・既存61検査・所有権21検査の計202件が通過し、
+canonical SCPAも通過しました。再帰的な検査探索が追加moduleを含むことを確認しています。
+120行の分類は108 pass・6 product-gap・4 evidence-gap・2 environment-excludedです。
+gapを観測する検査の成功は、正の機能要求の達成を意味しません。
+独立レビューと元blobとの照合を行い、X-02全体とreleaseは引き続き **CHECKPOINT-LOCKED** です。
+新しいコミットやmain統合後の検査結果は、対応するexact-headの記録で別途確認します。
