@@ -73,6 +73,25 @@ function validPEFileAlignment(fileAlignment, sectionAlignment) {
   return fileAlignment >= 0x200 && fileAlignment <= 0x10000;
 }
 
+// Microsoft IMAGE_OPTIONAL_HEADER32/64: SectionAlignment must be at least
+// FileAlignment, and when it is below the architecture page size the two must
+// be equal. An Optional Header that breaks this contract is not a canonical
+// image, so none of its section/entrypoint evidence may be promoted (#4118).
+function validatePEImageAlignment(sectionAlignment, fileAlignment) {
+  if (sectionAlignment <= 0) {
+    throw new Error(`PE SectionAlignment 0x${(sectionAlignment >>> 0).toString(16)} must be positive to map a canonical image`);
+  }
+  if (fileAlignment <= 0) {
+    throw new Error(`PE FileAlignment 0x${(fileAlignment >>> 0).toString(16)} must be positive to map a canonical image`);
+  }
+  if (sectionAlignment < fileAlignment) {
+    throw new Error(`PE SectionAlignment 0x${sectionAlignment.toString(16)} is smaller than FileAlignment 0x${fileAlignment.toString(16)}`);
+  }
+  if (sectionAlignment < 0x1000 && sectionAlignment !== fileAlignment) {
+    throw new Error(`PE SectionAlignment 0x${sectionAlignment.toString(16)} is below the 0x1000 page size, so FileAlignment must equal SectionAlignment (got 0x${fileAlignment.toString(16)})`);
+  }
+}
+
 function windowsImageSectionRawSize(sizeOfRawData, fileAlignment, sectionAlignment) {
   const alignmentValid = validPEFileAlignment(fileAlignment, sectionAlignment);
   if (sizeOfRawData === 0 || !alignmentValid) {
@@ -187,6 +206,7 @@ export function parsePE(input, options = {}) {
   const fileAlignment = r.u32(opt + 36);
   const sizeOfImage = r.u32(opt + 56);
   const sizeOfHeaders = r.u32(opt + 60);
+  validatePEImageAlignment(sectionAlignment, fileAlignment);
   if (numberOfSections > WINDOWS_IMAGE_MAX_SECTIONS) {
     throw new Error(`PE NumberOfSections ${numberOfSections} exceeds Windows image loader limit ${WINDOWS_IMAGE_MAX_SECTIONS}`);
   }
