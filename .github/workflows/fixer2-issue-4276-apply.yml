@@ -1,0 +1,64 @@
+name: Fixer 2 Issue 4276 Apply
+
+on:
+  push:
+    branches:
+      - fixer2/issue-4276-elf-relocation-record-identity
+    paths:
+      - .github/workflows/fixer2-issue-4276-apply.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Verify exact baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object js/binary/elf-dynamic.js)" = "61c9d7b55b22374e44bd61328580798229e4881c"
+          test "$(git hash-object js/binary/model.js)" = "853d93c64301aef1c4f06b3331f7fb17675801eb"
+          test ! -e tests/phase4/binary/issue-4276-elf-dynamic-relocation-identity.test.mjs
+      - name: Apply exact patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --check .github/fixer2/issue-4276.patch
+          git apply .github/fixer2/issue-4276.patch
+          git diff --check
+      - name: Verify exact post blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object js/binary/elf-dynamic.js)" = "88e54e4fc573ed23d12ea268e694b642d3214c1b"
+          test "$(git hash-object js/binary/model.js)" = "061ec67c245b254e0fb19585f73ff7a281d5f40a"
+          test "$(git hash-object tests/phase4/binary/issue-4276-elf-dynamic-relocation-identity.test.mjs)" = "22bdae873082cffd4cb66ea8080c5a8997600dba"
+      - name: Focused validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check js/binary/elf-dynamic.js
+          node --check js/binary/model.js
+          node --check tests/phase4/binary/issue-4276-elf-dynamic-relocation-identity.test.mjs
+          node tests/phase4/binary/issue-4276-elf-dynamic-relocation-identity.test.mjs
+          node tests/issue-4661-elf-dynamic-rel-ent-stride.mjs
+          node tests/universal-binary.mjs
+          node tests/phase4/binary/issue-5682-elf-relocation-import-site-identity.test.mjs
+          npm run binary:test
+          npm run lint
+      - name: Commit final tree and remove temporary write files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "rhgrive3"
+          git config user.email "rhgrive@gmail.com"
+          git add js/binary/elf-dynamic.js js/binary/model.js tests/phase4/binary/issue-4276-elf-dynamic-relocation-identity.test.mjs
+          git rm .github/fixer2/issue-4276.patch .github/workflows/fixer2-issue-4276-apply.yml
+          git commit -m "fix(elf): preserve dynamic relocation record identity (#4276) [skip actions]"
+          git push origin HEAD:fixer2/issue-4276-elf-relocation-record-identity
