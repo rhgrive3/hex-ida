@@ -561,7 +561,8 @@ function authenticateControlTarget(decoded, context, instructionId, descriptor, 
       completeness = 'partial';
       unknownEffects = { categories: ['registers'], reason, detail: { registerId: 'x30' } };
     } else {
-      writeRegister(operations, 'x30', createBitVectorValue(POINTER_BITS, address + 4n), {
+      const nextPc = BigInt.asUintN(POINTER_BITS, address + 4n);
+      writeRegister(operations, 'x30', createBitVectorValue(POINTER_BITS, nextPc), {
         stateKind: 'link-register',
         source: 'next-instruction-address',
       });

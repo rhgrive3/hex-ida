@@ -16,7 +16,7 @@ const TRACE_CAPABILITY_EVENT_TYPES = Object.freeze({
   traceBranch: 'branch',
   traceMemoryWrite: 'memory-write',
 });
-const REMOTE_CALL_METHODS = new Set(['attach','launch','pause','resume','stepInto','stepOver','stepOut','removeBreakpoint','listBreakpoints','readRegisters','writeRegister','readMemory','writeMemory','getThreads','getModules','getBacktrace','evaluate','trace','watchMemory']);
+const REMOTE_CALL_METHODS = new Set(['attach','launch','pause','resume','stepInto','stepOver','stepOut','removeBreakpoint','listBreakpoints','readRegisters','writeRegister','readMemory','writeMemory','compareAndWriteMemory','getThreads','getModules','getBacktrace','evaluate','trace','watchMemory']);
 
 // Listener isolation must cover async failures too: a listener returning a
 // promise that later rejects would otherwise leak an unhandledRejection
@@ -104,6 +104,13 @@ function cancelledRunResult(emulator) {
   };
 }
 function callsFromTrace(trace) {
+  const typedSites = new Set();
+  for (const e of trace || []) {
+    if (e?.type === 'call') {
+      const addr = e.addr ?? e.address;
+      if (addr != null) typedSites.add(typeof addr === 'bigint' ? addr : BigInt(addr));
+    }
+  }
   const out = [];
   for (const e of trace || []) {
     if (e?.type === 'call') {
@@ -111,9 +118,12 @@ function callsFromTrace(trace) {
       continue;
     }
     if (!/^(bl|blr)\b/i.test(e?.text || '')) continue;
+    const addr = e.addr ?? e.address;
+    const canonicalAddr = addr != null ? (typeof addr === 'bigint' ? addr : BigInt(addr)) : null;
+    if (canonicalAddr != null && typedSites.has(canonicalAddr)) continue;
     const match = /^bl\s+#?(0x[0-9a-f]+|[0-9]+)/i.exec(e.text || '');
     let target = null; try { if (match) target = BigInt(match[1]); } catch { target = null; }
-    out.push({ type:'call', address:e.addr ?? e.address, target, indirect:/^blr\b/i.test(e.text || ''), text:e.text });
+    out.push({ type:'call', address:addr, target, indirect:/^blr\b/i.test(e.text || ''), text:e.text });
   }
   return out;
 }
@@ -563,6 +573,28 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     } finally { traceState.suppressMemory = Math.max(0, Number(traceState.suppressMemory || 0) - 1); }
     return { written:data.length };
   }
+  async compareAndWriteMemory(address, expected, bytes, options = {}) {
+    this.require('writeMemory');
+    const start = asAddress(address);
+    const expData = Array.isArray(expected) || expected instanceof Uint8Array ? Uint8Array.from(expected) : null;
+    const writeData = Array.isArray(bytes) || bytes instanceof Uint8Array ? Uint8Array.from(bytes) : null;
+    if (!expData || !writeData || expData.length !== writeData.length) {
+      throw new DebugAdapterError('invalid-argument', 'compareAndWriteMemory requires expected and replacement byte arrays of equal length');
+    }
+    const sandbox = this.ensureSandbox();
+    const epoch = this.epoch;
+    if (options?.expectedEpoch != null && options.expectedEpoch !== epoch) {
+      throw new DebugAdapterError('stale-request', 'session generation changed before memory write');
+    }
+    const current = await this.readMemory(start, expData.length);
+    if (!current || current.length !== expData.length || !Array.from(current).every((v, i) => v === expData[i])) {
+      throw new DebugAdapterError('stale-target', 'Runtime memory target is stale: expected-before does not match.', { expected: Array.from(expData), actual: Array.from(current || []) });
+    }
+    if (options?.expectedEpoch != null && options.expectedEpoch !== this.epoch) {
+      throw new DebugAdapterError('stale-request', 'session generation changed during memory write');
+    }
+    return this.writeMemory(start, writeData);
+  }
   async getThreads() { return [{ id:'sandbox:0', name:'sandbox', state:this.running ? 'running':'stopped' }]; }
   async getModules() { return [{ id:'sandbox', name:'local function sandbox', base:null, synthetic:true }]; }
   async getBacktrace() { return (this.ensureSandbox().emulator.callStack || []).slice(-256).reverse().map((f,i) => ({ index:i, address:f.addr, returnAddress:f.ret })); }
@@ -708,6 +740,20 @@ export class RemoteDebugAdapter extends DebugAdapter {
   async writeMemory(address,bytes,requestOptions={}){this.require('writeMemory'); const LIMIT=64*1024; let data; if(bytes instanceof Uint8Array)data=bytes; else { const it=bytes?.[Symbol.iterator]; if(typeof it==='function'&&typeof bytes!=='string'){ // bounded consumption (#5750): never enumerate past the limit
     data=new Uint8Array(LIMIT+1); let n=0; for(const b of bytes){ if(n>=LIMIT) throw new DebugAdapterError('too-large','remote memory write exceeds 64 KiB'); if(!Number.isInteger(b)||b<0||b>255)throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value'); data[n++]=b; } data=data.subarray(0,n); } else { data=Array.from(bytes||[]); for(const b of data)if(!Number.isInteger(b)||b<0||b>255)throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value'); } }
     if(data.length>LIMIT) throw new DebugAdapterError('too-large','remote memory write exceeds 64 KiB'); const result=await this.call('writeMemory',{address:String(asAddress(address)),bytes:data},{ signal:requestOptions?.signal }); if(result&&result.written!=null){const written=result.written;if(typeof written!=='number'||!Number.isSafeInteger(written)||written<0)throw new DebugAdapterError('malformed-remote','remote writeMemory returned a malformed written count');if(written!==data.length)throw new DebugAdapterError('short-write',`remote memory write wrote ${written} of ${data.length} bytes`);} return result||{written:data.length}}
+  async compareAndWriteMemory(address, expected, bytes, requestOptions = {}) {
+    this.require('writeMemory');
+    const start = asAddress(address);
+    const expData = Array.isArray(expected) || expected instanceof Uint8Array ? Uint8Array.from(expected) : null;
+    const writeData = Array.isArray(bytes) || bytes instanceof Uint8Array ? Uint8Array.from(bytes) : null;
+    if (!expData || !writeData || expData.length !== writeData.length) {
+      throw new DebugAdapterError('invalid-argument', 'compareAndWriteMemory requires expected and replacement byte arrays of equal length');
+    }
+    const current = await this.readMemory(start, expData.length);
+    if (!current || current.length !== expData.length || !Array.from(current).every((v, i) => v === expData[i])) {
+      throw new DebugAdapterError('stale-target', 'Runtime memory target is stale: expected-before does not match.', { expected: Array.from(expData), actual: Array.from(current || []) });
+    }
+    return this.writeMemory(start, writeData, requestOptions);
+  }
   async getThreads(){return remoteArray(await this.call('getThreads'),'threads',REMOTE_ARRAY_LIMITS.threads,'threads')}
   async getModules(){return remoteArray(await this.call('getModules'),'modules',REMOTE_ARRAY_LIMITS.modules,'modules')}
   async getBacktrace(threadId){return remoteArray(await this.call('getBacktrace',{threadId}),'frames',REMOTE_ARRAY_LIMITS.backtrace,'backtrace')}

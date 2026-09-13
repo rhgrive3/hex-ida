@@ -276,11 +276,19 @@ export class Backend {
     }
   }
 
+  _isMessageCurrent(pending, workerName, messageEpoch) {
+    if (!pending || pending.workerName !== workerName) return false;
+    if (pending.uiEpoch !== this.gen) return false;
+    if (pending.transportEpoch !== this.transportEpoch) return false;
+    if (messageEpoch != null && messageEpoch !== pending.transportEpoch) return false;
+    return true;
+  }
+
   _onMessage(message, workerName) {
     if (!message) return;
     if (message.t === 'searchProgress' || message.t === 'scanProgress' || message.t === 'analysisProgress') {
       const pending = this.pending.get(message.requestId);
-      if (!pending || pending.uiEpoch !== this.gen) return;
+      if (!this._isMessageCurrent(pending, workerName, message.epoch)) return;
       if (pending.onProgress) pending.onProgress(message);
       else if (message.t === 'searchProgress' && this.onSearchProgress) this.onSearchProgress(message);
       else if (message.t === 'scanProgress' && this.onScanProgress) this.onScanProgress(message);
@@ -296,7 +304,7 @@ export class Backend {
     const pending = this.pending.get(message.id);
     if (!pending || pending.workerName !== workerName) return;
     this.pending.delete(message.id);
-    if (pending.uiEpoch !== this.gen || message.epoch !== pending.transportEpoch) {
+    if (!this._isMessageCurrent(pending, workerName, message.epoch)) {
       pending.reject(new StaleRequestError());
       return;
     }
@@ -391,6 +399,12 @@ export class Backend {
     }
     const previousTransportEpoch = this.transportEpoch;
     const openTransportEpoch = ++this.transportEpoch;
+    for (const [id, pending] of this.pending.entries()) {
+      if (pending.transportEpoch !== openTransportEpoch) {
+        this.pending.delete(id);
+        try { pending.reject(new StaleRequestError()); } catch {}
+      }
+    }
     for (const worker of [this._legacyWorker, this._platformWorker]) {
       if (worker) worker.postMessage({ t: 'cancel', epoch: previousTransportEpoch });
     }

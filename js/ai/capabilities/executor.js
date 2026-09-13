@@ -32,6 +32,12 @@ export class CapabilityExecutor {
     const binaryId = optionalBindingId(this.currentBinaryId(), 'Current binary identity', 'tool_failed');
     const requestedBinaryId = optionalBindingId(args.binaryId, 'Capability binary identity');
     if (requestedBinaryId != null && binaryId != null && requestedBinaryId !== binaryId) throw new AIError('scope_violation', 'Capability target belongs to a different binary.');
+    if (entry.id === 'runtime.connect') {
+      const boundBinaryId = requestedBinaryId || binaryId;
+      if (!boundBinaryId) {
+        throw new AIError('scope_violation', 'runtime.connect requires an explicit binary binding.');
+      }
+    }
     if (!entry.runtimeBound) return;
     const session = runtimePlatform?.currentSession?.(false);
     if (!session) throw new AIError('tool_failed', 'No runtime session is available.');
@@ -93,7 +99,12 @@ export class CapabilityExecutor {
       case 'patch.revert': return this.revertPatch(args);
       case 'patch.apply': return applyPatch(app, args);
       case 'runtime.status': return runtimeStatus(runtimePlatform);
-      case 'runtime.connect': return runtimePlatform?.startSession?.({ adapter: args.adapter || null, binaryHash: args.binaryId || this.currentBinaryId(), trace: args.trace || {}, connect: true }) ?? unavailable('runtime connect');
+      case 'runtime.connect': {
+        const binaryHash = optionalBindingId(args.binaryId, 'Capability binary identity')
+          || optionalBindingId(this.currentBinaryId(), 'Current binary identity', 'tool_failed');
+        if (!binaryHash) throw new AIError('scope_violation', 'runtime.connect requires an explicit binary binding.');
+        return runtimePlatform?.startSession?.({ adapter: args.adapter || null, binaryHash, trace: args.trace || {}, connect: true }) ?? unavailable('runtime connect');
+      }
       case 'runtime.attach': return runtimeAdapter(runtimePlatform).attach(args.target || {}, options);
       case 'runtime.detach': return runtimePlatform.sessions.close(args.runtimeSessionId);
       case 'runtime.breakpoint-create': return runtimeAdapter(runtimePlatform).setBreakpoint(args.breakpoint || args);
@@ -106,7 +117,7 @@ export class CapabilityExecutor {
       case 'runtime.step-out': return runtimeAdapter(runtimePlatform).stepOut(options);
       case 'runtime.registers': return runtimeAdapter(runtimePlatform).readRegisters(args.threadId);
       case 'runtime.memory-read': return boundedMemoryRead(runtimeAdapter(runtimePlatform), args);
-      case 'runtime.memory-write': return boundedMemoryWrite(runtimeAdapter(runtimePlatform), args);
+      case 'runtime.memory-write': return boundedMemoryWrite(runtimeAdapter(runtimePlatform), args, runtimePlatform?.currentSession?.(false));
       case 'runtime.experiment': return runtimePlatform.runExperiment(args.experiment, options);
       case 'project.save': return callRequired(app?.workspace, 'autosave');
       case 'project.snapshot': return callRequired(app?.workspace, 'snapshot');
@@ -189,12 +200,38 @@ async function boundedMemoryRead(adapter, args) {
   const bytes = await adapter.readMemory(args.address, size);
   return { address: String(args.address), bytes: Array.from(bytes || []) };
 }
-async function boundedMemoryWrite(adapter, args) {
+async function boundedMemoryWrite(adapter, args, session = null) {
   const bytes = byteArray(args.bytes), expected = byteArray(args.expectedBefore);
   if (!bytes.length || bytes.length > 64 * 1024 || bytes.length !== expected.length) throw new AIError('invalid_tool_call', 'Runtime write bytes and expected-before must have the same length between 1 and 65536.');
-  const before = await adapter.readMemory(args.address, expected.length);
-  if (!equalBytes(before, expected)) throw new AIError('tool_failed', 'Runtime memory target is stale: expected-before does not match.');
-  await adapter.writeMemory(args.address, bytes);
+  const initialGeneration = session?.generation ?? adapter?.generation ?? adapter?.epoch ?? null;
+
+  if (typeof adapter.compareAndWriteMemory === 'function') {
+    try {
+      await adapter.compareAndWriteMemory(args.address, expected, bytes, {
+        expectedGeneration: initialGeneration,
+        expectedEpoch: initialGeneration,
+      });
+    } catch (error) {
+      if (error?.code === 'stale-target' || error?.code === 'stale-request' || /stale/i.test(error?.message)) {
+        throw new AIError('tool_failed', `Runtime memory target is stale: ${error.message || 'expected-before does not match.'}`);
+      }
+      throw error instanceof AIError ? error : new AIError('tool_failed', error?.message || 'Runtime memory write failed.');
+    }
+  } else {
+    const before = await adapter.readMemory(args.address, expected.length);
+    if (!equalBytes(before, expected)) throw new AIError('tool_failed', 'Runtime memory target is stale: expected-before does not match.');
+    const currentGen = session?.generation ?? adapter?.generation ?? adapter?.epoch ?? null;
+    if (initialGeneration !== null && currentGen !== initialGeneration) {
+      throw new AIError('tool_failed', 'Runtime memory target is stale: session generation changed.');
+    }
+    await adapter.writeMemory(args.address, bytes);
+  }
+
+  const postGen = session?.generation ?? adapter?.generation ?? adapter?.epoch ?? null;
+  if (initialGeneration !== null && postGen !== initialGeneration) {
+    throw new AIError('tool_failed', 'Runtime memory target is stale: session generation changed.');
+  }
+
   const after = await adapter.readMemory(args.address, bytes.length);
   if (!equalBytes(after, bytes)) throw new AIError('tool_failed', 'Runtime memory write postcondition verification failed.');
   return { address: String(args.address), written: bytes.length, before: Array.from(expected), after: Array.from(bytes) };
