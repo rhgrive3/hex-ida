@@ -51,6 +51,12 @@ export const INTERPROCEDURAL_DEFAULT_BUDGET = Object.freeze({
 
 function fail(code) { throw new TypeError(code); }
 
+function budgetInteger(value, fallback, key) {
+  if (value == null) return fallback;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) fail(`interprocedural-invalid-budget-${key}`);
+  return value;
+}
+
 /**
  * Condenses the call graph into strongly connected components.
  *
@@ -59,11 +65,14 @@ function fail(code) { throw new TypeError(code); }
  * exactly the bottom-up order the solve wants.
  */
 export function condenseCallGraph(roots, successorsOf, {
-  maxComponents = INTERPROCEDURAL_DEFAULT_BUDGET.maxComponents,
-  maxNodes = Math.max(10000, maxComponents),
-  maxEdges = Math.max(50000, maxNodes * 4),
+  maxComponents,
+  maxNodes,
+  maxEdges,
   signal = null,
 } = {}) {
+  maxComponents = budgetInteger(maxComponents, INTERPROCEDURAL_DEFAULT_BUDGET.maxComponents, 'maxComponents');
+  maxNodes = budgetInteger(maxNodes, Math.max(10000, maxComponents), 'maxNodes');
+  maxEdges = budgetInteger(maxEdges, Math.max(50000, maxNodes * 4), 'maxEdges');
   const index = new Map();
   const low = new Map();
   const onStack = new Set();
@@ -434,6 +443,13 @@ export function solveInterproceduralSummaries({
   signal = null,
 } = {}) {
   const limits = { ...INTERPROCEDURAL_DEFAULT_BUDGET, ...budget };
+  limits.maxComponents = budgetInteger(limits.maxComponents, INTERPROCEDURAL_DEFAULT_BUDGET.maxComponents, 'maxComponents');
+  limits.maxNodes = budgetInteger(limits.maxNodes, null, 'maxNodes');
+  limits.maxEdges = budgetInteger(limits.maxEdges, null, 'maxEdges');
+  limits.maxIterationsPerComponent = budgetInteger(limits.maxIterationsPerComponent,
+    INTERPROCEDURAL_DEFAULT_BUDGET.maxIterationsPerComponent, 'maxIterationsPerComponent');
+  limits.maxEffectsPerSummary = budgetInteger(limits.maxEffectsPerSummary,
+    INTERPROCEDURAL_DEFAULT_BUDGET.maxEffectsPerSummary, 'maxEffectsPerSummary');
   const locals = localSummaries instanceof Map ? localSummaries : new Map(Object.entries(localSummaries ?? {}));
   const models = libraryModels instanceof Map ? libraryModels : new Map(Object.entries(libraryModels ?? {}));
   if (!Array.isArray(roots) || roots.length === 0) fail('interprocedural-roots-required');
