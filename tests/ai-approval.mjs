@@ -3,7 +3,7 @@ import { EvidenceStore } from '../js/ai/evidence.js';
 import { ProposalStore } from '../js/ai/proposals.js';
 
 const evidence = new EvidenceStore();
-const verified = evidence.ingest('verify_field_update', { verified: true, evidence: ['ev1'], results: [{ id: 'write', kind: 'function', functionAddress: '0x1000', evidence: ['ev1'] }] }, { verifier: true })[0];
+const verified = evidence.ingest('verify_field_update', { verified: true, evidence: ['ev1'], results: [{ id: 'write', kind: 'function', functionAddress: '0x1000', evidence: ['ev1'], verified: true }] }, { verifier: true })[0];
 const proposals = new ProposalStore({ evidenceStore: evidence });
 const rename = proposals.create({ kind: 'rename', target: '0x1000', before: 'sub_1000', after: 'addCoins', reason: 'verified role', evidenceIds: [verified.id] });
 await assert.rejects(() => proposals.apply(rename.id, { currentState: 'sub_1000', apply: async () => {} }), (error) => error.type === 'approval_required');

@@ -122,6 +122,16 @@ export function mappedELFFileSpanForVa(image, va, size) {
 /** Architecture-specific alignment gate for exact ELF instruction starts. */
 export function elfInstructionStartAlignmentRejection(image, address) {
   if (image?.arch === 'arm64' && address % 4n !== 0n) return 'does not satisfy arm64 4-byte alignment';
+  const isRiscv = image?.arch === 'riscv64' || image?.arch === 'riscv32' || image?.arch === 'riscv' || Number(image?.metadata?.machine) === 243;
+  if (isRiscv) {
+    if (address % 2n !== 0n) return 'does not satisfy riscv minimum 2-byte alignment';
+    const align = image?.metadata?.riscvIsa?.file?.instructionAlignment ?? image?.metadata?.riscvFileIsa?.instructionAlignment;
+    if (align === 4 && address % 4n !== 0n) return 'does not satisfy riscv 4-byte instruction alignment';
+  }
+  const isArm32 = image?.arch === 'arm' || Number(image?.metadata?.machine) === 40;
+  if (isArm32) {
+    if (address % 2n !== 0n) return 'does not satisfy arm 2-byte instruction alignment';
+  }
   return null;
 }
 
@@ -159,4 +169,14 @@ export function executableELFRange(image, address, size = 0n, sectionIndex = nul
   const section = (image.sections || []).find(executableSection) || null;
   if (section) return section;
   return (image.segments || []).find(executableSegment) || null;
+}
+
+export function elfInstructionTargetRejection(image, address) {
+  const instructionBytes = image?.arch === 'arm64' ? 4n : 1n;
+  if (!executableELFRange(image, address, 0n)) return 'outside a canonical executable mapping';
+  const alignmentRejection = elfInstructionStartAlignmentRejection(image, address);
+  if (alignmentRejection) return alignmentRejection;
+  if (!executableELFRange(image, address, instructionBytes)) return 'instruction bytes cross the canonical executable extent';
+  if (!mappedELFFileSpanForVa(image, address, instructionBytes)) return 'instruction bytes are not fully file-backed';
+  return null;
 }

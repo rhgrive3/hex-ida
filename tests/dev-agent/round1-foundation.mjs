@@ -60,7 +60,8 @@ await check('dev-supervisor-protocol', () => {
   assert.deepEqual([...DEV_SUPERVISOR_DECISION_TYPES], ['tool', 'human', 'wait', 'final']);
   assert.equal(validateDevSupervisorDecision({ type: 'tool', tool: 'repo.read', arguments: {}, purpose: 'inspect' }, { availableTools: ['repo.read'] }).type, 'tool');
   assert.equal(validateDevSupervisorDecision({ type: 'human', question: 'Continue?', blocking: true }).blocking, true);
-  assert.deepEqual(validateDevSupervisorDecision({ type: 'wait', events: [], reason: 'nothing to do' }).events, []);
+  assert.deepEqual(validateDevSupervisorDecision({ type: 'wait', events: ['worker.completed'], reason: 'wait for worker' }).events, ['worker.completed']);
+  assert.throws(() => validateDevSupervisorDecision({ type: 'wait', events: [], reason: 'nothing to do' }), /non-empty array/);
   assert.equal(validateDevSupervisorDecision({ type: 'final', answer: 'done', completedTasks: [], remaining: [] }).type, 'final');
   assert.throws(() => validateDevSupervisorDecision({ type: 'tool', tool: 'invented', arguments: {}, purpose: 'x' }, { availableTools: ['repo.read'] }), /Unavailable Dev tool/);
   assert.throws(() => validateDevSupervisorDecision({ type: 'tool', tool: 'repo.read', arguments: {}, purpose: 'x', extra: true }), /Malformed/);

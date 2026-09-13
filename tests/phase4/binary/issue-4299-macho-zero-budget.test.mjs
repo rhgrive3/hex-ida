@@ -43,12 +43,12 @@ test('zero wall-clock budget uses the existing sampled deadline check', () => {
 });
 
 test('zero does not turn omitted, malformed or coercive zero values into restrictive defaults', () => {
-  for (const value of [undefined, null, false, '', ' ', [], {}, NaN, Infinity, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+  for (const value of [undefined, null, false, '', ' ', '1', [], {}, NaN, Infinity, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
     const budget = createMachOMetadataBudget({ metadata: {}, warnings: [] }, { limits: { records: value } });
     assert.equal(budget.limits.records, MACHO_METADATA_LIMITS.records, String(value));
   }
-  for (const value of [1, '1', 2]) {
+  for (const value of [1, 2]) {
     const budget = createMachOMetadataBudget({ metadata: {}, warnings: [] }, { limits: { records: value } });
-    assert.equal(budget.limits.records, Number(value));
+    assert.equal(budget.limits.records, value);
   }
 });

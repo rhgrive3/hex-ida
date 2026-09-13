@@ -106,6 +106,8 @@ function __writesLowReg(w) {
   ]).has(kind);
 }
 
+const __XREF_PAIR_WINDOW = Number.MAX_SAFE_INTEGER;
+
 /* Canonical xref target identity (#5872): bigint, non-negative safe integer,
  * or exact integer numeric string. Structured values must never reach
  * BigInt()'s ToPrimitive: a malformed request gets a hard error instead of
@@ -177,7 +179,7 @@ findXrefs = async function findXrefsHardened({ regionId, target, limit, requestI
 
       const pair = Words.pairedOffset(w);
       let propagated = -1;
-      if (pair && pageOf[pair.rn] != null && index - pageAt[pair.rn] <= 8) {
+      if (pair && pageOf[pair.rn] != null && index - pageAt[pair.rn] <= __XREF_PAIR_WINDOW) {
         const full = pageOf[pair.rn] + pair.imm;
         if (full === want) {
           out.push({

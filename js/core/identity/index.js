@@ -109,6 +109,10 @@ function compareCanonicalWitnessParts(left, right) {
     || compareCanonicalText(stableStringify(left.witness), stableStringify(right.witness));
 }
 
+export function sameCanonicalIdentityValue(left, right) {
+  return compareCanonicalWitnessParts(canonicalWitnessParts(left), canonicalWitnessParts(right)) === 0;
+}
+
 function canonicalMapEntries(value, seen = new WeakSet()) {
   const entries = [...value.entries()].map(([key, entryValue]) => ({
     key,
@@ -245,7 +249,13 @@ export function lossyTypeWitness(value, path = '', seen = new WeakSet(), out = [
     } else if (ArrayBuffer.isView(value)) out.push([path, 'bytes']);
     else if (value instanceof ArrayBuffer) out.push([path, 'bytes']);
     else if (value instanceof Date) out.push([path, 'date']);
-    else if (Array.isArray(value)) value.forEach((item, index) => lossyTypeWitness(item, `${path}[${index}]`, seen, out));
+    else if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index++) {
+        const itemPath = `${path}[${index}]`;
+        if (!Object.hasOwn(value, index)) out.push([itemPath, 'array-hole']);
+        else lossyTypeWitness(value[index], itemPath, seen, out);
+      }
+    }
     else for (const key of Object.keys(value).sort()) lossyTypeWitness(value[key], `${path}.${key}`, seen, out);
     seen.delete(value);
   }
@@ -388,7 +398,7 @@ export function validateCanonicalIdentityNumbers(value, seen = new WeakSet()) {
   seen.delete(value);
 }
 
-function normalizeIdentity(value, code) {
+export function normalizeIdentity(value, code) {
   if (value == null) fail(code);
   validateCanonicalIdentityNumbers(value);
   if (typeof value === 'bigint' || typeof value === 'number') return String(value);

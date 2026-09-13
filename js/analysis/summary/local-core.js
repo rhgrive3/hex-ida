@@ -23,7 +23,7 @@ import {
 } from './contract.js';
 
 export const LOCAL_SUMMARY_ANALYZER_ID = 'phase7.summary.local';
-export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.2.0';
+export const LOCAL_SUMMARY_ANALYZER_VERSION = '1.2.1';
 
 const DEFAULT_ADDRESS_SPACES = Object.freeze(['memory']);
 
@@ -500,6 +500,7 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
       // be laundered into proven-summary by one composition step.
       memoryReadRegions.push(...resolved.memoryReadRegions.map((effect) => createMemoryEffect({ ...effect })));
       memoryWriteRegions.push(...resolved.memoryWriteRegions.map((effect) => createMemoryEffect({ ...effect })));
+      for (const effect of resolved.registerEffects) registerEffects.add(effect);
       for (const unknown of resolved.unknownCallEffects) {
         // Keep the originating call site. Composing a path prefix here would
         // make the effect set grow every time a summary is recomposed, which is

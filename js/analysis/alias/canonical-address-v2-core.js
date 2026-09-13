@@ -934,10 +934,30 @@ function exactAddressRootId(proof) {
   })}`;
 }
 
+function absoluteAddressRootId(proof, address) {
+  return `entity_memory_address_${stableDigest({
+    version: CANONICAL_ADDRESS_DERIVATION_VERSION,
+    addressSpace: proof.addressSpace,
+    rootKind: proof.kind,
+    canonicalAddress: address,
+    widthBits: proof.widthBits ?? null,
+  })}`;
+}
+
 export function canonicalAddressProofToRegionEvidence(proof) {
   if (!proof || proof.kind === 'unknown' || proof.kind === 'constant' || proof.kind === 'root-only') return null;
   if (proof.kind === 'absolute') {
-    return deepFreeze({ kind: 'global-absolute', address: canonicalAddress(proof.address) });
+    const address = canonicalAddress(proof.address);
+    const proofSpace = typeof proof.addressSpace === 'string' && proof.addressSpace
+      ? proof.addressSpace
+      : 'memory';
+    if (proofSpace === 'memory') return deepFreeze({ kind: 'global-absolute', address });
+    return deepFreeze({
+      kind: 'rooted-offset',
+      rootEntityId: absoluteAddressRootId(proof, address),
+      offset: '0',
+      addressSpace: proofSpace,
+    });
   }
   if (proof.kind === 'stack-like') {
     return deepFreeze({ kind: 'stack-fixed', offset: proof.offset.toString() });

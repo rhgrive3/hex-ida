@@ -206,23 +206,32 @@ function discoveryOptions(value) {
 }
 
 function discoveryKey(app, region) {
-  const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0);
+  const epoch = nonNegativeSafeInteger(
+    app?.backend?.gen ?? app?.analysisEpoch,
+    0,
+    'analysis-query-epoch-invalid',
+  );
   let regions = [];
   try { regions = typeof app?.programRegions === 'function' ? app.programRegions() || [] : []; } catch { regions = []; }
-  // Region identity in the shared key must be the same typed value the
-  // producer receives. String()-ing structured ids (`['text']` → 'text')
-  // collided the single-flight keys of different region values and let one
-  // region's producer be shared by another (#5580). Non-string ids are not
-  // scannable, so they key uniquely by their own spelling instead of being
-  // coerced behind the caller's back.
-  const ids = regions
-    .filter((item) => item?.exec !== false)
-    .map((item) => (typeof item?.id === 'string' ? item.id : JSON.stringify(item?.id ?? null)));
-  if (region?.exec !== false && region?.id != null) {
-    const id = typeof region.id === 'string' ? region.id : JSON.stringify(region.id);
-    if (!ids.includes(id)) ids.push(id);
+
+  // Only canonical string region ids own a shared producer key. Structured or
+  // otherwise malformed ids still retain the compatibility route, but stay
+  // unshared so the single-flight key can never describe a different typed
+  // input from the raw region passed to ensureFunctions() (#3980, #5580).
+  const ids = [];
+  for (const item of regions) {
+    if (item?.exec === false) continue;
+    if (typeof item?.id !== 'string' || item.id.length === 0) return null;
+    ids.push(item.id);
   }
-  return `${epoch}:${ids.join('|')}`;
+  if (region != null) {
+    if (region?.exec === false || typeof region?.id !== 'string' || region.id.length === 0) return null;
+    if (!ids.includes(region.id)) ids.push(region.id);
+  }
+
+  // JSON array framing is collision-free for arbitrary canonical string ids;
+  // unlike join('|'), embedded delimiters cannot alias a different region set.
+  return `${epoch}:${JSON.stringify(ids)}`;
 }
 
 function settleFunctionDiscoveryRoute(app) {
@@ -233,6 +242,12 @@ function settleFunctionDiscoveryRoute(app) {
     const options = discoveryOptions(rawOptions);
     abortIfNeeded(options.signal);
     const key = discoveryKey(app, region);
+    if (key == null) {
+      return waitForProducer(
+        Promise.resolve().then(() => routed.call(app, region, options.onProgress)),
+        options.signal,
+      );
+    }
     let producer = producers.get(key);
     if (!producer) {
       producer = Promise.resolve().then(() => routed.call(app, region, options.onProgress));

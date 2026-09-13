@@ -92,7 +92,8 @@ self.onmessage = async (event) => {
     finally { if (requestKey != null && active.get(requestKey)?.controller === controller) active.delete(requestKey); }
   };
   try {
-    const result = serialized ? (openChain = openChain.then(execute, execute)) : openChain.then(execute);
+    const result = serialized ? openChain.then(execute, execute) : openChain.then(execute);
+    if (serialized) openChain = result.then(() => undefined, () => undefined);
     const resolved = await result.finally(() => scheduled.delete(scheduledEntry));
     post({ t: 'ok', id: msg.id, epoch: msg.epoch, result: resolved }, resolved?.__transfer);
   } catch (error) {
@@ -202,7 +203,7 @@ async function detectFile(msg, signal) {
     const length = Math.min(16, candidate.size);
     const prefix = await temporary.readExactly(0n, length, { signal });
     if (signal.aborted) throw new Error('Open cancelled');
-    const detected = detectBinary(prefix);
+    const detected = detectBinary(prefix, { probeLength: BigInt(length), totalSize: BigInt(candidate.size) });
     return { formatId: detected.format, fat: !!detected.fat, size: BigInt(candidate.size), sourceBacked: true };
   } finally { temporary.clear?.(); }
 }

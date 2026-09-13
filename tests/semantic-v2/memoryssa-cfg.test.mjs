@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
+import { stableStringify } from '../../js/core/identity/index.js';
 import { createSemanticCfg } from '../../js/semantics/cfg/index.js';
 import { createSemanticIrFunction } from '../../js/semantics/ir/function.js';
-import { createMemoryRegionRef } from '../../js/semantics/memoryssa/contract.js';
+import { createMemoryRegionRef, createMemorySsaContract } from '../../js/semantics/memoryssa/contract.js';
 import { buildMemorySsa } from '../../js/semantics/memoryssa/build.js';
 import { reachingConcreteStore, reachingMemoryDefinition } from '../../js/semantics/memoryssa/queries.js';
 import { validateMemorySsa } from '../../js/semantics/memoryssa/validate.js';
@@ -153,6 +154,8 @@ function phi(memorySsa, blockId) {
   const loopPhi = phi(memorySsa, 'header');
   assert.ok(loopPhi);
   assert.deepEqual(loopPhi.incoming.map((item) => item.predecessorBlockId), ['body', 'entry']);
+  assert.equal(memorySsa.definitions.filter((definition) => definition.kind === 'entry' && definition.blockId === null).length, 0);
+  assert.equal(memorySsa.definitions.find((definition) => definition.kind === 'entry' && definition.regionId === regionA.id).blockId, 'entry');
   assert.equal(reachingMemoryDefinition(memorySsa, loadUse(memorySsa, 'exit_load')).id, loopPhi.id);
   assert.doesNotThrow(() => validateMemorySsa(memorySsa, { cfg }));
 }
@@ -175,6 +178,54 @@ function phi(memorySsa, blockId) {
   assert.ok(phi(memorySsa, 'outer_header'));
   assert.ok(phi(memorySsa, 'inner_header'));
   assert.doesNotThrow(() => validateMemorySsa(memorySsa, { cfg }));
+}
+
+{
+  const blocks = [
+    { id: 'entry', successors: [{ to: 'live', kind: 'branch' }] },
+    { id: 'live', successors: [{ to: 'join', kind: 'branch' }] },
+    { id: 'dead_root', successors: [{ to: 'join', kind: 'branch' }] },
+    { id: 'join', successors: [] },
+    { id: 'isolated_root', successors: [] },
+  ];
+  const nodes = [
+    makeNode('live_store', 'store', 'live', 'addr_A'),
+    makeNode('live_load', 'load', 'live', 'addr_A'),
+    makeNode('dead_load', 'load', 'dead_root', 'addr_A'),
+    makeNode('join_load', 'load', 'join', 'addr_A'),
+    makeNode('isolated_load', 'load', 'isolated_root', 'addr_A'),
+  ];
+  const { memorySsa, cfg } = build(blocks, nodes, { regions: [regionA, regionMaybe] });
+  const merge = phi(memorySsa, 'join');
+  assert.ok(merge);
+  const deadIncoming = merge.incoming.find((item) => item.predecessorBlockId === 'dead_root');
+  assert.ok(deadIncoming);
+  const deadSeed = memorySsa.definitions.find((definition) => definition.id === deadIncoming.definitionId);
+  assert.equal(deadSeed.kind, 'entry');
+  assert.equal(deadSeed.blockId, null);
+  assert.equal(deadSeed.proof.kind, 'unreachable-initial-memory-version');
+  assert.equal(reachingMemoryDefinition(memorySsa, loadUse(memorySsa, 'join_load')).id, merge.id);
+  assert.equal(reachingMemoryDefinition(memorySsa, loadUse(memorySsa, 'dead_load')).id, deadSeed.id);
+  const isolatedSeed = reachingMemoryDefinition(memorySsa, loadUse(memorySsa, 'isolated_load'));
+  assert.equal(isolatedSeed.kind, 'entry');
+  assert.equal(isolatedSeed.blockId, null);
+  assert.equal(isolatedSeed.proof.kind, 'unreachable-initial-memory-version');
+  assert.notEqual(isolatedSeed.id, deadSeed.id);
+  assert.equal(loadUse(memorySsa, 'dead_load').aliasRelation, 'unknown');
+  assert.equal(reachingConcreteStore(memorySsa, loadUse(memorySsa, 'dead_load')), null);
+  assert.equal(reachingConcreteStore(memorySsa, loadUse(memorySsa, 'live_load')).sourceEntityId, 'live_store');
+  assert.equal(memorySsa.definitions.filter((definition) => definition.kind === 'entry' && definition.blockId === null).length, 4);
+  assert.doesNotThrow(() => validateMemorySsa(memorySsa, { cfg }));
+  const imported = JSON.parse(JSON.stringify({
+    contractVersion: memorySsa.contractVersion,
+    functionId: memorySsa.functionId,
+    regions: memorySsa.regions,
+    definitions: memorySsa.definitions,
+    uses: memorySsa.uses,
+  }));
+  assert.doesNotThrow(() => createMemorySsaContract(imported, { cfg }));
+  const repeated = build(blocks, nodes, { regions: [regionA, regionMaybe] }).memorySsa;
+  assert.equal(stableStringify(memorySsa), stableStringify(repeated));
 }
 
 {

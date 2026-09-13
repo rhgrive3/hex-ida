@@ -135,7 +135,11 @@ function createSource(input, options = {}) {
     const snapshotId = options.snapshotId || stableDigest(Array.from(bytes));
     return { snapshotId, size: bytes.byteLength, read(offset, length, space = 'file') { if (space !== 'file') throw new Error('pattern-address-space-unavailable'); const at = Number(offset), n = Number(length); if (!Number.isSafeInteger(at) || !Number.isSafeInteger(n) || at < 0 || n < 0 || at + n > bytes.byteLength) throw new RangeError('pattern-read-out-of-range'); return bytes.slice(at, at + n); } };
   }
-  if (input && typeof input.read === 'function') return { snapshotId: String(input.snapshotId || options.snapshotId || ''), size: input.size ?? null, read: (offset, length, space) => input.read(offset, length, { space }) };
+  if (input && typeof input.read === 'function') return {
+    snapshotId: String(input.snapshotId || options.snapshotId || ''),
+    size: input.size ?? null,
+    read: (offset, length, space, signal = null) => input.read(offset, length, signal ? { space, signal } : { space }),
+  };
   throw new TypeError('pattern ByteSource is required');
 }
 function safeNumber(value, code = 'pattern-integer-overflow') { const number = Number(value); if (!Number.isSafeInteger(number) || number < 0) fail(code); return number; }
@@ -256,6 +260,14 @@ function consumedSize(type, result, ctx, values) {
   return size == null ? null : { size };
 }
 
+async function consumedSizeAsync(type, result, ctx, values) {
+  if (typeof result?.[ARRAY_CONSUMED_SIZE] === 'function') return await result[ARRAY_CONSUMED_SIZE]();
+  const length = result?.provenance?.length;
+  if (typeof length === 'string' && /^\d+$/.test(length)) return { size: BigInt(length) };
+  const size = staticSize(type, ctx, values);
+  return size == null ? null : { size };
+}
+
 function readType(type, offset, space, ctx, values, depth = 0) {
   if (!ctx.budget.checkDepth(depth) || !ctx.budget.consumeNodes()) return { status: 'partial', reason: ctx.budget.stopped?.reason || 'resource-limit' };
   if (!ctx.budget.checkpoint()) return { status: 'partial', reason: ctx.budget.stopped?.reason || 'cancelled' };
@@ -345,6 +357,101 @@ function readType(type, offset, space, ctx, values, depth = 0) {
   fail('pattern-type-unsupported');
 }
 
+
+async function readTypeAsync(type, offset, space, ctx, values, depth = 0) {
+  if (!ctx.budget.checkDepth(depth) || !ctx.budget.consumeNodes()) return { status: 'partial', reason: ctx.budget.stopped?.reason || 'resource-limit' };
+  if (!ctx.budget.checkpoint()) return { status: 'partial', reason: ctx.budget.stopped?.reason || 'cancelled' };
+  if (type.kind === 'primitive') {
+    const spec = PRIMITIVES.get(type.name); if (!spec) fail('pattern-primitive-unsupported');
+    if (!ctx.budget.consumeBytes(spec.bytes)) return { status: 'partial', reason: ctx.budget.stopped.reason };
+    const bytes = await ctx.source.read(offset, spec.bytes, space, ctx.signal);
+    if (!ctx.budget.checkpoint()) return { status: 'partial', reason: ctx.budget.stopped?.reason || 'cancelled' };
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); const value = primitiveValue(spec.read(view, 0), type.name);
+    return fieldValue(type, value, ctx, offset, spec.bytes, space);
+  }
+  if (type.kind === 'named') {
+    const target = ctx.types.get(type.name);
+    if (!target) fail(`pattern-type-unknown:${type.name}`);
+    return readTypeAsync(target, offset, space, ctx, values, depth + 1);
+  }
+  if (type.kind === 'enum') { const result = await readTypeAsync(type.base, offset, space, ctx, values, depth + 1); return result.status ? result : { ...result, type: 'enum', enumName: type.name || null }; }
+  if (type.kind === 'bitfield') { const result = await readTypeAsync(type.base, offset, space, ctx, values, depth + 1); return result.status ? result : { ...result, type: 'bitfield', fields: type.fields }; }
+  if (type.kind === 'conditional') return evaluateExpression(type.when, values) ? readTypeAsync(type.then, offset, space, ctx, values, depth + 1) : type.else ? readTypeAsync(type.else, offset, space, ctx, values, depth + 1) : fieldValue(type, null, ctx, offset, 0, space, { absent: true });
+  if (type.kind === 'pointer' || type.kind === 'offset') {
+    const pointer = await readTypeAsync({ kind: 'primitive', name: 'u64le' }, offset, space, ctx, values, depth + 1); if (pointer.status) return pointer;
+    const address = pointer.value; const targetSpace = type.space;
+    const out = fieldValue(type, address, ctx, offset, 8, space, { targetSpace, lazy: true });
+    out.dereference = () => readTypeAsync(type.target, address, targetSpace, ctx, values, depth + 1);
+    return out;
+  }
+  if (type.kind === 'array') {
+    const countValue = typeof type.count === 'number' ? type.count : typeof type.count === 'string' ? valueAt(values, type.count) : evaluateExpression(type.count, values);
+    const count = arrayCountNumber(countValue);
+    const out = fieldValue(type, null, ctx, offset, 0, space, { length: count, lazy: true, materialized: [] });
+    const elementSize = staticSize(type.element, ctx, values);
+    const elementOffsets = [];
+    const elementLengths = [];
+    const ensureElements = async (through) => {
+      let next = BigInt(offset);
+      for (let j = 0; j <= through; j++) {
+        if (out.materialized[j]) {
+          if (elementSize == null) next = elementOffsets[j] + elementLengths[j];
+          continue;
+        }
+        if (!ctx.budget.consumeEntries()) return ctx.budget.partial();
+        const at = elementSize == null ? next : BigInt(offset) + BigInt(j) * elementSize;
+        const item = await readTypeAsync(type.element, at, space, ctx, values, depth + 1);
+        if (item.status) return item;
+        const measured = await consumedSizeAsync(type.element, item, ctx, values);
+        if (measured?.status) return measured;
+        if (measured?.size == null) return { status: 'partial', reason: 'pattern-array-layout-unknown' };
+        out.materialized[j] = item;
+        elementOffsets[j] = at;
+        elementLengths[j] = measured.size;
+        if (elementSize == null) next = at + measured.size;
+      }
+      return out.materialized[through] || null;
+    };
+    let expansionTail = Promise.resolve();
+    const serializeExpansion = (work) => {
+      const result = expansionTail.then(work, work);
+      expansionTail = result.then(() => undefined, () => undefined);
+      return result;
+    };
+    out[ARRAY_CONSUMED_SIZE] = () => serializeExpansion(async () => {
+      if (count === 0) return { size: 0n };
+      if (elementSize != null) return { size: elementSize * BigInt(count) };
+      const result = await ensureElements(count - 1);
+      if (result?.status) return result;
+      return { size: elementOffsets[count - 1] + elementLengths[count - 1] - BigInt(offset) };
+    });
+    out.expand = (index) => {
+      const i = safeNumber(index, 'pattern-array-index-invalid');
+      if (i >= count) throw new RangeError('pattern-array-index-out-of-range');
+      if (out.materialized[i]) return Promise.resolve(out.materialized[i]);
+      return serializeExpansion(() => ensureElements(i));
+    };
+    return out;
+  }
+  if (type.kind === 'union') {
+    const options = [];
+    for (const item of type.options) options.push(await readTypeAsync(item, offset, space, ctx, values, depth + 1));
+    const unionSize = staticSize(type, ctx, values);
+    if (unionSize == null) return { status: 'partial', reason: 'pattern-union-size-unproven' };
+    return fieldValue(type, options[0]?.value ?? null, ctx, offset, unionSize, space, { alternatives: options });
+  }
+  if (type.kind === 'struct') {
+    const fields = {}; let cursor = BigInt(offset); const localValues = { ...values };
+    for (const field of type.fields) {
+      if (field.when && !evaluateExpression(field.when, localValues)) { fields[field.name] = fieldValue(field.type, null, ctx, cursor, 0, space, { absent: true }); continue; }
+      const relative = field.at == null ? 0 : safeNumber(typeof field.at === 'number' ? field.at : valueAt(localValues, field.at), 'pattern-field-offset-invalid');
+      const fieldOffset = cursor + BigInt(relative); const result = await readTypeAsync(field.type, fieldOffset, space, ctx, localValues, depth + 1); fields[field.name] = result; if (result.status) return result; const measured = field.at == null ? await consumedSizeAsync(field.type, result, ctx, localValues) : null; if (measured?.status) return measured; localValues[field.name] = result; if (field.at == null && measured?.size != null) cursor += measured.size;
+    }
+    const size = cursor - BigInt(offset); return fieldValue(type, fields, ctx, offset, size, space, { fields });
+  }
+  fail('pattern-type-unsupported');
+}
+
 export function evaluatePattern(compiled, byteSource, options = {}) {
   const pattern = compiled?.patternId ? compiled : compilePattern(compiled, options);
   const source = createSource(byteSource, options);
@@ -360,6 +467,19 @@ export function evaluatePattern(compiled, byteSource, options = {}) {
   return { status: 'complete', patternId: pattern.patternId, snapshotId: source.snapshotId, value: result, budget: budget.snapshot() };
 }
 
-export function evaluatePatternAsync(compiled, byteSource, options = {}) { return Promise.resolve(evaluatePattern(compiled, byteSource, options)); }
+export async function evaluatePatternAsync(compiled, byteSource, options = {}) {
+  const pattern = compiled?.patternId ? compiled : compilePattern(compiled, options);
+  const source = createSource(byteSource, options);
+  if (pattern.snapshotId && pattern.snapshotId !== source.snapshotId) throw new Error('pattern-source-snapshot-mismatch');
+  const budget = options.budget || createResourceBudget({ maxBytes: options.maxBytes || 4 * 1024 * 1024, maxNodes: options.maxNodes || 50_000, maxEntries: options.maxEntries || 50_000, maxDepth: options.maxDepth || 64, signal: options.signal });
+  const structs = pattern.ast.kind === 'module' ? pattern.ast.structs : [pattern.ast];
+  const typeMap = new Map(structs.filter((item) => item?.name).map((item) => [item.name, item]));
+  const root = pattern.ast.kind === 'module' ? typeMap.get(pattern.ast.root || structs[0]?.name) : pattern.ast;
+  const ctx = { patternId: pattern.patternId, source, budget, types: typeMap, signal: options.signal || null };
+  const initialValues = pattern.ast.constants && typeof pattern.ast.constants === 'object' ? { constants: pattern.ast.constants } : {};
+  const result = await readTypeAsync(root, 0n, options.addressSpace || 'file', ctx, initialValues, 0);
+  if (result.status === 'partial' || budget.stopped) return { status: 'partial', reason: result.reason || budget.stopped.reason, patternId: pattern.patternId, snapshotId: source.snapshotId, value: null, budget: budget.snapshot() };
+  return { status: 'complete', patternId: pattern.patternId, snapshotId: source.snapshotId, value: result, budget: budget.snapshot() };
+}
 
 export function patternSupportTruth() { return Object.freeze({ parser: 'supported', evaluator: 'bounded', mutation: 'unsupported', network: 'unsupported', arbitraryJavaScript: 'unsupported', authority: 'L2-evidence' }); }

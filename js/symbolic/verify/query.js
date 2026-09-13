@@ -86,16 +86,52 @@ function normalizeTargetEntity(value) {
   return normalized;
 }
 
+// The factory's hash material must be reproducible from any accepted query so
+// the first proof-authority boundary can recompute identity instead of trusting
+// a caller-supplied queryHash (#3963).
+function canonicalQueryHashPayload(query) {
+  const constraints = Array.isArray(query.constraints) ? query.constraints.filter(Boolean) : [];
+  return {
+    schemaVersion: QUERY_SCHEMA_VERSION,
+    kind: query.kind,
+    claimKind: query.claimKind,
+    targetEntity: normalizeTargetEntity(query.targetEntity ?? null),
+    constraints: constraints.map((c) => ({ hash: computeStructuralHash(c), expression: c })),
+    assertion: query.assertion ? { hash: computeStructuralHash(query.assertion), expression: query.assertion } : null,
+    assumptions: Array.isArray(query.assumptions) ? query.assumptions : [],
+    completeness: query.completeness || createCompleteness(),
+    requestedOutputs: Array.isArray(query.requestedOutputs) ? query.requestedOutputs : [],
+    semanticIrVersion: requireIdentityString(query.semanticIrVersion, 'semanticIrVersion'),
+    translatorVersion: requireIdentityString(query.translatorVersion, 'translatorVersion'),
+    architecture: requireIdentityString(query.architecture, 'architecture'),
+    bitWidth: normalizeBitWidth(query.bitWidth),
+    proofScope: query.proofScope ?? null,
+  };
+}
+
+export function computeCanonicalQueryHash(query) {
+  return stableDigest(canonicalQueryHashPayload(query));
+}
+
+export function verifyVerificationQueryIdentity(query) {
+  if (!query || typeof query !== 'object') return 'not-an-object';
+  if (typeof query.kind !== 'string' || !Object.values(VERIFICATION_QUERY_KIND).includes(query.kind)) return 'unknown-query-kind';
+  if (typeof query.claimKind !== 'string' || !Object.values(CLAIM_KIND).includes(query.claimKind)) return 'unknown-claim-kind';
+  if (!Array.isArray(query.constraints)) return 'constraints-not-array';
+  if (query.schemaVersion !== QUERY_SCHEMA_VERSION) return 'schema-version-mismatch';
+  if (typeof query.queryHash !== 'string' || query.queryHash.length === 0) return 'missing-query-hash';
+  let canonical;
+  try {
+    canonical = computeCanonicalQueryHash(query);
+  } catch {
+    return 'unhashable-query-content';
+  }
+  if (canonical !== query.queryHash) return 'query-hash-identity-mismatch';
+  return null;
+}
+
 export function isVerificationQuery(query) {
-  return (
-    !!query &&
-    typeof query === 'object' &&
-    typeof query.kind === 'string' &&
-    typeof query.claimKind === 'string' &&
-    Array.isArray(query.constraints) &&
-    query.schemaVersion === QUERY_SCHEMA_VERSION &&
-    typeof query.queryHash === 'string'
-  );
+  return verifyVerificationQueryIdentity(query) === null;
 }
 
 export function createVerificationQuery({
