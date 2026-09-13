@@ -19,6 +19,8 @@ function stackAlignment(param, argument) {
   if (argument?.abiClass === 'aggregate-indirect-copy' && argument?.pointer === true) return 8;
   const explicit = Number(param?.alignment ?? param?.align ?? param?.alignmentBytes);
   if (Number.isFinite(explicit) && explicit > 0) return Math.min(16, Math.max(8, Math.floor(explicit)));
+  // The core allocator has already validated nested aggregate alignment.
+  if (Number.isSafeInteger(argument?.alignment) && argument.alignment > 8) return Math.min(16, argument.alignment);
   if (argument?.abiClass === 'vector' && Number(argument?.bits) === 128) return 16;
   if (Number(argument?.stackElementBytes) >= 16) return 16;
   if (argument?.abiClass === 'wide-integer') return 16;
@@ -71,7 +73,7 @@ function normalizeAAPCS64StackLayout(result, params) {
     cursor = Math.ceil(cursor / alignment) * alignment;
     argument.offset = cursor;
     argument.alignment = alignment;
-    if (argument.abiClass === 'aggregate' && Array.isArray(argument.pieces)) {
+    if (Array.isArray(argument.pieces)) {
       argument.pieces = argument.pieces.map((piece) => ({
         ...piece,
         stackOffset: argument.offset + Number(piece.byteOffset || 0),
