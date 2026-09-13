@@ -84,16 +84,19 @@ export function parseELF(input, options = {}) {
   }
   if (h.type === ET_REL) assignRelocatableSectionAddresses(rawSections, image);
   for (const s of rawSections) {
-    // A file-backed SHF_ALLOC section must live inside the file to serve as
-    // virtual mapping authority: `sectionHasMappedAddress()` ranks the
-    // smallest covering mapping, so an unvalidated section header whose
-    // sh_offset/sh_size points past EOF could shadow a validated PT_LOAD and
-    // turn readable VAs into out-of-file offsets (#5888). Such a section
-    // stays listed for metadata but loses mapping authority
-    // ('unmapped-section').
-    const fileSpanInvalid = h.type !== ET_REL && s.type !== 8 && (s.flags & SHF_ALLOC) !== 0n
-      && (s.offset > BigInt(r.length) || s.size > BigInt(r.length) - s.offset);
+    // A file-backed section must have its whole payload inside the input to
+    // serve as canonical mapping authority: `sh_offset` is the section's first
+    // file byte and `sh_size` its length, so a span crossing EOF declares
+    // payload that does not exist (#4223). Only SHT_NOBITS is exempt, because it
+    // owns no file bytes. This holds regardless of SHF_ALLOC or image type: an
+    // ET_REL synthetic-address section claims file bytes the same way (#4223),
+    // and `sectionHasMappedAddress()` ranks the smallest covering mapping, so an
+    // unvalidated section header could otherwise shadow a validated PT_LOAD and
+    // turn readable VAs into out-of-file offsets (#5888). Such a section stays
+    // listed for metadata but loses mapping authority ('unmapped-section').
     const noBits = s.type === 8;
+    const fileSpanInvalid = !noBits
+      && (s.offset > BigInt(r.length) || s.size > BigInt(r.length) - s.offset);
     const mappingInconsistent = !fileSpanInvalid && h.type !== ET_REL
       && (s.flags & SHF_ALLOC) !== 0n && s.size > 0n
       && !elfSectionFileSpanConsistentWithLoads(image, s.addr, s.size, s.offset, noBits);
@@ -109,7 +112,7 @@ export function parseELF(input, options = {}) {
       fileSize: noBits ? 0n : s.size,
       perms: { read: !!(s.flags & SHF_ALLOC), write: !!(s.flags & SHF_WRITE), execute: !!(s.flags & SHF_EXECINSTR) },
       flags: s.flags, type: s.type, index: s.index,
-      source: h.type === ET_REL ? 'ET_REL-synthetic-section' : fileSpanInvalid || mappingInconsistent ? 'unmapped-section' : 'section-header',
+      source: fileSpanInvalid || mappingInconsistent ? 'unmapped-section' : h.type === ET_REL ? 'ET_REL-synthetic-section' : 'section-header',
     });
   }
 
