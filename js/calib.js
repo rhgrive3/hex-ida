@@ -20,18 +20,17 @@ const GROUP_CAP = {
 
 function damp(nth) { return 1 / (1 + nth * 1.2); }
 function likelihoodRatio(value) {
-  const raw = value === 0 ? 0 : (value || 1);
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : 1;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  return 1;
 }
 function boundedStrength(value) {
   if (value == null) return 1;
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0;
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.max(0, Math.min(1, value));
+  return 0;
 }
 function nonNegativeFinite(value, fallback) {
-  const n = Number(value);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+  return fallback;
 }
 const LN = Math.log;
 
@@ -40,9 +39,8 @@ export function groupedFusion(items, opts) {
   const absent = o.absent != null ? nonNegativeFinite(o.absent, 40) : 40;
   const candidates = o.candidates != null ? nonNegativeFinite(o.candidates, 200) : 200;
   const n = Math.max(2, candidates + absent);
-  const requestedPrior = Number(o.prior);
-  const prior = o.prior != null && Number.isFinite(requestedPrior)
-    ? Math.max(1e-9, Math.min(0.5, requestedPrior))
+  const prior = typeof o.prior === 'number' && Number.isFinite(o.prior)
+    ? Math.max(1e-9, Math.min(0.5, o.prior))
     : 1 / n;
   let logOdds = LN(prior / (1 - prior));
   const byGroup = new Map();
