@@ -54,9 +54,7 @@ function manifestFixture({
     [0x27, { count: exportedBytes.length / 14, bytes: exportedBytes }],
   ]);
   if (declSecurity != null) {
-    // DeclSecurity: Action(2) Parent(2) PermissionSet(2); parent = TypeDef #1
-    // (HasDeclSecurity tag 0). A TypeDef row must exist for the parent to
-    // resolve — flags include HasSecurity (0x00040000).
+    // DeclSecurity parent scope follows the action's metadata-table contract.
     const types = new Uint8Array(14), tv = new DataView(types.buffer);
     tv.setUint32(0, 0x00040001, true);
     tv.setUint16(4, 25, true); // 'Widget'
@@ -65,9 +63,13 @@ function manifestFixture({
     tv.setUint16(10, 1, true);
     tv.setUint16(12, 1, true);
     rows.set(2, { count: 1, bytes: types });
+    const action = declSecurity.action ?? 0x0002;
+    const parent = declSecurity.parent ?? ([0x0008, 0x0009, 0x000a, 0x000b, 0x000c].includes(action) ? 'assembly' : 'type');
+    const parentTags = { type: 0, method: 1, assembly: 2 };
+    if (parent === 'assembly') rows.set(0x20, { count: 1, bytes: new Uint8Array(22) });
     const decl = new Uint8Array(6), dv = new DataView(decl.buffer);
-    dv.setUint16(0, declSecurity.action ?? 0x0002, true);
-    dv.setUint16(2, ((declSecurity.parentRid ?? 1) << 2) | 0, true);
+    dv.setUint16(0, action, true);
+    dv.setUint16(2, ((declSecurity.parentRid ?? 1) << 2) | parentTags[parent], true);
     dv.setUint16(4, declSecurity.permissionSetIndex ?? 1, true);
     rows.set(0x0e, { count: 1, bytes: decl });
   }
@@ -268,7 +270,7 @@ test('#7632 DeclSecurity fails closed on unknown action, missing parent row, or 
     /cil-declsecurity-permission-set-required|cil-unsupported-binary/);
 });
 
-test('#7632 DeclSecurity accepts the full defined CorDeclSecurity domain (R2)', () => {
+test('#7632 DeclSecurity accepts the full defined CorDeclSecurity domain with valid scopes', () => {
   // CorDeclSecurity defines every action value from Request (0x0001) through
   // DemandChoice (0x0012), including Prejit, NonCAS, and Choice actions.
   for (let action = 0x0001; action <= 0x0012; action++) {
