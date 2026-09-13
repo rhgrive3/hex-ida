@@ -615,11 +615,15 @@ function toLinkReturnAddress(address) {
   } catch { return null; }
 }
 
+const coordBig = (v) => typeof v === 'bigint' ? v : (typeof v === 'number' && Number.isSafeInteger(v) ? BigInt(v) : null);
+
 export function analyzeDataFlow(insns, opts) {
   const o = opts || {};
   const joinRows = o.joinRows || new Set();
   const regs = new Map();            // regKey -> value
   const stack = new Map();           // 'sp+off' -> value
+  const stackFrame = new Map();
+  const stackFrameLost = new Set();
   const flows = [];                  // データの流れ（テストで検証する対象）
   const calls = [];
   const argsRead = new Set();        // 自分で書く前に読んだ x0〜x7 = 引数
@@ -642,7 +646,7 @@ export function analyzeDataFlow(insns, opts) {
     const base = insn.mnemonic.toLowerCase();
 
     // 分岐で飛んでこられる場所 = 合流点。ここから先は前提を持ち越せない。
-    if (joinRows.has(insn.row)) { regs.clear(); stack.clear(); }
+    if (joinRows.has(insn.row)) { regs.clear(); stack.clear(); stackFrame.clear(); stackFrameLost.clear(); }
 
     // 引数レジスタの検出は「自分で書く前に読んだか」で判定する
     for (const r of insn.reads) {
@@ -757,7 +761,13 @@ export function analyzeDataFlow(insns, opts) {
         const iv = get(m.index);
         m.indexAddr = iv && iv.kind === 'loaded' && iv.addr != null ? iv.addr : null;
       }
-      const slot = m.stack && m.disp != null && !m.indexed ? m.base + '+' + m.disp.toString() : null;
+      const frameLost = m.stack && m.base ? stackFrameLost.has(m.base) : false;
+      const accessDisp = m.disp != null ? coordBig(m.disp) : (!m.indexed && m.base ? 0n : null);
+      const frameDelta = m.stack && !frameLost && m.base ? stackFrame.get(m.base) || 0n : 0n;
+      let slot = null;
+      if (m.stack && m.base && !m.indexed && !frameLost && accessDisp != null) {
+        slot = m.base + '+' + (frameDelta + accessDisp).toString();
+      }
       if (m.kind === 'load') {
         for (const dst of insn.writes) {
           if (dst === m.base && insn.ops.some((x) => x.k === 'mem' && (x.mode === 'pre' || x.mode === 'post'))) continue;
@@ -786,6 +796,19 @@ export function analyzeDataFlow(insns, opts) {
         if (slot) {
           if (v) stack.set(slot, Object.assign({}, v, { ev: v.ev.concat([ev('stack-save', insn.row, { slot })]) }));
           else stack.set(slot, unknownValue(ev('untracked', insn.row)));
+        }
+      }
+      if (m.stack && m.base && !m.indexed && (m.mode === 'pre' || m.mode === 'post')) {
+        const wb = coordBig(m.writebackDisp);
+        if (wb != null && !stackFrameLost.has(m.base)) {
+          stackFrame.set(m.base, (stackFrame.get(m.base) || 0n) + wb);
+        } else {
+          stackFrameLost.add(m.base);
+          stackFrame.delete(m.base);
+          const slotPrefix = m.base + '+';
+          for (const k of Array.from(stack.keys())) {
+            if (k.startsWith(slotPrefix)) stack.delete(k);
+          }
         }
       }
       markWritten(insn, written);
