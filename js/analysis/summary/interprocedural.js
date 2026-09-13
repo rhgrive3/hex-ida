@@ -34,6 +34,7 @@ import { snapshotContractData as strictSummaryData, recordFields as strictSummar
 import { summaryIdentityMatches as summaryIdentityMatchesForDemand } from './contract.js';
 import {
   EFFECT_SOURCES,
+  createDirectCall,
   createFunctionSummary,
   createMemoryEffect,
   createUnknownCallEffect,
@@ -741,6 +742,16 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     hasUnknown ? (unconverged ? 'truncated' : 'partial') : 'complete',
     hasUnknown ? (unconverged ? 'iteration-limit' : 'evidence-missing') : null,
   );
+  const publishedDirectCalls = replaceCallFallbacks
+    ? local.directCalls.map((call) => call.effectSource === 'unknown-call-fallback' && resolvedCallSites.has(call.callSiteId)
+      ? createDirectCall({
+        callSiteId: call.callSiteId,
+        targetEntityIds: call.targetEntityIds,
+        summaryId: call.summaryId,
+        effectSource: 'proven-summary',
+      })
+      : call)
+    : local.directCalls;
 
   const baseStatus = calleeStatuses.length ? mergeAnalysisStatus(localStatus, calleeStatuses) : localStatus;
   const localInput = local.status;
@@ -779,7 +790,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     escapes: mergeEscapes(escapes),
     allocations: local.allocations,
     frees: local.frees,
-    directCalls: local.directCalls,
+    directCalls: publishedDirectCalls,
     indirectCallSets: local.indirectCallSets,
     unknownCallEffects: dedupedUnknowns,
     noreturn: hasUnknown ? 'unknown' : unionKnowledge(noreturn),

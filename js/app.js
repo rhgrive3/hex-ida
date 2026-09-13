@@ -161,18 +161,23 @@ export async function ensureRecognitionState(app, options = {}) {
   const knowledgeRev = Number(app.knowledge?.revision ?? 0);
   const knowledgeIsCurrent = () => Number(app.knowledge?.revision ?? 0) === knowledgeRev;
   if (app.recognition && app.recognition.gen === sym.gen && app.recognitionKnowledgeRev === knowledgeRev) return app.recognition;
-  if (app.recognitionBusy && app.recognitionBusyKnowledgeRev === knowledgeRev) return app.recognitionBusy;
+  const busy = app.recognitionBusy;
+  if (busy && busy.controller && app.recognitionBusyKnowledgeRev === knowledgeRev && !busy.controller.signal.aborted) {
+    return waitForAppProducer(busy, options.signal ?? null);
+  }
   const epoch = app.backend.gen;
   const max = Math.min(500000, Math.max(1000, coverageBudgetNumber(options.maxFunctions, 350000)));
   const knowledgeLimit = Math.min(2048, Math.max(0, coverageBudgetNumber(options.knowledgeLimit, 512)));
+  const producerController = new AbortController();
+  const producerState = { controller: producerController, waiters: 0, settled: false, promise: null };
   const pending = (async () => {
     try { await app.ensureSwift(); } catch { /* Swift metadata is optional */ }
-    if (epoch !== app.backend.gen || sym !== app.symbols || !knowledgeIsCurrent()) return null;
+    if (producerController.signal.aborted || epoch !== app.backend.gen || sym !== app.symbols || !knowledgeIsCurrent()) return null;
     // Symbol metadata can change while the async state build yields. Pin the
     // generation after optional metadata producers finish and reject any
     // snapshot that crosses a symbol-index or knowledge mutation.
     const symbolGen = sym.gen;
-    const isCurrent = () => epoch === app.backend.gen && sym === app.symbols && sym.gen === symbolGen && knowledgeIsCurrent();
+    const isCurrent = () => !producerController.signal.aborted && epoch === app.backend.gen && sym === app.symbols && sym.gen === symbolGen && knowledgeIsCurrent();
     const state = await buildRecognitionState({
       sym, maxFunctions:max, knowledgeLimit, fields:app.fields, knowledge:app.knowledge,
       binaryHash:app.backend.contentHash || null,
@@ -183,15 +188,16 @@ export async function ensureRecognitionState(app, options = {}) {
     app.recognitionKnowledgeRev = knowledgeRev;
     return state;
   })();
-  app.recognitionBusy = pending;
-  app.recognitionBusyKnowledgeRev = knowledgeRev;
-  try { return await pending; }
-  finally {
-    if (app.recognitionBusy === pending) {
+  producerState.promise = pending.finally(() => {
+    if (app.recognitionBusy === producerState) {
       app.recognitionBusy = null;
       app.recognitionBusyKnowledgeRev = null;
     }
-  }
+    producerState.settled = true;
+  });
+  app.recognitionBusy = producerState;
+  app.recognitionBusyKnowledgeRev = knowledgeRev;
+  return waitForAppProducer(producerState, options.signal ?? null);
 }
 
 
