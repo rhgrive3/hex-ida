@@ -544,7 +544,7 @@ function installCancellableFunctionDiscovery(app) {
           pruneSettledCache(producers);
           return value;
         }).catch((error) => {
-          producers.delete(key);
+          if (producers.get(key) === entry) producers.delete(key);
           throw error;
         });
         producers.set(key, entry);
