@@ -223,7 +223,7 @@ Later, with the real local toolchain/browser available:
    check and verify the resulting release identity.
 3. Apply `migrations/auth` through fresh and already-migrated Wrangler-local D1.
 4. Run full local HTTPS browser/CSP/userscript/standalone integration with
-   Playwright 1.62.1 or the repository's exact supported browser harness.
+   Playwright 1.63.0 or the repository's exact supported browser harness.
 5. Re-run affected userscript/AI/broad/check suites, separating any baseline
    failures by a safe untouched copy.
 6. Perform three consecutive task-defined Full Reviews with zero new findings.

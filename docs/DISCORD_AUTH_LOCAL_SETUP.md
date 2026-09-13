@@ -4,16 +4,16 @@
 
 Discord OAuth, HEX `free` / `vip` / `admin` authorization, owner bootstrap,
 web/userscript sessions, the Admin application, and Admin-only privileged Dev
-source delivery are implemented in source. No remote push, merge, deploy,
-production D1 mutation, Discord Developer Portal change, or live Discord API call
-was performed.
+source delivery are implemented in source. The review branch is pushed for
+review; no merge, production deploy, production D1 mutation, Discord Developer
+Portal change, or live Discord API call was performed.
 
-The review environment could execute all focused auth tests and a supplementary
-build with the provided offline esbuild 0.25.9 binary. The repository pins
-**esbuild 0.28.2**, Wrangler `^4.128.0`, and Playwright 1.62.1. Those exact
-packages were not available locally and the registry was unreachable, so the
-0.25.9 build is evidence only, not the canonical production build. Run the
-canonical commands below before deployment.
+The initial 2026-09-13 review used a supplementary esbuild 0.25.9 build because
+the pinned toolchain was unavailable there. Follow-up verification with the
+lockfile's esbuild 0.28.2, Wrangler 4.131.0, and Playwright 1.63.0 passed the
+canonical auth build and browser flows. The canonical build reproduced the two
+committed generated release files byte-for-byte; keep the remaining D1 and
+production gates below distinct from that completed evidence.
 
 The input archive has no Git metadata. Its files are the baseline for this work.
 
@@ -104,6 +104,14 @@ timeout --kill-after=5s 30s npm run auth:validate-production-config
 ```
 
 This command is validation only; it does not deploy or mutate remote D1.
+
+Use `npm run deploy:production` for production releases. The command validates
+`wrangler.jsonc` with the production sentinel check before running `wrangler
+deploy`; it fails closed and does not start Wrangler when validation fails. It
+does not accept a different config or environment, so the file validated is the
+file deployed. Keep this validation out of `build.command`: Wrangler runs that
+custom build step for both `wrangler dev` and `wrangler deploy`, while local
+development relies on the sentinel. See [Wrangler custom builds](https://developers.cloudflare.com/workers/wrangler/custom-builds/).
 
 ## Session security
 
@@ -197,16 +205,17 @@ acceptance run.
 
 Before calling production acceptance complete:
 
-1. Install the repository-pinned dependencies, especially esbuild 0.28.2,
-   Wrangler, and Playwright 1.62.1.
-2. Re-run `npm run auth:build-test` with esbuild 0.28.2. The included generated
-   userscript/release files were produced only by the supplementary 0.25.9 build
-   in this review and must not be treated as canonical production artifacts.
+1. Install repository-pinned dependencies with `npm ci`; the lockfile currently
+   resolves esbuild 0.28.2, Wrangler 4.131.0, and Playwright 1.63.0.
+2. `npm run auth:build-test` has reproduced the two committed generated release
+   files byte-for-byte with esbuild 0.28.2. The branch receipt also records the
+   build-acceptance results.
 3. Run fresh and existing Wrangler-local D1 migration acceptance.
-4. Run the full local HTTPS browser/CSP/userscript flow with the pinned browser
-   harness. The review environment's Chromium policy blocked localhost navigation.
-5. Re-run the affected broad suites/check and preserve evidence for any baseline
-   failures.
+4. The full local HTTPS browser/CSP/userscript flow passed on Playwright 1.63.0;
+   retain the exact-browser receipt alongside the branch acceptance evidence.
+5. Preserve the broad-suite baseline result: `npm test` reaches the unchanged
+   failures in `tests/issue-5227-effective-address-wrap.test.mjs`; the exact
+   logs and focused lint/auth/build results are in the branch receipt.
 6. After all canonical evidence is available, perform the task-defined Full Review
    three consecutive times with zero new findings.
 7. Configure real `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`,
