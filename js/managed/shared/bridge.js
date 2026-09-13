@@ -833,12 +833,20 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
   const completeness = (unknownCallEffects.length > 0 || hasLanguageThrow) ? 'partial' : 'complete';
 
   if (unknownCallEffects.length > 0) {
+    const unknownEvidence = unknownCallEffects.map((u) => u.callSiteId);
     memoryWrites.push(createMemoryEffect({
       regionKind: 'unknown',
       broad: true,
       addressSpaces: ['memory'],
       source: 'unknown-call-fallback',
-      evidenceIds: unknownCallEffects.map((u) => u.callSiteId),
+      evidenceIds: unknownEvidence,
+    }));
+    memoryReads.push(createMemoryEffect({
+      regionKind: 'unknown',
+      broad: true,
+      addressSpaces: ['memory'],
+      source: 'unknown-call-fallback',
+      evidenceIds: unknownEvidence,
     }));
   }
 

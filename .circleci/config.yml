@@ -241,6 +241,18 @@ jobs:
                   --head-sha "$OWNERSHIP_HEAD_SHA")"
                 node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
                 ;;
+              consolidated-owner3)
+                # The owner3 EP-013 consolidation (#8436 + #8487) carries a
+                # Phase 7 analysis/summary fix alongside managed-bridge and
+                # Phase 10 dynamic-experiment owner paths. Enumerate every
+                # foreign path through the exact route before validating the
+                # Phase 7-owned subset.
+                FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+                  --branch "$CIRCLE_BRANCH" \
+                  --base-sha "$OWNERSHIP_BASE_SHA" \
+                  --head-sha "$OWNERSHIP_HEAD_SHA")"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
               *)
                 node tools/validation/phase7-ownership.mjs --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA"
                 ;;
