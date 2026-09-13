@@ -10,16 +10,14 @@
  * plain-objectified.
  */
 import assert from 'node:assert/strict';
-import { EvidenceStore } from '../js/ai/evidence.js';
 import { ProposalStore } from '../js/ai/proposals.js';
 
 function storeWith() {
-  const evidence = new EvidenceStore([{ id: 'ev_6250', kind: 'read', status: 'unknown', title: 'fixed' }]);
-  return new ProposalStore({ evidenceStore: evidence });
+  return new ProposalStore({ evidenceStore: { has: (id) => id === 'ev_6250' } });
 }
 
 function proposalFor(before, binding = null) {
-  const store = new ProposalStore({ evidenceStore: new EvidenceStore([{ id: 'ev_6250', kind: 'read', status: 'unknown', title: 'fixed' }]), binding });
+  const store = new ProposalStore({ evidenceStore: { has: (id) => id === 'ev_6250' }, binding });
   const proposal = store.create({
     kind: 'rename', target: { at: '0x1000' }, before, after: 'renamed',
     reason: 'regression fixture', evidenceIds: ['ev_6250'],
@@ -118,9 +116,8 @@ await assertStale({ pattern: /alpha/g }, { pattern: /beta/i }, 'nested RegExp so
 
 /* 5. bindingRevision shares the same fail-closed policy */
 {
-  const evidence = new EvidenceStore([{ id: 'ev_b6250', kind: 'read', status: 'unknown', title: 'b' }]);
   let binding = { binaryId: 'bin-A' };
-  const store = new ProposalStore({ evidenceStore: evidence, binding: () => binding });
+  const store = new ProposalStore({ evidenceStore: { has: (id) => id === 'ev_b6250' }, binding: () => binding });
   const proposal = store.create({ kind: 'rename', target: { at: '0x1000' }, before: 'a', after: 'b', reason: 'r', evidenceIds: ['ev_b6250'] });
   const { approvalToken } = store.approve(proposal.id);
   binding = { binaryId: /bin-A/ };
