@@ -11,6 +11,10 @@ import { parseELF } from '../../../js/binary/elf.js';
 import { resolveRiscvIsaProfile } from '../../../js/binary/riscv-isa.js';
 
 const EM_RISCV = 243;
+const ET_REL = 1;
+const ET_EXEC = 2;
+const ET_DYN = 3;
+const PT_LOAD = 1;
 const SHT_PROGBITS = 1;
 const SHT_SYMTAB = 2;
 const SHT_STRTAB = 3;
@@ -58,12 +62,13 @@ function symbolEntry({ name, bind = STB_LOCAL, type = STT_NOTYPE, size = 0n, val
   return { name, info: (bind << 4) | type, other: 0, shndx, value, size };
 }
 
-function buildElf({ arch = 'rv64i2p1', symbols = [] }) {
+function buildElf({ arch = 'rv64i2p1', symbols = [], type = ET_REL, textAddress = 0x401000n }) {
+  const runtimeImage = type !== ET_REL;
   const attr = arch === null ? null : attrPayload(arch);
   const textContent = new Uint8Array(16);
   const strtab = stringTable(['', ...symbols.map((entry) => entry.name)]);
 
-  let cursor = 64;
+  let cursor = 64 + (runtimeImage ? 56 : 0);
   const attrOff = cursor; if (attr) cursor += attr.length;
   const textOff = cursor; cursor += textContent.length;
   const symOff = cursor; cursor += (symbols.length + 1) * 24;
@@ -72,7 +77,7 @@ function buildElf({ arch = 'rv64i2p1', symbols = [] }) {
 
   const sections = [{ name:'', type:0, flags:0n, addr:0n, off:0, size:0, link:0, info:0, entsize:0n, addralign:0n }];
   if (attr) sections.push({ name:'.riscv.attributes', type:SHT_RISCV_ATTRIBUTES, flags:0n, addr:0n, off:attrOff, size:attr.length, link:0, info:0, entsize:0n, addralign:1n });
-  sections.push({ name:'.text', type:SHT_PROGBITS, flags:SHF_ALLOC | SHF_EXECINSTR, addr:0n, off:textOff, size:textContent.length, link:0, info:0, entsize:0n, addralign:4n });
+  sections.push({ name:'.text', type:SHT_PROGBITS, flags:SHF_ALLOC | SHF_EXECINSTR, addr:runtimeImage ? textAddress : 0n, off:textOff, size:textContent.length, link:0, info:0, entsize:0n, addralign:4n });
   sections.push({ name:'.symtab', type:SHT_SYMTAB, flags:0n, addr:0n, off:symOff, size:(symbols.length + 1) * 24, link:0, info:1, entsize:24n, addralign:8n });
   sections.push({ name:'.strtab', type:SHT_STRTAB, flags:0n, addr:0n, off:strOff, size:strtab.bytes.length, link:0, info:0, entsize:0n, addralign:1n });
   const symtab = sections.findIndex((section) => section.name === '.symtab');
@@ -102,16 +107,29 @@ function buildElf({ arch = 'rv64i2p1', symbols = [] }) {
   });
 
   buf.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0], 0);
-  view.setUint16(16, 1, true); // ET_REL
+  view.setUint16(16, type, true);
   view.setUint16(18, EM_RISCV, true);
   view.setUint32(20, 1, true);
   view.setBigUint64(24, 0n, true);
-  view.setBigUint64(32, 0n, true);
+  view.setBigUint64(32, runtimeImage ? 64n : 0n, true);
   view.setBigUint64(40, BigInt(shOff), true);
   view.setUint16(52, 64, true);
+  view.setUint16(54, runtimeImage ? 56 : 0, true);
+  view.setUint16(56, runtimeImage ? 1 : 0, true);
   view.setUint16(58, 64, true);
   view.setUint16(60, sections.length, true);
   view.setUint16(62, sections.length - 1, true);
+  if (runtimeImage) {
+    const p = 64;
+    view.setUint32(p, PT_LOAD, true);
+    view.setUint32(p + 4, 5, true); // PF_R | PF_X
+    view.setBigUint64(p + 8, BigInt(textOff), true);
+    view.setBigUint64(p + 16, textAddress, true);
+    view.setBigUint64(p + 24, textAddress, true);
+    view.setBigUint64(p + 32, BigInt(textContent.length), true);
+    view.setBigUint64(p + 40, BigInt(textContent.length), true);
+    view.setBigUint64(p + 48, 1n, true);
+  }
   sections.forEach((section, i) => {
     const p = shOff + i * 64;
     view.setUint32(p, shstrtab.offsets[i], true);
@@ -236,3 +254,86 @@ test('#4091: conforming mappings survive alongside contract-violating look-alike
   assert.deepEqual(mappings.map((mapping) => mapping.address), conforming.map((entry) => entry.address));
   assert.equal(conforming.length, 2);
 });
+
+for (const shndx of [0xfff1, 0xfff2]) {
+  test(`#4091: reserved section index ${shndx} cannot supply ISA authority without executable sections`, () => {
+    const name = '$xrv64i2p1_m2p0_c2p0';
+    const bytes = buildElf({ arch:null, symbols:[symbolEntry({ name, shndx })] });
+    const view = new DataView(bytes.buffer);
+    const textHeader = Number(view.getBigUint64(40, true)) + 64;
+    view.setBigUint64(textHeader + 8, SHF_ALLOC, true);
+    const image = parseELF(bytes);
+    const symbol = image.symbols.find((entry) => entry.name === name);
+    assert.ok(symbol, 'ordinary absolute/common symbol metadata is preserved');
+    assert.equal(symbol.sectionIndex, shndx);
+    assert.equal(symbol.defined, true);
+    assert.deepEqual(image.metadata.riscvIsa.sections, []);
+    assert.deepEqual(image.metadata.riscvIsa.mappings, []);
+    assert.equal(resolveRiscvIsaProfile(image.metadata.riscvIsa, 4n, { allowAssumed:false }), null);
+  });
+}
+
+test('#4091: an unmapped ET_REL executable section cannot supply mapping or range authority', () => {
+  const name = '$xrv64i2p1_m2p0_c2p0';
+  const bytes = buildElf({ arch:null, symbols:[symbolEntry({ name, shndx:1 })] });
+  const view = new DataView(bytes.buffer);
+  const textHeader = Number(view.getBigUint64(40, true)) + 64;
+  view.setBigUint64(textHeader + 32, BigInt(bytes.length), true);
+  const image = parseELF(bytes);
+  assert.equal(image.sections.find((section) => section.index === 1)?.source, 'unmapped-section');
+  const symbol = image.symbols.find((entry) => entry.name === name);
+  assert.ok(symbol);
+  assert.deepEqual(image.metadata.riscvIsa.mappings, []);
+  assert.deepEqual(image.metadata.riscvIsa.sections, []);
+  assert.equal(resolveRiscvIsaProfile(image.metadata.riscvIsa, symbol.address, { allowAssumed:false }), null);
+});
+
+test('#4091: an excluded executable virtual range cannot reappear through raw section metadata', () => {
+  const name = '$xrv64i2p1_m2p0_c2p0';
+  const value = (1n << 64n) - 4n;
+  const bytes = buildElf({ arch:null, symbols:[symbolEntry({ name, shndx:1, value })] });
+  const view = new DataView(bytes.buffer);
+  const textHeader = Number(view.getBigUint64(40, true)) + 64;
+  view.setUint16(16, 2, true); // ET_EXEC
+  view.setBigUint64(textHeader + 16, (1n << 64n) - 8n, true);
+  const image = parseELF(bytes);
+  assert.equal(image.sections.some((section) => section.index === 1), false);
+  assert.ok(image.symbols.some((entry) => entry.name === name));
+  assert.deepEqual(image.metadata.riscvIsa.mappings, []);
+  assert.deepEqual(image.metadata.riscvIsa.sections, []);
+  assert.equal(resolveRiscvIsaProfile(image.metadata.riscvIsa, value, { allowAssumed:false }), null);
+});
+
+test('#4091: a non-allocated executable ET_EXEC section has no canonical ISA mapping authority', () => {
+  const name = '$xrv64i2p1_m2p0_c2p0';
+  const bytes = buildElf({ arch:null, symbols:[symbolEntry({ name, shndx:1 })] });
+  const view = new DataView(bytes.buffer);
+  const textHeader = Number(view.getBigUint64(40, true)) + 64;
+  view.setUint16(16, 2, true); // ET_EXEC
+  view.setBigUint64(textHeader + 8, SHF_EXECINSTR, true);
+  const image = parseELF(bytes);
+  assert.equal(image.sections.find((section) => section.index === 1)?.source, 'section-header');
+  assert.equal(image.sections.find((section) => section.index === 1)?.perms.read, false);
+  assert.deepEqual(image.metadata.riscvIsa.mappings, []);
+  assert.deepEqual(image.metadata.riscvIsa.sections, []);
+  assert.equal(resolveRiscvIsaProfile(image.metadata.riscvIsa, 4n, { allowAssumed:false }), null);
+});
+
+for (const [type, label] of [[ET_EXEC, 'ET_EXEC'], [ET_DYN, 'ET_DYN']]) {
+  test(`#4091: ${label} mapping symbols must stay inside their declared section`, () => {
+    const sectionStart = 0x401000n;
+    for (const value of [sectionStart - 4n, sectionStart + 16n]) {
+      const image = parseELF(buildElf({ type, textAddress:sectionStart, symbols:[symbolEntry({ name:'$d', value })] }));
+      const symbol = image.symbols.find((entry) => entry.name === '$d');
+      assert.equal(symbol?.sectionIndex, 2);
+      assert.equal(symbol?.address, value);
+      assert.ok(image.metadata.riscvIsa.sections.some((section) => section.sectionIndex === 2
+        && section.start === sectionStart && section.end === sectionStart + 16n));
+      assert.equal(image.metadata.riscvIsa.mappings.length, 0, `out-of-section st_value ${value.toString(16)} must not grant mapping authority`);
+    }
+
+    const valid = parseELF(buildElf({ type, textAddress:sectionStart, symbols:[symbolEntry({ name:'$d', value:sectionStart })] }));
+    assert.equal(valid.metadata.riscvIsa.mappings.length, 1);
+    assert.equal(valid.metadata.riscvIsa.mappings[0].address, sectionStart);
+  });
+}

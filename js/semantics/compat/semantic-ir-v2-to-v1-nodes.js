@@ -4,7 +4,7 @@ import {
   legacyPublicStateIdentity, addUse, attachArgs, defaultUnknownInstruction, baseInstruction, targetAddress,
 } from './semantic-ir-v2-to-v1-core.js';
 import { projectLegacyAddress } from './semantic-ir-v2-to-v1-address.js';
-import { SEMANTIC_CONTROL_MAX_TARGETS } from '../ir/nodes.js';
+import { SEMANTIC_CONTROL_TARGET_COUNTS } from '../ir/nodes.js';
 
 const STRICT_FLOAT_LITERAL = /^[+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)$/;
 
@@ -629,11 +629,15 @@ export function projectNode(node, context) {
       inst.returnValueIds = node.inputs.slice();
       break;
     case 'branch': {
-      if (node.targets.length > SEMANTIC_CONTROL_MAX_TARGETS.branch) {
+      if (node.targets.length !== SEMANTIC_CONTROL_TARGET_COUNTS.branch || node.inputs.length !== 0) {
+        const reason = node.targets.length !== SEMANTIC_CONTROL_TARGET_COUNTS.branch
+          ? 'semantic-ir-v2-control-target-cardinality-not-representable-in-v1'
+          : 'semantic-ir-v2-control-input-cardinality-not-representable-in-v1';
         const unknown = defaultUnknownInstruction(node, blockIndex, row, options, {
-          reason: 'semantic-ir-v2-control-target-cardinality-not-representable-in-v1',
+          reason,
           unknownCategories: ['control'],
           surplusTargets: node.targets.slice(),
+          controlInputs: node.inputs.slice(),
         });
         Object.assign(inst, unknown, { semanticNodeId: node.id, sourceEntityId: node.id, sourceEffectIds: node.sourceEffectIds.slice(), instructionId: sourceInstructionIds(node.origin)[0] ?? null, sourceInstructionIds: sourceInstructionIds(node.origin), origin: node.origin });
         attachArgs(inst, inputValues);
@@ -648,11 +652,15 @@ export function projectNode(node, context) {
       break;
     }
     case 'conditional-branch': {
-      if (node.targets.length > SEMANTIC_CONTROL_MAX_TARGETS['conditional-branch']) {
+      if (node.targets.length !== SEMANTIC_CONTROL_TARGET_COUNTS['conditional-branch'] || node.inputs.length !== 1) {
+        const reason = node.targets.length !== SEMANTIC_CONTROL_TARGET_COUNTS['conditional-branch']
+          ? 'semantic-ir-v2-control-target-cardinality-not-representable-in-v1'
+          : 'semantic-ir-v2-control-input-cardinality-not-representable-in-v1';
         const unknown = defaultUnknownInstruction(node, blockIndex, row, options, {
-          reason: 'semantic-ir-v2-control-target-cardinality-not-representable-in-v1',
+          reason,
           unknownCategories: ['control'],
           surplusTargets: node.targets.slice(),
+          controlInputs: node.inputs.slice(),
         });
         Object.assign(inst, unknown, { semanticNodeId: node.id, sourceEntityId: node.id, sourceEffectIds: node.sourceEffectIds.slice(), instructionId: sourceInstructionIds(node.origin)[0] ?? null, sourceInstructionIds: sourceInstructionIds(node.origin), origin: node.origin });
         attachArgs(inst, inputValues);

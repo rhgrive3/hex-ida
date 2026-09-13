@@ -19,7 +19,7 @@ function okName() {
   return Uint8Array.from([0, 0x5f, 0x6f, 0x6b, 0]);
 }
 
-function buildMachO({ bits = 64, entries }) {
+function buildMachO({ bits = 64, entries, includeSection = true }) {
   const magic = bits === 64 ? 0xfeedfacf : 0xfeedface;
   const cputype = bits === 64 ? 0x0100000c : 12;
   const headerSize = bits === 64 ? 32 : 28;
@@ -42,7 +42,7 @@ function buildMachO({ bits = 64, entries }) {
 
   let p = headerSize;
   view.setUint32(p, bits === 64 ? 0x19 : 0x1, true);
-  view.setUint32(p + 4, segmentCommandSize + sectionRecordSize, true);
+  view.setUint32(p + 4, segmentCommandSize + (includeSection ? sectionRecordSize : 0), true);
   view.setUint8(p + 8, 0x5f, true); view.setUint8(p + 9, 0x54, true); view.setUint8(p + 10, 0x45, true); view.setUint8(p + 11, 0x58, true); view.setUint8(p + 12, 0x54, true);
   writeAt(p + 24, base);
   writeAt(p + (bits === 64 ? 32 : 28), 0x1000);
@@ -50,16 +50,18 @@ function buildMachO({ bits = 64, entries }) {
   writeAt(p + (bits === 64 ? 48 : 36), symoff);
   view.setInt32(p + (bits === 64 ? 56 : 40), 5, true);
   view.setInt32(p + (bits === 64 ? 60 : 44), 5, true);
-  view.setUint32(p + (bits === 64 ? 64 : 48), 1, true);
+  view.setUint32(p + (bits === 64 ? 64 : 48), includeSection ? 1 : 0, true);
   p += segmentCommandSize;
 
-  view.setUint8(p, 0x5f, true); view.setUint8(p + 1, 0x74, true); view.setUint8(p + 2, 0x65, true); view.setUint8(p + 3, 0x78, true); view.setUint8(p + 4, 0x74, true);
-  view.setUint8(p + 16, 0x5f, true); view.setUint8(p + 17, 0x54, true); view.setUint8(p + 18, 0x45, true); view.setUint8(p + 19, 0x58, true); view.setUint8(p + 20, 0x54, true);
-  writeAt(p + 32, base);
-  writeAt(p + (bits === 64 ? 40 : 36), 0x100);
-  view.setUint32(p + (bits === 64 ? 48 : 40), 0x20, true);
-  view.setUint32(p + (bits === 64 ? 64 : 56), 0x80000400, true); // S_REGULAR | S_ATTR_PURE_INSTRUCTIONS
-  p += sectionRecordSize;
+  if (includeSection) {
+    view.setUint8(p, 0x5f, true); view.setUint8(p + 1, 0x74, true); view.setUint8(p + 2, 0x65, true); view.setUint8(p + 3, 0x78, true); view.setUint8(p + 4, 0x74, true);
+    view.setUint8(p + 16, 0x5f, true); view.setUint8(p + 17, 0x54, true); view.setUint8(p + 18, 0x45, true); view.setUint8(p + 19, 0x58, true); view.setUint8(p + 20, 0x54, true);
+    writeAt(p + 32, base);
+    writeAt(p + (bits === 64 ? 40 : 36), 0x100);
+    view.setUint32(p + (bits === 64 ? 48 : 40), 0x20, true);
+    view.setUint32(p + (bits === 64 ? 64 : 56), 0x80000400, true); // S_REGULAR | S_ATTR_PURE_INSTRUCTIONS
+    p += sectionRecordSize;
+  }
 
   view.setUint32(p, 0x2, true); // LC_SYMTAB
   view.setUint32(p + 4, 24, true);
@@ -91,6 +93,35 @@ function testNames(image) {
 }
 
 for (const bits of [64, 32]) {
+  test(`#4222 nlist${bits}: an executable segment without sections cannot authorize N_SECT symbols`, () => {
+    for (const sect of [0, 1, 255]) {
+      for (const type of [N_SECT, N_SECT | N_EXT]) {
+        const image = parseMachO(buildMachO({ bits, includeSection:false, entries:[{ type, sect }] }));
+        assert.equal(image.segments.length, 1);
+        assert.equal(image.sections.length, 0);
+        assert.deepEqual(testNames(image), { symbols:[], exports:[] });
+        assert.equal(image.functions.length, 0);
+        assert.equal(image.metadata.machoMetadata.complete, false);
+        assert.ok(image.metadata.machoMetadata.reasons.includes(REASON));
+      }
+    }
+  });
+
+  test(`#4222 nlist${bits}: sectionless N_ABS and N_UNDF retain their own authority`, () => {
+    const absolute = parseMachO(buildMachO({ bits, includeSection:false, entries:[{ type:N_ABS | N_EXT, sect:0 }] }));
+    assert.equal(absolute.sections.length, 0);
+    assert.equal(absolute.symbols[0]?.defined, true);
+    assert.deepEqual(testNames(absolute).exports, ['_ok']);
+    assert.equal(absolute.metadata.machoMetadata.complete, true);
+
+    const imported = parseMachO(buildMachO({ bits, includeSection:false, entries:[{ type:N_UNDF | N_EXT, sect:0, value:0n }] }));
+    assert.equal(imported.sections.length, 0);
+    assert.equal(imported.symbols[0]?.defined, false);
+    assert.equal(imported.imports[0]?.name, '_ok');
+    assert.equal(imported.exports.length, 0);
+    assert.equal(imported.metadata.machoMetadata.complete, true);
+  });
+
   test(`#4222 nlist${bits}: an in-range N_SECT ordinal keeps defined/export truth`, () => {
     const image = parseMachO(buildMachO({ bits, entries:[{ type:N_SECT | N_EXT, sect:1 }] }));
     assert.equal(image.symbols.length, 1);
@@ -146,7 +177,7 @@ for (const bits of [64, 32]) {
   });
 }
 
-test('#4222: a section table is required before an ordinal can be checked', () => {
+test('#4222: LC_SYMTAB alone cannot authorize a defined-section symbol', () => {
   const symoff = 0x80;
   const stroff = symoff + 16;
   const bytes = new Uint8Array(stroff + 4);
@@ -170,6 +201,8 @@ test('#4222: a section table is required before an ordinal can be checked', () =
 
   const image = parseMachO(bytes);
   assert.equal(image.sections.length, 0);
-  assert.equal(image.symbols.length, 1);
-  assert.equal(image.metadata.machoMetadata.complete, true);
+  assert.deepEqual(testNames(image), { symbols:[], exports:[] });
+  assert.equal(image.functions.length, 0);
+  assert.equal(image.metadata.machoMetadata.complete, false);
+  assert.ok(image.metadata.machoMetadata.reasons.includes(REASON));
 });

@@ -23,10 +23,9 @@ const MEMORY_NODE_KINDS = new Set(['load', 'store']);
 const VARIABLE_NODE_KINDS = new Set(['state-read', 'state-write']);
 const CONTROL_NODE_KINDS = new Set(['branch', 'conditional-branch', 'switch']);
 
-// The number of successors a control node kind can denote is fixed by the kind
-// itself, so a node declaring more targets than that carries semantics no
-// downstream projection can represent. A `switch` keeps its n-ary case list.
-export const SEMANTIC_CONTROL_MAX_TARGETS = Object.freeze({
+// Fixed-arity control nodes have exact successor counts; a `switch` keeps its
+// n-ary case list.
+export const SEMANTIC_CONTROL_TARGET_COUNTS = Object.freeze({
   branch: 1,
   'conditional-branch': 2,
 });
@@ -116,7 +115,9 @@ export function createSemanticNode(input) {
     fail('semantic-ir-intrinsic-unknown-hidden-by-node');
   }
   if (CONTROL_NODE_KINDS.has(kind) && !out.targets.length) fail('semantic-ir-control-target-required');
-  if (Object.hasOwn(SEMANTIC_CONTROL_MAX_TARGETS, kind) && out.targets.length > SEMANTIC_CONTROL_MAX_TARGETS[kind]) {
+  if (kind === 'branch' && out.inputs.length !== 0) fail('semantic-ir-control-input-cardinality');
+  if (kind === 'conditional-branch' && out.inputs.length !== 1) fail('semantic-ir-control-input-cardinality');
+  if (Object.hasOwn(SEMANTIC_CONTROL_TARGET_COUNTS, kind) && out.targets.length !== SEMANTIC_CONTROL_TARGET_COUNTS[kind]) {
     fail('semantic-ir-control-target-cardinality');
   }
   if (SEMANTIC_SETS.unknownOperations.has(kind) && out.unknown == null) fail('semantic-ir-unknown-detail-required');

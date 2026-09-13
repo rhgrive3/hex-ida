@@ -1,5 +1,5 @@
 import { ByteView } from './reader.js';
-import { BinaryImage, functionSeed } from './model.js';
+import { BinaryImage, functionSeed, sectionHasMappedAddress } from './model.js';
 import { parseEhFrameHeader } from './elf-unwind.js';
 import { parseProgramDynamic } from './elf-dynamic.js';
 import { createELFMetadataBudget, markELFMetadataPartial } from './elf-budget.js';
@@ -150,8 +150,17 @@ export function parseELF(input, options = {}) {
   const symbolTables = rawSections.filter((s) => s.type === SHT_SYMTAB || s.type === SHT_DYNSYM);
   for (const s of symbolTables) parseSymbols(r, s, rawSections, image, bits, h.type, metadataBudget);
   if (image.arch === 'riscv64') {
+    // Raw headers and reserved symbol indices do not establish section authority.
+    const mappedSections = image.sections.filter(sectionHasMappedAddress);
+    const mappedSectionsByIndex = new Map(mappedSections.map((section) => [section.index, section]));
     const mappings = image.symbols
-      .filter((symbol) => isRiscvMappingSymbolRecord(symbol))
+      .filter((symbol) => {
+        if (!isRiscvMappingSymbolRecord(symbol)) return false;
+        const section = mappedSectionsByIndex.get(symbol.sectionIndex);
+        return section != null
+          && symbol.address >= section.address
+          && symbol.address < section.address + section.size;
+      })
       .map((symbol) => {
         const parsed = parseRiscvMappingSymbol(symbol.name);
         if (!parsed) return null;
@@ -163,12 +172,12 @@ export function parseELF(input, options = {}) {
       })
       .filter(Boolean)
       .sort((left, right) => left.address < right.address ? -1 : left.address > right.address ? 1 : 0);
-    const sections = rawSections
-      .filter((section) => (section.flags & SHF_EXECINSTR) !== 0n && section.size > 0n && (h.type !== ET_REL || section.syntheticAddr != null))
+    const sections = mappedSections
+      .filter((section) => section.perms.execute && section.size > 0n)
       .map((section) => ({
         sectionIndex:section.index,
-        start:h.type === ET_REL ? (section.syntheticAddr ?? 0n) : section.addr,
-        end:(h.type === ET_REL ? (section.syntheticAddr ?? 0n) : section.addr) + section.size,
+        start:section.address,
+        end:section.address + section.size,
       }));
     image.metadata.riscvIsa = {
       file:riscvFileIsa,

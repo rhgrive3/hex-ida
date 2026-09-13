@@ -6,10 +6,9 @@ import { createSemanticIrFunction } from '../../js/semantics/ir/function.js';
 import { projectNode } from '../../js/semantics/compat/semantic-ir-v2-to-v1-nodes.js';
 import { projectSemanticIrV2ToLegacyV1 } from '../../js/semantics/compat/semantic-ir-v2-to-v1.js';
 
-// Control node kind fixes the number of successors a v1 BR/CBR can carry, so a
-// complete canonical function must not be able to declare more targets than the
-// compatibility projection consumes. Surplus targets must fail closed at the
-// canonical boundary and must never become a silently narrowed edge (#4585).
+// Fixed control node kinds must carry their exact target and condition arity;
+// malformed complete functions must not become silently narrowed v1 edges
+// (#4585).
 
 const origin = { instructionIds: ['instruction_0'] };
 const CONTROL_TARGET_LIMITS = { branch: 1, 'conditional-branch': 2 };
@@ -112,7 +111,11 @@ test('#4585: a conditional branch keeps exactly two targets', () => {
   assert.equal(inst.extra.fallthroughBlockId, 'fallthrough');
 });
 
-test('#4585: a conditional branch with surplus targets fails closed', () => {
+test('#4585: a conditional branch with fewer or surplus targets fails closed', () => {
+  assert.throws(
+    () => build('conditional-branch', ['taken'], ['cond']),
+    /semantic-ir-control-target-cardinality/,
+  );
   assert.throws(
     () => build('conditional-branch', ['taken', 'fallthrough', 'extra'], ['cond']),
     /semantic-ir-control-target-cardinality/,
@@ -120,6 +123,17 @@ test('#4585: a conditional branch with surplus targets fails closed', () => {
   assert.throws(
     () => build('conditional-branch', [], ['cond']),
     /semantic-ir-control-target-required/,
+  );
+});
+
+test('#4585: a conditional branch requires exactly one condition input', () => {
+  assert.throws(
+    () => build('conditional-branch', ['taken', 'fallthrough']),
+    /semantic-ir-control-input-cardinality/,
+  );
+  assert.throws(
+    () => build('conditional-branch', ['taken', 'fallthrough'], ['cond', 'other']),
+    /semantic-ir-control-input-cardinality/,
   );
 });
 
@@ -141,6 +155,24 @@ test('#4585: surplus targets never become a narrowed exact edge in compat', () =
     assert.notEqual(inst.op, kind === 'branch' ? OP.BR : OP.CBR, `${kind}: narrowed exact edge must not be published`);
     assert.deepEqual(inst.extra.surplusTargets, targets, `${kind}: every declared target must stay visible`);
     assert.match(inst.extra.reason, /semantic-ir-v2-control-target-cardinality/);
+  }
+});
+
+test('#4585: missing targets or conditions never become exact BR/CBR in compat', () => {
+  const malformedControls = [
+    { kind:'branch', targets:[], inputs:[], reason:/semantic-ir-v2-control-target-cardinality/ },
+    { kind:'branch', targets:['b1'], inputs:['cond'], reason:/semantic-ir-v2-control-input-cardinality/ },
+    { kind:'conditional-branch', targets:['b1'], inputs:['cond'], reason:/semantic-ir-v2-control-target-cardinality/ },
+    { kind:'conditional-branch', targets:['b1', 'b2'], inputs:[], reason:/semantic-ir-v2-control-input-cardinality/ },
+    { kind:'conditional-branch', targets:['b1', 'b2'], inputs:['cond', 'other'], reason:/semantic-ir-v2-control-input-cardinality/ },
+  ];
+  for (const { kind, targets, inputs, reason } of malformedControls) {
+    const malformed = controlIr(kind, targets, inputs);
+    const node = malformed.nodes.find((candidate) => candidate.id === 'control');
+    const [inst] = projectNode({ ...node, sourceEffectIds: [] }, defensiveContext(malformed, node));
+    assert.equal(inst.op, OP.UNKNOWN, `${kind}: malformed control shape must fail closed`);
+    assert.match(inst.extra.reason, reason);
+    assert.notEqual(inst.op, kind === 'branch' ? OP.BR : OP.CBR);
   }
 });
 
