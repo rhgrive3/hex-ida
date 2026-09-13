@@ -1,0 +1,78 @@
+name: Owner11 fresh carrier
+
+on:
+  push:
+    branches:
+      - consolidate/owner11-20260913-2058
+    paths:
+      - .github/workflows/owner11-fresh-carrier.yml
+
+permissions:
+  contents: write
+
+jobs:
+  rebuild-current-main:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Reapply semantic commits on exact current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=59dee3793dfc1f4a5d1d5de85f6b24d0a77f46d9
+          test "$(git merge-base HEAD "$BASE")" = "$BASE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch --no-tags --depth=50 origin \
+            fix/issue-5085-owner11 \
+            fix/batch-4590-owner11 \
+            consolidated-owner11
+          for c in \
+            da10bc624e0f9513eac0a798344301a0c9f3634c \
+            ff0d5f02739b3b7b1734077cd3c05dd584380a39 \
+            b7c474ee35ca16199fb3551d7ee47185c4ccd615 \
+            5cdde4aeadb1cea3d56e649b692f683f986ad403
+          do
+            if ! git cherry-pick "$c"; then
+              conflicts="$(git diff --name-only --diff-filter=U || true)"
+              git cherry-pick --abort || true
+              printf 'failed_commit=%s\nconflicts:\n%s\n' "$c" "$conflicts" > .github/owner11-rebase-diagnostic.txt
+              git add .github/owner11-rebase-diagnostic.txt
+              git commit -m "diagnostic(owner11): record fresh-carrier conflict"
+              git push origin HEAD:consolidate/owner11-20260913-2058
+              exit 1
+            fi
+          done
+
+      - name: Regenerate current userscript outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 60s node scripts/build-userscript.mjs
+          timeout 30s node tools/validation/generated-output-policy.mjs
+
+      - name: Focused owner11 regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 45s node tests/issue-5085-sandbox-host-status-id-collision.mjs
+          timeout 60s node tests/userscript-chatgpt-sandbox-host.mjs
+          timeout 45s node --test tests/phase12/integration/issue-4590-session-proposal-hydration.test.mjs
+          timeout 45s node --test tests/phase12/integration/issue-4590-session-proposal-execution-authority.test.mjs
+          timeout 45s node --test tests/phase12/integration/issue-4666-unknown-semantic-detail-deep-freeze.test.mjs
+          timeout 60s npm run userscript:test
+          timeout 90s node tests/check.mjs
+
+      - name: Commit clean current-main carrier
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/owner11-fresh-carrier.yml .github/owner11-rebase-diagnostic.txt
+          git add -A
+          git diff --cached --check
+          git commit -m "fix(consolidated): refresh owner11 on current main (#5085, #4590, #4666)"
+          git push origin HEAD:consolidate/owner11-20260913-2058
