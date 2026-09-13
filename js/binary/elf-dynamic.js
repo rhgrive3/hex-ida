@@ -464,7 +464,7 @@ function dynamicSymbolsFromImage(image, limit = Number.MAX_SAFE_INTEGER) {
 export function dynamicSymbolFileCapacity(r, image, tags, symtabVa, syment) {
   const range=mappedELFFileRangeForVa(image,symtabVa),ent=toSafeNumber(syment);if(!range||ent==null||ent<=0)return 0;
   let end=range.end;
-  const pointerTags=[4n,5n,7n,17n,23n,36n,0x6000000fn,0x60000011n,0x6ffffef5n,0x6ffffff0n,0x6ffffffcn,0x6ffffffen];
+  const pointerTags=[4n,5n,7n,17n,23n,DT_SYMTAB_SHNDX,36n,0x6000000fn,0x60000011n,0x6ffffef5n,0x6ffffff0n,0x6ffffffcn,0x6ffffffen];
   for(const tag of pointerTags)for(const va of tags.get(tag)||[]){if(va===symtabVa)continue;const candidate=mappedELFFileRangeForVa(image,va);if(candidate&&candidate.segment===range.segment&&candidate.start>range.start&&candidate.start<end)end=candidate.start;}
   return Math.max(0,Math.floor((end-range.start)/ent));
 }
