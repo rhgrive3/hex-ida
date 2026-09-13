@@ -235,6 +235,16 @@ export class Emulator {
     this.loadedValid.set(key, valid);
   }
 
+  async _ensurePageRange(start, end) {
+    await this.ensure(start);
+    const startPage = (start / BigInt(PAGE)) * BigInt(PAGE);
+    const endPage = (end / BigInt(PAGE)) * BigInt(PAGE);
+    for (let page = startPage + BigInt(PAGE); page < endPage; page += BigInt(PAGE)) {
+      await this.ensure(page);
+    }
+    if (endPage !== startPage) await this.ensure(end);
+  }
+
   byteAt(addr) {
     const address = BigInt(addr);
     const page = (address / BigInt(PAGE)) * BigInt(PAGE);
@@ -300,9 +310,7 @@ export class Emulator {
   async load(addr, size) {
     const n = normalizeMemorySize(size);
     const start = BigInt(addr);
-    await this.ensure(start);
-    const end = start + BigInt(n - 1);
-    if (end / BigInt(PAGE) !== start / BigInt(PAGE)) await this.ensure(end);
+    await this._ensurePageRange(start, start + BigInt(n - 1));
     let v = 0n;
     for (let i = n - 1; i >= 0; i--) v = (v << 8n) | BigInt(this.byteAt(start + BigInt(i)));
     return v;
@@ -320,9 +328,7 @@ export class Emulator {
        below would fail open and writeByte() would mint undeclared mem
        backing. An interior page without backing fails closed here. */
     const end = start + BigInt(n - 1);
-    for (let p = (start / BigInt(PAGE)) * BigInt(PAGE); p <= end; p += BigInt(PAGE)) {
-      await this.ensure(p);
-    }
+    await this._ensurePageRange(start, end);
     /* #7968: admit every byte of the store before committing any of it — a
        range that straddles the write-authority boundary fails closed without
        partially writing the bytes inside the prefix. */
@@ -345,8 +351,7 @@ export class Emulator {
     const start = BigInt(addr);
     const out = new Uint8Array(n);
     if (!n) return out;
-    for (let i = 0; i < n; i += PAGE) await this.ensure(start + BigInt(i));
-    await this.ensure(start + BigInt(n - 1));
+    await this._ensurePageRange(start, start + BigInt(n - 1));
     for (let i = 0; i < n; i++) out[i] = this.byteAt(start + BigInt(i));
     return out;
   }

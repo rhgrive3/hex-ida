@@ -154,15 +154,30 @@ function operationShapeValid(operations) {
 function formatIdentityMismatch(result, transaction, expectedOutputHash) {
   if (!result || typeof result !== 'object') return null;
   const format = result.format ?? result.image?.format;
-  if (format != null && String(format).toLowerCase() !== transaction.format) return 'validator-format-mismatch';
+  if (format != null) {
+    if (typeof format !== 'string') return 'validator-format-invalid';
+    if (format.toLowerCase() !== transaction.format) return 'validator-format-mismatch';
+  }
   const architecture = result.architecture ?? result.arch ?? result.image?.arch;
-  if (architecture != null && String(architecture).toLowerCase() !== transaction.architecture) return 'validator-architecture-mismatch';
+  if (architecture != null) {
+    if (typeof architecture !== 'string') return 'validator-architecture-invalid';
+    if (architecture.toLowerCase() !== transaction.architecture) return 'validator-architecture-mismatch';
+  }
   const loaderVersion = result.loaderVersion ?? result.parserVersion ?? result.image?.loaderVersion;
-  if (loaderVersion != null && String(loaderVersion) !== transaction.loaderVersion) return 'validator-loader-identity-mismatch';
+  if (loaderVersion != null) {
+    if (typeof loaderVersion !== 'string') return 'validator-loader-identity-invalid';
+    if (loaderVersion !== transaction.loaderVersion) return 'validator-loader-identity-mismatch';
+  }
   const sourceHash = result.sourceHash ?? result.inputHash ?? result.image?.sourceHash;
-  if (sourceHash != null && String(sourceHash).toLowerCase() !== transaction.sourceHash) return 'validator-source-identity-mismatch';
+  if (sourceHash != null) {
+    if (typeof sourceHash !== 'string') return 'validator-source-identity-invalid';
+    if (sourceHash.toLowerCase() !== transaction.sourceHash) return 'validator-source-identity-mismatch';
+  }
   const outputHash = result.outputHash ?? result.bytesHash ?? result.image?.outputHash;
-  if (outputHash != null && String(outputHash).toLowerCase() !== expectedOutputHash) return 'validator-output-identity-mismatch';
+  if (outputHash != null) {
+    if (typeof outputHash !== 'string') return 'validator-output-identity-invalid';
+    if (outputHash.toLowerCase() !== expectedOutputHash) return 'validator-output-identity-mismatch';
+  }
   return null;
 }
 
@@ -964,19 +979,22 @@ export async function publishRebuildTransaction(materialized, validation, option
     // able to mutate the validated temporary output after its identity is fixed.
     const result = await options.atomicPromote(materialized.bytes.slice(), { materialized, validation });
     if (!result || result.atomic !== true || result.committed !== true) return { status: 'rejected', reason: 'rebuild-v2-publication-not-atomic' };
-    const protocol = String(result.protocol || '');
-    if (!ATOMIC_PUBLICATION_PROTOCOLS.has(protocol)) return { status: 'rejected', reason: 'rebuild-v2-publication-protocol-invalid' };
-    const publicationIdentity = String(result.publicationIdentity || '').trim();
+    const protocol = result.protocol;
+    if (typeof protocol !== 'string' || !ATOMIC_PUBLICATION_PROTOCOLS.has(protocol)) return { status: 'rejected', reason: 'rebuild-v2-publication-protocol-invalid' };
+    if (result.publicationIdentity != null && typeof result.publicationIdentity !== 'string') return { status: 'rejected', reason: 'rebuild-v2-publication-identity-invalid' };
+    const publicationIdentity = typeof result.publicationIdentity === 'string' ? result.publicationIdentity.trim() : '';
     if (!publicationIdentity) return { status: 'rejected', reason: 'rebuild-v2-publication-identity-required' };
     if (result.transactionId == null || result.outputHash == null || result.outputIdentity == null) return { status: 'rejected', reason: 'rebuild-v2-publication-identity-incomplete' };
-    if (String(result.transactionId) !== materialized.transactionId) return { status: 'rejected', reason: 'rebuild-v2-publication-transaction-mismatch' };
-    if (String(result.outputHash) !== materialized.outputHash) return { status: 'rejected', reason: 'rebuild-v2-publication-output-mismatch' };
+    if (typeof result.transactionId !== 'string' || typeof result.outputHash !== 'string' || typeof result.outputIdentity !== 'string') return { status: 'rejected', reason: 'rebuild-v2-publication-identity-invalid' };
+    if (result.transactionId !== materialized.transactionId) return { status: 'rejected', reason: 'rebuild-v2-publication-transaction-mismatch' };
+    if (result.outputHash !== materialized.outputHash) return { status: 'rejected', reason: 'rebuild-v2-publication-output-mismatch' };
     const outputIdentity = canonicalOutputIdentity(materialized.transactionId, materialized.outputHash);
-    if (String(result.outputIdentity) !== outputIdentity) return { status: 'rejected', reason: 'rebuild-v2-publication-output-identity-mismatch' };
+    if (result.outputIdentity !== outputIdentity) return { status: 'rejected', reason: 'rebuild-v2-publication-output-identity-mismatch' };
     for (const field of ['binaryId', 'format', 'architecture', 'loaderVersion', 'sourceHash']) {
       if (result[field] != null) {
+        if (typeof result[field] !== 'string') return { status: 'rejected', reason: 'rebuild-v2-publication-identity-invalid' };
         const expected = materialized[field];
-        const observed = String(result[field]);
+        const observed = result[field];
         if ((field === 'sourceHash' ? observed.toLowerCase() : observed) !== (field === 'sourceHash' ? String(expected).toLowerCase() : String(expected))) {
           return { status: 'rejected', reason: 'rebuild-v2-publication-identity-mismatch' };
         }
