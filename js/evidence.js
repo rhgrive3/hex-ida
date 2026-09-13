@@ -496,6 +496,10 @@ function finitePositiveLr(value, fallback = 1) {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return fallback;
   return value;
 }
+function countAuthority(value, fallback) {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+  return fallback;
+}
 
 /**
  * 証拠 1 件。
@@ -661,8 +665,9 @@ export function fuse(items, opts) {
    * 「5 個のうちどれか」を前提にすると、ろくな根拠がなくても 20% から始まってしまう。
    * 実際には「この目的の値は、このバイナリには無い」ことの方が多い。
    */
-  const absent = o.absent != null ? o.absent : 40;
-  const n = Math.max(2, (o.candidates != null ? o.candidates : 200) + absent);
+  const absent = countAuthority(o.absent, 40);
+  const candidates = countAuthority(o.candidates, 200);
+  const n = Math.max(2, candidates + absent);
   const prior = o.prior != null
     ? Math.max(1e-9, Math.min(0.5, o.prior))
     : 1 / n;
