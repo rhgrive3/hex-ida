@@ -7454,6 +7454,13 @@ RV64 subject/minimization や既存 ordering 行列の再作成は不要です�
   モジュール境界、所有権、独立レビュー通過。Phase9全体は上記2件が失敗。
 - frozen 観測変更：失効したProxy、例外を投げるProxy、後からfreezeした変更、
   mutableな子と循環を含む回帰を追加。対象テストと独立レビューを実施。
+- `b4a84ec58` の clean head で対象59件を再検証した結果は **58通過・1失敗**。
+  `proof-projection-origin.test.mjs` の「public optimizer retains an issued projection after successful replay」が
+  `complete` を期待する箇所で `partial` となりました。単独実行でも失敗し、
+  変更前 `fa07353bc` の隔離 checkout でも同じ失敗を確認しました。原因は未確定・未修正です。
+  dirty 状態で一度59件通過した結果を、最終状態の合格根拠には使いません。
+- frozen 観測の追加19テストは、所有範囲内の既存ファイル
+  `tests/phase8/substrate/proof-projection-origin.test.mjs` に集約しています。
 - 今回の frozen 変更後の full Phase9/full Phase8 は未実施です。
   初期の性能計測で標準120msの停止は解消していません。
 - 完成済みの生成物もブランチに含めます。工程上の状態は **CHECKPOINT-LOCKED** のままです。
