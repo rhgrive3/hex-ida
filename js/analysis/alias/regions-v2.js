@@ -234,10 +234,8 @@ function genuineRenamedDefinitionRow(ir, definition, stateUse, addressRead, load
 }
 
 function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
-  const debug = process.env.HEX_DEBUG_C2_POINTER === '1';
   const memorySsa = options.canonicalMemorySsa;
   const ssa = options.ssa;
-  if (debug) process.stderr.write(`pointer-hint inputs ${String(node?.id)} brand=${isCanonicalMemorySsaProducerArtifact(memorySsa)} fn=${String(memorySsa?.functionId)} irfn=${String(ir?.functionId)} md=${String(memorySsa?.identity?.semanticIrDigest)} id=${stableDigest(ir)} uses=${Array.isArray(memorySsa?.uses)} defs=${Array.isArray(memorySsa?.definitions)} meta=${Array.isArray(memorySsa?.accessMetadata)} ssa=${Boolean(ssa)}\n`);
   if (!isCanonicalMemorySsaProducerArtifact(memorySsa)
       || String(memorySsa.functionId ?? '') !== String(ir?.functionId ?? '')
       || String(memorySsa.identity?.semanticIrDigest ?? '') !== stableDigest(ir)
@@ -245,7 +243,6 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
       || !Array.isArray(memorySsa.definitions)
       || !Array.isArray(memorySsa.accessMetadata)
       || !ssa || !Array.isArray(ssa.uses) || !Array.isArray(ssa.definitions)) {
-    if (debug) process.stderr.write(`pointer-hint precondition failed ${String(node?.id)}\n`);
     return null;
   }
   const addressValueId = node?.memory?.addressExpr?.valueId;
@@ -279,7 +276,6 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
     }
   }
   if (!addressRead || addressRead.kind !== 'state-read') {
-    if (debug) process.stderr.write(`pointer-hint address read failed ${String(node?.id)} ${String(addressRead?.kind)}\n`);
     return null;
   }
 
@@ -288,7 +284,6 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
     && String(use.proof?.sourceSemanticValueId ?? addressReadValueId) === String(addressReadValueId)
     && genuineRenamedUseRow(ir, use, addressRead, addressReadValueId, blockIdByNode));
   const candidates = [];
-  if (debug) process.stderr.write(`pointer-hint state uses ${String(node?.id)} ${stateUses.length}\n`);
   for (const stateUse of stateUses) {
     const scalarDefinition = ssa.definitions.find((definition) =>
       String(definition.valueId ?? '') === String(stateUse.valueId ?? '')
@@ -363,7 +358,6 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
       });
     }
   }
-  if (debug) process.stderr.write(`pointer-hint candidates ${String(node?.id)} ${candidates.length}\n`);
   if (candidates.length !== 1) return null;
   return candidates[0];
 }
@@ -471,7 +465,7 @@ function preciseRegion({ descriptor, functionId, binaryId, widthBits, origin, ad
   });
 }
 
-export function deriveMemoryRegion(input = {}) {
+function deriveMemoryRegionWithCandidates(input = {}, rawEvidenceCandidates = null) {
   const memory = object(input.memory) ?? {};
   const origin = normalizedOrigin(input.origin);
   const functionId = optionalIdentityString(input.functionId, 'function-id');
@@ -484,11 +478,83 @@ export function deriveMemoryRegion(input = {}) {
     : null;
   const addressSpace = optionalIdentityString(memory.addressSpace ?? input.addressSpace, 'address-space');
   const addressValueId = optionalIdentityString(memory.addressExpr?.valueId ?? input.addressValueId, 'address-value-id');
-  const descriptor = normalizeDescriptor(input.regionEvidence ?? input.provenance ?? input.metadata);
+  const evidenceCandidates = Array.isArray(rawEvidenceCandidates)
+    ? rawEvidenceCandidates.map(normalizeDescriptor).filter(Boolean)
+    : null;
+  let descriptor = evidenceCandidates?.[0]
+    ?? normalizeDescriptor(input.regionEvidence ?? input.provenance ?? input.metadata);
+  let comparableCandidates = evidenceCandidates;
+  let descriptorConflict = false;
+
+  if (descriptor && evidenceCandidates?.length > 1 && PRECISE_KINDS.has(descriptor.kind)) {
+    const preciseKindCandidates = evidenceCandidates.filter((candidate) => PRECISE_KINDS.has(candidate.kind));
+    descriptorConflict = preciseKindCandidates.some((candidate) => candidate.kind !== descriptor.kind);
+
+    // rooted-offset addressSpace is optional proof detail. One source may
+    // supply the storage domain while another supplies the same root/offset.
+    // Merge that one-way refinement before comparing canonical identities so
+    // source ordering cannot turn compatible evidence into a false conflict.
+    if (!descriptorConflict && descriptor.kind === 'rooted-offset') {
+      const spaces = new Set();
+      for (const candidate of preciseKindCandidates) {
+        if (candidate.kind !== 'rooted-offset' || candidate.addressSpace == null) continue;
+        try {
+          const candidateSpace = optionalIdentityString(candidate.addressSpace, 'address-space');
+          if (candidateSpace) spaces.add(candidateSpace);
+        } catch {
+          // Malformed auxiliary metadata is not proof-grade authority.
+        }
+      }
+      if (spaces.size > 1) {
+        descriptorConflict = true;
+      } else if (spaces.size === 1) {
+        const [consensusSpace] = spaces;
+        if (descriptor.addressSpace == null) descriptor = { ...descriptor, addressSpace: consensusSpace };
+        comparableCandidates = evidenceCandidates.map((candidate) =>
+          candidate.kind === 'rooted-offset' && candidate.addressSpace == null
+            ? { ...candidate, addressSpace: consensusSpace }
+            : candidate);
+      }
+    }
+  }
+
+  const conflictingRegion = () => unknownRegion({
+    functionId,
+    binaryId,
+    widthBits,
+    origin,
+    sourceEntityId: input.sourceEntityId,
+    addressValueId,
+    addressSpace,
+    reason: 'conflicting-region-evidence',
+    metadata: {
+      ...(object(input.unknownMetadata) ?? {}),
+      regionEvidenceConflict: true,
+      regionEvidenceCandidateCount: evidenceCandidates?.length ?? 0,
+    },
+  });
+  if (descriptorConflict) return conflictingRegion();
 
   const precise = descriptor && Number.isSafeInteger(widthBits) && widthBits > 0
     ? preciseRegion({ descriptor, functionId, binaryId, widthBits, origin, addressSpace, addressValueId })
     : null;
+  if (precise && comparableCandidates?.length > 1) {
+    const conflicting = comparableCandidates.slice(1).some((candidate) => {
+      let candidateRegion = null;
+      try {
+        candidateRegion = preciseRegion({
+          descriptor: candidate, functionId, binaryId, widthBits, origin, addressSpace, addressValueId,
+        });
+      } catch {
+        // A malformed secondary candidate is not proof-grade authority. The
+        // primary descriptor keeps its historical behavior; only two valid
+        // precise claims can establish a contradiction.
+        return false;
+      }
+      return candidateRegion != null && candidateRegion.id !== precise.id;
+    });
+    if (conflicting) return conflictingRegion();
+  }
   if (precise) return precise;
 
   if (originHasEvidence(origin) && Number.isSafeInteger(widthBits) && widthBits > 0 && (addressSpace === 'tls' || addressSpace === 'io')) {
@@ -515,6 +581,10 @@ export function deriveMemoryRegion(input = {}) {
     reason: descriptor ? 'malformed-or-unproven-region-evidence' : 'missing-region-provenance',
     metadata: object(input.unknownMetadata),
   });
+}
+
+export function deriveMemoryRegion(input = {}) {
+  return deriveMemoryRegionWithCandidates(input);
 }
 
 function irForAddressRootDerivation(ir) {
@@ -571,9 +641,10 @@ export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
   const value = addressValueId ? values.find((item) => item.id === addressValueId) : null;
   const definingNode = value?.definitionNodeId ? nodes.find((item) => item.id === value.definitionNodeId) : null;
   const accessOrigin = normalizedOrigin(node.origin, value?.origin, definingNode?.origin);
-  const explicitDescriptor = descriptorCandidates(node, value, definingNode, options.regionEvidence)
+  const explicitDescriptors = descriptorCandidates(node, value, definingNode, options.regionEvidence)
     .map(normalizeDescriptor)
-    .find(Boolean) ?? null;
+    .filter(Boolean);
+  const explicitDescriptor = explicitDescriptors[0] ?? null;
 
   let proof = null;
   let graphDescriptor = null;
@@ -600,7 +671,7 @@ export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
   // origin; otherwise equal MemoryRegionIds would carry conflicting objects.
   const regionOrigin = graphDescriptor || memoryPointerDescriptor ? normalizedOrigin(ir.origin) : accessOrigin;
 
-  return deriveMemoryRegion({
+  return deriveMemoryRegionWithCandidates({
     functionId: ir.functionId,
     binaryId: options.binaryId ?? ir.binaryId ?? ir.metadata?.binaryId,
     memory: node.memory,
@@ -612,7 +683,7 @@ export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
       ...(object(options.unknownMetadata) ?? {}),
       ...(derivationMetadata ?? {}),
     },
-  });
+  }, explicitDescriptor ? explicitDescriptors : null);
 }
 
 export function isPreciseMemoryRegion(region) {
