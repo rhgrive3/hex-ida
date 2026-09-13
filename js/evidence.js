@@ -521,9 +521,19 @@ export function evidence(code, strength, detail, lr) {
  * @param {number} users   その文言を参照している関数の数
  * @param {number} score   matchText の当てはまり（1 以上なら強い一致）
  */
+function observationCount(value, absent) {
+  if (value == null || value === 0) return absent;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) return null;
+  return value;
+}
+
 export function exclusiveLR(total, users, score, text) {
-  const n = Math.max(2, total || 0);
-  const k = Math.max(1, users || 1);
+  const totalC = observationCount(total, 0);
+  const usersC = observationCount(users, 1);
+  if (totalC === null || usersC === null) return 0;
+  const n = Math.max(2, totalC);
+  const k = Math.max(1, usersC);
+  if (typeof score !== 'number' || !Number.isFinite(score)) return 0;
   if (k > EXCLUSIVE_MAX_USERS) return 0;        // 何十か所からも使われる語は名指しではない
   if (!namesBehaviour(text)) return 0;
   /*
@@ -571,8 +581,11 @@ function namesBehaviour(text) {
  * 体力の形をした値は、盾でも残弾でも耐久度でもありうる。だから割引は大きい。
  */
 export function rarityLR(total, matching) {
-  const n = Math.max(2, total || 0);
-  const k = Math.max(1, matching || 1);
+  const totalC = observationCount(total, 0);
+  const matchingC = observationCount(matching, 1);
+  if (totalC === null || matchingC === null) return 0;
+  const n = Math.max(2, totalC);
+  const k = Math.max(1, matchingC);
   if (k >= n) return 0;
   return Math.max(1, Math.min(1e4, (n / k) * SHAPE_FITS_GOAL));
 }
