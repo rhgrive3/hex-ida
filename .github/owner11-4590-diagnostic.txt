@@ -1,0 +1,64 @@
+TAP version 13
+# Subtest: \#4590 pending proposal persists into a rebuilt runtime namespace and stays reviewable
+ok 1 - \#4590 pending proposal persists into a rebuilt runtime namespace and stays reviewable
+  ---
+  duration_ms: 14.204893
+  type: 'test'
+  ...
+# Subtest: \#4590 approval credentials are never persisted or restored
+ok 2 - \#4590 approval credentials are never persisted or restored
+  ---
+  duration_ms: 2.220607
+  type: 'test'
+  ...
+# Subtest: \#4590 fail-closed restore rejects evidence, binding, and revision inconsistency
+ok 3 - \#4590 fail-closed restore rejects evidence, binding, and revision inconsistency
+  ---
+  duration_ms: 2.982411
+  type: 'test'
+  ...
+# Subtest: \#4590 non-pending persisted proposal states follow the fail-closed restore policy
+ok 4 - \#4590 non-pending persisted proposal states follow the fail-closed restore policy
+  ---
+  duration_ms: 2.020621
+  type: 'test'
+  ...
+# Subtest: \#4590 a persisted-proposal-only session never claims the shared default namespace
+ok 5 - \#4590 a persisted-proposal-only session never claims the shared default namespace
+  ---
+  duration_ms: 1.304666
+  type: 'test'
+  ...
+# Subtest: \#4590 evidence and hypothesis restore semantics are unchanged
+not ok 6 - \#4590 evidence and hypothesis restore semantics are unchanged
+  ---
+  duration_ms: 2.879289
+  type: 'test'
+  location: '/home/runner/work/hex-ida/hex-ida/tests/phase12/integration/issue-4590-session-proposal-hydration.test.mjs:181:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    + actual - expected
+    
+    + 'supported'
+    - 'verified'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 'verified'
+  actual: 'supported'
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///home/runner/work/hex-ida/hex-ida/tests/phase12/integration/issue-4590-session-proposal-hydration.test.mjs:185:10)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+1..6
+# tests 6
+# suites 0
+# pass 5
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 307.453442
