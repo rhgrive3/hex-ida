@@ -512,6 +512,31 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
     if (!budget.take({ stringBytes:name.length*2, estimatedHeapBytes:name.length*2+32 }, 'symbol-name')) break;
     const ntype = type & 0x0e;
     const external = !!(type & 1);
+    if (ntype === 0x0a) {
+      if (value > BigInt(Number.MAX_SAFE_INTEGER) || value >= BigInt(st.strsize)) {
+        markMachOMetadataPartial(image, 'indirect-symbol-target-out-of-range');
+        budget.warn(`Mach-O indirect symbol ${i} n_value ${value} is outside the string table`);
+        continue;
+      }
+      const targetIndex = Number(value);
+      if (r.bytes.subarray(st.stroff + targetIndex, st.stroff + st.strsize).indexOf(0) === -1) {
+        markMachOMetadataPartial(image, 'indirect-symbol-target-not-terminated');
+        budget.warn(`Mach-O indirect symbol ${i} target name has no NUL terminator before string-table end`);
+        continue;
+      }
+      image.symbols.push({
+        name,
+        address: 0n,
+        size: null,
+        common: false,
+        kind: 'indirect',
+        indirectTarget: r.cstring(st.stroff + targetIndex, st.strsize - targetIndex),
+        binding: external ? 'global' : 'local',
+        defined: false,
+        sectionIndex: sect, desc, source: 'LC_SYMTAB',
+      });
+      continue;
+    }
     const isUndefinedType = ntype === 0;
     // For N_UNDF with non-zero n_value, Mach-O defines a tentative/common
     // symbol: n_value is the requested byte size, never a VM address.
