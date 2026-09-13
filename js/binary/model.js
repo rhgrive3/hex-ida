@@ -620,7 +620,11 @@ function dedupeImports(input) {
       const seen = new Set();
       i.sites = i.sites.filter((s) => {
         const scalar = (value) => typeof value === 'bigint' ? value.toString() : value == null ? '' : String(value);
-        const key = [scalar(s.address), scalar(s.offset), s.kind || '', scalar(s.type), scalar(s.addend), scalar(s.pointerFormat), s.weak ? '1' : '0'].join(':');
+        const key = [
+          scalar(s.address), scalar(s.offset), s.kind || '', scalar(s.type), scalar(s.addend),
+          scalar(s.pointerFormat), s.weak ? '1' : '0', scalar(s.recordFileOffset), scalar(s.recordIndex),
+          scalar(s.recordEncoding),
+        ].join(':');
         if (seen.has(key)) return false;
         seen.add(key); return true;
       });

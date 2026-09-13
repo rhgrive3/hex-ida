@@ -375,7 +375,11 @@ function applyVersionMetadata(image, versions, budget = null) {
 
 function collectDynamicRelocations(r, tags, image, bits, budget) {
   const out = [];
-  const seen = new Set();
+  // Dynamic tags can alias the exact same physical relocation table (for
+  // example DT_RELA and DT_JMPREL). Deduplicate only that physical identity;
+  // equal relocation contents are not duplicates because consecutive records
+  // at one location may be composed in ELF table order.
+  const seenPhysicalRecords = new Set();
   const one = (tag) => tags.get(tag)?.[0] ?? null;
   const addTable = (va, size, ent, rela, source) => {
     if (budget.stopped || va == null || size == null || size <= 0n) return;
@@ -400,10 +404,15 @@ function collectDynamicRelocations(r, tags, image, bits, budget) {
         address = BigInt(r.u32(q)); const raw = r.u32(q + 4); symIndex = raw >>> 8; type = raw & 0xff;
         if (rela) addend = BigInt(r.i32(q + 8));
       }
-      const key = `${address}:${symIndex}:${type}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      if (!budget.push(out, { address, symIndex, type, addend, source }, source)) break;
+      const physicalKey = `${q}:${e}:${rela ? 'rela' : 'rel'}`;
+      if (seenPhysicalRecords.has(physicalKey)) continue;
+      seenPhysicalRecords.add(physicalKey);
+      if (!budget.push(out, {
+        address, symIndex, type, addend, source,
+        recordIndex: i,
+        recordFileOffset: BigInt(q),
+        recordEncoding: rela ? 'RELA' : 'REL',
+      }, source)) break;
     }
   };
 
@@ -458,6 +467,9 @@ function attachDynamicRelocations(image, relocs, symbols) {  const byIndex = new
       addend: rel.addend,
       section: null,
       source: rel.source,
+      recordIndex: rel.recordIndex ?? null,
+      recordFileOffset: rel.recordFileOffset ?? null,
+      recordEncoding: rel.recordEncoding ?? null,
       ...dynamicRelocationResolutionMetadata(image, rel, sym),
     };
     image.relocations.push(item);
@@ -468,7 +480,17 @@ function attachDynamicRelocations(image, relocs, symbols) {  const byIndex = new
         imp = { name: sym.name, library: null, ordinal: null, weak: sym.binding === 'weak', version: sym.version ?? null, versionLibrary: sym.versionLibrary ?? null, versionIndex: sym.versionIndex ?? null, symbolIndex: sym.index, source: 'PT_DYNAMIC', sites: [] };
         image.imports.push(imp); importByName.set(key, imp);
       }
-      imp.sites.push({ address: rel.address, offset: item.fileOffset, kind: 'relocation', type: rel.type });
+      imp.sites.push({
+        address: rel.address,
+        offset: item.fileOffset,
+        kind: 'relocation',
+        type: rel.type,
+        addend: rel.addend,
+        source: rel.source,
+        recordIndex: rel.recordIndex ?? null,
+        recordFileOffset: rel.recordFileOffset ?? null,
+        recordEncoding: rel.recordEncoding ?? null,
+      });
     }
   }
 }
