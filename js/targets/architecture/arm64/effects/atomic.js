@@ -123,11 +123,13 @@ function registerMatchesSizeSuffix(reg, sizeSuffix) {
   return reg.bits === 32 || reg.bits === 64;
 }
 
-function orderingFromSuffix(suffix = '') {
+function orderingFromSuffix(suffix = '', { acquire = true } = {}) {
+  const read = acquire && (suffix === 'a' || suffix === 'al') ? 'acquire' : 'relaxed';
+  const write = suffix === 'l' || suffix === 'al' ? 'release' : 'relaxed';
   return {
-    read:suffix === 'a' || suffix === 'al' ? 'acquire' : 'relaxed',
-    write:suffix === 'l' || suffix === 'al' ? 'release' : 'relaxed',
-    summary:suffix === 'al' ? 'acq-rel' : suffix === 'a' ? 'acquire' : suffix === 'l' ? 'release' : 'relaxed',
+    read,
+    write,
+    summary:read === 'acquire' ? (write === 'release' ? 'acq-rel' : 'acquire') : write === 'release' ? 'release' : 'relaxed',
   };
 }
 function widthFromSuffixOrReg(sizeSuffix, reg) {
@@ -293,7 +295,7 @@ function exclusiveLoad(decoded, context, match) {
   }
   if (!isBaseOnly(addr)) return partial(decoded, context, 'exclusive loads require base-only addressing');
 
-  const acquire = mnemonicOf(decoded).startsWith('ldaxr');
+  const acquire = mnemonicOf(decoded).startsWith('ldaxr') && !dest.zero;
   const ordering = acquire ? 'acquire' : 'relaxed';
   const memAccess = access(ctx, addr.addressExpr, widthBits, ordering);
   const raw = arm64Temporary('exclusive.load.raw', widthBits);
@@ -426,7 +428,7 @@ function atomicRmw(decoded, context, { family, suffix = '', sizeSuffix = '' }) {
   }
   if (!isBaseOnly(addr)) return partial(decoded, context, `${family} requires base-only addressing`);
 
-  const order = orderingFromSuffix(suffix);
+  const order = orderingFromSuffix(suffix, { acquire:!result.zero });
   const readAccess = access(ctx, addr.addressExpr, widthBits, order.read);
   const writeAccess = access(ctx, addr.addressExpr, widthBits, order.write);
   let sourceRead;
@@ -479,7 +481,7 @@ function compareSwap(decoded, context, match) {
   }
   if (!isBaseOnly(addr)) return partial(decoded, context, 'CAS requires base-only addressing');
 
-  const order = orderingFromSuffix(suffix);
+  const order = orderingFromSuffix(suffix, { acquire:!expected.zero });
   const readAccess = access(ctx, addr.addressExpr, widthBits, order.read);
   const writeAccess = access(ctx, addr.addressExpr, widthBits, order.write);
   let expectedRead;

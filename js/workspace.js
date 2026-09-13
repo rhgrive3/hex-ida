@@ -1,6 +1,6 @@
 import { Backend } from './backend.js';
 import { SymbolIndex } from './symbols.js';
-import { createHexProject, exportHexProject, importHexProject, serializeHexProject, parseHexProject, normalizeNavigation } from './project/index.js';
+import { createHexProject, exportHexProject, importHexProject, serializeHexProject, parseHexProject, normalizeNavigation, projectAnnotationCommitList } from './project/index.js';
 import { runDiffInWorker } from './diff/runtime.js';
 import { createCompactFunctionSet, demoteLowInformationAbsenceClaims } from './diff/compact-function-set.js';
 import { stripSecrets } from './ai/session-core/index.js';
@@ -13,6 +13,24 @@ const MAX_DIFF_FUNCTIONS=350000;
 const PROJECT_LANGUAGES=new Set(['ja','en']);
 const PROJECT_TEXT_SIZES=new Set(['s','m','l','xl']);
 
+const IDENTITY_INTEGER_FIELDS=new Set(['sliceIndex','sliceOffset','sliceSize']);
+const IDENTITY_STRING_FIELDS=new Set(['uuid','architecture']);
+function canonicalizeIdentityField(field,value){
+  if(typeof value==='bigint'){
+    if(IDENTITY_INTEGER_FIELDS.has(field))return {state:'match',token:'i:'+value.toString()};
+    return {state:'invalid'};
+  }
+  if(typeof value==='number'){
+    if(IDENTITY_INTEGER_FIELDS.has(field)&&Number.isSafeInteger(value))return {state:'match',token:'i:'+String(value)};
+    return {state:'invalid'};
+  }
+  if(typeof value==='string'){
+    if(IDENTITY_STRING_FIELDS.has(field))return {state:'match',token:'s:'+value};
+    return {state:'invalid'};
+  }
+  if(value==null)return {state:'absent'};
+  return {state:'invalid'};
+}
 function keyOf(value){return value==null?'':String(value);}
 function cleanName(name){return String(name||'analysis').replace(/[^a-z0-9._-]+/gi,'_').replace(/^_+|_+$/g,'').slice(0,120)||'analysis';}
 function asBigInt(value){try{return value==null?null:BigInt(value);}catch{return null;}}
@@ -64,9 +82,12 @@ export function sameProjectIdentity(project, identity){
   const a=project.binary.metadata||{}, b=identity.metadata||{};
   const keys=['sliceIndex','sliceOffset','sliceSize','uuid','architecture'];
   for(const key of keys){
-    if(b[key]==null)continue;
-    if(a[key]==null)return {ok:false,reason:'slice-identity-incomplete',field:key};
-    if(keyOf(a[key])!==keyOf(b[key]))return {ok:false,reason:'slice-identity-mismatch',field:key};
+    const projectValue=canonicalizeIdentityField(key,a[key]);
+    const liveValue=canonicalizeIdentityField(key,b[key]);
+    if(projectValue.state==='invalid'||liveValue.state==='invalid')return {ok:false,reason:'slice-identity-mismatch',field:key};
+    if(liveValue.state==='absent')continue;
+    if(projectValue.state==='absent')return {ok:false,reason:'slice-identity-incomplete',field:key};
+    if(projectValue.token!==liveValue.token)return {ok:false,reason:'slice-identity-mismatch',field:key};
   }
   return {ok:true};
 }
@@ -90,6 +111,9 @@ function safeFindings(app){
 function safeEvidence(app){
   const report=app?.autoReport?.report||null;
   return (report?.deep||[]).slice(0,MAX_PROJECT_FINDINGS);
+}
+function safeProjectAnnotations(app){
+  return (Array.isArray(app?.projectAnnotations)?app.projectAnnotations:[]).slice(0,MAX_PROJECT_FINDINGS);
 }
 function aiTurns(){
   const session=globalThis.window?.__hexAi?.session||globalThis.window?.__hexUi?.assistant?.session||null;
@@ -133,6 +157,7 @@ export function snapshotWorkspace(app, identity){
     bookmarks:bookmarks.slice(-500),
     patches:patchEntries(app.patches),
     confirmedFindings:safeFindings(app),
+    projectAnnotations:safeProjectAnnotations(app),
     evidence:safeEvidence(app),
     investigationSessions:safeSessions,
     agentAnswers:safeTurns.filter((t)=>t.role==='assistant'&&t.status==='done'),
@@ -170,9 +195,11 @@ export function applyWorkspaceProject(app, project){
     staging.add(BigInt(p.offset),p.before||[],p.after||[],meta);
     stagedPatches.push([BigInt(p.offset),p.before||[],p.after||[],meta]);
   }
+  const stagedNames=projectAnnotationCommitList(project.user?.names,'user.names');
+  const stagedComments=projectAnnotationCommitList(project.user?.comments,'user.comments');
   notes.names.clear();notes.comments.clear();notes.types.clear();if(replaceVars)notes.vars.clear();
-  for(const entry of project.user.names||[])if(entry?.address!=null&&entry.value)notes.names.set(BigInt(entry.address).toString(),String(entry.value));
-  for(const entry of project.user.comments||[])if(entry?.address!=null&&entry.value)notes.comments.set(BigInt(entry.address).toString(),String(entry.value));
+  for(const [address,value] of stagedNames)notes.names.set(address,value);
+  for(const [address,value] of stagedComments)notes.comments.set(address,value);
   for(const entry of project.user.types||[])if(entry?.key)notes.types.set(String(entry.key),String(entry.value||''));
   if(replaceVars)for(const entry of (project.user.vars||project.user.varNames||[]))if(entry?.key)notes.vars.set(String(entry.key),String(entry.value||''));
   notes.structs=Array.isArray(project.user.structs)?project.user.structs.slice():[];
@@ -193,6 +220,7 @@ export function applyWorkspaceProject(app, project){
       key:app.codeRegion?.()?.id||null,gen:app.symbols?.gen||0,restored:true,
     }:null;
   }
+  app.projectAnnotations=Array.isArray(project.projectAnnotations)?project.projectAnnotations.slice():[];
   if(Array.isArray(project.findings?.investigationSessions)){
     const currentHash = app?.backend?.contentHash || app?.store?.get?.('fileInfo')?.hash || null;
     for(const session of project.findings.investigationSessions){

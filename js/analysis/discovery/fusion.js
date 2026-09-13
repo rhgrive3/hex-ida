@@ -39,6 +39,29 @@ function canonicalEvidence(item, code = 'discovery-fusion-evidence-item-invalid'
   return createDiscoveryEvidence(item);
 }
 
+const PRODUCER_STOP_COMPLETENESS = new Map([
+  ['cancelled', 'partial'],
+  ['budget-exhausted', 'truncated'],
+  ['memory-limit', 'truncated'],
+  ['iteration-limit', 'truncated'],
+]);
+
+const PRODUCER_STOP_REASONS = new Set(PRODUCER_STOP_COMPLETENESS.keys());
+
+function canonicalProducerOutput(produced) {
+  if (produced == null) return { items: [], truncated: false, stopReason: null };
+  if (Array.isArray(produced)) return { items: produced, truncated: false, stopReason: null };
+  if (typeof produced !== 'object') throw new TypeError('discovery-producer-evidence-invalid');
+  if (!Array.isArray(produced.evidence)) throw new TypeError('discovery-producer-evidence-invalid');
+  if (typeof produced.truncated !== 'boolean') throw new TypeError('discovery-producer-evidence-invalid');
+  if (produced.truncated !== true) {
+    if (produced.stopReason != null) throw new TypeError('discovery-producer-evidence-invalid');
+    return { items: produced.evidence, truncated: false, stopReason: null };
+  }
+  if (!PRODUCER_STOP_REASONS.has(produced.stopReason)) throw new TypeError('discovery-producer-evidence-invalid');
+  return { items: produced.evidence, truncated: true, stopReason: produced.stopReason };
+}
+
 /**
  * A registry of evidence producers.
  *
@@ -75,11 +98,20 @@ export class DiscoveryProducerRegistry {
   collect(input, architectureId, options = {}) {
     const evidence = [];
     const producerIds = [];
+    let truncated = false;
+    let stopReason = null;
+    const stop = (reason) => {
+      truncated = true;
+      if (stopReason == null || stopReason === 'budget-exhausted') stopReason = reason;
+    };
     for (const producer of this.for(architectureId)) {
-      if (options.signal?.aborted) break;
-      const produced = producer.produce(input, options);
-      if (produced != null && !Array.isArray(produced)) throw new TypeError('discovery-producer-evidence-invalid');
-      for (const item of produced ?? []) {
+      if (options.signal?.aborted) {
+        stop('cancelled');
+        break;
+      }
+      const produced = canonicalProducerOutput(producer.produce(input, options));
+      if (produced.truncated) stop(produced.stopReason);
+      for (const item of produced.items) {
         evidence.push(canonicalEvidence({
           ...item,
           producerId: producer.id,
@@ -88,7 +120,7 @@ export class DiscoveryProducerRegistry {
       }
       producerIds.push(producer.id);
     }
-    return { evidence, producerIds };
+    return { evidence, producerIds, truncated, stopReason };
   }
 }
 
@@ -178,31 +210,70 @@ function regionBounds(region) {
   }
 }
 
-// Every partial range in the same authority tier must be contained in the
-// agreed complete region set. An outside range, a partial ownership
-// contradiction, or an unparseable range withdraws the exact claim.
-function checkPartialContainment(completeRegions, partialItems) {
-  const complete = [];
-  for (const region of completeRegions ?? []) {
-    const bounds = regionBounds(region);
-    if (!bounds) return { kind: 'extent', detail: 'complete extent region is not parseable', alternatives: [] };
-    complete.push(bounds);
-  }
-  const ownershipByRange = new Map();
+// Conflicting ownership applies to the overlapping bytes, not only to ranges
+// with identical endpoints. Track the furthest live end for each ownership so
+// differently-owned partial ranges cannot overlap while retaining exact extent
+// authority (#4952). Half-open touching ranges remain compatible.
+function checkPartialOwnership(partialItems) {
+  const regions = [];
   for (const item of partialItems ?? []) {
     for (const region of item?.regions ?? []) {
       const bounds = regionBounds(region);
       if (!bounds) return { kind: 'extent', detail: 'partial extent region is not parseable', alternatives: [] };
-      const key = `${bounds.start}-${bounds.end}`;
-      const prior = ownershipByRange.get(key);
-      if (prior != null && prior !== region.ownership) {
+      regions.push({ ...bounds, ownership: region.ownership });
+    }
+  }
+  regions.sort((left, right) => {
+    if (left.start < right.start) return -1;
+    if (left.start > right.start) return 1;
+    if (left.end < right.end) return -1;
+    if (left.end > right.end) return 1;
+    return compareText(left.ownership, right.ownership);
+  });
+
+  const maxEndByOwnership = new Map();
+  for (const region of regions) {
+    for (const [ownership, end] of maxEndByOwnership) {
+      if (ownership !== region.ownership && end > region.start) {
         return {
           kind: 'extent',
           detail: 'partial extent ownership evidence disagrees',
-          alternatives: [...new Set([prior, region.ownership])].sort(),
+          alternatives: [ownership, region.ownership].sort(),
         };
       }
-      ownershipByRange.set(key, region.ownership);
+    }
+    const priorEnd = maxEndByOwnership.get(region.ownership);
+    if (priorEnd == null || region.end > priorEnd) maxEndByOwnership.set(region.ownership, region.end);
+  }
+  return null;
+}
+
+// Every partial range in the same authority tier must be contained in the
+// agreed complete region set. An outside range, a partial ownership
+// contradiction, or an unparseable range withdraws the exact claim.
+function checkPartialContainment(completeRegions, partialItems) {
+  const ownershipConflict = checkPartialOwnership(partialItems);
+  if (ownershipConflict) return ownershipConflict;
+
+  const complete = [];
+  for (const region of completeRegions ?? []) {
+    const bounds = regionBounds(region);
+    if (!bounds) return { kind: 'extent', detail: 'complete extent region is not parseable', alternatives: [] };
+    complete.push({ ...bounds, ownership: region.ownership });
+  }
+  for (const item of partialItems ?? []) {
+    for (const region of item?.regions ?? []) {
+      const bounds = regionBounds(region);
+      if (!bounds) return { kind: 'extent', detail: 'partial extent region is not parseable', alternatives: [] };
+      const ownershipConflict = complete.find((c) =>
+        c.start < bounds.end && bounds.start < c.end && c.ownership !== region.ownership);
+      if (ownershipConflict) {
+        return {
+          kind: 'extent',
+          detail: 'partial extent ownership evidence disagrees',
+          alternatives: [ownershipConflict.ownership, region.ownership].sort(),
+        };
+      }
       const contained = complete.some((c) => c.start <= bounds.start && bounds.end <= c.end);
       if (!contained) {
         return {
@@ -229,20 +300,13 @@ function fuseExtent(evidence) {
   const partial = pool.filter((item) => item.extentRole === 'partial');
   const complete = pool.filter((item) => item.extentRole !== 'partial');
   if (complete.length === 0 && partial.length > 0) {
+    const ownershipConflict = checkPartialOwnership(partial);
+    if (ownershipConflict) return { regions: [], state: 'unknown', conflicts: [ownershipConflict] };
+
     const merged = new Map();
-    const ownershipByRange = new Map();
     for (const item of partial) {
       for (const region of item.regions) {
         const rangeKey = `${region.start}-${region.end}`;
-        const priorOwnership = ownershipByRange.get(rangeKey);
-        if (priorOwnership != null && priorOwnership !== region.ownership) {
-          return {
-            regions: [],
-            state: 'unknown',
-            conflicts: [{ kind: 'extent', detail: 'partial extent ownership evidence disagrees', alternatives: [...new Set([priorOwnership, region.ownership])].sort() }],
-          };
-        }
-        ownershipByRange.set(rangeKey, region.ownership);
         merged.set(`${rangeKey}-${region.ownership}`, region);
       }
     }
@@ -252,7 +316,7 @@ function fuseExtent(evidence) {
       const byEnd = BigInt(left.end) < BigInt(right.end) ? -1 : BigInt(left.end) > BigInt(right.end) ? 1 : 0;
       return byEnd || compareText(left.ownership, right.ownership);
     });
-    return { regions, state: authoritative.length > 0 ? 'exact' : 'heuristic', conflicts: [] };
+    return { regions, state: 'unknown', conflicts: [], partialKnown: true };
   }
   const considered = complete.length > 0 ? complete : pool;
 
@@ -323,6 +387,19 @@ export function fuseFunctionCandidates(evidence, options = {}) {
     return { candidates: [], status: status('partial', 'cancelled') };
   }
 
+  const producerStatus = options.producerStatus;
+  if (producerStatus != null) {
+    if (typeof producerStatus !== 'object' || Array.isArray(producerStatus)
+      || typeof producerStatus.truncated !== 'boolean'
+      || (producerStatus.truncated && !PRODUCER_STOP_REASONS.has(producerStatus.stopReason))
+      || (!producerStatus.truncated && producerStatus.stopReason != null)) {
+      throw new TypeError('discovery-fusion-producer-status-invalid');
+    }
+    if (producerStatus.truncated) {
+      return { candidates: [], status: status(PRODUCER_STOP_COMPLETENESS.get(producerStatus.stopReason), producerStatus.stopReason) };
+    }
+  }
+
   // Validate and canonicalize before sorting. Comparators are not validation
   // boundaries: malformed plugin records must fail closed deterministically
   // instead of invoking methods on attacker-controlled field shapes.
@@ -335,6 +412,9 @@ export function fuseFunctionCandidates(evidence, options = {}) {
   const canonical = [];
   const candidateStarts = new Set();
   for (let index = 0; index < evidence.length; index += 1) {
+    if (options.signal?.aborted) {
+      return { candidates: [], status: status('partial', 'cancelled') };
+    }
     const item = canonicalEvidence(evidence[index]);
     canonical.push(item);
     if (item.start == null) continue;
@@ -346,7 +426,13 @@ export function fuseFunctionCandidates(evidence, options = {}) {
 
   const byStart = new Map();
   const orderedEvidence = canonical.sort(compareEvidence);
+  if (options.signal?.aborted) {
+    return { candidates: [], status: status('partial', 'cancelled') };
+  }
   for (const item of orderedEvidence) {
+    if (options.signal?.aborted) {
+      return { candidates: [], status: status('partial', 'cancelled') };
+    }
     if (item.start == null) continue;
     const key = primitiveInteger(item.start, 'discovery-fusion-invalid-start').toString();
     if (!byStart.has(key)) byStart.set(key, { items: [], overflow: false });
@@ -363,6 +449,9 @@ export function fuseFunctionCandidates(evidence, options = {}) {
   let evidenceOverflow = false;
   const starts = [...byStart.keys()].sort((left, right) => (BigInt(left) < BigInt(right) ? -1 : 1));
   for (const start of starts) {
+    if (options.signal?.aborted) {
+      return { candidates: [], status: status('partial', 'cancelled') };
+    }
     const entry = byStart.get(start);
     const fullBucket = entry.items;
     evidenceOverflow ||= entry.overflow;
@@ -409,6 +498,7 @@ export function fuseFunctionCandidates(evidence, options = {}) {
         extentEvidence: bucket.filter((item) => item.regions.length > 0),
         startState,
         extentState: extent.state,
+        allowRegionsWithUnknownExtent: extent.partialKnown === true && extent.regions.length > 0,
         conflicts,
         architectureId: bucket.find((item) => item.architectureId)?.architectureId ?? options.architectureId ?? null,
       }));
@@ -440,6 +530,7 @@ function reconcileOverlaps(candidates, { signal = null } = {}) {
 
   const regions = [];
   for (let i = 0; i < n; i++) {
+    if (candidates[i].extentState === 'unknown') continue;
     for (const r of candidates[i].regions) {
       regions.push({
         candidateIndex: i,
@@ -453,6 +544,7 @@ function reconcileOverlaps(candidates, { signal = null } = {}) {
   const starts = candidates.map((c, i) => ({ candidateIndex: i, start: BigInt(c.start) }));
   starts.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
   const sharedAtStart = candidates.map((candidate) => {
+    if (candidate.extentState === 'unknown') return false;
     const start = BigInt(candidate.start);
     let covered = false;
     for (const region of candidate.regions) {

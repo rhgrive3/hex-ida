@@ -75,7 +75,10 @@ await forEachX86BrowserSession(async ({ decodeAndLift }) => {
   assert.ok(addEffects.operations.filter((op) => op.kind === 'flag-write').some((op) => op.flag.flagId.startsWith('RFLAGS.')));
 
   const [{ effects:randomEffects }] = await decodeAndLift([0x0f, 0xc7, 0xf0], 0x3010n);
+  // The real receiver now reaches the dedicated encoding-validated random
+  // owner. Generic terminal fallback still cannot authorize this family.
   assert.equal(randomEffects.completeness, 'exact-with-intrinsic');
+  assert.equal(randomEffects.metadata?.encodingValidated, true);
   const randomFlags = randomEffects.operations[0].effectSummary.registersWritten;
   assert.ok(hasRflags(randomFlags));
   assert.ok(!hasFpswFlags(randomFlags));

@@ -141,12 +141,30 @@ export function createManagedValidationReport(input) {
 }
 
 export function validateManagedValidationReport(report) {
-  if (!report || typeof report !== 'object') fail('managed-validation-report-invalid');
-  const validTargetId = typeof report.targetId === 'string' && Boolean(report.targetId.trim());
-  const validStatus = typeof report.status === 'string' && STATUS_SET.has(report.status);
-  const validProfileId = report.profileId == null
-    || (typeof report.profileId === 'string' && Boolean(report.profileId.trim()));
-  if (!validTargetId || !validStatus || !validProfileId) fail('managed-validation-report-incomplete');
-  validateCompleteness(report.status, report.completeness);
+  report = object(report, 'managed-validation-report-invalid');
+  const targetId = nonEmpty(report.targetId, 'managed-validation-report-incomplete');
+  const status = nonEmpty(report.status, 'managed-validation-report-incomplete');
+  const profileId = report.profileId == null
+    ? null
+    : nonEmpty(report.profileId, 'managed-validation-report-incomplete');
+  if (targetId !== report.targetId
+      || status !== report.status
+      || (report.profileId != null && profileId !== report.profileId)
+      || !STATUS_SET.has(status)) {
+    fail('managed-validation-report-incomplete');
+  }
+
+  // Preserve the existing completeness error contract before identity/schema
+  // checks so malformed authority axes remain diagnosed at their first divergence.
+  validateCompleteness(status, report.completeness);
+
+  const expectedId = `val-rep:${stableDigest({ targetId, profileId, status })}`;
+  if (report.id !== expectedId) fail('managed-validation-report-id-mismatch');
+
+  array(report.errors, 'managed-validation-invalid-errors');
+  array(report.warnings, 'managed-validation-invalid-warnings');
+  array(report.verifierFacts, 'managed-validation-invalid-facts');
+  if (report.origin == null) fail('managed-validation-origin-required');
+  createOriginSet(report.origin);
   return true;
 }

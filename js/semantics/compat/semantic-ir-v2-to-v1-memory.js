@@ -12,6 +12,7 @@ import { isCanonicalMemorySsaProducerArtifact } from '../memoryssa/build.js';
 import { forwardExactStackOperandIdentity } from '../memoryssa/operand-forwarding.js';
 import { stableDigest } from '../../core/identity/index.js';
 import { propagateScalarConstants } from './semantic-ir-v2-to-v1-finalize.js';
+import { canonicalGlobalAddress } from '../../architecture/compat/ir-core-arm64-aapcs64-v1.js';
 
 // Projection-issued access capabilities: normalized qualifier evidence is not
 // a reaching-store / MustAlias proof. It only describes this original access.
@@ -131,7 +132,7 @@ function fallbackLocation(inst) {
   if (!inst?.addr) return { key: 'unknown', kind: V1_MK.UNKNOWN, size: inst?.extra?.size ?? null };
   const base = inst.addr.base;
   if (base?.const != null && inst.addr.index == null) {
-    const address = base.const + (inst.addr.disp ?? 0n);
+    const address = canonicalGlobalAddress(base.const, inst.addr.disp ?? 0n);
     return { key: `global:${address.toString(16)}`, kind: V1_MK.GLOBAL, address, size: inst.addr.size ?? null };
   }
   return { key: `unknown:${inst.semanticNodeId ?? inst.id ?? 'memory'}`, kind: V1_MK.UNKNOWN, size: inst.addr.size ?? null };

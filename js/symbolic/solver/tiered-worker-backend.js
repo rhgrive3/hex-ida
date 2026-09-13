@@ -51,7 +51,7 @@ class WorkerSolverSession extends SolverSession {
       if (!pending) return;
       this.pending.delete(message.requestId);
       if (message.token !== pending.token || !isValidSolverResult(message.result, {
-        query: { queryHash: pending.queryHash },
+        query: pending.query,
         backend: this.backend,
       })) {
         pending.resolve(createSolverResult({

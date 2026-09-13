@@ -66,11 +66,11 @@ assert.equal(discovered[0].role, 'available');
 const claimed = await coordinator.claim({ runId: 'run-1', workerId: 'worker-1' });
 assert.equal(claimed.supervisorChatgptConversationId, 'supervisor-cid');
 await assert.rejects(() => coordinator.claim({ runId: 'run-2', workerId: 'worker-2' }), (error) => error.code === 'worker-busy');
-await coordinator.createChat({ workerId: 'worker-1' });
+await coordinator.createChat({ runId: 'run-1', workerId: 'worker-1' });
 assert.equal(controller.currentConversation().id, 'supervisor-cid', 'create_chat must return only after the single Safari tab is back on Supervisor');
 assert.deepEqual(controller.navigation.map((item) => item.id), ['supervisor-cid'], 'create_chat recovery must restore Supervisor before the next Supervisor decision');
 assert.equal(controller.navigation[0].options.continuityAnchor?.id, 'supervisor-latest');
-const result = await coordinator.send({ workerId: 'worker-1', instruction: 'exact instruction' });
+const result = await coordinator.send({ runId: 'run-1', workerId: 'worker-1', instruction: 'exact instruction' });
 assert.equal(controller.lastSend, 'exact instruction');
 assert.equal(result.responseText, 'one line');
 assert.equal(result.chatgptConversationId, 'worker-cid');
@@ -79,12 +79,12 @@ assert.deepEqual(controller.navigation.map((item) => item.id), ['supervisor-cid'
 const completed = await coordinator.waitEvent({ events: ['worker.completed'], runId: 'run-1' });
 assert.equal(completed.type, 'worker.completed', 'terminal event remains available after synchronous single-tab send');
 
-await coordinator.followup({ workerId: 'worker-1', text: 'follow-up' });
+await coordinator.followup({ runId: 'run-1', workerId: 'worker-1', text: 'follow-up' });
 assert.equal(controller.navigation.at(-2).id, 'worker-cid', 'follow-up must return to the retained Worker conversation');
 assert.equal(controller.navigation.at(-2).options.continuityAnchor, undefined, 'Worker return must retain the strict default hydration policy');
 assert.equal(controller.navigation.at(-1).id, 'supervisor-cid', 'follow-up completion must restore Supervisor again');
 assert.equal(controller.currentConversation().id, 'supervisor-cid');
-const released = await coordinator.release({ workerId: 'worker-1' });
+const released = await coordinator.release({ runId: 'run-1', workerId: 'worker-1' });
 assert.equal(released.role, 'available');
 assert.equal(released.claimed, false);
 

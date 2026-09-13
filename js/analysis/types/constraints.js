@@ -224,38 +224,191 @@ export function canonicalDescriptorString(layer, descriptor) {
   return stableStringify(canonicalDescriptorMaterial(layer, descriptor));
 }
 
-function validateDescriptor(layer, descriptor) {
-  if (descriptor == null || typeof descriptor !== 'object' || Array.isArray(descriptor)) fail('type-claim-descriptor-required');
-  if (layer !== 'structural') return;
-  const pending = [descriptor], seen = new WeakSet();
-  while (pending.length) {
-    const node = pending.pop();
-    if (node == null || typeof node !== 'object' || seen.has(node)) continue;
-    seen.add(node);
-    for (const [key,value] of Object.entries(node)) {
-      if (NUMERIC_DESCRIPTOR_FIELDS.has(key) && value != null) {
-        const integer = toBigInt(value,null);
-        const zeroSize = (key === 'sizeBytes' || key === 'totalSizeBytes') && node.kind === 'array' && toBigInt(node.length,null) === 0n;
-        if (integer == null || integer < 0n || (integer === 0n && !zeroSize && !['offset','length'].includes(key))) fail(`structural-${({sizeBytes:'size',alignBytes:'align',strideBytes:'stride',totalSizeBytes:'total-size',widthBits:'width'})[key] ?? key}-invalid`);
-      }
-      if (['targetEntityId','elementEntityId'].includes(key) && value != null && (typeof value !== 'string' || !value.trim())) fail('structural-target-invalid');
-      if (value && typeof value === 'object') pending.push(value);
-    }
-    if (node.sizeBytes != null && node.totalSizeBytes != null && toBigInt(node.sizeBytes) !== toBigInt(node.totalSizeBytes)) fail('structural-total-size-conflict');
-    if (node.kind === 'array') {
-      const stride = toBigInt(node.strideBytes,null), length = toBigInt(node.length,null), elementSize = toBigInt(node.elementType?.sizeBytes,null);
-      if (stride != null && elementSize != null && stride < elementSize) fail('structural-array-stride-conflict');
-      const size = toBigInt(node.totalSizeBytes ?? node.sizeBytes,null);
-      if (size != null && stride != null && length != null && size !== stride * length) fail('structural-array-size-conflict');
-    }
-    if (node.members != null) {
-      if (!Array.isArray(node.members)) fail('structural-members-invalid');
-      for (const member of node.members) if (!member || typeof member !== 'object' || Array.isArray(member)) fail('structural-member-invalid');
-    }
-    if (node.kind === 'union' && Array.isArray(node.members)) {
-      for (const member of node.members) if (toBigInt(member?.offset,0n) !== 0n) fail('structural-union-offset-invalid');
+export function canonicalDependencyIdentity(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text.length > 0 ? text : null;
+}
+
+const STRUCTURAL_IDENTITY_FIELDS = Object.freeze(['targetEntityId', 'elementEntityId']);
+
+function validateStructuralIdentityFields(node) {
+  if (node == null || typeof node !== 'object') return;
+  for (const field of STRUCTURAL_IDENTITY_FIELDS) {
+    const value = node[field];
+    if (value != null && canonicalDependencyIdentity(value) == null) fail('structural-identity-invalid');
+  }
+}
+
+const NESTED_STRUCTURAL_TYPE_KEYS = Object.freeze(['memberType', 'elementType', 'pointeeType']);
+
+function validateStructuralDescriptorValue(value, seen = new WeakSet()) {
+  if (value == null || typeof value !== 'object' || seen.has(value)) return;
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    for (const child of value) validateStructuralDescriptorValue(child, seen);
+    return;
+  }
+
+  // Validate semantic type nodes only; unrelated metadata stays outside this contract.
+  validateStructuralIdentityFields(value);
+  const zeroLengthArray = value.kind === 'array' && toBigInt(value.length, null) === 0n;
+
+  if (value.widthBits != null) {
+    const width = toBigInt(value.widthBits, null);
+    if (width == null || width <= 0n) fail('structural-width-invalid');
+  }
+  if (value.offset != null) {
+    const offset = toBigInt(value.offset, null);
+    if (offset == null || offset < 0n) fail('structural-offset-invalid');
+  }
+  if (value.sizeBytes != null) {
+    const size = toBigInt(value.sizeBytes, null);
+    if (size == null || size < 0n || (size === 0n && !zeroLengthArray)) fail('structural-size-invalid');
+  }
+  if (value.totalSizeBytes != null) {
+    const size = toBigInt(value.totalSizeBytes, null);
+    if (size == null || size < 0n || (size === 0n && !zeroLengthArray)) fail('structural-total-size-invalid');
+  }
+  if (value.sizeBytes != null && value.totalSizeBytes != null
+    && toBigInt(value.sizeBytes, null) !== toBigInt(value.totalSizeBytes, null)) {
+    fail('structural-total-size-conflict');
+  }
+  if (value.alignBytes != null) {
+    const align = toBigInt(value.alignBytes, null);
+    if (align == null || align <= 0n) fail('structural-align-invalid');
+  }
+  if (value.strideBytes != null) {
+    const stride = toBigInt(value.strideBytes, null);
+    if (stride == null || stride <= 0n) fail('structural-stride-invalid');
+  }
+  if (value.length != null) {
+    const length = toBigInt(value.length, null);
+    if (length == null || length < 0n) fail('structural-length-invalid');
+  }
+
+  if (value.kind === 'array') {
+    const stride = toBigInt(value.strideBytes, null);
+    const length = toBigInt(value.length, null);
+    const elementSize = toBigInt(value.elementType?.sizeBytes, null);
+    if (stride != null && elementSize != null && stride < elementSize) fail('structural-array-stride-conflict');
+    const size = toBigInt(value.totalSizeBytes ?? value.sizeBytes, null);
+    if (size != null && stride != null && length != null && size !== stride * length) {
+      fail('structural-array-size-conflict');
     }
   }
+  if (value.members != null) {
+    if (!Array.isArray(value.members)) fail('structural-members-invalid');
+    for (const member of value.members) {
+      if (!member || typeof member !== 'object' || Array.isArray(member)) fail('structural-member-invalid');
+    }
+  }
+  if (value.kind === 'union' && Array.isArray(value.members)) {
+    for (const member of value.members) {
+      if (toBigInt(member.offset, 0n) !== 0n) fail('structural-union-offset-invalid');
+    }
+  }
+
+  for (const key of NESTED_STRUCTURAL_TYPE_KEYS) {
+    validateStructuralDescriptorValue(value[key], seen);
+  }
+  if (Array.isArray(value.members)) validateStructuralDescriptorValue(value.members, seen);
+}
+
+function canonicalizeStructuralValue(value, seen) {
+  if (value == null || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value);
+
+  if (Array.isArray(value)) {
+    const out = [];
+    seen.set(value, out);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    for (const key of Reflect.ownKeys(descriptors)) {
+      if (key === 'length') continue;
+      const property = descriptors[key];
+      if (!Object.prototype.hasOwnProperty.call(property, 'value')) {
+        Object.defineProperty(out, key, property);
+        continue;
+      }
+      Object.defineProperty(out, key, {
+        ...property,
+        value: canonicalizeStructuralValue(property.value, seen),
+      });
+    }
+    if (descriptors.length) Object.defineProperty(out, 'length', descriptors.length);
+    return out;
+  }
+
+  const out = {};
+  seen.set(value, out);
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const key of Reflect.ownKeys(descriptors)) {
+    const property = descriptors[key];
+    if (!Object.prototype.hasOwnProperty.call(property, 'value')) {
+      Object.defineProperty(out, key, property);
+      continue;
+    }
+    const child = key === 'members' && Array.isArray(property.value)
+      ? canonicalizeStructuralMembersInternal(property.value, seen)
+      : canonicalizeStructuralValue(property.value, seen);
+    Object.defineProperty(out, key, { ...property, value: child });
+  }
+  return out;
+}
+
+function canonicalizeStructuralMembersInternal(members, seen) {
+  if (seen.has(members)) return seen.get(members);
+  const canonical = [];
+  seen.set(members, canonical);
+
+  if (!members.every((member) => member != null && typeof member === 'object' && !Array.isArray(member))) {
+    for (const member of members) canonical.push(canonicalizeStructuralValue(member, seen));
+    return canonical;
+  }
+
+  const sorted = members.map((rawMember) => {
+    const member = canonicalizeStructuralValue(rawMember, seen);
+    return {
+      member,
+      offset: canonicalInteger(member.offset ?? 0),
+      canonical: canonicalDescriptorString('structural', member),
+    };
+  }).sort((left, right) => {
+    if (left.offset != null && right.offset != null) {
+      if (left.offset < right.offset) return -1;
+      if (left.offset > right.offset) return 1;
+    } else if (left.offset != null) {
+      return -1;
+    } else if (right.offset != null) {
+      return 1;
+    }
+    return left.canonical.localeCompare(right.canonical);
+  });
+
+  let previous = null;
+  for (const entry of sorted) {
+    if (entry.canonical === previous) continue;
+    canonical.push(entry.member);
+    previous = entry.canonical;
+  }
+  return canonical;
+}
+
+export function canonicalizeStructuralMembers(members) {
+  if (!Array.isArray(members)) return members;
+  return canonicalizeStructuralMembersInternal(members, new WeakMap());
+}
+
+function canonicalizeStructuralDescriptor(descriptor) {
+  return canonicalizeStructuralValue(descriptor, new WeakMap());
+}
+
+function validateDescriptor(layer, descriptor) {
+  if (descriptor == null || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
+    fail('type-claim-descriptor-required');
+  }
+  if (layer === 'structural') validateStructuralDescriptorValue(descriptor);
 }
 
 /**
@@ -270,10 +423,11 @@ export function createTypeClaim(input = {}) {
   if (!LAYER_SET.has(layer)) fail('type-claim-invalid-layer');
   const descriptor = input.descriptor ?? null;
   if (descriptor == null) fail('type-claim-descriptor-required');
+  const snapshot = snapshotDescriptor(descriptor, layer);
   const claim = {
     layer,
     entityId: nonEmpty(input.entityId, 'type-claim-entity-required'),
-    descriptor: snapshotDescriptor(descriptor, layer),
+    descriptor: layer === 'structural' ? canonicalizeStructuralDescriptor(snapshot) : snapshot,
   };
   validateDescriptor(layer, claim.descriptor);
   claim.key = stableDigest({ layer: claim.layer, entityId: claim.entityId, descriptor: canonicalDescriptorMaterial(layer, claim.descriptor) });
@@ -336,8 +490,11 @@ export function createSoftEvidence(input = {}) {
   if (!SOFT_SET.has(kind)) fail('soft-evidence-invalid-kind');
   const origin = strictNonEmpty(input.origin ?? 'heuristic', 'soft-evidence-origin-required');
   if (!ORIGIN_SET.has(origin)) fail('soft-evidence-invalid-origin');
-  const weight = Number(input.weight ?? 0.5);
-  if (!Number.isFinite(weight) || weight < 0 || weight > 1) fail('soft-evidence-invalid-weight');
+  const rawWeight = input.weight ?? 0.5;
+  if (typeof rawWeight !== 'number' || !Number.isFinite(rawWeight) || rawWeight < 0 || rawWeight > 1) {
+    fail('soft-evidence-invalid-weight');
+  }
+  const weight = rawWeight;
   return deepFreeze({
     kind,
     origin,
@@ -418,8 +575,10 @@ function aggregateMembersConflict(aMembers, bMembers) {
   }
   if (aMembers.every((member) => member != null && typeof member === 'object' && !Array.isArray(member))
     && bMembers.every((member) => member != null && typeof member === 'object' && !Array.isArray(member))) {
-    const aCanonicalSet = aMembers.map((member) => canonicalDescriptorString('structural', member)).sort();
-    const bCanonicalSet = bMembers.map((member) => canonicalDescriptorString('structural', member)).sort();
+    const aCanonicalSet = canonicalizeStructuralMembers(aMembers)
+      .map((member) => canonicalDescriptorString('structural', member));
+    const bCanonicalSet = canonicalizeStructuralMembers(bMembers)
+      .map((member) => canonicalDescriptorString('structural', member));
     if (aCanonicalSet.length === bCanonicalSet.length
       && aCanonicalSet.every((entry, index) => entry === bCanonicalSet[index])) return false;
   }

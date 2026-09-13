@@ -32,6 +32,8 @@ import { ANALYSIS_STATUS_SCHEMA_VERSION, createAnalysisStatus, isCompleteStatus,
 import {
   TYPE_LAYERS,
   canonicalDescriptorString,
+  canonicalDependencyIdentity,
+  canonicalizeStructuralMembers,
   claimsConflict,
   createContradiction,
   createHardConstraint,
@@ -203,27 +205,70 @@ function softIdentity(evidence) {
   });
 }
 
-function extractDependencies(claim) {
-  // Descriptors already passed the canonical bounded data snapshot. Walk all
-  // nested type constructors; an array of unions can contain recursive pointers.
-  const deps=new Set(),seen=new WeakSet(),pending=[claim?.descriptor];
-  while(pending.length) {
-    const node=pending.pop();if(!node||typeof node!=='object'||seen.has(node))continue;seen.add(node);
-    for(const key of ['targetEntityId','elementEntityId']) {
-      if(typeof node[key]==='string'&&node[key].trim())deps.add(node[key].trim());
+function addDependencyIdentity(deps, value) {
+  const identity = canonicalDependencyIdentity(value);
+  if (identity != null) deps.add(identity);
+}
+
+const TYPE_DEPENDENCY_IDENTITY_KEYS = Object.freeze(['targetEntityId', 'elementEntityId']);
+const TYPE_DEPENDENCY_CHILD_KEYS = Object.freeze(['elementType', 'pointeeType', 'memberType', 'members']);
+const MAX_TYPE_DEPENDENCY_NODES = 4096;
+const MAX_TYPE_DEPENDENCY_DEPTH = 256;
+
+function walkTypeDependencies(root) {
+  const deps = new Set();
+  let exhausted = false;
+  if (!root || typeof root !== 'object') return { deps, exhausted };
+  const visited = new Set();
+  const stack = [[root, 0]];
+  let nodes = 0;
+  while (stack.length) {
+    const [node, depth] = stack.pop();
+    if (!node || typeof node !== 'object' || visited.has(node)) continue;
+    if (depth > MAX_TYPE_DEPENDENCY_DEPTH || nodes >= MAX_TYPE_DEPENDENCY_NODES) {
+      exhausted = true;
+      continue;
     }
-    if(node===claim.descriptor&&typeof node.entityId==='string'&&node.entityId.trim()&&node.entityId!==claim.entityId)deps.add(node.entityId.trim());
-    for(const value of Object.values(node))if(value&&typeof value==='object')pending.push(value);
+    visited.add(node);
+    nodes += 1;
+    if (Array.isArray(node)) {
+      for (const child of node) stack.push([child, depth + 1]);
+      continue;
+    }
+    for (const key of TYPE_DEPENDENCY_IDENTITY_KEYS) addDependencyIdentity(deps, node[key]);
+    for (const key of TYPE_DEPENDENCY_CHILD_KEYS) {
+      const child = node[key];
+      if (child && typeof child === 'object') stack.push([child, depth + 1]);
+    }
   }
-  return deps;
+  return { deps, exhausted };
+}
+
+function extractDependencies(claim) {
+  const deps = new Set();
+  const d = claim?.descriptor;
+  if (!d || typeof d !== 'object') return { deps, exhausted: false };
+
+  const descriptorIdentity = canonicalDependencyIdentity(d.entityId);
+  if (descriptorIdentity != null && descriptorIdentity !== claim.entityId) deps.add(descriptorIdentity);
+
+  const walked = walkTypeDependencies(d);
+  for (const dep of walked.deps) deps.add(dep);
+  return { deps, exhausted: walked.exhausted };
+}
+
+function memberDependencyIdentities(member) {
+  const walked = walkTypeDependencies(member);
+  return walked.deps;
 }
 
 function isMemberRecursive(member, entityId, sccMembers = []) {
-  const target = member?.memberType?.targetEntityId ?? member?.targetEntityId ?? null;
-  const elementTarget = member?.memberType?.elementType?.targetEntityId ?? member?.memberType?.elementEntityId ?? null;
-  if ([...extractDependencies({entityId,descriptor:member})].some(id=>id===entityId||sccMembers.includes(id))) return true;
-  if (target === entityId || (target && sccMembers.includes(target))) return true;
-  if (elementTarget === entityId || (elementTarget && sccMembers.includes(elementTarget))) return true;
+  const identities = memberDependencyIdentities(member);
+  const descriptorIdentity = canonicalDependencyIdentity(member?.entityId);
+  if (descriptorIdentity != null && descriptorIdentity !== entityId) identities.add(descriptorIdentity);
+  for (const identity of identities) {
+    if (identity === entityId || sccMembers.includes(identity)) return true;
+  }
   return member?.isRecursive === true || member?.memberType?.isRecursive === true;
 }
 
@@ -293,7 +338,8 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
           merged.sizeBytes = structuralIntegerWire(size);merged.totalSizeBytes = merged.sizeBytes;
         }
       }
-      const recursive = sccContext?.isRecursive === true || [...extractDependencies({entityId,descriptor:merged})].includes(entityId);
+      const dependencies = extractDependencies({ entityId, descriptor: merged });
+      const recursive = sccContext?.isRecursive === true || dependencies.deps.has(entityId);
       return createTypeClaim({layer,entityId,descriptor:{...merged,isRecursive:recursive,recursiveIdentity:recursive?entityId:null,sccMembers:recursive?(sccContext?.sccMembers??[entityId]):null}});
     }
     const rawMembers = [];
@@ -339,13 +385,9 @@ function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
       }
     }
 
-    const members = [...membersByOffset.values()]
-      .sort((left, right) => {
-        if (left.offset < right.offset) return -1;
-        if (left.offset > right.offset) return 1;
-        return stableStringify(left.member).localeCompare(stableStringify(right.member));
-      })
-      .map((entry) => entry.member);
+    const members = canonicalizeStructuralMembers(
+      [...membersByOffset.values()].map((entry) => entry.member),
+    );
 
     const sccMembers = sccContext?.sccMembers ?? [entityId];
     const isRecursive = sccContext?.isRecursive === true
@@ -476,6 +518,7 @@ export class TypeConstraintGraph {
     this.entities = new Map();
     /** entityId -> Set<dependentEntityId> */
     this.dependencies = new Map();
+    this.dependencyTruncated = new Set();
     this.userConstraintDigests = new Set();
   }
 
@@ -495,7 +538,8 @@ export class TypeConstraintGraph {
   }
 
   #recordDependencies(claim) {
-    const deps = extractDependencies(claim);
+    const { deps, exhausted } = extractDependencies(claim);
+    if (exhausted) this.dependencyTruncated.add(claim.entityId);
     if (deps.size === 0) return;
     if (!this.dependencies.has(claim.entityId)) {
       this.dependencies.set(claim.entityId, new Set());
@@ -624,6 +668,7 @@ export class TypeConstraintGraph {
       }
       if (solved.stopReason === 'budget-exhausted') stopReason = stopReason ?? 'budget-exhausted';
     }
+    if (this.dependencyTruncated.has(entityId)) stopReason = stopReason ?? 'budget-exhausted';
     return createTypeResult({
       entityId,
       status: stopReason === 'cancelled'
@@ -1077,7 +1122,7 @@ export function reconstructStructuralType(graphOrResult, entityId, options = {})
   if (options.signal?.aborted) return null;
 
   const dependencies = extractDependencies({ entityId: canonicalEntityId, descriptor });
-  const recursive = descriptor.isRecursive === true || dependencies.has(canonicalEntityId);
+  const recursive = descriptor.isRecursive === true || dependencies.deps.has(canonicalEntityId);
   return deepFreeze({
     kind: descriptor.kind ?? 'struct',
     entityId: canonicalEntityId,

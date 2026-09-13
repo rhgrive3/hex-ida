@@ -8,10 +8,26 @@ function fail(code) { throw new TypeError(code); }
 
 const VALUE_TYPES = new Set([0x7f, 0x7e, 0x7d, 0x7c, 0x7b, 0x70, 0x6f]);
 
+const I32_COMPARE_OPS = new Map([
+  [0x45, { mnemonic:'i32.eqz', predicate:'eq', signedness:null, arity:1 }],
+  [0x46, { mnemonic:'i32.eq', predicate:'eq', signedness:null, arity:2 }],
+  [0x47, { mnemonic:'i32.ne', predicate:'ne', signedness:null, arity:2 }],
+  [0x48, { mnemonic:'i32.lt_s', predicate:'lt', signedness:'signed', arity:2 }],
+  [0x49, { mnemonic:'i32.lt_u', predicate:'lt', signedness:'unsigned', arity:2 }],
+  [0x4a, { mnemonic:'i32.gt_s', predicate:'gt', signedness:'signed', arity:2 }],
+  [0x4b, { mnemonic:'i32.gt_u', predicate:'gt', signedness:'unsigned', arity:2 }],
+  [0x4c, { mnemonic:'i32.le_s', predicate:'le', signedness:'signed', arity:2 }],
+  [0x4d, { mnemonic:'i32.le_u', predicate:'le', signedness:'unsigned', arity:2 }],
+]);
+
 function typeBits(type) {
   if (type === 0x7e || type === 0x7c) return 64;
   if (type === 0x7b) return 128;
   return 32;
+}
+
+function sameTypes(a, b) {
+  return a.length === b.length && a.every((type, index) => type === b[index]);
 }
 
 function decodeBlockType(bytecode, pos, wasmModule) {
@@ -131,6 +147,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
     const producedValues = [];
     const consumedValues = [];
     const possibleExceptions = [];
+    let compare = null;
     const unknownEffects = [];
 
     switch (opcode) {
@@ -176,6 +193,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         mnemonic = 'end';
         const frame = controlStack.pop();
         if (!frame) fail('wasm-unmatched-end');
+        if (frame.kind === 'if' && !frame.elseSeen && !sameTypes(frame.params, frame.results)) fail('wasm-invalid-if-without-else-type');
         if (!frame.polymorphic && currentStackHeight !== frame.stackHeight + frame.results.length) fail('wasm-invalid-block-result-stack');
         const continuation = pos;
         frame.endOffset = opOffset;
@@ -216,9 +234,12 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         mnemonic = 'br_table';
         consumedValues.push({ id: 'index', bits: 32 }); consume(1);
         const ce = { kind: 'switch', targetOffsets: new Array(labelDepths.length - 1).fill(null), defaultTargetOffset: null, labelDepths: labelDepths.slice(0, -1), defaultLabelDepth: labelDepths.at(-1) };
-        for (let i = 0; i < labelDepths.length - 1; i++) labelTarget(controlStack[controlStack.length - 1 - labelDepths[i]], ce, `__case_${i}`);
+        const caseFrames = [];
+        for (let i = 0; i < labelDepths.length - 1; i++) { const target = controlStack[controlStack.length - 1 - labelDepths[i]]; caseFrames.push(target); labelTarget(target, ce, `__case_${i}`); }
         const defFrame = controlStack[controlStack.length - 1 - labelDepths.at(-1)];
         const defHolder = { kind: 'branch', targetOffset: null }; labelTarget(defFrame, defHolder); ce.__defaultHolder = defHolder;
+        ce.caseKinds = caseFrames.map((frame) => (frame.kind === 'function' ? 'function-exit' : 'offset'));
+        ce.defaultKind = defFrame.kind === 'function' ? 'function-exit' : 'offset';
         controlEffects.push(ce);
         markUnreachable();
         break;
@@ -238,7 +259,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         consume(calleeType.params.length, 'wasm-stack-underflow-call');
         for (let i = 0; i < calleeType.results.length; i++) producedValues.push({ id: `result_${i}`, bits: typeBits(calleeType.results[i]), type: calleeType.results[i] });
         produce(calleeType.results.length);
-        callEffects.push({ targetIndex: r.value, target: `func_${r.value}`, dispatchKind: 'direct', signature: { params: calleeType.params, results: calleeType.results } });
+        callEffects.push({ targetIndex: r.value, target: `func_${r.value}`, targetMethodId: r.value < importedFuncs.length ? null : createManagedMethodId(wasmModule.moduleId, r.value), dispatchKind: 'direct', signature: { params: calleeType.params, results: calleeType.results } });
         break;
       }
       case 0x11: {
@@ -306,12 +327,14 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
       case 0x41: { const r = decodeSleb128(bytecode, pos); pos = r.nextOffset; mnemonic = 'i32.const'; producedValues.push({ bits: 32, constant: r.value }); produce(1); break; }
       case 0x42: { const r = decodeSleb128_64(bytecode, pos); pos = r.nextOffset; mnemonic = 'i64.const'; producedValues.push({ bits: 64, constant: r.value }); produce(1); break; }
       case 0x45: case 0x46: case 0x47: case 0x48: case 0x49: case 0x4a: case 0x4b: case 0x4c: case 0x4d: {
-        mnemonic = opcode === 0x45 ? 'i32.eqz' : 'i32.cmp'; const n = opcode === 0x45 ? 1 : 2; for (let i = 0; i < n; i++) consumedValues.push({ id: `arg_${i}`, bits: 32 }); consume(n); producedValues.push({ bits: 32 }); produce(1); break;
+        const cmp = I32_COMPARE_OPS.get(opcode); if (!cmp) fail('wasm-compare-descriptor-missing');
+        mnemonic = cmp.mnemonic; compare = { predicate:cmp.predicate, signedness:cmp.signedness, operandBits:32, arity:cmp.arity };
+        for (let i=0;i<cmp.arity;i++) consumedValues.push({ id:`arg_${i}`, bits:32 }); consume(cmp.arity); producedValues.push({bits:32}); produce(1); break;
       }
-      case 0x6a: case 0x6b: case 0x6c: case 0x6d: case 0x6e: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75: case 0x76: {
-        const names = { 0x6a:'i32.add',0x6b:'i32.sub',0x6c:'i32.mul',0x6d:'i32.div_s',0x6e:'i32.div_u',0x71:'i32.and',0x72:'i32.or',0x73:'i32.xor',0x74:'i32.shl',0x75:'i32.shr_s',0x76:'i32.shr_u' };
+      case 0x6a: case 0x6b: case 0x6c: case 0x6d: case 0x6e: case 0x6f: case 0x70: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75: case 0x76: {
+        const names = { 0x6a:'i32.add',0x6b:'i32.sub',0x6c:'i32.mul',0x6d:'i32.div_s',0x6e:'i32.div_u',0x6f:'i32.rem_s',0x70:'i32.rem_u',0x71:'i32.and',0x72:'i32.or',0x73:'i32.xor',0x74:'i32.shl',0x75:'i32.shr_s',0x76:'i32.shr_u' };
         mnemonic = names[opcode]; consumedValues.push({ id:'rhs',bits:32 },{ id:'lhs',bits:32 }); consume(2); producedValues.push({bits:32}); produce(1);
-        if (opcode === 0x6d || opcode === 0x6e) possibleExceptions.push({ kind: 'integer-divide-by-zero', condition: 'rhs==0' });
+        if (opcode === 0x6d || opcode === 0x6e || opcode === 0x6f || opcode === 0x70) possibleExceptions.push({ kind: 'integer-divide-by-zero', condition: 'rhs==0' });
         if (opcode === 0x6d) possibleExceptions.push({ kind: 'integer-divide-overflow', condition: 'lhs==INT32_MIN&&rhs==-1' });
         break;
       }
@@ -337,14 +360,15 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
     if (stoppedOnUnsupported) drafts.length = 0;
     budget.chargeValues(consumedValues.length + producedValues.length);
     const origin = createOriginSet({ operationIds: [opId], byteRanges: [{ start: codeBody.bodyOffset + opOffset, end: codeBody.bodyOffset + pos }] });
-    drafts.push({ frontendId:'wasm', frontendSemanticVersion:'1.0.0', profileId:wasmModule.vmSpecEdition, methodId, operationId:opId, bytecodeOffset:opOffset, opcode, mnemonic, consumedValues, producedValues, locationReads, locationWrites, memoryEffects, callEffects, controlEffects, possibleExceptions, origin, completeness, unknownEffects });
+    drafts.push({ frontendId:'wasm', frontendSemanticVersion:'1.0.0', profileId:wasmModule.vmSpecEdition, methodId, operationId:opId, bytecodeOffset:opOffset, opcode, mnemonic, consumedValues, producedValues, locationReads, locationWrites, memoryEffects, callEffects, controlEffects, possibleExceptions, origin, completeness, unknownEffects, compare });
     if (stoppedOnUnsupported) break;
   }
 
   if (!stoppedOnUnsupported && controlStack.length !== 0) fail('wasm-missing-function-end');
   for (const d of drafts) for (const c of d.controlEffects) if (c.kind === 'switch') {
     for (let i = 0; i < c.targetOffsets.length; i++) { const k = `__case_${i}`; if (c[k] != null) c.targetOffsets[i] = c[k]; delete c[k]; }
-    if (c.__defaultHolder) { c.defaultTargetOffset = c.__defaultHolder.targetOffset; delete c.__defaultHolder; }
+    if (c.__defaultHolder) { c.defaultTargetOffset = c.__defaultHolder.targetOffset; if (c.defaultKind == null && c.__defaultHolder.targetKind === 'function-exit') c.defaultKind = 'function-exit'; delete c.__defaultHolder; }
+    delete c.targetKind;
   }
   const bundles = drafts.map((d) => createVMEffectBundle(d, options));
   const aggregateCompleteness = bundles.some((b) => b.completeness === 'unknown') ? 'unknown' : bundles.some((b) => b.completeness === 'partial') ? 'partial' : bundles.some((b) => b.completeness === 'exact-with-intrinsic') ? 'exact-with-intrinsic' : 'exact';

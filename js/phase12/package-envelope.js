@@ -22,11 +22,10 @@ function required(value, code) {
 
 function positiveLimit(value, fallback, name, code = 'package-resource-limit-invalid') {
   if (value == null) return fallback;
-  const n = Number(value);
-  if (!Number.isSafeInteger(n) || n <= 0) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
     throw new PackageValidationError(code, `${name} must be a positive safe integer`, { name, value });
   }
-  return n;
+  return value;
 }
 
 function normalizedPackageLimits(options = {}) {
@@ -276,13 +275,14 @@ function countEntries(value, limits, depth = 0, state = { entries: 0 }) {
   if (depth > limits.maxDepth) throw new PackageValidationError('package-nesting-budget-exceeded');
   if (Array.isArray(value)) {
     state.entries += value.length;
+    if (state.entries > limits.maxEntries) throw new PackageValidationError('package-entry-budget-exceeded');
     for (const item of value) countEntries(item, limits, depth + 1, state);
   } else {
     const keys = Object.keys(value);
     state.entries += keys.length;
+    if (state.entries > limits.maxEntries) throw new PackageValidationError('package-entry-budget-exceeded');
     for (const key of keys) countEntries(value[key], limits, depth + 1, state);
   }
-  if (state.entries > limits.maxEntries) throw new PackageValidationError('package-entry-budget-exceeded');
   return state;
 }
 
@@ -292,7 +292,10 @@ export function parseBoundedPackageInput(value, options = {}) {
   if (bytes.byteLength > maxBytes) throw new PackageValidationError('package-input-too-large', 'package input exceeds pre-parse byte budget');
   scanJsonBudget(bytes, options);
   let parsed;
-  try { parsed = JSON.parse(new TextDecoder().decode(bytes)); }
+  let text;
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+  catch (error) { throw new PackageValidationError('package-input-invalid-utf8', error.message); }
+  try { parsed = JSON.parse(text); }
   catch (error) { throw new PackageValidationError('package-json-malformed', error.message); }
   const limits = normalizedPackageLimits(options);
   countEntries(parsed, limits);
@@ -443,11 +446,11 @@ export function importPhase12Package(value, options = {}) {
 
 export function resolvePackageDependencies(envelope, dependencies = []) {
   const checked = validateEnvelopeShape(envelope);
-  const available = new Map((dependencies || []).map((item) => [item.packageId, item]));
+  const available = new Map(normalizeDependencies(dependencies).map((item) => [item.packageId, item]));
   const resolved = [];
   for (const dependency of checked.dependencies) {
     const found = available.get(dependency.packageId);
-    if (!found || found.contentHash !== dependency.contentHash || String(found.packageVersion) !== dependency.packageVersion) {
+    if (!found || found.contentHash !== dependency.contentHash || found.packageVersion !== dependency.packageVersion) {
       throw new PackageValidationError('package-dependency-not-pinned', `dependency ${dependency.packageId} is not resolved to its exact identity`);
     }
     resolved.push(Object.freeze({ packageId: dependency.packageId, contentHash: dependency.contentHash, packageVersion: dependency.packageVersion }));
@@ -497,14 +500,17 @@ export function validateProviderOutput(value, options = {}) {
     if (!value.provenance || typeof value.provenance !== 'object' || Array.isArray(value.provenance)) throw new PackageValidationError('provider-output-provenance-required');
     if (!['complete', 'partial', 'truncated'].includes(value.completeness)) throw new PackageValidationError('provider-output-completeness-invalid');
     if (value.completeness !== 'complete' && value.unique === true) throw new PackageValidationError('provider-output-incomplete-unique-invalid');
+    if (value.targetIdentity != null) required(value.targetIdentity, 'provider-output-target-identity-invalid');
     for (const item of entries) {
       if (!item || typeof item !== 'object') throw new PackageValidationError('provider-output-item-invalid');
       for (const key of Object.keys(item)) {
         if (!ALLOWED_ITEM_FIELDS.has(key)) throw new PackageValidationError('provider-output-item-unknown-field', `unknown item field: ${key}`);
       }
       if (typeof item.id !== 'string' || item.id.trim() === '' || item.targetIdentity == null) throw new PackageValidationError('provider-output-item-identity-required');
+      required(item.targetIdentity, 'provider-output-item-target-identity-invalid');
       if (value.targetIdentity != null && item.targetIdentity !== value.targetIdentity) throw new PackageValidationError('provider-output-item-target-mismatch');
     }
+    if (options.targetIdentity != null) required(options.targetIdentity, 'provider-output-target-identity-invalid');
     if (options.targetIdentity != null && value.targetIdentity !== options.targetIdentity) throw new PackageValidationError('provider-output-target-mismatch');
     return { ok: true, value: deepFreeze(value) };
   } catch (error) { return { ok: false, error: error.message, code: error.code }; }

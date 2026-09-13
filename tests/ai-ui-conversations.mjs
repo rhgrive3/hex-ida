@@ -8,6 +8,7 @@
  */
 import assert from 'node:assert/strict';
 import { AiSession } from '../js/ai/ui/session.js';
+import { createInvestigationSession, InvestigationSessionStore } from '../js/ai/session-core/index.js';
 import { createConversationStore, deriveTitle, conversationTitle } from '../js/ai/ui/conversations.js';
 import {
   applyStatus, capabilityApi, findModel, findProvider, findReasoning, normalizeCapabilities,
@@ -175,6 +176,22 @@ await check('delete removes one chat and never leaves the session empty', async 
   assert.ok(session.deleteConversation(a));
   assert.equal(session.list().length, 1);
   assert.equal(session.turns.length, 0);
+});
+
+await check('delete immediately removes an idle in-memory core session', async () => {
+  const conversationId = 'core-delete-test';
+  const sessionStore = new InvestigationSessionStore();
+  sessionStore.register(createInvestigationSession({ id: conversationId, goal: 'Delete test' }));
+  const engine = { runtime: { sessionStore }, run: async () => ({ answer: 'done' }) };
+  const session = new AiSession({ engine, storage: null });
+  session.conversations = [
+    { id: conversationId, title: 'Delete me', turns: [], busy: false },
+    { id: 'core-keep-test', title: 'Keep me', turns: [], busy: false },
+  ];
+  session.current = session.conversations[0];
+
+  assert.equal(session.deleteConversation(conversationId), true);
+  assert.equal(sessionStore.sessions.has(conversationId), false);
 });
 
 /* ── busy ────────────────────────────────────────────────────── */

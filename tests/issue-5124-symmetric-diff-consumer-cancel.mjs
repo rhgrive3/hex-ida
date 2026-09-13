@@ -88,6 +88,25 @@ function fakeSignal() {
   };
 }
 
+// A pre-aborted joiner must fail promptly without borrowing a live wait.
+{
+  const { workspace, calls, producer, release } = makeWorkspace();
+  const first = track(workspace.diff());
+  const aborted = new AbortController();
+  aborted.abort(new Error('pre-aborted joiner'));
+  const joiner = track(workspace.diff({ signal: aborted.signal }));
+  await drain();
+  assert.equal(joiner.outcome, 'rejected', 'a pre-aborted joiner must not wait for the producer');
+  assert.ok(isAbort(joiner.error));
+  assert.equal(first.outcome, 'pending');
+  assert.equal(producer.signal?.aborted, false, 'the existing consumer still owns its wait');
+  assert.equal(calls.ensure, 1);
+  release();
+  await drain(8);
+  assert.equal(first.error?.code, 'DIFF_FINGERPRINT_PROFILE_MISMATCH');
+  assert.equal(workspace.busy, null);
+}
+
 // A consumer abort must not reach the other consumer's wait.
 {
   const { workspace, calls, producer } = makeWorkspace();

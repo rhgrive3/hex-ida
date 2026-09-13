@@ -120,12 +120,12 @@ export class FunctionFixture {
     return this.#value(id, nodeId, machineType, null);
   }
 
-  cast(id, kind, input, { blockId = this.current, widthBits = 64 } = {}) {
+  cast(id, kind, input, { blockId = this.current, widthBits = 64, attributes = null } = {}) {
     const nodeId = `node_${id}`;
-    const attributes = kind === 'zext' || kind === 'sext'
+    const effectiveAttributes = attributes ?? (kind === 'zext' || kind === 'sext'
       ? { fromBits: this.values.find((value) => value.id === input)?.machineType?.widthBits, toBits: widthBits }
-      : {};
-    this.#push({ id: nodeId, kind, blockId, inputs: [input], outputs: [id], attributes, origin: origin(nodeId) });
+      : {});
+    this.#push({ id: nodeId, kind, blockId, inputs: [input], outputs: [id], attributes: effectiveAttributes, origin: origin(nodeId) });
     return this.#value(id, nodeId, { kind: 'bitvector', widthBits }, null);
   }
 

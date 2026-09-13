@@ -423,6 +423,17 @@ const resolvedTarget = (overrides = {}) => ({
   ...overrides,
 });
 
+test('C4 return target obeys the same in-block definition order as ordinary value uses', () => {
+  const ir = contractFunction({ metadata: { returnControlTarget: resolvedTarget() } });
+  ir.values[0] = { ...ir.values[0], kind: 'definition', definitionNodeId: 'define-target' };
+  ir.nodes.push({ id: 'define-target', kind: 'const', blockId: 'entry', inputs: [],
+    outputs: ['target'], attributes: { value: '4096' }, origin: CONTRACT_ORIGIN });
+  ir.blocks[0].nodeIds.push('define-target');
+  assert.throws(() => createSemanticIrFunction(ir), /semantic-ir-value-use-before-definition-in-block/);
+  ir.blocks[0].nodeIds.reverse();
+  assert.doesNotThrow(() => createSemanticIrFunction(ir));
+});
+
 test('C4 return target metadata is strict, typed, and counted in raw reference budgets', () => {
   const valid = createSemanticIrFunction(contractFunction({ metadata: { returnControlTarget: resolvedTarget() } }));
   assert.deepEqual(valid.nodes[0].metadata.returnControlTarget, resolvedTarget());

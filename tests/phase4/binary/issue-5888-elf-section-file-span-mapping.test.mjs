@@ -36,9 +36,11 @@ function buildELF({ secOffset, secSize }) {
   b.setBigUint64(0x58, 0x400000n, true);
   b.setBigUint64(0x60, 0x100n, true);
   b.setBigUint64(0x68, 0x100n, true);
-  b.setBigUint64(0x70, 0x1000n, true);
+  b.setBigUint64(0x70, 0x100n, true); // p_align: congruent with p_offset/p_vaddr (#4090)
 
-  bytes.set(shstrtab, 0x70);
+  // Keep the string table outside the program header: overlapping p_align
+  // would make this fixture malformed under the PT_LOAD contract (#4090).
+  bytes.set(shstrtab, 0x200);
   const sh = (i, name, type, flags, addr, off, size, align = 1n) => {
     const p = shoff + i * 64;
     b.setUint32(p, name, true); b.setUint32(p + 4, type, true);
@@ -48,8 +50,8 @@ function buildELF({ secOffset, secSize }) {
   };
   sh(0, 0, 0, 0n, 0n, 0n, 0n, 0n);
   sh(1, 1, 1, 0x2n, 0x400020n, secOffset, secSize); // .badsec SHF_ALLOC PROGBITS
-  sh(2, 8, 3, 0n, 0n, 0x70, 22n);                   // .shstrtab
-  sh(3, 0, 3, 0n, 0n, 0x70, BigInt(shstrtab.length));
+  sh(2, 8, 3, 0n, 0n, 0x200, 22n);                  // .shstrtab
+  sh(3, 0, 3, 0n, 0n, 0x200, BigInt(shstrtab.length));
   return bytes;
 }
 

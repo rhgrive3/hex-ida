@@ -7,6 +7,89 @@ const VARIANT_TYPES = [/^[IF]$/, /^[JD]$/, /^(?:L|\[)/, /^Z$/, /^B$/, /^C$/, /^S
 const ACC_STATIC = 0x08;
 const ACC_VOLATILE = 0x40;
 
+// Static-field access carries the declaring class's initialization authority
+// (#8053). A declared <clinit> in the class or any required superclass may
+// execute arbitrary code and fail before an sget*/sput* completes. Exactness
+// is retained only when that initializer chain is locally proven code-free,
+// or when execution is already inside the declaring class's own <clinit>.
+function resolveClassInitializationAuthority(image, declaringClass, method) {
+  if (!Array.isArray(image.methods)) fail('dex-method-definitions-unavailable');
+  const initializersFor = (classType) => {
+    const initializers = image.methods.filter((entry) => entry?.classType === classType && entry?.name === '<clinit>');
+    if (initializers.length > 1) fail('dex-class-initialization-ambiguous');
+    return initializers.length === 1;
+  };
+  const selfInitializing = method?.classType === declaringClass && method?.name === '<clinit>';
+  const clinitPresent = initializersFor(declaringClass);
+  if (selfInitializing) {
+    return {
+      declaringClass,
+      clinitPresent,
+      initializationRequired: false,
+      initializationProven: false,
+      discharged: 'declaring-class-initializer',
+    };
+  }
+  if (clinitPresent) {
+    return { declaringClass, clinitPresent, initializationRequired: true, initializationProven: false };
+  }
+
+  const classes = image.classes ?? [];
+  const declaringMatches = classes.filter((entry) => entry?.classType === declaringClass);
+  if (declaringMatches.length !== 1) fail('dex-class-initialization-class-ambiguous');
+  const hasNoInterfaces = classDefinition => Array.isArray(classDefinition?.interfaceTypes)
+    && classDefinition.interfaceTypes.length === 0;
+  let superinterfaceAuthorityComplete = hasNoInterfaces(declaringMatches[0]);
+  const seen = new Set([declaringClass]);
+  let superType = declaringMatches[0]?.superType ?? null;
+  while (superType != null) {
+    if (typeof superType !== 'string' || !superType) fail('dex-class-initialization-superclass-invalid');
+    if (seen.has(superType)) fail('dex-class-initialization-superclass-cycle');
+    seen.add(superType);
+    const matches = classes.filter((entry) => entry?.classType === superType);
+    if (matches.length > 1) fail('dex-class-initialization-class-ambiguous');
+    if (matches.length === 0) {
+      return {
+        declaringClass,
+        clinitPresent: false,
+        initializationRequired: true,
+        initializationProven: false,
+        superclassAuthority: 'unresolved',
+      };
+    }
+    if (!hasNoInterfaces(matches[0])) superinterfaceAuthorityComplete = false;
+    if (initializersFor(superType)) {
+      return {
+        declaringClass,
+        clinitPresent: false,
+        initializationRequired: true,
+        initializationProven: false,
+        superclassInitializationRequired: true,
+        superclassInitializerClass: superType,
+      };
+    }
+    superType = matches[0]?.superType ?? null;
+  }
+
+  // DEX 037 introduced default interface methods. For those formats, only
+  // complete empty interface lists across the class chain prove their absence.
+  const versionMatch = typeof image.formatVersion === 'string'
+    ? /^dex-(\d{3})$/.exec(image.formatVersion)
+    : null;
+  const dexVersion = versionMatch ? Number(versionMatch[1]) : null;
+  if (!Number.isSafeInteger(dexVersion) || (dexVersion >= 37 && !superinterfaceAuthorityComplete)) {
+    return {
+      declaringClass,
+      clinitPresent: false,
+      initializationRequired: true,
+      initializationProven: false,
+      superinterfaceAuthority: 'unavailable',
+    };
+  }
+
+  return { declaringClass, clinitPresent: false, initializationRequired: false, initializationProven: false };
+}
+
 function resolveFieldDeclaration(image, field, fieldIndex, isStatic) {
   const owners = (image.classes ?? []).filter((cls) => cls?.classType === field.classType);
   if (owners.length === 0) return null;
@@ -30,7 +113,7 @@ function resolveFieldDeclaration(image, field, fieldIndex, isStatic) {
   return accessFlags;
 }
 
-export function dexFieldEffects({ opcode, formatByte, fieldIndex, image }) {
+export function dexFieldEffects({ opcode, formatByte, fieldIndex, image, method }) {
   const isStatic = opcode >= 0x60;
   const relative = opcode - (isStatic ? 0x60 : 0x52);
   const isWrite = relative >= 7, variant = relative % 7;
@@ -50,8 +133,15 @@ export function dexFieldEffects({ opcode, formatByte, fieldIndex, image }) {
   if (accessFlags == null) fail('dex-field-declaration-unresolved');
   const isVolatile = (accessFlags & ACC_VOLATILE) !== 0;
   const fieldIdentity = createManagedFieldId(createManagedTypeId(image.moduleId,field.classType),fieldIndex);
+  const classInitialization = isStatic
+    ? resolveClassInitializationAuthority(image, field.classType, method)
+    : null;
   return {
     mnemonic:`${isStatic ? 's' : 'i'}${isWrite ? 'put' : 'get'}${SUFFIXES[variant]}`,
+    // ART throws NullPointerException for instance field access on a null
+    // receiver (ThrowNullPointerExceptionForFieldAccess). Static ops have no
+    // receiver and must not inherit the condition (#7981).
+    possibleExceptions:isStatic ? [] : ['java/lang/NullPointerException'],
     locationReads:reads, locationWrites:isWrite ? [] : [valueLocation],
     producedValues:isWrite ? [] : [{ bits:info.byteWidth*8,
       type:info.extension ? {kind:'bitvector',widthBits:info.byteWidth*8} : info.type }],
@@ -62,6 +152,17 @@ export function dexFieldEffects({ opcode, formatByte, fieldIndex, image }) {
       addressKind:isStatic ? 'static-field' : 'instance-field',
       declarationResolved:true, declarationAccessFlags:accessFlags,
       volatility:isVolatile, atomic:isVolatile,
-      ordering:isVolatile ? (isWrite ? 'release' : 'acquire') : 'unknown' }],
+      ordering:isVolatile ? (isWrite ? 'release' : 'acquire') : 'unknown',
+      ...(isStatic ? { classInitialization } : { receiverNullException:true }) }],
+    completeness:'exact',
+    unknownEffects:[],
+    ...(isStatic && classInitialization.initializationRequired ? {
+      completeness:'partial',
+      unknownEffects:[{ category:'calls', reason:classInitialization.superclassAuthority === 'unresolved'
+        ? 'dex-class-initialization-superclass-unresolved'
+        : classInitialization.superinterfaceAuthority === 'unavailable'
+          ? 'dex-class-initialization-superinterface-authority-unavailable'
+          : 'dex-class-initialization-unverified' }],
+    } : {}),
   };
 }

@@ -59,7 +59,7 @@ class WorkerSolverSession extends SolverSession {
       const tokenMatches = (pending.legacyEnvelope && message.token === undefined) ||
         message.token === pending.token;
       const identityOk = tokenMatches && isValidSolverResult(message.result, {
-        query: { queryHash: pending.queryHash },
+        query: pending.query,
         backend: this.backend,
       });
       if (!identityOk) {

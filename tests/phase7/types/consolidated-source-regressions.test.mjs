@@ -69,12 +69,11 @@ test('#3470 dependency enumeration failure marks SCC condensation truncated', ()
   assert.equal(result.isRecursiveMap.get('A'), false);
 });
 
-test('#3470/#5271 cached self-edge evidence does not re-enumerate dependencies', () => {
+test('#3470/#4535/#5271 an empty dependency enumeration is materialized once', () => {
   let calls = 0;
   const result = condenseTypeGraph(['A'], () => {
     calls += 1;
-    if (calls === 1) return [];
-    throw new Error('self-edge probe failed');
+    return [];
   });
 
   // #5271 caches self-edge membership during the bounded first traversal.

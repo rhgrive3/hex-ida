@@ -227,6 +227,22 @@ export function isVerificationQuery(query, options = {}) {
   return validateVerificationQuery(query, options).valid;
 }
 
+// Preserve the public identity helpers through the bounded canonical validator.
+// The supplied hash never participates in the identity being recomputed.
+export function computeCanonicalQueryHash(query, options = {}) {
+  const content = Object.fromEntries(ownDataEntries(query, 64));
+  content.queryHash = 'recompute-canonical-query-identity';
+  const result = validateVerificationQuery(content, options);
+  if (!result.recomputedHash) throw new TypeError(result.reason || 'invalid-verification-query');
+  return result.recomputedHash;
+}
+
+export function verifyVerificationQueryIdentity(query, options = {}) {
+  const result = validateVerificationQuery(query, options);
+  if (result.valid) return null;
+  return result.reason === 'query-hash-content-mismatch' ? 'query-hash-identity-mismatch' : result.reason;
+}
+
 export function createVerificationQuery(input = {}) {
   ownDataEntries(input, 64);
   const {

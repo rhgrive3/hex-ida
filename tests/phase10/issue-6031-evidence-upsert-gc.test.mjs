@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { EvidenceStore } from '../../js/ai/evidence.js';
+import { InvestigationSessionStore } from '../../js/ai/session-core/index.js';
 
 // Same ID upsert must not accumulate unreferenced payloads.
 {
@@ -60,9 +61,12 @@ import { EvidenceStore } from '../../js/ai/evidence.js';
     const store = new EvidenceStore();
     store.add({ id: 'a', kind: 'observation', sourceTool: 'test', sourceData: { v: 'a0' } });
     store.add({ id: 'b', kind: 'observation', sourceTool: 'test', sourceData: { v: 'b0' } });
-    store.restorePersistedConfirmed([
-      { id: 'a', kind: 'observation', status: 'verified', sourceTool: 'test', sourceData: { v: 'verified' } },
-    ]);
+    store.restorePersistedConfirmed(new InvestigationSessionStore().register({
+      id: 'issue-6031-persisted',
+      confirmedFindings: [
+        { id: 'a', kind: 'observation', status: 'verified', sourceTool: 'test', sourceData: { v: 'verified' } },
+      ],
+    }).confirmedFindings);
     const verifiedSourceId = store.get('a').sourceRef.evidenceSourceId;
     assert.deepEqual(store.sourceDataFor('a'), { v: 'verified' });
 

@@ -15,6 +15,7 @@ import {
   readModifyWrite as coreReadModifyWrite,
   getSemanticMigrationMode,
   OP, MK, VK, COND, pointerProvenance,
+  canonicalGlobalAddress,
 } from './ir-core.js';
 import { normalizeIntegerValue, normalizeRangeDomain, rangeWithDomain } from './range-domain.js';
 import { annotateValueRanges, shiftedConst, typeBounds } from './semantics/compat/legacy-value-ranges.js';
@@ -145,7 +146,7 @@ function promoteResolvedGlobals(ir) {
     const a = inst.addr;
     if (a.stack || a.index || !a.base || a.base.const == null || a.disp == null) continue;
 
-    const address = a.base.const + a.disp;
+    const address = canonicalGlobalAddress(a.base.const, a.disp);
     const size = (inst.loc && inst.loc.size) || a.size || (inst.extra && inst.extra.size) || null;
     // A global address identifies the storage root, not an access extent. Keep
     // per-access width in the canonical location key so a 32-bit access cannot

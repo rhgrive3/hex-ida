@@ -367,6 +367,7 @@ test('local handover and ARM64 import require every exact path without broadenin
     "js/metadata/objc.js",
     "js/targets/architecture/arm64/effects/common.js",
     "js/targets/architecture/arm64/effects/integer.js",
+    "js/targets/architecture/x86_64/effects/integer.js",
     "tests/arm64-direct-branch-target-alignment.test.mjs",
     "tests/machine-effects/arm64-adr-strict-address-evidence.test.mjs",
     "tests/machine-effects/arm64-literal-memory-encoding.test.mjs",
@@ -389,6 +390,7 @@ test('local handover and ARM64 import require every exact path without broadenin
     }
   }
   for (const file of ['js/metadata/swift.js', 'js/targets/architecture/arm64/effects/flags.js',
+    'js/targets/architecture/x86_64/effects/simd.js',
     'tests/semantic-v2/unreviewed.test.mjs', 'docs/analysis-unreviewed.md']) {
     const widened = structuredClone(manifest);
     widened.owners.integration.push(file);

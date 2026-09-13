@@ -30,6 +30,7 @@ export const PDB_PROVIDER_ID = 'phase7.debug.pdb';
 export const PDB_PROVIDER_VERSION = '1.0.0';
 
 const MSF_MAGIC = 'Microsoft C/C++ MSF 7.00\r\n\u001aDS\0\0\0';
+const MSF_BLOCK_SIZES = Object.freeze([512, 1024, 2048, 4096]);
 
 /** CodeView symbol record kinds this provider models. */
 const S_PUB32 = 0x110e;
@@ -48,6 +49,7 @@ const LF_STRUCTURE = 0x1505;
 const LF_CLASS = 0x1504;
 const LF_UNION = 0x1506;
 const LF_ENUM = 0x1507;
+const LF_ENUMERATE = 0x1502;
 const LF_ARRAY = 0x1503;
 const LF_MEMBER = 0x150d;
 
@@ -56,6 +58,12 @@ const MODIFIER_CONST = 0x0001;
 const MODIFIER_VOLATILE = 0x0002;
 const MODIFIER_UNALIGNED = 0x0004;
 const MODIFIER_KNOWN_MASK = MODIFIER_CONST | MODIFIER_VOLATILE | MODIFIER_UNALIGNED;
+
+/** CodeView ClassOptions used by tag records, including LF_ENUM. */
+const CLASS_OPTION_FORWARD_REFERENCE = 0x0080;
+const CLASS_OPTION_HAS_UNIQUE_NAME = 0x0200;
+// LLVM's current ClassOptions set: all other bits are semantically unknown here.
+const CLASS_OPTIONS_KNOWN_MASK = 0x27ff;
 
 /** CV_PUBSYMFLAGS: bit 1 marks a function. */
 const CVPSF_FUNCTION = 0x00000002;
@@ -168,7 +176,7 @@ export function parseMsf(bytes, byteBudget = null) {
   const numBlocks = view.getUint32(40, true);
   const numDirectoryBytes = view.getUint32(44, true);
   const blockMapAddr = view.getUint32(52, true);
-  if (blockSize === 0 || (blockSize & (blockSize - 1)) !== 0) {
+  if (!MSF_BLOCK_SIZES.includes(blockSize)) {
     return { streams: [], diagnostics: ['invalid MSF block size'], complete: false };
   }
   if (freeBlockMapBlock !== 1 && freeBlockMapBlock !== 2) {
@@ -387,9 +395,9 @@ export function parseModuleInfo(bytes, dbi) {
 }
 
 /** PE section headers, as stored in the PDB's section-header stream. */
-export function parseSectionHeaders(bytes) {
+function parseSectionHeaderStream(bytes) {
   const headers = [];
-  if (!bytes) return headers;
+  if (!bytes) return { headers, complete: false, trailingBytes: 0 };
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   for (let offset = 0; offset + 40 <= bytes.length; offset += 40) {
     headers.push({
@@ -399,7 +407,12 @@ export function parseSectionHeaders(bytes) {
       sizeOfRawData: view.getUint32(offset + 16, true),
     });
   }
-  return headers;
+  const trailingBytes = bytes.length % 40;
+  return { headers, complete: trailingBytes === 0, trailingBytes };
+}
+
+export function parseSectionHeaders(bytes) {
+  return parseSectionHeaderStream(bytes).headers;
 }
 
 /**
@@ -526,6 +539,7 @@ function parseTpiStreamWithBudget(bytes, recordBudget, context) {
   let offset = typeDataStart;
   let index = firstIndex;
   let fieldListsComplete = true;
+  let enumFieldListsComplete = true;
 
   while (offset + 4 <= typeDataEnd && index - firstIndex < expectedCount) {
     const length = view.getUint16(offset, true);
@@ -542,7 +556,7 @@ function parseTpiStreamWithBudget(bytes, recordBudget, context) {
     const bodyEnd = {
       [LF_STRUCTURE]: body + 18, [LF_CLASS]: body + 18, [LF_UNION]: body + 10,
       [LF_POINTER]: body + 8, [LF_MODIFIER]: body + 6, [LF_PROCEDURE]: body + 12,
-      [LF_ARRAY]: body + 8, [LF_ENUM]: body + 8,
+      [LF_ARRAY]: body + 8, [LF_ENUM]: body + 12,
     }[leaf] ?? end;
     if (bodyEnd > end) break;
 
@@ -566,7 +580,7 @@ function parseTpiStreamWithBudget(bytes, recordBudget, context) {
         leaf, kind: 'aggregate', keyword,
         // Bit 7 of the property field marks a forward reference: it names the
         // type but carries no layout, so it is not a complete fact.
-        forwardReference: (properties & 0x0080) !== 0,
+        forwardReference: (properties & CLASS_OPTION_FORWARD_REFERENCE) !== 0,
         memberCount: count,
         fieldList,
         sizeBytes,
@@ -591,11 +605,36 @@ function parseTpiStreamWithBudget(bytes, recordBudget, context) {
       const { value: sizeBytes } = numeric;
       types.set(index, { leaf, kind: 'array', elementType: view.getUint32(body, true), sizeBytes });
     } else if (leaf === LF_ENUM) {
-      types.set(index, { leaf, kind: 'enum', underlying: view.getUint32(body + 4, true), name: null });
+      // LF_ENUM is a TagRecord: NumEnumerators, Properties, UnderlyingType,
+      // FieldListType, Name, and (when HasUniqueName is set) UniqueName.
+      // Retaining only UnderlyingType made a recognized record render as
+      // `unknown`, while also skipping structural validation of its names
+      // (#4058).
+      const memberCount = view.getUint16(body, true);
+      const properties = view.getUint16(body + 2, true);
+      const underlying = view.getUint32(body + 4, true);
+      const fieldList = view.getUint32(body + 8, true);
+      const nameEntry = cstringWithNext(bytes, body + 12, end);
+      if (!nameEntry) break;
+      let uniqueName = null;
+      if ((properties & CLASS_OPTION_HAS_UNIQUE_NAME) !== 0) {
+        const uniqueNameEntry = cstringWithNext(bytes, nameEntry.next, end);
+        if (!uniqueNameEntry) break;
+        uniqueName = uniqueNameEntry.value;
+      }
+      const knownProperties = (properties & ~CLASS_OPTIONS_KNOWN_MASK) === 0;
+      if (!knownProperties) unmodelled.add(leaf);
+      types.set(index, {
+        leaf, kind: 'enum', memberCount, properties, underlying, fieldList,
+        name: nameEntry.value, uniqueName,
+        complete: knownProperties && (properties & CLASS_OPTION_FORWARD_REFERENCE) === 0,
+      });
     } else if (leaf === LF_FIELDLIST) {
       const fieldList = parseFieldList(view, bytes, body, end, unmodelled);
       if (!fieldList.complete) fieldListsComplete = false;
-      types.set(index, { leaf, kind: 'field-list', members: fieldList.members, complete: fieldList.complete });
+      types.set(index, {
+        leaf, kind: 'field-list', members: fieldList.members, enumerators: fieldList.enumerators, complete: fieldList.complete,
+      });
     } else if (leaf === LF_ARGLIST) {
       // Historical fixtures contain a leaf-only LF_ARGLIST. Preserve the
       // record boundary/stream walk, but never let that shape prove an exact
@@ -621,6 +660,27 @@ function parseTpiStreamWithBudget(bytes, recordBudget, context) {
     offset = end;
     index += 1;
   }
+  // LF_ENUM completeness also depends on the referenced LF_FIELDLIST: a
+  // non-forward enum is not authoritative unless the reference resolves to a
+  // complete enum-only field list whose LF_ENUMERATE count agrees with
+  // NumEnumerators. Resolve after the stream walk so forward TypeIndex
+  // references are handled without record-order assumptions (#4058).
+  for (const record of types.values()) {
+    if (record.kind !== 'enum' || record.complete !== true) continue;
+    const noMembers = record.memberCount === 0 && record.fieldList === 0;
+    const fields = record.fieldList === 0 ? null : types.get(record.fieldList);
+    const fieldListMatches = noMembers || (
+      fields?.kind === 'field-list'
+      && fields.complete === true
+      && fields.members.length === 0
+      && fields.enumerators.length === record.memberCount
+    );
+    if (!fieldListMatches) {
+      record.complete = false;
+      enumFieldListsComplete = false;
+    }
+  }
+
   // An incomplete field-list child (unsupported subrecord) fails the stream
   // closed (#5773). Complete also only when the declared record extent was
   // fully consumed and the parsed record count matches TypeIndexEnd -
@@ -629,7 +689,8 @@ function parseTpiStreamWithBudget(bytes, recordBudget, context) {
   return {
     types,
     unmodelled,
-    complete: fieldListsComplete && expectedCount >= 0 && offset >= typeDataEnd && index - firstIndex === expectedCount,
+    complete: fieldListsComplete && enumFieldListsComplete
+      && expectedCount >= 0 && offset >= typeDataEnd && index - firstIndex === expectedCount,
     firstIndex,
   };
 }
@@ -693,39 +754,52 @@ function readNumeric(view, bytes, offset, end = bytes.length) {
 }
 
 /**
- * Parses an LF_FIELDLIST's children. Only LF_MEMBER is modeled: any other
- * (valid) field-list subrecord — LF_STMEMBER, LF_BCLASS, LF_METHOD, ... —
- * cannot be skipped reliably, so the children after it are unreachable and
- * the field list is incomplete. That incompleteness propagates to the whole
- * TPI result instead of silently publishing a partial member list as an
- * exact layout (#5773).
+ * Parses the field-list children whose shapes this provider can validate.
+ * LF_MEMBER supplies aggregate layout facts; LF_ENUMERATE supplies enum member
+ * authority. Any other valid subrecord — LF_STMEMBER, LF_BCLASS, LF_METHOD,
+ * LF_INDEX, ... — cannot be skipped reliably here, so the list is incomplete
+ * instead of publishing a partial child set as exact evidence (#5773/#4058).
  */
 function parseFieldList(view, bytes, start, end, unmodelled) {
   const members = [];
+  const enumerators = [];
   let offset = start;
   let complete = true;
   while (offset + 2 <= end) {
     const leaf = view.getUint16(offset, true);
-    if (leaf !== LF_MEMBER) {
+    let nameEntry = null;
+    if (leaf === LF_MEMBER) {
+      if (offset + 8 > end) { complete = false; break; }
+      const typeIndex = view.getUint32(offset + 4, true);
+      const numeric = readNumeric(view, bytes, offset + 8, end);
+      if (!numeric || numeric.value == null) { complete = false; break; }
+      const { value: fieldOffset, next } = numeric;
+      nameEntry = cstringWithNext(bytes, next, end);
+      if (!nameEntry) { complete = false; break; }
+      members.push({ name: nameEntry.value, typeIndex, offset: fieldOffset });
+    } else if (leaf === LF_ENUMERATE) {
+      // LF_ENUMERATE = leaf, CV_fldattr_t, numeric value, NUL name. The
+      // enumerator value is retained so later consumers cannot mistake a
+      // counted-but-unparsed child for validated member authority.
+      if (offset + 4 > end) { complete = false; break; }
+      const attributes = view.getUint16(offset + 2, true);
+      const numeric = readNumeric(view, bytes, offset + 4, end);
+      if (!numeric || !Number.isSafeInteger(numeric.value)) { complete = false; break; }
+      nameEntry = cstringWithNext(bytes, numeric.next, end);
+      if (!nameEntry) { complete = false; break; }
+      enumerators.push({ name: nameEntry.value, value: numeric.value, attributes });
+    } else {
       unmodelled.add(leaf);
       complete = false;
       break;
     }
-    if (offset + 8 > end) { complete = false; break; }
-    const typeIndex = view.getUint32(offset + 4, true);
-    const numeric = readNumeric(view, bytes, offset + 8, end);
-    if (!numeric || numeric.value == null) { complete = false; break; }
-    const { value: fieldOffset, next } = numeric;
-    const nameEntry = cstringWithNext(bytes, next, end);
-    if (!nameEntry) { complete = false; break; }
-    members.push({ name: nameEntry.value, typeIndex, offset: fieldOffset });
     // Records are padded to a 4-byte boundary with 0xf1..0xf3 filler.
     let cursor = nameEntry.next;
     while (cursor < end && bytes[cursor] >= 0xf0) cursor += 1;
     if (cursor <= offset) { complete = false; break; }
     offset = cursor;
   }
-  return { members, complete: complete && offset === end };
+  return { members, enumerators, complete: complete && offset === end };
 }
 
 /** Renders a TPI type index as a nominal name plus machine facts. */
@@ -839,6 +913,21 @@ export function describeTypeIndex(index, types, depth = 0, maxDepth = DEBUG_DEFA
   if (record.kind === 'array') {
     const element = describeTypeIndex(record.elementType, types, depth + 1, maxDepth);
     return { name: `${element.name}[]`, sizeBytes: record.sizeBytes, class: 'array', complete: false };
+  }
+  if (record.kind === 'enum') {
+    const underlying = describeTypeIndex(record.underlying, types, depth + 1);
+    // CodeView enumerations have an integral underlying machine type. Do not
+    // launder a malformed/unknown target into authoritative enum width/class.
+    const integralUnderlying = underlying.complete === true
+      && underlying.class === 'integer'
+      && Number.isSafeInteger(underlying.widthBits)
+      && underlying.widthBits > 0;
+    return {
+      name: record.name ? `enum ${record.name}` : 'enum <anonymous>',
+      widthBits: integralUnderlying ? underlying.widthBits : undefined,
+      class: integralUnderlying ? 'integer' : undefined,
+      complete: record.complete === true && integralUnderlying,
+    };
   }
   return { name: 'unknown', complete: false };
 }
@@ -1030,7 +1119,8 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     }
 
     const tpi = parseTpiStreamWithBudget(msf.streams[2]?.read(), recordBudget, 'TPI stream');
-    const sectionHeaders = parseSectionHeaders(findSectionHeaderStream(msf, dbi, dbiBytes));
+    const sectionHeaderStream = parseSectionHeaderStream(findSectionHeaderStream(msf, dbi, dbiBytes));
+    const sectionHeaders = sectionHeaderStream.headers;
     const imageBase = canonicalImageBase(image?.imageBase);
 
     if (byteBudget.exhausted) {
@@ -1056,6 +1146,9 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
       diagnostics.push(`unmodelled TPI leaf kinds: ${[...tpi.unmodelled].map((leaf) => `0x${leaf.toString(16)}`).slice(0, 8).join(', ')}`);
     }
     if (!sectionHeaders.length) diagnostics.push('no section header stream: symbol addresses stay unresolved');
+    if (!sectionHeaderStream.complete && sectionHeaderStream.trailingBytes > 0) {
+      diagnostics.push(`section header stream is truncated: ${sectionHeaderStream.trailingBytes} trailing bytes`);
+    }
     if (imageBase == null) diagnostics.push('PE image base unavailable or invalid: PDB symbol addresses stay unresolved');
 
     const result = createDebugProviderResult({
@@ -1162,7 +1255,7 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
     for (const [index, record] of parsed.tpi.types) {
       if (record.kind !== 'aggregate' || record.forwardReference || !record.fieldList) continue;
       const fields = parsed.tpi.types.get(record.fieldList);
-      if (!fields || fields.kind !== 'field-list' || fields.complete !== true) continue;
+      if (!fields || fields.kind !== 'field-list' || fields.complete !== true || fields.enumerators?.length) continue;
       out.push({
         typeIndex: index,
         name: record.name,

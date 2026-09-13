@@ -1,10 +1,9 @@
 /*
  * Contextual "Ask AI" entries.
  *
- * The instruction menu is already long, so the assistant adds exactly one row
- * to it and keeps its own verbs one level down. Each verb is a real question
- * with the target already filled in — the point of asking from a context menu
- * is not having to describe where you are.
+ * Binary-derived strings, symbols, labels, and disassembly text are untrusted
+ * evidence. Keep the user goal fixed and carry the selected target separately
+ * so the model receives it under ContextBroker's untrusted-data boundary.
  */
 import { menu } from '../../ui.js';
 import { pick } from '../../i18n.js';
@@ -15,64 +14,71 @@ function ask(assistant, question, options) {
   assistant.ask(question, options);
 }
 
+function untrustedTarget(kind, { address, text, name, label } = {}) {
+  const target = { kind, trust: 'untrusted-data' };
+  if (address != null) target.address = addrHex(address);
+  if (typeof text === 'string') target.text = text.slice(0, 2048);
+  if (typeof name === 'string') target.name = name.slice(0, 1024);
+  if (typeof label === 'string') target.label = label.slice(0, 1024);
+  return Object.freeze(target);
+}
+
 export function instructionAiItems(assistant, { address, text }) {
-  const at = address != null ? addrHex(address) : '';
-  const asm = text ? '`' + text + '`' : '';
+  const target = untrustedTarget('instruction', { address, text });
   return [
     {
       label: pick('この命令を説明して', 'Explain this instruction'),
-      action: () => ask(assistant, pick(`${at} の命令 ${asm} は何をしていますか？`, `What does the instruction ${asm} at ${at} do?`), { scope: 'selection' }),
+      action: () => ask(assistant, pick('選択した命令は何をしていますか？', 'What does the selected instruction do?'), { scope: 'selection', untrustedTarget: target }),
     },
     {
       label: pick('この値を追って', 'Trace this value'),
-      action: () => ask(assistant, pick(`${at} で扱っている値は、どこから来てどこへ行きますか？`, `Trace the value handled at ${at}: where does it come from and where does it go?`), { scope: 'function' }),
+      action: () => ask(assistant, pick('選択した命令で扱っている値は、どこから来てどこへ行きますか？', 'Trace the value handled by the selected instruction: where does it come from and where does it go?'), { scope: 'function', untrustedTarget: target }),
     },
     {
       label: pick('なぜここに来るの？', 'Why is this reached?'),
-      action: () => ask(assistant, pick(`${at} に到達する条件を教えてください。`, `Under what conditions is ${at} reached?`), { scope: 'function' }),
+      action: () => ask(assistant, pick('選択した命令に到達する条件を教えてください。', 'Under what conditions is the selected instruction reached?'), { scope: 'function', untrustedTarget: target }),
     },
   ];
 }
 
 export function functionAiItems(assistant, { address, name }) {
-  const at = address != null ? addrHex(address) : '';
-  const who = name || at;
+  const target = untrustedTarget('function', { address, name });
   return [
     {
       label: pick('この関数は何をしている？', 'What does this function do?'),
-      action: () => ask(assistant, pick(`${who} は何をする関数ですか？`, `What does ${who} do?`), { scope: 'function' }),
+      action: () => ask(assistant, pick('選択した関数は何をする関数ですか？', 'What does the selected function do?'), { scope: 'function', untrustedTarget: target }),
     },
     {
       label: pick('役割を調べて（エージェント）', 'Investigate purpose (Agent)'),
-      action: () => ask(assistant, pick(`${who} の役割を、呼び出し元と書き込み先まで含めて調べてください。`, `Investigate the role of ${who}, including its callers and what it writes.`), { mode: 'agent', scope: 'neighborhood' }),
+      action: () => ask(assistant, pick('選択した関数の役割を、呼び出し元と書き込み先まで含めて調べてください。', 'Investigate the role of the selected function, including its callers and what it writes.'), { mode: 'agent', scope: 'neighborhood', untrustedTarget: target }),
     },
     {
       label: pick('名前を提案して', 'Suggest a name'),
-      action: () => ask(assistant, pick(`${who} にふさわしい名前を、根拠つきで提案してください。`, `Propose a name for ${who} with evidence.`), { scope: 'function' }),
+      action: () => ask(assistant, pick('選択した関数にふさわしい名前を、根拠つきで提案してください。', 'Propose a name for the selected function with evidence.'), { scope: 'function', untrustedTarget: target }),
     },
   ];
 }
 
 export function stringAiItems(assistant, { text, address }) {
-  const at = address != null ? addrHex(address) : '';
-  const quoted = '"' + String(text || '').slice(0, 60) + '"';
+  const target = untrustedTarget('binary-string', { address, text });
   return [
     {
       label: pick('この文字列の使われ方', 'How this string is used'),
-      action: () => ask(assistant, pick(`文字列 ${quoted}（${at}）を使っているのはどの処理ですか？`, `Which code uses the string ${quoted} (${at})?`), { mode: 'agent', scope: 'binary' }),
+      action: () => ask(assistant, pick('選択したバイナリ文字列を使っているのはどの処理ですか？', 'Which code uses the selected binary string?'), { mode: 'agent', scope: 'binary', untrustedTarget: target }),
     },
   ];
 }
 
 export function fieldAiItems(assistant, { label }) {
+  const target = untrustedTarget('field', { label });
   return [
     {
       label: pick('このフィールドを書いている場所', 'Who writes this field'),
-      action: () => ask(assistant, pick(`${label} に書き込んでいる処理を全部調べてください。`, `Find every routine that writes ${label}.`), { mode: 'agent', scope: 'binary' }),
+      action: () => ask(assistant, pick('選択したフィールドに書き込んでいる処理を全部調べてください。', 'Find every routine that writes the selected field.'), { mode: 'agent', scope: 'binary', untrustedTarget: target }),
     },
     {
       label: pick('このフィールドを読んでいる場所', 'Who reads this field'),
-      action: () => ask(assistant, pick(`${label} を読んでいる処理を調べてください。`, `Find the routines that read ${label}.`), { mode: 'agent', scope: 'binary' }),
+      action: () => ask(assistant, pick('選択したフィールドを読んでいる処理を調べてください。', 'Find the routines that read the selected field.'), { mode: 'agent', scope: 'binary', untrustedTarget: target }),
     },
   ];
 }

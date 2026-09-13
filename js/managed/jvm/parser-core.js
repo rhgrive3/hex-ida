@@ -150,7 +150,19 @@ export function parseJvm(bytes,options={}){
     }
     if((mFlags&0x0008)===0){const parameterSlots=parsedMethodDescriptor.parameters.reduce((slots,type)=>slots+(type.kind==='base'&&(type.tag==='J'||type.tag==='D')?2:1),0);if(parameterSlots>=255)fail('jvm-invalid-method-descriptor');}claimMemberSignature(seenMethodSignatures,methodName,methodDescriptor,'jvm-duplicate-method-name-descriptor');methods.push({accessFlags:mFlags,name:methodName,descriptor:methodDescriptor,code:codeAttr});
   }
-  const thisClassName=requireDefiningClassName(thisClassIdx,'jvm-invalid-this-class-index'),superClassName=superClassIdx===0?null:requireDefiningClassName(superClassIdx,'jvm-invalid-super-class-index');
+  const thisClassName=requireDefiningClassName(thisClassIdx,'jvm-invalid-this-class-index');
+  // JVMS §4.1 super_class contract: super_class=0 is reserved for the class
+  // Object; interfaces and ACC_MODULE class files must carry a nonzero
+  // super_class naming class Object. Cross-field violations fail closed (#4860).
+  const isInterfaceClass=(accessFlags&0x0200)!==0,isModuleClass=(accessFlags&0x8000)!==0;
+  let superClassName;
+  if(superClassIdx===0){
+    if(isInterfaceClass||isModuleClass||thisClassName!=='java/lang/Object')fail('jvm-invalid-zero-super-class');
+    superClassName=null;
+  }else{
+    superClassName=requireDefiningClassName(superClassIdx,'jvm-invalid-super-class-index');
+    if((isInterfaceClass||isModuleClass)&&superClassName!=='java/lang/Object')fail('jvm-super-class-must-be-object');
+  }
   ensure(pos,2,'jvm-truncated-class-attributes-count');const classAttrCount=view.getUint16(pos,false);pos+=2;let bootstrapMethodsCount=null;for(let a=0;a<classAttrCount;a++){ensure(pos,6,'jvm-truncated-class-attribute');const attrName=requireUtf8(view.getUint16(pos,false),'jvm-invalid-class-attribute-name-index'),attrLen=view.getUint32(pos+2,false),attrDataStart=pos+6;ensure(attrDataStart,attrLen,'jvm-truncated-class-attribute');pos=attrDataStart+attrLen;if(majorVersion>=51&&attrName==='BootstrapMethods'){if(bootstrapMethodsCount!==null)fail('jvm-duplicate-bootstrap-methods-attribute');const attrEnd=pos,ensureBootstrap=(o,s,c='jvm-truncated-bootstrap-methods-attribute')=>checkedRange(attrEnd,o,s,c);ensureBootstrap(attrDataStart,2);bootstrapMethodsCount=view.getUint16(attrDataStart,false);let bPos=attrDataStart+2;for(let b=0;b<bootstrapMethodsCount;b++){ensureBootstrap(bPos,4);const argumentCount=view.getUint16(bPos+2,false);bPos+=4;ensureBootstrap(bPos,argumentCount*2);bPos+=argumentCount*2;}if(bPos!==attrEnd)fail('jvm-invalid-bootstrap-methods-attribute-length');}}validateBootstrapMethodReferences(bootstrapMethodsCount);if(pos!==u8.length)fail('jvm-trailing-bytes');
   const binaryId=options.binaryId||'jvm-binary',imageId=createManagedImageId(binaryId),moduleId=createManagedModuleId(imageId,`${thisClassName}.class`);
   return deepFreeze({imageId,moduleId,formatVersion:`class-${majorVersion}.${minorVersion}`,vmSpecEdition:probe.vmSpecEdition,thisClassName,superClassName,interfaces,accessFlags,constantPool,fields,methods,rawBytes:u8});

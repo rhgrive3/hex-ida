@@ -61,8 +61,11 @@ test('5558: duplicate re-discovery does not burn the global discovery budget', a
   assert.deepEqual(guessCalls, ['text-a', 'text-b'], 'the later region must still be scanned');
   assert.equal(addedCalls.length, 2, 'both regions must feed the symbol index');
   assert.equal(discovery.regions[1].skipped, undefined, 'text-b must not be skipped for budget');
-  assert.deepEqual(discovery.reasons, [], 'no function-global-budget truncation may be recorded');
-  assert.equal(discovery.complete, true);
+  assert.deepEqual(addedCalls, [[0x1234n], [0x9999n]], 'each region retains its available ingestion budget');
+  assert.deepEqual(discovery.reasons, ['text-b:backend-result-exceeds-budget'], 'only unexamined overflow is partial; no function-global-budget truncation');
+  assert.equal(discovery.regions[0].complete, true);
+  assert.equal(discovery.complete, false, 'a clipped suffix has not been examined for duplicates');
+  assert.equal(discovery.capped, true);
 });
 
 test('5558: genuinely new discoveries still debit the budget', async () => {

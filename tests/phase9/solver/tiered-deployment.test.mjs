@@ -32,7 +32,8 @@ import { TieredBvBackend, classifyTieredQuery } from '../../../js/symbolic/solve
 // Optional tier keeps the existing lightweight Worker transport unchanged.
 import { TieredWorkerSolverBackend as WorkerSolverBackend } from '../../../js/symbolic/solver/tiered-worker-backend.js';
 import { validateSatModel } from '../../../js/symbolic/verify/validate-model.js';
-import { CLAIM_KIND, VERIFICATION_QUERY_KIND, createVerificationQuery, validateVerificationQuery } from '../../../js/symbolic/verify/query.js';
+import { CLAIM_KIND, VERIFICATION_QUERY_KIND, createVerificationQuery, validateVerificationQuery,
+  computeCanonicalQueryHash, verifyVerificationQueryIdentity } from '../../../js/symbolic/verify/query.js';
 
 function query(assertion, constraints = []) {
   return createVerificationQuery({
@@ -43,6 +44,22 @@ function query(assertion, constraints = []) {
     assertion,
   });
 }
+
+test('public query identity helpers share bounded content hashing with the factory', () => {
+  const original = query(createBool(true));
+  assert.equal(computeCanonicalQueryHash(original), original.queryHash);
+  assert.equal(verifyVerificationQueryIdentity(original), null);
+  const changed = { ...original, assertion: createBool(false) };
+  assert.notEqual(computeCanonicalQueryHash(changed), original.queryHash);
+  assert.equal(verifyVerificationQueryIdentity(changed), 'query-hash-identity-mismatch');
+  const unhashed = { ...original };
+  delete unhashed.queryHash;
+  assert.equal(computeCanonicalQueryHash(unhashed), original.queryHash);
+  let reads = 0;
+  const accessor = { ...original, get assertion() { reads++; return createBool(true); } };
+  assert.throws(() => computeCanonicalQueryHash(accessor), /accessor/);
+  assert.equal(reads, 0);
+});
 
 async function checkConcreteBinary(backend, width, op, leftValue, rightValue, expectedValue) {
   const left = createFreshSymbol(bvSort(width), `left_${width}_${op}_${leftValue}_${rightValue}`);
@@ -881,6 +898,8 @@ test('result snapshots are transitively immutable including Map models and neste
   assert.throws(() => result.model.delete('x'), TypeError);
   assert.throws(() => result.model.clear(), TypeError);
   assert.throws(() => Map.prototype.set.call(result.model, 'x', 9n), TypeError);
+  assert.equal(result.model.valueOf(), result.model);
+  assert.throws(() => result.model.valueOf().set('x', 9n), TypeError);
   assert.throws(() => { result.model.get('x').witness[0] = 9n; }, TypeError);
   assert.throws(() => { result.stats.evidence.path.push('b'); }, TypeError);
   assert.throws(() => { result.status = SOLVER_STATUS.UNSAT; }, TypeError);

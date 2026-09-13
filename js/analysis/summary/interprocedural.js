@@ -31,9 +31,10 @@ import { assertScopedAnalysisWork as assertSummaryWork, workStopStatus as summar
 import { ResourceBudget as SummaryResourceBudget, BudgetExceededError as SummaryBudgetExceededError } from '../../core/budgets/index.js';
 import { snapshotContractData as strictSummaryData, recordFields as strictSummaryFields, exactInteger as strictSummaryInteger,
   exactString as strictSummaryString, stringSet as strictSummaryStrings } from '../../core/identity/structured.js';
-import { summaryIdentityMatches } from './contract.js';
+import { summaryIdentityMatches as summaryIdentityMatchesForDemand } from './contract.js';
 import {
   EFFECT_SOURCES,
+  createDirectCall,
   createFunctionSummary,
   createMemoryEffect,
   createUnknownCallEffect,
@@ -42,6 +43,8 @@ import {
 } from './contract.js';
 
 import { substituteReturnAlternatives, RETURN_FACT_LIMIT } from './return-equations.js';
+
+const summaryIdentityMatches = summaryIdentityMatchesForDemand;
 
 export const INTERPROCEDURAL_ANALYZER_ID = 'phase7.summary.interprocedural';
 export const INTERPROCEDURAL_ANALYZER_VERSION = '1.4.0';
@@ -55,6 +58,12 @@ export const INTERPROCEDURAL_DEFAULT_BUDGET = Object.freeze({
 
 function fail(code) { throw new TypeError(code); }
 
+function budgetInteger(value, fallback, key) {
+  if (value == null) return fallback;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) fail(`interprocedural-invalid-budget-${key}`);
+  return value;
+}
+
 /**
  * Condenses the call graph into strongly connected components.
  *
@@ -63,11 +72,14 @@ function fail(code) { throw new TypeError(code); }
  * exactly the bottom-up order the solve wants.
  */
 export function condenseCallGraph(roots, successorsOf, {
-  maxComponents = INTERPROCEDURAL_DEFAULT_BUDGET.maxComponents,
-  maxNodes = Math.max(10000, maxComponents),
-  maxEdges = Math.max(50000, maxNodes * 4),
+  maxComponents,
+  maxNodes,
+  maxEdges,
   signal = null,
 } = {}) {
+  maxComponents = budgetInteger(maxComponents, INTERPROCEDURAL_DEFAULT_BUDGET.maxComponents, 'maxComponents');
+  maxNodes = budgetInteger(maxNodes, Math.max(10000, maxComponents), 'maxNodes');
+  maxEdges = budgetInteger(maxEdges, Math.max(50000, maxNodes * 4), 'maxEdges');
   const index = new Map();
   const low = new Map();
   const onStack = new Set();
@@ -439,6 +451,13 @@ export function solveInterproceduralSummaries({
   signal = null,
 } = {}) {
   const limits = { ...INTERPROCEDURAL_DEFAULT_BUDGET, ...budget };
+  limits.maxComponents = budgetInteger(limits.maxComponents, INTERPROCEDURAL_DEFAULT_BUDGET.maxComponents, 'maxComponents');
+  limits.maxNodes = budgetInteger(limits.maxNodes, null, 'maxNodes');
+  limits.maxEdges = budgetInteger(limits.maxEdges, null, 'maxEdges');
+  limits.maxIterationsPerComponent = budgetInteger(limits.maxIterationsPerComponent,
+    INTERPROCEDURAL_DEFAULT_BUDGET.maxIterationsPerComponent, 'maxIterationsPerComponent');
+  limits.maxEffectsPerSummary = budgetInteger(limits.maxEffectsPerSummary,
+    INTERPROCEDURAL_DEFAULT_BUDGET.maxEffectsPerSummary, 'maxEffectsPerSummary');
   const sources = localSummaries instanceof Map ? localSummaries : new Map(Object.entries(localSummaries ?? {}));
   const models = libraryModels instanceof Map ? libraryModels : new Map(Object.entries(libraryModels ?? {}));
   if (!Array.isArray(roots) || roots.length === 0) fail('interprocedural-roots-required');
@@ -720,6 +739,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
   const writes = [replaceCallFallbacks ? local.memoryWriteRegions.filter(notCallFallback) : local.memoryWriteRegions];
   const unknowns = replaceCallFallbacks ? [] : [...local.unknownCallEffects];
   const calleeStatuses = [];
+  const registerEffects = new Set(local.registerEffects);
   const noreturn = [local.noreturn];
   const mayThrow = [local.mayThrow];
   const escapes = [...local.escapes];
@@ -728,6 +748,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     reads.push(callee.memoryReadRegions);
     writes.push(callee.memoryWriteRegions);
     escapes.push(...callee.escapes);
+    for (const effect of callee.registerEffects) registerEffects.add(effect);
     // Keep provenance-bearing unresolved effects and control-flow knowledge in
     // lockstep with the memory dimensions for every resolved call edge.
     unknowns.push(...callee.unknownCallEffects);
@@ -845,6 +866,38 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     hasUnknown ? (unconverged ? 'truncated' : 'partial') : 'complete',
     hasUnknown ? (unconverged ? 'iteration-limit' : 'evidence-missing') : null,
   );
+  const publishedDirectCalls = replaceCallFallbacks
+    ? local.directCalls.map((call) => call.effectSource === 'unknown-call-fallback' && resolvedCallSites.has(call.callSiteId)
+      ? createDirectCall({
+        callSiteId: call.callSiteId,
+        targetEntityIds: call.targetEntityIds,
+        summaryId: call.summaryId,
+        effectSource: 'proven-summary',
+      })
+      : call)
+    : local.directCalls;
+
+  const baseStatus = calleeStatuses.length ? mergeAnalysisStatus(localStatus, calleeStatuses) : localStatus;
+  const localInput = local.status;
+  const relaxLocalFloor = replaceCallFallbacks
+    && local.unknownCallEffects.length > 0
+    && localInput?.completeness === 'partial'
+    && localInput?.stopReason === 'evidence-missing';
+  const flooredCompleteness = relaxLocalFloor || !localInput?.completeness
+    ? baseStatus.completeness
+    : weakestCompleteness(baseStatus.completeness, localInput.completeness);
+  const composedStatus = flooredCompleteness === baseStatus.completeness
+    ? baseStatus
+    : createAnalysisStatus({
+      snapshotId: baseStatus.snapshotId,
+      analyzerId: baseStatus.analyzerId,
+      analyzerVersion: baseStatus.analyzerVersion,
+      completeness: flooredCompleteness,
+      budgetClass: baseStatus.budgetClass,
+      stopReason: baseStatus.stopReason ?? localInput?.stopReason ?? 'evidence-missing',
+      evidenceIds: [...(baseStatus.evidenceIds ?? []), ...(localInput?.evidenceIds ?? [])],
+      dependencyIds: [...(baseStatus.dependencyIds ?? []), ...(localInput?.dependencyIds ?? [])],
+    });
 
   return createFunctionSummary({
     functionId,
@@ -855,21 +908,20 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
       : composeReturns(local, locals, solved, component, snapshotId, checkpoint, groundUnresolved),
     returnEquations: local.returnEquations,
     returnSourceDigest: local.returnSourceDigest,
-    registerEffects: local.registerEffects,
+    registerEffects: [...registerEffects],
     memoryReadRegions: mergeEffects(reads, limits.maxEffectsPerSummary),
     memoryWriteRegions: mergeEffects(writes, limits.maxEffectsPerSummary),
     escapes: mergeEscapes(escapes),
     allocations: local.allocations,
     frees: local.frees,
-    directCalls: local.directCalls,
+    directCalls: publishedDirectCalls,
     indirectCallSets: local.indirectCallSets,
     unknownCallEffects: dedupedUnknowns,
     noreturn: hasUnknown ? 'unknown' : unionKnowledge(noreturn),
     mayThrow: hasUnknown ? 'unknown' : unionKnowledge(mayThrow),
     stackDelta: local.stackDelta,
     semanticFacts: local.semanticFacts,
-    status: mergeAnalysisStatus(localStatus,
-      [...(replaceCallFallbacks ? [] : [status(local.status.completeness, local.status.stopReason)]), ...calleeStatuses]),
+    status: composedStatus,
   });
 }
 

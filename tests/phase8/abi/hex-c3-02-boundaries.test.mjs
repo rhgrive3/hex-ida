@@ -870,9 +870,11 @@ test('C3-02 forced-stack homogeneous aggregates use canonical physical element s
     const entry = classified.arguments[16];
     const next = classified.arguments[17];
     assert.equal(entry.location, 'stack', `${name} must be forced to stack`);
-    // #5598 rounds the aggregate once; it does not widen each HFA member.
     const physicalElementBytes = elementBytes;
-    assert.equal(entry.bytes, physicalElementBytes * aggregate.members.length, `${name} physical size`);
+    const roundedAggregateBytes = Math.ceil(
+      (elementBytes * aggregate.members.length) / 8,
+    ) * 8;
+    assert.equal(entry.bytes, roundedAggregateBytes, `${name} whole aggregate physical size`);
     assert.deepEqual(entry.pieces.map(({ pieceIndex, byteOffset, stackOffset, bytes }) => ({
       pieceIndex, byteOffset, stackOffset, bytes,
     })), aggregate.members.map((_member, piece) => ({
@@ -901,7 +903,7 @@ test('C3-02 forced-stack homogeneous aggregates use canonical physical element s
   const registers = ['sp', ...Array.from({ length:8 }, (_unused, index) => `x${index}`),
     ...Array.from({ length:8 }, (_unused, index) => `v${index}`)];
   const prototype = recoverFunctionPrototype(
-    { args:new Map(registers.map((reg, index) => [reg, reg === 'sp' ? value(99, reg) : value(index + 1, reg)])), instructions },
+    { args:new Map(registers.map((reg, index) => [reg, value(reg === 'sp' ? 99 : index + 1, reg)])), instructions },
     { values:new Map() },
     { abiAdapter:semanticAbiAdapter(AAPCS64_ABI, { architecture:'arm64', platform:'linux' }),
       functionPrototype:{ parameters } },

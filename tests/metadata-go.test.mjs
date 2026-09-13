@@ -395,4 +395,5 @@ console.log('Go Metadata Provider tests passed.');
 
 // Keep focused Go regressions in the required metadata:test denominator.
 await import('./issue-5373-go-name-uvarint-overflow.mjs');
+await import('./issue-4875-go-abi-type-str-offset.mjs');
 await import('./issue-5877-go-pclntab-section-without-buffer.test.mjs');

@@ -93,14 +93,12 @@ function buildCallPe({ callerBytecode, staticSignature } = {}) {
   const callerNameIndex = addString(buf, stringsOffset, stringCursor, 'Caller');
 
   const tablesOffset = metadataOffset + 0x100;
-  const valid = (1n << 2n) | (1n << 6n) | (1n << 10n);
+  const valid = (1n << 2n) | (1n << 6n);
   view.setUint32(tablesOffset + 8, Number(valid & 0xffffffffn), true);
   view.setUint32(tablesOffset + 12, Number(valid >> 32n), true);
   let tablePos = tablesOffset + 24;
   view.setUint32(tablePos, 1, true); tablePos += 4; // TypeDef
   view.setUint32(tablePos, 2, true); tablePos += 4; // MethodDef
-  view.setUint32(tablePos, 1, true); tablePos += 4; // MemberRef
-
   const fixtureTypeNameIndex = addString(buf, stringsOffset, stringCursor, 'FixtureType');
   view.setUint32(tablePos, 0, true); tablePos += 4;
   view.setUint16(tablePos, fixtureTypeNameIndex, true); tablePos += 2;

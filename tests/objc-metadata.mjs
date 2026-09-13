@@ -22,8 +22,10 @@ p64(0x1000 + 32, 0);
 p64(0x1000 + 40, 0);
 p64(0x1000 + 48, 0);
 p64(0x1000 + 56, 0);
-p32(0x1000 + 64, 72);         // protocol_t fixed prefix size (#3979)
-p32(0x1000 + 68, 0);          // protocol_t flags
+// protocol_t is self-describing: #3979 made the size/flags pair (at +0x40 on
+// LP64) mandatory for a complete layout, so a real protocol_t must declare it.
+p32(0x1000 + 64, 72);          // size
+p32(0x1000 + 68, 0);           // flags
 str(0x1800, 'CoinProviding');
 
 p32(0x1100, 24); p32(0x1104, 1);

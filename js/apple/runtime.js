@@ -71,9 +71,11 @@ export function resolveObjcIMP(objcIndex, address, { receiverType = null, select
     const type = cleanClassName(receiverType);
     if (!type) return { resolved: null, candidates: [], confidence: 0 };
     const chain = new Set();
-    let cur = type, guard = 0;
+    let cur = type;
     let hierarchyComplete = true;
-    while (cur && guard++ < 64 && !chain.has(cur)) {
+    const classCount = Number.isSafeInteger(objcIndex.classes?.size) && objcIndex.classes.size >= 0 ? objcIndex.classes.size : 0;
+    let remaining = classCount + 1;
+    while (cur && remaining-- > 0 && !chain.has(cur)) {
       chain.add(cur);
       const cls = objcIndex.classes?.get(cur);
       if (!cls) { hierarchyComplete = false; break; }

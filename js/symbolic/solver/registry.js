@@ -5,7 +5,7 @@
  */
 
 import { FakeSolverBackend } from './fake-backend.js';
-import { PROOF_AUTHORITY, isExactProofBackend } from './backend.js';
+import { isExactProofBackend } from './backend.js';
 import { ExhaustiveBvBackend } from './exhaustive-backend.js';
 import { TieredBvBackend } from './tiered-backend.js';
 import { TieredWorkerSolverBackend } from './tiered-worker-backend.js';
@@ -17,7 +17,14 @@ import { WorkerSolverBackend } from './worker-backend.js';
    trust contract (identity, capabilities, exactProofs, model extraction and
    fingerprint pairing), not on proofAuthority alone. */
 function qualifiesAsExactDefault(backend, allowNonExactDefault) {
-  return allowNonExactDefault || isExactProofBackend(backend);
+  if (allowNonExactDefault) return true;
+  try {
+    return isExactProofBackend(backend);
+  } catch {
+    // Capability providers are external plugin surfaces. A malformed provider
+    // is ineligible, but must not block selection of a later exact backend.
+    return false;
+  }
 }
 
 export class SolverRegistry {
@@ -30,6 +37,9 @@ export class SolverRegistry {
   registerBackend(backend) {
     if (!backend || !backend.id) {
       throw new TypeError('registerBackend: backend must have a valid id');
+    }
+    if (this._backends.has(backend.id)) {
+      throw new Error(`registerBackend: backend '${backend.id}' is already registered`);
     }
     this._backends.set(backend.id, backend);
     if (!this._defaultBackendId && qualifiesAsExactDefault(backend, this._allowNonExactDefault)) {
@@ -61,7 +71,7 @@ export class SolverRegistry {
     if (!this._backends.has(id)) {
       throw new Error(`setDefaultBackend: backend '${id}' is not registered`);
     }
-    if (!this._allowNonExactDefault && !isExactProofBackend(this._backends.get(id))) {
+    if (!qualifiesAsExactDefault(this._backends.get(id), this._allowNonExactDefault)) {
       throw new Error(`setDefaultBackend: backend '${id}' is not an exact production backend`);
     }
     this._defaultBackendId = id;

@@ -78,6 +78,9 @@ function cooperativeYield() { return new Promise((resolve)=>setTimeout(resolve,0
 
 function utf8(bytes) { try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { return null; } }
 function layoutCandidates(version) {
+  if (version === 27) return [{type:88,method:32,tokenAt:20,label:'27'}];
+  if (version === 29) return [{type:88,method:32,tokenAt:20,label:'29'}];
+  if (version === 31) return [{type:88,method:36,tokenAt:24,label:'31'}];
   if (version >= 29) return [{type:92,method:40,label:'29+'}];
   if (version >= 27) return [{type:92,method:40,label:'27+'},{type:96,method:40,label:'27-alt'}];
   if (version >= 25) return [{type:96,method:52,label:'25+'},{type:100,method:52,label:'25-alt'}];
@@ -136,7 +139,7 @@ function scoreLayout(ctx, layout, budget) {
   const typeDefs=ctx.pair('typeDefinitions'), methodDefs=ctx.pair('methods');
   const typeCount=recordCount(typeDefs,layout.type), methodCount=recordCount(methodDefs,layout.method);
   if(typeCount==null||methodCount==null||typeCount>200000||methodCount>500000)return null;
-  const stringAt=makeStringAt(ctx), tokenAt=ctx.version>=27?24:40;
+  const stringAt=makeStringAt(ctx), tokenAt=layout.tokenAt ?? (ctx.version>=27?24:40);
   let validTypeNames=0, validOwners=0, validMethodNames=0, validTokens=0;
   const ti=sampleIndices(typeCount), mi=sampleIndices(methodCount);
   for(const i of ti){ budget.check(1); const o=typeDefs.offset+i*layout.type; if(o+8>typeDefs.end)return null; if(stringAt(ctx.dv.getInt32(o,true)))validTypeNames++; }
@@ -168,7 +171,7 @@ function parseLayout(ctx,layout,budget){
     classes.push({index:i,name,namespace:ns||'',full:ns?ns+'.'+name:name});
   }
   const methods=[];let validOwners=0,validTokens=0,validMethodNames=0;
-  const tokenAt=version>=27?24:40;
+  const tokenAt=layout.tokenAt ?? (version>=27?24:40);
   for(let i=0;i<methodCount;i++){
     if((i&1023)===0)budget.check(1024);
     const o=methodDefs.offset+i*layout.method;if(o<methodDefs.offset||o+8>methodDefs.end)return null;
@@ -253,7 +256,7 @@ async function parseLayoutAsync(ctx,layout,budget,options={}){
     classes.push({index:i,name,namespace:ns||'',full:ns?ns+'.'+name:name});
   }
   const methods=[];let validOwners=0,validTokens=0,validMethodNames=0;
-  const tokenAt=version>=27?24:40;
+  const tokenAt=layout.tokenAt ?? (version>=27?24:40);
   for(let i=0;i<methodCount;i++){
     if((i&1023)===0){budget.check(1024);if(options.yield!==false)await cooperativeYield();}
     const o=methodDefs.offset+i*layout.method;if(o<methodDefs.offset||o+8>methodDefs.end)return null;

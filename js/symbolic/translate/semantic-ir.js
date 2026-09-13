@@ -91,9 +91,11 @@ export function translateSemanticIR(target, options = {}) {
     if (depth > maxDepth) throw new QueryFailure('budget:translation-depth');
     if (!val || typeof val !== 'object') return unknown(fallback, 'missing-ssa-value');
     const width = widthOf(val, fallback);
-    const id = data(val, 'id');
+    const rawId = data(val, 'id');
+    const id = typeof rawId === 'string' ? rawId.trim() : rawId;
     if (id != null) {
-      if (!['string','number'].includes(typeof id) || typeof id === 'number' && !Number.isSafeInteger(id)) return unknown(width, 'invalid-value-id', val);
+      if (!['string','number'].includes(typeof id) || typeof id === 'string' && !id
+          || typeof id === 'number' && !Number.isSafeInteger(id)) return unknown(width, 'invalid-value-id', val);
       if (identities.has(id) && identities.get(id) !== val) return unknown(width, 'duplicate-value-id', val);
       identities.set(id, val);
     }

@@ -60,7 +60,7 @@ function testCanonicalWiring() {
   assert.match(runtime, /RECOGNITION_INPUTS_CHANGED/, 'recognition must reject publication after input-version races');
   assert.match(runtime, /function installCancellableFunctionDiscovery\(app\)/, 'function discovery must have one runtime owner');
   assert.match(runtime, /entry\.request(?:\?\.|\.)cancel\?\.\(\)/, 'last discovery waiter must cancel its producer');
-  assert.match(runtime, /const key = recognitionInputKey\(app\)[\s\S]*const after = recognitionInputKey\(app\)[\s\S]*after === key/,
+  assert.match(runtime, /const key = recognitionInputKey\(app\)[\s\S]*after\s*=\s*recognitionInputKey\(app\)[\s\S]*after === key/,
     'recognition must publish only when start/end input identity matches');
 
   const service = source('js/analysis/investigation-service.js');

@@ -241,7 +241,9 @@ function domainValue(symbol, index) {
 class ExhaustiveSolverSession extends SolverSession {
   async _executeCheck(query, options = {}, token, signal) {
     const startedAt = Date.now();
-    const deadline = typeof options.timeoutMs === 'number' && options.timeoutMs > 0 ? monotonicNow() + options.timeoutMs : Infinity;
+    const timeoutBudget = Number.isFinite(options.timeoutMs) ? options.timeoutMs
+      : Number.isFinite(this.options.timeoutMs) ? this.options.timeoutMs : 0;
+    const deadline = timeoutBudget > 0 ? monotonicNow() + timeoutBudget : Infinity;
     const guard = () => signal?.aborted ? 'cancelled' : monotonicNow() >= deadline ? 'timeout' : null;
     let maxConstraints;
     let maxExprNodes;
@@ -353,7 +355,7 @@ class ExhaustiveSolverSession extends SolverSession {
       return createSolverResult({ status: SOLVER_STATUS.CANCELLED, reason: 'provider-aborted', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { cancelled: true, publishable: false } });
     }
     if (outcome === 'timeout') {
-      return createSolverResult({ status: SOLVER_STATUS.TIMEOUT, reason: 'enumeration-deadline-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { timedOut: true, publishable: false } });
+      return createSolverResult({ status: SOLVER_STATUS.TIMEOUT, reason: 'internal-deadline-exceeded', stats: { solveTimeMs: Date.now() - startedAt, nodesEvaluated }, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { timedOut: true, publishable: false } });
     }
     const stats = { solveTimeMs: Date.now() - startedAt, nodesEvaluated };
     if (found) {

@@ -351,6 +351,27 @@ function patternBytes(value, code) {
   return bytes;
 }
 
+const PATTERN_SCAN_CANCEL_CHECK_INTERVAL = 4096;
+
+function patternScanBudget(options) {
+  const budget = options?.budget;
+  if (budget != null && (typeof budget !== 'object' || Array.isArray(budget))) {
+    throw new TypeError('discovery-pattern-budget-invalid');
+  }
+  const limit = (name) => {
+    const value = budget?.[name];
+    if (value == null) return null;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+      throw new TypeError(`discovery-pattern-budget-${name}-invalid`);
+    }
+    return value;
+  };
+  return {
+    maxComparisons: limit('maxPatternComparisons'),
+    maxEvidence: limit('maxPatternEvidence'),
+  };
+}
+
 /**
  * A declarative byte-pattern producer.
  *
@@ -394,23 +415,47 @@ export function createPatternProducer({ id, architectureId, patterns, alignment 
   return Object.freeze({
     id: producerId,
     architectureId: producerArchitectureId,
-    produce(input) {
+    produce(input, options = {}) {
       const bytes = input?.image?.code;
       const base = input?.image?.codeBaseAddress;
       if (!bytes || base == null || compiled.length === 0) return [];
       const canonicalBase = toAddress(base);
       if (canonicalBase == null) return [];
+      const { maxComparisons, maxEvidence } = patternScanBudget(options);
+      const signal = options?.signal;
       const baseAddress = BigInt(canonicalBase);
+      const alignmentWidth = BigInt(alignment);
+      const firstOffset = Number((alignmentWidth - (baseAddress % alignmentWidth)) % alignmentWidth);
       const out = [];
-      for (let offset = 0; offset + 1 <= bytes.length; offset += alignment) {
+      let comparisons = 0;
+      let lastObserved = 0;
+      let stopReason = null;
+      scan:
+      for (let offset = firstOffset; offset + 1 <= bytes.length; offset += alignment) {
         for (const pattern of compiled) {
           if (offset + pattern.bytes.length > bytes.length) continue;
           let matched = true;
           for (let index = 0; index < pattern.bytes.length; index += 1) {
+            comparisons += 1;
+            if (maxComparisons != null && comparisons > maxComparisons) {
+              stopReason = 'budget-exhausted';
+              break scan;
+            }
+            if (comparisons - lastObserved >= PATTERN_SCAN_CANCEL_CHECK_INTERVAL) {
+              lastObserved = comparisons;
+              if (signal?.aborted) {
+                stopReason = 'cancelled';
+                break scan;
+              }
+            }
             const mask = pattern.mask ? pattern.mask[index] : 0xff;
             if ((bytes[offset + index] & mask) !== (pattern.bytes[index] & mask)) { matched = false; break; }
           }
           if (!matched) continue;
+          if (maxEvidence != null && out.length >= maxEvidence) {
+            stopReason = 'budget-exhausted';
+            break scan;
+          }
           out.push(evidence('prologue-candidate', {
             start: (baseAddress + BigInt(offset)).toString(),
             evidenceIds: [`pattern:${pattern.id}:${offset}`],
@@ -418,6 +463,7 @@ export function createPatternProducer({ id, architectureId, patterns, alignment 
           break;
         }
       }
+      if (stopReason != null) return Object.freeze({ evidence: out, truncated: true, stopReason });
       return out;
     },
   });

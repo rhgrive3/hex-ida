@@ -45,7 +45,6 @@ const TYPED_ARRAY_TAG_GETTER = Object.getOwnPropertyDescriptor(
   Object.getPrototypeOf(Uint8Array.prototype),
   Symbol.toStringTag,
 )?.get;
-
 const UINT8_ARRAY_CONSTRUCTOR = Uint8Array;
 const UINT8_ARRAY_SET = UINT8_ARRAY_CONSTRUCTOR.prototype.set;
 const UINT8_ARRAY_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(
@@ -129,17 +128,17 @@ export function createRiscv64DecodedInstruction(input = {}) {
   }
   if (mode === 'rv64im' && instructionAlignment !== 4) throw new TypeError('riscv64-decoded-instruction-mode-alignment-mismatch');
   if (mode === 'rv64imc' && instructionAlignment !== 2) throw new TypeError('riscv64-decoded-instruction-mode-alignment-mismatch');
-  // ISA/profile evidence must agree: `rv64im` is the no-C profile and `rv64imc`
-  // carries compressed capability, so an explicit `compressedInstructions` flag
-  // that contradicts the mode publishes contradictory ISA facts (#5999).
+
+  // ISA/profile evidence must agree: `rv64im` is the no-C profile and
+  // `rv64imc` carries compressed capability. Do not booleanize structured
+  // input, because a truthy non-boolean would launder contradictory evidence
+  // into a canonical record (#5999).
   let compressedInstructions = null;
   if (input.compressedInstructions != null) {
     if (typeof input.compressedInstructions !== 'boolean') {
       throw new TypeError('riscv64-decoded-instruction-invalid-compressed-instructions');
     }
     if (input.compressedInstructions !== (mode === 'rv64imc')) {
-      // Keep #7010's published diagnostic for an explicit denial of C while
-      // retaining #7262's validation of the reverse capability contradiction.
       throw new TypeError(mode === 'rv64imc'
         ? 'riscv64-decoded-instruction-compressed-profile-contradiction'
         : 'riscv64-decoded-instruction-compressed-capability-conflict');
