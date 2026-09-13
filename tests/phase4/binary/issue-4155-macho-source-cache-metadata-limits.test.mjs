@@ -42,8 +42,8 @@ assert.equal(
 );
 assert.equal(
   key({ records:'1' }),
-  key({ records:1 }),
-  'cache identity must use the same accepted numeric normalization as the Mach-O metadata budget',
+  key({}),
+  'invalid numeric-string overrides must retain the default cache identity',
 );
 assert.equal(
   key({ records:Number.NaN }),
@@ -90,11 +90,11 @@ async function parse(source, records) {
 {
   const source = new StaticByteSource(makeFatMachOFixture());
   try {
-    const first = await parse(source, 100_000);
+    const first = await parse(source, Number.NaN);
     const readsAfterFirst = source.reads;
     const second = await parse(source, '100000');
     assert.equal(second.metadata.machoMetadata.complete, first.metadata.machoMetadata.complete);
-    assert.equal(source.reads, readsAfterFirst, 'semantically identical normalized metadata limits should still reuse the cache entry');
+    assert.equal(source.reads, readsAfterFirst, 'invalid overrides with the same fallback policy should still reuse the cache entry');
   } finally {
     clearMachOSourceCache(source);
   }
