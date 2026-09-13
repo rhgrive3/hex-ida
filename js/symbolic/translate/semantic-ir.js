@@ -76,7 +76,13 @@ export function translateSemanticIR(target, options = {}) {
     }
 
     let valId = null;
-    if (val.id != null) {
+    const canonicalValueId = val.semanticSsaValueId ?? val.semanticValueId ?? null;
+    if (typeof canonicalValueId === 'string' && canonicalValueId.trim() !== '') {
+      valId = canonicalValueId.trim();
+    } else if (val.id != null) {
+      // Production Semantic IR keeps a local numeric compatibility id alongside
+      // the canonical semantic/SSA string identity. Prefer the canonical id; a
+      // caller object with only a non-string legacy id remains fail-closed.
       if (typeof val.id === 'string' && val.id.trim() !== '') valId = val.id.trim();
       else {
         semanticUnknowns++;
