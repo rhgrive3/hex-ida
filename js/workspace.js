@@ -1,6 +1,6 @@
 import { Backend } from './backend.js';
 import { SymbolIndex } from './symbols.js';
-import { createHexProject, exportHexProject, importHexProject, serializeHexProject, parseHexProject, normalizeNavigation } from './project/index.js';
+import { createHexProject, exportHexProject, importHexProject, serializeHexProject, parseHexProject, normalizeNavigation, projectAnnotationCommitList } from './project/index.js';
 import { runDiffInWorker } from './diff/runtime.js';
 import { createCompactFunctionSet, demoteLowInformationAbsenceClaims } from './diff/compact-function-set.js';
 import { stripSecrets } from './ai/session-core/index.js';
@@ -191,9 +191,11 @@ export function applyWorkspaceProject(app, project){
     staging.add(BigInt(p.offset),p.before||[],p.after||[],meta);
     stagedPatches.push([BigInt(p.offset),p.before||[],p.after||[],meta]);
   }
+  const stagedNames=projectAnnotationCommitList(project.user?.names,'user.names');
+  const stagedComments=projectAnnotationCommitList(project.user?.comments,'user.comments');
   notes.names.clear();notes.comments.clear();notes.types.clear();if(replaceVars)notes.vars.clear();
-  for(const entry of project.user.names||[])if(entry?.address!=null&&entry.value)notes.names.set(BigInt(entry.address).toString(),String(entry.value));
-  for(const entry of project.user.comments||[])if(entry?.address!=null&&entry.value)notes.comments.set(BigInt(entry.address).toString(),String(entry.value));
+  for(const [address,value] of stagedNames)notes.names.set(address,value);
+  for(const [address,value] of stagedComments)notes.comments.set(address,value);
   for(const entry of project.user.types||[])if(entry?.key)notes.types.set(String(entry.key),String(entry.value||''));
   if(replaceVars)for(const entry of (project.user.vars||project.user.varNames||[]))if(entry?.key)notes.vars.set(String(entry.key),String(entry.value||''));
   notes.structs=Array.isArray(project.user.structs)?project.user.structs.slice():[];

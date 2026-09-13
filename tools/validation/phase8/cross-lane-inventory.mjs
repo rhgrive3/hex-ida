@@ -9,11 +9,50 @@ import {
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const MAIN_GATE_BATCH_LANE = 'fix/main-gate-recovery-20260913';
+const ACTIONS_GROUP_LANE = 'dependabot/github_actions/github-actions-436ea2ae3a';
 
 // This is an exact, short-lived integration route for the current gate-repair
 // candidate. Phase 8 validates only its own subset; every foreign path is
 // enumerated so this route cannot become a general ownership exemption.
 export const CROSS_LANE_ROUTES = Object.freeze({
+  [ACTIONS_GROUP_LANE]: Object.freeze([
+    ".circleci/config.yml",
+    ".github/workflows/_phase-release-validation.yml",
+    ".github/workflows/agent-loop-resilience.yml",
+    ".github/workflows/ai-eval-contract.yml",
+    ".github/workflows/cancel-stale-pr-runs.yml",
+    ".github/workflows/codeql-actions.yml",
+    ".github/workflows/codeql-javascript.yml",
+    ".github/workflows/cross-binary-accuracy.yml",
+    ".github/workflows/final-head-admission.yml",
+    ".github/workflows/generated-exact-head-recovery.yml",
+    ".github/workflows/generated-sync.yml",
+    ".github/workflows/generated-userscript-autofix.yml",
+    ".github/workflows/generated-userscript-main-sync.yml",
+    ".github/workflows/ghidra-differential.yml",
+    ".github/workflows/invariant-gates.yml",
+    ".github/workflows/issue-2528-canonical-claims.yml",
+    ".github/workflows/migration-guardrails.yml",
+    ".github/workflows/openssf-scorecard.yml",
+    ".github/workflows/phase12-release-validation.yml",
+    ".github/workflows/phase4-release-validation.yml",
+    ".github/workflows/phase6-release-validation.yml",
+    ".github/workflows/phase7-ownership.yml",
+    ".github/workflows/phase7-release-validation.yml",
+    ".github/workflows/phase9-preflight.yml",
+    ".github/workflows/pr-fast-gate.yml",
+    ".github/workflows/sandbox-security.yml",
+    ".github/workflows/stage1-release-validation.yml",
+    ".github/workflows/stage2-nonphysical-closure.yml",
+    ".github/workflows/stage2-release-validation.yml",
+    ".github/workflows/ui-regression.yml",
+    ".github/workflows/universal-platform.yml",
+    ".github/workflows/unlinked-top10-runner.yml",
+    ".github/workflows/userscript-host.yml",
+    "tests/phase7/ownership/cross-lane-routing.test.mjs",
+    "tests/reusable-release-validation.mjs",
+    "tools/validation/phase7/cross-lane-inventory.mjs",
+  ]),
   [MAIN_GATE_BATCH_LANE]: Object.freeze([
     '.circleci/config.yml',
     '.github/workflows/phase7-ownership.yml',

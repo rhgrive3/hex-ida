@@ -36,6 +36,7 @@ assert.deepEqual(parseWasm(definedTable(0x00)).tables[0], {
   min: 1,
   max: null,
   shared: false,
+  addressType: 'i32',
   flags: 0,
 });
 assert.deepEqual(parseWasm(definedTable(0x01, 1, 2)).tables[0], {
@@ -43,6 +44,7 @@ assert.deepEqual(parseWasm(definedTable(0x01, 1, 2)).tables[0], {
   min: 1,
   max: 2,
   shared: false,
+  addressType: 'i32',
   flags: 1,
 });
 
@@ -63,7 +65,7 @@ for (const [flags, max] of [[0x02, null], [0x03, 1]]) {
 // accidentally reject its flags=0x03 encoding.
 assert.deepEqual(
   parseWasm(moduleWithSection(5, [1, 0x03, 1, 2])).memories[0],
-  { min: 1, max: 2, shared: true, flags: 3 },
+  { min: 1, max: 2, shared: true, addressType: 'i32', flags: 3 },
 );
 
 // The original counterexample must be rejected before call_indirect can become

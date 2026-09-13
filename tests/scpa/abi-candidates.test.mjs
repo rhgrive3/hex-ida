@@ -39,6 +39,21 @@ test('scalar span is not inferred, but an explicitly declared candidate span can
   assert.deepEqual((await run()).results[0].candidatePieces,[]);
   context.result.arguments[0].bytes=4;context.result.arguments[0].possible=true;
   const r=await run();assert.equal(r.results[0].candidatePieces[0].bitSize,32);assert.deepEqual(r.results[0].pieces,[]);
+  assert.equal(r.results[0].candidateStatus,'described-only');assert.equal(r.results[0].typeConstraintPublished,false);
+});
+for (const parameter of [{type:'uint32'}, {type:'uint32',bits:32,bytes:8}, {type:'uint32',bits:32,sizeBits:64}]) {
+  test(`real classifier with unproven scalar metadata cannot publish candidates: ${JSON.stringify(parameter)}`,async t=>{
+    const {run}=setup(t,{parameters:[parameter]}),r=await run();
+    assert.equal(r.status,'unsupported');
+    assert.equal(r.exact,false);
+    assert.equal(r.results,undefined);
+  });
+}
+test('real classifier preserves an explicitly consistent scalar candidate span',async t=>{
+  const {run}=setup(t,{parameters:[{type:'uint32',bits:32,bytes:4}]}),r=await run();
+  assert.equal(r.results[0].candidatePieces[0].bitSize,32);
+  assert.equal(r.results[0].candidateStatus,'described-only');
+  assert.equal(r.results[0].typeConstraintPublished,false);
 });
 test('overlapping x/w candidates are diagnostic and neither candidate becomes exact',async t=>{
   const {context,run}=setup(t,{parameters:[{type:'uint64',bits:64},{type:'uint32',bits:32}]});

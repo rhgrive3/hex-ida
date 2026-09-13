@@ -39,12 +39,12 @@ for (const name of ['chromium', 'webkit']) {
       const coordinator = new SingleConversationWorkerCoordinator({ controller, tabNodeId: 'one-page' });
       const discovered = await coordinator.discover();
       const claimed = await coordinator.claim({ runId: 'run', workerId: 'worker-1' });
-      await coordinator.createChat({ workerId: 'worker-1' });
-      const final = await coordinator.send({ workerId: 'worker-1', instruction: 'Return one line.' });
+      await coordinator.createChat({ runId: 'run', workerId: 'worker-1' });
+      const final = await coordinator.send({ runId: 'run', workerId: 'worker-1', instruction: 'Return one line.' });
       const pageCount = window.length;
       const visible = controller.currentConversation();
       const navigation = [...controller.navigation];
-      await coordinator.release({ workerId: 'worker-1' });
+      await coordinator.release({ runId: 'run', workerId: 'worker-1' });
       coordinator.close();
       return { discovered, claimed, final, visible, navigation, pageCount };
     });

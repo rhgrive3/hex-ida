@@ -92,7 +92,7 @@ function tableLayout(bytes, view, stream) {
     rowSizes[table] = size;
     pos += rows * size;
   }
-  return { rowCounts, tableOffsets, rowSizes, heapSizes };
+  return { rowCounts, tableOffsets, rowSizes, heapSizes, valid };
 }
 
 function readManifestSecurity(bytes, view, layout, stringsStream, blobStream, defs) {
@@ -209,9 +209,10 @@ export function overlayCilManifestSecurity(bytes, parsed) {
   const tablesStream = meta.streams.find(s => s.name === '#~' || s.name === '#-');
   const stringsStream = meta.streams.find(s => s.name === '#Strings');
   const blobStream = meta.streams.find(s => s.name === '#Blob');
+  const guidStream = meta.streams.find(s => s.name === '#GUID');
   if (!tablesStream) fail('cil-metadata-tables-missing');
   const layout = tableLayout(u8, view, tablesStream);
-  const defs = readCilDefinitions(u8, view, layout, stringsStream, blobStream);
+  const defs = readCilDefinitions(u8, view, layout, stringsStream, blobStream, guidStream);
   const extra = readManifestSecurity(u8, view, layout, stringsStream, blobStream, defs);
   return deepFreeze({ ...parsed, files: extra.files, exportedTypes: extra.exportedTypes, declSecurity: extra.declSecurity });
 }

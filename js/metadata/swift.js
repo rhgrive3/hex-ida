@@ -157,6 +157,7 @@ export class SwiftMetadataProvider extends LanguageMetadataProvider {
     this.cachedIndex = buildSwiftRuntimeIndex(model);
 
     const isComplete = model.complete === true;
+    const hasIdentityBinding = this.binaryIdentity != null;
     const coverage = isComplete ? null : swiftPartialCoverage(model);
     // The adapter publishes descriptor records, not witness projections. Prove
     // that narrower universe only when all contributing scans are complete.
@@ -166,7 +167,9 @@ export class SwiftMetadataProvider extends LanguageMetadataProvider {
       && model.completeness?.witnessTables?.complete === false
       && this.options.vtables == null && this.options.witnessTables == null;
     const identity = createLanguageMetadataIdentity({
-      verdict: isComplete ? 'matched-authoritative' : 'matched-partial',
+      verdict: isComplete
+        ? (hasIdentityBinding ? 'matched-authoritative' : 'identity-unavailable')
+        : 'matched-partial',
       providerId: this.id,
       providerVersion: this.version,
       ecosystem: 'swift',
@@ -177,7 +180,9 @@ export class SwiftMetadataProvider extends LanguageMetadataProvider {
       architecture: this.architecture,
       platform: this.platform,
       method: 'swift5-abi',
-      detail: `Swift 5 ABI (${model.types?.length || 0} types, ${model.protocols?.length || 0} protocols)`,
+      detail: hasIdentityBinding
+        ? `Swift 5 ABI (${model.types?.length || 0} types, ${model.protocols?.length || 0} protocols)`
+        : `Swift 5 ABI without binary identity binding (${model.types?.length || 0} types, ${model.protocols?.length || 0} protocols)`,
       // No declared subset is authoritative without the bound's proof.
       coverage: coverage == null || boundedSubset ? coverage : { ...coverage, entityIds: [] },
     });

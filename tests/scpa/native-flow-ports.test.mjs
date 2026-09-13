@@ -9,6 +9,7 @@ import { ScopedAnalysisWork } from '../../js/core/budgets/scoped-work.js';
 import { architecturePluginV2 } from '../../js/targets/architecture/index.js';
 import { resolveABIPlugin } from '../../js/targets/abi/index.js';
 import { buildSemanticV2CompatibilityPipeline } from '../../js/semantics/compat/index.js';
+import { getDefinitionForUse } from '../../js/semantics/ssa/queries.js';
 
 const scalar = { returnType: 'int64', parameters: [{ type: 'int64', bits: 64 }] };
 const leaf = [['mov', 'x0, #7', 0xd28000e0], ['ret', '', 0xd65f03c0]];
@@ -122,6 +123,37 @@ test('declared native call binds a fresh normal result and retains unknown call 
   assert.equal(node.call.mayThrow, 'unknown');
   assert.ok(loaded.source.result.pipeline.semanticIr.unknowns.some(item => item.reason === 'call-context-effects-not-enriched'));
   assert.equal(loaded.bound.memory.calls[0].outputs[0].canonicalKind, 'call-clobber');
+});
+
+test('native call uncertainty preserves the pre-call stack root and still clobbers later reads', () => {
+  const { result } = captured(0x1000n, [
+    ['add', 'x0, sp, #0', 0x910003e0],
+    ['mov', 'x1, #5', 0xd28000a1],
+    ['bl', '#0x2000', 0x940003fe],
+    ['add', 'x2, sp, #0', 0x910003e2],
+    ['ret', '', 0xd65f03c0],
+  ]);
+  const { semanticIr, ssa } = result.pipeline;
+  const nodes = new Map(semanticIr.nodes.map(node => [node.id, node]));
+  const orderedNodes = semanticIr.blocks.find(block => block.id === semanticIr.entryBlockId)
+    .nodeIds.map(id => nodes.get(id));
+  const call = orderedNodes.find(node => node.kind === 'call');
+  assert.ok(semanticIr.unknowns.some(unknown => unknown.reason === 'call-context-effects-not-enriched'
+    && unknown.detail?.nodeId === call.id), 'call uncertainty must retain its exact Semantic IR node reference');
+  const reads = orderedNodes.filter(node => node.kind === 'state-read'
+    && node.variable?.physicalIdentity?.registerId === 'sp');
+  assert.equal(reads.length, 2);
+  const reaching = reads.map(node => {
+    const uses = ssa.uses.filter(use => use.proof?.kind === 'renamed-use' && use.sourceEntityId === node.id);
+    assert.equal(uses.length, 1);
+    return getDefinitionForUse(ssa, uses[0]);
+  });
+  assert.ok(['entry', 'undef'].includes(reaching[0].kind),
+    'later call uncertainty must not replace the incoming stack root with a function-level clobber');
+  assert.equal(call.call.completeness, 'unknown');
+  assert.ok(call.call.unknownEffects.categories.includes('state'));
+  assert.equal(reaching[1].kind, 'unknown');
+  assert.equal(reaching[1].sourceEntityId, call.id, 'the call must still clobber subsequent state reads');
 });
 
 test('native return bindings reject register, descriptor, consumer and scalar definition mutations', async t => {

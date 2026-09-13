@@ -2,7 +2,7 @@ import {
   ABIPlugin, registerABIPlugin, abiPlugin, abiPlugins, findABIPlugin,
   isRegisteredABIPlugin, abiPluginRegistryDigest, abiPluginRegistryGeneration,
 } from './registry.js';
-import { AAPCS64_ABI } from './aapcs64.js';
+import { AAPCS64_ABI, AAPCS64_ILP32_ABI } from './aapcs64.js';
 import { DARWIN_ARM64_ABI } from './darwin-arm64.js';
 import { SYSV_AMD64_ABI } from './sysv-amd64.js';
 import { MICROSOFT_X64_ABI } from './microsoft-x64.js';
@@ -26,6 +26,7 @@ const UNKNOWN_ABI = new ABIPlugin({
 
 registerABIPlugin(DARWIN_ARM64_ABI);
 registerABIPlugin(AAPCS64_ABI);
+registerABIPlugin(AAPCS64_ILP32_ABI);
 registerABIPlugin(SYSV_AMD64_ABI);
 registerABIPlugin(MICROSOFT_X64_ABI);
 registerABIPlugin(MICROSOFT_VECTORCALL_ABI);
@@ -37,7 +38,7 @@ registerABIPlugin(UNKNOWN_ABI);
 export {
   ABIPlugin, registerABIPlugin, abiPlugin, abiPlugins, findABIPlugin,
   isRegisteredABIPlugin, abiPluginRegistryDigest, abiPluginRegistryGeneration,
-  AAPCS64_ABI, DARWIN_ARM64_ABI,
+  AAPCS64_ABI, AAPCS64_ILP32_ABI, DARWIN_ARM64_ABI,
   SYSV_AMD64_ABI, MICROSOFT_X64_ABI, MICROSOFT_VECTORCALL_ABI, UNKNOWN_ABI,
   RISCV_LP64_ABI, RISCV_LP64F_ABI, RISCV_LP64D_ABI,
 };
@@ -57,11 +58,30 @@ export function resolveABIPlugin(target = {}, { legacyDefault = false } = {}) {
   }
   const callingConvention = requestedCallingConvention(target);
   const explicit = target?.abiId || (typeof target?.abi === 'string' ? target.abi : null);
+  const arch = String(target?.architectureId || target?.architecture || target?.arch || '').trim().toLowerCase();
+  const bits = Number(target?.bits || target?.pointerBits || 0);
+  const isIlp32 = bits === 32 || target?.dataModel === 'ilp32';
   if (explicit) {
+    if (explicit === 'aapcs64' && isIlp32 && arch === 'arm64') {
+      return findABIPlugin({
+        id: 'aapcs64-ilp32',
+        callingConvention,
+        architecture: arch,
+        platform: target?.platformId || target?.platform || target?.os,
+      }) || UNKNOWN_ABI;
+    }
     return findABIPlugin({
       id: explicit,
       callingConvention,
       architecture: target?.architectureId || target?.architecture || target?.arch,
+      platform: target?.platformId || target?.platform || target?.os,
+    }) || UNKNOWN_ABI;
+  }
+  if (arch === 'arm64' && isIlp32) {
+    return findABIPlugin({
+      id: 'aapcs64-ilp32',
+      callingConvention,
+      architecture: arch,
       platform: target?.platformId || target?.platform || target?.os,
     }) || UNKNOWN_ABI;
   }
@@ -71,7 +91,6 @@ export function resolveABIPlugin(target = {}, { legacyDefault = false } = {}) {
     callingConvention,
   });
   if (found?.supported) return found;
-  const arch = String(target?.architectureId || target?.architecture || target?.arch || '').trim().toLowerCase();
   if (legacyDefault && (!arch || arch === 'arm64') && !target?.platformId && !target?.platform && !target?.os && !callingConvention) return AAPCS64_ABI;
   return UNKNOWN_ABI;
 }

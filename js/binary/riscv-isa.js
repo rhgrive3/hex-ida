@@ -96,6 +96,20 @@ function strictRiscvProfile(value) {
   };
 }
 
+function compactSingleLetterExtensions(token) {
+  const letters = [];
+  let cursor = 0;
+  while (cursor < token.length) {
+    const entry = /^[a-z](?:\d+(?:p\d+)?)?/.exec(token.slice(cursor));
+    if (!entry) return letters;
+    const end = cursor + entry[0].length;
+    if ('zsx'.includes(entry[0][0]) && /^[a-z]/.test(token.slice(end))) return letters;
+    letters.push(entry[0][0]);
+    cursor = end;
+  }
+  return letters;
+}
+
 export function normalizeRiscvIsaString(input) {
   if (typeof input !== 'string') return null;
   const canonical = input.trim().toLowerCase();
@@ -113,8 +127,8 @@ export function normalizeRiscvIsaString(input) {
   // including the standard G abbreviation (for example rv64gc/rv64gcv).
   // Stop before multi-letter Z*/S*/X* extensions so a 'c' inside zicsr etc.
   // cannot masquerade as the compressed C extension.
-  const compactRun = /^([ieg](?:(?![zsx])[a-z])*)/.exec(firstToken)?.[1] || '';
-  const compressedInstructions = compactRun.includes('c')
+  const singleLetters = compactSingleLetterExtensions(firstToken);
+  const compressedInstructions = singleLetters.includes('c')
     || tokens.some((token) => /^c(?:\d|$)/.test(token) || /^zc(?:a|e)(?:\d|$)/.test(token));
   return Object.freeze({
     canonical,

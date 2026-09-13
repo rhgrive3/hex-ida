@@ -4,6 +4,7 @@ import {
   deepFreeze,
   jsonSafe,
   stableDigest,
+  validateCanonicalIdentityNumbers,
 } from '../../core/identity/index.js';
 import { createOriginSet, mergeOriginSets } from '../../core/identity/origin.js';
 import { createMemoryRegionRef } from '../../semantics/memoryssa/contract.js';
@@ -448,7 +449,8 @@ function preciseRegion({ descriptor, functionId, binaryId, widthBits, origin, ad
     if (!explicitSpace || (!scope.functionId && !scope.binaryId)) return null;
     const rootIdentity = descriptor.rootIdentity ?? (addressValueId ? { addressValueId } : null);
     if (rootIdentity == null) return null;
-    canonicalRegionIdentity = { addressSpace: explicitSpace, rootIdentity: jsonSafe(rootIdentity), widthBits: normalizedWidth };
+    try { validateCanonicalIdentityNumbers(rootIdentity); } catch { return null; }
+    canonicalRegionIdentity = { addressSpace: explicitSpace, rootIdentity, widthBits: normalizedWidth };
     specific = {
       ...(scope.functionId ? { functionId: scope.functionId } : {}),
       ...(scope.binaryId ? { binaryId: scope.binaryId } : {}),
