@@ -365,14 +365,15 @@ async function resolveRelativeIndirectablePointer(read,fieldAddress,raw,options=
 
 export async function parseSwiftConformanceDescriptor(read,address,options={}){
   const addr=BigInt(address),b=await exact(read,addr,16);if(!b)return null;
-  const protocol=await resolveRelativeIndirectablePointer(read,addr,i32(b,0),options), rawTypeRef=rel(addr+4n,i32(b,4)), witnessTable=rel(addr+8n,i32(b,8)), flags=u32(b,12), typeReferenceKind=(flags>>>3)&7;
+  const rawWitness=i32(b,8),witnessTableKind=rawWitness&3,witnessTableBase=rel(addr+8n,rawWitness&~3);
+  const protocol=await resolveRelativeIndirectablePointer(read,addr,i32(b,0),options), rawTypeRef=rel(addr+4n,i32(b,4)), witnessTable=witnessTableKind===0?witnessTableBase:null, flags=u32(b,12), typeReferenceKind=(flags>>>3)&7;
   if(protocol==null||rawTypeRef==null)return null;
   let typeRef=null, objcClassName=null, objcClassReference=null;
   if(typeReferenceKind===0) typeRef=rawTypeRef;
   else if(typeReferenceKind===1) typeRef=await resolveAbsolutePointer(read,rawTypeRef,options);
   else if(typeReferenceKind===2) objcClassName=await cstring(read,rawTypeRef);
   else if(typeReferenceKind===3) objcClassReference=rawTypeRef;
-  return{runtime:'swift',kind:'conformance',address:addr,protocol,typeRef,rawTypeRef,objcClassName,objcClassReference,witnessTable,flags,typeReferenceKind,conditionalRequirements:(flags>>>8)&0xff,resilientWitnesses:!!(flags&(1<<16))};
+  return{runtime:'swift',kind:'conformance',address:addr,protocol,typeRef,rawTypeRef,objcClassName,objcClassReference,witnessTable,witnessTableKind,witnessTableAccessor:witnessTableKind===3?null:witnessTableBase,flags,typeReferenceKind,conditionalRequirements:(flags>>>8)&0xff,resilientWitnesses:!!(flags&(1<<16))};
 }
 
 const SWIFT_CLASS_HAS_VTABLE = 1 << 15;
@@ -483,6 +484,7 @@ export async function buildSwiftMetadataModel(read,sections,opts={}){
   const witnessSeeds=[...(opts.witnessTables||[])],seedAddresses=new Set(witnessSeeds.map((w)=>String(w.address)));
   for(const c of conformances){
     if(signal?.aborted)return null;
+    if((c.witnessTableKind??0)!==0){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: witness table representation is not a concrete table, so automatic projection is not proof-safe.`);continue;}
     if(c.witnessTable==null||seedAddresses.has(c.witnessTable.toString()))continue;
     const protocol=protocols.find((p)=>p.address.toString()===c.protocol?.toString()),type=c.typeReferenceKind<=1&&c.typeRef!=null?types.find((t)=>t.address.toString()===c.typeRef.toString()):null;
     if(pointerBytes==null){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: native pointer ABI is unknown, so witness table layout is not proof-safe for automatic projection.`);continue;}
