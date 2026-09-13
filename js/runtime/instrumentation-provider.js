@@ -129,6 +129,7 @@ export class InstrumentationProvider {
       kind: 'instrumentation',
       facets: ['instrumentation'],
       capabilities: {
+        ...options.capabilities,
         probes: typeof backend.installProbe === 'function',
         intercept: typeof backend.intercept === 'function' || typeof backend.installProbe === 'function',
         replace: typeof backend.replace === 'function',
@@ -137,7 +138,6 @@ export class InstrumentationProvider {
         objcRuntime: typeof backend.getObjCRuntimeInfo === 'function',
         swiftRuntime: typeof backend.getSwiftRuntimeInfo === 'function',
         mutationRequiresAuthorization: true,
-        ...options.capabilities,
       },
     });
   }
