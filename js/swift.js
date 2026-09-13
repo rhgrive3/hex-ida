@@ -12,6 +12,9 @@ function u64(b, o = 0) { let v = 0n; for (let i = 7; i >= 0; i--) v = (v << 8n) 
 function rel(fieldAddress, raw) { return raw ? BigInt(fieldAddress) + BigInt(raw) : null; }
 
 async function exact(read, addr, len) { if (addr == null || len <= 0) return null; const b = await read(BigInt(addr), len); return b && b.length >= len ? b.subarray(0, len) : null; }
+function isCancellationError(error) {
+  return error?.name === 'AbortError' || error?.code === 'ABORT_ERR';
+}
 async function cstring(read, addr, max = MAX_NAME) {
   if (addr == null) return null;
   const b = await read(BigInt(addr), max, true); if (!b || !b.length) return null;
@@ -113,14 +116,14 @@ export async function readSwiftMangledName(read, address, options = {}) {
         try {
           const resolved = await resolver({ kind:byte, address:referenceAddress, candidateTarget, rawTarget, payloadBytes:Array.from(payload) });
           if (resolved != null) resolvedTarget = BigInt(resolved);
-        } catch { resolvedTarget = null; }
+        } catch (error) { if (isCancellationError(error)) throw error; resolvedTarget = null; }
       } else if (byte >= 0x18) {
         const pointerResolver = options.resolvePointer || options.binaryImage?.resolvePointer || options.binaryImage?.decodePointer;
         if (typeof pointerResolver === 'function') {
           try {
             const resolved = await pointerResolver(rawTarget, { address:referenceAddress, swiftSymbolicReferenceKind:byte });
             if (resolved != null) resolvedTarget = BigInt(resolved);
-          } catch { resolvedTarget = null; }
+          } catch (error) { if (isCancellationError(error)) throw error; resolvedTarget = null; }
         }
       }
       refs.push({ kind:byte, address:referenceAddress, relative:byte <= 0x17, payloadBytes:Array.from(payload), candidateTarget, rawTarget, resolvedTarget, resolved:resolvedTarget != null });
@@ -348,7 +351,7 @@ async function resolveAbsolutePointer(read,address,options={}) {
   const pointerBytes=swiftPointerBytesFor(options); if(pointerBytes==null)return null;
   const b=await exact(read,address,pointerBytes); if(!b)return null; const raw=pointerBytes===4?BigInt(u32(b,0)):u64(b);
   const resolver=options.resolvePointer||options.binaryImage?.resolvePointer||options.binaryImage?.decodePointer;
-  if(typeof resolver==='function'){try{const v=await resolver(raw,{address:BigInt(address)});return v==null?null:BigInt(v);}catch{return null;}}
+  if(typeof resolver==='function'){try{const v=await resolver(raw,{address:BigInt(address)});return v==null?null:BigInt(v);}catch(error){if(isCancellationError(error))throw error;return null;}}
   return options.allowRawPointers===true ? (raw||null) : null;
 }
 
@@ -401,7 +404,7 @@ export async function parseSwiftWitnessTable(read,address,count,budget=4096,opti
   const stride=BigInt(pointerBytes);
   const resolver=options.resolvePointer||options.binaryImage?.resolvePointer||options.binaryImage?.decodePointer;
   for(let i=0;i<n;i++,at+=stride){const b=await exact(read,at,pointerBytes);if(!b)break;const raw=pointerBytes===4?BigInt(u32(b,0)):u64(b);let target=null;
-    if(raw){if(typeof resolver==='function'){try{const v=await resolver(raw,{address:at});target=v==null?null:BigInt(v);}catch{target=null;}}else if(options.allowRawPointers===true)target=raw;}
+    if(raw){if(typeof resolver==='function'){try{const v=await resolver(raw,{address:at});target=v==null?null:BigInt(v);}catch(error){if(isCancellationError(error))throw error;target=null;}}else if(options.allowRawPointers===true)target=raw;}
     out.push({index:i,target,rawTarget:raw||null,resolved:target!=null});
   }return out;
 }
@@ -418,7 +421,7 @@ async function relativePointerSection(read,range,budget,parser,options={}){
     if(signal?.aborted)return{items,completeness:{present:true,declared,scanned,parsed:items.length,capped:true,unreadableEntries,invalidEntries,misalignedBytes,complete:false}};
     const field=range.addr+BigInt(i*4),b=await exact(read,field,4);if(!b){unreadableEntries++;break;}
     scanned++;const target=rel(field,i32(b,0));if(target==null){invalidEntries++;continue;}
-    try{const value=await parser(read,target);if(value)items.push(value);else invalidEntries++;}catch{invalidEntries++;}
+    try{const value=await parser(read,target);if(value)items.push(value);else invalidEntries++;}catch(error){if(isCancellationError(error))throw error;invalidEntries++;}
   }
   const capped=declared>budget,complete=misalignedBytes===0&&!capped&&unreadableEntries===0&&invalidEntries===0&&scanned===declared&&items.length===declared;
   return{items,completeness:{present:true,declared,scanned,parsed:items.length,capped,unreadableEntries,invalidEntries,misalignedBytes,complete}};
