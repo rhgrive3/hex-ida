@@ -499,7 +499,11 @@ export function dynamicSymbolKind(type) {
 
 export function resolveDynamicSectionIndex(r, image, tags, symbolIndex, rawIndex) {
   if (rawIndex !== SHN_XINDEX) {
-    if (rawIndex === SHN_UNDEF || rawIndex === SHN_ABS || rawIndex === SHN_COMMON || (rawIndex > 0 && rawIndex < SHN_LORESERVE)) return { known:true, index:rawIndex, source:'st_shndx' };
+    if (rawIndex === SHN_UNDEF || rawIndex === SHN_ABS || rawIndex === SHN_COMMON) return { known:true, index:rawIndex, source:'st_shndx' };
+    if (rawIndex > 0 && rawIndex < SHN_LORESERVE) {
+      if (dynamicSectionTableAdmits(image, rawIndex)) return { known:true, index:rawIndex, source:'st_shndx' };
+      return { known:false, index:null, source:'st_shndx', reason:`out-of-range-section-index-${rawIndex}` };
+    }
     return { known:false, index:null, source:'st_shndx', reason:`unsupported-reserved-${rawIndex}` };
   }
   const tableVa = tags.get(DT_SYMTAB_SHNDX)?.[0] ?? null;
@@ -508,8 +512,18 @@ export function resolveDynamicSectionIndex(r, image, tags, symbolIndex, rawIndex
   const byteOffset = symbolIndex * 4;
   if (!range || !Number.isSafeInteger(byteOffset) || byteOffset < 0 || range.start + byteOffset + 4 > range.end || range.start + byteOffset + 4 > r.length) return { known:false, index:null, source:'DT_SYMTAB_SHNDX', reason:'truncated-companion' };
   const candidate = r.u32(range.start + byteOffset);
-  if (candidate === SHN_UNDEF || candidate === SHN_ABS || candidate === SHN_COMMON || (candidate > 0 && candidate < SHN_LORESERVE)) return { known:true, index:candidate, source:'DT_SYMTAB_SHNDX' };
+  if (candidate === SHN_UNDEF || candidate === SHN_ABS || candidate === SHN_COMMON) return { known:true, index:candidate, source:'DT_SYMTAB_SHNDX' };
+  if (candidate > 0 && candidate < SHN_LORESERVE) {
+    if (dynamicSectionTableAdmits(image, candidate)) return { known:true, index:candidate, source:'DT_SYMTAB_SHNDX' };
+    return { known:false, index:null, source:'DT_SYMTAB_SHNDX', reason:`out-of-range-section-index-${candidate}` };
+  }
   return { known:false, index:null, source:'DT_SYMTAB_SHNDX', reason:`invalid-extended-index-${candidate}` };
+}
+
+function dynamicSectionTableAdmits(image, index) {
+  const sections = image?.sections;
+  if (!Array.isArray(sections) || sections.length === 0) return true;
+  return sections.some((section) => section?.index === index);
 }
 
 export function symbolCountFromSymtabSize(sizeValue, symtabVa, syment, image) {
