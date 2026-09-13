@@ -474,12 +474,12 @@ export function adapterEvidence(code, strength, detail, lr) {
 }
 
 function finiteStrength(value, fallback = 0) {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : fallback;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.min(1, value));
 }
 function finitePositiveLr(value, fallback = 1) {
-  const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return fallback;
+  return value;
 }
 
 /**
