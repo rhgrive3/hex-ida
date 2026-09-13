@@ -267,7 +267,10 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
     // virtual address (ELF gABI). Keep it out of the VA domain and
     // image.exports as a canonical address (#5843).
     const tls = type === 6;
-    const sym = { name, address: tls ? null : unallocatedOrUndefined ? 0n : value, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, stOther: other, processorSpecificOther: other & ~3, riscvVariantCcFlag, riscvVariantCc, callingConvention: riscvVariantCc ? 'riscv-vector-variant' : null, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(tls ? { tlsOffset: value } : {}), ...(common ? { commonAlignment: value, commonSize: size, allocation: 'common-unallocated' } : {}), addressDomain: tls ? 'tls-offset' : common ? 'common-unallocated' : 'virtual', ...(ifunc ? { resolverAddress:value, resolution:'runtime-resolver' } : {}) };
+    const isArm32 = Number(image?.metadata?.machine) === 40 || image?.arch === 'arm';
+    const isThumb = isArm32 && (type === 2 || type === STT_GNU_IFUNC) && (value & 1n) === 1n;
+    const effectiveValue = isThumb ? (value & ~1n) : value;
+    const sym = { name, address: tls ? null : unallocatedOrUndefined ? 0n : effectiveValue, originalValue: value, isThumb, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, stOther: other, processorSpecificOther: other & ~3, riscvVariantCcFlag, riscvVariantCc, callingConvention: riscvVariantCc ? 'riscv-vector-variant' : null, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(tls ? { tlsOffset: value } : {}), ...(common ? { commonAlignment: value, commonSize: size, allocation: 'common-unallocated' } : {}), addressDomain: tls ? 'tls-offset' : common ? 'common-unallocated' : 'virtual', ...(ifunc ? { resolverAddress:effectiveValue, resolution:'runtime-resolver' } : {}) };
     out.push(sym);
     if (!name) continue;
     image.symbols.push(sym);
@@ -281,12 +284,12 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
       // TLS exports keep their name/visibility fact but never mint a VA (#5843).
       image.exports.push(tls
         ? { name, address: null, kind, tlsOffset: value, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' }
-        : { name, address: value, kind, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' });
+        : { name, address: effectiveValue, kind, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' });
     }
-    if (defined === true && !common && (type === 2 || type === STT_GNU_IFUNC) && value !== 0n) {
+    if (defined === true && !common && (type === 2 || type === STT_GNU_IFUNC) && effectiveValue !== 0n) {
       if (budget && !budget.claimOutput(1, 128, 'PT_DYNAMIC function seeds')) break;
       const owner = (() => {
-        const start=value, extent=size||0n;
+        const start=effectiveValue, extent=size||0n;
         const section=typeof image.sectionAt==='function'?image.sectionAt(start):null;
         if(section?.perms?.execute && (extent===0n || extent<=section.address+section.size-start))return section;
         const segment=typeof image.segmentAt==='function'?image.segmentAt(start):null;
@@ -294,12 +297,12 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
         return null;
       })();
       if (owner) {
-        const alignmentRejection = elfInstructionStartAlignmentRejection(image, value);
+        const alignmentRejection = elfInstructionStartAlignmentRejection(image, effectiveValue);
         if (alignmentRejection) {
           markDynamicPartial(image, `ignored PT_DYNAMIC ${type === STT_GNU_IFUNC ? 'STT_GNU_IFUNC resolver' : 'STT_FUNC'} ${name}: ${alignmentRejection}`);
           continue;
         }
-        image.functions.push(functionSeed(value, {
+        image.functions.push(functionSeed(effectiveValue, {
           size: size || null,
           name: type === STT_GNU_IFUNC ? `${name}$resolver` : name,
           source: type === STT_GNU_IFUNC ? 'ifunc-resolver' : 'symbol',
@@ -316,7 +319,7 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
         }));
         if (riscvVariantCc) {
           if (!Array.isArray(image.metadata.riscvVariantCcFunctions)) image.metadata.riscvVariantCcFunctions = [];
-          image.metadata.riscvVariantCcFunctions.push({ name, address: value, symbolIndex: i, tableIndex: -1, stOther: other, callingConvention: 'riscv-vector-variant' });
+          image.metadata.riscvVariantCcFunctions.push({ name, address: effectiveValue, symbolIndex: i, tableIndex: -1, stOther: other, callingConvention: 'riscv-vector-variant' });
         }
       }
       else markDynamicPartial(image, `ignored PT_DYNAMIC ${type === STT_GNU_IFUNC ? 'STT_GNU_IFUNC resolver' : 'STT_FUNC'} ${name} outside executable mapping/extent`);
@@ -370,6 +373,9 @@ function collectDynamicRelocations(r, tags, image, bits, budget) {
     if (!span || e == null || e <= 0) { markDynamicPartial(image, `${source} table crosses a file-backed PT_LOAD boundary`); return; }
     const off = span.start;
     if (!budget.claimInput(n, source)) return;
+    if (n % e !== 0) {
+      markDynamicPartial(image, `${source} size ${n} is not a multiple of entry size ${e}`);
+    }
     const count = Math.floor(n / e);
     for (let i = 0; i < count && !budget.stopped; i++) {
       if (!budget.step()) break;
