@@ -21,7 +21,8 @@ jobs:
           H0=e12fcf53811d8cc91ac188de589b9465cd1dd731
           B0=e78e09c85ca4ddf125818d96f2238557e7624973
           STAGING="$(git rev-parse HEAD)"
-          test "$(git rev-parse HEAD^)" = "$H0"
+          git merge-base --is-ancestor "$H0" "$STAGING"
+          test "$(git diff --name-only "$H0"..."$STAGING")" = ".github/workflows/integrator-b-8498-reconcile.yml"
           git fetch --no-tags origin main
           test "$(git rev-parse origin/main)" = "$B0"
           test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$B0"
@@ -34,11 +35,11 @@ jobs:
           test "$rc" -eq 0 -o "$rc" -eq 1
 
           conflicts="$(git diff --name-only --diff-filter=U)"
-          test "$conflicts" = "js/binary/macho-dyld.js"
-          git show "$B0:js/binary/macho-dyld.js" > js/binary/macho-dyld.js
-          test "$(git hash-object js/binary/macho-dyld.js)" = "8ec3107865d62f800d73a3f3d0561decc70e5d7e"
-
-          python - <<'PY'
+          if [ -n "$conflicts" ]; then
+            test "$conflicts" = "js/binary/macho-dyld.js"
+            git show "$B0:js/binary/macho-dyld.js" > js/binary/macho-dyld.js
+            test "$(git hash-object js/binary/macho-dyld.js)" = "8ec3107865d62f800d73a3f3d0561decc70e5d7e"
+            python - <<'PY'
           from pathlib import Path
           p=Path('js/binary/macho-dyld.js')
           s=p.read_text()
@@ -46,21 +47,14 @@ jobs:
               global s
               assert s.count(old)==1, (old[:80], s.count(old))
               s=s.replace(old,new,1)
-          once(
-          """export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=null){\n""",
-          """function classicBindPointerSize(image) {\n  // ARM64_32 uses the 64-bit Mach-O container format but a 32-bit native\n  // pointer ABI. Keep image.bits as file-class authority and derive the\n  // classic dyld bind slot width from the target ABI instead.\n  return image?.arch === 'arm64_32' ? 4n : image?.bits === 64 ? 8n : 4n;\n}\n\nexport function parseClassicBindings(r,dc,image,segments,source,sharedBudget=null){\n""")
+          once("export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=null){\n", """function classicBindPointerSize(image) {\n  // ARM64_32 uses the 64-bit Mach-O container format but a 32-bit native\n  // pointer ABI. Keep image.bits as file-class authority and derive the\n  // classic dyld bind slot width from the target ABI instead.\n  return image?.arch === 'arm64_32' ? 4n : image?.bits === 64 ? 8n : 4n;\n}\n\nexport function parseClassicBindings(r,dc,image,segments,source,sharedBudget=null){\n""")
           once("  const ptrSize = image.bits === 64 ? 8n : 4n;\n", "  const ptrSize = classicBindPointerSize(image);\n")
-          once(
-          """  const validLocation = () => {\n    if (!locationSet) return false;\n    const seg = segments[segIndex];\n    return !!seg && segOffset >= 0n && segOffset <= seg.size && ptrSize <= seg.size - segOffset;\n  };\n""",
-          """  const validLocation = (width = ptrSize) => {\n    if (!locationSet) return false;\n    const seg = segments[segIndex];\n    return !!seg && segOffset >= 0n && segOffset <= seg.size && width <= seg.size - segOffset;\n  };\n""")
-          once(
-          "    if (!validLocation()) { fail('threaded APPLY starts outside its segment'); return; }\n",
-          """    // BIND_OPCODE_THREADED encodes 64-bit chain words even when a target's\n    // ordinary native pointer ABI differs. Do not let ARM64_32's 4-byte\n    // classic-bind slot width weaken this separate chain-word bounds proof.\n    if (!validLocation(8n)) { fail('threaded APPLY starts outside its segment'); return; }\n""")
-          once(
-          "      if (address < seg.address || address + ptrSize > seg.address + seg.size) { fail('threaded binding delta leaves segment'); return; }\n",
-          "      if (address < seg.address || address + 8n > seg.address + seg.size) { fail('threaded binding delta leaves segment'); return; }\n")
+          once("""  const validLocation = () => {\n    if (!locationSet) return false;\n    const seg = segments[segIndex];\n    return !!seg && segOffset >= 0n && segOffset <= seg.size && ptrSize <= seg.size - segOffset;\n  };\n""", """  const validLocation = (width = ptrSize) => {\n    if (!locationSet) return false;\n    const seg = segments[segIndex];\n    return !!seg && segOffset >= 0n && segOffset <= seg.size && width <= seg.size - segOffset;\n  };\n""")
+          once("    if (!validLocation()) { fail('threaded APPLY starts outside its segment'); return; }\n", """    // BIND_OPCODE_THREADED encodes 64-bit chain words even when a target's\n    // ordinary native pointer ABI differs. Do not let ARM64_32's 4-byte\n    // classic-bind slot width weaken this separate chain-word bounds proof.\n    if (!validLocation(8n)) { fail('threaded APPLY starts outside its segment'); return; }\n""")
+          once("      if (address < seg.address || address + ptrSize > seg.address + seg.size) { fail('threaded binding delta leaves segment'); return; }\n", "      if (address < seg.address || address + 8n > seg.address + seg.size) { fail('threaded binding delta leaves segment'); return; }\n")
           p.write_text(s)
           PY
+          fi
 
           test "$(git hash-object js/binary/macho-dyld.js)" = "d2ffd03c87b0ee301ddde12db3d9618c6f0cb484"
           test "$(git hash-object tests/phase4/binary/issue-8495-macho-arm64_32-classic-bind-pointer-width.test.mjs)" = "8e36bf763bb76be8e47643c9325ab6b06f8164d2"
@@ -88,7 +82,7 @@ jobs:
           H0=e12fcf53811d8cc91ac188de589b9465cd1dd731
           B0=e78e09c85ca4ddf125818d96f2238557e7624973
           STAGING="$(git rev-parse HEAD)"
-          test "$(git rev-parse HEAD^)" = "$H0"
+          git merge-base --is-ancestor "$H0" "$STAGING"
           test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$B0"
           test "$(git ls-remote origin refs/heads/fixer2/issue-8495-arm64_32-classic-bind-width | cut -f1)" = "$STAGING"
           git config user.name github-actions[bot]
