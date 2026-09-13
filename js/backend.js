@@ -1079,34 +1079,49 @@ export class Backend {
     }
   }
 
+  _drainChunkQueue() {
+    const next = this.queue.shift();
+    if (next) this._dispatch(next);
+  }
+
+  _finishChunk(job, result, error = null) {
+    this.inflight.delete(job.key);
+    if (job.gen !== this.gen || error?.stale) {
+      this._drainChunkQueue();
+      return;
+    }
+    if (error) {
+      this.cache.set(job.key, { bytes: new Uint8Array(0), rows: 0, mn: null, ops: null, error: error.message });
+      this.onChunk?.(job.regionId, job.chunk, error);
+      this._drainChunkQueue();
+      return;
+    }
+
+    try {
+      const entry = normalizeChunk(result);
+      this.cache.set(job.key, entry);
+      this.onChunk?.(job.regionId, job.chunk);
+
+      if (job.wantAsm && !entry.mn) {
+        const retry = { ...job, wantAsm: true, dispatchedWantAsm: null };
+        this.inflight.set(job.key, retry);
+        this.queue.unshift(retry);
+      }
+    } catch (failure) {
+      this.cache.set(job.key, { bytes: new Uint8Array(0), rows: 0, mn: null, ops: null, error: failure.message });
+      this.onChunk?.(job.regionId, job.chunk, failure);
+    }
+    this._drainChunkQueue();
+  }
+
   _dispatch(job) {
     job.dispatchedWantAsm = !!job.wantAsm;
     this.call('chunk', { regionId: job.regionId, chunk: job.chunk, wantAsm: job.dispatchedWantAsm })
-      .then((res) => {
-        const entry = normalizeChunk(res);
-        this.inflight.delete(job.key);
-        if (job.gen !== this.gen) return;
-        this.cache.set(job.key, entry);
-        this.onChunk?.(job.regionId, job.chunk);
-
-        if (job.wantAsm && !entry.mn) {
-          const retry = { ...job, wantAsm: true, dispatchedWantAsm: null };
-          this.inflight.set(job.key, retry);
-          this.queue.unshift(retry);
-        }
-      })
-      .catch((err) => {
-        this.inflight.delete(job.key);
-        if (job.gen !== this.gen || err?.stale) return;
-        this.cache.set(job.key, { bytes: new Uint8Array(0), rows: 0, mn: null, ops: null, error: err.message });
-        this.onChunk?.(job.regionId, job.chunk, err);
-      })
-      .then(() => {
-        const next = this.queue.shift();
-        if (next) this._dispatch(next);
-      });
+      .then(
+        (res) => this._finishChunk(job, res),
+        (err) => this._finishChunk(job, null, err),
+      );
   }
-
   dropQueued() {
     for (const job of this.queue) this.inflight.delete(job.key);
     this.queue.length = 0;
