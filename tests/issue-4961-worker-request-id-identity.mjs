@@ -4,9 +4,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { createBool } from '../js/symbolic/expr/factory.js';
 import { WorkerSolverBackend } from '../js/symbolic/solver/worker-backend.js';
 import { SOLVER_STATUS, createSolverResult } from '../js/symbolic/solver/result.js';
 import { isCanonicalRequestId } from '../js/symbolic/solver/worker-protocol.js';
+import { CLAIM_KIND, VERIFICATION_QUERY_KIND, createVerificationQuery } from '../js/symbolic/verify/query.js';
 
 class ManualWorker {
   constructor() {
@@ -40,6 +42,11 @@ class ManualWorker {
     const check = this.messages.find((message) => message.type === 'solver-check');
     return check?.requestId ?? null;
   }
+
+  issuedToken() {
+    const check = this.messages.find((message) => message.type === 'solver-check');
+    return check?.token ?? null;
+  }
 }
 
 function startSession(worker) {
@@ -51,12 +58,21 @@ function startSession(worker) {
   return backend.createSession({ timeoutMs: 0 });
 }
 
-function resultFor(queryHash) {
+function canonicalUnsatQuery(targetEntity) {
+  return createVerificationQuery({
+    kind: VERIFICATION_QUERY_KIND.CONDITIONAL_EDGE_FEASIBILITY,
+    claimKind: CLAIM_KIND.EDGE_FEASIBLE,
+    targetEntity,
+    assertion: createBool(false),
+  });
+}
+
+function resultFor(query) {
   return createSolverResult({
     status: SOLVER_STATUS.UNSAT,
     backend: 'worker-identity-backend',
     backendVersion: '1.0.0',
-    queryHash,
+    queryHash: query.queryHash,
   });
 }
 
@@ -76,13 +92,19 @@ async function isPending(promise, ms = 25) {
 test('issue-4961: canonical decimal-string requestId resolves only its own pending query', async () => {
   const worker = new ManualWorker();
   const session = startSession(worker);
-  const inFlight = session.check({ queryHash: 'canonical-identity' });
+  const submittedQuery = canonicalUnsatQuery('canonical-identity');
+  const inFlight = session.check(submittedQuery);
   await flush();
   const requestId = worker.issuedRequestId();
   assert.equal(typeof requestId, 'string');
   assert.equal(requestId, '1');
 
-  worker.dispatch({ type: 'solver-result', requestId, result: resultFor('canonical-identity') });
+  worker.dispatch({
+    type: 'solver-result',
+    requestId,
+    token: worker.issuedToken(),
+    result: resultFor(submittedQuery),
+  });
   const result = await inFlight;
   assert.equal(result.status, SOLVER_STATUS.UNSAT);
   assert.equal(result.lifecycle.publishable, true);
@@ -92,17 +114,28 @@ test('issue-4961: canonical decimal-string requestId resolves only its own pendi
 test('issue-4961: array requestId aliasing is dropped and keeps the pending entry', async () => {
   const worker = new ManualWorker();
   const session = startSession(worker);
-  const inFlight = session.check({ queryHash: 'array-alias' });
+  const submittedQuery = canonicalUnsatQuery('array-alias');
+  const inFlight = session.check(submittedQuery);
   await flush();
   const requestId = worker.issuedRequestId();
 
-  worker.dispatch({ type: 'solver-result', requestId: [requestId], result: resultFor('array-alias') });
+  worker.dispatch({
+    type: 'solver-result',
+    requestId: [requestId],
+    token: worker.issuedToken(),
+    result: resultFor(submittedQuery),
+  });
   assert.equal(await isPending(inFlight), true);
   assert.equal(session.pending.size, 1);
   assert.equal(session.pending.has(requestId), true);
   assert.equal(worker.terminateCount, 0);
 
-  worker.dispatch({ type: 'solver-result', requestId, result: resultFor('array-alias') });
+  worker.dispatch({
+    type: 'solver-result',
+    requestId,
+    token: worker.issuedToken(),
+    result: resultFor(submittedQuery),
+  });
   const result = await inFlight;
   assert.equal(result.status, SOLVER_STATUS.UNSAT);
   assert.equal(result.lifecycle.publishable, true);
@@ -127,11 +160,17 @@ test('issue-4961: object, number, boolean and null requestIds never correlate', 
   for (const requestId of hostile) {
     const worker = new ManualWorker();
     const session = startSession(worker);
-    const inFlight = session.check({ queryHash: `hostile-${String(typeof requestId)}` });
+    const submittedQuery = canonicalUnsatQuery(`hostile-${String(typeof requestId)}`);
+    const inFlight = session.check(submittedQuery);
     await flush();
     const issued = worker.issuedRequestId();
 
-    worker.dispatch({ type: 'solver-result', requestId, result: resultFor('hostile') });
+    worker.dispatch({
+      type: 'solver-result',
+      requestId,
+      token: worker.issuedToken(),
+      result: resultFor(submittedQuery),
+    });
     assert.equal(await isPending(inFlight, 10), true, `must not correlate: ${String(requestId)}`);
     assert.equal(session.pending.has(issued), true);
     assert.equal(worker.terminateCount, 0);
@@ -142,15 +181,26 @@ test('issue-4961: object, number, boolean and null requestIds never correlate', 
 test('issue-4961: unknown and stale canonical ids still drop without deleting pending entries', async () => {
   const worker = new ManualWorker();
   const session = startSession(worker);
-  const inFlight = session.check({ queryHash: 'unknown-id' });
+  const submittedQuery = canonicalUnsatQuery('unknown-id');
+  const inFlight = session.check(submittedQuery);
   await flush();
   const issued = worker.issuedRequestId();
 
-  worker.dispatch({ type: 'solver-result', requestId: '9876543210', result: resultFor('unknown-id') });
+  worker.dispatch({
+    type: 'solver-result',
+    requestId: '9876543210',
+    token: worker.issuedToken(),
+    result: resultFor(submittedQuery),
+  });
   assert.equal(await isPending(inFlight, 10), true);
   assert.equal(session.pending.has(issued), true);
 
-  worker.dispatch({ type: 'solver-result', requestId: issued, result: resultFor('unknown-id') });
+  worker.dispatch({
+    type: 'solver-result',
+    requestId: issued,
+    token: worker.issuedToken(),
+    result: resultFor(submittedQuery),
+  });
   assert.equal((await inFlight).status, SOLVER_STATUS.UNSAT);
 });
 
@@ -161,7 +211,7 @@ test('issue-4961: malformed envelopes never bypass the timeout termination bound
     workerFactory: () => new ManualWorker(),
   });
   const session = backend.createSession();
-  const result = await session.check({ queryHash: 'malformed-timeout' }, { timeoutMs: 5 });
+  const result = await session.check(canonicalUnsatQuery('malformed-timeout'), { timeoutMs: 5 });
   assert.equal(result.status, SOLVER_STATUS.TIMEOUT);
   assert.equal(result.lifecycle.publishable, false);
   assert.equal(session.isTerminated(), true);
@@ -172,7 +222,7 @@ test('issue-4961: shared envelope validator accepts every host-minted id and not
   const session = startSession(worker);
   const started = [];
   for (let i = 0; i < 3; i += 1) {
-    started.push(session.check({ queryHash: `minted-${i}` }));
+    started.push(session.check(canonicalUnsatQuery(`minted-${i}`)));
     await flush();
   }
   const minted = worker.messages

@@ -88,6 +88,8 @@ const SPECIAL_PATHS = Object.freeze({
     'js/targets/architecture/x86_64/effects/system.js',
     'js/targets/architecture/x86_64/effects/trusted-decoder-terminal.js',
     'tests/architecture-plugin-v2-hook-validation.test.mjs',
+    'tests/issue-4957-worker-budget-type-contract.mjs',
+    'tests/issue-4961-worker-request-id-identity.mjs',
     'tests/machine-effects/phase2-integration.test.mjs',
     'tests/machine-effects/x86-capstone-flag-domain.test.mjs',
     'tests/machine-effects/x86-lahf-sahf.test.mjs',

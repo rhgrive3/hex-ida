@@ -379,6 +379,8 @@
       "js/targets/architecture/x86_64/effects/system.js",
       "js/targets/architecture/x86_64/effects/trusted-decoder-terminal.js",
       "tests/architecture-plugin-v2-hook-validation.test.mjs",
+      "tests/issue-4957-worker-budget-type-contract.mjs",
+      "tests/issue-4961-worker-request-id-identity.mjs",
       "tests/issue-5498-eligibility-result-status-authority.mjs",
       "tests/objc-metadata.mjs",
       "tests/issue-529-objc-integration.mjs",
