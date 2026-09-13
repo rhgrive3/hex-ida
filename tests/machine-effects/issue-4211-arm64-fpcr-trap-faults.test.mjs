@@ -24,6 +24,7 @@ function fpTrap(bundle) {
 }
 
 function assertFpTrap(bundle, label) {
+  assert.equal(bundle.possibleFaults.length, 2, `${label}: exactly the access and numeric FP faults are expected`);
   const accessFaults = bundle.possibleFaults.filter((fault) => fault?.kind === 'fp-advsimd-access-trap');
   const fpFaults = bundle.possibleFaults.filter((fault) => fault?.kind === 'arm64-floating-point-exception');
   assert.equal(accessFaults.length, 1, `${label}: exactly one architectural FP/AdvSIMD access fault is expected`);
@@ -95,10 +96,14 @@ test('#4211 vector FP uses the same FPCR trap policy while status-free FP bit op
   assert.equal(fault.detail.normalCompletionEffectsCommitOnFault, false);
 
   const scalarMove = lift('fmov', 's0, s1');
+  assert.deepEqual(scalarMove.possibleFaults.map((fault) => fault.kind), ['fp-advsimd-access-trap'],
+    'bit-preserving FMOV has only its architectural access fault');
   assert.equal(fpTrap(scalarMove), undefined, 'bit-preserving FMOV does not gain a numeric FP exception fault');
   assert.equal(scalarMove.possibleFaults.filter((fault) => fault?.kind === 'fp-advsimd-access-trap').length, 1,
     'bit-preserving FMOV still performs the architectural FP/AdvSIMD access check');
   const vectorNeg = lift('fneg', 'v0.4s, v1.4s');
+  assert.deepEqual(vectorNeg.possibleFaults.map((fault) => fault.kind), ['fp-advsimd-access-trap'],
+    'status-free vector FNEG has only its architectural access fault');
   assert.equal(fpTrap(vectorNeg), undefined, 'status-free vector FNEG does not gain a numeric FP exception fault');
   assert.equal(vectorNeg.possibleFaults.filter((fault) => fault?.kind === 'fp-advsimd-access-trap').length, 1,
     'status-free vector FNEG still performs the architectural FP/AdvSIMD access check');

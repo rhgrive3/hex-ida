@@ -182,6 +182,7 @@ try {
     assert.equal(effects.metadata.family, 'arm64-simd', `${label}:wrong-family`);
     assert.equal(effects.operations.some((operation) => operation.kind === 'unknown'), false, `${label}:unknown-effect`);
     const readsFpcr = effects.operations.some((operation) => operation.kind === 'register-read' && operation.register.registerId === 'fpcr');
+    assert.equal(effects.possibleFaults.length, readsFpcr ? 2 : 1, `${label}:unexpected-fault-count`);
     const accessFaults = effects.possibleFaults.filter((fault) => fault?.kind === 'fp-advsimd-access-trap');
     const fpExceptionFaults = effects.possibleFaults.filter((fault) => fault?.kind === 'arm64-floating-point-exception');
     assert.equal(accessFaults.length, 1, `${label}:fp-advsimd-access-trap-contract`);

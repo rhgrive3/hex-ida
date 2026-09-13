@@ -209,6 +209,41 @@ test('#4201 EL0 CPACR_EL1 trap keeps definite EL1 provenance', () => {
   assert.equal(fault.condition.reason, 'cpacr-el1-fpen-traps-fp-advsimd');
 });
 
+test('#4201 CPACR_EL1 traps route to EL2 only with proven effective TGE', () => {
+  for (const [el2Enabled, hcrEl2Tge, target] of [
+    [true, false, 1],
+    [true, true, 2],
+    [true, undefined, undefined],
+    [true, null, undefined],
+    [true, 'true', undefined],
+    [true, 1, undefined],
+    [false, true, 1],
+    [false, undefined, 1],
+  ]) {
+    const fault = accessFault(lift('fadd', 's0, s1, s2', {
+      fpAdvSimdAccess:{
+        currentEL:0, cpacrEl1Fpen:0, el2Enabled, hcrEl2E2h:false, hcrEl2Tge,
+        cptrEl2Tfp:false, el3Present:false,
+      },
+    }));
+    assert.ok(fault);
+    assert.equal(fault.condition.accessState, 'trapped');
+    assert.equal(fault.condition.trapTargetEL, target, `EL2=${el2Enabled}, TGE=${hcrEl2Tge}`);
+    assert.equal(fault.condition.reason, 'cpacr-el1-fpen-traps-fp-advsimd');
+  }
+});
+
+test('#4201 CPACR_EL1 routing stays uncertain without EL2 enablement evidence', () => {
+  for (const [hcrEl2Tge, target] of [[true, undefined], [undefined, undefined], [false, 1]]) {
+    const fault = accessFault(lift('fadd', 's0, s1, s2', {
+      fpAdvSimdAccess:{ currentEL:1, cpacrEl1Fpen:0, hcrEl2Tge, el3Present:false },
+    }));
+    assert.ok(fault);
+    assert.equal(fault.condition.accessState, 'trapped');
+    assert.equal(fault.condition.trapTargetEL, target);
+  }
+});
+
 test('#4201 VHE host CPTR_EL2.FPEN covers every EL0 encoding', () => {
   for (const [cptrEl2Fpen, expected] of [
     [0, 'trapped'],
@@ -269,7 +304,7 @@ test('#4201 legacy CPTR_EL2.TFP remains the non-VHE EL2 access control', () => {
   assert.equal(accessState({ ...common, cptrEl2Tfp:false }), 'allowed');
 });
 
-test('#4201 definite EL2 trapping does not overclaim the target while EL3 trap state is unknown', () => {
+test('#4201 definite EL2 trapping keeps its target while the later EL3 check is unknown', () => {
   const fault = accessFault(lift('fadd', 's0, s1, s2', {
     fpAdvSimdAccess:{
       currentEL:0,
@@ -282,25 +317,75 @@ test('#4201 definite EL2 trapping does not overclaim the target while EL3 trap s
   }));
   assert.ok(fault);
   assert.equal(fault.condition.accessState, 'trapped');
-  assert.equal(fault.condition.trapTargetEL, undefined);
+  assert.equal(fault.condition.trapTargetEL, 2);
 });
 
-test('#4201 EL3 CPTR trap evidence takes precedence over lower-level trap targets', () => {
-  const fault = accessFault(lift('fadd', 's0, s1, s2', {
-    fpAdvSimdAccess:{
-      currentEL:0,
-      cpacrEl1Fpen:0,
-      el2Enabled:true,
-      hcrEl2E2h:false,
-      cptrEl2Tfp:true,
-      el3Present:true,
-      cptrEl3Tfp:true,
-    },
-  }));
-  assert.ok(fault);
-  assert.equal(fault.condition.accessState, 'trapped');
-  assert.equal(fault.condition.trapTargetEL, 3);
-  assert.equal(fault.condition.reason, 'cptr-el3-tfp-traps-fp-advsimd');
+test('#4201 CPACR_EL1 then CPTR_EL2 traps take precedence over CPTR_EL3', () => {
+  for (const [cpacrEl1Fpen, cptrEl2Tfp, target, reason] of [
+    [0, true, 1, 'cpacr-el1-fpen-traps-fp-advsimd'],
+    [3, true, 2, 'cptr-el2-tfp-traps-fp-advsimd'],
+    [3, false, 3, 'cptr-el3-tfp-traps-fp-advsimd'],
+  ]) {
+    const fault = accessFault(lift('fadd', 's0, s1, s2', {
+      fpAdvSimdAccess:{
+        currentEL:0, cpacrEl1Fpen, el2Enabled:true, hcrEl2E2h:false, hcrEl2Tge:false,
+        cptrEl2Tfp, el3Present:true, cptrEl3Tfp:true,
+      },
+    }));
+    assert.ok(fault);
+    assert.equal(fault.condition.accessState, 'trapped');
+    assert.equal(fault.condition.trapTargetEL, target);
+    assert.equal(fault.condition.reason, reason);
+  }
+});
+
+test('#4201 an unknown earlier access check prevents an exact later trap target', () => {
+  for (const controls of [
+    { el2Enabled:false },
+    { cpacrEl1Fpen:3, el2Enabled:true, hcrEl2E2h:false },
+  ]) {
+    const fault = accessFault(lift('fadd', 's0, s1, s2', {
+      fpAdvSimdAccess:{ currentEL:0, ...controls, el3Present:true, cptrEl3Tfp:true },
+    }));
+    assert.ok(fault);
+    assert.equal(fault.condition.accessState, 'trapped');
+    assert.equal(fault.condition.trapTargetEL, undefined);
+  }
+});
+
+test('#4201 CPTR_EL3.TFP traps FP and SIMD accesses at EL3 itself', () => {
+  for (const el3Present of [true, undefined]) {
+    for (const [mnemonic, operands] of [['fmov', 's0, s1'], ['add', 'v0.4s, v1.4s, v2.4s']]) {
+      const fault = accessFault(lift(mnemonic, operands, {
+        fpAdvSimdAccess:{ currentEL:3, el3Present, cptrEl3Tfp:true },
+      }));
+      assert.ok(fault);
+      assert.equal(fault.condition.accessState, 'trapped');
+      assert.equal(fault.condition.trapTargetEL, 3);
+      assert.equal(fault.condition.reason, 'cptr-el3-tfp-traps-fp-advsimd');
+    }
+  }
+});
+
+test('#4201 CPTR_EL3.TFP clear at EL3 removes only the access trap', () => {
+  for (const el3Present of [true, undefined]) {
+    const bundle = lift('fdiv', 's0, s1, s2', {
+      fpAdvSimdAccess:{ currentEL:3, el3Present, cptrEl3Tfp:false },
+    });
+    assert.equal(accessFault(bundle), undefined);
+    assert.deepEqual(bundle.possibleFaults.map((fault) => fault.kind), ['arm64-floating-point-exception']);
+  }
+});
+
+test('#4201 unknown or malformed CPTR_EL3.TFP at EL3 retains an unknown access trap', () => {
+  for (const cptrEl3Tfp of [undefined, null, 'false', 0]) {
+    const fault = accessFault(lift('fmov', 's0, s1', {
+      fpAdvSimdAccess:{ currentEL:3, cptrEl3Tfp },
+    }));
+    assert.ok(fault);
+    assert.equal(fault.condition.accessState, 'unknown');
+    assert.equal(fault.condition.trapTargetEL, undefined);
+  }
 });
 
 test('#4201 malformed or incomplete execution-regime controls remain unknown', () => {

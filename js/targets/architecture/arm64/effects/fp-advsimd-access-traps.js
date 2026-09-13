@@ -53,7 +53,12 @@ function cpacrEl1Decision(input, currentEL) {
   if (fpen == null) return unknown('cpacr-el1-fpen-unproven');
   if (fpen === 3) return allowed('cpacr-el1-fpen-allows-fp-advsimd');
   if (fpen === 1 && currentEL === 1) return allowed('cpacr-el1-fpen-allows-el1-fp-advsimd');
-  return trapped('cpacr-el1-fpen-traps-fp-advsimd', 1);
+  // HCR_EL2.TGE redirects an EL1 exception to EL2 when EL2 is enabled.
+  // The trap is definite even when its routing controls are not proven.
+  const trapTargetEL = el2Enabled === false || hcrEl2Tge === false
+    ? 1
+    : el2Enabled === true && hcrEl2Tge === true ? 2 : undefined;
+  return trapped('cpacr-el1-fpen-traps-fp-advsimd', trapTargetEL);
 }
 
 function cptrEl2Decision(input, currentEL) {
@@ -89,9 +94,8 @@ function cptrEl2Decision(input, currentEL) {
 }
 
 function cptrEl3Decision(input, currentEL) {
-  if (currentEL === 3) return allowed('cptr-el3-not-applicable');
-
-  const el3Present = canonicalBoolean(input?.el3Present);
+  // Execution at EL3 proves its presence; TFP also controls EL3 itself.
+  const el3Present = currentEL === 3 ? true : canonicalBoolean(input?.el3Present);
   if (el3Present == null) return unknown('el3-presence-unproven');
   if (el3Present === false) return allowed('el3-not-present');
 
@@ -106,22 +110,23 @@ function rawAccessDecision(input) {
   const currentEL = canonicalCurrentEL(input?.currentEL);
   if (currentEL == null) return unknown('current-el-unproven');
 
+  // Later CPTR checks do not override a trap taken by an earlier FP access check.
   const decisions = [
-    cptrEl3Decision(input, currentEL),
-    cptrEl2Decision(input, currentEL),
     cpacrEl1Decision(input, currentEL),
+    cptrEl2Decision(input, currentEL),
+    cptrEl3Decision(input, currentEL),
   ];
 
-  let higherControlUnknown = false;
+  let earlierControlUnknown = false;
   for (const decision of decisions) {
     if (decision.state === 'unknown') {
-      higherControlUnknown = true;
+      earlierControlUnknown = true;
       continue;
     }
     if (decision.state === 'trapped') {
       return Object.freeze({
         ...decision,
-        ...(higherControlUnknown ? { trapTargetEL:undefined } : {}),
+        ...(earlierControlUnknown ? { trapTargetEL:undefined } : {}),
       });
     }
   }
