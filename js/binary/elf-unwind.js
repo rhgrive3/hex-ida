@@ -53,7 +53,11 @@ function sameExecutableRange(image, start, range) {
 function instructionAlignment(image) {
   const arch = String(image?.architecture || image?.arch || '').toLowerCase();
   if (arch === 'arm64' || arch === 'aarch64') return 4n;
-  if (arch.includes('riscv')) return 2n;
+  if (arch.includes('riscv')) {
+    const isaAlignment = image?.metadata?.riscvIsa?.file?.instructionAlignment
+      ?? image?.metadata?.riscvFileIsa?.instructionAlignment;
+    return isaAlignment === 4 ? 4n : 2n;
+  }
   if (arch === 'arm' || arch === 'thumb') return 2n;
   return 1n;
 }
