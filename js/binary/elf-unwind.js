@@ -382,6 +382,7 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
         if (alignment > 1n && decoded.initial % alignment !== 0n) throw new Error('FDE initial location violates target instruction alignment');
         candidates.push({ address:decoded.initial, fdeAddress:row.fde, domainKind:domain.kind });
       } catch (entryError) {
+        if (entryError?.code === 'BINARY_SOURCE_RANGE_MISSING') throw entryError;
         invalidEntries++;
         recordUnverifiedKnownUnwind(image, row.initial, entryError.message, unverifiedSeen);
         warn(image, `entry ${row.index} rejected: ${entryError.message}`);
@@ -468,9 +469,15 @@ function decodeEhValue(r, p0, enc, ctx, end = r.length) {
     throw new Error(`unsupported DW_EH_PE application 0x${application.toString(16)}`);
   }
   if (indirect) {
-    const off = ctx.image.addressToOffset(value);
-    if (off == null || off + BigInt(ptrBytes) > BigInt(r.length)) throw new Error(`DW_EH_PE_indirect target 0x${value.toString(16)} is not readable`);
-    value = ctx.bits === 64 ? r.u64(Number(off)) : BigInt(r.u32(Number(off)));
+    const pointerBytes = ctx.image?.readVirtual?.(value, ptrBytes);
+    if (!(pointerBytes instanceof Uint8Array) || pointerBytes.length !== ptrBytes) {
+      throw new Error(`DW_EH_PE_indirect target 0x${value.toString(16)} is not readable`);
+    }
+    const pointerView = new DataView(pointerBytes.buffer, pointerBytes.byteOffset, pointerBytes.byteLength);
+    const littleEndian = typeof r.littleEndian === 'boolean' ? r.littleEndian : ctx.image?.endian !== 'big';
+    value = ctx.bits === 64
+      ? pointerView.getBigUint64(0, littleEndian)
+      : BigInt(pointerView.getUint32(0, littleEndian));
   }
   return { value, raw, next };
 }
