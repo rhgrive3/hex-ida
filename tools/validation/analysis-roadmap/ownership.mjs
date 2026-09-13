@@ -6,6 +6,8 @@ import { loadManifest as loadPhase8, validateFiles as validatePhase8 } from '../
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 export const BRANCH = 'feat/analysis-roadmap-v8-current-main-20260907';
+export const BRANCH_ALIAS = 'integration-candidate/local-handover-20260914';
+const ROUTED_BRANCHES = Object.freeze([BRANCH, BRANCH_ALIAS]);
 const SPECIAL_PATHS = Object.freeze({
   semanticCompat: ['js/core/identity/live-data.js', 'js/core/identity/origin.js', 'tests/core-origin-canonical-reuse.test.mjs', 'js/ir-core.js', 'js/ir-base.js', 'js/decompiler/semantic.js', 'js/decompiler/semantic-views.js', 'js/semantics/compat/index.js', 'js/semantics/compat/legacy-value-ranges.js', 'js/semantics/compat/semantic-ir-v2-to-v1.js', 'js/semantics/compat/semantic-ir-v2-to-v1-core.js', 'js/semantics/compat/semantic-ir-v2-to-v1-finalize.js', 'js/semantics/compat/semantic-ir-v2-to-v1-memory.js', 'js/semantics/compat/semantic-ir-v2-to-v1-nodes.js'],
   integration: [
@@ -162,7 +164,7 @@ export function validateRoadmapManifest(manifest) {
 }
 
 export function validateRoadmapInventory(branch, phase, files, manifest = loadRoadmapManifest()) {
-  if (branch !== BRANCH || !['phase7', 'phase8'].includes(phase)) throw new TypeError('no exact roadmap integration route');
+  if (!ROUTED_BRANCHES.includes(branch) || !['phase7', 'phase8'].includes(phase)) throw new TypeError('no exact roadmap integration route');
   const assignment = validateRoadmapManifest(manifest);
   if (!Array.isArray(files) || !files.length) throw new TypeError('empty roadmap inventory');
   for (const file of files) if (!assignment.has(file)) throw new TypeError(`undeclared roadmap path: ${JSON.stringify(file)}`);

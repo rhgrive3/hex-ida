@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
-import { BRANCH, loadRoadmapManifest, validateRoadmapManifest, validateRoadmapInventory } from '../../../tools/validation/analysis-roadmap/ownership.mjs';
+import { BRANCH, BRANCH_ALIAS, loadRoadmapManifest, validateRoadmapManifest, validateRoadmapInventory } from '../../../tools/validation/analysis-roadmap/ownership.mjs';
 
 test('v8 ownership validates the complete declared component union before selecting either phase', () => {
   const manifest = loadRoadmapManifest();
@@ -62,6 +62,23 @@ test('v8 ownership fails closed on wrong branch, missing phase and incomplete in
   assert.throws(() => validateRoadmapInventory(BRANCH, 'phase9', files));
   assert.throws(() => validateRoadmapInventory(BRANCH, 'phase7', []));
   assert.throws(() => validateRoadmapInventory(BRANCH, 'phase8', ['js/analysis/index.js']));
+});
+
+test('the exact backup integration alias uses the canonical manifest and rejects sibling names', () => {
+  const manifest = loadRoadmapManifest();
+  const files = [...validateRoadmapManifest(manifest).keys()];
+  assert.equal(manifest.branch, BRANCH);
+  for (const phase of ['phase7', 'phase8']) {
+    const canonical = validateRoadmapInventory(BRANCH, phase, files, manifest);
+    assert.deepEqual(validateRoadmapInventory(BRANCH_ALIAS, phase, files, manifest), canonical);
+  }
+  for (const branch of [`${BRANCH_ALIAS}-other`, 'integration-candidate/local-handover-20260914-child']) {
+    assert.throws(() => validateRoadmapInventory(branch, 'phase7', files, manifest), /no exact roadmap integration route/);
+    assert.throws(() => validateRoadmapInventory(branch, 'phase8', files, manifest), /no exact roadmap integration route/);
+  }
+  const aliasManifest = structuredClone(manifest);
+  aliasManifest.branch = BRANCH_ALIAS;
+  assert.throws(() => validateRoadmapManifest(aliasManifest), /invalid roadmap manifest identity/);
 });
 
 test('C4 conditional predicate proof and its real projection regression have exact Phase 8 ownership', () => {
@@ -162,11 +179,16 @@ test('v8 ownership is wired in both CircleCI and permanent exact-SHA fallbacks',
   for (const phase of ['phase7', 'phase8']) {
     const job = circle.split(`  ${phase}-ownership:`)[1].split('\n  phase')[0];
     assert.ok(job.includes(BRANCH));
+    assert.ok(job.includes(BRANCH_ALIAS));
+    if (phase === 'phase7') assert.ok(job.includes(`${BRANCH}|${BRANCH_ALIAS})`));
+    else assert.ok(job.includes(`|| [ "\${CIRCLE_BRANCH:-}" = '${BRANCH_ALIAS}' ]`));
     assert.match(job, /tools\/validation\/analysis-roadmap\/ownership\.mjs/);
     assert.ok(job.includes(`--phase ${phase}`));
     assert.ok(job.includes(`node tools/validation/${phase}-ownership.mjs --files-json`));
     const fallback = read(`.github/workflows/${phase}-ownership.yml`);
     assert.ok(fallback.includes(BRANCH));
+    assert.ok(fallback.includes(BRANCH_ALIAS));
+    assert.ok(fallback.includes(`"${BRANCH}" || "$HEAD_REF" == "${BRANCH_ALIAS}"`));
     assert.ok(fallback.includes(`--phase ${phase}`));
     assert.ok(fallback.includes(`node tools/validation/${phase}-ownership.mjs --files-json`));
   }

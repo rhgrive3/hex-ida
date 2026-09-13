@@ -159,7 +159,7 @@ jobs:
             set -euo pipefail
             node tools/validation/phase7-ownership.mjs --check-manifest
             case "${CIRCLE_BRANCH:-}" in
-              feat/analysis-roadmap-v8-current-main-20260907)
+              feat/analysis-roadmap-v8-current-main-20260907|integration-candidate/local-handover-20260914)
                 FILES_JSON="$(node tools/validation/analysis-roadmap/ownership.mjs \
                   --branch "$CIRCLE_BRANCH" --phase phase7 \
                   --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA")"
@@ -384,7 +384,7 @@ jobs:
             if [ "$RUN_PHASE8_OWNERSHIP" != 'true' ]; then exit 0; fi
             set -euo pipefail
             node tools/validation/phase8-ownership.mjs --check-manifest
-            if [ "${CIRCLE_BRANCH:-}" = 'feat/analysis-roadmap-v8-current-main-20260907' ]; then
+            if [ "${CIRCLE_BRANCH:-}" = 'feat/analysis-roadmap-v8-current-main-20260907' ] || [ "${CIRCLE_BRANCH:-}" = 'integration-candidate/local-handover-20260914' ]; then
               FILES_JSON="$(node tools/validation/analysis-roadmap/ownership.mjs \
                 --branch "$CIRCLE_BRANCH" --phase phase8 \
                 --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA")"
