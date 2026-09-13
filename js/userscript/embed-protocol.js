@@ -426,22 +426,27 @@ function sanitizeDetails(value, depth = 0, seen = new WeakSet()) {
   if (typeof Error !== 'undefined' && value instanceof Error) return undefined;
   if (seen.has(value)) return undefined;
   seen.add(value);
-  if (Array.isArray(value)) {
-    const out = [];
-    const limit = Math.min(value.length, 64);
-    for (let index = 0; index < limit; index += 1) {
-      out.push(sanitizeDetails(ownDataValue(value, index), depth + 1, seen));
+  try {
+    if (Array.isArray(value)) {
+      const out = [];
+      const limit = Math.min(value.length, 64);
+      for (let index = 0; index < limit; index += 1) {
+        out.push(sanitizeDetails(ownDataValue(value, index), depth + 1, seen));
+      }
+      return out;
+    }
+    if (!isPlainRecord(value)) return undefined;
+    const out = Object.create(null);
+    for (const key of Object.keys(value).slice(0, 64)) {
+      if (/^(?:stack|cause)$/i.test(key)) continue;
+      const clean = sanitizeDetails(ownDataValue(value, key), depth + 1, seen);
+      if (clean !== undefined) out[key] = clean;
     }
     return out;
+  } finally {
+    // Only ancestors are cycles; sibling references must be visited again.
+    seen.delete(value);
   }
-  if (!isPlainRecord(value)) return undefined;
-  const out = Object.create(null);
-  for (const key of Object.keys(value).slice(0, 64)) {
-    if (/^(?:stack|cause)$/i.test(key)) continue;
-    const clean = sanitizeDetails(ownDataValue(value, key), depth + 1, seen);
-    if (clean !== undefined) out[key] = clean;
-  }
-  return out;
 }
 
 function ownDataValue(target, key) {

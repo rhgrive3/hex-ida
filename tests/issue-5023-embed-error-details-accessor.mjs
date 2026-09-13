@@ -17,6 +17,7 @@ process.on('unhandledRejection', onUnhandled);
 
 await testThrowingEnumerableGetterDetails();
 await testSideEffectGetterNotExecuted();
+await testSharedAccessorDetailsWithCycles();
 await testPlainDataDetailsPreserved();
 await testCyclicDetails();
 await testSanitizerFailureStillResponds();
@@ -79,6 +80,44 @@ async function testSideEffectGetterNotExecuted() {
   assert.deepEqual({ ...message.error.details }, { note: 'plain', list: ['first', undefined] });
   assert.equal(Object.hasOwn(message.error.details, 'peek'), false);
   raw.close();
+}
+
+async function testSharedAccessorDetailsWithCycles() {
+  let accesses = 0;
+  const shared = { keep: 'yes' };
+  Object.defineProperty(shared, 'peek', {
+    enumerable: true,
+    get() { accesses += 1; return 'secret'; },
+  });
+  shared.self = shared;
+  const list = [shared];
+  Object.defineProperty(list, '1', {
+    enumerable: true,
+    get() { accesses += 1; return 'secret'; },
+  });
+  list.push(list);
+  const raw = rawServer({
+    'chatgpt.status': () => {
+      const error = new Error('shared cyclic details');
+      error.code = 'SHARED_CYCLIC';
+      error.details = { first: shared, second: shared, list, again: list };
+      throw error;
+    },
+  });
+  try {
+    const message = await rawRequest(raw.port, 'shared-cyclic', 'chatgpt.status');
+    assert.equal(message.error.code, 'SHARED_CYCLIC');
+    assert.equal(accesses, 0, 'shared references must not execute record or array accessors');
+    assert.deepEqual(message.error.details, {
+      first: { keep: 'yes' },
+      second: { keep: 'yes' },
+      list: [{ keep: 'yes' }, undefined, undefined],
+      again: [{ keep: 'yes' }, undefined, undefined],
+    }, 'keep every shared reference while cutting ancestor cycles and accessor properties');
+    assert.equal(await stillHealthy(raw.port, 'shared-cyclic-next'), 'healthy');
+  } finally {
+    raw.close();
+  }
 }
 
 async function testPlainDataDetailsPreserved() {
