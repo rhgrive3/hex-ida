@@ -46,9 +46,10 @@ export async function dispatchScopedAppQuery(app, snapshot, method, request, opt
   const dataEndianness = ['little', 'le'].includes(endian) ? 'little' : 'big';
   // PE/arm64e do not borrow a neighboring ABI just to advertise availability.
   const platform = initial.format === 'macho' ? 'darwin' : initial.format === 'elf' ? 'unknown' : null;
-  const abiId = initial.format === 'macho' ? 'darwin-arm64' : initial.format === 'elf' ? 'aapcs64' : null;
+  const abiId = initial.format === 'macho' ? 'darwin-arm64' : initial.format === 'elf' ? (initial.bits === 32 ? 'aapcs64-ilp32' : 'aapcs64') : null;
   if (!platform || !abiId) return unsupported('scoped-arm64-format-abi-unavailable');
-  const abi = resolveABIPlugin({ architecture: 'arm64', platform, abiId });
+  if (initial.format === 'elf' && initial.bits === 32) return unsupported('scoped-arm64-ilp32-unsupported');
+  const abi = resolveABIPlugin({ architecture: 'arm64', platform, abiId, bits: initial.bits });
   if (!abi?.supported) return unsupported('scoped-arm64-abi-unavailable');
   if (entry.binding !== identity || !entry.service || entry.service.closed) {
     entry.service?.close('app-binding-changed');

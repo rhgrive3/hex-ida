@@ -300,6 +300,39 @@ function registerSource(reg, bits = XLEN, extra = {}) {
 
 function align(value, alignment) { return Math.ceil(value / alignment) * alignment; }
 
+function stackSlotAlignment(parameter, classified) {
+  const rawAlign = parameter?.alignment ?? parameter?.align
+    ?? parameter?.layout?.alignment ?? parameter?.layout?.align;
+  if (rawAlign != null) {
+    const n = Number(rawAlign);
+    if (!Number.isSafeInteger(n) || n <= 0 || (n & (n - 1)) !== 0) return null;
+    return Math.min(16, Math.max(8, n));
+  }
+  if (classified?.aggregate) {
+    const members = aggregateMembers(parameter);
+    if (members && members.length) {
+      let maxAlign = 8;
+      for (const m of members) {
+        const mAlign = m?.alignment ?? m?.align ?? m?.layout?.alignment ?? m?.layout?.align;
+        if (mAlign != null) {
+          const n = Number(mAlign);
+          if (!Number.isSafeInteger(n) || n <= 0 || (n & (n - 1)) !== 0) return null;
+          if (n > maxAlign) maxAlign = n;
+        } else if (m.bits != null) {
+          const b = Number(m.bits);
+          if (b >= 128) maxAlign = Math.max(maxAlign, 16);
+        }
+      }
+      return Math.min(16, maxAlign);
+    }
+    return 8;
+  }
+  if (classified?.bits != null) {
+    return Number(classified.bits) > 64 ? 16 : 8;
+  }
+  return 8;
+}
+
 /*
  * Aggregate locations are canonical evidence, not a convenience list of
  * registers.  Every emitted lane therefore carries its logical width and
@@ -767,8 +800,13 @@ function createClassifier(profile) {
           });
           return;
         }
+        const slotAlignment = stackSlotAlignment(parameter, classified);
+        if (slotAlignment == null) {
+          unknownArgument(index, classified, 'aggregate-alignment-invalid');
+          return;
+        }
         const slot = align(bytes, 8);
-        stackOffset = align(stackOffset, needed === 2 ? 16 : 8);
+        stackOffset = align(stackOffset, slotAlignment);
         const pieces = Array.from({ length:needed }, (_unused, piece) => aggregatePiece({
           pieceIndex:piece,
           stackOffset:stackOffset + piece * 8,
@@ -808,7 +846,11 @@ function createClassifier(profile) {
       /* Scalars wider than XLEN and at most 2*XLEN use an argument-register pair. */
       const needed = classified.bits > XLEN ? 2 : 1;
       if (variadicArgument && variadicStackOnly) {
-        const slotAlignment = needed === 2 ? 16 : 8;
+        const slotAlignment = stackSlotAlignment(parameter, classified);
+        if (slotAlignment == null) {
+          unknownArgument(index, classified, 'variadic-alignment-invalid');
+          return;
+        }
         const bytes = align(Math.max(8, Math.ceil(classified.bits / 8)), slotAlignment);
         stackOffset = align(stackOffset, slotAlignment);
         const entry = {
@@ -864,7 +906,11 @@ function createClassifier(profile) {
         return;
       }
 
-      const slotAlignment = needed === 2 ? 16 : 8;
+      const slotAlignment = stackSlotAlignment(parameter, classified);
+      if (slotAlignment == null) {
+        unknownArgument(index, classified, 'scalar-alignment-invalid');
+        return;
+      }
       const bytes = align(Math.max(8, Math.ceil(classified.bits / 8)), slotAlignment);
       stackOffset = align(stackOffset, slotAlignment);
       const entry = {

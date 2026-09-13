@@ -29,6 +29,7 @@ const SHN_COMMON = 0xfff2;
 const SHN_XINDEX = 0xffff;
 const STB_GNU_UNIQUE = 10;
 const STT_GNU_IFUNC = 10;
+export const STO_AARCH64_VARIANT_PCS = 0x80;
 const DT_REL = 17n;
 const DT_RELSZ = 18n;
 const DT_RELENT = 19n;
@@ -281,6 +282,8 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
     const ifunc = type === STT_GNU_IFUNC && defined === true && !common;
     const riscvVariantCcFlag = Number(image?.metadata?.machine) === 243 && (other & 0x80) !== 0;
     const riscvVariantCc = riscvVariantCcFlag && type === 2;
+    const aarch64VariantPcsFlag = Number(image?.metadata?.machine) === 183 && (other & 0x80) !== 0;
+    const aarch64VariantPcs = aarch64VariantPcsFlag && type === 2;
     // STT_TLS: a defined TLS symbol's st_value is its TLS offset, not a
     // virtual address (ELF gABI). Keep it out of the VA domain and
     // image.exports as a canonical address (#5843).
@@ -288,7 +291,7 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
     const isArm32 = Number(image?.metadata?.machine) === 40 || image?.arch === 'arm';
     const isThumb = isArm32 && (type === 2 || type === STT_GNU_IFUNC) && (value & 1n) === 1n;
     const effectiveValue = isThumb ? (value & ~1n) : value;
-    const sym = { name, address: tls ? null : unallocatedOrUndefined ? 0n : effectiveValue, originalValue: value, isThumb, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, stOther: other, processorSpecificOther: other & ~3, riscvVariantCcFlag, riscvVariantCc, callingConvention: riscvVariantCc ? 'riscv-vector-variant' : null, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(tls ? { tlsOffset: value } : {}), ...(common ? { commonAlignment: value, commonSize: size, allocation: 'common-unallocated' } : {}), addressDomain: tls ? 'tls-offset' : common ? 'common-unallocated' : 'virtual', ...(ifunc ? { resolverAddress:effectiveValue, resolution:'runtime-resolver' } : {}) };
+    const sym = { name, address: tls ? null : unallocatedOrUndefined ? 0n : effectiveValue, originalValue: value, isThumb, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, stOther: other, processorSpecificOther: other & ~3, riscvVariantCcFlag, riscvVariantCc, aarch64VariantPcsFlag, aarch64VariantPcs, callingConvention: aarch64VariantPcs ? 'aarch64-variant-pcs' : riscvVariantCc ? 'riscv-vector-variant' : null, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(tls ? { tlsOffset: value } : {}), ...(common ? { commonAlignment: value, commonSize: size, allocation: 'common-unallocated' } : {}), addressDomain: tls ? 'tls-offset' : common ? 'common-unallocated' : 'virtual', ...(ifunc ? { resolverAddress:effectiveValue, resolution:'runtime-resolver' } : {}) };
     out.push(sym);
     if (!name) continue;
     image.symbols.push(sym);
@@ -332,12 +335,16 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
           // #6061: the section-backed symbol parser propagates the RISC-V
           // variant-cc calling-convention evidence into function seeds; the
           // PT_DYNAMIC path must mint identical evidence for the same byte.
-          callingConvention: riscvVariantCc ? 'riscv-vector-variant' : null,
-          abiMetadata: riscvVariantCc ? { riscvVariantCc: true, stOther: other } : null,
+          callingConvention: aarch64VariantPcs ? 'aarch64-variant-pcs' : riscvVariantCc ? 'riscv-vector-variant' : null,
+          abiMetadata: aarch64VariantPcs ? { aarch64VariantPcs: true, stOther: other } : riscvVariantCc ? { riscvVariantCc: true, stOther: other } : null,
         }));
         if (riscvVariantCc) {
           if (!Array.isArray(image.metadata.riscvVariantCcFunctions)) image.metadata.riscvVariantCcFunctions = [];
           image.metadata.riscvVariantCcFunctions.push({ name, address: effectiveValue, symbolIndex: i, tableIndex: -1, stOther: other, callingConvention: 'riscv-vector-variant' });
+        }
+        if (aarch64VariantPcs) {
+          if (!Array.isArray(image.metadata.aarch64VariantPcsFunctions)) image.metadata.aarch64VariantPcsFunctions = [];
+          image.metadata.aarch64VariantPcsFunctions.push({ name, address: value, symbolIndex: i, tableIndex: -1, stOther: other, callingConvention: 'aarch64-variant-pcs' });
         }
       }
       else markDynamicPartial(image, `ignored PT_DYNAMIC ${type === STT_GNU_IFUNC ? 'STT_GNU_IFUNC resolver' : 'STT_FUNC'} ${name} outside executable mapping/extent`);

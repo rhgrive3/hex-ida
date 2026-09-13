@@ -402,12 +402,25 @@ export function createApi(app, out, options = {}) {
     async loadStrings(context = null) { return investigationServiceFor(app).collectStrings({ signal:signalOf(context) }); },
 
     /** 文字列を検索する。 */
-    findStrings(query, limit = 200) {
+    findStrings(query, limit = 200, context = null) {
+      if (limit && typeof limit === 'object' && !Array.isArray(limit)) {
+        context = limit;
+        limit = limit.limit ?? 200;
+      }
+      const signal = signalOf(context);
+      throwIfAborted(signal);
       const q = String(query ?? '').toLowerCase();
       const max = Math.max(1, Math.min(5000, Number(limit) || 200));
       const source = app.stringIndex || (app.strings?.items) || [];
       const results = [];
+      const maxScanned = Number.isSafeInteger(context?.maxScanned) && context.maxScanned > 0
+        ? context.maxScanned
+        : Number.POSITIVE_INFINITY;
+      let scanned = 0;
       for (const s of source) {
+        throwIfAborted(signal);
+        if (scanned >= maxScanned) break;
+        scanned++;
         const text = s?.text;
         if (typeof text !== 'string') continue;
         if (!q || text.toLowerCase().includes(q)) {
@@ -415,6 +428,16 @@ export function createApi(app, out, options = {}) {
           if (results.length >= max) break;
         }
       }
+      throwIfAborted(signal);
+      const complete = scanned < source.length && scanned >= maxScanned ? false : (results.length < max || scanned >= source.length);
+      Object.assign(results, {
+        complete,
+        completeness: complete ? 'complete' : 'partial',
+        scanned,
+        total: source.length,
+        capped: results.length >= max && source.length > results.length,
+        reason: complete ? null : (scanned >= maxScanned && source.length > scanned ? 'scan-budget-exhausted' : 'result-limit'),
+      });
       return results;
     },
 

@@ -6,6 +6,7 @@ import { stableStringify } from '../../core/identity/index.js';
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 function fail(code) { throw new TypeError(code); }
 
+<<<<<<< HEAD
 // ECMA-335 II.23.4 marshalling-descriptor constants (`NATIVE_TYPE_xxx`). The
 // value is what actually changes the managed/native call boundary, so it is
 // decoded as evidence and never replaced by a name guess.
@@ -65,12 +66,21 @@ function decodeMarshalSpec(raw) {
   }
   if (raw.length !== 1) fail(code);
   return { nativeType, nativeTypeName: name };
+=======
+function formatCilGuid(bytes, offset) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const d1 = view.getUint32(offset, true);
+  const d2 = view.getUint16(offset + 4, true);
+  const d3 = view.getUint16(offset + 6, true);
+  const rest = [...bytes.subarray(offset + 8, offset + 16)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  return `${d1.toString(16).padStart(8, '0')}-${d2.toString(16).padStart(4, '0')}-${d3.toString(16).padStart(4, '0')}-${rest.slice(0, 4)}-${rest.slice(4)}`.toLowerCase();
+>>>>>>> a9c65318a (fix(batch): LP64 stack alignment, findStrings cancellation, ELF32 ILP32, STO_AARCH64_VARIANT_PCS, and CIL Module table (#5621, #5900, #8428, #8366, #7689))
 }
 
 // Read only definitions, but use the complete, already-bounds-checked table layout.
-export function readCilDefinitions(bytes, view, layout, stringsStream, blobStream = null) {
-  const { rowCounts: counts, tableOffsets: offsets, rowSizes, heapSizes } = layout;
-  const s = heapSizes & 1 ? 4 : 2, b = heapSizes & 4 ? 4 : 2;
+export function readCilDefinitions(bytes, view, layout, stringsStream, blobStream = null, guidStream = null) {
+  const { rowCounts: counts, tableOffsets: offsets, rowSizes, heapSizes, valid } = layout;
+  const s = heapSizes & 1 ? 4 : 2, g = heapSizes & 2 ? 4 : 2, b = heapSizes & 4 ? 4 : 2;
   const index = (pos, width) => width === 2 ? view.getUint16(pos, true) : view.getUint32(pos, true);
   const text = value => {
     // Preserve legacy minimal metadata with an absent optional heap and null names.
@@ -107,6 +117,9 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
   // or malformed blob fails closed rather than silently dropping identity.
   const blobHeap = blobStream && blobStream.size
     ? bytes.subarray(blobStream.offset, blobStream.offset + blobStream.size)
+    : null;
+  const guidHeap = guidStream && guidStream.size
+    ? bytes.subarray(guidStream.offset, guidStream.offset + guidStream.size)
     : null;
   const typeSpecRowCounts = () => [counts[2], counts[1], counts[0x1b]];
   // TypeSpec (0x1b) rows are the constructed-type authority (#7673): each row
@@ -222,6 +235,39 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
       publicKeyBlobIndex, publicKey,
       name: text(index(pos + 16 + b, s)),
       culture: text(index(pos + 16 + b + s, s)),
+    };
+  })() : null;
+  // Module (0x00): current module identity (ECMA-335 II.22.30, exactly one row) (#7689).
+  if (counts[0x00] > 1) fail('cil-module-table-multi-row');
+  if (valid != null && (valid & 1n) !== 0n && counts[0x00] === 0) fail('cil-module-table-empty');
+  const module = counts[0x00] ? (() => {
+    const pos = offsets[0x00];
+    const generation = view.getUint16(pos, true);
+    if (generation !== 0) fail('cil-module-generation-invalid');
+    const nameIndex = index(pos + 2, s);
+    if (nameIndex === 0) fail('cil-module-name-missing');
+    const name = requiredText(nameIndex, 'cil-module-name-invalid');
+    const mvidGuidIndex = index(pos + 2 + s, g);
+    if (mvidGuidIndex === 0) fail('cil-module-mvid-missing');
+    if (!guidHeap) fail('cil-module-guid-heap-missing');
+    const mvidOffset = (mvidGuidIndex - 1) * 16;
+    if (mvidOffset < 0 || mvidOffset + 16 > guidHeap.length) fail('cil-module-mvid-invalid');
+    const encId = index(pos + 2 + s + g, g);
+    if (encId !== 0) fail('cil-module-encid-invalid');
+    const encBaseId = index(pos + 2 + s + g * 2, g);
+    if (encBaseId !== 0) fail('cil-module-encbaseid-invalid');
+    const mvidBytes = guidHeap.subarray(mvidOffset, mvidOffset + 16);
+    const mvid = formatCilGuid(guidHeap, mvidOffset);
+    return {
+      rid: 1,
+      token: cilMetadataToken(0x00, 1),
+      generation,
+      name,
+      mvidGuidIndex,
+      mvid,
+      mvidBytes: new Uint8Array(mvidBytes),
+      encId,
+      encBaseId,
     };
   })() : null;
   const bindOwners = (table, pointerTable, values, listKey, tokensKey) => {
@@ -615,6 +661,7 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     field.rva = row.rva;
   }
 
+<<<<<<< HEAD
   // II.22.17 FieldMarshal: the managed -> native marshalling descriptor for a
   // Field or Param. The HasFieldMarshal flag alone only proves a descriptor
   // exists; without decoding it, two images whose native call boundary differs
@@ -783,5 +830,5 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     owner.attributes = [...(owner.attributes ?? []), attribute];
   }
 
-  return { types, methods, fields, manifestResources, typeSpecs, typeRefs, memberRefs, assemblyRefs, assembly, params, properties, events, methodSemantics, interfaceImpls, methodImpls, implMaps, moduleRefs, fieldRvas, fieldMarshals, customAttributes };
+  return { types, methods, fields, manifestResources, typeSpecs, typeRefs, memberRefs, assemblyRefs, assembly, module, params, properties, events, methodSemantics, interfaceImpls, methodImpls, implMaps, moduleRefs, fieldRvas, fieldMarshals, customAttributes };
 }
