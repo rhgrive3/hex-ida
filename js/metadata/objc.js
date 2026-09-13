@@ -163,6 +163,14 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
     this.cachedIndex = buildObjcRuntimeIndex(model);
 
     const isComplete = model.runtimeCompleteness?.complete === true;
+    // A pointer ABI the provider cannot decode is reported as an explicit
+    // reason instead of arriving as an unexplained empty metadata set (#8280).
+    const pointerAbiReason = model.pointerAbiReason
+      ?? [
+        ...(model.runtimeCompleteness?.classes?.reasons ?? []),
+        ...(model.completeness?.protocols?.reasons ?? []),
+      ].find((reason) => typeof reason === 'string' && reason.startsWith('objc-pointer-abi'))
+      ?? null;
     const identity = createLanguageMetadataIdentity({
       verdict: isComplete ? 'matched-authoritative' : 'matched-partial',
       providerId: this.id,
@@ -206,7 +214,9 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
         complete: isComplete,
         unreadableEntries: model.completeness?.unreadableEntries || 0,
         invalidEntries: model.completeness?.invalidEntries || 0,
+        ...(pointerAbiReason ? { reasons: [pointerAbiReason], pointerAbi: pointerAbiReason } : {}),
       },
+      ...(pointerAbiReason ? { diagnostics: [pointerAbiReason] } : {}),
     });
   }
 
