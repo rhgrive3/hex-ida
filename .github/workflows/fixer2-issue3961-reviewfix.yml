@@ -1,0 +1,66 @@
+name: fixer2 issue3961 second-pass remote write
+on:
+  push:
+    branches:
+      - fixer2/issue-3961-dynsym-fallback
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fixer2/issue-3961-dynsym-fallback
+          fetch-depth: 1
+      - name: Apply reviewed delta with exact guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object js/binary/elf-core.js)" = "9d027dfddc00dabb46e32cdc83c67a2627f8cedb"
+          test "$(git hash-object tests/phase4/binary/issue-3961-elf-malformed-dynsym-fallback.test.mjs)" = "8286caf302f466f333a8e4cf743b753c7551be6f"
+          cp .github/fixer2-issue3961-test.mjs tests/phase4/binary/issue-3961-elf-malformed-dynsym-fallback.test.mjs
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('js/binary/elf-core.js')
+          s=p.read_text()
+          old="""  const hasRelocations = rawSections.some((s) => s.type === SHT_REL || s.type === SHT_RELA);\n  const hasDynamic = rawSections.some((s) => s.type === SHT_DYNAMIC);\n  parseProgramDynamic(r, programHeaders, image, bits, {\n    signal: options.signal,\n    symbols: !dynsymAuthoritative,\n    relocations: !hasRelocations,\n    sectionDynamicPresent: hasDynamic,\n  });\n  validateSectionRiscvVariantCcTag(image, rawSections);\n"""
+          new="""  const hasRelocations = rawSections.some((s) => s.type === SHT_REL || s.type === SHT_RELA);\n  const hasDynamic = rawSections.some((s) => s.type === SHT_DYNAMIC);\n  const dynamicSymbolFallback = !dynsymAuthoritative;\n  parseProgramDynamic(r, programHeaders, image, bits, {\n    signal: options.signal,\n    symbols: dynamicSymbolFallback,\n    relocations: !hasRelocations,\n    sectionDynamicPresent: hasDynamic,\n  });\n  if (dynamicSymbolFallback) reconcileDynamicSymbolFallbackEvidence(image);\n  validateSectionRiscvVariantCcTag(image, rawSections);\n"""
+          assert old in s
+          s=s.replace(old,new,1)
+          old="  let authoritative = table.size >= table.entsize;\n"
+          new="""  let authoritative = true;\n  if (table.size < table.entsize || table.size % table.entsize !== 0n) {\n    authoritative = false;\n    budget.partial(`symbols:${table.index}:table-size`, `ELF symbol table ${table.index} size ${table.size} is not a whole non-empty sequence of ${table.entsize}-byte entries`);\n  }\n"""
+          assert old in s
+          s=s.replace(old,new,1)
+          marker='\nfunction validateSectionRiscvVariantCcTag(image, sections) {\n'
+          helper=r'''\nfunction reconcileDynamicSymbolFallbackEvidence(image) {\n  const scalar = (value) => typeof value === 'bigint' ? value.toString() : value == null ? '' : String(value);\n  const symbolKey = (symbol) => [\n    scalar(symbol.index), symbol.name || '', scalar(symbol.address), scalar(symbol.tlsOffset),\n    scalar(symbol.size), symbol.kind || '', symbol.binding || '', scalar(symbol.defined), scalar(symbol.sectionIndex),\n  ].join('\\0');\n  const dynamicSymbols = new Set(\n    image.symbols.filter((symbol) => symbol?.source === 'PT_DYNAMIC').map(symbolKey),\n  );\n  if (dynamicSymbols.size) {\n    image.symbols = image.symbols.filter((symbol) => symbol?.source !== 'dynsym' || !dynamicSymbols.has(symbolKey(symbol)));\n  }\n\n  const importKey = (entry) => [scalar(entry.symbolIndex), entry.name || '', entry.weak ? '1' : '0'].join('\\0');\n  const dynamicImports = new Map(\n    image.imports.filter((entry) => entry?.source === 'PT_DYNAMIC').map((entry) => [importKey(entry), entry]),\n  );\n  if (dynamicImports.size) {\n    image.imports = image.imports.filter((entry) => {\n      if (entry?.source !== 'elf-dynsym') return true;\n      const replacement = dynamicImports.get(importKey(entry));\n      if (!replacement) return true;\n      if (entry.sites?.length) replacement.sites = [...(replacement.sites || []), ...entry.sites];\n      return false;\n    });\n  }\n\n  const exportKey = (entry) => [\n    entry.name || '', scalar(entry.address), scalar(entry.tlsOffset), entry.kind || '', scalar(entry.symbolIndex),\n  ].join('\\0');\n  const dynamicExports = new Set(\n    image.exports.filter((entry) => entry?.source === 'PT_DYNAMIC').map(exportKey),\n  );\n  if (dynamicExports.size) {\n    image.exports = image.exports.filter((entry) => entry?.source !== 'dynsym' || !dynamicExports.has(exportKey(entry)));\n  }\n}\n'''
+          assert marker in s
+          s=s.replace(marker,'\n'+helper+marker,1)
+          p.write_text(s)
+          PY
+          test "$(git hash-object js/binary/elf-core.js)" = "e944a740494a5422cb3c1c9f0daeb891af73863d"
+          test "$(git hash-object tests/phase4/binary/issue-3961-elf-malformed-dynsym-fallback.test.mjs)" = "793b2098b5224e057f0a77928304dc551ea5c931"
+      - name: Validate final reviewed tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check js/binary/elf-core.js
+          node --check tests/phase4/binary/issue-3961-elf-malformed-dynsym-fallback.test.mjs
+          node tests/phase4/binary/issue-3961-elf-malformed-dynsym-fallback.test.mjs
+          node tests/phase4/binary/issue-3835-elf-dynamic-string-table.test.mjs
+          node tests/phase4/binary/issue-3845-elf-dynamic-hash-mapping.test.mjs
+          node tests/universal-binary-sectionless.mjs
+          node tests/binary-platform.mjs
+          npm run binary:test
+          npm run lint
+      - name: Commit reviewed final tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/fixer2-issue3961-test.mjs .github/workflows/fixer2-issue3961-reviewfix.yml
+          git add js/binary/elf-core.js tests/phase4/binary/issue-3961-elf-malformed-dynsym-fallback.test.mjs
+          git commit -m 'fix(elf): reconcile partial DYNSYM fallback evidence (#3961)'
+          git push origin HEAD:fixer2/issue-3961-dynsym-fallback
