@@ -478,7 +478,7 @@ function semanticFacts(state, result) {
   const facts = { inputs: [], outputs: [], stores: [], calls: [], conditions: [], evidence: [], warnings: [] };
   const abiArgumentRegisters = new Set(abiArgumentLocationsForState(state).map((location) => location.reg));
   for (const [reg, v] of state.ir.args || []) {
-    if (abiArgumentRegisters.has(String(reg)) && (v.uses || []).length) facts.inputs.push({ name: argumentName(v, state), reg, type: typeFor(state, v), valueId: v.id });
+    if ((v.uses || []).length) facts.inputs.push({ name: argumentName(v, state), reg, type: typeFor(state, v), valueId: v.id });
   }
   for (const inst of state.ir.instructions || []) {
     if (inst.op === 'store') {
