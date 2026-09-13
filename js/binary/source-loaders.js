@@ -6,7 +6,7 @@ import { ByteView } from './reader.js';
 import { asByteSource } from './source.js';
 import { parseSourceRanges } from './source-reader.js';
 import { scanSourceStrings } from '../bytesource/strings.js';
-import { sliceArchName, validateFatSlice, validateFatContainer, probePastEndArm64SliceAsync, parseInnerMachOHeader } from './macho-fat.js';
+import { sliceArchName, selectDefaultFatSlice, validateFatSlice, validateFatContainer, probePastEndArm64SliceAsync, parseInnerMachOHeader } from './macho-fat.js';
 
 const FAT_KINDS = new Map([
   ['cafebabe', { bits: 32, littleEndian: false }],
@@ -145,7 +145,7 @@ async function parseMachOSourceWithPrefix(source, opts, prefix, rangeOptions) {
   const indexed = requestedIndex == null ? null : all[requestedIndex];
   const requested = indexed || (opts.arch ? all.find((slice) => sliceArchName(slice) === opts.arch) : null);
   if (requestedIndex == null && opts.arch && !requested) throw new Error(`requested Mach-O architecture ${opts.arch} is not present in the universal binary`);
-  const selected = requested || all.find((slice) => sliceArchName(slice) === 'arm64e') || all.find((slice) => sliceArchName(slice) === 'arm64') || all.find((slice) => sliceArchName(slice) === 'x86_64') || all[0];
+  const selected = requested || selectDefaultFatSlice(all);
   if (!selected) throw new Error('Mach-O universal binary has no readable slice');
   const sliceSource = source.subrange(selected.offset, selected.size);
   const slicePrefix = await readPrefix(sliceSource, opts.signal);
