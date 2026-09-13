@@ -215,13 +215,14 @@ function validELFSectionAlignment(alignment) {
 function assignRelocatableSectionAddresses(sections, image) {
   let cursor = 0x100000000n;
   for (const sec of sections) {
-    if (sec.index === 0 || sec.size <= 0n) { sec.syntheticAddr = 0n; continue; }
+    if (sec.index === 0) { sec.syntheticAddr = 0n; continue; }
     const requested = sec.addralign > 0n ? sec.addralign : 1n;
     if (!validELFSectionAlignment(requested)) {
       sec.syntheticAddr = null;
       markELFMetadataPartial(image, `section-addralign:${sec.index}`, `ELF ET_REL section ${sec.index} has invalid sh_addralign ${sec.addralign}; synthetic address authority was withheld`);
       continue;
     }
+    if (sec.size <= 0n) { sec.syntheticAddr = 0n; continue; }
     cursor = alignUp(cursor, requested);
     sec.syntheticAddr = cursor;
     cursor += sec.size > 0n ? sec.size : 1n;

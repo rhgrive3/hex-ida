@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { parseELF } from '../../../js/binary/elf.js';
 
-function makeRelocatableElf64({ textAlign = 0x02000000n } = {}) {
+function makeRelocatableElf64({ textAlign = 0x02000000n, textSize = 0x80n } = {}) {
   const bytes = new Uint8Array(0x800);
   const view = new DataView(bytes.buffer);
   const w16 = (o, x) => view.setUint16(o, Number(x), true);
@@ -43,7 +43,7 @@ function makeRelocatableElf64({ textAlign = 0x02000000n } = {}) {
   };
   sh(0, 0, 0, 0n, 0, 0, 0, 0, 0n, 0n);
   sh(1, names.pad, 1, 0n, 0x100, 1, 0, 0, 1n, 0n);
-  sh(2, names.text, 1, 0x6n, 0x120, 0x80, 0, 0, textAlign, 0n);
+  sh(2, names.text, 1, 0x6n, 0x120, textSize, 0, 0, textAlign, 0n);
   sh(3, names.str, 3, 0n, 0x1c0, strtab.length, 0, 0, 1n, 0n);
   sh(4, names.sym, 2, 0n, 0x200, 72, 3, 1, 8n, 24n);
   sh(5, names.rela, 4, 0n, 0x260, 24, 4, 2, 8n, 24n);
@@ -83,5 +83,11 @@ for (const alignment of [3n, 6n, 0x1800000n]) {
   assert.equal(image.symbols.find((symbol) => symbol.name === 'func')?.address, null);
   assert.equal(image.relocations.length, 0, 'relocations targeting an invalid synthetic section must fail closed');
 }
+
+const zeroSizedInvalid = parseELF(makeRelocatableElf64({ textAlign: 3n, textSize: 0n }));
+const zeroSizedText = textOf(zeroSizedInvalid);
+assert.equal(zeroSizedText.source, 'unmapped-section', 'zero-sized ET_REL sections must still validate sh_addralign');
+assert.equal(zeroSizedInvalid.metadata.elfMetadata?.complete, false);
+assert.ok(zeroSizedInvalid.metadata.elfMetadata?.reasons?.some((reason) => reason.includes('section-addralign')));
 
 console.log('issue #4227 ET_REL sh_addralign synthetic-layout regression: PASS');
