@@ -774,11 +774,44 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
           controlEffects.push({ kind: 'rethrow' });
           break;
 
-        case 0x16: // volatile.
+        case 0x12: // unaligned. <alignment:u1>
+          {
+            need(1);
+            const alignment = bytecode[pc++];
+            mnemonic = 'unaligned.';
+            completeness = 'partial';
+            if (alignment !== 1 && alignment !== 2 && alignment !== 4) {
+              unknownEffects.push({ category: 'memory', reason: `cil-unaligned-prefix-alignment-${alignment}` });
+            } else {
+              unknownEffects.push({ category: 'memory', reason: 'cil-unaligned-prefix-unattached' });
+            }
+          }
+          break;
+
+        case 0x13: // volatile.
+          mnemonic = 'volatile.';
+          completeness = 'partial';
+          unknownEffects.push({ category: 'memory', reason: 'cil-volatile-prefix-unattached' });
+          break;
+
         case 0x14: // tail.
-        case 0x12: // unaligned.
+          mnemonic = 'tail.';
+          completeness = 'partial';
+          unknownEffects.push({ category: 'control', reason: 'cil-tail-prefix-unattached' });
+          break;
+
+        case 0x16: // constrained. <token:u4>
+          need(4);
+          pc += 4;
+          mnemonic = 'constrained.';
+          completeness = 'partial';
+          unknownEffects.push({ category: 'types', reason: 'cil-constrained-prefix-unattached' });
+          break;
+
         case 0x1e: // readonly.
-          mnemonic = `prefix_${subOp.toString(16)}`;
+          mnemonic = 'readonly.';
+          completeness = 'partial';
+          unknownEffects.push({ category: 'memory', reason: 'cil-readonly-prefix-unattached' });
           break;
 
         default:
