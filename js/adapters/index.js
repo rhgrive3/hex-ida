@@ -16,6 +16,7 @@ const TRACE_CAPABILITY_EVENT_TYPES = Object.freeze({
   traceBranch: 'branch',
   traceMemoryWrite: 'memory-write',
 });
+const REMOTE_TRACE_MULTIPLEX_CAPABILITIES = Object.freeze(new Set(['traceFunction','traceCall','traceReturn','traceBranch','traceMemoryWrite','traceMemoryRead']));
 const REMOTE_CALL_METHODS = new Set(['attach','launch','pause','resume','stepInto','stepOver','stepOut','removeBreakpoint','listBreakpoints','readRegisters','writeRegister','readMemory','writeMemory','getThreads','getModules','getBacktrace','evaluate','trace','watchMemory']);
 
 // Listener isolation must cover async failures too: a listener returning a
@@ -716,7 +717,7 @@ export class RemoteDebugAdapter extends DebugAdapter {
   async getModules(){return remoteArray(await this.call('getModules'),'modules',REMOTE_ARRAY_LIMITS.modules,'modules')}
   async getBacktrace(threadId){return remoteArray(await this.call('getBacktrace',{threadId}),'frames',REMOTE_ARRAY_LIMITS.backtrace,'backtrace')}
   async evaluate(expression,context){const text=evaluateExpressionText(expression); if(text.length>4096)throw new DebugAdapterError('too-large','remote evaluate expression exceeds 4096 characters'); return this.call('evaluate',{expression:text,context})}
-  async trace(options={}){const {signal,...params}=options||{};return remoteTrace(await this.call('trace',params,{signal}))}
+  async trace(options={}){const {signal,...params}=options||{};const capability=params&&REMOTE_TRACE_MULTIPLEX_CAPABILITIES.has(params.capability)?params.capability:'traceFunction';if(!REMOTE_CALL_METHODS.has('trace'))throw new DebugAdapterError('unsupported-method','remote debug method is not exposed: trace');this.requireConnected();this.require(capability);return remoteTrace(await this.protocol.request('trace',params,{ signal,epoch:this.epoch }))}
   watchMemory(spec){return this.call('watchMemory',normalizeBreakpoint({...spec,kind:'memory'}))}
   getObjCRuntimeInfo(request={}){this.requireConnected(); this.require('objcRuntime'); return this.protocol.request('objcRuntime',request,{epoch:this.epoch})}
   getSwiftRuntimeInfo(request={}){this.requireConnected(); this.require('swiftRuntime'); return this.protocol.request('swiftRuntime',request,{epoch:this.epoch})}
