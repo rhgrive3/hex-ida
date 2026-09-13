@@ -17,8 +17,8 @@ import { X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION } from './targets/architecture/
 import {
   X86_SEMANTIC_FUNCTION_ANALYSIS_VERSION,
   X86_SEMANTIC_FUNCTION_MAX_DECODE_BYTES,
+  X86_SEMANTIC_FUNCTION_SCHEMA_VERSION,
 } from './targets/architecture/x86_64/semantic-function-contract.js';
-import { SEMANTIC_FUNCTION_PRESENTATION_SCHEMA_VERSION } from './analysis/semantic-function-presentation-contract.js';
 import { RISCV64_DECODER_SEMANTIC_VERSION } from './targets/architecture/riscv64/decoded-instruction.js';
 import { RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION } from './targets/architecture/riscv64/effects/common.js';
 import { resolveRiscvIsaProfile } from './binary/riscv-isa.js';
@@ -40,7 +40,7 @@ const SEMANTIC_FUNCTION_TARGETS = Object.freeze({
     decoderSemanticVersion: X86_DECODER_SEMANTIC_VERSION,
     architectureSemanticVersion: X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION,
     analysisVersion: X86_SEMANTIC_FUNCTION_ANALYSIS_VERSION,
-    schemaVersion: SEMANTIC_FUNCTION_PRESENTATION_SCHEMA_VERSION,
+    schemaVersion: X86_SEMANTIC_FUNCTION_SCHEMA_VERSION,
     abiIds: Object.freeze(['sysv-amd64', 'microsoft-x64']),
     defaultPlatform: (formatId) => (formatId === 'pe' ? 'windows' : 'linux'),
   }),
@@ -50,7 +50,7 @@ const SEMANTIC_FUNCTION_TARGETS = Object.freeze({
     decoderSemanticVersion: RISCV64_DECODER_SEMANTIC_VERSION,
     architectureSemanticVersion: RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION,
     analysisVersion: RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION,
-    schemaVersion: SEMANTIC_FUNCTION_PRESENTATION_SCHEMA_VERSION,
+    schemaVersion: X86_SEMANTIC_FUNCTION_SCHEMA_VERSION,
     abiIds: Object.freeze(['lp64', 'lp64f', 'lp64d']),
     defaultPlatform: () => 'linux',
   }),
@@ -286,7 +286,7 @@ export class Backend {
     if (!message) return;
     if (message.t === 'searchProgress' || message.t === 'scanProgress' || message.t === 'analysisProgress') {
       const pending = this.pending.get(message.requestId);
-      if (!pending || pending.uiEpoch !== this.gen) return;
+      if (!pending || pending.uiEpoch !== this.gen || pending.transportEpoch !== this.transportEpoch || message.epoch !== pending.transportEpoch) return;
       if (pending.onProgress) pending.onProgress(message);
       else if (message.t === 'searchProgress' && this.onSearchProgress) this.onSearchProgress(message);
       else if (message.t === 'scanProgress' && this.onScanProgress) this.onScanProgress(message);
@@ -302,7 +302,7 @@ export class Backend {
     const pending = this.pending.get(message.id);
     if (!pending || pending.workerName !== workerName) return;
     this.pending.delete(message.id);
-    if (pending.uiEpoch !== this.gen || message.epoch !== pending.transportEpoch) {
+    if (pending.uiEpoch !== this.gen || pending.transportEpoch !== this.transportEpoch || message.epoch !== pending.transportEpoch) {
       pending.reject(new StaleRequestError());
       return;
     }
