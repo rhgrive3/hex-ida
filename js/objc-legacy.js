@@ -365,11 +365,14 @@ async function readMethods(get, listAddr, out, className, prefix, budget, comple
     scanned++;
 
     let nameAddr = null;
+    let typesAddr = null;
     let imp = null;
     if (relative) {
       const nameField = entry + 0n;
+      const typesField = entry + 4n;
       const impField = entry + 8n;
       const nameTarget = nameField + BigInt(i32(b, 0));
+      typesAddr = typesField + BigInt(i32(b, 4));
       imp = impField + BigInt(i32(b, 8));
       nameAddr = await resolveRelativeMethodSelectorAddress(
         directSelector,
@@ -382,6 +385,7 @@ async function readMethods(get, listAddr, out, className, prefix, budget, comple
       }
     } else {
       nameAddr = cleanPointer(get, readWord(get, b, 0));
+      typesAddr = cleanPointer(get, readWord(get, b, pointerBytes));
       imp = cleanPointer(get, readWord(get, b, pointerBytes * 2));
     }
     if (imp == null) { markLegacyPartial(completeness, 'method-imp-unresolved', 'incompleteMethodLists'); continue; }
@@ -390,10 +394,11 @@ async function readMethods(get, listAddr, out, className, prefix, budget, comple
     if(get.requireImplementationProof&&!implementationProven)markLegacyPartial(completeness,implementationValidationReason||'method-imp-unproven','incompleteMethodLists');
     const sel = await cstring(get, nameAddr);
     if (!sel) { markLegacyPartial(completeness, 'method-selector-invalid', 'incompleteMethodLists'); continue; }
+    const types = await cstring(get, typesAddr);
     out.push({
       addr: imp,
       name: prefix + '[' + className + ' ' + sel + ']',
-      sel, kind: prefix, className, implementationProven, implementationValidationReason,
+      sel, kind: prefix, className, types, implementationProven, implementationValidationReason,
     });
   }
   if (scanned < count) markLegacyPartial(completeness, 'method-budget', 'incompleteMethodLists');
