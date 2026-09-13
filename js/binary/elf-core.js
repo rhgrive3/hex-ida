@@ -5,7 +5,7 @@ import { parseProgramDynamic } from './elf-dynamic.js';
 import { createELFMetadataBudget, markELFMetadataPartial } from './elf-budget.js';
 import { elfInstructionStartAlignmentRejection, elfSectionFileSpanConsistentWithLoads, executableELFRange, mappedELFFileSpanForVa } from './elf-mapping.js';
 import { relocationFieldWidth } from './elf-relocation-target.js';
-import { parseRiscvAttributes, parseRiscvMappingSymbol } from './riscv-isa.js';
+import { isRiscvMappingSymbolRecord, parseRiscvAttributes, parseRiscvMappingSymbol } from './riscv-isa.js';
 
 const ET_REL = 1;
 const PT_LOAD = 1;
@@ -135,7 +135,7 @@ export function parseELF(input, options = {}) {
   for (const s of symbolTables) parseSymbols(r, s, rawSections, image, bits, h.type, metadataBudget);
   if (image.arch === 'riscv64') {
     const mappings = image.symbols
-      .filter((symbol) => symbol?.defined === true && typeof symbol.name === 'string')
+      .filter((symbol) => isRiscvMappingSymbolRecord(symbol))
       .map((symbol) => {
         const parsed = parseRiscvMappingSymbol(symbol.name);
         if (!parsed) return null;

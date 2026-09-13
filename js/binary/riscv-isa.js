@@ -194,6 +194,16 @@ export function parseRiscvMappingSymbol(name) {
   return isa ? Object.freeze({ kind:'instruction', isa:Object.freeze({ ...isa, evidence:'mapping-symbol' }) }) : null;
 }
 
+export function isRiscvMappingSymbolRecord(symbol) {
+  return symbol?.defined === true
+    && symbol.kind === 'type-0'
+    && symbol.binding === 'local'
+    && symbol.size === 0n
+    && typeof symbol.address === 'bigint'
+    && Number.isInteger(symbol.sectionIndex)
+    && symbol.sectionIndex > 0;
+}
+
 export function resolveRiscvIsaProfile(metadata, address, options = {}) {
   const fallback = Object.freeze({
     canonical:'rv64imc-assumed', xlen:64, compressedInstructions:true, instructionAlignment:2,
