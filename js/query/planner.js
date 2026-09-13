@@ -824,9 +824,12 @@ async function analyzeCandidates(query, pools, tools, b) {
 async function verifyBest(query, ranked, tools, b) {
   for (const c of ranked.slice(0, 8)) {
     if (expired(b)) break;
-    const rmw = (c.semantic || []).find((f) => f.kind === FACT.RMW ||
-      (query.action === 'increase' && f.kind === FACT.INCREMENT) ||
-      (query.action === 'decrease' && f.kind === FACT.DECREMENT));
+    const verifiesFieldUpdate = query.action === 'increase' || query.action === 'decrease';
+    const rmw = verifiesFieldUpdate
+      ? (c.semantic || []).find((f) => f.kind === FACT.RMW ||
+        (query.action === 'increase' && f.kind === FACT.INCREMENT) ||
+        (query.action === 'decrease' && f.kind === FACT.DECREMENT))
+      : null;
     if (rmw && rmw.location) {
       const verified = await invokeTool(tools, 'verify_field_update', b, c.address, rmw.location.key || { offset: rmw.location.disp }, { pathLimit: 8 });
       if (expired(b)) break;
