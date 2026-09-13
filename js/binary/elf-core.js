@@ -191,6 +191,7 @@ export function parseELF(input, options = {}) {
     sectionDynamicPresent: hasDynamic,
   });
   validateSectionRiscvVariantCcTag(image, rawSections);
+  if (!dynsymAuthoritative) reconcileDynamicSymbolFallbackEvidence(image);
   let ehFrameHdr = rawSections.find((s) => s.name === '.eh_frame_hdr') || null;
   if (!ehFrameHdr) {
     const ph = programHeaders.find((item) => item.type === PT_GNU_EH_FRAME && item.filesz > 0n);
@@ -500,7 +501,11 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
   }
   const minEnt = BigInt(bits === 64 ? 24 : 16);
   if (table.entsize < minEnt) { budget.partial(`symbols:${table.index}:entry-size`, `ELF symbol table ${table.index} entry size ${table.entsize} is smaller than ${minEnt}`); return false; }
-  let authoritative = table.size >= table.entsize;
+  let authoritative = true;
+  if (table.size < table.entsize || table.size % table.entsize !== 0n) {
+    authoritative = false;
+    budget.partial(`symbols:${table.index}:table-size`, `ELF symbol table ${table.index} size ${table.size} is not a whole non-empty sequence of ${table.entsize}-byte entries`);
+  }
   const tableStart = safeOffset(table.offset), ent = safeOffset(table.entsize);
   const strStart = safeOffset(str.offset), strBytes = safeOffset(str.size);
   if (tableStart == null || ent == null || strStart == null || strBytes == null || tableStart > r.length || strStart > r.length || strBytes > r.length-strStart) {
@@ -586,6 +591,50 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
   return authoritative;
 }
 
+
+function reconcileDynamicSymbolFallbackEvidence(image) {
+  const scalar = (value) => typeof value === 'bigint' ? value.toString() : value ?? null;
+  const key = (values) => JSON.stringify(values.map(scalar));
+  const symbolKey = (symbol) => key([
+    symbol.index, symbol.name, symbol.address, symbol.tlsOffset, symbol.size,
+    symbol.kind, symbol.binding, symbol.defined, symbol.sectionIndex, symbol.stOther,
+  ]);
+  const dynamicSymbols = new Set(
+    image.symbols.filter((symbol) => symbol.source === 'PT_DYNAMIC').map(symbolKey),
+  );
+  const replacedSymbols = new Set();
+  image.symbols = image.symbols.filter((symbol) => {
+    if (symbol.source !== 'dynsym' || !dynamicSymbols.has(symbolKey(symbol))) return true;
+    replacedSymbols.add(`${symbol.tableIndex}:${symbol.index}`);
+    return false;
+  });
+
+  // Reconcile only matching DYNSYM records. Independent SYMTAB facts and
+  // partial section records without a matching fallback remain available.
+  const importKey = (entry) => key([
+    entry.symbolIndex, entry.name, entry.weak, entry.version, entry.versionLibrary,
+  ]);
+  const dynamicImports = new Map(
+    image.imports.filter((entry) => entry.source === 'PT_DYNAMIC').map((entry) => [importKey(entry), entry]),
+  );
+  image.imports = image.imports.filter((entry) => {
+    if (entry.source !== 'elf-dynsym' || !replacedSymbols.has(`${entry.tableIndex}:${entry.symbolIndex}`)) return true;
+    const replacement = dynamicImports.get(importKey(entry));
+    if (!replacement) return true;
+    if (entry.sites?.length) replacement.sites = [...(replacement.sites || []), ...entry.sites];
+    return false;
+  });
+
+  const exportKey = (entry) => key([
+    entry.symbolIndex, entry.name, entry.address, entry.tlsOffset, entry.kind, entry.version,
+  ]);
+  const dynamicExports = new Set(
+    image.exports.filter((entry) => entry.source === 'PT_DYNAMIC').map(exportKey),
+  );
+  image.exports = image.exports.filter((entry) => entry.source !== 'dynsym'
+    || !replacedSymbols.has(`${entry.tableIndex}:${entry.symbolIndex}`)
+    || !dynamicExports.has(exportKey(entry)));
+}
 
 function validateSectionRiscvVariantCcTag(image, sections) {
   if (Number(image?.metadata?.machine) !== EM_RISCV) return;
