@@ -37,6 +37,9 @@ function resolveClassInitializationAuthority(image, declaringClass, method) {
   const classes = image.classes ?? [];
   const declaringMatches = classes.filter((entry) => entry?.classType === declaringClass);
   if (declaringMatches.length !== 1) fail('dex-class-initialization-class-ambiguous');
+  const hasNoInterfaces = classDefinition => Array.isArray(classDefinition?.interfaceTypes)
+    && classDefinition.interfaceTypes.length === 0;
+  let superinterfaceAuthorityComplete = hasNoInterfaces(declaringMatches[0]);
   const seen = new Set([declaringClass]);
   let superType = declaringMatches[0]?.superType ?? null;
   while (superType != null) {
@@ -54,6 +57,7 @@ function resolveClassInitializationAuthority(image, declaringClass, method) {
         superclassAuthority: 'unresolved',
       };
     }
+    if (!hasNoInterfaces(matches[0])) superinterfaceAuthorityComplete = false;
     if (initializersFor(superType)) {
       return {
         declaringClass,
@@ -67,18 +71,13 @@ function resolveClassInitializationAuthority(image, declaringClass, method) {
     superType = matches[0]?.superType ?? null;
   }
 
-  // DEX 037 introduced default interface methods. For those formats, class
-  // initialization may need to initialize default-method-bearing
-  // superinterfaces before the class completes initialization. This owner
-  // does not yet have canonical interface-list/default-method authority on
-  // current main, so absence of that metadata cannot prove absence of the
-  // trigger. Legacy pre-037 DEX cannot contain default interface methods and
-  // therefore retains the existing exact clean-chain control.
+  // DEX 037 introduced default interface methods. For those formats, only
+  // complete empty interface lists across the class chain prove their absence.
   const versionMatch = typeof image.formatVersion === 'string'
     ? /^dex-(\d{3})$/.exec(image.formatVersion)
     : null;
   const dexVersion = versionMatch ? Number(versionMatch[1]) : null;
-  if (!Number.isSafeInteger(dexVersion) || dexVersion >= 37) {
+  if (!Number.isSafeInteger(dexVersion) || (dexVersion >= 37 && !superinterfaceAuthorityComplete)) {
     return {
       declaringClass,
       clinitPresent: false,

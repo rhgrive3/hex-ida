@@ -233,16 +233,47 @@ function nonNegativeInteger(value, code) {
 function assertAllowedKeys(input, allowed, code) {
   for (const key of Object.keys(input)) if (!allowed.has(key)) fail(`${code}:${key}`);
 }
+function validateUnknownCategories(value) {
+  const categories = array(value, 'vm-effect-invalid-unknown-category');
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(categories, 'length');
+  const length = lengthDescriptor?.value;
+  if (!Number.isSafeInteger(length) || length < 1) fail('vm-effect-invalid-unknown-category');
+  const uniqueCategories = new Set();
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(categories, String(index));
+    if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      fail('vm-effect-invalid-unknown-category');
+    }
+    if (typeof descriptor.value !== 'string' || !SETS.unknownCategories.has(descriptor.value)) {
+      fail('vm-effect-invalid-unknown-category');
+    }
+    uniqueCategories.add(descriptor.value);
+  }
+  return [...uniqueCategories].sort();
+}
 function validateUnknownEffect(value) {
   const effect = object(value, 'vm-effect-invalid-unknown-effect');
   const categoryDescriptor = Object.getOwnPropertyDescriptor(effect, 'category');
-  if (!categoryDescriptor || !Object.prototype.hasOwnProperty.call(categoryDescriptor, 'value')) {
+  const categoriesDescriptor = Object.getOwnPropertyDescriptor(effect, 'categories');
+  if (categoryDescriptor && !Object.prototype.hasOwnProperty.call(categoryDescriptor, 'value')) {
     fail('vm-effect-invalid-unknown-category');
   }
-  const category = categoryDescriptor.value;
-  if (typeof category !== 'string' || !SETS.unknownCategories.has(category)) {
+  if (categoriesDescriptor && !Object.prototype.hasOwnProperty.call(categoriesDescriptor, 'value')) {
     fail('vm-effect-invalid-unknown-category');
   }
+  if (categoryDescriptor) {
+    const category = categoryDescriptor.value;
+    if (typeof category !== 'string' || !SETS.unknownCategories.has(category)) {
+      fail('vm-effect-invalid-unknown-category');
+    }
+  }
+  if (categoriesDescriptor) {
+    const categories = validateUnknownCategories(categoriesDescriptor.value);
+    if (categoryDescriptor && (categories.length !== 1 || categories[0] !== categoryDescriptor.value)) {
+      fail('vm-effect-invalid-unknown-category');
+    }
+  }
+  if (!categoryDescriptor && !categoriesDescriptor) fail('vm-effect-invalid-unknown-category');
   return effect;
 }
 function normalizeUnknownEffect(value) {
