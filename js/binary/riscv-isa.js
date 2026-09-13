@@ -138,6 +138,44 @@ export function normalizeRiscvIsaString(input) {
   });
 }
 
+const ELF_ISA_BASE_TOKEN = /^(i|e)(\d+)p(\d+)$/;
+const ELF_ISA_EXTENSION_TOKEN = /^([a-z][a-z0-9]*?)(\d+)p(\d+)$/;
+const ELF_ISA_EXTENSION_ORDER = { m:1, a:2, f:3, d:4, q:5, l:6, c:7, b:8, j:9, k:10, t:11 };
+
+function canonicalElfIsaExtensionOrder(name) {
+  if (name.length === 1) {
+    const rank = ELF_ISA_EXTENSION_ORDER[name];
+    return rank === undefined ? null : { rank, group:'' };
+  }
+  const group = name[0];
+  if (group !== 'z' && group !== 's' && group !== 'x') return null;
+  return { rank:group === 'z' ? 20 : group === 's' ? 30 : 40, group:name };
+}
+
+export function parseCanonicalRiscvElfIsa(input) {
+  if (typeof input !== 'string') return null;
+  if (input.length === 0 || input !== input.trim().toLowerCase()) return null;
+  const match = /^rv(32|64)([a-z0-9]+(?:_[a-z0-9]+)*)$/.exec(input);
+  if (!match) return null;
+  const tokens = match[2].split('_');
+  if (!ELF_ISA_BASE_TOKEN.test(tokens[0] || '')) return null;
+  let previous = { rank:0, group:'' };
+  const seen = new Set();
+  for (const token of tokens.slice(1)) {
+    const extension = ELF_ISA_EXTENSION_TOKEN.exec(token);
+    if (!extension) return null;
+    const name = extension[1];
+    if (seen.has(name)) return null;
+    seen.add(name);
+    const order = canonicalElfIsaExtensionOrder(name);
+    if (!order) return null;
+    if (order.rank < previous.rank) return null;
+    if (order.rank === previous.rank && order.group <= previous.group) return null;
+    previous = order;
+  }
+  return normalizeRiscvIsaString(input);
+}
+
 export function parseRiscvAttributes(input, options = {}) {
   const bytes = bytesOf(input);
   if (!bytes || !bytes.length || bytes.length > MAX_ATTRIBUTE_BYTES || bytes[0] !== 0x41) return null;
@@ -239,16 +277,21 @@ export function resolveRiscvIsaProfile(metadata, address, options = {}) {
   }
   if (selected?.kind === 'data') return Object.freeze({ code:false, exact:true, evidence:'mapping-symbol-data' });
   if (selected && selected.kind !== 'instruction') return options.allowAssumed === false ? null : fallback;
-  const base = selected?.isa || metadata.file || null;
+  const mappingIsa = selected?.isa || null;
+  const mappingIsaCanonical = mappingIsa !== null && parseCanonicalRiscvElfIsa(mappingIsa.canonical) !== null;
+  const fileIsa = metadata.file || null;
+  const base = mappingIsaCanonical ? mappingIsa : (fileIsa || mappingIsa);
   if (!base) return options.allowAssumed === false ? null : fallback;
   const normalized = strictRiscvProfile(base);
   if (!normalized) return options.allowAssumed === false ? null : fallback;
-  const evidence = selected?.isa ? 'mapping-symbol' : (base.evidence ?? metadata.evidence ?? 'elf-attribute');
+  const evidence = mappingIsaCanonical
+    ? 'mapping-symbol'
+    : (base.evidence ?? metadata.evidence ?? 'elf-attribute');
   if (typeof evidence !== 'string' || evidence.trim() === '') return options.allowAssumed === false ? null : fallback;
   return Object.freeze({
     ...normalized,
     evidence,
-    exact:true,
+    exact:parseCanonicalRiscvElfIsa(base.canonical) !== null,
     code:true,
   });
 }
