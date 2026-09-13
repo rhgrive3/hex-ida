@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { installDemandDrivenAnalysis, __demandDrivenInternalsForTests } from '../js/analysis/demand-driven-runtime.js';
+import { installDemandDrivenAnalysis, __demandDrivenInternalsForTests } from '../../../js/analysis/demand-driven-runtime.js';
 
 // #4217: when the last waiter aborts, waitForShared() cancels the shared
 // producer but the owner cache only drops the entry once the producer settles.
@@ -74,7 +74,7 @@ test('#4217 a late-abandoned producer must not evict the entry that replaced it'
 });
 
 test('#4217 a caller arriving after the abandoned producer settled still coalesces', async () => {
-  const { app, requests, producers, key } = discoveryHarness();
+  const { app, requests, producers } = discoveryHarness();
 
   const abandonedSignal = new AbortController();
   const abandoned = app.ensureFunctions(null, { signal: abandonedSignal.signal });
