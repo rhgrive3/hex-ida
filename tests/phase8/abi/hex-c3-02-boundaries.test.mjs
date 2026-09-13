@@ -870,8 +870,11 @@ test('C3-02 forced-stack homogeneous aggregates use canonical physical element s
     const entry = classified.arguments[16];
     const next = classified.arguments[17];
     assert.equal(entry.location, 'stack', `${name} must be forced to stack`);
-    const physicalElementBytes = Math.max(8, elementBytes);
-    assert.equal(entry.bytes, physicalElementBytes * aggregate.members.length, `${name} physical size`);
+    const physicalElementBytes = elementBytes;
+    const roundedAggregateBytes = Math.ceil(
+      (elementBytes * aggregate.members.length) / 8,
+    ) * 8;
+    assert.equal(entry.bytes, roundedAggregateBytes, `${name} whole aggregate physical size`);
     assert.deepEqual(entry.pieces.map(({ pieceIndex, byteOffset, stackOffset, bytes }) => ({
       pieceIndex, byteOffset, stackOffset, bytes,
     })), aggregate.members.map((_member, piece) => ({
@@ -893,14 +896,14 @@ test('C3-02 forced-stack homogeneous aggregates use canonical physical element s
     hfa32,
     { type:'int64', bits:64 },
   ];
-  const instructions = [0, 8, 16].map((disp, index) => ({
+  const instructions = [0, 4, 8].map((disp, index) => ({
     op:'load', loc:{ kind:'stack', baseReg:'sp', frameEpoch:99, disp:BigInt(disp), key:`c3-02:hfa:${index}` },
-    memUse:{ kind:'entry' }, dst:{ id:300 + index, bits:64 },
+    memUse:{ kind:'entry' }, dst:{ id:300 + index, bits:32 },
   }));
   const registers = ['sp', ...Array.from({ length:8 }, (_unused, index) => `x${index}`),
     ...Array.from({ length:8 }, (_unused, index) => `v${index}`)];
   const prototype = recoverFunctionPrototype(
-    { args:new Map(registers.map((reg, index) => [reg, reg === 'sp' ? value(99, reg) : value(index + 1, reg)])), instructions },
+    { args:new Map(registers.map((reg, index) => [reg, value(reg === 'sp' ? 99 : index + 1, reg)])), instructions },
     { values:new Map() },
     { abiAdapter:semanticAbiAdapter(AAPCS64_ABI, { architecture:'arm64', platform:'linux' }),
       functionPrototype:{ parameters } },
@@ -910,10 +913,10 @@ test('C3-02 forced-stack homogeneous aggregates use canonical physical element s
   assert.equal(aggregate.aggregate, true);
   assert.equal(aggregate.canonicalLocation, 'stack');
   assert.deepEqual(aggregate.pieces.map(({ pieceIndex, stackOffset, bytes }) => ({ pieceIndex, stackOffset, bytes })), [
-    { pieceIndex:0, stackOffset:0, bytes:8 }, { pieceIndex:1, stackOffset:8, bytes:8 },
+    { pieceIndex:0, stackOffset:0, bytes:4 }, { pieceIndex:1, stackOffset:4, bytes:4 },
   ]);
   assert.equal(prototype.arguments.filter((argument) => argument.canonicalParameterIndex === 16).length, 1);
-  assert.equal(prototype.arguments.find((argument) => argument.canonicalParameterIndex === 17)?.stackOffset, 16n);
+  assert.equal(prototype.arguments.find((argument) => argument.canonicalParameterIndex === 17)?.stackOffset, 8n);
 });
 
 test('C3-02 aggregate layouts require fully located deterministic padding coverage', () => {
