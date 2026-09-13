@@ -325,6 +325,16 @@ jobs:
                   --head-sha "$OWNERSHIP_HEAD_SHA")"
                 node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
                 ;;
+              codex/consolidate-arm64-repairs-20260913)
+                # The consolidated repair batch spans multiple ownership lanes.
+                # Enumerate every foreign path before validating the Phase 7
+                # subset so the integration remains fail-closed.
+                FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+                  --branch "$CIRCLE_BRANCH" \
+                  --base-sha "$OWNERSHIP_BASE_SHA" \
+                  --head-sha "$OWNERSHIP_HEAD_SHA")"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
               *)
                 node tools/validation/phase7-ownership.mjs --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA"
                 ;;
@@ -381,6 +391,12 @@ jobs:
                 --head-sha "$OWNERSHIP_HEAD_SHA")"
               node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"
             elif [ "${CIRCLE_BRANCH:-}" = 'fix/main-gate-recovery-20260913' ]; then
+              FILES_JSON="$(node tools/validation/phase8/cross-lane-inventory.mjs \
+                --branch "$CIRCLE_BRANCH" \
+                --base-sha "$OWNERSHIP_BASE_SHA" \
+                --head-sha "$OWNERSHIP_HEAD_SHA")"
+              node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"
+            elif [ "${CIRCLE_BRANCH:-}" = 'codex/consolidate-arm64-repairs-20260913' ]; then
               FILES_JSON="$(node tools/validation/phase8/cross-lane-inventory.mjs \
                 --branch "$CIRCLE_BRANCH" \
                 --base-sha "$OWNERSHIP_BASE_SHA" \
