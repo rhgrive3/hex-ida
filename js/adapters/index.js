@@ -134,6 +134,10 @@ function registerSelector(reg) {
   if (typeof reg !== 'string' || !isRegisterName(reg)) throw new DebugAdapterError('invalid-register', 'unsupported register selector');
   return reg;
 }
+function evaluateExpressionText(expression) {
+  if (typeof expression !== 'string') throw new DebugAdapterError('invalid-argument', 'evaluate expression must be a string');
+  return expression;
+}
 function registerWriteValue(reg, value) {
   let normalized;
   if (typeof value === 'bigint') normalized = value;
@@ -536,9 +540,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
         }
         data = data.subarray(0, n);
       } else {
-        const source = Array.from(bytes || []);
-        for (const byte of source) if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value');
-        data = Uint8Array.from(source);
+        throw new DebugAdapterError('invalid-byte', 'memory write requires a byte array');
       }
     }
     if (data.length > WRITE_LIMIT) throw new DebugAdapterError('too-large','memory write exceeds 256 KiB');
@@ -565,7 +567,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   async getModules() { return [{ id:'sandbox', name:'local function sandbox', base:null, synthetic:true }]; }
   async getBacktrace() { return (this.ensureSandbox().emulator.callStack || []).slice(-256).reverse().map((f,i) => ({ index:i, address:f.addr, returnAddress:f.ret })); }
   async evaluate(expression) {
-    const text = String(expression || '').trim(); if (/^(x([0-9]|[12][0-9]|30)|sp|pc)$/.test(text)) return this.ensureSandbox().getRegister(text);
+    const text = evaluateExpressionText(expression).trim(); if (/^(x([0-9]|[12][0-9]|30)|sp|pc)$/.test(text)) return this.ensureSandbox().getRegister(text);
     throw new DebugAdapterError('unsupported-expression','local evaluate only accepts register names');
   }
   async trace(options = {}) {
@@ -709,7 +711,7 @@ export class RemoteDebugAdapter extends DebugAdapter {
   async getThreads(){return remoteArray(await this.call('getThreads'),'threads',REMOTE_ARRAY_LIMITS.threads,'threads')}
   async getModules(){return remoteArray(await this.call('getModules'),'modules',REMOTE_ARRAY_LIMITS.modules,'modules')}
   async getBacktrace(threadId){return remoteArray(await this.call('getBacktrace',{threadId}),'frames',REMOTE_ARRAY_LIMITS.backtrace,'backtrace')}
-  async evaluate(expression,context){const text=String(expression); if(text.length>4096)throw new DebugAdapterError('too-large','remote evaluate expression exceeds 4096 characters'); return this.call('evaluate',{expression:text,context})}
+  async evaluate(expression,context){const text=evaluateExpressionText(expression); if(text.length>4096)throw new DebugAdapterError('too-large','remote evaluate expression exceeds 4096 characters'); return this.call('evaluate',{expression:text,context})}
   async trace(options={}){const {signal,...params}=options||{};return remoteTrace(await this.call('trace',params,{signal}))}
   watchMemory(spec){return this.call('watchMemory',normalizeBreakpoint({...spec,kind:'memory'}))}
   getObjCRuntimeInfo(request={}){this.requireConnected(); this.require('objcRuntime'); return this.protocol.request('objcRuntime',request,{epoch:this.epoch})}

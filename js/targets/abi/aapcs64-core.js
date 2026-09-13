@@ -334,6 +334,7 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
         pieces:Array.from({length:c.members}, (_unused,piece) => ({
           pieceIndex:piece, order:piece,
           stackOffset:stackOffset + piece * homogeneousElementBytes,
+          stackAlignment:homogeneousElementBytes,
           bits:c.elementBits, bytes:homogeneousElementBytes,
           byteOffset:piece * homogeneousElementBytes, abiClass:c.hfa?'hfa':'hva',
         })),

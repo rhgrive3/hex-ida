@@ -32,6 +32,11 @@ function run(payload, name = '_x') {
         ? { perms: { execute: true } }
         : null;
     },
+    addressToOffset(address) {
+      return address >= imageBase && address < imageBase + 0x1000n
+        ? address - imageBase
+        : null;
+    },
   };
   const status = parseExportTrie(
     new ByteView(bytes),

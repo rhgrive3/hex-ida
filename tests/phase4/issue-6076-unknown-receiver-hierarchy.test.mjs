@@ -47,18 +47,16 @@ test('6076: missing mid-chain superclass blocks negative filtering', () => {
   assert.equal(result.partial, true);
 });
 
-test('6076: hierarchy depth budget keeps beyond-budget candidates inconclusive', () => {
-  const classes = Array.from({ length: 65 }, (_, i) => ({
+test('6076/4555: a fully indexed deep hierarchy is complete rather than budget-truncated', () => {  const classes = Array.from({ length: 65 }, (_, i) => ({
     name: `Depth${i}`,
     ...(i < 64 ? { superName: `Depth${i + 1}` } : {}),
     methods: i === 64 ? [{ sel: 'work', addr: 0x1234n }] : [],
   }));
   const deep = buildObjcRuntimeIndex(model(classes));
   const result = resolveObjcDispatch(deep, { receiverType: 'Depth0', selector: 'work' });
-  assert.equal(result.resolved, null);
+  assert.equal(result.resolved?.className, 'Depth64');
   assert.deepEqual(result.candidates.map((candidate) => candidate.className), ['Depth64']);
-  assert.equal(result.partial, true);
-  assert.match(result.reason, /hierarchy is unavailable or incomplete/);
+  assert.equal(result.partial, false);
 });
 
 test('6076: cyclic hierarchy keeps unrelated selector candidates inconclusive', () => {

@@ -1,34 +1,42 @@
-import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { runVerificationOracles } from './verification/oracles.mjs';
+import { fileURLToPath } from "node:url";
 
-const directory = path.dirname(fileURLToPath(import.meta.url));
+import { runVerificationOracles } from "./verification/oracles.mjs";
+import { discoverPhaseTests, runPhaseNodeTests } from "../support/phase-node-test-runner.mjs";
 
-function discoverTests(root) {
-  const out = [];
-  for (const entry of fs.readdirSync(root, { withFileTypes:true })) {
-    const absolute = path.join(root, entry.name);
-    if (entry.isDirectory()) out.push(...discoverTests(absolute));
-    else if (entry.isFile() && entry.name.endsWith('.test.mjs')) out.push(absolute);
+const DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
+
+export function discoverPhase4Tests(root = DIRECTORY) {
+  return discoverPhaseTests(root);
+}
+
+export async function runPhase4Tests(
+  argv = process.argv.slice(2),
+  { root = DIRECTORY, spawn, runVerification = runVerificationOracles } = {},
+) {
+  const runnerOptions = {
+    phase: "phase4",
+    root,
+    argv,
+    cwd: path.resolve(root, "../.."),
+  };
+  if (spawn) runnerOptions.spawn = spawn;
+  const result = runPhaseNodeTests(runnerOptions);
+
+  // Keep the independent Phase 4 product oracles after the child test runner
+  // has exited. Importing node:test files only registers tests; it does not
+  // prove that their asynchronous bodies have completed.
+  const verification = await runVerification();
+  console.log("PHASE4_VERIFICATION_ORACLES " + JSON.stringify(verification));
+  const failedCases = verification.verificationCases.filter((item) => item.status !== "pass");
+  const rawFailures = Object.entries(verification.rawFailures).filter(([, value]) => Number(value) !== 0);
+  if (failedCases.length || rawFailures.length) {
+    throw new Error(`phase4 independent verification failed: cases=${failedCases.length} raw=${JSON.stringify(Object.fromEntries(rawFailures))}`);
   }
-  return out;
+
+  console.log(`phase4: PASS (${result.selected} test files + independent verification)`);
+  return Object.freeze({ ...result, verification });
 }
 
-const files = discoverTests(directory).sort((a, b) => a.localeCompare(b));
-if (!files.length) throw new Error('phase4: no contract tests discovered');
-for (const file of files) {
-  const relative = path.relative(directory, file).replaceAll('\\', '/');
-  process.stdout.write(`[phase4] ${relative}\n`);
-  await import(pathToFileURL(file).href);
-}
-
-const verification = await runVerificationOracles();
-console.log('PHASE4_VERIFICATION_ORACLES ' + JSON.stringify(verification));
-const failedCases = verification.verificationCases.filter((item) => item.status !== 'pass');
-const rawFailures = Object.entries(verification.rawFailures).filter(([, value]) => Number(value) !== 0);
-if (failedCases.length || rawFailures.length) {
-  throw new Error(`phase4 independent verification failed: cases=${failedCases.length} raw=${JSON.stringify(Object.fromEntries(rawFailures))}`);
-}
-
-console.log(`phase4: PASS (${files.length} test files + independent verification)`);
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) await runPhase4Tests();

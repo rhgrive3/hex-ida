@@ -81,7 +81,7 @@ console.log('  ok 1 relocation step() only spends non-negative safe integers (#1
 // `positiveLimit` helpers elsewhere in the loader; only values that cannot be
 // a finite positive integer fall back. Explicit numeric zero is covered by
 // #4299 and is a valid zero budget, not a default-budget request.
-for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -5, 1.5, 'lots', null, undefined, {}, []]) {
+for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -5, 1.5, 'lots', '1', null, false, true, undefined, {}, [], ['1']]) {
   const budget = createMachOMetadataBudget({ metadata: {}, warnings: [] }, {
     limits: { records: bad, stringBytes: bad, warnings: bad, wallClockMs: bad, objects: bad, operations: bad, inputBytes: bad, estimatedHeapBytes: bad },
   });
