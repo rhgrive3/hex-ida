@@ -154,15 +154,30 @@ function operationShapeValid(operations) {
 function formatIdentityMismatch(result, transaction, expectedOutputHash) {
   if (!result || typeof result !== 'object') return null;
   const format = result.format ?? result.image?.format;
-  if (format != null && String(format).toLowerCase() !== transaction.format) return 'validator-format-mismatch';
+  if (format != null) {
+    if (typeof format !== 'string') return 'validator-format-invalid';
+    if (format.toLowerCase() !== transaction.format) return 'validator-format-mismatch';
+  }
   const architecture = result.architecture ?? result.arch ?? result.image?.arch;
-  if (architecture != null && String(architecture).toLowerCase() !== transaction.architecture) return 'validator-architecture-mismatch';
+  if (architecture != null) {
+    if (typeof architecture !== 'string') return 'validator-architecture-invalid';
+    if (architecture.toLowerCase() !== transaction.architecture) return 'validator-architecture-mismatch';
+  }
   const loaderVersion = result.loaderVersion ?? result.parserVersion ?? result.image?.loaderVersion;
-  if (loaderVersion != null && String(loaderVersion) !== transaction.loaderVersion) return 'validator-loader-identity-mismatch';
+  if (loaderVersion != null) {
+    if (typeof loaderVersion !== 'string') return 'validator-loader-identity-invalid';
+    if (loaderVersion !== transaction.loaderVersion) return 'validator-loader-identity-mismatch';
+  }
   const sourceHash = result.sourceHash ?? result.inputHash ?? result.image?.sourceHash;
-  if (sourceHash != null && String(sourceHash).toLowerCase() !== transaction.sourceHash) return 'validator-source-identity-mismatch';
+  if (sourceHash != null) {
+    if (typeof sourceHash !== 'string') return 'validator-source-identity-invalid';
+    if (sourceHash.toLowerCase() !== transaction.sourceHash) return 'validator-source-identity-mismatch';
+  }
   const outputHash = result.outputHash ?? result.bytesHash ?? result.image?.outputHash;
-  if (outputHash != null && String(outputHash).toLowerCase() !== expectedOutputHash) return 'validator-output-identity-mismatch';
+  if (outputHash != null) {
+    if (typeof outputHash !== 'string') return 'validator-output-identity-invalid';
+    if (outputHash.toLowerCase() !== expectedOutputHash) return 'validator-output-identity-mismatch';
+  }
   return null;
 }
 
