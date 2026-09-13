@@ -14,7 +14,7 @@ jobs:
         with:
           ref: fixer2/issue-8495-arm64_32-classic-bind-width
           fetch-depth: 0
-      - name: Reconcile exact head onto exact live main
+      - name: Guard exact head and live main
         shell: bash
         run: |
           set -euo pipefail
@@ -22,24 +22,29 @@ jobs:
           B0=e78e09c85ca4ddf125818d96f2238557e7624973
           STAGING="$(git rev-parse HEAD)"
           git merge-base --is-ancestor "$H0" "$STAGING"
-          test "$(git diff --name-only "$H0"..."$STAGING")" = ".github/workflows/integrator-b-8498-reconcile.yml"
+          test "$(git diff --name-only "$H0".."$STAGING")" = ".github/workflows/integrator-b-8498-reconcile.yml"
           git fetch --no-tags origin main
           test "$(git rev-parse origin/main)" = "$B0"
           test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$B0"
           test "$(git ls-remote origin refs/heads/fixer2/issue-8495-arm64_32-classic-bind-width | cut -f1)" = "$STAGING"
-
-          set +e
-          git merge --no-commit --no-ff "$B0"
-          rc=$?
-          set -e
+      - name: Merge current main topology
+        shell: bash
+        run: |
+          set -euo pipefail
+          B0=e78e09c85ca4ddf125818d96f2238557e7624973
+          rc=0
+          git merge --no-commit --no-ff "$B0" || rc=$?
           test "$rc" -eq 0 -o "$rc" -eq 1
-
           conflicts="$(git diff --name-only --diff-filter=U)"
-          if [ -n "$conflicts" ]; then
-            test "$conflicts" = "js/binary/macho-dyld.js"
-            git show "$B0:js/binary/macho-dyld.js" > js/binary/macho-dyld.js
-            test "$(git hash-object js/binary/macho-dyld.js)" = "8ec3107865d62f800d73a3f3d0561decc70e5d7e"
-            python - <<'PY'
+          test -z "$conflicts" -o "$conflicts" = "js/binary/macho-dyld.js"
+      - name: Apply verified PR-unique delta to current-main source
+        shell: bash
+        run: |
+          set -euo pipefail
+          B0=e78e09c85ca4ddf125818d96f2238557e7624973
+          git show "$B0:js/binary/macho-dyld.js" > js/binary/macho-dyld.js
+          test "$(git hash-object js/binary/macho-dyld.js)" = "8ec3107865d62f800d73a3f3d0561decc70e5d7e"
+          python - <<'PY'
           from pathlib import Path
           p=Path('js/binary/macho-dyld.js')
           s=p.read_text()
@@ -54,8 +59,6 @@ jobs:
           once("      if (address < seg.address || address + ptrSize > seg.address + seg.size) { fail('threaded binding delta leaves segment'); return; }\n", "      if (address < seg.address || address + 8n > seg.address + seg.size) { fail('threaded binding delta leaves segment'); return; }\n")
           p.write_text(s)
           PY
-          fi
-
           test "$(git hash-object js/binary/macho-dyld.js)" = "d2ffd03c87b0ee301ddde12db3d9618c6f0cb484"
           test "$(git hash-object tests/phase4/binary/issue-8495-macho-arm64_32-classic-bind-pointer-width.test.mjs)" = "8e36bf763bb76be8e47643c9325ab6b06f8164d2"
           git add js/binary/macho-dyld.js tests/phase4/binary/issue-8495-macho-arm64_32-classic-bind-pointer-width.test.mjs
