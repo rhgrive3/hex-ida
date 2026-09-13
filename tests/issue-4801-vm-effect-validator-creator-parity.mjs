@@ -12,6 +12,8 @@ const creatorInput = {
   operationId: 'vm-op:m:0x0:0',
   methodId: 'm',
   frontendId: 'wasm',
+  opcode: 0x01,
+  mnemonic: 'nop',
   completeness: 'exact',
 };
 

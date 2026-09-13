@@ -19,6 +19,8 @@ function canonical(overrides = {}) {
     methodId: 'method-4838',
     operationId: 'op-4838',
     bytecodeOffset: 0,
+    mnemonic: 'nop',
+    completeness: 'exact',
     ...overrides,
   });
 }
@@ -55,7 +57,7 @@ for (const value of [[16], '16', {}, true, 1.5, Number.NaN, Number.MAX_SAFE_INTE
   );
 }
 assert.equal(canonical({ bytecodeOffset: 16 }).bytecodeOffset, 16);
-assert.equal(canonical({ opcode: 0 }).opcode, 0);
+assert.equal(canonical({ opcode: 0, mnemonic: 'unreachable', controlEffects: [{ kind: 'trap' }] }).opcode, 0);
 assert.equal(canonical().opcode, null);
 assert.equal(canonical().bytecodeOffset, 0);
 
@@ -169,6 +171,8 @@ assert.throws(
     frontendSemanticVersion: '1.0.0',
     opcode: 0x6a,
     mnemonic: 'i32.add',
+    consumedValues: [{ id: 'lhs', bits: 32 }, { id: 'rhs', bits: 32 }],
+    producedValues: [{ bits: 32 }],
     completeness: 'exact',
   });
   assert.equal(valid.completeness, 'exact');
