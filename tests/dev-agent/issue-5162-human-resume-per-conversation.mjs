@@ -1,3 +1,4 @@
+import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 import assert from 'node:assert/strict';
 import { DevSupervisorEngineV0 } from '../../js/ai/dev/supervisor/dev-supervisor-engine-v0.js';
 import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
@@ -124,7 +125,7 @@ function createHarness(decisions) {
     idFactory: (kind) => `${kind}-${++sequence}`,
     now: () => '2026-08-18T00:00:00.000Z',
   });
-  const settings = new DevAgentUiSettings({ storage: null });
+  const settings = new DevAgentUiSettings({ authProvider: new AllowAllAdminProvider(), storage: null });
   settings.setAgentProfile('dev');
   settings.setDecisionPolicy('yolo');
   let index = 0;

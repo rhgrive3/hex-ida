@@ -1,3 +1,4 @@
+import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 /* CARD G: prompt transport only.
    A CONTINUATION stops resending the fixed contract, so it is only safe when
    this runtime can prove the model already received and accepted exactly that
@@ -261,7 +262,7 @@ function newEngine(replies) {
     now: () => '2026-08-17T00:00:00.000Z',
   });
   const storage = { getItem: () => null, setItem() {} };
-  const settings = new DevAgentUiSettings({ storage });
+  const settings = new DevAgentUiSettings({ authProvider: new AllowAllAdminProvider(), storage });
   settings.setAgentProfile(AGENT_PROFILE.DEV);
   const bridge = {
     async request(prompt, options) {

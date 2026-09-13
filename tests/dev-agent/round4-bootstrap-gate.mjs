@@ -139,7 +139,7 @@ assert.deepEqual(proofEvidence, { ...evidence, capability: DEV_BOOTSTRAP_ROUND4_
 assert.throws(() => loader.invoke('dev.bootstrap.unknown'), /Unknown Dev extension capability/);
 
 const routingCalls = [];
-const settings = { agentProfile: 'standard' };
+const settings = { agentProfile: 'standard', identity: { authenticated: true, admin: true, capabilities: { canUseDevAgent: true, canUseDevYolo: true } } };
 const standardEngine = {
   async run(input) { routingCalls.push(['standard', input.mode]); return 'standard'; },
   marker() { return 'bound-standard'; },

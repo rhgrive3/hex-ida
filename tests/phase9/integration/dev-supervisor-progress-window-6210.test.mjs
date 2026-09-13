@@ -1,3 +1,4 @@
+import { AllowAllAdminProvider } from '../../../js/ai/dev/auth/admin-provider.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DevSupervisorV0 } from '../../../js/ai/dev/supervisor/dev-supervisor-v0.js';
@@ -30,7 +31,7 @@ function create(onRequest) {
     workerClient, idFactory: (kind) => `window-${kind}-${++nextId}`,
     now: () => '2026-08-18T08:00:00.000Z',
   });
-  const settings = new DevAgentUiSettings({ storage: { getItem: () => null, setItem() {} } });
+  const settings = new DevAgentUiSettings({ authProvider: new AllowAllAdminProvider(), storage: { getItem: () => null, setItem() {} } });
   settings.setAgentProfile(AGENT_PROFILE.DEV);
   const bridge = Object.freeze({ request: onRequest });
   const engine = new ProgressBudgetDevSupervisorEngineV0({ supervisor, settings, bridge, maxDecisions: 2 });

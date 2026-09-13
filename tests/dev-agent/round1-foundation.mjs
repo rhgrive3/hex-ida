@@ -22,19 +22,25 @@ async function check(name, fn) {
 
 await check('dev-profile-admin-visibility', () => {
   const allow = readAdminIdentity(new AllowAllAdminProvider());
-  assert.deepEqual(allow, { authenticated: true, admin: true, provider: 'allow-all-admin' });
+  assert.deepEqual(allow, { authenticated: true, admin: true, provider: 'allow-all-admin', capabilities: { canUseDevAgent: true, canUseDevYolo: true } });
   assert.deepEqual([...availableAgentProfiles(allow)], ['standard', 'dev']);
   assert.equal(canSelectAgentProfile(allow, 'dev'), true);
   class NonAdminProvider extends AdminAuthProvider { getIdentity(){ return { authenticated: true, admin: false, provider: 'fixture' }; } }
   const settings = new DevAgentUiSettings({ authProvider: new NonAdminProvider(), storage: null });
   assert.deepEqual([...settings.profiles()], ['standard']);
   assert.throws(() => settings.setAgentProfile('dev'), /Admin privileges/);
+  class DevOnlyProvider extends AdminAuthProvider { getIdentity(){ return { authenticated: true, admin: false, provider: 'future-vip', capabilities: { canUseDevAgent: true, canUseDevYolo: false } }; } }
+  const devOnly = new DevAgentUiSettings({ authProvider: new DevOnlyProvider(), storage: null });
+  assert.deepEqual([...devOnly.profiles()], ['standard', 'dev']);
+  assert.equal(devOnly.setAgentProfile('dev'), true);
+  assert.throws(() => devOnly.setDecisionPolicy('yolo'), /Admin privileges/);
+  devOnly.destroy();
 });
 
 await check('dev-policy-normal-yolo', () => {
   const memory = new Map();
   const storage = { getItem: (key) => memory.get(key) || null, setItem: (key, value) => memory.set(key, value) };
-  const settings = new DevAgentUiSettings({ storage });
+  const settings = new DevAgentUiSettings({ authProvider: new AllowAllAdminProvider(), storage });
   assert.deepEqual([...DEV_DECISION_POLICIES], ['normal', 'yolo']);
   assert.equal(settings.decisionPolicy, 'normal');
   assert.equal(devDecisionPolicyContract('normal').securityOrPermissionBoundary, 'human-confirmation-normally');
@@ -42,7 +48,7 @@ await check('dev-policy-normal-yolo', () => {
   assert.equal(devDecisionPolicyContract('yolo').availableCapabilitiesOnly, true);
   assert.equal(devDecisionPolicyContract('normal').mayAskHuman, true);
   settings.setDecisionPolicy('yolo');
-  assert.equal(new DevAgentUiSettings({ storage }).decisionPolicy, 'yolo');
+  assert.equal(new DevAgentUiSettings({ authProvider: new AllowAllAdminProvider(), storage }).decisionPolicy, 'yolo');
   assert.throws(() => assertDevDecisionPolicy('unsafe'), /Unsupported/);
 });
 
@@ -121,7 +127,7 @@ await check('dev-run-state', () => {
 });
 
 await check('dev-profile-engine-isolation', async () => {
-  const settings = new DevAgentUiSettings({ storage: null });
+  const settings = new DevAgentUiSettings({ authProvider: new AllowAllAdminProvider(), storage: null });
   let standardCalls = 0;
   const standardEngine = {
     async run(input) { standardCalls++; return { answer: `standard:${input.question}` }; },

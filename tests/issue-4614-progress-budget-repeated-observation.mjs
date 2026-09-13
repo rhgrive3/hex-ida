@@ -1,3 +1,4 @@
+import { AllowAllAdminProvider } from '../js/ai/dev/auth/admin-provider.js';
 import assert from 'node:assert/strict';
 import { DevSupervisorV0 } from '../js/ai/dev/supervisor/dev-supervisor-v0.js';
 import { ProgressBudgetDevSupervisorEngineV0 } from '../js/ai/dev/supervisor/dev-supervisor-progress-budget.js';
@@ -43,7 +44,7 @@ function createEngine({ maxDecisions, onRequest, identityProvider } = {}) {
   });
   // Force the engine-owned read-only identity provider path (no parent runtime).
   supervisor.adminTools = null;
-  const settings = new DevAgentUiSettings({ storage: { getItem: () => null, setItem() {} } });
+  const settings = new DevAgentUiSettings({ authProvider: new AllowAllAdminProvider(), storage: { getItem: () => null, setItem() {} } });
   settings.setAgentProfile(AGENT_PROFILE.DEV);
   const bridge = Object.freeze({ request: async (...args) => onRequest(...args) });
   const engine = new ProgressBudgetDevSupervisorEngineV0({

@@ -96,6 +96,7 @@ assert.match(template, /^\/\/ ==UserScript==/);
 assert.match(template, /@match\s+https:\/\/chatgpt\.com\/\*/);
 assert.match(template, /@run-at\s+document-start/, 'Smart App Banner suppression must run while ChatGPT head markup is being parsed');
 assert.match(template, /@grant\s+GM\.xmlHttpRequest/);
+for (const grant of ['getValue', 'setValue', 'deleteValue']) assert.ok(template.includes(`GM.${grant}`), `private storage grant missing: ${grant}`);
 assert.match(template, /__HEX_ORIGIN__\/hex\.meta\.js/);
 assert.doesNotMatch(template, /responseType:"arraybuffer"/);
 assert.ok(Buffer.byteLength(template) < 64 * 1024, `loader is ${Buffer.byteLength(template)} bytes`);
