@@ -41,6 +41,7 @@ function loaderStartArray(value, code) {
 const VALIDATED_LOADER_SEED_SOURCES = new Set([
   'function_starts',
   'exception',
+  'dt-init',
   'tls-callback',
   'guard-cf',
   'unwind',
@@ -400,8 +401,10 @@ export function createPatternProducer({ id, architectureId, patterns, alignment 
       const canonicalBase = toAddress(base);
       if (canonicalBase == null) return [];
       const baseAddress = BigInt(canonicalBase);
+      const alignmentWidth = BigInt(alignment);
+      const firstOffset = Number((alignmentWidth - (baseAddress % alignmentWidth)) % alignmentWidth);
       const out = [];
-      for (let offset = 0; offset + 1 <= bytes.length; offset += alignment) {
+      for (let offset = firstOffset; offset + 1 <= bytes.length; offset += alignment) {
         for (const pattern of compiled) {
           if (offset + pattern.bytes.length > bytes.length) continue;
           let matched = true;

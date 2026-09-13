@@ -27,9 +27,9 @@ export const TYPE_SCC_DEFAULT_LIMITS = Object.freeze({
  *   cancelled: boolean
  * }}
  */
-function positiveLimit(value, fallback, code) {
-  if (value == null) return fallback;
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+function nonNegativeLimit(value, fallback, code) {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw new TypeError(code);
   }
   return value;
@@ -41,9 +41,9 @@ export function condenseTypeGraph(entityIds, dependenciesOf, {
   maxEdges: rawMaxEdges,
   signal = null,
 } = {}) {
-  const maxComponents = positiveLimit(rawMaxComponents, TYPE_SCC_DEFAULT_LIMITS.maxComponents, 'type-scc-invalid-component-limit');
-  const maxNodes = positiveLimit(rawMaxNodes, TYPE_SCC_DEFAULT_LIMITS.maxNodes, 'type-scc-invalid-node-limit');
-  const maxEdges = positiveLimit(rawMaxEdges, TYPE_SCC_DEFAULT_LIMITS.maxEdges, 'type-scc-invalid-edge-limit');
+  const maxComponents = nonNegativeLimit(rawMaxComponents, TYPE_SCC_DEFAULT_LIMITS.maxComponents, 'type-scc-invalid-component-limit');
+  const maxNodes = nonNegativeLimit(rawMaxNodes, TYPE_SCC_DEFAULT_LIMITS.maxNodes, 'type-scc-invalid-node-limit');
+  const maxEdges = nonNegativeLimit(rawMaxEdges, TYPE_SCC_DEFAULT_LIMITS.maxEdges, 'type-scc-invalid-edge-limit');
   const index = new Map();
   const low = new Map();
   const onStack = new Set();

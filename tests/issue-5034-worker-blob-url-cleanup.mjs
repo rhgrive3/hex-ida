@@ -156,11 +156,13 @@ await runWorkerAssetsScenario({
   assert.deepEqual(revoked, created, 'cleanup must revoke each owned URL exactly once');
 });
 
-const protectedSource = (await readFile(new URL('../js/userscript/protected-workers.js', import.meta.url), 'utf8'))
+const hostLocationSource = (await readFile(new URL('../js/userscript/runtime-host-location.js', import.meta.url), 'utf8')).replace(/^export /gm, '');
+const protectedSource = hostLocationSource + '\n' + (await readFile(new URL('../js/userscript/protected-workers.js', import.meta.url), 'utf8'))
   .replace(
     "import { PROTECTED_WORKER_ASSETS } from '../../.runtime-build/embedded-assets.js';",
     'const PROTECTED_WORKER_ASSETS = globalThis.__HEX_TEST_PROTECTED_ASSETS__;',
   )
+  .replace(/^import .* from '\.\/runtime-host-location\.js';\n/m, '')
   .replace('export function installProtectedWorkers', 'function installProtectedWorkers');
 
 const protectedAssets = {
