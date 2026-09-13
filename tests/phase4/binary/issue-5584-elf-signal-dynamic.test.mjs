@@ -123,7 +123,7 @@ function buildDynamicElf({ entries = 64, withRelocationsAndSymbols = false, with
     view.setBigUint64(p + 24, BigInt(va), true);
     view.setBigUint64(p + 32, BigInt(filesz), true);
     view.setBigUint64(p + 40, BigInt(filesz), true);
-    view.setBigUint64(p + 48, 0x1000n, true);
+    view.setBigUint64(p + 48, 0x100n, true); // congruent with file offset 0x100
   };
   phdr(0, PT_LOAD, 0x100, 0x1000, loadFilesz);
   phdr(1, PT_DYNAMIC, dynamicOffset, dynamicVa, dynamicSize);
@@ -242,4 +242,3 @@ test('#5584: the same GNU-hash image yields exact count evidence without cancell
   assert.equal(image.metadata.programDynamicPartial ?? false, false);
   assert.equal(diagnostics.some((d) => d.includes('cancelled')), false, 'no cancellation evidence without an abort');
 });
-

@@ -35,7 +35,7 @@ function elf(loads) {
     dv.setBigUint64(p + 24, BigInt(L.vaddr ?? 0x400000), true);
     dv.setBigUint64(p + 32, BigInt(L.filesz ?? 0x1000), true);
     dv.setBigUint64(p + 40, BigInt(L.memsz ?? 0x1000), true);
-    dv.setBigUint64(p + 48, 0x1000n, true);
+    dv.setBigUint64(p + 48, BigInt(L.align ?? 0x1000), true);
     p += phentsize;
   }
   const put = (off, edi) => buf.set([0xb8, 0x3c, 0x00, 0x00, 0x00, 0xbf, edi, 0x00, 0x00, 0x00, 0x0f, 0x05], off);
@@ -72,7 +72,7 @@ test('#7610 file-backed over zero-fill overlap is order-dependent and fails clos
   // LOAD1 win, first-wins publishes LOAD0's zeros.
   const { image, error } = parse([
     { offset: 0x1000, flags: PF_R | PF_W, filesz: 0, memsz: 0x800, vaddr: 0x400000 },
-    { offset: 0x2000, flags: PF_R | PF_X, filesz: 0x800, memsz: 0x800, vaddr: 0x400400 },
+    { offset: 0x2000, flags: PF_R | PF_X, filesz: 0x800, memsz: 0x800, vaddr: 0x400400, align: 1 },
   ]);
   assert.equal(image, null);
   assert.equal(error?.code, 'ELF_PT_LOAD_VM_OVERLAP');
