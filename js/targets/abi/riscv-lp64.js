@@ -166,6 +166,7 @@ function vectorDescriptor(parameter) {
   }
   if (parsedNf != null && (parsedNf < 1 || parsedNf > 8 || parsedLmul * parsedNf > 8)) conflict = true;
   const fixedLength = parameter?.fixedLengthVector === true || /fixed[-_ ]?length/.test(abiClass);
+  if (mask && fixedLength) conflict = true;
   const descriptor = { mask, lmul, tupleCount, fixedLength };
   // The fixed-length variant derives its register group from the type size and
   // ABI_VLEN, so an explicit LMUL is only *comparison* evidence against that

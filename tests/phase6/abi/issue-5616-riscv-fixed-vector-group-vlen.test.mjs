@@ -129,3 +129,14 @@ test('#5616 explicit conflicting lmul fails closed as conflict', () => {
   assert.equal(ret.partial, true);
   assert.equal(ret.reason, 'vector-return-descriptor-conflict');
 });
+
+test('fixed-length vectors cannot also claim the v0 mask register', () => {
+  const argument = classifyArgs([fixedVector(256, { mask:true })]);
+  assert.equal(argument.arguments[0].exact, false);
+  assert.equal(argument.arguments[0].partial, true);
+  assert.equal(argument.arguments[0].abiClass, 'vector-descriptor-conflict');
+
+  const result = classifyRet(256, {}, { mask:true });
+  assert.equal(result.partial, true);
+  assert.equal(result.reason, 'vector-return-descriptor-conflict');
+});

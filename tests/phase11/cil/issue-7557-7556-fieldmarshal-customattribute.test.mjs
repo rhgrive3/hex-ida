@@ -328,14 +328,26 @@ const PROBE = { supported: true, confidence: 1, formatVersion: 'pe-cli', vmSpecE
 }
 
 {
-  // MethodDef constructors are legal and keep their own token identity.
+  // MethodDef constructors keep their token and owner identity after #-
+  // MethodPtr indirection reorders the raw MethodDef rows.
   const withMethodDefCtor = parseCil(buildCil({
-    methods: [{ name: '.ctor', signature: [0x20, 0x00, 0x01], body: [0x2a] }],
-    types: [{ name: 'Holder', namespace: 'Fixture', methodList: 1, fieldList: 1 }],
+    tableName: '#-',
+    methods: [
+      { name: '.ctor', signature: [0x20, 0x00, 0x01], body: [0x2a] },
+      { name: 'Run', body: [0x2a] },
+    ],
+    types: [
+      { name: 'Other', namespace: 'Fixture', methodList: 1, fieldList: 1 },
+      { name: 'Holder', namespace: 'Fixture', methodList: 2, fieldList: 1 },
+    ],
     fields: [{ name: 'X', flags: 0x1006 }],
     leadingStrings: STRINGS,
     blobs: [[0x14], [0x01, 0x00, 0x00, 0x00]],
     extraRows: [
+      [0x05, { count: 2, bytes: rows(2, [
+        (view, p) => u16(view, p, 2),
+        (view, p) => u16(view, p, 1),
+      ]) }],
       [0x0d, { count: 1, bytes: fieldMarshalRow(HAS_FIELD_MARSHAL_FIELD(1), MARSHAL_BLOB_INDEX) }],
       [0x0c, { count: 1, bytes: customAttributeRow({
         parentBase: HAS_CUSTOM_ATTRIBUTE_FIELD(1),

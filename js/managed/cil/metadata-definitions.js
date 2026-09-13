@@ -673,12 +673,10 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
   const memberRefParentTables = [0x02, 0x01, 0x1a, 0x06, 0x1b];
   const memberRefParentSize = codedIndexSize(counts, memberRefParentTables, 3);
   if (counts[0x0a] && memberRefParentSize + s + b !== rowSizes[0x0a]) fail('cil-memberref-row-layout-mismatch');
-  const methodOwner = new Map();
-  for (let i = 0; i < types.length; i++) {
-    const first = types[i].methodList || 1;
-    const last = types[i + 1]?.methodList ?? methods.length + 1;
-    for (let rid = first; rid < last && rid <= methods.length; rid++) methodOwner.set(rid, types[i]);
-  }
+  const methodOwner = new Map(methods.map(method => [
+    method.rid,
+    typeByToken.get(method.declaringTypeToken),
+  ]));
   const declaringTypeName = (table, rid) => {
     let name = null, namespace = '';
     if (table === 0x01) { const row = typeRefs[rid - 1]; name = row?.name ?? null; namespace = row?.namespace ?? ''; }
