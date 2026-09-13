@@ -43,6 +43,12 @@ function normalizeInteger(value, bits, signed) {
   return n;
 }
 
+function fieldWidthBits(raw) {
+  if (raw == null) return 64;
+  if (typeof raw !== 'number' || !Number.isSafeInteger(raw) || raw < 8 || raw > 64 || raw % 8 !== 0) return null;
+  return raw;
+}
+
 // Machine-integer boundary for caller-provided experiment values: an unsafe
 // number has already been rounded by IEEE-754 at the call site, so freezing it
 // into a BigInt would publish silently wrong machine values (#5724). Such
@@ -153,10 +159,11 @@ export function compareExpected(caseSpec, observation) {
   const stop = observation && observation.stop && observation.stop.kind;
   if (stop === 'fault' || stop === 'exception' || stop === 'timeout' || stop === 'unsupported' || stop === 'cancelled') return { status:'unsupported', reason:`execution-${stop}` };
   if (expected.field) {
+    const bits = fieldWidthBits(expected.field.bits);
+    if (bits == null) return { status:'inconclusive', reason:'invalid-expected-field-bits', expected:expected.field.value };
     const offset = BigInt(expected.field.offset);
     const actual = observedFieldValue(observation, offset);
     if (!actual.observed) return { status:'inconclusive', reason:'expected-field-final-state-not-observed', expected:expected.field.value };
-    const bits = Number(expected.field.bits || 64);
     // #5578: the observation width is part of the field contract —
     // compileExperiment() watches exactly fieldBits/8 bytes. An under-width,
     // over-width, or unknown-width observation must never produce the strong
