@@ -45,6 +45,9 @@ function equals(a,b,guard) {
 }
 function checkEffects(ir,execution,guard) {
   if(execution.assumptions?.length)throw new QueryFailure('conditional-machine-effects-outside-proof-scope');
+  // This verifier compares ABI values and bytes. A return control target is a
+  // separate observable even on generic IR without MachineEffects metadata.
+  if(execution.paths.some(path=>path.terminalControl))throw new QueryFailure('terminal-control-outside-proof-scope');
   for(const block of ir.blocks)for(const group of [block.phis ?? [], block.insts])for(const inst of group) {
     guard.take('workItems');
     // A generic scalar/byte program has no unobserved physical register or

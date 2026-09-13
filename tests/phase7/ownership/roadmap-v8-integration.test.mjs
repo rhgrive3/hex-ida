@@ -15,6 +15,19 @@ test('v8 ownership validates the complete declared component union before select
   }
 });
 
+test('C4 terminal observations and their regression have exact symbolic ownership', () => {
+  const manifest = loadRoadmapManifest(), assignments = validateRoadmapManifest(manifest);
+  const union = [...assignments.keys()];
+  for (const file of ['js/symbolic/memory/terminal-control.js', 'tests/phase9/memory/terminal-control.test.mjs']) {
+    assert.equal(assignments.get(file), 'symbolic');
+    const missing = structuredClone(manifest);
+    missing.owners.symbolic = missing.owners.symbolic.filter(path => path !== file);
+    for (const phase of ['phase7', 'phase8']) {
+      assert.throws(() => validateRoadmapInventory(BRANCH, phase, union, missing), /undeclared/);
+    }
+  }
+});
+
 test('v8 ownership rejects blanket allowances, duplicate owners and relabeled frozen contracts', () => {
   for (const [owner, file] of [['symbolic', 'js/symbolic/**'], ['phase7', 'js/semantics/ir/nodes.js'],
     ['phase8', 'js/analysis/status.js'], ['integration', 'js/targets/abi/registry.js'], ['symbolic', 'js/ir-core.js']]) {

@@ -1,5 +1,6 @@
 import { prepareMemoryObservations, observeTerminalMemory } from './memory/observations.js';
 import { validateExecutionContract } from './memory/execution-contract.js';
+import { readReturnControl, observeReturnControl } from './memory/terminal-control.js';
 /*
  * symbolic/executor.js — bounded light symbolic execution over Semantic IR.
  *
@@ -538,9 +539,13 @@ function executePaths(ir, opts) {
         }
         const value = candidate ? evalValue(candidate, state, ir, opts, memo, new Set()) : null;
         if (state.byteMemory && value) state.byteMemory.validateExpression(value);
+        const control = state.byteMemory ? readReturnControl(inst, state.byteMemory) : null;
+        const terminalControl = control ? observeReturnControl(control,
+          evalValue(control.value, state, ir, opts, memo, new Set()), state.byteMemory) : null;
         const observations = state.byteMemory ? observeTerminalMemory(opts._memoryObservations, state, opts) : null;
         paths.push({
           ...(observations ? {memoryObservations:observations} : {}),
+          ...(terminalControl ? {terminalControl} : {}),
           status: value && (value.kind === SYM.UNKNOWN || value.kind === 'unknown_semantic') ? 'unknown' : 'complete',
           reason: value && (value.kind === SYM.UNKNOWN || value.kind === 'unknown_semantic') ? value.reason : null,
           ...(opts._executionCapture ? {snapshot:opts._executionCapture.capture(state,paths.length,observations)} : {}),
@@ -666,14 +671,32 @@ export function symbolicExecute(ir, opts = {}) {
     const result = executePaths(ir, { ...opts, _sourceIr:ir, _memoryAssumptions:memoryAssumptions, _byteMemory: memory, _executionMetrics: executionMetrics, _semanticValues:semanticValues, _addressMap:validatedAddressMap, _memoryObservations:observations, _executionCapture:opts.captureValues?capture:null });
     capture?.check();
     memory.check();
-    const partial = result.truncated || result.paths.some(path => path.status !== 'complete');
+    const explorationPartial = result.truncated || result.paths.some(path => path.status !== 'complete');
+    const controlUnproved = result.paths.some(path => path.terminalControl
+      && !(path.terminalControl.normalCompletionCondition.kind === 'const'
+        && path.terminalControl.normalCompletionCondition.value === true));
+    const partial = explorationPartial || controlUnproved;
+    // Preserve terminal observations even when normal return is not proved.
+    // They deliberately carry no ABI values, memory state or path snapshots;
+    // existing proof consumers still see partial with an empty paths array.
+    const observationUnits = result.paths.reduce((count, path) => count + (path.terminalControl
+      ? 3 + path.constraints.length + path.takenBranches.length : 0), 0);
+    memory.chargeExecution(observationUnits, observationUnits);
+    const terminalControlObservations = result.paths.flatMap((path, pathIndex) => path.terminalControl
+      ? [Object.freeze({ pathIndex, control:path.terminalControl,
+        constraints:Object.freeze(path.constraints.slice()),
+        takenBranches:Object.freeze(path.takenBranches.map(step => Object.freeze({ ...step }))) })] : []);
+    const terminalControlCoverage = !explorationPartial && result.paths.length > 0
+      && terminalControlObservations.length === result.paths.length ? 'complete' : 'partial';
     const metrics = Object.freeze({ ...memory.metrics(), ...result.metrics, wallClock: monotonicNow() - started });
     const paths = partial ? [] : result.paths.map(path => Object.freeze({ ...path,
       constraints: Object.freeze(path.constraints), constraintText: Object.freeze(path.constraintText),
       takenBranches: Object.freeze(path.takenBranches.map(Object.freeze)),
       touchedFields: Object.freeze(path.touchedFields.map(Object.freeze)) }));
     return capture.publish(Object.freeze({ ...result, assumptions:Object.freeze([...memoryAssumptions.values()]), memoryObservationRequests:observations, identity: memory.identity, status: partial ? 'partial' : 'complete',
-      reason: partial ? (result.paths.find(path => path.status !== 'complete')?.reason ?? 'budget:exploration') : null, paths: Object.freeze(paths), metrics }));
+      ...(terminalControlObservations.length ? { terminalControlObservations:Object.freeze(terminalControlObservations), terminalControlCoverage } : {}),
+      reason: explorationPartial ? (result.paths.find(path => path.status !== 'complete')?.reason ?? 'budget:exploration')
+        : controlUnproved ? 'return-control-normal-completion-unproved' : null, paths: Object.freeze(paths), metrics }));
   } catch (error) {
     if (!(error instanceof QueryFailure)) throw error;
     const failure = reason => Object.freeze({ engine: 'semantic-ir-symbolic', status: 'partial', reason,

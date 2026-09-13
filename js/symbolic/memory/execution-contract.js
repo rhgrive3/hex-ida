@@ -4,6 +4,7 @@
  */
 import { OP } from '../../ir-base.js';
 import { QueryFailure } from './query-state.js';
+import { readReturnControl } from './terminal-control.js';
 
 const TERMINATORS = new Set([OP.RET, OP.BR, OP.CBR]);
 const DEFINITIONS = new Set([OP.CONST, OP.ADDR, OP.MOV, OP.BIN, OP.UN, OP.CMP, OP.SEL, OP.BFX, OP.BFI, OP.LOAD, OP.PHI]);
@@ -93,6 +94,7 @@ export function validateExecutionContract(ir, memory) {
       }
       if (inst.op === OP.STORE && inst.args?.length !== 1) fail('store-operand-arity');
       if (inst.op === OP.RET && (inst.args?.length ?? 0) > 1) fail('unsupported-multi-return');
+      if (inst.op === OP.RET) readReturnControl(inst, memory);
       if (TERMINATORS.has(inst.op)) terminated = true;
     }
     if (first) {

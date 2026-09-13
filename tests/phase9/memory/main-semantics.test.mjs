@@ -13,7 +13,8 @@ function sequence(insts,result) {
 test('main buildSemanticModel -> buildIR -> byte executor handles numeric SSA IDs and trunc/zext',()=>{
   const ir=machineIR(['mov w1, #0xaa','mov x2, x1','ret']);
   assert.equal(ir.compat.projection,'semantic-ir-v2-to-v1');
-  const result=symbolicExecute(ir,opts);
+  // The scalar assertion uses an explicitly aligned architectural return input.
+  const result=symbolicExecute(ir,{...opts,symbolicArgs:{x30:4096n}});
   assert.equal(result.status,'complete',result.reason);
 });
 test('real main memory qualifiers stay conservative rather than being inferred from mnemonics',()=>{

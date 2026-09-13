@@ -5,7 +5,8 @@ import { machineIR, identity } from './main-fixtures.mjs';
 import { createBv, evaluateExpr } from '../../../js/symbolic/expr/index.js';
 import { translateMemoryScalar } from '../../../js/symbolic/translate/memory.js';
 const execute = (ir, numerator, denominator) => symbolicExecute(ir, {
-  captureValues: true, symbolicArgs: { x1: numerator, x2: denominator }, byteMemory: { identity },
+  // Division/shift observations are taken on an explicitly aligned return.
+  captureValues: true, symbolicArgs: { x1: numerator, x2: denominator, x30:4096n }, byteMemory: { identity },
 });
 const translated = (ir, inst, result) => translate.translateSemanticIR(inst, { ir, identity, executionSnapshot: result.paths[0].snapshot });
 

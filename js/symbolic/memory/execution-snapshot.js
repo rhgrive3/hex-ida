@@ -15,22 +15,27 @@ const executions = new WeakMap();
 const SHAPES = Object.freeze({
   ir: {entry:null,blocks:'blocks',instructions:'insts',values:'values',functionId:null,semanticIrVersion:null,truncated:null,architecture:null,arch:null,abiId:null,semanticsVersion:null,snapshotId:null,binaryId:null},
   block: {index:null,insts:'insts',phis:'insts',succ:'scalars'},
-  inst: {id:null,op:null,sub:null,subOp:null,name:null,args:'args',dst:'value',incoming:'incoming',cond:'inst',signed:null,float:null,bits:null,conditionValue:'value',returnTargetValue:'value',row:null,address:null,addr:'addr',loc:'loc',extra:'extra',volatile:null,atomic:null,value:null},
+  inst: {id:null,op:null,sub:null,subOp:null,name:null,args:'args',dst:'value',incoming:'incoming',cond:'inst',signed:null,float:null,bits:null,conditionValue:'value',returnTargetValue:'value',possibleFaults:'faults',faults:'faults',row:null,address:null,addr:'addr',loc:'loc',extra:'extra',volatile:null,atomic:null,value:null},
   value: {id:null,bits:null,kind:null,const:null,float:null,floatConst:null,constKind:null,reg:null,index:null,def:'inst',semanticValueId:null,semanticSsaValueId:null,machineType:'machineType'},
   machineType: {kind:null,widthBits:null},
   argument: {value:'value',bits:null}, incomingItem: {from:null,value:'value'},
   addr: {base:'value',index:'value',disp:null,size:null,widthBits:null,precise:null,addressSpace:null},
   loc: {kind:null,key:null,address:null,size:null,disp:null,addressSpace:null,volatile:null,atomic:null},
-  extra: {stateWrite:null,value:null,constKind:null,kind:null,bit:null,target:null,returnControlTargetValueId:null,returnControlTarget:'returnControlTarget',size:null,widthBits:null,memoryAccess:'descriptor',signed:null,float:null,sourceBits:null,targetBits:null,lsb:null,width:null,toward:null,bitfieldKind:null,volatile:null,atomic:null,addressPrecise:null,addressSemantic:null,completeness:null,attributes:'attributes'},
+  extra: {stateWrite:null,value:null,constKind:null,kind:null,bit:null,target:null,returnControlTargetValueId:null,returnControlTarget:'returnControlTarget',possibleFaults:'faults',faults:'faults',size:null,widthBits:null,memoryAccess:'descriptor',signed:null,float:null,sourceBits:null,targetBits:null,lsb:null,width:null,toward:null,bitfieldKind:null,volatile:null,atomic:null,addressPrecise:null,addressSemantic:null,completeness:null,attributes:'attributes'},
   returnControlTarget: {schema:null,state:null,valueId:null,reason:null},
-  attributes: {float:null,machineAddressExpression:'expression',machineEffects:'machineEffects'},
-  machineEffects: {bundleCompleteness:null,operationMetadata:'operationMetadata'},
+  attributes: {float:null,machineAddressExpression:'expression',machineEffects:'machineEffects',machineControlEffect:'controlEffect',possibleFaults:'faults',faults:'faults'},
+  machineEffects: {bundleCompleteness:null,architectureId:null,mode:null,possibleFaults:'faults',faults:'faults',operationMetadata:'operationMetadata'},
+  controlEffect: {kind:null,target:'controlTarget'},
+  controlTarget: {kind:null},
+  fault: {kind:null,condition:'faultCondition',detail:'faultDetail'},
+  faultCondition: {kind:null,alignmentBytes:null},
+  faultDetail: {architecture:null,instructionSet:null},
   operationMetadata: {divisionByZero:null,signedOverflow:null,widthBits:null},
   expression: {kind:null,widthBits:null,left:'expression',right:'expression',value:'expression',amount:null,fromBits:null,toBits:null,temporaryId:null},
   descriptor: {faults:'scalars',alignment:null,widthBits:null,addressSpace:null,endian:null,atomic:null,volatility:null,ordering:null,addressExpr:'addressExpr'},
   addressExpr: {valueId:null},
 });
-const ARRAYS = {blocks:'block',insts:'inst',values:'value',args:'argument',incoming:'incomingItem',scalars:null};
+const ARRAYS = {blocks:'block',insts:'inst',values:'value',args:'argument',incoming:'incomingItem',scalars:null,faults:'fault'};
 function property(object,key) {
   const descriptor=Object.getOwnPropertyDescriptor(object,key);
   if (descriptor && !Object.hasOwn(descriptor,'value')) throw new QueryFailure('ir-accessor');
@@ -53,7 +58,7 @@ function captureContract(ir,memory) {
     memory.chargeExecution(size+1,size+1);
     // PHI operands have a closed use-list contract. Remember additions too,
     // including non-enumerable and symbol keys, without evaluating accessors.
-    const ownKeys=mode==='argument' || mode==='args' ? Reflect.ownKeys(object) : null;
+    const ownKeys=['argument','args','returnControlTarget','controlEffect','faults','fault','faultCondition','faultDetail'].includes(mode) ? Reflect.ownKeys(object) : null;
     if(ownKeys) memory.chargeExecution(ownKeys.length,ownKeys.length);
     if(!seen.has(object)) seen.set(object,new Set());seen.get(object).add(mode);
     const entries=[];

@@ -1,5 +1,32 @@
 # Analysis roadmap v8 integration checkpoint
 
+## 2026-09-13: RET の経路別 control 観測と normal completion の判定
+
+`f51fe505e941dc64483b7cf9a52f74206be5ea4c` で保持した canonical return target を、
+既存 byte symbolic executor の現在の SSA 値から評価します。ABI returnValue とは別に
+`hex-terminal-control/v1` の target・fault predicates・normalCompletionCondition を保持します。
+現在の fault lowering は正確な A64 PC alignment descriptor のみです。未対応の fault、
+未解決の明示 target、矛盾する binding は partial に残します。
+
+RET の normalCompletionCondition が全経路で定数 true の場合だけ、従来の complete paths と
+snapshot を公開します。false または未証明の条件が残れば `partial` / `paths:[]` とし、
+`terminalControlObservations` に戻り先・fault 条件・経路条件・branch trace のみを保持します。
+この診断配列には ABI 返り値・メモリ状態・snapshot を含めません。`terminalControlCoverage`
+は既存探索で全 terminal path の観測が揃ったかを示し、例外状態や全 MachineEffects の証明ではありません。
+fault 条件を branch 条件へ追加して正常終了を仮定することもありません。
+
+既存 ABI/byte-only 同値検証には terminal PC の比較がまだないため、generic IR の target も
+明示的に保留します。fault の変更は実行結果と snapshot を失効させます。成功する既存の
+scalar/memory/taint テストでは aligned x30 を明示入力として与え、未知・不整列入力の否定例も保持します。
+
+実 A64 MOVZ/RET word の aligned/misaligned ケース、parsed-row の象徴値・分岐合流、
+metadata/fault 変更、予算と取消し、consumer の取りこぼしを新テストで検査します。
+C4 の次段は、同じ RET bundle の各操作に複製された fault を一つの terminal 観測に結び付け、
+経路条件による fault 不成立を既存 solver で検証することです。現在の C4 の保留条件は緩めません。
+全領域・例外・メモリ・ループの変換受入と ME の残件も維持し、統合全体は **CHECKPOINT-LOCKED** です。
+検査・レビュー・公開 SHA の証拠は永続 `c4-terminal-control-20260913` に保存します。
+ユーザー X-02 の開始点 `6b58b97aad4615e614066901ca2e1413fc23db91` と担当 4 パスは変更しません。
+
 ## 2026-09-13: C4 の machine return target を canonical SSA へ接続
 
 ユーザーの C1 パッチは `1931f30099a1c86dfb649cf6e8c57770b2b3b483` で結合し、

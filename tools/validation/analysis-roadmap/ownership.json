@@ -306,7 +306,9 @@
       "tests/phase9/solver/bitblast-sym01-differential.test.mjs",
       "tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs",
       "tests/phase9/solver/tiered-sym01-rescue.test.mjs",
-      "tests/phase9/solver/worker-lifecycle.test.mjs"
+      "tests/phase9/solver/worker-lifecycle.test.mjs",
+      "js/symbolic/memory/terminal-control.js",
+      "tests/phase9/memory/terminal-control.test.mjs"
     ],
     "semanticCompat": [
       "js/core/identity/live-data.js",

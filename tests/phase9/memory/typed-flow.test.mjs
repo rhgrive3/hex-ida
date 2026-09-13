@@ -44,6 +44,6 @@ test('actual main numeric and canonical SSA identity feeds first-class taint thr
   const input=ir.values.find(v=>v.kind==='arg' && v.reg==='x1');assert.ok(input);
   const out=ir.instructions.find(i=>i.extra?.stateWrite?.register==='x2')?.dst ?? ir.values.find(v=>v.reg==='x2' && v.def?.extra?.stateWrite);
   assert.ok(out);
-  const result=queryTaint(ir,{identity:{...identity,addressSpace:'memory'},memory:{addressBits:64},models:createTaintModels({id:'real-main',version:'1',provenance:'buildSemanticModel/buildIR',sources:[{id:'external',valueId:semanticValueIdentity(input)}],sinks:[{id:'state-write',valueId:semanticValueIdentity(out)}]})});
+  const result=queryTaint(ir,{identity:{...identity,addressSpace:'memory'},memory:{addressBits:64},execution:{symbolicArgs:{x30:4096n}},models:createTaintModels({id:'real-main',version:'1',provenance:'buildSemanticModel/buildIR',sources:[{id:'external',valueId:semanticValueIdentity(input)}],sinks:[{id:'state-write',valueId:semanticValueIdentity(out)}]})});
   assert.equal(result.status,'complete',result.reason);assert.deepEqual(result.sinks[0].taint.sources,['external']);
 });
