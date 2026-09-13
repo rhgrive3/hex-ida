@@ -103,6 +103,36 @@ export const VM_UNKNOWN_CATEGORIES = Object.freeze([
   'other',
 ]);
 
+
+export const VM_COMPARE_PREDICATES = Object.freeze(['eq', 'ne', 'lt', 'gt', 'le', 'ge']);
+export const VM_ORDERED_COMPARE_PREDICATES = Object.freeze(['lt', 'gt', 'le', 'ge']);
+export const VM_COMPARE_SIGNEDNESS = Object.freeze(['signed', 'unsigned']);
+export const VM_COMPARE_ARITIES = Object.freeze([1, 2]);
+const COMPARE_DESCRIPTOR_KEYS = new Set(['predicate', 'signedness', 'operandBits', 'arity']);
+const COMPARE_SETS = Object.freeze({
+  predicates: new Set(VM_COMPARE_PREDICATES),
+  ordered: new Set(VM_ORDERED_COMPARE_PREDICATES),
+  signedness: new Set(VM_COMPARE_SIGNEDNESS),
+  arities: new Set(VM_COMPARE_ARITIES),
+});
+function normalizeCompareDescriptor(value, consumedCount) {
+  const input = object(value, 'vm-effect-invalid-compare-descriptor');
+  assertAllowedKeys(input, COMPARE_DESCRIPTOR_KEYS, 'vm-effect-compare-unexpected-key');
+  const { predicate, arity, operandBits } = input;
+  if (typeof predicate !== 'string' || !COMPARE_SETS.predicates.has(predicate)) fail('vm-effect-compare-invalid-predicate');
+  if (typeof arity !== 'number' || !Number.isSafeInteger(arity) || !COMPARE_SETS.arities.has(arity)) fail('vm-effect-compare-invalid-arity');
+  if (arity !== consumedCount) fail('vm-effect-compare-arity-mismatch');
+  let signedness = null;
+  if (input.signedness != null) {
+    if (typeof input.signedness !== 'string' || !COMPARE_SETS.signedness.has(input.signedness)) fail('vm-effect-compare-invalid-signedness');
+    signedness = input.signedness;
+  }
+  if (COMPARE_SETS.ordered.has(predicate) && signedness == null) fail('vm-effect-compare-signedness-required');
+  if (!COMPARE_SETS.ordered.has(predicate) && signedness != null) fail('vm-effect-compare-signedness-not-allowed');
+  if (typeof operandBits !== 'number' || !Number.isSafeInteger(operandBits) || operandBits <= 0) fail('vm-effect-compare-invalid-operand-bits');
+  return deepFreeze({ predicate, signedness, operandBits, arity });
+}
+
 const SETS = Object.freeze({
   completeness: new Set(VM_EFFECT_COMPLETENESS),
   locations: new Set(VM_LOCATION_KINDS),
@@ -129,6 +159,72 @@ function optionalString(value, code) {
   if (value == null || value === '') return null;
   if (typeof value !== 'string') fail(code);
   return value;
+}
+
+const SEMANTIC_COLLECTION_FIELDS = Object.freeze([
+  'consumedValues',
+  'producedValues',
+  'locationReads',
+  'locationWrites',
+  'memoryEffects',
+  'callEffects',
+  'controlEffects',
+  'possibleExceptions',
+]);
+
+// Exact operations with no explicit effect payload still need canonical
+// frontend semantics. Raw opcode/mnemonic identity is not proof: only known
+// zero-effect operations may use the empty exact representation.
+const EXACT_EMPTY_OPERATION_KEYS = new Set([
+  'wasm:1:nop',
+  'wasm:2:block',
+  'wasm:3:loop',
+  'wasm:11:end',
+  'dex:0:nop',
+  'cil:0:nop',
+  'cil:1:break',
+  'cil:65042:prefix_12',
+  'cil:65044:prefix_14',
+  'cil:65046:prefix_16',
+  'cil:65054:prefix_1e',
+  'jvm:0:nop',
+]);
+
+function hasSemanticCollectionEntry(value) {
+  if (!Array.isArray(value)) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value') && descriptor.value != null) return true;
+  }
+  return false;
+}
+
+function hasCanonicalEmptyOperationSemantics(bundle) {
+  if (typeof bundle.frontendId !== 'string') return false;
+  const opcode = bundle.opcode == null ? null : bundle.opcode;
+  const mnemonic = typeof bundle.mnemonic === 'string' ? bundle.mnemonic.trim() : '';
+  if (!mnemonic) return false;
+  if (opcode != null && EXACT_EMPTY_OPERATION_KEYS.has(`${bundle.frontendId}:${opcode}:${mnemonic}`)) return true;
+  // Test/compat callers may omit the raw opcode, but only an exact canonical
+  // mnemonic from this fixed frontend vocabulary may stand in for it.
+  if (opcode == null) {
+    for (const key of EXACT_EMPTY_OPERATION_KEYS) {
+      const [frontend, , knownMnemonic] = key.split(':');
+      if (frontend === bundle.frontendId && knownMnemonic === mnemonic) return true;
+    }
+  }
+  return false;
+}
+
+function hasOperationSemantics(bundle) {
+  if (SEMANTIC_COLLECTION_FIELDS.some((field) => hasSemanticCollectionEntry(bundle[field]))) return true;
+  return hasCanonicalEmptyOperationSemantics(bundle);
+}
+
+function requireExactOperationSemantics(bundle, completeness) {
+  if ((completeness === 'exact' || completeness === 'exact-with-intrinsic') && !hasOperationSemantics(bundle)) {
+    fail('vm-effect-exact-semantics-required');
+  }
 }
 function nonNegativeInteger(value, code) {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) fail(code);
@@ -226,14 +322,14 @@ export function createVMEffectBundle(input, options = {}) {
     'profileId', 'methodId', 'operationId', 'bytecodeOffset', 'opcode', 'mnemonic',
     'consumedValues', 'producedValues', 'locationReads', 'locationWrites',
     'memoryEffects', 'callEffects', 'controlEffects', 'possibleExceptions',
-    'origin', 'completeness', 'unknownEffects', 'metadata',
+    'origin', 'completeness', 'unknownEffects', 'metadata', 'compare',
   ]), 'vm-effect-bundle-unexpected-key');
 
   const frontendId = nonEmpty(input.frontendId, 'vm-effect-frontend-id-required');
   const methodId = nonEmpty(input.methodId, 'vm-effect-method-id-required');
   const operationId = nonEmpty(input.operationId, 'vm-effect-operation-id-required');
   const bytecodeOffset = nonNegativeInteger(input.bytecodeOffset ?? 0, 'vm-effect-offset-required');
-  const completeness = nonEmpty(input.completeness ?? 'exact', 'vm-effect-completeness-required');
+  const completeness = nonEmpty(input.completeness, 'vm-effect-completeness-required');
   if (!SETS.completeness.has(completeness)) fail('vm-effect-invalid-completeness');
 
   const consumedValues = array(input.consumedValues ?? [], 'vm-effect-invalid-consumed-values');
@@ -261,6 +357,21 @@ export function createVMEffectBundle(input, options = {}) {
   const profileId = optionalString(input.profileId, 'vm-effect-invalid-profile-id');
   const mnemonic = optionalString(input.mnemonic, 'vm-effect-invalid-mnemonic');
   const opcode = input.opcode != null ? nonNegativeInteger(input.opcode, 'vm-effect-invalid-opcode') : null;
+  const compare = input.compare == null ? null : normalizeCompareDescriptor(input.compare, consumedValues.length);
+
+  requireExactOperationSemantics({
+    frontendId,
+    opcode,
+    mnemonic,
+    consumedValues,
+    producedValues,
+    locationReads,
+    locationWrites,
+    memoryEffects,
+    callEffects,
+    controlEffects,
+    possibleExceptions,
+  }, completeness);
 
   const out = {
     schemaVersion,
@@ -285,6 +396,7 @@ export function createVMEffectBundle(input, options = {}) {
     completeness,
     unknownEffects: deepFreeze(unknownEffects),
     metadata: input.metadata ? deepFreeze(jsonSafe(input.metadata)) : Object.freeze({}),
+    ...(compare ? { compare } : {}),
   };
 
   return deepFreeze(out);
@@ -315,11 +427,13 @@ export function validateVMEffectBundle(bundle) {
   array(bundle.callEffects ?? [], 'vm-effect-invalid-call-effects');
   array(bundle.controlEffects ?? [], 'vm-effect-invalid-control-effects');
   array(bundle.possibleExceptions ?? [], 'vm-effect-invalid-exceptions');
+  if (bundle.compare != null) normalizeCompareDescriptor(bundle.compare, (bundle.consumedValues ?? []).length);
   const unknownEffects = unknownEffectsForValidation(bundle);
   for (const effect of unknownEffects) validateUnknownEffect(effect);
   if ((bundle.completeness === 'partial' || bundle.completeness === 'unknown') && unknownEffects.length === 0) {
     fail('vm-effect-partial-must-specify-unknown-effects');
   }
+  requireExactOperationSemantics(bundle, bundle.completeness);
   return true;
 }
 
@@ -394,7 +508,10 @@ export function createVMEffectFunction(input, options = {}) {
     if (!VM_EFFECT_RESOLUTION_COMPLETENESS.includes(declared)) fail('vm-effect-resolution-completeness-invalid');
     resolutionCompleteness = declared;
   } else {
-    resolutionCompleteness = 'complete';
+    // Absence of explicit target-resolution evidence is conservative. A
+    // caller may promote this axis only by supplying a canonical taxonomy
+    // value; omission must never mint complete authority (#4048).
+    resolutionCompleteness = 'partial';
   }
 
   const functionIdentity = { methodId, frontendId, profileId };
@@ -409,7 +526,7 @@ export function createVMEffectFunction(input, options = {}) {
     exceptionRegions: deepFreeze(exceptionRegions.map((r) => jsonSafe(r))),
     validationReportId: optionalString(input.validationReportId, 'vm-effect-invalid-validation-report-id'),
     aggregateCompleteness,
-    resolutionCompleteness: input.resolutionCompleteness != null ? resolutionCompleteness : 'complete',
+    resolutionCompleteness,
     origin: createOriginSet(input.origin ?? { parentEntityIds: [methodId] }),
     metadata: input.metadata ? deepFreeze(jsonSafe(input.metadata)) : Object.freeze({}),
   };
