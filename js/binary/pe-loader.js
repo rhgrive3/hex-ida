@@ -5,6 +5,7 @@ import {
   createPEMetadataBudget,
   mappedFileRangeForRva,
   mappedFileSpanForRva,
+  peExactMappingOwner,
   parseExceptionFunctions as parseExceptionFunctionsCore,
   parseBaseRelocations as parseBaseRelocationsCore,
   parseLoadConfig as parseLoadConfigCore,
@@ -19,6 +20,8 @@ export {
   directory,
   peMachineName,
   resolveCoffSectionName,
+  PE_SECTION_MAPPING_SOURCE,
+  PE_LOW_ALIGNMENT_RAW_IDENTITY_SOURCE,
 } from './pe-loader-core.js';
 
 export {
@@ -158,7 +161,7 @@ function loadedImageSpanForAddress(image, address, size, { writable = false } = 
   if (start < image.imageBase) return false;
   const sizeOfImage = image.metadata?.sizeOfImage;
   if (Number.isSafeInteger(sizeOfImage) && sizeOfImage >= 0 && finish > image.imageBase + BigInt(sizeOfImage)) return false;
-  const owners = [...(image.sections || []), ...(image.segments || [])];
+  const owners = [...(image.sections || []), ...(image.segments || [])].filter(peExactMappingOwner);
   let cursor = start;
   while (cursor < finish) {
     let coveredTo = cursor;

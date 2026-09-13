@@ -89,10 +89,17 @@ export function createPEMetadataBudget(image, options = {}) {
 
 function ensureBudget(image, budget) { return budget || createPEMetadataBudget(image); }
 
+export const PE_SECTION_MAPPING_SOURCE = 'PE-section';
+export const PE_LOW_ALIGNMENT_RAW_IDENTITY_SOURCE = 'PE-section-low-alignment-raw-offset';
+
+export function peExactMappingOwner(owner) {
+  return !!owner && owner.source !== PE_LOW_ALIGNMENT_RAW_IDENTITY_SOURCE;
+}
+
 export function mappedFileRangeForRva(image, rva) {
   if (!Number.isInteger(rva) || rva <= 0) return null;
   const address = image.imageBase + BigInt(rva);
-  const owners = [...(image.sections || []), ...(image.segments || [])];
+  const owners = [...(image.sections || []), ...(image.segments || [])].filter(peExactMappingOwner);
   for (const owner of owners) {
     if (!owner || owner.address == null || owner.fileOffset == null || owner.fileSize == null) continue;
     const fileSize = BigInt(owner.fileSize);
@@ -117,7 +124,7 @@ export function mappedFileSpanForRva(image, rva, size) {
 function mappedMemorySpanForRva(image, rva, size, { writable = false } = {}) {
   if (!Number.isInteger(rva) || rva <= 0 || !Number.isSafeInteger(size) || size <= 0) return null;
   const address = image.imageBase + BigInt(rva), spanEnd = address + BigInt(size);
-  const owners = [...(image.sections || []), ...(image.segments || [])];
+  const owners = [...(image.sections || []), ...(image.segments || [])].filter(peExactMappingOwner);
   let cursor = address;
   while (cursor < spanEnd) {
     let coveredTo = cursor;
@@ -533,7 +540,7 @@ function mappedBaseRelocationTarget(image, rva) {
   const sizeOfImage = image.metadata?.sizeOfImage;
   if (Number.isSafeInteger(sizeOfImage) && sizeOfImage >= 0 && rva >= sizeOfImage) return null;
   const address = image.imageBase + BigInt(rva);
-  const owners = [...(image.sections || []), ...(image.segments || [])];
+  const owners = [...(image.sections || []), ...(image.segments || [])].filter(peExactMappingOwner);
   for (const owner of owners) {
     if (!owner || typeof owner.address !== 'bigint' || typeof owner.size !== 'bigint' || owner.size <= 0n) continue;
     if (address >= owner.address && address < owner.address + owner.size) return address;
@@ -554,7 +561,7 @@ function mappedBaseRelocationTargetSpan(image, rva, width) {
   const sizeOfImage = image.metadata?.sizeOfImage;
   if (Number.isSafeInteger(sizeOfImage) && sizeOfImage >= 0 && (rva > sizeOfImage - width)) return false;
   const start = image.imageBase + BigInt(rva), finish = start + BigInt(width);
-  const owners = [...(image.sections || []), ...(image.segments || [])];
+  const owners = [...(image.sections || []), ...(image.segments || [])].filter(peExactMappingOwner);
   let cursor = start;
   while (cursor < finish) {
     let coveredTo = cursor;
@@ -614,7 +621,7 @@ export function parseCoffSymbols(r, ptr, count, image, sharedBudget = null) {
     if(!budget.take({inputBytes:18,records:1,objects:2,operations:2,estimatedHeapBytes:256},'coff-symbol-record'))break;
     const p=ptr+i*18;let name;
     if(r.u32(p)===0){const noff=r.u32(p+4);name=noff>=4&&noff<strSize&&strBase+noff<strEnd?mappedCStringAtOffset(r,strBase+noff,strEnd,budget,'COFF symbol'):'';}else{name=r.ascii(p,8);if(name&&!budget.take({stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'coff-inline-name'))name='';}
-    const value=r.u32(p+8),secNo=r.i16(p+12),type=r.u16(p+14),storage=r.u8(p+16),aux=r.u8(p+17);const sec=image.sections.find((s)=>s.index===secNo);const address=sec?sec.address+BigInt(value):0n;
+    const value=r.u32(p+8),secNo=r.i16(p+12),type=r.u16(p+14),storage=r.u8(p+16),aux=r.u8(p+17);const sec=image.sections.find((s)=>s.index===secNo&&peExactMappingOwner(s));const address=sec?sec.address+BigInt(value):0n;
     if(name){const derivedFunction=((type>>>4)&0x3)===2,valueInSection=!!(sec&&sec.size!=null&&BigInt(value)<BigInt(sec.size)),executable=!!(valueInSection&&sec.perms?.execute),executableExternal=!!(executable&&storage===2);image.symbols.push({name,address,size:null,kind:derivedFunction?'function':'symbol',binding:storage===2?'global':'local',defined:secNo>0,sectionIndex:secNo,source:'COFF'});if(derivedFunction&&executable&&address)image.functions.push(functionSeed(address,{name,source:'symbol',confidence:0.98,exactFunctionStart:true,functionStartEvidence:'COFF derived function type'}));else if(executableExternal&&address)image.functions.push(functionSeed(address,{name,source:'symbol-heuristic',confidence:0.55}));}
     if(aux>count-i-1){budget.partial('coff:aux-overrun','PE COFF auxiliary symbol records exceed declared symbol count');break;}i+=1+aux;
   }

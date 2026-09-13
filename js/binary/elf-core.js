@@ -56,6 +56,7 @@ export function parseELF(input, options = {}) {
   const h = readHeader(r, bits);
   validateHeaderTableSizes(r, h, bits);
   resolveExtendedProgramHeaderCount(r, h, bits);
+  validateHeaderTablePresence(h);
   const image = new BinaryImage(bytes, {
     format: 'elf', arch: elfMachineName(h.machine, bits), bits,
     endian: littleEndian ? 'little' : 'big', platform: elfOsAbi(r.u8(7)),
@@ -281,6 +282,11 @@ function validateHeaderTableSizes(r, h, bits) {
   if (h.shoff !== 0n && h.shentsize < minSection) throw new Error(`ELF e_shentsize ${h.shentsize} is smaller than ${minSection}`);
   if (h.phnum === PN_XNUM && h.shoff === 0n) throw new Error('ELF PN_XNUM requires section header 0');
   void r;
+}
+
+function validateHeaderTablePresence(h) {
+  if (h.phoff === 0n && h.phnum !== 0) throw new Error(`ELF e_phnum ${h.phnum} requires a non-zero e_phoff`);
+  if (h.shoff === 0n && h.shnum !== 0) throw new Error(`ELF e_shnum ${h.shnum} requires a non-zero e_shoff`);
 }
 
 function resolveExtendedProgramHeaderCount(r, h, bits) {
