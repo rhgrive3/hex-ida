@@ -106,6 +106,7 @@ function delayFixture(nonzeroDescriptors, includeZeroDescriptor) {
     writeU32(bytes, off + 16, thunkRva);
   }
   const image = makeImage(bytes);
+  image.sections[0].perms.write = true;
   return { reader: new Reader(bytes), image, directory: { rva: DIRECTORY_RVA, size: directorySize } };
 }
 

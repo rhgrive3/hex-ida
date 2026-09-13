@@ -391,6 +391,7 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
 
           const kinds = { 0x6e: 'virtual', 0x6f: 'super', 0x70: 'direct', 0x71: 'static', 0x72: 'interface' };
           const targetMeth = dexImage.methods[methIdx] || { name: `m_${methIdx}` };
+          const targetResolved = Array.isArray(dexImage.methods) && methIdx < dexImage.methods.length;
           mnemonic = `invoke-${kinds[opcode]}`;
 
           for (const reg of argRegs) {
@@ -412,6 +413,9 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
             callEffect.interfaceTypes = dexImage.classes
               .flatMap((cls) => Array.isArray(cls.interfaceTypes) ? cls.interfaceTypes : []);
             callEffect.unresolved = true;
+          }
+          if (targetResolved && callEffect.unresolved !== true) {
+            callEffect.targetMethodId = createManagedMethodId(dexImage.moduleId, methIdx, targetMeth.name);
           }
           callEffects.push(callEffect);
         }
