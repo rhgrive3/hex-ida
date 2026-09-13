@@ -17,7 +17,8 @@ function boundedLikelihoodRatio(value, fallback) {
   return Number.isFinite(n) ? Math.max(1, n) : fallback;
 }
 function isExplicitSemanticProof(f, e) {
-  const grade=String(f?.proofGrade || e?.proofGrade || f?.grade || e?.grade || '').toLowerCase();
+  const rawGrade = f?.proofGrade || e?.proofGrade || f?.grade || e?.grade || '';
+  const grade = typeof rawGrade === 'string' ? rawGrade.toLowerCase() : '';
   return f?.verified === true || e?.verified === true || !!(f?.verificationOrigin || e?.verificationOrigin)
     || ['verified','proof','proof-grade','deterministic'].includes(grade);
 }
