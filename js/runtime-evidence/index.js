@@ -139,7 +139,7 @@ export function createRuntimeEvidenceRecord(input = {}) {
     id:runtimeEvidenceId(input.id, generatedId),
     source:'runtime', backend:String(input.backend || 'unknown').slice(0,128), binaryHash:input.binaryHash || null, sliceIdentity:input.sliceIdentity || null,
     function:input.function == null ? null : input.function, address:input.address == null ? null : input.address,
-    input:input.input || null, initialState:input.initialState || null, observedState:input.observedState || null,
+    input:input.input ?? null, initialState:input.initialState ?? null, observedState:input.observedState ?? null,
     branchPath:Array.isArray(input.branchPath) ? input.branchPath.slice(0,4096) : [], timestamp:resolvedTimestamp, sessionId,
     reproducibility:input.reproducibility || { replayable:false, runs:1, consistent:null },
     confidence:safeConfidence(input.confidence), verdict:input.verdict || 'inconclusive', kind:input.kind || 'observation',
