@@ -467,8 +467,29 @@ export class Backend {
         result=platformInfo;
       } else {
         const legacy=await step(this._callTo('legacy','open',{file}));
+        const fallbackFormatId = legacyFallbackFormatId(legacy);
+        assertCurrent();
+        if (fallbackFormatId === null) {
+          const error = new Error('Legacy fallback could not determine a supported binary format; open failed.');
+          error.code = 'BACKEND_LEGACY_FORMAT_UNSUPPORTED';
+          throw error;
+        }
         nextLegacy=legacy;
-        if (platformError && legacy.format === 'Raw binary') legacy.warnings=[...(legacy.warnings||[]),platformError.message];
+        if (fallbackFormatId === 'macho') {
+          nextFormat='macho';
+          legacy.formatId = 'macho';
+          for (const slice of legacy.slices || []) slice.capability = legacySliceCapability(slice);
+          legacy.capability = legacy.slices?.[0]?.capability || legacySliceCapability(null);
+          legacy.platform = {
+            compatibility:'legacy-macho', sourceBackedDetection:false, detected:detection,
+            normalizedDyldTruth:false, duplicateUniversalParseAvoided:false,
+            platformSelectedSliceReparseAvoided:false, legacyCompatibilityParseRequired:true,
+            ...(platformError ? { normalizedDyldError: platformError.message } : {}),
+          };
+          nextPlatform = { formatId:'macho', capability:legacy.capability, detection:detection||{formatId:'macho'}, normalizedDyldTruth:false, compatibility:'legacy-macho', fallbackFromPlatformFailure:true };
+        } else {
+          if (platformError && legacy.format === 'Raw binary') legacy.warnings=[...(legacy.warnings||[]),platformError.message];
+        }
         result=legacy;
       }
     }
@@ -1067,6 +1088,15 @@ export class Backend {
 
 function normalizeChunk(res) {
   return { bytes: res.bytes, rows: res.rows, mn: res.mn ? res.mn.split('\n') : null, ops: res.ops ? res.ops.split('\n') : null };
+}
+
+function legacyFallbackFormatId(legacy) {
+  if (!legacy || typeof legacy !== 'object') return null;
+  const slices = Array.isArray(legacy.slices) ? legacy.slices : null;
+  if (!slices) return null;
+  if (slices.some((slice) => slice && typeof slice.info === 'object' && slice.info !== null)) return 'macho';
+  if (slices.length === 0 && legacy.raw && typeof legacy.raw === 'object' && legacy.raw.exec === true) return 'unknown';
+  return null;
 }
 
 function legacySliceCapability(slice) {
