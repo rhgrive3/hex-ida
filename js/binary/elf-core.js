@@ -35,6 +35,8 @@ const SHT_RISCV_ATTRIBUTES = 0x70000003;
 const R_RISCV_JUMP_SLOT = 5;
 const DT_RISCV_VARIANT_CC = 0x70000001n;
 const DT_INIT = 12n;
+const DT_NEEDED = 1n;
+const DT_SONAME = 14n;
 const ELF_RUNTIME_PAGE_SIZE = 0x1000n;
 
 function elfAddressRangeFits(bits, address, size) {
@@ -515,7 +517,10 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     let nameOff,info,other,shndx,value,size;
     if(bits===64){nameOff=r.u32(p);info=r.u8(p+4);other=r.u8(p+5);shndx=r.u16(p+6);value=r.u64(p+8);size=r.u64(p+16);}
     else{nameOff=r.u32(p);value=BigInt(r.u32(p+4));size=BigInt(r.u32(p+8));info=r.u8(p+12);other=r.u8(p+13);shndx=r.u16(p+14);}
-    if (BigInt(nameOff) >= str.size || nameOff >= strBytes) continue;
+    if (BigInt(nameOff) >= str.size || nameOff >= strBytes) {
+      if (i !== 0 || nameOff !== 0) budget.partial(`symbols:${table.index}:name-offset-range`, `ELF symbol table ${table.index} references a string-table offset outside its string table`);
+      continue;
+    }
     const maxName=Math.min(strBytes-nameOff,1<<20,Math.max(1,Math.floor(budget.remainingStringBytes/2)+1));
     const name=terminatedStringInTable(r,strStart,strBytes,nameOff,maxName);
     if(name==null){budget.partial(`symbols:${table.index}:unterminated-name`,`ELF symbol ${i} in table ${table.index} references a string without a NUL terminator in its string table`);continue;}
@@ -740,28 +745,37 @@ function parseDynamic(r, sec, sections, image, bits, budget) {
       }
     }
 
-    if (stringTableValid && (tag === 1n || tag === 14n) && val < BigInt(strSize)) {
-      const off = Number(val);
-      const max = Math.min(
-        strSize - off,
-        1 << 20,
-        Math.max(1, Math.floor(budget.remainingStringBytes / 2) + 1),
-      );
-      const name = terminatedStringInTable(r, strStart, strSize, off, max);
-      if (name == null && off < strSize) {
+    if (tag === DT_NEEDED || tag === DT_SONAME) {
+      if (stringTableValid && val >= BigInt(strSize)) {
         budget.partial(
-          `dynamic-section:${sec.index}:unterminated-string`,
-          `ELF SHT_DYNAMIC ${sec.index} references a string without a NUL terminator in its string table`,
+          `dynamic-section:${sec.index}:string-reference-range`,
+          `ELF SHT_DYNAMIC ${sec.index} references a string-table offset outside its string table`,
         );
         continue;
       }
-      if (name && !budget.take({
-        inputBytes: Math.min(max, name.length + 1),
-        stringBytes:name.length * 2,
-        estimatedHeapBytes:name.length * 2 + 32,
-      }, 'SHT_DYNAMIC-string')) break;
-      if (tag === 1n && name) image.libraries.push(name);
-      else if (tag === 14n && name) image.metadata.soname = name;
+      if (stringTableValid && val < BigInt(strSize)) {
+        const off = Number(val);
+        const max = Math.min(
+          strSize - off,
+          1 << 20,
+          Math.max(1, Math.floor(budget.remainingStringBytes / 2) + 1),
+        );
+        const name = terminatedStringInTable(r, strStart, strSize, off, max);
+        if (name == null && off < strSize) {
+          budget.partial(
+            `dynamic-section:${sec.index}:unterminated-string`,
+            `ELF SHT_DYNAMIC ${sec.index} references a string without a NUL terminator in its string table`,
+          );
+          continue;
+        }
+        if (name && !budget.take({
+          inputBytes: Math.min(max, name.length + 1),
+          stringBytes:name.length * 2,
+          estimatedHeapBytes:name.length * 2 + 32,
+        }, 'SHT_DYNAMIC-string')) break;
+        if (tag === DT_NEEDED && name) image.libraries.push(name);
+        else if (tag === DT_SONAME && name) image.metadata.soname = name;
+      }
     }
   }
 
