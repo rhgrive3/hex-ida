@@ -1,4 +1,5 @@
 const EM_X86_64 = 62;
+const EM_AARCH64 = 183;
 
 // x86-64 psABI relocation storage widths in bytes. A zero width denotes a
 // relocation with no storage field. Relocations whose field is `wordclass`
@@ -52,6 +53,35 @@ const X86_64_RELOCATION_FIELD_BYTES = new Map([
   [50, 4n], // R_X86_64_CODE_6_GOTTPOFF
   [51, 4n], // R_X86_64_CODE_6_GOTPC32_TLSDESC
 ]);
+
+// AArch64 AAELF64 relocation storage widths in bytes. Instruction relocations
+// occupy one 32-bit A64 instruction. Null/relaxation-only relocations have no
+// storage field. COPY is size-dependent, so it has no type-fixed width authority
+// here; dynamic consumers prove it from symbol st_size. Unallocated/reserved codes
+// are not present and therefore fail closed for this recognized machine.
+const AARCH64_RELOCATION_FIELD_BYTES = new Map([
+  [0, 0n], [256, 0n], // R_AARCH64_NONE (both encodings are specified)
+  [257, 8n], [258, 4n], [259, 2n], // ABS64/32/16
+  [260, 8n], [261, 4n], [262, 2n], // PREL64/32/16
+  ...Array.from({ length: 18 }, (_, i) => [263 + i, 4n]), // 263..280
+  ...Array.from({ length: 12 }, (_, i) => [282 + i, 4n]), // 282..293; 281 reserved
+  [299, 4n],
+  ...Array.from({ length: 7 }, (_, i) => [300 + i, 4n]),
+  [307, 8n], // GOTREL64
+  [308, 4n], // GOTREL32
+  ...Array.from({ length: 9 }, (_, i) => [309 + i, i === 8 ? 8n : 4n]), // 309..317; FUNCINIT64 is 8
+  ...Array.from({ length: 48 }, (_, i) => [512 + i, 4n]), // TLS static instruction relocations 512..559
+  ...Array.from({ length: 7 }, (_, i) => [560 + i, 4n]), // TLSDESC instruction relocations
+  [567, 0n], [568, 0n], [569, 0n], // relaxation-only markers
+  [570, 4n], [571, 4n], [572, 4n], [573, 4n],
+  [580, 8n], // AUTH_ABS64
+  ...Array.from({ length: 17 }, (_, i) => [581 + i, 4n]),
+  [598, 0n], // AUTH_TLSDESC_CALL relaxation marker
+  [1025, 8n], [1026, 8n], [1027, 8n], [1028, 8n], [1029, 8n], [1030, 8n],
+  [1031, 16n], // TLSDESC is a consecutive pair of pointer-sized values
+  [1032, 8n],
+  [1041, 8n], [1042, 8n], [1043, 16n], [1044, 8n],
+]);
 const X86_64_WORDCLASS_RELOCATIONS = new Set([
   6, // R_X86_64_GLOB_DAT
   7, // R_X86_64_JUMP_SLOT
@@ -60,9 +90,20 @@ const X86_64_WORDCLASS_RELOCATIONS = new Set([
 ]);
 
 export function relocationFieldWidth(machine, type, bits) {
-  if (machine !== EM_X86_64) return undefined;
-  if (X86_64_WORDCLASS_RELOCATIONS.has(type)) return BigInt(bits === 64 ? 8 : 4);
-  return X86_64_RELOCATION_FIELD_BYTES.has(type)
-    ? X86_64_RELOCATION_FIELD_BYTES.get(type)
-    : null;
+  if (machine === EM_X86_64) {
+    if (X86_64_WORDCLASS_RELOCATIONS.has(type)) return BigInt(bits === 64 ? 8 : 4);
+    return X86_64_RELOCATION_FIELD_BYTES.has(type)
+      ? X86_64_RELOCATION_FIELD_BYTES.get(type)
+      : null;
+  }
+  if (machine === EM_AARCH64) {
+    // AAELF64 and the beta ELF32/P32 ABI use different relocation code spaces.
+    // This table is intentionally ELF64-only; preserve the prior no-authority
+    // behavior for P32 rather than misclassifying its valid codes as reserved.
+    if (bits !== 64) return undefined;
+    return AARCH64_RELOCATION_FIELD_BYTES.has(type)
+      ? AARCH64_RELOCATION_FIELD_BYTES.get(type)
+      : null;
+  }
+  return undefined;
 }
