@@ -138,11 +138,11 @@ export function compileExperiment(hypothesis, options = {}) {
 
 function observedFieldValue(observation, offset) {
   const after = (observation && observation.memoryAfter) || [];
-  const final = after.find((f) => f && f.offset != null && BigInt(f.offset) === offset);
+  const final = after.find((f) => f && f.offset != null && strictMachineInteger(f.offset) === offset);
   if (final && final.value != null) return { observed:true, value:final.value, source:'final-state', size:final.size };
   const deltas = (observation && observation.memoryDelta) || [];
   let touched = null;
-  for (const delta of deltas) if (delta && delta.offset != null && BigInt(delta.offset) === offset && delta.after != null) touched=delta;
+  for (const delta of deltas) if (delta && delta.offset != null && strictMachineInteger(delta.offset) === offset && delta.after != null) touched=delta;
   if (touched) return { observed:true, value:touched.after, source:'delta-final', size:touched.size };
   return { observed:false, value:null, source:null, size:null };
 }
