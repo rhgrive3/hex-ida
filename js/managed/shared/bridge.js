@@ -110,6 +110,64 @@ function managedDivisionRemainderOperatorForNode(node, frontendId, mnemonic) {
   return node.operator;
 }
 
+const MANAGED_COMPARE_OPERATORS = new Map([
+  ['eq', { op: 'eq', signed: null, arity: 2 }],
+  ['ne', { op: 'ne', signed: null, arity: 2 }],
+  ['is-zero', { op: 'eq', signed: null, arity: 1 }],
+  ['is-nonzero', { op: 'ne', signed: null, arity: 1 }],
+  ['slt', { op: 'lt', signed: true, arity: 2 }],
+  ['ult', { op: 'lt', signed: false, arity: 2 }],
+  ['sle', { op: 'le', signed: true, arity: 2 }],
+  ['ule', { op: 'le', signed: false, arity: 2 }],
+  ['sgt', { op: 'gt', signed: true, arity: 2 }],
+  ['ugt', { op: 'gt', signed: false, arity: 2 }],
+  ['sge', { op: 'ge', signed: true, arity: 2 }],
+  ['uge', { op: 'ge', signed: false, arity: 2 }],
+]);
+
+function managedWasmComparison(mnemonic) {
+  const text = typeof mnemonic === 'string' ? mnemonic.trim().toLowerCase() : '';
+  const match = /^i(?:32|64)\.(eqz|eq|ne|(?:lt|le|gt|ge)_[su])$/.exec(text);
+  if (!match) return null;
+  const operation = match[1];
+  if (operation === 'eqz') return { op: 'eq', signed: null, arity: 1 };
+  if (operation === 'eq' || operation === 'ne') return { op: operation, signed: null, arity: 2 };
+  const relation = operation.slice(0, 2);
+  return { op: relation, signed: operation.endsWith('_s'), arity: 2 };
+}
+
+function sameManagedComparison(a, b) {
+  return a && b && a.op === b.op && a.signed === b.signed && a.arity === b.arity;
+}
+
+function legacyManagedComparison(mnemonic) {
+  const text = typeof mnemonic === 'string' ? mnemonic.trim().toLowerCase() : '';
+  const op = text.includes('eq') ? 'eq'
+    : text.includes('ne') ? 'ne'
+    : text.includes('le') ? 'le'
+    : text.includes('ge') ? 'ge'
+    : text.includes('lt') ? 'lt'
+    : text.includes('gt') ? 'gt'
+    : null;
+  return op ? { op, signed: null, arity: 2 } : null;
+}
+
+function managedComparisonForNode(node, frontendId, mnemonic) {
+  const hasCanonicalOperator = node?.operator != null;
+  const canonical = typeof node?.operator === 'string'
+    ? MANAGED_COMPARE_OPERATORS.get(node.operator) || null
+    : null;
+  const frontend = typeof frontendId === 'string' ? frontendId.trim().toLowerCase() : '';
+  const wasm = frontend === 'wasm' ? managedWasmComparison(mnemonic) : null;
+
+  if (hasCanonicalOperator) {
+    if (!canonical || (wasm && !sameManagedComparison(canonical, wasm))) return null;
+    return canonical;
+  }
+  if (frontend === 'wasm') return wasm;
+  return legacyManagedComparison(mnemonic);
+}
+
 function safeIdent(s, fallback = 'value') {
   const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_$]/g, '_').replace(/^([0-9])/, '_$1');
   return x || fallback;
@@ -1028,9 +1086,11 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
     } else if (n.kind === 'compare') {
       const left = n.inputs[0] ? buildValueExpr(n.inputs[0]) : expr.constant(0n, bits);
       const right = n.inputs[1] ? buildValueExpr(n.inputs[1]) : expr.constant(0n, bits);
-      const mn = (n.metadata?.mnemonic || '').toLowerCase();
-      const op = mn.includes('eq') ? 'eq' : mn.includes('ne') ? 'ne' : mn.includes('le') ? 'le' : mn.includes('ge') ? 'ge' : mn.includes('lt') ? 'lt' : mn.includes('gt') ? 'gt' : 'eq';
-      res = expr.compare(op, left, right);
+      const mnemonic = typeof n.metadata?.mnemonic === 'string' ? n.metadata.mnemonic : '';
+      const comparison = managedComparisonForNode(n, frontendId, mnemonic);
+      res = comparison
+        ? expr.compare(comparison.op, left, right, comparison.signed)
+        : expr.intrinsic(safeIdent(mnemonic || 'managed_compare'), [left, right], bits);
     } else if (n.kind === 'unary') {
       const arg = n.inputs[0] ? buildValueExpr(n.inputs[0]) : expr.constant(0n, bits);
       const mnemonic = typeof n.metadata?.mnemonic === 'string' ? n.metadata.mnemonic : '';
