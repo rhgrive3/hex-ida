@@ -359,6 +359,9 @@ const LOAD_MN = /^(ldr|ldrb|ldrh|ldrsb|ldrsh|ldrsw|ldur|ldurb|ldurh|ldursb|ldurs
 const STORE_MN = /^(str|strb|strh|stur|sturb|sturh|stp|stnp|stlr|stlrb|stlrh|sttr|stxr|stlxr|st1|st2|st3|st4)$/;
 const STRUCT_LOAD_MN = /^ld[1-4]$/;
 const STRUCT_STORE_MN = /^st[1-4]$/;
+const ATOMIC_RMW_MN = /^(?:cas|swp|ld(?:add|set|clr|eor|smax|smin|umax|umin))(?:al|a|l)?(?:b|h)?$/;
+const ATOMIC_SOURCE_RESULT_MN = /^(?:swp|ld(?:add|set|clr|eor|smax|smin|umax|umin))(?:al|a|l)?(?:b|h)?$/;
+const ATOMIC_COMPARE_SWAP_MN = /^cas(?:al|a|l)?(?:b|h)?$/;
 
 function structureTransferSize(ops) {
   const list = ops.find((o) => o.k === 'list');
@@ -395,6 +398,8 @@ function gpNum(key) {
 /** 書き込み先になるオペランドの位置。読み書きなしなら空。 */
 function writeIndexes(base, ops) {
   if (STORE_MN.test(base)) return [];
+  if (ATOMIC_SOURCE_RESULT_MN.test(base)) return ops.length === 3 && ops[2].k === 'mem' && ops[1].k === 'reg' ? [1] : [];
+  if (ATOMIC_COMPARE_SWAP_MN.test(base)) return ops.length === 3 && ops[2].k === 'mem' && ops[0].k === 'reg' ? [0] : [];
   if (base === 'ldp' || base === 'ldpsw' || base === 'ldnp') return [0, 1];
   if (COMPARE_MN.test(base)) return [];
   if (CALL_MN.test(base) || RET_MN.test(base)) return [];
@@ -444,6 +449,8 @@ function accessSize(base, ops) {
   if (/^(ldrb|ldrsb|strb|sturb|ldurb|ldursb|ldarb|stlrb)$/.test(base)) return 1;
   if (/^(ldrh|ldrsh|strh|sturh|ldurh|ldursh|ldarh|stlrh)$/.test(base)) return 2;
   if (/^(ldrsw|ldursw)$/.test(base)) return 4;
+  if (ATOMIC_RMW_MN.test(base) && /b$/.test(base)) return 1;
+  if (ATOMIC_RMW_MN.test(base) && /h$/.test(base)) return 2;
   if (STRUCT_LOAD_MN.test(base) || STRUCT_STORE_MN.test(base)) return structureTransferSize(ops);
   const reg = ops.find((o) => o.k === 'reg');
   const w = reg && reg.bits ? reg.bits / 8 : 8;
@@ -497,10 +504,12 @@ export function makeInstruction(raw) {
 
   const wIdx = writeIndexes(base, parsed);
   const structLoad = STRUCT_LOAD_MN.test(base);
+  const atomicRmw = ATOMIC_RMW_MN.test(base);
+  const destAlsoRead = ATOMIC_COMPARE_SWAP_MN.test(base);
   const reads = new Set();
   for (let i = 0; i < parsed.length; i++) {
     if (wIdx.includes(i)) {
-      if (parsed[i].k === 'reg') continue;
+      if (parsed[i].k === 'reg' && !destAlsoRead) continue;
       if (parsed[i].k === 'list' && structLoad) continue;
     }
     collectReads(parsed[i], reads);
@@ -535,9 +544,9 @@ export function makeInstruction(raw) {
   insn.source = parsed.length > 1 ? parsed[wIdx.length ? 1 : 0] || null : (parsed[0] || null);
 
   const mem = parsed.find((o) => o.k === 'mem') || null;
-  if (mem && (LOAD_MN.test(base) || STORE_MN.test(base))) {
+  if (mem && (atomicRmw || LOAD_MN.test(base) || STORE_MN.test(base))) {
     insn.memory = {
-      kind: LOAD_MN.test(base) ? 'load' : 'store',
+      kind: atomicRmw ? 'atomic' : (LOAD_MN.test(base) ? 'load' : 'store'),
       base: regKey(mem.base),
       disp: mem.addressDisp && mem.addressDisp.value != null ? mem.addressDisp.value : (mem.disp && mem.disp.value != null ? mem.disp.value : null),
       writebackDisp: mem.writebackDisp && mem.writebackDisp.value != null ? mem.writebackDisp.value : null,
@@ -785,7 +794,28 @@ export function analyzeDataFlow(insns, opts) {
         m.indexAddr = iv && iv.kind === 'loaded' && iv.addr != null ? iv.addr : null;
       }
       const slot = m.stack && m.disp != null && !m.indexed ? m.base + '+' + m.disp.toString() : null;
-      if (m.kind === 'load') {
+      if (m.kind === 'atomic') {
+        const srcIndex = ATOMIC_COMPARE_SWAP_MN.test(base) ? 1 : 0;
+        const srcOp = insn.ops[srcIndex];
+        const src = srcOp && srcOp.k === 'reg' ? regKey(srcOp) : null;
+        const sv = src ? get(src) : null;
+        flow('reg->mem', insn.row, src, slot || (m.base || 'mem'), sv);
+        if (slot) {
+          if (sv) stack.set(slot, Object.assign({}, sv, { ev: sv.ev.concat([ev('stack-save', insn.row, { slot })]) }));
+          else stack.set(slot, unknownValue(ev('untracked', insn.row)));
+        }
+        const writeback = insn.ops.some((x) => x.k === 'mem' && (x.mode === 'pre' || x.mode === 'post'));
+        for (const dst of insn.writes) {
+          if (writeback && dst === m.base) continue;
+          const baseVal = m.base ? get(m.base) : null;
+          const addr = baseVal && baseVal.kind === 'address' && m.disp != null ? baseVal.addr + m.disp : null;
+          const v = value('loaded', { at: { base: m.base, disp: m.disp }, addr, size: m.size },
+            SCORE.high, [ev('atomic', insn.row, { base: m.base, disp: m.disp, addr })], insn.row);
+          set(dst, v);
+          flow('mem->reg', insn.row, m.base, dst, v);
+          if (addr != null) addressRefs.push({ row: insn.row, addr, value: v, load: true });
+        }
+      } else if (m.kind === 'load') {
         for (const dst of insn.writes) {
           if (dst === m.base && insn.ops.some((x) => x.k === 'mem' && (x.mode === 'pre' || x.mode === 'post'))) continue;
           let v;
@@ -1172,7 +1202,8 @@ function finishBlock(g, ctx) {
       }
     }
     if (insn.memory) {
-      g.effects.push(insn.memory.kind === 'load' ? 'read' : 'write');
+      if (insn.memory.kind === 'atomic') g.effects.push('read', 'write');
+      else g.effects.push(insn.memory.kind === 'load' ? 'read' : 'write');
       if (insn.memory.stack) g.facts.stack = true;
     }
     if (insn.branchTarget != null) {
