@@ -130,6 +130,47 @@ test('state bindings retain actual reaching definitions and graph membership aft
   }
 });
 
+test('unbound canonical flag obligations survive without register bindings or public state markers', () => {
+  // This is the generic canonical plugin boundary, not an ARM64 instruction
+  // fixture. Unsupported state must stay an obligation even with no eligible
+  // register assignment to seed the shared observer.
+  for (const withRegister of [false, true]) {
+    const plugin = { id:'flag-obligation-test', semanticVersion:'1', fixedInstructionSize:4,
+      liftExact(decoded) {
+        const flag = { kind:'flag', flagId:'Z', widthBits:1 };
+        const operations = [
+          { id:`${decoded.instructionId}:flag-write`, kind:'flag-write', flag,
+            value:{ kind:'bitvector', widthBits:1, value:'1' } },
+          { id:`${decoded.instructionId}:flag-read`, kind:'flag-read', flag,
+            value:{ kind:'bitvector', widthBits:1 } },
+        ];
+        if (withRegister) operations.push({ id:`${decoded.instructionId}:register-write`, kind:'register-write',
+          register:{ kind:'register', registerId:'state0', widthBits:32 },
+          value:{ kind:'bitvector', widthBits:32, value:'7' } });
+        return createMachineEffectBundle({ instructionId:decoded.instructionId,
+          architectureId:this.id, mode:decoded.mode, origin:decoded.origin,
+          operations, controlEffect:{ kind:'return' }, possibleFaults:[], completeness:'exact' });
+      } };
+    const result = buildSemanticV2CompatibilityPipeline({ architecturePlugin:plugin,
+      decoderSemanticVersion:'test-1', binaryId:'flag-obligation-binary', sliceId:'flag-obligation-slice',
+      addressWidthBits:64, entryBlockKey:'entry', blocks:[{ key:'entry', startAddress:0x1000n,
+        instructions:[{ decoded:{ address:0x1000n, mode:'test' } }], successors:[] }] });
+    const ir = result.legacyV1, context = { ...identity, binaryId:'flag-obligation-binary',
+      functionId:result.semanticIr.functionId, snapshotId:'snapshot-unbound',
+      architecture:plugin.id, semanticsVersion:plugin.semanticVersion };
+    const flags = ir.instructions.filter(inst =>
+      (inst.extra?.stateRead ?? inst.extra?.stateWrite)?.physicalIdentity?.kind === 'flag');
+    assert.equal(flags.length, 2);
+    for (const inst of flags) assert.equal(readCanonicalRegisterStateBinding(ir, inst, context), null);
+    assert.equal(prepareCanonicalRegisterStateBindings(ir, context)?.status, 'unavailable');
+    for (const inst of flags) for (const key of ['stateRead', 'stateWrite', 'publicStateIdentity', 'stateReadProof', 'stateWriteProof']) {
+      delete inst.extra[key];
+    }
+    assert.equal(prepareCanonicalRegisterStateBindings(ir, context)?.status, 'unavailable',
+      'private canonical state obligations cannot disappear with public markers');
+  }
+});
+
 test('public projection of identical canonical or copied SSA cannot mint state assignment authority', () => {
   // A synthetic plugin isolates the issuer boundary; the ARM64 fixture above
   // separately verifies the real producer. Both use the canonical SSA builder.

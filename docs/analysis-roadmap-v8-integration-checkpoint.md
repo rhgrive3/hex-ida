@@ -1,5 +1,30 @@
 # Analysis roadmap v8 integration checkpoint
 
+## 2026-09-13: canonical 状態操作の全件照合と X-02 の残件確認
+
+PR **#7036** へ `53c177e4390abb3ef2e717ac06347b0b5c9ed533` まで通常 push し、
+同 SHA の限定 257 テストと 8 チェックのログを照合しました。これは作業途中のソース保存で、
+統合受入は引き続き **CHECKPOINT-LOCKED** です。
+
+独立レビューで、レジスタ操作を含まない synthetic canonical plugin のフラグ操作について、
+公開 state marker がなくなると未証明の操作を見落とす範囲が確認されました。
+canonical IR の全 `state-read/state-write` を適格性判定より前に内部記録し、
+発行済みの対応記録が一件でも欠ければ到達可能性の準備を拒否します。
+フラグのみ・フラグとレジスタの混在・公開 marker の削除を回帰対象にします。
+これはフラグの意味証明を追加したという主張ではなく、未証明の状態操作を残すための修正です。
+実際の ARM64 parsed-row fixture は引き続き `unproved-machine-effects` を保持し、
+RET の fault、全領域・例外・メモリ・ループの証明は未完了です。
+
+解析 md 全体は **23 finding / 21 FR task** のままです。C4・ME・ユーザー C1 の完了だけで
+全体を終了とはしません。X-02 の既存メタデータ/fixup 28 件と PAC 情報分離 46 件は
+上記 SHA で通過しましたが、OS/toolchain 別の横断受入は未確認です。
+調べた `openBinary/openBinarySource` は共有キャッシュの直接入力を扱いません。
+別のインポート経路、既存 category/protocol fixture、全 Apple 行列との対応を照合します。
+独立 Mach-O 再検証は LLVM 18.1.3 要求に対して環境が 14.0.0 のため開始前に失敗しました。
+指定どおり環境対応・実機・別 issue 修正は対象外とし、その検証を成功には数えません。
+詳細は永続 evidence の `completion-audit-20260913/x02-requirement-audit-53c177e.json` に保存しています。
+ユーザー C1 の開始点と予約済み担当パスは変更しません。
+
 ## 2026-09-13: 条件証明を既存の非同期最適化入口へ接続
 
 `optimizeSemanticDecompilation(result, { identity, conditionalBranch, ... })` から、

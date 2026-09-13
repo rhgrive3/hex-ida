@@ -21,6 +21,7 @@ import {
   buildSemanticV2CompatibilityPipeline,
   projectedRegisterStateBindingCandidate,
   projectedRegisterStateBindingCandidates,
+  projectedCanonicalStateObligations,
 } from './semantics/compat/index.js';
 import {
   canonicalMemoryForwardingContextForLoad,
@@ -65,13 +66,16 @@ export function prepareCanonicalRegisterStateBindings(projected, identity) {
   const unavailable = Object.freeze({ status:'unavailable' });
   const records = new Map(projectedRegisterStateBindingCandidates(projected).map(record => [record.source, record]));
   for (const [source, record] of facadeRegisterStateBindings.get(projected) ?? []) records.set(source, record);
+  const obligations = projectedCanonicalStateObligations(projected) ?? [];
+  const boundNodes = new Set([...records.values()].map(record => record.canonicalNode));
+  if (obligations.some(node => !boundNodes.has(node))) return unavailable;
   if (!records.size) return null;
   const contexts = [...new Set([...records.values()].map(record => record.context))];
   const contextCurrent = () => identity && contexts.every(context => Object.keys(context).every(key => identity[key] === context[key]));
   try { if (!contextCurrent()) return unavailable; }
   catch { return unavailable; }
   const checks = [...new Set([...records.values()].map(record => record.isCurrent))];
-  const workItems = records.size * 16 + checks.reduce((sum, check) => sum + check.workItems, 0);
+  const workItems = records.size * 16 + obligations.length * 2 + checks.reduce((sum, check) => sum + check.workItems, 0);
   if (!Number.isSafeInteger(workItems)) return unavailable;
   return Object.freeze({ status:'prepared', size:records.size, observationCount:checks.length, workItems,
     get:source => records.get(source) ?? null,

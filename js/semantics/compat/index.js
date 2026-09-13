@@ -69,6 +69,10 @@ const UNKNOWN_CATEGORIES = Object.freeze(['registers', 'flags', 'memory', 'contr
 // acquire them by copying proof descriptions or matching semantic IDs.
 const registerStateBindings = new WeakMap();
 const registerStateContexts = new WeakMap();
+const canonicalStateObligations = new WeakMap();
+export function projectedCanonicalStateObligations(projected) {
+  return canonicalStateObligations.get(projected) ?? null;
+}
 export function projectedRegisterStateContext(projected) {
   return registerStateContexts.get(projected) ?? null;
 }
@@ -79,6 +83,11 @@ export function projectedRegisterStateBindingCandidates(projected) {
   return Object.freeze([...(registerStateBindings.get(projected)?.values() ?? [])]);
 }
 function sealRegisterStateBindings(projected, ir, ssa, context) {
+  // Capture the complete canonical read/write inventory before eligibility
+  // filtering. In particular, a flag-only projection must not look stateless
+  // merely because no register binding can be issued for it.
+  canonicalStateObligations.set(projected, Object.freeze(ir.nodes.filter(node =>
+    ['state-read', 'state-write'].includes(node.kind))));
   try {
     if (ir.completeness !== 'complete' || projected.functionId !== ir.functionId) return;
     const nodes = new Map(ir.nodes.map(node => [node.id, node]));
