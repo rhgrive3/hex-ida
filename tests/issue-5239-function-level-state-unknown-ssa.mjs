@@ -74,6 +74,128 @@ function definitionFor(ssa, use) {
   return getDefinitionForUse(ssa, use);
 }
 
+function writeThenRead({ completeness, unknowns } = {}) {
+  return singleBlockIr({
+    nodes: [
+      {
+        id: 'constant', kind: 'const', blockId: 'b0', inputs: [], outputs: ['seven'],
+        attributes: { value: 7, widthBits: 64 }, origin: origin('node:constant'),
+      },
+      {
+        id: 'write-R', kind: 'state-write', blockId: 'b0', inputs: ['seven'], outputs: [],
+        variable: variableR, origin: origin('node:write-R'),
+      },
+      stateRead('read-R', 'read-value'),
+    ],
+    values: [entryValue('r-entry', 'R'), definitionValue('seven', 'constant'), definitionValue('read-value', 'read-R')],
+    completeness,
+    unknowns,
+  });
+}
+
+test('#5239 an ordinary write cannot restore exact state across an unlocated unknown region', () => {
+  for (const categories of [['state'], []]) {
+    const ir = writeThenRead({
+      completeness: 'partial',
+      // The missing region may occur after write-R and before read-R. No node
+      // identifies its position, so an entry-only clobber is insufficient.
+      unknowns: [{ reason: 'function-region-not-lowered', categories }],
+    });
+    const ssa = buildSemanticSsa(ir, cfg);
+    validateSemanticSsa(ssa, ir, cfg);
+    const reaching = definitionFor(ssa, reachingStateUse(ssa, 'read-R'));
+    assert.equal(reaching.kind, 'unknown');
+    assert.equal(reaching.proof.transform.proofKind, 'conservative-state-clobber');
+    assert.equal(reaching.proof.sourceSemanticValueId, null, 'the read must not inherit the constant written before the possible clobber');
+  }
+});
+
+test('#5239 unlocated uncertainty also survives ordinary writes outside the entry block', () => {
+  const ir = writeThenRead({
+    completeness: 'partial',
+    unknowns: [{ reason: 'function-region-not-lowered', categories: ['state'] }],
+  });
+  for (const node of ir.nodes) node.blockId = 'body';
+  ir.blocks = [
+    { id: 'b0', nodeIds: [], origin: origin('block:b0') },
+    { id: 'body', nodeIds: ir.nodes.map((node) => node.id), origin: origin('block:body') },
+  ];
+  const bodyCfg = {
+    functionId: ir.functionId, entryBlockId: 'b0',
+    blocks: [{ id: 'b0', successors: [{ to: 'body', kind: 'fallthrough' }] }, { id: 'body', successors: [] }],
+  };
+  const ssa = buildSemanticSsa(ir, bodyCfg);
+  validateSemanticSsa(ssa, ir, bodyCfg);
+  assert.equal(definitionFor(ssa, reachingStateUse(ssa, 'read-R')).kind, 'unknown');
+});
+
+test('#5239 a located clobber cannot hide a separate same-reason state region', () => {
+  for (const detail of [
+    { region: 'not-lowered', after: 'write-R', before: 'read-R' },
+    { nodeId: 'missing-node' },
+    { nodeId: 'constant' },
+  ]) {
+    const ir = writeThenRead({
+      completeness: 'partial',
+      unknowns: [
+        { reason: 'state effect unavailable', categories: ['state'], detail: { nodeId: 'located-unknown' } },
+        { reason: 'state effect unavailable', categories: ['state'], detail },
+      ],
+    });
+    ir.nodes.unshift(unknownStateWrite('located-unknown'));
+    ir.blocks[0].nodeIds = ir.nodes.map((node) => node.id);
+    const ssa = buildSemanticSsa(ir, cfg);
+    validateSemanticSsa(ssa, ir, cfg);
+    const reaching = definitionFor(ssa, reachingStateUse(ssa, 'read-R'));
+    assert.equal(reaching.kind, 'unknown');
+    assert.equal(reaching.proof.sourceSemanticValueId, null,
+      'a matching reason or a reference without a state clobber is not location evidence');
+  }
+});
+
+test('#5239 successive reads cannot share a value across a possible missing state update', () => {
+  const ir = writeThenRead({
+    completeness: 'partial',
+    unknowns: [{ reason: 'function-region-not-lowered', categories: ['state'] }],
+  });
+  ir.nodes.push(stateRead('read-R-again', 'second-read-value'));
+  ir.values.push(definitionValue('second-read-value', 'read-R-again'));
+  ir.blocks[0].nodeIds = ir.nodes.map((node) => node.id);
+  const ssa = buildSemanticSsa(ir, cfg);
+  validateSemanticSsa(ssa, ir, cfg);
+  const first = definitionFor(ssa, reachingStateUse(ssa, 'read-R'));
+  const second = definitionFor(ssa, reachingStateUse(ssa, 'read-R-again'));
+  assert.equal(first.kind, 'unknown');
+  assert.equal(second.kind, 'unknown');
+  assert.notEqual(first.valueId, second.valueId, 'the missing region could change R between the reads');
+});
+
+test('#5239 complete and explicitly non-state partial functions preserve ordinary writes', () => {
+  for (const options of [{}, { completeness: 'partial', unknowns: [{ reason: 'missing-memory-effects', categories: ['memory'] }] }]) {
+    const ir = writeThenRead(options);
+    const ssa = buildSemanticSsa(ir, cfg);
+    validateSemanticSsa(ssa, ir, cfg);
+    const reaching = definitionFor(ssa, reachingStateUse(ssa, 'read-R'));
+    assert.equal(reaching.kind, 'definition');
+    assert.equal(reaching.sourceEntityId, 'write-R');
+    assert.equal(reaching.proof.sourceSemanticValueId, 'seven');
+  }
+});
+
+test('#5239 a located clobber allows a subsequent complete write to restore exact state', () => {
+  const ir = writeThenRead({
+    completeness: 'partial',
+    unknowns: [{ reason: 'state effect unavailable', categories: ['state'], detail: { nodeId: 'located-unknown' } }],
+  });
+  ir.nodes.splice(1, 0, unknownStateWrite('located-unknown'));
+  ir.blocks[0].nodeIds = ir.nodes.map((node) => node.id);
+  const ssa = buildSemanticSsa(ir, cfg);
+  validateSemanticSsa(ssa, ir, cfg);
+  const reaching = definitionFor(ssa, reachingStateUse(ssa, 'read-R'));
+  assert.equal(reaching.kind, 'definition');
+  assert.equal(reaching.proof.sourceSemanticValueId, 'seven');
+});
+
 test('#5239 complete IR keeps the exact entry reaching definition', () => {
   const ir = counterexample({});
   const ssa = buildSemanticSsa(ir, cfg);
@@ -132,7 +254,7 @@ test('#5239 explicit node-local unknown-state-write broad clobber is not regress
     nodes: [unknownStateWrite('unknown_write'), stateRead('read-R', 'read-value')],
     values: [entryValue('r-entry', 'R'), definitionValue('read-value', 'read-R')],
     completeness: 'partial',
-    unknowns: [{ reason: 'state effect unavailable', categories: ['state'] }],
+    unknowns: [{ reason: 'state effect unavailable', categories: ['state'], detail: { nodeId: 'unknown_write' } }],
   });
   const ssa = buildSemanticSsa(ir, cfg);
   validateSemanticSsa(ssa, ir, cfg);
@@ -155,7 +277,7 @@ test('#5239 the partial-IR artifact exposes conservative unknown evidence to con
   assert.equal(reaching.proof.broadUnknown, true);
 });
 
-test('#5239 a function-level state unknown duplicating node-local evidence adds no synthetic clobber', () => {
+test('#5239 a function-level state unknown explicitly bound to node-local evidence adds no synthetic clobber', () => {
   const ir = singleBlockIr({
     nodes: [
       stateRead('read-R', 'read-value'),
@@ -173,7 +295,7 @@ test('#5239 a function-level state unknown duplicating node-local evidence adds 
     ],
     values: [entryValue('r-entry', 'R'), definitionValue('read-value', 'read-R')],
     completeness: 'partial',
-    unknowns: [{ reason: 'unresolved-call', categories: ['state'] }],
+    unknowns: [{ reason: 'unresolved-call', categories: ['state'], detail: { nodeId: 'unknown_call' } }],
   });
   const ssa = buildSemanticSsa(ir, cfg);
   validateSemanticSsa(ssa, ir, cfg);
