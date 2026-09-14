@@ -12,7 +12,7 @@ function rvRawBytes(op, { rd = 'x0', rs1 = 'x0', imm = 0n } = {}) {
     const bits = (value, high, low) => (value >> BigInt(low)) & ((1n << BigInt(high - low + 1)) - 1n);
     word = ((bits(imm, 20, 20)) << 31n) | ((bits(imm, 10, 1)) << 21n) | ((bits(imm, 11, 11)) << 20n) | ((bits(imm, 19, 12)) << 12n) | (registerNumber(rd) << 7n) | 0x6fn;
   } else if (op === 'jalr') {
-    word = (((imm >> 20n) & 0xfffn) << 20n) | (registerNumber(rs1) << 15n) | (registerNumber(rd) << 7n) | 0x67n;
+    word = ((imm & 0xfffn) << 20n) | (registerNumber(rs1) << 15n) | (registerNumber(rd) << 7n) | 0x67n;
   } else {
     throw new TypeError(`no canonical encoding for fixture op ${op}`);
   }
@@ -64,6 +64,7 @@ test('issue #889: non-RAS link registers do not become ABI calls', () => {
     rv('jal', { rd:'x5', imm:8n }),
     rv('jalr', { rd:'x6', rs1:'x10', imm:0n }),
     rv('jalr', { rd:'x1', rs1:'x10', imm:0n }),
+    rv('jalr', { rd:'x1', rs1:'x10', imm:12n }),
   ]) {
     const decoded = decodeRiscv64InstructionWord(instruction.rawBytes);
     assert.equal(decoded.supported, true);
