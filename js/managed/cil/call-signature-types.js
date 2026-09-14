@@ -354,6 +354,17 @@ export function cilMethodSlotElementByte(blob, sequence, typeDefOrRefRowCounts =
   fail(code);
 }
 
+// ECMA-335 II.23.2.3 FieldSig: FIELD Type (0x06). The lifter resolves field
+// tokens through this same canonical Type grammar so a field load never
+// borrows a fabricated 32-bit identity (#3971).
+export function parseCilFieldSignature(blob, typeDefOrRefRowCounts = null) {
+  const code = 'cil-field-signature-invalid';
+  if (!(blob instanceof Uint8Array) || blob.length < 2 || blob[0] !== 0x06) fail(code);
+  const parsed = parseType(blob, 1, code, 0, 0, typeDefOrRefRowCounts);
+  if (parsed.next !== blob.length) fail(code);
+  return Object.freeze(parsed.value);
+}
+
 // ECMA-335 II.23.2.6 LocalVarSig: 0x07 Count T* where each T may carry
 // custom modifiers, the PINNED modifier, and a BYREF pair. The lifter needs
 // the typed locals as a stack-type array so ldloc/stloc stop publishing a
