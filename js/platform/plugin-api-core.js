@@ -21,7 +21,12 @@ function fallbackClone(value, seen = new WeakMap(), depth = 0) {
   if (value == null || typeof value !== 'object') return value;
   if (depth > 32) throw new Error('plugin context nesting exceeds safety limit');
   if (seen.has(value)) return seen.get(value);
-  if (value instanceof Date) return new Date(value.getTime());
+  const dateValue = intrinsicDateValue(value);
+  if (dateValue.ok) {
+    const copy = new Date(dateValue.value);
+    seen.set(value, copy);
+    return copy;
+  }
   // A snapshot must be detached: `structuredClone` and `TypedArray.prototype.slice`
   // both keep a SharedArrayBuffer's backing shared, so a plugin could still reach
   // host bytes through the "snapshot". Clone the complete backing store into a
@@ -32,24 +37,39 @@ function fallbackClone(value, seen = new WeakMap(), depth = 0) {
     seen.set(value, copy);
     return copy;
   }
-  if (value instanceof ArrayBuffer) {
-    const copy = value.slice(0);
+  const arrayBufferLength = ordinaryArrayBufferByteLength(value);
+  if (arrayBufferLength != null) {
+    const copy = new ArrayBuffer(arrayBufferLength);
+    new Uint8Array(copy).set(new Uint8Array(value, 0, arrayBufferLength));
     seen.set(value, copy);
     return copy;
   }
   if (ArrayBuffer.isView(value)) {
     const dataView = dataViewMeta(value);
-    const backing = dataView?.buffer ?? viewBackingBuffer(value);
+    const typedArray = dataView == null ? typedArrayMeta(value) : null;
+    const backing = dataView?.buffer ?? typedArray?.buffer ?? viewBackingBuffer(value);
     if (backing == null) throw new TypeError('plugin snapshot view backing is invalid');
     const buffer = fallbackClone(backing, seen, depth + 1);
     const copy = dataView != null
       ? new DataView(buffer, dataView.byteOffset, dataView.byteLength)
-      : new value.constructor(buffer, value.byteOffset, value.length);
+      : new typedArray.ctor(buffer, typedArray.byteOffset, typedArray.length);
     seen.set(value, copy);
     return copy;
   }
-  if (value instanceof Map) { const out = new Map(); seen.set(value, out); for (const [k, v] of value) out.set(fallbackClone(k, seen, depth + 1), fallbackClone(v, seen, depth + 1)); return out; }
-  if (value instanceof Set) { const out = new Set(); seen.set(value, out); for (const v of value) out.add(fallbackClone(v, seen, depth + 1)); return out; }
+  const mapEntries = intrinsicMapEntries(value);
+  if (mapEntries != null) {
+    const out = new Map();
+    seen.set(value, out);
+    for (const [k, v] of mapEntries) out.set(fallbackClone(k, seen, depth + 1), fallbackClone(v, seen, depth + 1));
+    return out;
+  }
+  const setValues = intrinsicSetValues(value);
+  if (setValues != null) {
+    const out = new Set();
+    seen.set(value, out);
+    for (const v of setValues) out.add(fallbackClone(v, seen, depth + 1));
+    return out;
+  }
   if (Array.isArray(value)) { const out = []; seen.set(value, out); for (const v of value) out.push(fallbackClone(v, seen, depth + 1)); return out; }
   const out = Object.create(null); seen.set(value, out);
   for (const [key, v] of Object.entries(value)) { if (typeof v === 'function') continue; out[key] = fallbackClone(v, seen, depth + 1); }
@@ -60,13 +80,26 @@ const SHARED_ARRAY_BUFFER_CTOR = typeof SharedArrayBuffer === 'function' ? Share
 const SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER = SHARED_ARRAY_BUFFER_CTOR == null
   ? null
   : Object.getOwnPropertyDescriptor(SHARED_ARRAY_BUFFER_CTOR.prototype, 'byteLength')?.get ?? null;
-const TYPED_ARRAY_BUFFER_GETTER = Object.getOwnPropertyDescriptor(
-  Object.getPrototypeOf(Uint8Array.prototype),
-  'buffer',
-)?.get;
+const ARRAY_BUFFER_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')?.get;
+const TYPED_ARRAY_PROTOTYPE = Object.getPrototypeOf(Uint8Array.prototype);
+const TYPED_ARRAY_BUFFER_GETTER = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, 'buffer')?.get;
+const TYPED_ARRAY_BYTE_OFFSET_GETTER = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, 'byteOffset')?.get;
+const TYPED_ARRAY_LENGTH_GETTER = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, 'length')?.get;
+const TYPED_ARRAY_TAG_GETTER = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, Symbol.toStringTag)?.get;
 const DATA_VIEW_BUFFER_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer')?.get;
 const DATA_VIEW_BYTE_OFFSET_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteOffset')?.get;
 const DATA_VIEW_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteLength')?.get;
+const DATE_GET_TIME = Date.prototype.getTime;
+const MAP_ENTRIES = Map.prototype.entries;
+const SET_VALUES = Set.prototype.values;
+const TYPED_ARRAY_CTORS = new Map([
+  ['Int8Array', Int8Array], ['Uint8Array', Uint8Array], ['Uint8ClampedArray', Uint8ClampedArray],
+  ['Int16Array', Int16Array], ['Uint16Array', Uint16Array], ['Int32Array', Int32Array], ['Uint32Array', Uint32Array],
+  ...(typeof Float16Array === 'function' ? [['Float16Array', Float16Array]] : []),
+  ['Float32Array', Float32Array], ['Float64Array', Float64Array],
+  ...(typeof BigInt64Array === 'function' ? [['BigInt64Array', BigInt64Array]] : []),
+  ...(typeof BigUint64Array === 'function' ? [['BigUint64Array', BigUint64Array]] : []),
+]);
 
 function isSharedBuffer(value) {
   if (typeof SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER !== 'function' || value == null || typeof value !== 'object') return false;
@@ -77,6 +110,23 @@ function isSharedBuffer(value) {
     return false;
   }
 }
+
+function ordinaryArrayBufferByteLength(value) {
+  if (typeof ARRAY_BUFFER_BYTE_LENGTH_GETTER !== 'function' || value == null || typeof value !== 'object') return null;
+  try { return ARRAY_BUFFER_BYTE_LENGTH_GETTER.call(value); } catch { return null; }
+}
+function intrinsicDateValue(value) {
+  if (value == null || typeof value !== 'object') return { ok: false, value: null };
+  try { return { ok: true, value: DATE_GET_TIME.call(value) }; } catch { return { ok: false, value: null }; }
+}
+function intrinsicMapEntries(value) {
+  if (value == null || typeof value !== 'object') return null;
+  try { return MAP_ENTRIES.call(value); } catch { return null; }
+}
+function intrinsicSetValues(value) {
+  if (value == null || typeof value !== 'object') return null;
+  try { return SET_VALUES.call(value); } catch { return null; }
+}
 function viewBackingBuffer(value) {
   if (typeof TYPED_ARRAY_BUFFER_GETTER === 'function') {
     try { return TYPED_ARRAY_BUFFER_GETTER.call(value); } catch {}
@@ -85,6 +135,26 @@ function viewBackingBuffer(value) {
     try { return DATA_VIEW_BUFFER_GETTER.call(value); } catch {}
   }
   return null;
+}
+
+function typedArrayMeta(value) {
+  if (typeof TYPED_ARRAY_BUFFER_GETTER !== 'function'
+    || typeof TYPED_ARRAY_BYTE_OFFSET_GETTER !== 'function'
+    || typeof TYPED_ARRAY_LENGTH_GETTER !== 'function'
+    || typeof TYPED_ARRAY_TAG_GETTER !== 'function') return null;
+  try {
+    const tag = TYPED_ARRAY_TAG_GETTER.call(value);
+    const ctor = TYPED_ARRAY_CTORS.get(tag);
+    if (ctor == null) return null;
+    return {
+      buffer: TYPED_ARRAY_BUFFER_GETTER.call(value),
+      byteOffset: TYPED_ARRAY_BYTE_OFFSET_GETTER.call(value),
+      length: TYPED_ARRAY_LENGTH_GETTER.call(value),
+      ctor,
+    };
+  } catch {
+    return null;
+  }
 }
 function dataViewMeta(value) {
   if (typeof DATA_VIEW_BUFFER_GETTER !== 'function'
@@ -115,12 +185,14 @@ function containsSharedBuffer(value, seen = new WeakSet()) {
   if (SHARED_ARRAY_BUFFER_CTOR == null) return false;
   if (isSharedBuffer(value)) return true;
   if (ArrayBuffer.isView(value)) return isSharedBuffer(viewBackingBuffer(value));
-  if (value instanceof ArrayBuffer) return false;
+  if (ordinaryArrayBufferByteLength(value) != null) return false;
   if (seen.has(value)) return false;
   seen.add(value);
   if (Array.isArray(value)) { for (const item of value) if (containsSharedBuffer(item, seen)) return true; return false; }
-  if (value instanceof Map) { for (const [k, v] of value) { if (containsSharedBuffer(k, seen) || containsSharedBuffer(v, seen)) return true; } return false; }
-  if (value instanceof Set) { for (const v of value) if (containsSharedBuffer(v, seen)) return true; return false; }
+  const mapEntries = intrinsicMapEntries(value);
+  if (mapEntries != null) { for (const [k, v] of mapEntries) { if (containsSharedBuffer(k, seen) || containsSharedBuffer(v, seen)) return true; } return false; }
+  const setValues = intrinsicSetValues(value);
+  if (setValues != null) { for (const v of setValues) if (containsSharedBuffer(v, seen)) return true; return false; }
   for (const key of Reflect.ownKeys(value)) {
     const desc = Object.getOwnPropertyDescriptor(value, key);
     if (desc && 'value' in desc && containsSharedBuffer(desc.value, seen)) return true;
