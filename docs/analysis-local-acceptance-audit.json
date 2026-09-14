@@ -1682,6 +1682,51 @@
           "finalAdmission": "failure"
         },
         "remaining": "New-head CI, complete Phase8/whole product gate, independent review, C4 full proof/120ms and physical device/runtime/release evidence remain required."
+      },
+      "reviewReadyCheckpoint": {
+        "recordedAt": "2026-09-14T07:50:54.633164+00:00",
+        "head": "fc339fa1870bbfee889f4cbc7dd55880db86e662",
+        "base": "71900d5847a3136ebcbd965d63c17b0abfd4c8d7",
+        "fastGate": {
+          "status": "success",
+          "runId": 34818991384,
+          "allStepsPassed": true
+        },
+        "userscript": {
+          "status": "success",
+          "runId": 34818991386
+        },
+        "circleCi": {
+          "allEightContextsPassed": true,
+          "benchmarkJob": 69604,
+          "benchmarkUrl": "https://circleci.com/gh/rhgrive3/hex-ida/69604"
+        },
+        "readyForReview": true,
+        "autoMergeEnabled": false,
+        "finalAdmission": {
+          "state": "pending",
+          "reason": "missing exact-head AUTO approval",
+          "runId": 34819547716
+        },
+        "codeRabbit": {
+          "state": "success",
+          "description": "Review skipped: draft pull request",
+          "actualReviewAccepted": false,
+          "note": "This status was emitted before the Ready transition. A real review on the published head is still required."
+        },
+        "manualReleaseVerification": {
+          "status": "BLOCKED",
+          "workflow": ".github/workflows/phase8-release-validation.yml",
+          "inputs": {
+            "sha": "fc339fa1870bbfee889f4cbc7dd55880db86e662",
+            "shadow": false,
+            "gates": true
+          },
+          "reason": "No callable workflow-dispatch API is available. The public Actions workflow page was verified in the browser, which is signed out of GitHub."
+        },
+        "phase8": "Still running on the clean frozen published 0bcc1878 worktree; no source/test mutation was made there.",
+        "fullRoadmapComplete": false,
+        "merged": false
       }
     }
   },
