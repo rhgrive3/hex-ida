@@ -118,10 +118,10 @@ function readFunctionBlockType(bytes,offset){if(offset>=bytes.length)fail('wasm-
 function requireFunctionBytes(bytes,offset,count,code){const end=offset+count;if(!Number.isSafeInteger(end)||end>bytes.length)fail(code);return end;}
 function readFunctionU32(bytes,offset){return decodeUleb128(bytes,offset).nextOffset;}
 function readFunctionMemarg(bytes,offset){return readFunctionU32(bytes,readFunctionU32(bytes,offset));}
-function readFunctionInstructionImmediate(bytes,offset,opcode,dataCount=null,heapTypeIndices=null){
+function readFunctionInstructionImmediate(bytes,offset,opcode,dataCount=null,heapTypeIndices=null,budget=null){
   if(opcode===0x0c||opcode===0x0d||opcode===0x10||opcode===0x12||opcode===0x14||opcode===0x15||(opcode>=0x20&&opcode<=0x26)||opcode===0xd2)return readFunctionU32(bytes,offset);
   if(opcode===0x11||opcode===0x13)return readFunctionU32(bytes,readFunctionU32(bytes,offset));
-  if(opcode===0x0e){const count=decodeUleb128(bytes,offset);let pos=count.nextOffset;for(let i=0;i<=count.value;i++)pos=readFunctionU32(bytes,pos);return pos;}
+  if(opcode===0x0e){const count=decodeUleb128(bytes,offset);let pos=count.nextOffset;for(let i=0;i<=count.value;i++){if(budget)budget.chargeValue();pos=readFunctionU32(bytes,pos);}return pos;}
   if(opcode===0x1c){const count=decodeUleb128(bytes,offset);let pos=count.nextOffset;for(let i=0;i<count.value;i++){if(pos>=bytes.length||!WASM_VALUE_TYPES.has(bytes[pos]))fail('wasm-invalid-select-value-type');pos++;}return pos;}
   if(opcode>=0x28&&opcode<=0x3e)return readFunctionMemarg(bytes,offset);
   if(opcode===0x3f||opcode===0x40)return readFunctionU32(bytes,offset);
@@ -136,7 +136,7 @@ function readFunctionInstructionImmediate(bytes,offset,opcode,dataCount=null,hea
   if(opcode===0x00||opcode===0x01||opcode===0x0f||opcode===0x1a||opcode===0x1b||(opcode>=0x45&&opcode<=0xc4)||opcode===0xd1)return offset;
   fail(`wasm-unsupported-function-opcode-0x${opcode.toString(16)}`);
 }
-function validateFunctionExpression(bytecode,dataCount=null,heapTypeIndices=null,budget=null){if(bytecode.length===0)fail('wasm-function-missing-end');const control=[{kind:'function',elseSeen:false}];let pos=0;while(pos<bytecode.length){if(budget)budget.checkpoint();const opcode=bytecode[pos++];if(opcode===0x02||opcode===0x03||opcode===0x04){pos=readFunctionBlockType(bytecode,pos);if(budget)budget.enterControlFrame();control.push({kind:opcode===0x04?'if':opcode===0x03?'loop':'block',elseSeen:false});continue;}if(opcode===0x05){const frame=control.at(-1);if(!frame||frame.kind!=='if'||frame.elseSeen)fail('wasm-invalid-else');frame.elseSeen=true;continue;}if(opcode===0x0b){const frame=control.pop();if(!frame)fail('wasm-unmatched-end');if(budget&&frame.kind!=='function')budget.leaveControlFrame();if(frame.kind==='function'){if(pos!==bytecode.length)fail('wasm-trailing-bytes-after-function-end');return;}continue;}pos=readFunctionInstructionImmediate(bytecode,pos,opcode,dataCount,heapTypeIndices);}fail('wasm-function-missing-end');}
+function validateFunctionExpression(bytecode,dataCount=null,heapTypeIndices=null,budget=null){if(bytecode.length===0)fail('wasm-function-missing-end');const control=[{kind:'function',elseSeen:false}];let pos=0;while(pos<bytecode.length){if(budget)budget.checkpoint();const opcode=bytecode[pos++];if(opcode===0x02||opcode===0x03||opcode===0x04){pos=readFunctionBlockType(bytecode,pos);if(budget)budget.enterControlFrame();control.push({kind:opcode===0x04?'if':opcode===0x03?'loop':'block',elseSeen:false});continue;}if(opcode===0x05){const frame=control.at(-1);if(!frame||frame.kind!=='if'||frame.elseSeen)fail('wasm-invalid-else');frame.elseSeen=true;continue;}if(opcode===0x0b){const frame=control.pop();if(!frame)fail('wasm-unmatched-end');if(budget&&frame.kind!=='function')budget.leaveControlFrame();if(frame.kind==='function'){if(pos!==bytecode.length)fail('wasm-trailing-bytes-after-function-end');return;}continue;}pos=readFunctionInstructionImmediate(bytecode,pos,opcode,dataCount,heapTypeIndices,budget);}fail('wasm-function-missing-end');}
 
 export function parseWasm(bytes,options={}){
   const probe=probeWasm(bytes);if(!probe.supported)fail(probe.reason === 'unsupported-version' ? 'wasm-unsupported-version' : 'wasm-unsupported-binary');if(probe.formatVersion!=='1')fail('wasm-unsupported-version');

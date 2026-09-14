@@ -180,13 +180,18 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
       }
       case 0x0e: {
         const count = decodeUleb128(bytecode, pos); pos = count.nextOffset;
+        // #8945: branch-table edge cardinality is attacker-controlled inside
+        // one admitted opcode; the target vector is pre-admitted before it is
+        // materialized and long walks keep bounded cancellation latency.
+        budget.chargeValues(count.value + 1);
         const depths = [];
-        for (let i = 0; i < count.value; i++) { const depth = decodeUleb128(bytecode, pos); pos = depth.nextOffset; depths.push(depth.value); }
+        for (let i = 0; i < count.value; i++) { const depth = decodeUleb128(bytecode, pos); pos = depth.nextOffset; depths.push(depth.value); if ((i & 0x3ff) === 0x3ff) budget.checkpoint(); }
         const fallback = decodeUleb128(bytecode, pos); pos = fallback.nextOffset; depths.push(fallback.value);
         if (depths.some((depth) => depth >= frames.length)) fail('wasm-invalid-branch-depth');
         pop(I32, 'wasm-stack-underflow-branch-table-index');
         const expected = labelTypes(frames[frames.length - 1 - depths[0]]);
         for (const depth of depths) {
+          budget.chargeValues(expected.length);
           const actual = labelTypes(frames[frames.length - 1 - depth]);
           if (!sameTypes(actual, expected)) fail('wasm-branch-table-type-mismatch');
         }
