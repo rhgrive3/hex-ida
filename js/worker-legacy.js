@@ -869,12 +869,19 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   const slice = slices.find((s) => (s.regions || []).some((r) => r.id === regionId));
   const imageBase = slice && slice.info ? slice.info.textVM : null;
   const unwind = slice ? (slice.regions || []).find((r) => r.section === '__unwind_info' && r.size > 0n) : null;
+  let unwindMetadataTruncated = false;
+  let unwindMetadataReason = null;
   if (unwind && imageBase != null && unwind.size < BigInt(16 * 1024 * 1024)) {
     try {
       const buf = await readRange(unwind.fileOffset, Number(unwind.size));
-      for (const a of MachO.parseUnwindStarts(buf, imageBase)) {
-        if (a >= lo && a < hi && found.size < cap) found.add(a);
+      const remaining = Math.max(0, cap - found.size);
+      if (remaining > 0) {
+        const unwindStarts = MachO.parseUnwindStarts(buf, imageBase, { maxResults: remaining, maxWork: remaining, shouldCancel: () => cancelled(requestId) });
+        for (const a of unwindStarts) if (a >= lo && a < hi && found.size < cap) found.add(a);
+        if (unwindStarts.truncated) { unwindMetadataTruncated = true; unwindMetadataReason = 'unwind-starts-' + (unwindStarts.truncationReason || 'truncated'); }
       }
+      await yieldToQueue();
+      if (cancelled(requestId)) return { starts: new BigUint64Array(0), cancelled: true };
     } catch { /* 読めなければ推測だけで進む */ }
   }
 
@@ -1304,8 +1311,8 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   const starts = new BigUint64Array(list.length);
   for (let i = 0; i < list.length; i++) starts[i] = list[i];
   const startCapHit = found.size >= cap;
-  const capped = startCapHit || candidateBudgetHit;
-  const truncationReason = candidateBudgetHit ? 'candidate-memory-budget' : startCapHit ? 'function-start-cap-reached' : null;
+  const capped = startCapHit || candidateBudgetHit || unwindMetadataTruncated;
+  const truncationReason = candidateBudgetHit ? 'candidate-memory-budget' : startCapHit ? 'function-start-cap-reached' : unwindMetadataReason;
   return {
     starts, cancelled: false, capped, truncated: capped, complete: !capped, cap, truncationReason,
     completeness: {

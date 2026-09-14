@@ -95,7 +95,20 @@
   // deepEqual(result, [...])) while `result.truncated` remains readable.
   function attachTruncatedFlag(out) {
     Object.defineProperty(out, 'truncated', { value: false, writable: true, enumerable: false, configurable: true });
+    Object.defineProperty(out, 'truncationReason', { value: null, writable: true, enumerable: false, configurable: true });
     return out;
+  }
+
+  function markTruncated(out, reason) {
+    out.truncated = true;
+    if (!out.truncationReason) out.truncationReason = reason || 'budget';
+    return out;
+  }
+
+  function boundedExpansionBudget(value, fallback, maximum) {
+    if (value == null) return fallback;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) return 0;
+    return Math.min(value, maximum);
   }
 
   function cpuName(type, sub) {
@@ -535,7 +548,7 @@
    * @param {Uint8Array} buf  __unwind_info の中身
    * @param {BigInt} imageBase  マッハヘッダのアドレス（関数の位置はここからの差）
    */
-  function parseUnwindStarts(buf, imageBase) {
+  function parseUnwindStarts(buf, imageBase, options = {}) {
     const out = attachTruncatedFlag([]);
     if (!buf || buf.length < 28) return out;
     const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
@@ -543,6 +556,18 @@
     const indexOff = dv.getUint32(20, true);
     const indexCount = dv.getUint32(24, true);
     if (!indexCount || indexOff + indexCount * 12 > buf.length) return out;
+    const resultLimit = boundedExpansionBudget(options.maxResults, UNWIND_STARTS_MAX, UNWIND_STARTS_MAX);
+    const workLimit = boundedExpansionBudget(options.maxWork, UNWIND_STARTS_MAX, UNWIND_STARTS_MAX);
+    const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;
+    let work = 0;
+    const chargeWork = () => {
+      if (work >= workLimit) { markTruncated(out, 'work-limit'); return false; }
+      work++;
+      if (shouldCancel && ((work & 63) === 1) && shouldCancel()) { markTruncated(out, 'cancelled'); return false; }
+      return true;
+    };
+    if (resultLimit === 0) return markTruncated(out, 'result-limit');
+    if (workLimit === 0) return markTruncated(out, 'work-limit');
 
     /*
      * A first-level index row may alias a second-level page, and many rows may
@@ -590,7 +615,8 @@
       const rec = decodePage(pageOff);
       const base = rec.kind === 3 ? BigInt(funcOffset) : 0n;
       for (const rel of rec.rel) {
-        if (out.length >= UNWIND_STARTS_MAX) { out.truncated = true; break; }
+        if (out.length >= resultLimit) { markTruncated(out, 'result-limit'); break; }
+        if (!chargeWork()) break;
         const value = imageBase + base + rel;
         if (seen.has(value)) continue;                         // 関数先頭は一意
         seen.add(value);
@@ -610,7 +636,7 @@
    * Each pair associates an exact function start with one `__gcc_except_tab`
    * record. Values are image-relative 32-bit offsets by Mach-O ABI.
    */
-  function parseUnwindLsdaEntries(buf, imageBase) {
+  function parseUnwindLsdaEntries(buf, imageBase, options = {}) {
     const out = attachTruncatedFlag([]);
     if (!buf || buf.length < 28 || imageBase == null) return out;
     const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
@@ -619,6 +645,18 @@
     const indexCount = dv.getUint32(24, true);
     if (indexCount < 2 || indexOff + indexCount * 12 > buf.length) return out;
     const base = BigInt(imageBase);
+    const resultLimit = boundedExpansionBudget(options.maxResults, UNWIND_LSDA_MAX, UNWIND_LSDA_MAX);
+    const workLimit = boundedExpansionBudget(options.maxWork, UNWIND_LSDA_MAX, UNWIND_LSDA_MAX);
+    const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;
+    let work = 0;
+    const chargeWork = () => {
+      if (work >= workLimit) { markTruncated(out, 'work-limit'); return false; }
+      work++;
+      if (shouldCancel && ((work & 63) === 1) && shouldCancel()) { markTruncated(out, 'cancelled'); return false; }
+      return true;
+    };
+    if (resultLimit === 0) return markTruncated(out, 'result-limit');
+    if (workLimit === 0) return markTruncated(out, 'work-limit');
     /*
      * Eagerly materializing one `fnOff + ':' + tableOff` string key per pair on
      * top of a BigInt-object output let a ~5.2 MiB __unwind_info retain enough
@@ -635,7 +673,8 @@
       const nextLsdaOff = dv.getUint32(q + 8, true);
       if (!lsdaOff || !nextLsdaOff || nextLsdaOff < lsdaOff || nextLsdaOff > buf.length) continue;
       for (let x = lsdaOff; x + 8 <= nextLsdaOff; x += 8) {
-        if (out.length >= UNWIND_LSDA_MAX) { out.truncated = true; break; }
+        if (out.length >= resultLimit) { markTruncated(out, 'result-limit'); break; }
+        if (!chargeWork()) break;
         const fnOff = dv.getUint32(x, true);
         const tableOff = dv.getUint32(x + 4, true);
         if (!tableOff) continue;
@@ -646,6 +685,7 @@
     out.sort((a, b) => (a.lsda < b.lsda ? -1 : a.lsda > b.lsda ? 1 : a.functionStart < b.functionStart ? -1 : 1));
     const uniq = attachTruncatedFlag([]);
     uniq.truncated = out.truncated;
+    uniq.truncationReason = out.truncationReason;
     let prev = null;
     for (const e of out) {
       if (prev && prev.lsda === e.lsda && prev.functionStart === e.functionStart) continue;
