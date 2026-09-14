@@ -1,11 +1,16 @@
 import { toExactArrayBuffer } from './array-buffer.js';
 import { decompressGzipExact } from './decompress.js';
+import { createAttemptDeadline, readBoundedBytes, readBoundedText } from './loader-transport.js';
 import { captureRuntimeHostLocation } from './runtime-host-location.js';
 
 const HEX_ORIGIN = '__HEX_ORIGIN__';
 const LOADER_VERSION = '__HEX_LOADER_VERSION__';
 const EXPECTED_BUILD = '__HEX_BUILD_ID__';
 const RETRIES = 2;
+const BOOTSTRAP_MAX_JSON_BYTES = 64 * 1024;
+const RUNTIME_MAX_CIPHERTEXT_BYTES = 32 * 1024 * 1024;
+const RUNTIME_MAX_PLAINTEXT_BYTES = 64 * 1024 * 1024;
+const NETWORK_ATTEMPT_DEADLINE_MS = 60 * 1000;
 const RUNTIME_HOST_LOCATION = captureRuntimeHostLocation();
 const stopSmartAppBannerSuppression = suppressSmartAppBanner();
 
@@ -51,6 +56,7 @@ async function loadRuntime() {
     body: JSON.stringify({ nonce, loaderVersion: LOADER_VERSION, buildId: EXPECTED_BUILD, requestId, sessionIdentity, clientPublicKey }),
   }));
   if (!bootstrap || bootstrap.buildId !== EXPECTED_BUILD || Date.parse(bootstrap.expiry) <= Date.now()) throw new Error('Runtime bootstrap identity or expiry could not be verified.');
+  if (!Number.isSafeInteger(bootstrap.manifest?.byteLength) || bootstrap.manifest.byteLength <= 0 || bootstrap.manifest.byteLength > RUNTIME_MAX_CIPHERTEXT_BYTES) throw new Error('The protected runtime manifest does not declare an admissible byte length.');
   const sourceCommit = normalizeCommit(bootstrap.sourceCommit);
   globalThis.__HEX_DEPLOYMENT_COMMIT__ = sourceCommit;
   const serverPublicKey = await cryptoStage('ECDH server-key import', () => crypto.subtle.importKey('jwk', bootstrap.serverPublicKey, { name: 'ECDH', namedCurve: 'P-256' }, false, []));
@@ -68,7 +74,7 @@ async function loadRuntime() {
     tagLength: 128,
   }, wrappingKey, toExactArrayBuffer(fromB64(bootstrap.keyEnvelope.ciphertext))));
   const contentKey = await cryptoStage('AES-GCM content-key import', () => crypto.subtle.importKey('raw', toExactArrayBuffer(contentKeyRaw), { name: 'AES-GCM' }, false, ['decrypt']));
-  const ciphertext = new Uint8Array(await runtimeStage('protected runtime fetch', () => fetchBytes(new URL(bootstrap.runtimeLocator, HEX_ORIGIN).href, { headers: { authorization: `Bearer ${bootstrap.session}` } })));
+  const ciphertext = await runtimeStage('protected runtime fetch', () => fetchBytes(new URL(bootstrap.runtimeLocator, HEX_ORIGIN).href, { headers: { authorization: `Bearer ${bootstrap.session}` } }, bootstrap.manifest.byteLength));
   await assertHash(ciphertext, bootstrap.manifest.ciphertextHash);
   const compressed = new Uint8Array(await cryptoStage('AES-GCM runtime decrypt', () => crypto.subtle.decrypt({
     name: 'AES-GCM',
@@ -77,7 +83,7 @@ async function loadRuntime() {
     tagLength: 128,
   }, contentKey, toExactArrayBuffer(ciphertext))));
   if (bootstrap.manifest.compression !== 'gzip') throw new Error('The protected runtime compression format is unsupported.');
-  const plaintext = await runtimeStage('protected runtime decompress', () => decompressGzipExact(compressed));
+  const plaintext = await runtimeStage('protected runtime decompress', () => decompressGzipExact(compressed, RUNTIME_MAX_PLAINTEXT_BYTES));
   await assertHash(plaintext, bootstrap.manifest.contentHash);
   const blobUrl = await runtimeStage('protected runtime Blob creation', () => URL.createObjectURL(new Blob([toExactArrayBuffer(plaintext)], { type: 'text/javascript' })));
   try {
@@ -118,14 +124,29 @@ async function assertHash(bytes, expected) {
 function constantTimeEqual(a, b) { if (a.length !== b.length) return false; let diff = 0; for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i); return diff === 0; }
 
 async function fetchJson(url, init = {}) {
-  const response = await fetch(url, { ...init, method: init.method || 'GET', credentials: 'omit', mode: 'cors', cache: 'no-store' });
-  if (response.status !== 200) throw new Error(`Hex runtime bootstrap failed (${response.status}).`);
-  return response.json();
+  const attempt = createAttemptDeadline(NETWORK_ATTEMPT_DEADLINE_MS);
+  try {
+    const response = await fetch(url, { ...init, signal: attempt.signal, method: init.method || 'GET', credentials: 'omit', mode: 'cors', cache: 'no-store' });
+    if (response.status !== 200) throw new Error(`Hex runtime bootstrap failed (${response.status}).`);
+    return JSON.parse(await readBoundedText(response, {
+      maxBytes: BOOTSTRAP_MAX_JSON_BYTES,
+      overBudgetMessage: 'Hex runtime bootstrap response exceeded its byte budget.',
+      mismatchMessage: 'Hex runtime bootstrap response exceeded its byte budget.',
+    }));
+  } finally { attempt.dispose(); }
 }
-async function fetchBytes(url, init = {}) {
-  const response = await fetch(url, { ...init, method: init.method || 'GET', credentials: 'omit', mode: 'cors', cache: 'no-store' });
-  if (response.status !== 200) throw new Error(`Hex protected runtime fetch failed (${response.status}).`);
-  return response.arrayBuffer();
+async function fetchBytes(url, init = {}, expectedBytes = null) {
+  const attempt = createAttemptDeadline(NETWORK_ATTEMPT_DEADLINE_MS);
+  try {
+    const response = await fetch(url, { ...init, signal: attempt.signal, method: init.method || 'GET', credentials: 'omit', mode: 'cors', cache: 'no-store' });
+    if (response.status !== 200) throw new Error(`Hex protected runtime fetch failed (${response.status}).`);
+    return readBoundedBytes(response, {
+      maxBytes: RUNTIME_MAX_CIPHERTEXT_BYTES,
+      exactBytes: Number.isSafeInteger(expectedBytes) && expectedBytes > 0 ? expectedBytes : null,
+      overBudgetMessage: 'The protected runtime exceeded its admission byte budget.',
+      mismatchMessage: 'The protected runtime length did not match the bootstrap manifest.',
+    });
+  } finally { attempt.dispose(); }
 }
 
 function suppressSmartAppBanner() {
