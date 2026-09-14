@@ -526,6 +526,7 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
 
   let funcs = new BigUint64Array(0);
   let functionStartsExact = false;
+  let functionStartsCapped = false;
   // Exact decoded starts (plus the Mach-O entry seed) are also the hard
   // control-flow roots for ADR/ADRP provenance in the worker scans.
   slice.functionStarts = [];
@@ -533,14 +534,29 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
     const buf = await readRange(base + BigInt(info.functionStarts.dataoff),
                                 Math.min(info.functionStarts.datasize, 8 * 1024 * 1024));
     try {
-      const list = MachO.parseFunctionStarts(buf, info.textVM, { regions:slice.regions || [], architecture:info.architecture || 'arm64' });
-      const seeds = list.slice();
-      if (info.entry != null && !seeds.some((value) => value === info.entry)) seeds.push(info.entry);
-      seeds.sort((a,b)=>(a<b?-1:a>b?1:0));
-      slice.functionStarts = seeds;
-      funcs = new BigUint64Array(seeds.length);
-      for (let i = 0; i < seeds.length; i++) funcs[i] = seeds[i];
+      const list = MachO.parseFunctionStarts(buf, info.textVM, {
+        regions: slice.regions || [], architecture: info.architecture || 'arm64',
+        shouldCancel: () => cancelled(requestId),
+      });
+      /*
+       * Decoded function starts are strictly increasing (positive ULEB
+       * deltas), so the retained prefix is already ordered: splice the entry
+       * seed in at its binary-search position instead of a second full copy
+       * + linear membership scan + re-sort of a potentially huge list
+       * (#8805). The parser charged its retention budget before materializing
+       * any refused start; a truncated decode makes discovery capped, never
+       * silently complete.
+       */
+      if (info.entry != null) {
+        let lo = 0, hi = list.length;
+        while (lo < hi) { const mid = (lo + hi) >>> 1; if (list[mid] < info.entry) lo = mid + 1; else hi = mid; }
+        if (list[lo] !== info.entry) list.splice(lo, 0, info.entry);
+      }
+      slice.functionStarts = list;
+      funcs = new BigUint64Array(list.length);
+      for (let i = 0; i < list.length; i++) funcs[i] = list[i];
       functionStartsExact = list.length > 0 && list.complete === true;
+      if (list.truncated) { functionStartsCapped = true; capped = true; }
     } catch { slice.functionStarts = []; funcs = new BigUint64Array(0); }
   }
 
@@ -573,8 +589,9 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
     allSeedsExact: funcs.length > 0,
     discoveryComplete: functionStartsExact,
     functionStartsExact,
-    functionDiscovery: { complete:functionStartsExact, capped:false,
-      reasons:functionStartsExact ? [] : ['no-complete-lc-function-starts'] },
+    functionDiscovery: { complete:functionStartsExact, capped:functionStartsCapped,
+      reasons:functionStartsExact ? [] : functionStartsCapped
+        ? ['lc-function-starts-budget-capped'] : ['no-complete-lc-function-starts'] },
     capped,
     __transfer: [outAddrs.buffer, outKinds.buffer, outFlags.buffer, funcs.buffer],
   };

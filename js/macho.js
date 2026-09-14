@@ -618,26 +618,50 @@
 
   /* ── LC_FUNCTION_STARTS ───────────────────────────────── */
 
+  /*
+   * LC_FUNCTION_STARTS admits one valid ULEB delta per input byte, so the
+   * worker's 8 MiB metadata read cap is an input ceiling, not a retention
+   * ceiling: a dense 4 MiB stream materialized ~4M BigInts and aborted a
+   * 128 MiB heap before any caller could apply a result budget (#8805).
+   * Decode into a capped representation with the charge taken BEFORE the
+   * (limit+1)-th BigInt exists, observe cancellation at bounded intervals,
+   * and mark the list `truncated` (forcing `complete=false`) so the caller
+   * reports capped discovery instead of blessing a prefix as exact
+   * function-boundary evidence — the same fail-closed discipline as
+   * parseUnwindStarts (#8789) / stubSymbols (#8800). Delta-encoded starts
+   * are strictly increasing, so callers can consume the retained prefix
+   * without a copy-and-resort.
+   */
+  const FUNCTION_STARTS_MAX = 200_000;  // #8805 retained decoded function starts
+
   /** ULEB128 の差分列を、絶対アドレスの配列にほどく。 */
   function parseFunctionStarts(buf, base, options = {}) {
-    const out=[]; let addr=base; let i=0; let malformed=false; let rejected=0;
-    const regions=Array.isArray(options.regions)?options.regions:[];
-    const alignment=instructionAlignment(options.architecture||'arm64');
-    const valid=(value)=>value%alignment===0n && (!regions.length || regions.some((r)=>r.exec&&r.size>0n&&value>=r.vmAddr&&value-r.vmAddr<r.size));
-    while(i<buf.length){
-      let delta=0n,shift=0n,byte=0;
+    const out = attachTruncatedFlag([]);
+    let addr = base; let i = 0; let malformed = false; let rejected = 0;
+    const regions = Array.isArray(options.regions) ? options.regions : [];
+    const alignment = instructionAlignment(options.architecture || 'arm64');
+    const resultLimit = boundedExpansionBudget(options.maxStarts, FUNCTION_STARTS_MAX, FUNCTION_STARTS_MAX);
+    const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;
+    const valid = (value) => value % alignment === 0n && (!regions.length || regions.some((r) => r.exec && r.size > 0n && value >= r.vmAddr && value - r.vmAddr < r.size));
+    while (i < buf.length) {
+      let delta = 0n, shift = 0n, byte = 0;
       do {
-        if(i>=buf.length){malformed=true;break;}
-        byte=buf[i++]; delta|=BigInt(byte&0x7f)<<shift; shift+=7n;
-        if(shift>70n){malformed=true;break;}
-      } while(byte&0x80);
-      if(malformed||delta===0n) break;
-      const next=addr+delta;
-      if(next<addr){malformed=true;break;}
-      addr=next;
-      if(valid(addr)) out.push(addr); else rejected++;
+        if (i >= buf.length) { malformed = true; break; }
+        byte = buf[i++]; delta |= BigInt(byte & 0x7f) << shift; shift += 7n;
+        if (shift > 70n) { malformed = true; break; }
+      } while (byte & 0x80);
+      if (malformed || delta === 0n) break;
+      const next = addr + delta;
+      if (next < addr) { malformed = true; break; }
+      addr = next;
+      if (!valid(addr)) { rejected++; continue; }
+      if (out.length >= resultLimit) { markTruncated(out, 'result-limit'); break; }
+      out.push(addr);
+      if (shouldCancel && ((out.length & 63) === 0) && shouldCancel()) { markTruncated(out, 'cancelled'); break; }
     }
-    out.rejected=rejected; out.complete=!malformed&&rejected===0; out.malformed=malformed;
+    if (malformed && !out.truncated) { out.truncated = true; out.truncationReason = 'malformed'; }
+    out.rejected = rejected; out.malformed = malformed;
+    out.complete = !malformed && rejected === 0 && !out.truncated;
     return out;
   }
 
