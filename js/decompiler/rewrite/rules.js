@@ -162,16 +162,31 @@ const arithmeticRules = [
   (n) => sameWidthDomain(n, n.left, n.right)),
 ];
 
+/*
+ * #8861 — `min`/`max` is not one operator. The width-exact evaluator resolves
+ * `signed === false` as unsigned bitvector ordering and anything else as signed
+ * ordering, so two intrinsics that share a name can implement different total
+ * orders. Idempotence `op(op(x,y),y) == op(x,y)` only holds inside one order
+ * domain, therefore nested collapse compares the full ordering signature
+ * (result width, resolved signedness, retained comparison provenance) and fails
+ * closed on any mismatch or one-sided unknown metadata.
+ */
+const orderSignature = (n) => `${n?.signed === false ? 'unsigned' : n?.signed === true ? 'signed' : 'unknown'}:${n?.compareSigned === undefined ? null : n.compareSigned}`;
+const sameOrderDomain = (a, b) => orderSignature(a) === orderSignature(b) && a?.signed != null && b?.signed != null;
+
 const intrinsicRules = [{
   name:'idempotent-minmax', phase:'select',
   match:(n)=>n?.kind==='intrinsic' && ['min','max'].includes(n.name) && n.args?.length===2 && sameExpr(n.args[0],n.args[1]) && isStable(n.args[0]) ? {} : null,
   precondition:(n)=>sameWidthDomain(n, n.args[0]),
-  rewrite:(n)=>n.args[0], proof:proof('order-identity','min/max(x,x) == x'), cost,
+  rewrite:(n)=>n.args[0], proof:(before)=>({ kind:'order-identity', detail:'min/max(x,x) == x', bits: widthOf(before) ?? null, ordering: before?.signed === false ? 'unsigned' : 'signed' }), cost,
 }, {
   name:'nested-minmax-idempotent', phase:'select',
   match:(n)=>n?.kind==='intrinsic' && ['min','max'].includes(n.name) && n.args?.length===2 && n.args[0]?.kind==='intrinsic' && n.args[0].name===n.name
     && n.args[0].args?.some((a)=>sameExpr(a,n.args[1])) && isStable(n.args[1]) ? { inner:n.args[0] } : null,
-  rewrite:(n,m)=>m.inner, proof:proof('order-idempotence','min/max(min/max(x,y),y)'), cost,
+  precondition:(n,m)=>sameWidthDomain(n, m.inner) && sameOrderDomain(n, m.inner),
+  rewrite:(n,m)=>m.inner,
+  proof:(before, after, m)=>({ kind:'order-idempotence', detail:'min/max(min/max(x,y),y)', bits: widthOf(before) ?? null,
+    ordering: before?.signed === false ? 'unsigned' : 'signed', domainSignature: orderSignature(before), innerSignature: orderSignature(m.inner) }), cost,
 }];
 
 const bitRules = [
