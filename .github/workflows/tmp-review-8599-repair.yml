@@ -1,0 +1,193 @@
+name: tmp-review-8599-repair
+
+on:
+  push:
+    branches:
+      - fix/review-8599-current-main-r1
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Apply exact review fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              s = p.read_text()
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly one match, got {count}')
+              p.write_text(s.replace(old, new, 1))
+
+          replace_once('js/slice.js',
+          """function boundedMemoryLimit(value, fallback, maximum) {
+            if (!isPrimitiveFiniteNumber(value)) return fallback;
+            return Math.max(1, Math.min(maximum, value));
+          }""",
+          """function boundedMemoryLimit(value, fallback, maximum) {
+            if (typeof value !== 'number' || !Number.isSafeInteger(value)) return fallback;
+            return Math.max(1, Math.min(maximum, value));
+          }""")
+
+          replace_once('js/analyze.js',
+          """function modelPointerWidth(opts = {}) {
+            const width = opts?.pointerWidth;
+            if (width === 4 || width === 8) return width;
+            const architecture = opts?.architecture;
+            if (typeof architecture === 'string' && architecture) {
+              const mapped = ARM64_SEMANTIC_POINTER_WIDTH_BYTES.get(architecture.toLowerCase());
+              return mapped === undefined ? null : mapped;
+            }
+            return 8;
+          }""",
+          """function modelPointerWidth(opts = {}) {
+            const width = opts?.pointerWidth;
+            if (width === 4 || width === 8) return width;
+            const architecture = opts?.architecture;
+            if (architecture != null) {
+              if (typeof architecture !== 'string') return null;
+              const normalized = architecture.trim().toLowerCase();
+              if (!normalized) return null;
+              const mapped = ARM64_SEMANTIC_POINTER_WIDTH_BYTES.get(normalized);
+              return mapped === undefined ? null : mapped;
+            }
+            return 8;
+          }""")
+
+          p = Path('js/managed/shared/bridge.js')
+          s = p.read_text()
+          old_load = """      memoryReads.push(createMemoryEffect({
+                  regionKind: 'heap',
+                  broad: false,
+                  addressSpaces: ['memory'],
+                  source: 'instruction',
+                  evidenceIds: [node.id],
+                }));"""
+          new_load = """      memoryReads.push(createMemoryEffect({
+                  regionKind: 'unknown',
+                  broad: true,
+                  addressSpaces: [node.memory?.addressSpace || 'memory'],
+                  source: 'proven-summary',
+                  evidenceIds: [node.id],
+                }));"""
+          old_store = """      memoryWrites.push(createMemoryEffect({
+                  regionKind: 'heap',
+                  broad: false,
+                  addressSpaces: ['memory'],
+                  source: 'instruction',
+                  evidenceIds: [node.id],
+                }));"""
+          new_store = """      memoryWrites.push(createMemoryEffect({
+                  regionKind: 'unknown',
+                  broad: true,
+                  addressSpaces: [node.memory?.addressSpace || 'memory'],
+                  source: 'proven-summary',
+                  evidenceIds: [node.id],
+                }));"""
+          if s.count(old_load) != 1 or s.count(old_store) != 1:
+              raise SystemExit(f'bridge patterns changed: load={s.count(old_load)} store={s.count(old_store)}')
+          p.write_text(s.replace(old_load, new_load, 1).replace(old_store, new_store, 1))
+
+          test = Path('tests/phase11/shared/issue-4811-4786-4971-4973-5000-r1-regressions.test.mjs')
+          test.write_text(r'''import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import { runDiffInWorker } from '../../../js/diff/runtime.js';
+          import { buildManagedMethodSummary } from '../../../js/managed/shared/bridge.js';
+          import { resolveModelTexts } from '../../../js/analyze.js';
+          import { memoryOrigins } from '../../../js/slice.js';
+
+          test('#4811 matcher options cross worker boundary', async () => {
+            let posted;
+            class W { postMessage(v){posted=v;} terminate(){} addEventListener(){} removeEventListener(){} }
+            runDiffInWorker([], [], {workerFactory:()=>new W(), ambiguityWindow:0.08, neighborhoodIterations:4, maxCandidates:64, maxBucketScan:256, allowSimilar:false});
+            assert.equal(posted.options.ambiguityWindow,0.08);
+            assert.equal(posted.options.neighborhoodIterations,4);
+            assert.equal(posted.options.maxCandidates,64);
+            assert.equal(posted.options.maxBucketScan,256);
+            assert.equal(posted.options.allowSimilar,false);
+          });
+
+          test('#4786 managed load/store summaries use conservative canonical source', () => {
+            const semanticIr={nodes:[{id:'l',kind:'load',memory:{addressSpace:'heap-a'}},{id:'s',kind:'store',memory:{addressSpace:'heap-b'}}],values:[]};
+            const cfg={blocks:[]};
+            const out=buildManagedMethodSummary({methodId:'m',semanticIr,cfg});
+            const r=out.summary.memoryReadRegions[0], w=out.summary.memoryWriteRegions[0];
+            for (const e of [r,w]) { assert.equal(e.regionKind,'unknown'); assert.equal(e.broad,true); assert.equal(e.source,'proven-summary'); }
+            assert.deepEqual(r.addressSpaces,['heap-a']);
+            assert.deepEqual(w.addressSpaces,['heap-b']);
+          });
+
+          test('#4973 declared structured architecture cannot confer pointer width', async () => {
+            const model={addressRefs:[{row:0,addr:0x4000n}],semantic:[],calls:[],facts:{stringRefs:[]}};
+            const reads=[];
+            const backend={readAt:async (addr)=>{reads.push(addr); if(addr===0x4000n) return {found:true,terminated:false,text:null,bytes:new Uint8Array([0x78,0x56,0x34,0x12,0xef,0xbe,0xad,0xde])}; return {found:false};}};
+            await resolveModelTexts(backend, model, 96, {architecture:['arm64_32']});
+            assert.deepEqual(reads,[0x4000n]);
+          });
+
+          test('#4973 arm64_32 ignores adjacent 4 bytes', async () => {
+            const model={addressRefs:[{row:0,addr:0x4000n}],semantic:[],calls:[],facts:{stringRefs:[]}};
+            const reads=[];
+            const backend={readAt:async (addr)=>{reads.push(addr); if(addr===0x4000n) return {found:true,terminated:false,text:null,bytes:new Uint8Array([0x78,0x56,0x34,0x12,0xef,0xbe,0xad,0xde])}; if(addr===0x12345678n) return {found:true,terminated:true,text:'ok',bytes:new Uint8Array([111,107,0])}; return {found:false};}};
+            const out=await resolveModelTexts(backend, model, 96, {architecture:'arm64_32'});
+            assert.deepEqual(reads,[0x4000n,0x12345678n]);
+            assert.equal(out.addressRefs[0].text,'ok');
+          });
+
+          test('#4971 ARM64 PAC/TBI lower 48 bits survive', async () => {
+            const model={addressRefs:[{row:0,addr:0x2000n}],semantic:[],calls:[],facts:{stringRefs:[]}};
+            const target=0x123456789abcn; const reads=[];
+            const backend={readAt:async (addr)=>{reads.push(addr); if(addr===0x2000n) return {found:true,terminated:false,text:null,bytes:new Uint8Array([0xbc,0x9a,0x78,0x56,0x34,0x12,0x00,0x7f])}; if(addr===target) return {found:true,terminated:true,text:'pac',bytes:new Uint8Array([112,97,99,0])}; return {found:false};}};
+            const out=await resolveModelTexts(backend,model,96,{architecture:'arm64e'});
+            assert.deepEqual(reads,[0x2000n,target]); assert.equal(out.addressRefs[0].text,'pac');
+          });
+
+          test('#5000 fractional and unsafe memory budgets cannot control traversal', () => {
+            const a={id:'a'},b={id:'b'}; const phi={kind:'phi',incoming:[{node:{kind:'store',inst:a}},{node:{kind:'store',inst:b}}]};
+            for (const bad of [1.9, Number.MAX_SAFE_INTEGER+1, 1e30]) { const r=memoryOrigins(phi,{maxNodes:bad,maxEdges:bad}); assert.equal(r.truncated,false,String(bad)); assert.equal(r.stores.length,2); }
+          });
+          '''.replace(/^          /gm, ''))
+          PY
+      - name: Verify focused regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 30s node --test tests/phase11/shared/issue-4811-4786-4971-4973-5000-r1-regressions.test.mjs
+          timeout 20s node tests/issue-4727-memory-origins-budget.mjs
+          timeout 20s node tests/issue-4973-arm64-32-pointer-width.mjs
+          timeout 20s node tests/issue-5360-model-texts-transient-read-retry.mjs
+          timeout 20s node tests/issue-6258-effect-source-authority.mjs
+          timeout 20s node tests/issue-4696-managed-summary-partial-propagation.mjs
+          timeout 30s node tests/check.mjs
+      - name: Commit repaired head and remove temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/tmp-review-8599-repair.yml
+          git diff --check
+          changed="$(git status --short | awk '{print $2}' | sort)"
+          printf '%s\n' "$changed"
+          printf '%s\n' "$changed" | grep -qx 'js/analyze.js'
+          printf '%s\n' "$changed" | grep -qx 'js/managed/shared/bridge.js'
+          printf '%s\n' "$changed" | grep -qx 'js/slice.js'
+          printf '%s\n' "$changed" | grep -qx 'tests/phase11/shared/issue-4811-4786-4971-4973-5000-r1-regressions.test.mjs'
+          printf '%s\n' "$changed" | grep -qx '.github/workflows/tmp-review-8599-repair.yml'
+          test "$(printf '%s\n' "$changed" | wc -l)" -eq 5
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: resolve current-main review blockers for #8599'
+          git push origin HEAD:fix/review-8599-current-main-r1
