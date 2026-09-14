@@ -87,18 +87,23 @@ assert.deepEqual(jsonSafe(new Map([['k', 1]])), { $map: [['k', 1]] });
 assert.deepEqual(jsonSafe(new Set([1, 2])), { $set: [1, 2] });
 assert.deepEqual(jsonSafe(Object.create(null)), {});
 assert.equal(stableDigest({ a: 1, b: [2] }), stableDigest({ b: [2], a: 1 }));
-// #3805 Map/Set and #3915 special numbers stay representable, not rejected.
 assert.equal(sameCanonicalIdentityValue(new Map([['k', NaN]]), new Map([['k', null]])), false);
 assert.ok(stableDigest(new Map([['k', 1]])));
 
-// 7. EP-031 guard: a non-plain object that DOES expose its own enumerable state
-// (frozen factory/class record) is still faithfully canonicalized — the repair
-// rejects only the erased-to-{} internal-slot case, never legitimate structured
-// records that core consumers such as MemorySSA proof digests rely upon.
-class Record { constructor(x, y) { this.x = x; this.y = y; } }
-assert.deepEqual(jsonSafe(new Record(1, 2)), { x: 1, y: 2 });
-assert.equal(stableDigest(new Record(1, 2)), stableDigest({ x: 1, y: 2 }));
-const protoed = Object.assign(Object.create({ hidden: 'ignored' }), { k: 5 });
-assert.deepEqual(jsonSafe(protoed), { k: 5 });
+// 7. Generic Object.keys() canonicalization is only valid for genuine plain
+// records. Enumerable keys do not prove that a class/custom prototype exposes
+// all semantic state: hidden/private state must not alias under one digest.
+class Token {
+  #secret;
+  constructor(secret) { this.kind = 'token'; this.#secret = secret; }
+  reveal() { return this.#secret; }
+}
+const tokenA = new Token('A');
+const tokenB = new Token('B');
+assert.notEqual(tokenA.reveal(), tokenB.reveal());
+rejects('jsonSafe(class instance with hidden state)', () => jsonSafe(tokenA));
+rejects('stableDigest(class instance with hidden state)', () => stableDigest(tokenA));
+const protoed = Object.assign(Object.create({ hidden: 'semantic-prototype-state' }), { k: 5 });
+rejects('jsonSafe(custom-prototype record)', () => jsonSafe(protoed));
 
 process.stdout.write('issue-8970 core identity object-domain: all assertions passed\n');
