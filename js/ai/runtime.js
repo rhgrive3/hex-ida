@@ -9,7 +9,7 @@ import { createAgentJobManager } from './jobs/index.js';
 import { InvestigationSessionStore, isValidSessionId } from './session-core/index.js';
 import { sanitizeActions, addressText, validateSchema } from './validation.js';
 import { executeTurn } from './control/turn-executor.js';
-import { addressExistsAsync, assertLiveBindingsUnchanged, defaultMonotonicNow, deterministicConfidence, fallbackEvidence, presentAnswer } from './control/runtime-support.js';
+import { addressExistsAsync, assertLiveBindingsUnchanged, defaultMonotonicNow, deterministicConfidence, fallbackEvidence, presentAnswer, qualifyingEvidence } from './control/runtime-support.js';
 
 const BUDGET_LIMIT_REASONS = new Set([
   'budget_exhausted',
@@ -127,6 +127,7 @@ export class AIRuntime {
     if (missingIds.length) activity.push({ type: 'consistency-check', label: `${missingIds.length} 件の存在しない evidence 参照を除外`, timestamp: new Date().toISOString() });
     // A non-empty model citation set is authoritative: if none of those IDs
     // resolve, never silently bind an unrelated deterministic/store fallback.
+    const usedEvidenceFallback = !evidence.length && !hasExplicitEvidenceSelection;
     const finalEvidence = evidence.length
       ? evidence
       : hasExplicitEvidenceSelection
@@ -156,7 +157,14 @@ export class AIRuntime {
     const proposalActions = proposals.map((proposal) => ({ kind: 'review-proposal', target: proposal.id }));
     const actions = sanitizeActions([...suggestedActions, ...proposalActions], { evidenceStore, proposalStore, addressExists: (address) => existence.get(address) ?? false });
     let confidence = Number.isFinite(decision.confidence) ? Math.max(0, Math.min(1, decision.confidence)) : deterministicConfidence(plan);
-    if (!finalEvidence.length) confidence = Math.min(confidence, 0.5);
+    // A substituted fallback must satisfy the gate with actual authority: a
+    // stale or merely `supported` planner ranking record may not lift the
+    // evidence-free confidence cap (#8864). An explicit model citation set keeps
+    // its own #5159 resolution semantics.
+    const evidenceSatisfiesAuthority = usedEvidenceFallback
+      ? qualifyingEvidence(finalEvidence).length > 0
+      : finalEvidence.length > 0;
+    if (!evidenceSatisfiesAuthority) confidence = Math.min(confidence, 0.5);
     const budgetReason = BUDGET_LIMIT_REASONS.has(limitReason) ? limitReason : null;
     const elapsedNow = typeof monotonicNow === 'function' ? monotonicNow() : defaultMonotonicNow();
     const elapsedMs = Number.isFinite(elapsedNow) && Number.isFinite(started)
