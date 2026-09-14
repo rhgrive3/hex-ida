@@ -113,6 +113,24 @@ function lookupVirtualMapping(lookup, address) {
   return best?.mapping || null;
 }
 
+
+function isAddressSorted(items) {
+  for (let i = 1; i < items.length; i++) {
+    if (items[i - 1].address > items[i].address) return false;
+  }
+  return true;
+}
+
+function isDataInCodeAddressSorted(entries) {
+  let previous = null;
+  for (const entry of entries) {
+    if (entry.address == null) continue;
+    if (previous !== null && entry.address < previous) return false;
+    previous = entry.address;
+  }
+  return true;
+}
+
 function buildMappingLookup(items) {
   const starts = new Array(items.length);
   const prefixEnds = new Array(items.length);
@@ -151,6 +169,34 @@ function lookupMapping(lookup, address) {
   return address < item.address + item.size ? item : null;
 }
 
+
+
+function buildDataInCodeLookup(entries) {
+  const ranges = [];
+  for (let order = 0; order < entries.length; order++) {
+    const entry = entries[order];
+    if (entry.address == null) continue;
+    const size = BigInt(entry.length);
+    if (size <= 0n) continue;
+    ranges.push({ entry, order, address: entry.address, size });
+  }
+  ranges.sort((a, b) => a.address < b.address ? -1 : a.address > b.address ? 1 : a.order - b.order);
+  const starts = new Array(ranges.length);
+  const prefixEnds = new Array(ranges.length);
+  let maxEnd = null;
+  for (let i = 0; i < ranges.length; i++) {
+    starts[i] = ranges[i].address;
+    const end = ranges[i].address + ranges[i].size;
+    if (maxEnd === null || end > maxEnd) maxEnd = end;
+    prefixEnds[i] = maxEnd;
+  }
+  return { items: ranges, starts, prefixEnds };
+}
+
+function lookupDataInCode(lookup, address) {
+  const range = lookupMapping(lookup, address);
+  return range?.entry || null;
+}
 
 export const MAX_VIRTUAL_READ_BYTES = 64 * 1024 * 1024;
 
@@ -196,6 +242,7 @@ export class BinaryImage {
     this.metadata = meta.metadata || {};
     this._finalized = false;
     this._mappingLookups = { sections: null, segments: null, virtual: null };
+    this._dataInCodeLookup = null;
   }
 
   addSegment(s) {
@@ -294,7 +341,7 @@ export class BinaryImage {
   sectionAt(address) {
     const a = strictBigIntOrNull(address);
     if (a === null || a < 0n) return null;
-    if (!this._finalized) return this.sections.find((s) => inRange(a, s.address, s.size)) || null;
+    if (!isAddressSorted(this.sections)) return this.sections.find((s) => inRange(a, s.address, s.size)) || null;
     if (!this._mappingLookups.sections) this._mappingLookups.sections = buildMappingLookup(this.sections);
     return lookupMapping(this._mappingLookups.sections, a);
   }
@@ -302,7 +349,7 @@ export class BinaryImage {
   segmentAt(address) {
     const a = strictBigIntOrNull(address);
     if (a === null || a < 0n) return null;
-    if (!this._finalized) return this.segments.find((s) => inRange(a, s.address, s.size)) || null;
+    if (!isAddressSorted(this.segments)) return this.segments.find((s) => inRange(a, s.address, s.size)) || null;
     if (!this._mappingLookups.segments) this._mappingLookups.segments = buildMappingLookup(this.segments);
     return lookupMapping(this._mappingLookups.segments, a);
   }
@@ -362,12 +409,17 @@ export class BinaryImage {
       address,
     };
     this.dataInCode.push(normalized);
+    this._dataInCodeLookup = null;
     return normalized;
   }
 
   isDataInCode(address) {
     const a = strictBigIntOrNull(address);
     if (a === null) return false;
+    if (isDataInCodeAddressSorted(this.dataInCode)) {
+      if (!this._dataInCodeLookup) this._dataInCodeLookup = buildDataInCodeLookup(this.dataInCode);
+      return lookupDataInCode(this._dataInCodeLookup, a) !== null;
+    }
     for (const entry of this.dataInCode) {
       if (entry.address == null) continue;
       if (a >= entry.address && a < entry.address + BigInt(entry.length)) {
@@ -380,6 +432,10 @@ export class BinaryImage {
   dataInCodeAt(address) {
     const a = strictBigIntOrNull(address);
     if (a === null) return null;
+    if (isDataInCodeAddressSorted(this.dataInCode)) {
+      if (!this._dataInCodeLookup) this._dataInCodeLookup = buildDataInCodeLookup(this.dataInCode);
+      return lookupDataInCode(this._dataInCodeLookup, a);
+    }
     for (const entry of this.dataInCode) {
       if (entry.address == null) continue;
       if (a >= entry.address && a < entry.address + BigInt(entry.length)) {
