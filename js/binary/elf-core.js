@@ -1,11 +1,11 @@
 import { ByteView } from './reader.js';
-import { BinaryImage, functionSeed } from './model.js';
+import { BinaryImage, functionSeed, sectionHasMappedAddress } from './model.js';
 import { parseEhFrameHeader } from './elf-unwind.js';
 import { parseProgramDynamic } from './elf-dynamic.js';
 import { createELFMetadataBudget, markELFMetadataPartial } from './elf-budget.js';
 import { elfInstructionStartAlignmentRejection, elfInstructionTargetRejection, elfSectionFileSpanConsistentWithLoads, executableELFRange } from './elf-mapping.js';
 import { relocationFieldWidth } from './elf-relocation-target.js';
-import { parseRiscvAttributes, parseRiscvMappingSymbol } from './riscv-isa.js';
+import { isRiscvMappingSymbolRecord, parseRiscvAttributes, parseRiscvMappingSymbol } from './riscv-isa.js';
 
 const ET_REL = 1;
 const ET_EXEC = 2;
@@ -115,16 +115,19 @@ export function parseELF(input, options = {}) {
       image.warnings.push(`ELF section ${s.index} (${s.name || 'unnamed'}) virtual range exceeds ELF${bits} address space and is excluded from canonical sections`);
       continue;
     }
-    // A file-backed SHF_ALLOC section must live inside the file to serve as
-    // virtual mapping authority: `sectionHasMappedAddress()` ranks the
-    // smallest covering mapping, so an unvalidated section header whose
-    // sh_offset/sh_size points past EOF could shadow a validated PT_LOAD and
-    // turn readable VAs into out-of-file offsets (#5888). Such a section
-    // stays listed for metadata but loses mapping authority
-    // ('unmapped-section').
-    const fileSpanInvalid = h.type !== ET_REL && s.type !== 8 && (s.flags & SHF_ALLOC) !== 0n
-      && (s.offset > BigInt(r.length) || s.size > BigInt(r.length) - s.offset);
+    // A file-backed section must have its whole payload inside the input to
+    // serve as canonical mapping authority: `sh_offset` is the section's first
+    // file byte and `sh_size` its length, so a span crossing EOF declares
+    // payload that does not exist (#4223). Only SHT_NOBITS is exempt, because it
+    // owns no file bytes. This holds regardless of SHF_ALLOC or image type: an
+    // ET_REL synthetic-address section claims file bytes the same way (#4223),
+    // and `sectionHasMappedAddress()` ranks the smallest covering mapping, so an
+    // unvalidated section header could otherwise shadow a validated PT_LOAD and
+    // turn readable VAs into out-of-file offsets (#5888). Such a section stays
+    // listed for metadata but loses mapping authority ('unmapped-section').
     const noBits = s.type === 8;
+    const fileSpanInvalid = !noBits
+      && (s.offset > BigInt(r.length) || s.size > BigInt(r.length) - s.offset);
     const mappingInconsistent = !fileSpanInvalid && h.type !== ET_REL
       && (s.flags & SHF_ALLOC) !== 0n && s.size > 0n
       && !elfSectionFileSpanConsistentWithLoads(image, s.addr, s.size, s.offset, noBits);
@@ -141,7 +144,7 @@ export function parseELF(input, options = {}) {
       fileSize: noBits ? 0n : s.size,
       perms: { read: !!(s.flags & SHF_ALLOC), write: !!(s.flags & SHF_WRITE), execute: !!(s.flags & SHF_EXECINSTR) },
       flags: s.flags, type: s.type, index: s.index,
-      source: relocatableMappingInvalid ? 'unmapped-section' : h.type === ET_REL ? 'ET_REL-synthetic-section' : fileSpanInvalid || mappingInconsistent ? 'unmapped-section' : 'section-header',
+      source: relocatableMappingInvalid || fileSpanInvalid || mappingInconsistent ? 'unmapped-section' : h.type === ET_REL ? 'ET_REL-synthetic-section' : 'section-header',
     });
   }
 
@@ -170,8 +173,17 @@ export function parseELF(input, options = {}) {
     if (s.type === SHT_DYNSYM && complete) dynsymAuthoritative = true;
   }
   if (isRiscv) {
+    // Raw headers and reserved symbol indices do not establish section authority.
+    const mappedSections = image.sections.filter(sectionHasMappedAddress);
+    const mappedSectionsByIndex = new Map(mappedSections.map((section) => [section.index, section]));
     const mappings = image.symbols
-      .filter((symbol) => symbol?.defined === true && typeof symbol.name === 'string')
+      .filter((symbol) => {
+        if (!isRiscvMappingSymbolRecord(symbol)) return false;
+        const section = mappedSectionsByIndex.get(symbol.sectionIndex);
+        return section != null
+          && symbol.address >= section.address
+          && symbol.address < section.address + section.size;
+      })
       .map((symbol) => {
         const parsed = parseRiscvMappingSymbol(symbol.name);
         if (!parsed) return null;
@@ -183,12 +195,12 @@ export function parseELF(input, options = {}) {
       })
       .filter(Boolean)
       .sort((left, right) => left.address < right.address ? -1 : left.address > right.address ? 1 : 0);
-    const sections = rawSections
-      .filter((section) => (section.flags & SHF_EXECINSTR) !== 0n && section.size > 0n && (h.type !== ET_REL || section.syntheticAddr != null))
+    const sections = mappedSections
+      .filter((section) => section.perms.execute && section.size > 0n)
       .map((section) => ({
         sectionIndex:section.index,
-        start:h.type === ET_REL ? (section.syntheticAddr ?? 0n) : section.addr,
-        end:(h.type === ET_REL ? (section.syntheticAddr ?? 0n) : section.addr) + section.size,
+        start:section.address,
+        end:section.address + section.size,
       }));
     image.metadata.riscvIsa = {
       file:riscvFileIsa,
