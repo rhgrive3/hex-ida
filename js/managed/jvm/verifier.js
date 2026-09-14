@@ -4,6 +4,32 @@ function asNonNegativeInteger(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
+// Aggregate verifier-state budget (#8715): every frame array the dataflow
+// pass materializes must be reserved before allocation. The default bounds
+// worst-case retained/replayed frame cells far below any constrained worker
+// heap; callers may lower it, never disable it.
+const DEFAULT_VERIFIER_STATE_CELLS = 4_000_000;
+
+class VerifierStateBudget {
+  constructor(configured) {
+    this.limit = Number.isSafeInteger(configured) && configured > 0
+      ? Math.min(configured, DEFAULT_VERIFIER_STATE_CELLS)
+      : DEFAULT_VERIFIER_STATE_CELLS;
+    this.used = 0;
+    this.exceeded = false;
+  }
+
+  reserve(cells) {
+    const amount = Number.isSafeInteger(cells) && cells > 0 ? cells : 0;
+    if (this.used + amount > this.limit) {
+      this.exceeded = true;
+      return false;
+    }
+    this.used += amount;
+    return true;
+  }
+}
+
 function parseDescriptorType(text, start, { allowVoid = false } = {}) {
   if (typeof text !== 'string' || start >= text.length) return null;
   const ch = text[start];
@@ -63,7 +89,11 @@ function stackSlots(stack) {
 }
 
 function cloneState(state) {
-  return { stack: [...state.stack], locals: [...state.locals] };
+  // #8715: the per-instruction working copy must never re-densify the locals
+  // frame. The stack is mutated in place by executeBundle, so it stays a
+  // fresh copy; locals are shared structurally until a local write copies
+  // them once (copy-on-write below).
+  return { stack: [...state.stack], locals: state.locals, localsOwned: false };
 }
 
 function statesEqual(a, b) {
@@ -138,7 +168,15 @@ function popKind(state, expected, errors, offset) {
   return true;
 }
 
-function setLocal(state, index, kind, slots) {
+function setLocal(state, index, kind, slots, budget) {
+  if (!state.localsOwned) {
+    // Copy-on-write: an untouched dense locals vector is never re-materialized
+    // per program point (#8715). The copy itself is reserved first so a
+    // high-write-count method cannot exceed the aggregate state budget.
+    if (budget && !budget.reserve(state.locals.length)) return;
+    state.locals = [...state.locals];
+    state.localsOwned = true;
+  }
   if (state.locals[index] === 'cat2-tail' && index > 0) state.locals[index - 1] = null;
   if (state.locals[index + 1] === 'cat2-tail') state.locals[index + 1] = null;
   if (slots === 2 && state.locals[index + 1] && state.locals[index + 2] === 'cat2-tail') state.locals[index + 2] = null;
@@ -205,7 +243,7 @@ function validateConstantPoolOperand(bundle, image, classMajor, errors, unsuppor
   if (tag === 17) unsupported.add(`dynamic-constant-verification:${bundle.bytecodeOffset}`);
 }
 
-function executeBundle(bundle, state, descriptor, errors, unsupported) {
+function executeBundle(bundle, state, descriptor, errors, unsupported, budget = null) {
   const opcode = bundle.opcode;
   const offset = bundle.bytecodeOffset;
   const push = (kind) => state.stack.push(kind);
@@ -243,7 +281,7 @@ function executeBundle(bundle, state, descriptor, errors, unsupported) {
       const index = bundle.locationWrites?.find((entry) => entry?.kind === 'local')?.index;
       const kind = opcode === 0x36 ? 'int' : opcode === 0x37 ? 'long' : opcode === 0x38 ? 'float' : opcode === 0x39 ? 'double' : 'ref';
       const slots = kind === 'long' || kind === 'double' ? 2 : 1;
-      if (popKind(state, kind, errors, offset)) setLocal(state, index, kind, slots);
+      if (popKind(state, kind, errors, offset)) setLocal(state, index, kind, slots, budget);
       return true;
     }
     case 0x3b: case 0x3c: case 0x3d: case 0x3e:
@@ -253,7 +291,7 @@ function executeBundle(bundle, state, descriptor, errors, unsupported) {
     case 0x4b: case 0x4c: case 0x4d: case 0x4e: {
       const family = opcode < 0x3f ? [0x3b, 'int', 1] : opcode < 0x43 ? [0x3f, 'long', 2] : opcode < 0x47 ? [0x43, 'float', 1] : opcode < 0x4b ? [0x47, 'double', 2] : [0x4b, 'ref', 1];
       const index = opcode - family[0];
-      if (popKind(state, family[1], errors, offset)) setLocal(state, index, family[1], family[2]);
+      if (popKind(state, family[1], errors, offset)) setLocal(state, index, family[1], family[2], budget);
       return true;
     }
     case 0x57: {
@@ -488,40 +526,56 @@ export function verifyJvmMethod(decoded, options = {}) {
   // without reporting a violation.
   let dataflowChecked = false;
   if (descriptor && maxStack != null && maxLocals != null && errors.length === 0) {
+    // #8715: retained/replayed verifier frame cells are reserved *before*
+    // every frame-array allocation. A method whose state churn exceeds the
+    // aggregate budget ends the pass as explicit unverified (partial), never
+    // as a heap abort.
+    const stateCells = new VerifierStateBudget(options.maxVerifierStateCells);
     const initialLocals = Array(maxLocals).fill(null);
     for (let i = 0; i < descriptor.initialLocals.length && i < maxLocals; i++) initialLocals[i] = descriptor.initialLocals[i] ?? null;
     const states = new Map([[0, { stack: [], locals: initialLocals }]]);
     const queue = [0];
+    let queueHead = 0;
     const bundleByOffset = new Map(bundles.map((bundle, index) => [bundle.bytecodeOffset, { bundle, index }]));
-    while (queue.length && errors.length === 0) {
-      const offset = queue.shift();
-      const entry = bundleByOffset.get(offset);
-      if (!entry) continue;
-      const state = cloneState(states.get(offset));
-      const canPropagate = executeBundle(entry.bundle, state, descriptor, errors, unsupported);
-      const usedStack = stackSlots(state.stack);
-      if (usedStack > maxStack) errors.push({ code: 'jvm-max-stack-exceeded', offset, actual: usedStack, maxStack });
-      if (!canPropagate || errors.length) continue;
-      for (const successor of normalSuccessors(entry.bundle, bundles, entry.index)) {
-        if (!starts.has(successor)) continue;
-        const previous = states.get(successor);
-        if (!previous) {
-          states.set(successor, cloneState(state));
-          queue.push(successor);
-          continue;
-        }
-        const merged = mergeStates(previous, state);
-        if (!merged.compatible) {
-          errors.push({ code: 'jvm-incompatible-frame-merge', offset: successor });
-          break;
-        }
-        if (merged.changed) {
-          states.set(successor, merged.state);
-          queue.push(successor);
+    if (!stateCells.reserve(maxLocals)) {
+      unsupported.add('jvm-verifier-state-budget-exceeded');
+    } else {
+      while (queueHead < queue.length && errors.length === 0 && !stateCells.exceeded) {
+        const offset = queue[queueHead++];
+        const entry = bundleByOffset.get(offset);
+        if (!entry) continue;
+        const stored = states.get(offset);
+        if (!stateCells.reserve(stored.stack.length)) continue;
+        const state = cloneState(stored);
+        const canPropagate = executeBundle(entry.bundle, state, descriptor, errors, unsupported, stateCells);
+        const usedStack = stackSlots(state.stack);
+        if (usedStack > maxStack) errors.push({ code: 'jvm-max-stack-exceeded', offset, actual: usedStack, maxStack });
+        if (!canPropagate || errors.length || stateCells.exceeded) continue;
+        for (const successor of normalSuccessors(entry.bundle, bundles, entry.index)) {
+          if (!starts.has(successor)) continue;
+          const previous = states.get(successor);
+          if (!previous) {
+            if (!stateCells.reserve(state.stack.length)) continue;
+            const next = { stack: [...state.stack], locals: state.locals };
+            states.set(successor, next);
+            queue.push(successor);
+            continue;
+          }
+          if (!stateCells.reserve(previous.stack.length + previous.locals.length)) continue;
+          const merged = mergeStates(previous, state);
+          if (!merged.compatible) {
+            errors.push({ code: 'jvm-incompatible-frame-merge', offset: successor });
+            break;
+          }
+          if (merged.changed) {
+            states.set(successor, merged.state);
+            queue.push(successor);
+          }
         }
       }
     }
-    dataflowChecked = errors.length === 0;
+    if (stateCells.exceeded) unsupported.add('jvm-verifier-state-budget-exceeded');
+    dataflowChecked = errors.length === 0 && !stateCells.exceeded;
   }
 
   const status = errors.length > 0 ? 'invalid' : unsupported.size > 0 ? 'partial' : 'valid';
