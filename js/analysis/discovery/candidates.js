@@ -23,6 +23,12 @@ export const FUNCTION_CANDIDATE_SCHEMA_VERSION = 1;
  */
 export const EVIDENCE_AUTHORITY = Object.freeze({
   'loader-function-start': 'authoritative',
+  // A loader seed proves an exact *start*, not the bytes that follow it. An
+  // inferred body (e.g. a `next-function-start` range between two starts) must
+  // never inherit the start's hard authority, so the range is published under
+  // this corroborating class and `fuseExtent` can only mint `exact` from a
+  // genuinely validated extent source (unwind/exception/etc.) (#8846).
+  'loader-function-extent': 'corroborating',
   'unwind-entry': 'authoritative',
   'debug-symbol': 'authoritative',
   // Debug providers can deliberately downgrade a symbol after identity/coverage
