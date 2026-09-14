@@ -317,7 +317,7 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
     };
     if (metadata != null) valInput.metadata = metadata;
     const val = createSemanticValue(valInput);
-    valueTypeByValueId.set(val.id, val.machineType);
+    if (metadata?.reason !== 'machine-type-unresolved') valueTypeByValueId.set(val.id, val.machineType);
     allValues.push(val);
     return val;
   }

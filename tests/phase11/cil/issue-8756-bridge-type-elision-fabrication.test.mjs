@@ -80,6 +80,17 @@ for (const [label, lower] of [['bridge-v2', lowerVMEffectsToSemanticIr], ['legac
     assert.ok(result.semanticIr.unknowns.some((entry) => entry.reason === 'machine-type-unresolved'));
   });
 
+  test(`#8756 ${label}: unresolved width must not launder to 32-bit through copy propagation`, () => {
+    const result = lowered([0x14, 0x25, 0x26, 0x26, 0x2a], null, lower);
+    const dup = nodeByMnemonic(result, 'dup');
+    assert.equal(dup.completeness, 'partial', 'dup of an unresolved value cannot publish proven widths');
+    assert.equal(dup.unknown?.reason, 'machine-type-unresolved');
+    for (const id of dup.outputs) {
+      assert.equal(valueById(result, id).metadata?.reason, 'machine-type-unresolved');
+    }
+    assert.equal(result.semanticIr.completeness, 'partial');
+  });
+
   test(`#8756 ${label}: explicit native width authority is preserved`, () => {
     for (const bits of [32, 64]) {
       const result = lowered(LDNULL_POP, bits, lower);
