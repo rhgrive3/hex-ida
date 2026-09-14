@@ -722,9 +722,10 @@ console.log('\nAll integrated issue tests PASS!');
   assert.deepEqual(bic.argRegs, [1, 2], `bic argRegs must be [1,2], got ${JSON.stringify(bic.argRegs)}`);
   assert.equal(bic.setsReturnValue, true, 'bic must record the x0 write');
 
-  // bfi writes its first operand too.
+  // bfi writes its first operand too; BFI also keeps the untouched
+  // destination bits, so operand 0 is an input as of #3606.
   const bfi = await mk(['bfi', 'ret'], ['x0, x1, #0, #4', '']);
-  assert.deepEqual(bfi.argRegs, [1], `bfi argRegs must be [1], got ${JSON.stringify(bfi.argRegs)}`);
+  assert.deepEqual(bfi.argRegs, [0, 1], `bfi argRegs must be [0,1], got ${JSON.stringify(bfi.argRegs)}`);
   assert.equal(bfi.setsReturnValue, true);
 
   // Genuine destination-less mnemonics keep their behavior.

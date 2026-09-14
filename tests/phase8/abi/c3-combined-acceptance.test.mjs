@@ -213,9 +213,14 @@ test('C3-02 explicit-layout and explicit-sret boundaries do not fabricate missin
   assert.equal(incomplete.arguments[0].location, 'unknown');
   assert.equal(incomplete.arguments[0].mustUse, false);
   const sysv = PROFILES[3], memoryReturn = parameterFor(sysv, 4);
-  const unproven = adapterFor(sysv).classifyFunctionReturn(returnRequest(memoryReturn));
-  assert.equal(unproven.partial, true, 'MEMORY class is not an invented explicit hidden-pointer declaration');
-  assert.deepEqual(adapterFor(sysv).returnLocations(returnRequest(memoryReturn)), []);
+  // main #6010 derives hidden sret from a proven MEMORY layout. An explicit
+  // flag is unnecessary; missing or contradictory layout remains unproven.
+  const indirect = adapterFor(sysv).classifyFunctionReturn(returnRequest(memoryReturn));
+  assert.notEqual(indirect.partial, true);
+  assert.equal(indirect.hiddenResultPointer.input, 'rdi');
+  assert.equal(indirect.hiddenResultPointer.returned, 'rax');
+  assert.equal(canonicalAbiEvidence(indirect), true);
+  assert.deepEqual(adapterFor(sysv).returnLocations(returnRequest(memoryReturn)).map(location => location.reg), ['rax']);
   for (const profile of PROFILES) {
     const invalid = parameterFor(profile, 1);
     invalid.members[1].byteOffset = 0;

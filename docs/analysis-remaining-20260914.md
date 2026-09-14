@@ -262,3 +262,22 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
   `42be5bf15faf94d25227ae135a3c169489e8769c43f1c7666d2209828c0c819b`。
   同clean commitの関連51検査も成功（`worker-host-contracts-committed.json`）。
   Worker browser受入の残件はこの環境・commitで解消した。実機成功とはしない。
+
+## Checkpoint 10: ユーザー指示による #7036 への集約
+
+- 追加PR #8888は並行作業中の保存先だったが、ユーザーの集約指示に従い、
+  実装と文書を#7036のbranchへ統合する。以後の正本は#7036。
+- 取り込み元: #7036 `10c718296f28622145696d48257b72880ab3d3fa`、
+  追加実装 `321f67610bff908f261f448d12faca2e0e00b2d5`、
+  main `f1af93b04a9511703fba61e1b6b14d9fbce4b572`。
+  #7036のmainに対する108 behindをmergeで解消し、force-pushは行わない。
+- #7036側のCFG予算共有と公開stack escape保持を保存。
+  C4 return-target拡張とmainのcontrol-target個数検証を併存させた。
+  ARM64 helperの重複を除去。非canonical BVの拒否理由はmainの表記へ統一。
+- RISC-Vは共通flatteningを再利用し、struct名にUnionを含む場合の誤判定と、
+  canonical layoutで証明済みの単一member unionの扱いを整合した。
+  SysV MEMORYのsretはmain #6010の導出契約へ受入期待値を同期。
+  不明layout・重複layout・未証明nested aggregateの拒否は維持する。
+- canonical userscriptは2回buildで同一
+  （`integration-7036-generated-hashes.json`）。
+  この統合はbranch集約とmain追従であり、未解決の全体受入を成功に変えない。

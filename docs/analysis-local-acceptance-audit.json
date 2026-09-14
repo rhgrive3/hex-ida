@@ -2076,6 +2076,16 @@
           "identical": true
         },
         "physicalDeviceAcceptance": false
+      },
+      "consolidation": {
+        "canonicalPullRequest": 7036,
+        "supersededPullRequest": 8888,
+        "integrationInput": "10c718296f28622145696d48257b72880ab3d3fa",
+        "implementationInput": "321f67610bff908f261f448d12faca2e0e00b2d5",
+        "mainInput": "f1af93b04a9511703fba61e1b6b14d9fbce4b572",
+        "behindBefore": 108,
+        "method": "non-fast-forward merge; no force-push",
+        "fullAcceptance": false
       }
     }
   },

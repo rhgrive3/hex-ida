@@ -377,7 +377,7 @@ export async function parseSwiftConformanceDescriptor(read,address,options={}){
   else if(typeReferenceKind===1) typeRef=await resolveAbsolutePointer(read,rawTypeRef,options);
   else if(typeReferenceKind===2) objcClassName=await cstring(read,rawTypeRef);
   else if(typeReferenceKind===3) objcClassReference=rawTypeRef;
-  return{runtime:'swift',kind:'conformance',address:addr,protocol,typeRef,rawTypeRef,objcClassName,objcClassReference,witnessTable,witnessTableKind,witnessTableAccessor:witnessTableKind===3?null:witnessTableBase,flags,typeReferenceKind,conditionalRequirements:(flags>>>8)&0xff,resilientWitnesses:!!(flags&(1<<16))};
+  return{runtime:'swift',kind:'conformance',address:addr,protocol,typeRef,rawTypeRef,objcClassName,objcClassReference,witnessTable,witnessTableKind,witnessTableAccessor:witnessTableKind===3?null:witnessTableBase,flags,typeReferenceKind,conditionalRequirements:(flags>>>8)&0xff,resilientWitnesses:!!(flags&(1<<16)),genericWitnessTable:!!(flags&(1<<17))};
 }
 
 const SWIFT_CLASS_HAS_VTABLE = 1 << 15;
@@ -492,7 +492,7 @@ export async function buildSwiftMetadataModel(read,sections,opts={}){
     if(c.witnessTable==null||seedAddresses.has(c.witnessTable.toString()))continue;
     const protocol=protocols.find((p)=>p.address.toString()===c.protocol?.toString()),type=c.typeReferenceKind<=1&&c.typeRef!=null?types.find((t)=>t.address.toString()===c.typeRef.toString()):null;
     if(pointerBytes==null){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: native pointer ABI is unknown, so witness table layout is not proof-safe for automatic projection.`);continue;}
-    if(!protocol||!type||c.conditionalRequirements!==0||c.resilientWitnesses===true||protocol.requirementsComplete!==true){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: witness table layout is not proof-safe for automatic projection.`);continue;}
+    if(!protocol||!type||c.conditionalRequirements!==0||c.resilientWitnesses===true||c.genericWitnessTable===true||protocol.requirementsComplete!==true){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: witness table layout is not proof-safe for automatic projection.`);continue;}
     const requirements=protocol.requirements||[];
     if(requirements.length!==Number(protocol.numRequirements)||requirements.some((r)=>r.witnessCallable!==true)){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: non-callable protocol requirements prevent exact witness projection.`);continue;}
     if(!requirements.length)continue;

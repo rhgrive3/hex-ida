@@ -1084,7 +1084,7 @@ test('noncanonical BV constants never mint false UNSAT in any exact tier', async
     for (const backend of [new ExhaustiveBvBackend(), new BitBlastBvBackend(), new TieredBvBackend()]) {
       const result = await backend.createSession().check(candidate);
       assert.equal(result.status, SOLVER_STATUS.UNSUPPORTED);
-      assert.equal(result.reason, 'noncanonical-bv-constant');
+      assert.equal(result.reason, 'non-canonical-bv-constant');
       assert.equal(result.lifecycle.publishable, false);
     }
   }

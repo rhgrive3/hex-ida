@@ -21,6 +21,13 @@ function fixture(symbolsOverrides = {}) {
       addedCalls.push([...starts]);
       return 0; // every returned start is already known -> nothing new added
     },
+    functionEvidence(addr) {
+      // Model the real SymbolIndex authority used to prove an over-returned
+      // tail is duplicate-only without ingesting it beyond the budget.
+      return [0x1234n, 0x9999n, 0x999an, 0x999bn].includes(addr)
+        ? { source: 'metadata', confidence: 0.7, confirmed: false }
+        : null;
+    },
     ...symbolsOverrides,
   };
   const backend = {
@@ -62,10 +69,10 @@ test('5558: duplicate re-discovery does not burn the global discovery budget', a
   assert.equal(addedCalls.length, 2, 'both regions must feed the symbol index');
   assert.equal(discovery.regions[1].skipped, undefined, 'text-b must not be skipped for budget');
   assert.deepEqual(addedCalls, [[0x1234n], [0x9999n]], 'each region retains its available ingestion budget');
-  assert.deepEqual(discovery.reasons, ['text-b:backend-result-exceeds-budget'], 'only unexamined overflow is partial; no function-global-budget truncation');
+  assert.deepEqual(discovery.reasons, [], 'the canonical evidence index proves the over-returned tail is duplicate-only');
   assert.equal(discovery.regions[0].complete, true);
-  assert.equal(discovery.complete, false, 'a clipped suffix has not been examined for duplicates');
-  assert.equal(discovery.capped, true);
+  assert.equal(discovery.complete, true, 'a proven duplicate-only suffix does not reduce completeness');
+  assert.equal(discovery.capped, false);
 });
 
 test('5558: genuinely new discoveries still debit the budget', async () => {

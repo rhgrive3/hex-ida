@@ -13,6 +13,14 @@ function normalizedSuccessors(successors) {
   return successors.map((xs) => Array.from(new Set((xs || []).filter((x) => validNodeIndex(x, n)))));
 }
 
+function normalizedTerminatingNodes(terminating, length) {
+  if (terminating == null) return new Set();
+  if (typeof terminating[Symbol.iterator] !== 'function') throw new TypeError('controlflow-terminating-nodes-invalid');
+  const out = new Set();
+  for (const i of terminating) if (validNodeIndex(i, length)) out.add(i);
+  return out;
+}
+
 function predecessorsOf(succ) {
   const pred = succ.map(() => []);
   for (let i = 0; i < succ.length; i++) for (const j of succ[i]) pred[j].push(i);
@@ -205,7 +213,7 @@ function strongComponents(succ, pred, reachable) {
   return { components, componentOf };
 }
 
-function postDominatorsOf(succ, pred, reachable, components, componentOf) {
+function postDominatorsOf(succ, pred, reachable, components, componentOf, terminating) {
   const n = succ.length;
   const EXIT = n;
   const internal = (i) => succ[i].filter((j) => reachable.has(j));
@@ -215,7 +223,7 @@ function postDominatorsOf(succ, pred, reachable, components, componentOf) {
   for (const i of reachable) {
     const ci = componentOf[i];
     const xs = internal(i);
-    if (!xs.length) compHasExit[ci] = true;
+    if (!xs.length || terminating.has(i)) compHasExit[ci] = true;
     for (const j of xs) {
       const cj = componentOf[j];
       if (ci !== cj) compOut[ci].add(cj);
@@ -249,7 +257,7 @@ function postDominatorsOf(succ, pred, reachable, components, componentOf) {
   const reverse = Array.from({ length: n + 1 }, () => []);
   for (const i of reachable) {
     const xs = internal(i);
-    if (!xs.length || nonTerminatingSinks.has(i)) reverse[EXIT].push(i);
+    if (!xs.length || nonTerminatingSinks.has(i) || terminating.has(i)) reverse[EXIT].push(i);
     for (const j of xs) reverse[j].push(i);
   }
   const reversePred = predecessorsOf(reverse);
@@ -271,9 +279,12 @@ function postDominatorsOf(succ, pred, reachable, components, componentOf) {
 /**
  * @param {number[][]} successors internal CFG successor indices
  * @param {number} entry entry node index
+ * @param {Iterable<number>} [terminating] nodes with a flow edge leaves the
+ *   analyzed region, so the node terminates without reaching an internal sink
  */
-export function analyzeGraph(successors, entry = 0) {
+export function analyzeGraph(successors, entry = 0, terminating = null) {
   const succ = normalizedSuccessors(successors || []);
+  const terminatingNodes = normalizedTerminatingNodes(terminating, succ.length);
   const canonicalEntry = validNodeIndex(entry, succ.length) ? entry : -1;
   const predecessors = predecessorsOf(succ);
   const reachable = reachableFrom(succ, canonicalEntry);
@@ -321,7 +332,7 @@ export function analyzeGraph(successors, entry = 0) {
     for (const x of loop.nodes) for (const y of succ[x]) if (!loop.nodes.has(y)) loop.exits.add(y);
   }
 
-  const post = postDominatorsOf(succ, predecessors, reachable, components, componentOf);
+  const post = postDominatorsOf(succ, predecessors, reachable, components, componentOf, terminatingNodes);
   return {
     successors: succ,
     predecessors,
