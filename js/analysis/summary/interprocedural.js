@@ -44,11 +44,41 @@ import {
 export const INTERPROCEDURAL_ANALYZER_ID = 'phase7.summary.interprocedural';
 export const INTERPROCEDURAL_ANALYZER_VERSION = '1.3.2';
 
+/**
+ * Classic A3 solver resource contract (#8872).
+ *
+ * `maxEffectsPerSummary` already bounded memory read/write rows, and `transfers`
+ * bounds demand-mode payloads, but the three other transitively propagated
+ * dimensions — `escapes`, `unknownCallEffects`, `registerEffects` — had no fence at
+ * all. An ordinary acyclic call chain therefore retained Θ(N²) summary rows while
+ * still publishing `complete`, and a 2,200-function chain OOMed a 512 MiB heap
+ * below the advertised `maxComponents`/`maxNodes` graph bounds.
+ *
+ * Two independent resources close that hole on the canonical budget owner:
+ * rows published and kept resident, and rows touched while composing. Crossing
+ * either one fails closed to `truncated` with `budget-exhausted`; a summary is
+ * never allowed to keep `complete` authority after a fact was dropped.
+ */
 export const INTERPROCEDURAL_DEFAULT_BUDGET = Object.freeze({
   maxIterationsPerComponent: 16,
   maxComponents: 4096,
   maxEffectsPerSummary: 512,
+  maxTransitiveRowsPerSummary: 2048,
+  maxResidentSummaryRows: 262144,
+  maxSummaryMergeRows: 8388608,
 });
+
+export const SUMMARY_PAYLOAD_RESOURCES = Object.freeze({
+  residentRows: 'residentSummaryRows',
+  mergeRows: 'summaryMergeRows',
+});
+
+/** Rows the published summary keeps alive, across every bounded dimension. */
+function summaryResidentRows(summary) {
+  return (summary.escapes?.length || 0) + (summary.unknownCallEffects?.length || 0)
+    + (summary.registerEffects?.length || 0)
+    + (summary.memoryReadRegions?.length || 0) + (summary.memoryWriteRegions?.length || 0);
+}
 
 function fail(code) { throw new TypeError(code); }
 
@@ -317,6 +347,46 @@ function mergeEscapes(values) {
     .map(([, escape]) => escape);
 }
 
+/**
+ * Grow a transitive dimension only while the summary's own row budget has room.
+ * Returning `truncated` is mandatory: a dropped distinct fact is an
+ * under-approximation of a may-analysis, so the caller must lose `complete`
+ * authority rather than silently keep a prefix (#8872).
+ */
+function boundedPush(target, incoming, limit) {
+  let truncated = false;
+  for (const value of incoming) {
+    if (target.length >= limit) { truncated = true; break; }
+    target.push(value);
+  }
+  return truncated;
+}
+
+function boundedAddAll(target, incoming, limit) {
+  let truncated = false;
+  for (const value of incoming) {
+    if (target.size >= limit) { truncated = true; break; }
+    target.add(value);
+  }
+  return truncated;
+}
+
+/** Deterministic capped union: keeps the lowest code-unit members of one row. */
+function boundedUnion(left, right, limit, normalize) {
+  const seen = new Set();
+  const values = [];
+  let truncated = false;
+  for (const value of [...left, ...right]) {
+    const member = normalize(value);
+    if (seen.has(member)) continue;
+    seen.add(member);
+    if (values.length >= limit) { truncated = true; continue; }
+    values.push(member);
+  }
+  if (truncated) values.sort();
+  return { values, truncated };
+}
+
 
 function mergedRegionProof(left, right) {
   if (!left || !right || left.id !== right.id || left.kind !== right.kind) return null;
@@ -451,6 +521,17 @@ export function solveInterproceduralSummaries({
     INTERPROCEDURAL_DEFAULT_BUDGET.maxIterationsPerComponent, 'maxIterationsPerComponent');
   limits.maxEffectsPerSummary = budgetInteger(limits.maxEffectsPerSummary,
     INTERPROCEDURAL_DEFAULT_BUDGET.maxEffectsPerSummary, 'maxEffectsPerSummary');
+  limits.maxTransitiveRowsPerSummary = budgetInteger(limits.maxTransitiveRowsPerSummary,
+    INTERPROCEDURAL_DEFAULT_BUDGET.maxTransitiveRowsPerSummary, 'maxTransitiveRowsPerSummary');
+  limits.maxResidentSummaryRows = budgetInteger(limits.maxResidentSummaryRows,
+    INTERPROCEDURAL_DEFAULT_BUDGET.maxResidentSummaryRows, 'maxResidentSummaryRows');
+  limits.maxSummaryMergeRows = budgetInteger(limits.maxSummaryMergeRows,
+    INTERPROCEDURAL_DEFAULT_BUDGET.maxSummaryMergeRows, 'maxSummaryMergeRows');
+  if (limits.maxTransitiveRowsPerSummary < 1) fail('interprocedural-invalid-budget-maxTransitiveRowsPerSummary');
+  const payloadLedger = new SummaryResourceBudget({
+    [SUMMARY_PAYLOAD_RESOURCES.residentRows]: limits.maxResidentSummaryRows,
+    [SUMMARY_PAYLOAD_RESOURCES.mergeRows]: limits.maxSummaryMergeRows,
+  }, { name: 'interprocedural-summary-payload' });
   const locals = localSummaries instanceof Map ? localSummaries : new Map(Object.entries(localSummaries ?? {}));
   const models = libraryModels instanceof Map ? libraryModels : new Map(Object.entries(libraryModels ?? {}));
   if (!Array.isArray(roots) || roots.length === 0) fail('interprocedural-roots-required');
@@ -504,6 +585,18 @@ export function solveInterproceduralSummaries({
   let totalIterations = 0;
   let worstStopReason = null;
   let worstCompleteness = 'complete';
+  const failClosedPayload = (error) => {
+    // Rows are charged only for what has already been materialized, so the
+    // process can never be pushed past the fence by the report itself. Nothing
+    // partial is published: an incomplete solve answers with no summaries.
+    const stop = {
+      resource: error?.resource ?? SUMMARY_PAYLOAD_RESOURCES.residentRows,
+      used: Number.isSafeInteger(error?.used) ? error.used : null,
+      limit: Number.isSafeInteger(error?.limit) ? error.limit : null,
+    };
+    return { summaries: new Map(), components, iterations: totalIterations,
+      status: status('truncated', 'budget-exhausted'), budgetStop: stop };
+  };
 
   for (const component of components) {
     if (signal?.aborted) {
@@ -530,7 +623,13 @@ export function solveInterproceduralSummaries({
       totalIterations += 1;
       changed = false;
       for (const functionId of component) {
-        const next = composeSummary({ functionId, locals, models, solved, component, limits, status, snapshotId });
+        let next;
+        try {
+          next = composeSummary({ functionId, locals, models, solved, component, limits, status, snapshotId, payloadLedger });
+        } catch (error) {
+          if (error instanceof SummaryBudgetExceededError) return failClosedPayload(error);
+          throw error;
+        }
         const digest = functionSummaryDigest(next);
         if (componentDigests.get(functionId) !== digest) {
           componentDigests.set(functionId, digest);
@@ -547,12 +646,31 @@ export function solveInterproceduralSummaries({
       // recursion-unconverged effect, so callers see a bounded incomplete
       // result instead of a plausible-looking complete one (P7-INV-010).
       for (const functionId of component) {
-        solved.set(functionId, composeSummary({
-          functionId, locals, models, solved, component, limits, status, snapshotId, unconverged: true,
-        }));
+        let republished;
+        try {
+          republished = composeSummary({
+            functionId, locals, models, solved, component, limits, status, snapshotId, unconverged: true, payloadLedger,
+          });
+        } catch (error) {
+          if (error instanceof SummaryBudgetExceededError) return failClosedPayload(error);
+          throw error;
+        }
+        solved.set(functionId, republished);
       }
       worstStopReason = 'iteration-limit';
       worstCompleteness = weakestCompleteness(worstCompleteness, 'truncated');
+    }
+
+    // Resident charge: every summary this component publishes stays alive in
+    // `solved` for the rest of the solve, so it is charged once here, after the
+    // fixed point, rather than per iteration.
+    try {
+      for (const functionId of component) {
+        payloadLedger.consume(SUMMARY_PAYLOAD_RESOURCES.residentRows, summaryResidentRows(solved.get(functionId)));
+      }
+    } catch (error) {
+      if (error instanceof SummaryBudgetExceededError) return failClosedPayload(error);
+      throw error;
     }
   }
 
@@ -571,10 +689,37 @@ export function solveInterproceduralSummaries({
   };
 }
 
-function composeSummary({ functionId, locals, models, solved, component, limits, status, snapshotId, unconverged = false }) {
+function composeSummary({
+  functionId, locals, models, solved, component, limits, status, snapshotId, unconverged = false, payloadLedger = null,
+}) {
   const local = locals.get(functionId);
   if (!local) fail('interprocedural-missing-local-summary');
   if (local.functionId !== functionId) fail('interprocedural-local-summary-identity-mismatch');
+  // #8872: the classic solver passes a row fence plus the shared payload ledger.
+  // The resumable demand session has its own per-transfer payload/lifetime fences
+  // and does not supply these, so its behavior is deliberately unchanged.
+  const rowLimit = Number.isSafeInteger(limits.maxTransitiveRowsPerSummary) && limits.maxTransitiveRowsPerSummary >= 1
+    ? limits.maxTransitiveRowsPerSummary : Number.POSITIVE_INFINITY;
+  let payloadTruncated = false;
+  const chargeMergeRows = (rows) => {
+    if (payloadLedger === null || !(rows > 0)) return;
+    payloadLedger.consume(SUMMARY_PAYLOAD_RESOURCES.mergeRows, rows > 0 ? rows : 0);
+  };
+  const takeRows = (target, incoming) => {
+    if (!incoming || incoming.length === 0) return;
+    chargeMergeRows(incoming.length);
+    if (boundedPush(target, incoming, rowLimit)) payloadTruncated = true;
+  };
+  const takeSetRows = (target, incoming) => {
+    if (!incoming || incoming.length === 0) return;
+    chargeMergeRows(incoming.length);
+    if (boundedAddAll(target, incoming, rowLimit)) payloadTruncated = true;
+  };
+  const addRow = (target, value) => {
+    chargeMergeRows(1);
+    if (target.length >= rowLimit) { payloadTruncated = true; return; }
+    target.push(value);
+  };
 
   // A local P7-3a summary records a placeholder for every call it could not
   // resolve: an `unknownCallEffect` plus broad fallback memory effects. Once
@@ -613,21 +758,25 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
 
   const reads = [replaceCallFallbacks ? local.memoryReadRegions.filter(notCallFallback) : local.memoryReadRegions];
   const writes = [replaceCallFallbacks ? local.memoryWriteRegions.filter(notCallFallback) : local.memoryWriteRegions];
-  const unknowns = replaceCallFallbacks ? [] : [...local.unknownCallEffects];
+  const unknowns = [];
+  if (!replaceCallFallbacks) takeRows(unknowns, local.unknownCallEffects);
   const calleeStatuses = [];
-  const registerEffects = new Set(local.registerEffects);
+  const registerEffects = new Set();
+  takeSetRows(registerEffects, local.registerEffects);
   const noreturn = [local.noreturn];
   const mayThrow = [local.mayThrow];
-  const escapes = [...local.escapes];
+  const escapes = [];
+  takeRows(escapes, local.escapes);
 
   const accumulateCallee = (callee) => {
     reads.push(callee.memoryReadRegions);
     writes.push(callee.memoryWriteRegions);
-    escapes.push(...callee.escapes);
-    for (const effect of callee.registerEffects) registerEffects.add(effect);
+    chargeMergeRows(callee.memoryReadRegions.length + callee.memoryWriteRegions.length);
+    takeRows(escapes, callee.escapes);
+    takeSetRows(registerEffects, callee.registerEffects);
     // Keep provenance-bearing unresolved effects and control-flow knowledge in
     // lockstep with the memory dimensions for every resolved call edge.
-    unknowns.push(...callee.unknownCallEffects);
+    takeRows(unknowns, callee.unknownCallEffects);
     noreturn.push(callee.noreturn);
     mayThrow.push(callee.mayThrow);
     calleeStatuses.push(callee.status);
@@ -659,13 +808,14 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
         // callee, so it can never override contradictory binary evidence.
         reads.push(validatedModel.memoryReadRegions);
         writes.push(validatedModel.memoryWriteRegions);
-        escapes.push(...validatedModel.escapes);
+        chargeMergeRows(validatedModel.memoryReadRegions.length + validatedModel.memoryWriteRegions.length);
+        takeRows(escapes, validatedModel.escapes);
         noreturn.push(validatedModel.noreturn);
         mayThrow.push(validatedModel.mayThrow);
         continue;
       }
       writes.push([broadEffect('unknown-call-fallback')]);
-      unknowns.push(createUnknownCallEffect({
+      addRow(unknowns, createUnknownCallEffect({
         callSiteId: call.callSiteId,
         reason: locals.has(target) ? 'summary-missing' : 'library-model-missing',
         targetEntityIds: [target],
@@ -690,13 +840,14 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
       if (validatedModel) {
         reads.push(validatedModel.memoryReadRegions);
         writes.push(validatedModel.memoryWriteRegions);
-        escapes.push(...validatedModel.escapes);
+        chargeMergeRows(validatedModel.memoryReadRegions.length + validatedModel.memoryWriteRegions.length);
+        takeRows(escapes, validatedModel.escapes);
         noreturn.push(validatedModel.noreturn);
         mayThrow.push(validatedModel.mayThrow);
         continue;
       }
       writes.push([broadEffect('unknown-call-fallback')]);
-      unknowns.push(createUnknownCallEffect({
+      addRow(unknowns, createUnknownCallEffect({
         callSiteId: set.callSiteId,
         reason: locals.has(candidate) ? 'summary-missing' : 'library-model-missing',
         targetEntityIds: [candidate],
@@ -707,7 +858,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     if (!set.exhaustive) {
       writes.push([broadEffect('unknown-call-fallback')]);
       if (!unknowns.some((unknown) => unknown.callSiteId === set.callSiteId)) {
-        unknowns.push(createUnknownCallEffect({ callSiteId: set.callSiteId, reason: 'indirect-incomplete-target-set' }));
+        addRow(unknowns, createUnknownCallEffect({ callSiteId: set.callSiteId, reason: 'indirect-incomplete-target-set' }));
       }
     }
   }
@@ -715,7 +866,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
   if (unconverged) {
     writes.push([broadEffect('unknown-call-fallback')]);
     reads.push([broadEffect('unknown-call-fallback')]);
-    unknowns.push(createUnknownCallEffect({ callSiteId: functionId, reason: 'recursion-unconverged' }));
+    addRow(unknowns, createUnknownCallEffect({ callSiteId: functionId, reason: 'recursion-unconverged' }));
   }
 
   const unknownsByKey = new Map();
@@ -729,11 +880,16 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     // Same call site and reason means one logical unresolved call; the target
     // and evidence payloads must union rather than last-wins, or every
     // candidate but the final one vanishes from the published provenance.
+    chargeMergeRows(prior.targetEntityIds.length + prior.evidenceIds.length
+      + unknown.targetEntityIds.length + unknown.evidenceIds.length);
+    const targetEntityIds = boundedUnion(prior.targetEntityIds, unknown.targetEntityIds, rowLimit, (value) => value);
+    const evidenceIds = boundedUnion(prior.evidenceIds, unknown.evidenceIds, rowLimit, (value) => value);
+    if (targetEntityIds.truncated || evidenceIds.truncated) payloadTruncated = true;
     unknownsByKey.set(key, createUnknownCallEffect({
       callSiteId: unknown.callSiteId,
       reason: unknown.reason,
-      targetEntityIds: [...prior.targetEntityIds, ...unknown.targetEntityIds],
-      evidenceIds: [...prior.evidenceIds, ...unknown.evidenceIds],
+      targetEntityIds: targetEntityIds.values,
+      evidenceIds: evidenceIds.values,
     }));
   }
   const dedupedUnknowns = [...unknownsByKey.values()];
@@ -775,6 +931,27 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
       dependencyIds: [...(baseStatus.dependencyIds ?? []), ...(localInput?.dependencyIds ?? [])],
     });
 
+  // #8872: dropping any distinct transitive row (escape / unknown-call /
+  // register effect / provenance member) is an under-approximation of a
+  // may-analysis, so this summary can no longer claim `complete`. Failing closed
+  // here keeps the per-summary fence from silently truncating while still
+  // publishing full authority — the same rule the resident/merge ledgers enforce
+  // by returning no summaries at all (P7-INV-010, guardrail "unknown stays explicit").
+  const publishedStatus = payloadTruncated
+    ? createAnalysisStatus({
+      snapshotId: composedStatus.snapshotId,
+      analyzerId: composedStatus.analyzerId,
+      analyzerVersion: composedStatus.analyzerVersion,
+      completeness: weakestCompleteness(composedStatus.completeness, 'truncated'),
+      budgetClass: composedStatus.budgetClass,
+      stopReason: composedStatus.completeness === 'complete'
+        ? 'budget-exhausted'
+        : (composedStatus.stopReason ?? 'budget-exhausted'),
+      evidenceIds: composedStatus.evidenceIds,
+      dependencyIds: composedStatus.dependencyIds,
+    })
+    : composedStatus;
+
   return createFunctionSummary({
     functionId,
     inputs: local.inputs,
@@ -797,7 +974,7 @@ function composeSummary({ functionId, locals, models, solved, component, limits,
     mayThrow: hasUnknown ? 'unknown' : unionKnowledge(mayThrow),
     stackDelta: local.stackDelta,
     semanticFacts: local.semanticFacts,
-    status: composedStatus,
+    status: publishedStatus,
   });
 }
 
