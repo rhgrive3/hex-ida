@@ -304,3 +304,14 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
 - legacy safety-floor baselineを訂正版の同じmanifestで再測定した。これは訂正後の再計算であり、candidate実装前に採取したbaselineという意味ではない。旧manifestとbaselineはGit履歴 `9c105b5e0` および永続evidenceの `c1-before-*` に残す。
 - mainのcontrol-input cardinalityにfixture helperを適合させた。条件分岐へ未制約のentry predicateを与え、両経路を保持する。canonical CFG/PHI実装は変更しない。
 - witness・全30行precision・frozen corpusの12検査は成功。commit後のC1結合・関連回帰・canonical Phase7とownershipの結果を追記する。全ロードマップの完了宣言ではない。
+
+
+## Checkpoint 12 — C1 committed acceptance and full-gate result (2026-09-15)
+
+- `cc1a923c9ddc4f93bd6af70632290c21522ecce8` のclean headでC1結合・escape・corpus・240 rename cellを含む **201/201 PASS**。実差分Phase7/8 ownershipもPASS。`c1-final-acceptance` log SHA256 `19f821bca7f0f1f9277c7d7247423121583c8310d97a251c17fbaa996dc93654`、inventory `a5c56083091242fe5d6c819e27df59a09c2efd9ac7a716e11c794bf38ad9f6ec`。
+- 同headのcanonical `npm run phase7:test`（440 discovered files）はexit 1。成功扱いにしない。全ログを永続evidence `c1-canonical-phase7-final-full.log` へ保存、SHA256 `efb762e2f06de24d9195c6d7233342a8c10d677748413c93350d422544458827`。runner出力は最終集計前で途切れており、全件のpass/fail数は確定できない。
+- その実行で残っていた #5215 の旧片側non-escape正例を修正した。正例には両allocation rootを明示し、両方を観測する副作用のないfixture式を追加。refine時NoAlias、reject後May、escape cache再計算の検査を維持し、5/5 PASS。片側のみの他fixtureと #4977 負例は保持する。
+- 未解決の全体検査には #4777 のgenuine scalar chainがunknownになる精度回帰、region debug出力、共有producer/abort、ownership重複、#3754 control-target fixture等がある。#4777は単独でも再現した。今回のtruth訂正を理由にそれらの期待値やruntime条件を緩めない。
+- exact Phase7 verifierの訂正版aliasはbaseline 1/2・candidate 2/2、falseNo/falseMust/unknown=0、memory link 2/2。ただしcoldActiveFunctionは並行実行時610.737ms、他の担当検査終了後も368.466msで250ms予算を超え、**BLOCKING**。元の予算を保持する。`c1-isolated-verifier` receipt SHA256 `e94d85deedd69f591cf0990c6da43fd0fe86cde3ee9f2826ecef9551ada4d0f6`。
+- 初回の誤ったexpect-sha指定はidentity rejectionとして履歴に保持し、正しい40桁SHAで再検証した。旧headでの中断したfull runもPASSにしない。
+- #7036のcandidate source conflictは解消済みでbehind 0を再確認した。統合受入/全ロードマップ完成は未宣言。物理実機はユーザー指示でSKIPPED。
