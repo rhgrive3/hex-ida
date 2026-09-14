@@ -1,9 +1,35 @@
 import { codedIndexSize, tableIndexSize, cilMetadataToken } from './metadata-layout.js';
 import { readCilMetadataBlob } from './call-signature-metadata.js';
-import { parseCilMethodSignature, parseCilTypeSpecSignature } from './call-signature-types.js';
+import { parseCilMethodSignature, parseCilPropertySignature, parseCilTypeSpecSignature, cilMethodSlotElementByte, cilPropertyTypeElementByte } from './call-signature-types.js';
 import { decodeCilCustomAttributeValue } from './custom-attribute-values.js';
 import { stableStringify } from '../../core/identity/index.js';
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+const utf16 = new TextDecoder('utf-16le');
+const constantValueTypes = new Map([
+  [0x02, { name: 'boolean', width: 1, decode: blob => {
+    if (blob[0] > 1) fail('cil-constant-blob-value-invalid');
+    return blob[0] === 1;
+  } }],
+  [0x03, { name: 'char', width: 2, decode: blob => blob[0] | (blob[1] << 8) }],
+  [0x04, { name: 'int8', width: 1, decode: blob => (blob[0] << 24) >> 24 }],
+  [0x05, { name: 'uint8', width: 1, decode: blob => blob[0] }],
+  [0x06, { name: 'int16', width: 2, decode: blob => { const v = blob[0] | (blob[1] << 8); return (v & 0x8000) ? v - 0x10000 : v; } }],
+  [0x07, { name: 'uint16', width: 2, decode: blob => blob[0] | (blob[1] << 8) }],
+  [0x08, { name: 'int32', width: 4, decode: blob => (blob[0] | (blob[1] << 8) | (blob[2] << 16) | (blob[3] << 24)) }],
+  [0x09, { name: 'uint32', width: 4, decode: blob => (blob[0] | (blob[1] << 8) | (blob[2] << 16) | (blob[3] << 24)) >>> 0 }],
+  [0x0a, { name: 'int64', width: 8, decode: signed64 }],
+  [0x0b, { name: 'uint64', width: 8, decode: unsigned64 }],
+  [0x0c, { name: 'float32', width: 4, decode: blob => new DataView(blob.buffer, blob.byteOffset, 4).getFloat32(0, true) }],
+  [0x0d, { name: 'float64', width: 8, decode: blob => new DataView(blob.buffer, blob.byteOffset, 8).getFloat64(0, true) }],
+  [0x0e, { name: 'string', width: null, decode: blob => utf16.decode(blob) }],
+  [0x12, { name: 'class', width: 4, decode: blob => decodeNullReference(blob) }],
+]);
+function decodeNullReference(blob) {
+  if (blob[0] | blob[1] | blob[2] | blob[3]) fail('cil-constant-blob-length-invalid');
+  return null;
+}
+function signed64(blob) { return new DataView(blob.buffer, blob.byteOffset, blob.byteLength).getBigInt64(0, true); }
+function unsigned64(blob) { return new DataView(blob.buffer, blob.byteOffset, blob.byteLength).getBigUint64(0, true); }
 function fail(code) { throw new TypeError(code); }
 // ECMA-335 II.23.4 marshalling-descriptor constants (`NATIVE_TYPE_xxx`). The
 // value is what actually changes the managed/native call boundary, so it is
@@ -826,5 +852,220 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     owner.attributes = [...(owner.attributes ?? []), attribute];
   }
 
-  return { types, methods, fields, manifestResources, typeSpecs, typeRefs, memberRefs, assemblyRefs, assembly, module, params, properties, events, methodSemantics, interfaceImpls, methodImpls, implMaps, moduleRefs, fieldRvas, fieldMarshals, customAttributes };
+  const hasConstantSize = codedIndexSize(counts, [0x04, 0x08, 0x17], 2);
+  const hasConstantTables = [0x04, 0x08, 0x17];
+  const constants = readRows(0x0b, pos => {
+    const elementType = bytes[pos];
+    if (!constantValueTypes.has(elementType)) fail('cil-constant-type-invalid');
+    const parent = index(pos + 2, hasConstantSize);
+    if (parent === 0) fail('cil-constant-parent-required');
+    const parentTable = hasConstantTables[parent & 0x3], parentRid = Math.floor(parent / 4);
+    if (parentTable == null || parentRid < 1 || parentRid > counts[parentTable]) fail('cil-constant-parent-invalid');
+    return {
+      type: elementType,
+      parent: { table: parentTable, rid: parentRid, token: cilMetadataToken(parentTable, parentRid) },
+      valueIndex: index(pos + 2 + hasConstantSize, b),
+    };
+  });
+  const classLayouts = readRows(0x0f, pos => {
+    const packingSize = view.getUint16(pos, true);
+    if ((packingSize !== 0 && (packingSize & (packingSize - 1)) !== 0) || packingSize > 128) {
+      fail('cil-class-layout-packing-invalid');
+    }
+    return { packingSize, classSize: view.getUint32(pos + 2, true), parent: index(pos + 6, tableIndexSize(counts, 2)) };
+  });
+  const fieldLayouts = readRows(0x10, pos => ({
+    offset: view.getUint32(pos, true),
+    field: index(pos + 4, tableIndexSize(counts, 4)),
+  }));
+  const nestedClasses = readRows(0x29, pos => ({
+    nested: index(pos, tableIndexSize(counts, 2)),
+    enclosing: index(pos + tableIndexSize(counts, 2), tableIndexSize(counts, 2)),
+  }));
+
+  return { types, methods, fields, manifestResources, typeSpecs, typeRefs, memberRefs, assemblyRefs, assembly, module, params, properties, events, methodSemantics, interfaceImpls, methodImpls, implMaps, moduleRefs, fieldRvas, fieldMarshals, customAttributes, constants, classLayouts, fieldLayouts, nestedClasses };
+}
+
+// Bind auxiliary metadata tables onto canonical owner rows. This runs before
+// the image freezes; malformed or contradictory table authority fails closed.
+export function bindCilMetadataTables(defs, blobHeap) {
+  const { types, typeRefs, typeSpecs, fields, methods, params, properties, constants, classLayouts, fieldLayouts, nestedClasses, assembly, assemblyRefs } = defs;
+  const typeDefOrRefRowCounts = [types.length, typeRefs?.length ?? 0, typeSpecs?.length ?? 0];
+  const fieldSignatureElement = (blob) => {
+    if (!(blob instanceof Uint8Array) || blob.length < 2 || blob[0] !== 0x06) fail('cil-field-signature-invalid');
+    // Validate the entire CustomMod* Type production with the canonical Type
+    // parser before deriving the raw lead byte needed for Constant.Type
+    // agreement. This rejects truncated payloads and trailing garbage.
+    try {
+      parseCilTypeSpecSignature(blob.subarray(1), typeDefOrRefRowCounts);
+    } catch (error) {
+      if (error instanceof TypeError && String(error.message ?? error).startsWith('cil-type-spec-signature-invalid')) {
+        fail('cil-field-signature-invalid');
+      }
+      throw error;
+    }
+    let pos = 1;
+    for (;;) {
+      const lead = blob[pos];
+      if (lead === 0x1f || lead === 0x20) {
+        pos = readCompressedUnsigned(blob, pos + 1, 'cil-field-signature-invalid').next;
+        continue;
+      }
+      return { elementType: lead, offset: pos };
+    }
+  };
+  const primitiveConstantTypes = new Set([0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e]);
+  const enumUnderlyingTypes = new Set([0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b]);
+  const coreLibraryNames = new Set(['mscorlib', 'System.Runtime', 'System.Private.CoreLib', 'netstandard']);
+  const enumUnderlyingElementType = (signature, element) => {
+    if (element.elementType !== 0x11) return null;
+    let encoded;
+    try {
+      encoded = readCompressedUnsigned(signature, element.offset + 1, 'cil-field-signature-invalid').value;
+    } catch {
+      return null;
+    }
+    const tag = encoded & 0x3, rid = encoded >>> 2;
+    if (tag !== 0 || rid < 1 || rid > types.length) return null;
+    const enumType = types[rid - 1];
+    let isEnum = false;
+    const base = enumType?.extendsTypeRef ?? null;
+    if (base?.namespace === 'System' && base?.name === 'Enum' && base.resolutionScope?.table === 0x23) {
+      isEnum = coreLibraryNames.has(assemblyRefs?.[base.resolutionScope.rid - 1]?.name);
+    } else if (typeof enumType?.extendsToken === 'string' && enumType.extendsToken.startsWith('0x0200')) {
+      const baseRid = Number.parseInt(enumType.extendsToken.slice(6), 16);
+      const baseType = types[baseRid - 1];
+      isEnum = coreLibraryNames.has(assembly?.name) && baseType?.namespace === 'System' && baseType?.name === 'Enum';
+    }
+    if (!isEnum) return null;
+    const valueFields = fields.filter(field => field.declaringTypeToken === enumType.token
+      && field.name === 'value__'
+      && (field.accessFlags & 0x10) === 0
+      && (field.accessFlags & 0x0600) === 0x0600
+      && (field.accessFlags & 0x0007) === 0x0006);
+    if (valueFields.length !== 1) return null;
+    const valueField = valueFields[0];
+    if (!Number.isSafeInteger(valueField.signatureBlobIndex) || valueField.signatureBlobIndex <= 0) return null;
+    try {
+      const valueSignature = readCilMetadataBlob(blobHeap, valueField.signatureBlobIndex, 'cil-field-signature-blob-invalid');
+      const underlying = fieldSignatureElement(valueSignature).elementType;
+      return enumUnderlyingTypes.has(underlying) ? underlying : null;
+    } catch {
+      return null;
+    }
+  };
+  const constantRows = [];
+  const constantParents = new Set();
+  for (const row of constants ?? []) {
+    const key = row.parent.token;
+    if (constantParents.has(key)) fail('cil-constant-parent-duplicate');
+    constantParents.add(key);
+    const shape = constantValueTypes.get(row.type);
+    const blob = readCilMetadataBlob(blobHeap, row.valueIndex, 'cil-constant-blob-invalid');
+    if (shape.width != null && blob.length !== shape.width) fail('cil-constant-blob-length-invalid');
+    if (shape.name === 'string' && blob.length % 2 !== 0) fail('cil-constant-blob-length-invalid');
+    if (row.parent.table === 0x04) {
+      const field = fields[row.parent.rid - 1];
+      if (!field || !Number.isSafeInteger(field.signatureBlobIndex) || field.signatureBlobIndex <= 0) {
+        fail('cil-constant-parent-type-unprovable');
+      }
+      const signature = readCilMetadataBlob(blobHeap, field.signatureBlobIndex, 'cil-field-signature-blob-invalid');
+      const declaredElement = fieldSignatureElement(signature);
+      const declared = declaredElement.elementType;
+      if (primitiveConstantTypes.has(declared)) {
+        if (row.type !== declared) fail('cil-constant-type-mismatch');
+      } else if (declared === 0x11) {
+        const underlying = enumUnderlyingElementType(signature, declaredElement);
+        if (underlying == null || row.type !== underlying) fail('cil-constant-type-mismatch');
+      } else if (row.type !== 0x12 || (declared !== 0x12 && declared !== 0x1c)) {
+        fail('cil-constant-type-mismatch');
+      }
+    } else if (row.parent.table === 0x08 || row.parent.table === 0x17) {
+      const declaredElement = (decoded) => {
+        const primitiveCodes = { boolean: 0x02, char: 0x03, i1: 0x04, u1: 0x05, i2: 0x06, u2: 0x07, i4: 0x08, u4: 0x09, i8: 0x0a, u8: 0x0b, r4: 0x0c, r8: 0x0d };
+        if (decoded?.primitive != null && primitiveCodes[decoded.primitive] != null) return primitiveCodes[decoded.primitive];
+        if (decoded?.stackType === 'object-ref' && decoded.typeToken == null && decoded.genericIndex == null) return 'reference';
+        return null;
+      };
+      let declared = null;
+      let declaredExact = null;
+      if (row.parent.table === 0x08) {
+        const param = params?.[row.parent.rid - 1] ?? null;
+        const owner = param?.ownerToken != null ? methods.find(m => m.token === param.ownerToken) ?? null : null;
+        if (!owner || !Number.isSafeInteger(owner.signatureBlobIndex)) fail('cil-constant-parent-type-unprovable');
+        const ownerSigBlob = readCilMetadataBlob(blobHeap, owner.signatureBlobIndex, 'cil-method-signature-blob-invalid');
+        const methodSig = parseCilMethodSignature(ownerSigBlob);
+        const slot = param.sequence === 0 ? methodSig.returnValue : methodSig.parameters[param.sequence - 1] ?? null;
+        if (slot == null) fail('cil-constant-parent-type-unprovable');
+        declared = declaredElement(slot);
+        if (declared === 'reference') declaredExact = cilMethodSlotElementByte(ownerSigBlob, param.sequence);
+      } else {
+        const property = properties?.[row.parent.rid - 1] ?? null;
+        if (!property || !Number.isSafeInteger(property.typeBlobIndex)) fail('cil-constant-parent-type-unprovable');
+        const propertySigBlob = readCilMetadataBlob(blobHeap, property.typeBlobIndex, 'cil-property-signature-blob-invalid');
+        const propertySig = parseCilPropertySignature(propertySigBlob);
+        declared = declaredElement(propertySig.propertyType);
+        if (declared === 'reference') declaredExact = cilPropertyTypeElementByte(propertySigBlob);
+      }
+      if (declared === null) fail('cil-constant-parent-type-unprovable');
+      if (declared === 'reference') {
+        if (declaredExact === 0x0e) {
+          if (row.type !== 0x0e) fail('cil-constant-type-mismatch');
+        } else if (declaredExact === 0x1c || declaredExact === 0x1d || declaredExact === 0x14) {
+          if (row.type !== 0x12) fail('cil-constant-type-mismatch');
+        } else {
+          fail('cil-constant-type-mismatch');
+        }
+      } else if (row.type !== declared) {
+        fail('cil-constant-type-mismatch');
+      }
+    }
+    const value = Object.freeze({ type: shape.name, value: shape.decode(blob) });
+    row.value = value;
+    constantRows.push(Object.freeze({ token: row.token, parent: row.parent.token, ...value }));
+    if (row.parent.table === 0x04) fields[row.parent.rid - 1].constant = value;
+  }
+
+  const layoutParents = new Set();
+  for (const row of classLayouts ?? []) {
+    if (row.parent < 1 || row.parent > types.length) fail('cil-class-layout-parent-invalid');
+    if (layoutParents.has(row.parent)) fail('cil-class-layout-parent-duplicate');
+    layoutParents.add(row.parent);
+    const layoutMask = types[row.parent - 1].accessFlags & 0x18;
+    if (layoutMask !== 0x08 && layoutMask !== 0x10) fail('cil-class-layout-flags-contradiction');
+    types[row.parent - 1].classLayout = Object.freeze({ packingSize: row.packingSize, classSize: row.classSize });
+  }
+
+  const layoutFields = new Set();
+  for (const row of fieldLayouts ?? []) {
+    if (row.field < 1 || row.field > fields.length) fail('cil-field-layout-field-invalid');
+    if (layoutFields.has(row.field)) fail('cil-field-layout-field-duplicate');
+    layoutFields.add(row.field);
+    const field = fields[row.field - 1];
+    const ownerToken = field.declaringTypeToken;
+    const ownerType = ownerToken ? types[(parseInt(ownerToken, 16) & 0xffffff) - 1] : null;
+    if (!ownerType || (ownerType.accessFlags & 0x18) !== 0x10) fail('cil-class-layout-flags-contradiction');
+    if ((field.accessFlags & 0x10) !== 0) fail('cil-field-layout-static-field');
+    field.offset = row.offset;
+  }
+
+  const nestedRids = new Set();
+  for (const row of nestedClasses ?? []) {
+    if (row.nested < 1 || row.nested > types.length || row.enclosing < 1 || row.enclosing > types.length) {
+      fail('cil-nested-class-reference-invalid');
+    }
+    if (row.nested === row.enclosing) fail('cil-nested-class-self-referential');
+    if (nestedRids.has(row.nested)) fail('cil-nested-class-nested-duplicate');
+    nestedRids.add(row.nested);
+    if ((types[row.nested - 1].accessFlags & 0x7) < 2) fail('cil-nested-class-visibility-invalid');
+    types[row.nested - 1].enclosingTypeToken = types[row.enclosing - 1].token;
+  }
+  for (const type of types) {
+    let current = type, steps = 0;
+    while (current?.enclosingTypeToken != null) {
+      if (++steps > types.length) fail('cil-nested-class-cycle');
+      current = types[(parseInt(current.enclosingTypeToken, 16) & 0xffffff) - 1];
+    }
+  }
+  return { ...defs, constants: constantRows };
 }
