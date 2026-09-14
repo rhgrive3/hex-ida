@@ -4,6 +4,7 @@
  */
 import { compileGoal } from '../goalc.js';
 import { createAgentTools } from './tools.js';
+import { globalCandidateAuthority } from './candidate-authority.js';
 import { createToolCallBudget, planAnalysisGoal } from '../query/planner.js';
 
 function canonicalAddress(value) {
@@ -14,6 +15,8 @@ function canonicalAddress(value) {
   if (!/^(?:0[xX][0-9a-fA-F]+|[+]?\d+)$/.test(text)) return null;
   try { return BigInt(text); } catch { return null; }
 }
+
+const MAX_CANDIDATE_AUTHORITY_REASONS = 4;
 
 const FUNCTION_ADDRESS_FIRST_ARG_TOOLS = new Set([
   'get_function', 'get_callers', 'get_callees',
@@ -61,9 +64,16 @@ function verificationVerdict(verification) {
   return { status, confidence };
 }
 
-function confidenceFromEvidence({ semanticCount, explicitVerified, verdictStatus, verdictConfidence }) {
+function confidenceFromEvidence({ semanticCount, explicitVerified, verdictStatus, verdictConfidence, candidateAuthority }) {
   const staticConfidence = semanticCount ? 0.78 : 0.45;
-  if (!verdictStatus) return explicitVerified ? 0.98 : staticConfidence;
+  if (!verdictStatus) {
+    if (!explicitVerified) return staticConfidence;
+    // #8673: a positive candidate verification proves one property of one
+    // observed candidate. It may not mint the complete-plan 0.98 global
+    // conclusion while planner/candidate/semantic coverage is partial; the
+    // local proof stays valid, the terminal authority does not.
+    return candidateAuthority ? 0.98 : staticConfidence;
+  }
 
   if (verdictStatus === 'confirmed') {
     // Runtime confirmation is itself the strongest source. Never manufacture a
@@ -104,11 +114,19 @@ export function deterministicAnswer(plan) {
   const { status: verdict, confidence: verdictConfidence } = verificationVerdict(best.verification);
   const explicitVerified = best.verification?.verified === true;
   const verified = explicitVerified || verdict === 'confirmed';
+  const authority = globalCandidateAuthority(plan);
   const semanticCount = (best.semanticFacts || []).length;
   const reasons = [
     { kind: 'semantic-facts', count: semanticCount },
     { kind: 'deterministic-verification', verified },
   ];
+  if (explicitVerified) {
+    reasons.push({
+      kind: 'candidate-coverage-authority',
+      authoritative: authority.authoritative,
+      reasons: authority.reasons.slice(0, MAX_CANDIDATE_AUTHORITY_REASONS),
+    });
+  }
   if (verdict) reasons.push({
     kind: `runtime-${verdict}`,
     status: verdict,
@@ -120,7 +138,7 @@ export function deterministicAnswer(plan) {
     conclusion: { address: best.address, name: best.name || null },
     reasons,
     evidence: plan.evidence || [],
-    confidence: confidenceFromEvidence({ semanticCount, explicitVerified, verdictStatus: verdict, verdictConfidence }),
+    confidence: confidenceFromEvidence({ semanticCount, explicitVerified, verdictStatus: verdict, verdictConfidence, candidateAuthority: authority.authoritative }),
     missingEvidence: plan.missingEvidence || [],
   };
 }
