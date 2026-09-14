@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import { createCapstoneX86Session } from "../../phase5/helpers/capstone-session.mjs";
 import { createX86DecodedInstruction } from "../../../js/targets/architecture/x86_64/decoded-instruction.js";
 import { dispatchX86MachineEffects } from "../../../js/targets/architecture/x86_64/effects/index.js";
-import { X86_LONG64_EVEX_DENOMINATOR_FAMILIES } from "../../../js/targets/architecture/x86_64/effects/evex-denominator-families.js";
+import {
+  X86_LONG64_EVEX_DENOMINATOR_FAMILIES,
+  X86_LONG64_EVEX_DENOMINATOR_FAMILY_SET,
+} from "../../../js/targets/architecture/x86_64/effects/evex-denominator-families.js";
 import { X86_LONG64_DECODER_WITNESSES } from "../../../tools/validation/machine-effects/fixtures/x86-long64-decoder-witnesses.mjs";
 import {
   bytesFromX86Long64WitnessHex,
@@ -76,7 +79,18 @@ assert.ok(
   "every provenance-required witness is an owned explicit partial",
 );
 
-// (4) True synthetic/non-denominator EVEX spellings stay fail-closed unowned.
+// (4) Public imports cannot mutate the denominator membership authority.
+assert.equal(Object.isFrozen(X86_LONG64_EVEX_DENOMINATOR_FAMILY_SET), true);
+assert.equal(typeof X86_LONG64_EVEX_DENOMINATOR_FAMILY_SET.add, "undefined");
+assert.equal(X86_LONG64_EVEX_DENOMINATOR_FAMILY_SET.has("vnotadenominatorfamily"), false);
+assert.equal(
+  Reflect.set(X86_LONG64_EVEX_DENOMINATOR_FAMILY_SET, "has", () => true),
+  false,
+  "the public membership facade must not be replaceable",
+);
+assert.equal(X86_LONG64_EVEX_DENOMINATOR_FAMILY_SET.has("vnotadenominatorfamily"), false);
+
+// (5) True synthetic/non-denominator EVEX spellings stay fail-closed unowned.
 const synthetic = structuredClone(valignqRow);
 synthetic.instructionFamily = "vnotadenominatorfamily";
 synthetic.opcodeName = "vnotadenominatorfamily";
@@ -85,7 +99,7 @@ const syntheticOutcome = dispatchX86MachineEffects(synthetic, { closureMatrixTer
 assert.equal(syntheticOutcome.ownerId, "fallback", "a non-denominator spelling must not acquire an owner");
 assert.equal(syntheticOutcome.result, null);
 
-// (5) Single authority: the frozen js inventory is exactly the denominator's
+// (6) Single authority: the frozen js inventory is exactly the denominator's
 // EVEX family set (machine-derived; drift or shrink fails the lane).
 assert.deepEqual(
   [...X86_LONG64_EVEX_DENOMINATOR_FAMILIES].sort(),
