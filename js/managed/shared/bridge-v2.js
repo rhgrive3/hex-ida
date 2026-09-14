@@ -6,6 +6,7 @@ import * as legacy from './bridge.js';
 import { lowerVMEffectsToSemanticIr as lowerCore } from './bridge-lowering-v2.js';
 import { overlayDexLowering } from './bridge-dex-overlay-v2.js';
 import { overlayJvmControlLowering } from './bridge-jvm-control-overlay-v2.js';
+import { overlayJvmObjectLowering } from './bridge-jvm-object-overlay-v2.js';
 import { overlayWasmNarrowLoadExtensions } from './bridge-wasm-narrow-load-overlay-v2.js';
 import { assertVMEffectFunctionBundleOwnership } from './vm-effects.js';
 import { overlayWasmSelect, projectWasmSelectView } from './bridge-wasm-select-overlay-v2.js';
@@ -60,7 +61,8 @@ export function lowerVMEffectsToSemanticIr(value, options = {}) {
   assertVMEffectFunctionBundleOwnership(value);
   const representable = maskUnrepresentableEffects(value);
   const lowered = overlayJvmControlLowering(representable, overlayWasmSelect(representable, lowerCore(representable, options), options), options);
-  const wasmLowered = overlayWasmNarrowLoadExtensions(representable, lowered, options);
+  const jvmLowered = overlayJvmObjectLowering(representable, lowered, options);
+  const wasmLowered = overlayWasmNarrowLoadExtensions(representable, jvmLowered, options);
   const overlaid = overlayDexLowering(representable, wasmLowered);
   const hasUnrepresentedFunctionExit = representable.bundles?.some((bundle) =>
     bundle.controlEffects?.some((effect) => effect.kind === 'switch'
@@ -147,6 +149,97 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
     if (!Array.isArray(categories)) continue;
     if (categories.some((category) => SUMMARY_UNKNOWN_FUNCTION_MEMORY_CATEGORIES.has(category))) functionLevelUnknownEffects = true;
     if (categories.includes('calls') && unknownCallEffects.length === 0) { unknownEffectCalls = true; unknownCallEffects.push(createUnknownCallEffect({ callSiteId: methodId, reason: 'summary-incomplete', targetEntityIds: [], evidenceIds: [] })); }
+  }
+  const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(semanticIr.completeness!=null&&semanticIr.completeness!=='complete'||unknownCallEffects.length>0||hasLanguageThrow||hasUnboundFieldOrdering||unknownEffectEvidence.size>0||functionLevelUnknownEffects||unknownEffectCalls)?'partial':'complete';
+  if(unknownCallEffects.length>0)memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds:unknownCallEffects.map(u=>u.callSiteId)}));
+  if(unknownEffectEvidence.size>0||functionLevelUnknownEffects){
+    const evidenceIds=[...unknownEffectEvidence];
+    if(!memoryReads.some((effect)=>effect.broad))memoryReads.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+    if(!memoryWrites.some((effect)=>effect.broad))memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+  }
+  const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(semanticIr.completeness!=null&&semanticIr.completeness!=='complete'||unknownCallEffects.length>0||hasLanguageThrow||hasUnboundFieldOrdering||unknownEffectEvidence.size>0||functionLevelUnknownEffects||unknownEffectCalls)?'partial':'complete';
+  if(unknownCallEffects.length>0)memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds:unknownCallEffects.map(u=>u.callSiteId)}));
+  if(unknownEffectEvidence.size>0||functionLevelUnknownEffects){
+    const evidenceIds=[...unknownEffectEvidence];
+    if(!memoryReads.some((effect)=>effect.broad))memoryReads.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+    if(!memoryWrites.some((effect)=>effect.broad))memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+  }
+  const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(semanticIr.completeness!=null&&semanticIr.completeness!=='complete'||unknownCallEffects.length>0||hasLanguageThrow||hasUnboundFieldOrdering||unknownEffectEvidence.size>0||functionLevelUnknownEffects||unknownEffectCalls)?'partial':'complete';
+  if(unknownCallEffects.length>0)memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds:unknownCallEffects.map(u=>u.callSiteId)}));
+  if(unknownEffectEvidence.size>0||functionLevelUnknownEffects){
+    const evidenceIds=[...unknownEffectEvidence];
+    if(!memoryReads.some((effect)=>effect.broad))memoryReads.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+    if(!memoryWrites.some((effect)=>effect.broad))memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+  }
+  const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(semanticIr.completeness!=null&&semanticIr.completeness!=='complete'||unknownCallEffects.length>0||hasLanguageThrow||hasUnboundFieldOrdering||unknownEffectEvidence.size>0||functionLevelUnknownEffects||unknownEffectCalls)?'partial':'complete';
+  if(unknownCallEffects.length>0)memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds:unknownCallEffects.map(u=>u.callSiteId)}));
+  if(unknownEffectEvidence.size>0||functionLevelUnknownEffects){
+    const evidenceIds=[...unknownEffectEvidence];
+    if(!memoryReads.some((effect)=>effect.broad))memoryReads.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+    if(!memoryWrites.some((effect)=>effect.broad))memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+  }
+  const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(semanticIr.completeness!=null&&semanticIr.completeness!=='complete'||unknownCallEffects.length>0||hasLanguageThrow||hasUnboundFieldOrdering||unknownEffectEvidence.size>0||functionLevelUnknownEffects||unknownEffectCalls)?'partial':'complete';
+  if(unknownCallEffects.length>0)memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds:unknownCallEffects.map(u=>u.callSiteId)}));
+  if(unknownEffectEvidence.size>0||functionLevelUnknownEffects){
+    const evidenceIds=[...unknownEffectEvidence];
+    if(!memoryReads.some((effect)=>effect.broad))memoryReads.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+    if(!memoryWrites.some((effect)=>effect.broad))memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+  }
+  const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(semanticIr.completeness!=null&&semanticIr.completeness!=='complete'||unknownCallEffects.length>0||hasLanguageThrow||hasUnboundFieldOrdering||unknownEffectEvidence.size>0||functionLevelUnknownEffects||unknownEffectCalls)?'partial':'complete';
+  if(unknownCallEffects.length>0)memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds:unknownCallEffects.map(u=>u.callSiteId)}));
+  if(unknownEffectEvidence.size>0||functionLevelUnknownEffects){
+    const evidenceIds=[...unknownEffectEvidence];
+    if(!memoryReads.some((effect)=>effect.broad))memoryReads.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+    if(!memoryWrites.some((effect)=>effect.broad))memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+  }
+  const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(semanticIr.completeness!=null&&semanticIr.completeness!=='complete'||unknownCallEffects.length>0||hasLanguageThrow||hasUnboundFieldOrdering||unknownEffectEvidence.size>0||functionLevelUnknownEffects||unknownEffectCalls)?'partial':'complete';
+  if(unknownCallEffects.length>0)memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds:unknownCallEffects.map(u=>u.callSiteId)}));
+  if(unknownEffectEvidence.size>0||functionLevelUnknownEffects){
+    const evidenceIds=[...unknownEffectEvidence];
+    if(!memoryReads.some((effect)=>effect.broad))memoryReads.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+    if(!memoryWrites.some((effect)=>effect.broad))memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+  }
+  const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(semanticIr.completeness!=null&&semanticIr.completeness!=='complete'||unknownCallEffects.length>0||hasLanguageThrow||hasUnboundFieldOrdering||unknownEffectEvidence.size>0||functionLevelUnknownEffects||unknownEffectCalls)?'partial':'complete';
+  if(unknownCallEffects.length>0)memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds:unknownCallEffects.map(u=>u.callSiteId)}));
+  if(unknownEffectEvidence.size>0||functionLevelUnknownEffects){
+    const evidenceIds=[...unknownEffectEvidence];
+    if(!memoryReads.some((effect)=>effect.broad))memoryReads.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+    if(!memoryWrites.some((effect)=>effect.broad))memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+  }
+  const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(semanticIr.completeness!=null&&semanticIr.completeness!=='complete'||unknownCallEffects.length>0||hasLanguageThrow||hasUnboundFieldOrdering||unknownEffectEvidence.size>0||functionLevelUnknownEffects||unknownEffectCalls)?'partial':'complete';
+  if(unknownCallEffects.length>0)memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds:unknownCallEffects.map(u=>u.callSiteId)}));
+  if(unknownEffectEvidence.size>0||functionLevelUnknownEffects){
+    const evidenceIds=[...unknownEffectEvidence];
+    if(!memoryReads.some((effect)=>effect.broad))memoryReads.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+    if(!memoryWrites.some((effect)=>effect.broad))memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+  }
+  const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(semanticIr.completeness!=null&&semanticIr.completeness!=='complete'||unknownCallEffects.length>0||hasLanguageThrow||hasUnboundFieldOrdering||unknownEffectEvidence.size>0||functionLevelUnknownEffects||unknownEffectCalls)?'partial':'complete';
+  if(unknownCallEffects.length>0)memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds:unknownCallEffects.map(u=>u.callSiteId)}));
+  if(unknownEffectEvidence.size>0||functionLevelUnknownEffects){
+    const evidenceIds=[...unknownEffectEvidence];
+    if(!memoryReads.some((effect)=>effect.broad))memoryReads.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+    if(!memoryWrites.some((effect)=>effect.broad))memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+  }
+  const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(semanticIr.completeness!=null&&semanticIr.completeness!=='complete'||unknownCallEffects.length>0||hasLanguageThrow||hasUnboundFieldOrdering||unknownEffectEvidence.size>0||functionLevelUnknownEffects||unknownEffectCalls)?'partial':'complete';
+  if(unknownCallEffects.length>0)memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds:unknownCallEffects.map(u=>u.callSiteId)}));
+  if(unknownEffectEvidence.size>0||functionLevelUnknownEffects){
+    const evidenceIds=[...unknownEffectEvidence];
+    if(!memoryReads.some((effect)=>effect.broad))memoryReads.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+    if(!memoryWrites.some((effect)=>effect.broad))memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+  }
+  const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(semanticIr.completeness!=null&&semanticIr.completeness!=='complete'||unknownCallEffects.length>0||hasLanguageThrow||hasUnboundFieldOrdering||unknownEffectEvidence.size>0||functionLevelUnknownEffects||unknownEffectCalls)?'partial':'complete';
+  if(unknownCallEffects.length>0)memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds:unknownCallEffects.map(u=>u.callSiteId)}));
+  if(unknownEffectEvidence.size>0||functionLevelUnknownEffects){
+    const evidenceIds=[...unknownEffectEvidence];
+    if(!memoryReads.some((effect)=>effect.broad))memoryReads.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+    if(!memoryWrites.some((effect)=>effect.broad))memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+  }
+  const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(semanticIr.completeness!=null&&semanticIr.completeness!=='complete'||unknownCallEffects.length>0||hasLanguageThrow||hasUnboundFieldOrdering||unknownEffectEvidence.size>0||functionLevelUnknownEffects||unknownEffectCalls)?'partial':'complete';
+  if(unknownCallEffects.length>0)memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds:unknownCallEffects.map(u=>u.callSiteId)}));
+  if(unknownEffectEvidence.size>0||functionLevelUnknownEffects){
+    const evidenceIds=[...unknownEffectEvidence];
+    if(!memoryReads.some((effect)=>effect.broad))memoryReads.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
+    if(!memoryWrites.some((effect)=>effect.broad))memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds}));
   }
   const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(semanticIr.completeness!=null&&semanticIr.completeness!=='complete'||unknownCallEffects.length>0||hasLanguageThrow||hasUnboundFieldOrdering||unknownEffectEvidence.size>0||functionLevelUnknownEffects||unknownEffectCalls)?'partial':'complete';
   if(unknownCallEffects.length>0)memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds:unknownCallEffects.map(u=>u.callSiteId)}));
