@@ -110,12 +110,23 @@ test('#8833 extent crossing a zero-fill tail never becomes an exact extent', () 
   assert.equal(fused.candidates[0].extentState, 'heuristic');
 });
 
-test('#8833 extent leaving the proving executable segment is downgraded', () => {
+test('#8833 exact-fit extent ending at the proving executable mapping boundary remains exact', () => {
   const image = targetImage([
     segment({ base: 0x1000n, size: 0x40n }),
     segment({ base: 0x1040n, size: 0x40n, execute: false }),
   ]);
   const { evidence, fused } = produceDebug([row({ sizeBytes: 0x40 })], { image });
+  assert.equal(evidence[0].kind, 'debug-symbol');
+  assert.equal(evidence[0].authority, 'authoritative');
+  assert.equal(fused.candidates[0].extentState, 'exact');
+});
+
+test('#8833 extent leaving the proving executable segment is downgraded', () => {
+  const image = targetImage([
+    segment({ base: 0x1000n, size: 0x40n }),
+    segment({ base: 0x1040n, size: 0x40n, execute: false }),
+  ]);
+  const { evidence, fused } = produceDebug([row({ sizeBytes: 0x41 })], { image });
   assert.equal(evidence[0].kind, 'debug-symbol-heuristic');
   assert.equal(fused.candidates[0].extentState, 'heuristic');
 });
