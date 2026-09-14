@@ -45,6 +45,7 @@ const SPECIAL_PATHS = Object.freeze({
     'tests/scpa/x02-declared-metadata-boundaries.test.mjs',
     'tests/scpa/fixtures/x02-dyld-shared-cache.mjs',
     'js/binary/detect.js',
+    'js/binary/dyld-shared-cache-core.js',
     'js/binary/dyld-shared-cache.js',
     'js/binary/index.js',
     'js/binary/source-loaders.js',

@@ -14,6 +14,11 @@
 その場合の有限分類は115/0/4/1。不在/版違いの本ローカル環境は114/0/4/2のままで、
 元環境の不在をCIに強制せず、未実行の独立検証を成功扱いしない。
 
+最終readbackで追加されたa3077124のlegacy slide-info拒否と両入口の否定検査も保持した。
+同commitの構文/変数名破損を修復後、公開cacheと固定120行の計121件、Node22のcoreを再検証済み。
+反映直前に修復済みcore分割の098b5127が追加されたため、そちらを採用して新coreの所有権を補完した。
+分割後の公開cache/prior120/所有権142件とNode22 coreも通過。独立実機等の未完了は変わらない。
+
 | 固定行 | 修正と実入口 | 保持する制限 |
 |---|---|---|
 | X02-A-07 | LC_BUILD_VERSIONのtool ID/raw version/表示versionを両公開loaderで保持。共通metadata予算を適用 | producerの宣言。provenanceVerified=false |

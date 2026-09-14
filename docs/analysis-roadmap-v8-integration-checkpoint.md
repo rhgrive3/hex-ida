@@ -7631,3 +7631,28 @@ version、format、architectureの一致を必須にしてpassとする。不在
 environment-excludedとfail-closed結果を維持する。元120行とJSON/helper hashは変更しない。
 ローカル分類は引き続き114/0/4/2であり、指定版LLVMのあるCIは実行成功時のみ115/0/4/1になる。
 これはCI実行結果を先取りする主張ではない。独立レビュー・C4全領域・実機・releaseの残件は維持する。
+
+### 同日最終追記: 追加headのdyld破損を修復
+
+`fb2127d274f5b30b1bd035d58bb9925df15fea1d` ではGitHub PR fast gate
+`34798058659` の全stepとuserscript hostが成功した。その最終readbackで、別の追加commit
+`a3077124a18b48304fc9960b1f13185e8a64cfb6` が同headを親として到着した。
+最新2ファイルのblob/modeとtree `b566e18e412e0bd6e6e9ca3cd4e1635f1220d221` を再照合した。
+
+追加されたlegacy slide-info拒否と両公開loaderの否定検査を保持し、混入した4か所の
+`new Error` 引用符破損、5か所の診断prefixの誤字、1か所の未定義 `slid` を修正した。
+`fb2127d274` との差を再確認するとruntime差分は本来のlegacy判定7行だけになる。
+構文検査、X-02/公開cache121件、lint、Node22 + CI=trueのcanonical core (42.8秒)が通過。
+生成userscriptは再生成して2回目とのhash一致を確認した。新しいhashは監査JSONの
+`integrationFollowup.lateDyldRepair` に記録する。古いheadのCIを新しいheadの成功とは扱わない。
+全体のC4・独立レビュー・実機・release受入とマージの未達は変わらない。
+
+その修復のpush直前に、さらに `098b51277308ae40659690b7ab38cbfa9ca5f6d9` が到着した。
+このcommitは破損を除いた既存parserを `dyld-shared-cache-core.js` へ移し、公開wrapperで
+legacy拒否を行うものだった。coreのblob `67b70ff354bafd68daca5189299bcd4c36ed722b` は
+fb2127d274の旧parserそのものと一致する。ローカル修復でこの分割を上書きせず、
+tree `0cf7c63c1f286ebd73d2c8a057ec72c2d668655b` へ照合し直した。
+未宣言だった新coreをmanifest/policy/所有権の否定検査へ明示し、公開cache/prior120/所有権の
+142件とNode22 + CI=trueのcanonical core (41.6秒)、lint、module boundariesを再検証した。
+分割版の生成物も2回buildして一致を確認する。最新のsource/hash/log記録は監査JSONの
+`integrationFollowup.splitDyldReconciliation` に保持し、直前の単一ファイル修復の計測とは分ける。

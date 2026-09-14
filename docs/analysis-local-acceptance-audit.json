@@ -698,6 +698,60 @@
       },
       "conditionalCiClassification": "115/0/4/1 only if pinned LLVM is available and the real independent oracle succeeds; not asserted as observed here",
       "fullRoadmapComplete": false
+    },
+    "lateDyldRepair": {
+      "inputHead": "a3077124a18b48304fc9960b1f13185e8a64cfb6",
+      "inputTree": "b566e18e412e0bd6e6e9ca3cd4e1635f1220d221",
+      "previousVerifiedHead": "fb2127d274f5b30b1bd035d58bb9925df15fea1d",
+      "previousVerifiedCiRun": 34798058659,
+      "previousCiResult": "PR fast gate and userscript host success; does not qualify later heads",
+      "repair": "Preserve legacy slide-info rejection and new public-input negatives. Repair 4 malformed quote tokens, 5 diagnostic prefix typos and 1 undefined slid reference.",
+      "dyldSourceSha256": "cc49367b60f198842eb43ab417ea7f8902764e1be8718f3ff222b6360eb71dc9",
+      "localCore": "Node 22.23.2 + CI=true canonical core PASS (42.8s)",
+      "localFocused": "121 pass / 0 fail; public cache and frozen prior120",
+      "generatedSha256": {
+        "userscript/hex.user.template.js": "481da6cdd00ef84c8a28896d24aa9fab500fb40b9cc1f6c34af98bcd0e02ad19",
+        "userscript/release-version.json": "f7a52d405a068ef0717efb85387d42767ef7369ee3f0b09dda633677ae64bdec"
+      },
+      "secondBuildIdentical": true,
+      "logHashes": {
+        "core-latest-dyld-node22.log": "17456cc5f05391b2d8a9b877f37d1a0a0e864ed6fcc611e19de7e719ca44b387",
+        "dyld-latest-focused.log": "9bd248b879c7b6e04dc8c73ec99f5a308f9287e45be738526875b6dab00dae67",
+        "lint-latest-dyld.log": "a3c672ef332c78d50bc0b1d3121563829077111b1926d2e7a252d74a41260b7c",
+        "build-latest-dyld-first.log": "24adc7a0bc399fc913775c596380bf9004f5b221b10b23d8fb72bae61f6c8605",
+        "build-latest-dyld-second.log": "5f6843dca1af5d1f77b8440a7b4d28ee14963237cf084d7fca401c2b781e79d9"
+      },
+      "fullRoadmapComplete": false,
+      "merged": false
+    },
+    "splitDyldReconciliation": {
+      "inputHead": "098b51277308ae40659690b7ab38cbfa9ca5f6d9",
+      "inputTree": "0cf7c63c1f286ebd73d2c8a057ec72c2d668655b",
+      "adoptedRemoteSplit": true,
+      "coreBlob": "67b70ff354bafd68daca5189299bcd4c36ed722b",
+      "coreReusesVerifiedPreviousParser": true,
+      "ownership": "New core path explicitly declared in manifest/policy and positive/removal/foreign-path tests",
+      "localCore": "Node 22.23.2 + CI=true canonical core PASS (41.6s)",
+      "localFocused": "142 pass / 0 fail: public cache, frozen prior120 and exact ownership",
+      "sourceSha256": {
+        "js/binary/dyld-shared-cache.js": "e7c58b322bf44999d6373291825aed519a8f2fb2ba5f906051c673fed7cd422f",
+        "js/binary/dyld-shared-cache-core.js": "80f8ddab78c2efe8c743ca7185d95094df6dad3976a87b5e6a30be4d2cf798d8"
+      },
+      "generatedSha256": {
+        "userscript/hex.user.template.js": "d9909cb7c9a3c45320c96b80eb3cf49198d00612f4404e22f0483454b4a6078a",
+        "userscript/release-version.json": "ea30838ca1d91a55eb42c01b7ca6c289a3274f206cea1404ab26591f520dff15"
+      },
+      "secondBuildIdentical": true,
+      "logHashes": {
+        "core-final-split-node22.log": "e556e177450ab3fad02e8c2a658dd24090de8c87fba5f345c6c9af1911b790d7",
+        "split-dyld-final-focused.log": "0b94d95315d6e71e3bcd50ee02055279b3dc9b646cf4943fc829d8d896a2c48c",
+        "lint-final-split.log": "ddfead6ef4e868487d29d0d379dae2ef9d00f3f452ab27d6cd552f7783758c55",
+        "boundaries-final-split.log": "a7dd19fe35f5103c96dc162ed63aa349d7ad61b630f892287a80315335091ebb",
+        "build-final-split-first.log": "fd39057c7501a462b82a819bcbd872f3c8c8febdd31e6e9dbb36e09bf10844ef",
+        "build-final-split-second.log": "8c7e3e0e7c9ea421621625f8e605c81efbebd8eeec1fef0d9928e25176c15b34"
+      },
+      "fullRoadmapComplete": false,
+      "merged": false
     }
   },
   "integrationFollowupHistory": [
