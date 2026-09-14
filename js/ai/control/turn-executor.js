@@ -15,11 +15,6 @@ import {
 
 const MIN_MODEL_REPAIR_REMAINING_MS = 45000;
 
-// A turn's deterministic evidence is only current if the live workbench analysis
-// is still the exact revision captured when the snapshot was taken. Re-analysis
-// mid-turn would otherwise let a stale-analysis result finalize as an
-// authoritative turn outcome (#8930). This is a no-op when the context did not
-// expose a revision to begin with (nothing to compare against).
 export function assertAnalysisRevisionUnchanged(local, snapshot) {
   const snapshotRevision = snapshot?.analysisRevision ?? null;
   if (snapshotRevision == null) return;
@@ -162,7 +157,7 @@ function markPlannerBudgetLimited(plan, reason) {
   };
 }
 
-function createBudgetedPlannerTools(registry, { budget, scope, signal, onBudgetExhausted }) {
+function createBudgetedPlannerTools(registry, { budget, scope, signal, onBudgetExhausted, assertFresh }) {
   const names = [
     'search_functions', 'search_strings', 'get_xrefs', 'get_callers', 'get_callees',
     'get_function', 'get_semantic_facts', 'verify_field_update', 'find_thresholds',
@@ -181,6 +176,7 @@ function createBudgetedPlannerTools(registry, { budget, scope, signal, onBudgetE
     const observation = await registry.execute(name, plannerRegistryInput(name, args), {
       scope,
       signal: plannerCallSignal(args, signal),
+      assertFresh,
     });
     const afterDisassembly = registry.analysisStats?.disassembly || beforeDisassembly;
     const result = observation.result;
@@ -230,6 +226,10 @@ export async function executeTurn(input = {}, options = {}) {
     try {
       ensureRunning(signal, started, turnTimeoutMs, monotonicNow);
       const snapshot = createTurnSnapshot(this.localContext, request);
+      const assertTurnFresh = () => {
+        assertLiveBindingsUnchanged(this.localContext, snapshot);
+        assertAnalysisRevisionUnchanged(this.localContext, snapshot);
+      };
       const intent = request.intent || routeIntent(request.goal, snapshot);
       request.intent = intent;
       const scopeController = new ScopeController(snapshot, request.scope, { onExpand: addActivity });
@@ -280,6 +280,7 @@ export async function executeTurn(input = {}, options = {}) {
           scope: scopeController.effectiveScope,
           signal,
           onBudgetExhausted: (reason) => { plannerBudgetReason ||= reason; },
+          assertFresh: assertTurnFresh,
         });
         if (this.planner && shouldRunPlanner(request, snapshot, intent)) {
           assertLiveBindingsUnchanged(this.localContext, snapshot);
@@ -300,6 +301,7 @@ export async function executeTurn(input = {}, options = {}) {
           if (!limitReason && plannerBudgetReason) limitReason = plannerBudgetReason;
           if (!limitReason && plan?.exhausted && registry.accounting.calls >= budget.maxToolCalls) limitReason = 'tool-call-budget';
           assertLiveBindingsUnchanged(this.localContext, snapshot);
+          assertAnalysisRevisionUnchanged(this.localContext, snapshot);
           const plannedEvidence = evidenceStore.ingestPlan(plan);
           // Publish the canonical record set this plan actually produced.
           // `plan.evidence` holds raw planner source IDs, which are a different
@@ -318,7 +320,9 @@ export async function executeTurn(input = {}, options = {}) {
         if (!this.provider || typeof this.provider.nextTurn !== 'function') decision = deterministicDecision(plan, request);
         else {
           if (typeof this.provider.prepareCapabilities === 'function') {
+            assertTurnFresh();
             await this.provider.prepareCapabilities({ signal, timeoutMs: Math.min(5000, remainingTime(started, turnTimeoutMs, monotonicNow)) });
+            assertTurnFresh();
             ensureRunning(signal, started, turnTimeoutMs, monotonicNow);
           }
           const seenCalls = new Map(); let repairs = 0;
@@ -347,6 +351,7 @@ export async function executeTurn(input = {}, options = {}) {
             try {
               modelCalls++;
               addActivity({ type: 'model-start', label: '次の解析手順を選択', phase: window.phase, toolCount: tools.length, effectiveScope: scopeController.effectiveScope });
+              assertTurnFresh();
               next = await this.provider.nextTurn({
                 sessionId: session.id, mode: request.mode, style: request.style,
                 conversationId: request.conversationId || null,
@@ -361,6 +366,7 @@ export async function executeTurn(input = {}, options = {}) {
               });
               // Provider cooperation is not deadline authority: discard a late
               // result before it can be validated or adopted (#5815).
+              assertTurnFresh();
               ensureRunning(signal, started, turnTimeoutMs, monotonicNow);
               const visibleToolNames = tools.map((tool) => tool.name);
               const previousTool = observations.length ? observations[observations.length - 1]?.tool : null;
@@ -399,13 +405,19 @@ export async function executeTurn(input = {}, options = {}) {
             const requiredScope = requiredScopeForTool(next.tool);
             if (requiredScope) scopeController.expandTo(requiredScope, next.purpose || next.tool);
             request.effectiveScope = scopeController.effectiveScope;
-            assertLiveBindingsUnchanged(this.localContext, snapshot);
+            assertTurnFresh();
             scopeController.assertToolCall(next.tool, next.arguments);
-            const observation = await registry.execute(next.tool, next.arguments, { scope: scopeController.effectiveScope, signal });
+            const observation = await registry.execute(next.tool, next.arguments, {
+              scope: scopeController.effectiveScope, signal, assertFresh: assertTurnFresh,
+            });
+            assertTurnFresh();
             toolCalls = registry.accounting.calls;
             observations.push({ tool: next.tool, summary: observation.summary, evidenceIds: observation.evidenceIds, data: observation.modelData });
+            assertTurnFresh();
             await this.sessionStore.updateMemory(session.id, { importantPriorActions: [{ tool: next.tool, summary: observation.summary, evidenceIds: observation.evidenceIds }] });
+            assertTurnFresh();
             session = await this.sessionStore.get(session.id);
+            assertTurnFresh();
           }
           if (!decision && !limitReason && modelCalls >= budget.maxModelCalls) limitReason = 'model-call-budget';
         }
@@ -443,19 +455,20 @@ export async function executeTurn(input = {}, options = {}) {
       };
       assertDeadlineHonest();
       toolCalls = registry.accounting.calls;
-      const result = await this.finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, monotonicNow, limitReason, registry, snapshot, effectiveScope: scopeController.effectiveScope, stores: { evidenceStore, hypothesisStore, proposalStore }, signal });
+      const result = await this.finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, monotonicNow, limitReason, registry, snapshot, effectiveScope: scopeController.effectiveScope, stores: { evidenceStore, hypothesisStore, proposalStore }, signal, assertFresh: assertTurnFresh });
+      assertTurnFresh();
       // Every asynchronous persistence boundary gets a pre/post binding check.
       // The payloads below are snapshot-derived; a live workbench switch while
       // a persistence adapter is awaiting cannot turn this turn into a normal
       // completion or inject current runtime identity into old session memory.
       const persistWithBindingCheck = async (operation) => {
-        assertLiveBindingsUnchanged(this.localContext, snapshot);
+        assertTurnFresh();
         try {
           return await operation();
         } finally {
           // A rejected write must still prove that the live binding did not
           // drift before the rejection escapes this turn.
-          assertLiveBindingsUnchanged(this.localContext, snapshot);
+          assertTurnFresh();
         }
       };
       await persistWithBindingCheck(() => this.sessionStore.appendMessage(session.id, { role: 'assistant', content: result.answer }));
@@ -480,6 +493,7 @@ export async function executeTurn(input = {}, options = {}) {
       // the budget-exhausted policy, never a clean success (#5606).
       assertDeadlineHonest();
       if (limitReason && result.limits && !result.limits.reason) result.limits = { exhausted: true, reason: limitReason };
+      assertTurnFresh();
       return validateAIResult(result);
     } finally {
       clearTimeout(deadline); this.activeControllers.delete(turnController);
