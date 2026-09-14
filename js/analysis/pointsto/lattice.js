@@ -518,8 +518,10 @@ export function joinPointsTo(a, b, budget = POINTS_TO_DEFAULT_BUDGET) {
   // is pure allocation/canonicalization work. Bottom is the exact join
   // identity, and an equal set can be reused only when doing so preserves the
   // root-descriptor proof metadata that mergeSameRootTargets() would publish.
-  if (!a.top && a.targets.length === 0 && a.lossReasons.length === 0) return b;
-  if (!b.top && b.targets.length === 0 && b.lossReasons.length === 0) return a;
+  if (!a.top && a.targets.length === 0 && a.lossReasons.length === 0
+      && b.targets.length <= targetLimit) return b;
+  if (!b.top && b.targets.length === 0 && b.lossReasons.length === 0
+      && a.targets.length <= targetLimit) return a;
   if (pointsToEqual(a, b)) {
     let reusable = true;
     const seenRoots = new Set();
@@ -538,7 +540,7 @@ export function joinPointsTo(a, b, budget = POINTS_TO_DEFAULT_BUDGET) {
         break;
       }
     }
-    if (reusable) return a;
+    if (reusable && a.targets.length <= targetLimit) return a;
   }
 
   if (a.top || b.top) {

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  BOTTOM_POINTS_TO,
   createPointsToSet,
   createPointsToTarget,
   exactRange,
@@ -111,5 +112,25 @@ test('budget validation is an exported API boundary even on lattice short-circui
   assert.throws(
     () => widenPointsTo(null, pointsTo('a'), malformed),
     /points-to-invalid-max-targets-per-set/,
+  );
+});
+
+test('join reuse fast paths still enforce the active target cap', () => {
+  const overCap = pointsTo('r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8');
+  const equivalentOverCap = pointsTo('r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8');
+  const budget = { maxTargetsPerSet: 8 };
+
+  assert.equal(overCap.top, false, 'control: prebuilt sets are not capped at construction time');
+  assertTargetCap(
+    joinPointsTo(BOTTOM_POINTS_TO, overCap, budget),
+    'bottom identity must not bypass the active cap',
+  );
+  assertTargetCap(
+    joinPointsTo(overCap, BOTTOM_POINTS_TO, budget),
+    'symmetric bottom identity must not bypass the active cap',
+  );
+  assertTargetCap(
+    joinPointsTo(overCap, equivalentOverCap, budget),
+    'equivalent-set reuse must not bypass the active cap',
   );
 });
