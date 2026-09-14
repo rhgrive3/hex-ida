@@ -3,6 +3,7 @@ import { parseMachO } from './macho.js';
 import { parseELF } from './elf-loader.js';
 import { parsePE } from './pe.js';
 import { scanStrings } from './strings.js';
+import { parseDyldSharedCache } from './dyld-shared-cache.js';
 
 export { BinaryImage, functionSeed, mergeFunctionSeeds } from './model.js';
 export { ByteView, BinaryReadError, hex } from './reader.js';
@@ -18,13 +19,15 @@ export { parseMachO } from './macho.js';
 export { parseELF, parseAarch64GnuProperty, attachAarch64GnuPropertyEvidence } from './elf-loader.js';
 export { parsePE } from './pe.js';
 export { scanStrings } from './strings.js';
+export { parseDyldSharedCache, parseDyldSharedCacheSource } from './dyld-shared-cache.js';
 export { auditBinary, capabilitiesOf } from './audit.js';
 export { fnv1a64, fingerprintBytes, fingerprintFunction, fingerprintImage } from './fingerprint.js';
 
 export function openBinary(input, opts = {}) {
   const detected = detectBinary(input);
   let image;
-  if (detected.format === 'macho') image = parseMachO(input, opts);
+  if (detected.format === 'dyld-shared-cache') image = parseDyldSharedCache(input, opts);
+  else if (detected.format === 'macho') image = parseMachO(input, opts);
   else if (detected.format === 'elf') image = parseELF(input, opts);
   else if (detected.format === 'pe') image = parsePE(input, opts);
   else throw new Error('対応していない実行ファイル形式です（Mach-O / ELF / PE を判定できませんでした）。');

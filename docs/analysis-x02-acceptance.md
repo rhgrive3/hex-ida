@@ -66,8 +66,8 @@ clang 17 や同じ parser を独立 oracle にすり替えない。
 | ID | 要求 | 有限検査の分類 | 残る境界 |
 |---|---|---|---|
 | X02-R01 | OS / compiler / runtime identity | evidence-gap | No observed Apple OS/runtime versions; synthetic layout labels are not version observations. |
-| X02-R02 | Direct shared-cache input | product-gap | Public binary loaders expose Mach-O/ELF/PE, not a direct cache/slide-info reader. Header-only rejection is negative evidence only. |
-| X02-R03 | Shared-cache slide / rebase and address identity | product-gap | Nonzero VA/file-offset mapping is exercised; shared-cache slides and extracted-image reconciliation are not implemented here. |
+| X02-R02 | Direct shared-cache input | pass | Bounded public `dyld_v1`/`x86_64` cache input now reaches `openBinary` / `openBinarySource`; the positive fixture is synthetic and does not establish real Apple cache/subcache version coverage. |
+| X02-R03 | Shared-cache slide / rebase and address identity | pass | Finite `slide_info2` mapping/rebase/unslid→runtime address identity is checked; other slide-info generations, extracted-image/subcache reconciliation and real-device/oracle evidence remain unverified. |
 | X02-R04 | Chained fixups | evidence-gap | 40 synthetic authenticated site rows and unknown version/format negatives pass; real versioned producers and independent decode are absent. |
 | X02-R05 | Swift generic metadata | evidence-gap | Owned layout descriptor is parsed. Runtime instantiation and substitutions remain unknown. |
 | X02-R06 | Swift witness metadata | evidence-gap | Owned layout target passes the image-owned resolver. Real runtime witness execution is unverified. |
@@ -77,6 +77,19 @@ clang 17 や同じ parser を独立 oracle にすり替えない。
 | X02-R10 | PAC runtime authentication | environment-excluded | No Apple arm64e device/runtime oracle; metadata preservation does not establish authentication. |
 | X02-R11 | Signing impact | evidence-gap | Synthetic signature marker blocks unsigned-only mutation; no valid Apple signature, re-signing, or OS launch oracle. |
 | X02-R12 | Independent Mach-O reparse | environment-excluded | Required Ubuntu LLVM 18.1.3 readobj is unavailable. Checked-in compiler artifact hash is not a current independent reparse. |
+
+### 2026-09-14 M4 review remediation — direct shared-cache path
+
+Reviewer R4 が exact-head で指摘した X02-R02/R03 の product gap に対し、既存の公開 binary 入口へ
+有限・fail-closed な dyld shared-cache 経路を追加した。`tests/phase4/binary/issue-7036-dyld-shared-cache-public-input.test.mjs`
+は、修正前には同じ 16-byte cache magic が `unknown` になって失敗し、修正後は resident input と
+`maxReadLength: 8` の `ByteSource` の双方から同じ cache mapping / slide / rebase identity を得る。
+
+今回の正の範囲は synthetic `dyld_v1  x86_64` と `slide_info2` の有限 contract に限定する。
+未知 architecture、未対応 slide-info version、mapping overlap、宣言 `maxSlide` 超過は fail-closed のまま拒否する。
+これは実 Apple cache producer、subcache、slide-info v1/v3/v4/v5、arm64e runtime authentication、実機、独立 oracle を
+新たに検証したことを意味しない。既存 61 検査 / prior-120 検査の分母や履歴結果も変更しない。
+したがって X-02 全体と release は引き続き **CHECKPOINT-LOCKED**、`fullAcceptanceComplete=false` である。
 
 ## 実行と証拠
 
