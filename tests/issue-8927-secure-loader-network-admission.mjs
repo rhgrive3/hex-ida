@@ -72,13 +72,19 @@ function streamResponse({ chunks, headers = {}, failAfter = null }) {
   }
 }
 
-// 4. dispose() aborts a completed attempt so no body can stay open across retries.
+// 4. dispose() clears only the timer: a completed attempt must never abort (a
+//    late abort races Chromium's body-stream finalization), while an expired
+//    undisposed deadline still fires.
 {
   const attempt = createAttemptDeadline(10_000);
   assert.equal(attempt.signal.aborted, false);
   attempt.dispose();
-  assert.equal(attempt.signal.aborted, true, 'the attempt signal must not outlive the attempt');
   attempt.dispose();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(attempt.signal.aborted, false, 'a disposed (completed) attempt must not be aborted');
+  const fired = createAttemptDeadline(15);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(fired.signal.aborted, true, 'an undisposed attempt must still hit its deadline');
 }
 
 // 5. Declared Content-Length above budget is rejected before body materialization.

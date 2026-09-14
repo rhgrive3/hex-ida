@@ -5,10 +5,12 @@ export function createAttemptDeadline(deadlineMs) {
   return Object.freeze({
     signal: controller.signal,
     dispose() {
+      // Clearing the timer is all a completed attempt needs. Aborting after
+      // success races Chromium's body-stream finalization (BodyStreamBuffer
+      // was aborted), so the signal must survive a clean attempt.
       if (disposed) return;
       disposed = true;
       clearTimeout(timer);
-      try { controller.abort(new Error('The network attempt completed.')); } catch { /* the signal is already aborting */ }
     },
   });
 }
