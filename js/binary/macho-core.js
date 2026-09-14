@@ -9,6 +9,7 @@ const S_MOD_TERM_FUNC_POINTERS = 0xa;
 const S_INIT_FUNC_OFFSETS = 0x16;
 const S_ATTR_PURE_INSTRUCTIONS = 0x80000000;
 const S_INTERPOSING = 0x0d;
+const N_SECT = 0x0e;
 
 export const DICE_KIND_DATA = 1;
 export const DICE_KIND_JUMP_TABLE8 = 2;
@@ -538,6 +539,11 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
       continue;
     }
     const isUndefinedType = ntype === 0;
+    if (ntype === N_SECT && (sect === 0 || (image.sections.length > 0 && !image.sections.some((section) => section.index === sect)))) {
+      markMachOMetadataPartial(image, 'symbol-section-index-out-of-range');
+      budget.warn(`Mach-O section symbol ${i} n_sect ${sect} does not resolve to a parsed section`);
+      continue;
+    }
     // For N_UNDF with non-zero n_value, Mach-O defines a tentative/common
     // symbol: n_value is the requested byte size, never a VM address.
     const commonSymbol = isUndefinedType && value !== 0n;

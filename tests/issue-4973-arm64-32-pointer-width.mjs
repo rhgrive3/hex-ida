@@ -96,13 +96,13 @@ const CELL = 0x8000n;
 for (const arch of ['arm64', 'arm64e']) {
   const store = new Map([
     [CELL, { bytes: cellBytes(8, 0x1000200412345678n, 0n) }],
-    [0x412345678n, { bytes: new Uint8Array(0), text: 'canon', terminated: true }],
+    [0x200412345678n, { bytes: new Uint8Array(0), text: 'canon', terminated: true }],
   ]);
   const backend = makeBackend(store);
   const model = modelFor(CELL);
   await resolveModelTexts(backend, model, 96, { architecture: arch });
   assert.equal(resolvedText(model), 'canon', `${arch} 64-bit decode must stay intact`);
-  assert.ok(backend.reads.includes(0x412345678n), `${arch} must read the canonicalized 64-bit target`);
+  assert.ok(backend.reads.includes(0x200412345678n), `${arch} must read the canonicalized 48-bit target`);
 }
 
 {

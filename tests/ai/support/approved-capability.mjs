@@ -15,7 +15,8 @@ const kinds = {
 export async function executeApprovedCapability(executor, capability, args) {
   const kind = kinds[capability];
   if (!kind) throw new Error(`No proposal kind for ${capability}`);
-  const evidenceStore = new EvidenceStore([{ id: 'fixture-evidence', kind: 'read', status: 'unknown' }]);
+  const evidenceStore = new EvidenceStore();
+  evidenceStore.ingest('fixture', { id: 'fixture-evidence', kind: 'read', status: 'verified' }, { verifier: true });
   const store = new ProposalStore({ evidenceStore });
   const target = { ...args };
   const before = kind === 'patch' ? args.before : null;

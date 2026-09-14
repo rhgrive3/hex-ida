@@ -32,6 +32,9 @@ export class CapabilityExecutor {
     const binaryId = optionalBindingId(this.currentBinaryId(), 'Current binary identity', 'tool_failed');
     const requestedBinaryId = optionalBindingId(args.binaryId, 'Capability binary identity');
     if (requestedBinaryId != null && binaryId != null && requestedBinaryId !== binaryId) throw new AIError('scope_violation', 'Capability target belongs to a different binary.');
+    if (entry.id === 'runtime.connect' && binaryId == null && requestedBinaryId == null) {
+      throw new AIError('scope_violation', 'runtime.connect requires a current or explicit binary binding.');
+    }
     if (!entry.runtimeBound) return;
     const session = runtimePlatform?.currentSession?.(false);
     if (!session) throw new AIError('tool_failed', 'No runtime session is available.');

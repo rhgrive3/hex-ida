@@ -39,8 +39,14 @@ export function buildCil(options = {}) {
     return index;
   };
   const blobIndexes = (options.blobs ?? []).map(addBlob);
+  const extraRowEntries = options.extraRows instanceof Map ? [...options.extraRows] : options.extraRows ?? [];
+  const extraRowCount = table => extraRowEntries.find(([id]) => id === table)?.[1]?.count ?? 0;
+  const typeDefExtendsSize = Math.max(typeDefs.length, extraRowCount(0x01), extraRowCount(0x1b)) < 0x4000 ? 2 : 4;
+  const typeDefFieldIndexSize = fieldDefs.length < 0x10000 ? 2 : 4;
+  const typeDefMethodIndexSize = definitions.length < 0x10000 ? 2 : 4;
+  const typeDefRowSize = 8 + typeDefExtendsSize + typeDefFieldIndexSize + typeDefMethodIndexSize;
   const methods = new Uint8Array(definitions.length * 14), mv = new DataView(methods.buffer);
-  const types = new Uint8Array(typeDefs.length * 14), tv = new DataView(types.buffer);
+  const types = new Uint8Array(typeDefs.length * typeDefRowSize), tv = new DataView(types.buffer);
   const fields = new Uint8Array(fieldDefs.length * 6), fv = new DataView(fields.buffer);
   const bodyOffsets = [];
   definitions.forEach((m, i) => {
@@ -53,12 +59,18 @@ export function buildCil(options = {}) {
     mv.setUint16(i * 14 + 12, 1, true);
   });
   typeDefs.forEach((t, i) => {
-    tv.setUint32(i * 14, t.flags ?? 1, true);
-    tv.setUint16(i * 14 + 4, stringIndex(t.name), true);
-    tv.setUint16(i * 14 + 6, stringIndex(t.namespace), true);
-    tv.setUint16(i * 14 + 8, t.extends ?? 0, true);
-    tv.setUint16(i * 14 + 10, t.fieldList ?? 1, true);
-    tv.setUint16(i * 14 + 12, t.methodList ?? 1, true);
+    const rowPos = i * typeDefRowSize;
+    tv.setUint32(rowPos, t.flags ?? 1, true);
+    tv.setUint16(rowPos + 4, stringIndex(t.name), true);
+    tv.setUint16(rowPos + 6, stringIndex(t.namespace), true);
+    if (typeDefExtendsSize === 2) tv.setUint16(rowPos + 8, t.extends ?? 0, true);
+    else tv.setUint32(rowPos + 8, t.extends ?? 0, true);
+    const fieldListOffset = rowPos + 8 + typeDefExtendsSize;
+    if (typeDefFieldIndexSize === 2) tv.setUint16(fieldListOffset, t.fieldList ?? 1, true);
+    else tv.setUint32(fieldListOffset, t.fieldList ?? 1, true);
+    const methodListOffset = fieldListOffset + typeDefFieldIndexSize;
+    if (typeDefMethodIndexSize === 2) tv.setUint16(methodListOffset, t.methodList ?? 1, true);
+    else tv.setUint32(methodListOffset, t.methodList ?? 1, true);
   });
   fieldDefs.forEach((f, i) => {
     fv.setUint16(i * 6, f.flags ?? 6, true);
@@ -69,7 +81,7 @@ export function buildCil(options = {}) {
   const standaloneSig = options.standAloneSigs ?? [];
   const saSig = new Uint8Array(standaloneSig.length * 2), sv = new DataView(saSig.buffer);
   standaloneSig.forEach((sig, i) => { sv.setUint16(i * 2, addBlob(sig), true); });
-  const extraRows = [...(options.extraRows ?? [])];
+  const extraRows = [...extraRowEntries];
   if (standaloneSig.length) extraRows.push([0x11, { count: standaloneSig.length, bytes: saSig }]);
   const rows = new Map();
   if (typeDefs.length) rows.set(2, { count: typeDefs.length, bytes: types });
@@ -84,7 +96,7 @@ export function buildCil(options = {}) {
     { name: '#Blob', bytes: pad(Uint8Array.from(blobBytes)) },
     ...(options.extraStreams ?? []),
   ];
-  const bytes = new Uint8Array(0x3000), v = new DataView(bytes.buffer);
+  const bytes = new Uint8Array(Math.max(0x3000, options.imageSize ?? 0x3000)), v = new DataView(bytes.buffer);
   bytes.set([0x4d, 0x5a]); v.setUint32(0x3c, 0x80, true); bytes.set([0x50, 0x45, 0, 0], 0x80);
   v.setUint16(0x84, 0x14c, true); v.setUint16(0x86, 1, true); v.setUint16(0x94, 0xe0, true);
   const opt = 0x98; v.setUint16(opt, 0x10b, true); v.setUint32(opt + 92, 16, true);
@@ -92,7 +104,8 @@ export function buildCil(options = {}) {
   const section = opt + 0xe0;
   v.setUint32(section + 8, bytes.length - 0x200, true); v.setUint32(section + 12, 0x2000, true);
   v.setUint32(section + 16, bytes.length - 0x200, true); v.setUint32(section + 20, 0x200, true);
-  v.setUint32(0x200, 72, true); v.setUint32(0x208, 0x2100, true); v.setUint32(0x20c, 0x1400, true);
+  v.setUint32(0x200, 72, true); v.setUint32(0x208, 0x2100, true);
+  v.setUint32(0x20c, options.metadataSize ?? 0x1400, true);
   // Optional CLI header extensions (#7735 entrypoint, #7753 resources).
   if (options.cliFlags != null) v.setUint32(0x210, options.cliFlags, true);
   if (options.entryPointToken != null) v.setUint32(0x214, options.entryPointToken, true);

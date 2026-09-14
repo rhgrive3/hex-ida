@@ -8,7 +8,7 @@
  */
 import { CHUNK_ROWS } from './backend.js';
 import { stableDigest, jsonSafe } from './core/identity/index.js';
-import { parseOperands, isCall, isReturn, categoryOf, referenceTarget } from './arm64.js';
+import { parseOperands, isCall, isReturn, categoryOf, referenceTarget, arm64ReadsDestination } from './arm64.js';
 import { arm64EncodingWord } from './targets/architecture/arm64/encoding-word.js';
 import { analysisAbortSignalMethods } from './analysis/producer-wait.js';
 import { pick } from './i18n.js';
@@ -101,7 +101,7 @@ async function awaitAbortable(operation, signal) {
 const ATOMIC_SOURCE_RESULT_RE = /^(?:swp|ld(?:add|set|clr|eor|smax|smin|umax|umin))(?:al|a|l)?(?:b|h)?$/;
 // Without-return aliases (`LD<op> <Ws>, WZR, [<Xn>]`) have no GPR result, so the
 // lone register operand is a source read rather than a destination (#3702).
-const ATOMIC_STORE_ONLY_RE = /^st(?:add|clr|eor|set|smax|smin|umax|umin)l?(?:b|h)?$/;
+const ATOMIC_WITHOUT_RETURN_RE = /^st(?:add|clr|eor|set|smax|smin|umax|umin)(?:al|a|l)?(?:b|h)?$/;
 // Mnemonics without a writable destination register. Matched as whole words so
 // that e.g. `bic` is not swallowed by `b` (#2188).
 const NO_DEST_MNEMONICS = new Set([
@@ -115,13 +115,31 @@ const NO_DEST_MNEMONICS = new Set([
 const ATOMIC_READ_WRITE_DEST_RE = /^cas(?:al|a|l)?(?:b|h)?$/;
 const EXCLUSIVE_STORE_RE = /^st(?:l)?x(?:r[bh]?|p)$/;
 const ATOMIC_PAIR_READ_WRITE_DEST_RE = /^casp(?:al|a|l)?$/;
+const OPAQUE_JUMP_RE = /^(?:br|braa|brab|braaz|brabz)$/;
+
+function reachableRowSet(startRow, end, edges) {
+  const live = new Uint8Array(end - startRow + 1);
+  const pending = [startRow];
+  while (pending.length) {
+    let row = pending.pop();
+    while (row >= startRow && row <= end && !live[row - startRow]) {
+      live[row - startRow] = 1;
+      const edge = edges.get(row);
+      if (!edge) { row++; continue; }
+      if (edge.target != null) pending.push(edge.target);
+      if (!edge.fall) break;
+      row++;
+    }
+  }
+  return live;
+}
 
 function destIndex(mn) {
   const b = mn.toLowerCase();
   if (ATOMIC_SOURCE_RESULT_RE.test(b)) return 1;
   // Without-return LSE aliases discard the loaded value, so operand 0 is a
   // source read and there is no destination register (#3702).
-  if (ATOMIC_STORE_ONLY_RE.test(b)) return -1;
+  if (ATOMIC_WITHOUT_RETURN_RE.test(b)) return -1;
   if (/^(str|stp|stur|strb|strh|sturb|sturh|stnp|sttr|st1|st2|st3|st4|stlr)/.test(b)) return -1;
   // Full-mnemonic matching only: a bare `b` alternative here also prefix-matched
   // every `b*` mnemonic with a destination register (bic/bfi/bfm/...), so their
@@ -136,7 +154,7 @@ function destinationIsRead(mn, index) {
   const b = mn.toLowerCase();
   if (ATOMIC_READ_WRITE_DEST_RE.test(b)) return index === 0;
   if (ATOMIC_PAIR_READ_WRITE_DEST_RE.test(b)) return index === 0 || index === 1;
-  return false;
+  return index === 0 && arm64ReadsDestination(mn);
 }
 
 function readRegs(op, into) {
@@ -183,7 +201,15 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   const written = new Set();
   const argsRead = new Set();
   const calleeSaved = new Set();
-  let lastX0Write = -1;
+  const x0WriteRows = [];
+  const flowEdges = new Map();
+  let flowIsClosed = true;
+  const absoluteRowOf = (addr) => {
+    if (addr == null) return null;
+    const rel = addr - region.vmAddr;
+    if (rel < 0n || rel % 4n !== 0n) return null;
+    return Number(rel / 4n);
+  };
   const rawInsns = [];
   // Set when the row cap actually dropped instructions. The old code relied on
   // overshooting the cap by one so `buildSemanticModel` would notice the excess
@@ -236,7 +262,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
 
       const di = destIndex(mn);
       const destReg = di >= 0 && ops[di]?.k === 'reg' && ops[di]?.cls === 'gp' ? ops[di].num : null;
-      const pairDestReg = (/^(ldp|ldpsw|ldnp)$/.test(b) || ATOMIC_PAIR_READ_WRITE_DEST_RE.test(b)) && ops[1]?.k === 'reg' && ops[1]?.cls === 'gp'
+      const pairDestReg = (/^(ldp|ldpsw|ldnp|ldxp|ldaxp)$/.test(b) || ATOMIC_PAIR_READ_WRITE_DEST_RE.test(b)) && ops[1]?.k === 'reg' && ops[1]?.cls === 'gp'
         ? ops[1].num
         : null;
       const reads = new Set();
@@ -248,11 +274,11 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       for (const r of reads) if (r <= 7 && !written.has(r)) argsRead.add(r);
       if (destReg != null) {
         written.add(destReg);
-        if (destReg === 0) lastX0Write = row;
+        if (destReg === 0) x0WriteRows.push(row);
       }
       if (pairDestReg != null) {
         written.add(pairDestReg);
-        if (pairDestReg === 0) lastX0Write = row;
+        if (pairDestReg === 0) x0WriteRows.push(row);
       }
 
       if (b === 'sub' && ops[0] && ops[0].cls === 'sp' && ops[1] && ops[1].cls === 'sp' && ops[2] && ops[2].k === 'imm' && ops[2].value != null) {
@@ -284,17 +310,28 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         } else res.indirectCalls++;
         // AAPCS64 calls may clobber x0-x18; BL/BLR also overwrite LR/x30.
         // Keep x19-x29 provenance because those registers are callee-saved.
-        for (let r = 0; r <= 18; r++) pageOf.delete(r);
+        for (let r = 0; r <= 18; r++) { pageOf.delete(r); written.add(r); }
         pageOf.delete(30);
       } else if (isReturn(b)) {
         res.returns++;
+        flowEdges.set(row, { target: null, fall: false });
       } else if (/^b\./.test(b) || b === 'cbz' || b === 'cbnz' || b === 'tbz' || b === 'tbnz') {
         res.condBranches++;
         const t = referenceTarget(b, opsStr);
         if (t != null && t <= addr) res.loops.push({ from: addr, to: t });
+        const tr = absoluteRowOf(t);
+        if (tr == null) flowIsClosed = false;
+        else flowEdges.set(row, { target: tr >= startRow && tr <= end ? tr : null, fall: true });
       } else if (b === 'b') {
         const t = referenceTarget(b, opsStr);
         if (t != null && t <= addr) res.loops.push({ from: addr, to: t });
+        const tr = absoluteRowOf(t);
+        if (tr == null) flowIsClosed = false;
+        else flowEdges.set(row, { target: tr >= startRow && tr <= end ? tr : null, fall: false });
+      } else if (OPAQUE_JUMP_RE.test(b)) {
+        flowIsClosed = false;
+      } else if (b === 'brk' || b === 'udf') {
+        flowEdges.set(row, { target: null, fall: false });
       }
 
       // Consume the previous ADRP fact before invalidating a destination. This
@@ -327,7 +364,12 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   throwIfAborted(signal);
   res.argRegs = Array.from(argsRead).sort((a, b) => a - b);
   res.savesCallee = Array.from(calleeSaved).sort((a, b) => a - b);
-  res.setsReturnValue = lastX0Write >= 0;
+  if (x0WriteRows.length && flowIsClosed) {
+    const live = reachableRowSet(startRow, end, flowEdges);
+    res.setsReturnValue = x0WriteRows.some((r) => live[r - startRow] === 1);
+  } else {
+    res.setsReturnValue = x0WriteRows.length > 0;
+  }
   const seen = new Set();
   res.loops = res.loops.filter((l) => {
     const k = l.from + ':' + l.to;
@@ -673,7 +715,7 @@ function pointerAt(bytes, width) {
   if (v === 0n) return null;
   if (width === 4) return v;
   if (v < 0x0001000000000000n) return v;
-  return v & 0x0000000fffffffffn;
+  return v & 0x0000ffffffffffffn;
 }
 
 const HINTS = [

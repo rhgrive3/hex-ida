@@ -17,7 +17,7 @@
  *   どの推測にも evidence[] と confidence を必ず付ける。
  *   分からないものは kind:'unknown' のまま残す。無理に名前を付けない。
  */
-import { parseOperands, categoryOf } from './arm64.js';
+import { parseOperands, categoryOf, arm64ReadsDestination } from './arm64.js';
 import { analyzeGraph } from './controlflow.js';
 
 /* ────────────────────────────────────────────────────────────
@@ -355,8 +355,8 @@ export const FEATURE_OF_CATEGORY = {
  * its memory fact, and for stores the source read is inverted into a
  * destination write. The AdvSIMD structure register-list family belongs here
  * too (#3601). */
-const LOAD_MN = /^(ldr|ldrb|ldrh|ldrsb|ldrsh|ldrsw|ldur|ldurb|ldurh|ldursb|ldursh|ldursw|ldp|ldpsw|ldnp|ldar|ldarb|ldarh|ldxr|ldaxr|ldtr|ld1|ld2|ld3|ld4)$/;
-const STORE_MN = /^(str|strb|strh|stur|sturb|sturh|stp|stnp|stlr|stlrb|stlrh|sttr|stxr|stlxr|st1|st2|st3|st4)$/;
+const LOAD_MN = /^(ldr|ldrb|ldrh|ldrsb|ldrsh|ldrsw|ldur|ldurb|ldurh|ldursb|ldursh|ldp|ldpsw|ldnp|ldar|ldarb|ldarh|ldxr|ldaxr|ldtr|ldtrb|ldtrh|ldtrsb|ldtrsh|ldtrsw|ld1|ld2|ld3|ld4)$/;
+const STORE_MN = /^(str|strb|strh|stur|sturb|sturh|stp|stnp|stlr|stlrb|stlrh|sttr|sttrb|sttrh|stxr|stlxr|st1|st2|st3|st4)$/;
 const STRUCTURE_MN = /^(ld1|ld2|ld3|ld4|st1|st2|st3|st4)$/;
 /* Exclusive stores are memory stores that still define a 32-bit status result
  * in operand 0; the data operand after it carries the access width (#3592). */
@@ -462,9 +462,9 @@ function targetOf(base, ops) {
 
 /** アクセスするバイト数（分かる範囲で）。 */
 function accessSize(base, ops) {
-  if (/^(ldrb|ldrsb|strb|sturb|ldurb|ldursb|ldarb|stlrb)$/.test(base)) return 1;
-  if (/^(ldrh|ldrsh|strh|sturh|ldurh|ldursh|ldarh|stlrh)$/.test(base)) return 2;
-  if (/^(ldrsw|ldursw)$/.test(base)) return 4;
+  if (/^(ldrb|ldrsb|strb|sturb|ldurb|ldursb|ldarb|stlrb|ldtrb|ldtrsb|sttrb)$/.test(base)) return 1;
+  if (/^(ldrh|ldrsh|strh|sturh|ldurh|ldursh|ldarh|stlrh|ldtrh|ldtrsh|sttrh)$/.test(base)) return 2;
+  if (/^(ldrsw|ldursw|ldtrsw)$/.test(base)) return 4;
   // Exclusive stores move the data operand (operand 1), never the 32-bit
   // status result that comes first (#3592).
   if (EXCLUSIVE_STORE_MN.test(base)) {
@@ -543,13 +543,14 @@ export function makeInstruction(raw) {
 
   const wIdx = writeIndexes(base, parsed);
   const reads = new Set();
+  const destIsRead = arm64ReadsDestination(base);
   for (let i = 0; i < parsed.length; i++) {
     const op = parsed[i];
     if (wIdx.includes(i) && (op.k === 'reg' || op.k === 'elem' || op.k === 'list')) {
       // A lane destination always merges into the physical register, CAS keeps
       // its compare/result register read-write (#3602), and a register-list
       // destination is write-only rather than also an input (#3601, #3877).
-      if (op.k !== 'elem' && !ATOMIC_READ_WRITE_DEST_RE.test(base)) continue;
+      if (op.k !== 'elem' && !(i === 0 && destIsRead) && !ATOMIC_READ_WRITE_DEST_RE.test(base)) continue;
     }
     collectReads(op, reads);
   }
@@ -706,6 +707,73 @@ function toLinkReturnAddress(address) {
 
 const coordBig = (v) => typeof v === 'bigint' ? v : (typeof v === 'number' && Number.isSafeInteger(v) ? BigInt(v) : null);
 
+const ARG_UNIVERSE = ['x0', 'x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7'];
+
+// 「その命令地点に到達するまでに entry 値が必ず死んでいる」レジスタ集合を、
+// CFG を跨いで must-interpret で求める。join では全 predecessor で kill 済みの
+// ものだけを保つので、片側 path だけの書き込みが entry 引数を消さない（#3921）。
+// CFG 情報（blocks/preds）が無ければ null を返し、呼び出し側は従来の線形挙動。
+function computeEntryKillSets(insns, o) {
+  const blocks = o.blocks;
+  const preds = o.preds;
+  if (!Array.isArray(blocks) || !blocks.length || !Array.isArray(preds) || preds.length !== blocks.length) return null;
+  if (!insns.length) return null;
+
+  const byRow = new Map();
+  for (const insn of insns) byRow.set(insn.row, insn);
+
+  const genWrites = (block) => {
+    const gen = new Set();
+    for (const row of block.rows) {
+      const insn = byRow.get(row);
+      if (!insn || insn.data || insn.unknownMnemonic) continue;
+      for (const w of insn.writes) if (ARG_UNIVERSE.includes(w)) gen.add(w);
+    }
+    return gen;
+  };
+
+  let entryIndex = -1;
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    if (b.startRow <= insns[0].row && insns[0].row <= b.endRow) { entryIndex = i; break; }
+  }
+  if (entryIndex < 0) entryIndex = 0;
+
+  const top = () => new Set(ARG_UNIVERSE);
+  const killIn = blocks.map((b, i) => (i === entryIndex ? new Set() : top()));
+  const gen = blocks.map((b) => genWrites(b));
+  for (let iter = 0; iter <= blocks.length + 1; iter++) {
+    let changed = false;
+    for (let i = 0; i < blocks.length; i++) {
+      if (i === entryIndex) continue;
+      let next;
+      const ps = preds[i];
+      if (!Array.isArray(ps) || !ps.length) next = new Set();
+      else {
+        next = top();
+        for (const p of ps) {
+          const out = new Set(killIn[p]);
+          for (const w of gen[p]) out.add(w);
+          for (const r of next) if (!out.has(r)) next.delete(r);
+        }
+      }
+      if (next.size !== killIn[i].size) changed = true;
+      else for (const r of next) { if (!killIn[i].has(r)) { changed = true; break; } }
+      killIn[i] = next;
+    }
+    if (!changed) break;
+  }
+
+  const rowKills = new Map();
+  const blockStartRows = new Set();
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    blockStartRows.add(b.startRow);
+    for (const row of b.rows) rowKills.set(row, killIn[i]);
+  }
+  return { rowKills, blockStartRows };
+}
+
 export function analyzeDataFlow(insns, opts) {
   const o = opts || {};
   const joinRows = o.joinRows || new Set();
@@ -717,6 +785,9 @@ export function analyzeDataFlow(insns, opts) {
   const calls = [];
   const argsRead = new Set();        // 自分で書く前に読んだ x0〜x7 = 引数
   const written = new Set();
+  const cfgKills = computeEntryKillSets(insns, o);
+  const rowKills = cfgKills ? cfgKills.rowKills : null;
+  const blockStartRows = cfgKills ? cfgKills.blockStartRows : null;
   const addressRefs = [];            // {row, addr, value} — 文字列を後から埋める用
   const byRow = new Map();
 
@@ -736,11 +807,13 @@ export function analyzeDataFlow(insns, opts) {
 
     // 分岐で飛んでこられる場所 = 合流点。ここから先は前提を持ち越せない。
     if (joinRows.has(insn.row)) { regs.clear(); stack.clear(); stackFrame.clear(); stackFrameLost.clear(); }
+    if (rowKills && blockStartRows.has(insn.row)) written.clear();
 
     // 引数レジスタの検出は「自分で書く前に読んだか」で判定する
+    const pathKilled = rowKills ? rowKills.get(insn.row) : null;
     for (const r of insn.reads) {
       const n = gpNum(r);
-      if (n >= 0 && n <= 7 && !written.has(r)) {
+      if (n >= 0 && n <= 7 && !written.has(r) && !(pathKilled && pathKilled.has(r))) {
         argsRead.add(n);
         if (!regs.has(r)) {
           set(r, value('arg', { index: n }, SCORE.high, [ev('argreg', insn.row, { index: n })], -1));
@@ -1076,7 +1149,11 @@ export function buildBasicBlocks(insns, opts) {
   });
   const headers = new Set(graph.backEdges.map((e) => e.to));
   blocks.forEach((b, i) => { b.isLoopHeader = headers.has(i); });
-  return { blocks, joinRows, backEdges };
+  const preds = blocks.map(() => []);
+  for (let i = 0; i < succ.length; i++) {
+    for (const j of succ[i]) if (j >= 0 && j < preds.length && !preds[j].includes(i)) preds[j].push(i);
+  }
+  return { blocks, joinRows, backEdges, preds };
 }
 
 /* ────────────────────────────────────────────────────────────
@@ -1395,7 +1472,7 @@ export function buildSemanticModel(raw, opts) {
 
   markTailCalls(insns, o, truncated);
   const bbInfo = buildBasicBlocks(insns, o);
-  const flow = analyzeDataFlow(insns, Object.assign({ joinRows: bbInfo.joinRows }, o));
+  const flow = analyzeDataFlow(insns, Object.assign({ joinRows: bbInfo.joinRows, blocks: bbInfo.blocks, preds: bbInfo.preds }, o));
   const semantic = buildSemanticBlocks(insns, bbInfo, flow, o);
 
   const model = {

@@ -20,6 +20,10 @@ function unsupported(expression) {
   return (error) => error instanceof DebugAdapterError && error.code === 'unsupported-expression';
 }
 
+function invalidArgument() {
+  return (error) => error instanceof DebugAdapterError && error.code === 'invalid-argument';
+}
+
 for (const name of ['x0', 'x1', 'x30', 'sp', 'pc']) {
   const { adapter, registers, reads } = localHarness();
   assert.equal(await adapter.evaluate(name), registers.get(name), `${name} still evaluates`);
@@ -56,7 +60,7 @@ for (const expression of [
   () => 'pc',
 ]) {
   const { adapter, reads } = localHarness();
-  await assert.rejects(adapter.evaluate(expression), unsupported(String(typeof expression)), `${typeof expression} structured input must not reach getRegister`);
+  await assert.rejects(adapter.evaluate(expression), invalidArgument(), `${typeof expression} structured input must not reach getRegister`);
   assert.deepEqual(reads, [], `${String(typeof expression)} must not be promoted to a register read`);
 }
 
@@ -64,7 +68,7 @@ for (const expression of [
   let coerced = 0;
   const expression = { toString() { coerced++; return 'pc'; } };
   const { adapter, reads } = localHarness();
-  await assert.rejects(adapter.evaluate(expression), unsupported('coercion probe'));
+  await assert.rejects(adapter.evaluate(expression), invalidArgument());
   assert.equal(coerced, 0, 'the type boundary must not stringify raw input');
   assert.deepEqual(reads, []);
 }
