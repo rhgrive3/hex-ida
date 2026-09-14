@@ -192,7 +192,7 @@ export async function parseSourceRanges(source, parser, parserOptions = {}, opti
         let cursor = span.start;
         while (cursor < span.end) {
           throwIfSourceAborted(options.signal);
-          if (++reads > maxReads) throw new ByteSourceLimitError(`binary metadata required more than ${maxReads} range reads`);
+          if (++reads > maxReads) throw new ByteSourceLimitError(`maxReads=${maxReads} cursor=${cursor} spanStart=${span.start} spanEnd=${span.end} pass=${parserPasses} cached=${cachedBytes}`);
           const remaining = source.size - cursor;
           const budgetRemaining = maxCachedBytes - cachedBytes;
           if (budgetRemaining <= 0) throw new ByteSourceLimitError(`binary metadata exceeds the ${maxCachedBytes}-byte cache limit`);
