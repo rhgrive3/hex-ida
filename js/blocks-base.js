@@ -17,7 +17,7 @@
  *   どの推測にも evidence[] と confidence を必ず付ける。
  *   分からないものは kind:'unknown' のまま残す。無理に名前を付けない。
  */
-import { parseOperands, categoryOf } from './arm64.js';
+import { parseOperands, categoryOf, arm64ReadsDestination } from './arm64.js';
 import { analyzeGraph } from './controlflow.js';
 
 /* ────────────────────────────────────────────────────────────
@@ -543,13 +543,14 @@ export function makeInstruction(raw) {
 
   const wIdx = writeIndexes(base, parsed);
   const reads = new Set();
+  const destIsRead = arm64ReadsDestination(base);
   for (let i = 0; i < parsed.length; i++) {
     const op = parsed[i];
     if (wIdx.includes(i) && (op.k === 'reg' || op.k === 'elem' || op.k === 'list')) {
       // A lane destination always merges into the physical register, CAS keeps
       // its compare/result register read-write (#3602), and a register-list
       // destination is write-only rather than also an input (#3601, #3877).
-      if (op.k !== 'elem' && !ATOMIC_READ_WRITE_DEST_RE.test(base)) continue;
+      if (op.k !== 'elem' && !(i === 0 && destIsRead) && !ATOMIC_READ_WRITE_DEST_RE.test(base)) continue;
     }
     collectReads(op, reads);
   }

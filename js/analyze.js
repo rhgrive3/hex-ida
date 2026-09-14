@@ -8,7 +8,7 @@
  */
 import { CHUNK_ROWS } from './backend.js';
 import { stableDigest, jsonSafe } from './core/identity/index.js';
-import { parseOperands, isCall, isReturn, categoryOf, referenceTarget } from './arm64.js';
+import { parseOperands, isCall, isReturn, categoryOf, referenceTarget, arm64ReadsDestination } from './arm64.js';
 import { arm64EncodingWord } from './targets/architecture/arm64/encoding-word.js';
 import { analysisAbortSignalMethods } from './analysis/producer-wait.js';
 import { pick } from './i18n.js';
@@ -154,7 +154,7 @@ function destinationIsRead(mn, index) {
   const b = mn.toLowerCase();
   if (ATOMIC_READ_WRITE_DEST_RE.test(b)) return index === 0;
   if (ATOMIC_PAIR_READ_WRITE_DEST_RE.test(b)) return index === 0 || index === 1;
-  return false;
+  return index === 0 && arm64ReadsDestination(mn);
 }
 
 function readRegs(op, into) {

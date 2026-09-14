@@ -171,6 +171,22 @@ const ATOMIC_CATEGORY_RE = /^(?:cas|swp|ld(?:add|set|clr|eor|smax|smin|umax|umin
 // (#4495; operand read/write ownership is a separate #3702 contract).
 const STORE_ONLY_ATOMIC_CATEGORY_RE = /^st(?:add|clr|eor|set|smax|smin|umax|umin)l?(?:b|h)?$/;
 
+const ATOMIC_READ_WRITE_DEST_RE = /^cas(?:al|a|l)?(?:b|h)?$/;
+const RMW_DEST_MNEMONICS = new Set([
+  'movk',
+  'pacia', 'pacib', 'pacda', 'pacdb',
+  'paciza', 'pacizb', 'pacdza', 'pacdzb',
+  'autia', 'autib', 'autda', 'autdb',
+  'autiza', 'autizb', 'autdza', 'autdzb',
+  'xpaci', 'xpacd',
+  'bfm', 'bfi', 'bfc', 'bfxil',
+]);
+
+export function arm64ReadsDestination(mn) {
+  const b = String(mn || '').toLowerCase();
+  return ATOMIC_READ_WRITE_DEST_RE.test(b) || RMW_DEST_MNEMONICS.has(b);
+}
+
 export function categoryOf(mn) {
   if (!mn) return '';
   const b = mn.toLowerCase();
@@ -2374,6 +2390,66 @@ for (const entry of ORDERED_MEMORY_TABLE) {
   HANDLERS[entry.mnemonic] = loadStore(entry.isLoad, entry);
 }
 
+const MTE_GRANULE = {
+  en: '16-byte allocation granule',
+  ja: '16 バイトのグランユール（タグ付きメモリブロック）',
+};
+
+function mteTagHandler({ isLoad, zeroing = false, span = 1 }) {
+  return (o, ops) => {
+    const dst = ops[0];
+    const mem = ops.find((x) => x.k === 'mem');
+    const addrExpr = mem ? memExpr(mem) : '';
+    const spanEn = span === 2 ? 'two consecutive 16-byte granules (32 bytes)' : MTE_GRANULE.en;
+    const spanJa = span === 2 ? '連続する 2 つ（計 32 バイト）の 16 バイト・グランユール' : MTE_GRANULE.ja;
+    if (isLoad) {
+      o.title = J('メモリタグを読む', 'Load allocation tag');
+      o.pseudo = opShort(dst) + ' = WithAllocationTag(' + opShort(dst) + ', AllocationTag(' + addrExpr + '))';
+      o.summary = J(
+        spanJa + ' に付いた Allocation Tag を読み、既存の ' + opShort(dst) + ' のデータアドレス部分を保ったまま論理アドレスタグを差し替えます。通常のデータ値を読む命令ではありません。',
+        'Read the Allocation Tag of ' + spanEn + ' and merge it into the existing ' + opShort(dst) + ' value, preserving its non-tag address bits. This is not an ordinary data load.');
+    } else {
+      o.title = J('メモリタグを書く', 'Store allocation tag');
+      o.pseudo = 'AllocationTag[' + addrExpr + '] = Tag(' + opShort(dst) + ')' +
+        (zeroing ? '; zero(*[16 bytes]' + addrExpr + ') ' + J('/* グランユールをゼロクリア */', '/* granule zeroing */') : '');
+      o.summary = J(
+        opShort(dst) + ' の上位ビットに詰めたタグを、' + spanJa + ' の Allocation Tag として書き込みます。' + (zeroing ? 'さらにこのグランユールのデータ 16 バイトをゼロで埋めます。' : 'メモリ上のデータ本体は書き換えません。'),
+        'Store the tag packed in ' + opShort(dst) + ' as the Allocation Tag of ' + spanEn + '.' + (zeroing ? ' STZG also zeroes the 16 data bytes of the granule.' : ' The data bytes themselves are not written.'));
+    }
+    o.detail.push(J(
+      'MTE（Memory Tagging Extension）ではメモリは 16 バイト単位で 4 ビットのタグを持っており、この命令は通常の整数転送ではなくそのタグを操作します。',
+      'With MTE every 16-byte granule carries a 4-bit Allocation Tag; this instruction operates on that tag storage, not on ordinary integer data.'));
+    o.terms = ['memory', 'security'];
+    addRegRoles(o, ops);
+  };
+}
+
+function mteUnknownHandler(o, ops, base) {
+  o.title = J('特別なメモリタグ命令', 'Special memory-tag operation');
+  o.pseudo = base + ' ' + (o.operands || '');
+  o.summary = J(
+    'MTE（Memory Tagging Extension）の Allocation Tag に関わる命令です。通常のデータ読み書きとは別物のため、このビューアでは断定した説明をしません。',
+    'An MTE operation on Allocation Tags of 16-byte granules. It is not an ordinary data transfer, so this viewer keeps the description conservative.');
+  o.detail.push(J(
+    'タグは 16 バイトごとに付くメタデータで、ポインタとデータの照合に使われます。',
+    'Tags are per-16-byte-granule metadata checked against pointers.'));
+  o.terms = ['memory', 'security'];
+}
+
+const MTE_TAG_TABLE = {
+  stg: { isLoad: false },
+  stzg: { isLoad: false, zeroing: true },
+  st2g: { isLoad: false, span: 2 },
+  stz2g: { isLoad: false, zeroing: true, span: 2 },
+  ldg: { isLoad: true },
+};
+for (const [name, spec] of Object.entries(MTE_TAG_TABLE)) {
+  HANDLERS[name] = mteTagHandler(spec);
+}
+HANDLERS.stgm = mteUnknownHandler;
+HANDLERS.stzgm = mteUnknownHandler;
+HANDLERS.ldgm = mteUnknownHandler;
+
 /* 排他アクセス ----------------------------------------------- */
 
 function sizeLabel(bytes) {
@@ -2618,6 +2694,7 @@ function familyHandler(base) {
   if (/^b\.[a-z]{2}$/.test(base)) return condBranch;
   if (/^(braa|brab|braaz|brabz)$/.test(base)) return HANDLERS.br;
   if (/^(blraa|blrab|blraaz|blrabz)$/.test(base)) return HANDLERS.blr;
+  if (/^(stz?2?gm?|ldg)/.test(base)) return mteUnknownHandler;
   if (/^ld/.test(base)) return loadStore(true);
   if (/^st/.test(base)) return loadStore(false);
   if (/^f/.test(base)) {
