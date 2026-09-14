@@ -1882,10 +1882,10 @@
         "userscript/release-version.json": "5e27c4badb1e85c71fdb2b6ce4ceb062e78dd279906c703c81474129c0851095"
       },
       "remaining": [
-        "C1 non-escape positive versus both-root proof contract",
         "machine-effects x86 closure/decoder regressions and canonical check not green",
         "Stage2 cross ARM64/arm64e/RISC-V and x86 baseline ran; x86 attach launcher PR_SET_PTRACER returns EINVAL in this environment (Yama interface absent). Canonical Stage2 not green.",
-        "current-head independent review and integration acceptance; old PR R2 issue repaired, CLI review authentication still unavailable"
+        "current-head independent review and integration acceptance; old PR R2 issue repaired, CLI review authentication still unavailable",
+        "Canonical Phase7 remains red: #4777 scalar-chain precision, debug diagnostics, shared producer/abort, ownership overlap, #3754 control-target fixture, and verifier coldActiveFunction performance; full log retained, final aggregate unavailable."
       ],
       "checkpoint": "docs/analysis-remaining-20260914.md",
       "additionalCanonicalResults": [
@@ -2123,7 +2123,92 @@
         "mergedAt": "2026-09-14T16:01:45Z",
         "publishedIntegrationHead": "972c01bc0cdd6dc4cc81c14738cd2ee8ebcb2918"
       },
-      "backupBranch": "codex/analysis-remaining-20260914"
+      "backupBranch": "codex/analysis-remaining-20260914",
+      "c1TruthErratum": {
+        "date": "2026-09-15",
+        "status": "NON_ESCAPE_CORPUS_INCONSISTENCY_REPAIRED",
+        "sourceHead": "6e6fcaf382c9f4ee0a00116cd0fe9d692fa0faae",
+        "commits": [
+          "a6607c29cbdc2754cfdad46fb279ba01047c9d49",
+          "cc1a923c9ddc4f93bd6af70632290c21522ecce8",
+          "6e6fcaf382c9f4ee0a00116cd0fe9d692fa0faae"
+        ],
+        "corpusVersion": 2,
+        "manifestDigest": "896de134032f78f88732e2513677e4b7",
+        "v1TruthGeneratorVersion": "2.0.0",
+        "v2TruthGeneratorVersion": "3.0.0",
+        "originalV2QueryCount": 30,
+        "retainedV2QueryCount": 30,
+        "previousExactConservative": [
+          15,
+          15
+        ],
+        "correctedExactConservative": [
+          12,
+          18
+        ],
+        "renameCells": 240,
+        "correctedQueries": [
+          "q-frame-non-escaping",
+          "v2-frame-non-escaping",
+          "v2-callee-ret",
+          "v2-tls-vs-stack"
+        ],
+        "runtimeProofConditionsChanged": false,
+        "scoringThresholdsChanged": false,
+        "oldEvidenceInvalidated": true,
+        "baselineNote": "Retrospective recalculation of unchanged legacy safety floor on corrected corpus; not a pre-candidate baseline or precision-improvement claim.",
+        "cacheRegression": "#5215 positive control explicitly supplies and observes both allocation roots; rejected refinement still withdraws NoAlias. One-sided #4977 negatives retained.",
+        "testsPassed": 230,
+        "receipts": [
+          {
+            "label": "c1-complete-acceptance",
+            "sourceHead": "6e6fcaf382c9f4ee0a00116cd0fe9d692fa0faae",
+            "dirtyAtStart": [],
+            "exitCode": 0,
+            "logSha256": "7aab33d9e8f628787fc466925abdd827064157387e8689ddf695cdf596737991"
+          },
+          {
+            "label": "c1-complete-inventory",
+            "sourceHead": "6e6fcaf382c9f4ee0a00116cd0fe9d692fa0faae",
+            "dirtyAtStart": [],
+            "exitCode": 0,
+            "logSha256": "3dfbe71a2599fff2a13bf5e8cafc71c6638a6dc01aba645f4cb6cae3707e4bf4"
+          },
+          {
+            "label": "c1-canonical-phase7-final",
+            "sourceHead": "cc1a923c9ddc4f93bd6af70632290c21522ecce8",
+            "dirtyAtStart": [],
+            "exitCode": 1,
+            "logSha256": "fe086ffa44ccbaf66193f448831d5fb6bb1a7068a5ce5ab562cbc02eb3c9d17a"
+          },
+          {
+            "label": "c1-isolated-verifier",
+            "sourceHead": "cc1a923c9ddc4f93bd6af70632290c21522ecce8",
+            "dirtyAtStart": [],
+            "exitCode": 1,
+            "logSha256": "e94d85deedd69f591cf0990c6da43fd0fe86cde3ee9f2826ecef9551ada4d0f6"
+          }
+        ],
+        "canonicalPhase7": {
+          "discoveredFiles": 440,
+          "exitCode": 1,
+          "finalCountsAvailable": false,
+          "fullLogSha256": "efb762e2f06de24d9195c6d7233342a8c10d677748413c93350d422544458827",
+          "note": "Runner output ended before final aggregate. #5215 repaired subsequently; other failures retained."
+        },
+        "phase7VerifierVerdict": "BLOCKING",
+        "coldActiveFunctionMs": 368.466,
+        "coldActiveFunctionBudgetMs": 250,
+        "remoteComparison": {
+          "behind": 0,
+          "ahead": 263,
+          "main": "f1af93b04a9511703fba61e1b6b14d9fbce4b572",
+          "head": "6e6fcaf382c9f4ee0a00116cd0fe9d692fa0faae"
+        },
+        "fullRoadmapComplete": false,
+        "physicalDevices": "SKIPPED_BY_USER"
+      }
     }
   },
   "integrationFollowupHistory": [

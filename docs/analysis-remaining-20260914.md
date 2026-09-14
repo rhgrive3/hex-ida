@@ -315,3 +315,7 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
 - exact Phase7 verifierの訂正版aliasはbaseline 1/2・candidate 2/2、falseNo/falseMust/unknown=0、memory link 2/2。ただしcoldActiveFunctionは並行実行時610.737ms、他の担当検査終了後も368.466msで250ms予算を超え、**BLOCKING**。元の予算を保持する。`c1-isolated-verifier` receipt SHA256 `e94d85deedd69f591cf0990c6da43fd0fe86cde3ee9f2826ecef9551ada4d0f6`。
 - 初回の誤ったexpect-sha指定はidentity rejectionとして履歴に保持し、正しい40桁SHAで再検証した。旧headでの中断したfull runもPASSにしない。
 - #7036のcandidate source conflictは解消済みでbehind 0を再確認した。統合受入/全ロードマップ完成は未宣言。物理実機はユーザー指示でSKIPPED。
+
+最終追加検証: `6e6fcaf382c9f4ee0a00116cd0fe9d692fa0faae` のclean headでC1・#5215・ownership回帰 **230/230 PASS**、実差分Phase7/8 inventoryもPASS。
+acceptance log SHA256 `7aab33d9e8f628787fc466925abdd827064157387e8689ddf695cdf596737991`、inventory `3dfbe71a2599fff2a13bf5e8cafc71c6638a6dc01aba645f4cb6cae3707e4bf4`。
+main `f1af93b04a9511703fba61e1b6b14d9fbce4b572` に対してbehind **0**、ahead **263**。以後の文書commitはこの検証対象SHAと区別する。
