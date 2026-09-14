@@ -98,6 +98,15 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
   const codeBody = wasmModule.codeBodies[internalIdx];
   const memoryContext = createWasmMemoryValidationContext(wasmModule);
   const bytecode = codeBody.bytecode;
+  // #8709: resolve local indices against the canonical params + locals vectors
+  // in O(1). Rebuilding `[...params, ...locals]` per local.get/set/tee made
+  // lifting O(local-instructions x locals), so a ~1 KiB module with 1,000,000
+  // compactly-declared locals monopolized ~10s of synchronous CPU.
+  const localParams = funcType.params;
+  const localDecls = codeBody.locals;
+  const localParamCount = localParams.length;
+  const localTotalCount = localParamCount + localDecls.length;
+  const localTypeAt = (index) => (index < localParamCount ? localParams[index] : localDecls[index - localParamCount]);
   const drafts = [];
   let pos = 0;
   let opSeq = 0;
@@ -285,14 +294,13 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         mnemonic = 'select'; consumedValues.push({ id: 'cond', bits: 32 }, { id: 'val2' }, { id: 'val1' }); consume(3); producedValues.push({ bits: 32 }); produce(1); break;
       case 0x20: {
         const r = decodeUleb128(bytecode, pos); pos = r.nextOffset;
-        const localTypes = [...funcType.params, ...codeBody.locals];
-        if (r.value >= localTypes.length) fail('wasm-invalid-local-index');
-        const t = localTypes[r.value]; mnemonic = 'local.get'; locationReads.push({ kind: 'local', index: r.value, bits: typeBits(t), type: t }); producedValues.push({ bits: typeBits(t), type: t, fromLocationRead: 0 }); produce(1); break;
+        if (r.value >= localTotalCount) fail('wasm-invalid-local-index');
+        const t = localTypeAt(r.value); mnemonic = 'local.get'; locationReads.push({ kind: 'local', index: r.value, bits: typeBits(t), type: t }); producedValues.push({ bits: typeBits(t), type: t, fromLocationRead: 0 }); produce(1); break;
       }
       case 0x21: case 0x22: {
         const r = decodeUleb128(bytecode, pos); pos = r.nextOffset;
-        const localTypes = [...funcType.params, ...codeBody.locals]; if (r.value >= localTypes.length) fail('wasm-invalid-local-index');
-        const t = localTypes[r.value]; mnemonic = opcode === 0x21 ? 'local.set' : 'local.tee';
+        if (r.value >= localTotalCount) fail('wasm-invalid-local-index');
+        const t = localTypeAt(r.value); mnemonic = opcode === 0x21 ? 'local.set' : 'local.tee';
         consumedValues.push({ id: 'value', bits: typeBits(t), type: t }); consume(1); locationWrites.push({ kind: 'local', index: r.value, bits: typeBits(t), type: t });
         if (opcode === 0x22) { producedValues.push({ bits: typeBits(t), type: t, forwardedConsumedIndex: 0 }); produce(1); }
         break;
