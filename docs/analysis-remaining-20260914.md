@@ -221,3 +221,24 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
   call引数来歴検査だけがmanifest未宣言と確認した。両ファイルは作業開始時の
   親head `d792b212e` と同一で、今回ソース変更はしていない。
   既存integration ownerへ2つのexact pathを登録し、削除時の拒否回帰を追加した。
+
+## Checkpoint 8: clean headとリモートCIの結果
+
+- `e6f694e89e2ff14a6cd7bc1c8921c0c6f8e3b635` はpush済み。
+  clean headで実差分のPhase7/8 inventoryが成功し、同headのリモートCircleCI
+  Phase7/8 ownershipも両方SUCCESS。`continuation-inventory-committed.json` と
+  `remote-checks-e6f.json` に保存した。全体admission成功とは区別する。
+- 同clean headで関数要約・CASP/exclusive store・Worker import境界の検査が成功
+  （`summary-contracts-committed.json`）。PR #8888の説明も修正後の実装へ更新した。
+- 同headのcanonical Stage2はARM64/arm64e/RISC-Vの実LLDB/QEMU検証を通過し、
+  x86 nativeの起動・レジスタ・メモリ操作も進んだが、attach用launcherで失敗した。
+  完全ログ `stage2-native-restored-full.log` とreceiptを保持する。
+- LLDB内蔵Pythonの環境を外部子Pythonへ持ち込まないよう専用wrapperを修正した。
+  外部Pythonの起動成功を実測したが、x86重点再検査は同launcherで失敗した。
+  stderrを独立に取得すると `PR_SET_PTRACER` 呼出しが `EINVAL` を返していた。
+  この環境では `/proc/sys/kernel/yama/ptrace_scope` も存在しない。
+  根拠は `lldb18-ptrace-launcher-diagnostic.log` と
+  `stage2-x86-child-environment.json`。attach検査・必須assertionは変更していない。
+- C1の固定corpusと非escape契約、Workerの2秒browser受入、全体check、
+  Phase12の5失敗、main競合と最新headの独立受入は残る。
+  実機はユーザー指定でSKIPPED。監査JSONの23 finding / 21 taskと未完了状態を保持。

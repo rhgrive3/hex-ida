@@ -1886,8 +1886,8 @@
         "canonical Linux Worker cold startup exceeds unchanged 2000ms budget",
         "machine-effects x86 closure/decoder regressions and canonical check not green",
         "candidate merge-tree against main conflicts in 6 paths",
-        "Stage2 local ARM64/arm64e steps ran; RISC-V LLDB command failed; preparing LLDB18",
-        "independent review authentication and exact-head integration acceptance"
+        "Stage2 cross ARM64/arm64e/RISC-V and x86 baseline ran; x86 attach launcher PR_SET_PTRACER returns EINVAL in this environment (Yama interface absent). Canonical Stage2 not green.",
+        "current-head independent review and integration acceptance; old PR R2 issue repaired, CLI review authentication still unavailable"
       ],
       "checkpoint": "docs/analysis-remaining-20260914.md",
       "additionalCanonicalResults": [
@@ -1902,7 +1902,132 @@
           "logSha256": "12124ccfa96ef3100aa6e8a2e97eee7f4b1c29c33f92c95da875cfe0a7c15c71",
           "completeLog": "evidence/analysis-remaining-20260914/phase12-current-full.log"
         }
-      ]
+      ],
+      "summaryAndOwnershipRepair": {
+        "reviewedIssue": "PR #8888 R2: analyzeFunction omitted read-write destinations",
+        "commits": [
+          "d665f4225f3b31a754197c09325a7700c1101542",
+          "64b6c3efd4c335dc03d28a7db760dc190a42057f",
+          "e6f694e89e2ff14a6cd7bc1c8921c0c6f8e3b635"
+        ],
+        "receipts": [
+          {
+            "label": "summary-entrypoint-before",
+            "sourceHead": "a767a5043ef52b66120f290aa8127ca96cb00c1a",
+            "dirtyAtStart": [
+              " M tests/phase7/integration/analysis-entrypoint-dependencies.test.mjs"
+            ],
+            "sourceDiffSha256": "471a54533d66e9a010670f9deb1f7eb4d166ccdbc90f4aa70902c3120d5e09aa",
+            "exitCode": 1,
+            "logSha256": "29702467522800e5ab1c2e8cf175e39976624995d4bbde3b6cb8e9a22376b3f4"
+          },
+          {
+            "label": "summary-entrypoint-repaired",
+            "sourceHead": "a767a5043ef52b66120f290aa8127ca96cb00c1a",
+            "dirtyAtStart": [
+              " M js/analyze.js",
+              " M tests/phase7/integration/analysis-entrypoint-dependencies.test.mjs",
+              " M tests/phase7/ownership/roadmap-v8-integration.test.mjs",
+              " M tools/validation/analysis-roadmap/ownership.json",
+              " M tools/validation/analysis-roadmap/ownership.mjs"
+            ],
+            "sourceDiffSha256": "961b12ecc884a3ecf79db96f0055d864c48acff6357ae05ab5a9c640830d21e1",
+            "exitCode": 0,
+            "logSha256": "bbcf7dd14f46584f90c38f6c3ecb54b850236d92dd6da912e2c6c1afb6640add"
+          },
+          {
+            "label": "continuation-route-before",
+            "sourceHead": "d665f4225f3b31a754197c09325a7700c1101542",
+            "dirtyAtStart": [
+              " M tests/phase7/ownership/roadmap-v8-integration.test.mjs"
+            ],
+            "sourceDiffSha256": "f3d662bdc6a52042c214e0698006b0d9ae53ff269b2491c9dde75da1bf669b93",
+            "exitCode": 1,
+            "logSha256": "d091f893573c6ebd3f826d4af3d582de27fe6ca968d8ba435f770a8f3624a796"
+          },
+          {
+            "label": "continuation-route-repaired",
+            "sourceHead": "d665f4225f3b31a754197c09325a7700c1101542",
+            "dirtyAtStart": [
+              " M .circleci/config.yml",
+              " M .github/workflows/phase7-ownership.yml",
+              " M .github/workflows/phase8-ownership.yml",
+              " M tests/phase7/ownership/roadmap-v8-integration.test.mjs",
+              " M tools/validation/analysis-roadmap/ownership.mjs"
+            ],
+            "sourceDiffSha256": "d270131f90e9def96e27d9564c052ed64486835e102f5bfbc61da710eb77f8b2",
+            "exitCode": 0,
+            "logSha256": "65d7b3dac7cc8793ca38053a8965fb0f54024b3e7e29650356d110d92583f2a8"
+          },
+          {
+            "label": "inherited-call-ownership",
+            "sourceHead": "64b6c3efd4c335dc03d28a7db760dc190a42057f",
+            "dirtyAtStart": [
+              " M tests/phase7/ownership/roadmap-v8-integration.test.mjs",
+              " M tools/validation/analysis-roadmap/ownership.json",
+              " M tools/validation/analysis-roadmap/ownership.mjs"
+            ],
+            "sourceDiffSha256": "7e257a19277047e3b3a9d5034fb3dd61e14bc86e57e0dd8cfa2895c780b4313a",
+            "exitCode": 0,
+            "logSha256": "2f0f1da8def2f0db167c4f05273330149b8cbe41f349859643a6eb839cdca5ae"
+          },
+          {
+            "label": "continuation-inventory-committed",
+            "sourceHead": "e6f694e89e2ff14a6cd7bc1c8921c0c6f8e3b635",
+            "dirtyAtStart": [],
+            "sourceDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "exitCode": 0,
+            "logSha256": "be90b22c3d7cc4c9a572ee22b0eaea6ca0dc3b55d1570905dd6a6f95f1220f6f"
+          },
+          {
+            "label": "summary-contracts-committed",
+            "sourceHead": "e6f694e89e2ff14a6cd7bc1c8921c0c6f8e3b635",
+            "dirtyAtStart": [],
+            "sourceDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "exitCode": 0,
+            "logSha256": "dc9c5abb6e216c579e70e588899382041756cead3bb656543aa83abc721ab6d8"
+          },
+          {
+            "label": "stage2-native-restored",
+            "sourceHead": "e6f694e89e2ff14a6cd7bc1c8921c0c6f8e3b635",
+            "dirtyAtStart": [],
+            "sourceDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "exitCode": 1,
+            "logSha256": "0f372c6175d540da84a6384d0bc48e5c8bb2bd418fcc0e23773f5102e8ef59a2"
+          },
+          {
+            "label": "stage2-x86-child-environment",
+            "sourceHead": "e6f694e89e2ff14a6cd7bc1c8921c0c6f8e3b635",
+            "dirtyAtStart": [],
+            "sourceDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "exitCode": 1,
+            "logSha256": "7c611ecd71cb662a4d821fd5485eef44385834aae91eb13dc5b85274ecee936b"
+          }
+        ],
+        "generatedHashes": {
+          "first": {
+            "userscript/hex.user.template.js": "34c21bff9eec050dcb123379fd1c45ac3d2f399576c4c237aac47e4fd188caf7",
+            "userscript/release-version.json": "b7c5ede6a9caf3a83cb7920318f2c95b90a7efd122fbd9847a3ffa097530196c"
+          },
+          "second": {
+            "userscript/hex.user.template.js": "34c21bff9eec050dcb123379fd1c45ac3d2f399576c4c237aac47e4fd188caf7",
+            "userscript/release-version.json": "b7c5ede6a9caf3a83cb7920318f2c95b90a7efd122fbd9847a3ffa097530196c"
+          },
+          "identical": true
+        },
+        "remoteOwnership": {
+          "head": "e6f694e89e2ff14a6cd7bc1c8921c0c6f8e3b635",
+          "phase7": "SUCCESS",
+          "phase8": "SUCCESS",
+          "receipt": "evidence/analysis-remaining-20260914/remote-checks-e6f.json"
+        },
+        "inheritedSourceUnchangedFrom": "d792b212ed85f1d01734cb190caf441ab23f091d",
+        "inheritedPathsRegistered": [
+          "js/blocks-base.js",
+          "tests/phase4/issue-3911-blocks-base-call-arg-provenance.test.mjs"
+        ],
+        "independentReview": "Old R2 issue repaired; current-head independent approval remains pending"
+      }
     }
   },
   "integrationFollowupHistory": [
