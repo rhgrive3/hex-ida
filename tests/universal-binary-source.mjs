@@ -135,6 +135,15 @@ async function testIssue48To60Regressions() {
   assert.equal(cstring.length, cstringSize - 1);
   assert.ok(cstringSubarrayCalls <= 4, `sparse cstring used ${cstringSubarrayCalls} subarray calls for ${cstringSize} cached bytes`);
 
+  const missingCStringSparse = new SparseByteBuffer(512n);
+  missingCStringSparse.readAheadSize = 512;
+  missingCStringSparse.add(0n, Uint8Array.from([0x41, 0x42]));
+  assert.throws(
+    () => new ByteView(missingCStringSparse).cstring(0, 512),
+    (error) => error?.code === 'BINARY_SOURCE_RANGE_MISSING' && error.offset === 2n && error.length === 1n,
+    'sparse cstring batching must not widen a cache miss beyond the next byte',
+  );
+
   let parserPasses = 0;
   const stagedSource = new MemoryByteSource(new Uint8Array(4096), { maxReadLength: 64 });
   const staged = await parseSourceRanges(stagedSource, (backing) => {

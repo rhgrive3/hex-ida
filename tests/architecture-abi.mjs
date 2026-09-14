@@ -91,11 +91,24 @@ const region = { vmAddr:BASE, size:0x100n };
   assert.equal(unknownCall.evidence, 'conservative-aapcs64');
   assert.deepEqual(classifyCallArguments({}), unknownCall, 'public legacy export must preserve AAPCS64 classification');
 
-  const insn = { callPrototype:{ args:[{ type:'int' }, { type:'double', abiClass:'fp' }], returnType:'double' } };
+  // Exact scalar arguments require owner-supplied widths; type labels alone
+  // cannot bypass the canonical AAPCS64 unknown-layout contract.
+  const insn = { callPrototype:{ args:[{ type:'int', bits:32, bytes:4 }, { type:'double', abiClass:'fp', bits:64, bytes:8 }], returnType:'double', returnBits:64 } };
   const classified = AAPCS64_ABI.classifyArguments(insn);
   assert.equal(classified.arguments[0].reg, 'x0');
   assert.equal(classified.arguments[1].reg, 'v0');
   assert.deepEqual(AAPCS64_ABI.classifyCallReturn(insn), { reg:'v0', bits:64 });
+  assert.equal(classified.arguments[0].bits, 32);
+  assert.equal(classified.arguments[1].bits, 64);
+  assert.deepEqual(classifyCallArguments(insn), classified, 'legacy facade must keep explicit scalar layout');
+
+  const unproved = AAPCS64_ABI.classifyArguments({ callPrototype:{ args:[{ type:'int' }, { type:'double', abiClass:'fp', bits:64, bytes:8 }] } });
+  assert.equal(unproved.partial, true);
+  assert.equal(unproved.arguments[0].location, 'unknown');
+  assert.equal(unproved.arguments[0].reason, 'scalar-width-size-not-proven');
+  assert.equal(unproved.arguments[1].location, 'unknown', 'an unknown preceding argument blocks exact subsequent allocation');
+  assert.equal(unproved.arguments[1].reason, 'preceding-argument-layout-not-proven');
+  assert.ok(unproved.arguments.every((argument) => argument.exact === false && argument.reg == null));
   assert.equal(AAPCS64_ABI.classifyCallReturn({ callPrototype:{ returnType:'int', returnBits:-1, returnsValue:true } }), null);
   assert.equal(AAPCS64_ABI.classifyCallReturn({ callPrototype:{ returnType:'double', returnBits:Number.POSITIVE_INFINITY, returnsValue:true } }), null);
   assert.equal(AAPCS64_ABI.classifyFunctionReturn({ functionPrototype:{ returnType:'int', returnBits:1.5, returnsValue:true } }), null);

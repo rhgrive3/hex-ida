@@ -122,9 +122,9 @@ function fixture(sectionIndex, companion = null, options = {}) {
   const image = {
     warnings: [],
     libraries: [],
-    metadata: { machine: 62 },
+    metadata: { machine: 62, ...(options.sectionTableAuthority ? { elfSectionTableAuthority: options.sectionTableAuthority } : {}) },
     segments: [segment],
-    sections: [],
+    sections: options.sections ?? [],
     symbols: [],
     imports: options.seedImport === true ? [{
       name: 'mystery',
@@ -180,7 +180,10 @@ test('PT_DYNAMIC SHN_XINDEX without companion remains unknown, not an import', (
 
 test('PT_DYNAMIC SHN_XINDEX with truncated or invalid companion remains unknown', () => {
   assertUnknown(fixture(SHN_XINDEX, 'truncated'), 'truncated-companion');
-  assertUnknown(fixture(SHN_XINDEX, 0xff10), 'invalid-extended-index');
+  // #4197: the companion is a full 32-bit section index, so reserved-range
+  // values are not intrinsically invalid. This fixture has no section table
+  // proving index 0xff10; preserve the precise range diagnostic and unknown.
+  assertUnknown(fixture(SHN_XINDEX, 0xff10), 'out-of-range-section-index-65296');
 });
 
 test('version metadata does not promote an unresolved symbol into an existing import', () => {
@@ -225,5 +228,27 @@ test('PT_DYNAMIC known section identity remains a definite export', () => {
     assert.equal(image.imports.length, 0);
     assert.equal(image.exports.length, 1);
     assert.equal(image.exports[0].name, 'mystery');
+  }
+});
+
+// The 32-bit companion may legitimately name an actual section at an index
+// which would be reserved in the 16-bit st_shndx field (gABI / #4197).
+test('PT_DYNAMIC extended index is exact only with admissible section-table evidence', () => {
+  const index = 0xff10;
+  const sections = [{ index: 0 }, { index }];
+  const image = fixture(SHN_XINDEX, index, {
+    sections,
+    sectionTableAuthority: { declared: true, valid: true },
+  });
+  assert.equal(image.symbols[0].defined, true);
+  assert.equal(image.symbols[0].sectionIndex, index);
+  assert.equal(image.imports.length, 0);
+  assert.equal(image.exports.length, 1);
+
+  for (const invalidOptions of [
+    { sections: [{ index: 0 }, { index: 1 }], sectionTableAuthority: { declared: true, valid: true } },
+    { sections, sectionTableAuthority: { declared: true, valid: false } },
+  ]) {
+    assertUnknown(fixture(SHN_XINDEX, index, invalidOptions), `out-of-range-section-index-${index}`);
   }
 });
