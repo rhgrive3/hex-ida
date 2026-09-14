@@ -88,6 +88,87 @@ function boundedLimit(value, fallback = 100, max = 500) {
 const DEFAULT_MAX_ENTRIES = 256;
 const DEFAULT_MAX_AGE_MS = 30 * 60 * 1000;
 
+// Observation admission is a trust boundary: a cached record's evidence was
+// verified against the exact content admitted here, so the store must own an
+// immutable snapshot instead of a caller reference (#8826). The budgets below
+// keep that ownership fix from becoming a new resource-exhaustion boundary:
+// a result that cannot be snapshotted inside them is admitted fail-closed as
+// non-cacheable and non-evidence-authoritative rather than aliased.
+const SNAPSHOT_MAX_DEPTH = 64;
+const SNAPSHOT_MAX_NODES = 200_000;
+const SNAPSHOT_MAX_STRING_CHARS = 1_000_000;
+const SNAPSHOT_MAX_TOTAL_CHARS = 4_000_000;
+const SNAPSHOT_SCALAR_METADATA_KEYS = ['truncated', 'reason'];
+
+function ownSnapshot(value) {
+  const clones = new Map();
+  const ancestors = new Set();
+  const budget = { nodes: 0, chars: 0 };
+  function walk(input, depth) {
+    if (depth > SNAPSHOT_MAX_DEPTH) throw new Error('observation-snapshot-too-deep');
+    if (input === null) return null;
+    const kind = typeof input;
+    if (kind === 'boolean' || kind === 'number' || kind === 'undefined') return input;
+    if (kind === 'bigint') return `0x${input.toString(16)}`;
+    if (kind === 'string') {
+      if (input.length > SNAPSHOT_MAX_STRING_CHARS) throw new Error('observation-snapshot-string-limit');
+      budget.chars += input.length;
+      if (budget.chars > SNAPSHOT_MAX_TOTAL_CHARS) throw new Error('observation-snapshot-string-limit');
+      return input;
+    }
+    if (kind !== 'object') throw new Error('observation-snapshot-unavailable');
+    if (Array.isArray(input)) {
+      // arrays fall through below
+    } else {
+      const prototype = Object.getPrototypeOf(input);
+      if (prototype !== Object.prototype && prototype !== null) throw new Error('observation-snapshot-unavailable');
+    }
+    if (ancestors.has(input)) throw new Error('observation-snapshot-cycle');
+    const existing = clones.get(input);
+    if (existing) return existing;
+    budget.nodes += 1;
+    if (budget.nodes > SNAPSHOT_MAX_NODES) throw new Error('observation-snapshot-budget');
+    ancestors.add(input);
+    let copy;
+    if (Array.isArray(input)) {
+      copy = [];
+      clones.set(input, copy);
+      for (let i = 0; i < input.length; i += 1) {
+        copy.push(walk(input[i], depth + 1));
+        budget.nodes += 1;
+        if (budget.nodes > SNAPSHOT_MAX_NODES) throw new Error('observation-snapshot-budget');
+      }
+      // Bounded-scan markers ride on non-enumerable array properties; keep
+      // them inside the same owned snapshot so a cache hit or detail read
+      // cannot lose the completeness signal the evidence was created with.
+      for (const key of SNAPSHOT_SCALAR_METADATA_KEYS) {
+        if (input[key] !== undefined) {
+          Object.defineProperty(copy, key, {
+            value: walk(input[key], depth + 1),
+            enumerable: false,
+            configurable: false,
+            writable: false,
+          });
+        }
+      }
+    } else {
+      copy = {};
+      clones.set(input, copy);
+      for (const [key, item] of Object.entries(input)) {
+        Object.defineProperty(copy, key, {
+          value: walk(item, depth + 1),
+          enumerable: true,
+          configurable: false,
+          writable: false,
+        });
+      }
+    }
+    ancestors.delete(input);
+    return Object.freeze(copy);
+  }
+  return walk(value, 0);
+}
+
 const SCOPE_WIDTH = Object.freeze({ selection: 0, function: 1, neighborhood: 2, auto: 3, binary: 3, project: 3, runtime: 3 });
 
 export function assertScopeAccess(record, requestedScope = null, requestedBoundary = null) {
@@ -212,7 +293,22 @@ export class ObservationStore {
 
   put({ tool, arguments: args = {}, fullResult, functionIdentity = null, deterministic = true, cacheable = deterministic, extraBinding = {}, effectiveScope = null, scopeBoundary = null } = {}) {
     const binding = this.binding(extraBinding);
-    const cacheKey = deterministic && cacheable ? this.cacheKey(tool, args, extraBinding) : null;
+    // Admit an owned, deeply frozen snapshot (#8826): a caller that keeps and
+    // mutates the result object must never be able to change what a later
+    // cache hit or detailRef resolution presents as previously verified data.
+    let admittedResult = fullResult;
+    let admittedArgs = args;
+    let snapshotOwned = true;
+    try {
+      admittedResult = ownSnapshot(fullResult);
+      admittedArgs = ownSnapshot(args);
+    } catch {
+      // Fail closed: an unsnapshottable/over-budget result stays observable
+      // for this call only — never cache-reusable and never evidence-
+      // authoritative (the registry enforces the latter half).
+      snapshotOwned = false;
+    }
+    const cacheKey = snapshotOwned && deterministic && cacheable ? this.cacheKey(tool, args, extraBinding) : null;
     if (cacheKey) {
       const existing = this.cache.get(cacheKey);
       if (existing) {
@@ -222,7 +318,7 @@ export class ObservationStore {
     this.sequence += 1;
     const id = `obs_${binding.key}_${this.sequence.toString(36)}_${shortHash(`${Date.now()}:${Math.random()}`)}`;
     const record = {
-      id, tool: String(tool || 'unknown'), arguments: args, fullResult, binding,
+      id, tool: String(tool || 'unknown'), arguments: admittedArgs, fullResult: admittedResult, snapshotOwned, binding,
       binaryIdentity: binding.binaryIdentity,
       functionIdentity: functionIdentity == null ? null : textIdentity(functionIdentity),
       effectiveScope: typeof effectiveScope === 'string' && effectiveScope ? effectiveScope : null,
