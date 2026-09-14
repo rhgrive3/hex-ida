@@ -181,6 +181,36 @@
     return s;
   }
 
+  /*
+   * Bounded decode for NUL-terminated load-command strings (the dylib
+   * install-name family, #8776). Unlike the 16-byte fixed segment/section
+   * fields above, a dylib command name spans the rest of one structurally
+   * accepted command up to the worker's 4 MiB HEADER_MAX, and the old
+   * char-by-char cstr() assembled it with one immutable concatenation per
+   * byte: a ~3 MiB admitted command retained >100 MiB of rope and aborted
+   * the worker even though the *input* was inside its own read cap. The NUL
+   * terminator and the budgets are validated BEFORE any string is built; an
+   * unterminated name is rejected fail-closed (never laundered into a
+   * prefix), and a name beyond the per-string or aggregate retained budget
+   * marks load-command string metadata capped instead of blessing partial
+   * identity. decodeLatin1/budgetedDecodeLatin1 are shared with the #8745
+   * string-table path so the two cannot diverge again.
+   */
+  const LC_NAME_MAX = 256 * 1024;        // one install name beyond any legitimate Mach-O
+  const LC_STRINGS_MAX = 1024 * 1024;    // aggregate retained load-command names per slice
+
+  function lcName(u8, off, end, budget) {
+    let p = off;
+    while (p < end && u8[p] !== 0) p++;
+    if (p >= end) return null;           // unterminated inside the command: fail closed, not "capped"
+    if (p - off > LC_NAME_MAX) {
+      budget.capped = true;
+      if (!budget.reason) budget.reason = 'lc-name-budget';
+      return null;
+    }
+    return budgetedDecodeLatin1(u8, off, p, budget);
+  }
+
   // Mach-O string-table entries are NUL-terminated and are bounded only by the
   // string table itself: the format has no 1024-byte symbol-name cap. Read to
   // the first NUL inside the table and fail closed when the entry is not
@@ -347,6 +377,7 @@
     const end = hdrSize + sizeofcmds;
     let textVM = null, textFileOff = null;
     const threadEntries = [];
+    const lcStrings = createStringDecodingBudget(LC_STRINGS_MAX);
 
     for (let i = 0; i < ncmds; i++) {
       if (off + 8 > end) { info.diagnostics.push('truncated load-command header'); break; }
@@ -445,7 +476,11 @@
         case LC.LOAD_WEAK_DYLIB:
         case LC.REEXPORT_DYLIB: {
           info.dylibCount++; const nameOff=dv.getUint32(off+8,true);
-          if(nameOff>=24&&off+nameOff<commandEnd){const value=cstr(u8,off+nameOff,commandEnd-(off+nameOff));if(value)info.dylibs.push(value);} break;
+          if(nameOff>=24&&off+nameOff<commandEnd){
+            const value=lcName(u8,off+nameOff,commandEnd,lcStrings);
+            if(value==null) info.diagnostics.push(lcStrings.capped?'dylib install name exceeds the decoded-name budget':'unterminated dylib install name');
+            else if(value) info.dylibs.push(value);
+          } break;
         }
         case LC.SYMTAB: info.symtab={symoff:dv.getUint32(off+8,true),nsyms:dv.getUint32(off+12,true),stroff:dv.getUint32(off+16,true),strsize:dv.getUint32(off+20,true)}; break;
         case LC.DYSYMTAB: info.dysymtab={indirectsymoff:dv.getUint32(off+56,true),nindirectsyms:dv.getUint32(off+60,true)}; break;
@@ -463,6 +498,8 @@
     }
 
     info.textVM=textVM; info.textFileOff=textFileOff;
+    info.loadCommandStringsCapped=lcStrings.capped;
+    info.loadCommandStringsReason=lcStrings.reason||null;
     const align=instructionAlignment(architecture);
     const execSegments=info.segments.filter((seg)=>seg.validMapping && !!(seg.initprot&4) && seg.vmsize>0n);
     const validPc=(pc)=>pc!=null && pc%align===0n && execSegments.some((seg)=>inRange(pc,seg.vmaddr,seg.vmsize));

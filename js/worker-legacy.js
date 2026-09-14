@@ -454,6 +454,9 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
   const info = slice.info;
   const base = slice.offset;
   let capped = false;
+  // Hostile dylib install names refused before materialization (#8776): the
+  // load-command string view is incomplete and must be reported as such.
+  if (info.loadCommandStringsCapped) capped = true;
   let sym = null;
 
   if (info.symtab && info.symtab.nsyms > 0) {
