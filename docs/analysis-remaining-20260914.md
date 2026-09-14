@@ -216,3 +216,8 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
   専用LLDBの起動設定はASLRを有効のままとした。静的fixtureと検査assertionは変更なし。
   native fixtureの起動・停止が成功（`native-lldb-aslr-enabled.log`）。
   実行設定とwrapper hashは `lldb18-runtime-configuration.json` に保存した。
+
+- 実際の477 changed-fileを照合し、既存 `js/blocks-base.js` と #3911の
+  call引数来歴検査だけがmanifest未宣言と確認した。両ファイルは作業開始時の
+  親head `d792b212e` と同一で、今回ソース変更はしていない。
+  既存integration ownerへ2つのexact pathを登録し、削除時の拒否回帰を追加した。

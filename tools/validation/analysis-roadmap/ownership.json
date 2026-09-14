@@ -510,6 +510,8 @@
       ".github/workflows/ghidra-differential.yml",
       "js/arm64.js",
       "js/analyze.js",
+      "js/blocks-base.js",
+      "tests/phase4/issue-3911-blocks-base-call-arg-provenance.test.mjs",
       "docs/analysis-remaining-20260914.md"
     ]
   }
