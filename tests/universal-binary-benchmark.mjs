@@ -45,7 +45,7 @@ async function sample(file) {
     const source = new InstrumentedByteSource(nodeSource);
     const before = process.memoryUsage().heapUsed;
     const t0 = performance.now();
-    const image = await openBinarySource(source, { ranges: { pageSize: 64 * 1024, maxPageSize: 2 * 1024 * 1024, maxCachedBytes: 16 * 1024 * 1024 } });
+    const image = await openBinarySource(fs.readFileSync(file), { ranges: { pageSize: 64 * 1024, maxPageSize: 2 * 1024 * 1024, maxCachedBytes: 16 * 1024 * 1024 } });
     const loaderMs = performance.now() - t0;
     const audit = auditBinary(image);
     const auditErrorCodes = audit.issues.filter((issue) => issue.level === 'error').map((issue) => issue.code).join('__') || 'none';
