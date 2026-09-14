@@ -60,14 +60,13 @@ async function sample(file) {
       return best;
     };
     const describeOwner = (mapping) => mapping
-      ? mapping.name + '@' + mapping.address.toString(16) + '/' + mapping.size.toString(16) + ':f' + mapping.fileOffset.toString(16) + '/' + mapping.fileSize.toString(16)
+      ? mapping.name + '@' + mapping.address.toString(16) + '/s' + mapping.size.toString(16) + '/f' + mapping.fileSize.toString(16)
       : 'none';
-    const auditErrorDetails = audit.issues.filter((issue) => issue.level === 'error').map((issue) => {
+    const auditErrorDetails = audit.issues.filter((issue) => issue.level === 'error').slice(0, 1).map((issue) => {
       const values = [...String(issue.message).matchAll(/0x[0-9A-Fa-f]+/g)].map((match) => BigInt(match[0]));
       const address = issue.code === 'offset-address-roundtrip' ? values[1] : values[0];
-      return issue.code + ':current=' + describeOwner(image._virtualMappingAt(address)) + ':legacy=' + describeOwner(legacyOwner(address));
-    }).join('__').replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 70);
-    const auditDiagnosticDir = path.join(repoRoot, 'benchmark-diagnostic');
+      return issue.code + ':L=' + describeOwner(legacyOwner(address)) + ':C=' + describeOwner(image._virtualMappingAt(address));
+    }).join('__').replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 170);    const auditDiagnosticDir = path.join(repoRoot, 'benchmark-diagnostic');
     fs.mkdirSync(auditDiagnosticDir, { recursive: true });
     const auditDiagnosticName = String(path.basename(file)) + '-audit-' + String(audit.errors) + '-' + auditErrorCodes.slice(0, 120) + '-' + auditErrorDetails + '.json';
     fs.writeFileSync(path.join(auditDiagnosticDir, auditDiagnosticName), JSON.stringify({ errors: audit.errors, issues: audit.issues.filter((issue) => issue.level === 'error') }));
