@@ -196,7 +196,28 @@ function filterUnresolvedConditionalFallthrough(fragment, bundle, controlTargets
     const targets = node.targets.slice(0, -1);
     if (!targets.length) return node;
     changed = true;
-    return { ...node, targets };
+    // A missing fallthrough must not leave a 1-target conditional-branch:
+    // that shape is explicitly rejected by the #4585 cardinality guard.
+    // Preserve the known taken edge as a partial branch without fabricating
+    // a false edge to another block; the SSA validator already treats a
+    // branch carrying conditional CFG edges as a normalized conditional
+    // with one unresolved successor (#8922).
+    return {
+      ...node,
+      kind: 'branch',
+      inputs: [],
+      targets,
+      completeness: 'partial',
+      unknown: {
+        reason: 'semantic-cfg-missing-fallthrough',
+        categories: ['control'],
+        knownParts: {
+          takenTargets: targets,
+          conditionInputs: Array.isArray(node.inputs) ? node.inputs : [],
+          expectedFallthroughAddress: fallthroughAddress == null ? null : String(fallthroughAddress),
+        },
+      },
+    };
   });
   return {
     ...fragment,

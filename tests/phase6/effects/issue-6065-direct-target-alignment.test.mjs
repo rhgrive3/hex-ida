@@ -132,9 +132,16 @@ function analyzeAlignmentCase(immediate, binaryId) {
 }
 
 test('6065: MachineEffects-to-Semantic-IR preserves real alignment faults only', () => {
+  // Single-instruction slices are truncated by construction (no fallthrough
+  // block), so the control node is a partial branch carrying the taken edge
+  // plus missing-fallthrough evidence instead of a 2-target
+  // conditional-branch (#8922). Fault evidence must survive that shape.
+  const controlNode = (pipeline) => pipeline.semanticIr.nodes.find((node) =>
+    node.kind === 'conditional-branch'
+    || (node.kind === 'branch' && node.unknown?.reason === 'semantic-cfg-missing-fallthrough'));
   const aligned = analyzeAlignmentCase(8, 'issue-6065-aligned');
   const alignedMachine = aligned.pipeline.machineEffects[0];
-  const alignedBranch = aligned.pipeline.semanticIr.nodes.find((node) => node.kind === 'conditional-branch');
+  const alignedBranch = controlNode(aligned.pipeline);
   assert.ok(alignedBranch, 'aligned branch must reach Semantic IR');
   assert.deepEqual(alignedMachine.possibleFaults, []);
   assert.deepEqual(alignedBranch.attributes.machineEffects.possibleFaults ?? [], []);
@@ -143,7 +150,7 @@ test('6065: MachineEffects-to-Semantic-IR preserves real alignment faults only',
 
   const misaligned = analyzeAlignmentCase(2, 'issue-6065-misaligned');
   const misalignedMachine = misaligned.pipeline.machineEffects[0];
-  const misalignedBranch = misaligned.pipeline.semanticIr.nodes.find((node) => node.kind === 'conditional-branch');
+  const misalignedBranch = controlNode(misaligned.pipeline);
   assert.ok(misalignedBranch, 'misaligned branch must reach Semantic IR');
   assert.equal(misalignedMachine.possibleFaults.length, 1);
   assert.deepEqual(misalignedBranch.attributes.machineEffects.possibleFaults, misalignedMachine.possibleFaults,
