@@ -161,8 +161,19 @@ test('C4-03 native x86 counted loop retains certified descriptions and its compl
   assert.equal(map.budget.maxOriginsPerEntity, 1024);
   assert.equal(map.counts.ledgerTruncated, 0);
   assert.equal(map.counts.provenanceLoss, 0);
-  const dense = Object.values(map.entities).find(entity => Object.values(entity.origins).reduce((n, values) => n + values.length, 0) === 525);
-  assert.ok(dense, 'retain every actually observed origin, not a truncated 512-entry subset');
+  // The native producer now carries additional origins. Pin the real dense
+  // entity and all of its source members, not the old presentation count 525.
+  const size = entity => Object.values(entity.origins).reduce((n, values) => n + values.length, 0);
+  const dense = Object.values(map.entities).sort((left, right) => size(right) - size(left))[0];
+  assert.ok(size(dense) > 512, 'exercise the original truncation boundary');
+  const source = result.lines[dense.lineIndex].source;
+  for (const key of ['rows', 'addresses', 'ir']) {
+    assert.deepEqual((source[key] || []).map(String).filter(value => !dense.origins[key].map(String).includes(value)), [],
+      `missing original ${key} on the dense entity`);
+  }
+  for (const [key, prefix] of [['ssaDefs', 'def'], ['ssaUses', 'use']]) for (const value of source[key] || []) {
+    assert.ok(dense.origins.ssaRefs.includes(`${prefix}:${value}`), `missing original ${prefix}:${value}`);
+  }
   for (const [kind, values] of Object.entries({ row:dense.origins.rows, addr:dense.origins.addresses,
     ir:dense.origins.ir, ssa:dense.origins.ssaRefs })) {
     for (const value of values) assert.ok(map.reverse[`${kind}:${value}`].includes(dense.entityKey));
@@ -201,24 +212,24 @@ test('C4-03 native counted loop preserves all normalization witnesses within the
   assert.equal(map.budget.maxTransformRecords, 2048);
   assert.equal(map.counts.ledgerTruncated, 0);
   assert.equal(map.counts.provenanceLoss, 0);
-  // Current main projects non-constant address arithmetic as a canonical
-  // `bin:add` node so SCCP cannot discard the index operand.  The pre-main
-  // MOV projection emitted three additional selection witnesses; the current
-  // representation intentionally has the corresponding 935/1188/925 totals.
-  assert.equal(map.ledger.length + map.counts.groupedExpressionWitnesses, 935);
-  assert.equal(map.counts.sourceRecordWitnesses, 1188);
-  assert.equal(map.counts.attachedPublicStateNormalizations, 253);
+  // Compiler inputs stay frozen; witness counts follow the actual canonical
+  // producer inventory. The old 935/1188/925 totals describe an earlier public
+  // representation. Compare every current source record and normalization
+  // event below so neither regrouping nor a dropped witness can hide a gap.
   const expressions = renderHistory.renderExpressionWitnesses(map);
-  assert.equal(result.rewriteProof.length, 925);
+  assert.ok(result.rewriteProof.length > 900, 'retain the native dense-history fixture');
   assert.equal(expressions.length, result.rewriteProof.length, 'no expression consumer mapping is coalesced');
   assert.deepEqual(expressions.map(record => [record.rule, record.before, record.after, record.valueId]),
     result.rewriteProof.map(record => [record.rule, record.before, record.after, record.valueId ?? null]));
   const witnesses = renderHistory.renderPublicStateNormalizations(map);
-  assert.equal(witnesses.length, 261);
   const history = facade.readFacadeStateNormalization(result.ir) || projector.readProjectedStateNormalization(result.ir);
   assert.ok(history);
+  assert.ok(history.events.length > 250, 'retain the full native normalization inventory');
   assert.deepEqual(witnesses.map(record => record.publicStateTransition.ordinal).sort((a,b) => a-b),
     history.events.map(event => event.ordinal).sort((a,b) => a-b));
+  assert.equal(map.counts.sourceRecordWitnesses,
+    map.ledger.reduce((count, record) => count + renderHistory.renderRecordWitnesses(record).length
+      + renderHistory.renderRecordWitnesses(record).filter(witness => witness.publicNormalization).length, 0));
   for (const witness of witnesses) {
     assert.deepEqual(witness.producedRefs, []);
     assert.deepEqual(witness.removedRefs, []);

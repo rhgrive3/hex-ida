@@ -244,7 +244,7 @@ export class ByteView {
     let value = 0n;
     let shift = 0n;
     for (let i = 0; i < byteLimit; i++, p++) {
-      if (p >= hardEndBig) throw new BinaryReadError(ULEB128 crosses bounded substream', this.base + p);
+      if (p >= hardEndBig) throw new BinaryReadError('ULEB128 crosses bounded substream', this.base + p);
       this.check(p, 1);
       const b = this.u8(p);
       value |= BigInt(b & 0x7f) << shift;
@@ -274,7 +274,7 @@ export class ByteView {
       for (let i = 0; i < byteLimit; i++, p++) {
         if (p >= hardEnd) throw new BinaryReadError('SLEB128 crosses bounded substream', this.base + BigInt(p));
         this.check(p, 1);
-      b = this.u8(p);
+        b = this.u8(p);
         value |= BigInt(b & 0x7f) << shift;
         shift += 7n;
         if ((b & 0x80) === 0) {

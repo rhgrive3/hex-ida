@@ -7,16 +7,24 @@ import { decompileSemantic, readSemanticConditionalRegions } from '../../../js/d
 import { prepareConditionalRegionStructure } from '../../../js/decompiler/phase8/conditional-region-structure.js';
 import { prepareConditionalRegionReachability } from '../../../js/decompiler/phase8/conditional-region-reachability.js';
 
-export function conditionalRegionFixture({ kind = 'cbz', predicate = 'xor', after = null, mutate = () => {}, armEffect = () => {} } = {}) {
+export function conditionalRegionFixture({ kind = 'cbz', predicate = 'xor', after = null, loopCount = 2,
+  mutate = () => {}, armEffect = () => {} } = {}) {
   const f = fixture('reachability'); f.block(0);
   const input = f.opaque(8); input.reg = 'x0'; input.index = 0;
   const value = typeof predicate === 'function' ? predicate(f, input)
     : predicate === 'xor' ? f.binary('xor', input, input, 8) : input;
+  const initialCount = after === 'bounded-loop' ? f.constant(BigInt(loopCount), 8) : null;
   f.conditionalBranch(value, 1, 2);
   f.block(1); const yes = f.constant(1n, 8); armEffect(f, yes); f.branch(3);
   f.block(2); const no = f.constant(2n, 8); armEffect(f, no); f.branch(3);
   f.block(3); const merged = f.phi([[1, yes], [2, no]], 8);
-  if (after === 'branch' || after === 'loop') {
+  if (after === 'bounded-loop') {
+    const count = f.phi([[1, initialCount], [2, initialCount], [4, initialCount]], 8);
+    f.conditionalBranch(count, 4, 5);
+    f.block(4); const next = f.binary('sub', count, f.constant(1n, 8), 8);
+    f.closePhi(count, 4, next); f.branch(3);
+    f.block(5); f.ret();
+  } else if (after === 'branch' || after === 'loop') {
     f.conditionalBranch(input, 4, 5);
     f.block(4); if (after === 'loop') f.branch(3); else f.branch(6);
     f.block(5); if (after === 'loop') f.ret(); else { f.branch(6); f.block(6); f.ret(); }
@@ -32,7 +40,7 @@ export function conditionalRegionFixture({ kind = 'cbz', predicate = 'xor', afte
     if (term.op === 'ret') term.args = [{ value:merged }];
   }
   // The loop re-enters the PHI join, so give its backedge the exact incoming value.
-  if (after === 'loop') merged.def.incoming.push({ from:4, value:merged });
+  if (after === 'loop' || after === 'bounded-loop') merged.def.incoming.push({ from:4, value:merged });
   mutate(ir);
   const seed = decompileSemantic({ name:'reachability', instructions:ir.instructions, calls:[] },
     { ir, deterministicTransforms:true, phase8PrepareRegionProof:true });

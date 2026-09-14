@@ -175,6 +175,28 @@ test('public conditional publication rejects a final lifecycle callback mutation
   assert.equal(actual.proofOptimization.adopted, 1);
 });
 
+test('public predicate projection accepts complete finite loops and retains their PHIs and CFG', async () => {
+  const f = fixture({ kind:'cbnz', after:'bounded-loop', loopCount:2 });
+  const before = structuredClone(f.ir), initial = f.projection.pseudocode;
+  const output = await optimizeSemanticDecompilation(f.projection, { ...options, conditionalBranch:f.region.branch });
+  assert.equal(output.proofOptimization.status, 'complete', output.proofOptimization.reason);
+  assert.equal(output.proofOptimization.adopted, 1);
+  assert.equal(output.proofOptimization.scope, 'conditional-predicate-only');
+  assert.equal(output.proofOptimization.armErasureAuthorized, false);
+  assert.ok(isProducerProjection(output));
+  assert.equal(output.renderProvenance.completeness, 'complete');
+  assert.notEqual(output.pseudocode, initial);
+  assert.equal(f.projection.pseudocode, initial);
+  assert.equal(output.cAst.body.length, f.projection.cAst.body.length);
+  assert.deepEqual(structuredClone(f.ir), before);
+  const incomplete = fixture({ kind:'cbnz', after:'bounded-loop', loopCount:3 });
+  const refused = await optimizeSemanticDecompilation(incomplete.projection, { ...options, conditionalBranch:incomplete.region.branch });
+  assert.equal(refused.proofOptimization.status, 'partial');
+  assert.equal(refused.proofOptimization.reason, 'loop-budget');
+  assert.equal(refused.cAst, incomplete.projection.cAst);
+  assert.equal(refused.proofOptimization.adopted, 0);
+});
+
 test('public conditional requests reject copied branches, missing preparation and mixed scalar authority', async () => {
   for (const alter of [f=>({ conditionalBranch:{ ...f.region.branch } }),
     () => ({ conditionalBranch:null }), () => ({ targets:[] }), () => ({ phase8RegionErasurePlan:{} }),
@@ -364,6 +386,9 @@ test('late projection callback mutation cannot refresh a genuine condition proof
 
 test('the final projection callback cannot publish a stale header after earlier checks passed', async () => {
   const f = await committed();
+  // Immutable producer data can be certified once. Compare two warm reads so
+  // the chosen callback is the actual final boundary in both projections.
+  applyPhase8Projection(f.projection, f.stage.analysis, { ...f.opts, scopedTransformEvidence:true });
   let finalCall = 0;
   const baseline = applyPhase8Projection(f.projection, f.stage.analysis, { ...f.opts,
     scopedTransformEvidence:true, shouldAbort() { finalCall++; return false; } });

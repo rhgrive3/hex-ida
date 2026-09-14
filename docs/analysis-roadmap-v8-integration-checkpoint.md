@@ -7656,3 +7656,63 @@ tree `0cf7c63c1f286ebd73d2c8a057ec72c2d668655b` へ照合し直した。
 142件とNode22 + CI=trueのcanonical core (41.6秒)、lint、module boundariesを再検証した。
 分割版の生成物も2回buildして一致を確認する。最新のsource/hash/log記録は監査JSONの
 `integrationFollowup.splitDyldReconciliation` に保持し、直前の単一ファイル修復の計測とは分ける。
+
+## 2026-09-14 C4 finite-loop and producer-history continuation
+
+同じ PR #7036 を継続し、`87548c7f7e2e89b39b12b3c6117e892436c71dc0` から進めた。
+並行到着した `13320afa1eb0a96991b24911e42101e474482784` の maxSlide=0 修正を保持し、
+さらに `962678eee50d23d225d37948d4803fbbbf575aee` のバイナリ負荷対策6ファイルを
+blob・commit・tree SHAで照合して採用した。入力treeは
+`e4fab47ed453a23d7fac037a4d5f53c6a3fba1f0`、mainは引き続き
+`2b9c1218e0c5bb394aab5b219adc7c253a764451`。他の作業を上書きしていない。
+
+既存canonical executorが全経路を完走する場合のみ、選択領域の下流にある有限ループを
+入口到達性へ接続した。0/1/2回の陽性と、block再訪3回・path/step/branch制限の陰性を検証。
+上限到達と選択分岐の再通過では結果全体を拒否し、帰納証明やarm/PHI/CFG削除の許可を付与しない。
+実emitterの反転選択をprivateな来歴から引き継ぎ、現在の変数名を使う条件式にも反映する。
+親の内部に全node/exitが収まり、header文のCALL/STORE/UNKNOWN/CLOBBERを外へ移動しない
+入れ子ループだけ既存emitterで構造化する。cross-level exitとheader効果の否定検査を保持。
+
+同一読取内の来歴検査を共有し、後続observerの実行後に共有入力を再確認する。
+実producerの不変データ認証だけを引き継ぎ、mutableなconsumer/IRの検証は継続する。
+代表関数の283 consumerを保持した観測でdescriptor読取は1,017,774から160,997へ減少した。
+コピー・後からの入力変更・IR置換を拒否し、aggregate認証予算と旧representation件数の3回帰を修正。
+この測定は標準120msの受入ではない。型付きledger addressを保持し、native scalar陽性には
+実際のaligned RET targetを与えた。unknown/misaligned RETと非total UDIVは採用しない。
+
+追加readerのULEB128診断文字列に欠けていた引用符を修復した。benchmark自体の閾値、
+固定入力hash、sample数は変更せず、6パスの所有権と削除・範囲外の拒否を補完した。
+canonical binary検査も通過。462変更パスについてphase7/phase8の所有権を照合した。
+旧Stage2基準とmainの真正なGit object/祖先関係を復元し、denominatorと独立report契約の
+metadata不足を解消した。この復元は実機oracleの実行証拠を新しく作るものではない。
+
+最新runtimeのNode 22.23.2 / CI=trueによる検査:
+
+| 範囲 | 結果 |
+|---|---|
+| core | c4-publish-core: PASS (41.2s) |
+| provenance | c4-publish-provenance: PASS (187.6s) |
+| structuring | c4-publish-structuring: PASS (4.7s) |
+| performance | c4-publish-performance: PASS (26.3s) |
+| phase4-binary | c4-publish-phase4-binary: PASS (13.4s) |
+| frozen-corpus-final | PASS (653.7s): all original 135 functions, fixed baseline identity, direct safety/provenance and strict readability comparisons; no goto regression. |
+
+control/ownership重点検査、projection-origin全ファイル、lint、module boundaries、
+evidence writersも通過。キャンセル検査は初回認証と再利用時のcallback数を混同せず、
+同じ認証状態の最後のcallbackで実際にabortし、公開を拒否することを確認した。
+canonical生成を最終sourceで2回実行し、tracked生成物が一致した。
+`hex.user.template.js`: `9a0840d8ee8335fe19394eeee0da23c758b53eab512ed723451b3b37aadc42b7`。
+`release-version.json`: `d208ded4f1e66b45a4c7ce1e181f159f80cc992f65c6e2826d6a27641e936e51`。
+実行範囲、source hash、log hashは監査JSONの `integrationFollowup.c4Continuation` を参照。
+
+全体受入は未完了。途中でsourceが更新された全Phase8診断は1811.7秒で2件失敗した。
+キャンセル検査はその後修復し、184型変換case×3 strategyは単独で通過したが、
+全体実行の型変換拒否は解消済みと認定しない。途中の全体実行を最終headの証拠に使わない。
+Git metadata復元後のcanonical checkも70.0秒でmachine-effects-contractの18ファイルが失敗。
+指定LLVMとPlaywright実行ファイルの不足は残る。13320afaのCircleCI benchmark failureは
+小さい実測reportと実3入力を取得できておらず、原因指標と追加修正後の合格は未確認。
+962678eeのPR fast gateはsource syntax段階で失敗したため、今回修復後のexact-head CIが必要。
+CodeRabbitのDraftによるskipを独立レビュー成功へ読み替えない。
+全C4のflags/fault/exception/領域削除、120ms、独立レビュー、Apple実機/active runtime/
+signing/releaseの受入も残る。**23 finding / 21 FR、CHECKPOINT-LOCKED、
+fullRoadmapComplete:false、transformAuthorization:falseを維持し、マージは未実施。**

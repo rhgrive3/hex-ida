@@ -51,7 +51,13 @@ test('v8 public optimizer retains an issued projection after successful replay',
  }
 });
 test('v8 public optimizer cancellation at the last observer does not publish',async()=>{
- const f=projectionFixture();let calls=0;const completed=await optimizeSemanticDecompilation(f.result,{...f.options,isCancelled:()=>{calls++;return false;}});
+ const f=projectionFixture();
+ // The actual producer retains immutable-data certificates after its first
+ // projection. Compare the final callback on two equally warmed reads; the
+ // cold read has extra certification work and is not a stable callback count.
+ const warmed=await optimizeSemanticDecompilation(f.result,f.options);
+ assert.equal(warmed.proofOptimization.status,'complete');
+ let calls=0;const completed=await optimizeSemanticDecompilation(f.result,{...f.options,isCancelled:()=>{calls++;return false;}});
  assert.equal(completed.proofOptimization.status,'complete');let count=0;const ac=new AbortController();
  const stopped=await optimizeSemanticDecompilation(f.result,{...f.options,signal:ac.signal,isCancelled:()=>{if(++count===calls)ac.abort();return false;}});
  assert.equal(ac.signal.aborted,true);assert.equal(stopped.proofOptimization.status,'partial');assert.equal(stopped.proofOptimization.adopted,0);

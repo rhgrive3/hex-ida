@@ -484,11 +484,44 @@ test('whole-function edges and downstream branch endpoints are checked beyond th
   }
 });
 
-test('a downstream loop requires a loop proof despite a complete initial region census', async () => {
+test('an unresolved downstream loop cannot publish a bounded path proof', async () => {
   const f = example({ after:'loop' });
   assert.equal(f.structure.status, 'complete', f.structure.reason);
-  const result = await f.run(); assert.equal(result.reason, 'loop-reachability-proof-required');
+  const result = await f.run(); assert.equal(result.reason, 'loop-budget');
+  assert.equal(result.status, 'partial'); assert.deepEqual(result.arms, []);
   assert.equal(readConditionalRegionReachability(result, f.ir, identity), null);
+});
+
+test('complete finite loop exploration retains PHI updates and proves both arm verdicts', async () => {
+  for (const kind of ['cbz', 'cbnz']) for (const loopCount of [0, 1, 2]) {
+    const f = example({ kind, after:'bounded-loop', loopCount });
+    assert.equal(f.structure.status, 'complete', f.structure.reason);
+    const before = structuredClone(f.ir);
+    const result = await f.run();
+    assert.equal(result.status, 'complete', result.reason);
+    assert.equal(result.scope, 'bounded-canonical-executor-entry-path-feasibility');
+    assert.equal(result.executionCoverage.kind, 'complete-finite-unrolling');
+    assert.equal(result.executionCoverage.blockVisitsPerBlock, loopCount + 1);
+    assert.equal(result.terminalPathCount, 2);
+    assert.deepEqual(result.executionCoverage.branchVisits, [1, 1]);
+    assert.equal(result.executionCoverage.inductionProved, false);
+    assert.deepEqual(result.arms.map(arm => arm.verdict), kind === 'cbz' ? ['refuted', 'proved'] : ['proved', 'refuted']);
+    assert.ok(result.arms.find(arm => arm.verdict === 'refuted').counterexampleValidated);
+    assert.equal(result.transformAuthorization, false);
+    assert.equal(readConditionalRegionReachability(result, f.ir, identity), result);
+    assert.deepEqual(structuredClone(f.ir), before);
+  }
+});
+
+test('loop coverage must include every path and cannot raise the canonical unroll ceiling', async () => {
+  for (const [loopCount, limits] of [[3, {}], [2, { maxBlockVisits:2 }], [2, { maxBlockVisits:4 }],
+    [2, { maxPaths:1 }], [2, { maxSteps:4 }], [2, { maxBranches:2 }]]) {
+    const f = example({ after:'bounded-loop', loopCount });
+    const result = await f.run(limits);
+    assert.equal(result.status, 'partial', JSON.stringify(limits));
+    assert.deepEqual(result.arms, []);
+    assert.equal(readConditionalRegionReachability(result, f.ir, identity), null);
+  }
 });
 
 test('child execution cannot overdraw the shared work or allocation budget', async () => {

@@ -134,10 +134,12 @@ test('v8 production optimizer commits, projects and preserves source/IR identity
  assert.ok(r.proofOptimization.phase8OptimizeStage>0);
 });
 test('v8 true machine->decompiler entry optimizes an MBA cancellation; no helper-only wiring',async()=>{
- const base=0x1000n,lines=['eor x2, x0, x1','eor x3, x1, x0','eor x0, x2, x3','ret'];
+ // Give the real RET an aligned canonical target. An unconstrained return
+ // register cannot stand in for a proof of normal completion.
+ const base=0x1000n,lines=['eor x2, x0, x1','eor x3, x1, x0','eor x0, x2, x3','mov x30, #0x4000','ret'];
  const raw=lines.map((t,row)=>{const i=t.indexOf(' ');return {row,address:base+BigInt(row*4),mn:i<0?t:t.slice(0,i),ops:i<0?'':t.slice(i+1)};});
  const rowOfAddress=a=>Number((a-base)/4n);
- const model=buildSemanticModel(raw,{startRow:0,endRow:3,rowOfAddress});
+ const model=buildSemanticModel(raw,{startRow:0,endRow:raw.length-1,rowOfAddress});
  const opts={addr:base,name:'cancel_mba',rowOfAddress,beginner:false,returnType:'uint64',decompilerTimeBudgetMs:5000};
  const baseline=decompile(model,opts);assert.match(baseline.pseudocode,/\^/);
  const r=await decompileWithProof(model,opts,{identity:{...identity,architecture:'arm64'},abiId:'aapcs64',candidateStrategy:'equality-saturation',timeoutMs:1000});

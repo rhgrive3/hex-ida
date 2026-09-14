@@ -320,6 +320,7 @@ function retainStatementRenderLine(node, inst, detail, ctx, control = null, resu
     const canonical = Object.freeze({ isCurrent:() => history.canonical.isCurrent() && inputs.matches() });
     if (history.edges < 0 || ctx.opts.shouldAbort?.() || !canonical.isCurrent() || !output.matches()) throw new Error(`${prefix}-binding-unavailable`);
     (control ? controlRenderLines : statementRenderLines).set(node, Object.freeze({ ir:ctx.ir, instruction:inst, canonical, records, resultBinding,
+      ...(control ? { selection:detail } : {}),
       isCurrent:() => canonical.isCurrent() && output.matches() }));
   } catch { history.edges = 0; history.reasons.add(`${prefix}-binding-unavailable`); }
 }
@@ -1392,7 +1393,18 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
 
     const loop = ctx.graph.loopByHeader.get(bi);
     const term = blockTerm(block);
-    if (loop && !state.activeLoop) {
+    // Reuse the same natural-loop emitter inside a containing loop. Every
+    // inner node and exit must remain in the parent's body; a cross-level exit
+    // still needs an explicit edge rather than an inner break with new meaning.
+    const nestedLoop = loop && state.activeLoop && loop.header !== state.loopHeader
+      && loop.nodes.size < state.activeLoop.nodes.size
+      && [...loop.nodes].every(node => state.activeLoop.nodes.has(node))
+      && [...loop.exits].every(exit => state.activeLoop.nodes.has(exit))
+      // loopRender emits header statements before the loop. A newly nested
+      // loop must not move a repeated statement out of it. LOAD expressions
+      // remain in the condition/body and are evaluated on each iteration.
+      && block.insts.every(inst => ![OP.CALL,OP.STORE,OP.UNKNOWN,OP.CLOBBER].includes(inst.op));
+    if (loop && (!state.activeLoop || nestedLoop)) {
       emitBlockStatements(block, out, ctx, indent);
       const lr = loopRender(loop, block, term, ctx, state, indent, stop);
       if (lr) { out.push(...lr.lines); bi = lr.next; continue; }

@@ -56,6 +56,26 @@ test('v8 ownership rejects blanket allowances, duplicate owners and relabeled fr
   assert.throws(() => validateRoadmapManifest(manifest), /duplicate/);
 });
 
+test('concurrent binary work has exact ownership without granting benchmark threshold ownership', () => {
+  const manifest = loadRoadmapManifest(), assignments = validateRoadmapManifest(manifest);
+  const union = [...assignments.keys()];
+  for (const file of ['js/binary/macho-indirect-symbols.js','js/binary/model.js',
+    'js/binary/reader.js','js/binary/source-reader.js',
+    'tests/universal-binary-benchmark.mjs','tests/universal-binary-source.mjs']) {
+    assert.equal(assignments.get(file),'integration');
+    const missing = structuredClone(manifest);
+    missing.owners.integration = missing.owners.integration.filter(path => path !== file);
+    for (const phase of ['phase7','phase8']) {
+      assert.throws(() => validateRoadmapInventory(BRANCH,phase,union,missing),/undeclared/);
+    }
+  }
+  for (const file of ['tools/benchmark/compare.mjs','js/binary/unreviewed.js']) {
+    const widened = structuredClone(manifest);
+    widened.owners.integration.push(file);
+    assert.throws(() => validateRoadmapManifest(widened),/outside integration owner/);
+  }
+});
+
 test('v8 ownership fails closed on wrong branch, missing phase and incomplete inventory', () => {
   const files = Object.values(loadRoadmapManifest().owners).flat();
   assert.throws(() => validateRoadmapInventory(`${BRANCH}-other`, 'phase7', files));

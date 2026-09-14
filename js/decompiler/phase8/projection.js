@@ -1,6 +1,6 @@
 import { isProducerProjection, producerExpressionToken, readProducerInputExpressions, producerUsesProofOnlyRewrites } from '../pipeline.js';
 import { readExpressionHistoryConsumer, readStoreSpellingProducer, readInitialControlConsumer, readCallResultSpellingProducer,
-  expressionHistoryRecordCount, readCopiedConditionalRegions } from '../pipeline-core.js';
+  expressionHistoryRecordCount, readCopiedConditionalRegions, readProjectionDataObserver } from '../pipeline-core.js';
 import { expressionOriginHistory } from '../rewrite/engine.js';
 import { readStackPhiHistoryConsumer } from '../passes/stack-phi-recovery.js';
 import { readStackReturnHistoryConsumer } from '../passes/stack-return-recovery.js';
@@ -198,7 +198,7 @@ export function readProjectedRegionControl(result, branch, header, originalHeade
   } catch { return null; }
 }
 
-function prepareProjectionHistory(result, expressions, conditions, records, opts, reasons, proofExpressions) {
+function prepareProjectionHistory(result, expressions, conditions, records, opts, reasons, proofExpressions, dataObserver) {
   const consumers = [...new Set([...expressions, ...conditions].filter(Boolean))];
   const cap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
   const budget = opts.renderProvenanceBindingBudget;
@@ -207,7 +207,7 @@ function prepareProjectionHistory(result, expressions, conditions, records, opts
     return null;
   }
   try {
-    const observation = observeProjectionData(
+    const observation = dataObserver.captureCertifiedData(
       [result.cAst.body, result.semanticAst.conditions, result.rewriteProof, records], opts.shouldAbort);
     if (observation.metrics.edges > cap(budget?.maxEdges, PROJECTION_LIMITS.edges)) {
       reasons.add('projection-history-budget');
@@ -221,7 +221,7 @@ function prepareProjectionHistory(result, expressions, conditions, records, opts
       conditions:result.semanticAst.conditions, rewriteProof:result.rewriteProof,
       producerDisposition:result.expressionHistoryBinding,
       expressions:Object.freeze(expressions), conditionConsumers:Object.freeze(conditions),
-      consumers:Object.freeze(consumers), records, observation, proofExpressions };
+      consumers:Object.freeze(consumers), records, observation, proofExpressions, dataObserver };
   } catch {
     reasons.add('projection-history-observation-unavailable');
     return null;
@@ -943,9 +943,13 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     const candidates = [...new Set(rows.map((row) => conditions.get(row)).filter(Boolean))];
     // The structured emitter may invert a branch or reuse a post-store load.
     // Render-only mapping must not replace that expression with the raw taken
-    // branch predicate. Condition rewrites remain on the explicit rewrite path.
+    // branch predicate. Ordinary projection retains the actual emitter's
+    // polarity while using current variable spellings. The private producer
+    // binding supplies inversion; caller metadata cannot grant it. The proved
+    // condition path above has its own polarity and equivalence binding.
     if (!renderOnly && candidates.length === 1) {
-      const expression = printExpression(candidates[0]);
+      const printed = printExpression(candidates[0]);
+      const expression = controlSources[index]?.conditionInverted ? `!(${printed})` : printed;
       const keyword = String(node.text || '').includes('if (') ? 'if' : String(node.text || '').includes('while (') ? 'while' : null;
       if (keyword) {
         const beforeText = node.text, control = controlSources[index];
@@ -983,7 +987,8 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
               const source = mergeSource(node.source, candidates[0].source);
               record = Object.freeze({ rule:'replace-initial-control-condition', phase:'phase8-render',
                 before:`control:${keyword}:initial-condition`, after:`control:${keyword}:canonical-condition`,
-                evidence:Object.freeze({ kind:'observed-control-render-not-cfg-equivalence', detail:'actual owned condition spelling replacement; not a new CFG/flag equivalence proof' }),
+                evidence:Object.freeze({ kind:'observed-control-render-not-cfg-equivalence', conditionInverted:control.conditionInverted,
+                  detail:'actual owned condition spelling replacement with retained branch polarity; not a new CFG/flag equivalence proof' }),
                 originHistory:expressionOriginHistory({ source }, { source }),
               });
               controlRecords.push(record);
@@ -1047,7 +1052,8 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
     if (memo.get(expression) === expression) proofExpressions.set(expression,binding);
   }
   const pendingHistory = prepareProjectionHistory(result, expressionConsumers, conditionBindings,
-    retainedRecords, opts, historyReasons, proofExpressions);
+    retainedRecords, opts, historyReasons, proofExpressions,
+    inherited?.dataObserver || readProjectionDataObserver(original.cAst) || createProjectionIrObserver());
   const adoptedCse = records.some(record => record.kind === 'proved-scalar-cse');
   const requiresCompleteHistory = adoptedCse || dceRecords.length > 0 || conditionWrites > 0;
   if (requiresCompleteHistory && (!pendingHistory || historyReasons.size)) return original;

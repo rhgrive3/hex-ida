@@ -42,8 +42,10 @@ export async function prepareConditionalRegionReachability(structure, ir, option
     guard.take('workItems', structure.cfgEdges.length + structure.blocks.length);
     if (structure.cfgEdges.some(edge => edge.kinds.some(kind => !ORDINARY.has(kind)))) return reject('nonordinary-function-edge');
     if (structure.blocks.some(block => block.isEntry === true && block !== structure.functionEntry)) return reject('multiple-function-entries');
-    // A terminal-path union is not an induction certificate for a loop. Check
-    // acyclicity of the already-issued CFG inventory, without inventing edges.
+    // Recount cycles for the evidence scope. A cycle is not by itself an
+    // incomplete exploration: the canonical executor may finish every path by
+    // finite unrolling. No path stopped by a visit/step/branch limit is admitted
+    // below, and this never supplies an induction certificate.
     guard.take('allocationUnits', structure.blocks.length * 3 + structure.cfgEdges.length);
     const incoming = new Map(structure.blocks.map(block => [block.index, 0])), outgoing = new Map();
     for (const edge of structure.cfgEdges) {
@@ -60,7 +62,7 @@ export async function prepareConditionalRegionReachability(structure, ir, option
         if (incoming.get(target) === 0) queue.push(target);
       }
     }
-    if (visited !== structure.blocks.length) return reject('loop-reachability-proof-required');
+    const cyclic = visited !== structure.blocks.length;
     const [{ symbolicExecute }, { isExecutionResult, isExecutionSnapshot }, { validateExecutionContract },
       { verifyConditionalEdgeFeasibility }, { createProductionSolverRegistry }, expr, { scalarOperation },
       { prepareCanonicalRegisterStateBindings, prepareCanonicalReturnFaultBindings }] = await Promise.all([
@@ -202,7 +204,7 @@ export async function prepareConditionalRegionReachability(structure, ir, option
       return reject(execution.reason ?? 'incomplete-execution');
     }
     if (execution.assumptions.length || execution.memoryObservationRequests.length) return reject('conditional-execution-assumptions');
-    const terms = [], faultTerms = [], armTerms = { yes:[], no:[] }, traversals = { yes:[], no:[] };
+    const terms = [], faultTerms = [], armTerms = { yes:[], no:[] }, traversals = { yes:[], no:[] }, branchVisits = [];
     for (const [pathIndex, path] of paths.entries()) {
       guard.take('workItems');
       if ((!terminalMode && (path.status !== 'complete' || !isExecutionSnapshot(path.snapshot, guard.identity, ir)
@@ -236,6 +238,7 @@ export async function prepareConditionalRegionReachability(structure, ir, option
           roles.add(step.taken ? 'yes' : 'no');
         }
       }
+      guard.take('allocationUnits'); branchVisits.push(targetVisits);
       for (const role of roles) { armTerms[role].push(term); traversals[role].push(pathIndex); }
     }
     const union = values => values.length ? expr.createConnective('or', ...values) : expr.createBool(false);
@@ -278,9 +281,13 @@ export async function prepareConditionalRegionReachability(structure, ir, option
     guard.check();
     if (!readConditionalRegionStructure(structure, ir, guard.identity, checkedExecutionCurrent)) return reject('stale-proof-input');
     const complete = arms.every(arm => arm.verdict === 'proved' || arm.verdict === 'refuted' && arm.counterexampleValidated);
-    const result = freeze({ version:1, status:complete ? 'complete' : 'partial',
-      scope:'acyclic-canonical-executor-entry-path-feasibility', transformAuthorization:false,
+    const result = freeze({ version:2, status:complete ? 'complete' : 'partial',
+      scope:cyclic ? 'bounded-canonical-executor-entry-path-feasibility' : 'acyclic-canonical-executor-entry-path-feasibility',
+      transformAuthorization:false,
       semanticRegionValidation:'required', arms:freeze(arms), terminalPathCount:paths.length,
+      executionCoverage:freeze({ kind:cyclic ? 'complete-finite-unrolling' : 'complete-acyclic-paths',
+        branchVisits:freeze(branchVisits), blockVisitsPerBlock:execution.metrics.blockVisitsPerBlock,
+        stepsPerPath:execution.metrics.stepsPerPath, inductionProved:false }),
       ...(faultProof ? { terminalFaultQueryHash:faultProof.queryHash, terminalFaultVerdict:faultProof.verdict } : {}),
       domainQueryHash:domain.queryHash, assumptions:freeze([]) });
     if (complete) issued.set(result, { structure, ir, guard, executionCurrent });
