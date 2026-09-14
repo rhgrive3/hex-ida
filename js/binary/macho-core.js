@@ -539,7 +539,11 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
       continue;
     }
     const isUndefinedType = ntype === 0;
-    if (ntype === N_SECT && (sect === 0 || (image.sections.length > 0 && !image.sections.some((section) => section.index === sect)))) {
+    const sectionOrdinalKnown = sect >= 1 && image.sections.some((section) => section.index === sect);
+    if (ntype === N_SECT && !sectionOrdinalKnown) {
+      // Keep the newer specific reason while retaining the historical reason
+      // consumed by the phase12 adversarial contract.
+      markMachOMetadataPartial(image, 'symbol-invalid-section-index');
       markMachOMetadataPartial(image, 'symbol-section-index-out-of-range');
       budget.warn(`Mach-O section symbol ${i} n_sect ${sect} does not resolve to a parsed section`);
       continue;

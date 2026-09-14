@@ -103,6 +103,15 @@ function validateControlProjection(ir, cfg) {
       }
       continue;
     }
+    if (node.kind === 'branch' && node.targets.length === 1
+      && successors.length > 0
+      && successors.every((edge) => edge.to === node.targets[0]
+        && ['branch', 'conditional-true', 'conditional-false', 'fallthrough'].includes(edge.kind))) {
+      // A conditional whose taken and fallthrough destinations are identical
+      // is normalized to an unconditional branch; its CFG may still retain the
+      // two source edge labels while preserving the same sole successor.
+      continue;
+    }
     if (node.kind === 'conditional-branch' && node.targets.length === 1) {
       const target = node.targets[0];
       if (successors.length === 0 || successors.some((edge) => edge.to !== target
