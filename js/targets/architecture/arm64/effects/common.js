@@ -32,16 +32,52 @@ export function canonicalIdentityStringList(value, errorCode) {
 
 // One ordered-source resolver for MachineEffects identity fields, shared by the
 // ARM64 base owners and the ARM64e extension. The first evidence that is
-// actually PRESENT decides, and only a primitive non-empty string is accepted:
-// `String()` must never run on semantic identity, and a present-but-malformed
-// value must not fall through to a later source or a default (#5992, #8815).
+// actually PRESENT decides, and EVERY present value has to be a primitive
+// non-empty string: `String()` must never run on semantic identity, and a
+// malformed value in a later source must not be skipped because an earlier one
+// was well-formed (#5992, #8815, #8834).
 export function canonicalIdentityField(values, { fallback = null, errorCode }) {
+  let resolved = null;
   for (const value of values) {
     if (value === undefined || value === null) continue;
-    return canonicalIdentityString(value, errorCode);
+    const canonical = canonicalIdentityString(value, errorCode);
+    if (resolved === null) resolved = canonical;
   }
+  if (resolved !== null) return resolved;
   if (fallback === null) throw new TypeError(errorCode);
   return fallback;
+}
+
+// The memory and atomic owners used to build their own `{ instructionId, mode,
+// architectureId, dataEndianness, origin }` context with `String()` coercion, so
+// an Array or a custom-toString object collapsed into a canonical-looking
+// identity and reached their `exact` / `exact-with-intrinsic` bundles while the
+// rest of the ARM64 owners already rejected it (#5992, #8834). One shared
+// resolver keeps every owner on the same primitive-only acceptance domain.
+export const ARM64_EFFECT_DATA_ENDIANNESS = 'little';
+
+export function arm64EffectIdentityContext(decoded, context = {}) {
+  const instructionId = canonicalIdentityField(
+    [context?.instructionId, decoded?.instructionId],
+    { errorCode: 'arm64-machine-effects-instruction-id-required' },
+  );
+  return {
+    instructionId,
+    architectureId: canonicalIdentityField(
+      [context?.architectureId, decoded?.architectureId],
+      { fallback: ARM64_ARCHITECTURE_ID, errorCode: 'arm64-machine-effects-architecture-id-invalid' },
+    ),
+    mode: canonicalIdentityField(
+      [context?.mode, decoded?.mode],
+      { fallback: ARM64_MODE, errorCode: 'arm64-machine-effects-mode-invalid' },
+    ),
+    dataEndianness: canonicalIdentityField(
+      [context?.dataEndianness, decoded?.dataEndianness, context?.endian, decoded?.endian],
+      { fallback: ARM64_EFFECT_DATA_ENDIANNESS, errorCode: 'arm64-machine-effects-data-endianness-invalid' },
+    ),
+    origin: context?.origin ?? decoded?.origin ?? { instructionIds: [instructionId] },
+    options: context?.options ?? {},
+  };
 }
 
 

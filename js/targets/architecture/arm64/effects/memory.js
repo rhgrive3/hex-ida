@@ -17,6 +17,7 @@ import {
 } from './addressing.js';
 import { ARM64_ATOMIC_EFFECT_MNEMONICS, isArm64AtomicInstruction, liftArm64AtomicEffects } from './atomic.js';
 import { arm64DecodedEncodingWord } from '../encoding-word.js';
+import { arm64EffectIdentityContext } from './common.js';
 
 export const LEGACY_ARM64_MEMORY_INVENTORY = Object.freeze({
   loads: Object.freeze(['ldr','ldrb','ldrh','ldrsb','ldrsh','ldrsw','ldur','ldurb','ldurh','ldursb','ldursh','ldursw','ldp','ldpsw','ldnp','ldar','ldarb','ldarh','ldxr','ldaxr','ldtr']),
@@ -52,21 +53,9 @@ const WIDTH_OVERRIDE = Object.freeze({
 });
 
 function mnemonicOf(decoded) { if (typeof decoded?.mnemonic !== 'string') return ''; return decoded.mnemonic.trim().toLowerCase(); }
-function contextOf(decoded, context = {}) {
-  const instructionId = String(context.instructionId || decoded?.instructionId || '').trim();
-  if (!instructionId) throw new TypeError('arm64-machine-effects-instruction-id-required');
-  return {
-    instructionId,
-    architectureId: String(context.architectureId || decoded?.architectureId || 'arm64'),
-    mode: String(context.mode || decoded?.mode || 'a64'),
-    dataEndianness: String(context.dataEndianness || decoded?.dataEndianness || context.endian || decoded?.endian || 'little'),
-    origin: context.origin || decoded?.origin || { instructionIds:[instructionId] },
-    options: context.options || {},
-  };
-}
 
 function bundle(decoded, context, body) {
-  const ctx = contextOf(decoded, context);
+  const ctx = arm64EffectIdentityContext(decoded, context);
   return createMachineEffectBundle({
     instructionId:ctx.instructionId,
     architectureId:ctx.architectureId,
@@ -392,7 +381,7 @@ function hasOperandShape(decoded, shape) {
 }
 
 function simpleMemory(decoded, context, mnemonic, isLoad) {
-  const ctx = contextOf(decoded, context);
+  const ctx = arm64EffectIdentityContext(decoded, context);
   if (!hasOperandShape(decoded, ['reg','mem'])) return partial(decoded, context, 'memory instruction operand shape is invalid');
   const reg = dataRegisters(decoded)[0];
   if (!reg) return partial(decoded, context, 'memory instruction data register is missing');
@@ -468,7 +457,7 @@ function simpleMemory(decoded, context, mnemonic, isLoad) {
 }
 
 function pairMemory(decoded, context, mnemonic, isLoad) {
-  const ctx = contextOf(decoded, context);
+  const ctx = arm64EffectIdentityContext(decoded, context);
   if (!hasOperandShape(decoded, ['reg','reg','mem'])) return partial(decoded, context, 'pair memory instruction operand shape is invalid');
   const regs = dataRegisters(decoded).slice(0, 2);
   if (regs.length !== 2) return partial(decoded, context, 'pair memory instruction requires two data registers');
@@ -527,7 +516,7 @@ function pairMemory(decoded, context, mnemonic, isLoad) {
 }
 
 function literalLoad(decoded, context, mnemonic) {
-  const ctx = contextOf(decoded, context);
+  const ctx = arm64EffectIdentityContext(decoded, context);
   if (!hasOperandShape(decoded, ['reg','imm'])) return partial(decoded, context, 'literal load operand shape is invalid');
   const reg = dataRegisters(decoded)[0];
   if (!reg) return partial(decoded, context, 'literal load destination register is missing');
