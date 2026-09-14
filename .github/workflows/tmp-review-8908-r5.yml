@@ -17,6 +17,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
       - name: Repair MethodAccess and blob-content identity
         shell: bash
         run: |
@@ -27,48 +28,74 @@ jobs:
 
           p = Path('js/managed/cil/metadata-definitions.js')
           s = p.read_text()
-          old = """  const FIELD_COMPILER_CONTROLLED = flags => (flags & 0x0007) === 0x0000;
-          const METHOD_COMPILER_CONTROLLED = flags => (flags & 0x0080) !== 0;
-          const assertUniqueKeys = (rows, keyOf, code) => {
-          """
-          new = """  const FIELD_COMPILER_CONTROLLED = flags => (flags & 0x0007) === 0x0000;
-          const METHOD_COMPILER_CONTROLLED = flags => (flags & 0x0007) === 0x0000;
-          const definitionBlobKeys = new Map();
-          const definitionBlobKey = (blobIndex, code) => {
-            if (definitionBlobKeys.has(blobIndex)) return definitionBlobKeys.get(blobIndex);
-            if (!blobHeap) fail(code);
-            const raw = readCilMetadataBlob(blobHeap, blobIndex, code);
-            let hex = '';
-            for (const byte of raw) hex += byte.toString(16).padStart(2, '0');
-            const key = `${raw.length}:${hex}`;
-            definitionBlobKeys.set(blobIndex, key);
-            return key;
-          };
-          const assertUniqueKeys = (rows, keyOf, code) => {
-          """
+
+          old = "  const METHOD_COMPILER_CONTROLLED = flags => (flags & 0x0080) !== 0;"
+          new = "  const METHOD_COMPILER_CONTROLLED = flags => (flags & 0x0007) === 0x0000;"
           if s.count(old) != 1:
-              raise SystemExit(f'identity helper anchor mismatch: {s.count(old)}')
+              raise SystemExit(f'MethodAccess anchor mismatch: {s.count(old)}')
           s = s.replace(old, new, 1)
-          replacements = [
-            ("`F\\u0000${field.declaringTypeToken ?? ''}\\u0000${field.name ?? ''}\\u0000${field.signatureBlobIndex}`",
-             "`F\\u0000${field.declaringTypeToken ?? ''}\\u0000${field.name ?? ''}\\u0000${definitionBlobKey(field.signatureBlobIndex, 'cil-field-signature-blob-invalid')}`"),
-            ("`M\\u0000${method.declaringTypeToken ?? ''}\\u0000${method.name ?? ''}\\u0000${method.signatureBlobIndex}`",
-             "`M\\u0000${method.declaringTypeToken ?? ''}\\u0000${method.name ?? ''}\\u0000${definitionBlobKey(method.signatureBlobIndex, 'cil-methoddef-signature-blob-invalid')}`"),
-            ("`P\\u0000${property.ownerToken ?? ''}\\u0000${property.name ?? ''}\\u0000${property.typeBlobIndex}`",
-             "`P\\u0000${property.ownerToken ?? ''}\\u0000${property.name ?? ''}\\u0000${definitionBlobKey(property.typeBlobIndex, 'cil-property-signature-blob-invalid')}`"),
-          ]
-          for old_key, new_key in replacements:
-              if s.count(old_key) != 1:
-                  raise SystemExit(f'identity key anchor mismatch: {old_key} -> {s.count(old_key)}')
-              s = s.replace(old_key, new_key, 1)
+
+          helper_anchor = "  const assertUniqueKeys = (rows, keyOf, code) => {"
+          helper = textwrap.dedent("""\
+            const sameDefinitionBlob = (left, right) => {
+              if (left.length !== right.length) return false;
+              for (let i = 0; i < left.length; i++) if (left[i] !== right[i]) return false;
+              return true;
+            };
+            const signatureIdentityBuckets = new Map();
+            const assertUniqueSignatureRows = (rows, prefixOf, blobIndexOf, code, blobCode) => {
+              for (const row of rows) {
+                const prefix = prefixOf(row);
+                if (prefix === null) continue;
+                if (!blobHeap) fail(blobCode);
+                const raw = readCilMetadataBlob(blobHeap, blobIndexOf(row), blobCode);
+                // Hash only narrows the exact-byte candidates. A collision never
+                // becomes duplicate authority without the byte-for-byte check.
+                let hash = 0x811c9dc5;
+                for (const byte of raw) hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
+                const bucketKey = `${prefix}\\u0000${raw.length}\\u0000${hash}`;
+                const bucket = signatureIdentityBuckets.get(bucketKey);
+                if (bucket?.some(previous => sameDefinitionBlob(previous, raw))) fail(code);
+                if (bucket) bucket.push(raw);
+                else signatureIdentityBuckets.set(bucketKey, [raw]);
+              }
+            };
+          """)
+          if s.count(helper_anchor) != 1:
+              raise SystemExit(f'identity helper anchor mismatch: {s.count(helper_anchor)}')
+          s = s.replace(helper_anchor, helper + helper_anchor, 1)
+
+          start = s.find("  assertUniqueKeys(fields, field =>")
+          end = s.find("\n  assertUniqueKeys(events, event =>", start)
+          if start < 0 or end < 0:
+              raise SystemExit(f'signature identity block anchors missing: start={start} end={end}')
+          signature_calls = textwrap.dedent("""\
+            assertUniqueSignatureRows(fields,
+              field => FIELD_COMPILER_CONTROLLED(field.accessFlags) ? null
+                : `F\\u0000${field.declaringTypeToken ?? ''}\\u0000${field.name ?? ''}`,
+              field => field.signatureBlobIndex,
+              'cil-field-identity-duplicate', 'cil-field-signature-blob-invalid');
+            assertUniqueSignatureRows(methods,
+              method => METHOD_COMPILER_CONTROLLED(method.accessFlags) ? null
+                : `M\\u0000${method.declaringTypeToken ?? ''}\\u0000${method.name ?? ''}`,
+              method => method.signatureBlobIndex,
+              'cil-methoddef-identity-duplicate', 'cil-method-signature-blob-invalid');
+            assertUniqueSignatureRows(properties,
+              property => `P\\u0000${property.ownerToken ?? ''}\\u0000${property.name ?? ''}`,
+              property => property.typeBlobIndex,
+              'cil-property-identity-duplicate', 'cil-property-signature-blob-invalid');
+          """)
+          # textwrap removes the source's two-space function indentation; restore it.
+          signature_calls = ''.join(('  ' + line if line.strip() else line) for line in signature_calls.splitlines(True))
+          s = s[:start] + signature_calls.rstrip('\n') + s[end:]
           p.write_text(s)
 
           p = Path('tests/phase11/cil/issue-8778-cil-definition-identity.test.mjs')
           s = p.read_text()
           marker = "console.log('[phase11] issue #8778 CIL ECMA-335 duplicate-definition identity tests passed');\n"
           extra = textwrap.dedent("""\
-          // MethodAccess CompilerControlled is access-mask value 0 only. Public|HideBySig
-          // (0x0086) and Private (0x0001) remain ordinary semantic definitions.
+          // MethodAccess CompilerControlled is the access-mask value 0 only.
+          // Public|HideBySig (0x0086) and Private (0x0001) are ordinary methods.
           for (const flags of [0x0086, 0x0001]) {
             const b = buildCil({
               methods: [
@@ -82,7 +109,7 @@ jobs:
               `duplicate MethodDef identity must fail for access flags 0x${flags.toString(16)}`);
           }
 
-          // CompilerControlled MethodDef rows (access mask 0) are the sole exemption.
+          // Actual CompilerControlled methods (access mask 0) are the exemption.
           {
             const b = buildCil({
               methods: [
@@ -95,8 +122,21 @@ jobs:
             assert.doesNotThrow(() => parseCil(b, { binaryId: 'ccmethod' }));
           }
 
-          // Same signature payload stored at distinct #Blob offsets is still the same
-          // Field semantic identity; heap placement is not authority.
+          // Two distinct #Blob offsets with identical MethodDef signature bytes
+          // are still the same semantic signature.
+          {
+            const b = buildCil({
+              methods: [
+                { name: 'SameSig', flags: 0x0006, signature: [0x00, 0x00, 0x01], body: [0x2a] },
+                { name: 'SameSig', flags: 0x0006, signature: [0x00, 0x00, 0x01], body: [0x2a] },
+              ],
+              types: [{ name: 'T', namespace: 'N', fieldList: 1, methodList: 1 }],
+              imageSize: 0x6000, metadataSize: 0x5000,
+            }).bytes;
+            assert.throws(() => rawParse(b, { binaryId: 'dup-method-content' }), /cil-methoddef-identity-duplicate/);
+          }
+
+          // The same content rule applies to fields.
           {
             const b = buildCil({
               methods: [],
@@ -110,8 +150,8 @@ jobs:
             assert.throws(() => rawParse(b, { binaryId: 'dup-field-content' }), /cil-field-identity-duplicate/);
           }
 
-          // Property signatures use the same content identity rule. The two one-byte
-          // payloads below are deliberately stored at different heap offsets 8 and 10.
+          // Property signatures use the same exact-content rule. Each one-byte
+          // payload occupies a different #Blob heap entry (offsets 8 and 10).
           {
             const properties = new Uint8Array(12);
             const pv = new DataView(properties.buffer);
@@ -143,12 +183,19 @@ jobs:
               raise SystemExit(f'test marker mismatch: {s.count(marker)}')
           p.write_text(s.replace(marker, extra + marker, 1))
           PY
+
       - name: Verify focused CIL identity regressions
         shell: bash
         run: |
           set -euo pipefail
           timeout 20s node --check js/managed/cil/metadata-definitions.js
           timeout 40s node tests/phase11/cil/issue-8778-cil-definition-identity.test.mjs
+          {
+            echo '### #8908 R5 repair'
+            echo '- MethodAccess access-mask regression: PASS'
+            echo '- exact #Blob content identity regression: PASS'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Commit repaired head and remove workflow
         shell: bash
         run: |
