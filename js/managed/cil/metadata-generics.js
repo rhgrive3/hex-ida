@@ -31,11 +31,15 @@ export function readCilGenericMetadata(bytes, view, layout, stringsStream, defs,
     textCache.set(value, valueText);
     return valueText;
   };
-  const readRows = (table, decode) => Array.from({ length: counts[table] }, (_, i) => {
+  const readRows = (table, decode) => {
+    const count = counts[table];
+    if (budget) budget.preflightRows(count, rowSizes[table]);
+    return Array.from({ length: count }, (_, i) => {
     if (budget) budget.chargeRow(rowSizes[table]);
     const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
-    return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
-  });
+      return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
+    });
+  };
 
   const ownerSize = codedIndexSize(counts, [0x02, 0x06], 1);
   const genericParams = readRows(0x2a, pos => {

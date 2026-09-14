@@ -123,6 +123,19 @@ export function createCilMetadataBudget(options = {}) {
       if (heapBytes > limits.maxEstimatedHeapBytes) fail('cil-metadata-resource-limit-heap');
       checkpoint();
     },
+    preflightRows(count, encodedByteLength = 0) {
+      if (!Number.isSafeInteger(count) || count < 0
+          || !Number.isSafeInteger(encodedByteLength) || encodedByteLength < 0)
+        fail('cil-metadata-resource-limit-row-size');
+      const nextRows = rows + count;
+      if (!Number.isSafeInteger(nextRows) || nextRows > limits.maxRows)
+        fail('cil-metadata-resource-limit-rows');
+      const retainedBytes = 256 + encodedByteLength * 4;
+      const addedHeapBytes = retainedBytes * count;
+      if (!Number.isSafeInteger(retainedBytes) || !Number.isSafeInteger(addedHeapBytes)
+          || heapBytes + addedHeapBytes > limits.maxEstimatedHeapBytes)
+        fail('cil-metadata-resource-limit-heap');
+    },
     chargeRow(encodedByteLength = 0) {
       if (!Number.isSafeInteger(encodedByteLength) || encodedByteLength < 0)
         fail('cil-metadata-resource-limit-row-size');

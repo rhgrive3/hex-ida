@@ -14,6 +14,14 @@ console.log('[phase11] running issue #8699 retained-row heap budget tests...');
   assert.throws(() => budget.chargeRow(8), /cil-metadata-resource-limit-heap/);
 }
 
+{
+  const budget = createCilMetadataBudget({ resourceBudget: {
+    maxRows: 10_000_000, maxEstimatedHeapBytes: 1024, maxWork: 1000, deadlineMs: 10_000,
+  } });
+  assert.throws(() => budget.preflightRows(1_000_000, 8), /cil-metadata-resource-limit-heap/,
+    'table-sized result allocation must be rejected before Array.from materializes it');
+}
+
 function genericParamAliasFixture(n) {
   const name = 'g';
   const pre = buildCil({ leadingStrings: [name] });

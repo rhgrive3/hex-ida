@@ -118,11 +118,15 @@ function readManifestSecurity(bytes, view, layout, stringsStream, blobStream, de
     textCache.set(value, decoded);
     return decoded;
   };
-  const readRows = (table, decode) => Array.from({ length: counts[table] || 0 }, (_, i) => {
+  const readRows = (table, decode) => {
+    const count = counts[table] || 0;
+    if (budget) budget.preflightRows(count, rowSizes[table]);
+    return Array.from({ length: count }, (_, i) => {
     if (budget) budget.chargeRow(rowSizes[table]);
     const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
-    return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
-  });
+      return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
+    });
+  };
   const blobHeap = blobStream?.size ? bytes.subarray(blobStream.offset, blobStream.offset + blobStream.size) : null;
 
   const validManifestFileName = name => {

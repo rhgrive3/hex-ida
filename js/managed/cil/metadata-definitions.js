@@ -130,11 +130,15 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     if (valueText == null || valueText.length === 0) fail(code);
     return valueText;
   };
-  const readRows = (table, decode) => Array.from({ length: counts[table] }, (_, i) => {
+  const readRows = (table, decode) => {
+    const count = counts[table];
+    if (budget) budget.preflightRows(count, rowSizes[table]);
+    return Array.from({ length: count }, (_, i) => {
     if (budget) budget.chargeRow(rowSizes[table]);
     const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
-    return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
-  });
+      return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
+    });
+  };
   const methods = readRows(6, pos => ({
     rva: view.getUint32(pos, true), implFlags: view.getUint16(pos + 4, true),
     accessFlags: view.getUint16(pos + 6, true), name: text(index(pos + 8, s)),
@@ -161,6 +165,7 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
   // blob authority (signature stays null) instead of collapsing two distinct
   // constructed types into one opaque token; structural blob violations fail
   // closed.
+  if (budget && counts[0x1b]) budget.preflightRows(counts[0x1b], rowSizes[0x1b]);
   const typeSpecs = counts[0x1b] ? Array.from({ length: counts[0x1b] }, (_, i) => {
     if (budget) budget.chargeRow(rowSizes[0x1b]);
     const rid = i + 1, pos = offsets[0x1b] + i * rowSizes[0x1b];
