@@ -165,10 +165,19 @@ export class SolverSession {
           }
         );
       } else {
-        result = createSolverResult({
-          ...result,
-          lifecycle: { ...(result.lifecycle || {}), publishable: result.lifecycle?.publishable !== false },
-        });
+        // Canonicalization runs AFTER the lifecycle has already been committed
+        // (settled / timer cleared / removed from _inFlight). A provider model
+        // that survives the budget but still throws here must never strand the
+        // promise with no timer and no in-flight record left (#8975); resolve a
+        // deterministic provider-failure instead.
+        try {
+          result = createSolverResult({
+            ...result,
+            lifecycle: { ...(result.lifecycle || {}), publishable: result.lifecycle?.publishable !== false },
+          });
+        } catch {
+          result = this._result(SOLVER_STATUS.PROVIDER_FAILURE, 'solver-result-canonicalization-failed');
+        }
       }
       record.resolve(result);
     };
