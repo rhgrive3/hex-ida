@@ -94,5 +94,10 @@ if (binaryPath) {
 }
 
 for (const row of checks) console.log(`${row.ok ? 'PASS' : 'FAIL'} ${row.name}: ${row.detail}`);
+if (failed) {
+  const failedNames = checks.filter((row) => !row.ok).map((row) => row.name.replace(/[^A-Za-z0-9._-]+/g, '-')).join('__') || 'unknown';
+  fs.mkdirSync('benchmark-diagnostic', { recursive: true });
+  fs.writeFileSync(`benchmark-diagnostic/compare-${failedNames.slice(0, 240)}.json`, JSON.stringify({ failed: checks.filter((row) => !row.ok) }));
+}
 if (!accuracyPath && !compilerTruthPath && !binaryPath) throw new Error('at least one current report is required');
 if (failed) process.exit(1);
