@@ -166,40 +166,9 @@ export class ByteView {
       const nul = span.indexOf(0);
       raw = nul < 0 ? span : span.subarray(0, nul);
     } else {
-      // A sparse backing must scan in bounded blocks. Calling u8() one byte
-      // at a time turns every uncached character into a separate source read.
-      const blockSize = Number.isSafeInteger(this.bytes.readAheadSize) && this.bytes.readAheadSize > 0
-        ? this.bytes.readAheadSize
-        : 64 * 1024;
-      const blockSizeBig = BigInt(blockSize);
-      let p = start - (start % blockSizeBig);
-      raw = this.bytes.subarray(o, o);
-      while (p < end) {
-        const blockEnd = p + BigInt(Math.min(blockSize, Number(end - p)));
-        let span;
-        try {
-          span = this.bytes.subarray(exposedOffset(p), exposedOffset(blockEnd));
-        } catch (error) {
-          if (error?.code !== 'BINARY_SOURCE_RANGE_MISSING') throw error;
-          const missing = typeof error.offset === 'bigint' ? error.offset : BigInt(error.offset ?? p);
-          if (missing > start) {
-            const cached = this.bytes.subarray(exposedOffset(p), exposedOffset(missing));
-            const cachedNul = cached.indexOf(0, Number(start - p));
-            if (cachedNul >= 0) {
-              raw = this.bytes.subarray(o, exposedOffset(p + BigInt(cachedNul)));
-              break;
-            }
-          }
-          throw error;
-        }
-        const nul = span.indexOf(0, Number(start - p));
-        if (nul >= 0) {
-          raw = this.bytes.subarray(o, exposedOffset(p + BigInt(nul)));
-          break;
-        }
-        p = blockEnd;
-        raw = this.bytes.subarray(o, exposedOffset(p));
-      }
+      let p = start;
+      while (p < end && this.u8(p) !== 0) p++;
+      raw = this.bytes.subarray(o, exposedOffset(p));
     }
     try { return new TextDecoder('utf-8', { fatal: false }).decode(raw); }
     catch {
