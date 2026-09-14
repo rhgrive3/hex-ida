@@ -2,6 +2,8 @@ import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedExceptionRegionId, createManagedMethodId, createVMOperationId } from '../shared/identity.js';
 import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
 import { createCilLocalTypeResolver } from './call-signatures.js';
+import { cilTokenText } from './metadata-layout.js';
+import { cilImageLookups } from './image-lookup.js';
 import { cilStackValueWidth } from './stack-width.js';
 import { decodeCilInstructionBoundary } from './instruction-boundary.js';
 
@@ -107,20 +109,17 @@ function resolveCilStaticFieldInitialization(cilImage, token, currentMethod) {
   if (table !== CIL_FIELD_DEF_TABLE) {
     return { resolved:false, reason:'cil-static-field-token-unresolved' };
   }
-  if (!Array.isArray(cilImage.methods)) {
+  // Row identity lookups are indexed once per parsed image instead of being
+  // rescanned per method instruction (#8791).
+  const lookups = cilImageLookups(cilImage);
+  if (!lookups.hasMethodRows) {
     return { resolved:false, reason:'cil-method-definitions-unavailable' };
   }
-  const field = (cilImage.fields ?? []).find(
-    (row) => row?.token === `0x${token.toString(16).padStart(8, '0')}`,
-  );
+  const field = lookups.fieldByToken.get(`0x${token.toString(16).padStart(8, '0')}`);
   if (!field) return { resolved:false, reason:'cil-static-field-row-missing' };
-  const ownerType = (cilImage.types ?? []).find(
-    (row) => row?.token === field.declaringTypeToken,
-  );
+  const ownerType = lookups.typeByToken.get(field.declaringTypeToken);
   if (!ownerType) return { resolved:false, reason:'cil-static-field-owner-type-missing' };
-  const initializers = cilImage.methods.filter(
-    (row) => row?.declaringTypeToken === ownerType.token && row?.name === '.cctor',
-  );
+  const initializers = ownerType.token == null ? [] : lookups.initializersByOwner.get(ownerType.token) ?? [];
   if (initializers.length > 1) {
     return { resolved:false, reason:'cil-type-initializer-ambiguous' };
   }
@@ -141,16 +140,11 @@ function resolveCilStaticFieldInitialization(cilImage, token, currentMethod) {
   };
 }
 
-function cilTokenText(token) {
-  const numeric = typeof token === 'number' ? token >>> 0 : Number.parseInt(String(token), 16);
-  return Number.isSafeInteger(numeric) ? `0x${(numeric >>> 0).toString(16).padStart(8, '0')}` : null;
-}
-
 function resolveCilCalleeIdentity(cilImage, token) {
   const tokenText = cilTokenText(token);
   if (!tokenText) return null;
-  const rows = Array.isArray(cilImage.methods) ? cilImage.methods : [];
-  if (!rows.some((row) => cilTokenText(row?.token) === tokenText)) return null;
+  const lookups = cilImageLookups(cilImage);
+  if (!lookups.hasMethodRows || !lookups.methodTokens.has(tokenText)) return null;
   return { tokenText, methodId: createManagedMethodId(cilImage.moduleId, tokenText) };
 }
 
@@ -171,9 +165,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
   const methodId = createManagedMethodId(cilImage.moduleId, methodTokenText(bodyIndex, methodAuthority));
   // Enclosing MethodDef identity for initializer self-access discharge (#8048).
   const currentMethodToken = methodTokenText(bodyIndex, methodAuthority);
-  const currentMethod = (cilImage.methods ?? []).find(
-    (row) => row?.token === currentMethodToken,
-  ) ?? null;
+  const currentMethod = cilImageLookups(cilImage).methodByToken.get(currentMethodToken) ?? null;
   const returnSignature = methodAuthority?.complete ? methodAuthority?.signature : null;
   const returnStackSlots = returnSignature ? (returnSignature.returnValue === null ? 0 : 1) : null;
   const bytecode = methodBody.bytecode;

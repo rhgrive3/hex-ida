@@ -279,14 +279,49 @@ function buildResolverIndex(cilImage) {
   }
 }
 
-export function createCilCallSignatureResolver(cilImage) {
+// One immutable whole-image metadata index per parsed image (#8791). The
+// method-signature, call-signature and local-type resolvers all read this
+// object, so decoding N methods builds the index once instead of once (or
+// several times) per method. The parsed image is deep-frozen, and the cached
+// entry additionally pins the exact `rawBytes` identity it was built from, so a
+// stale index can never be served for different bytes.
+const metadataIndexCache = new WeakMap();
+const metadataIndexBuilds = new WeakMap();
+
+function resolverIndex(cilImage) {
+  const cacheable = cilImage !== null && typeof cilImage === 'object';
+  const rawBytes = cilImage?.rawBytes;
+  if (cacheable && rawBytes instanceof Uint8Array) {
+    const cached = metadataIndexCache.get(cilImage);
+    if (cached !== undefined && cached.rawBytes === rawBytes) return cached;
+  }
+  if (cacheable) metadataIndexBuilds.set(cilImage, (metadataIndexBuilds.get(cilImage) ?? 0) + 1);
   const { index, reason } = buildResolverIndex(cilImage);
+  const entry = {
+    rawBytes: rawBytes instanceof Uint8Array ? rawBytes : null,
+    index,
+    reason,
+  };
+  if (cacheable) metadataIndexCache.set(cilImage, entry);
+  return entry;
+}
+
+// Observability for the #8791 lifetime contract: how many times the whole-image
+// metadata index was built for this exact image. A decode loop must keep this
+// at one. It is tracked per image instead of globally so concurrent test
+// fixtures cannot inflate each other's counts.
+export function cilCallMetadataIndexBuilds(cilImage) {
+  return metadataIndexBuilds.get(cilImage) ?? 0;
+}
+
+export function createCilCallSignatureResolver(cilImage) {
+  const { index, reason } = resolverIndex(cilImage);
   if (!index) return () => Object.freeze({ complete:false, reason });
   return (token) => resolveIndexed(index, token);
 }
 
 export function createCilMethodSignatureResolver(cilImage) {
-  const { index, reason } = buildResolverIndex(cilImage);
+  const { index, reason } = resolverIndex(cilImage);
   if (!index) return () => Object.freeze({ complete:false, reason });
 
   return (methodBody) => {
@@ -295,20 +330,14 @@ export function createCilMethodSignatureResolver(cilImage) {
       return Object.freeze({ complete:false, reason:'cil-return-method-body-identity-unavailable' });
     }
 
-    const matches = [];
-    for (let row = 0; row < index.methodDefs.length; row++) {
-      if (index.methodDefs[row]?.bodyOffset === bodyOffset) matches.push(row + 1);
+    if (!index.methodBodyOffsets.has(bodyOffset)) {
+      return Object.freeze({ complete:false, reason:'cil-return-methoddef-unresolved' });
     }
-    if (matches.length !== 1) {
-      return Object.freeze({
-        complete:false,
-        reason:matches.length === 0
-          ? 'cil-return-methoddef-unresolved'
-          : 'cil-return-methoddef-ambiguous',
-      });
+    const rid = index.methodBodyOffsets.get(bodyOffset);
+    if (rid === null) {
+      return Object.freeze({ complete:false, reason:'cil-return-methoddef-ambiguous' });
     }
 
-    const rid = matches[0];
     const methodToken = tokenFor(METHOD_DEF_TABLE, rid);
     const resolved = resolveIndexed(index, methodToken);
     return Object.freeze({
@@ -324,7 +353,7 @@ export function createCilMethodSignatureResolver(cilImage) {
 // fabricating a 32-bit exact fact. Arguments ride on the MethodDef signature
 // authority already resolved for the enclosing method.
 export function createCilLocalTypeResolver(cilImage) {
-  const { index, reason } = buildResolverIndex(cilImage);
+  const { index, reason } = resolverIndex(cilImage);
   if (!index) {
     return () => Object.freeze({ complete:false, reason, locals:null });
   }
