@@ -1,4 +1,5 @@
 import { decodeSleb128, decodeSleb128_64, decodeUleb128 } from './parser.js';
+import { createVMEffectBudgetTracker } from '../shared/vm-effects.js';
 import { createWasmMemoryValidationContext, decodeWasmMemarg, validateWasmMemoryInstruction } from './memory-validation.js';
 
 function fail(code) { throw new TypeError(code); }
@@ -10,6 +11,7 @@ const F64 = 0x7c;
 const UNKNOWN = Symbol('wasm-unknown-stack-type');
 const VALUE_TYPES = new Set([I32, I64, F32, F64, 0x7b, 0x70, 0x6f]);
 const PLAIN_SELECT_TYPES = new Set([I32, I64, F32, F64, 0x7b]);
+const EMPTY_TYPES = Object.freeze([]);
 
 function checkpoint(options) {
   if (options?.signal?.aborted) {
@@ -23,15 +25,20 @@ function sameTypes(a, b) {
   return a.length === b.length && a.every((type, index) => type === b[index]);
 }
 
-function decodeBlockType(bytecode, pos, wasmModule) {
+function decodeBlockType(bytecode, pos, wasmModule, budget = null) {
   if (pos >= bytecode.length) fail('wasm-truncated-blocktype');
   const first = bytecode[pos];
-  if (first === 0x40) return { params: [], results: [], nextOffset: pos + 1 };
-  if (VALUE_TYPES.has(first)) return { params: [], results: [first], nextOffset: pos + 1 };
+  if (first === 0x40) return { params: EMPTY_TYPES, results: EMPTY_TYPES, nextOffset: pos + 1 };
+  if (VALUE_TYPES.has(first)) return { params: EMPTY_TYPES, results: [first], nextOffset: pos + 1 };
   const result = decodeSleb128(bytecode, pos);
   if (result.value < 0 || result.value >= wasmModule.types.length) fail('wasm-invalid-block-type-index');
   const type = wasmModule.types[result.value];
-  return { params: type.params.slice(), results: type.results.slice(), nextOffset: result.nextOffset };
+  // #8946: a typed block indexes the shared Type section, so every reference
+  // re-traverses the same signature. Admission precedes traversal, and the
+  // canonical (parser-frozen) vectors are retained by reference — repeated
+  // block references must never clone or retain O(signatureWidth) copies.
+  if (budget) budget.chargeValues(type.params.length + type.results.length);
+  return { params: type.params, results: type.results, nextOffset: result.nextOffset };
 }
 
 function functionTypeForIndex(wasmModule, funcIndex) {
@@ -66,8 +73,12 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
     ...wasmModule.tables,
   ];
   const memoryContext = createWasmMemoryValidationContext(wasmModule);
+  // #8946: the validator receives hostile functions before the lifter, so it
+  // must enforce the same shared VMEffect resource authority rather than
+  // traversing/cloning attacker-referenced signature vectors unbounded.
+  const budget = createVMEffectBudgetTracker(options);
   const stack = [];
-  const frames = [{ kind: 'function', height: 0, params: [], results: funcType.results.slice(), polymorphic: false, elseSeen: false }];
+  const frames = [{ kind: 'function', height: 0, params: EMPTY_TYPES, results: funcType.results, polymorphic: false, elseSeen: false }];
   let pos = 0;
   let complete = true;
 
@@ -83,9 +94,9 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
     return actual;
   };
   const popTypes = (types, underflowCode = 'wasm-stack-underflow', mismatchCode = 'wasm-stack-type-mismatch') => {
-    const actual = new Array(types.length);
-    for (let i = types.length - 1; i >= 0; i--) actual[i] = pop(types[i], underflowCode, mismatchCode);
-    return actual;
+    // #8946: no call site consumes a materialized copy of the popped types, so
+    // the traversal is allocation-free even for multi-million-entry vectors.
+    for (let i = types.length - 1; i >= 0; i--) pop(types[i], underflowCode, mismatchCode);
   };
   const pushTypes = (types) => { for (const type of types) stack.push(type); };
   const assertSuffix = (types, underflowCode = 'wasm-stack-underflow', mismatchCode = 'wasm-stack-type-mismatch') => {
@@ -113,6 +124,7 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
 
   while (pos < bytecode.length) {
     checkpoint(options);
+    budget.chargeOperation();
     const opcode = bytecode[pos++];
     switch (opcode) {
       case 0x00:
@@ -121,7 +133,7 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
       case 0x01:
         break;
       case 0x02: case 0x03: case 0x04: {
-        const blockType = decodeBlockType(bytecode, pos, wasmModule);
+        const blockType = decodeBlockType(bytecode, pos, wasmModule, budget);
         pos = blockType.nextOffset;
         const kind = opcode === 0x02 ? 'block' : opcode === 0x03 ? 'loop' : 'if';
         if (kind === 'if') pop(I32, 'wasm-stack-underflow-if-condition');
@@ -160,7 +172,9 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
         if (depth.value >= frames.length) fail('wasm-invalid-branch-depth');
         if (opcode === 0x0d) pop(I32, 'wasm-stack-underflow-branch-condition');
         const target = frames[frames.length - 1 - depth.value];
-        assertSuffix(labelTypes(target), 'wasm-stack-underflow-branch-values');
+        const targetTypes = labelTypes(target);
+        budget.chargeValues(targetTypes.length);
+        assertSuffix(targetTypes, 'wasm-stack-underflow-branch-values');
         if (opcode === 0x0c) markUnreachable();
         break;
       }
@@ -187,6 +201,7 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
       case 0x10: {
         const callee = decodeUleb128(bytecode, pos); pos = callee.nextOffset;
         const type = functionTypeForIndex(wasmModule, callee.value);
+        budget.chargeValues(type.params.length + type.results.length);
         popTypes(type.params, 'wasm-stack-underflow-call');
         pushTypes(type.results);
         break;
@@ -199,6 +214,7 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
         const tableType = tables[table.value];
         if (!tableType) fail('wasm-invalid-call-indirect-table-index');
         if (tableType.elemType !== 0x70) fail('wasm-invalid-call-indirect-table-type');
+        budget.chargeValues(1 + type.params.length + type.results.length);
         pop(I32, 'wasm-stack-underflow-call-indirect');
         popTypes(type.params, 'wasm-stack-underflow-call-indirect');
         pushTypes(type.results);
