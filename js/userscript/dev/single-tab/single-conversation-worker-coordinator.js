@@ -1,5 +1,6 @@
 import { DEV_WORKER_FAILURE, DEV_WORKER_STATE } from '../../../ai/dev/workers/contracts.js';
 import { waitFor } from '../../chatgpt-adapter.js';
+import { canonicalWorkerIdentity } from '../frame-mesh/worker-identity.js';
 
 const EVENT_QUEUE_LIMIT = 128;
 const SUPERVISOR_CLAIM_TIMEOUT_MS = 30000;
@@ -44,8 +45,8 @@ export class SingleConversationWorkerCoordinator {
   async discover() { return Object.freeze([this.advertisement()]); }
 
   async claim({ runId, workerId } = {}) {
-    const normalizedRun = required(runId, 'runId');
-    const normalizedWorker = required(workerId, 'workerId');
+    const normalizedRun = canonicalWorkerIdentity(runId, 'runId');
+    const normalizedWorker = canonicalWorkerIdentity(workerId, 'workerId');
     if (this.closed) throw workerError(DEV_WORKER_FAILURE.TRANSPORT_FAILURE, 'Single-tab Worker coordinator is closed.');
     if (this.claiming) throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'The single-tab Worker slot is already being claimed.');
     if (this.claimed) {
@@ -402,8 +403,8 @@ export class SingleConversationWorkerCoordinator {
 
   assertClaim(args = {}) {
     if (!this.claimed) throw workerError(DEV_WORKER_FAILURE.WORKER_UNAVAILABLE, 'No logical Worker is currently claimed.');
-    const runId = required(args.runId, 'runId');
-    const workerId = required(args.workerId, 'workerId');
+    const runId = canonicalWorkerIdentity(args.runId, 'runId');
+    const workerId = canonicalWorkerIdentity(args.workerId, 'workerId');
     if (runId !== this.claimed.runId || workerId !== this.claimed.workerId) {
       throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'The requested claim identity does not own the single-tab Worker slot.');
     }
