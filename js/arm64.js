@@ -149,8 +149,8 @@ cat('add adds sub subs adc adcs sbc sbcs neg negs mul madd msub mneg smull umull
 cat('and ands orr orn eor eon bic bics lsl lsr asr ror lslv lsrv asrv rorv extr ubfm sbfm bfm ubfx sbfx ubfiz sbfiz bfi bfxil bfc rev rev16 rev32 rev64 clz cls rbit sxtb sxth sxtw uxtb uxth', 'logic');
 cat('cmp cmn tst ccmp ccmn fcmp fcmpe', 'compare');
 cat('csel csinc csinv csneg cset csetm cinc cinv cneg', 'select');
-cat('ldr ldrb ldrh ldrsb ldrsh ldrsw ldur ldurb ldurh ldursb ldursh ldursw ldp ldpsw ldnp ldtr ldxr ldaxr ldxrb ldxrh ldaxrb ldaxrh ldxp ldaxp ldar ldarb ldarh ld1 ld2 ld3 ld4 prfm', 'load');
-cat('str strb strh stur sturb sturh stp stnp sttr stxr stlxr stxrb stxrh stlxrb stlxrh stxp stlxp stlr stlrb stlrh st1 st2 st3 st4', 'store');
+cat('ldr ldrb ldrh ldrsb ldrsh ldrsw ldur ldurb ldurh ldursb ldursh ldursw ldp ldpsw ldnp ldtr ldtrb ldtrh ldtrsb ldtrsh ldtrsw ldxr ldaxr ldxrb ldxrh ldaxrb ldaxrh ldxp ldaxp ldar ldarb ldarh ld1 ld2 ld3 ld4 prfm', 'load');
+cat('str strb strh stur sturb sturh stp stnp sttr sttrb sttrh stxr stlxr stxrb stxrh stlxrb stlxrh stxp stlxp stlr stlrb stlrh st1 st2 st3 st4', 'store');
 cat('b bl br blr ret cbz cbnz tbz tbnz braa brab braaz brabz blraa blrab blraaz blrabz retaa retab', 'flow');
 cat('adr adrp', 'address');
 cat('nop hint bti svc hvc smc brk hlt dmb dsb isb yield wfe wfi sev sevl mrs msr sys eret eretaa eretab clrex paciasp pacibsp pacia pacib pacda pacdb paciza pacizb pacdza pacdzb paciaz pacibz pacia1716 pacib1716 autiasp autibsp autia autib autda autdb autiza autizb autdza autdzb autiaz autibz autia1716 autib1716 xpaci xpacd xpaclri pacga dc ic tlbi', 'system');
@@ -1164,10 +1164,10 @@ function cType(size, signed) {
   return (signed ? '' : 'u') + t;
 }
 
-for (const n of ['ldr', 'ldrb', 'ldrh', 'ldrsb', 'ldrsh', 'ldrsw', 'ldur', 'ldurb', 'ldurh', 'ldursb', 'ldursh', 'ldursw', 'ldtr']) {
+for (const n of ['ldr', 'ldrb', 'ldrh', 'ldrsb', 'ldrsh', 'ldrsw', 'ldur', 'ldurb', 'ldurh', 'ldursb', 'ldursh', 'ldursw', 'ldtr', 'ldtrb', 'ldtrh', 'ldtrsb', 'ldtrsh', 'ldtrsw']) {
   HANDLERS[n] = loadStore(true);
 }
-for (const n of ['str', 'strb', 'strh', 'stur', 'sturb', 'sturh', 'sttr']) {
+for (const n of ['str', 'strb', 'strh', 'stur', 'sturb', 'sturh', 'sttr', 'sttrb', 'sttrh']) {
   HANDLERS[n] = loadStore(false);
 }
 

@@ -1259,7 +1259,12 @@ function locationOf(inst, pointerMemo = defaultPointerProvenanceMemo) {
   if (a.stack) {
     const baseReg = a.baseReg || a.base?.reg || 'stack';
     const frameEpoch = a.base?.id ?? -1;
-    return { key:`stack:${baseReg}:e${frameEpoch}:${a.disp.toString()}:s${size}`, kind:MK.STACK, baseReg, frameEpoch, disp:a.disp, size };
+    const proof = a.base ? stackPointerProvenanceOf(a.base) : null;
+    if (proof && proof.must === true && proof.offset != null) {
+      const cdisp = BigInt(proof.offset) + BigInt(a.disp);
+      return { key:`stack:sp:c${cdisp.toString()}:s${size}`, kind:MK.STACK, baseReg:'sp', frameEpoch:0, disp:cdisp, size, base:a.base };
+    }
+    return { key:`stack:${baseReg}:e${frameEpoch}:${a.disp.toString()}:s${size}`, kind:MK.STACK, baseReg, frameEpoch, disp:a.disp, size, base:a.base };
   }
   const base = a.base;
   if (base.const != null) {
@@ -1352,9 +1357,16 @@ function storeOverlapsRange(storeLoc, otherLoc) {
     return overlapSameKind(storeLoc.address,sa,otherLoc.address,sb);
   }
   if (storeLoc.kind === MK.STACK) {
-    if (storeLoc.baseReg !== otherLoc.baseReg || storeLoc.frameEpoch !== otherLoc.frameEpoch) return false;
     if (storeLoc.disp == null || otherLoc.disp == null) return false;
-    return overlapSameKind(storeLoc.disp,sa,otherLoc.disp,sb);
+    if (storeLoc.baseReg === otherLoc.baseReg && storeLoc.frameEpoch === otherLoc.frameEpoch) {
+      return overlapSameKind(storeLoc.disp,sa,otherLoc.disp,sb);
+    }
+    const pa = stackPointerProvenanceOf(storeLoc.base);
+    const pb = stackPointerProvenanceOf(otherLoc.base);
+    if (pa?.must === true && pb?.must === true && pa.offset != null && pb.offset != null) {
+      return overlap(BigInt(pa.offset) + BigInt(storeLoc.disp),sa, BigInt(pb.offset) + BigInt(otherLoc.disp),sb);
+    }
+    return true;
   }
   if (storeLoc.kind === MK.FIELD) {
     const storeRoot = storeLoc.aliasRoot || (storeLoc.base ? 'value:' + storeLoc.base.id : null);
