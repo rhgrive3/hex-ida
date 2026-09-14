@@ -124,6 +124,19 @@ try {
   };
   }
 } catch (error) {
+  const diagnosticName = String(error?.name || 'Error').replace(/[^A-Za-z0-9._-]+/g, '-');
+  const diagnosticCode = String(error?.code || 'NO_CODE').replace(/[^A-Za-z0-9._-]+/g, '-');
+  const diagnosticTarget = String(currentTarget || 'unknown').replace(/[^A-Za-z0-9._-]+/g, '-');
+  const diagnosticMessage = String(error?.message || error)
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .slice(0, 96)
+    .replace(/-+$/g, '');
+  const diagnosticDir = path.join(repoRoot, 'benchmark-diagnostic');
+  fs.mkdirSync(diagnosticDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(diagnosticDir, `${diagnosticTarget}-${diagnosticCode}-${diagnosticName}-${diagnosticMessage || 'failure'}.json`),
+    JSON.stringify({ target: currentTarget, name: error?.name || 'Error', code: error?.code || null, message: String(error?.message || error) }),
+  );
   console.log(JSON.stringify({
     kind: 'binary-benchmark-error',
     target: currentTarget,
