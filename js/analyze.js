@@ -29,8 +29,11 @@ function modelPointerWidth(opts = {}) {
   const width = opts?.pointerWidth;
   if (width === 4 || width === 8) return width;
   const architecture = opts?.architecture;
-  if (typeof architecture === 'string' && architecture) {
-    const mapped = ARM64_SEMANTIC_POINTER_WIDTH_BYTES.get(architecture.toLowerCase());
+  if (architecture != null) {
+    if (typeof architecture !== 'string') return null;
+    const normalized = architecture.trim().toLowerCase();
+    if (!normalized) return null;
+    const mapped = ARM64_SEMANTIC_POINTER_WIDTH_BYTES.get(normalized);
     return mapped === undefined ? null : mapped;
   }
   return 8;
