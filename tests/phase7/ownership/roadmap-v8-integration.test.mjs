@@ -96,15 +96,21 @@ test('v8 ownership fails closed on wrong branch, missing phase and incomplete in
   assert.throws(() => validateRoadmapInventory(BRANCH, 'phase8', ['js/analysis/index.js']));
 });
 
+const CONTINUATION_BRANCH = 'codex/analysis-remaining-20260914';
+
 test('the exact backup integration alias uses the canonical manifest and rejects sibling names', () => {
   const manifest = loadRoadmapManifest();
   const files = [...validateRoadmapManifest(manifest).keys()];
   assert.equal(manifest.branch, BRANCH);
   for (const phase of ['phase7', 'phase8']) {
     const canonical = validateRoadmapInventory(BRANCH, phase, files, manifest);
-    assert.deepEqual(validateRoadmapInventory(BRANCH_ALIAS, phase, files, manifest), canonical);
+    for (const branch of [BRANCH_ALIAS, CONTINUATION_BRANCH]) {
+      assert.deepEqual(validateRoadmapInventory(branch, phase, files, manifest), canonical);
+      assert.throws(() => validateRoadmapInventory(branch, phase, [...files, 'js/analysis/unreviewed.js'], manifest), /undeclared/);
+    }
   }
-  for (const branch of [`${BRANCH_ALIAS}-other`, 'integration-candidate/local-handover-20260914-child']) {
+  for (const branch of [`${BRANCH_ALIAS}-other`, 'integration-candidate/local-handover-20260914-child',
+    `${CONTINUATION_BRANCH}-other`, 'codex/analysis-remaining-20260915']) {
     assert.throws(() => validateRoadmapInventory(branch, 'phase7', files, manifest), /no exact roadmap integration route/);
     assert.throws(() => validateRoadmapInventory(branch, 'phase8', files, manifest), /no exact roadmap integration route/);
   }
@@ -225,8 +231,10 @@ test('v8 ownership is wired in both CircleCI and permanent exact-SHA fallbacks',
     const job = circle.split(`  ${phase}-ownership:`)[1].split('\n  phase')[0];
     assert.ok(job.includes(BRANCH));
     assert.ok(job.includes(BRANCH_ALIAS));
-    if (phase === 'phase7') assert.ok(job.includes(`${BRANCH}|${BRANCH_ALIAS})`));
+    if (phase === 'phase7') assert.ok(job.includes(`${BRANCH}|${BRANCH_ALIAS}|${CONTINUATION_BRANCH})`));
     else assert.ok(job.includes(`|| [ "\${CIRCLE_BRANCH:-}" = '${BRANCH_ALIAS}' ]`));
+    assert.ok(job.includes(CONTINUATION_BRANCH));
+    if (phase === 'phase8') assert.ok(job.includes(`|| [ "\${CIRCLE_BRANCH:-}" = '${CONTINUATION_BRANCH}' ]`));
     assert.match(job, /tools\/validation\/analysis-roadmap\/ownership\.mjs/);
     assert.ok(job.includes(`--phase ${phase}`));
     assert.ok(job.includes(`node tools/validation/${phase}-ownership.mjs --files-json`));
@@ -234,6 +242,7 @@ test('v8 ownership is wired in both CircleCI and permanent exact-SHA fallbacks',
     assert.ok(fallback.includes(BRANCH));
     assert.ok(fallback.includes(BRANCH_ALIAS));
     assert.ok(fallback.includes(`"${BRANCH}" || "$HEAD_REF" == "${BRANCH_ALIAS}"`));
+    assert.ok(fallback.includes(`|| "$HEAD_REF" == "${CONTINUATION_BRANCH}"`));
     assert.ok(fallback.includes(`--phase ${phase}`));
     assert.ok(fallback.includes(`node tools/validation/${phase}-ownership.mjs --files-json`));
   }

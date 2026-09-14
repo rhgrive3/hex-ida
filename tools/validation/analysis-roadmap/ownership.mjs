@@ -7,7 +7,8 @@ import { loadManifest as loadPhase8, validateFiles as validatePhase8 } from '../
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 export const BRANCH = 'feat/analysis-roadmap-v8-current-main-20260907';
 export const BRANCH_ALIAS = 'integration-candidate/local-handover-20260914';
-const ROUTED_BRANCHES = Object.freeze([BRANCH, BRANCH_ALIAS]);
+const CONTINUATION_BRANCH = 'codex/analysis-remaining-20260914';
+const ROUTED_BRANCHES = Object.freeze([BRANCH, BRANCH_ALIAS, CONTINUATION_BRANCH]);
 const SPECIAL_PATHS = Object.freeze({
   semanticCompat: ['js/core/identity/live-data.js', 'js/core/identity/origin.js', 'tests/core-origin-canonical-reuse.test.mjs', 'js/ir-core.js', 'js/ir-base.js', 'js/decompiler/semantic.js', 'js/decompiler/semantic-views.js', 'js/semantics/compat/index.js', 'js/semantics/compat/legacy-value-ranges.js', 'js/semantics/compat/semantic-ir-v2-to-v1.js', 'js/semantics/compat/semantic-ir-v2-to-v1-core.js', 'js/semantics/compat/semantic-ir-v2-to-v1-finalize.js', 'js/semantics/compat/semantic-ir-v2-to-v1-memory.js', 'js/semantics/compat/semantic-ir-v2-to-v1-nodes.js'],
   integration: [

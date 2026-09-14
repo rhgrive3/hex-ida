@@ -203,3 +203,16 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
 - LLDB18.1.3によるStage2のARM64/arm64e/RISC-Vローカルprovider検証は成功。
   続くx86 native fixtureのLLDB起動で失敗し、Stage2全体は未合格。
   `stage2-lldb18.json` と完全ログを保存。実機検証の代替成功とはしない。
+
+## Checkpoint 7: 続行ブランチのCI経路
+
+- `codex/analysis-remaining-20260914` だけを既存roadmap manifestの経路へ追加。
+  CircleCIとGitHub exact-SHA fallbackの両方を接続した。全changed-file宣言検査と
+  各phase所有権検査を維持し、隣接branch名・未宣言pathは拒否する。
+- 修正前の回帰は21成功/2失敗、修正後は23成功
+  （`continuation-route-before` / `continuation-route-repaired`）。
+  リモートCI成功の認定は新headの実行結果を待つ。
+- LLDB18の補助server実体を専用wrapperへ接続。コンテナがpersonality変更を拒否するため、
+  専用LLDBの起動設定はASLRを有効のままとした。静的fixtureと検査assertionは変更なし。
+  native fixtureの起動・停止が成功（`native-lldb-aslr-enabled.log`）。
+  実行設定とwrapper hashは `lldb18-runtime-configuration.json` に保存した。
