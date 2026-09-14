@@ -1,0 +1,54 @@
+name: tmp-review-8895-finalize
+on:
+  push:
+    branches: [codex/issue-campaign-20260914-lane-15-batch-01]
+permissions:
+  contents: write
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Apply identical reviewed repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          awk '
+            /- name: Apply blocker fixes/ { in_step=1; next }
+            in_step && /- name: Verify focused regressions/ { exit }
+            in_step && found_run { sub(/^          /, ""); print }
+            in_step && /run: \|/ { found_run=1; next }
+          ' .github/workflows/tmp-review-8895-repair.yml > /tmp/apply.sh
+          bash /tmp/apply.sh
+      - name: Verify blocker regression
+        run: timeout 25s node tests/issue-8789-8816-unwind-caller-bounds.mjs
+      - name: Verify issue 8789
+        run: timeout 30s node tests/issue-8789-macho-unwind-starts-budget.mjs
+      - name: Verify issue 8816
+        run: timeout 30s node tests/issue-8816-macho-lsda-budget.mjs
+      - name: Verify issue 8800
+        run: timeout 25s node tests/issue-8800-macho-stub-symbols-budget.mjs
+      - name: Syntax lint
+        run: timeout 30s node tests/check.mjs
+      - name: Commit exact repaired head
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/tmp-review-8895-repair.yml
+          rm .github/workflows/tmp-review-8895-finalize.yml
+          git diff --check
+          changed="$(git status --short | awk '{print $2}' | sort)"
+          printf '%s\n' "$changed"
+          for p in .github/workflows/tmp-review-8895-finalize.yml .github/workflows/tmp-review-8895-repair.yml js/macho.js js/worker-fixes.js js/worker-legacy.js tests/issue-8789-8816-unwind-caller-bounds.mjs; do
+            printf '%s\n' "$changed" | grep -qx "$p"
+          done
+          test "$(printf '%s\n' "$changed" | wc -l)" -eq 6
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: propagate Mach-O unwind truncation and caller budgets'
+          git push origin HEAD:codex/issue-campaign-20260914-lane-15-batch-01
