@@ -1,8 +1,9 @@
-import { codedIndexSize, metadataRowSize, validateMetadataTableValidMask } from './metadata-layout.js';
+import { codedIndexSize, metadataRowSize, tableIndexSize, validateMetadataTableValidMask } from './metadata-layout.js';
 import { readCilMetadataStreams } from './metadata-streams.js';
 import { CLI_HEADER_SIZE, validateCliHeaderSize } from './cli-header.js';
 const TYPE_REF_TABLE = 0x01;
-const TYPE_DEF_TABLE = 0x02;
+export const TYPE_DEF_TABLE = 0x02;
+export const FIELD_DEF_TABLE = 0x04;
 const TYPE_SPEC_TABLE = 0x1b;
 const MODULE_REF_TABLE = 0x1a;
 export const METHOD_DEF_TABLE = 0x06;
@@ -144,6 +145,7 @@ export function buildCilCallMetadataIndex(bytes) {
   const typeSpecs = [];
   const moduleRefs = [];
   const assemblyRefs = [];
+  const fieldDefs = [];
   const stringIndexSize = (heapSizes & 0x01) !== 0 ? 4 : 2;
   const blobIndexSize = (heapSizes & 0x04) !== 0 ? 4 : 2;
   for (let table = 0; table < 64; table++) {
@@ -167,6 +169,31 @@ export function buildCilCallMetadataIndex(bytes) {
             'cil-call-signature-methoddef-truncated'),
         }));
       }
+    } else if (table === TYPE_DEF_TABLE) {
+      // TypeDef rows carry the owner identity for FieldDef resolution: the
+      // FieldList pointer range binds each field to exactly one type (#3971).
+      const extendsSize = codedIndexSize(rowCounts, [TYPE_DEF_TABLE, TYPE_REF_TABLE, TYPE_SPEC_TABLE], 2);
+      for (let row = 0; row < rows; row++) {
+        const rowPos = pos + row * rowSize;
+        typeDefs.push(Object.freeze({
+          nameIndex: readIndex(view, rowPos + 4, stringIndexSize, 'cil-call-signature-typedef-truncated'),
+          namespaceIndex: readIndex(view, rowPos + 4 + stringIndexSize, stringIndexSize,
+            'cil-call-signature-typedef-truncated'),
+          fieldList: readIndex(view, rowPos + 6 + 2 * stringIndexSize + extendsSize,
+            tableIndexSize(rowCounts, FIELD_DEF_TABLE),
+            'cil-call-signature-typedef-truncated'),
+        }));
+      }
+    } else if (table === FIELD_DEF_TABLE) {
+      for (let row = 0; row < rows; row++) {
+        const rowPos = pos + row * rowSize;
+        fieldDefs.push(Object.freeze({
+          accessFlags: readU16(view, rowPos, 'cil-call-signature-fielddef-truncated'),
+          nameIndex: readIndex(view, rowPos + 2, stringIndexSize, 'cil-call-signature-fielddef-truncated'),
+          signatureBlobIndex: readIndex(view, rowPos + 2 + stringIndexSize, blobIndexSize,
+            'cil-call-signature-fielddef-truncated'),
+        }));
+      }
     } else if (table === MEMBER_REF_TABLE) {
       const parentSize = codedIndexSize(rowCounts, [0x02, 0x01, 0x1a, 0x06, 0x1b], 3);
       const parentTables = [0x02, 0x01, 0x1a, 0x06, 0x1b];
@@ -180,6 +207,7 @@ export function buildCilCallMetadataIndex(bytes) {
         // when that MemberRef token is actually resolved (#7601 + main #7706).
         memberRefs.push(Object.freeze({
           parentEncoded,
+          parent:parentEncoded,
           parentTable:parentTag < parentTables.length ? parentTables[parentTag] : null,
           parentRid,
           nameIndex:readIndex(view, rowPos + parentSize, stringIndexSize, 'cil-call-signature-memberref-truncated'),
@@ -203,15 +231,6 @@ export function buildCilCallMetadataIndex(bytes) {
           method:readIndex(view, rowPos, methodSize, 'cil-call-signature-methodspec-truncated'),
           instantiation:readIndex(view, rowPos + methodSize, blobIndexSize, 'cil-call-signature-methodspec-truncated'),
         });
-      }
-    } else if (table === TYPE_DEF_TABLE) {
-      for (let row = 0; row < rows; row++) {
-        const rowPos = pos + row * rowSize;
-        typeDefs.push(Object.freeze({
-          nameIndex:readIndex(view, rowPos + 4, stringIndexSize, 'cil-call-signature-typedef-truncated'),
-          namespaceIndex:readIndex(view, rowPos + 4 + stringIndexSize, stringIndexSize,
-            'cil-call-signature-typedef-truncated'),
-        }));
       }
     } else if (table === TYPE_REF_TABLE) {
       const scopeSize = codedIndexSize(rowCounts, [0x00, MODULE_REF_TABLE, ASSEMBLY_REF_TABLE, TYPE_REF_TABLE], 2);
@@ -268,6 +287,7 @@ export function buildCilCallMetadataIndex(bytes) {
     typeSpecs:Object.freeze(typeSpecs),
     moduleRefs:Object.freeze(moduleRefs),
     assemblyRefs:Object.freeze(assemblyRefs),
+    fieldDefs:Object.freeze(fieldDefs),
     typeDefOrRefRowCounts:Object.freeze([
       rowCounts[TYPE_DEF_TABLE],
       rowCounts[TYPE_REF_TABLE],

@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { EVIDENCE_VERDICT, PRECONDITION_STATUS, STRUCTURED_ENTITY_ID_PREFIX, createSymbolicEvidence, isProvedEvidence } from '../../../js/symbolic/evidence/symbolic-evidence.js';
+import { SOLVER_STATUS } from '../../../js/symbolic/solver/result.js';
+import { PROOF_AUTHORITY } from '../../../js/symbolic/solver/backend.js';
+import { COMPLETENESS_STATUS, createCompleteness } from '../../../js/symbolic/translate/support-matrix.js';
+const allComplete=createCompleteness({translation:COMPLETENESS_STATUS.COMPLETE,controlFlow:COMPLETENESS_STATUS.COMPLETE,memoryEffects:COMPLETENESS_STATUS.COMPLETE,pathCoverage:COMPLETENESS_STATUS.COMPLETE,queryScope:COMPLETENESS_STATUS.COMPLETE});
+function exactProof(overrides={}){return {queryKind:'equivalence',claimKind:'bounded-equivalence',proofStatement:'x == x',targetEntities:['fn:1'],queryHash:'q1',backendId:'solver',backendVersion:'1',proofAuthority:PROOF_AUTHORITY.EXACT,capabilityFingerprint:'cap',solverStatus:SOLVER_STATUS.UNSAT,preconditionStatus:PRECONDITION_STATUS.SATISFIABLE,verdict:EVIDENCE_VERDICT.PROVED,completeness:allComplete,architecture:'arm64',bitWidth:64,...overrides};}
+test('#4663 primitive scope metadata remains exact',()=>{const e=createSymbolicEvidence(exactProof());assert.equal(e.architecture,'arm64');assert.equal(e.bitWidth,64);assert.equal(isProvedEvidence(e),true);});
+test('#4663 architecture and bitWidth reject coercion',()=>{for(const o of [{architecture:['arm64']},{architecture:{toString:()=> 'arm64'}},{architecture:64},{architecture:''},{bitWidth:['64']},{bitWidth:'64'},{bitWidth:64.5},{bitWidth:0},{bitWidth:Number.MAX_SAFE_INTEGER+1}]) assert.throws(()=>createSymbolicEvidence(exactProof(o)),TypeError);});
+test('#4663 preserves current structured target namespace without collisions',()=>{const obj=createSymbolicEvidence(exactProof({targetEntities:[{id:'x'}]}));const json=createSymbolicEvidence(exactProof({targetEntities:['{"id":"x"}']}));assert.equal(isProvedEvidence(obj),true);assert.notEqual(obj.id,json.id);assert.ok(obj.targetEntities[0].startsWith(STRUCTURED_ENTITY_ID_PREFIX));assert.throws(()=>createSymbolicEvidence(exactProof({targetEntities:[obj.targetEntities[0]]})),TypeError);});
+test('#4663 malformed non-object target authority still fails closed',()=>{for(const t of [[1],[true],[null]]) assert.throws(()=>createSymbolicEvidence(exactProof({targetEntities:t})),TypeError);});

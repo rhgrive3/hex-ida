@@ -298,6 +298,16 @@ export class Emulator {
     this.loadedValid.set(key, valid);
   }
 
+  async _ensurePageRange(start, end) {
+    await this.ensure(start);
+    const startPage = (start / BigInt(PAGE)) * BigInt(PAGE);
+    const endPage = (end / BigInt(PAGE)) * BigInt(PAGE);
+    for (let page = startPage + BigInt(PAGE); page < endPage; page += BigInt(PAGE)) {
+      await this.ensure(page);
+    }
+    if (endPage !== startPage) await this.ensure(end);
+  }
+
   byteAt(addr) {
     const address = BigInt(addr);
     const page = (address / BigInt(PAGE)) * BigInt(PAGE);
@@ -364,10 +374,7 @@ export class Emulator {
     const n = normalizeMemorySize(size);
     const start = BigInt(addr);
     const end = start + BigInt(n - 1);
-    const firstPage = (start / BigInt(PAGE)) * BigInt(PAGE);
-    for (let p = firstPage; p <= end; p += BigInt(PAGE)) {
-      await this.ensure(p, p === firstPage ? start : p);
-    }
+    await this._ensurePageRange(start, end)
     let v = 0n;
     for (let i = n - 1; i >= 0; i--) v = (v << 8n) | BigInt(this.byteAt(start + BigInt(i)));
     return v;
@@ -385,10 +392,7 @@ export class Emulator {
        below would fail open and writeByte() would mint undeclared mem
        backing. An interior page without backing fails closed here. */
     const end = start + BigInt(n - 1);
-    const firstPage = (start / BigInt(PAGE)) * BigInt(PAGE);
-    for (let p = firstPage; p <= end; p += BigInt(PAGE)) {
-      await this.ensure(p, p === firstPage ? start : p);
-    }
+    await this._ensurePageRange(start, end)
     /* #7968: admit every byte of the store before committing any of it — a
        range that straddles the write-authority boundary fails closed without
        partially writing the bytes inside the prefix. */
@@ -411,8 +415,7 @@ export class Emulator {
     const start = BigInt(addr);
     const out = new Uint8Array(n);
     if (!n) return out;
-    for (let i = 0; i < n; i += PAGE) await this.ensure(start + BigInt(i));
-    await this.ensure(start + BigInt(n - 1));
+    await this._ensurePageRange(start, start + BigInt(n - 1));
     for (let i = 0; i < n; i++) out[i] = this.byteAt(start + BigInt(i));
     return out;
   }
@@ -825,20 +828,22 @@ export class Emulator {
     const signed = /^ldrs|^ldurs/.test(mn);
 
     if (pair) {
-      for (const reg of [ops[0], ops[1]]) {
-        if (isFloatReg(reg) && reg.bits && reg.bits > 64) {
-          throw new EmulatorFault('unsupported', `${mn} does not support Q register pair operand: ${reg.text}`, { register: reg.text });
-        }
-      }
-      const each = signedWordPair ? 4 : (isWide(ops[0]) ? 8 : 4);
-      let a = await this.load(addr, each);
-      let b = await this.load(addr + BigInt(each), each);
       if (signedWordPair) {
+        let a = await this.load(addr, 4);
+        let b = await this.load(addr + 4n, 4);
         a = BigInt.asUintN(64, BigInt.asIntN(32, a));
         b = BigInt.asUintN(64, BigInt.asIntN(32, b));
+        this.set(ops[0].text, a);
+        this.set(ops[1].text, b);
+      } else {
+        const eachA = pairElementSize(ops[0]);
+        const eachB = pairElementSize(ops[1]);
+        if (eachA == null || eachB == null) throw pairUnsupportedFault(mn, ops[0], ops[1]);
+        const a = await this.load(addr, eachA);
+        const b = await this.load(addr + BigInt(eachA), eachB);
+        if (isFloatReg(ops[0])) this.setFpBits(ops[0], a); else this.set(ops[0].text, a);
+        if (isFloatReg(ops[1])) this.setFpBits(ops[1], b); else this.set(ops[1].text, b);
       }
-      if (isFloatReg(ops[0])) this.setFpBits(ops[0], a); else this.set(ops[0].text, a);
-      if (isFloatReg(ops[1])) this.setFpBits(ops[1], b); else this.set(ops[1].text, b);
     } else {
       let v = await this.load(addr, size);
       if (signed) v = BigInt.asUintN(64, BigInt.asIntN(size * 8, v));
@@ -871,16 +876,11 @@ export class Emulator {
       return null;
     }
     if (pair) {
-      for (const reg of [ops[0], ops[1]]) {
-        if (isFloatReg(reg) && reg.bits && reg.bits > 64) {
-          throw new EmulatorFault('unsupported', `${mn} does not support Q register pair operand: ${reg.text}`, { register: reg.text });
-        }
-      }
-      const each = isWide(ops[0]) ? 8 : 4;
-      const a = isFloatReg(ops[0]) ? this.fpBits(ops[0]) : this.get(ops[0].text);
-      const b = isFloatReg(ops[1]) ? this.fpBits(ops[1]) : this.get(ops[1].text);
-      await this.store(addr, each, a);
-      await this.store(addr + BigInt(each), each, b);
+      const eachA = pairElementSize(ops[0]);
+      const eachB = pairElementSize(ops[1]);
+      if (eachA == null || eachB == null) throw pairUnsupportedFault(mn, ops[0], ops[1]);
+      await this.store(addr, eachA, elementBits(this, ops[0]));
+      await this.store(addr + BigInt(eachA), eachB, elementBits(this, ops[1]));
     } else if (isFloatReg(ops[first])) await this.store(addr,size,this.fpBits(ops[first]));
     else await this.store(addr,size,this.get(ops[first].text));
     this.effectiveAddress(mem,true);
@@ -1141,6 +1141,30 @@ function storeSize(mn, src) {
 }
 
 function isFloatReg(op) { return !!op && op.k === 'reg' && (op.cls === 'fp' || op.cls === 'vec'); }
+
+function pairElementSize(op) {
+  if (!op || op.k !== 'reg') return null;
+  if (op.cls === 'fp' || op.cls === 'vec') {
+    if (op.bits === 128 || /^q\d+$/i.test(op.text || '')) return null;
+    if (op.bits === 32 || /^s\d+$/i.test(op.text || '')) return 4;
+    return 8;
+  }
+  if (op.bits === 32) return 4;
+  return 8;
+}
+
+function elementBits(emu, op) {
+  if (isFloatReg(op)) return emu.fpBits(op);
+  return emu.get(op.text);
+}
+
+function pairUnsupportedFault(mn, a, b) {
+  return new EmulatorFault(
+    'unsupported-instruction',
+    `${mn} pair access of ${a?.text || '?'}${b ? ', ' + b.text : ''} needs 16-byte vector register state this emulator does not model`,
+    { mnemonic: mn, registers: [a?.text, b?.text] },
+  );
+}
 
 function bitsToFloat(bits, size) {
   const buf = new ArrayBuffer(8);
