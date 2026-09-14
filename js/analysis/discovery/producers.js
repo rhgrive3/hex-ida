@@ -328,7 +328,8 @@ function debugFunctionStartIsProvableCode(input, startString, sizeBytesRaw) {
   const mapping = image.resolveVirtualMapping(start);
   if (!mapping || mapping.kind !== 'file') return false;
   const available = mapping.available;
-  if (typeof available !== 'bigint' || available < bytes.span + bytes.extent) return false;
+  const required = bytes.span > bytes.extent ? bytes.span : bytes.extent;
+  if (typeof available !== 'bigint' || available < required) return false;
   if (bytes.extent > 0n) {
     const segmentEnd = BigInt(segment.address) + BigInt(segment.size);
     if (start + bytes.extent > segmentEnd) return false;
