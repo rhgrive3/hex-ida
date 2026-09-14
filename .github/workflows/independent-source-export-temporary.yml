@@ -1,0 +1,37 @@
+name: Temporary independent source export
+on:
+  push:
+    branches: [diagnostic/independent-source-20260914]
+    paths: [.github/workflows/independent-source-export-temporary.yml]
+permissions:
+  contents: read
+jobs:
+  export-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        timeout-minutes: 2
+        with:
+          ref: 13320afa1eb0a96991b24911e42101e474482784
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Export only the pinned tracked source
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 13320afa1eb0a96991b24911e42101e474482784
+          test "$(git rev-parse HEAD^{tree})" = c785f7cb6f590ce1269d9db8ceb94b38f080384d
+          mkdir -p "$RUNNER_TEMP/independent-source-export"
+          timeout --kill-after=3s 30s git archive --format=zip --output="$RUNNER_TEMP/independent-source-export/hex-ida-pr7036-13320afa.zip" HEAD
+          sha256sum "$RUNNER_TEMP/independent-source-export/hex-ida-pr7036-13320afa.zip" > "$RUNNER_TEMP/independent-source-export/SHA256SUMS"
+          printf '%s\n' 'Source commit: 13320afa1eb0a96991b24911e42101e474482784' 'Source tree: c785f7cb6f590ce1269d9db8ceb94b38f080384d' > "$RUNNER_TEMP/independent-source-export/SOURCE.txt"
+          cat "$RUNNER_TEMP/independent-source-export/SOURCE.txt" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        timeout-minutes: 2
+        with:
+          name: independent-source-13320afa
+          path: ${{ runner.temp }}/independent-source-export/
+          if-no-files-found: error
+          retention-days: 1
