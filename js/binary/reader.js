@@ -163,7 +163,7 @@ export class ByteView {
       const startNumber = Number(start);
       const endNumber = Number(end);
       const span = this.bytes.subarray(startNumber, endNumber);
-      const nul = span.indexOf(0);
+      const nul = span.indexOf(0, Number(start - p));
       raw = nul < 0 ? span : span.subarray(0, nul);
     } else {
       // A sparse backing must scan in bounded blocks. Calling u8() one byte
@@ -171,7 +171,8 @@ export class ByteView {
       const blockSize = Number.isSafeInteger(this.bytes.readAheadSize) && this.bytes.readAheadSize > 0
         ? this.bytes.readAheadSize
         : 64 * 1024;
-      let p = start;
+      const blockSizeBig = BigInt(blockSize);
+      let p = start - (start % blockSizeBig);
       raw = this.bytes.subarray(o, o);
       while (p < end) {
         const blockEnd = p + BigInt(Math.min(blockSize, Number(end - p)));
@@ -181,9 +182,9 @@ export class ByteView {
         } catch (error) {
           if (error?.code !== 'BINARY_SOURCE_RANGE_MISSING') throw error;
           const missing = typeof error.offset === 'bigint' ? error.offset : BigInt(error.offset ?? p);
-          if (missing > p) {
+          if (missing > start) {
             const cached = this.bytes.subarray(exposedOffset(p), exposedOffset(missing));
-            const cachedNul = cached.indexOf(0);
+            const cachedNul = cached.indexOf(0, Number(start - p));
             if (cachedNul >= 0) {
               raw = this.bytes.subarray(o, exposedOffset(p + BigInt(cachedNul)));
               break;
