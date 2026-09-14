@@ -177,6 +177,20 @@ export function createHexAIContext(app) {
     get() { return app?.backend?.binaryId ?? legacy.binaryId ?? null; },
   });
 
+  // #8931: first-party AnalysisQueryAPI owns a canonical analysis epoch
+  // (`js/analysis/query/app-adapter.js::currentIdentity`). The AI
+  // ObservationStore folds `context.analysisRevision` into its deterministic
+  // binding key, so without this getter the cache falls back to the constant
+  // `analysis:0` for the entire session and a second identical tool call is a
+  // cache hit even after QueryAPI's epoch has advanced. Publishing the epoch
+  // makes QueryAPI's snapshot-freshness/stale-retry boundary authoritative at
+  // the AI cache too. A host that exposes no epoch stays explicit-unknown
+  // (null), which ObservationStore treats as unresolved (per-context ephemeral
+  // nonce) rather than a shared cross-epoch authority.
+  define(context, 'analysisRevision', {
+    get() { return app?.backend?.gen ?? app?.analysisEpoch ?? null; },
+  });
+
   // Direct analysis indexes are intentionally not part of the production AI
   // context. Query callbacks below are the only first-party analysis authority.
   define(context, 'symbols', { get:() => null });
