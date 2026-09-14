@@ -314,12 +314,29 @@ function preflightMeasure(value, depth, state, inOperations) {
 function childBytesOf(_kept, bytes) { return bytes; }
 
 function admitRemoteEnvelope(envelope, maxBatch, maxMessageBytes) {
+  try {
+    return measureRemoteEnvelopeAdmission(envelope, maxBatch, maxMessageBytes);
+  } catch {
+    // Anything the bounded preflight cannot evaluate stays with the existing
+    // fail-closed snapshot/verification paths instead of throwing at ingress.
+    return { status: 'indeterminate' };
+  }
+}
+
+function measureRemoteEnvelopeAdmission(envelope, maxBatch, maxMessageBytes) {
   if (!isPlainRecord(envelope)) return { status: 'indeterminate' };
   const operations = ownEnumerableEntry(envelope, 'operations');
-  if (operations.kind !== 'data' || !Array.isArray(operations.value)
-    || operations.value.length === 0 || operations.value.length > maxBatch) {
-    return { status: 'over-batch' };
+  // An accessor cannot be read without executing caller code, so it is rejected
+  // by the owned snapshot scan instead of being probed as trusted data.
+  if (operations.kind === 'accessor') return { status: 'shape-unreadable' };
+  if (operations.kind !== 'data' || !Array.isArray(operations.value)) return { status: 'over-batch' };
+  let batch = 0;
+  try {
+    batch = operations.value.length;
+  } catch {
+    return { status: 'indeterminate' };
   }
+  if (batch === 0 || batch > maxBatch) return { status: 'over-batch' };
   let rawEgressGuard = true;
   try {
     rawEgressGuard = envelope?.egress?.rawBinaryBytes !== true && envelope?.egress?.derivedDataOnly !== false;
@@ -467,7 +484,8 @@ export class RemoteCollaborationGate {
     const admission = admitRemoteEnvelope(envelope, this.maxBatch, this.maxMessageBytes);
     const admissionReason = ADMISSION_REJECTIONS[admission.status];
     if (admissionReason) return { ok: false, reason: admissionReason };
-    if (envelope?.egress?.rawBinaryBytes !== true && envelope?.egress?.derivedDataOnly !== false
+    if (admission.status !== 'admitted' && admission.status !== 'shape-unreadable'
+      && envelope?.egress?.rawBinaryBytes !== true && envelope?.egress?.derivedDataOnly !== false
       && Array.isArray(envelope?.operations) && containsRawBinaryBytes(envelope.operations)) {
       return { ok: false, reason: 'remote-raw-binary-egress-forbidden' };
     }

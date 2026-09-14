@@ -224,6 +224,29 @@ check('oversized rejection leaves no replay, snapshot, or proof state', () => {
   );
 });
 
+check('hostile proxies cannot turn admission into a thrown ingress error', () => {
+  const throwingLength = new Proxy([{}, {}], {
+    get(target, key) {
+      if (key === 'length') throw new Error('length-getter-invoked');
+      return Reflect.get(target, key);
+    },
+  });
+  const instance = gate({ maxBatch: 1 });
+  assert.doesNotThrow(() => assert.deepEqual(
+    instance.validate(hostileEnvelope(throwingLength)),
+    { ok: false, reason: 'remote-raw-binary-egress-forbidden' },
+  ));
+  const accessorOperations = hostileEnvelope([{}]);
+  Object.defineProperty(accessorOperations, 'operations', { enumerable: true, get() { throw new Error('accessor-invoked'); } });
+  assert.doesNotThrow(() => assert.deepEqual(
+    instance.validate(accessorOperations),
+    { ok: false, reason: 'remote-envelope-shape-invalid' },
+    'an unreadable operations accessor must stay with the existing fail-closed shape path',
+  ));
+  const nonArray = hostileEnvelope('not-an-array');
+  assert.deepEqual(instance.validate(nonArray), { ok: false, reason: 'remote-batch-budget-exceeded' });
+});
+
 check('admission keeps the normal valid path intact', () => {
   const instance = gate({ maxBatch: 4, maxMessageBytes: 1024 * 1024 });
   const envelope = validEnvelope();
