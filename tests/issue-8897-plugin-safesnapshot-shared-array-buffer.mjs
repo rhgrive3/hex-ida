@@ -159,3 +159,56 @@ test('#8897 cross-realm SAB and DataView are detached without losing view bounds
   });
   assert.deepEqual(Array.from(hostBytes), [0, 1, 2, 3, 4, 5, 6, 7], 'cross-realm shared memory must remain detached');
 });
+
+test('#8897 cross-realm Map/Set graphs detach SAB without invoking a poisoned view constructor', { skip: !HAS_SAB && 'SharedArrayBuffer unavailable' }, async () => {
+  const foreign = vm.runInNewContext(`(() => {
+    const sab = new SharedArrayBuffer(8);
+    const all = new Uint8Array(sab);
+    all.set([0, 1, 2, 3, 4, 5, 6, 7]);
+    const bytes = new Uint16Array(sab, 2, 2);
+    Object.defineProperty(bytes, 'constructor', {
+      configurable: true,
+      value() { throw new Error('poisoned constructor must not run'); },
+    });
+    return {
+      sab,
+      bytes,
+      map: new Map([['buffer', sab], ['bytes', bytes]]),
+      set: new Set([bytes]),
+    };
+  })()`);
+  const hostBytes = new Uint8Array(foreign.sab);
+
+  const registry = new PlatformPluginRegistry({ timeoutMs: 1000 });
+  registry.registerAnalyzer('sab.cross-realm-containers', {
+    async analyze(context) {
+      const mapBytes = context.project.map.get('bytes');
+      const setBytes = [...context.project.set][0];
+      const buffer = context.project.map.get('buffer');
+      const before = Array.from(new Uint8Array(buffer));
+      mapBytes[0] = 0xaabb;
+      return {
+        before,
+        sameView: mapBytes === setBytes && mapBytes === context.project.bytes,
+        sameBacking: buffer === mapBytes.buffer && buffer === context.project.sab,
+        byteOffset: mapBytes.byteOffset,
+        length: mapBytes.length,
+        sharedBacking: buffer instanceof SharedArrayBuffer,
+        after: Array.from(new Uint8Array(buffer)),
+      };
+    },
+  });
+
+  const result = await registry.invoke('analyzer', 'sab.cross-realm-containers', 'analyze', { project: foreign });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.value, {
+    before: [0, 1, 2, 3, 4, 5, 6, 7],
+    sameView: true,
+    sameBacking: true,
+    byteOffset: 2,
+    length: 2,
+    sharedBacking: false,
+    after: [0, 1, 0xbb, 0xaa, 4, 5, 6, 7],
+  });
+  assert.deepEqual(Array.from(hostBytes), [0, 1, 2, 3, 4, 5, 6, 7], 'cross-realm container graph must not retain shared backing');
+});
