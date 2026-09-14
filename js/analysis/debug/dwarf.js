@@ -127,35 +127,65 @@ const ENCODING_CLASS = Object.freeze({
 // or memory before the first DIE is charged (#3932).
 const DEFAULT_MAX_ABBREV_DECLARATIONS = 65_536;
 const DEFAULT_MAX_ABBREV_ATTRIBUTES = 1_048_576;
+// Section-backed string aliases are bounded by retained decoded output, not by
+// scan bytes: a scan budget lets the same physical string be decoded and kept
+// once per aliasing DIE (#8733).
+const DEFAULT_MAX_DECODED_STRING_BYTES = 8 * 1024 * 1024;
+// V8 retains JS strings as UTF-16, so two bytes per decoded code unit is the
+// conservative proxy for one retained decoded string.
+const DECODED_STRING_BYTES_PER_CHAR = 2;
+// One cache entry is itself retained state, so it is charged too.
+const DECODED_STRING_ENTRY_OVERHEAD_BYTES = 64;
 const BYTE_BUDGET_DIAGNOSTIC = 'byte budget exhausted';
 const BYTE_BUDGET_ERROR_CODE = 'dwarf-byte-budget-exhausted';
+const STRING_BUDGET_DIAGNOSTIC = 'decoded string budget exhausted';
+const STRING_BUDGET_ERROR_CODE = 'dwarf-string-budget-exhausted';
 
 function resolveDebugEndian(endian) {
   if (endian == null) return 'little';
   return endian === 'little' || endian === 'big' ? endian : null;
 }
 
-function byteBudgetError() {
-  const error = new RangeError(BYTE_BUDGET_ERROR_CODE);
-  error.code = BYTE_BUDGET_ERROR_CODE;
-  return error;
-}
-
 function isByteBudgetError(error) {
   return error?.code === BYTE_BUDGET_ERROR_CODE;
 }
 
-function createByteBudget(maxBytesScanned) {
-  let bytesScanned = 0;
+function createChargedBudget(maxUnits, errorCode) {
+  let used = 0;
   return {
-    get exhausted() { return bytesScanned >= maxBytesScanned; },
-    get bytesScanned() { return bytesScanned; },
+    get exhausted() { return used >= maxUnits; },
+    get used() { return used; },
     charge(count) {
       if (!Number.isSafeInteger(count) || count < 0) throw new RangeError('dwarf-invalid-byte-charge');
-      if (count > maxBytesScanned - bytesScanned) throw byteBudgetError();
-      bytesScanned += count;
+      if (count > maxUnits - used) {
+        const error = new RangeError(errorCode);
+        error.code = errorCode;
+        throw error;
+      }
+      used += count;
     },
   };
+}
+
+function createByteBudget(maxBytesScanned) {
+  return createChargedBudget(maxBytesScanned, BYTE_BUDGET_ERROR_CODE);
+}
+
+function createDecodedStringBudget(maxDecodedStringBytes) {
+  return createChargedBudget(maxDecodedStringBytes, STRING_BUDGET_ERROR_CODE);
+}
+
+/** The stable diagnostic for one budget-exhaustion error, or null for anything else. */
+function budgetDiagnostic(error) {
+  if (error?.code === BYTE_BUDGET_ERROR_CODE) return BYTE_BUDGET_DIAGNOSTIC;
+  if (error?.code === STRING_BUDGET_ERROR_CODE) return STRING_BUDGET_DIAGNOSTIC;
+  return null;
+}
+
+function pushBudgetDiagnostic(diagnostics, error) {
+  const diagnostic = budgetDiagnostic(error);
+  if (diagnostic && !diagnostics.includes(diagnostic)) diagnostics.push(diagnostic);
+  return diagnostic != null;
 }
 
 class Cursor {
@@ -261,7 +291,7 @@ class Cursor {
  * returns `null`, which callers propagate as an unresolved attribute instead of
  * silently decoding an empty or unterminated span.
  */
-function cstring(bytes, offset, byteBudget = null) {
+function decodeSectionString(bytes, offset, byteBudget = null) {
   if (!bytes || offset < 0 || offset >= bytes.length) return null;
   let end = offset;
   while (end < bytes.length) {
@@ -271,6 +301,44 @@ function cstring(bytes, offset, byteBudget = null) {
   }
   if (end === bytes.length) return null;
   return new TextDecoder('utf8').decode(bytes.subarray(offset, end));
+}
+
+/**
+ * Resolves section-backed string references for one parse run.
+ *
+ * DWARF string forms are table *references*: nothing in the format limits how
+ * many DIEs may alias one physical string, so decoding on every reference turns
+ * a ~70 KiB section into hundreds of retained copies of the same string (#8733).
+ * Every resolution is therefore cached under its own section namespace, and the
+ * retained decoded output — plus the cache entry that holds it — is charged
+ * against an explicit budget. A cached failure stays a failure: an out-of-range
+ * or unterminated reference is never published as a valid string (#1861).
+ */
+function createStringResolver(byteBudget, maxDecodedStringBytes) {
+  const decodedBudget = createDecodedStringBudget(maxDecodedStringBytes);
+  const namespaces = new Map();
+  return {
+    /** Scan cost still belongs to the shared `.debug_info`/section scan budget. */
+    chargeScan(count) { byteBudget?.charge(count); },
+    get decodedExhausted() { return decodedBudget.exhausted; },
+    get decodedBytes() { return decodedBudget.used; },
+    resolve(namespace, bytes, offset) {
+      if (!bytes || !Number.isSafeInteger(offset) || offset < 0) return null;
+      let cache = namespaces.get(namespace);
+      if (!cache || cache.bytes !== bytes) {
+        cache = { bytes, byOffset: new Map() };
+        namespaces.set(namespace, cache);
+      }
+      if (cache.byOffset.has(offset)) return cache.byOffset.get(offset);
+      const value = decodeSectionString(bytes, offset, byteBudget);
+      // Charge before caching so neither an unbounded decoded-string set nor an
+      // unbounded negative-result set can grow past the budget.
+      decodedBudget.charge(DECODED_STRING_ENTRY_OVERHEAD_BYTES
+        + (value == null ? 0 : value.length * DECODED_STRING_BYTES_PER_CHAR));
+      cache.byOffset.set(offset, value);
+      return value;
+    },
+  };
 }
 
 /** Parses one `.debug_abbrev` table with shared per-parse budgets. */
@@ -342,7 +410,7 @@ function readUnsignedWidth(cursor, width) {
  * the DIE keeps its other attributes and records that one is unknown, which is
  * how a partially understood record stays honest instead of being dropped.
  */
-function readForm(cursor, form, unit, sections, implicitConst, byteBudget = null) {
+function readForm(cursor, form, unit, sections, implicitConst, strings) {
   switch (form) {
     case DW_FORM.addr: {
       // DW_FORM_addr occupies exactly the CU's address size, which the DWARF
@@ -389,12 +457,14 @@ function readForm(cursor, form, unit, sections, implicitConst, byteBudget = null
     }
     case DW_FORM.strp: {
       const offset = unit.offsetSize === 8 ? Number(cursor.u64()) : cursor.u32();
-      const text = sections.debug_str ? cstring(sections.debug_str, offset, byteBudget) : null;
+      const text = sections.debug_str ? strings.resolve('debug_str', sections.debug_str, offset) : null;
       return { value: text, unsupported: !sections.debug_str || text == null };
     }
     case DW_FORM.line_strp: {
       const offset = unit.offsetSize === 8 ? Number(cursor.u64()) : cursor.u32();
-      const text = sections.debug_line_str ? cstring(sections.debug_line_str, offset, byteBudget) : null;
+      const text = sections.debug_line_str
+        ? strings.resolve('debug_line_str', sections.debug_line_str, offset)
+        : null;
       return { value: text, unsupported: !sections.debug_line_str || text == null };
     }
     case DW_FORM.ref_addr:
@@ -417,7 +487,7 @@ function readForm(cursor, form, unit, sections, implicitConst, byteBudget = null
     case DW_FORM.implicit_const: return { value: implicitConst };
     case DW_FORM.indirect: {
       const actual = Number(cursor.uleb());
-      return readForm(cursor, actual, unit, sections, null, byteBudget);
+      return readForm(cursor, actual, unit, sections, null, strings);
     }
     default:
       // An unrecognised form has an unknown length, so the DIE stream cannot be
@@ -488,9 +558,9 @@ function strOffsetsContributionAtBase(table, base, expectedOffsetSize, state = n
 }
 
 /** Resolves the string for a DW_FORM_strx index through `.debug_str_offsets`. */
-function strxString(index, unit, sections, contributionState = null, byteBudget = null) {
+function strxString(index, unit, sections, contributionState = null, strings = null) {
   const table = sections.debug_str_offsets;
-  if (!table || !sections.debug_str) return null;
+  if (!table || !sections.debug_str || !strings) return null;
   const entrySize = unit.offsetSize;
   let contribution;
   let base = unit.strOffsetsBase;
@@ -512,11 +582,11 @@ function strxString(index, unit, sections, contributionState = null, byteBudget 
   if (!Number.isSafeInteger(relative)) return null;
   const at = base + relative;
   if (!Number.isSafeInteger(at) || !Number.isSafeInteger(at + entrySize) || at + entrySize > contribution.end) return null;
-  byteBudget?.charge(entrySize);
+  strings.chargeScan(entrySize);
   const view = new DataView(table.buffer, table.byteOffset, table.byteLength);
   const rawOffset = entrySize === 8 ? view.getBigUint64(at, unit.littleEndian) : BigInt(view.getUint32(at, unit.littleEndian));
   if (rawOffset > BigInt(Number.MAX_SAFE_INTEGER)) return null;
-  return cstring(sections.debug_str, Number(rawOffset), byteBudget);
+  return strings.resolve('debug_str', sections.debug_str, Number(rawOffset));
 }
 
 /**
@@ -645,9 +715,13 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
   const maxAbbrevAttributes = Number.isSafeInteger(budget?.maxAbbrevAttributes) && budget.maxAbbrevAttributes > 0
     ? budget.maxAbbrevAttributes
     : DEFAULT_MAX_ABBREV_ATTRIBUTES;
+  const maxDecodedStringBytes = Number.isSafeInteger(budget?.maxDecodedStringBytes) && budget.maxDecodedStringBytes > 0
+    ? budget.maxDecodedStringBytes
+    : DEFAULT_MAX_DECODED_STRING_BYTES;
 
   const units = [];
   const byteBudget = createByteBudget(maxBytesScanned);
+  const strings = createStringResolver(byteBudget, maxDecodedStringBytes);
   const cursor = new Cursor(info, 0, byteBudget, resolvedEndian);
   const abbrevCache = new Map();
   const requestedAddrContributionScans = Number.isSafeInteger(budget?.maxAddrContributionScans)
@@ -938,7 +1012,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       let dieComplete = !duplicateCode && tagSupported;
       try {
         for (const spec of declaration.attributes) {
-          const read = readForm(cursor, spec.form, unit, sections, spec.implicitConst, byteBudget);
+          const read = readForm(cursor, spec.form, unit, sections, spec.implicitConst, strings);
           if (read.unsupported) {
             dieComplete = false;
             diagnostics.push(`unsupported form 0x${spec.form.toString(16)} at 0x${dieOffset.toString(16)}`);
@@ -949,8 +1023,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
           attributes.set(spec.attribute, { form: spec.form, value: read.value });
         }
       } catch (error) {
-        if (isByteBudgetError(error)) {
-          diagnostics.push(BYTE_BUDGET_DIAGNOSTIC);
+        if (pushBudgetDiagnostic(diagnostics, error)) {
           complete = false;
           unitComplete = false;
           break;
@@ -979,7 +1052,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       try {
         for (const [attribute, entry] of attributes) {
           if ([DW_FORM.strx, DW_FORM.strx1, DW_FORM.strx2, DW_FORM.strx3, DW_FORM.strx4].includes(entry.form)) {
-            const resolved = strxString(entry.value, unit, sections, strOffsetsContributionState, byteBudget);
+            const resolved = strxString(entry.value, unit, sections, strOffsetsContributionState, strings);
             attributes.set(attribute, { form: entry.form, value: resolved });
             if (resolved == null) {
               // A string-table index that cannot be bound to a validated
@@ -1016,13 +1089,11 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
           }
         }
       } catch (error) {
-        if (isByteBudgetError(error)) {
-          diagnostics.push(BYTE_BUDGET_DIAGNOSTIC);
-          complete = false;
-          unitComplete = false;
-        } else {
+        if (!pushBudgetDiagnostic(diagnostics, error)) {
           throw error;
         }
+        complete = false;
+        unitComplete = false;
       }
       if (!unitComplete) { complete = false; break; }
       // DW_AT_ranges carries non-contiguous address evidence in
@@ -1093,6 +1164,13 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
         if (!diagnostics.includes(BYTE_BUDGET_DIAGNOSTIC)) diagnostics.push(BYTE_BUDGET_DIAGNOSTIC);
         complete = false;
       }
+      break;
+    }
+    // A decoded-string budget hit is a stop for the whole parse, not for one
+    // unit: every later unit would fail on its first section string (#8733).
+    if (strings.decodedExhausted) {
+      if (!diagnostics.includes(STRING_BUDGET_DIAGNOSTIC)) diagnostics.push(STRING_BUDGET_DIAGNOSTIC);
+      complete = false;
       break;
     }
   }
