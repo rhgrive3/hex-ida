@@ -641,7 +641,7 @@ function discoverDescriptors(irFunction, cfg, options, fallbackRegion, orderedNo
           || (descriptor.sourceKind === 'unknown-memory-effect' && descriptor.node?.kind === 'call'))
         && !stackValues.nodeHasStackDerivedArgument(descriptor.node)
         && !callMayExposeStackAddress(descriptor.node, nodes, irFunction, stackValues)
-        && !stackAddressPublishedBeforeCall(descriptor.node, nodes, irFunction, stackValues)) {
+        && !stackAddressPublishedBeforeCall(descriptor.node, nodes, stackValues)) {
       descriptor.noEscapeStack = true;
     }
   }
