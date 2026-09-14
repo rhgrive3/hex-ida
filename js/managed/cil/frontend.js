@@ -25,7 +25,9 @@ export class CilFrontend {
   }
 
   async probe(bytes, context = {}) {
-    return probeCil(bytes);
+    // Format detection is the availability boundary (#8704): the caller's
+    // admission budget has to reach the probe, not only the parse.
+    return probeCil(bytes, { ...this.options, ...context });
   }
 
   async open(bytes, context = {}) {

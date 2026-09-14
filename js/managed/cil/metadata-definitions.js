@@ -102,7 +102,11 @@ function formatCilGuid(bytes, offset) {
 }
 
 // Read only definitions, but use the complete, already-bounds-checked table layout.
-export function readCilDefinitions(bytes, view, layout, stringsStream, blobStream = null, guidStream = null) {
+// `admission` is the aggregate metadata resource budget (#8704): the row objects
+// and decoded string bytes a table is about to materialize are charged first, so
+// an image declaring more authority than the budget admits never reaches
+// allocation.
+export function readCilDefinitions(bytes, view, layout, stringsStream, blobStream = null, guidStream = null, admission = null) {
   const { rowCounts: counts, tableOffsets: offsets, rowSizes, heapSizes, valid } = layout;
   const s = heapSizes & 1 ? 4 : 2, g = heapSizes & 2 ? 4 : 2, b = heapSizes & 4 ? 4 : 2;
   const index = (pos, width) => width === 2 ? view.getUint16(pos, true) : view.getUint32(pos, true);
@@ -114,6 +118,7 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     let pos = start;
     while (pos < end && bytes[pos] !== 0) pos++;
     if (pos === end) fail('cil-definition-string-unterminated');
+    admission?.chargeStringBytes(pos - start);
     try { return utf8.decode(bytes.subarray(start, pos)); }
     catch { fail('cil-invalid-strings-utf8'); }
   };
@@ -122,10 +127,15 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     if (valueText == null || valueText.length === 0) fail(code);
     return valueText;
   };
-  const readRows = (table, decode) => Array.from({ length: counts[table] }, (_, i) => {
-    const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
-    return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
-  });
+  const readRows = (table, decode) => {
+    // Charge the objects this table is about to allocate before allocating them.
+    if (counts[table]) admission?.chargeObjects(counts[table]);
+    return Array.from({ length: counts[table] }, (_, i) => {
+      const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
+      admission?.chargeOperations(1);
+      return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
+    });
+  };
   const methods = readRows(6, pos => ({
     rva: view.getUint32(pos, true), implFlags: view.getUint16(pos + 4, true),
     accessFlags: view.getUint16(pos + 6, true), name: text(index(pos + 8, s)),
@@ -154,6 +164,7 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
   // closed.
   const typeSpecs = counts[0x1b] ? Array.from({ length: counts[0x1b] }, (_, i) => {
     const rid = i + 1, pos = offsets[0x1b] + i * rowSizes[0x1b];
+    admission?.chargeOperations(1);
     const signatureBlobIndex = index(pos, b);
     if (!blobHeap) fail('cil-type-spec-blob-missing');
     const rawSignature = readCilMetadataBlob(blobHeap, signatureBlobIndex, 'cil-type-spec-blob-index-invalid');
@@ -888,7 +899,8 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
 
 // Bind auxiliary metadata tables onto canonical owner rows. This runs before
 // the image freezes; malformed or contradictory table authority fails closed.
-export function bindCilMetadataTables(defs, blobHeap) {
+// `admission` is the same #8704 resource budget the definition decode used.
+export function bindCilMetadataTables(defs, blobHeap, admission = null) {
   const { types, typeRefs, typeSpecs, fields, methods, params, properties, constants, classLayouts, fieldLayouts, nestedClasses, assembly, assemblyRefs } = defs;
   const typeDefOrRefRowCounts = [types.length, typeRefs?.length ?? 0, typeSpecs?.length ?? 0];
   const fieldSignatureElement = (blob) => {
@@ -957,6 +969,7 @@ export function bindCilMetadataTables(defs, blobHeap) {
   const constantRows = [];
   const constantParents = new Set();
   for (const row of constants ?? []) {
+    admission?.chargeOperations(1);
     const key = row.parent.token;
     if (constantParents.has(key)) fail('cil-constant-parent-duplicate');
     constantParents.add(key);
