@@ -98,6 +98,10 @@ const DW_FORM = Object.freeze({
 const ADDRX_FORMS = Object.freeze([DW_FORM.addrx, DW_FORM.addrx1, DW_FORM.addrx2, DW_FORM.addrx3, DW_FORM.addrx4]);
 /** Forms whose resolved value is an absolute address (direct or addrx-resolved). */
 const ADDRESS_CLASS_FORMS = Object.freeze([DW_FORM.addr, ...ADDRX_FORMS]);
+// DWARF5 indexed string forms resolve through `.debug_str_offsets` after the
+// attribute list is read, because DW_AT_str_offsets_base may arrive on the unit
+// root that owns them.
+const STRX_FORMS = Object.freeze([DW_FORM.strx, DW_FORM.strx1, DW_FORM.strx2, DW_FORM.strx3, DW_FORM.strx4]);
 // References that must never be interpreted as numeric DIE offsets in the
 // current `.debug_info` object. Supplementary references need a separately
 // identity-validated debug object (#4206), while ref_sig8 belongs to the
@@ -127,6 +131,11 @@ const ENCODING_CLASS = Object.freeze({
 // or memory before the first DIE is charged (#3932).
 const DEFAULT_MAX_ABBREV_DECLARATIONS = 65_536;
 const DEFAULT_MAX_ABBREV_ATTRIBUTES = 1_048_576;
+// Abbreviation *application* is a separate resource from abbreviation parsing:
+// one reused declaration multiplies its attribute list across every DIE that
+// cites it, and zero-byte forms such as DW_FORM_flag_present add retained state
+// without consuming a single scanned byte (#8752).
+const DEFAULT_MAX_DIE_ATTRIBUTE_ENTRIES = 500_000;
 // Section-backed string aliases are bounded by retained decoded output, not by
 // scan bytes: a scan budget lets the same physical string be decoded and kept
 // once per aliasing DIE (#8733).
@@ -140,6 +149,8 @@ const BYTE_BUDGET_DIAGNOSTIC = 'byte budget exhausted';
 const BYTE_BUDGET_ERROR_CODE = 'dwarf-byte-budget-exhausted';
 const STRING_BUDGET_DIAGNOSTIC = 'decoded string budget exhausted';
 const STRING_BUDGET_ERROR_CODE = 'dwarf-string-budget-exhausted';
+const ATTRIBUTE_BUDGET_DIAGNOSTIC = 'attribute materialization budget exhausted';
+const ATTRIBUTE_BUDGET_ERROR_CODE = 'dwarf-attribute-budget-exhausted';
 
 function resolveDebugEndian(endian) {
   if (endian == null) return 'little';
@@ -175,10 +186,21 @@ function createDecodedStringBudget(maxDecodedStringBytes) {
   return createChargedBudget(maxDecodedStringBytes, STRING_BUDGET_ERROR_CODE);
 }
 
+function createAttributeEntryBudget(maxAttributeEntries) {
+  return createChargedBudget(maxAttributeEntries, ATTRIBUTE_BUDGET_ERROR_CODE);
+}
+
+function isBudgetExhaustion(error) {
+  return error?.code === BYTE_BUDGET_ERROR_CODE
+    || error?.code === STRING_BUDGET_ERROR_CODE
+    || error?.code === ATTRIBUTE_BUDGET_ERROR_CODE;
+}
+
 /** The stable diagnostic for one budget-exhaustion error, or null for anything else. */
 function budgetDiagnostic(error) {
   if (error?.code === BYTE_BUDGET_ERROR_CODE) return BYTE_BUDGET_DIAGNOSTIC;
   if (error?.code === STRING_BUDGET_ERROR_CODE) return STRING_BUDGET_DIAGNOSTIC;
+  if (error?.code === ATTRIBUTE_BUDGET_ERROR_CODE) return ATTRIBUTE_BUDGET_DIAGNOSTIC;
   return null;
 }
 
@@ -718,10 +740,14 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
   const maxDecodedStringBytes = Number.isSafeInteger(budget?.maxDecodedStringBytes) && budget.maxDecodedStringBytes > 0
     ? budget.maxDecodedStringBytes
     : DEFAULT_MAX_DECODED_STRING_BYTES;
+  const maxDieAttributeEntries = Number.isSafeInteger(budget?.maxDieAttributeEntries) && budget.maxDieAttributeEntries > 0
+    ? budget.maxDieAttributeEntries
+    : DEFAULT_MAX_DIE_ATTRIBUTE_ENTRIES;
 
   const units = [];
   const byteBudget = createByteBudget(maxBytesScanned);
   const strings = createStringResolver(byteBudget, maxDecodedStringBytes);
+  const attributeBudget = createAttributeEntryBudget(maxDieAttributeEntries);
   const cursor = new Cursor(info, 0, byteBudget, resolvedEndian);
   const abbrevCache = new Map();
   const requestedAddrContributionScans = Number.isSafeInteger(budget?.maxAddrContributionScans)
@@ -1012,6 +1038,10 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       let dieComplete = !duplicateCode && tagSupported;
       try {
         for (const spec of declaration.attributes) {
+          // The declaration parse was bounded once per abbreviation table; this
+          // is the bound on applying it. Zero-byte forms create the same
+          // retained per-DIE state as a wide form, so they are charged too.
+          attributeBudget.charge(1);
           const read = readForm(cursor, spec.form, unit, sections, spec.implicitConst, strings);
           if (read.unsupported) {
             dieComplete = false;
@@ -1051,7 +1081,10 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       }
       try {
         for (const [attribute, entry] of attributes) {
-          if ([DW_FORM.strx, DW_FORM.strx1, DW_FORM.strx2, DW_FORM.strx3, DW_FORM.strx4].includes(entry.form)) {
+          // Deferred index resolution is per-DIE work too: charging it keeps a
+          // small-byte form from moving the same amplification sideways (#8752).
+          if (STRX_FORMS.includes(entry.form) || ADDRX_FORMS.includes(entry.form)) attributeBudget.charge(1);
+          if (STRX_FORMS.includes(entry.form)) {
             const resolved = strxString(entry.value, unit, sections, strOffsetsContributionState, strings);
             attributes.set(attribute, { form: entry.form, value: resolved });
             if (resolved == null) {
@@ -1166,11 +1199,17 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       }
       break;
     }
-    // A decoded-string budget hit is a stop for the whole parse, not for one
-    // unit: every later unit would fail on its first section string (#8733).
-    if (strings.decodedExhausted) {
-      if (!diagnostics.includes(STRING_BUDGET_DIAGNOSTIC)) diagnostics.push(STRING_BUDGET_DIAGNOSTIC);
-      complete = false;
+    // A decoded-string or attribute-materialization budget hit stops the whole
+    // parse, not just one unit: a reused string alias or a reused wide
+    // abbreviation would otherwise refill the allowance once per unit (#8733,
+    // #8752). Exact-fit input that consumed no further unit stays complete,
+    // like the shared byte budget.
+    if (strings.decodedExhausted || attributeBudget.exhausted) {
+      const diagnostic = strings.decodedExhausted ? STRING_BUDGET_DIAGNOSTIC : ATTRIBUTE_BUDGET_DIAGNOSTIC;
+      if (cursor.offset < info.length) {
+        if (!diagnostics.includes(diagnostic)) diagnostics.push(diagnostic);
+        complete = false;
+      }
       break;
     }
   }
