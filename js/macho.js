@@ -985,17 +985,28 @@
    * これがあると「_printf を呼んでいる」と読めるようになる。
    */
   function stubSymbols(info, indirectBuf, sym) {
-    const out = [];
+    const out = attachTruncatedFlag([]);
     if (!indirectBuf || !indirectBuf.length || !sym) return out;
     const dv = new DataView(indirectBuf.buffer, indirectBuf.byteOffset, indirectBuf.byteLength);
     const total = Math.floor(indirectBuf.length / 4);
     const pointerSize = info.pointerBits === 32 ? 4 : 8;
+    /*
+     * Several stub/pointer sections may reuse the same reserved1 indirect-symbol
+     * window (or describe overlapping ranges), and each section expanded that
+     * window independently with only a per-section bound, so a small indirect
+     * table multiplied by section count into millions of objects before
+     * analyzeSlice() could sort/dedup them (#8800). Validate each section's
+     * indirect interval against the loaded table and charge one shared
+     * STUB_SYMBOLS_MAX budget across all sections before materializing a
+     * mapping, marking the result truncated rather than over-allocating.
+     */
     for (const seg of info.segments) {
       for (const sec of seg.sections) {
         if (!sec.stubs && !sec.pointers) continue;
         const entSize = sec.stubs ? (sec.reserved2 || 12) : pointerSize;
         if (entSize <= 0) continue;
-        const count = Number(sec.size / BigInt(entSize));
+        if (sec.reserved1 >= total) continue;                  // window starts outside the table
+        const count = Math.min(Number(sec.size / BigInt(entSize)), total - sec.reserved1);
         for (let i = 0; i < count; i++) {
           const idx = sec.reserved1 + i;
           if (idx >= total) break;
@@ -1003,6 +1014,7 @@
           if (symIdx & (INDIRECT_SYMBOL_LOCAL | INDIRECT_SYMBOL_ABS)) continue;
           const name = sym.names[symIdx];
           if (!name) continue;
+          if (out.length >= STUB_SYMBOLS_MAX) { out.truncated = true; return out; }
           out.push({ addr: sec.addr + BigInt(i * entSize), name, stub: !!sec.stubs });
         }
       }

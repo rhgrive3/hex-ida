@@ -480,9 +480,13 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
       const ind = await readRange(base + BigInt(info.dysymtab.indirectsymoff), n * 4);
       if (ind.length >= 4) {
         try {
-          for (const s of MachO.stubSymbols(info, ind, sym)) {
+          const stubList = MachO.stubSymbols(info, ind, sym);
+          for (const s of stubList) {
             entries.push({ addr: s.addr, name: s.name, kind: s.stub ? 1 : 2 });
           }
+          // Indirect-symbol expansion hit its aggregate budget: symbol discovery
+          // is capped and must not be reported as complete (#8800).
+          if (stubList.truncated) capped = true;
         } catch { /* 壊れていても他は返す */ }
       }
     }
