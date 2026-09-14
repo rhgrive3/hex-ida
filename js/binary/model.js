@@ -203,6 +203,69 @@ function lookupVirtualMapping(lookup, address) {
   return best?.mapping || null;
 }
 
+// #8772: file-offset resolution is a mapping query, not a display scan. Sections and
+// segments are indexed by their file range so a lookup costs O(log N + the ranges that
+// actually contain the offset) instead of O(sections + segments) per call. The candidate
+// order is preserved exactly: ascending virtual size, ties broken by the original
+// enumeration order (sections first, then segments).
+function buildFileOffsetLookup(sections, segments) {
+  const items = [];
+  let rank = 0;
+  for (const mapping of sections) {
+    if (!sectionHasMappedAddress(mapping) || mapping.address == null) continue;
+    // Validate the raw range the same way the per-query scan did, so malformed
+    // provider output still fails closed at the identical boundary.
+    inRange(0n, mapping.fileOffset, mapping.fileSize);
+    const start = BigInt(mapping.fileOffset);
+    const end = start + BigInt(mapping.fileSize);
+    if (end > start) items.push({ mapping, rank, start, end, size: mapping.size });
+    rank++;
+  }
+  for (const mapping of segments) {
+    inRange(0n, mapping.fileOffset, mapping.fileSize);
+    const start = BigInt(mapping.fileOffset);
+    const end = start + BigInt(mapping.fileSize);
+    if (end > start) items.push({ mapping, rank, start, end, size: mapping.size });
+    rank++;
+  }
+  items.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.rank - b.rank));
+  const starts = new Array(items.length);
+  const prefixEnds = new Array(items.length);
+  let maxEnd = null;
+  for (let i = 0; i < items.length; i++) {
+    starts[i] = items[i].start;
+    if (maxEnd === null || items[i].end > maxEnd) maxEnd = items[i].end;
+    prefixEnds[i] = maxEnd;
+  }
+  return { items, starts, prefixEnds };
+}
+
+function lookupFileOffsetCandidates(lookup, offset) {
+  const { items, starts, prefixEnds } = lookup;
+  let lo = 0;
+  let hi = items.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (starts[mid] <= offset) lo = mid + 1;
+    else hi = mid;
+  }
+  const upper = lo;
+  if (upper === 0) return [];
+  lo = 0;
+  hi = upper;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (prefixEnds[mid] > offset) hi = mid;
+    else lo = mid + 1;
+  }
+  const candidates = [];
+  for (let i = lo; i < upper; i++) {
+    if (items[i].end > offset) candidates.push(items[i]);
+  }
+  candidates.sort((a, b) => (a.size < b.size ? -1 : a.size > b.size ? 1 : a.rank - b.rank));
+  return candidates;
+}
+
 
 function isAddressSorted(items) {
   for (let i = 1; i < items.length; i++) {
@@ -402,7 +465,7 @@ export class BinaryImage {
     this.warnings = [];
     this.metadata = meta.metadata || {};
     this._finalized = false;
-    this._mappingLookups = { sections: null, segments: null, virtual: null };
+    this._mappingLookups = { sections: null, segments: null, virtual: null, offsets: null };
     this._mappingSorted = { sections: null, segments: null };
     this._dataInCodeLookup = null;
     this._dataInCodeSorted = null;
@@ -430,6 +493,7 @@ export class BinaryImage {
     this._finalized = false;
     this._mappingLookups.segments = null;
     this._mappingLookups.virtual = null;
+    this._mappingLookups.offsets = null;
     this._mappingSorted.segments = null;
     return seg;
   }
@@ -459,6 +523,7 @@ export class BinaryImage {
     this._finalized = false;
     this._mappingLookups.sections = null;
     this._mappingLookups.virtual = null;
+    this._mappingLookups.offsets = null;
     this._mappingSorted.sections = null;
     return sec;
   }
@@ -479,17 +544,9 @@ export class BinaryImage {
   offsetToAddress(offset) {
     const o = strictBigIntOrNull(offset);
     if (o === null || o < 0n) return null;
-    const candidates = [];
-    for (const s of this.sections) {
-      if (!sectionHasMappedAddress(s) || s.address == null || !inRange(o, s.fileOffset, s.fileSize)) continue;
-      candidates.push(s);
-    }
-    for (const s of this.segments) {
-      if (!inRange(o, s.fileOffset, s.fileSize)) continue;
-      candidates.push(s);
-    }
-    candidates.sort((a, b) => (a.size < b.size ? -1 : a.size > b.size ? 1 : 0));
-    for (const s of candidates) {
+    if (!this._mappingLookups.offsets) this._mappingLookups.offsets = buildFileOffsetLookup(this.sections, this.segments);
+    for (const candidate of lookupFileOffsetCandidates(this._mappingLookups.offsets, o)) {
+      const s = candidate.mapping;
       const a = s.address + (o - s.fileOffset);
       const owner = this._virtualMappingAt(a);
       if (owner) {
@@ -849,6 +906,7 @@ export class BinaryImage {
     this._mappingLookups.segments = null;
     this._mappingLookups.sections = null;
     this._mappingLookups.virtual = null;
+    this._mappingLookups.offsets = null;
     this._mappingSorted.segments = true;
     this._mappingSorted.sections = true;
     this.symbols.sort(byAddr);
