@@ -416,7 +416,11 @@
     info.textVM=textVM; info.textFileOff=textFileOff;
     const align=instructionAlignment(architecture);
     const execSegments=info.segments.filter((seg)=>seg.validMapping && !!(seg.initprot&4) && seg.vmsize>0n);
-    const validPc=(pc)=>pc!=null && pc%align===0n && execSegments.some((seg)=>inRange(pc,seg.vmaddr,seg.vmsize));
+    // A PC must be inside the segment's *file-backed* VM span, not merely inside
+    // the segment's vmsize: the tail past `filesize` is loader zero-fill and has
+    // no instruction bytes to seed. #5551/#5555 enforced this on the canonical
+    // side (`image.addressToOffset(addr) != null`); the legacy path must agree.
+    const validPc=(pc)=>pc!=null && pc%align===0n && execSegments.some((seg)=>inRange(pc,seg.vmaddr,seg.filesize));
     if (info.entryOff != null) {
       const seg=execSegments.find((candidate)=>inRange(info.entryOff,candidate.fileoff,candidate.filesize));
       if (seg) {
@@ -517,7 +521,7 @@
     let terminated=false; let partialReason=null;
     const regions=Array.isArray(options.regions)?options.regions:[];
     const alignment=instructionAlignment(options.architecture||'arm64');
-    const valid=(value)=>value%alignment===0n && (!regions.length || regions.some((r)=>r.exec&&r.size>0n&&value>=r.vmAddr&&value-r.vmAddr<r.size));
+    const valid=(value)=>value%alignment===0n && regions.length>0 && regions.some((r)=>r.exec&&r.size>0n&&value>=r.vmAddr&&value-r.vmAddr<r.size);
     while(i<buf.length){
       let delta=0n,shift=0n,byte=0;
       do {
