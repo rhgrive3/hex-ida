@@ -479,9 +479,16 @@ function accessSize(base, ops) {
   }
   if (STRUCTURE_MN.test(base)) {
     const list = ops.find((o) => o.k === 'list');
+    const regs = list ? (list.regs || []) : [];
+    if (!regs.length) return null;
     let total = 0;
-    for (const r of list ? (list.regs || []) : []) total += vectorRegisterBytes(r);
-    return total > 0 ? total : 8;
+    for (const r of regs) {
+      const bytes = vectorRegisterBytes(r);
+      // One unproven list member makes the whole structure transfer unproven.
+      if (bytes === null) return null;
+      total += bytes;
+    }
+    return total > 0 ? total : null;
   }
   const reg = ops.find((o) => o.k === 'reg');
   const w = reg && reg.bits ? reg.bits / 8 : 8;
@@ -489,12 +496,17 @@ function accessSize(base, ops) {
   return w;
 }
 
-/** Structure-register-list element width. `v0.8b` moves 8 bytes, not 16. */
+/** Structure-register-list element width. `v0.8b` moves 8 bytes, not 16.
+ * Only an explicit arrangement proves the transfer width: a bare vector
+ * register (`{v0}`) publishes the physical 128-bit V width, not the memory
+ * footprint, and a lane spelling the operand grammar did not structure
+ * (`{v0.h}[3]`) proves nothing, so both fail closed to null (#8713, #8780). */
 function vectorRegisterBytes(reg) {
-  if (!reg || reg.k !== 'reg') return 0;
-  const m = /^(\d+)([bhsd])$/i.exec(reg.arr || '');
-  if (m) return Number(m[1]) * ({ b: 1, h: 2, s: 4, d: 8 }[m[2].toLowerCase()] || 0);
-  return reg.bits ? reg.bits / 8 : 0;
+  if (!reg || reg.k !== 'reg' || !reg.arr) return null;
+  const m = /^(\d+)([bhsd])$/i.exec(reg.arr);
+  if (!m) return null;
+  const bytes = Number(m[1]) * ({ b: 1, h: 2, s: 4, d: 8 }[m[2].toLowerCase()] || 0);
+  return bytes > 0 ? bytes : null;
 }
 
 /**
@@ -640,9 +652,8 @@ function instructionRole(insn, base) {
   if (base === 'adrp' || base === 'adr') return ROLE.ADDRESS_CALCULATION;
   if (insn.memory) {
     if (insn.memory.kind === 'load') return ROLE.MEMORY_READ;
-    // An atomic RMW keeps the established 'quiet' atomic role; its read/write
-    // fact is published on `insn.memory`, not through the block role (#3602).
-    if (insn.memory.kind === 'atomic') return 'quiet';
+    // An atomic read-modify-write is memory-effect-bearing, not quiet: it keeps
+    // the MEMORY_WRITE role and publishes both effect halves on its group (#8781).
     return ROLE.MEMORY_WRITE;
   }
   if (/^(paciasp|pacibsp|bti|nop|hint)$/.test(base)) return 'quiet';
@@ -1367,7 +1378,15 @@ function finishBlock(g, ctx) {
       }
     }
     if (insn.memory) {
-      g.effects.push(insn.memory.kind === 'load' ? 'read' : 'write');
+      // Project the instruction's own read/write truth. Only atomics carry both
+      // halves; a plain load or store keeps its single effect (#8781).
+      const mem = insn.memory;
+      if (mem.read || mem.write) {
+        if (mem.read) g.effects.push('read');
+        if (mem.write) g.effects.push('write');
+      } else {
+        g.effects.push(mem.kind === 'load' ? 'read' : 'write');
+      }
       if (insn.memory.stack) g.facts.stack = true;
     }
     if (insn.branchTarget != null) {
