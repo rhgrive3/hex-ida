@@ -95,3 +95,21 @@ test('#8766 normal rustc v0 corpus demangles exactly as before', () => {
     assert.equal(r.demangled, `<a::${type}>`);
   }
 });
+
+
+test('#8766 output ceiling never overshoots', () => {
+  const result = demangleRustV0('_R' + P(14), 40, { maxOutputChars: 64 });
+  assert.equal(result.parsed, false);
+  assert.equal(result.reason, 'v0-resource-budget-exceeded');
+  assert.equal(result.resourceLimited, true);
+  assert.ok(result.stats.outputChars <= 64, `overshot ${result.stats.outputChars}`);
+});
+
+test('#8766 review generic composition is rejected within ceiling', () => {
+  const symbol = '_RINvC4core3foo' + 'a'.repeat(32) + 'E';
+  const result = demangleRustV0(symbol, 40, { maxOutputChars: 32 });
+  assert.equal(result.parsed, false);
+  assert.equal(result.reason, 'v0-resource-budget-exceeded');
+  assert.equal(result.resourceLimited, true);
+  assert.ok(result.stats.outputChars <= 32, `overshot ${result.stats.outputChars}`);
+});

@@ -116,3 +116,17 @@ test('#8655 distinct heavy symbols are bounded by the provider-wide aggregate bu
   assert.equal(unbounded.completeness.complete, true);
   assert.equal(unbounded.counts.symbols, symbols.length);
 });
+
+
+test('#8655 review aggregate splice ceiling is enforced inside first symbol', () => {
+  const { name } = frontInsertSymbol(4);
+  assert.equal(demangleRustV0(name).parsed, true);
+  const bounded = new RustMetadataProvider({
+    symbols: [{ name, address: 0x1000n }],
+    binaryIdentity: 'sha256:agg-hard',
+    options: { rustDemangle: { aggregateMaxSpliceWork: 1 } },
+  }).probe();
+  assert.equal(bounded.counts.symbols, 0);
+  assert.equal(bounded.completeness.complete, false);
+  assert.equal(bounded.completeness.capped, true);
+});

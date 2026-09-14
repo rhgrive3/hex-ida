@@ -48,16 +48,7 @@ const RUST_V0_BASIC_TYPES = Object.freeze({
   z: '!',
 });
 
-/**
- * Rust v0 demangling resource ceilings (#8766, #8655).
- *
- * A syntactic recursion-depth cap is not a resource cap: a grammar-valid
- * compressed name can render exponentially or spend quadratic CPU well inside
- * the default depth. These ceilings bound operations and rendered characters
- * per symbol so a hostile but valid input fails closed instead of aborting the
- * worker. They are deliberately generous so ordinary rustc-produced symbols
- * demangle byte-for-byte unchanged.
- */
+/** Rust v0 demangling resource ceilings (#8766, #8655). */
 const RUST_V0_DEFAULT_MAX_OUTPUT_CHARS = 1_000_000;
 const RUST_V0_DEFAULT_MAX_OPS = 2_000_000;
 const RUST_V0_DEFAULT_MAX_SCALARS = 8_192;
@@ -68,61 +59,72 @@ function positiveBudget(value, fallback) {
   return Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
-function createDemangleBudget(overrides = {}) {
+function createDemangleBudget(overrides = {}, ceilings = null) {
   const o = overrides && typeof overrides === 'object' ? overrides : {};
+  const configured = {
+    maxOutputChars: positiveBudget(o.maxOutputChars, RUST_V0_DEFAULT_MAX_OUTPUT_CHARS),
+    maxOps: positiveBudget(o.maxOps, RUST_V0_DEFAULT_MAX_OPS),
+    maxScalars: positiveBudget(o.maxScalars, RUST_V0_DEFAULT_MAX_SCALARS),
+    maxEncodedBytes: positiveBudget(o.maxEncodedBytes, RUST_V0_DEFAULT_MAX_ENCODED_BYTES),
+    maxSpliceWork: positiveBudget(o.maxSpliceWork, RUST_V0_DEFAULT_MAX_SPLICE_WORK),
+  };
+  const cap = (key) => {
+    const ceiling = ceilings?.[key];
+    return Number.isSafeInteger(ceiling) && ceiling >= 0
+      ? Math.min(configured[key], ceiling)
+      : configured[key];
+  };
   return {
     ops: 0,
     outputChars: 0,
     scalars: 0,
     encodedBytes: 0,
     spliceWork: 0,
-    maxOutputChars: positiveBudget(o.maxOutputChars, RUST_V0_DEFAULT_MAX_OUTPUT_CHARS),
-    maxOps: positiveBudget(o.maxOps, RUST_V0_DEFAULT_MAX_OPS),
-    maxScalars: positiveBudget(o.maxScalars, RUST_V0_DEFAULT_MAX_SCALARS),
-    maxEncodedBytes: positiveBudget(o.maxEncodedBytes, RUST_V0_DEFAULT_MAX_ENCODED_BYTES),
-    maxSpliceWork: positiveBudget(o.maxSpliceWork, RUST_V0_DEFAULT_MAX_SPLICE_WORK),
+    maxOutputChars: cap('maxOutputChars'),
+    maxOps: cap('maxOps'),
+    maxScalars: cap('maxScalars'),
+    maxEncodedBytes: cap('maxEncodedBytes'),
+    maxSpliceWork: cap('maxSpliceWork'),
     exceeded: false,
   };
 }
 
 function v0ChargeOutput(state, length) {
-  state.budget.outputChars += length;
-  if (state.budget.outputChars > state.budget.maxOutputChars) state.budget.exceeded = true;
-  return !state.budget.exceeded;
+  const b = state.budget;
+  if (!Number.isSafeInteger(length) || length < 0 || length > b.maxOutputChars - b.outputChars) {
+    b.exceeded = true;
+    return false;
+  }
+  b.outputChars += length;
+  return true;
 }
 
 function v0ChargeOp(state) {
-  state.budget.ops += 1;
-  if (state.budget.ops > state.budget.maxOps) state.budget.exceeded = true;
-  return !state.budget.exceeded;
+  const b = state.budget;
+  if (b.ops >= b.maxOps) {
+    b.exceeded = true;
+    return false;
+  }
+  b.ops += 1;
+  return true;
 }
 
-/**
- * Charge Punycode decoding work (#8655): encoded input bytes, decoded scalars,
- * and the quadratic element-shift cost of arbitrary-position insertions. An
- * attacker can force every insertion to index 0, so `output.splice(0, 0, …)`
- * moves the whole prefix once per scalar; charging the current output length
- * per insertion bounds CPU by the configured budget instead of Θ(n²).
- */
 function v0ChargePunycode(state, { encodedBytes = 0, scalars = 0, spliceWork = 0 } = {}) {
   if (!state || !state.budget) return true;
   const b = state.budget;
+  if (![encodedBytes, scalars, spliceWork].every((value) => Number.isSafeInteger(value) && value >= 0)
+      || encodedBytes > b.maxEncodedBytes - b.encodedBytes
+      || scalars > b.maxScalars - b.scalars
+      || spliceWork > b.maxSpliceWork - b.spliceWork) {
+    b.exceeded = true;
+    return false;
+  }
   b.encodedBytes += encodedBytes;
   b.scalars += scalars;
   b.spliceWork += spliceWork;
-  if (b.encodedBytes > b.maxEncodedBytes || b.scalars > b.maxScalars || b.spliceWork > b.maxSpliceWork) {
-    b.exceeded = true;
-  }
-  return !b.exceeded;
+  return true;
 }
 
-/**
- * Resolve a Rust v0 backreference `B<offset>` to a previously produced path or
- * type. The same referenced production always renders identically, so the
- * render is memoized by `(kind, offset)`; the recorded relative depth span
- * keeps a reuse inside the caller's recursion budget. Output allocation is
- * still charged so memoization cannot silently unbound the final render.
- */
 function v0ResolveBackref(str, state, kind, offset, depth) {
   const key = `${kind}:${offset}`;
   const hit = state.memo.get(key);
@@ -147,18 +149,33 @@ function v0ResolveBackref(str, state, kind, offset, depth) {
   return text;
 }
 
-/**
- * Charge a freshly materialized render against the per-symbol output ceiling
- * and, when it completed cleanly, memoize it so a later backreference to the
- * same offset can reuse the exact string instead of re-expanding it.
- */
-function v0CacheRender(state, kind, entryPos, depth, text) {
-  if (typeof text !== 'string') return text;
-  if (!v0ChargeOutput(state, text.length)) return null;
+function v0MemoizeRender(state, kind, entryPos, depth, text) {
   if (!state.depthExceeded && !state.budget.exceeded) {
     state.memo.set(`${kind}:${entryPos}`, { text, span: Math.max(0, state.maxSeenDepth - depth) });
   }
   return text;
+}
+
+/** Charge an already materialized leaf render. */
+function v0CacheRender(state, kind, entryPos, depth, text) {
+  if (typeof text !== 'string') return text;
+  if (!v0ChargeOutput(state, text.length)) return null;
+  return v0MemoizeRender(state, kind, entryPos, depth, text);
+}
+
+/**
+ * Reserve the exact output charge before allocating a composed render. This is
+ * the hard pre-allocation gate for joins/templates: if the composition cannot
+ * fit, its builder is never invoked (#8766 review blocker).
+ */
+function v0CacheComposedRender(state, kind, entryPos, depth, length, build) {
+  if (!v0ChargeOutput(state, length)) return null;
+  const text = build();
+  if (typeof text !== 'string' || text.length !== length) {
+    state.budget.exceeded = true;
+    return null;
+  }
+  return v0MemoizeRender(state, kind, entryPos, depth, text);
 }
 
 /**
@@ -250,9 +267,6 @@ function decodePunycode(input, state) {
     n += Math.floor(i / outLen);
     if (n > 0x10ffff) return null;
     i = i % outLen;
-    // Charge the arbitrary-position insertion cost (Θ(current output length)
-    // element shifts) before performing it, so a crafted all-front sequence is
-    // bounded by the configured work budget instead of Θ(n²).
     if (!v0ChargePunycode(state, { scalars: 1, spliceWork: outLen })) return null;
     output.splice(i, 0, String.fromCodePoint(n));
     i++;
@@ -351,13 +365,9 @@ function parseV0Const(str, state, depth = 0) {
   while (state.pos < str.length && /[0-9a-fA-F]/.test(str[state.pos])) {
     hexStr += str[state.pos++];
   }
-  if (state.pos >= str.length || str[state.pos] !== '_') {
-    return null;
-  }
-  state.pos++; // consume '_'
-  if (hexStr === '') {
-    return '0';
-  }
+  if (state.pos >= str.length || str[state.pos] !== '_') return null;
+  state.pos++;
+  if (hexStr === '') return '0';
   try {
     const val = BigInt('0x' + hexStr);
     return isNegative ? `-${val.toString()}` : val.toString();
@@ -390,13 +400,15 @@ function parseV0Type(str, state, depth = 0) {
     }
     const inner = parseV0Type(str, state, depth + 1);
     if (!inner) return null;
-    return v0CacheRender(state, 'type', entryPos, depth, c === 'R' ? `&${inner}` : `&mut ${inner}`);
+    const prefix = c === 'R' ? '&' : '&mut ';
+    return v0CacheComposedRender(state, 'type', entryPos, depth, prefix.length + inner.length, () => `${prefix}${inner}`);
   }
   if (c === 'P' || c === 'O') {
     state.pos++;
     const inner = parseV0Type(str, state, depth + 1);
     if (!inner) return null;
-    return v0CacheRender(state, 'type', entryPos, depth, c === 'P' ? `*const ${inner}` : `*mut ${inner}`);
+    const prefix = c === 'P' ? '*const ' : '*mut ';
+    return v0CacheComposedRender(state, 'type', entryPos, depth, prefix.length + inner.length, () => `${prefix}${inner}`);
   }
   if (c === 'A') {
     state.pos++;
@@ -404,7 +416,8 @@ function parseV0Type(str, state, depth = 0) {
     if (!elemType) return null;
     const len = parseV0Const(str, state, depth + 1);
     if (len === null) return null;
-    return v0CacheRender(state, 'type', entryPos, depth, `[${elemType}; ${len}]`);
+    const renderLength = 1 + elemType.length + 2 + len.length + 1;
+    return v0CacheComposedRender(state, 'type', entryPos, depth, renderLength, () => `[${elemType}; ${len}]`);
   }
   if (c === 'B') {
     state.pos++;
@@ -448,10 +461,9 @@ function parseV0Path(str, state, depth = 0) {
 
   if (tag === 'N') {
     if (state.pos >= str.length) return null;
-    const ns = str[state.pos++]; // namespace character
+    const ns = str[state.pos++];
     const parent = parseV0Path(str, state, depth + 1);
     if (!parent) return null;
-    // A nested path always includes an identifier, even when its length is 0.
     const ident = parseV0Identifier(str, state.pos, state);
     if (!ident) return null;
     state.pos = ident.nextPos;
@@ -461,26 +473,27 @@ function parseV0Path(str, state, depth = 0) {
       else if (ns === 'S') name = '{shim}';
       else name = `{${ns}}`;
     }
-    return v0CacheRender(state, 'path', entryPos, depth, `${parent}::${name}`);
+    const renderLength = parent.length + 2 + name.length;
+    return v0CacheComposedRender(state, 'path', entryPos, depth, renderLength, () => `${parent}::${name}`);
   }
 
   if (tag === 'M') {
     const implPath = parseV0ImplPath(str, state, depth + 1);
     const typeName = parseV0Type(str, state, depth + 1);
-    if (implPath && typeName) return v0CacheRender(state, 'path', entryPos, depth, `<${implPath}::${typeName}>`);
-    return null;
+    if (!implPath || !typeName) return null;
+    const renderLength = 1 + implPath.length + 2 + typeName.length + 1;
+    return v0CacheComposedRender(state, 'path', entryPos, depth, renderLength, () => `<${implPath}::${typeName}>`);
   }
 
   if (tag === 'X') {
-    // All three components of `X` impl-path type trait-path are mandatory;
-    // `<type as trait>` placeholders would admit truncated symbols (#5866).
     const implPath = parseV0ImplPath(str, state, depth + 1);
     if (!implPath) return null;
     const typeName = parseV0Type(str, state, depth + 1);
     if (!typeName) return null;
     const traitPath = parseV0Path(str, state, depth + 1);
     if (!traitPath) return null;
-    return v0CacheRender(state, 'path', entryPos, depth, `<${typeName} as ${traitPath}>`);
+    const renderLength = 1 + typeName.length + 4 + traitPath.length + 1;
+    return v0CacheComposedRender(state, 'path', entryPos, depth, renderLength, () => `<${typeName} as ${traitPath}>`);
   }
 
   if (tag === 'I') {
@@ -508,7 +521,11 @@ function parseV0Path(str, state, depth = 0) {
     }
     if (state.pos >= str.length || str[state.pos] !== 'E') return null;
     state.pos++;
-    return v0CacheRender(state, 'path', entryPos, depth, args.length > 0 ? `${base}<${args.join(', ')}>` : base);
+    if (args.length === 0) return v0CacheRender(state, 'path', entryPos, depth, base);
+    let argsLength = (args.length - 1) * 2;
+    for (const arg of args) argsLength += arg.length;
+    const renderLength = base.length + 1 + argsLength + 1;
+    return v0CacheComposedRender(state, 'path', entryPos, depth, renderLength, () => `${base}<${args.join(', ')}>`);
   }
 
   if (tag === 'B') {
@@ -536,7 +553,7 @@ function parseV0Path(str, state, depth = 0) {
  * optional vendor-specific suffix starting with `.` or `$`. Unrecognized
  * trailing bytes leave the symbol unparsed instead of silently succeeding.
  */
-export function demangleRustV0(symbol, maxDepth = 32, budgetOverrides) {
+export function demangleRustV0(symbol, maxDepth = 32, budgetOverrides, budgetCeilings = null) {
   if (typeof symbol !== 'string') {
     return { original: symbol, demangled: '', parsed: false, reason: 'not-primitive-string' };
   }
@@ -550,7 +567,7 @@ export function demangleRustV0(symbol, maxDepth = 32, budgetOverrides) {
     pos: 0,
     maxDepth: depthLimit,
     depthExceeded: false,
-    budget: createDemangleBudget(budgetOverrides),
+    budget: createDemangleBudget(budgetOverrides, budgetCeilings),
     memo: new Map(),
     maxSeenDepth: 0,
   };
@@ -572,17 +589,21 @@ export function demangleRustV0(symbol, maxDepth = 32, budgetOverrides) {
   if (state.budget.exceeded) {
     return { original: symbol, demangled: symbol, parsed: false, reason: 'v0-resource-budget-exceeded', resourceLimited: true, stats: stats() };
   }
-
   if (state.depthExceeded) {
     return { original: symbol, demangled: symbol, parsed: false, reason: 'v0-depth-limit-exceeded', stats: stats() };
   }
-
   if (!demangled) {
     return { original: symbol, demangled: symbol, parsed: false, reason: 'unrecognized-v0-structure', stats: stats() };
   }
-
   if (state.pos < s.length && !v0SuffixParses(s, state.pos, depthLimit, state.budget, state.memo)) {
-    return { original: symbol, demangled: symbol, parsed: false, reason: state.budget.exceeded ? 'v0-resource-budget-exceeded' : 'unconsumed-v0-trailing-bytes', resourceLimited: state.budget.exceeded || undefined, stats: stats() };
+    return {
+      original: symbol,
+      demangled: symbol,
+      parsed: false,
+      reason: state.budget.exceeded ? 'v0-resource-budget-exceeded' : 'unconsumed-v0-trailing-bytes',
+      resourceLimited: state.budget.exceeded || undefined,
+      stats: stats(),
+    };
   }
 
   const components = demangled.split('::');
@@ -597,11 +618,7 @@ export function demangleRustV0(symbol, maxDepth = 32, budgetOverrides) {
   };
 }
 
-/**
- * Checks the unconsumed remainder of a v0 symbol against the grammar suffix
- * productions: an optional instantiating crate path followed by an optional
- * vendor-specific suffix (`.` or `$...`). Anything else is not v0.
- */
+/** Checks an optional v0 instantiating-crate/vendor suffix. */
 function v0SuffixParses(s, pos, maxDepth, budget, memo) {
   if (pos >= s.length) return true;
   if (s[pos] === '.' || s[pos] === '$') return true;
@@ -704,13 +721,13 @@ export function demangleRustLegacy(symbol) {
 /**
  * Demangles any Rust symbol (v0 or legacy).
  */
-export function demangleRustSymbol(symbol, budgetOverrides) {
+export function demangleRustSymbol(symbol, budgetOverrides, budgetCeilings = null) {
   if (typeof symbol !== 'string') {
     return { original: symbol, demangled: '', parsed: false, reason: 'not-primitive-string' };
   }
   const text = symbol;
   if (text.startsWith('_R') || text.startsWith('__R')) {
-    return demangleRustV0(text, 32, budgetOverrides);
+    return demangleRustV0(text, 32, budgetOverrides, budgetCeilings);
   }
   if (stripLegacyRustPrefix(text) != null) {
     const leg = demangleRustLegacy(text);
@@ -803,9 +820,6 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     this.platform = platform;
     this.options = options;
     this.cachedParsed = null;
-    // Per-symbol demangle ceilings (#8655/#8766) plus a provider-wide aggregate
-    // allowance so many individually-acceptable symbols cannot multiply the
-    // demangler's work without bound within one probe().
     const dm = options && typeof options === 'object' && options.rustDemangle && typeof options.rustDemangle === 'object'
       ? options.rustDemangle
       : {};
@@ -819,6 +833,7 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     this.aggregateMax = {
       ops: positiveBudget(dm.aggregateMaxOps, RUST_V0_DEFAULT_MAX_OPS * 10),
       scalars: positiveBudget(dm.aggregateMaxScalars, RUST_V0_DEFAULT_MAX_SCALARS * 20),
+      encodedBytes: positiveBudget(dm.aggregateMaxEncodedBytes, RUST_V0_DEFAULT_MAX_ENCODED_BYTES * 20),
       spliceWork: positiveBudget(dm.aggregateMaxSpliceWork, RUST_V0_DEFAULT_MAX_SPLICE_WORK * 10),
       outputChars: positiveBudget(dm.aggregateMaxOutputChars, RUST_V0_DEFAULT_MAX_OUTPUT_CHARS * 10),
     };
@@ -834,16 +849,17 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     let resourceLimited = 0;
 
     const isRustCandidateName = isRustCandidateSymbol;
-    // Identical symbol text is demangled at most once per probe (#8655: repeated
-    // records must not multiply the decoder cost).
     const demangleCache = new Map();
     const perSymbol = this.demangleBudget;
     const aggMax = this.aggregateMax;
-    const aggregate = { ops: 0, scalars: 0, spliceWork: 0, outputChars: 0 };
-    const aggregateSpent = () => aggregate.ops > aggMax.ops
-      || aggregate.scalars > aggMax.scalars
-      || aggregate.spliceWork > aggMax.spliceWork
-      || aggregate.outputChars > aggMax.outputChars;
+    const aggregate = { ops: 0, scalars: 0, encodedBytes: 0, spliceWork: 0, outputChars: 0 };
+    const remainingAggregate = () => ({
+      maxOps: Math.max(0, aggMax.ops - aggregate.ops),
+      maxScalars: Math.max(0, aggMax.scalars - aggregate.scalars),
+      maxEncodedBytes: Math.max(0, aggMax.encodedBytes - aggregate.encodedBytes),
+      maxSpliceWork: Math.max(0, aggMax.spliceWork - aggregate.spliceWork),
+      maxOutputChars: Math.max(0, aggMax.outputChars - aggregate.outputChars),
+    });
 
     for (const sym of rawSymbols) {
       const name = typeof sym?.name === 'string' ? sym.name
@@ -857,16 +873,13 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
       }
       let dem = demangleCache.get(name);
       if (dem === undefined) {
-        if (aggregateSpent()) {
-          dem = { original: name, demangled: name, parsed: false, resourceLimited: true, stats: null };
-        } else {
-          dem = demangleRustSymbol(name, perSymbol);
-          if (dem && dem.stats) {
-            aggregate.ops += dem.stats.ops;
-            aggregate.scalars += dem.stats.scalars;
-            aggregate.spliceWork += dem.stats.spliceWork;
-            aggregate.outputChars += dem.stats.outputChars;
-          }
+        dem = demangleRustSymbol(name, perSymbol, remainingAggregate());
+        if (dem && dem.stats) {
+          aggregate.ops += dem.stats.ops;
+          aggregate.scalars += dem.stats.scalars;
+          aggregate.encodedBytes += dem.stats.encodedBytes;
+          aggregate.spliceWork += dem.stats.spliceWork;
+          aggregate.outputChars += dem.stats.outputChars;
         }
         demangleCache.set(name, dem);
       }
