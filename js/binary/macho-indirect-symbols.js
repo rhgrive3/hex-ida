@@ -177,6 +177,18 @@ export function applyMachOIndirectSymbols(thinInput, image, opts={}) {
     symbolCache.set(index,value);
     return value;
   };
+  const importsByName = new Map();
+  for (const imp of image.imports || []) {
+    const byOrdinal = importsByName.get(imp.name) || new Map();
+    const byWeak = byOrdinal.get(imp.ordinal) || new Map();
+    const key = !!imp.weak;
+    const bucket = byWeak.get(key) || [];
+    bucket.push(imp);
+    byWeak.set(key, bucket);
+    byOrdinal.set(imp.ordinal, byWeak);
+    importsByName.set(imp.name, byOrdinal);
+  }
+  const matchingImports = (sym) => importsByName.get(sym.name)?.get(sym.ordinal)?.get(sym.weak) || [];
 
   for (const sec of image.sections || []) {
     const type=sec.flags & 0xff;
@@ -203,7 +215,7 @@ export function applyMachOIndirectSymbols(thinInput, image, opts={}) {
       if (decoded.error) { if (decoded.error==='metadata-budget') { status.complete=false; status.partialReason ||= 'metadata-budget'; return image; } partial(decoded.error,`Mach-O indirect symbol index ${raw} has no usable LC_SYMTAB record`); continue; }
       const sym=decoded.symbol;
       if (!sym) continue;
-      const imports=(image.imports || []).filter((imp)=>imp.name===sym.name && imp.ordinal===sym.ordinal && !!imp.weak===sym.weak);
+      const imports=matchingImports(sym);
       const preferred=imports.find((imp)=>imp.source==='symbol-table') || imports[0];
       if (!preferred) { partial('symbol-import-unavailable',`Mach-O indirect symbol ${sym.name} has no canonical import record`); continue; }
       const address=sec.address+BigInt(i)*width;
