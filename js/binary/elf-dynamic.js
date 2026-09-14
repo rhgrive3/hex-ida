@@ -124,14 +124,77 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
     return r.cstring(strOff + n, maxLength);
   };
 
-  for (const needed of tags.get(DT_NEEDED) || []) {
-    const name = stringAt(needed);
+  // #8688 — DT_NEEDED/DT_SONAME names were decoded and retained with only a
+  // per-string 1 MiB span cap, no aggregate decoded/output/heap bound, and no
+  // string-offset cache. A valid ELF may hold thousands of DT_NEEDED entries,
+  // each referencing a distinct long suffix of DT_STRTAB; on the ordinary parse
+  // path that let a ~169 KiB input retain hundreds of MiB of dependency names
+  // and deterministically abort a 512 MiB V8 heap. Charge every decode against
+  // a shared aggregate budget (both the bytes scanned and the bytes retained),
+  // cache identical offsets so repeated references cost once, and fail closed
+  // to `dynamic strings:resource-budget` partiality instead of silently growing.
+  const DYNAMIC_STRING_SCAN_BUDGET = 8 * 1024 * 1024;
+  const DYNAMIC_STRING_RETAINED_BUDGET = 4 * 1024 * 1024;
+  const DYNAMIC_STRING_MAX_REFS = 100_000;
+  let dynamicStringScanBytes = 0;
+  let dynamicStringRetainedBytes = 0;
+  let dynamicStringBudgetHit = false;
+  const dynamicStringCache = new Map();
+  const boundedStringAt = (offset, options = {}) => {
+    const cacheKey = typeof offset === 'bigint' ? `b:${offset}` : `n:${offset}`;
+    if (dynamicStringCache.has(cacheKey)) return dynamicStringCache.get(cacheKey);
+    if (dynamicStringBudgetHit) {
+      dynamicStringCache.set(cacheKey, null);
+      return null;
+    }
+    if (dynamicStringScanBytes >= DYNAMIC_STRING_SCAN_BUDGET
+      || dynamicStringRetainedBytes >= DYNAMIC_STRING_RETAINED_BUDGET
+      || dynamicStringCache.size >= DYNAMIC_STRING_MAX_REFS) {
+      dynamicStringBudgetHit = true;
+      markDynamicPartial(image, 'dynamic strings:resource-budget exceeded before decoding DT_NEEDED/DT_SONAME name');
+      dynamicStringCache.set(cacheKey, null);
+      return null;
+    }
+    const name = stringAt(offset, options);
+    if (name == null) {
+      dynamicStringCache.set(cacheKey, null);
+      return null;
+    }
+    // Charge the scan window actually decoded for this reference. When the
+    // string table is absent/unmapped, stringAt() already short-circuited to an
+    // empty string; there is no decoded window to charge.
+    const decoded = name == null ? 0 : name.length;
+    if (strSpan && strOff != null && strSize != null) {
+      const n = Number(offset);
+      if (Number.isSafeInteger(n) && n >= 0) {
+        const scanned = Math.min(strSize - n, strSpan.spanEnd - strOff - n, 1 << 20);
+        dynamicStringScanBytes += Math.max(0, scanned);
+      }
+    }
+    dynamicStringRetainedBytes += decoded;
+    if (dynamicStringRetainedBytes > DYNAMIC_STRING_RETAINED_BUDGET || dynamicStringScanBytes > DYNAMIC_STRING_SCAN_BUDGET) {
+      dynamicStringBudgetHit = true;
+      markDynamicPartial(image, 'dynamic strings:resource-budget exceeded while decoding DT_NEEDED/DT_SONAME names');
+    }
+    dynamicStringCache.set(cacheKey, name);
+    return name;
+  };
+
+  const neededEntries = tags.get(DT_NEEDED) || [];
+  if (neededEntries.length > DYNAMIC_STRING_MAX_REFS) {
+    markDynamicPartial(image, `DT_NEEDED count ${neededEntries.length} exceeds the dynamic-string reference limit ${DYNAMIC_STRING_MAX_REFS}; truncated`);
+  }
+  let neededEmitted = 0;
+  for (const needed of neededEntries) {
+    if (neededEmitted >= DYNAMIC_STRING_MAX_REFS || dynamicStringBudgetHit) break;
+    const name = boundedStringAt(needed);
     if (!name) continue;
+    neededEmitted++;
     image.libraries.push(name);
   }
   const soname = one(DT_SONAME);
   if (soname != null) {
-    const name = stringAt(soname);
+    const name = boundedStringAt(soname);
     if (name) image.metadata.soname = name;
   }
 
