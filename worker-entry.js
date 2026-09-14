@@ -44,8 +44,17 @@ export class RuntimeBootstrap extends DurableObject {
   async beginIssue(input) {
     const now = Date.now();
     const result = await beginRuntimeBootstrapIssuance(this.ctx.storage, input, { now });
-    if (result.ok) await scheduleRuntimeBootstrapCleanup(this.ctx.storage, Math.min(input.expiry, result.leaseExpiry));
-    return result;
+    if (!result.ok) return result;
+    try {
+      await scheduleRuntimeBootstrapCleanup(this.ctx.storage, Math.min(input.expiry, result.leaseExpiry));
+      return result;
+    } catch {
+      // Never publish a lease whose eventual cleanup cannot be scheduled. The
+      // rate counter remains charged, but provisional nonce/session/lease rows
+      // are rolled back before the caller can start expensive crypto work.
+      await abortRuntimeBootstrapIssuance(this.ctx.storage, { leaseId: result.leaseId, sessionId: input.sessionId });
+      return { ok: false, reason: 'bootstrap-cleanup-scheduling-failed' };
+    }
   }
   async finishIssue(input) {
     return finishRuntimeBootstrapIssuance(this.ctx.storage, { ...input, now: Date.now() });
