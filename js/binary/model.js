@@ -55,6 +55,64 @@ function normalizePerms(p) {
 
 function minBigInt(a, b) { return a < b ? a : b; }
 
+
+function buildVirtualMappingLookup(sections, segments) {
+  const items = [];
+  let order = 0;
+  for (const mapping of sections) {
+    if (sectionHasMappedAddress(mapping) && mapping.size > 0n) {
+      items.push({
+        mapping,
+        order,
+        start: mapping.address,
+        size: mapping.size,
+        end: mapping.address + mapping.size,
+      });
+    }
+    order++;
+  }
+  for (const mapping of segments) {
+    if (mapping.size > 0n) {
+      items.push({
+        mapping,
+        order,
+        start: mapping.address,
+        size: mapping.size,
+        end: mapping.address + mapping.size,
+      });
+    }
+    order++;
+  }
+  items.sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : a.order - b.order);
+  const starts = new Array(items.length);
+  const prefixEnds = new Array(items.length);
+  let maxEnd = null;
+  for (let i = 0; i < items.length; i++) {
+    starts[i] = items[i].start;
+    if (maxEnd === null || items[i].end > maxEnd) maxEnd = items[i].end;
+    prefixEnds[i] = maxEnd;
+  }
+  return { items, starts, prefixEnds };
+}
+
+function lookupVirtualMapping(lookup, address) {
+  let lo = 0;
+  let hi = lookup.starts.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (lookup.starts[mid] <= address) lo = mid + 1;
+    else hi = mid;
+  }
+  const upper = lo;
+  let best = null;
+  for (let i = upper - 1; i >= 0 && lookup.prefixEnds[i] > address; i--) {
+    const item = lookup.items[i];
+    if (item.end <= address) continue;
+    if (!best || item.size < best.size || (item.size === best.size && item.order < best.order)) best = item;
+  }
+  return best?.mapping || null;
+}
+
 function buildMappingLookup(items) {
   const starts = new Array(items.length);
   const prefixEnds = new Array(items.length);
@@ -137,7 +195,7 @@ export class BinaryImage {
     this.warnings = [];
     this.metadata = meta.metadata || {};
     this._finalized = false;
-    this._mappingLookups = { sections: null, segments: null };
+    this._mappingLookups = { sections: null, segments: null, virtual: null };
   }
 
   addSegment(s) {
@@ -161,6 +219,7 @@ export class BinaryImage {
     this.segments.push(seg);
     this._finalized = false;
     this._mappingLookups.segments = null;
+    this._mappingLookups.virtual = null;
     return seg;
   }
 
@@ -188,6 +247,7 @@ export class BinaryImage {
     this.sections.push(sec);
     this._finalized = false;
     this._mappingLookups.sections = null;
+    this._mappingLookups.virtual = null;
     return sec;
   }
 
@@ -250,14 +310,8 @@ export class BinaryImage {
   _virtualMappingAt(address) {
     const a = strictBigIntOrNull(address);
     if (a === null || a < 0n) return null;
-    let best = null;
-    for (const s of this.sections) {
-      if (sectionHasMappedAddress(s) && s.size > 0n && inRange(a, s.address, s.size) && (!best || s.size < best.size)) best = s;
-    }
-    for (const s of this.segments) {
-      if (s.size > 0n && inRange(a, s.address, s.size) && (!best || s.size < best.size)) best = s;
-    }
-    return best;
+    if (!this._mappingLookups.virtual) this._mappingLookups.virtual = buildVirtualMappingLookup(this.sections, this.segments);
+    return lookupVirtualMapping(this._mappingLookups.virtual, a);
   }
 
   _nextMappingBoundary(current, owner) {
@@ -457,6 +511,7 @@ export class BinaryImage {
     this.sections.sort(byAddr);
     this._mappingLookups.segments = null;
     this._mappingLookups.sections = null;
+    this._mappingLookups.virtual = null;
     this.symbols.sort(byAddr);
     this.exports.sort(byAddr);
     this.relocations.sort(byAddr);
