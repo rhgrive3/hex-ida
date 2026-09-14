@@ -2,12 +2,23 @@ import { parseCil as parseCilBase, probeCil as probeCilBase } from './parser-bas
 import { overlayCilMetadata } from './parser-overlay.js';
 import { overlayCilManifestSecurity } from './metadata-manifest-security.js';
 function unsupported(reason='malformed-pe-cli'){ return {supported:false,confidence:0,reason}; }
+function parseCilValidated(bytes, options = {}) {
+  return overlayCilManifestSecurity(
+    bytes,
+    overlayCilMetadata(bytes, parseCilBase(bytes, options), options),
+    options,
+  );
+}
 export function probeCil(bytes) {
   const base=probeCilBase(bytes); if(!base.supported)return base;
-  try { overlayCilManifestSecurity(bytes,overlayCilMetadata(bytes,parseCilBase(bytes))); return base; }
+  try { parseCilValidated(bytes); return base; }
   catch { return unsupported(); }
 }
 export function parseCil(bytes,options={}) {
-  const probe=probeCil(bytes); if(!probe.supported)throw new TypeError('cil-unsupported-binary');
-  return overlayCilManifestSecurity(bytes,overlayCilMetadata(bytes,parseCilBase(bytes,options),options),options);
+  const base=probeCilBase(bytes); if(!base.supported)throw new TypeError('cil-unsupported-binary');
+  try { return parseCilValidated(bytes, options); }
+  catch (error) {
+    if (error?.message?.startsWith('cil-metadata-resource-limit-')) throw error;
+    throw new TypeError('cil-unsupported-binary');
+  }
 }
