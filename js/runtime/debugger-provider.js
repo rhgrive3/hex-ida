@@ -197,20 +197,19 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
         // #5696: propagate a session-owned signal to the adapter so an
         // epoch switch/close can cancel remote work, while retaining the
         // completion-time generation check for adapters that ignore abort.
+        // #8692: the same helper is also checked before the side-effecting
+        // adapter invocation, so an already-cancelled/closed/epoch-changed
+        // request can never mutate the target just to be rejected later.
         const operation = createRuntimeOperationController(session, normalizedCallOptions.signal);
-        const startedEpoch = session.epoch;
         try {
+          operation.throwIfStale('register write stopped before its backend invocation');
           const raw = await this.adapter.writeRegister(
             name,
             value,
             normalizedCallOptions.threadId,
             { signal: operation.signal },
           );
-          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
-            throw new DebugAdapterError('runtime-session-stale', 'register write completed after its runtime epoch changed', {
-              startedEpoch, currentEpoch: session.epoch,
-            });
-          }
+          operation.throwIfStale('register write completed after its runtime epoch changed');
           const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
           return { result: raw, intervention };
         } finally {
@@ -228,14 +227,10 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
           sequence: ++interventionSequence,
         });
         const operation = createRuntimeOperationController(session, callOptions?.signal);
-        const startedEpoch = session.epoch;
         try {
+          operation.throwIfStale('memory write stopped before its backend invocation');
           const raw = await this.adapter.writeMemory(address, bytes, { ...callOptions, signal: operation.signal });
-          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
-            throw new DebugAdapterError('runtime-session-stale', 'memory write completed after its runtime epoch changed', {
-              startedEpoch, currentEpoch: session.epoch,
-            });
-          }
+          operation.throwIfStale('memory write completed after its runtime epoch changed');
           const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
           return { result: raw, intervention };
         } finally {
