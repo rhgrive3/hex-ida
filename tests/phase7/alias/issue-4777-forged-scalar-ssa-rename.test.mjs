@@ -61,7 +61,7 @@ function buildIr() {
     values,
     nodes,
     completeness: 'partial',
-    unknowns: [{ reason: 'unresolved-call', categories: ['state'] }],
+    unknowns: [{ reason: 'unresolved-call', categories: ['state'], detail: { nodeId: 'node_call_unknown' } }],
     origin: origin('function'),
   });
 }
@@ -144,5 +144,5 @@ test('a genuine scalar chain still refines reload regions (#4777)', () => {
   });
   assert.ok(slotRegion, 'the slot store must classify');
   assert.equal(slotRegion?.kind, 'rooted-offset',
-    'the genuine sp-relative slot access must keep a precise rooted region');
+    `the genuine sp-relative slot access must keep a precise rooted region: ${JSON.stringify(slotRegion)}`);
 });

@@ -319,3 +319,11 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
 最終追加検証: `6e6fcaf382c9f4ee0a00116cd0fe9d692fa0faae` のclean headでC1・#5215・ownership回帰 **230/230 PASS**、実差分Phase7/8 inventoryもPASS。
 acceptance log SHA256 `7aab33d9e8f628787fc466925abdd827064157387e8689ddf695cdf596737991`、inventory `3dfbe71a2599fff2a13bf5e8cafc71c6638a6dc01aba645f4cb6cae3707e4bf4`。
 main `f1af93b04a9511703fba61e1b6b14d9fbce4b572` に対してbehind **0**、ahead **263**。以後の文書commitはこの検証対象SHAと区別する。
+
+
+## Checkpoint 13 — #4777 fixture binding repair (2026-09-15)
+
+- `tests/phase7/alias/issue-4777-forged-scalar-ssa-rename.test.mjs` marked a partial function and included a state-unknown call, but the function-level unknown record had no `detail.nodeId`. SSA correctly treated that unlocated record as potentially separate from the represented call and inserted an entry-wide unknown state definition. That made an earlier, valid SP-relative store unknown before the call.
+- Bind the record to `node_call_unknown`. The SSA unknown now remains at its actual call position: the pre-call `sp + 0` chain again classifies as `rooted-offset`; later untrusted rename rows remain `unknown`. Neither production proof logic nor forged-row negative behavior is weakened.
+- The issue's two focused regressions pass (2/2). Added its exact Phase 7 owner and a negative ownership-manifest check. Verify current-head inventory and ownership test after commit.
+- The earlier 440-file Phase 7 run was on a head before this fixture correction and must remain recorded as red. Other unrelated/full Phase 7 blockers remain; do not claim a full Phase 7 pass from this focused repair.

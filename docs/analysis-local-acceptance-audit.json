@@ -1885,7 +1885,7 @@
         "machine-effects x86 closure/decoder regressions and canonical check not green",
         "Stage2 cross ARM64/arm64e/RISC-V and x86 baseline ran; x86 attach launcher PR_SET_PTRACER returns EINVAL in this environment (Yama interface absent). Canonical Stage2 not green.",
         "current-head independent review and integration acceptance; old PR R2 issue repaired, CLI review authentication still unavailable",
-        "Canonical Phase7 remains red: #4777 scalar-chain precision, debug diagnostics, shared producer/abort, ownership overlap, #3754 control-target fixture, and verifier coldActiveFunction performance; full log retained, final aggregate unavailable."
+        "Canonical Phase7 remains red on prior pre-#4777-fix head; remaining debug diagnostics, shared producer/abort, ownership overlap, #3754 control-target fixture, and verifier coldActiveFunction performance are not closed by the focused #4777 repair."
       ],
       "checkpoint": "docs/analysis-remaining-20260914.md",
       "additionalCanonicalResults": [
@@ -2195,7 +2195,7 @@
           "exitCode": 1,
           "finalCountsAvailable": false,
           "fullLogSha256": "efb762e2f06de24d9195c6d7233342a8c10d677748413c93350d422544458827",
-          "note": "Runner output ended before final aggregate. #5215 repaired subsequently; other failures retained."
+          "note": "#4777 was repaired on a later head; other failures remain and full-suite aggregate was unavailable."
         },
         "phase7VerifierVerdict": "BLOCKING",
         "coldActiveFunctionMs": 368.466,
@@ -2207,7 +2207,14 @@
           "head": "6e6fcaf382c9f4ee0a00116cd0fe9d692fa0faae"
         },
         "fullRoadmapComplete": false,
-        "physicalDevices": "SKIPPED_BY_USER"
+        "physicalDevices": "SKIPPED_BY_USER",
+        "latestAcceptanceHead": "TBD-4777-COMMIT",
+        "latestAcceptance": {
+          "test": "tests/phase7/alias/issue-4777-forged-scalar-ssa-rename.test.mjs",
+          "passed": 2,
+          "failed": 0,
+          "semantics": "located unknown-call preserves earlier canonical SP proof; forged rename remains unknown"
+        }
       }
     }
   },

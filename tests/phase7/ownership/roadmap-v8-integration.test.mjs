@@ -517,6 +517,7 @@ test('C1 corpus erratum and baseline paths require exact Phase 7 ownership', () 
   const assignments = validateRoadmapManifest(manifest);
   const union = [...assignments.keys()];
   for (const file of [
+    "tests/phase7/alias/issue-4777-forged-scalar-ssa-rename.test.mjs",
     "tests/phase7/alias/issue-5215-stale-escape-cache.test.mjs",
     "tools/validation/phase7/corpus-manifest.mjs",
     "tests/phase7/foundation/corpus-manifest.test.mjs",
