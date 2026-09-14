@@ -59,11 +59,11 @@ const unlistedGhaFailure = check({
   conclusion: 'failure',
 });
 const prFastGateSuccess = check({
-  name: 'PR fast gate',
+  name: 'fast',
   appSlug: 'github-actions',
 });
 const prFastGateFailure = check({
-  name: 'PR fast gate',
+  name: 'fast',
   appSlug: 'github-actions',
   conclusion: 'failure',
 });
@@ -78,8 +78,8 @@ const externalFailure = check({
 });
 
 // Unknown/non-event-covered GitHub Actions checks remain outside controller
-// authority. The event-covered PR fast gate is authoritative and must fail
-// closed when its exact-head check is not green.
+// authority. The event-covered PR fast gate's production `jobs.fast` check
+// is authoritative and must fail closed when its exact-head check is not green.
 assert.deepEqual(admissionAuthorityCheckRuns([unlistedGhaFailure]), []);
 assert.equal(evaluate([unlistedGhaFailure]).state, 'success');
 assert.deepEqual(admissionAuthorityCheckRuns([prFastGateSuccess]), [prFastGateSuccess]);
@@ -117,3 +117,10 @@ assert.match(workflowSource, /github\.event\.check_run\.head_sha/);
 assert.match(workflowSource, /required_review_thread_resolution/);
 assert.doesNotMatch(workflowSource, /readUnresolvedReviewThreads/);
 assert.doesNotMatch(workflowSource, /reviewThreads\(first:/);
+
+const prFastGateSource = fs.readFileSync(
+  new URL('../../.github/workflows/pr-fast-gate.yml', import.meta.url),
+  'utf8',
+);
+assert.match(prFastGateSource, /^name: PR fast gate$/m);
+assert.match(prFastGateSource, /^jobs:\s*\n  fast:/m);

@@ -10,7 +10,9 @@ const SHA_RE = /^[0-9a-f]{40}$/i;
 const EVIDENCE_REVISION_RE = /^[0-9a-f]{64}$/i;
 
 const EVENT_COVERED_GITHUB_ACTIONS_CHECKS = new Set([
-  'PR fast gate',
+  // GitHub check-run names are job names, not workflow display names.
+  // `.github/workflows/pr-fast-gate.yml` publishes its `jobs.fast` check as `fast`.
+  'fast',
   'Invariant Gates',
   'Agent loop resilience',
   'AI evaluation contract',
@@ -95,11 +97,11 @@ function isEventCoveredGitHubActionsCheck(check) {
     && EVENT_COVERED_GITHUB_ACTIONS_CHECKS.has(text(check?.name).trim());
 }
 
-// GitHub Actions checks are authority only when their workflow is explicitly
-// covered by this controller's event surface. Unknown GHA checks remain outside
-// the mutable authority set, while external checks stay event-covered by
-// check_run. The admission controller's own check is always excluded to avoid
-// recursion.
+// GitHub Actions checks are authority only when their emitted job check is from
+// a workflow explicitly covered by this controller's event surface. Unknown GHA
+// checks remain outside the mutable authority set, while external checks stay
+// event-covered by check_run. The admission controller's own check is always
+// excluded to avoid recursion.
 export function admissionAuthorityCheckRuns(checkRuns = []) {
   return checkRuns.filter((check) => (
     !isAdmissionCheck(check)
