@@ -1,0 +1,70 @@
+name: Temporary apply independent final fixes v2
+
+on:
+  push:
+    branches:
+      - fix/independent-io-pr7036-aware-20260914
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Fetch latest #7036
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch --no-tags origin refs/heads/feat/analysis-roadmap-v8-current-main-20260907:refs/remotes/origin/feat/analysis-roadmap-v8-current-main-20260907
+          git rev-parse refs/remotes/origin/feat/analysis-roadmap-v8-current-main-20260907
+
+      - name: Merge latest #7036
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="$(git rev-parse refs/remotes/origin/feat/analysis-roadmap-v8-current-main-20260907)"
+          git merge --no-ff --no-edit "$BASE"
+
+      - name: Verify patch applies
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --check .github/independent-final-fixes.patch
+
+      - name: Apply verified fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply .github/independent-final-fixes.patch
+
+      - name: Architecture ABI focused test
+        shell: bash
+        run: timeout 180s node tests/architecture-abi.mjs
+
+      - name: Phase4 focused regressions
+        shell: bash
+        run: timeout 180s node --test tests/phase4/architecture-abi-compat-regressions.test.mjs tests/phase4/arm64-memory-presentation-contract.test.mjs tests/phase4/issue-3630-elf-dynamic-section-authority.test.mjs
+
+      - name: Commit and push final source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/independent-final-fixes.patch
+          rm -f .github/workflows/apply-independent-final-fixes-v2-temp.yml
+          git add -A
+          git commit -m 'fix(analysis): resolve remaining Phase4 and ABI regressions'
+          git push origin HEAD:fix/independent-io-pr7036-aware-20260914
