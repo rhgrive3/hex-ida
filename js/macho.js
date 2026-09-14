@@ -73,6 +73,31 @@
   const N_EXT = 0x01;   // 外へ公開されている名前（エクスポート）の印
   const INDIRECT_SYMBOL_LOCAL = 0x80000000, INDIRECT_SYMBOL_ABS = 0x40000000;
 
+  /*
+   * Aggregate output ceilings for the legacy __unwind_info / indirect-symbol
+   * expansion helpers. These helpers build their full result *inside*
+   * js/macho.js, before worker-legacy.js / worker-fixes.js can apply their own
+   * SYMBOL_MAX / candidate-cap / Set-dedup bounds. A small, structurally-valid
+   * input (first-level index aliases of one page, a wide LSDA interval, or many
+   * pointer/stub sections reusing one indirect table) therefore multiplied into
+   * millions of BigInts/objects and OOM-killed the analysis worker
+   * (#8789, #8816, #8800). Charging this budget before each allocation keeps the
+   * peak heap bounded; on exhaustion the returned array carries an explicit
+   * `truncated` marker so a reduced result is never silently blessed as complete
+   * (same authority discipline as parseFunctionStarts' `complete`/`rejected`).
+   */
+  const UNWIND_STARTS_MAX = 200_000;   // #8789 decoded compact-unwind function starts
+  const UNWIND_LSDA_MAX   = 200_000;   // #8816 deduplicated LSDA (functionStart, lsda) pairs
+  const STUB_SYMBOLS_MAX  = 200_000;   // #8800 indirect stub/GOT symbol mappings
+
+  // Attach the truncation signal as a NON-enumerable property so the returned
+  // value stays a plain array for deep-equality callers/tests (#5371 asserts
+  // deepEqual(result, [...])) while `result.truncated` remains readable.
+  function attachTruncatedFlag(out) {
+    Object.defineProperty(out, 'truncated', { value: false, writable: true, enumerable: false, configurable: true });
+    return out;
+  }
+
   function cpuName(type, sub) {
     const s = sub & 0x00ffffff;
     switch (type) {
@@ -511,7 +536,7 @@
    * @param {BigInt} imageBase  マッハヘッダのアドレス（関数の位置はここからの差）
    */
   function parseUnwindStarts(buf, imageBase) {
-    const out = [];
+    const out = attachTruncatedFlag([]);
     if (!buf || buf.length < 28) return out;
     const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     if (dv.getUint32(0, true) !== 1) return out;               // 知らない版は読まない
@@ -519,36 +544,59 @@
     const indexCount = dv.getUint32(24, true);
     if (!indexCount || indexOff + indexCount * 12 > buf.length) return out;
 
-    for (let i = 0; i < indexCount; i++) {
-      const e = indexOff + i * 12;
-      const funcOffset = dv.getUint32(e, true);
-      const pageOff = dv.getUint32(e + 4, true);
-      if (!pageOff || pageOff + 8 > buf.length) continue;      // 最後の番人の行
-      const kind = dv.getUint32(pageOff, true);
-      /* Second-level entries live inside their own 4 KiB page (lld emits
-       * exactly 4096-byte pages). Only bounding against buf.length let a
-       * malformed entryPageOffset/entryCount walk into the next page, the
-       * LSDA index, or any other __unwind_info payload and reinterpret those
-       * bytes as compact-unwind entries (#5371). */
+    /*
+     * A first-level index row may alias a second-level page, and many rows may
+     * share one page, so decoding independently per row multiplied a single
+     * 4 KiB page into 1.5M BigInts and OOMed the worker (#8789). Decode each
+     * physical page once (keyed by its offset) and apply the row's own
+     * funcOffset base when emitting compressed entries. The #5371 per-page
+     * 4 KiB bound stays intact; the shared UNWIND_STARTS_MAX caps aggregate
+     * expansion across distinct pages, and function starts are deduplicated as
+     * they are emitted so aliases do not grow the result.
+     */
+    const pageCache = new Map();
+    const decodePage = (pageOff) => {
+      const cached = pageCache.get(pageOff);
+      if (cached) return cached;
+      const rec = { kind: dv.getUint32(pageOff, true), rel: [] };
+      pageCache.set(pageOff, rec);
       const pageEnd = Math.min(buf.length, pageOff + 0x1000);
-      if (kind === 2) {                                        // そのまま並んでいる形
+      if (rec.kind === 2) {                                    // そのまま並んでいる形
         const entryOff = dv.getUint16(pageOff + 4, true);
         const count = dv.getUint16(pageOff + 6, true);
         for (let k = 0; k < count; k++) {
           const p = pageOff + entryOff + k * 8;
           if (p + 8 > pageEnd) break;
-          out.push(imageBase + BigInt(dv.getUint32(p, true)));
+          rec.rel.push(BigInt(dv.getUint32(p, true)));         // 画像相対、行 base 不要
         }
-      } else if (kind === 3) {                                 // 圧縮された形
+      } else if (rec.kind === 3) {                             // 圧縮された形
         const entryOff = dv.getUint16(pageOff + 4, true);
         const count = dv.getUint16(pageOff + 6, true);
         for (let k = 0; k < count; k++) {
           const p = pageOff + entryOff + k * 4;
           if (p + 4 > pageEnd) break;
-          const v = dv.getUint32(p, true);
-          out.push(imageBase + BigInt(funcOffset + (v & 0x00ffffff)));
+          rec.rel.push(BigInt(dv.getUint32(p, true) & 0x00ffffff)); // 行 funcOffset を後で加算
         }
       }
+      return rec;
+    };
+
+    const seen = new Set();
+    for (let i = 0; i < indexCount; i++) {
+      const e = indexOff + i * 12;
+      const funcOffset = dv.getUint32(e, true);
+      const pageOff = dv.getUint32(e + 4, true);
+      if (!pageOff || pageOff + 8 > buf.length) continue;      // 最後の番人の行
+      const rec = decodePage(pageOff);
+      const base = rec.kind === 3 ? BigInt(funcOffset) : 0n;
+      for (const rel of rec.rel) {
+        if (out.length >= UNWIND_STARTS_MAX) { out.truncated = true; break; }
+        const value = imageBase + base + rel;
+        if (seen.has(value)) continue;                         // 関数先頭は一意
+        seen.add(value);
+        out.push(value);
+      }
+      if (out.truncated) break;
     }
     out.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     return out;
