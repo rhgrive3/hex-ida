@@ -40,6 +40,10 @@ const WASM_PARSE_BUDGET_DEFAULTS = Object.freeze({
   maxEstimatedHeapBytes: 96 * 1024 * 1024,
   maxOperations: 200000000,
   maxControlDepth: 65536,
+  // #8711: a single multi-million-parameter signature is otherwise admitted by
+  // the aggregate heap estimate and then re-traversed (and amplified ~100x into
+  // effect objects) by every downstream consumer that walks a callee signature.
+  maxSignatureArity: 65536,
   deadlineMs: 30000,
 });
 const WASM_RECORD_BUDGET_BYTES = 96;
@@ -50,7 +54,7 @@ function createWasmParseBudget(options) {
   const limits = { ...WASM_PARSE_BUDGET_DEFAULTS, ...(options.resourceBudget || {}) };
   const signal = options.signal || null;
   const startedAt = Date.now();
-  let records = 0, objects = 0, heapBytes = 0, operations = 0, controlDepth = 0;
+  let records = 0, objects = 0, heapBytes = 0, operations = 0, controlDepth = 0, signatureEntries = 0;
   function checkpoint() {
     operations++;
     if (operations > limits.maxOperations) fail('wasm-resource-limit-operations');
@@ -77,6 +81,12 @@ function createWasmParseBudget(options) {
       chargeHeap(count * WASM_OBJECT_BUDGET_BYTES);
     },
     chargeValue() { chargeHeap(WASM_VALUE_BUDGET_BYTES); checkpoint(); },
+    beginSignature() { signatureEntries = 0; },
+    chargeSignature(count) {
+      signatureEntries += count;
+      if (signatureEntries > limits.maxSignatureArity) fail('wasm-resource-limit-signature-arity');
+      checkpoint();
+    },
     checkpoint,
     enterControlFrame() {
       controlDepth++;
@@ -137,7 +147,7 @@ export function parseWasm(bytes,options={}){
   while(pos<u8.length){const idR=readByte(u8,pos,'wasm-truncated-section-id');const sectionId=idR.value;pos=idR.nextOffset;if(sectionId!==0){const sectionOrder=WASM_STANDARD_SECTION_ORDER.get(sectionId);if(sectionOrder==null)fail(`wasm-unsupported-section-${sectionId}`);if(seenSections.has(sectionId))fail(`wasm-duplicate-section-${sectionId}`);if(sectionOrder<lastStandardSectionOrder)fail(`wasm-out-of-order-section-${sectionId}`);seenSections.add(sectionId);lastStandardSectionOrder=sectionOrder;}
     const sizeR=decodeUleb128(u8,pos);pos=sizeR.nextOffset;if(sizeR.value>u8.length-pos)fail('wasm-truncated-section-payload');const sectionStart=pos,sectionEnd=pos+sizeR.value,sectionBytes=u8.subarray(sectionStart,sectionEnd);budget.chargeRecord(64);sections.push({id:sectionId,offset:sectionStart,size:sizeR.value});let secPos=0;
     if(sectionId===0){const n=decodeName(sectionBytes,0);budget.chargeRecord(64);budget.chargeBytes(2*n.name.length);customSections.push({name:n.name,data:sectionBytes.subarray(n.nextOffset)});pos=sectionEnd;continue;}
-    if(sectionId===1){const countR=decodeUleb128(sectionBytes,secPos);secPos=countR.nextOffset;for(let i=0;i<countR.value;i++){budget.chargeRecord(WASM_TYPE_ENTRY_BUDGET_BYTES);budget.chargeObjects(3);const form=readByte(sectionBytes,secPos,'wasm-malformed-type-section');secPos=form.nextOffset;if(form.value!==0x60)fail('wasm-unsupported-type-form');const pc=decodeUleb128(sectionBytes,secPos);secPos=pc.nextOffset;const params=[];for(let p=0;p<pc.value;p++){const t=readValueType(sectionBytes,secPos);secPos=t.nextOffset;budget.chargeValue();params.push(t.value);}const rc=decodeUleb128(sectionBytes,secPos);secPos=rc.nextOffset;const results=[];for(let r=0;r<rc.value;r++){const t=readValueType(sectionBytes,secPos);secPos=t.nextOffset;budget.chargeValue();results.push(t.value);}types.push({params,results});}}
+    if(sectionId===1){const countR=decodeUleb128(sectionBytes,secPos);secPos=countR.nextOffset;for(let i=0;i<countR.value;i++){budget.chargeRecord(WASM_TYPE_ENTRY_BUDGET_BYTES);budget.chargeObjects(3);budget.beginSignature();const form=readByte(sectionBytes,secPos,'wasm-malformed-type-section');secPos=form.nextOffset;if(form.value!==0x60)fail('wasm-unsupported-type-form');const pc=decodeUleb128(sectionBytes,secPos);secPos=pc.nextOffset;budget.chargeSignature(pc.value);const params=[];for(let p=0;p<pc.value;p++){const t=readValueType(sectionBytes,secPos);secPos=t.nextOffset;budget.chargeValue();params.push(t.value);}const rc=decodeUleb128(sectionBytes,secPos);secPos=rc.nextOffset;budget.chargeSignature(rc.value);const results=[];for(let r=0;r<rc.value;r++){const t=readValueType(sectionBytes,secPos);secPos=t.nextOffset;budget.chargeValue();results.push(t.value);}types.push({params,results});}}
     else if(sectionId===2){const countR=decodeUleb128(sectionBytes,secPos);secPos=countR.nextOffset;for(let i=0;i<countR.value;i++){budget.chargeRecord(128);budget.chargeObjects(2);const mod=decodeName(sectionBytes,secPos);secPos=mod.nextOffset;const field=decodeName(sectionBytes,secPos);secPos=field.nextOffset;budget.chargeBytes(2*(mod.name.length+field.name.length));const kr=readByte(sectionBytes,secPos,'wasm-truncated-import-kind');secPos=kr.nextOffset;let desc;if(kr.value===0){const tr=decodeUleb128(sectionBytes,secPos);secPos=tr.nextOffset;desc={kind:0,typeIndex:tr.value};}else if(kr.value===1){const tr=readTableType(sectionBytes,secPos);secPos=tr.nextOffset;desc={kind:1,...tr.value};}else if(kr.value===2){const mr=readMemoryLimits(sectionBytes,secPos);secPos=mr.nextOffset;desc={kind:2,...mr.value};}else if(kr.value===3){const gr=readGlobalType(sectionBytes,secPos);secPos=gr.nextOffset;desc={kind:3,...gr.value};}else fail(`wasm-invalid-import-kind-${kr.value}`);imports.push({module:mod.name,field:field.name,desc});}}
     else if(sectionId===3){const c=decodeUleb128(sectionBytes,secPos);secPos=c.nextOffset;for(let i=0;i<c.value;i++){budget.chargeRecord(16);const r=decodeUleb128(sectionBytes,secPos);secPos=r.nextOffset;functions.push(r.value);}}
     else if(sectionId===4){const c=decodeUleb128(sectionBytes,secPos);secPos=c.nextOffset;for(let i=0;i<c.value;i++){budget.chargeRecord(64);budget.chargeObjects(1);const r=readTableType(sectionBytes,secPos);secPos=r.nextOffset;tables.push(r.value);}}
