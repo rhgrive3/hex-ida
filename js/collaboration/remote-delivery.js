@@ -89,7 +89,7 @@ export function applyRemoteEnvelopeQueued(log, gate, envelope) {
     unresolvedOperationIds,
     unresolvedCount: summary.unresolvedCount,
     unresolvedOperationIdsTruncated: summary.unresolvedOperationIdsTruncated,
-    retainedPending: log.retainedPendingUsage(),
+    retainedPending: log.retainedPendingUsage(snap.actorIdentity),
     pendingBudget: log.pendingBudget(),
     stateDigest: log.digest(),
   });

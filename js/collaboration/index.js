@@ -42,7 +42,7 @@ function canonicalOperationBytes(operation) {
 // One pass over the retained set. The retained set is itself capped by the
 // configured ceilings, so retained-state accounting can never scan a backlog an
 // actor grew without limit.
-function retainedPendingProjection(pending, actorIdentity) {
+function retainedPendingProjection(pending, actorIdentity = null) {
   let operations = 0;
   let bytes = 0;
   let actorOperations = 0;
@@ -438,7 +438,7 @@ export class ChangeLog {
       status: 'rejected',
       reason: PENDING_BUDGET_REASON,
       operationId: operation.operationId,
-      retainedPending: this.retainedPendingUsage(),
+      retainedPending: this.retainedPendingUsage(operation.authorIdentity ?? null),
       ...this.pendingBudget(),
     });
   }
@@ -668,9 +668,13 @@ export class ChangeLog {
     });
   }
 
-  retainedPendingUsage() {
-    const retained = retainedPendingProjection(this.pending, null);
-    return deepFreeze({ operations: retained.operations, bytes: retained.bytes });
+  retainedPendingUsage(actorIdentity = null) {
+    const retained = retainedPendingProjection(this.pending, actorIdentity);
+    return deepFreeze({
+      operations: retained.operations,
+      bytes: retained.bytes,
+      actorOperations: retained.actorOperations,
+    });
   }
 
   // Bounded receive summary: the exact retained count is always reported while
