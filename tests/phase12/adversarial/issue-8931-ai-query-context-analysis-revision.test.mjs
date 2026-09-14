@@ -75,7 +75,7 @@ test('#8931: first-party query context exposes a live canonical analysis identit
   assert.equal(context.analysisAuthority, 'AnalysisQueryAPI', 'first-party query context fixture');
 
   const initial = context.analysisRevision;
-  assert.match(initial, /^analysis-query:/, 'revision is an explicit canonical query identity');
+  assert.match(initial, /^snapshot_/, 'revision is derived from the canonical AnalysisQueryAPI snapshot identity');
 
   bumpEpoch();
   const afterEpoch = context.analysisRevision;
@@ -102,7 +102,7 @@ test('#8931: analysisBinding is complete when the query context identity is pres
   const { app } = makeApp();
   const context = createHexAIContext(app);
   const binding = analysisBinding(context);
-  assert.match(binding.analysisRevision, /^analysis-query:/, 'canonical query identity folds into the binding key');
+  assert.match(binding.analysisRevision, /^snapshot_/, 'canonical query snapshot identity folds into the binding key');
   assert.equal(binding.missing.includes('analysisRevision'), false, 'analysisRevision must not be unresolved');
   assert.equal(binding.complete, true, 'first-party context must resolve a complete deterministic binding');
 });
@@ -169,7 +169,7 @@ test('#8931: malformed generation cannot alias a prior numeric cache identity', 
   setEpoch('1');
   assert.throws(
     () => analysisBinding(context),
-    (error) => error instanceof TypeError && error.message === 'analysis-query-epoch-invalid',
+    (error) => error instanceof TypeError && error.message === 'analysis-snapshot-epoch-invalid',
     'numeric 1 -> string "1" must fail closed instead of stringifying to the previous cache authority',
   );
 });
@@ -180,7 +180,24 @@ test('#8931: malformed project generation follows QueryAPI fail-closed validatio
   setProjectRevision('1');
   assert.throws(
     () => analysisBinding(context),
-    (error) => error instanceof TypeError && error.message === 'analysis-query-project-revision-invalid',
+    (error) => error instanceof TypeError && error.message === 'analysis-snapshot-project-revision-invalid',
+  );
+});
+
+test('#8931: malformed nested artifact version cannot alias a prior valid cache identity', () => {
+  const { app, setArtifactVersions } = makeApp();
+  const context = createHexAIContext(app);
+  setArtifactVersions({ cfg: {} });
+  const valid = analysisBinding(context);
+  assert.equal(valid.complete, true);
+
+  // A hand-rolled enumerable-key serializer maps Date to {}, which would alias
+  // the preceding valid object and let the outer cache hide the invalid live
+  // QueryAPI identity. Canonical snapshot normalization rejects it instead.
+  setArtifactVersions({ cfg: new Date(0) });
+  assert.throws(
+    () => analysisBinding(context),
+    (error) => error instanceof TypeError && error.message === 'analysis-snapshot-artifact-version-value-invalid',
   );
 });
 

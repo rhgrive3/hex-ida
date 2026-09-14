@@ -9,6 +9,7 @@ import {
   analyzeModelAt as analyzeLegacyModelAt,
   createHexAIContext as createLegacyHexAIContext,
 } from './hex-context-legacy.js';
+import { createAnalysisSnapshot } from '../../analysis/query/index.js';
 
 const QUERY_AUTHORITY = 'AnalysisQueryAPI';
 const MAX_QUERY_PAGE = 5_000;
@@ -152,52 +153,29 @@ function currentAddressOf(context) {
   try { return toBigInt(context.currentAddress); } catch { return null; }
 }
 
+function storeValue(app, key) {
+  try { return typeof app?.store?.get === 'function' ? app.store.get(key) : (app?.store?.[key] ?? null); }
+  catch { return null; }
+}
+
 function isPlainObject(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const proto = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
 }
 
-function identityGeneration(value, code) {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new TypeError(code);
-  return value;
-}
-
-function stableIdentityValue(value, depth = 0, ancestors = null) {
-  if (depth > 64) throw new TypeError('analysis-query-artifact-versions-invalid');
-  if (value == null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw new TypeError('analysis-query-artifact-versions-invalid');
-    return JSON.stringify(value);
-  }
-  if (typeof value === 'bigint') return JSON.stringify(`0x${value.toString(16)}`);
-  if (typeof value !== 'object') throw new TypeError('analysis-query-artifact-versions-invalid');
-  const path = ancestors || new Set();
-  if (path.has(value)) throw new TypeError('analysis-query-artifact-versions-invalid');
-  path.add(value);
-  try {
-    if (Array.isArray(value)) {
-      return `[${value.map((item) => stableIdentityValue(item, depth + 1, path)).join(',')}]`;
-    }
-    const keys = Object.keys(value).sort();
-    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableIdentityValue(value[key], depth + 1, path)}`).join(',')}}`;
-  } finally {
-    path.delete(value);
-  }
-}
-
 function canonicalAnalysisRevision(app) {
   const rawEpoch = app?.backend?.gen ?? app?.analysisEpoch ?? null;
   if (rawEpoch == null) return null;
-  const analysisEpoch = identityGeneration(rawEpoch, 'analysis-query-epoch-invalid');
-  const project = app?.workspace?.project ?? app?.activeProject ?? null;
-  const projectRevision = identityGeneration(
-    project?.revision ?? app?.projectRevision ?? app?.workspace?.bindingRevision ?? 0,
-    'analysis-query-project-revision-invalid',
-  );
+  const project = storeValue(app, 'project') ?? app?.workspace?.project ?? app?.project ?? null;
   const rawVersions = app?.analysisArtifactVersions ?? app?.artifactVersions;
   const artifactVersions = isPlainObject(rawVersions) ? { ...rawVersions } : {};
-  return `analysis-query:${stableIdentityValue({ analysisEpoch, artifactVersions, projectRevision })}`;
+  return createAnalysisSnapshot({
+    binaryId:'ai-cache-analysis-binding',
+    projectRevision:project?.revision ?? app?.projectRevision ?? app?.workspace?.bindingRevision ?? 0,
+    artifactVersions,
+    analysisEpoch:rawEpoch,
+  }).snapshotId;
 }
 
 /**
@@ -225,14 +203,13 @@ export function createHexAIContext(app) {
     get() { return app?.backend?.binaryId ?? legacy.binaryId ?? null; },
   });
 
-  // #8931: the outer AI cache must vary on the same semantic identity
-  // dimensions that make an AnalysisQueryAPI snapshot current. Epoch alone is
-  // insufficient: artifact-only rebuilds are new analysis, and malformed
-  // generations must not stringify into a prior valid cache key. Project
-  // revision is included too (even though ObservationStore also carries it)
-  // so this getter fails closed with QueryAPI's generation contract before a
-  // deterministic cache lookup can hide an invalid live identity. Hosts with
-  // no epoch remain explicit-unknown and retain #5887's per-context nonce.
+  // #8931: use the canonical AnalysisQueryAPI snapshot identity machinery for
+  // the outer deterministic cache too. This keeps epoch/project validation and
+  // artifactVersions normalization identical to QueryAPI, so malformed nested
+  // values cannot alias a prior valid cache key. Binary identity remains an
+  // independent ObservationStore binding dimension, hence the fixed local
+  // binary id used solely to digest the analysis tuple. A host with no live
+  // epoch stays explicit-unknown and retains #5887's per-context nonce.
   define(context, 'analysisRevision', {
     get() { return canonicalAnalysisRevision(app); },
   });
