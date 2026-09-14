@@ -14,12 +14,12 @@ jobs:
         with:
           ref: codex/issue-campaign-20260914-lane-03-batch-03
           fetch-depth: 0
-      - name: Guard exact reviewed parent
+      - name: Guard exact reviewed ancestry
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "d44d0927b17aa20dbc8572bb7f4a37dc986f7438"
-          test "$(git rev-parse HEAD^^)" = "63bc4e12d3ab4800421d6647ad69893108556e93"
+          test "$(git rev-parse HEAD^)" = "dbd0ddcddf8f32e8dc24f068407a46d5bffdcffc"
+          test "$(git rev-parse HEAD^^^)" = "63bc4e12d3ab4800421d6647ad69893108556e93"
       - name: Apply retained-row heap budget repair
         shell: bash
         run: |
@@ -31,76 +31,107 @@ jobs:
           def replace_once(path, old, new):
               p = Path(path)
               text = p.read_text()
-              if text.count(old) != 1:
-                  raise SystemExit(f"expected one match in {path}, got {text.count(old)}")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected one match in {path}, got {count}: {old[:80]!r}")
               p.write_text(text.replace(old, new, 1))
 
-          replace_once('js/managed/cil/metadata-layout.js', '''    chargeRow() {
-              rows++;
-              if (rows > limits.maxRows) fail('cil-metadata-resource-limit-rows');
-              checkpoint();
-            },''', '''    chargeRow(encodedByteLength = 0) {
-              if (!Number.isSafeInteger(encodedByteLength) || encodedByteLength < 0)
-                fail('cil-metadata-resource-limit-row-size');
-              rows++;
-              if (rows > limits.maxRows) fail('cil-metadata-resource-limit-rows');
-              // A decoded metadata row is retained as a JS object (plus an array
-              // slot and property storage), so encoded bytes alone are not a safe
-              // heap estimate. Charge a conservative fixed object floor plus the
-              // encoded row width before any row object is materialized (#8699).
-              const retainedBytes = 256 + encodedByteLength * 4;
-              if (!Number.isSafeInteger(retainedBytes)) fail('cil-metadata-resource-limit-row-size');
-              heapBytes += retainedBytes;
-              if (heapBytes > limits.maxEstimatedHeapBytes) fail('cil-metadata-resource-limit-heap');
-              checkpoint();
-            },''')
-
-          replace_once('js/managed/cil/metadata-definitions.js',
-              '    if (budget) budget.chargeRow();\n    const rid = i + 1, pos = offsets[table] + i * rowSizes[table];',
-              '    if (budget) budget.chargeRow(rowSizes[table]);\n    const rid = i + 1, pos = offsets[table] + i * rowSizes[table];')
-          replace_once('js/managed/cil/metadata-definitions.js',
-              '  const typeSpecs = counts[0x1b] ? Array.from({ length: counts[0x1b] }, (_, i) => {\n    const rid = i + 1, pos = offsets[0x1b] + i * rowSizes[0x1b];',
-              '  const typeSpecs = counts[0x1b] ? Array.from({ length: counts[0x1b] }, (_, i) => {\n    if (budget) budget.chargeRow(rowSizes[0x1b]);\n    const rid = i + 1, pos = offsets[0x1b] + i * rowSizes[0x1b];')
-          replace_once('js/managed/cil/metadata-generics.js',
-              '    if (budget) budget.chargeRow();\n    const rid = i + 1, pos = offsets[table] + i * rowSizes[table];',
-              '    if (budget) budget.chargeRow(rowSizes[table]);\n    const rid = i + 1, pos = offsets[table] + i * rowSizes[table];')
-          replace_once('js/managed/cil/metadata-manifest-security.js',
-              '    if (budget) budget.chargeRow();\n    const rid = i + 1, pos = offsets[table] + i * rowSizes[table];',
-              '    if (budget) budget.chargeRow(rowSizes[table]);\n    const rid = i + 1, pos = offsets[table] + i * rowSizes[table];')
-
-          replace_once('js/managed/cil/parser-overlay.js',
-              'export function overlayCilMetadata(bytes,parsed,options={}){\n const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes),view=new DataView(u8.buffer,u8.byteOffset,u8.byteLength),pe=peLayout(u8,view);if(!pe?.cliPresent)return parsed;\n const budget=createCilMetadataBudget(options);',
-              'export function overlayCilMetadata(bytes,parsed,options={},internalBudget=null){\n const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes),view=new DataView(u8.buffer,u8.byteOffset,u8.byteLength),pe=peLayout(u8,view);if(!pe?.cliPresent)return parsed;\n const budget=internalBudget??createCilMetadataBudget(options);')
-          replace_once('js/managed/cil/metadata-manifest-security.js',
-              'export function overlayCilManifestSecurity(bytes, parsed, options = {}) {',
-              'export function overlayCilManifestSecurity(bytes, parsed, options = {}, internalBudget = null) {')
-          replace_once('js/managed/cil/metadata-manifest-security.js',
-              '  const budget = createCilMetadataBudget(options);',
-              '  const budget = internalBudget ?? createCilMetadataBudget(options);')
-
-          replace_once('js/managed/cil/parser.js',
+          replace_once(
+              'js/managed/cil/metadata-layout.js',
+              "    chargeRow() {\n"
+              "      rows++;\n"
+              "      if (rows > limits.maxRows) fail('cil-metadata-resource-limit-rows');\n"
+              "      checkpoint();\n"
+              "    },",
+              "    chargeRow(encodedByteLength = 0) {\n"
+              "      if (!Number.isSafeInteger(encodedByteLength) || encodedByteLength < 0)\n"
+              "        fail('cil-metadata-resource-limit-row-size');\n"
+              "      rows++;\n"
+              "      if (rows > limits.maxRows) fail('cil-metadata-resource-limit-rows');\n"
+              "      // A decoded row is retained as a JS object. Charge a conservative\n"
+              "      // object/property floor plus encoded width before materialization.\n"
+              "      const retainedBytes = 256 + encodedByteLength * 4;\n"
+              "      if (!Number.isSafeInteger(retainedBytes)) fail('cil-metadata-resource-limit-row-size');\n"
+              "      heapBytes += retainedBytes;\n"
+              "      if (heapBytes > limits.maxEstimatedHeapBytes) fail('cil-metadata-resource-limit-heap');\n"
+              "      checkpoint();\n"
+              "    },",
+          )
+          replace_once(
+              'js/managed/cil/metadata-definitions.js',
+              "    if (budget) budget.chargeRow();\n"
+              "    const rid = i + 1, pos = offsets[table] + i * rowSizes[table];",
+              "    if (budget) budget.chargeRow(rowSizes[table]);\n"
+              "    const rid = i + 1, pos = offsets[table] + i * rowSizes[table];",
+          )
+          replace_once(
+              'js/managed/cil/metadata-definitions.js',
+              "  const typeSpecs = counts[0x1b] ? Array.from({ length: counts[0x1b] }, (_, i) => {\n"
+              "    const rid = i + 1, pos = offsets[0x1b] + i * rowSizes[0x1b];",
+              "  const typeSpecs = counts[0x1b] ? Array.from({ length: counts[0x1b] }, (_, i) => {\n"
+              "    if (budget) budget.chargeRow(rowSizes[0x1b]);\n"
+              "    const rid = i + 1, pos = offsets[0x1b] + i * rowSizes[0x1b];",
+          )
+          replace_once(
+              'js/managed/cil/metadata-generics.js',
+              "    if (budget) budget.chargeRow();\n"
+              "    const rid = i + 1, pos = offsets[table] + i * rowSizes[table];",
+              "    if (budget) budget.chargeRow(rowSizes[table]);\n"
+              "    const rid = i + 1, pos = offsets[table] + i * rowSizes[table];",
+          )
+          replace_once(
+              'js/managed/cil/metadata-manifest-security.js',
+              "    if (budget) budget.chargeRow();\n"
+              "    const rid = i + 1, pos = offsets[table] + i * rowSizes[table];",
+              "    if (budget) budget.chargeRow(rowSizes[table]);\n"
+              "    const rid = i + 1, pos = offsets[table] + i * rowSizes[table];",
+          )
+          replace_once(
+              'js/managed/cil/parser-overlay.js',
+              "export function overlayCilMetadata(bytes,parsed,options={}){\n"
+              " const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes),view=new DataView(u8.buffer,u8.byteOffset,u8.byteLength),pe=peLayout(u8,view);if(!pe?.cliPresent)return parsed;\n"
+              " const budget=createCilMetadataBudget(options);",
+              "export function overlayCilMetadata(bytes,parsed,options={},internalBudget=null){\n"
+              " const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes),view=new DataView(u8.buffer,u8.byteOffset,u8.byteLength),pe=peLayout(u8,view);if(!pe?.cliPresent)return parsed;\n"
+              " const budget=internalBudget??createCilMetadataBudget(options);",
+          )
+          replace_once(
+              'js/managed/cil/metadata-manifest-security.js',
+              "export function overlayCilManifestSecurity(bytes, parsed, options = {}) {",
+              "export function overlayCilManifestSecurity(bytes, parsed, options = {}, internalBudget = null) {",
+          )
+          replace_once(
+              'js/managed/cil/metadata-manifest-security.js',
+              "  const budget = createCilMetadataBudget(options);",
+              "  const budget = internalBudget ?? createCilMetadataBudget(options);",
+          )
+          replace_once(
+              'js/managed/cil/parser.js',
               "import { overlayCilManifestSecurity } from './metadata-manifest-security.js';\n",
-              "import { overlayCilManifestSecurity } from './metadata-manifest-security.js';\nimport { createCilMetadataBudget } from './metadata-layout.js';\n")
-          replace_once('js/managed/cil/parser.js', '''function parseCilValidated(bytes, options = {}) {
-            return overlayCilManifestSecurity(
-              bytes,
-              overlayCilMetadata(bytes, parseCilBase(bytes, options), options),
-              options,
-            );
-          }''', '''function parseCilValidated(bytes, options = {}) {
-            // One parser-wide authority: metadata and manifest/security overlays
-            // share counters instead of each getting a fresh per-phase budget.
-            const budget = createCilMetadataBudget(options);
-            return overlayCilManifestSecurity(
-              bytes,
-              overlayCilMetadata(bytes, parseCilBase(bytes, options), options, budget),
-              options,
-              budget,
-            );
-          }''')
+              "import { overlayCilManifestSecurity } from './metadata-manifest-security.js';\n"
+              "import { createCilMetadataBudget } from './metadata-layout.js';\n",
+          )
+          replace_once(
+              'js/managed/cil/parser.js',
+              "function parseCilValidated(bytes, options = {}) {\n"
+              "  return overlayCilManifestSecurity(\n"
+              "    bytes,\n"
+              "    overlayCilMetadata(bytes, parseCilBase(bytes, options), options),\n"
+              "    options,\n"
+              "  );\n"
+              "}",
+              "function parseCilValidated(bytes, options = {}) {\n"
+              "  const budget = createCilMetadataBudget(options);\n"
+              "  return overlayCilManifestSecurity(\n"
+              "    bytes,\n"
+              "    overlayCilMetadata(bytes, parseCilBase(bytes, options), options, budget),\n"
+              "    options,\n"
+              "    budget,\n"
+              "  );\n"
+              "}",
+          )
 
-          test = Path('tests/phase11/cil/issue-8699-retained-row-heap-budget.test.mjs')
-          test.write_text(dedent(r'''\
+          Path('tests/phase11/cil/issue-8699-retained-row-heap-budget.test.mjs').write_text(dedent('''\
           import assert from 'node:assert/strict';
           import { buildCil } from '../fixtures/medium-cil.mjs';
           import { parseCil } from '../../../js/managed/cil/parser.js';
@@ -144,12 +175,8 @@ jobs:
             () => parseCil(genericParamAliasFixture(64), {
               binaryId: 'row-heap-tiny',
               resourceBudget: {
-                maxRows: 10_000,
-                maxStrings: 10_000,
-                maxStringBytes: 1024 * 1024,
-                maxEstimatedHeapBytes: 2048,
-                maxWork: 1_000_000,
-                deadlineMs: 10_000,
+                maxRows: 10_000, maxStrings: 10_000, maxStringBytes: 1024 * 1024,
+                maxEstimatedHeapBytes: 2048, maxWork: 1_000_000, deadlineMs: 10_000,
               },
             }),
             /cil-metadata-resource-limit-heap/,
@@ -158,12 +185,8 @@ jobs:
           const admitted = parseCil(genericParamAliasFixture(32), {
             binaryId: 'row-heap-admit',
             resourceBudget: {
-              maxRows: 10_000,
-              maxStrings: 10_000,
-              maxStringBytes: 1024 * 1024,
-              maxEstimatedHeapBytes: 1024 * 1024,
-              maxWork: 1_000_000,
-              deadlineMs: 10_000,
+              maxRows: 10_000, maxStrings: 10_000, maxStringBytes: 1024 * 1024,
+              maxEstimatedHeapBytes: 1024 * 1024, maxWork: 1_000_000, deadlineMs: 10_000,
             },
           });
           assert.equal(admitted.genericParams.length, 32);
