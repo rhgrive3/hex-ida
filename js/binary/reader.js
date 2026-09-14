@@ -312,3 +312,18 @@ export function align(value, alignment) {
   if (a <= 0n) return v;
   return (v + a - 1n) / a * a;
 }
+
+export function inRange(value, start, size) {
+  const v = integerValue(value, 'value');
+  const s = integerValue(start, 'start');
+  const n = integerValue(size, 'size');
+  return n > 0n && v >= s && v < s + n;
+}
+
+export function hex(value) {
+  if (value == null) return null;
+  const integer = integerValue(value, 'value');
+  return integer < 0n
+    ? '-0x' + (-integer).toString(16).toUpperCase()
+    : '0x' + integer.toString(16).toUpperCase();
+}
