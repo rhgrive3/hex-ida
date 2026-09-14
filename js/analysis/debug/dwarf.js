@@ -98,6 +98,10 @@ const DW_FORM = Object.freeze({
 const ADDRX_FORMS = Object.freeze([DW_FORM.addrx, DW_FORM.addrx1, DW_FORM.addrx2, DW_FORM.addrx3, DW_FORM.addrx4]);
 /** Forms whose resolved value is an absolute address (direct or addrx-resolved). */
 const ADDRESS_CLASS_FORMS = Object.freeze([DW_FORM.addr, ...ADDRX_FORMS]);
+// DWARF5 indexed string forms resolve through `.debug_str_offsets` after the
+// attribute list is read, because DW_AT_str_offsets_base may arrive on the unit
+// root that owns them.
+const STRX_FORMS = Object.freeze([DW_FORM.strx, DW_FORM.strx1, DW_FORM.strx2, DW_FORM.strx3, DW_FORM.strx4]);
 /** The largest extent the canonical DebugRecord `sizeBytes` domain can hold. */
 const MAX_EXACT_DEBUG_EXTENT = BigInt(Number.MAX_SAFE_INTEGER);
 
@@ -134,10 +138,6 @@ function debugExtentBetween(low, high) {
   const end = bigNumeric(high);
   return base == null || end == null ? null : end - base;
 }
-// DWARF5 indexed string forms resolve through `.debug_str_offsets` after the
-// attribute list is read, because DW_AT_str_offsets_base may arrive on the unit
-// root that owns them.
-const STRX_FORMS = Object.freeze([DW_FORM.strx, DW_FORM.strx1, DW_FORM.strx2, DW_FORM.strx3, DW_FORM.strx4]);
 // References that must never be interpreted as numeric DIE offsets in the
 // current `.debug_info` object. Supplementary references need a separately
 // identity-validated debug object (#4206), while ref_sig8 belongs to the
@@ -201,7 +201,6 @@ function createChargedBudget(maxUnits, errorCode) {
   let used = 0;
   return {
     get exhausted() { return used >= maxUnits; },
-    get used() { return used; },
     charge(count) {
       if (!Number.isSafeInteger(count) || count < 0) throw new RangeError('dwarf-invalid-byte-charge');
       if (count > maxUnits - used) {
@@ -224,12 +223,6 @@ function createDecodedStringBudget(maxDecodedStringBytes) {
 
 function createAttributeEntryBudget(maxAttributeEntries) {
   return createChargedBudget(maxAttributeEntries, ATTRIBUTE_BUDGET_ERROR_CODE);
-}
-
-function isBudgetExhaustion(error) {
-  return error?.code === BYTE_BUDGET_ERROR_CODE
-    || error?.code === STRING_BUDGET_ERROR_CODE
-    || error?.code === ATTRIBUTE_BUDGET_ERROR_CODE;
 }
 
 /** The stable diagnostic for one budget-exhaustion error, or null for anything else. */
@@ -379,7 +372,6 @@ function createStringResolver(byteBudget, maxDecodedStringBytes) {
     /** Scan cost still belongs to the shared `.debug_info`/section scan budget. */
     chargeScan(count) { byteBudget?.charge(count); },
     get decodedExhausted() { return decodedBudget.exhausted; },
-    get decodedBytes() { return decodedBudget.used; },
     resolve(namespace, bytes, offset) {
       if (!bytes || !Number.isSafeInteger(offset) || offset < 0) return null;
       let cache = namespaces.get(namespace);
@@ -1257,9 +1249,13 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
     // #8752). Exact-fit input that consumed no further unit stays complete,
     // like the shared byte budget.
     if (strings.decodedExhausted || attributeBudget.exhausted) {
-      const diagnostic = strings.decodedExhausted ? STRING_BUDGET_DIAGNOSTIC : ATTRIBUTE_BUDGET_DIAGNOSTIC;
       if (cursor.offset < info.length) {
-        if (!diagnostics.includes(diagnostic)) diagnostics.push(diagnostic);
+        for (const [exhausted, diagnostic] of [
+          [strings.decodedExhausted, STRING_BUDGET_DIAGNOSTIC],
+          [attributeBudget.exhausted, ATTRIBUTE_BUDGET_DIAGNOSTIC],
+        ]) {
+          if (exhausted && !diagnostics.includes(diagnostic)) diagnostics.push(diagnostic);
+        }
         complete = false;
       }
       break;
