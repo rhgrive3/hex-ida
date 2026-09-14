@@ -611,7 +611,7 @@
    * record. Values are image-relative 32-bit offsets by Mach-O ABI.
    */
   function parseUnwindLsdaEntries(buf, imageBase) {
-    const out = [];
+    const out = attachTruncatedFlag([]);
     if (!buf || buf.length < 28 || imageBase == null) return out;
     const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     if (dv.getUint32(0, true) !== 1) return out;
@@ -619,7 +619,15 @@
     const indexCount = dv.getUint32(24, true);
     if (indexCount < 2 || indexOff + indexCount * 12 > buf.length) return out;
     const base = BigInt(imageBase);
-    const seen = new Set();
+    /*
+     * Eagerly materializing one `fnOff + ':' + tableOff` string key per pair on
+     * top of a BigInt-object output let a ~5.2 MiB __unwind_info retain enough
+     * JS state to OOM a 128 MiB heap (#8816). Drop the string Set entirely:
+     * charge the shared UNWIND_LSDA_MAX budget before each output object, then
+     * sort the bounded set and collapse exact adjacent duplicates. (fnOff,
+     * tableOff) map injectively onto (functionStart, lsda) for a fixed base, so
+     * adjacent-after-sort dedup is equivalent to the old global key Set.
+     */
     for (let i = 0; i + 1 < indexCount; i++) {
       const p = indexOff + i * 12;
       const q = p + 12;
@@ -627,17 +635,23 @@
       const nextLsdaOff = dv.getUint32(q + 8, true);
       if (!lsdaOff || !nextLsdaOff || nextLsdaOff < lsdaOff || nextLsdaOff > buf.length) continue;
       for (let x = lsdaOff; x + 8 <= nextLsdaOff; x += 8) {
+        if (out.length >= UNWIND_LSDA_MAX) { out.truncated = true; break; }
         const fnOff = dv.getUint32(x, true);
         const tableOff = dv.getUint32(x + 4, true);
         if (!tableOff) continue;
-        const key = fnOff + ':' + tableOff;
-        if (seen.has(key)) continue;
-        seen.add(key);
         out.push({ functionStart: base + BigInt(fnOff), lsda: base + BigInt(tableOff) });
       }
+      if (out.truncated) break;
     }
     out.sort((a, b) => (a.lsda < b.lsda ? -1 : a.lsda > b.lsda ? 1 : a.functionStart < b.functionStart ? -1 : 1));
-    return out;
+    const uniq = attachTruncatedFlag([]);
+    uniq.truncated = out.truncated;
+    let prev = null;
+    for (const e of out) {
+      if (prev && prev.lsda === e.lsda && prev.functionStart === e.functionStart) continue;
+      uniq.push(e); prev = e;
+    }
+    return uniq;
   }
 
   /**
