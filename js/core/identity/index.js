@@ -37,6 +37,29 @@ function compareCanonicalText(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+// Canonical identity accepts an explicit object domain. After the structured
+// types handled below (Map/Set/Array/Date/ArrayBuffer/binary view), the generic
+// branch canonicalizes an object through its enumerable own properties. That is
+// faithful only when those properties carry the value's whole state. A non-plain
+// object that exposes no own enumerable string keys — a direct SharedArrayBuffer,
+// RegExp or Error (and any other internal-slot object) — instead carries its
+// semantics outside enumerable keys, so an Object.keys() canonicalization
+// deterministically erases it to {} and aliases byte/state-distinct inputs to one
+// digest and ID. Reject those fail-closed instead of laundering the loss (#8970).
+// Objects that do expose their state through enumerable own properties (including
+// frozen factory/class records) remain faithfully canonicalized.
+function isCanonicalPlainObject(value) {
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function isErasedInternalSlotObject(value) {
+  if (isCanonicalPlainObject(value)) return false;
+  if (typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer) return true;
+  if (value instanceof RegExp || value instanceof Error) return true;
+  return Object.keys(value).length === 0;
+}
+
 export function jsonSafe(value, seen = new WeakSet()) {
   if (typeof value === 'bigint') return value.toString();
   if (value == null || typeof value === 'string' || typeof value === 'boolean') return value;
@@ -64,6 +87,7 @@ export function jsonSafe(value, seen = new WeakSet()) {
     out = { $set: canonicalSetEntries(value, seen).map(({ value: entryValue }) => jsonSafe(entryValue, seen)) };
   } else if (Array.isArray(value)) out = value.map((item) => jsonSafe(item, seen));
   else {
+    if (isErasedInternalSlotObject(value)) fail('identity-unsupported-object');
     out = {};
     for (const key of Object.keys(value).sort()) {
       const raw = value[key];
@@ -256,7 +280,10 @@ export function lossyTypeWitness(value, path = '', seen = new WeakSet(), out = [
         else lossyTypeWitness(value[index], itemPath, seen, out);
       }
     }
-    else for (const key of Object.keys(value).sort()) lossyTypeWitness(value[key], `${path}.${key}`, seen, out);
+    else {
+      if (isErasedInternalSlotObject(value)) fail('identity-unsupported-object');
+      for (const key of Object.keys(value).sort()) lossyTypeWitness(value[key], `${path}.${key}`, seen, out);
+    }
     seen.delete(value);
   }
   return path === '' ? (out.length ? out : null) : out;
@@ -393,6 +420,7 @@ export function validateCanonicalIdentityNumbers(value, seen = new WeakSet()) {
   } else if (Array.isArray(value)) {
     for (const item of value) validateCanonicalIdentityNumbers(item, seen);
   } else {
+    if (isErasedInternalSlotObject(value)) fail('identity-unsupported-object');
     for (const key of Object.keys(value)) validateCanonicalIdentityNumbers(value[key], seen);
   }
   seen.delete(value);
