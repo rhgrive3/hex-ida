@@ -29,6 +29,32 @@ function operandWidths(run, count) {
   return top.every((bits) => bits != null) ? top : null;
 }
 
+// ECMA-335 §III.3:1.5: plain `ceq`/`cgt`/`clt` compare the values currently on
+// the stack, and `cgt`/`clt` are SIGNED unless the instruction is spelled `.un`.
+// A managed reference (`ldnull`, `newobj`, a pointer field) and a floating value
+// have different ordering semantics, so integral operand authority may only come
+// from a push that states it: the int32/int64 evaluation-stack categories, or an
+// integer literal. Anything else stays unresolved instead of minting a signed
+// comparison the image never proved (#8785).
+function cilStackValueIsIntegral(value) {
+  if (cilStackValueWidth(value) == null) return false;
+  if (value.isNull === true || value.stringToken != null || value.stringRef != null) return false;
+  if (value.pointee != null || value.typeToken != null || value.valueType != null || value.referenceKind != null) return false;
+  if (value.floating === true || value.type?.kind === 'float') return false;
+  if (value.stackType != null) return value.stackType === 'int32' || value.stackType === 'int64';
+  return value.constant != null && Number.isSafeInteger(Number(value.constant));
+}
+
+// Both the width and the integral category of the stack top must be proven for
+// the same run of pushes, so a compare cannot borrow an integer shape from an
+// unrelated reference push of the same size.
+function integerOperandWidths(widthRun, integerRun, count) {
+  if (widthRun.length < count || integerRun.length < count) return null;
+  const widths = widthRun.slice(widthRun.length - count);
+  const integers = integerRun.slice(integerRun.length - count);
+  return widths.every((bits, i) => bits != null && integers[i] === true) ? widths : null;
+}
+
 function typedLocationAccess(kind, index, slotType, unknownEffects) {
   const access = { kind, index };
   if (!slotType?.complete) {
@@ -168,6 +194,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
   let opSeq = 0;
   let currentStackHeight = 0;
   let pushWidthRun = [];
+  let pushIntegerRun = [];
   const bundles = [];
   let stoppedOnUnsupported = false;
 
@@ -255,6 +282,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
     let producedValues = [];
     let consumedValues = [];
     let unknownEffects = [];
+    let compare = null;
     let stackEffectUnmodeled = false;
 
     if (!isPrefixFE) {
@@ -764,8 +792,28 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
         case 0x02: // cgt
         case 0x04: // clt
           mnemonic = subOp === 0x01 ? 'ceq' : subOp === 0x02 ? 'cgt' : 'clt';
+          {
+            // The comparison predicate and its signedness are only liftable when
+            // the stack top proves two integral operands of one width; without
+            // that authority the bundle fails closed to partial instead of
+            // publishing a complete compare that carries no canonical operator
+            // (#8785). `.un` and float/unordered spellings are not decoded here,
+            // so no unsigned authority is ever claimed from these mnemonics.
+            const widths = integerOperandWidths(pushWidthRun, pushIntegerRun, 2);
+            const operandBits = widths != null && widths[0] === widths[1] ? widths[0] : null;
+            if (operandBits != null) {
+              compare = subOp === 0x01
+                ? { predicate: 'eq', operandBits, arity: 2 }
+                : { predicate: subOp === 0x02 ? 'gt' : 'lt', signedness: 'signed', operandBits, arity: 2 };
+            } else {
+              completeness = 'partial';
+              unknownEffects.push({ category: 'types', reason: 'cil-compare-operand-authority-unresolved' });
+            }
+          }
           consumedValues.push({ id: 'rhs', bits: 32 }, { id: 'lhs', bits: 32 });
-          producedValues.push({ bits: 32 });
+          // III.1.5: the result is an int32 0/1 flag, which is itself integral
+          // authority for a chained comparison.
+          producedValues.push({ bits: 32, stackType: 'int32' });
           currentStackHeight--;
           break;
 
@@ -889,9 +937,14 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
     if (stackEffectUnmodeled || callEffects.length > 0 || controlEffects.length > 0
       || consumedValues.length > pushWidthRun.length) {
       pushWidthRun = [];
+      pushIntegerRun = [];
     } else {
       pushWidthRun.length -= consumedValues.length;
-      for (const value of producedValues) pushWidthRun.push(cilStackValueWidth(value));
+      pushIntegerRun.length -= consumedValues.length;
+      for (const value of producedValues) {
+        pushWidthRun.push(cilStackValueWidth(value));
+        pushIntegerRun.push(cilStackValueIsIntegral(value));
+      }
     }
 
     const origin = createOriginSet({
@@ -921,6 +974,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
       origin,
       completeness,
       unknownEffects,
+      compare,
     }, options));
     if (stoppedOnUnsupported) break;
   }
