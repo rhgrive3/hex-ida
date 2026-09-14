@@ -202,6 +202,9 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   const argsRead = new Set();
   const calleeSaved = new Set();
   const x0WriteRows = [];
+  const spRows = [];
+  const spEffects = new Map();
+  const spEdges = new Map();
   const flowEdges = new Map();
   let flowIsClosed = true;
   const absoluteRowOf = (addr) => {
@@ -249,6 +252,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       else modelRowsDropped = true;
       if (b.charCodeAt(0) === 46) { res.dataRows++; continue; }
       res.instructions++;
+      spRows.push(row);
 
       const ops = parseOperands(opsStr);
       const catg = categoryOf(b);
@@ -281,19 +285,32 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         if (pairDestReg === 0) x0WriteRows.push(row);
       }
 
-      if (b === 'sub' && ops[0] && ops[0].cls === 'sp' && ops[1] && ops[1].cls === 'sp' && ops[2] && ops[2].k === 'imm' && ops[2].value != null) {
-        const amount = arm64AddSubImmediateValue(ops[2]);
-        if (amount != null) res.frameBytes += Number(amount);
-      }
+      const spMem = (catg === 'load' || catg === 'store') ? ops.find((x) => x.k === 'mem') : null;
+      const spWritebackMem = !!(spMem && spMem.base && spMem.base.cls === 'sp' &&
+        (spMem.mode === 'pre' || spMem.mode === 'post'));
       if (catg === 'load' || catg === 'store') {
-        const mem = ops.find((x) => x.k === 'mem');
-        if (mem && mem.base && mem.base.cls === 'sp') {
-          res.stackAccess++;
-          if (catg === 'store' && mem.mode === 'pre' && mem.disp && mem.disp.value != null && mem.disp.value < 0n) {
-            res.frameBytes += Number(-mem.disp.value);
-          }
+        const mem = spMem;
+        if (mem && mem.base && mem.base.cls === 'sp') res.stackAccess++;
+      }
+      let spEffect = null;
+      if (spWritebackMem) {
+        const wb = spMem.writebackDisp && spMem.writebackDisp.value != null ? spMem.writebackDisp.value : null;
+        spEffect = wb != null
+          ? { known: true, delta: Number(-wb) }
+          : { known: false, delta: 0 };
+      } else if (ops[0] && ops[0].cls === 'sp') {
+        const srcIsSp = !!(ops[1] && ops[1].cls === 'sp');
+        const immOp = ops[2] && ops[2].k === 'imm' ? ops[2] : null;
+        if ((b === 'sub' || b === 'add') && srcIsSp && immOp) {
+          const amount = arm64AddSubImmediateValue(immOp);
+          spEffect = amount != null
+            ? { known: true, delta: b === 'sub' ? Number(amount) : -Number(amount) }
+            : { known: false, delta: 0 };
+        } else {
+          spEffect = { known: false, delta: 0 };
         }
       }
+      if (spEffect) spEffects.set(row, spEffect);
       const saveStart = EXCLUSIVE_STORE_RE.test(b) ? 1 : 0;
       for (let i = saveStart; i < ops.length; i++) {
         const op = ops[i];
@@ -314,21 +331,25 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         pageOf.delete(30);
       } else if (isReturn(b)) {
         res.returns++;
+        spEdges.set(row, { target: null, targetKnown: true, fall: false });
         flowEdges.set(row, { target: null, fall: false });
       } else if (/^b\./.test(b) || b === 'cbz' || b === 'cbnz' || b === 'tbz' || b === 'tbnz') {
         res.condBranches++;
         const t = referenceTarget(b, opsStr);
         if (t != null && t <= addr) res.loops.push({ from: addr, to: t });
         const tr = absoluteRowOf(t);
+        spEdges.set(row, { target: tr, targetKnown: t != null && tr != null, fall: true });
         if (tr == null) flowIsClosed = false;
         else flowEdges.set(row, { target: tr >= startRow && tr <= end ? tr : null, fall: true });
       } else if (b === 'b') {
         const t = referenceTarget(b, opsStr);
         if (t != null && t <= addr) res.loops.push({ from: addr, to: t });
         const tr = absoluteRowOf(t);
+        spEdges.set(row, { target: tr, targetKnown: t != null && tr != null, fall: false });
         if (tr == null) flowIsClosed = false;
         else flowEdges.set(row, { target: tr >= startRow && tr <= end ? tr : null, fall: false });
       } else if (OPAQUE_JUMP_RE.test(b)) {
+        spEdges.set(row, { target: null, targetKnown: false, fall: false });
         flowIsClosed = false;
       } else if (b === 'brk' || b === 'udf') {
         flowEdges.set(row, { target: null, fall: false });
@@ -362,7 +383,75 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   }
 
   throwIfAborted(signal);
+  const spRowSet = new Set(spRows);
+  const nextSpRow = new Map();
+  for (let i = 0; i + 1 < spRows.length; i++) nextSpRow.set(spRows[i], spRows[i + 1]);
+  let spPeak = 0;
+  let spExact = true;
+  if (spRows.length) {
+    const states = new Map();
+    const queue = [spRows[0]];
+    states.set(spRows[0], { depth: 0, peak: 0 });
+    const mergeState = (row, incoming) => {
+      const previous = states.get(row);
+      if (!previous) {
+        states.set(row, incoming);
+        queue.push(row);
+        return;
+      }
+      const depth = previous.depth == null || incoming.depth == null
+        ? null
+        : (previous.depth === incoming.depth ? previous.depth : null);
+      const merged = {
+        depth,
+        peak: Math.max(previous.peak, incoming.peak),
+      };
+      if (merged.depth !== previous.depth || merged.peak !== previous.peak) {
+        states.set(row, merged);
+        queue.push(row);
+      }
+    };
+    while (queue.length) {
+      const row = queue.shift();
+      const state = states.get(row);
+      if (state.depth == null) spExact = false;
+      else spPeak = Math.max(spPeak, state.peak);
+      const effect = spEffects.get(row);
+      let out = state;
+      if (effect) {
+        if (state.depth == null || !effect.known) {
+          spExact = false;
+          out = { depth: null, peak: state.peak };
+        } else {
+          const depth = state.depth + effect.delta;
+          if (depth < 0) {
+            spExact = false;
+            out = { depth: null, peak: state.peak };
+          } else {
+            out = { depth, peak: Math.max(state.peak, depth) };
+            spPeak = Math.max(spPeak, depth);
+          }
+        }
+      }
+      const edge = spEdges.get(row);
+      const fall = nextSpRow.get(row);
+      const successors = [];
+      if (!edge) {
+        if (fall != null) successors.push(fall);
+      } else {
+        if (!edge.targetKnown) {
+          spExact = false;
+        } else if (edge.target != null && edge.target >= startRow && edge.target <= end) {
+          if (spRowSet.has(edge.target)) successors.push(edge.target);
+          else spExact = false;
+        }
+        if (edge.fall && fall != null) successors.push(fall);
+      }
+      for (const successor of new Set(successors)) mergeState(successor, out);
+    }
+  }
   res.argRegs = Array.from(argsRead).sort((a, b) => a - b);
+  res.frameBytes = spExact ? spPeak : 0;
   res.savesCallee = Array.from(calleeSaved).sort((a, b) => a - b);
   if (x0WriteRows.length && flowIsClosed) {
     const live = reachableRowSet(startRow, end, flowEdges);
