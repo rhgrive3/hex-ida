@@ -18,7 +18,7 @@ const loaderSource = readFileSync(new URL('js/userscript/loader.js', root), 'utf
 assert.match(loaderSource, /createAttemptDeadline\(NETWORK_ATTEMPT_DEADLINE_MS\)/, 'each fetch attempt must own a finite deadline');
 assert.match(loaderSource, /signal:\s*attempt\.signal/, 'both fetches must pass the attempt AbortSignal');
 assert.match(loaderSource, /readBoundedBytes\(response, \{[\s\S]*?exactBytes/, 'the runtime asset must be read through the bounded reader with manifest authority');
-assert.match(loaderSource, /Number\.isSafeInteger\(bootstrap\.manifest\?\.byteLength\)/, 'manifest.byteLength must be validated before the runtime GET starts');
+assert.match(loaderSource, /Number\.isSafeInteger\(manifest\.byteLength\)/, 'manifest.byteLength must be validated before the runtime GET starts');
 assert.match(loaderSource, /fetchBytes\([\s\S]*?bootstrap\.manifest\.byteLength\)/, 'the manifest length must reach the runtime reader');
 assert.match(loaderSource, /decompressGzipExact\(compressed, RUNTIME_MAX_PLAINTEXT_BYTES\)/, 'gzip output must carry a plaintext ceiling');
 
