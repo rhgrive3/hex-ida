@@ -36,6 +36,7 @@ export class CachedByteSource extends ByteSource {
     this.stats.largestRead = Math.max(this.stats.largestRead, range.length);
     if (range.length === 0) return new Uint8Array(0);
 
+    const generation = this.generation;
     const out = new Uint8Array(range.length);
     let done = 0;
     const start = range.offset;
@@ -46,6 +47,8 @@ export class CachedByteSource extends ByteSource {
       const pageOffset = Number(absolute % BigInt(this.pageSize));
       const page = await this.#page(pageIndex, options.signal);
       throwIfCancelled(options.signal);
+      // clear() also revokes cache-hit continuations and multi-page reads.
+      if (generation !== this.generation) throw new ByteSourceCancelledError();
       if (pageOffset >= page.length) break;
       const take = Math.min(page.length - pageOffset, range.length - done);
       out.set(page.subarray(pageOffset, pageOffset + take), done);
@@ -56,7 +59,11 @@ export class CachedByteSource extends ByteSource {
 
   async readExactly(offset, length, options = {}) {
     const range = this.validateRange(offset, length);
+    const generation = this.generation;
     const bytes = await this.read(range.offset, range.length, options);
+    // The inner read can finish one microtask before this public operation.
+    throwIfCancelled(options.signal);
+    if (generation !== this.generation) throw new ByteSourceCancelledError();
     if (bytes.byteLength !== range.length) throw new Error(`truncated cached read: expected ${range.length}, received ${bytes.byteLength}`);
     return bytes;
   }
@@ -73,6 +80,7 @@ export class CachedByteSource extends ByteSource {
 
     this.stats.misses++;
     let entry = this.inflight.get(key);
+    let startProducer = null;
     if (!entry) {
       const offset = pageIndex * BigInt(this.pageSize);
       const remaining = this.size - offset;
@@ -84,20 +92,44 @@ export class CachedByteSource extends ByteSource {
         settled: false,
         discard: false,
         promise: null,
+        cancel: null,
       };
-      entry.promise = (async () => {
-        const bytes = await this.source.readExactly(offset, length, { signal: entry.controller.signal });
-        this.stats.backendBytesRead += bytes.byteLength;
-        if (!entry.discard && generation === this.generation) this.#remember(key, bytes);
-        return bytes;
-      })().finally(() => {
+      const cancelled = new Promise((_, reject) => {
+        entry.cancel = () => reject(new ByteSourceCancelledError());
+      });
+      // Reserve the entry and its consumers before backend code can reenter.
+      // Start within this call (not a later microtask): consumers such as the
+      // Mach-O cache rely on replacement I/O starting before read() returns.
+      const producer = new Promise((resolve, reject) => {
+        startProducer = () => {
+          (async () => {
+            throwIfCancelled(entry.controller.signal);
+            const result = await this.source.readExactly(offset, length, { signal: entry.controller.signal });
+            this.stats.backendBytesRead += result.byteLength;
+            throwIfCancelled(entry.controller.signal);
+            // Backend views may alias reusable storage or retain an entire file.
+            // Cache-owned buffers make page accounting and snapshots exact.
+            const bytes = new Uint8Array(result);
+            if (!entry.discard && generation === this.generation) this.#remember(key, bytes);
+            return bytes;
+          })().then(resolve, reject);
+        };
+      });
+      // A backend may ignore cancellation indefinitely. Revocation must still settle
+      // consumers, and the race keeps late producer failures observed.
+      entry.promise = Promise.race([producer, cancelled]).finally(() => {
         entry.settled = true;
         if (this.inflight.get(key) === entry) this.inflight.delete(key);
       });
+      // A consumer can reject during signal setup before it starts waiting.
+      // Observe that abandoned entry without changing errors seen by other consumers.
+      entry.promise.catch(() => {});
       this.inflight.set(key, entry);
     }
 
-    return this.#waitForPage(key, entry, signal);
+    const waiting = this.#waitForPage(key, entry, signal);
+    startProducer?.();
+    return waiting;
   }
 
   #waitForPage(key, entry, signal) {
@@ -111,6 +143,7 @@ export class CachedByteSource extends ByteSource {
       if (entry.waiters !== 0 || entry.settled || entry.discard) return;
       entry.discard = true;
       if (this.inflight.get(key) === entry) this.inflight.delete(key);
+      entry.cancel();
       entry.controller.abort();
     };
 
@@ -123,11 +156,13 @@ export class CachedByteSource extends ByteSource {
       const finish = (fn, value) => {
         if (finished) return;
         finished = true;
-        signal.removeEventListener?.('abort', onAbort);
+        // Listener cleanup is advisory; it cannot strand a settled consumer.
+        try { signal.removeEventListener?.('abort', onAbort); } catch { /* preserve the result */ }
         detach();
         fn(value);
       };
       const onAbort = () => finish(reject, new ByteSourceCancelledError());
+      entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
       try {
         signal.addEventListener?.('abort', onAbort, { once: true });
       } catch (error) {
@@ -138,7 +173,6 @@ export class CachedByteSource extends ByteSource {
         onAbort();
         return;
       }
-      entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
     });
   }
 
@@ -160,13 +194,17 @@ export class CachedByteSource extends ByteSource {
 
   clear() {
     this.generation++;
-    for (const entry of this.inflight.values()) {
-      entry.discard = true;
-      entry.controller.abort();
-    }
+    const entries = [...this.inflight.values()];
     this.cache.clear();
     this.inflight.clear();
     this.cachedBytes = 0;
+    // Revoke the entire old generation before any abort listener can start a
+    // replacement read. Never iterate a map that those callbacks can repopulate.
+    for (const entry of entries) entry.discard = true;
+    for (const entry of entries) {
+      entry.cancel();
+      entry.controller.abort();
+    }
   }
 
   memoryStats() {

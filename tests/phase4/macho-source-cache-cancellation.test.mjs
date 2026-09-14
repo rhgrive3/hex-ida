@@ -13,7 +13,18 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-const source = makeFatMachOFixture();
+// Mutable byte arrays intentionally bypass the shared cache (#5536). Keep
+// these producer-ownership assertions on an actually cacheable source, and
+// count backend reads so a raw uncached parse can never satisfy them by chance.
+const sourceBytes = new Uint8Array(makeFatMachOFixture());
+let sourceReads = 0;
+const source = Object.freeze({
+  size: BigInt(sourceBytes.length),
+  async read(offset, length) {
+    sourceReads++;
+    return sourceBytes.slice(Number(offset), Number(offset) + length);
+  },
+});
 const ranges = { pageSize:128, maxPageSize:128, maxCachedBytes:2 * 1024 * 1024 };
 const staleStringAbort = new AbortController();
 staleStringAbort.abort(new Error('stale-string-consumer'));
@@ -55,6 +66,8 @@ try {
     'consumer-owned strings.signal must not cancel the shared Mach-O cache producer',
   );
 
+  const readsAfterFirst = sourceReads;
+  assert.ok(readsAfterFirst > 0, 'the first shared parse must read the source');
   const second = await parseMachOSource(source, {
     sliceIndex:0,
     strings:{ minLength:4, signal:healthyStringAbort.signal },
@@ -65,6 +78,7 @@ try {
     false,
     'a stale nested signal must not poison the cache entry reused by a healthy caller',
   );
+  assert.equal(sourceReads, readsAfterFirst, 'a healthy caller must reuse the shared producer artifact');
 
   const loose = await parseMachOSource(source, {
     sliceIndex:0,
