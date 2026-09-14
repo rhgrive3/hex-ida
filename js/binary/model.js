@@ -94,6 +94,48 @@ function buildVirtualMappingLookup(sections, segments) {
   return { items, starts, prefixEnds, runs: buildVirtualMappingRuns(items) };
 }
 
+// Owner selection for overlapping mappings is "smallest size wins, earliest source
+// order breaks ties" and is queried while sweeping interval boundaries in ascending
+// order. One heap implements that comparator for both the virtual-mapping run index and
+// the function-seed region sweep so the two boundaries cannot drift apart.
+function createSizeOrderMinHeap() {
+  const heap = [];
+  const before = (a, b) => a.size < b.size || (a.size === b.size && a.order < b.order);
+
+  const push = (item) => {
+    heap.push(item);
+    let index = heap.length - 1;
+    while (index > 0) {
+      const parent = (index - 1) >>> 1;
+      if (!before(heap[index], heap[parent])) break;
+      [heap[index], heap[parent]] = [heap[parent], heap[index]];
+      index = parent;
+    }
+  };
+
+  const pop = () => {
+    const top = heap[0];
+    const last = heap.pop();
+    if (heap.length > 0) {
+      heap[0] = last;
+      let index = 0;
+      while (true) {
+        const left = index * 2 + 1;
+        const right = left + 1;
+        let smallest = index;
+        if (left < heap.length && before(heap[left], heap[smallest])) smallest = left;
+        if (right < heap.length && before(heap[right], heap[smallest])) smallest = right;
+        if (smallest === index) break;
+        [heap[index], heap[smallest]] = [heap[smallest], heap[index]];
+        index = smallest;
+      }
+    }
+    return top;
+  };
+
+  return { push, pop, clear: () => { heap.length = 0; }, top: () => heap[0], size: () => heap.length };
+}
+
 function buildVirtualMappingRuns(items) {
   const events = [];
   for (const item of items) {
@@ -103,16 +145,19 @@ function buildVirtualMappingRuns(items) {
   events.sort((a, b) => a.point < b.point ? -1 : a.point > b.point ? 1 : a.kind - b.kind);
   const starts = [];
   const owners = [];
-  const active = new Set();
+  // The owner of an interval is the smallest live mapping, so the minimum is carried
+  // across boundaries in a lazy-deletion heap. Rescanning the whole live set at every
+  // boundary made index construction Θ(N^2) on nested mappings, which let a small file
+  // spend far beyond the parser's advertised deadline in the first mapping query (#8880).
+  const live = new Set();
+  const heap = createSizeOrderMinHeap();
+  const bestActive = () => {
+    while (heap.size() > 0 && !live.has(heap.top())) heap.pop();
+    const best = heap.top();
+    return best ? best.mapping : null;
+  };
   let previous = null;
   let cursor = 0;
-  const bestActive = () => {
-    let best = null;
-    for (const item of active) {
-      if (!best || item.size < best.size || (item.size === best.size && item.order < best.order)) best = item;
-    }
-    return best?.mapping || null;
-  };
   while (cursor < events.length) {
     const point = events[cursor].point;
     if (previous !== null && previous < point) {
@@ -122,10 +167,10 @@ function buildVirtualMappingRuns(items) {
     const groupEnd = cursor;
     while (cursor < events.length && events[cursor].point === point) cursor++;
     for (let i = groupEnd; i < cursor; i++) {
-      if (events[i].kind < 0) active.delete(events[i].item);
+      if (events[i].kind < 0) live.delete(events[i].item);
     }
     for (let i = groupEnd; i < cursor; i++) {
-      if (events[i].kind > 0) active.add(events[i].item);
+      if (events[i].kind > 0) { live.add(events[i].item); heap.push(events[i].item); }
     }
     previous = point;
   }
@@ -905,46 +950,13 @@ function createMonotonicRegionLookup(regions) {
     end: BigInt(region.address) + BigInt(region.size),
   })).sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : a.order - b.order);
 
-  const heap = [];
+  const heap = createSizeOrderMinHeap();
   let cursor = 0;
   let lastAddress = null;
 
-  const before = (a, b) => a.size < b.size || (a.size === b.size && a.order < b.order);
-
-  const push = (item) => {
-    heap.push(item);
-    let index = heap.length - 1;
-    while (index > 0) {
-      const parent = (index - 1) >>> 1;
-      if (!before(heap[index], heap[parent])) break;
-      [heap[index], heap[parent]] = [heap[parent], heap[index]];
-      index = parent;
-    }
-  };
-
-  const pop = () => {
-    const top = heap[0];
-    const last = heap.pop();
-    if (heap.length > 0) {
-      heap[0] = last;
-      let index = 0;
-      while (true) {
-        const left = index * 2 + 1;
-        const right = left + 1;
-        let smallest = index;
-        if (left < heap.length && before(heap[left], heap[smallest])) smallest = left;
-        if (right < heap.length && before(heap[right], heap[smallest])) smallest = right;
-        if (smallest === index) break;
-        [heap[index], heap[smallest]] = [heap[smallest], heap[index]];
-        index = smallest;
-      }
-    }
-    return top;
-  };
-
   const reset = () => {
     cursor = 0;
-    heap.length = 0;
+    heap.clear();
     lastAddress = null;
   };
 
@@ -952,9 +964,10 @@ function createMonotonicRegionLookup(regions) {
     const value = BigInt(address);
     if (lastAddress !== null && value < lastAddress) reset();
     lastAddress = value;
-    while (cursor < ordered.length && ordered[cursor].start <= value) push(ordered[cursor++]);
-    while (heap.length > 0 && heap[0].end <= value) pop();
-    return heap[0]?.region || null;
+    while (cursor < ordered.length && ordered[cursor].start <= value) heap.push(ordered[cursor++]);
+    while (heap.size() > 0 && heap.top().end <= value) heap.pop();
+    const best = heap.top();
+    return best ? best.region : null;
   };
 }
 
