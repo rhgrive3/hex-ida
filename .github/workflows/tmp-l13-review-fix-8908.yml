@@ -18,13 +18,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "63bc4e12d3ab4800421d6647ad69893108556e93"
+          test "$(git rev-parse HEAD^)" = "d44d0927b17aa20dbc8572bb7f4a37dc986f7438"
+          test "$(git rev-parse HEAD^^)" = "63bc4e12d3ab4800421d6647ad69893108556e93"
       - name: Apply retained-row heap budget repair
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          from textwrap import dedent
 
           def replace_once(path, old, new):
               p = Path(path)
@@ -98,15 +100,14 @@ jobs:
           }''')
 
           test = Path('tests/phase11/cil/issue-8699-retained-row-heap-budget.test.mjs')
-          test.write_text(r'''import assert from 'node:assert/strict';
+          test.write_text(dedent(r'''\
+          import assert from 'node:assert/strict';
           import { buildCil } from '../fixtures/medium-cil.mjs';
           import { parseCil } from '../../../js/managed/cil/parser.js';
           import { createCilMetadataBudget } from '../../../js/managed/cil/metadata-layout.js';
 
           console.log('[phase11] running issue #8699 retained-row heap budget tests...');
 
-          // Direct authority regression: row admission itself must consume the heap
-          // ceiling before a caller is allowed to materialize the corresponding JS object.
           {
             const budget = createCilMetadataBudget({ resourceBudget: {
               maxRows: 1000, maxEstimatedHeapBytes: 700, maxWork: 1000, deadlineMs: 10_000,
@@ -139,9 +140,6 @@ jobs:
             }).bytes;
           }
 
-          // Public parser regression: one tiny shared string cannot hide the retained
-          // row-object footprint behind a generous row count. This must reject while
-          // admitting rows, not after proportional GenericParam retention.
           assert.throws(
             () => parseCil(genericParamAliasFixture(64), {
               binaryId: 'row-heap-tiny',
@@ -171,7 +169,7 @@ jobs:
           assert.equal(admitted.genericParams.length, 32);
 
           console.log('[phase11] issue #8699 retained-row heap budget tests passed');
-          '''.replace(/^          /gm, ''))
+          '''))
           PY
       - name: Focused validation
         shell: bash
