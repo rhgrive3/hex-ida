@@ -8,9 +8,9 @@
  *   category coverage  -> ldxp/ldaxp are loads; stxp/stlxp are stores
  */
 import assert from 'node:assert/strict';
-import { analyzeFunction } from '../js/analyze.js';
-import { categoryOf } from '../js/arm64.js';
-import { CHUNK_ROWS } from '../js/backend.js';
+import { analyzeFunction } from '../../js/analyze.js';
+import { categoryOf } from '../../js/arm64.js';
+import { CHUNK_ROWS } from '../../js/backend.js';
 
 console.log('Testing #3791 analyzeFunction LDXP/LDAXP pair destination...');
 
