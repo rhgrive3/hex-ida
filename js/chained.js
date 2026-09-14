@@ -21,6 +21,8 @@ const MAX_CHAINED_IMPORTS = 250_000;
 const MAX_STUB_BYTES = 8 * 1024 * 1024;
 const MAX_STUBS = 80_000;
 const MAX_SUPPLEMENTAL_READ_BYTES = 32 * 1024 * 1024;
+const MAX_DECODED_IMPORT_NAME_BYTES = 8 * 1024 * 1024;
+const IMPORT_NAME_CACHE_ENTRY_BYTES = 64;
 
 const PTR_ARM64E = new Set([1, 7, 9, 10]);
 const PTR_ARM64E_24 = 12;
@@ -42,7 +44,7 @@ function ascii(u8, off, len) {
   return out;
 }
 
-function utf8z(u8, off) {
+function utf8z(u8, off, reserveDecoded = null) {
   if (!(off >= 0) || off >= u8.length) return null;
   let end = off;
   while (end < u8.length && u8[end]) end++;
@@ -54,8 +56,44 @@ function utf8z(u8, off) {
      U+FEFF in the decoded name — the default strips it and the published
      name would no longer match the pool bytes. */
   if (end >= u8.length) return null;
+  // TextDecoder materializes a JS UTF-16 string. Its retained representation is
+  // bounded by two bytes per input byte, so admit that conservative upper bound
+  // before decode rather than allocating first and charging afterwards (#8739).
+  if (reserveDecoded && !reserveDecoded((end - off) * 2)) return null;
   try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(u8.subarray(off, end)); }
   catch { return null; }
+}
+
+function createImportNameResolver(raw, symbolsOffset, nameOffsets) {
+  const decodedNames = new Map();
+  let retainedBytes = 0;
+  let exhausted = false;
+  const reserve = (amount) => {
+    if (!Number.isSafeInteger(amount) || amount < 0 || amount > MAX_DECODED_IMPORT_NAME_BYTES - retainedBytes) {
+      exhausted = true;
+      return false;
+    }
+    retainedBytes += amount;
+    return true;
+  };
+  return {
+    count: nameOffsets.length,
+    get exhausted() { return exhausted; },
+    get retainedBytes() { return retainedBytes; },
+    resolve(ordinal) {
+      if (!Number.isSafeInteger(ordinal) || ordinal < 0 || ordinal >= nameOffsets.length) return null;
+      const poolOffset = symbolsOffset + nameOffsets[ordinal];
+      if (decodedNames.has(poolOffset)) return decodedNames.get(poolOffset);
+      // Bound both the offset-keyed cache fan-out and the decoded string before
+      // either is retained. Invalid/unterminated names are cached as null so
+      // repeated malformed aliases do not re-scan the pool tail.
+      if (!reserve(IMPORT_NAME_CACHE_ENTRY_BYTES)) return null;
+      const name = utf8z(raw, poolOffset, reserve);
+      if (exhausted) return null;
+      decodedNames.set(poolOffset, name);
+      return name;
+    },
+  };
 }
 
 function u32be(dv, off) { return dv.getUint32(off, false); }
@@ -183,33 +221,19 @@ function parseImportNames(raw) {
 
   const stride = format === 1 ? 4 : format === 2 ? 8 : format === 3 ? 16 : 0;
   if (!stride || importsOffset + count * stride > raw.length) return null;
-  const names = new Array(count);
-  /* Import records may carry an arbitrary number of repeated `name_offset`
-     values referencing one physical symbol-pool string. Decode and retain each
-     distinct pool offset exactly once for the lifetime of this parse (#8739):
-     repeated aliases share one immutable string instead of re-scanning and
-     re-materializing a fresh copy per record, which let a ~70 KiB file retain
-     tens of MiB. The cache also memoizes invalid/unterminated offsets so
-     repeated malformed aliases do not re-rescan the pool tail. Distinct decoded
-     bytes remain bounded by the fixup payload read cap (MAX_FIXUP_BYTES). */
-  const decodedNames = new Map();
+  // Import records are cheap metadata. Keep only ordinal -> pool offset here;
+  // decoding before chain membership is known can retain megabytes of names
+  // that can never contribute supplemental output (#8739).
+  const nameOffsets = new Uint32Array(count);
   for (let i = 0; i < count; i++) {
     const p = importsOffset + i * stride;
-    let nameOffset;
     if (format === 1 || format === 2) {
       const word = dv.getUint32(p, true);
-      nameOffset = word >>> 9;
+      nameOffsets[i] = word >>> 9;
     } else {
       const word = dv.getBigUint64(p, true);
-      nameOffset = Number((word >> 32n) & 0xffffffffn);
+      nameOffsets[i] = Number((word >> 32n) & 0xffffffffn);
     }
-    const poolOffset = symbolsOffset + nameOffset;
-    let name = decodedNames.get(poolOffset);
-    if (name === undefined && !decodedNames.has(poolOffset)) {
-      name = utf8z(raw, poolOffset);
-      decodedNames.set(poolOffset, name);
-    }
-    names[i] = name ?? null;
   }
 
   /* starts_in_image uses the Mach-O segment order.  Keep the pointer format
@@ -247,7 +271,7 @@ function parseImportNames(raw) {
       }
     }
   }
-  return { names, formats, starts };
+  return { names: createImportNameResolver(raw, symbolsOffset, nameOffsets), formats, starts };
 }
 
 /* `next` field position/stride per pointer format, mirroring dyld's
@@ -436,7 +460,7 @@ export async function chainedImportSymbols(file, sliceIndex = 0) {
   if (image.fixups.dataoff > image.sliceSize || fixupSize > image.sliceSize - image.fixups.dataoff) return [];
   const raw = await bytes(file, image.base + image.fixups.dataoff, image.fixups.datasize);
   const imports = parseImportNames(raw);
-  if (!imports || !imports.names.length) return [];
+  if (!imports || imports.names.count === 0) return [];
 
   let supplementalReadBytes = raw.length;
   let supplementalReadBudgetExhausted = false;
@@ -503,8 +527,11 @@ export async function chainedImportSymbols(file, sliceIndex = 0) {
       if (supplementalReadBudgetExhausted) return [];
       if (ptr == null) continue;
       const ordinal = bindOrdinal(ptr, format);
-      if (ordinal == null || ordinal < 0 || ordinal >= imports.names.length) continue;
-      const name = imports.names[ordinal];
+      if (ordinal == null || ordinal < 0 || ordinal >= imports.names.count) continue;
+      const name = imports.names.resolve(ordinal);
+      // Like the supplemental read ceiling, exhausting retained-name authority
+      // discards the supplemental batch rather than publishing a silent prefix.
+      if (imports.names.exhausted) return [];
       if (!name) continue;
       out.push({ addr: stubAddr, name, kind: 1 });
       /* The GOT name is useful for indirect-call explanations too. */
@@ -565,4 +592,4 @@ export async function augmentAnalysisResultWithChainedImports(file, sliceIndex, 
   return Object.assign({}, result, { addrs, kinds, flags, names });
 }
 
-export const __chainedInternalsForTests = Object.freeze({ validMachOVmRange, rangeWithin, stubSectionWithinSegment, segmentFor, sliceOffset });
+export const __chainedInternalsForTests = Object.freeze({ validMachOVmRange, rangeWithin, stubSectionWithinSegment, segmentFor, sliceOffset, createImportNameResolver });
