@@ -242,7 +242,9 @@ export class BinaryImage {
     this.metadata = meta.metadata || {};
     this._finalized = false;
     this._mappingLookups = { sections: null, segments: null, virtual: null };
+    this._mappingSorted = { sections: null, segments: null };
     this._dataInCodeLookup = null;
+    this._dataInCodeSorted = null;
   }
 
   addSegment(s) {
@@ -267,6 +269,7 @@ export class BinaryImage {
     this._finalized = false;
     this._mappingLookups.segments = null;
     this._mappingLookups.virtual = null;
+    this._mappingSorted.segments = null;
     return seg;
   }
 
@@ -295,6 +298,7 @@ export class BinaryImage {
     this._finalized = false;
     this._mappingLookups.sections = null;
     this._mappingLookups.virtual = null;
+    this._mappingSorted.sections = null;
     return sec;
   }
 
@@ -341,7 +345,8 @@ export class BinaryImage {
   sectionAt(address) {
     const a = strictBigIntOrNull(address);
     if (a === null || a < 0n) return null;
-    if (!isAddressSorted(this.sections)) return this.sections.find((s) => inRange(a, s.address, s.size)) || null;
+    if (this._mappingSorted.sections === null) this._mappingSorted.sections = isAddressSorted(this.sections);
+    if (!this._mappingSorted.sections) return this.sections.find((s) => inRange(a, s.address, s.size)) || null;
     if (!this._mappingLookups.sections) this._mappingLookups.sections = buildMappingLookup(this.sections);
     return lookupMapping(this._mappingLookups.sections, a);
   }
@@ -349,7 +354,8 @@ export class BinaryImage {
   segmentAt(address) {
     const a = strictBigIntOrNull(address);
     if (a === null || a < 0n) return null;
-    if (!isAddressSorted(this.segments)) return this.segments.find((s) => inRange(a, s.address, s.size)) || null;
+    if (this._mappingSorted.segments === null) this._mappingSorted.segments = isAddressSorted(this.segments);
+    if (!this._mappingSorted.segments) return this.segments.find((s) => inRange(a, s.address, s.size)) || null;
     if (!this._mappingLookups.segments) this._mappingLookups.segments = buildMappingLookup(this.segments);
     return lookupMapping(this._mappingLookups.segments, a);
   }
@@ -410,13 +416,15 @@ export class BinaryImage {
     };
     this.dataInCode.push(normalized);
     this._dataInCodeLookup = null;
+    this._dataInCodeSorted = null;
     return normalized;
   }
 
   isDataInCode(address) {
     const a = strictBigIntOrNull(address);
     if (a === null) return false;
-    if (isDataInCodeAddressSorted(this.dataInCode)) {
+    if (this._dataInCodeSorted === null) this._dataInCodeSorted = isDataInCodeAddressSorted(this.dataInCode);
+    if (this._dataInCodeSorted) {
       if (!this._dataInCodeLookup) this._dataInCodeLookup = buildDataInCodeLookup(this.dataInCode);
       return lookupDataInCode(this._dataInCodeLookup, a) !== null;
     }
@@ -432,7 +440,8 @@ export class BinaryImage {
   dataInCodeAt(address) {
     const a = strictBigIntOrNull(address);
     if (a === null) return null;
-    if (isDataInCodeAddressSorted(this.dataInCode)) {
+    if (this._dataInCodeSorted === null) this._dataInCodeSorted = isDataInCodeAddressSorted(this.dataInCode);
+    if (this._dataInCodeSorted) {
       if (!this._dataInCodeLookup) this._dataInCodeLookup = buildDataInCodeLookup(this.dataInCode);
       return lookupDataInCode(this._dataInCodeLookup, a);
     }
@@ -568,6 +577,8 @@ export class BinaryImage {
     this._mappingLookups.segments = null;
     this._mappingLookups.sections = null;
     this._mappingLookups.virtual = null;
+    this._mappingSorted.segments = true;
+    this._mappingSorted.sections = true;
     this.symbols.sort(byAddr);
     this.exports.sort(byAddr);
     this.relocations.sort(byAddr);
