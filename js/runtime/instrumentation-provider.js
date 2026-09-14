@@ -63,43 +63,93 @@ function eventInterventionIds(raw) {
     : source?.interventionIds ?? null;
 }
 
-function materializeRuntimeValue(value, seen = new WeakMap()) {
+// #8847: the provider must own one immutable-enough envelope snapshot so a
+// compromised/mutating backend cannot rewrite an event between filtering,
+// correlation and publication, and so getter-backed fields are read exactly once
+// (#4778). But the previous recursive clone had NO depth or size limit: a deep or
+// oversized backend event ran `materializeRuntimeValue` into a native stack
+// overflow / unbounded synchronous allocation *before* the normalizer's
+// events.maxBytes budget was ever consulted, producing the wrong failure
+// (runtime-invalid-event "Maximum call stack size exceeded") instead of a bounded
+// drop. The clone shape is kept exactly as #4778 requires (DataView stays a
+// DataView over an owned buffer, Map/Set stay, typed views are copied, functions
+// are rejected), but it is now bounded by the same event byte budget + a hard
+// depth ceiling and fails closed with the normalizer's own overflow code
+// (runtime-event-resource-limit) so an over-budget event is cheaply dropped rather
+// than blown up or partially materialized.
+const MAX_ENVELOPE_DEPTH = 64;
+const ENVELOPE_BASE_DEFAULT_MAX_BYTES = 4 * 1024 * 1024;
+
+function envelopeByteBudget(eventOptions) {
+  const configured = eventOptions && typeof eventOptions === 'object' ? eventOptions.maxBytes : undefined;
+  if (typeof configured === 'number' && Number.isSafeInteger(configured) && configured >= 1024) return configured;
+  return ENVELOPE_BASE_DEFAULT_MAX_BYTES;
+}
+
+function materializeRuntimeValue(value, state) {
   if (value == null || typeof value !== 'object') {
     if (typeof value === 'function') throw new DebugAdapterError('runtime-invalid-event', 'runtime event contains a function');
     return value;
   }
-  if (seen.has(value)) return seen.get(value);
-  if (value instanceof Date) return new Date(value.getTime());
-  if (value instanceof RegExp) return new RegExp(value.source, value.flags);
-  if (value instanceof ArrayBuffer) return value.slice(0);
+  state.depth += 1;
+  if (state.depth > MAX_ENVELOPE_DEPTH) throw new DebugAdapterError('runtime-event-resource-limit', 'runtime event exceeds pre-normalization depth budget');
+  if (state.seen.has(value)) return state.seen.get(value);
+  const overBudget = () => {
+    if (state.bytes > state.maxBytes) {
+      throw new DebugAdapterError('runtime-event-resource-limit', `runtime event exceeds pre-normalization byte budget (${state.maxBytes})`);
+    }
+  };
+  if (value instanceof Date) { state.bytes += 24; overBudget(); return new Date(value.getTime()); }
+  if (value instanceof RegExp) { state.bytes += 24; overBudget(); return new RegExp(value.source, value.flags); }
+  if (value instanceof ArrayBuffer) {
+    state.bytes += value.byteLength + 16; overBudget();
+    return value.slice(0);
+  }
   if (value instanceof DataView) {
     const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    state.bytes += value.byteLength + 16; overBudget();
     const ownedBytes = Uint8Array.from(bytes);
     return new DataView(ownedBytes.buffer);
   }
-  if (ArrayBuffer.isView(value)) return new value.constructor(value);
+  if (ArrayBuffer.isView(value)) {
+    state.bytes += value.byteLength + 16; overBudget();
+    return new value.constructor(value);
+  }
+
   if (value instanceof Map) {
+    state.bytes += value.size * 8 + 16; overBudget();
     const output = new Map();
-    seen.set(value, output);
+    state.seen.set(value, output);
     for (const [key, item] of value) {
-      output.set(materializeRuntimeValue(key, seen), materializeRuntimeValue(item, seen));
+      output.set(materializeRuntimeValue(key, state), materializeRuntimeValue(item, state));
     }
     return output;
   }
   if (value instanceof Set) {
+    state.bytes += value.size * 8 + 16; overBudget();
     const output = new Set();
-    seen.set(value, output);
-    for (const item of value) output.add(materializeRuntimeValue(item, seen));
+    state.seen.set(value, output);
+    for (const item of value) output.add(materializeRuntimeValue(item, state));
     return output;
   }
 
-  const output = Array.isArray(value) ? [] : {};
-  seen.set(value, output);
-  if (Array.isArray(value)) output.length = value.length;
+  if (Array.isArray(value)) {
+    state.bytes += value.length * 2 + 16; overBudget();
+    const output = new Array(value.length);
+    state.seen.set(value, output);
+    for (let index = 0; index < value.length; index += 1) output[index] = materializeRuntimeValue(value[index], state);
+    return output;
+  }
+
+  const output = {};
+  state.seen.set(value, output);
   for (const key of Reflect.ownKeys(value)) {
     if (typeof key !== 'string' || key === 'length') continue;
+    state.bytes += key.length + 8; overBudget();
+    const item = materializeRuntimeValue(value[key], state);
+    if (typeof item === 'string') { state.bytes += item.length; overBudget(); }
     Object.defineProperty(output, key, {
-      value: materializeRuntimeValue(value[key], seen),
+      value: item,
       enumerable: true,
       configurable: true,
       writable: true,
@@ -108,9 +158,10 @@ function materializeRuntimeValue(value, seen = new WeakMap()) {
   return output;
 }
 
-function materializeRuntimeEvent(raw) {
+function materializeRuntimeEvent(raw, maxBytes) {
+  const state = { seen: new WeakMap(), depth: 0, bytes: 0, maxBytes };
   try {
-    return materializeRuntimeValue(raw);
+    return materializeRuntimeValue(raw, state);
   } catch (error) {
     if (error instanceof DebugAdapterError) throw error;
     throw new DebugAdapterError('runtime-invalid-event', `runtime event could not be materialized: ${String(error?.message || error)}`);
@@ -177,8 +228,21 @@ export class InstrumentationProvider {
     const interventions = new InterventionLedger();
     const probes = new Map();
 
+    const envelopeMaxBytes = envelopeByteBudget(this.options.events);
+    // #8847: produce ONE owned envelope snapshot with the SAME ownership shape
+    // #4778 requires (getters read once, DataView/Map/Set/typed views owned), but a
+    // now-BOUNDED clone: a deep or oversized hostile backend event is rejected with
+    // the normalizer's own runtime-event-resource-limit code and cheaply dropped,
+    // instead of running the old unbounded recursion into a native stack overflow /
+    // unbounded allocation outside events.maxBytes.
     const ingest = (raw, normalizerOptions = {}) => {
-      const ownedRaw = materializeRuntimeEvent(raw);
+      let ownedRaw;
+      try {
+        ownedRaw = materializeRuntimeEvent(raw, envelopeMaxBytes);
+      } catch (error) {
+        if (error?.code === 'runtime-event-resource-limit') return null;
+        throw error;
+      }
       if (typeof this.options.eventFilter === 'function' && this.options.eventFilter(ownedRaw) === false) return null;
       const handle = eventProbeHandle(ownedRaw);
       const interventionId = handle == null ? null : probes.get(handle) ?? null;
