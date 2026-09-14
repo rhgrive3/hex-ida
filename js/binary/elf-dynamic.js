@@ -38,6 +38,17 @@ const DT_JMPREL = 23n;
 const DT_GNU_HASH = 0x6ffffef5n;
 
 export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
+  // parseELF's public cancellation contract must reach the PT_DYNAMIC path:
+  // an aborted caller must not start (or keep funding) large dynamic decode
+  // work (#5584). The check runs before the header lookup because program-header
+  // decoding is itself budget-admitted and may legitimately yield no decoded
+  // table at all once the caller has cancelled (#8714).
+  const signal = opts.signal || null;
+  const cancelled = () => signal?.aborted === true;
+  if (cancelled()) {
+    markDynamicPartial(image, 'PT_DYNAMIC parse was cancelled before it started');
+    return { parsed: false };
+  }
   const dyn = (programHeaders || []).find((p) => p.type === PT_DYNAMIC);
   if (!dyn || dyn.filesz <= 0n) return { parsed: false };
   const start = toSafeNumber(dyn.offset);
@@ -48,15 +59,6 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   }
 
   const entSize = bits === 64 ? 16 : 8;
-  // parseELF's public cancellation contract must reach the PT_DYNAMIC path:
-  // an aborted caller must not start (or keep funding) large dynamic decode
-  // work (#5584).
-  const signal = opts.signal || null;
-  const cancelled = () => signal?.aborted === true;
-  if (cancelled()) {
-    markDynamicPartial(image, 'PT_DYNAMIC parse was cancelled before it started');
-    return { parsed: false };
-  }
   const tags = new Map();
   const ordered = [];
   const entrySpanRemainder = size % entSize;

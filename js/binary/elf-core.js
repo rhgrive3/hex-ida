@@ -74,7 +74,13 @@ export function parseELF(input, options = {}) {
     },
   });
 
-  const programHeaders = parseProgramHeaders(r, h, image, bits);
+  // Program headers and section names are both decoded before any bounded
+  // metadata work used to exist, so they must sit inside the same finite ELF
+  // metadata budget as the rest of the pass: an expanded `PN_XNUM` count or a
+  // table full of repeated `.shstrtab` offsets could otherwise materialize
+  // hundreds of MiB outside every limit (#8714, #8678).
+  const metadataBudget = createELFMetadataBudget(image, { signal: options.signal, limits: options.metadataLimits });
+  const programHeaders = parseProgramHeaders(r, h, image, bits, metadataBudget);
   const rawSections = parseSectionHeaders(r, h, bits, image);
   // Keep section-table presence separate from parse success. `[]` can mean a
   // genuinely sectionless ELF *or* a declared table that was truncated /
@@ -83,11 +89,7 @@ export function parseELF(input, options = {}) {
     declared: h.shoff !== 0n,
     valid: h.shoff === 0n || rawSections.length > 0,
   });
-  // Section-name decoding happens before any canonical section is published,
-  // so it must sit inside the same finite metadata budget as the rest of the
-  // metadata pass; otherwise a valid ELF with many shared `.shstrtab` offsets
-  // can exhaust the heap outside every existing limit (#8678).
-  const metadataBudget = createELFMetadataBudget(image, { signal: options.signal, limits: options.metadataLimits });
+  // Section names must also be resolved inside the budget established above.
   nameSections(r, rawSections, h, image, metadataBudget);
   let riscvFileIsa = null;
   const isRiscv = Number(h.machine) === EM_RISCV || image.arch === 'riscv64' || image.arch === 'riscv32';
@@ -404,13 +406,25 @@ function rejectAmbiguousPtLoadOverlap(image, index, ph) {
   }
 }
 
-function parseProgramHeaders(r, h, image, bits) {
+function parseProgramHeaders(r, h, image, bits, budget) {
   const out = [];
   const off = safeOffset(h.phoff);
   if (off == null) { image.warnings.push('ELF program header offset is not safely representable'); return out; }
   if (!h.phnum || !h.phentsize || off <= 0) return out;
-  if (off + h.phnum * h.phentsize > r.length) { image.warnings.push('ELF program header table is truncated'); return out; }
-  for (let i = 0; i < h.phnum; i++) {
+  // The declared count is only authority for what the file can actually hold.
+  // Reading the in-file prefix and marking the table partial keeps a `PN_XNUM`
+  // expansion from turning a small file into an unbudgeted object fan-out
+  // (#8714), the same fail-closed shape `parseSymbols` uses for truncated tables.
+  const capacity = Math.max(0, Math.floor((r.length - off) / h.phentsize));
+  let count = h.phnum;
+  if (count > capacity) {
+    markELFMetadataPartial(image, 'program-headers:truncated', `ELF program header table declares ${count} entries of ${h.phentsize} bytes at offset ${off} but only ${capacity} fit in the file`);
+    count = capacity;
+  }
+  let parsed = 0;
+  for (let i = 0; i < count; i++) {
+    if (!budget.take({ inputBytes: h.phentsize, records: 1, objects: 1, operations: 4, estimatedHeapBytes: 288 }, 'program-header')) break;
+    parsed++;
     const p = off + i * h.phentsize;
     let ph;
     if (bits === 64) {
@@ -444,6 +458,11 @@ function parseProgramHeaders(r, h, image, bits) {
       });
     }
   }
+  // `e_phnum = PN_XNUM` stores the real count in section header 0's `sh_info`,
+  // which is attacker-controlled. Publish what was actually consumed, never the
+  // declared figure, so downstream authority cannot size itself from a count the
+  // file does not contain (#8714).
+  if (h.extendedPhnum != null) image.metadata.extendedProgramHeaderCount = parsed;
   return out;
 }
 
