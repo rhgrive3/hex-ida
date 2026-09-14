@@ -1,4 +1,4 @@
-name: Temporary apply independent final fixes v3
+name: Temporary apply independent final fixes v4
 
 on:
   push:
@@ -42,10 +42,6 @@ jobs:
         shell: bash
         run: git apply --check --include='js/blocks-base.js' .github/independent-final-fixes.patch
 
-      - name: Check architecture ABI patch
-        shell: bash
-        run: git apply --check --include='tests/architecture-abi.mjs' .github/independent-final-fixes.patch
-
       - name: Check ABI discovery regression patch
         shell: bash
         run: git apply --check --include='tests/phase4/architecture-abi-compat-regressions.test.mjs' .github/independent-final-fixes.patch
@@ -58,9 +54,9 @@ jobs:
         shell: bash
         run: git apply --check --include='tests/phase4/issue-3630-elf-dynamic-section-authority.test.mjs' .github/independent-final-fixes.patch
 
-      - name: Apply verified fixes
+      - name: Apply non-overlapping verified fixes
         shell: bash
-        run: git apply .github/independent-final-fixes.patch
+        run: git apply --exclude='tests/architecture-abi.mjs' .github/independent-final-fixes.patch
 
       - name: Architecture ABI focused test
         shell: bash
@@ -77,5 +73,5 @@ jobs:
           rm -f .github/independent-final-fixes.patch
           rm -f .github/workflows/apply-independent-final-fixes-v2-temp.yml
           git add -A
-          git commit -m 'fix(analysis): resolve remaining Phase4 and ABI regressions'
+          git commit -m 'fix(analysis): resolve remaining Phase4 regressions'
           git push origin HEAD:fix/independent-io-pr7036-aware-20260914
