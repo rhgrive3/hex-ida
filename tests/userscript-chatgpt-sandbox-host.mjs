@@ -119,8 +119,10 @@ const entrySource = await readFile(new URL('../js/userscript/entry.js', import.m
 const protectedEntrySource = await readFile(new URL('../js/userscript/protected-entry.js', import.meta.url), 'utf8');
 const loaderSource = await readFile(new URL('../js/userscript/loader.js', import.meta.url), 'utf8');
 assert.match(entrySource, /createChatGPTSandboxHost/);
-assert.match(loaderSource, /runtimeContentHash:\s*String\(bootstrap\.manifest\.contentHash/,
-  'the trusted loader must pass the already-verified full runtime hash into the protected runtime');
+assert.match(loaderSource, /const actualContentHash = await assertHash\(plaintext, manifest\.contentHash\);\s*\n\s*if \(!actualContentHash\.startsWith\(EXPECTED_BUILD\)\)/,
+  'the trusted loader must re-derive the executed runtime digest and bind it to the pinned build before passing it on (#8928)');
+assert.match(loaderSource, /runtimeContentHash:\s*actualContentHash/,
+  'the loader must forward the locally proven digest, not the remote-supplied manifest value (#8928)');
 assert.match(protectedEntrySource, /runtimeContentHash:\s*String\(options\.runtimeContentHash/,
   'the protected entry must carry the trusted runtime hash into the ChatGPT host');
 assert.match(entrySource, /runtimeContentHash:\s*String\(options\.runtimeContentHash/,
