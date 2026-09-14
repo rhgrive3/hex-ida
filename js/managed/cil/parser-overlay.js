@@ -112,9 +112,9 @@ function validateManagedEntryAuthority(bytes,parsed,defs,layout,meta){
   if(!Number.isSafeInteger(rid)||rid<1||rid>(layout.rowCounts[FILE_TABLE]||0))fail('cil-entrypoint-file-row-missing');
  }
 }
-export function overlayCilMetadata(bytes,parsed,options={}){
+export function overlayCilMetadata(bytes,parsed,options={},internalBudget=null){
  const u8=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes),view=new DataView(u8.buffer,u8.byteOffset,u8.byteLength),pe=peLayout(u8,view);if(!pe?.cliPresent)return parsed;
- const budget=createCilMetadataBudget(options);
+ const budget=internalBudget??createCilMetadataBudget(options);
  const meta=readCilMetadataStreams(u8,pe.metadataOffset,pe.metadataSize),tablesStream=meta.streams.find(s=>s.name==='#~'||s.name==='#-'),stringsStream=meta.streams.find(s=>s.name==='#Strings'),blobStream=meta.streams.find(s=>s.name==='#Blob'),guidStream=meta.streams.find(s=>s.name==='#GUID');if(!tablesStream)fail('cil-metadata-tables-missing');
  const blobHeap=blobStream?u8.subarray(blobStream.offset,blobStream.offset+blobStream.size):null;
  const usStream=meta.streams.find(s=>s.name==='#US');

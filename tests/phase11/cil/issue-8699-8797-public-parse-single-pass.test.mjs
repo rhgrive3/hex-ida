@@ -57,9 +57,9 @@ function withBudgetStartCount(fn) {
     'low-budget public parse must not run an unbounded metadata/manifest probe first');
 }
 
-// #8797: a successful public parse performs each semantic overlay once. Each
-// overlay constructs one aggregate metadata budget, so one authoritative parse
-// creates two budgets total (metadata + manifest), not four from probe+parse.
+// #8797/#8699: a successful public parse performs each semantic overlay once,
+// and both overlays share one parser-wide aggregate metadata budget. This keeps
+// the retained-row/string/work ceiling authoritative across the whole parse.
 {
   const bytes = buildCil({
     methods: [{ name: 'Run', body: [0x2a] }],
@@ -68,8 +68,8 @@ function withBudgetStartCount(fn) {
   const { value: image, starts } = withBudgetStartCount(() =>
     parseCil(bytes, { binaryId: 'public-single-pass' }));
   assert.equal(image.methods.length, 1);
-  assert.equal(starts, 2,
-    'public parse must not repeat completed metadata/manifest semantic overlays');
+  assert.equal(starts, 1,
+    'public parse must use one shared aggregate budget across metadata/manifest overlays');
 }
 
 console.log('[phase11] #8699/#8797 public parse single-pass budget regressions passed');

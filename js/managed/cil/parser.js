@@ -1,12 +1,15 @@
 import { parseCil as parseCilBase, probeCil as probeCilBase } from './parser-base.js';
 import { overlayCilMetadata } from './parser-overlay.js';
 import { overlayCilManifestSecurity } from './metadata-manifest-security.js';
+import { createCilMetadataBudget } from './metadata-layout.js';
 function unsupported(reason='malformed-pe-cli'){ return {supported:false,confidence:0,reason}; }
 function parseCilValidated(bytes, options = {}) {
+  const budget = createCilMetadataBudget(options);
   return overlayCilManifestSecurity(
     bytes,
-    overlayCilMetadata(bytes, parseCilBase(bytes, options), options),
+    overlayCilMetadata(bytes, parseCilBase(bytes, options), options, budget),
     options,
+    budget,
   );
 }
 export function probeCil(bytes) {

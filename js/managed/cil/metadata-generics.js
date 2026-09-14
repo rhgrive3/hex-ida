@@ -32,7 +32,7 @@ export function readCilGenericMetadata(bytes, view, layout, stringsStream, defs,
     return valueText;
   };
   const readRows = (table, decode) => Array.from({ length: counts[table] }, (_, i) => {
-    if (budget) budget.chargeRow();
+    if (budget) budget.chargeRow(rowSizes[table]);
     const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
     return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
   });

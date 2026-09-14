@@ -123,9 +123,17 @@ export function createCilMetadataBudget(options = {}) {
       if (heapBytes > limits.maxEstimatedHeapBytes) fail('cil-metadata-resource-limit-heap');
       checkpoint();
     },
-    chargeRow() {
+    chargeRow(encodedByteLength = 0) {
+      if (!Number.isSafeInteger(encodedByteLength) || encodedByteLength < 0)
+        fail('cil-metadata-resource-limit-row-size');
       rows++;
       if (rows > limits.maxRows) fail('cil-metadata-resource-limit-rows');
+      // A decoded row is retained as a JS object. Charge a conservative
+      // object/property floor plus encoded width before materialization.
+      const retainedBytes = 256 + encodedByteLength * 4;
+      if (!Number.isSafeInteger(retainedBytes)) fail('cil-metadata-resource-limit-row-size');
+      heapBytes += retainedBytes;
+      if (heapBytes > limits.maxEstimatedHeapBytes) fail('cil-metadata-resource-limit-heap');
       checkpoint();
     },
     chargeWork() { checkpoint(); },

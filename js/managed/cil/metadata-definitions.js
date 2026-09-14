@@ -131,7 +131,7 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     return valueText;
   };
   const readRows = (table, decode) => Array.from({ length: counts[table] }, (_, i) => {
-    if (budget) budget.chargeRow();
+    if (budget) budget.chargeRow(rowSizes[table]);
     const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
     return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
   });
@@ -162,6 +162,7 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
   // constructed types into one opaque token; structural blob violations fail
   // closed.
   const typeSpecs = counts[0x1b] ? Array.from({ length: counts[0x1b] }, (_, i) => {
+    if (budget) budget.chargeRow(rowSizes[0x1b]);
     const rid = i + 1, pos = offsets[0x1b] + i * rowSizes[0x1b];
     const signatureBlobIndex = index(pos, b);
     if (!blobHeap) fail('cil-type-spec-blob-missing');

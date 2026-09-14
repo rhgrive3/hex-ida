@@ -119,7 +119,7 @@ function readManifestSecurity(bytes, view, layout, stringsStream, blobStream, de
     return decoded;
   };
   const readRows = (table, decode) => Array.from({ length: counts[table] || 0 }, (_, i) => {
-    if (budget) budget.chargeRow();
+    if (budget) budget.chargeRow(rowSizes[table]);
     const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
     return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
   });
@@ -229,12 +229,12 @@ function readManifestSecurity(bytes, view, layout, stringsStream, blobStream, de
   return { files, exportedTypes, declSecurity };
 }
 
-export function overlayCilManifestSecurity(bytes, parsed, options = {}) {
+export function overlayCilManifestSecurity(bytes, parsed, options = {}, internalBudget = null) {
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
   const pe = peLayout(u8, view);
   if (!pe?.cliPresent) return parsed;
-  const budget = createCilMetadataBudget(options);
+  const budget = internalBudget ?? createCilMetadataBudget(options);
   const meta = readCilMetadataStreams(u8, pe.metadataOffset, pe.metadataSize);
   const tablesStream = meta.streams.find(s => s.name === '#~' || s.name === '#-');
   const stringsStream = meta.streams.find(s => s.name === '#Strings');
