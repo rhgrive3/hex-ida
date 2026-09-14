@@ -122,8 +122,8 @@ function immutableBytesRecord(value) {
 
 // Map/Set identity stays order-insensitive exactly like the existing canonical
 // digest entries, but the published record can no longer be mutated in place.
-function immutableCollectionRecord(kind, entries) {
-  const canonical = entries.map((entry) => entry.map((item) => canonicalImmutableContent(item, [])));
+function immutableCollectionRecord(kind, entries, path) {
+  const canonical = entries.map((entry) => entry.map((item) => canonicalImmutableContent(item, path)));
   canonical.sort((left, right) => {
     const a = stableStringify(left);
     const b = stableStringify(right);
@@ -155,9 +155,14 @@ function canonicalImmutableContent(value, path = []) {
   }
   if (value instanceof Map || classOf === 'Map' || isMutableCollectionView(value)) {
     if (value instanceof WeakMap || value instanceof WeakSet) throw new TypeError(MUTABLE_COLLECTION_REASON);
-    if (value instanceof Set || classOf === 'Set') return immutableCollectionRecord('Set', [...value].map((item) => [item]));
-    if (!(value instanceof Map || classOf === 'Map')) throw new TypeError(MUTABLE_COLLECTION_REASON);
-    return immutableCollectionRecord('Map', [...value.entries()].map(([key, item]) => [key, item]));
+    path.push(value);
+    try {
+      if (value instanceof Set || classOf === 'Set') return immutableCollectionRecord('Set', [...value].map((item) => [item]), path);
+      if (!(value instanceof Map || classOf === 'Map')) throw new TypeError(MUTABLE_COLLECTION_REASON);
+      return immutableCollectionRecord('Map', [...value.entries()].map(([key, item]) => [key, item]), path);
+    } finally {
+      path.pop();
+    }
   }
   path.push(value);
   try {
