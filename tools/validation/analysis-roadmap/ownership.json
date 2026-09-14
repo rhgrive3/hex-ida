@@ -503,7 +503,8 @@
       "js/targets/architecture/arm64/memory-access-qualifiers.js",
       "tests/semantic-v2/issue-4513-memoryssa-access-provider-completeness.test.mjs",
       "tests/issue-4135-pe-section-virtual-layout.mjs",
-      "tests/machine-effects/issue-6079-vblendmx-blend-category.test.mjs"
+      "tests/machine-effects/issue-6079-vblendmx-blend-category.test.mjs",
+      ".github/workflows/ghidra-differential.yml"
     ]
   }
 }

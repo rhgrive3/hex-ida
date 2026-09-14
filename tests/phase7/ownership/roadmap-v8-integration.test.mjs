@@ -38,6 +38,7 @@ test('main reconciliation regression changes require their exact existing owners
     ['tests/issue-4961-worker-request-id-identity.mjs', 'integration'],
     ['tests/phase11/jvm/issue-8724-control-overlay-order.test.mjs', 'integration'],
     ['tests/architecture-abi.mjs', 'integration'],
+    ['.github/workflows/ghidra-differential.yml', 'integration'],
     ['tests/machine-effects/issue-6079-vblendmx-blend-category.test.mjs', 'integration'],
     ['tests/issue-4135-pe-section-virtual-layout.mjs', 'integration'],
     ['tests/semantic-v2/issue-c2-01-byte-exact-forwarding.test.mjs', 'integration'],

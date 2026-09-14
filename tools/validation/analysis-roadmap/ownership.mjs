@@ -67,6 +67,7 @@ const SPECIAL_PATHS = Object.freeze({
     'js/targets/abi/darwin-arm64.js',
     'js/semantics/memoryssa/proof-core.js',
     'js/semantics/memory-access-provider.js',
+    '.github/workflows/ghidra-differential.yml',
     'js/targets/architecture/arm64/memory-access-qualifiers.js',
     'tests/semantic-v2/issue-4513-memoryssa-access-provider-completeness.test.mjs',
     'js/targets/abi/evidence.js',
