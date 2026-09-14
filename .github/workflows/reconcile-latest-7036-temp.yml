@@ -1,0 +1,48 @@
+name: Temporary reconcile latest 7036
+
+on:
+  push:
+    branches:
+      - fix/independent-io-pr7036-aware-20260914
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Fetch and merge live 7036 parent
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          timeout 60s git fetch --no-tags origin refs/heads/feat/analysis-roadmap-v8-current-main-20260907:refs/remotes/origin/feat/analysis-roadmap-v8-current-main-20260907
+          BASE="$(git rev-parse refs/remotes/origin/feat/analysis-roadmap-v8-current-main-20260907)"
+          echo "live parent: $BASE"
+          git merge --no-ff --no-edit "$BASE"
+      - name: Focused regression validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 180s node tests/architecture-abi.mjs
+          timeout 180s node --test tests/phase4/architecture-abi-compat-regressions.test.mjs tests/phase4/arm64-memory-presentation-contract.test.mjs tests/phase4/issue-3630-elf-dynamic-section-authority.test.mjs
+          timeout 180s node tests/ci/circleci-impact.test.mjs
+          git diff --check
+      - name: Remove temporary workflow and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/reconcile-latest-7036-temp.yml
+          git commit -m 'chore(ci): remove temporary 7036 reconciliation route'
+          git push origin HEAD:fix/independent-io-pr7036-aware-20260914
