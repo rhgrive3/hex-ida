@@ -930,22 +930,37 @@ export function analyzeDataFlow(insns, opts) {
       if (m.stack && m.base && !m.indexed && !frameLost && accessDisp != null) {
         slot = m.base + '+' + (frameDelta + accessDisp).toString();
       }
+      const isPair = base === 'ldp' || base === 'ldpsw' || base === 'ldnp' ||
+        base === 'stp' || base === 'stnp';
+      const stride = isPair && accessDisp != null ? BigInt(Math.floor(m.size / 2)) : 0n;
+      const elemSlot = (idx) => (slot && idx > 0
+        ? m.base + '+' + (frameDelta + accessDisp + stride * BigInt(idx)).toString()
+        : slot);
+
       if (m.kind === 'load') {
+        let di = 0;
         for (const dst of insn.writes) {
           if (dst === m.base && insn.ops.some((x) => x.k === 'mem' && (x.mode === 'pre' || x.mode === 'post'))) continue;
+          const dSlot = isPair ? elemSlot(di) : slot;
+          const dDisp = isPair && accessDisp != null
+            ? accessDisp + stride * BigInt(di)
+            : m.disp;
+          di++;
           let v;
-          const cached = slot ? stack.get(slot) : null;
+          const cached = !isPair || base === 'ldp' || base === 'ldnp'
+            ? (dSlot ? stack.get(dSlot) : null)
+            : null;
           if (cached) {
-            v = Object.assign({}, cached, { def: insn.row, ev: cached.ev.concat([ev('stack-reload', insn.row, { slot })]) });
-            flow('stack->reg', insn.row, slot, dst, v);
+            v = Object.assign({}, cached, { def: insn.row, ev: cached.ev.concat([ev('stack-reload', insn.row, { slot: dSlot })]) });
+            flow('stack->reg', insn.row, dSlot, dst, v);
           } else {
             const baseVal = m.base ? get(m.base) : null;
             // adrp（ページの先頭）＋ ldr の即値でも、指している場所は確定する。
             // __objc_selrefs からメソッド名を引くのがまさにこの形。
-            const addr = baseVal && baseVal.kind === 'address' && m.disp != null
-              ? baseVal.addr + m.disp : null;
-            v = value('loaded', { at: { base: m.base, disp: m.disp }, addr, size: m.size },
-              SCORE.high, [ev('load', insn.row, { base: m.base, disp: m.disp, addr })], insn.row);
+            const addr = baseVal && baseVal.kind === 'address' && dDisp != null
+              ? baseVal.addr + dDisp : null;
+            v = value('loaded', { at: { base: m.base, disp: dDisp }, addr, size: m.size },
+              SCORE.high, [ev('load', insn.row, { base: m.base, disp: dDisp, addr })], insn.row);
             flow('mem->reg', insn.row, m.base, dst, v);
             if (addr != null) addressRefs.push({ row: insn.row, addr, value: v, load: true });
           }
@@ -965,12 +980,16 @@ export function analyzeDataFlow(insns, opts) {
           flow('mem->reg', insn.row, m.base, dst, v);
         }
       } else {
-        const src = insn.ops[0] ? regKey(insn.ops[0]) : null;
-        const v = src ? get(src) : null;
-        flow('reg->mem', insn.row, src, slot || (m.base || 'mem'), v);
-        if (slot) {
-          if (v) stack.set(slot, Object.assign({}, v, { ev: v.ev.concat([ev('stack-save', insn.row, { slot })]) }));
-          else stack.set(slot, unknownValue(ev('untracked', insn.row)));
+        const srcCount = isPair ? 2 : 1;
+        for (let idx = 0; idx < srcCount; idx++) {
+          const src = insn.ops[idx] ? regKey(insn.ops[idx]) : null;
+          const v = src ? get(src) : null;
+          const sSlot = isPair ? elemSlot(idx) : slot;
+          flow('reg->mem', insn.row, src, sSlot || (m.base || 'mem'), v);
+          if (sSlot) {
+            if (v) stack.set(sSlot, Object.assign({}, v, { ev: v.ev.concat([ev('stack-save', insn.row, { slot: sSlot })]) }));
+            else stack.set(sSlot, unknownValue(ev('untracked', insn.row)));
+          }
         }
       }
       if (m.stack && m.base && !m.indexed && (m.mode === 'pre' || m.mode === 'post')) {
