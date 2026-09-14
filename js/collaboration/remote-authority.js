@@ -590,6 +590,15 @@ export class RemoteCollaborationChannel {
   receive(envelope) {
     return applyRemoteEnvelopeQueued(this.log, this.gate, envelope);
   }
+
+  // #8856 — revocation must be more than a future-ingress rule: an actor that
+  // can no longer deliver its own missing parents cannot be allowed to keep the
+  // session paying for its retained unresolved backlog. Pending operations were
+  // never applied, so purging them cannot rewrite converged history.
+  revokeActor(actorIdentity) {
+    this.gate.revoke(actorIdentity);
+    return Object.freeze({ status: 'revoked', ...this.log.purgePendingByAuthor(actorIdentity) });
+  }
 }
 
 export function remoteCollaborationSupport({

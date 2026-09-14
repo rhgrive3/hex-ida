@@ -12,6 +12,9 @@ function cloneWorking(log) {
     operations: [...log.operations.values()],
     allowRemote: log.allowRemote === true,
     authorizedAuthors: [...log.authorizedAuthors],
+    maxPendingOperations: log.maxPendingOperations,
+    maxPendingOperationsPerActor: log.maxPendingOperationsPerActor,
+    maxPendingBytes: log.maxPendingBytes,
   });
   working.pending = new Map(log.pending);
   return working;
@@ -75,12 +78,19 @@ export function applyRemoteEnvelopeQueued(log, gate, envelope) {
   log.operations = working.operations;
   log.pending = working.pending;
 
-  const unresolvedOperationIds = [...log.pending.keys()].sort();
+  // #8856 — the retained backlog is budgeted, so the receive summary stays
+  // bounded and deterministic while still reporting the exact retained count.
+  const summary = log.unresolvedOperationSummary();
+  const unresolvedOperationIds = summary.unresolvedOperationIds;
   return Object.freeze({
     status: unresolvedOperationIds.length ? 'accepted-with-pending-dependencies' : 'applied',
     envelopeId: envelope.envelopeId,
     results,
     unresolvedOperationIds,
+    unresolvedCount: summary.unresolvedCount,
+    unresolvedOperationIdsTruncated: summary.unresolvedOperationIdsTruncated,
+    retainedPending: log.retainedPendingUsage(),
+    pendingBudget: log.pendingBudget(),
     stateDigest: log.digest(),
   });
 }

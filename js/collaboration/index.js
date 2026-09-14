@@ -1,4 +1,4 @@
-import { deepFreeze, lossyTypeWitness, stableDigest } from '../core/identity/index.js';
+import { deepFreeze, lossyTypeWitness, stableDigest, stableStringify } from '../core/identity/index.js';
 import { createOperationIdentity, assertIdentityMatch } from '../phase12/identity.js';
 
 export const CHANGELOG_SCHEMA_VERSION = 'hex-project-operation-v1';
@@ -9,6 +9,65 @@ const OPERATION_ACTIONS = new Set(['set', 'remove', 'resolve', 'resurrect']);
 // Factory provenance is not a transport grant or a payload-integrity proof.
 // Never infer canonical identity validation from an untrusted schema tag.
 const CANONICAL_PROJECT_OPERATIONS = new WeakSet();
+
+// #8856 — unresolved remote ingress is session-lifetime retained state, so a
+// per-envelope budget is not enough. These ceilings bound how much
+// missing-dependency backlog one session (and one actor inside it) may retain.
+export const PENDING_BUDGET_REASON = 'changelog-pending-budget-exceeded';
+export const PENDING_SUMMARY_LIMIT = 256;
+const DEFAULT_MAX_PENDING_OPERATIONS = 512;
+const DEFAULT_MAX_PENDING_OPERATIONS_PER_ACTOR = 128;
+const MAX_PENDING_OPERATIONS_CEILING = 16384;
+const DEFAULT_MAX_PENDING_BYTES = 4 * 1024 * 1024;
+const MAX_PENDING_BYTES_CEILING = 128 * 1024 * 1024;
+const PENDING_CANONICAL_BYTES = new WeakMap();
+
+function pendingLimit(value, fallback, max, code) {
+  const n = value == null ? fallback : value;
+  if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 1 || n > max) throw new TypeError(code);
+  return n;
+}
+
+function canonicalOperationBytes(operation) {
+  if (operation != null && typeof operation === 'object') {
+    const cached = PENDING_CANONICAL_BYTES.get(operation);
+    if (cached !== undefined) return cached;
+  }
+  const text = stableStringify(operation);
+  const bytes = typeof TextEncoder === 'undefined' ? text.length : new TextEncoder().encode(text).length;
+  if (operation != null && typeof operation === 'object') PENDING_CANONICAL_BYTES.set(operation, bytes);
+  return bytes;
+}
+
+// One pass over the retained set. The retained set is itself capped by the
+// configured ceilings, so retained-state accounting can never scan a backlog an
+// actor grew without limit.
+function retainedPendingProjection(pending, actorIdentity) {
+  let operations = 0;
+  let bytes = 0;
+  let actorOperations = 0;
+  for (const operation of pending.values()) {
+    operations += 1;
+    bytes += canonicalOperationBytes(operation);
+    if (actorIdentity != null && operation.authorIdentity === actorIdentity) actorOperations += 1;
+  }
+  return { operations, bytes, actorOperations };
+}
+
+function restoredPendingWithinBudget(pending, limits) {
+  if (pending.size > limits.maxPendingOperations) return false;
+  const actors = new Map();
+  let bytes = 0;
+  for (const operation of pending.values()) {
+    bytes += canonicalOperationBytes(operation);
+    if (bytes > limits.maxPendingBytes) return false;
+    const actor = operation.authorIdentity ?? null;
+    const count = (actors.get(actor) ?? 0) + 1;
+    if (count > limits.maxPendingOperationsPerActor) return false;
+    actors.set(actor, count);
+  }
+  return true;
+}
 
 function required(value, code) {
   if (typeof value !== 'string') throw new TypeError(code);
@@ -272,6 +331,39 @@ export class ChangeLog {
     }
     this.allowRemote = options.allowRemote === true;
     this.authorizedAuthors = new Set((options.authorizedAuthors ?? []).map((author) => required(author, 'changelog-author-identity-invalid')));
+    this.maxPendingOperations = pendingLimit(options.maxPendingOperations, DEFAULT_MAX_PENDING_OPERATIONS, MAX_PENDING_OPERATIONS_CEILING, 'changelog-max-pending-operations-invalid');
+    this.maxPendingOperationsPerActor = pendingLimit(options.maxPendingOperationsPerActor, DEFAULT_MAX_PENDING_OPERATIONS_PER_ACTOR, MAX_PENDING_OPERATIONS_CEILING, 'changelog-max-pending-per-actor-invalid');
+    this.maxPendingBytes = pendingLimit(options.maxPendingBytes, DEFAULT_MAX_PENDING_BYTES, MAX_PENDING_BYTES_CEILING, 'changelog-max-pending-bytes-invalid');
+    // A checkpoint must not be able to resurrect a backlog larger than the live
+    // policy, otherwise the retained-state budget is only enforced on ingress.
+    if (!restoredPendingWithinBudget(this.pending, this)) throw new TypeError(PENDING_BUDGET_REASON);
+  }
+
+  // #8856 — a newly unresolved operation is retained session state, so it must
+  // clear the retained-state ceilings before anything is written. Re-admitting
+  // an operation the log already retains never grows the backlog.
+  #canRetainPending(operation) {
+    if (this.pending.has(operation.operationId)) return true;
+    if (this.pending.size + 1 > this.maxPendingOperations) return false;
+    let bytes = canonicalOperationBytes(operation);
+    if (bytes > this.maxPendingBytes) return false;
+    let actorOperations = 0;
+    for (const retained of this.pending.values()) {
+      bytes += canonicalOperationBytes(retained);
+      if (retained.authorIdentity === operation.authorIdentity) actorOperations += 1;
+      if (bytes > this.maxPendingBytes || actorOperations + 1 > this.maxPendingOperationsPerActor) return false;
+    }
+    return bytes <= this.maxPendingBytes && actorOperations + 1 <= this.maxPendingOperationsPerActor;
+  }
+
+  #pendingBudgetRejection(operation) {
+    return Object.freeze({
+      status: 'rejected',
+      reason: PENDING_BUDGET_REASON,
+      operationId: operation.operationId,
+      retainedPending: this.retainedPendingUsage(),
+      ...this.pendingBudget(),
+    });
   }
 
   #validate(operation) {
@@ -290,7 +382,14 @@ export class ChangeLog {
 
   #applyOne(operation) {
     const validation = this.#validate(operation);
-    if (validation) return validation;
+    if (validation) {
+      // Retained unresolved state is session-lifetime resource debt, so the
+      // retained-state ceilings gate it before anything is written.
+      if (validation.status === 'unresolved' && !this.#canRetainPending(operation)) {
+        return this.#pendingBudgetRejection(operation);
+      }
+      return validation;
+    }
     if (this.operations.has(operation.operationId)) {
       const existing = this.operations.get(operation.operationId);
       if (semanticDigest(existing) !== semanticDigest(operation)) {
@@ -307,6 +406,7 @@ export class ChangeLog {
     const key = factKey(operation.targetEntityId, operation.factKind);
     const current = this.state.facts[key] || null;
     if (operation.action !== 'resolve' && operation.action !== 'remove' && this.state.tombstones.some((item) => item.key === key) && operation.action !== 'resurrect') {
+      if (!this.#canRetainPending(operation)) return this.#pendingBudgetRejection(operation);
       this.state.unresolved.push({ operationId: operation.operationId, reason: 'tombstone-protects-state', key });
       this.pending.set(operation.operationId, operation);
       return { status: 'unresolved', reason: 'tombstone-protects-state' };
@@ -415,7 +515,7 @@ export class ChangeLog {
     const operations = inputs.map((input) => requireCanonicalProjectOperation(input));
     const ordered = orderOperations(operations, new Set(this.operations.keys()));
     if (ordered.unresolved.length) return Object.freeze({ status: 'unresolved', reason: 'missing-causal-parent', operationIds: ordered.unresolved.map((operation) => operation.operationId), stateDigest: this.digest() });
-    const working = new ChangeLog({ projectIdentity: this.projectIdentity, binaryIdentity: this.binaryIdentity, state: this.state, operations: [...this.operations.values()], pending: [...this.pending.entries()], allowRemote: this.allowRemote, authorizedAuthors: [...this.authorizedAuthors] });
+    const working = new ChangeLog({ projectIdentity: this.projectIdentity, binaryIdentity: this.binaryIdentity, state: this.state, operations: [...this.operations.values()], pending: [...this.pending.entries()], allowRemote: this.allowRemote, authorizedAuthors: [...this.authorizedAuthors], maxPendingOperations: this.maxPendingOperations, maxPendingOperationsPerActor: this.maxPendingOperationsPerActor, maxPendingBytes: this.maxPendingBytes });
     const results = [];
     for (const operation of ordered.ordered) {
       const existingPending = working.pending.get(operation.operationId);
@@ -482,6 +582,52 @@ export class ChangeLog {
   }
   snapshot() { return deepFreeze(cloneState(this.state)); }
   appliedOperationIds() { return Object.freeze([...this.operations.keys()].sort()); }
+
+  pendingBudget() {
+    return deepFreeze({
+      maxOperations: this.maxPendingOperations,
+      maxOperationsPerActor: this.maxPendingOperationsPerActor,
+      maxBytes: this.maxPendingBytes,
+    });
+  }
+
+  retainedPendingUsage() {
+    const retained = retainedPendingProjection(this.pending, null);
+    return deepFreeze({ operations: retained.operations, bytes: retained.bytes });
+  }
+
+  // Bounded receive summary: the exact retained count is always reported while
+  // the identifier materialization stays capped and deterministically ordered.
+  unresolvedOperationSummary(limit = PENDING_SUMMARY_LIMIT) {
+    const operationIds = [...this.pending.keys()].sort(compareOperationId);
+    return Object.freeze({
+      unresolvedOperationIds: Object.freeze(operationIds.slice(0, limit)),
+      unresolvedCount: operationIds.length,
+      unresolvedOperationIdsTruncated: operationIds.length > limit,
+    });
+  }
+
+  // #8856 — revocation/disconnect must not leave an actor's unresolved retained
+  // debt in the shared session. Pending entries were never applied, so dropping
+  // them is deterministic and cannot fork converged state or rewrite history.
+  purgePendingByAuthor(actorIdentity) {
+    const author = required(actorIdentity, 'changelog-purge-author-invalid');
+    const purged = [];
+    for (const [operationId, operation] of this.pending) {
+      if (operation.authorIdentity !== author) continue;
+      this.pending.delete(operationId);
+      purged.push(operationId);
+    }
+    if (purged.length > 0) {
+      const dropped = new Set(purged);
+      this.state.unresolved = (this.state.unresolved ?? []).filter((item) => !dropped.has(item?.operationId));
+    }
+    return Object.freeze({
+      actorIdentity: author,
+      purgedCount: purged.length,
+      ...this.unresolvedOperationSummary(),
+    });
+  }
 }
 
 function normalizeCheckpointOperationIds(value) {
@@ -587,7 +733,7 @@ function checkpointOperationPlaceholders(checkpoint) {
   }));
 }
 
-export function replayOperations({ projectIdentity, binaryIdentity = null, operations = [], checkpoint = null, allowRemote = false, authorizedAuthors = [] } = {}) {
+export function replayOperations({ projectIdentity, binaryIdentity = null, operations = [], checkpoint = null, allowRemote = false, authorizedAuthors = [], maxPendingOperations = null, maxPendingOperationsPerActor = null, maxPendingBytes = null } = {}) {
   const normalizedCheckpoint = checkpoint ? normalizeCheckpoint(checkpoint, { projectIdentity, binaryIdentity }) : null;
   const appliedIds = new Set(normalizedCheckpoint?.operationIds ?? []);
   const log = new ChangeLog({
@@ -598,6 +744,9 @@ export function replayOperations({ projectIdentity, binaryIdentity = null, opera
     pending: normalizedCheckpoint?.pendingOperations.map((operation) => [operation.operationId, operation]) ?? [],
     allowRemote,
     authorizedAuthors,
+    maxPendingOperations,
+    maxPendingOperationsPerActor,
+    maxPendingBytes,
   });
   const filtered = normalizedCheckpoint ? operations.filter((operation) => !appliedIds.has(operation.operationId)) : operations;
   const result = log.applyBatch(filtered);
@@ -617,6 +766,9 @@ export function restoreCheckpoint(checkpoint, options = {}) {
     pending: normalizedCheckpoint.pendingOperations.map((operation) => [operation.operationId, operation]),
     allowRemote: options.allowRemote,
     authorizedAuthors: options.authorizedAuthors,
+    maxPendingOperations: options.maxPendingOperations,
+    maxPendingOperationsPerActor: options.maxPendingOperationsPerActor,
+    maxPendingBytes: options.maxPendingBytes,
   });
   const appliedIds = new Set(normalizedCheckpoint.operationIds);
   const restoreResults = [];
