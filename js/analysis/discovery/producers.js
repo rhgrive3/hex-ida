@@ -289,12 +289,61 @@ export const callGraphProducer = Object.freeze({
   },
 });
 
-/** Debug-provider symbols, already gated by identity at the provider boundary. */
+const DEBUG_EXACT_START_MIN_INSTRUCTION_BYTES = 4n;
+
+function debugFunctionStartBytes(input, sizeBytesRaw) {
+  const minimum = input?.minimumInstructionBytes;
+  let span = DEBUG_EXACT_START_MIN_INSTRUCTION_BYTES;
+  if (minimum !== undefined) {
+    if (!Number.isSafeInteger(minimum) || minimum < 1 || minimum > 64) return null;
+    span = BigInt(minimum);
+  }
+  let extent = 0n;
+  if (sizeBytesRaw != null) {
+    if (!Number.isSafeInteger(sizeBytesRaw) || sizeBytesRaw < 0) return null;
+    extent = BigInt(sizeBytesRaw);
+  }
+  return { span, extent };
+}
+
+/**
+ * A debug identity match proves which build a companion describes; it proves
+ * nothing about whether one claimed address denotes code in this binary. So
+ * `exact` debug evidence becomes an authoritative start only after the target
+ * image itself proves the claim: the address sits in an executable mapping,
+ * the ISA minimum instruction span is contiguous file-backed bytes (never a
+ * zero-fill tail), and a claimed extent is validated separately against the
+ * same executable file-backed run (#8833). A missing or unusable target is
+ * absence of proof, and absence of proof never mints authority.
+ */
+function debugFunctionStartIsProvableCode(input, startString, sizeBytesRaw) {
+  const image = input?.image;
+  if (!image || typeof image !== 'object' || Array.isArray(image)) return false;
+  if (typeof image.segmentAt !== 'function' || typeof image.resolveVirtualMapping !== 'function') return false;
+  const bytes = debugFunctionStartBytes(input, sizeBytesRaw);
+  if (bytes === null) return false;
+  const start = BigInt(startString);
+  const segment = image.segmentAt(start);
+  if (!segment || segment.perms?.execute !== true) return false;
+  const mapping = image.resolveVirtualMapping(start);
+  if (!mapping || mapping.kind !== 'file') return false;
+  const available = mapping.available;
+  if (typeof available !== 'bigint' || available < bytes.span + bytes.extent) return false;
+  if (bytes.extent > 0n) {
+    const segmentEnd = BigInt(segment.address) + BigInt(segment.size);
+    if (start + bytes.extent > segmentEnd) return false;
+    if (image.segmentAt(start + bytes.extent - 1n) !== segment) return false;
+    const endMapping = image.resolveVirtualMapping(start + bytes.extent - 1n);
+    if (!endMapping || endMapping.kind !== 'file' || endMapping.mapping !== mapping.mapping) return false;
+  }
+  return true;
+}
+
 export function createDebugEvidenceProducer(debugEvidence) {
   return Object.freeze({
     id: 'discovery.debug',
     architectureId: null,
-    produce() {
+    produce(input) {
       // A debug record only validates its address as a non-empty string, so a
       // single malformed symbol must degrade to "no start / no region" and be
       // filtered like any other unusable row — it must never abort the whole
@@ -311,12 +360,17 @@ export function createDebugEvidenceProducer(debugEvidence) {
         }
         // `debugFunctionEvidence()` has already applied the provider identity
         // and partial-coverage gate. Only its canonical `exact` token may keep
-        // the authoritative debug-symbol kind; every other representation is
-        // a weak fact. Select the authority-bearing kind before canonical
-        // evidence construction so `String()` coercion cannot turn a boxed or
-        // structured value into an authority token (#4050).
+        // the authoritative debug-symbol kind, and only after the target image
+        // proves the claimed address is executable, file-backed code — an
+        // identity match on its own is not address authority (#4050, #8833).
+        // Every other representation is a weak fact. Select the authority-
+        // bearing kind before canonical evidence construction so `String()`
+        // coercion cannot turn a boxed or structured value into an authority
+        // token (#4050).
         const rawConfidence = item?.confidence;
-        const exact = rawConfidence === 'exact';
+        const exact = rawConfidence === 'exact'
+          && start != null
+          && debugFunctionStartIsProvableCode(input, start, item.sizeBytes ?? null);
         const confidence = typeof rawConfidence === 'string' ? rawConfidence : null;
         return evidence(exact ? 'debug-symbol' : 'debug-symbol-heuristic', {
           start,
