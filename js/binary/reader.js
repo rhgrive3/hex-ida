@@ -166,9 +166,24 @@ export class ByteView {
       const nul = span.indexOf(0);
       raw = nul < 0 ? span : span.subarray(0, nul);
     } else {
+      // A sparse backing must scan in bounded blocks. Calling u8() one byte
+      // at a time turns every uncached character into a separate source read;
+      // the block request lets SourceRangeMissingError expose the whole
+      // bounded span so the range loader can fill it in one pass.
+      const blockSize = 64 * 1024;
       let p = start;
-      while (p < end && this.u8(p) !== 0) p++;
-      raw = this.bytes.subarray(o, exposedOffset(p));
+      raw = this.bytes.subarray(o, o);
+      while (p < end) {
+        const blockEnd = p + BigInt(Math.min(blockSize, Number(end - p)));
+        const span = this.bytes.subarray(exposedOffset(p), exposedOffset(blockEnd));
+        const nul = span.indexOf(0);
+        if (nul >= 0) {
+          raw = this.bytes.subarray(o, exposedOffset(p + BigInt(nul)));
+          break;
+        }
+        p = blockEnd;
+        raw = this.bytes.subarray(o, exposedOffset(p));
+      }
     }
     try { return new TextDecoder('utf-8', { fatal: false }).decode(raw); }
     catch {
