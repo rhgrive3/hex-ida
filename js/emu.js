@@ -268,10 +268,29 @@ export class Emulator {
       return;
     }
     this._syncHeapBase();
-    if (page >= this.heapBase && page < this.heapBase + this.heapSize) {
+    const heapEnd = this.heapBase + this.heapSize;
+    if (page < heapEnd && page + BigInt(PAGE) > this.heapBase) {
+      /* #8755: configureHeap() accepts an arbitrary byte range, but backing is
+         page-granular. Back exactly the intersection [heapBase, heapEnd) of this
+         page. A page wholly inside the declared range keeps the existing
+         whole-page fast path (loadedValid = PAGE, ungated) so aligned heaps stay
+         byte-for-byte identical (#4137); a head or tail boundary page is gated to
+         its [lo, hi) window through the same #5685 syntheticRanges /
+         syntheticRangeGated machinery that byteAt() and _assertWriteAuthority()
+         already honour. Previously the floor-page test `page >= heapBase` lost
+         the first declared bytes of an unaligned heap (its floor page < heapBase
+         was never admitted) and the partial tail page was activated for its whole
+         PAGE bytes, exposing backing past the declared end. */
+      const lo = this.heapBase > page ? Number(this.heapBase - page) : 0;
+      const hi = heapEnd - page >= BigInt(PAGE) ? PAGE : Number(heapEnd - page);
       this.loaded.set(key, new Uint8Array(PAGE));
       this.loadedValid.set(key, PAGE);
       this.syntheticPages.add(key);
+      if (lo === 0 && hi === PAGE) return;
+      let ranges = this.syntheticRanges.get(key);
+      if (!ranges) { ranges = []; this.syntheticRanges.set(key, ranges); }
+      if (!ranges.some((r) => r.lo === lo && r.hi === hi)) ranges.push({ lo, hi });
+      this.syntheticRangeGated.add(key);
       return;
     }
     if (typeof this.io.read !== 'function') {
