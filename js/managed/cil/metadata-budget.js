@@ -111,8 +111,9 @@ export function createCilMetadataAdmission(options = {}) {
     chargeRows: (count, table = 'aggregate') => charge('rows', `rows:${table}`, limits.maxRows, 'cil-metadata-resource-limit-rows', count),
     chargeObjects: (count) => charge('objects', 'objects', limits.maxObjects, 'cil-metadata-resource-limit-objects', count),
     chargeStringBytes: (count) => charge('stringBytes', 'stringBytes', limits.maxStringBytes, 'cil-metadata-resource-limit-string-bytes', count),
+    // Every decode step charges work here, which is also where cancellation and
+    // the wall-clock stop are observed inside the large row loops (#8704).
     chargeOperations: (count = 1) => charge('operations', 'operations', limits.maxOperations, 'cil-metadata-resource-limit-operations', count),
-    checkpoint: () => charge('operations', 'operations', limits.maxOperations, 'cil-metadata-resource-limit-operations', 0),
     usage: () => Object.freeze({ ...usage }),
     snapshot: () => Object.freeze({
       version: CIL_METADATA_BUDGET_VERSION,

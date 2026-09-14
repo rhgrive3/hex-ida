@@ -143,7 +143,6 @@ function recordingAdmission(limits = {}) {
     chargeObjects: (count) => { calls.objects += count; calls.objectCharges += 1; return inner.chargeObjects(count); },
     chargeStringBytes: (count) => { calls.stringBytes += count; return inner.chargeStringBytes(count); },
     chargeOperations: (count = 1) => { calls.operations += count; return inner.chargeOperations(count); },
-    checkpoint: () => inner.checkpoint(),
     usage: () => inner.usage(),
     snapshot: () => inner.snapshot(),
   });
