@@ -421,10 +421,29 @@ export class Emulator {
   }
 
   setup(addr, args) {
-    this.pc = BigInt(addr);
-    this.sp = STACK_TOP - 0x400n;
-    this.x[30] = 0n;
     const values = args || [];
+    /* #8748: stack args beyond x0..x7 live at sp + (i-8)*8. Placing them must
+       stay inside the declared stack backing [STACK_TOP-STACK_SIZE, STACK_TOP),
+       the same window ensure() will materialise. writeByte() mints a page before
+       the authority check and only rejects bytes on an already-loaded page, so a
+       stack-arg write past STACK_TOP would silently create readable backing that
+       later byteAt()/load paths expose as data. Admit every stack byte before any
+       register or memory is mutated, then commit — mirroring the #7968 store()
+       "no partial commit" rule at the synchronous setup boundary. */
+    const stackBase = STACK_TOP - BigInt(STACK_SIZE);
+    const stackTopForArgs = STACK_TOP - 0x400n;
+    for (let i = 8; i < values.length; i++) {
+      const start = stackTopForArgs + BigInt((i - 8) * 8);
+      const end = start + 8n;
+      if (start < stackBase || end > STACK_TOP) {
+        throw new EmulatorFault('unmapped-memory',
+          `setup places ${values.length - 8} stack argument(s) outside the declared stack backing`,
+          { stackBase, stackTop: STACK_TOP, overflowAt: start });
+      }
+    }
+    this.pc = BigInt(addr);
+    this.sp = stackTopForArgs;
+    this.x[30] = 0n;
     for (let i = 0; i < values.length; i++) {
       const value = BigInt.asUintN(64, BigInt(values[i]));
       if (i <= 7) this.x[i] = value;
