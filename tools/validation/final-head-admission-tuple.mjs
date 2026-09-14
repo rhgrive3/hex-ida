@@ -12,8 +12,10 @@ const EVIDENCE_REVISION_RE = /^[0-9a-f]{64}$/i;
 const EVENT_COVERED_GITHUB_ACTIONS_CHECKS = new Set([
   // GitHub check-run names are job names, not workflow display names.
   // `.github/workflows/pr-fast-gate.yml` publishes its `jobs.fast` check as `fast`.
+  // `.github/workflows/invariant-gates.yml` publishes its terminal aggregate
+  // `jobs.invariant-gates` check as `invariant-gates`.
   'fast',
-  'Invariant Gates',
+  'invariant-gates',
   'Agent loop resilience',
   'AI evaluation contract',
   'Issue 2528 canonical claims authority',

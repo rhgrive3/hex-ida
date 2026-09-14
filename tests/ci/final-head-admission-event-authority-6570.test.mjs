@@ -67,6 +67,21 @@ const prFastGateFailure = check({
   appSlug: 'github-actions',
   conclusion: 'failure',
 });
+const invariantGateSuccess = check({
+  name: 'invariant-gates',
+  appSlug: 'github-actions',
+});
+const invariantGateFailure = check({
+  name: 'invariant-gates',
+  appSlug: 'github-actions',
+  conclusion: 'failure',
+});
+const invariantGatePending = check({
+  name: 'invariant-gates',
+  appSlug: 'github-actions',
+  conclusion: null,
+  status: 'in_progress',
+});
 const externalSuccess = check({
   name: 'External security scan',
   appSlug: 'external-ci',
@@ -89,6 +104,23 @@ assert.equal(evaluate([prFastGateFailure]).state, 'failure');
 assert.notEqual(
   admissionEvidenceRevision(evidence([prFastGateSuccess])),
   admissionEvidenceRevision(evidence([prFastGateFailure])),
+);
+
+// Invariant Gates is workflow-run covered, but the authoritative terminal
+// GitHub Actions check is the aggregate job check named `invariant-gates`.
+assert.deepEqual(admissionAuthorityCheckRuns([invariantGateSuccess]), [invariantGateSuccess]);
+assert.equal(evaluate([invariantGateSuccess]).state, 'success');
+assert.deepEqual(admissionAuthorityCheckRuns([invariantGateFailure]), [invariantGateFailure]);
+assert.equal(evaluate([invariantGateFailure]).state, 'failure');
+assert.deepEqual(admissionAuthorityCheckRuns([invariantGatePending]), [invariantGatePending]);
+assert.equal(evaluate([invariantGatePending]).state, 'pending');
+assert.notEqual(
+  admissionEvidenceRevision(evidence([invariantGateSuccess])),
+  admissionEvidenceRevision(evidence([invariantGateFailure])),
+);
+assert.notEqual(
+  admissionEvidenceRevision(evidence([invariantGateSuccess])),
+  admissionEvidenceRevision(evidence([invariantGatePending])),
 );
 
 // External check runs emit check_run events, so they remain authority.
@@ -124,3 +156,10 @@ const prFastGateSource = fs.readFileSync(
 );
 assert.match(prFastGateSource, /^name: PR fast gate$/m);
 assert.match(prFastGateSource, /^jobs:\s*\n  fast:/m);
+
+const invariantGateSource = fs.readFileSync(
+  new URL('../../.github/workflows/invariant-gates.yml', import.meta.url),
+  'utf8',
+);
+assert.match(invariantGateSource, /^name: Invariant Gates$/m);
+assert.match(invariantGateSource, /^  invariant-gates:\s*\n    name: invariant-gates$/m);
