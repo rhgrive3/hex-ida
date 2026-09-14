@@ -182,22 +182,7 @@ async function handle(msg, signal) {
     case 'fieldAccess': return msg.offsets ? { groups: Object.fromEntries((msg.offsets || []).map((x) => [String(x), []])), unsupported: true } : { results: [], unsupported: true };
     case 'valueShapes': return { groups: [], unsupported: true };
     case 'metadata': return metadataPage(msg, signal);
-    case 'hash': {
-      const hashSource = source;
-      if (!hashSource) throw new Error('No binary is open.');
-      // Keep this request's source identity and exact-read cancellation checks.
-      // After the first logical chunk, dispatch queued worker messages even
-      // when every cache/backend promise is already fulfilled. The hash
-      // algorithm and per-read progress contract remain unchanged.
-      const cooperativeSource = {
-        size: hashSource.size, maxReadLength: hashSource.maxReadLength,
-        async read(offset, length, options) {
-          if (offset > 0n && !signal.aborted) await cooperativeYield();
-          return hashSource.readExactly(offset, length, options);
-        },
-      };
-      return { hash: await hashByteSource(cooperativeSource, { signal, onProgress: ({ done, total }) => self.postMessage({ t: 'analysisProgress', requestId: msg.id, epoch: msg.epoch, phase: 'hash', done, total }) }) };
-    }
+    case 'hash': return { hash: await hashByteSource(source, { signal, onProgress: ({ done, total }) => self.postMessage({ t: 'analysisProgress', requestId: msg.id, epoch: msg.epoch, phase: 'hash', done, total }) }) };
     case 'memoryStats': return memoryStats();
     case 'cleanupMemory': source?.clear?.(); return memoryStats();
     case 'probe': return { ok: true, capability: descriptor?.capability || null };
@@ -206,13 +191,8 @@ async function handle(msg, signal) {
 }
 
 function createSource(input) {
-  const maxReadLength = 8 * 1024 * 1024;
-  const base = asByteSource(input, { maxReadLength });
-  // Physical reads obey the backend ceiling; the cache can assemble a larger
-  // logical read from several pages. Keep at most 32 resident pages even for
-  // a very small ceiling, rather than spending the byte budget on tiny entries.
-  const pageSize = Math.min(SCAN_BLOCK, base.maxReadLength);
-  return new CachedByteSource(base, { pageSize, maxReadLength, maxCachedBytes: 32 * pageSize });
+  const base = asByteSource(input, { maxReadLength: 8 * 1024 * 1024 });
+  return new CachedByteSource(base, { pageSize: 256 * 1024, maxCachedBytes: 8 * 1024 * 1024 });
 }
 
 async function detectFile(msg, signal) {
@@ -436,12 +416,8 @@ async function scanStrings(msg, signal) {
     carryAt = base + BigInt(i);
     pos += BigInt(block.length);
     self.postMessage({ t: 'scanProgress', requestId: msg.id, epoch: msg.epoch, done: exactExternalInteger(pos), all: exactExternalInteger(total), hits: out.length });
-    // A microtask alone cannot dispatch a queued Worker cancellation message.
-    if (pos < total && out.length < cap && !signal.aborted) await cooperativeYield();
-    else await Promise.resolve();
+    await Promise.resolve();
   }
-  // Cancellation must win over both a final run flush and cap/completeness.
-  if (signal.aborted) return { results: out, cancelled: true, capped: false, scannedBytes: exactExternalInteger(pos), complete: false };
   flush();
   return {
     results: out.slice(0, cap), cancelled: false, capped: out.length >= cap,
@@ -482,12 +458,10 @@ async function runSearch(msg, signal) {
     // Capture after each awaited read, so mutable caller data is not cached
     // across chunks. Small/oversized or exotic patterns keep the old path.
     const matcher = compileBytePattern(pattern, mask, msg.kind === 'text');
-    const matches = matcher?.findAll(joined);
     for (let i = 0; i <= joined.length - pattern.length; i++) {
-      if (matches) {
-        const next = matches.next();
-        if (next.done) break;
-        i = next.value;
+      if (matcher) {
+        i = matcher.find(joined, i);
+        if (i < 0) break;
       } else {
         let ok = true;
         for (let j = 0; j < pattern.length; j++) {
@@ -507,13 +481,8 @@ async function runSearch(msg, signal) {
       t: 'searchProgress', requestId: msg.id, epoch: msg.epoch,
       done: exactExternalInteger(pos - start), all: exactExternalInteger(total - start), hits: results.length,
     });
-    // Cache hits and memory-backed reads can resolve entirely in microtasks.
-    // Give cancel/new-epoch messages a task boundary before reading more data.
-    if (pos < total && !capped && !signal.aborted) await cooperativeYield();
   }
-  // A progress consumer may synchronously cancel even the final/capped chunk.
-  // Never turn that received cancellation into a successful terminal result.
-  return { cancelled: signal.aborted, results, scanned: exactExternalInteger(pos - start), capped: !signal.aborted && capped };
+  return { cancelled: false, results, scanned: exactExternalInteger(pos - start), capped };
 }
 
 function lower(byte) { return byte >= 65 && byte <= 90 ? byte + 32 : byte; }

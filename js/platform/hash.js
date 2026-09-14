@@ -79,9 +79,6 @@ export async function hashByteSource(input, options = {}) {
     offset += BigInt(bytes.length);
     if (onProgress) Reflect.apply(onProgress, options, [{ done: offset, total: source.size }]);
   }
-  // A progress callback may cancel the last chunk; no next iteration will
-  // observe that signal before the identity is published.
-  throwIfAborted(options.signal);
   return `fnv1a64:${source.size.toString(16)}:${fnv64Hex(low, high)}`;
 }
 
@@ -144,12 +141,7 @@ export async function sha256TreeByteSource(input, options = {}) {
         reportProgress(offset + BigInt(at + chunk.byteLength));
       }
     }
-    // Keep per-read abort reasons authoritative inside multi-read assembly;
-    // after its last progress callback there is no next read to observe abort.
-    throwIfAborted(options.signal);
-    const digest = await subtle.digest('SHA-256', bytes);
-    throwIfAborted(options.signal);
-    digests.push(new Uint8Array(digest));
+    digests.push(new Uint8Array(await subtle.digest('SHA-256', bytes)));
     offset += BigInt(bytes.byteLength);
   }
 
@@ -165,6 +157,5 @@ export async function sha256TreeByteSource(input, options = {}) {
   let at = header.byteLength;
   for (const digest of digests) { manifest.set(digest, at); at += digest.byteLength; }
   const root = new Uint8Array(await subtle.digest('SHA-256', manifest));
-  throwIfAborted(options.signal);
   return `sha256tree:v2:${source.size.toString(16)}:${bytesHex(root)}`;
 }
