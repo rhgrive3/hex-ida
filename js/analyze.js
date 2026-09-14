@@ -139,7 +139,7 @@ function destIndex(mn) {
   if (ATOMIC_SOURCE_RESULT_RE.test(b)) return 1;
   // Without-return LSE aliases discard the loaded value, so operand 0 is a
   // source read and there is no destination register (#3702).
-  if (ATOMIC_STORE_ONLY_RE.test(b)) return -1;
+  if (ATOMIC_WITHOUT_RETURN_RE.test(b)) return -1;
   if (/^(str|stp|stur|strb|strh|sturb|sturh|stnp|sttr|st1|st2|st3|st4|stlr)/.test(b)) return -1;
   // Full-mnemonic matching only: a bare `b` alternative here also prefix-matched
   // every `b*` mnemonic with a destination register (bic/bfi/bfm/...), so their
