@@ -197,12 +197,17 @@ export function applyWorkspaceProject(app, project){
   }
   const stagedNames=projectAnnotationCommitList(project.user?.names,'user.names');
   const stagedComments=projectAnnotationCommitList(project.user?.comments,'user.comments');
+  const stagedTypes=[];
+  for(const entry of project.user.types||[])if(entry?.key)stagedTypes.push([String(entry.key),String(entry.value||'')]);
+  const stagedVars=[];
+  if(replaceVars)for(const entry of (project.user.vars||project.user.varNames||[]))if(entry?.key)stagedVars.push([String(entry.key),String(entry.value||'')]);
+  const stagedStructs=Array.isArray(project.user.structs)?project.user.structs.slice():[];
   notes.names.clear();notes.comments.clear();notes.types.clear();if(replaceVars)notes.vars.clear();
   for(const [address,value] of stagedNames)notes.names.set(address,value);
   for(const [address,value] of stagedComments)notes.comments.set(address,value);
-  for(const entry of project.user.types||[])if(entry?.key)notes.types.set(String(entry.key),String(entry.value||''));
-  if(replaceVars)for(const entry of (project.user.vars||project.user.varNames||[]))if(entry?.key)notes.vars.set(String(entry.key),String(entry.value||''));
-  notes.structs=Array.isArray(project.user.structs)?project.user.structs.slice():[];
+  for(const [key,value] of stagedTypes)notes.types.set(key,value);
+  if(replaceVars)for(const [key,value] of stagedVars)notes.vars.set(key,value);
+  notes.structs=stagedStructs;
   notes.dirty=true;
   if(!notes.save())throw new Error(notes.lastSaveError?.code||'notes-save-failed');
   app.patches.clear();
