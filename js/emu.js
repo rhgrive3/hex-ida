@@ -892,12 +892,22 @@ export class Emulator {
     return op?.bits === 32 || /^s\d+$/i.test(op?.text || '') ? 4 : 8;
   }
 
+  // The physical FP/SIMD register file holds 128 raw bits per register. Every
+  // narrower view is a truncation or reinterpretation of that single state.
+  fpRaw(op) {
+    if (!op || op.k !== 'reg' || !isFloatReg(op)) return 0n;
+    const raw = this.vRaw[op.num];
+    if (raw != null) return BigInt.asUintN(128, raw);
+    const current = this.v[op.num] === undefined ? 0 : Number(this.v[op.num]);
+    return BigInt.asUintN(128, floatToBits(current, 8));
+  }
+
   fpBits(op) {
     if (!op || op.k !== 'reg' || !isFloatReg(op)) return 0n;
     const size = this.fpSize(op);
-    const current = this.v[op.num] === undefined ? 0 : Number(this.v[op.num]);
     const raw = this.vRaw[op.num];
-    if (raw != null && Object.is(this.vRawNumber[op.num], current)) return BigInt.asUintN(size * 8, raw);
+    if (raw != null) return BigInt.asUintN(size * 8, raw);
+    const current = this.v[op.num] === undefined ? 0 : Number(this.v[op.num]);
     return floatToBits(size === 4 ? Math.fround(current) : current, size);
   }
 
@@ -906,6 +916,17 @@ export class Emulator {
     const size = this.fpSize(op);
     const raw = BigInt.asUintN(size * 8, BigInt(bits));
     const value = bitsToFloat(raw, size);
+    this.v[op.num] = value;
+    this.vRaw[op.num] = raw;
+    this.vRawNumber[op.num] = value;
+  }
+
+  // A vector result writes the whole 128-bit register; the bits above the named
+  // elements are zero because the caller built them that way.
+  setFpVectorBits(op, bits) {
+    if (!op || op.k !== 'reg' || !isFloatReg(op)) return;
+    const raw = BigInt.asUintN(128, BigInt(bits));
+    const value = bitsToFloat(BigInt.asUintN(64, raw), 8);
     this.v[op.num] = value;
     this.vRaw[op.num] = raw;
     this.vRawNumber[op.num] = value;
@@ -943,6 +964,14 @@ export class Emulator {
       else this.nzcv={n:false,z:false,c:true,v:false};
       return null;
     }
+    // The mnemonic alone cannot separate the scalar form from the AdvSIMD
+    // vector form; the operand shape does (#8732).
+    if (Object.prototype.hasOwnProperty.call(FLOAT_ARITHMETIC, mn)) {
+      if (isFloatReg(ops[0]) && (ops[0].arr != null || ops[0].bits === 128)) return this.vectorFloatInsn(mn, ops);
+      if (!isFloatReg(ops[0])) {
+        throw new EmulatorFault('unsupported-instruction', `${mn} has a destination this emulator cannot interpret`, { mnemonic: mn, operands: ops.map((o) => (o && o.text) || null) });
+      }
+    }
     const a=this.fget(ops[1]), b=ops[2] ? this.fget(ops[2]) : 0;
     if (mn === 'fmov') {
       if (ops[1]?.k === 'imm') this.fset(ops[0], ops[1].float != null ? ops[1].float : Number(ops[1].value || 0n));
@@ -952,13 +981,8 @@ export class Emulator {
       else throw new EmulatorFault('invalid-fmov-form', 'unsupported FMOV operand form');
       return null;
     }
-    if (mn === 'fadd') { this.fset(ops[0],a+b); return null; }
-    if (mn === 'fsub') { this.fset(ops[0],a-b); return null; }
-    if (mn === 'fmul') { this.fset(ops[0],a*b); return null; }
-    if (mn === 'fdiv') { this.fset(ops[0],a/b); return null; }
-    if (mn === 'fneg') { this.fset(ops[0],-a); return null; }
-    if (mn === 'fabs') { this.fset(ops[0],Math.abs(a)); return null; }
-    if (mn === 'fsqrt') { this.fset(ops[0],Math.sqrt(a)); return null; }
+    const arithmetic = FLOAT_ARITHMETIC[mn];
+    if (arithmetic) { this.fset(ops[0], arithmetic(a, b)); return null; }
     if (mn === 'fmadd' || mn === 'fmsub' || mn === 'fnmadd' || mn === 'fnmsub') {
       const size = this.fpSize(ops[0]);
       const negateProduct = mn === 'fmsub' || mn === 'fnmsub';
@@ -994,13 +1018,37 @@ export class Emulator {
       }
       this.set(ops[0].text,result); return null;
     }
-    if (/^(fmin|fmax|fminnm|fmaxnm)$/.test(mn)) {
-      let value;
-      if (/nm$/.test(mn)) { if (Number.isNaN(a) && !Number.isNaN(b)) value=b; else if (!Number.isNaN(a) && Number.isNaN(b)) value=a; else value=/min/.test(mn)?Math.min(a,b):Math.max(a,b); }
-      else value=/min/.test(mn)?Math.min(a,b):Math.max(a,b);
-      this.fset(ops[0],value); return null;
-    }
     throw new Error('この小数命令はまだ実行できません: ' + mn);
+  }
+
+  // AdvSIMD element-wise floating-point arithmetic. The arrangement names the
+  // elements that participate, each element is computed independently, and a
+  // destination write leaves the bits above the named elements zero (#8732).
+  vectorFloatInsn(mn, ops) {
+    const shape = vectorElementShape(mn, ops[0]);
+    const unary = mn === 'fneg' || mn === 'fabs' || mn === 'fsqrt';
+    const operandCount = unary ? 2 : 3;
+    if (ops.length < operandCount) {
+      throw new EmulatorFault('unsupported-instruction', `${mn} needs ${operandCount} vector operands`, { mnemonic: mn, operands: ops.map((o) => (o && o.text) || null) });
+    }
+    for (const op of ops.slice(0, operandCount)) {
+      if (!isFloatReg(op) || op.arr !== ops[0].arr) {
+        throw new EmulatorFault('unsupported-arrangement', `${mn} requires every operand to use the ${ops[0].arr} arrangement`, { mnemonic: mn, operand: op });
+      }
+    }
+    const lhs = this.fpRaw(ops[1]);
+    const rhs = unary ? 0n : this.fpRaw(ops[2]);
+    const elementMask = (1n << BigInt(shape.elementBytes * 8)) - 1n;
+    const arithmetic = FLOAT_ARITHMETIC[mn];
+    let result = 0n;
+    for (let index = 0; index < shape.count; index++) {
+      const shift = BigInt(index * shape.elementBytes * 8);
+      const a = bitsToFloat((lhs >> shift) & elementMask, shape.elementBytes);
+      const b = unary ? 0 : bitsToFloat((rhs >> shift) & elementMask, shape.elementBytes);
+      result |= floatToBits(arithmetic(a, b), shape.elementBytes) << shift;
+    }
+    this.setFpVectorBits(ops[0], result);
+    return null;
   }
 
   conditionalSelect(mn, ops) {
@@ -1162,6 +1210,42 @@ function fixedPointFractionBits(mn, op, max) {
     throw new EmulatorFault('invalid-fp-immediate', `${mn} fixed-point #fbits must be in 1..${max}`, { operand: op });
   }
   return Number(raw);
+}
+
+// One semantic definition of each floating-point arithmetic operation, shared by
+// the scalar form and by every element of the AdvSIMD vector form.
+const FLOAT_ARITHMETIC = {
+  fadd: (a, b) => a + b,
+  fsub: (a, b) => a - b,
+  fmul: (a, b) => a * b,
+  fdiv: (a, b) => a / b,
+  fneg: (a) => -a,
+  fabs: (a) => Math.abs(a),
+  fsqrt: (a) => Math.sqrt(a),
+  fmin: (a, b) => Math.min(a, b),
+  fmax: (a, b) => Math.max(a, b),
+  fminnm: (a, b) => (Number.isNaN(a) !== Number.isNaN(b) ? (Number.isNaN(a) ? b : a) : Math.min(a, b)),
+  fmaxnm: (a, b) => (Number.isNaN(a) !== Number.isNaN(b) ? (Number.isNaN(a) ? b : a) : Math.max(a, b)),
+};
+
+const VECTOR_ELEMENT_BYTES = { b: 1, h: 2, s: 4, d: 8 };
+
+// AdvSIMD element-wise floating-point arithmetic names the elements it operates
+// on with an arrangement such as .2s. Binary16 element formats are not modelled
+// by this emulator, so they are refused rather than silently widened.
+function vectorElementShape(mn, op) {
+  const arr = typeof op?.arr === 'string' ? op.arr : null;
+  const match = arr && /^([1-9]|1[0-6])([bhsd])$/.exec(arr);
+  if (!match) {
+    throw new EmulatorFault('unsupported-arrangement', `${mn} needs a vector arrangement this emulator does not model`, { operand: op });
+  }
+  const count = Number(match[1]);
+  const code = match[2];
+  const elementBytes = VECTOR_ELEMENT_BYTES[code];
+  if (code === 'b' || code === 'h' || count * elementBytes > 16) {
+    throw new EmulatorFault('unsupported-arrangement', `${mn} ${arr}: only 32/64-bit floating-point element arrangements are modelled`, { operand: op });
+  }
+  return { elementBytes, count };
 }
 
 function pairElementSize(op) {
