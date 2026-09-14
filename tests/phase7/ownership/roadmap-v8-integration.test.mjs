@@ -37,6 +37,10 @@ test('main reconciliation regression changes require their exact existing owners
     ['tests/issue-4957-worker-budget-type-contract.mjs', 'integration'],
     ['tests/issue-4961-worker-request-id-identity.mjs', 'integration'],
     ['tests/phase11/jvm/issue-8724-control-overlay-order.test.mjs', 'integration'],
+    ['tests/architecture-abi.mjs', 'integration'],
+    ['tests/machine-effects/issue-6079-vblendmx-blend-category.test.mjs', 'integration'],
+    ['tests/issue-4135-pe-section-virtual-layout.mjs', 'integration'],
+    ['tests/semantic-v2/issue-c2-01-byte-exact-forwarding.test.mjs', 'integration'],
     ['tests/phase7/summary/issue-6208-local-summary-identity.test.mjs', 'phase7'],
     ['tests/phase7/types/issue-5184-structural-member-order.test.mjs', 'phase7'],
   ]) {
@@ -157,6 +161,19 @@ test('v8 integration owns only the authorized MemorySSA builder repair, not its 
     assert.equal(assignments.get(file), 'integration');
   }
   manifest.owners.integration.push('js/semantics/memoryssa/contract.js');
+  assert.throws(() => validateRoadmapManifest(manifest), /outside integration owner/);
+});
+
+test('canonical access-provider integration owns only its fixed target adapter and boundary', () => {
+  const manifest = loadRoadmapManifest(), assignments = validateRoadmapManifest(manifest);
+  const files = ["js/semantics/memory-access-provider.js", "js/targets/architecture/arm64/memory-access-qualifiers.js", "tests/semantic-v2/issue-4513-memoryssa-access-provider-completeness.test.mjs"];
+  for (const file of files) {
+    assert.equal(assignments.get(file), 'integration');
+    const missing = structuredClone(manifest);
+    missing.owners.integration = missing.owners.integration.filter(path => path !== file);
+    assert.throws(() => validateRoadmapInventory(BRANCH, 'phase8', [...assignments.keys()], missing), /undeclared roadmap path/);
+  }
+  manifest.owners.integration.push('js/targets/architecture/x86_64/memory-access-qualifiers.js');
   assert.throws(() => validateRoadmapManifest(manifest), /outside integration owner/);
 });
 

@@ -143,8 +143,8 @@ function x87Plan(base, ctx) {
   return null;
 }
 
-export function liftX87(instruction, context, family) {
-  if (!trustedCapstoneInstruction(instruction, family)) {
+export function liftX87(instruction, context, family, provenanceSource = instruction) {
+  if (!trustedCapstoneInstruction(instruction, family, provenanceSource)) {
     const ctx = createX86EffectContext(instruction, context);
     return ctx.partial('x86-x87-trusted-decoder-provenance-required', ['registers', 'memory', 'faults', 'other'], { metadata: { family: 'fp', operation: family, x87PhysicalStateModeled: true } });
   }

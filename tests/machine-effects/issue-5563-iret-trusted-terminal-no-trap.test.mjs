@@ -48,6 +48,8 @@ try {
     assert.notEqual(result?.controlEffect?.kind, 'trap', `${mnemonic} must never be reclassified as a trap`);
     assert.notEqual(result?.metadata?.terminalizedBy, 'trusted-capstone-structured-intrinsic');
     assert.equal(result?.unknownEffects?.reason, 'x86-extended-system-family-requires-dedicated-semantics');
+    assert.strictEqual(closeTrustedX86Partial(instruction, 'control', result, { closureMatrixTerminal:true }), result,
+      `${mnemonic}: a public control projection must also refuse IRET without the system implicit-memory guard`);
   }
 } finally {
   capstone.close();
@@ -63,11 +65,6 @@ assert.doesNotMatch(
   terminalSource,
   /groups\.has\('int'\)\s*\|\|\s*groups\.has\('iret'\)/,
   'the iret decoder group must not feed the trap promotion branch',
-);
-assert.match(
-  terminalSource,
-  /groups\.has\('iret'\)\) return null/,
-  'IRET* must cancel group-based control promotion instead of minting a trap',
 );
 
 console.log('issue-5563 trusted terminal must not convert IRET* into a trap: PASS');

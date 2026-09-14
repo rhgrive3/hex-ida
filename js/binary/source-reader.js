@@ -162,7 +162,7 @@ export async function parseSourceRanges(source, parser, parserOptions = {}, opti
   if (!Number.isSafeInteger(maxCachedBytes) || maxCachedBytes <= 0) throw new ByteSourceLimitError('maxCachedBytes must be a positive safe integer');
   if (!Number.isSafeInteger(maxReads) || maxReads <= 0) throw new ByteSourceLimitError('maxReads must be a positive safe integer');
   const sparse = new SparseByteBuffer(source.size);
-  sparse.readAheadSize = maxPageSize;
+  sparse.readAheadSize = Math.min(maxPageSize, Math.max(pageSize, 128 * 1024));
   let reads = 0;
   let parserPasses = 0;
   let cachedBytes = 0;
@@ -204,6 +204,9 @@ export async function parseSourceRanges(source, parser, parserOptions = {}, opti
       for (const span of spans) {
         let cursor = span.start;
         while (cursor < span.end) {
+          const nextMissing = sparse.missingSpans(cursor, span.end)[0];
+          if (!nextMissing) break;
+          cursor = nextMissing.start;
           throwIfSourceAborted(options.signal);
           if (++reads > maxReads) throw new ByteSourceLimitError(`binary metadata required more than ${maxReads} range reads`);
           const remaining = source.size - cursor;
@@ -215,8 +218,11 @@ export async function parseSourceRanges(source, parser, parserOptions = {}, opti
           const wantedByParser = missing > BigInt(maxPageSize) ? maxPageSize : safeNumber(missing, 'missing source range length');
           const requested = Math.max(pageSize, adaptive, wantedByParser);
           const requestLimit = Math.min(requested, maxPageSize, source.maxReadLength, budgetRemaining);
-          const spanRemaining = span.end - cursor;
-          const length = Number(spanRemaining < BigInt(requestLimit) ? spanRemaining : BigInt(requestLimit));
+          // A one-byte parser miss still gets a bounded read-ahead window.
+          // The cache tracks the requested gap separately, so extending the
+          // source read cannot change parser semantics and avoids one-read-per-byte storms.
+          const availableRemaining = source.size - cursor;
+          const length = Number(availableRemaining < BigInt(requestLimit) ? availableRemaining : BigInt(requestLimit));
           if (length <= 0) throw new ByteSourceLimitError(`binary metadata exceeds the ${maxCachedBytes}-byte cache limit`);
           const bytes = await source.readExactly(cursor, length, { signal: options.signal });
           throwIfSourceAborted(options.signal);

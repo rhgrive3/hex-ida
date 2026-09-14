@@ -167,7 +167,7 @@ function dispatchWithDecoderSource(decoded, context, provenanceSource) {
     });
   }
 
-  const extended = dispatchX86ExtendedStateEffects(instruction, context);
+  const extended = dispatchX86ExtendedStateEffects(instruction, context, decoded);
   if (extended != null && extended.result != null) {
     return Object.freeze({
       ownerId: extended.ownerId,

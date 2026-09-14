@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 
 import { createX86DecodedInstruction } from '../../js/targets/architecture/x86_64/decoded-instruction.js';
 import { dispatchX86MachineEffects } from '../../js/targets/architecture/x86_64/effects/index.js';
+import { closeTrustedX86Partial } from '../../js/targets/architecture/x86_64/effects/trusted-decoder-terminal.js';
 import { canonicalX86ConditionCode } from '../../js/targets/architecture/x86_64/effects/flags.js';
 import { createCapstoneX86Session } from '../phase5/helpers/capstone-session.mjs';
 
@@ -71,7 +72,6 @@ assert.match(indexSource, /instructionFamily\.startsWith\('set'\)\s*&&\s*!isCano
 assert.match(indexSource, /const systemSet = liftX86SystemEffects\(instruction, context\)/);
 assert.match(indexSource, /ownerId:'system', result:terminalize\(instruction, 'system', systemSet, context, provenanceSource\)/);
 assert.match(indexSource, /return dispatchWithDecoderSource\(decoded, context, decoded\)/);
-assert.match(indexSource, /x86-extended-system-family-requires-dedicated-semantics/);
 
 // Exercise the actual decoder provenance used by terminalization as well.
 const session = await createCapstoneX86Session();
@@ -79,12 +79,19 @@ try {
   const decoded = session.decode(Uint8Array.of(0xf3, 0x0f, 0x01, 0xe8), 0x1000n);
   assert.equal(decoded.length, 1);
   assert.equal(decoded[0].instructionFamily, 'setssbsy');
-  const actual = dispatchX86MachineEffects(createX86DecodedInstruction({
+  const instruction = createX86DecodedInstruction({
     ...decoded[0], instructionId: 'issue-5566:decoded-setssbsy',
-  }));
+  });
+  const actual = dispatchX86MachineEffects(instruction);
   assert.equal(actual.ownerId, 'system');
   assert.equal(actual.result.completeness, 'partial');
   assert.equal(actual.result.unknownEffects.reason, 'x86-extended-system-family-requires-dedicated-semantics');
+  // The refusal is enforced by the terminal boundary, so test that behavior
+  // instead of requiring its reason string to appear in a caller's source.
+  for (const context of [{}, { closureMatrixTerminal: true }]) {
+    assert.equal(closeTrustedX86Partial(instruction, actual.ownerId, actual.result, context), actual.result,
+      'a public decoder row without implicit-memory proof must preserve the system partial');
+  }
 } finally {
   session.close();
 }

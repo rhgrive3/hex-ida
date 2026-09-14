@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   BinaryImage, BlobByteSource, ByteSourceLimitError, ByteSourceRangeError, ByteView, MemoryByteSource,
-  mergeFunctionSeeds, openBinary, openBinarySource,
+  asByteSource, mergeFunctionSeeds, openBinary, openBinarySource,
 } from '../js/binary/index.js';
 import { SparseByteBuffer, parseSourceRanges } from '../js/binary/source-reader.js';
 import { CachedByteSource, ByteSourceCancelledError } from '../js/bytesource/cached.js';
@@ -143,6 +143,32 @@ async function testIssue48To60Regressions() {
     (error) => error?.code === 'BINARY_SOURCE_RANGE_MISSING' && error.offset === 2n && error.length === 1n,
     'sparse cstring batching must not widen a cache miss beyond the next byte',
   );
+
+  // Cached chunks may start before the string and split inside it. A NUL
+  // outside the requested string must not terminate this read.
+  const splitCString = new SparseByteBuffer(32n);
+  splitCString.add(0n, Uint8Array.from([0, 0x41, 0x42]));
+  splitCString.add(3n, Uint8Array.from([0x43, 0, 0x44]));
+  assert.equal(new ByteView(splitCString).cstring(1, 8), 'ABC');
+  assert.equal(new ByteView(splitCString).cstring(1, 2), 'AB');
+  assert.equal(new ByteView(splitCString).cstring(4, 8), '');
+  assert.throws(() => new ByteView(splitCString).cstring(5, 8),
+    (error) => error?.code === 'BINARY_SOURCE_RANGE_MISSING' && error.offset === 6n && error.length === 1n);
+
+  // The parser still requests exactly the missing byte; the source loader
+  // supplies bounded adaptive read-ahead to avoid one physical read per byte.
+  const aheadBytes = new Uint8Array(1024).fill(0x41);
+  aheadBytes[304] = 0;
+  const aheadSource = new SpySource(aheadBytes);
+  let aheadText;
+  await parseSourceRanges(asByteSource(aheadSource, { maxReadLength: 128 }), (backing) => {
+    aheadText = new ByteView(backing).cstring(5, 512);
+    return new BinaryImage(backing, { format: 'test' });
+  }, {}, { pageSize: 32, maxPageSize: 128, maxCachedBytes: 512 });
+  assert.equal(aheadText, 'A'.repeat(299));
+  assert.ok(aheadSource.reads.length < 20, 'a long string must not issue one source read per character');
+  assert.ok(aheadSource.reads.every(({ length }) => length >= 32 && length <= 128));
+  assert.ok(aheadSource.reads.reduce((total, { length }) => total + length, 0) <= 512);
 
   let parserPasses = 0;
   const stagedSource = new MemoryByteSource(new Uint8Array(4096), { maxReadLength: 64 });
