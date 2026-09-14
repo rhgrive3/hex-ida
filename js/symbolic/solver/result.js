@@ -52,19 +52,45 @@ function isPlainModelObject(value) {
   return proto === Object.prototype || proto === null;
 }
 
-function immutableModelValue(value) {
+// A provider-controlled SAT model is canonicalized (recursively deep-copied and
+// frozen) before it is published. That canonicalization is itself a work
+// boundary: an attacker-supplied model can be deep enough to overflow the
+// stack or wide enough to exhaust the heap during the copy, before any
+// authoritative boundary rejects it (#8975). Legitimate models from the
+// exhaustive backend are flat symbol→scalar assignments (depth ≤ 2), so these
+// budgets sit far above any real result and far below the reporter's
+// demonstrated crash points.
+const MAX_MODEL_DEPTH = 512;
+const MAX_MODEL_NODES = 200_000;
+
+class SolverModelLimitError extends Error {
+  constructor(code) {
+    super(`solver model exceeded ${code}`);
+    this.name = 'SolverModelLimitError';
+    this.limitCode = code;
+  }
+}
+
+function stackOverflowError(err) {
+  return err instanceof RangeError && /maximum call stack|stack size|call stack/i.test(String(err && err.message));
+}
+
+function immutableModelValue(value, depth, counter) {
   if (value === null || typeof value !== 'object') return value;
+  if (depth > MAX_MODEL_DEPTH) throw new SolverModelLimitError('model-depth-limit');
+  counter.nodes += 1;
+  if (counter.nodes > MAX_MODEL_NODES) throw new SolverModelLimitError('model-node-limit');
   if (value instanceof Map) {
     const copy = new ImmutableSolverModelMap();
-    for (const [key, entryValue] of value) Map.prototype.set.call(copy, key, immutableModelValue(entryValue));
+    for (const [key, entryValue] of value) Map.prototype.set.call(copy, key, immutableModelValue(entryValue, depth + 1, counter));
     return Object.freeze(copy);
   }
-  if (Array.isArray(value)) return Object.freeze(value.map(immutableModelValue));
+  if (Array.isArray(value)) return Object.freeze(value.map((element) => immutableModelValue(element, depth + 1, counter)));
   if (isPlainModelObject(value)) {
     const copy = {};
     for (const key of Object.keys(value)) {
       Object.defineProperty(copy, key, {
-        value: immutableModelValue(value[key]),
+        value: immutableModelValue(value[key], depth + 1, counter),
         enumerable: true,
         writable: false,
         configurable: false,
@@ -73,6 +99,24 @@ function immutableModelValue(value) {
     return Object.freeze(copy);
   }
   return Object.freeze(value);
+}
+
+function normalizeSolverModel(model) {
+  try {
+    return { ok: true, value: immutableModelValue(model, 0, { nodes: 0 }) };
+  } catch (err) {
+    // Exceeding an explicit budget, or overflowing the stack during an
+    // un-budgeted copy, is a resource exhaustion at the canonicalization
+    // boundary — never a proved SAT answer. Fail closed to a resource-limit
+    // result instead of throwing out of createSolverResult (#8975).
+    if (err instanceof SolverModelLimitError || stackOverflowError(err)) {
+      return { ok: false, reason: err instanceof SolverModelLimitError ? err.limitCode : 'model-stack-limit' };
+    }
+    // A structurally hostile model (throwing getter, proxy trap) is a provider
+    // failure; let it propagate so the caller can resolve the lifecycle rather
+    // than strand it.
+    throw err;
+  }
 }
 
 export function createSolverResult({
@@ -89,10 +133,20 @@ export function createSolverResult({
     throw new TypeError(`createSolverResult: invalid solver status '${status}'`);
   }
 
-  // Model is only permitted when status is SAT; publish an owned immutable snapshot (#3986)
+  // Model is only permitted when status is SAT; publish an owned immutable snapshot (#3986).
+  // A provider model whose canonicalization would exceed the depth/node budget is not a
+  // proved answer — demote it to a deterministic RESOURCE_LIMIT result instead of throwing
+  // out of the canonicalization boundary (#8975).
+  let modelLimitReason = null;
   let normalizedModel = null;
   if (status === SOLVER_STATUS.SAT && model && typeof model === 'object') {
-    normalizedModel = immutableModelValue(model);
+    const normalized = normalizeSolverModel(model);
+    if (normalized.ok) {
+      normalizedModel = normalized.value;
+    } else {
+      modelLimitReason = normalized.reason;
+      status = SOLVER_STATUS.RESOURCE_LIMIT;
+    }
   }
 
   const normalizedLifecycle = Object.freeze({
@@ -100,20 +154,21 @@ export function createSolverResult({
     cancelled: lifecycle?.cancelled === true,
     stale: lifecycle?.stale === true,
     disposed: lifecycle?.disposed === true,
-    budgetExceeded: lifecycle?.budgetExceeded === true,
+    budgetExceeded: lifecycle?.budgetExceeded === true || modelLimitReason != null,
     late: lifecycle?.late === true,
     publishable: lifecycle?.publishable !== false &&
       lifecycle?.timedOut !== true &&
       lifecycle?.cancelled !== true &&
       lifecycle?.stale !== true &&
       lifecycle?.disposed !== true &&
-      lifecycle?.budgetExceeded !== true,
+      lifecycle?.budgetExceeded !== true &&
+      modelLimitReason == null,
   });
 
   return Object.freeze({
     status,
     model: normalizedModel,
-    reason: reason ? String(reason) : null,
+    reason: reason ? String(reason) : (modelLimitReason ? `provider-model-${modelLimitReason}` : null),
     stats: Object.freeze({
       ...stats,
       solveTimeMs: Number(stats.solveTimeMs) || 0,
