@@ -651,9 +651,8 @@ function instructionRole(insn, base) {
   if (base === 'adrp' || base === 'adr') return ROLE.ADDRESS_CALCULATION;
   if (insn.memory) {
     if (insn.memory.kind === 'load') return ROLE.MEMORY_READ;
-    // An atomic RMW keeps the established 'quiet' atomic role; its read/write
-    // fact is published on `insn.memory`, not through the block role (#3602).
-    if (insn.memory.kind === 'atomic') return 'quiet';
+    // An atomic read-modify-write is memory-effect-bearing, not quiet: it keeps
+    // the MEMORY_WRITE role and publishes both effect halves on its group (#8781).
     return ROLE.MEMORY_WRITE;
   }
   if (/^(paciasp|pacibsp|bti|nop|hint)$/.test(base)) return 'quiet';
@@ -1282,7 +1281,15 @@ function finishBlock(g, ctx) {
       }
     }
     if (insn.memory) {
-      g.effects.push(insn.memory.kind === 'load' ? 'read' : 'write');
+      // Project the instruction's own read/write truth. Only atomics carry both
+      // halves; a plain load or store keeps its single effect (#8781).
+      const mem = insn.memory;
+      if (mem.read || mem.write) {
+        if (mem.read) g.effects.push('read');
+        if (mem.write) g.effects.push('write');
+      } else {
+        g.effects.push(mem.kind === 'load' ? 'read' : 'write');
+      }
       if (insn.memory.stack) g.facts.stack = true;
     }
     if (insn.branchTarget != null) {
