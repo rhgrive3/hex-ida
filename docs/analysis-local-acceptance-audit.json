@@ -2131,7 +2131,8 @@
         "commits": [
           "a6607c29cbdc2754cfdad46fb279ba01047c9d49",
           "cc1a923c9ddc4f93bd6af70632290c21522ecce8",
-          "6e6fcaf382c9f4ee0a00116cd0fe9d692fa0faae"
+          "6e6fcaf382c9f4ee0a00116cd0fe9d692fa0faae",
+          "176b180e9baf44549667330888db0de7b5574e7a"
         ],
         "corpusVersion": 2,
         "manifestDigest": "896de134032f78f88732e2513677e4b7",
@@ -2208,12 +2209,33 @@
         },
         "fullRoadmapComplete": false,
         "physicalDevices": "SKIPPED_BY_USER",
-        "latestAcceptanceHead": "TBD-4777-COMMIT",
+        "latestAcceptanceHead": "176b180e9baf44549667330888db0de7b5574e7a",
         "latestAcceptance": {
           "test": "tests/phase7/alias/issue-4777-forged-scalar-ssa-rename.test.mjs",
           "passed": 2,
           "failed": 0,
-          "semantics": "located unknown-call preserves earlier canonical SP proof; forged rename remains unknown"
+          "semantics": "located unknown-call preserves earlier canonical SP proof; forged rename remains unknown",
+          "status": "PASS",
+          "receipts": [
+            {
+              "label": "c1-final-4777",
+              "sourceHead": "176b180e9baf44549667330888db0de7b5574e7a",
+              "exitCode": 0,
+              "logSha256": "5a7a101037181a146787774fe0d3c16c0076b72fd7c6a801a4cac6cc616c3d1f"
+            },
+            {
+              "label": "c1-final-4777-owner",
+              "sourceHead": "176b180e9baf44549667330888db0de7b5574e7a",
+              "exitCode": 0,
+              "logSha256": "8b26b09d4a3dd779731d32abb093239932d9058817603b781921dc23af09bf69"
+            },
+            {
+              "label": "c1-final-inventory-4777",
+              "sourceHead": "176b180e9baf44549667330888db0de7b5574e7a",
+              "exitCode": 0,
+              "logSha256": "c1fc7e428981a03077afcd2ccb7505395031b6bb09e8046a9cc7e3dc6e74b5b2"
+            }
+          ]
         }
       }
     }

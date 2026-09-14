@@ -327,3 +327,5 @@ main `f1af93b04a9511703fba61e1b6b14d9fbce4b572` に対してbehind **0**、ahead
 - Bind the record to `node_call_unknown`. The SSA unknown now remains at its actual call position: the pre-call `sp + 0` chain again classifies as `rooted-offset`; later untrusted rename rows remain `unknown`. Neither production proof logic nor forged-row negative behavior is weakened.
 - The issue's two focused regressions pass (2/2). Added its exact Phase 7 owner and a negative ownership-manifest check. Verify current-head inventory and ownership test after commit.
 - The earlier 440-file Phase 7 run was on a head before this fixture correction and must remain recorded as red. Other unrelated/full Phase 7 blockers remain; do not claim a full Phase 7 pass from this focused repair.
+
+最終 #4777 確認: `176b180e9baf44549667330888db0de7b5574e7a` のclean headで偽造rename negativeと真正SP positive **2/2 PASS**。unknown-callの`detail.nodeId`を修正し、入口wide unknown seedを防いだ。exact ownership regression PASS (`8b26b09d4a3dd779731d32abb093239932d9058817603b781921dc23af09bf69`)、実差分Phase7/8 inventory PASS (`c1fc7e428981a03077afcd2ccb7505395031b6bb09e8046a9cc7e3dc6e74b5b2`)。
