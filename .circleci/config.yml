@@ -483,9 +483,6 @@ jobs:
       - store_artifacts:
           path: universal-platform-benchmark.json
           destination: universal-platform-benchmark.json
-      - store_artifacts:
-          path: benchmark-diagnostic
-          destination: benchmark-diagnostic
 
 workflows:
   ci:
