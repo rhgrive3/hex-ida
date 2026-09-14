@@ -336,6 +336,114 @@ function resolveExtendedProgramHeaderCount(r, h, bits) {
   h.phnum = actual;
 }
 
+// #8665 — the PT_LOAD overlap safety check (originally added for #7610) is
+// load-bearing and must reject every genuinely ambiguous byte-provenance pair,
+// but its original form scanned *all* previously accepted segments per new load,
+// so N page-disjoint loads forced N*(N-1)/2 prior-segment iterations before the
+// ELF metadata wall-clock/operation budget existed. This page-interval index
+// (keyed by the image, so it stays entirely inside this parse) reduces the
+// common/disjoint case to a binary search: an existing load can only conflict
+// with the new load if their page-rounded VM intervals intersect, so the whole
+// linear prefix is skipped whenever its running maximum page end does not reach
+// the query start. Non-ELF images are never registered.
+const ptLoadOverlapIndex = new WeakMap();
+// Defense in depth: a pathological input that forces many genuinely
+// page-overlapping candidates is bounded rather than allowed to run unbounded;
+// exceeding it fails closed exactly like any other rejected topology.
+const ELF_PT_LOAD_OVERLAP_SCAN_BUDGET = 200_000;
+
+function ptLoadPageInterval(entry) {
+  const pageStart = alignDown(entry.address, ELF_RUNTIME_PAGE_SIZE);
+  const pageEnd = alignUp(entry.address + entry.size, ELF_RUNTIME_PAGE_SIZE);
+  return { pageStart, pageEnd };
+}
+
+function ptLoadOverlapState(image) {
+  let state = ptLoadOverlapIndex.get(image);
+  if (!state) {
+    state = { entries: [], prefMaxEnd: [], scanned: 0, dirty: false, work: 0, order: 0 };
+    ptLoadOverlapIndex.set(image, state);
+  }
+  // Consume any PT_LOAD segments appended since the last query. `addSegment`
+  // only ever appends, and the caller adds exactly one load after each check,
+  // so this amortizes to O(1) per accepted load.
+  const segments = image.segments;
+  while (state.scanned < segments.length) {
+    const segment = segments[state.scanned++];
+    if (segment.source !== 'PT_LOAD' || segment.size === 0n) continue;
+    const { pageStart, pageEnd } = ptLoadPageInterval(segment);
+    const entries = state.entries;
+    const last = entries.length ? entries[entries.length - 1] : null;
+    // `order` preserves the accepted-file order so the reported first conflict
+    // matches the original per-segment scan regardless of VM sort position.
+    const entry = { segment, address: segment.address, size: segment.size, fileOffset: segment.fileOffset, fileSize: segment.fileSize, pageStart, pageEnd, order: state.order++ };
+    if (last === null || pageStart >= last.pageStart) {
+      entries.push(entry);
+      const prevRun = last === null ? null : lastPref(state.prefMaxEnd);
+      state.prefMaxEnd.push(prevRun === null || pageEnd > prevRun ? pageEnd : prevRun);
+      continue;
+    }
+    // Out-of-order page base: binary-insert so the array stays sorted for the
+    // prefix-max short-circuit. Rare in real ELFs; bounded by the scan budget.
+    let lo = 0;
+    let hi = entries.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (entries[mid].pageStart <= pageStart) lo = mid + 1; else hi = mid;
+    }
+    entries.splice(lo, 0, entry);
+    state.dirty = true;
+  }
+  if (state.dirty) {
+    state.prefMaxEnd = [];
+    let run = null;
+    for (const entry of state.entries) {
+      run = run === null || entry.pageEnd > run ? entry.pageEnd : run;
+      state.prefMaxEnd.push(run);
+    }
+    state.dirty = false;
+  }
+  return state;
+}
+
+function lastPref(prefMaxEnd) {
+  return prefMaxEnd[prefMaxEnd.length - 1];
+}
+
+// Existing loads that could page-overlap [pageVmStart, pageVmEnd), returned in
+// accepted-file order to reproduce the original first-conflict message exactly.
+function ptLoadOverlapCandidates(state, pageVmStart, pageVmEnd) {
+  const entries = state.entries;
+  if (entries.length === 0) return [];
+  // hi = number of entries whose pageStart < pageVmEnd.
+  let lo = 0;
+  let hi = entries.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (entries[mid].pageStart < pageVmEnd) lo = mid + 1; else hi = mid;
+  }
+  if (lo === 0) return [];
+  // If no earlier interval reaches the query start, none can overlap it.
+  if (state.prefMaxEnd[lo - 1] <= pageVmStart) return [];
+  const matched = [];
+  for (let i = 0; i < lo; i++) {
+    state.work++;
+    if (state.work > ELF_PT_LOAD_OVERLAP_SCAN_BUDGET) {
+      const error = new Error('ELF PT_LOAD overlap validation exceeded the topology scan budget');
+      error.code = 'ELF_PT_LOAD_OVERLAP_SCAN_BUDGET';
+      throw error;
+    }
+    const entry = entries[i];
+    if (entry.pageEnd > pageVmStart && entry.pageStart < pageVmEnd) matched.push(entry);
+  }
+  matched.sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : 0));
+  return matched;
+}
+
+function ptLoadBackedPageEnd(address, size, fileSize, pageStart) {
+  return fileSize > 0n ? alignUp(address + size, ELF_RUNTIME_PAGE_SIZE) : pageStart;
+}
+
 function rejectAmbiguousPtLoadOverlap(image, index, ph) {
   // Linux maps PT_LOADs at page granularity. A later half-page claim can remap
   // the earlier half of the same page even when the declared p_vaddr/p_memsz
@@ -349,8 +457,11 @@ function rejectAmbiguousPtLoadOverlap(image, index, ph) {
   const pageVmEnd = alignUp(vmEnd, ELF_RUNTIME_PAGE_SIZE);
   const backedPageEnd = ph.filesz > 0n ? alignUp(backedEnd, ELF_RUNTIME_PAGE_SIZE) : pageVmStart;
   const filePageStart = alignDown(ph.offset, ELF_RUNTIME_PAGE_SIZE);
-  for (const existing of image.segments) {
-    if (existing.source !== 'PT_LOAD' || existing.size === 0n) continue;
+  const state = ptLoadOverlapState(image);
+  // Only page-rounded VM interval intersections can be ambiguous; the raw
+  // VM interval is always contained in its page interval, so this candidate
+  // filter never drops a real #7610 rejection. #8665.
+  for (const { segment: existing } of ptLoadOverlapCandidates(state, pageVmStart, pageVmEnd)) {
     const eVmEnd = existing.address + existing.size;
     const eBackedEnd = existing.address + existing.fileSize;
 
