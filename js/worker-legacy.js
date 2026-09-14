@@ -27,6 +27,12 @@ const HEADER_MAX = 4 * 1024 * 1024;  // cap on load-command area we will read
 
 const SYMBOL_MAX = 400_000;          // シンボルはこれ以上読まない（メモリ保護）
 const STRTAB_MAX = 48 * 1024 * 1024;
+// #8838: cap the raw data_in_code_entry[] payload we're willing to read. Each
+// record is 8 bytes; 8 MiB bounds ~1M entries, well past anything a real
+// Mach-O file declares. Anything larger is truncated and the excluded range
+// set is treated as incomplete (function starts are then not blessed as
+// complete exact evidence).
+const DATA_IN_CODE_MAX = 8 * 1024 * 1024;
 /* 文字列一覧の上限。20000 で切っていたころは、The Battle Cats の
    メソッド名 37161 本のうち 17161 本が黙って消えていた（＝機能の 46%）。
    1 本あたり数十バイトなので、この数でも数十 MB には届かない。 */
@@ -523,6 +529,27 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
   // Exact decoded starts (plus the Mach-O entry seed) are also the hard
   // control-flow roots for ADR/ADRP provenance in the worker scans.
   slice.functionStarts = [];
+
+  // #8838: decode LC_DATA_IN_CODE so a declared data range inside __text can
+  // never be promoted to exact function-start authority. A missing or unread
+  // table is a legitimate no-op; a table that overflows the read clamp or
+  // contains an out-of-slice entry means we can no longer prove the exclusion
+  // set is complete, so function starts must not be blessed as complete.
+  let dataInCodeRanges = [];
+  let dataInCodeIncomplete = false;
+  if (info.dataInCode && info.dataInCode.datasize > 0) {
+    const declared = info.dataInCode.datasize;
+    const diceClamped = declared > DATA_IN_CODE_MAX;
+    const diceBuf = await readRange(base + BigInt(info.dataInCode.dataoff),
+                                    Math.min(declared, DATA_IN_CODE_MAX));
+    if (diceClamped) dataInCodeIncomplete = true;
+    try {
+      const entries = MachO.parseDataInCode(diceBuf, info);
+      dataInCodeRanges = entries.map((e) => [e[0], e[1]]);
+      if (entries.truncated) dataInCodeIncomplete = true;
+    } catch { dataInCodeIncomplete = true; }
+  }
+
   if (info.functionStarts && info.functionStarts.datasize > 0 && info.textVM != null) {
     const declared = info.functionStarts.datasize;
     const clampLimit = 8 * 1024 * 1024;
@@ -537,15 +564,20 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
       functionStartsPartialReason = 'clamp-truncated';
     }
     try {
-      const list = MachO.parseFunctionStarts(buf, info.textVM, { regions:slice.regions || [], architecture:info.architecture || 'arm64' });
+      const list = MachO.parseFunctionStarts(buf, info.textVM,
+        { regions: slice.regions || [], architecture: info.architecture || 'arm64',
+          dataInCode: dataInCodeRanges });
       const seeds = list.slice();
       if (info.entry != null && !seeds.some((value) => value === info.entry)) seeds.push(info.entry);
       seeds.sort((a,b)=>(a<b?-1:a>b?1:0));
       slice.functionStarts = seeds;
       funcs = new BigUint64Array(seeds.length);
       for (let i = 0; i < seeds.length; i++) funcs[i] = seeds[i];
-      functionStartsExact = !clamped && list.length > 0 && list.complete === true;
+      functionStartsExact = !clamped && !dataInCodeIncomplete
+        && list.length > 0 && list.complete === true;
       if (!functionStartsExact && list.partialReason) functionStartsPartialReason = list.partialReason;
+      else if (!functionStartsExact && dataInCodeIncomplete && !functionStartsPartialReason)
+        functionStartsPartialReason = 'data-in-code-incomplete';
     } catch { slice.functionStarts = []; funcs = new BigUint64Array(0); if (!functionStartsPartialReason) functionStartsPartialReason = 'parse-threw'; }
   }
 

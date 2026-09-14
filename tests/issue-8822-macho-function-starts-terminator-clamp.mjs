@@ -94,7 +94,7 @@ const OPTS = { regions: ARM64_REGION, architecture: 'arm64' };
   // The clamp is detected and the parse result's completeness is guarded by it.
   assert.match(worker, /const clamped = declared > clampLimit;/,
     'analyzeSlice must compute the 8 MiB clamp as a first-class truncation signal');
-  assert.match(worker, /functionStartsExact = !clamped && list\.length > 0 && list\.complete === true;/,
+  assert.match(worker, /functionStartsExact = !clamped &&[^;]*list\.complete === true;/,
     'clamped prefix must never publish functionStartsExact=true');
   assert.match(worker, /if \(clamped\) \{[\s\S]*?capped = true;[\s\S]*?functionStartsPartialReason = 'clamp-truncated';/,
     'clamp must set capped=true and record the reason');
