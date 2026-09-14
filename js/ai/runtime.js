@@ -127,7 +127,6 @@ export class AIRuntime {
     if (missingIds.length) activity.push({ type: 'consistency-check', label: `${missingIds.length} 件の存在しない evidence 参照を除外`, timestamp: new Date().toISOString() });
     // A non-empty model citation set is authoritative: if none of those IDs
     // resolve, never silently bind an unrelated deterministic/store fallback.
-    const usedEvidenceFallback = !evidence.length && !hasExplicitEvidenceSelection;
     const finalEvidence = evidence.length
       ? evidence
       : hasExplicitEvidenceSelection
@@ -157,13 +156,12 @@ export class AIRuntime {
     const proposalActions = proposals.map((proposal) => ({ kind: 'review-proposal', target: proposal.id }));
     const actions = sanitizeActions([...suggestedActions, ...proposalActions], { evidenceStore, proposalStore, addressExists: (address) => existence.get(address) ?? false });
     let confidence = Number.isFinite(decision.confidence) ? Math.max(0, Math.min(1, decision.confidence)) : deterministicConfidence(plan);
-    // A substituted fallback must satisfy the gate with actual authority: a
-    // stale or merely `supported` planner ranking record may not lift the
-    // evidence-free confidence cap (#8864). An explicit model citation set keeps
-    // its own #5159 resolution semantics.
-    const evidenceSatisfiesAuthority = usedEvidenceFallback
-      ? qualifyingEvidence(finalEvidence).length > 0
-      : finalEvidence.length > 0;
+    // Evidence exposure and confidence authority are separate contracts. A
+    // current supported record may remain attached for provenance, whether it
+    // came from an explicit citation or planner fallback, but only qualifying
+    // authority may lift the no-authority confidence cap (#8864). #5159's
+    // invalid-explicit-citation no-substitution rule remains unchanged above.
+    const evidenceSatisfiesAuthority = qualifyingEvidence(finalEvidence).length > 0;
     if (!evidenceSatisfiesAuthority) confidence = Math.min(confidence, 0.5);
     const budgetReason = BUDGET_LIMIT_REASONS.has(limitReason) ? limitReason : null;
     const elapsedNow = typeof monotonicNow === 'function' ? monotonicNow() : defaultMonotonicNow();
