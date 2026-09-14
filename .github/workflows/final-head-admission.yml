@@ -228,6 +228,8 @@ jobs:
                 'ci/circleci: ai-eval-contract',
                 'ci/circleci: phase7-ownership',
                 'ci/circleci: phase8-ownership',
+                'ci/circleci: universal-platform-verify',
+                'ci/circleci: universal-platform-benchmark',
               ],
             });
 
