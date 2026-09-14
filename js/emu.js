@@ -972,16 +972,23 @@ export class Emulator {
     if (/^(scvtf|ucvtf)$/.test(mn)) {
       const bits=ops[1]?.bits === 32 ? 32 : 64, raw=this.get(ops[1].text);
       const value=mn === 'scvtf' ? BigInt.asIntN(bits,raw) : BigInt.asUintN(bits,raw);
+      const fractionBits = fixedPointFractionBits(mn, ops[2], bits - 1);
       // The destination format must round once, directly from the integer.
       // Going through binary64 first would round twice and flip boundary
-      // cases by one ULP (#5235).
-      if (this.fpSize(ops[0]) === 4) { this.setFpBits(ops[0],encodeExactFp(value,0,4)); return null; }
-      this.fset(ops[0],Number(value)); return null;
+      // cases by one ULP (#5235). The fixed-point form only shifts that
+      // single rounding's exponent; it is not a second conversion (#8731).
+      this.setFpBits(ops[0], encodeExactFp(value, -fractionBits, this.fpSize(ops[0])));
+      return null;
     }
     if (/^fcvtz[su]$/.test(mn)) {
       const bits=ops[0]?.bits === 32 || /^w/.test(ops[0]?.text || '') ? 32 : 64, unsigned=mn === 'fcvtzu'; let result=0n;
-      if (!Number.isNaN(a)) {
-        const t=Math.trunc(a);
+      const fractionBits = fixedPointFractionBits(mn, ops[2], bits);
+      // Scaling by a power of two is exact in binary, so the truncated product
+      // is the correctly rounded integer of value × 2^fbits; only the
+      // saturating bounds are inexact and they are handled below.
+      const source = fractionBits === 0 ? a : a * 2 ** fractionBits;
+      if (!Number.isNaN(source)) {
+        const t=Math.trunc(source);
         if (unsigned) { const max=(1n<<BigInt(bits))-1n; if (t<=0) result=0n; else if (!Number.isFinite(t)) result=max; else { const n=BigInt(t); result=n>max?max:n; } }
         else { const min=-(1n<<BigInt(bits-1)), max=(1n<<BigInt(bits-1))-1n; if (!Number.isFinite(t)) result=t<0?min:max; else { const n=BigInt(t); result=n<min?min:n>max?max:n; } }
       }
@@ -1143,6 +1150,19 @@ function storeSize(mn, src) {
 }
 
 function isFloatReg(op) { return !!op && op.k === 'reg' && (op.cls === 'fp' || op.cls === 'vec'); }
+
+// Fixed-point SCVTF/UCVTF/FCVTZS/FCVTZU carry a third #fbits operand naming the
+// number of fraction bits of the integer format. Absent it, the plain integer
+// form applies. Anything else is an encoding this emulator must refuse to
+// execute silently, and it is refused before any register state is touched.
+function fixedPointFractionBits(mn, op, max) {
+  if (op === undefined || op === null) return 0;
+  const raw = op.k === 'imm' ? op.value : null;
+  if (typeof raw !== 'bigint' || raw < 1n || raw > BigInt(max)) {
+    throw new EmulatorFault('invalid-fp-immediate', `${mn} fixed-point #fbits must be in 1..${max}`, { operand: op });
+  }
+  return Number(raw);
+}
 
 function pairElementSize(op) {
   if (!op || op.k !== 'reg') return null;
