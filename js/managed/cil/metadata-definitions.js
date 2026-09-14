@@ -892,6 +892,50 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     enclosing: index(pos + tableIndexSize(counts, 2), tableIndexSize(counts, 2)),
   }));
 
+  // #8778 — ECMA-335 [ERROR] duplicate-semantic-identity enforcement. The
+  // frontend derives definition identity from metadata tokens, so accepting two
+  // rows with an identical authoritative key silently SPLITS one CLI semantic
+  // definition across multiple Hex identities instead of failing closed. Ordinary
+  // overloads remain valid because their identity keys differ. Field/MethodDef
+  // CompilerControlled rows are excluded per II.22.24 / II.22.26; nested TypeDef
+  // identity is (enclosing, name) while top-level identity is (namespace, name).
+  const nestedEnclosingToken = new Map();
+  for (const row of nestedClasses) {
+    nestedEnclosingToken.set(row.nested, types[row.enclosing - 1]?.token ?? null);
+  }
+  const FIELD_COMPILER_CONTROLLED = flags => (flags & 0x0007) === 0x0000;
+  const METHOD_COMPILER_CONTROLLED = flags => (flags & 0x0080) !== 0;
+  const assertUniqueKeys = (rows, keyOf, code) => {
+    const seen = new Set();
+    for (const row of rows) {
+      const key = keyOf(row);
+      if (key === null) continue;
+      if (seen.has(key)) fail(code);
+      seen.add(key);
+    }
+  };
+  assertUniqueKeys(types, type => {
+    if (nestedEnclosingToken.has(type.rid)) {
+      const enclosing = nestedEnclosingToken.get(type.rid);
+      return enclosing === null ? null : `N\u0000${enclosing}\u0000${type.name ?? ''}`;
+    }
+    return `T\u0000${type.namespace ?? ''}\u0000${type.name ?? ''}`;
+  }, 'cil-typedef-identity-duplicate');
+  assertUniqueKeys(fields, field =>
+    FIELD_COMPILER_CONTROLLED(field.accessFlags) ? null
+      : `F\u0000${field.declaringTypeToken ?? ''}\u0000${field.name ?? ''}\u0000${field.signatureBlobIndex}`,
+  'cil-field-identity-duplicate');
+  assertUniqueKeys(methods, method =>
+    METHOD_COMPILER_CONTROLLED(method.accessFlags) ? null
+      : `M\u0000${method.declaringTypeToken ?? ''}\u0000${method.name ?? ''}\u0000${method.signatureBlobIndex}`,
+  'cil-methoddef-identity-duplicate');
+  assertUniqueKeys(properties, property =>
+    `P\u0000${property.ownerToken ?? ''}\u0000${property.name ?? ''}\u0000${property.typeBlobIndex}`,
+  'cil-property-identity-duplicate');
+  assertUniqueKeys(events, event =>
+    `E\u0000${event.ownerToken ?? ''}\u0000${event.name ?? ''}`,
+  'cil-event-identity-duplicate');
+
   return { types, methods, fields, manifestResources, typeSpecs, typeRefs, memberRefs, assemblyRefs, assembly, module, params, properties, events, methodSemantics, interfaceImpls, methodImpls, implMaps, moduleRefs, fieldRvas, fieldMarshals, customAttributes, constants, classLayouts, fieldLayouts, nestedClasses };
 }
 

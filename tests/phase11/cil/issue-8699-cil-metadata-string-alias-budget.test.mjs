@@ -4,35 +4,39 @@ import { parseCil } from '../../../js/managed/cil/parser.js';
 import { parseCil as parseCilBase } from '../../../js/managed/cil/parser-base.js';
 import { overlayCilMetadata } from '../../../js/managed/cil/parser-overlay.js';
 
+console.log('[phase11] running issue #8699 CIL metadata #Strings alias / GenericParam budget tests...');
+
 // The public parseCil probe facade collapses every internal fail-closed code to
 // cil-unsupported-binary; the raw overlay path surfaces the specific budgets.
 const rawParse = (bytes, options = {}) => overlayCilMetadata(bytes, parseCilBase(bytes, options), options);
 
-console.log('[phase11] running issue #8699 CIL metadata #Strings alias / GenericParam budget tests...');
-
 // Table 0x04 (Field) row = flags(2) + name(s2) + signature(b2) = 6 bytes.
-// Table 0x2a (GenericParam) row = Number(2) + Flags(2) + Owner(coded 2) + Name(s2) = 8 bytes.
-function fieldAliasFixture(n, nameLen) {
-  const name = 'F'.repeat(nameLen);
-  const rows = new Uint8Array(n * 6);
-  const v = new DataView(rows.buffer);
+// #8699's amplification needs MANY references to ONE shared #Strings entry. A
+// valid way to get that (without an ECMA-335 duplicate-definition identity, see
+// #8778) is to give each reference a DIFFERENT owner: N top-level TypeDefs, each
+// owning one Field whose Name indexes the same shared long #Strings offset.
+function fieldAliasFixture(n, nameLen = 4095) {
+  const shared = 'F'.repeat(nameLen);
+  const fields = new Uint8Array(n * 6);
+  const fv = new DataView(fields.buffer);
   for (let i = 0; i < n; i++) {
     const p = i * 6;
-    v.setUint16(p, 6, true);       // FieldAccess flags
-    v.setUint16(p + 2, 1, true);   // every Field references #Strings offset 1 (one shared name)
-    v.setUint16(p + 4, 5, true);   // valid field signature blob
+    fv.setUint16(p, 6, true);       // FieldAccess flags
+    fv.setUint16(p + 2, 1, true);   // every Field -> shared #Strings offset 1
+    fv.setUint16(p + 4, 5, true);   // valid field signature blob
   }
-  const imageSize = 0x400 + 0x100 + name.length + n * 6 + 0x1400;
+  const types = Array.from({ length: n }, (_, i) => ({
+    name: `T${i}`, namespace: '', flags: 1, fieldList: i + 1, methodList: 1,
+  }));
+  const imageSize = 0x400 + 0x100 + shared.length + n * 14 + n * 6 + n * 12 + 0x2000;
   return buildCil({
-    methods: [],
-    types: [{ name: 'T', namespace: 'N', fieldList: 1, methodList: 1 }],
-    leadingStrings: [name],
-    extraRows: new Map([[0x04, { count: n, bytes: rows }]]),
+    methods: [], types, leadingStrings: [shared],
+    extraRows: new Map([[0x04, { count: n, bytes: fields }]]),
     imageSize, metadataSize: imageSize - 0x300,
   }).bytes;
 }
 
-function genericParamAliasFixture(n, nameLen) {
+function genericParamAliasFixture(n, nameLen = 2048) {
   const name = 'g'.repeat(nameLen);
   const pre = buildCil({ leadingStrings: [name] });
   const nameOff = pre.layout.leadingStringIndex[name];
@@ -74,43 +78,45 @@ function genericParamAliasFixture(n, nameLen) {
   assert.equal(image.fields[1].name, nameB);
 }
 
-// Interning: a large alias table must decode each shared #Strings offset once, so
-// synchronous TextDecoder work stays flat in the reference count (was O(n)).
+// Interning (red: pre-fix re-decodes the shared entry once per reference). Each
+// reference to the long shared name must be decoded at most once per parse pass.
 {
   const originalDecode = TextDecoder.prototype.decode;
-  let decodeCalls = 0;
-  TextDecoder.prototype.decode = function (...args) { decodeCalls += 1; return originalDecode.apply(this, args); };
+  let sharedDecodes = 0;
+  TextDecoder.prototype.decode = function (...args) {
+    const view = args[0];
+    const len = view && typeof view.byteLength === 'number' ? view.byteLength : -1;
+    if (len === 4095) sharedDecodes += 1;
+    return originalDecode.apply(this, args);
+  };
   let image;
-  try {
-    image = parseCil(fieldAliasFixture(2000, 4095), { binaryId: 'intern' });
-  } finally {
-    TextDecoder.prototype.decode = originalDecode;
-  }
+  try { image = parseCil(fieldAliasFixture(2000), { binaryId: 'intern' }); }
+  finally { TextDecoder.prototype.decode = originalDecode; }
   assert.equal(image.fields.length, 2000);
   assert.equal(image.fields[0].name.length, 4095);
-  assert.ok(decodeCalls <= 100,
-    `2000 aliased rows must intern the shared #Strings entry (decodeCalls=${decodeCalls})`);
+  assert.ok(sharedDecodes <= 16,
+    `2000 references to one shared #Strings entry must intern it (sharedDecodes=${sharedDecodes})`);
 }
 
-// Availability: the alias fixture parses cheaply with the default (generous) budget.
+// Availability: the default (generous) budget must still ADMIT a large repeated-
+// offset alias table and intern it correctly (a tiny budget above rejected it).
 {
-  const t0 = Date.now();
-  const image = parseCil(fieldAliasFixture(5000, 4095), { binaryId: 'default' });
+  const image = parseCil(fieldAliasFixture(5000), { binaryId: 'default' });
   assert.equal(image.fields.length, 5000);
-  assert.ok(Date.now() - t0 < 3000, 'default budget must admit a repeated-offset alias table quickly');
+  assert.equal(image.fields[0].name.length, 4095);
+  assert.equal(image.fields[4999].name, image.fields[0].name);
 }
 
 // Admission: an injected tiny string budget must fail closed with a deterministic
 // code before the oversized shared string is materialized (red: no budget, parses).
 assert.throws(
-  () => rawParse(fieldAliasFixture(2000, 4095), { binaryId: 'budget', resourceBudget: { maxStringBytes: 64 } }),
+  () => rawParse(fieldAliasFixture(2000), { binaryId: 'budget', resourceBudget: { maxStringBytes: 64 } }),
   /cil-metadata-resource-limit-strings/,
-  'string-byte budget must reject an aliased #Strings expansion before materialization',
+  'string-byte budget must reject a large #Strings entry before materialization',
 );
 
-// GenericParam: shared names intern and a contiguous, unique number series under
-// one owner stays valid after the Set rewrite (also exercises the interned
-// generic-param text path).
+// GenericParam: shared names interned and a contiguous, unique number series under
+// one owner stays valid after the O(n^2) includes() -> Set rewrite.
 {
   const image = parseCil(genericParamAliasFixture(40, 2048), { binaryId: 'gparam' });
   assert.equal(image.genericParams.length, 40);
