@@ -1,0 +1,246 @@
+diff --git a/js/blocks-base.js b/js/blocks-base.js
+index 277540c8c881836d3db0a06242c40f410c0bc535..108c93cc9cf4b4c58b12ed95c4789dc655775994 100644
+--- a/js/blocks-base.js
++++ b/js/blocks-base.js
+@@ -479,9 +479,16 @@ function accessSize(base, ops) {
+   }
+   if (STRUCTURE_MN.test(base)) {
+     const list = ops.find((o) => o.k === 'list');
++    if (!list?.regs?.length) return null;
+     let total = 0;
+-    for (const r of list ? (list.regs || []) : []) total += vectorRegisterBytes(r);
+-    return total > 0 ? total : 8;
++    for (const r of list.regs) {
++      const bytes = vectorRegisterBytes(r);
++      // A partially parsed list is not evidence for a partial memory extent.
++      // Lane forms and bare V registers have no proven whole-vector width.
++      if (!bytes) return null;
++      total += bytes;
++    }
++    return total;
+   }
+   const reg = ops.find((o) => o.k === 'reg');
+   const w = reg && reg.bits ? reg.bits / 8 : 8;
+@@ -491,10 +498,10 @@ function accessSize(base, ops) {
+ 
+ /** Structure-register-list element width. `v0.8b` moves 8 bytes, not 16. */
+ function vectorRegisterBytes(reg) {
+-  if (!reg || reg.k !== 'reg') return 0;
++  if (!reg || reg.k !== 'reg' || reg.cls !== 'vec') return 0;
+   const m = /^(\d+)([bhsd])$/i.exec(reg.arr || '');
+   if (m) return Number(m[1]) * ({ b: 1, h: 2, s: 4, d: 8 }[m[2].toLowerCase()] || 0);
+-  return reg.bits ? reg.bits / 8 : 0;
++  return 0;
+ }
+ 
+ /**
+@@ -639,9 +646,8 @@ function instructionRole(insn, base) {
+   if (base === 'adrp' || base === 'adr') return ROLE.ADDRESS_CALCULATION;
+   if (insn.memory) {
+     if (insn.memory.kind === 'load') return ROLE.MEMORY_READ;
+-    // An atomic RMW keeps the established 'quiet' atomic role; its read/write
+-    // fact is published on `insn.memory`, not through the block role (#3602).
+-    if (insn.memory.kind === 'atomic') return 'quiet';
++    // Atomic RMW has an observable write even when its result is discarded.
++    // Keep it in a memory group rather than merging it into quiet setup.
+     return ROLE.MEMORY_WRITE;
+   }
+   if (/^(paciasp|pacibsp|bti|nop|hint)$/.test(base)) return 'quiet';
+@@ -1270,7 +1276,8 @@ function finishBlock(g, ctx) {
+       }
+     }
+     if (insn.memory) {
+-      g.effects.push(insn.memory.kind === 'load' ? 'read' : 'write');
++      if (insn.memory.kind === 'atomic') g.effects.push('read', 'write');
++      else g.effects.push(insn.memory.kind === 'load' ? 'read' : 'write');
+       if (insn.memory.stack) g.facts.stack = true;
+     }
+     if (insn.branchTarget != null) {
+diff --git a/tests/architecture-abi.mjs b/tests/architecture-abi.mjs
+index 4b64492ec8752bcf47c2f0a1c765bd1a1e99621c..4673ca37090d3c7eec443781eba8e1e7447db0b2 100644
+--- a/tests/architecture-abi.mjs
++++ b/tests/architecture-abi.mjs
+@@ -91,10 +91,27 @@ const region = { vmAddr:BASE, size:0x100n };
+   assert.equal(unknownCall.evidence, 'conservative-aapcs64');
+   assert.deepEqual(classifyCallArguments({}), unknownCall, 'public legacy export must preserve AAPCS64 classification');
+ 
+-  const insn = { callPrototype:{ args:[{ type:'int' }, { type:'double', abiClass:'fp' }], returnType:'double' } };
++  // A type label alone is not canonical scalar-width evidence. Keep the
++  // old incomplete fixture as a negative, including its allocation frontier.
++  const incomplete = AAPCS64_ABI.classifyArguments({
++    callPrototype:{ args:[{ type:'int' }, { type:'double', abiClass:'fp', bits:64 }], returnType:'double' },
++  });
++  assert.equal(incomplete.partial, true);
++  assert.equal(incomplete.stackArgsUnknown, true);
++  assert.deepEqual(incomplete.srcs, []);
++  assert.deepEqual(incomplete.arguments.map((argument) => argument.location), ['unknown', 'unknown']);
++  assert.deepEqual(incomplete.arguments.map((argument) => argument.exact), [false, false]);
++  assert.equal(incomplete.arguments[0].reason, 'scalar-width-size-not-proven');
++  assert.equal(incomplete.arguments[1].reason, 'preceding-argument-layout-not-proven');
++
++  // Positive placement is grounded in explicit owner widths, not the names.
++  const insn = { callPrototype:{ args:[{ type:'int', bits:32 }, { type:'double', abiClass:'fp', bits:64 }], returnType:'double' } };
+   const classified = AAPCS64_ABI.classifyArguments(insn);
+   assert.equal(classified.arguments[0].reg, 'x0');
+   assert.equal(classified.arguments[1].reg, 'v0');
++  assert.equal(classified.partial, false);
++  assert.deepEqual(classified.arguments.map((argument) => argument.bits), [32, 64]);
++  assert.deepEqual(classifyCallArguments(insn), classified, 'legacy export must share the canonical explicit-width result');
+   assert.deepEqual(AAPCS64_ABI.classifyCallReturn(insn), { reg:'v0', bits:64 });
+   assert.equal(AAPCS64_ABI.classifyCallReturn({ callPrototype:{ returnType:'int', returnBits:-1, returnsValue:true } }), null);
+   assert.equal(AAPCS64_ABI.classifyCallReturn({ callPrototype:{ returnType:'double', returnBits:Number.POSITIVE_INFINITY, returnsValue:true } }), null);
+diff --git a/tests/phase4/architecture-abi-compat-regressions.test.mjs b/tests/phase4/architecture-abi-compat-regressions.test.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..4eab8721f2ec8c4fa55b4450697087ab491ae4e4
+--- /dev/null
++++ b/tests/phase4/architecture-abi-compat-regressions.test.mjs
+@@ -0,0 +1,8 @@
++import test from 'node:test';
++
++// The standalone script imports architecture-abi.mjs. Keep that entire public
++// compatibility surface in canonical recursive Phase4 discovery: a passing
++// core group alone previously left its first assertion failure unobserved.
++test('public script and architecture/ABI compatibility regressions', async () => {
++  await import('../issues-454-455-script-architecture.mjs');
++});
+diff --git a/tests/phase4/arm64-memory-presentation-contract.test.mjs b/tests/phase4/arm64-memory-presentation-contract.test.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..19b0a4d8b4f6bbf19f2d2783d2cbf25d948b31a9
+--- /dev/null
++++ b/tests/phase4/arm64-memory-presentation-contract.test.mjs
+@@ -0,0 +1,87 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++import { ROLE, buildSemanticModel, makeInstruction } from '../../js/blocks.js';
++
++const BASE = 0x100000n;
++const raw = (mn, ops) => ({ row:0, address:BASE, mn, ops });
++const instruction = (mn, ops) => makeInstruction(raw(mn, ops));
++
++// This is the public text/presentation boundary, not a second ISA decoder.
++// A byte extent needs every list member to carry a parsed arrangement.
++test('structure memory facts preserve unknown and partially parsed extents', () => {
++  const unknownLists = [
++    '{v0.h}[3]', '{v0}', '{v0.16b, v1}', '{v0.16b, undecoded}',
++    '{v0.16b, v1.0b}', '{v0.16b, v1.16b', '{x0}', '{q0}', '{}', 'v0.16b',
++  ];
++  for (const mn of ['ld1', 'st1', 'ld2', 'st2', 'ld3', 'st3', 'ld4', 'st4']) {
++    for (const list of unknownLists) {
++      const result = instruction(mn, `${list}, [x2]`);
++      // A missing brace prevents the parser from finding the memory operand.
++      // Where an address survives, an unknown list may not acquire an extent.
++      if (!result.memory) {
++        assert.equal(list, '{v0.16b, v1.16b');
++        continue;
++      }
++      assert.equal(result.memory.kind, mn.startsWith('ld') ? 'load' : 'store');
++      assert.equal(result.memory.size, null, `${mn} ${list} must not invent moved bytes`);
++    }
++  }
++});
++
++test('explicit whole-vector lists retain all supported arranged extents', () => {
++  const shapes = [['8b',8], ['16b',16], ['4h',8], ['8h',16], ['2s',8], ['4s',16], ['2d',16]];
++  for (const [arrangement, bytes] of shapes) {
++    for (const count of [1, 2, 3, 4]) {
++      const list = `{${Array.from({length:count}, (_, n) => `v${n}.${arrangement}`).join(', ')}}`;
++      for (const mn of [`ld${count}`, `st${count}`, 'ld1', 'st1']) {
++        const result = instruction(mn, `${list}, [x4]`);
++        assert.equal(result.memory.size, bytes * count, `${mn} ${list}`);
++      }
++    }
++  }
++  for (const mn of ['ld1', 'st1']) {
++    assert.equal(instruction(mn, '{v0.1d}, [x1]').memory.size, 8);
++  }
++});
++
++test('ordinary scalar and pair accesses do not lose their known widths', () => {
++  for (const [mn, ops, bytes] of [
++    ['ldrb','w0, [x1]',1], ['ldrh','w0, [x1]',2], ['ldr','w0, [x1]',4],
++    ['ldr','x0, [x1]',8], ['str','q0, [x1]',16],
++    ['ldp','x0, x1, [x2]',16], ['stp','q0, q1, [x2]',32],
++    ['stxr','w0, x1, [x2]',8],
++  ]) assert.equal(instruction(mn, ops).memory.size, bytes, `${mn} ${ops}`);
++});
++
++test('atomic RMW families keep an observable write group and both memory effects', () => {
++  const fixtures = [
++    ['swp', 'x0, x1, [x2]'], ['swpal', 'w0, w1, [x2]'],
++    ['cas', 'x0, x1, [x2]'], ['casal', 'w0, w1, [x2]'],
++    ['ldadd', 'x0, x1, [x2]'], ['ldaddal', 'w0, w1, [x2]'],
++    ['ldsetb', 'w0, w1, [x2]'], ['ldeorh', 'w0, w1, [x2]'],
++    ['stadd', 'x0, [x2]'], ['staddl', 'w0, [x2]'],
++  ];
++  for (const [mn, ops] of fixtures) {
++    const result = instruction(mn, ops);
++    assert.equal(result.memory.kind, 'atomic');
++    assert.equal(result.memory.read, true);
++    assert.equal(result.memory.write, true);
++    assert.equal(result.role, ROLE.MEMORY_WRITE, `${mn} cannot be quiet`);
++    const model = buildSemanticModel([raw(mn, ops)], {rowOfAddress:() => null});
++    assert.equal(model.semantic.length, 1);
++    assert.equal(model.semantic[0].role, ROLE.MEMORY_WRITE, mn);
++    assert.deepEqual([...model.semantic[0].effects].sort(), ['read', 'write'], mn);
++  }
++});
++
++test('load/store/nop presentation roles and single-sided effects stay distinct', () => {
++  for (const [mn, ops, role, effects] of [
++    ['ldr', 'x0, [x1]', ROLE.MEMORY_READ, ['read']],
++    ['str', 'x0, [x1]', ROLE.MEMORY_WRITE, ['write']],
++    ['nop', '', 'quiet', []],
++  ]) {
++    assert.equal(instruction(mn, ops).role, role);
++    const model = buildSemanticModel([raw(mn, ops)], {rowOfAddress:() => null});
++    assert.deepEqual(model.semantic.flatMap((group) => group.effects), effects);
++  }
++});
+diff --git a/tests/phase4/issue-3630-elf-dynamic-section-authority.test.mjs b/tests/phase4/issue-3630-elf-dynamic-section-authority.test.mjs
+index 54916f69b0c8550201f1cb18a6e7ff6677769d27..bc1ea076f77de8ed9ab25aef7dd47903258f663c 100644
+--- a/tests/phase4/issue-3630-elf-dynamic-section-authority.test.mjs
++++ b/tests/phase4/issue-3630-elf-dynamic-section-authority.test.mjs
+@@ -124,7 +124,7 @@ function fixture(sectionIndex, companion = null, options = {}) {
+     libraries: [],
+     metadata: { machine: 62 },
+     segments: [segment],
+-    sections: [],
++    sections: options.sections || [],
+     symbols: [],
+     imports: options.seedImport === true ? [{
+       name: 'mystery',
+@@ -178,9 +178,14 @@ test('PT_DYNAMIC SHN_XINDEX without companion remains unknown, not an import', (
+   assertUnknown(fixture(SHN_XINDEX), 'missing-companion');
+ });
+ 
+-test('PT_DYNAMIC SHN_XINDEX with truncated or invalid companion remains unknown', () => {
++test('PT_DYNAMIC SHN_XINDEX with a truncated companion remains unknown', () => {
+   assertUnknown(fixture(SHN_XINDEX, 'truncated'), 'truncated-companion');
+-  assertUnknown(fixture(SHN_XINDEX, 0xff10), 'invalid-extended-index');
++});
++
++test('PT_DYNAMIC SHN_XINDEX without a backing extended section remains unknown', () => {
++  // #4197: the companion is an actual 32-bit section index. The reserved
++  // 16-bit range alone does not invalidate it; missing section authority does.
++  assertUnknown(fixture(SHN_XINDEX, 0xff10), 'out-of-range-section-index-65296');
+ });
+ 
+ test('version metadata does not promote an unresolved symbol into an existing import', () => {
+@@ -227,3 +232,17 @@ test('PT_DYNAMIC known section identity remains a definite export', () => {
+     assert.equal(image.exports[0].name, 'mystery');
+   }
+ });
++
++
++test('PT_DYNAMIC a real extended section index is not rejected as a reserved 16-bit value', () => {
++  const extendedIndex = 0xff10;
++  const image = fixture(SHN_XINDEX, extendedIndex, {
++    sections:Array.from({length:extendedIndex + 1}, (_, index) => ({index})),
++  });
++  assert.equal(image.symbols[0].defined, true);
++  assert.equal(image.symbols[0].sectionIndex, extendedIndex);
++  assert.equal(image.imports.length, 0);
++  assert.equal(image.exports.length, 1);
++  assert.equal(image.exports[0].name, 'mystery');
++  assert.equal(image.warnings.some((warning) => /(?:section-index|extended-index)/.test(warning)), false);
++});
