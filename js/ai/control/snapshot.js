@@ -66,6 +66,7 @@ export function createTurnSnapshot(local = {}, request = {}) {
     binaryIdentitySource: binding.source,
     liveBinaryIdentity: binding.live,
     projectIdentity: projectId,
+    analysisRevision: resolveAnalysisRevision(local),
     architecture: copyScalar(first(local.architecture, local.binary?.architecture, local.capability?.architecture)),
     slice: copyScalar(first(local.slice, local.sliceIndex, local.binary?.sliceIndex)),
     currentAddress: cursor == null ? null : addressText(cursor),
@@ -335,6 +336,14 @@ function snapshotNeighborhood(local, current) {
 
 function safeName(local, address) { try { return local.functionName?.(address) || null; } catch { return null; } }
 function copyScalar(value) { return ['string', 'number', 'boolean'].includes(typeof value) ? value : value == null ? null : String(value); }
+// The analysis revision is the identity of the workbench analysis snapshot a
+// turn's deterministic tools were evaluated against. It is captured once per
+// turn snapshot so the executor can fail closed if the live analysis is
+// re-derived mid-turn (#8930). Read from the same context fields the tool layer
+// uses; a context that does not expose it yields null (no revision to compare).
+export function resolveAnalysisRevision(local = {}) {
+  return copyScalar(first(local.analysisRevision, local.binary?.analysisRevision, local.program?.analysisRevision, local.revision));
+}
 function first(...values) { return values.find((value) => value !== undefined && value !== null) ?? null; }
 function parseAddress(value) { try { return value == null ? null : BigInt(value); } catch { return value; } }
 function deepFreeze(value) {

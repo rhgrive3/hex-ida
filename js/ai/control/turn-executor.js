@@ -1,6 +1,6 @@
 import { aiBudget, AIError } from '../schema.js';
 import { normalizeTurnRequest, validateAIResult, validateModelDecision } from '../validation.js';
-import { createTurnSnapshot, createSnapshotContext } from './snapshot.js';
+import { createTurnSnapshot, createSnapshotContext, resolveAnalysisRevision } from './snapshot.js';
 import { ScopeController } from './scope.js';
 import { routeIntent, shouldRunPlanner } from '../routing/intent.js';
 import { selectToolWindow } from './tool-window.js';
@@ -14,6 +14,24 @@ import {
 } from './runtime-support.js';
 
 const MIN_MODEL_REPAIR_REMAINING_MS = 45000;
+
+// A turn's deterministic evidence is only current if the live workbench analysis
+// is still the exact revision captured when the snapshot was taken. Re-analysis
+// mid-turn would otherwise let a stale-analysis result finalize as an
+// authoritative turn outcome (#8930). This is a no-op when the context did not
+// expose a revision to begin with (nothing to compare against).
+export function assertAnalysisRevisionUnchanged(local, snapshot) {
+  const snapshotRevision = snapshot?.analysisRevision ?? null;
+  if (snapshotRevision == null) return;
+  const liveRevision = resolveAnalysisRevision(local);
+  if (liveRevision !== snapshotRevision) {
+    throw new AIError(
+      'scope_violation',
+      'The binary analysis changed while this AI turn was running; refusing to finalize a result derived from a stale analysis.',
+      { snapshotRevision, liveRevision },
+    );
+  }
+}
 
 function normalizeExternalSignal(value) {
   if (value == null) return null;
@@ -265,6 +283,7 @@ export async function executeTurn(input = {}, options = {}) {
         });
         if (this.planner && shouldRunPlanner(request, snapshot, intent)) {
           assertLiveBindingsUnchanged(this.localContext, snapshot);
+          assertAnalysisRevisionUnchanged(this.localContext, snapshot);
           addActivity({ type: 'plan-start', label: '決定論的候補探索を開始' });
           const plannerStartCalls = registry.accounting.calls;
           const plannerToolCallBudget = createPlannerToolCallBudget(Math.max(0, budget.maxToolCalls - plannerStartCalls));
@@ -409,6 +428,7 @@ export async function executeTurn(input = {}, options = {}) {
       }
 
       assertLiveBindingsUnchanged(this.localContext, snapshot);
+      assertAnalysisRevisionUnchanged(this.localContext, snapshot);
       if (!decision) decision = deterministicDecision(plan, request, new AIError('budget_exhausted', 'The investigation budget was exhausted.'));
       // The deadline/cancellation contract holds to the final return: a turn
       // whose budget expired during finalization must not resolve as a normal
