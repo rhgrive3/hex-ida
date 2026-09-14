@@ -262,7 +262,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
 
       const di = destIndex(mn);
       const destReg = di >= 0 && ops[di]?.k === 'reg' && ops[di]?.cls === 'gp' ? ops[di].num : null;
-      const pairDestReg = (/^(ldp|ldpsw|ldnp)$/.test(b) || ATOMIC_PAIR_READ_WRITE_DEST_RE.test(b)) && ops[1]?.k === 'reg' && ops[1]?.cls === 'gp'
+      const pairDestReg = (/^(ldp|ldpsw|ldnp|ldxp|ldaxp)$/.test(b) || ATOMIC_PAIR_READ_WRITE_DEST_RE.test(b)) && ops[1]?.k === 'reg' && ops[1]?.cls === 'gp'
         ? ops[1].num
         : null;
       const reads = new Set();
