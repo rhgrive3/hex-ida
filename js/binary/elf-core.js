@@ -30,6 +30,7 @@ const SHF_WRITE = 0x1n;
 const SHF_ALLOC = 0x2n;
 const SHF_EXECINSTR = 0x4n;
 const EM_RISCV = 243;
+const SECTION_NAME_MAX_SPAN = 1 << 20;
 export const EM_AARCH64 = 183;
 export const STO_RISCV_VARIANT_CC = 0x80;
 export const STO_AARCH64_VARIANT_PCS = 0x80;
@@ -82,7 +83,12 @@ export function parseELF(input, options = {}) {
     declared: h.shoff !== 0n,
     valid: h.shoff === 0n || rawSections.length > 0,
   });
-  nameSections(r, rawSections, h, image);
+  // Section-name decoding happens before any canonical section is published,
+  // so it must sit inside the same finite metadata budget as the rest of the
+  // metadata pass; otherwise a valid ELF with many shared `.shstrtab` offsets
+  // can exhaust the heap outside every existing limit (#8678).
+  const metadataBudget = createELFMetadataBudget(image, { signal: options.signal, limits: options.metadataLimits });
+  nameSections(r, rawSections, h, image, metadataBudget);
   let riscvFileIsa = null;
   const isRiscv = Number(h.machine) === EM_RISCV || image.arch === 'riscv64' || image.arch === 'riscv32';
   if (isRiscv) {
@@ -161,8 +167,6 @@ export function parseELF(input, options = {}) {
       image.metadata.entrypointZeroEvidence = 'zero-sentinel-unproven';
     }
   }
-  const metadataBudget = createELFMetadataBudget(image, { signal: options.signal, limits: options.metadataLimits });
-
   const symbolTables = rawSections.filter((s) => s.type === SHT_SYMTAB || s.type === SHT_DYNSYM);
   for (const s of symbolTables) parseSymbols(r, s, rawSections, image, bits, h.type, metadataBudget);
   if (isRiscv) {
@@ -469,16 +473,18 @@ function parseSectionHeaders(r, h, bits, image) {
  * when no NUL exists, which would admit malformed bytes as canonical symbol /
  * DT_NEEDED / SONAME / section names. Returns null when the span has no NUL.
  */
-function terminatedStringInTable(r, strStart, strSize, offset, maxSpan) {
+function terminatedStringInTable(r, strStart, strSize, offset, maxSpan, stats = null) {
   const max = Math.min(strSize - offset, maxSpan);
-  if (max <= 0) return null;
+  if (max <= 0) { if (stats) stats.scanned = 0; return null; }
   const slice = r.slice(strStart + offset, max);
   const nul = slice.indexOf(0);
-  if (nul < 0) return null;
-  return r.cstring(strStart + offset, Math.min(nul + 1, max));
+  if (nul < 0) { if (stats) stats.scanned = max; return null; }
+  const span = Math.min(nul + 1, max);
+  if (stats) stats.scanned = span;
+  return r.cstring(strStart + offset, span);
 }
 
-function nameSections(r, sections, h, image) {
+function nameSections(r, sections, h, image, budget) {
   let shstrndx = h.shstrndx;
   if (shstrndx === SHN_XINDEX) {
     const link = sections[0]?.link;
@@ -497,11 +503,31 @@ function nameSections(r, sections, h, image) {
     return;
   }
   if (str.offset + str.size > BigInt(r.length)) return;
+  const strStart = Number(str.offset);
+  const strBytes = Number(str.size);
+  // `sh_name` is an offset, so a conforming ELF may point any number of section
+  // headers at one shared string. Resolve each distinct offset exactly once and
+  // charge the scan plus the retained text against the metadata budget; repeated
+  // references are free (#8678). Failed (unterminated/out-of-span) lookups are
+  // cached too, so an adversarial table cannot re-scan the same bytes per row.
+  const resolved = new Map();
+  const scan = { scanned: 0 };
   for (const s of sections) {
     if (BigInt(s.nameOffset) >= str.size) continue;
-    const sectionName = terminatedStringInTable(r, Number(str.offset), Number(str.size), s.nameOffset, 1 << 20);
-    if (sectionName != null) { s.name = sectionName; continue; }
-    s.name = '';
+    const cached = resolved.get(s.nameOffset);
+    if (cached !== undefined) { s.name = cached; continue; }
+    if (!budget.take({ records: 1, objects: 1, operations: 2 }, 'section-name')) return;
+    const sectionName = terminatedStringInTable(r, strStart, strBytes, s.nameOffset, SECTION_NAME_MAX_SPAN, scan) || '';
+    // The scan itself already happened, so charging it afterwards still caps the
+    // total bytes examined at the configured input limit plus one bounded span
+    // instead of the previous per-reference cost.
+    if (!budget.take({
+      inputBytes: scan.scanned,
+      stringBytes: sectionName.length * 2,
+      estimatedHeapBytes: sectionName.length * 2 + 32,
+    }, 'section-name')) return;
+    resolved.set(s.nameOffset, sectionName);
+    s.name = sectionName;
   }
 }
 
