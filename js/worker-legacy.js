@@ -519,12 +519,23 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
 
   let funcs = new BigUint64Array(0);
   let functionStartsExact = false;
+  let functionStartsPartialReason = null;
   // Exact decoded starts (plus the Mach-O entry seed) are also the hard
   // control-flow roots for ADR/ADRP provenance in the worker scans.
   slice.functionStarts = [];
   if (info.functionStarts && info.functionStarts.datasize > 0 && info.textVM != null) {
+    const declared = info.functionStarts.datasize;
+    const clampLimit = 8 * 1024 * 1024;
+    const clamped = declared > clampLimit;
     const buf = await readRange(base + BigInt(info.functionStarts.dataoff),
-                                Math.min(info.functionStarts.datasize, 8 * 1024 * 1024));
+                                Math.min(declared, clampLimit));
+    if (clamped) {
+      // #8822: a clamped prefix is not a complete ULEB stream. Even if the
+      // prefix's last byte happens to be a valid terminator, the suffix was
+      // never read, so the whole stream is not evidence. Never bless a prefix.
+      capped = true;
+      functionStartsPartialReason = 'clamp-truncated';
+    }
     try {
       const list = MachO.parseFunctionStarts(buf, info.textVM, { regions:slice.regions || [], architecture:info.architecture || 'arm64' });
       const seeds = list.slice();
@@ -533,8 +544,9 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
       slice.functionStarts = seeds;
       funcs = new BigUint64Array(seeds.length);
       for (let i = 0; i < seeds.length; i++) funcs[i] = seeds[i];
-      functionStartsExact = list.length > 0 && list.complete === true;
-    } catch { slice.functionStarts = []; funcs = new BigUint64Array(0); }
+      functionStartsExact = !clamped && list.length > 0 && list.complete === true;
+      if (!functionStartsExact && list.partialReason) functionStartsPartialReason = list.partialReason;
+    } catch { slice.functionStarts = []; funcs = new BigUint64Array(0); if (!functionStartsPartialReason) functionStartsPartialReason = 'parse-threw'; }
   }
 
   if ((!info.functionStarts || !info.functionStarts.datasize) && info.entry != null) {
@@ -566,8 +578,10 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
     allSeedsExact: funcs.length > 0,
     discoveryComplete: functionStartsExact,
     functionStartsExact,
-    functionDiscovery: { complete:functionStartsExact, capped:false,
-      reasons:functionStartsExact ? [] : ['no-complete-lc-function-starts'] },
+    functionDiscovery: { complete:functionStartsExact, capped:functionStartsPartialReason==='clamp-truncated',
+      reasons:functionStartsExact ? [] : (functionStartsPartialReason
+        ? ['no-complete-lc-function-starts', 'function-starts:' + functionStartsPartialReason]
+        : ['no-complete-lc-function-starts']) },
     capped,
     __transfer: [outAddrs.buffer, outKinds.buffer, outFlags.buffer, funcs.buffer],
   };

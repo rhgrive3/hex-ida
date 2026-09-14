@@ -514,23 +514,27 @@
   /** ULEB128 の差分列を、絶対アドレスの配列にほどく。 */
   function parseFunctionStarts(buf, base, options = {}) {
     const out=[]; let addr=base; let i=0; let malformed=false; let rejected=0;
+    let terminated=false; let partialReason=null;
     const regions=Array.isArray(options.regions)?options.regions:[];
     const alignment=instructionAlignment(options.architecture||'arm64');
     const valid=(value)=>value%alignment===0n && (!regions.length || regions.some((r)=>r.exec&&r.size>0n&&value>=r.vmAddr&&value-r.vmAddr<r.size));
     while(i<buf.length){
       let delta=0n,shift=0n,byte=0;
       do {
-        if(i>=buf.length){malformed=true;break;}
+        if(i>=buf.length){malformed=true;partialReason='truncated-leb';break;}
         byte=buf[i++]; delta|=BigInt(byte&0x7f)<<shift; shift+=7n;
-        if(shift>70n){malformed=true;break;}
+        if(shift>70n){malformed=true;partialReason='truncated-leb';break;}
       } while(byte&0x80);
-      if(malformed||delta===0n) break;
+      if(malformed) break;
+      if(delta===0n){terminated=true;break;}
       const next=addr+delta;
-      if(next<addr){malformed=true;break;}
+      if(next<addr){malformed=true;partialReason='address-overflow';break;}
       addr=next;
       if(valid(addr)) out.push(addr); else rejected++;
     }
+    if(!terminated&&!malformed){malformed=true;partialReason='missing-terminator';}
     out.rejected=rejected; out.complete=!malformed&&rejected===0; out.malformed=malformed;
+    out.partialReason=partialReason;
     return out;
   }
 
