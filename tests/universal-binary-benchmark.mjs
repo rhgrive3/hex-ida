@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
-import { openBinarySource, auditBinary } from '../js/binary/index.js';
+import { openBinary, openBinarySource, auditBinary } from '../js/binary/index.js';
 import { NodeFileByteSource } from '../js/bytesource/node.js';
 import { InstrumentedByteSource } from '../js/bytesource/cached.js';
 import { median, SCHEMA_VERSION } from '../tools/benchmark/schema.mjs';
@@ -45,7 +45,7 @@ async function sample(file) {
     const source = new InstrumentedByteSource(nodeSource);
     const before = process.memoryUsage().heapUsed;
     const t0 = performance.now();
-    const image = await openBinarySource(fs.readFileSync(file), { ranges: { pageSize: 64 * 1024, maxPageSize: 2 * 1024 * 1024, maxCachedBytes: 16 * 1024 * 1024 } });
+    const image = openBinary(fs.readFileSync(file));
     const loaderMs = performance.now() - t0;
     const audit = auditBinary(image);
     const auditErrorCodes = audit.issues.filter((issue) => issue.level === 'error').map((issue) => issue.code).join('__') || 'none';
