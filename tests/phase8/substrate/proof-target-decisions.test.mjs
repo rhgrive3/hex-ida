@@ -893,7 +893,7 @@ test('C4-03 constant Boolean proof output retains the elided canonical operand d
     assert.deepEqual(proof.producedRefs,[`L${line}:stmt`]);
     for(const argument of f.target.def.args) {
       assert.ok(result.renderProvenance.reverse[`addr:${argument.value.def.address}`].includes(`L${line}:stmt`));
-      assert.ok(proof.origin.addresses.includes(String(argument.value.def.address)));
+      assert.ok(proof.origin.addresses.includes(argument.value.def.address));
     }
     assert.deepEqual(structuredClone(f.ir),f.canonical);
   }
@@ -981,7 +981,7 @@ test('C4-04 bitfield automatic discovery and actual consumers retain field linea
     const proof=result.renderProvenance.ledger.find(row=>row.queryHash===decision.queryHash);
     const line=result.lines.findIndex(row=>/\breturn\b/.test(row.text));assert.ok(line>=0);
     assert.deepEqual(proof.producedRefs,[`L${line}:stmt`]);
-    assert.ok(proof.origin.addresses.includes(String(f.source.def.address)));
+    assert.ok(proof.origin.addresses.includes(f.source.def.address));
     assert.ok(result.renderProvenance.reverse[`addr:${f.source.def.address}`].includes(`L${line}:stmt`));
     assert.ok(!result.renderProvenance.reverse[`addr:${f.store.address}`].includes(`L${line}:stmt`));
     const replay=await optimizeSemanticDecompilation(result,options);

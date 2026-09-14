@@ -337,12 +337,14 @@ test('C4-04 representation coverage cannot copy plan authority or publish after 
   assert.equal(isPhase8RewritePlan(plan,scope),false);
 });
 
-test('C4-04 the public machine entry defers ordinary simplification until proof and keeps unsupported instruction refusal', async () => {
+test('C4-04 the public machine entry defers ordinary simplification until proof and keeps unsupported target refusal', async () => {
   const base = 0x1000n, rowOfAddress = address => Number((address - base) / 4n);
-  const model = mn => buildSemanticModel([
-    {row:0,address:base,mn,ops:'x0, x0, x0'},
-    {row:1,address:base + 4n,mn:'ret',ops:''},
-  ],{startRow:0,endRow:1,rowOfAddress});
+  const model = (mn, returnAddress = 0x4000n) => {
+    const raw = [{mn,ops:'x0, x0, x0'},
+      ...(returnAddress == null ? [] : [{mn:'mov',ops:`x30, #${returnAddress}`}]),
+      {mn:'ret',ops:''}].map((instruction,row) => ({...instruction,row,address:base+BigInt(row*4)}));
+    return buildSemanticModel(raw,{startRow:0,endRow:raw.length-1,rowOfAddress});
+  };
   const opts = {addr:base,name:'machine_example',rowOfAddress,beginner:false,returnType:'uint64',decompilerTimeBudgetMs:5000};
   const proofOpts = {identity:{...identity,architecture:'arm64'},abiId:'aapcs64',candidateStrategy:'representation-rules',timeoutMs:1000};
   const ordinary = decompile(model('eor'),opts);
@@ -364,15 +366,33 @@ test('C4-04 the public machine entry defers ordinary simplification until proof 
   assert.ok(result.ir.instructions.some(inst => inst.op === 'bin' && inst.sub === 'xor'));
   assert.match(result.pseudocode,/return 0;/);
 
-  // Current ADD lifting also emits BFX/is-zero auxiliaries outside the executor
-  // profile. Preserve this explicit unsupported cell; do not remove instructions
-  // or fabricate execution evidence to force a proof through the new generator.
-  const unsupported = await decompileWithProof(model('add'),opts,proofOpts);
-  assert.equal(unsupported.proofOptimization.status,'partial');
-  assert.equal(unsupported.proofOptimization.reason,'unsupported-instruction');
+  // Preserve the new architectural RET obligation: neither an unconstrained
+  // target nor a known misaligned target can authorize the scalar transaction.
+  for (const returnAddress of [null, 0x4002n]) {
+    const unsafe = await decompileWithProof(model('eor',returnAddress),opts,proofOpts);
+    assert.equal(unsafe.proofOptimization.status,'partial');
+    assert.equal(unsafe.proofOptimization.reason,'return-control-normal-completion-unproved');
+    assert.equal(unsafe.proofOptimization.adopted,0);
+    assert.match(unsafe.pseudocode,/\^/);
+    assert.ok(!unsafe.rewriteProof.some(row => row.rule === 'xor-self'));
+  }
+
+  // The canonical executor now covers ADD's BFX/is-zero auxiliaries. Keep the
+  // original ADD input, its real transaction and every auxiliary instruction.
+  const added = await decompileWithProof(model('add'),opts,proofOpts);
+  assert.equal(added.proofOptimization.status,'complete',added.proofOptimization.reason);
+  assert.equal(added.proofOptimization.adopted,3);
+  assert.ok(added.ir.instructions.some(inst => inst.op === 'bfx'));
+  assert.ok(added.ir.instructions.some(inst => inst.op === 'un' && inst.sub === 'is-zero'));
+  assert.match(added.pseudocode,/<< /);
+
+  // Division remains outside the total scalar rewrite domain, even where the
+  // architectural executor knows its zero-divisor behavior.
+  const unsupported = await decompileWithProof(model('udiv'),opts,proofOpts);
   assert.equal(unsupported.proofOptimization.adopted,0);
-  assert.ok(unsupported.ir.instructions.some(inst => inst.op === 'bfx'));
-  assert.match(unsupported.pseudocode,/\+/);
+  assert.ok(unsupported.proofOptimization.targetDecisions.some(row => row.reason === 'non-total-or-effectful-target'));
+  assert.ok(unsupported.ir.instructions.some(inst => inst.op === 'bin' && inst.sub === 'udiv'));
+  assert.match(unsupported.pseudocode,/a1 \/ a1/);
 });
 
 // This extends candidate mining through the existing recognizer. The 64 actual

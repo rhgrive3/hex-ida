@@ -90,6 +90,13 @@ export function expressionHistoryRecordCount(records, ir) {
   })).size;
 }
 const reusableBuildHistoryRecords = new WeakSet();
+const projectionDataObservers = new WeakMap();
+
+// Reuse only the actual C-AST producer's immutable DATA certificates. This
+// carries no consumer, rewrite or semantic authority, and caches no live match.
+export function readProjectionDataObserver(program) {
+  return projectionDataObservers.get(program) || null;
+}
 function buildOriginHistory(state, before, after) {
   state.recordOriginHistory ??= createExpressionOriginHistoryRecorder();
   return state.recordOriginHistory(before, after);
@@ -106,17 +113,23 @@ function valueHistoryRecord(record, valueId) {
   return copy;
 }
 function currentBuildHistory(records) {
-  const checked = new Set();
-  return records.every(record => {
+  const checked = new Set(), shared = new Set();
+  const current = records.every(record => {
     const observation = buildHistoryObservations.get(record);
+    for (const check of observation?.sharedChecks || []) shared.add(check);
     for (const current of observation?.producerChecks || []) if (!checked.has(current)) {
       checked.add(current);
       if (!current()) return false;
     }
-    if (!observation || checked.has(observation.matches)) return true;
-    checked.add(observation.matches);
-    return observation.matches() !== false;
+    const matches = observation?.consumerMatches || observation?.matches;
+    if (!matches || checked.has(matches)) return true;
+    checked.add(matches);
+    return matches() !== false;
   });
+  // Share the original matcher, never its answer across reads. Recheck after
+  // every distinct consumer/slot observation so a later observer cannot mutate
+  // inputs which an earlier selection already checked in this same batch.
+  return current && [...shared].every(check => check());
 }
 function consumerObservationBudget(state) {
   const requested = state.opts?.renderProvenanceBindingBudget;
@@ -640,12 +653,15 @@ function observeBuildSelection(value, instruction, state, kind = 'mov', related 
     budget.edges -= shared ? 0 : captured.metrics.edges;
     if (budget.edges < 0) throw new Error('build-selection-observation-budget');
     const own = (object, key) => Object.getOwnPropertyDescriptor(object, key)?.value;
-    return Object.freeze({ kind, matches:() => own(state.ir, 'values') === values && (value == null || own(values, valueIndex) === value)
+    const positionsMatch = () => own(state.ir, 'values') === values && (value == null || own(values, valueIndex) === value)
       && own(state.ir, 'blocks') === blocks && own(state.ir, 'instructions') === flat
       && locations.every(({ selected, block, blockIndex, blockId, listKey, instructions, instructionIndex, flatIndex }) =>
         own(blocks, blockIndex) === block && own(block, 'index') === blockId
         && own(block, listKey) === instructions && own(instructions, instructionIndex) === selected
-        && (flat == null || own(flat, flatIndex) === selected)) && captured.matches() });
+        && (flat == null || own(flat, flatIndex) === selected));
+    return Object.freeze({ kind, matches:() => positionsMatch() && captured.matches(),
+      producerChecks:Object.freeze([positionsMatch, captured.matches]),
+      sharedChecks:Object.freeze([captured.matches]) });
   } catch {
     budget.edges = 0; budget.reasons.add(`${kind}-selection-observation-unavailable`); return null;
   }
@@ -673,7 +689,9 @@ function finishBuildSelection(expression, selection, state) {
     const deferred = state.stateHistoryTransaction?.observation === selection;
     if (budget.edges < 0 || state.opts?.shouldAbort?.() || (!deferred && !selection.matches()) || !output.matches()) throw new Error('build-selection-unavailable');
     observation = Object.freeze({ matches:() => selection.matches() && output.matches(),
-      sourceMatches:selection.matches, outputMatches:output.matches });
+      sourceMatches:selection.matches, outputMatches:output.matches, consumerMatches:output.matches,
+      producerChecks:selection.producerChecks || Object.freeze([selection.matches]),
+      sharedChecks:selection.sharedChecks || Object.freeze([selection.matches]) });
   } catch {
     budget.edges = 0; budget.reasons.add(`${selection.kind}-selection-observation-unavailable`); return null;
   }
@@ -976,8 +994,9 @@ function recordCompatOperationSelection(value, expression, selected, state) {
           : 'actual compatibility constant write and its original input facts, retained through the consuming expression; not a new scalar or memory theorem' }),
       originHistory:origins?.incomplete ? Object.freeze({ ...history, truncated:true }) : history,
     });
-    const producerChecks = Object.freeze([transition.isCurrent, observation.sourceMatches, ...(origins?.memoryChecks || [])]);
-    buildHistoryObservations.set(record, Object.freeze({ matches:observation.outputMatches, producerChecks }));
+    const producerChecks = Object.freeze([transition.isCurrent, ...observation.producerChecks, ...(origins?.memoryChecks || [])]);
+    buildHistoryObservations.set(record, Object.freeze({ matches:observation.outputMatches, producerChecks,
+      sharedChecks:observation.sharedChecks }));
     compatOperationEvents.set(record, Object.freeze({ ir:state.ir, event }));
     reusableBuildHistoryRecords.add(record);
     pending.push({ record, producerChecks });
@@ -1758,6 +1777,7 @@ function cAstFromLines(result, state) {
             // original emitter, canonical inputs or semantic descriptor.
             initialControlConsumers.set(consumer, Object.freeze({
               instruction, line, node,
+              conditionInverted:initial.selection?.invert === true,
               isCurrent:() => initial.isCurrent() && inputsCurrent(),
             }));
           }
@@ -1798,6 +1818,7 @@ function cAstFromLines(result, state) {
   }
   const program = { kind: 'CProgram', body, source: mergeSource(...body.map((x) => x.source)) };
   finishConditionalRegionCopy(regionCopy, result, program, state);
+  if (state.projectionIrObserver) projectionDataObservers.set(program, state.projectionIrObserver);
   return program;
 }
 

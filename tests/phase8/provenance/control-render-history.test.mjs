@@ -22,8 +22,19 @@ function fixture(kind, options = {}) {
     f.conditionalBranch(condition, 1, 2); f.block(1); f.branch(2); f.block(2); f.ret();
   } else if (kind === 'if-else') {
     f.conditionalBranch(condition, 1, 2); f.block(1); f.branch(3); f.block(2); f.branch(3); f.block(3); f.ret();
-  } else if (kind === 'loop') {
-    f.branch(1); f.block(1); f.conditionalBranch(condition, 2, 3); f.block(2); f.branch(1); f.block(3); f.ret();
+  } else if (kind === 'loop' || kind === 'inverted-loop') {
+    f.branch(1); f.block(1); f.conditionalBranch(condition, kind === 'loop' ? 2 : 3, kind === 'loop' ? 3 : 2);
+    f.block(2); f.branch(1); f.block(3); f.ret();
+  } else if (['nested-loop','nested-external-exit','nested-header-effect'].includes(kind)) {
+    const inner = f.opaque(1); inner.reg = 'x1';
+    f.branch(1); f.block(1); f.conditionalBranch(condition,2,5);
+    f.block(2); f.branch(3); f.block(3);
+    if (kind === 'nested-header-effect') f.store(inner,{locKind:'stack',locKey:'sp:-8',disp:-8,bits:8});
+    f.conditionalBranch(inner,4,6);
+    f.block(4);
+    if (kind === 'nested-external-exit') f.conditionalBranch(condition,3,5);
+    else f.branch(3);
+    f.block(5); f.ret(); f.block(6); f.branch(1);
   } else if (kind === 'conditional-loop') {
     f.branch(1); f.block(1); f.conditionalBranch(condition, 2, 3); f.block(2); f.conditionalBranch(condition, 1, 3); f.block(3); f.ret();
   } else if (kind === 'changed-break') {
@@ -118,6 +129,46 @@ test('render-only projection preserves structured conditions rather than substit
     assert.equal(enhanced.pseudocode, text, 'the input presentation stays unchanged');
     assert.ok(!rules(result.renderProvenance).some(record => record.rule === 'replace-initial-control-condition'), kind);
     assert.deepEqual(structuredClone(f.ir), canonical, kind);
+  }
+});
+
+test('ordinary projection preserves an inverted loop predicate selected by the actual emitter', () => {
+  const f = fixture('inverted-loop'), canonical = structuredClone(f.ir);
+  const initial = f.seed.lines.find(line => line.text.startsWith('while ('));
+  assert.ok(initial);
+  assert.equal(readSemanticControlLineHistory(initial,f.ir).selection.invert,true);
+  const enhanced = enhancePublic(f.seed,f.model,f.opts);
+  const output = applyPhase8Projection(enhanced,analysis());
+  const loop = output.lines.find(line => line.text.startsWith('while ('));
+  assert.match(loop.text,/^while \(!\(/,'the loop continues on the original false branch');
+  assert.equal(output.renderProvenance.completeness,'complete');
+  assert.ok(output.rewriteProof.some(record => record.rule === 'replace-initial-control-condition'
+    && record.evidence.conditionInverted === true));
+  assert.deepEqual(structuredClone(f.ir),canonical);
+  const replay = applyPhase8Projection(output,analysis());
+  assert.equal(replay.pseudocode,output.pseudocode);
+  initial.text += ' changed';
+  assert.equal(applyPhase8Projection(output,analysis()).renderProvenance.completeness,'incomplete');
+});
+
+test('nested natural loops retain each header, back edge and exit in the actual emitter', () => {
+  const f = fixture('nested-loop'), canonical = structuredClone(f.ir);
+  const headers = f.seed.lines.filter(line => line.text.startsWith('while ('));
+  assert.equal(headers.length,2);
+  assert.deepEqual(headers.map(line => line.indent),[1,2]);
+  const selections = headers.map(line => readSemanticControlLineHistory(line,f.ir).selection);
+  assert.deepEqual(selections.map(({header,bodyStart,exit}) => ({header,bodyStart,exit})),
+    [{header:1,bodyStart:2,exit:5},{header:3,bodyStart:4,exit:6}]);
+  assert.deepEqual(f.seed.lines.filter(line => line.text === 'continue;').map(line =>
+    readSemanticControlLineHistory(line,f.ir).selection.target).sort(),[1,3]);
+  assert.ok(!f.seed.lines.some(line => /\bgoto\b/.test(line.text)));
+  const output = applyPhase8Projection(enhancePublic(f.seed,f.model,f.opts),analysis());
+  assert.equal(output.renderProvenance.completeness,'complete');
+  assert.deepEqual(structuredClone(f.ir),canonical);
+  for (const kind of ['nested-external-exit','nested-header-effect']) {
+    const unsafe = fixture(kind);
+    assert.ok(!unsafe.seed.lines.some(line => readSemanticControlLineHistory(line,unsafe.ir)?.selection?.header === 3
+      && line.text.startsWith('while (')),`${kind}: no inner loop without its complete emission preconditions`);
   }
 });
 
@@ -239,6 +290,10 @@ test('normal decoded branch and loop paths retain initial history through the pu
     assert.equal(result.renderProvenance.completeness,'complete',JSON.stringify({input,reasons:result.renderProvenance.reasons}));
     assert.ok(rules(result.renderProvenance).length>0);
     assert.ok(rules(result.renderProvenance).every(record=>record.producedRefs.length>0));
+    if (input[2] === 'b.ge #0x100000014') {
+      const loop = result.lines.find(line => line.text.startsWith('while ('));
+      assert.match(loop.text,/^while \(!\(.*>=/,'the decoded b.ge exit is negated in the continuing loop');
+    }
   }
 });
 

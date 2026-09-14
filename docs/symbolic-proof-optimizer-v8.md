@@ -291,6 +291,41 @@ not every possible permutation or all unbounded expressions. Native proof gaps,
 ordinary legacy-render coverage, memory/CFG/exception proofs and full integration
 acceptance remain open.
 
+## Finite-loop and producer-history continuation (2026-09-14)
+
+Entry reachability can use the canonical executor's complete finite unrolling
+when the selected conditional region is acyclic and the downstream CFG loops.
+Every execution path must complete within the unchanged path, branch, step and
+three-visits-per-block ceilings. An incomplete path withholds the whole result;
+repeated traversal of the selected branch still fails closed. The audit records
+the observed branch visits, executor bounds and `inductionProved:false`.
+This grants neither arm erasure nor PHI/CFG deletion authority. State, memory,
+fault and exception obligations remain at their existing proof boundaries.
+
+The initial emitter also reuses its natural-loop renderer for an inner loop only
+when all its nodes and exits remain inside the containing loop and its header
+does not emit repeated CALL/STORE/UNKNOWN/CLOBBER statements before the loop.
+Load expressions remain in the repeated condition/body. Cross-level exits
+retain explicit control flow. Its actual observed selection carries inverted
+condition polarity through the C AST producer; an ordinary row-based spelling
+update negates the canonical predicate when required and retains current variable
+spellings. It cannot substitute the raw taken-branch predicate for its inverse.
+The explicit proved-condition transaction retains its separate polarity checks.
+
+Producer-history reads deduplicate the same observed input/output callbacks
+within one read, then recheck shared inputs after the other observers. No match
+result is cached across reads. The final projection shares only the actual
+producer's immutable-data certification; consumer, mutable-input and lifecycle
+checks remain live. The real `quality.loop_decrement_step.O1` regression retains
+283 consumer records while reducing descriptor reads from 1,017,774 to 160,997;
+it rejects copies, late input mutation and replaced IR roots. This work count
+does not establish the separate 120ms or exclusive performance acceptance.
+
+The frozen 135-function corpus, original rule families and required thresholds
+remain unchanged. Native scalar positives now contain a canonical aligned RET
+target; unknown and misaligned targets still refuse adoption. Proof-ledger
+addresses retain their typed identity rather than being coerced into strings.
+
 ## Current-main reconciliation (2026-09-07)
 
 The publication branch is reconciled onto the then-current `main` lineage.  In

@@ -9,10 +9,9 @@
  */
 import { stableDigest } from '../../core/identity/index.js';
 import { committedProofOverlay, configurePhase8ProofApi } from './transaction.js';
-// Use the dependency-free canonical opcode vocabulary. Importing the public
-// ir-base facade would route through pipeline/index and create an evaluation
-// cycle before this pass can issue its descriptor.
-import { OP } from '../../architecture/compat/ir-core-arm64-aapcs64-v1.js';
+// Consume the public IR vocabulary. The opcode binding is used only while
+// preparing a plan, after the facade and its pipeline have initialized.
+import { OP } from '../../ir-base.js';
 import { createTaintModels } from '../../symbolic/taint/models.js';
 import { queryRecord, queryArray } from '../../symbolic/memory/data-input.js';
 import { createQueryGuard, QueryFailure, memoryIdentity, sameMemoryIdentity } from '../../symbolic/memory/query-state.js';

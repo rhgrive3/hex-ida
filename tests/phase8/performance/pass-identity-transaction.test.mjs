@@ -83,3 +83,45 @@ test('a returned state delta preserves unchanged roots and frozen observations',
   assert.equal(state.result, root);
   assert.deepEqual(state.passMetrics.map(row => row.ok), [true, false]);
 });
+
+test('native consumer history shares one live input observation within each read', async () => {
+  const [{ loadCorpus }, { decompileEntry }, { readLineExpressionHistory }] = await Promise.all([
+    import('../../../tools/validation/phase8/build-corpus.mjs'),
+    import('../../../tools/validation/phase8/decompile-corpus.mjs'),
+    import('../../../js/decompiler/phase8/projection.js'),
+  ]);
+  const corpus = loadCorpus(), index = corpus.functions.findIndex(entry => entry.id === 'quality.loop_decrement_step.O1');
+  assert.ok(index >= 0);
+  const { result, failure } = decompileEntry(corpus.functions[index], { index, deterministicTransforms:true });
+  assert.equal(failure, undefined);
+  assert.equal(result.renderProvenance.completeness, 'complete');
+  const candidate = result.lines.map(line => ({ line, records:readLineExpressionHistory(line, result.ir) }))
+    .filter(item => item.records?.length).sort((left, right) => right.records.length - left.records.length)[0];
+  assert.ok(candidate.records.length > 250, 'exercise the frozen native loop with its full history');
+  const descriptor = Object.getOwnPropertyDescriptor;
+  let reads = 0;
+  try {
+    Object.getOwnPropertyDescriptor = (object, key) => { reads++; return descriptor(object, key); };
+    assert.deepEqual(readLineExpressionHistory(candidate.line, result.ir), candidate.records);
+  } finally { Object.getOwnPropertyDescriptor = descriptor; }
+  // Count work, not wall time. The pre-fix native read performs over a million
+  // descriptor probes by rechecking the same whole IR for each selection.
+  assert.ok(reads < 300000, `repeated native input observations: ${reads}`);
+  assert.equal(readLineExpressionHistory({ ...candidate.line }, result.ir), null);
+  const input = result.ir.values[0], originalId = input.id;
+  let kindReads = 0, changed = false;
+  try {
+    Object.getOwnPropertyDescriptor = (object, key) => {
+      const data = descriptor(object, key);
+      if (object === input && key === 'kind' && ++kindReads === 2) {
+        input.id = 'changed-during-live-observation'; changed = true;
+      }
+      return data;
+    };
+    assert.equal(readLineExpressionHistory(candidate.line, result.ir), null);
+  } finally { Object.getOwnPropertyDescriptor = descriptor; input.id = originalId; }
+  assert.equal(changed, true, 'mutation occurs after the first live input observation');
+  assert.deepEqual(readLineExpressionHistory(candidate.line, result.ir), candidate.records);
+  result.ir.values = [...result.ir.values];
+  assert.equal(readLineExpressionHistory(candidate.line, result.ir), null, 'no truth cache survives the read');
+});
