@@ -163,7 +163,7 @@ export class ByteView {
       const startNumber = Number(start);
       const endNumber = Number(end);
       const span = this.bytes.subarray(startNumber, endNumber);
-      const nul = span.indexOf(0, Number(start - p));
+      const nul = span.indexOf(0);
       raw = nul < 0 ? span : span.subarray(0, nul);
     } else {
       // A sparse backing must scan in bounded blocks. Calling u8() one byte
