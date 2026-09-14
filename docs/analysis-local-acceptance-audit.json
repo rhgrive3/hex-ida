@@ -1129,6 +1129,171 @@
         "Pinned LLVM 18.1.3 and Playwright 1.63.0 Chromium/WebKit executables unavailable here.",
         "Physical Apple arm64e/iPad, hardware/ordering oracle, signing, active runtime and release evidence."
       ]
+    },
+    "movingMainReconciliation": {
+      "date": "2026-09-14",
+      "status": "CHECKPOINT-LOCKED",
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false,
+      "inputHead": "bdb22111d040d8c7549b159211405e32e64bdd56",
+      "oldBase": "2b9c1218e0c5bb394aab5b219adc7c253a764451",
+      "mainHead": "5676d9ccaf5ba957e87b56b0504b2e3c72c167fa",
+      "baseResolution": "Direct refs/heads/main read; PR-info base SHA remained the old merge base.",
+      "adoptedMainCommits": [
+        "85387f5d905ed5c28c71461c5651b76645698d44",
+        "c7d22942bdeab08b40a69fe537022ecb883afca0",
+        "f687baa08893f4ab29116ccad3dc9c154e57d3f3",
+        "5676d9ccaf5ba957e87b56b0504b2e3c72c167fa"
+      ],
+      "adoptedPaths": [
+        {
+          "path": "js/managed/dex/parser.js",
+          "importedMainBlob": "5e002fdcca432c73fb3e0018fd4ee3c46c0c3da8",
+          "finalSha256": "1dd45da03d1306a8356a48c668ac7265ab2c242a6993cfa33e489ba3c582fd39"
+        },
+        {
+          "path": "js/managed/shared/bridge-jvm-control-overlay-v2.js",
+          "importedMainBlob": "6e91c1ddf4a7e760abf13aa723cfe45d73482401",
+          "finalSha256": "297407d424272ec52e8a757136c5a047889bf0be3fc36e8099f0742839ae2a0b"
+        },
+        {
+          "path": "js/metadata/go.js",
+          "importedMainBlob": "af6eb262888c57bdb33b88e0e266dc3de62f5e67",
+          "finalSha256": "22e431ab2db8cc97ced69f83a7be444b27ad682ec87f4fd20f15d0ac739b9168"
+        },
+        {
+          "path": "js/runtime/app-runtime.js",
+          "importedMainBlob": "13420e0e1d96cbbfc5cebbbc5049a0f0a3a398f1",
+          "finalSha256": "dd073061a978ecb5e93cfd74819292e3c0ab1a2795230ec6442636f3339d271e"
+        },
+        {
+          "path": "tests/issue-8722-go-metadata-resource-budget.test.mjs",
+          "importedMainBlob": "cae0a7452add371b9e08bbbd1ec1198894b709a9",
+          "finalSha256": "1f74c497742f3ac223301e0e33ba1ff882f62f15aa9d20d2a632e47cd2f7f055"
+        },
+        {
+          "path": "tests/phase10/runtime/issue-8728-async-content-hash-stale-binary.test.mjs",
+          "importedMainBlob": "b96932315f32ba32fce17ece8601c94bb841e264",
+          "finalSha256": "4ab810fc88c1c71f427b0a5dc90d7f1f8e148b12676e30e5f772301de475337a"
+        },
+        {
+          "path": "tests/phase11/dex/issue-8717-identity-tables.test.mjs",
+          "importedMainBlob": "28fed9e80e70342253114606527bc361330948fa",
+          "finalSha256": "4c733c7eeb28e3d9409a75e4668022c526223c26637fa528e2446f706d5392b5"
+        },
+        {
+          "path": "tests/phase11/jvm/issue-8724-control-overlay-order.test.mjs",
+          "importedMainBlob": "b720280820bc7fbf3651f6c72e5ea721a828856e",
+          "finalSha256": "bbbf8069f203c8dcbb71b9c33a347035d2e53ee9573d269218080bfd20913456"
+        }
+      ],
+      "C4RuntimeSourceHashesUnchanged": true,
+      "mainFixtureRepair": {
+        "path": "tests/phase11/jvm/issue-8724-control-overlay-order.test.mjs",
+        "reason": "The incoming ordinary-class fixture incorrectly had super_class=0. Add a real java/lang/Object constant-pool superclass and retain zero-super rejection. JVM parser and bytecode denominator unchanged.",
+        "exactOwnershipAdded": true
+      },
+      "preRepairMainRegression": {
+        "label": "new-main-regressions",
+        "command": [
+          "/workspace/scratch/6decb715e99a/ci-node22/node_modules/node/bin/node",
+          "--test",
+          "tests/issue-8722-go-metadata-resource-budget.test.mjs",
+          "tests/phase10/runtime/issue-8728-async-content-hash-stale-binary.test.mjs",
+          "tests/phase11/dex/issue-8717-identity-tables.test.mjs",
+          "tests/phase11/jvm/issue-8724-control-overlay-order.test.mjs"
+        ],
+        "exitCode": 1,
+        "result": "Rerun with HEX_TEST_OUTPUT=verbose for live full output.",
+        "logSha256": "800ab44553e85f5c8774dc7998cf0e913f0f3e9cdf96f93ace1d478ef6142b9d"
+      },
+      "newMainVerification": [
+        {
+          "label": "build-1",
+          "command": [
+            "npm",
+            "run",
+            "userscript:build"
+          ],
+          "exitCode": 0,
+          "result": "c4-main-build-1: PASS (2.1s)",
+          "logSha256": "9321e691e9dca385d2a879583a1876e6b9d943cd3c43786abc44e84227cd5285"
+        },
+        {
+          "label": "build-2",
+          "command": [
+            "npm",
+            "run",
+            "userscript:build"
+          ],
+          "exitCode": 0,
+          "result": "c4-main-build-2: PASS (2.0s)",
+          "logSha256": "66c65357487135b1a0c4198122686a1445bc488a821b4badce00c6f7629d41ae"
+        },
+        {
+          "label": "new-main-regressions",
+          "command": [
+            "/workspace/scratch/6decb715e99a/ci-node22/node_modules/node/bin/node",
+            "--test",
+            "tests/issue-8722-go-metadata-resource-budget.test.mjs",
+            "tests/phase10/runtime/issue-8728-async-content-hash-stale-binary.test.mjs",
+            "tests/phase11/dex/issue-8717-identity-tables.test.mjs",
+            "tests/phase11/jvm/issue-8724-control-overlay-order.test.mjs",
+            "tests/phase7/ownership/roadmap-v8-integration.test.mjs"
+          ],
+          "exitCode": 0,
+          "result": "c4-main-new-main-regressions: PASS (5.8s)",
+          "logSha256": "889d32a66a7c856318d63f255dbb58cfb1d51700624a6bd1500c5934586c3ee8"
+        },
+        {
+          "label": "core",
+          "command": [
+            "npm",
+            "run",
+            "core:test"
+          ],
+          "exitCode": 0,
+          "result": "c4-main-core: PASS (43.3s)",
+          "logSha256": "c5791472d5d997c6a4177e2708b593e91a8b946702a4c134e9ec55c2838d9eb9"
+        },
+        {
+          "label": "binary",
+          "command": [
+            "npm",
+            "run",
+            "binary:test"
+          ],
+          "exitCode": 0,
+          "result": "c4-main-binary: PASS (2.1s)",
+          "logSha256": "57e97506b1d1f35ce20a48c8e26e06f77135ef55e4468cde372988d6ba5221b7"
+        }
+      ],
+      "generatedSha256": {
+        "userscript/hex.user.template.js": "071065f30c5681ee0e19fb049e4f4986c8c38765cd0acf4691ddbfa0a1f8b743",
+        "userscript/release-version.json": "f9a472edc6d500cf5551683c5c5c9a5333c303b57e5b2a42db792d8eeedd0cfe"
+      },
+      "secondBuildIdentical": true,
+      "previousHeadCi": {
+        "head": "bdb22111d040d8c7549b159211405e32e64bdd56",
+        "fastGateRun": 34807325683,
+        "fastGate": "all steps success",
+        "userscriptRun": 34807325628,
+        "userscript": "success",
+        "circleCiOtherContexts": "7 success",
+        "benchmarkJob": 68814,
+        "benchmark": "failure",
+        "finalAdmissionRun": 34807515179,
+        "finalAdmission": "failure",
+        "smallBenchmarkReportRetrieved": false
+      },
+      "previousHeadAdditionalRegression": {
+        "head": "bdb22111d040d8c7549b159211405e32e64bdd56",
+        "suite": "tests/phase8/substrate/proof-target-decisions.test.mjs",
+        "result": "complete file PASS (42.8s)",
+        "logSha256": "30ec9cf216a1a2638bf51b6c25db43a584456e7d6d3222dfad0897d227e89698",
+        "scope": "Earlier whole-Phase8 refusal did not reproduce in the full file. This is not acceptance of an unrun complete final-head Phase8 gate."
+      },
+      "remaining": "Actual benchmark report/fix and final-head admission, complete whole/Phase8 acceptance, C4 full proof/120ms and independent device/runtime/release evidence remain required."
     }
   },
   "integrationFollowupHistory": [
