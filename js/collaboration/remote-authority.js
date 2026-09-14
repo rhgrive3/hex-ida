@@ -192,6 +192,154 @@ function snapshotRemoteEnvelope(envelope) {
   return deepFreeze(snapshot);
 }
 
+// #8652 — the ingress budget must bound work and allocation before any
+// canonicalization pass. This preflight only ever accumulates a lower bound of
+// the canonical byte size, so an over-budget verdict is exactly what the
+// post-snapshot byteLength() authority would have reported, while a graph that
+// the walker cannot measure stays with the existing fail-closed paths.
+const PREFLIGHT_DEPTH_LIMIT = SNAPSHOT_SCAN_DEPTH_LIMIT;
+
+function ownEnumerableEntry(record, key) {
+  const descriptor = Object.getOwnPropertyDescriptor(record, key);
+  if (descriptor === undefined || descriptor.enumerable !== true) return { kind: 'absent', value: undefined };
+  if (descriptor.get !== undefined || descriptor.set !== undefined) return { kind: 'accessor', value: undefined };
+  return { kind: 'data', value: descriptor.value };
+}
+
+function preflightStop(state, reason) {
+  if (state.stop === null) state.stop = reason;
+  return false;
+}
+
+function preflightAdd(state, bytes) {
+  state.bytes += bytes;
+  if (state.bytes > state.maxMessageBytes) preflightStop(state, 'over-size');
+}
+
+function preflightNode(state) {
+  state.nodes += 1;
+  if (state.nodes > state.nodeCeiling) return preflightStop(state, 'over-size');
+  return false;
+}
+
+function preflightEntry(state) {
+  state.entries += 1;
+  if (state.entries > state.entryCeiling) return preflightStop(state, 'over-size');
+  return false;
+}
+
+function preflightMeasure(value, depth, state, inOperations) {
+  if (state.stop !== null) return false;
+  if (value === null) { preflightAdd(state, 4); return true; }
+  const type = typeof value;
+  if (type === 'string') { preflightAdd(state, value.length + 2); return true; }
+  if (type === 'number') {
+    const finite = Number.isFinite(value);
+    preflightAdd(state, finite ? String(value).length : 0);
+    return finite;
+  }
+  if (type === 'boolean') { preflightAdd(state, value === true ? 4 : 5); return true; }
+  if (type === 'bigint') { preflightAdd(state, value.toString().length + 2); return true; }
+  if (type !== 'object') return false;
+  if (depth > PREFLIGHT_DEPTH_LIMIT) return preflightStop(state, 'depth');
+  if (state.path.includes(value)) return preflightStop(state, 'cyclic');
+  try {
+    const isView = ArrayBuffer.isView(value);
+    const isArrayBuffer = !isView && value instanceof ArrayBuffer;
+    if (isView || isArrayBuffer || isSharedMemory(value)) {
+      if (inOperations && state.rawEgressGuard) return preflightStop(state, 'raw-binary');
+      preflightAdd(state, (isView || isArrayBuffer ? value.byteLength : 0) * 2 + 2);
+      return true;
+    }
+    const backing = ownEnumerableEntry(value, '__binaryByteBacking');
+    if (backing.kind === 'accessor') return preflightStop(state, 'accessor');
+    if (inOperations && backing.kind === 'data' && backing.value === true && state.rawEgressGuard) {
+      return preflightStop(state, 'raw-binary');
+    }
+    state.path.push(value);
+    if (preflightNode(state)) return false;
+    if (value instanceof Map) {
+      for (const [key, item] of value) {
+        if (preflightEntry(state)) break;
+        preflightMeasure(key, depth + 1, state, inOperations);
+        preflightMeasure(item, depth + 1, state, inOperations);
+        if (state.stop !== null) break;
+      }
+    } else if (value instanceof Set) {
+      for (const item of value) {
+        if (preflightEntry(state)) break;
+        preflightMeasure(item, depth + 1, state, inOperations);
+        if (state.stop !== null) break;
+      }
+    } else if (Array.isArray(value)) {
+      preflightAdd(state, 2 + (value.length > 0 ? value.length - 1 : 0));
+      for (const item of value) {
+        if (preflightEntry(state)) break;
+        preflightMeasure(item, depth + 1, state, inOperations);
+        if (state.stop !== null) break;
+      }
+    } else {
+      preflightAdd(state, 2);
+      let emitted = 0;
+      for (const key of Object.keys(value)) {
+        const entry = ownEnumerableEntry(value, key);
+        if (entry.kind === 'accessor') break;
+        if (entry.kind !== 'data') continue;
+        const childInOperations = inOperations || (depth === 0 && key === 'operations');
+        const childKept = preflightMeasure(entry.value, depth + 1, state, childInOperations);
+        if (state.stop !== null) break;
+        // The child's own canonical lower bound was accumulated by the recursion.
+        if (childKept) {
+          if (preflightEntry(state)) break;
+          preflightAdd(state, key.length + 3 + (emitted > 0 ? 1 : 0));
+          emitted += 1;
+        }
+      }
+    }
+    state.path.pop();
+    return true;
+  } catch {
+    return preflightStop(state, 'error');
+  }
+}
+
+function childBytesOf(_kept, bytes) { return bytes; }
+
+function admitRemoteEnvelope(envelope, maxBatch, maxMessageBytes) {
+  if (!isPlainRecord(envelope)) return { status: 'indeterminate' };
+  const operations = ownEnumerableEntry(envelope, 'operations');
+  if (operations.kind !== 'data' || !Array.isArray(operations.value)
+    || operations.value.length === 0 || operations.value.length > maxBatch) {
+    return { status: 'over-batch' };
+  }
+  let rawEgressGuard = true;
+  try {
+    rawEgressGuard = envelope?.egress?.rawBinaryBytes !== true && envelope?.egress?.derivedDataOnly !== false;
+  } catch {
+    rawEgressGuard = true;
+  }
+  const state = {
+    bytes: 0,
+    nodes: 0,
+    entries: 0,
+    stop: null,
+    path: [],
+    rawEgressGuard,
+    maxMessageBytes,
+    nodeCeiling: maxMessageBytes + 1,
+    entryCeiling: maxMessageBytes + 1,
+  };
+  preflightMeasure(envelope, 0, state, false);
+  return { status: state.stop ?? 'admitted' };
+}
+
+const ADMISSION_REJECTIONS = Object.freeze({
+  'over-batch': 'remote-batch-budget-exceeded',
+  'over-size': 'remote-message-budget-exceeded',
+  'raw-binary': 'remote-raw-binary-egress-forbidden',
+  'cyclic': 'remote-envelope-shape-invalid',
+});
+
 function isCanonicalRemoteOperation(operation) {
   if (!isPlainRecord(operation)) return false;
   const canonical = canonicalizeProjectOperation(operation);
@@ -308,6 +456,9 @@ export class RemoteCollaborationGate {
   validate(envelope) {
     VERIFIED_TRANSPORT_PROOFS.delete(this);
     VALIDATED_REMOTE_SNAPSHOTS.delete(envelope);
+    const admission = admitRemoteEnvelope(envelope, this.maxBatch, this.maxMessageBytes);
+    const admissionReason = ADMISSION_REJECTIONS[admission.status];
+    if (admissionReason) return { ok: false, reason: admissionReason };
     if (envelope?.egress?.rawBinaryBytes !== true && envelope?.egress?.derivedDataOnly !== false
       && Array.isArray(envelope?.operations) && containsRawBinaryBytes(envelope.operations)) {
       return { ok: false, reason: 'remote-raw-binary-egress-forbidden' };
