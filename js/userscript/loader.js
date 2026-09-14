@@ -56,7 +56,11 @@ async function loadRuntime() {
     body: JSON.stringify({ nonce, loaderVersion: LOADER_VERSION, buildId: EXPECTED_BUILD, requestId, sessionIdentity, clientPublicKey }),
   }));
   if (!bootstrap || bootstrap.buildId !== EXPECTED_BUILD || Date.parse(bootstrap.expiry) <= Date.now()) throw new Error('Runtime bootstrap identity or expiry could not be verified.');
-  if (!Number.isSafeInteger(bootstrap.manifest?.byteLength) || bootstrap.manifest.byteLength <= 0 || bootstrap.manifest.byteLength > RUNTIME_MAX_CIPHERTEXT_BYTES) throw new Error('The protected runtime manifest does not declare an admissible byte length.');
+  const manifest = bootstrap.manifest;
+  if (!manifest || manifest.buildId !== EXPECTED_BUILD) throw new Error('The protected runtime manifest build identity does not match the pinned loader build.');
+  if (typeof manifest.aad !== 'string' || !manifest.aad.startsWith(`hex-runtime:${EXPECTED_BUILD}:`)) throw new Error('The protected runtime manifest AAD is not bound to the pinned loader build.');
+  if (!isCanonicalSha256(manifest.contentHash) || !manifest.contentHash.startsWith(EXPECTED_BUILD)) throw new Error('The protected runtime manifest content hash is not bound to the pinned loader build.');
+  if (!Number.isSafeInteger(manifest.byteLength) || manifest.byteLength <= 0 || manifest.byteLength > RUNTIME_MAX_CIPHERTEXT_BYTES) throw new Error('The protected runtime manifest does not declare an admissible byte length.');
   const sourceCommit = normalizeCommit(bootstrap.sourceCommit);
   globalThis.__HEX_DEPLOYMENT_COMMIT__ = sourceCommit;
   const serverPublicKey = await cryptoStage('ECDH server-key import', () => crypto.subtle.importKey('jwk', bootstrap.serverPublicKey, { name: 'ECDH', namedCurve: 'P-256' }, false, []));
@@ -74,17 +78,18 @@ async function loadRuntime() {
     tagLength: 128,
   }, wrappingKey, toExactArrayBuffer(fromB64(bootstrap.keyEnvelope.ciphertext))));
   const contentKey = await cryptoStage('AES-GCM content-key import', () => crypto.subtle.importKey('raw', toExactArrayBuffer(contentKeyRaw), { name: 'AES-GCM' }, false, ['decrypt']));
-  const ciphertext = await runtimeStage('protected runtime fetch', () => fetchBytes(new URL(bootstrap.runtimeLocator, HEX_ORIGIN).href, { headers: { authorization: `Bearer ${bootstrap.session}` } }, bootstrap.manifest.byteLength));
-  await assertHash(ciphertext, bootstrap.manifest.ciphertextHash);
+  const ciphertext = await runtimeStage('protected runtime fetch', () => fetchBytes(new URL(bootstrap.runtimeLocator, HEX_ORIGIN).href, { headers: { authorization: `Bearer ${bootstrap.session}` } }, manifest.byteLength));
+  await assertHash(ciphertext, manifest.ciphertextHash);
   const compressed = new Uint8Array(await cryptoStage('AES-GCM runtime decrypt', () => crypto.subtle.decrypt({
     name: 'AES-GCM',
-    iv: toExactArrayBuffer(fromB64(bootstrap.manifest.iv)),
-    additionalData: toExactArrayBuffer(utf8(bootstrap.manifest.aad)),
+    iv: toExactArrayBuffer(fromB64(manifest.iv)),
+    additionalData: toExactArrayBuffer(utf8(manifest.aad)),
     tagLength: 128,
   }, contentKey, toExactArrayBuffer(ciphertext))));
-  if (bootstrap.manifest.compression !== 'gzip') throw new Error('The protected runtime compression format is unsupported.');
+  if (manifest.compression !== 'gzip') throw new Error('The protected runtime compression format is unsupported.');
   const plaintext = await runtimeStage('protected runtime decompress', () => decompressGzipExact(compressed, RUNTIME_MAX_PLAINTEXT_BYTES));
-  await assertHash(plaintext, bootstrap.manifest.contentHash);
+  const actualContentHash = await assertHash(plaintext, manifest.contentHash);
+  if (!actualContentHash.startsWith(EXPECTED_BUILD)) throw new Error('The protected runtime content digest is not bound to the pinned loader build.');
   const blobUrl = await runtimeStage('protected runtime Blob creation', () => URL.createObjectURL(new Blob([toExactArrayBuffer(plaintext)], { type: 'text/javascript' })));
   try {
     const runtimeModule = await runtimeStage('protected runtime import', () => import(blobUrl));
@@ -96,7 +101,7 @@ async function loadRuntime() {
       loaderVersion: LOADER_VERSION,
       buildId: EXPECTED_BUILD,
       sourceCommit,
-      runtimeContentHash: String(bootstrap.manifest.contentHash || '').toLowerCase(),
+      runtimeContentHash: actualContentHash,
       runtimeSourceProvider() {
         sourceCopies += 1;
         if (sourceCopies > 1) throw new Error('Protected runtime source was requested more than once.');
@@ -120,7 +125,9 @@ async function assertHash(bytes, expected) {
   const digest = await cryptoStage('SHA-256 integrity digest', () => crypto.subtle.digest('SHA-256', toExactArrayBuffer(bytes)));
   const actual = toHex(new Uint8Array(digest));
   if (!constantTimeEqual(actual, String(expected || '').toLowerCase())) throw new Error('Protected runtime integrity verification failed.');
+  return actual;
 }
+function isCanonicalSha256(value) { return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value); }
 function constantTimeEqual(a, b) { if (a.length !== b.length) return false; let diff = 0; for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i); return diff === 0; }
 
 async function fetchJson(url, init = {}) {
