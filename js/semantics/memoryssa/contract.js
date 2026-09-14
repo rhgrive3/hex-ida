@@ -153,15 +153,17 @@ export function canonicalSnapshotId(value, code = 'memory-ssa-snapshot-id-invali
 }
 
 /**
- * Consumer-side view of the same policy: the canonical token, or `null` when the
- * value proves nothing. A comparison against `null` can only ever mismatch, so a
- * structured or blank snapshot on either side fails closed to `stale` instead of
- * being repaired into a matching id (#8804).
+ * Consumer-side view of the same policy. `null` is reserved for a genuinely
+ * absent snapshot; malformed non-null values return `NaN`, which is deliberately
+ * self-unequal. That distinction is important at comparison-only boundaries:
+ * two arrays/objects/blank strings must never authenticate each other merely
+ * because both failed normalization (#8804). No coercion hook is invoked.
  */
 export function snapshotIdIdentity(value) {
-  if (typeof value !== 'string') return null;
+  if (value == null) return null;
+  if (typeof value !== 'string') return Number.NaN;
   const text = value.trim();
-  return text || null;
+  return text || Number.NaN;
 }
 
 export function createMemoryRegionRef(input) {
