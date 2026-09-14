@@ -94,7 +94,12 @@ export class DexFrontend {
       : verifier.verifierFacts;
     const hasUnknowns = decoded.bundles.some((b) => b.completeness === 'unknown');
     const hasPartials = decoded.bundles.some((b) => b.completeness === 'partial');
-    const semanticPartial = hasUnknowns || hasPartials;
+    // Bypass-proof (#7981): an instance-field access without the receiver-null
+    // exception authority must not be advertised as a complete semantic effect
+    // even when its own bundle completeness hides the omission.
+    const missingReceiverExceptionAuthority = decoded.bundles.some((b) =>
+      (b.memoryEffects ?? []).some((m) => m.space === 'field' && m.receiverNullException !== true));
+    const semanticPartial = hasUnknowns || hasPartials || missingReceiverExceptionAuthority;
     const invalid = verifier.structuralErrors.length > 0 || verifierErrors.length > 0;
     const verifierPartial = partialReasons.length > 0;
     const status = invalid ? 'invalid' : (semanticPartial || verifierPartial) ? 'partial' : 'valid';
@@ -108,6 +113,7 @@ export class DexFrontend {
         structural: verifier.structuralErrors.length > 0 ? 'failed' : 'complete',
         specValidation: invalid ? 'failed' : verifierPartial || semanticPartial ? 'partial' : 'valid',
         semanticEffect: semanticPartial ? 'partial' : 'complete',
+        resolution: invalid || verifierPartial || semanticPartial ? 'partial' : 'complete',
       },
     });
   }

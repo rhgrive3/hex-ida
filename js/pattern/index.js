@@ -144,5 +144,15 @@ export function evaluatePattern(compiled, byteSource, options = {}) {
 }
 
 export function evaluatePatternAsync(compiled, byteSource, options = {}) {
-  return Promise.resolve(evaluatePattern(compiled, byteSource, options));
+  const pattern = looksCompiled(compiled)
+    ? validateCompiledPattern(compiled)
+    : compilePattern(compiled, options);
+  const rootSpace = pattern.compileOptions.targetAddressSpace;
+  if (options.addressSpace != null && options.addressSpace !== rootSpace) {
+    fail('pattern-address-space-override-mismatch');
+  }
+  const source = snapshotByteSource(byteSource, options);
+  const evaluateOptions = { ...options, addressSpace: rootSpace };
+  if (source !== byteSource) evaluateOptions.snapshotId = source.snapshotId;
+  return core.evaluatePatternAsync(pattern, source, evaluateOptions);
 }

@@ -26,9 +26,21 @@ function c(value) { return { kind: SYM.CONST, value: BigInt(value) }; }
 // Bit width is a semantic authority: only primitive finite safe-integer numbers
 // may define it. Structured values must not launder into a canonical width via
 // Number() coercion (e.g. Number(['8']) === 8).
-function widthOf(bits, fallback = 64) {
-  if (typeof bits !== 'number' || !Number.isSafeInteger(bits) || bits < 1) return fallback;
-  return Math.max(1, Math.min(64, bits));
+const MAX_EXECUTOR_WIDTH = 64;
+function widthSignal(bits) {
+  if (typeof bits !== 'number' || !Number.isSafeInteger(bits) || bits < 1) return null;
+  if (bits > MAX_EXECUTOR_WIDTH) return { unsupportedWidth: bits };
+  return { width: bits };
+}
+function resolveWidth(candidates) {
+  for (const bits of candidates) {
+    const signal = widthSignal(bits);
+    if (signal) return signal;
+  }
+  return { width: MAX_EXECUTOR_WIDTH };
+}
+function unsupportedWidth(resolved) {
+  return resolved.unsupportedWidth == null ? null : unknown('unsupported-width', { bits: resolved.unsupportedWidth });
 }
 function unknown(reason, detail) { return { kind: SYM.UNKNOWN, reason, detail: detail || null }; }
 function op(name, ...args) {
@@ -49,7 +61,10 @@ function op(name, ...args) {
 }
 
 function binOp(name, a, b, bits = 64) {
-  const width = widthOf(bits);
+  const resolved = resolveWidth([bits]);
+  const rejected = unsupportedWidth(resolved);
+  if (rejected) return rejected;
+  const width = resolved.width;
   if (a && b && a.kind === SYM.CONST && b.kind === SYM.CONST) {
     const av = a.value, bv = b.value;
     try {
@@ -89,7 +104,10 @@ return { kind: SYM.OP, op: name, args: [a, b], bits:width };
 }
 
 function cmp(name, a, b, options = {}) {
-  const bits = widthOf(options.bits);
+  const resolved = resolveWidth([options.bits]);
+  const rejected = unsupportedWidth(resolved);
+  if (rejected) return rejected;
+  const bits = resolved.width;
   const signed = options.signed === true ? true : options.signed === false ? false : null;
   if (a?.kind === SYM.CONST && b?.kind === SYM.CONST) {
     const au = BigInt.asUintN(bits, a.value), bu = BigInt.asUintN(bits, b.value);
@@ -223,25 +241,35 @@ function evalValue(value, state, ir, opts, memo, active) {
       const chosen = phiValue(d, state);
       out = chosen ? evalValue(chosen, state, ir, opts, memo, active) : unknown('ambiguous-phi', { instruction: d.id });
     } else if (d.op === OP.BIN && d.args.length >= 2 && ['add', 'sub', 'and', 'or', 'xor', 'orr', 'eor', 'shl', 'lshr', 'ashr', 'mul'].includes(d.sub)) {
-      out = binOp(d.sub,
-        evalValue(d.args[0].value, state, ir, opts, memo, active),
-        evalValue(d.args[1].value, state, ir, opts, memo, active),
-        widthOf(d.dst?.bits, widthOf(value?.bits, 64)));
+      const resolved = resolveWidth([d.dst?.bits, value?.bits]);
+      const lhs = evalValue(d.args[0].value, state, ir, opts, memo, active);
+      const rhs = evalValue(d.args[1].value, state, ir, opts, memo, active);
+      out = unsupportedWidth(resolved) || binOp(d.sub, lhs, rhs, resolved.width);
     } else if (d.op === OP.UN && d.args[0] && /^(sxt|uxt|fmov|neg)/.test(d.sub || '')) {
       const x = evalValue(d.args[0].value, state, ir, opts, memo, active);
-      const toBits = widthOf(d.dst?.bits, widthOf(value?.bits, 64));
       const m = /^(sxt|uxt)(8|16|32|64)?/.exec(d.sub || '');
-      if (d.sub === 'neg') out = binOp('sub', c(0n), x, toBits);
-      else if (m) {
-        // m[2] comes from the canonical op-name grammar, not decoder evidence.
-        const fromBits = m[2] != null
-          ? Number(m[2])
-          : widthOf(d.args[0].bits, widthOf(d.args[0].value?.bits, toBits));
-        if (x.kind === SYM.CONST) {
-          const narrowed = m[1] === 'sxt' ? BigInt.asIntN(fromBits, x.value) : BigInt.asUintN(fromBits, x.value);
-          out = c(BigInt.asUintN(toBits, narrowed));
-        } else out = { kind:SYM.OP, op:m[1] === 'sxt' ? 'sext' : 'zext', args:[x], fromBits, toBits };
-      } else out = x;
+      const toResolved = resolveWidth([d.dst?.bits, value?.bits]);
+      const toRejected = unsupportedWidth(toResolved);
+      if (toRejected) out = toRejected;
+      else {
+        const toBits = toResolved.width;
+        if (d.sub === 'neg') out = binOp('sub', c(0n), x, toBits);
+        else if (m) {
+          // m[2] comes from the canonical op-name grammar, not decoder evidence.
+          const fromResolved = m[2] != null
+            ? { width: Number(m[2]) }
+            : resolveWidth([d.args[0].bits, d.args[0].value?.bits, toBits]);
+          const fromRejected = unsupportedWidth(fromResolved);
+          if (fromRejected) out = fromRejected;
+          else {
+            const fromBits = fromResolved.width;
+            if (x.kind === SYM.CONST) {
+              const narrowed = m[1] === 'sxt' ? BigInt.asIntN(fromBits, x.value) : BigInt.asUintN(fromBits, x.value);
+              out = c(BigInt.asUintN(toBits, narrowed));
+            } else out = { kind:SYM.OP, op:m[1] === 'sxt' ? 'sext' : 'zext', args:[x], fromBits, toBits };
+          }
+        } else out = x;
+      }
     } else if (d.op === OP.LOAD && d.loc) {
       out = loadExpression(d, state, opts);
     } else if (d.op === OP.SEL && d.args.length >= 2) {
@@ -266,12 +294,15 @@ function conditionFromCmp(cmpInst, condCode, state, ir, opts, memo, active) {
   if (!info || !info.op) return unknown('unsupported-condition', { condition: condCode });
   const a = evalValue(cmpInst.args[0].value, state, ir, opts, memo, active);
   const b = evalValue(cmpInst.args[1].value, state, ir, opts, memo, active);
-  const bits = widthOf(
+  const resolved = resolveWidth([
     cmpInst.args[0]?.bits,
-    widthOf(cmpInst.args[0]?.value?.bits,
-      widthOf(cmpInst.args[1]?.bits,
-        widthOf(cmpInst.args[1]?.value?.bits, 64))));
-  return cmp(info.op, a, b, { bits, signed: info.signed });
+    cmpInst.args[0]?.value?.bits,
+    cmpInst.args[1]?.bits,
+    cmpInst.args[1]?.value?.bits,
+  ]);
+  const rejected = unsupportedWidth(resolved);
+  if (rejected) return rejected;
+  return cmp(info.op, a, b, { bits: resolved.width, signed: info.signed });
 }
 
 function conditionFromFlags(inst, state, ir, opts, memo, active) {

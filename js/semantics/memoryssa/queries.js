@@ -32,6 +32,12 @@ function positiveInteger(value, code) {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) fail(code);
   return value;
 }
+function validId(value, code) {
+  if (typeof value !== 'string') fail(code);
+  const text = value.trim();
+  if (!text || text !== value) fail(code);
+  return text;
+}
 function analysisObject(memorySsa) {
   if (!memorySsa || typeof memorySsa !== 'object') fail('memory-ssa-query-analysis-required');
   return memorySsa;
@@ -43,19 +49,28 @@ function useMap(memorySsa) {
   return new Map(analysisObject(memorySsa).uses.map((use) => [use.id, use]));
 }
 function useFrom(memorySsa, useOrId) {
-  if (useOrId && typeof useOrId === 'object') return useOrId;
-  const use = useMap(memorySsa).get(String(useOrId));
+  let id;
+  if (typeof useOrId === 'string') {
+    id = validId(useOrId, 'memory-ssa-query-use-id-required');
+  } else if (useOrId && typeof useOrId === 'object') {
+    id = validId(useOrId.id, 'memory-ssa-query-use-id-required');
+  } else {
+    fail('memory-ssa-query-use-id-required');
+  }
+  const use = useMap(memorySsa).get(id);
   if (!use) fail('memory-ssa-query-use-not-found');
   return use;
 }
 
 export function getMemoryDefinition(memorySsa, definitionId) {
-  const definition = definitionMap(memorySsa).get(String(definitionId));
+  const id = validId(definitionId, 'memory-ssa-query-definition-id-required');
+  const definition = definitionMap(memorySsa).get(id);
   return definition ?? null;
 }
 
 export function getMemoryUse(memorySsa, useId) {
-  return useMap(memorySsa).get(String(useId)) ?? null;
+  const id = validId(useId, 'memory-ssa-query-use-id-required');
+  return useMap(memorySsa).get(id) ?? null;
 }
 
 export function reachingMemoryDefinition(memorySsa, useOrId) {
@@ -2173,7 +2188,9 @@ export function forwardMemoryValue(memorySsa, useOrId, options = {}) {
 export const reconstructMemoryValue = forwardMemoryValue;
 
 export function memoryUsesOfDefinition(memorySsa, definitionOrId) {
-  const definitionId = typeof definitionOrId === 'object' ? definitionOrId.id : String(definitionOrId);
+  const definitionId = typeof definitionOrId === 'object' && definitionOrId
+    ? validId(definitionOrId.id, 'memory-ssa-query-definition-id-required')
+    : validId(definitionOrId, 'memory-ssa-query-definition-id-required');
   const byId = useMap(memorySsa);
   const indexed = memorySsa.defUseLinks?.find((link) => link.definitionId === definitionId)?.useIds;
   const useIds = indexed ?? memorySsa.uses

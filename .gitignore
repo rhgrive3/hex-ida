@@ -35,3 +35,6 @@ tests/.real-fixtures/
 /reports/competitive/
 
 tests/.accuracy-active-*.mjs
+
+# Machine/user-specific Claude Code settings override (#5899)
+/.claude/settings.local.json

@@ -17,10 +17,10 @@ assert.ok(reusableText.includes("verify_script:"), "3. verify_script input");
 assert.ok(reusableText.includes("artifact_prefix:"), "3. artifact_prefix input");
 assert.ok(reusableText.includes("artifact_suffix:"), "3. artifact_suffix input");
 assert.ok(reusableText.includes("evidence_paths:"), "3. evidence_paths input");
-assert.ok(reusableText.includes("actions/checkout@v4"), "4. actions/checkout@v4");
+assert.ok(reusableText.includes("actions/checkout@v7"), "4. actions/checkout@v7");
 assert.ok(reusableText.includes("fetch-depth: 0"), "5. fetch-depth: 0");
 assert.ok(reusableText.includes("git fetch --no-tags origin main:refs/remotes/origin/main"), "6. fetch origin/main");
-assert.ok(reusableText.includes("actions/setup-node@v4"), "7. setup-node");
+assert.ok(reusableText.includes("actions/setup-node@v7"), "7. setup-node");
 assert.ok(reusableText.includes("22"), "7. node 22");
 assert.ok(reusableText.includes("cache: npm"), "7. npm cache");
 assert.ok(reusableText.includes("npm ci --no-audit --no-fund"), "8. npm ci");
@@ -31,7 +31,7 @@ assert.ok(
   reusableText.includes("${{ inputs.run_broad_regression && github.event_name != 'pull_request' }}"),
   "12. broad regression is preserved at release boundaries and deduplicated on PRs",
 );
-assert.ok(reusableText.includes("actions/upload-artifact@v4"), "13. upload-artifact");
+assert.ok(reusableText.includes("actions/upload-artifact@v7"), "13. upload-artifact");
 assert.ok(reusableText.includes("if: success()"), "14. if: success()");
 assert.ok(reusableText.includes("${{ inputs.artifact_prefix }}-${{ inputs.artifact_suffix }}"), "15. artifact name");
 assert.ok(reusableText.includes("if-no-files-found: error"), "16. if-no-files-found: error");
@@ -74,11 +74,11 @@ console.log("  ok Phase 10/11 manual release caller assertions");
 
 // No duplicated mechanics in caller files
 for (const caller of [phase10Text, phase11Text]) {
-  assert.ok(!caller.includes("actions/setup-node@v4"));
+  assert.doesNotMatch(caller, /actions\/setup-node@v\d+/);
   assert.ok(!caller.includes("npm ci --no-audit --no-fund"));
   assert.ok(!caller.includes("git fetch --no-tags origin main"));
   assert.ok(!caller.includes("args=()"));
-  assert.ok(!caller.includes("actions/upload-artifact@v4"));
+  assert.doesNotMatch(caller, /actions\/upload-artifact@v\d+/);
 }
 
 console.log("  ok No duplicated mechanics in callers");

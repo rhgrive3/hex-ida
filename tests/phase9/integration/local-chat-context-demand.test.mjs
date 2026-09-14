@@ -44,6 +44,7 @@ test('local agent delegates acquisition to the demand-driven planner', async () 
 
   assert.doesNotMatch(runAgent, /app\.ensureStrings\s*\(/);
   assert.doesNotMatch(runAgent, /app\.ensureProgram\s*\(/);
-  assert.match(runAgent, /runDeterministicAgent\(question, localContext \|\| \{\}, \{/);
+  assert.match(runAgent, /const plannerGoal = plannerGoalWithTargetHint\(question, context\?\.untrustedTarget\);/);
+  assert.match(runAgent, /runDeterministicAgent\(plannerGoal, localContext \|\| \{\}, \{/);
   assert.match(runAgent, /\n\s*signal,\n/);
 });

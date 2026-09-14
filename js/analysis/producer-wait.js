@@ -27,6 +27,14 @@ export function appProducerAbortError(signal, message = 'Analysis producer abort
   return error;
 }
 
+function appProducerAbortReason(signal, message = 'Analysis producer aborted') {
+  // Consumer AbortSignal.reason is identity-bearing cancellation authority.
+  // Preserve every provided value exactly; only missing/unsafe reads fall back.
+  let reason;
+  try { reason = signal?.reason; } catch { return appProducerAbortError(null, message); }
+  return reason === undefined ? appProducerAbortError(null, message) : reason;
+}
+
 export function analysisAbortSignalMethods(signal) {
   if (signal == null) return null;
   const type = typeof signal;
@@ -83,7 +91,7 @@ export function waitForAppProducer(entry, signal) {
   }
   if (subscription?.signal.aborted) {
     abortProducerWithoutConsumers(entry);
-    return Promise.reject(appProducerAbortError(subscription.signal));
+    return Promise.reject(appProducerAbortReason(signal));
   }
   entry.waiters++;
   return new Promise((resolve, reject) => {
@@ -98,7 +106,7 @@ export function waitForAppProducer(entry, signal) {
       if (abortIfLast) abortProducerWithoutConsumers(entry);
       fn(value);
     };
-    const onAbort = () => finish(reject, appProducerAbortError(subscription?.signal), true);
+    const onAbort = () => finish(reject, appProducerAbortReason(signal), true);
     if (subscription) {
       try {
         subscription.addEventListener.call(subscription.signal, 'abort', onAbort, { once:true });

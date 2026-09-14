@@ -1,4 +1,5 @@
 import { createArtifactDescriptor, createArtifactStore } from '../core/artifacts/index.js';
+import { assertWorldScope } from '../core/identity/world.js';
 import { createEntityId, createSliceId } from '../core/identity/index.js';
 import { AnalysisScheduler } from '../core/scheduler/index.js';
 import { BudgetExceededError } from '../core/budgets/index.js';
@@ -561,7 +562,39 @@ export function awaitCancellableProducer(operation, signal) {
  * already-canonical identity is supplied.
  */
 export function createWorkerAnalysisArtifactDescriptor(input = {}) {
-  const binaryId = requireCanonicalBinaryId(input.binaryId);
+  return createBoundWorkerAnalysisArtifactDescriptor({ ...input, dependencyScope: null }, requireCanonicalBinaryId(input.binaryId));
+}
+
+/** Local immutable sources are scoped identities, NOT fake whole-file SHA256s.
+ * This internal boundary requires a host-created world and binds that world's
+ * generation into the existing artifact key. It does not weaken the legacy
+ * content-addressed descriptor API or permit cross-session source reuse.
+ */
+export function createScopedWorkerAnalysisArtifactDescriptor(input = {}, world) {
+  assertWorldScope(world);
+  const binaryId = required(input.binaryId, 'analysis-scoped-binary-required');
+  const requestedSliceId = input.sliceId == null
+    ? createSliceId({ binaryId, index: input.sliceIndex ?? 0, architecture: input.architecture ?? 'unknown' })
+    : required(input.sliceId, 'analysis-scoped-slice-required').toLowerCase();
+  const member = world.binarySet.find((entry) => entry.binaryId === binaryId && entry.sliceId === requestedSliceId);
+  if (!member) throw new TypeError('analysis-scoped-source-outside-world');
+  if (CANONICAL_BINARY_ID.test(binaryId)) {
+    if (binaryId !== binaryId.toLowerCase()) throw new TypeError('analysis-scoped-binary-not-canonical');
+  } else if (!/^local_immutable_[0-9a-f]{32}$/.test(binaryId)
+    || member.sourceIdentity.kind !== 'local-immutable'
+    || member.sourceIdentity.sourceInstance !== binaryId) {
+    throw new TypeError('analysis-scoped-source-binding-invalid');
+  }
+  const descriptor = createBoundWorkerAnalysisArtifactDescriptor({ ...input,
+    config: { ...(input.config ?? {}), scopedWorldId: world.id, scopedGeneration: world.generation },
+    keyExtras: { ...(input.keyExtras ?? {}), sourceIdentityKind: member.sourceIdentity.kind,
+      scopedIdentityContract: 'host-bound-local-immutable/v1' },
+  }, binaryId);
+  if (descriptor.sliceId !== member.sliceId) throw new TypeError('analysis-scoped-slice-mismatch');
+  return descriptor;
+}
+
+function createBoundWorkerAnalysisArtifactDescriptor(input, binaryId) {
   const artifactKind = required(input.artifactKind ?? 'worker-analysis-result', 'analysis-artifact-kind-required');
   const architecture = required(input.architecture ?? 'unknown', 'analysis-artifact-architecture-required');
   // Canonical identity must have exactly one text representation. The
@@ -594,11 +627,12 @@ export function createWorkerAnalysisArtifactDescriptor(input = {}) {
     },
     config:input.config ?? {},
     keyExtras:{
+      ...(input.keyExtras ?? {}),
       migrationContract:WORKER_CACHE_MIGRATION_VERSION,
       payloadCodec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION,
-      ...(input.keyExtras ?? {}),
     },
     upstreamArtifactIds:input.upstreamArtifactIds ?? [],
+    ...(input.dependencyScope ? { dependencyScope: input.dependencyScope } : {}),
     originRefs:input.originRefs ?? [],
   });
 }
@@ -643,10 +677,10 @@ export class ArtifactAnalysisOrchestrator {
         ? (encodedPayload, record, context) => validate(decodeWorkerAnalysisPayload(encodedPayload, { rejectSparseArrays:true }), record, context)
         : null,
       creation:{
+        ...(creation || {}),
         migrationContract:WORKER_CACHE_MIGRATION_VERSION,
         payloadCodec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION,
         sourceRoute:ANALYSIS_ORCHESTRATION_ROUTE.CURRENT,
-        ...(creation || {}),
       },
       produce:async (context) => {
         this.metrics.producerInvocations++;

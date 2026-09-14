@@ -136,6 +136,7 @@ assert.equal(validateVMEffectFunction(fn), true);
 const report = createManagedValidationReport({
   targetId: methodId,
   status: 'valid',
+  completeness: { structural:'complete', specValidation:'valid', semanticEffect:'complete', resolution:'complete' },
   verifierFacts: ['stack-balanced-at-all-joins'],
 });
 assert.equal(report.status, 'valid');

@@ -9,6 +9,10 @@ export const GNU_PROPERTY_AARCH64_FEATURE_1_GCS = 1 << 2;
 
 const EM_AARCH64 = 183;
 const PN_XNUM = 0xffff;
+const DEFAULT_MAX_AGGREGATE_PROPERTY_BYTES = 4 * 1024 * 1024;
+const DEFAULT_MAX_PROPERTY_OPERATIONS = 262_144;
+const DEFAULT_MAX_PROPERTY_ENTRIES = 65_536;
+const DEFAULT_MAX_EVIDENCE_RECORDS = 4_096;
 
 function safeNumber(value) {
   if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? value : null;
@@ -28,6 +32,121 @@ function boundedSpan(offset, size, length) {
   return Number.isSafeInteger(offset) && Number.isSafeInteger(size)
     && offset >= 0 && size >= 0 && offset <= length && size <= length - offset;
 }
+
+function budgetOption(options, primary, alias, fallback) {
+  return optionBudget(options[primary] ?? options[alias], fallback);
+}
+
+function createPropertyBudget(options, maxProgramHeaders, maxPropertyBytes) {
+  return {
+    maxProgramHeaders,
+    maxPropertyBytes,
+    maxAggregatePropertyBytes: budgetOption(
+      options,
+      'maxAggregatePropertyBytes',
+      'maxPropertyBytesTotal',
+      DEFAULT_MAX_AGGREGATE_PROPERTY_BYTES,
+    ),
+    maxPropertyOperations: budgetOption(
+      options,
+      'maxPropertyOperations',
+      'maxOperations',
+      DEFAULT_MAX_PROPERTY_OPERATIONS,
+    ),
+    maxPropertyEntries: optionBudget(options.maxPropertyEntries, DEFAULT_MAX_PROPERTY_ENTRIES),
+    maxEvidenceRecords: budgetOption(
+      options,
+      'maxEvidenceRecords',
+      'maxEvidence',
+      DEFAULT_MAX_EVIDENCE_RECORDS,
+    ),
+    programHeadersVisited: 0,
+    uniqueSpans: 0,
+    duplicateSpanHeaders: 0,
+    aggregatePropertyBytes: 0,
+    propertyOperations: 0,
+    propertyEntries: 0,
+    evidenceRecords: 0,
+    exhausted: false,
+    exhaustedReason: null,
+  };
+}
+
+function budgetSnapshot(budget) {
+  return Object.freeze({
+    maxProgramHeaders: budget.maxProgramHeaders,
+    maxPropertyBytes: budget.maxPropertyBytes,
+    maxAggregatePropertyBytes: budget.maxAggregatePropertyBytes,
+    maxPropertyOperations: budget.maxPropertyOperations,
+    maxPropertyEntries: budget.maxPropertyEntries,
+    maxEvidenceRecords: budget.maxEvidenceRecords,
+    programHeadersVisited: budget.programHeadersVisited,
+    uniqueSpans: budget.uniqueSpans,
+    duplicateSpanHeaders: budget.duplicateSpanHeaders,
+    aggregatePropertyBytes: budget.aggregatePropertyBytes,
+    propertyOperations: budget.propertyOperations,
+    propertyEntries: budget.propertyEntries,
+    evidenceRecords: budget.evidenceRecords,
+    exhausted: budget.exhausted,
+    exhaustedReason: budget.exhaustedReason,
+  });
+}
+
+function exhaustBudget(budget, reason) {
+  if (!budget.exhausted) {
+    budget.exhausted = true;
+    budget.exhaustedReason = reason;
+  }
+  return false;
+}
+
+function takeOperation(budget) {
+  if (budget.propertyOperations >= budget.maxPropertyOperations) {
+    return exhaustBudget(budget, 'property-operations');
+  }
+  budget.propertyOperations++;
+  return true;
+}
+
+function takePropertyEntry(budget) {
+  if (budget.propertyEntries >= budget.maxPropertyEntries) {
+    return exhaustBudget(budget, 'property-entries');
+  }
+  if (!takeOperation(budget)) return false;
+  budget.propertyEntries++;
+  return true;
+}
+
+function admitPropertySpan(budget, filesz) {
+  if (filesz > budget.maxAggregatePropertyBytes - budget.aggregatePropertyBytes) {
+    return exhaustBudget(budget, 'aggregate-property-bytes');
+  }
+  if (!takeOperation(budget)) return false;
+  budget.aggregatePropertyBytes += filesz;
+  budget.uniqueSpans++;
+  return true;
+}
+
+function admitEvidenceRecord(budget) {
+  if (budget.evidenceRecords >= budget.maxEvidenceRecords) {
+    return exhaustBudget(budget, 'evidence-records');
+  }
+  budget.evidenceRecords++;
+  return true;
+}
+
+function budgetResult(budget, overrides, warnings) {
+  const finalWarnings = [...warnings];
+  if (budget.exhausted) {
+    finalWarnings.push(`GNU property parser budget exhausted: ${budget.exhaustedReason}`);
+  }
+  return defaultResult({
+    ...overrides,
+    budget: budgetSnapshot(budget),
+    warnings: Object.freeze(finalWarnings),
+  });
+}
+
 
 function defaultResult(overrides = {}) {
   return Object.freeze({
@@ -81,22 +200,29 @@ export function parseAarch64GnuProperty(input, options = {}) {
   const minPh = bits === 64 ? 56 : 32;
   const maxProgramHeaders = optionBudget(options.maxProgramHeaders, 4096);
   const maxPropertyBytes = optionBudget(options.maxPropertyBytes, 1024 * 1024);
+  const budget = createPropertyBudget(options, maxProgramHeaders, maxPropertyBytes);
   const warnings = [];
   if (phnum === PN_XNUM) {
     warnings.push('extended ELF program-header count is not re-read by the bounded GNU property parser');
-    return defaultResult({ loaderPolicy:'unknown', btiRequested:null, pacRequested:null, gcsRequested:null, warnings:Object.freeze(warnings) });
+    return budgetResult(budget, { loaderPolicy:'unknown', btiRequested:null, pacRequested:null, gcsRequested:null }, warnings);
   }
   if (phoffNumber == null || phentsize < minPh || phnum > maxProgramHeaders
       || !boundedSpan(phoffNumber, phnum * phentsize, r.length)) {
     warnings.push('ELF program-header table is unavailable or outside bounded input');
-    return defaultResult({ loaderPolicy:'unknown', btiRequested:null, pacRequested:null, gcsRequested:null, warnings:Object.freeze(warnings) });
+    return budgetResult(budget, { loaderPolicy:'unknown', btiRequested:null, pacRequested:null, gcsRequested:null }, warnings);
   }
 
   const evidence = [];
   let featureBits = null;
   let propertyIncomplete = false;
   let propertyNonConforming = false;
-  for (let index = 0; index < phnum; index++) {
+  const admittedSpans = new Map();
+  scanProgramHeaders: for (let index = 0; index < phnum; index++) {
+    budget.programHeadersVisited++;
+    if (!takeOperation(budget)) {
+      propertyIncomplete = true;
+      break;
+    }
     const p = phoffNumber + index * phentsize;
     const type = r.u32(p);
     if (type !== PT_GNU_PROPERTY) continue;
@@ -121,9 +247,28 @@ export function parseAarch64GnuProperty(input, options = {}) {
       warnings.push(`PT_GNU_PROPERTY ${index} is ignored: p_align ${segmentAlignmentRaw.toString()} does not satisfy the ${bits}-bit GNU property alignment ${requiredPropertyAlignment}`);
       continue;
     }
+    const spanKey = `${offset}:${filesz}`;
+    const admittedSpan = admittedSpans.get(spanKey);
+    if (admittedSpan) {
+      // Exact aliases carry no new property semantics. Keep the first
+      // program-header index on each evidence record and do not rescan or
+      // retain another copy for this alias.
+      budget.duplicateSpanHeaders++;
+      continue;
+    }
+    if (!admitPropertySpan(budget, filesz)) {
+      propertyIncomplete = true;
+      break;
+    }
+    const span = { offset, filesz, programHeaderIndex:index };
+    admittedSpans.set(spanKey, span);
     const end = offset + filesz;
     let cursor = offset;
     while (cursor + 12 <= end) {
+      if (!takePropertyEntry(budget)) {
+        propertyIncomplete = true;
+        break scanProgramHeaders;
+      }
       const namesz = r.u32(cursor);
       const descsz = r.u32(cursor + 4);
       const noteType = r.u32(cursor + 8);
@@ -145,6 +290,10 @@ export function parseAarch64GnuProperty(input, options = {}) {
         let propertyCursor = descStart;
         const descEnd = descStart + descsz;
         while (propertyCursor + 8 <= descEnd) {
+          if (!takePropertyEntry(budget)) {
+            propertyIncomplete = true;
+            break scanProgramHeaders;
+          }
           const propertyType = r.u32(propertyCursor);
           const dataSize = r.u32(propertyCursor + 4);
           const dataStart = propertyCursor + 8;
@@ -158,11 +307,15 @@ export function parseAarch64GnuProperty(input, options = {}) {
               propertyIncomplete = true;
               warnings.push(`malformed GNU_PROPERTY_AARCH64_FEATURE_1_AND size ${dataSize} at file offset ${propertyCursor}`);
             } else {
+              if (!admitEvidenceRecord(budget)) {
+                propertyIncomplete = true;
+                break scanProgramHeaders;
+              }
               const value = r.u32(dataStart);
               featureBits = featureBits == null ? value : (featureBits & value);
               evidence.push(Object.freeze({
                 source:'PT_GNU_PROPERTY',
-                programHeaderIndex:index,
+                programHeaderIndex:span.programHeaderIndex,
                 noteType:NT_GNU_PROPERTY_TYPE_0,
                 propertyType:GNU_PROPERTY_AARCH64_FEATURE_1_AND,
                 fileOffset:propertyCursor,
@@ -194,49 +347,46 @@ export function parseAarch64GnuProperty(input, options = {}) {
     }
   }
 
+  if (budget.exhausted) propertyIncomplete = true;
   if (propertyIncomplete) {
-    return defaultResult({
+    return budgetResult(budget, {
       loaderPolicy:'unknown',
       btiRequested:null,
       pacRequested:null,
       gcsRequested:null,
       ...(featureBits == null ? {} : { featureBits }),
       evidence:Object.freeze(evidence),
-      warnings:Object.freeze(warnings),
-    });
+    }, warnings);
   }
   if (propertyNonConforming && featureBits == null) {
-    return defaultResult({
+    return budgetResult(budget, {
       loaderPolicy:'unknown',
       btiRequested:null,
       pacRequested:null,
       gcsRequested:null,
       evidence:Object.freeze(evidence),
-      warnings:Object.freeze(warnings),
-    });
+    }, warnings);
   }
   if (featureBits == null) {
-    return defaultResult({
+    return budgetResult(budget, {
       loaderPolicy:'feature-bit-absent',
       btiRequested:false,
       pacRequested:false,
       gcsRequested:false,
       evidence:Object.freeze(evidence),
-      warnings:Object.freeze(warnings),
-    });
+    }, warnings);
   }
   const btiRequested = (featureBits & GNU_PROPERTY_AARCH64_FEATURE_1_BTI) !== 0;
   const pacRequested = (featureBits & GNU_PROPERTY_AARCH64_FEATURE_1_PAC) !== 0;
   const gcsRequested = (featureBits & GNU_PROPERTY_AARCH64_FEATURE_1_GCS) !== 0;
-  return defaultResult({
+  return budgetResult(budget, {
     loaderPolicy:btiRequested ? 'bti-requested' : 'bti-not-requested',
     btiRequested,
     pacRequested,
     gcsRequested,
     featureBits,
     evidence:Object.freeze(evidence),
-    warnings:Object.freeze(warnings),
-  });
+  }, warnings);
 }
 
 export function attachAarch64GnuPropertyEvidence(image, input, options = {}) {

@@ -1,8 +1,12 @@
 import { DebugSessionManager } from './session.js';
+import { captureExperimentBinding, assertExperimentBinding } from './experiment-binding.js';
+import { ScopedExperimentBroker } from './scoped-experiment-broker.js';
 import { LocalFunctionSandboxAdapter, EmulatorAdapter, SymbolicAdapter, RemoteDebugAdapter, LLDBCompatibleAdapter, FridaCompatibleAdapter, ReplayAdapter } from '../adapters/index.js';
 import { compileExperiment, HypothesisVerifier } from '../dynamic/experiments.js';
 import { createRuntimeEvidenceRecord, evidenceFromExperiment, fuseStaticDynamic, traceToSemanticFacts } from '../runtime-evidence/index.js';
 import { DebugAdapterError, asAddress, boundedInteger } from '../debug/adapter.js';
+
+const ACTIVE_EXPERIMENTS = new WeakSet();
 
 function runtimeAdapterName(value) {
   if (typeof value !== 'string' || !value.trim()) {
@@ -267,6 +271,11 @@ export class RuntimeAnalysisPlatform {
     const adapterName = runtimeAdapterName(name);
     return this.registerAdapter(adapterName, new ReplayAdapter(recording, options));
   }
+  /** Host-only opt-in factory; deliberately absent from read-only AI tools. */
+  createScopedExperimentBroker(configuration) {
+    return new ScopedExperimentBroker({ ...configuration, captureSession: () => this.currentSession(),
+      runExperiment: (experiment, options, guard) => this.runExperiment(experiment, options, guard) });
+  }
   async startSession({ adapter = null, binaryHash = null, trace = {}, connect = true } = {}) {
     const instance = adapter == null ? this.adapter() : (typeof adapter === 'string' ? this.adapter(adapter) : adapter);
     if (!instance) throw new DebugAdapterError('adapter-not-found',`debug adapter not found: ${adapter ?? '<default>'}`);
@@ -286,26 +295,55 @@ export class RuntimeAnalysisPlatform {
     if (this.evidence.length > 4096) this.evidence.shift();
     return record;
   }
-  async runExperiment(experiment, options = {}) {
+  /** Runs the existing verifier with lifecycle and finite wall-time fences.
+   * The optional third argument is an in-process host publication guard, never
+   * a serialized tool parameter. Scoped authorization uses it to bind its world.
+   */
+  async runExperiment(experiment, options = {}, publicationGuard = null) {
     const session = this.currentSession();
     if (!experiment || typeof experiment !== 'object' || !Array.isArray(experiment.cases)) throw new DebugAdapterError('invalid-experiment','experiment must contain cases');
     if (experiment.binaryHash && session.binaryHash && experiment.binaryHash !== session.binaryHash) throw new DebugAdapterError('binary-version-mismatch','experiment binary hash does not match the active runtime session',{experimentHash:experiment.binaryHash,sessionHash:session.binaryHash});
-    const scopedExperiment = experiment.binaryHash || !session.binaryHash ? experiment : { ...experiment, binaryHash:session.binaryHash };
-    session.addExperiment(scopedExperiment);
+    if (publicationGuard !== null && typeof publicationGuard !== 'function') throw new DebugAdapterError('experiment-publication-guard', 'publication guard must be a host callback');
+    if (ACTIVE_EXPERIMENTS.has(session)) throw new DebugAdapterError('experiment-busy', 'one experiment per runtime session may execute at a time');
+    const timeoutMs = runtimePositiveInteger(options.experimentTimeoutMs ?? 60000, 'experimentTimeoutMs', 60000);
+    const binding = captureExperimentBinding(session, () => this.sessions.current);
     const operation = operationController(session, options.signal);
-    const verifier = new HypothesisVerifier(session.adapter, ({experiment:testExperiment,testCase,observation,comparison}) => evidenceFromExperiment({
-      experiment:testExperiment,testCase,observation,comparison,backend:session.backend,binaryHash:session.binaryHash,
-      sliceIdentity:this.options.sliceIdentity || null,sessionId:session.id,
-      replayable:isReplayable(session.adapter,observation,observation?.trace || null)
-    }));
-    let result;
-    try { result = await verifier.verify(scopedExperiment, { ...options, signal:operation.signal }); }
-    finally { operation.release(); }
-    const evidence = [];
-    for (const item of result.cases) {
-      if (item.evidence) { evidence.push(this._recordEvidence(item.evidence)); session.addObservation({ experimentId:scopedExperiment.id, caseId:item.case.id, evidenceId:item.evidence.id, verdict:item.comparison.status }); }
-    }
-    return { ...result, evidence };
+    const deadline = Date.now() + timeoutMs;
+    const fence = () => {
+      if (Date.now() >= deadline) operation.abort('timeout');
+      assertExperimentBinding(binding, operation.signal);
+      if (publicationGuard && publicationGuard() !== true) throw new DebugAdapterError('experiment-publication-refused', 'host publication guard refused the experiment');
+    };
+    const timer = setTimeout(() => operation.abort('timeout'), timeoutMs);
+    ACTIVE_EXPERIMENTS.add(session);
+    try {
+      fence();
+      const scopedExperiment = experiment.binaryHash || !session.binaryHash ? experiment : { ...experiment, binaryHash:session.binaryHash };
+      session.addExperiment(scopedExperiment);
+      // An adapter that ignores AbortSignal must not resume after a late launch
+      // nor publish after a late result. These are wrappers around the SAME
+      // adapter, not a second executor or verification implementation.
+      const guarded = {};
+      for (const method of ['launch', 'resume']) guarded[method] = async (...args) => {
+        fence();
+        const value = await boundedRuntimeTracePhase(operation, `experiment-${method}`, deadline, timeoutMs,
+          () => { fence(); return session.adapter[method](...args); });
+        fence(); return value;
+      };
+      const verifier = new HypothesisVerifier(guarded, ({experiment:testExperiment,testCase,observation,comparison,launchCanonicalInput}) => evidenceFromExperiment({
+        experiment:testExperiment,testCase,observation,comparison,launchCanonicalInput,backend:binding.backend,binaryHash:binding.binaryHash,
+        sliceIdentity:this.options.sliceIdentity || null,sessionId:binding.sessionId,
+        replayable:isReplayable(session.adapter,observation,observation?.trace || null)
+      }));
+      const result = await boundedRuntimeTracePhase(operation, 'experiment-verify', deadline, timeoutMs,
+        () => verifier.verify(scopedExperiment, { ...options, signal:operation.signal }));
+      fence();
+      const evidence = [];
+      for (const item of result.cases) {
+        if (item.evidence) { evidence.push(this._recordEvidence(item.evidence)); session.addObservation({ experimentId:scopedExperiment.id, caseId:item.case.id, evidenceId:item.evidence.id, verdict:item.comparison.status }); }
+      }
+      return { ...result, evidence };
+    } finally { clearTimeout(timer); ACTIVE_EXPERIMENTS.delete(session); operation.release(); }
   }
   async verifyHypothesis(hypothesis, options = {}) {
     const session = this.currentSession();
@@ -332,7 +370,7 @@ export class RuntimeAnalysisPlatform {
     const operation = operationController(session,options.signal);
     const traceEpoch = session.epoch;
     const timeoutBudget = runtimeTimeout(options.timeoutMs);
-    let observation = { stop:null, returnValue:null, branches:[] }, trace;
+    let observation = { stop:null, returnValue:null, branches:[] }, trace, canonicalInput = null;
     const started = Date.now();
     const deadline = timeoutBudget == null ? null : started + timeoutBudget;
     let deadlineTimer = null;
@@ -342,7 +380,8 @@ export class RuntimeAnalysisPlatform {
     try {
       if (adapter.capabilities.launch) {
         const timeoutMs = remainingTraceTimeout(deadline, timeoutBudget, operation, 'launch');
-        await boundedRuntimeTracePhase(operation, 'launch', deadline, timeoutBudget, () => adapter.launch(launchSpec,{ signal:operation.signal, timeoutMs }));
+        const launched = await boundedRuntimeTracePhase(operation, 'launch', deadline, timeoutBudget, () => adapter.launch(launchSpec,{ signal:operation.signal, timeoutMs }));
+        canonicalInput = launched?.canonicalInput || null;
       } else if (adapter.capabilities.attach && options.attach) {
         const timeoutMs = remainingTraceTimeout(deadline, timeoutBudget, operation, 'attach');
         await boundedRuntimeTracePhase(operation, 'attach', deadline, timeoutBudget, () => adapter.attach(options.attach,{ signal:operation.signal, timeoutMs }));
@@ -384,7 +423,7 @@ export class RuntimeAnalysisPlatform {
     const replayable=isReplayable(adapter,observation,trace);
     const evidence = createRuntimeEvidenceRecord({ backend:session.backend,binaryHash:session.binaryHash,sliceIdentity:this.options.sliceIdentity || null,sessionId:session.id,
       experimentId:`trace:${requestedAddress.toString(16)}`,caseId:'trace',function:requestedAddress,
-      input:launchSpec,observedState:{stop:observation.stop,returnValue:observation.returnValue,factsComplete:factExtraction.complete,factExtraction:{truncated:factExtraction.truncated,processedEvents:factExtraction.processedEvents,totalEvents:factExtraction.totalEvents,reasons:factExtraction.reasons}},branchPath:observation.branches || [],
+      input:canonicalInput || launchSpec,observedState:{stop:observation.stop,returnValue:observation.returnValue,factsComplete:factExtraction.complete,factExtraction:{truncated:factExtraction.truncated,processedEvents:factExtraction.processedEvents,totalEvents:factExtraction.totalEvents,reasons:factExtraction.reasons}},branchPath:observation.branches || [],
       verdict:'inconclusive',confidence:factExtraction.complete ? 0.5 : 0.35,kind:'trace',reproducibility:{replayable,runs:1,consistent:null} });
     this._recordEvidence(evidence);
     return { functionAddress:requestedAddress, observation, trace, facts, factExtraction, evidence:[evidence] };

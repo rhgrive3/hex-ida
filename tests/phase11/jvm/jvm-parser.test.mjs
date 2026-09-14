@@ -12,8 +12,8 @@ export function buildMinimalJvmClass() {
   view.setUint16(4, 0, false);  // minor_version
   view.setUint16(6, 61, false); // major_version (Java 17)
 
-  // Constant pool count = 6 (entries 1..5)
-  view.setUint16(8, 6, false);
+  // Constant pool count = 8 (entries 1..7)
+  view.setUint16(8, 8, false);
 
   let p = 10;
   // CP 1: Utf8 "TestClass"
@@ -35,10 +35,15 @@ export function buildMinimalJvmClass() {
   buf[p++] = 1; view.setUint16(p, 4, false); p += 2;
   buf.set(new TextEncoder().encode('Code'), p); p += 4;
 
-  // Class info: access_flags=0x0001, this_class=2, super_class=0, interfaces_count=0
+  // CP 6: Utf8 "java/lang/Object"; CP 7: Class -> name_index 6
+  buf[p++] = 1; view.setUint16(p, 16, false); p += 2;
+  buf.set(new TextEncoder().encode('java/lang/Object'), p); p += 16;
+  buf[p++] = 7; view.setUint16(p, 6, false); p += 2;
+
+  // Class info: access_flags=0x0001, this_class=2, super_class=7, interfaces_count=0
   view.setUint16(p, 0x0001, false); p += 2;
   view.setUint16(p, 2, false); p += 2;
-  view.setUint16(p, 0, false); p += 2;
+  view.setUint16(p, 7, false); p += 2;
   view.setUint16(p, 0, false); p += 2;
 
   // fields_count=0

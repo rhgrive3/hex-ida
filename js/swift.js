@@ -1,5 +1,6 @@
 /* Swift ABI metadata intelligence. */
 import { pagedReader } from './objc-legacy.js';
+import { parseSwiftGenericContext, parseSwiftCaptureSection } from './swift-context.js';
 
 const MAX_NAME = 512;
 const DEFAULT_BUDGET = 20000;
@@ -11,6 +12,9 @@ function u64(b, o = 0) { let v = 0n; for (let i = 7; i >= 0; i--) v = (v << 8n) 
 function rel(fieldAddress, raw) { return raw ? BigInt(fieldAddress) + BigInt(raw) : null; }
 
 async function exact(read, addr, len) { if (addr == null || len <= 0) return null; const b = await read(BigInt(addr), len); return b && b.length >= len ? b.subarray(0, len) : null; }
+function isCancellationError(error) {
+  return error?.name === 'AbortError' || error?.code === 'ABORT_ERR';
+}
 async function cstring(read, addr, max = MAX_NAME) {
   if (addr == null) return null;
   const b = await read(BigInt(addr), max, true); if (!b || !b.length) return null;
@@ -18,6 +22,38 @@ async function cstring(read, addr, max = MAX_NAME) {
   for (; end < b.length && b[end]; end++) if (b[end] < 0x20 || b[end] === 0x7f) return null;
   if (!end || end === b.length) return null;
   try { return new TextDecoder('utf-8', { fatal: true }).decode(b.subarray(0, end)); } catch { return null; }
+}
+
+// Swift native pointer width is an architectural ABI fact, not a container
+// property: arm64_32 is a 64-bit Mach-O file class (MH_MAGIC_64,
+// LC_SEGMENT_64, nlist_64) with 4-byte native pointers (watchOS ILP32). Swift
+// absolute symbolic references, indirect relative references, and witness-table
+// entries are all `sizeof(void*)` words, so a known architecture must never be
+// silently parsed with the LP64 default (#8309).
+const SWIFT_ARCH_POINTER_BYTES = new Map([
+  ['arm64', 8], ['arm64e', 8], ['x86_64', 8], ['ppc64', 8],
+  ['arm64_32', 4], ['arm', 4], ['armv6', 4], ['armv7', 4], ['armv7s', 4], ['armv7k', 4],
+  ['x86', 4], ['i386', 4], ['ppc', 4],
+]);
+
+// Strict canonical lookup for a declared architecture. An unrecognized ABI is
+// not silently widened to LP64: callers get a typed failure instead.
+export function swiftNativePointerBytes(architecture) {
+  if (architecture == null) return null;
+  const bytes = SWIFT_ARCH_POINTER_BYTES.get(String(architecture).trim().toLowerCase());
+  if (bytes == null) throw new TypeError('swift-unknown-pointer-abi');
+  return bytes;
+}
+
+// Effective pointer width for a parser call: an explicit primitive width wins
+// (schema-validated, #5871); otherwise the architecture's ABI width; only a call
+// with no ABI information at all falls back to LP64. `null` means the ABI is
+// declared but unsupported, so the caller must fail closed instead of reading a
+// possibly fabricated 8-byte pointer.
+function swiftPointerBytesFor(options = {}) {
+  if ((options.pointerBytes ?? options.pointerSize) != null) return canonicalPointerBytes(options);
+  if (options.architecture == null) return 8;
+  return SWIFT_ARCH_POINTER_BYTES.get(String(options.architecture).trim().toLowerCase()) ?? null;
 }
 
 function swiftSymbolicReferencePayloadBytes(kind, pointerBytes = 8) {
@@ -46,7 +82,8 @@ function swiftMangledFragment(bytes) {
 export async function readSwiftMangledName(read, address, options = {}) {
   if (address == null || typeof read !== 'function') return { complete:false, reason:'unreadable', text:null, rawBytes:[], fragments:[], symbolicReferences:[] };
   const maxBytes = normalizeBudget(options.maxBytes, MAX_NAME, 4096);
-  const pointerBytes = canonicalPointerBytes(options);
+  const pointerBytes = swiftPointerBytesFor(options);
+  if (pointerBytes == null) return { complete:false, reason:'unknown-pointer-abi', text:null, rawBytes:[], fragments:[], symbolicReferences:[] };
   let bytes;
   try { bytes = await read(BigInt(address), maxBytes, true); } catch { bytes = null; }
   if (!bytes || !bytes.length) return { complete:false, reason:'unreadable', text:null, rawBytes:[], fragments:[], symbolicReferences:[] };
@@ -66,10 +103,11 @@ export async function readSwiftMangledName(read, address, options = {}) {
       }
       const payload = bytes.subarray(i + 1, i + 1 + payloadBytes);
       const referenceAddress = base + BigInt(i);
+      const relativeFieldAddress = base + BigInt(i + 1);
       let candidateTarget = null, rawTarget = null;
       if (byte <= 0x17) {
         relativeReferenceSeen = true;
-        candidateTarget = referenceAddress + BigInt(i32(payload, 0));
+        candidateTarget = relativeFieldAddress + BigInt(i32(payload, 0));
       } else {
         rawTarget = payloadBytes === 8 ? u64(payload, 0) : BigInt(u32(payload, 0));
       }
@@ -79,14 +117,14 @@ export async function readSwiftMangledName(read, address, options = {}) {
         try {
           const resolved = await resolver({ kind:byte, address:referenceAddress, candidateTarget, rawTarget, payloadBytes:Array.from(payload) });
           if (resolved != null) resolvedTarget = BigInt(resolved);
-        } catch { resolvedTarget = null; }
+        } catch (error) { if (isCancellationError(error)) throw error; resolvedTarget = null; }
       } else if (byte >= 0x18) {
         const pointerResolver = options.resolvePointer || options.binaryImage?.resolvePointer || options.binaryImage?.decodePointer;
         if (typeof pointerResolver === 'function') {
           try {
             const resolved = await pointerResolver(rawTarget, { address:referenceAddress, swiftSymbolicReferenceKind:byte });
             if (resolved != null) resolvedTarget = BigInt(resolved);
-          } catch { resolvedTarget = null; }
+          } catch (error) { if (isCancellationError(error)) throw error; resolvedTarget = null; }
         }
       }
       refs.push({ kind:byte, address:referenceAddress, relative:byte <= 0x17, payloadBytes:Array.from(payload), candidateTarget, rawTarget, resolvedTarget, resolved:resolvedTarget != null });
@@ -311,9 +349,10 @@ async function parseSwiftProtocolRequirements(read,protocol,budget=4096){
 }
 
 async function resolveAbsolutePointer(read,address,options={}) {
-  const b=await exact(read,address,8); if(!b)return null; const raw=u64(b);
+  const pointerBytes=swiftPointerBytesFor(options); if(pointerBytes==null)return null;
+  const b=await exact(read,address,pointerBytes); if(!b)return null; const raw=pointerBytes===4?BigInt(u32(b,0)):u64(b);
   const resolver=options.resolvePointer||options.binaryImage?.resolvePointer||options.binaryImage?.decodePointer;
-  if(typeof resolver==='function'){try{const v=await resolver(raw,{address:BigInt(address)});return v==null?null:BigInt(v);}catch{return null;}}
+  if(typeof resolver==='function'){try{const v=await resolver(raw,{address:BigInt(address)});return v==null?null:BigInt(v);}catch(error){if(isCancellationError(error))throw error;return null;}}
   return options.allowRawPointers===true ? (raw||null) : null;
 }
 
@@ -327,14 +366,15 @@ async function resolveRelativeIndirectablePointer(read,fieldAddress,raw,options=
 
 export async function parseSwiftConformanceDescriptor(read,address,options={}){
   const addr=BigInt(address),b=await exact(read,addr,16);if(!b)return null;
-  const protocol=await resolveRelativeIndirectablePointer(read,addr,i32(b,0),options), rawTypeRef=rel(addr+4n,i32(b,4)), witnessTable=rel(addr+8n,i32(b,8)), flags=u32(b,12), typeReferenceKind=(flags>>>3)&7;
+  const rawWitness=i32(b,8),witnessTableKind=rawWitness&3,witnessTableBase=rel(addr+8n,rawWitness&~3);
+  const protocol=await resolveRelativeIndirectablePointer(read,addr,i32(b,0),options), rawTypeRef=rel(addr+4n,i32(b,4)), witnessTable=witnessTableKind===0?witnessTableBase:null, flags=u32(b,12), typeReferenceKind=(flags>>>3)&7;
   if(protocol==null||rawTypeRef==null)return null;
   let typeRef=null, objcClassName=null, objcClassReference=null;
   if(typeReferenceKind===0) typeRef=rawTypeRef;
   else if(typeReferenceKind===1) typeRef=await resolveAbsolutePointer(read,rawTypeRef,options);
   else if(typeReferenceKind===2) objcClassName=await cstring(read,rawTypeRef);
   else if(typeReferenceKind===3) objcClassReference=rawTypeRef;
-  return{runtime:'swift',kind:'conformance',address:addr,protocol,typeRef,rawTypeRef,objcClassName,objcClassReference,witnessTable,flags,typeReferenceKind,conditionalRequirements:(flags>>>8)&0xff,resilientWitnesses:!!(flags&(1<<16))};
+  return{runtime:'swift',kind:'conformance',address:addr,protocol,typeRef,rawTypeRef,objcClassName,objcClassReference,witnessTable,witnessTableKind,witnessTableAccessor:witnessTableKind===3?null:witnessTableBase,flags,typeReferenceKind,conditionalRequirements:(flags>>>8)&0xff,resilientWitnesses:!!(flags&(1<<16)),genericWitnessTable:!!(flags&(1<<17))};
 }
 
 const SWIFT_CLASS_HAS_VTABLE = 1 << 15;
@@ -346,8 +386,8 @@ async function discoverSwiftClassVTables(read,types,budget){
     const specific=(Number(type.flags)>>>16)&0xffff;
     if(!(specific&SWIFT_CLASS_HAS_VTABLE))continue;
     const metadataInit=specific&0x3,resilient=!!(specific&SWIFT_CLASS_RESILIENT_SUPERCLASS);
-    if(type.generic||resilient||metadataInit!==0){complete=false;warnings.push(`Swift class ${type.name||type.address}: vtable layout is not proof-safe for automatic projection.`);continue;}
-    const headerAddress=BigInt(type.address)+44n,h=await exact(read,headerAddress,8);
+    if((type.generic&&type.genericContext?.complete!==true)||resilient||metadataInit!==0){complete=false;warnings.push(`Swift class ${type.name||type.address}: vtable layout is not proof-safe for automatic projection.`);continue;}
+    const headerAddress=type.generic?type.genericContext.endAddress:BigInt(type.address)+44n,h=await exact(read,headerAddress,8);
     if(!h){complete=false;warnings.push(`Swift class ${type.name||type.address}: vtable header is unreadable.`);continue;}
     const vtableOffset=u32(h,0),count=u32(h,4);
     if(count>4096||count>budget){complete=false;warnings.push(`Swift class ${type.name||type.address}: vtable count exceeds analysis budget.`);continue;}
@@ -362,9 +402,11 @@ export async function parseSwiftVTable(read,address,count,budget=4096){const n=M
 export async function parseSwiftWitnessTable(read,address,count,budget=4096,options={}){
   if (budget && typeof budget === 'object') { options=budget; budget=4096; }
   const n=Math.min(normalizeBudget(count,0,100000),normalizeBudget(budget,4096,100000)),out=[];let at=BigInt(address);
+  const pointerBytes=swiftPointerBytesFor(options); if(pointerBytes==null)return out;
+  const stride=BigInt(pointerBytes);
   const resolver=options.resolvePointer||options.binaryImage?.resolvePointer||options.binaryImage?.decodePointer;
-  for(let i=0;i<n;i++,at+=8n){const b=await exact(read,at,8);if(!b)break;const raw=u64(b);let target=null;
-    if(raw){if(typeof resolver==='function'){try{const v=await resolver(raw,{address:at});target=v==null?null:BigInt(v);}catch{target=null;}}else if(options.allowRawPointers===true)target=raw;}
+  for(let i=0;i<n;i++,at+=stride){const b=await exact(read,at,pointerBytes);if(!b)break;const raw=pointerBytes===4?BigInt(u32(b,0)):u64(b);let target=null;
+    if(raw){if(typeof resolver==='function'){try{const v=await resolver(raw,{address:at});target=v==null?null:BigInt(v);}catch(error){if(isCancellationError(error))throw error;target=null;}}else if(options.allowRawPointers===true)target=raw;}
     out.push({index:i,target,rawTarget:raw||null,resolved:target!=null});
   }return out;
 }
@@ -381,21 +423,37 @@ async function relativePointerSection(read,range,budget,parser,options={}){
     if(signal?.aborted)return{items,completeness:{present:true,declared,scanned,parsed:items.length,capped:true,unreadableEntries,invalidEntries,misalignedBytes,complete:false}};
     const field=range.addr+BigInt(i*4),b=await exact(read,field,4);if(!b){unreadableEntries++;break;}
     scanned++;const target=rel(field,i32(b,0));if(target==null){invalidEntries++;continue;}
-    try{const value=await parser(read,target);if(value)items.push(value);else invalidEntries++;}catch{invalidEntries++;}
+    try{const value=await parser(read,target);if(value)items.push(value);else invalidEntries++;}catch(error){if(isCancellationError(error))throw error;invalidEntries++;}
   }
   const capped=declared>budget,complete=misalignedBytes===0&&!capped&&unreadableEntries===0&&invalidEntries===0&&scanned===declared&&items.length===declared;
   return{items,completeness:{present:true,declared,scanned,parsed:items.length,capped,unreadableEntries,invalidEntries,misalignedBytes,complete}};
 }
 
+const SWIFT_WITNESS_TABLE_FIRST_REQUIREMENT_OFFSET=1n;
+
 export async function buildSwiftMetadataModel(read,sections,opts={}){
   const signal=opts.signal??null;
   if(signal?.aborted)return null;
+  // Native pointer width is one authority for the whole model: conformance
+  // indirect pointers, absolute type references and witness-table entries all
+  // use the same architectural width (#8309).
+  const pointerBytes=swiftPointerBytesFor(opts);
   const get=typeof opts.reader==='function'?opts.reader:pagedReader(read,opts.pageBytes||65536,opts.maxPages||96,{signal});
   const budget=normalizeBudget(opts.budget,DEFAULT_BUDGET,100000), typeSec=sectionRange(sections,['__swift5_types']), protoSec=sectionRange(sections,['__swift5_protos']), confSec=sectionRange(sections,['__swift5_proto']);
   const typeScan=await relativePointerSection(get,typeSec,budget,(r,a)=>parseSwiftNominalDescriptor(r,a,opts),{signal}), protoScan=await relativePointerSection(get,protoSec,budget,parseSwiftProtocolDescriptor,{signal}), confScan=await relativePointerSection(get,confSec,budget,(r,a)=>parseSwiftConformanceDescriptor(r,a,opts),{signal});
   if(signal?.aborted)return null;
   const types=typeScan.items,protocols=protoScan.items,conformances=confScan.items;
   const warnings=[];
+  const genericContexts=[];
+  let genericContextsComplete=true,genericRemaining=Math.min(budget,4096);
+  for(const type of types){
+    if(signal?.aborted)return null;
+    if(type.generic!==true)continue;
+    if(genericRemaining<=0){genericContextsComplete=false;continue;}
+    const context=await parseSwiftGenericContext(get,type,{...opts,budget:genericRemaining,readMangledName:readSwiftMangledName});
+    if(context){genericContexts.push(context);type.genericContext=context;genericRemaining-=1+context.parameters.length+context.requirements.length;if(!context.complete)genericContextsComplete=false;}
+  }
+  const captures=await parseSwiftCaptureSection(get,sectionRange(sections,['__swift5_capture']),{...opts,readMangledName:readSwiftMangledName});
   for(const p of protocols){
     if(signal?.aborted)return null;
     const scan=await parseSwiftProtocolRequirements(get,p,Math.min(budget,4096));
@@ -427,22 +485,24 @@ export async function buildSwiftMetadataModel(read,sections,opts={}){
   const witnessSeeds=[...(opts.witnessTables||[])],seedAddresses=new Set(witnessSeeds.map((w)=>String(w.address)));
   for(const c of conformances){
     if(signal?.aborted)return null;
+    if((c.witnessTableKind??0)!==0){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: witness table representation is not a concrete table, so automatic projection is not proof-safe.`);continue;}
     if(c.witnessTable==null||seedAddresses.has(c.witnessTable.toString()))continue;
     const protocol=protocols.find((p)=>p.address.toString()===c.protocol?.toString()),type=c.typeReferenceKind<=1&&c.typeRef!=null?types.find((t)=>t.address.toString()===c.typeRef.toString()):null;
-    if(!protocol||!type||c.conditionalRequirements!==0||c.resilientWitnesses===true||protocol.requirementsComplete!==true){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: witness table layout is not proof-safe for automatic projection.`);continue;}
+    if(pointerBytes==null){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: native pointer ABI is unknown, so witness table layout is not proof-safe for automatic projection.`);continue;}
+    if(!protocol||!type||c.conditionalRequirements!==0||c.resilientWitnesses===true||c.genericWitnessTable===true||protocol.requirementsComplete!==true){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: witness table layout is not proof-safe for automatic projection.`);continue;}
     const requirements=protocol.requirements||[];
     if(requirements.length!==Number(protocol.numRequirements)||requirements.some((r)=>r.witnessCallable!==true)){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: non-callable protocol requirements prevent exact witness projection.`);continue;}
     if(!requirements.length)continue;
-    const seed={address:c.witnessTable,count:requirements.length,typeAddress:type.address,typeName:type.name,protocolAddress:protocol.address,protocolName:protocol.name,source:'conformance'};
+    const seed={address:c.witnessTable,count:requirements.length,entriesAddress:c.witnessTable+SWIFT_WITNESS_TABLE_FIRST_REQUIREMENT_OFFSET*BigInt(pointerBytes),typeAddress:type.address,typeName:type.name,protocolAddress:protocol.address,protocolName:protocol.name,source:'conformance'};
     witnessSeeds.push(seed);seedAddresses.add(c.witnessTable.toString());
   }
   for(const w of witnessSeeds){
     if(signal?.aborted)return null;
-    const entries=await parseSwiftWitnessTable(get,w.address,w.count,budget,opts),expected=Math.min(normalizeBudget(w.count,0,100000),budget);if(entries.length!==expected||Number(w.count)>budget||entries.some((x)=>x.resolved!==true))witnessTablesComplete=false;witnessTables.push({...w,entries});
+    const entries=await parseSwiftWitnessTable(get,w.entriesAddress??w.address,w.count,budget,opts),expected=Math.min(normalizeBudget(w.count,0,100000),budget);if(entries.length!==expected||Number(w.count)>budget||entries.some((x)=>x.resolved!==true))witnessTablesComplete=false;witnessTables.push({...w,entries});
   }
-  const completeness={types:typeScan.completeness,protocols:protoScan.completeness,conformances:confScan.completeness,vtables:{complete:vtablesComplete},witnessTables:{complete:witnessTablesComplete}};
+  const completeness={types:typeScan.completeness,protocols:protoScan.completeness,conformances:confScan.completeness,vtables:{complete:vtablesComplete},witnessTables:{complete:witnessTablesComplete},genericContexts:{complete:genericContextsComplete},captures:captures.completeness};
   completeness.complete=Object.values(completeness).every((x)=>x?.complete===true);
-  return{runtime:'swift',types,protocols,conformances,vtables,witnessTables,completeness,complete:completeness.complete,warnings};
+  return{runtime:'swift',types,protocols,conformances,vtables,witnessTables,genericContexts,captureDescriptors:captures.descriptors,completeness,complete:completeness.complete,warnings};
 }
 
 function preferredTypeName(t){return t.qualifiedName||t.fullName||(t.moduleName&&t.name?`${t.moduleName}.${t.name}`:t.name)||null;}
@@ -479,7 +539,10 @@ export function buildSwiftRuntimeIndex(model={}){
   finalizeUniqueNames(protocolNameCandidates,protocolsByName,namesProven);
   for(const c of model.conformances||[]){const type=c.typeReferenceKind<=1&&c.typeRef!=null?typesByAddress.get(c.typeRef.toString())||null:null,proto=protocolsByAddress.get(c.protocol?.toString())||null,typeKey=canonicalTypeKey(type),protoKey=canonicalProtocolKey(proto);if(typeKey){let a=conformancesByType.get(typeKey);if(!a){a=[];conformancesByType.set(typeKey,a);}a.push({...c,typeName:preferredTypeName(type),typeIdentity:typeKey,protocolName:preferredProtocolName(proto||{}),protocolIdentity:protoKey});if(protoKey)witnessesByPair.set(`${typeKey}:${protoKey}`,c);}}
   for(const v of model.vtables||[]){const owner=typesByAddress.get(String(v.typeAddress))||(v.typeName?typesByName.get(v.typeName):null),key=canonicalTypeKey(owner);if(key)vtablesByType.set(key,v.methods||[]);}for(const t of model.types||[]){const key=canonicalTypeKey(t);if(key&&t.vtable?.length)vtablesByType.set(key,t.vtable);}
-  return{runtime:'swift',model,typesByAddress,typesByName,typesBySimpleName,protocolsByAddress,protocolsByName,protocolsBySimpleName,conformancesByType,vtablesByType,witnessesByPair};
+  const genericContextsByType=new Map(),captureDescriptorsByAddress=new Map();
+  for(const context of model.genericContexts||[]){const key=String(context.typeAddress),rows=genericContextsByType.get(key)||[];rows.push(context);genericContextsByType.set(key,rows);}
+  for(const descriptor of model.captureDescriptors||[]){const key=String(descriptor.address),rows=captureDescriptorsByAddress.get(key)||[];rows.push(descriptor);captureDescriptorsByAddress.set(key,rows);}
+  return{runtime:'swift',model,typesByAddress,typesByName,typesBySimpleName,protocolsByAddress,protocolsByName,protocolsBySimpleName,conformancesByType,vtablesByType,witnessesByPair,genericContextsByType,captureDescriptorsByAddress};
 }
 
 export function resolveSwiftDispatch(index,call={}){

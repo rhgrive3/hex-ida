@@ -18,7 +18,7 @@ const AT = Object.freeze({
   specification: 0x47,
   type: 0x49,
 });
-const FORM = Object.freeze({ ref4: 0x13 });
+const FORM = Object.freeze({ ref4: 0x13, refSig8: 0x20 });
 const UNIT = Object.freeze({ start: 0, addressSize: 8 });
 
 function attr(value, form = 0x08) {
@@ -149,5 +149,12 @@ test('#4657 a direct pointee cannot bypass a broken pointer specification chain'
   ]);
   const record = typeRecord({ pointer, targets: [signedInt()] });
   assert.equal(record.descriptor.claim.name, 'int32 *');
+  assert.equal(record.descriptor.complete, false);
+});
+
+test('#4657 a supplementary/signature pointee reference cannot enter the current DIE namespace', () => {
+  const pointer = die(0x10, TAG.pointer, [[AT.type, attr(BigInt(0x20), FORM.refSig8)]]);
+  const record = typeRecord({ pointer, targets: [signedInt()] });
+  assert.equal(record.descriptor.claim.name, 'unknown *');
   assert.equal(record.descriptor.complete, false);
 });

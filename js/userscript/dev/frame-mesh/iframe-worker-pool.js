@@ -244,6 +244,10 @@ export class IframeWorkerPool {
     this.waiters = [];
     this.leases.clear();
     this.slots.clear();
+    // In-flight provisions of the closed generation must never be joined by a
+    // fresh generation's provision() (#5204 review R1): clear them so the
+    // close→re-provision boundary creates a fresh frame.
+    this.provisioningSlots?.clear();
   }
 
   /* Worker frames must stay inside the Supervisor's own ChatGPT origin. A
@@ -266,6 +270,30 @@ export class IframeWorkerPool {
   }
 
   async provisionSlot(index, href, timeoutMs, generation = this.generation) {
+    // Per-slot single-flight (#5204): two overlapping provisions of the same
+    // index used to create two frames — the loser overwrote the winner's map
+    // entry and the winner's live iframe/runtime became unreachable. A slot
+    // join waits on the in-flight provisioning instead of duplicating it.
+    // The in-flight key is generation-aware (review R1 on the batch PR): a
+    // closed generation's stale provisioning must never be joined by a fresh
+    // generation's provision() — the stale promise can only observe its
+    // retired generation and return null, which would make the explicit
+    // close→re-provision boundary finish with zero ready slots. close()
+    // clears the old-generation map; the exact-promise cleanup keeps an old
+    // finally from deleting a newer entry.
+    const key = `${generation}:${index}`;
+    const inFlight = this.provisioningSlots?.get(key);
+    if (inFlight) return inFlight;
+    const promise = this.#provisionSlotOnce(index, href, timeoutMs, generation);
+    (this.provisioningSlots ??= new Map()).set(key, promise);
+    try {
+      return await promise;
+    } finally {
+      if (this.provisioningSlots.get(key) === promise) this.provisioningSlots.delete(key);
+    }
+  }
+
+  async #provisionSlotOnce(index, href, timeoutMs, generation) {
     let handle = null;
     try { handle = await this.createFrame({ slot: index, documentRef: this.documentRef, href }); }
     catch (error) {
@@ -302,6 +330,13 @@ export class IframeWorkerPool {
       return null;
     }
     if (!outcome.ready) { slot.error = { code: outcome.code, message: outcome.message }; this.retireProvisionedSlot(slot, false); return null; }
+    if (this.slots.get(index) !== slot) {
+      // This frame lost the slot map to a newer provisioning of the same
+      // index: retire it instead of advertising a ready frame that no lookup
+      // can ever reach (#5204).
+      this.retireProvisionedSlot(slot);
+      return null;
+    }
     slot.ready = true;
     return this.publicSlot(slot);
   }

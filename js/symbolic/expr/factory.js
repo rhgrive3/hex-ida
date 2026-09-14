@@ -27,8 +27,39 @@ import { wrap } from './bitvector.js';
 let symbolCounter = 0;
 const MAX_FRESH_SYMBOL_INDEX = Number.MAX_SAFE_INTEGER - 1;
 
+function deepFreezePlainJson(value) {
+  if (!value || typeof value !== 'object') return value;
+  const pending = [value];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    Object.freeze(current);
+    for (const key of Object.keys(current)) {
+      const child = current[key];
+      if (child && typeof child === 'object') pending.push(child);
+    }
+  }
+  return value;
+}
+
 export function resetSymbolCounterForTesting(val = 0) {
   symbolCounter = val;
+}
+
+/**
+ * Runs a deserialization body against the process-global fresh-symbol
+ * allocator as a single transaction: reservations made by restoreFreshSymbol
+ * while the body executes are committed only if the body returns normally.
+ * Any throw restores the counter to its pre-call value, so a malformed
+ * payload can never permanently advance (or exhaust) the id space (#5149).
+ */
+export function withSymbolAllocatorTransaction(run) {
+  const savedSymbolCounter = symbolCounter;
+  try {
+    return run();
+  } catch (error) {
+    symbolCounter = savedSymbolCounter;
+    throw error;
+  }
 }
 
 export function createBool(value) {
@@ -115,7 +146,7 @@ export function createUnknownSemantic(sort, reason, detail = null) {
     kind: EXPR_KIND.UNKNOWN_SEMANTIC,
     sort,
     reason,
-    detail: detail ? Object.freeze(JSON.parse(JSON.stringify(detail))) : null,
+    detail: detail ? deepFreezePlainJson(JSON.parse(JSON.stringify(detail))) : null,
   });
 }
 
@@ -183,29 +214,30 @@ export function createCompare(op, left, right) {
 }
 
 export function createConnective(op, ...args) {
+  const actualArgs = args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
   if (!Object.values(BOOL_CONNECTIVE_OP).includes(op)) {
     throw new TypeError(`createConnective: unknown boolean connective op '${op}'`);
   }
-  if (args.length === 0) {
+  if (actualArgs.length === 0) {
     throw new TypeError(`createConnective (${op}): requires at least one argument`);
   }
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
+  for (let i = 0; i < actualArgs.length; i++) {
+    const a = actualArgs[i];
     if (!a || !isBoolSort(a.sort)) {
       throw new TypeError(`createConnective (${op}): arg[${i}] must have Bool sort, got ${sortToString(a?.sort)}`);
     }
   }
-  if (op === BOOL_CONNECTIVE_OP.NOT && args.length !== 1) {
-    throw new TypeError(`createConnective (not): exactly one argument required, got ${args.length}`);
+  if (op === BOOL_CONNECTIVE_OP.NOT && actualArgs.length !== 1) {
+    throw new TypeError(`createConnective (not): exactly one argument required, got ${actualArgs.length}`);
   }
-  if ((op === BOOL_CONNECTIVE_OP.IMPLIES || op === BOOL_CONNECTIVE_OP.EQ || op === BOOL_CONNECTIVE_OP.NE) && args.length !== 2) {
-    throw new TypeError(`createConnective (${op}): exactly two arguments required, got ${args.length}`);
+  if ((op === BOOL_CONNECTIVE_OP.IMPLIES || op === BOOL_CONNECTIVE_OP.EQ || op === BOOL_CONNECTIVE_OP.NE) && actualArgs.length !== 2) {
+    throw new TypeError(`createConnective (${op}): exactly two arguments required, got ${actualArgs.length}`);
   }
   return Object.freeze({
     kind: EXPR_KIND.CONNECTIVE,
     sort: boolSort(),
     op,
-    args: Object.freeze([...args]),
+    args: Object.freeze(Array.isArray(actualArgs) ? actualArgs.slice() : Array.from(actualArgs)),
   });
 }
 

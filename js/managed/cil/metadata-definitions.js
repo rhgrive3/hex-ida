@@ -1,14 +1,110 @@
 import { codedIndexSize, tableIndexSize, cilMetadataToken } from './metadata-layout.js';
 import { readCilMetadataBlob } from './call-signature-metadata.js';
-import { parseCilMethodSignature, parseCilTypeSpecSignature } from './call-signature-types.js';
+import { parseCilMethodSignature, parseCilPropertySignature, parseCilTypeSpecSignature, cilMethodSlotElementByte, cilPropertyTypeElementByte } from './call-signature-types.js';
+import { decodeCilCustomAttributeValue } from './custom-attribute-values.js';
 import { stableStringify } from '../../core/identity/index.js';
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+const utf16 = new TextDecoder('utf-16le');
+const constantValueTypes = new Map([
+  [0x02, { name: 'boolean', width: 1, decode: blob => {
+    if (blob[0] > 1) fail('cil-constant-blob-value-invalid');
+    return blob[0] === 1;
+  } }],
+  [0x03, { name: 'char', width: 2, decode: blob => blob[0] | (blob[1] << 8) }],
+  [0x04, { name: 'int8', width: 1, decode: blob => (blob[0] << 24) >> 24 }],
+  [0x05, { name: 'uint8', width: 1, decode: blob => blob[0] }],
+  [0x06, { name: 'int16', width: 2, decode: blob => { const v = blob[0] | (blob[1] << 8); return (v & 0x8000) ? v - 0x10000 : v; } }],
+  [0x07, { name: 'uint16', width: 2, decode: blob => blob[0] | (blob[1] << 8) }],
+  [0x08, { name: 'int32', width: 4, decode: blob => (blob[0] | (blob[1] << 8) | (blob[2] << 16) | (blob[3] << 24)) }],
+  [0x09, { name: 'uint32', width: 4, decode: blob => (blob[0] | (blob[1] << 8) | (blob[2] << 16) | (blob[3] << 24)) >>> 0 }],
+  [0x0a, { name: 'int64', width: 8, decode: signed64 }],
+  [0x0b, { name: 'uint64', width: 8, decode: unsigned64 }],
+  [0x0c, { name: 'float32', width: 4, decode: blob => new DataView(blob.buffer, blob.byteOffset, 4).getFloat32(0, true) }],
+  [0x0d, { name: 'float64', width: 8, decode: blob => new DataView(blob.buffer, blob.byteOffset, 8).getFloat64(0, true) }],
+  [0x0e, { name: 'string', width: null, decode: blob => utf16.decode(blob) }],
+  [0x12, { name: 'class', width: 4, decode: blob => decodeNullReference(blob) }],
+]);
+function decodeNullReference(blob) {
+  if (blob[0] | blob[1] | blob[2] | blob[3]) fail('cil-constant-blob-length-invalid');
+  return null;
+}
+function signed64(blob) { return new DataView(blob.buffer, blob.byteOffset, blob.byteLength).getBigInt64(0, true); }
+function unsigned64(blob) { return new DataView(blob.buffer, blob.byteOffset, blob.byteLength).getBigUint64(0, true); }
 function fail(code) { throw new TypeError(code); }
+// ECMA-335 II.23.4 marshalling-descriptor constants (`NATIVE_TYPE_xxx`). The
+// value is what actually changes the managed/native call boundary, so it is
+// decoded as evidence and never replaced by a name guess.
+const MARSHAL_NATIVE_INTRINSICS = new Map([
+  [0x02, 'BOOLEAN'], [0x03, 'I1'], [0x04, 'U1'], [0x05, 'I2'], [0x06, 'U2'],
+  [0x07, 'I4'], [0x08, 'U4'], [0x09, 'I8'], [0x0a, 'U8'], [0x0b, 'R4'], [0x0c, 'R8'],
+  [0x14, 'LPSTR'], [0x15, 'LPWSTR'], [0x1f, 'INT'], [0x20, 'UINT'], [0x26, 'FUNC'],
+]);
+const MARSHAL_NATIVE_ARRAY = 0x2a;
+const MARSHAL_NATIVE_MAX = 0x50;
+
+// ECMA-335 II.23.2 compressed unsigned integer. Bounds-checked; a truncated or
+// non-minimal encoding is malformed evidence, not a value to guess at (#7557).
+function readCompressedUnsigned(bytes, offset, code) {
+  if (!(bytes instanceof Uint8Array) || !Number.isSafeInteger(offset) || offset < 0 || offset >= bytes.length) fail(code);
+  const first = bytes[offset];
+  if ((first & 0x80) === 0) return { value: first, next: offset + 1 };
+  if ((first & 0xc0) === 0x80) {
+    if (offset + 1 >= bytes.length) fail(code);
+    const value = ((first & 0x3f) << 8) | bytes[offset + 1];
+    if (value < 0x80) fail(code);
+    return { value, next: offset + 2 };
+  }
+  if ((first & 0xe0) === 0xc0) {
+    if (offset + 3 >= bytes.length) fail(code);
+    const value = ((first & 0x1f) * 0x1000000) + (bytes[offset + 1] << 16) + (bytes[offset + 2] << 8) + bytes[offset + 3];
+    if (value < 0x4000) fail(code);
+    return { value, next: offset + 4 };
+  }
+  fail(code);
+}
+
+// II.23.4 MarshalSpec ::= NativeIntrinsic | ARRAY ArrayElemType [ParamNum [NumElem]].
+// A recognised intrinsic carries no payload, so trailing bytes are malformed; an
+// unrecognised (future/extension) native type keeps its raw authority instead of
+// being dropped or guessed.
+function decodeMarshalSpec(raw) {
+  const code = 'cil-fieldmarshal-marshal-spec-invalid';
+  if (!(raw instanceof Uint8Array) || raw.length < 1) fail(code);
+  // NativeType and ArrayElemType are fixed single-byte enum values. Only
+  // ParamNum and NumElem use compressed unsigned integers (II.23.4).
+  const nativeType = raw[0];
+  if (nativeType === MARSHAL_NATIVE_ARRAY) {
+    if (raw.length < 2) fail(code);
+    const arrayElementType = raw[1];
+    if (arrayElementType !== MARSHAL_NATIVE_MAX && !MARSHAL_NATIVE_INTRINSICS.has(arrayElementType)) fail(code);
+    let paramNum = null, numElem = null, pos = 2;
+    if (pos < raw.length) { const read = readCompressedUnsigned(raw, pos, code); paramNum = read.value; pos = read.next; }
+    if (pos < raw.length) { const read = readCompressedUnsigned(raw, pos, code); numElem = read.value; pos = read.next; }
+    if (pos !== raw.length) fail(code);
+    return { nativeType, nativeTypeName: 'ARRAY', arrayElementType,
+      arrayElementTypeName: MARSHAL_NATIVE_INTRINSICS.get(arrayElementType) ?? 'MAX', paramNum, numElem };
+  }
+  const name = MARSHAL_NATIVE_INTRINSICS.get(nativeType);
+  if (name == null) {
+    return { nativeType, nativeTypeName: null, payload: raw.subarray(1) };
+  }
+  if (raw.length !== 1) fail(code);
+  return { nativeType, nativeTypeName: name };
+}
+
+function formatCilGuid(bytes, offset) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const d1 = view.getUint32(offset, true);
+  const d2 = view.getUint16(offset + 4, true);
+  const d3 = view.getUint16(offset + 6, true);
+  const rest = [...bytes.subarray(offset + 8, offset + 16)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  return `${d1.toString(16).padStart(8, '0')}-${d2.toString(16).padStart(4, '0')}-${d3.toString(16).padStart(4, '0')}-${rest.slice(0, 4)}-${rest.slice(4)}`.toLowerCase();
+}
 
 // Read only definitions, but use the complete, already-bounds-checked table layout.
-export function readCilDefinitions(bytes, view, layout, stringsStream, blobStream = null) {
-  const { rowCounts: counts, tableOffsets: offsets, rowSizes, heapSizes } = layout;
-  const s = heapSizes & 1 ? 4 : 2, b = heapSizes & 4 ? 4 : 2;
+export function readCilDefinitions(bytes, view, layout, stringsStream, blobStream = null, guidStream = null) {
+  const { rowCounts: counts, tableOffsets: offsets, rowSizes, heapSizes, valid } = layout;
+  const s = heapSizes & 1 ? 4 : 2, g = heapSizes & 2 ? 4 : 2, b = heapSizes & 4 ? 4 : 2;
   const index = (pos, width) => width === 2 ? view.getUint16(pos, true) : view.getUint32(pos, true);
   const text = value => {
     // Preserve legacy minimal metadata with an absent optional heap and null names.
@@ -45,6 +141,9 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
   // or malformed blob fails closed rather than silently dropping identity.
   const blobHeap = blobStream && blobStream.size
     ? bytes.subarray(blobStream.offset, blobStream.offset + blobStream.size)
+    : null;
+  const guidHeap = guidStream && guidStream.size
+    ? bytes.subarray(guidStream.offset, guidStream.offset + guidStream.size)
     : null;
   const typeSpecRowCounts = () => [counts[2], counts[1], counts[0x1b]];
   // TypeSpec (0x1b) rows are the constructed-type authority (#7673): each row
@@ -160,6 +259,39 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
       publicKeyBlobIndex, publicKey,
       name: text(index(pos + 16 + b, s)),
       culture: text(index(pos + 16 + b + s, s)),
+    };
+  })() : null;
+  // Module (0x00): current module identity (ECMA-335 II.22.30, exactly one row) (#7689).
+  if (counts[0x00] > 1) fail('cil-module-table-multi-row');
+  if (valid != null && (valid & 1n) !== 0n && counts[0x00] === 0) fail('cil-module-table-empty');
+  const module = counts[0x00] ? (() => {
+    const pos = offsets[0x00];
+    const generation = view.getUint16(pos, true);
+    if (generation !== 0) fail('cil-module-generation-invalid');
+    const nameIndex = index(pos + 2, s);
+    if (nameIndex === 0) fail('cil-module-name-missing');
+    const name = requiredText(nameIndex, 'cil-module-name-invalid');
+    const mvidGuidIndex = index(pos + 2 + s, g);
+    if (mvidGuidIndex === 0) fail('cil-module-mvid-missing');
+    if (!guidHeap) fail('cil-module-guid-heap-missing');
+    const mvidOffset = (mvidGuidIndex - 1) * 16;
+    if (mvidOffset < 0 || mvidOffset + 16 > guidHeap.length) fail('cil-module-mvid-invalid');
+    const encId = index(pos + 2 + s + g, g);
+    if (encId !== 0) fail('cil-module-encid-invalid');
+    const encBaseId = index(pos + 2 + s + g * 2, g);
+    if (encBaseId !== 0) fail('cil-module-encbaseid-invalid');
+    const mvidBytes = guidHeap.subarray(mvidOffset, mvidOffset + 16);
+    const mvid = formatCilGuid(guidHeap, mvidOffset);
+    return {
+      rid: 1,
+      token: cilMetadataToken(0x00, 1),
+      generation,
+      name,
+      mvidGuidIndex,
+      mvid,
+      mvidBytes: new Uint8Array(mvidBytes),
+      encId,
+      encBaseId,
     };
   })() : null;
   const bindOwners = (table, pointerTable, values, listKey, tokensKey) => {
@@ -552,6 +684,388 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     if ((field.accessFlags & 0x0100) === 0) fail('cil-fieldrva-field-flag-missing');
     field.rva = row.rva;
   }
+  // II.22.17 FieldMarshal: the managed -> native marshalling descriptor for a
+  // Field or Param. The HasFieldMarshal flag alone only proves a descriptor
+  // exists; without decoding it, two images whose native call boundary differs
+  // (LPSTR vs LPWSTR) collapse into one canonical projection (#7557).
+  const fieldMarshalTables = [0x04, 0x08];
+  const hasFieldMarshalSize = codedIndexSize(counts, fieldMarshalTables, 1);
+  // One truth: the semantic decode must agree with the physical row layout.
+  if (counts[0x0d] && hasFieldMarshalSize + b !== rowSizes[0x0d]) fail('cil-fieldmarshal-row-layout-mismatch');
+  const fieldMarshals = readRows(0x0d, pos => {
+    const parentBase = index(pos, hasFieldMarshalSize);
+    const nativeTypeBlobIndex = index(pos + hasFieldMarshalSize, b);
+    const tag = parentBase & 0x1, rid = parentBase >>> 1, table = fieldMarshalTables[tag];
+    failIf(table == null || rid < 1 || rid > counts[table], 'cil-fieldmarshal-parent-invalid');
+    if (!blobHeap) fail('cil-fieldmarshal-blob-missing');
+    const rawMarshalSpec = readCilMetadataBlob(blobHeap, nativeTypeBlobIndex, 'cil-fieldmarshal-native-type-blob-invalid');
+    return {
+      parentToken: cilMetadataToken(table, rid),
+      parent: { table, rid, kind: table === 0x04 ? 'field' : 'param' },
+      nativeTypeBlobIndex,
+      rawMarshalSpec,
+      marshalSpec: decodeMarshalSpec(rawMarshalSpec),
+    };
+  });
+  if (new Set(fieldMarshals.map(row => row.parentToken)).size !== fieldMarshals.length) {
+    fail('cil-fieldmarshal-parent-duplicate');
+  }
+  // A row and its HasFieldMarshal flag are one authority: neither direction of
+  // the contradiction may survive into the canonical image (II.22.17).
+  for (const row of fieldMarshals) {
+    if (row.parent.table === 0x04) {
+      const field = fields[row.parent.rid - 1];
+      if (field == null) fail('cil-fieldmarshal-parent-invalid');
+      if ((field.accessFlags & 0x1000) === 0) fail('cil-fieldmarshal-field-flag-missing');
+      field.marshalSpec = row.marshalSpec;
+      field.rawMarshalSpec = row.rawMarshalSpec;
+      field.fieldMarshalToken = row.token;
+    } else {
+      const param = params[row.parent.rid - 1];
+      if (param == null) fail('cil-fieldmarshal-parent-invalid');
+      if ((param.flags & 0x2000) === 0) fail('cil-fieldmarshal-param-flag-missing');
+      param.marshalSpec = row.marshalSpec;
+      param.rawMarshalSpec = row.rawMarshalSpec;
+      param.fieldMarshalToken = row.token;
+    }
+  }
+  for (const field of fields) {
+    if ((field.accessFlags & 0x1000) !== 0 && field.marshalSpec == null) fail('cil-fieldmarshal-row-missing');
+  }
+  for (const param of params) {
+    if ((param.flags & 0x2000) !== 0 && param.marshalSpec == null) fail('cil-fieldmarshal-row-missing');
+  }
 
-  return { types, methods, fields, manifestResources, typeSpecs, typeRefs, assemblyRefs, assembly, params, properties, events, methodSemantics, interfaceImpls, methodImpls, implMaps, moduleRefs, fieldRvas };
+  // II.22.21 MemberRef: the constructor authority a CustomAttribute row points
+  // at, and the declaring-type identity needed to recognise CLI-defined
+  // attributes such as System.ThreadStaticAttribute (#7556).
+  const memberRefParentTables = [0x02, 0x01, 0x1a, 0x06, 0x1b];
+  const memberRefParentSize = codedIndexSize(counts, memberRefParentTables, 3);
+  if (counts[0x0a] && memberRefParentSize + s + b !== rowSizes[0x0a]) fail('cil-memberref-row-layout-mismatch');
+  const methodOwner = new Map(methods.map(method => [
+    method.rid,
+    typeByToken.get(method.declaringTypeToken),
+  ]));
+  const declaringTypeName = (table, rid) => {
+    let name = null, namespace = '';
+    if (table === 0x01) { const row = typeRefs[rid - 1]; name = row?.name ?? null; namespace = row?.namespace ?? ''; }
+    else if (table === 0x02) { const row = types[rid - 1]; name = row?.name ?? null; namespace = row?.namespace ?? ''; }
+    else if (table === 0x1a) { name = moduleRefs[rid - 1]?.name ?? null; }
+    else if (table === 0x06) { const row = methodOwner.get(rid); name = row?.name ?? null; namespace = row?.namespace ?? ''; }
+    if (name == null) return null;
+    return [namespace, name].filter(part => part != null && part !== '').join('.') || null;
+  };
+  const memberRefs = readRows(0x0a, pos => {
+    const parentBase = index(pos, memberRefParentSize);
+    const tag = parentBase & 0x7, rid = parentBase >>> 3, table = memberRefParentTables[tag];
+    failIf(table == null || rid < 1 || rid > counts[table], 'cil-memberref-parent-invalid');
+    const name = text(index(pos + memberRefParentSize, s));
+    failIf(name == null || name.length === 0, 'cil-memberref-name-required');
+    return {
+      parentToken: cilMetadataToken(table, rid),
+      parent: { table, rid },
+      declaringTypeName: declaringTypeName(table, rid),
+      name,
+      signatureBlobIndex: index(pos + memberRefParentSize + s, b),
+    };
+  });
+
+  // II.22.10 CustomAttribute: Parent + constructor + opaque value payload. A
+  // runtime-affecting CLI-defined attribute is unrecoverable without all three,
+  // so nothing here may be silently defaulted (#7556).
+  const hasCustomAttributeTables = [0x06, 0x04, 0x01, 0x02, 0x08, 0x09, 0x0a, 0x00, 0x0e, 0x17, 0x14,
+    0x11, 0x1a, 0x1b, 0x20, 0x23, 0x26, 0x27, 0x28, 0x2a, 0x2c, 0x2b];
+  const hasCustomAttributeSize = codedIndexSize(counts, hasCustomAttributeTables, 5);
+  // CustomAttributeType tags: 2 = MethodDef, 3 = MemberRef (II.24.2.6).
+  const customAttributeTypeSize = codedIndexSize(counts, [0x06, 0x0a], 3);
+  if (counts[0x0c] && hasCustomAttributeSize + customAttributeTypeSize + b !== rowSizes[0x0c]) {
+    fail('cil-customattribute-row-layout-mismatch');
+  }
+  const customAttributeTypeTables = new Map([[2, 0x06], [3, 0x0a]]);
+  const memberRefByToken = new Map(memberRefs.map(row => [row.token, row]));
+  const customAttributes = readRows(0x0c, pos => {
+    const parentBase = index(pos, hasCustomAttributeSize);
+    const typeBase = index(pos + hasCustomAttributeSize, customAttributeTypeSize);
+    const valueBlobIndex = index(pos + hasCustomAttributeSize + customAttributeTypeSize, b);
+    const parentTag = parentBase & 0x1f, parentRid = parentBase >>> 5;
+    const parentTable = hasCustomAttributeTables[parentTag];
+    failIf(parentTable == null || parentRid < 1 || parentRid > counts[parentTable], 'cil-customattribute-parent-invalid');
+    const constructorTag = typeBase & 0x7, constructorRid = typeBase >>> 3;
+    const constructorTable = customAttributeTypeTables.get(constructorTag);
+    failIf(constructorTable == null || constructorRid < 1 || constructorRid > counts[constructorTable], 'cil-customattribute-constructor-invalid');
+    const constructorToken = cilMetadataToken(constructorTable, constructorRid);
+    let constructorName = null, ownerName = null, constructorSignatureBlobIndex = null;
+    if (constructorTable === 0x0a) {
+      const memberRef = memberRefByToken.get(constructorToken);
+      failIf(memberRef == null, 'cil-customattribute-constructor-invalid');
+      constructorName = memberRef.name;
+      ownerName = memberRef.declaringTypeName;
+      constructorSignatureBlobIndex = memberRef.signatureBlobIndex;
+    } else {
+      const method = methods[constructorRid - 1];
+      failIf(method == null, 'cil-customattribute-constructor-invalid');
+      constructorName = method.name;
+      ownerName = declaringTypeName(0x06, constructorRid);
+      constructorSignatureBlobIndex = method.signatureBlobIndex;
+    }
+    let rawValue = null, prolog = null, numNamed = null;
+    if (constructorName !== '.ctor') fail('cil-customattribute-constructor-invalid');
+    if (!blobHeap) fail('cil-customattribute-constructor-signature-missing');
+    const constructorSignatureBytes = readCilMetadataBlob(blobHeap, constructorSignatureBlobIndex,
+      'cil-customattribute-constructor-signature-invalid');
+    const customAttributeContext = {
+      assembly, assemblyRefs, types, typeRefs, fields, blobHeap,
+      typeDefOrRefRowCounts:typeSpecRowCounts(),
+    };
+    if (valueBlobIndex !== 0) {
+      if (!blobHeap) fail('cil-customattribute-value-blob-missing');
+      rawValue = readCilMetadataBlob(blobHeap, valueBlobIndex, 'cil-customattribute-value-blob-invalid');
+    }
+    const decodedValue = decodeCilCustomAttributeValue(rawValue ?? new Uint8Array(0), constructorSignatureBytes,
+      customAttributeContext);
+    prolog = decodedValue.prolog;
+    numNamed = decodedValue.numNamed;
+    return {
+      parentToken: cilMetadataToken(parentTable, parentRid),
+      parent: { table: parentTable, rid: parentRid },
+      constructorToken,
+      constructor: { table: constructorTable, rid: constructorRid, name: constructorName, declaringType: ownerName },
+      attributeTypeName: ownerName != null && constructorName != null ? `${ownerName}::${constructorName}` : null,
+      valueBlobIndex,
+      prolog,
+      numNamed,
+      rawValue,
+    };
+  });
+
+  // An attribute is authority for its Parent, so the owning canonical row also
+  // carries it (the same way a Field carries its FieldRVA). Parent kinds without
+  // a decoded row array stay represented by the canonical table alone.
+  const customAttributeParents = {
+    0x01: typeRefs, 0x02: types, 0x04: fields, 0x06: methods, 0x08: params,
+    0x0a: memberRefs, 0x14: events, 0x17: properties, 0x1a: moduleRefs,
+    0x1b: typeSpecs, 0x23: assemblyRefs, 0x28: manifestResources,
+  };
+  for (const attribute of customAttributes) {
+    const owner = customAttributeParents[attribute.parent.table]?.[attribute.parent.rid - 1];
+    if (owner == null) continue;
+    owner.attributes = [...(owner.attributes ?? []), attribute];
+  }
+
+  const hasConstantSize = codedIndexSize(counts, [0x04, 0x08, 0x17], 2);
+  const hasConstantTables = [0x04, 0x08, 0x17];
+  const constants = readRows(0x0b, pos => {
+    const elementType = bytes[pos];
+    if (!constantValueTypes.has(elementType)) fail('cil-constant-type-invalid');
+    const parent = index(pos + 2, hasConstantSize);
+    if (parent === 0) fail('cil-constant-parent-required');
+    const parentTable = hasConstantTables[parent & 0x3], parentRid = Math.floor(parent / 4);
+    if (parentTable == null || parentRid < 1 || parentRid > counts[parentTable]) fail('cil-constant-parent-invalid');
+    return {
+      type: elementType,
+      parent: { table: parentTable, rid: parentRid, token: cilMetadataToken(parentTable, parentRid) },
+      valueIndex: index(pos + 2 + hasConstantSize, b),
+    };
+  });
+  const classLayouts = readRows(0x0f, pos => {
+    const packingSize = view.getUint16(pos, true);
+    if ((packingSize !== 0 && (packingSize & (packingSize - 1)) !== 0) || packingSize > 128) {
+      fail('cil-class-layout-packing-invalid');
+    }
+    return { packingSize, classSize: view.getUint32(pos + 2, true), parent: index(pos + 6, tableIndexSize(counts, 2)) };
+  });
+  const fieldLayouts = readRows(0x10, pos => ({
+    offset: view.getUint32(pos, true),
+    field: index(pos + 4, tableIndexSize(counts, 4)),
+  }));
+  const nestedClasses = readRows(0x29, pos => ({
+    nested: index(pos, tableIndexSize(counts, 2)),
+    enclosing: index(pos + tableIndexSize(counts, 2), tableIndexSize(counts, 2)),
+  }));
+
+  return { types, methods, fields, manifestResources, typeSpecs, typeRefs, memberRefs, assemblyRefs, assembly, module, params, properties, events, methodSemantics, interfaceImpls, methodImpls, implMaps, moduleRefs, fieldRvas, fieldMarshals, customAttributes, constants, classLayouts, fieldLayouts, nestedClasses };
+}
+
+// Bind auxiliary metadata tables onto canonical owner rows. This runs before
+// the image freezes; malformed or contradictory table authority fails closed.
+export function bindCilMetadataTables(defs, blobHeap) {
+  const { types, typeRefs, typeSpecs, fields, methods, params, properties, constants, classLayouts, fieldLayouts, nestedClasses, assembly, assemblyRefs } = defs;
+  const typeDefOrRefRowCounts = [types.length, typeRefs?.length ?? 0, typeSpecs?.length ?? 0];
+  const fieldSignatureElement = (blob) => {
+    if (!(blob instanceof Uint8Array) || blob.length < 2 || blob[0] !== 0x06) fail('cil-field-signature-invalid');
+    // Validate the entire CustomMod* Type production with the canonical Type
+    // parser before deriving the raw lead byte needed for Constant.Type
+    // agreement. This rejects truncated payloads and trailing garbage.
+    try {
+      parseCilTypeSpecSignature(blob.subarray(1), typeDefOrRefRowCounts);
+    } catch (error) {
+      if (error instanceof TypeError && String(error.message ?? error).startsWith('cil-type-spec-signature-invalid')) {
+        fail('cil-field-signature-invalid');
+      }
+      throw error;
+    }
+    let pos = 1;
+    for (;;) {
+      const lead = blob[pos];
+      if (lead === 0x1f || lead === 0x20) {
+        pos = readCompressedUnsigned(blob, pos + 1, 'cil-field-signature-invalid').next;
+        continue;
+      }
+      return { elementType: lead, offset: pos };
+    }
+  };
+  const primitiveConstantTypes = new Set([0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e]);
+  const enumUnderlyingTypes = new Set([0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b]);
+  const coreLibraryNames = new Set(['mscorlib', 'System.Runtime', 'System.Private.CoreLib', 'netstandard']);
+  const enumUnderlyingElementType = (signature, element) => {
+    if (element.elementType !== 0x11) return null;
+    let encoded;
+    try {
+      encoded = readCompressedUnsigned(signature, element.offset + 1, 'cil-field-signature-invalid').value;
+    } catch {
+      return null;
+    }
+    const tag = encoded & 0x3, rid = encoded >>> 2;
+    if (tag !== 0 || rid < 1 || rid > types.length) return null;
+    const enumType = types[rid - 1];
+    let isEnum = false;
+    const base = enumType?.extendsTypeRef ?? null;
+    if (base?.namespace === 'System' && base?.name === 'Enum' && base.resolutionScope?.table === 0x23) {
+      isEnum = coreLibraryNames.has(assemblyRefs?.[base.resolutionScope.rid - 1]?.name);
+    } else if (typeof enumType?.extendsToken === 'string' && enumType.extendsToken.startsWith('0x0200')) {
+      const baseRid = Number.parseInt(enumType.extendsToken.slice(6), 16);
+      const baseType = types[baseRid - 1];
+      isEnum = coreLibraryNames.has(assembly?.name) && baseType?.namespace === 'System' && baseType?.name === 'Enum';
+    }
+    if (!isEnum) return null;
+    const valueFields = fields.filter(field => field.declaringTypeToken === enumType.token
+      && field.name === 'value__'
+      && (field.accessFlags & 0x10) === 0
+      && (field.accessFlags & 0x0600) === 0x0600
+      && (field.accessFlags & 0x0007) === 0x0006);
+    if (valueFields.length !== 1) return null;
+    const valueField = valueFields[0];
+    if (!Number.isSafeInteger(valueField.signatureBlobIndex) || valueField.signatureBlobIndex <= 0) return null;
+    try {
+      const valueSignature = readCilMetadataBlob(blobHeap, valueField.signatureBlobIndex, 'cil-field-signature-blob-invalid');
+      const underlying = fieldSignatureElement(valueSignature).elementType;
+      return enumUnderlyingTypes.has(underlying) ? underlying : null;
+    } catch {
+      return null;
+    }
+  };
+  const constantRows = [];
+  const constantParents = new Set();
+  for (const row of constants ?? []) {
+    const key = row.parent.token;
+    if (constantParents.has(key)) fail('cil-constant-parent-duplicate');
+    constantParents.add(key);
+    const shape = constantValueTypes.get(row.type);
+    const blob = readCilMetadataBlob(blobHeap, row.valueIndex, 'cil-constant-blob-invalid');
+    if (shape.width != null && blob.length !== shape.width) fail('cil-constant-blob-length-invalid');
+    if (shape.name === 'string' && blob.length % 2 !== 0) fail('cil-constant-blob-length-invalid');
+    if (row.parent.table === 0x04) {
+      const field = fields[row.parent.rid - 1];
+      if (!field || !Number.isSafeInteger(field.signatureBlobIndex) || field.signatureBlobIndex <= 0) {
+        fail('cil-constant-parent-type-unprovable');
+      }
+      const signature = readCilMetadataBlob(blobHeap, field.signatureBlobIndex, 'cil-field-signature-blob-invalid');
+      const declaredElement = fieldSignatureElement(signature);
+      const declared = declaredElement.elementType;
+      if (primitiveConstantTypes.has(declared)) {
+        if (row.type !== declared) fail('cil-constant-type-mismatch');
+      } else if (declared === 0x11) {
+        const underlying = enumUnderlyingElementType(signature, declaredElement);
+        if (underlying == null || row.type !== underlying) fail('cil-constant-type-mismatch');
+      } else if (row.type !== 0x12 || (declared !== 0x12 && declared !== 0x1c)) {
+        fail('cil-constant-type-mismatch');
+      }
+    } else if (row.parent.table === 0x08 || row.parent.table === 0x17) {
+      const declaredElement = (decoded) => {
+        const primitiveCodes = { boolean: 0x02, char: 0x03, i1: 0x04, u1: 0x05, i2: 0x06, u2: 0x07, i4: 0x08, u4: 0x09, i8: 0x0a, u8: 0x0b, r4: 0x0c, r8: 0x0d };
+        if (decoded?.primitive != null && primitiveCodes[decoded.primitive] != null) return primitiveCodes[decoded.primitive];
+        if (decoded?.stackType === 'object-ref' && decoded.typeToken == null && decoded.genericIndex == null) return 'reference';
+        return null;
+      };
+      let declared = null;
+      let declaredExact = null;
+      if (row.parent.table === 0x08) {
+        const param = params?.[row.parent.rid - 1] ?? null;
+        const owner = param?.ownerToken != null ? methods.find(m => m.token === param.ownerToken) ?? null : null;
+        if (!owner || !Number.isSafeInteger(owner.signatureBlobIndex)) fail('cil-constant-parent-type-unprovable');
+        const ownerSigBlob = readCilMetadataBlob(blobHeap, owner.signatureBlobIndex, 'cil-method-signature-blob-invalid');
+        const methodSig = parseCilMethodSignature(ownerSigBlob);
+        const slot = param.sequence === 0 ? methodSig.returnValue : methodSig.parameters[param.sequence - 1] ?? null;
+        if (slot == null) fail('cil-constant-parent-type-unprovable');
+        declared = declaredElement(slot);
+        if (declared === 'reference') declaredExact = cilMethodSlotElementByte(ownerSigBlob, param.sequence);
+      } else {
+        const property = properties?.[row.parent.rid - 1] ?? null;
+        if (!property || !Number.isSafeInteger(property.typeBlobIndex)) fail('cil-constant-parent-type-unprovable');
+        const propertySigBlob = readCilMetadataBlob(blobHeap, property.typeBlobIndex, 'cil-property-signature-blob-invalid');
+        const propertySig = parseCilPropertySignature(propertySigBlob);
+        declared = declaredElement(propertySig.propertyType);
+        if (declared === 'reference') declaredExact = cilPropertyTypeElementByte(propertySigBlob);
+      }
+      if (declared === null) fail('cil-constant-parent-type-unprovable');
+      if (declared === 'reference') {
+        if (declaredExact === 0x0e) {
+          if (row.type !== 0x0e) fail('cil-constant-type-mismatch');
+        } else if (declaredExact === 0x1c || declaredExact === 0x1d || declaredExact === 0x14) {
+          if (row.type !== 0x12) fail('cil-constant-type-mismatch');
+        } else {
+          fail('cil-constant-type-mismatch');
+        }
+      } else if (row.type !== declared) {
+        fail('cil-constant-type-mismatch');
+      }
+    }
+    const value = Object.freeze({ type: shape.name, value: shape.decode(blob) });
+    row.value = value;
+    constantRows.push(Object.freeze({ token: row.token, parent: row.parent.token, ...value }));
+    if (row.parent.table === 0x04) fields[row.parent.rid - 1].constant = value;
+  }
+
+  const layoutParents = new Set();
+  for (const row of classLayouts ?? []) {
+    if (row.parent < 1 || row.parent > types.length) fail('cil-class-layout-parent-invalid');
+    if (layoutParents.has(row.parent)) fail('cil-class-layout-parent-duplicate');
+    layoutParents.add(row.parent);
+    const layoutMask = types[row.parent - 1].accessFlags & 0x18;
+    if (layoutMask !== 0x08 && layoutMask !== 0x10) fail('cil-class-layout-flags-contradiction');
+    types[row.parent - 1].classLayout = Object.freeze({ packingSize: row.packingSize, classSize: row.classSize });
+  }
+
+  const layoutFields = new Set();
+  for (const row of fieldLayouts ?? []) {
+    if (row.field < 1 || row.field > fields.length) fail('cil-field-layout-field-invalid');
+    if (layoutFields.has(row.field)) fail('cil-field-layout-field-duplicate');
+    layoutFields.add(row.field);
+    const field = fields[row.field - 1];
+    const ownerToken = field.declaringTypeToken;
+    const ownerType = ownerToken ? types[(parseInt(ownerToken, 16) & 0xffffff) - 1] : null;
+    if (!ownerType || (ownerType.accessFlags & 0x18) !== 0x10) fail('cil-class-layout-flags-contradiction');
+    if ((field.accessFlags & 0x10) !== 0) fail('cil-field-layout-static-field');
+    field.offset = row.offset;
+  }
+
+  const nestedRids = new Set();
+  for (const row of nestedClasses ?? []) {
+    if (row.nested < 1 || row.nested > types.length || row.enclosing < 1 || row.enclosing > types.length) {
+      fail('cil-nested-class-reference-invalid');
+    }
+    if (row.nested === row.enclosing) fail('cil-nested-class-self-referential');
+    if (nestedRids.has(row.nested)) fail('cil-nested-class-nested-duplicate');
+    nestedRids.add(row.nested);
+    if ((types[row.nested - 1].accessFlags & 0x7) < 2) fail('cil-nested-class-visibility-invalid');
+    types[row.nested - 1].enclosingTypeToken = types[row.enclosing - 1].token;
+  }
+  for (const type of types) {
+    let current = type, steps = 0;
+    while (current?.enclosingTypeToken != null) {
+      if (++steps > types.length) fail('cil-nested-class-cycle');
+      current = types[(parseInt(current.enclosingTypeToken, 16) & 0xffffff) - 1];
+    }
+  }
+  return { ...defs, constants: constantRows };
 }

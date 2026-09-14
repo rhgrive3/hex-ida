@@ -62,8 +62,7 @@ function fairPrefix(values, max) {
 export function rankCandidates({ goal, strings, program, symbols, region, limit = 40, vendors = null }) {
   const notes = [], byAddr = new Map();
   if (!goal) return { candidates: [], matchedStrings: [], notes: ['no-goal'] };
-  const numericLimit = Number(limit);
-  const resultLimit = Number.isFinite(numericLimit) && numericLimit > 0 ? Math.floor(numericLimit) : 0;
+  const resultLimit = typeof limit === 'number' && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 0;
   const hasProgram = !!program;
   if (!hasProgram) notes.push('no-program-index');
 

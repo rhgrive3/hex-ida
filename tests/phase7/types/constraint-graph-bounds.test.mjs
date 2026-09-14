@@ -108,10 +108,10 @@ test('TypeConstraintGraph constructor rejects non-primitive, non-integer, or non
   }
 });
 
-test('condenseTypeGraph rejects non-primitive, non-integer, or non-positive limits (#6053)', () => {
+test('condenseTypeGraph rejects non-primitive, non-integer, negative, or unsafe limits (#6053, #4339)', () => {
   const nodes = ['A', 'B'];
   const deps = () => [];
-  for (const bad of ['1', ['1'], true, {}, NaN, Infinity, -Infinity, 1.5, 0, -1]) {
+  for (const bad of [null, '1', ['1'], true, {}, NaN, Infinity, -Infinity, 1.5, -1, Number.MAX_SAFE_INTEGER + 1]) {
     assert.throws(() => condenseTypeGraph(nodes, deps, { maxNodes: bad }), TypeError);
     assert.throws(() => condenseTypeGraph(nodes, deps, { maxEdges: bad }), TypeError);
     assert.throws(() => condenseTypeGraph(nodes, deps, { maxComponents: bad }), TypeError);

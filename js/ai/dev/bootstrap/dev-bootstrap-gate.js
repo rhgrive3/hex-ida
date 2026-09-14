@@ -49,7 +49,7 @@ export class DevExtensionLoader {
     return deepFreeze({ status: 'active', extensionId: this.#active.id, extensionVersion: this.#active.version, integrity: this.#active.integrity, identity: verifiedIdentity });
   }
   invoke(name) {
-    if (!this.#active) throw new Error('No Dev extension is active.'); const capability = this.#active.capabilities.find((item) => item.name === String(name || ''));
+    if (!this.#active) throw new Error('No Dev extension is active.'); const capabilityName = nonEmpty(name, 'capability name'); const capability = this.#active.capabilities.find((item) => item.name === capabilityName);
     if (!capability) throw new Error(`Unknown Dev extension capability: ${name}`); if (capability.kind !== 'identity') throw new Error(`Unsupported Dev extension capability kind: ${capability.kind}`);
     return deepFreeze({ capability: capability.name, extensionId: this.#active.id, extensionVersion: this.#active.version, integrity: this.#active.integrity, commit: this.#activeIdentity.commit, buildId: this.#activeIdentity.buildId, verified: true });
   }
@@ -64,7 +64,7 @@ async function sha256Hex(text) { if (!globalThis.crypto?.subtle) throw new Error
 function constantTimeTextEqual(left, right) { const a = String(left || ''), b = String(right || ''); let diff = a.length ^ b.length; const length = Math.max(a.length, b.length); for (let i = 0; i < length; i += 1) diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0); return diff === 0; }
 function assertPlainObject(value, label) { if (!value || typeof value !== 'object' || Array.isArray(value) || (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)) throw new TypeError(`${label} must be a plain object.`); }
 function assertExactKeys(value, keys, label) { const actual = Object.keys(value).sort(), expected = [...keys].sort(); if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) throw new TypeError(`${label} has an invalid shape.`); }
-function nonEmpty(value, field) { const text = String(value || '').trim(); if (!text) throw new TypeError(`${field} is required.`); return text; }
+function nonEmpty(value, field) { if (typeof value !== 'string') throw new TypeError(`${field} must be a string.`); const text = value.trim(); if (!text) throw new TypeError(`${field} is required.`); return text; }
 function assertCommit(value) {
   if (typeof value !== 'string') throw new TypeError('expectedCommit must be a string.');
   const text = value.trim();
@@ -78,5 +78,48 @@ function assertBuildId(value) {
   return text.toLowerCase();
 }
 function assertIntegrity(value) { const text = nonEmpty(value, 'extension.integrity'); if (!/^sha256-[0-9a-f]{64}$/i.test(text)) throw new TypeError('extension.integrity must be a SHA-256 identity.'); return text.toLowerCase(); }
-function cloneJson(value, field) { if (value === undefined) throw new TypeError(`${field} must be JSON-safe.`); try { return JSON.parse(JSON.stringify(value)); } catch { throw new TypeError(`${field} must be JSON-safe.`); } }
+function cloneJson(value, field, ancestors = new Set()) {
+  const invalid = () => { throw new TypeError(`${field} must be JSON-safe.`); };
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') { if (!Number.isFinite(value) || Object.is(value, -0)) invalid(); return value; }
+  if (!value || typeof value !== 'object') invalid();
+  if (ancestors.has(value)) invalid();
+
+  const isArray = Array.isArray(value);
+  const prototype = Object.getPrototypeOf(value);
+  if (isArray ? prototype !== Array.prototype : (prototype !== Object.prototype && prototype !== null)) invalid();
+
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Reflect.ownKeys(descriptors).some((key) => typeof key === 'symbol')) invalid();
+  ancestors.add(value);
+  try {
+    if (isArray) {
+      const indexKeys = Object.keys(descriptors).filter((key) => key !== 'length');
+      if (indexKeys.length !== value.length) invalid();
+      const out = new Array(value.length);
+      for (const key of indexKeys) {
+        if (!/^(?:0|[1-9]\d*)$/.test(key) || Number(key) >= 0xffffffff) invalid();
+        const descriptor = descriptors[key];
+        if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) invalid();
+        out[Number(key)] = cloneJson(descriptor.value, field, ancestors);
+      }
+      return out;
+    }
+
+    const out = {};
+    for (const key of Object.keys(descriptors)) {
+      const descriptor = descriptors[key];
+      if (!descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) invalid();
+      Object.defineProperty(out, key, {
+        value: cloneJson(descriptor.value, field, ancestors),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return out;
+  } finally {
+    ancestors.delete(value);
+  }
+}
 function deepFreeze(value) { if (value && typeof value === 'object' && !Object.isFrozen(value)) { for (const child of Object.values(value)) deepFreeze(child); Object.freeze(value); } return value; }

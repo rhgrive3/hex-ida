@@ -25,6 +25,7 @@ import {
   canonicalAliasProof,
   canonicalMemorySsaDigest,
   canonicalStoreValueProof,
+  isCanonicalAccessProvider,
   MEMORY_SSA_PROOF_VERSION,
 } from './proof.js';
 
@@ -566,6 +567,31 @@ function nodesByIdForStack(irFunction) {
   return new Map((irFunction.nodes ?? []).map((node) => [String(node.id), node]));
 }
 
+function stackAddressPublishedBeforeCall(node, orderedNodes, stackValues) {
+  const callIndex = orderedNodes.findIndex((candidate) => candidate === node);
+  if (callIndex < 0) return true;
+  const stores = (upstream) => {
+    const list = [
+      ...(upstream.kind === 'store' ? [{ addressValueId: memoryAddressExpr(upstream.memory)?.valueId ?? upstream.inputs?.[0], storedValueId: upstream.inputs?.[1] }] : []),
+      ...(upstream.intrinsic?.memoryWrite?.accesses ?? []).map((access) => ({
+        addressValueId: access.addressExpr?.valueId,
+        storedValueId: access.valueId ?? null,
+      })),
+    ];
+    return list;
+  };
+  for (let index = 0; index < callIndex; index++) {
+    const upstream = orderedNodes[index];
+    if (!upstream) continue;
+    for (const store of stores(upstream)) {
+      const stored = store.storedValueId;
+      if (stored == null || !stackValues.derives(stored)) continue;
+      if (!stackValues.derives(store.addressValueId)) return true;
+    }
+  }
+  return false;
+}
+
 function discoverDescriptors(irFunction, cfg, options, fallbackRegion, orderedNodes = null) {
   const descriptors = [];
   const readsByNode = new Map();
@@ -614,7 +640,8 @@ function discoverDescriptors(irFunction, cfg, options, fallbackRegion, orderedNo
         && (descriptor.sourceKind === 'call'
           || (descriptor.sourceKind === 'unknown-memory-effect' && descriptor.node?.kind === 'call'))
         && !stackValues.nodeHasStackDerivedArgument(descriptor.node)
-        && !callMayExposeStackAddress(descriptor.node, nodes, irFunction, stackValues)) {
+        && !callMayExposeStackAddress(descriptor.node, nodes, irFunction, stackValues)
+        && !stackAddressPublishedBeforeCall(descriptor.node, nodes, irFunction, stackValues)) {
       descriptor.noEscapeStack = true;
     }
   }
@@ -643,18 +670,20 @@ function addRegion(regionById, region) {
   if (prior && stableStringify(prior) !== stableStringify(normalized)) fail('memory-ssa-build-conflicting-region-id');
   regionById.set(normalized.id, normalized);
 }
-function unreachableRoots(cfg, options) {
+function unreachableComponents(cfg, options) {
   const reachable = new Set(reachableBlocks(cfg, cfg.entryBlockId, { signal: options.signal }));
   const unreachable = cfg.blocks.map((block) => block.id).filter((id) => !reachable.has(id)).sort();
   const unreachableSet = new Set(unreachable);
   const byId = new Map(cfg.blocks.map((block) => [block.id, block]));
   const roots = new Set([cfg.entryBlockId]);
+  const componentSeedByBlock = new Map();
   const seen = new Set();
   for (const seed of unreachable) {
     if (seen.has(seed)) continue;
     roots.add(seed);
     const stack = [seed];
     seen.add(seed);
+    componentSeedByBlock.set(seed, seed);
     while (stack.length) {
       const id = stack.pop();
       const block = byId.get(id);
@@ -665,11 +694,12 @@ function unreachableRoots(cfg, options) {
       for (const next of neighbors) {
         if (seen.has(next)) continue;
         seen.add(next);
+        componentSeedByBlock.set(next, seed);
         stack.push(next);
       }
     }
   }
-  return roots;
+  return Object.freeze({ roots, componentSeedByBlock });
 }
 function mapEqual(left, right, regionIds) {
   if (!left || !right) return false;
@@ -714,14 +744,14 @@ function effectSummary(descriptor, relation) {
   return jsonSafe(out);
 }
 function memoryAccessProof(descriptor, options, identity) {
-  const raw = typeof options?.accessProofForDescriptor === 'function'
-    ? options.accessProofForDescriptor(descriptor)
-    : null;
+  const provider = options?.accessProofForDescriptor;
+  const raw = isCanonicalAccessProvider(provider) ? provider(descriptor) : null;
   return canonicalAccessProof({
     raw,
     descriptor,
     identity,
     functionId: identity?.functionId ?? descriptor?.node?.functionId ?? null,
+    providerCallback: provider,
   });
 }
 
@@ -1047,19 +1077,44 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   const cfgBlockById = new Map(cfg.blocks.map((block) => [block.id, block]));
   const irBlockById = new Map(irFunction.blocks.map((block) => [block.id, block]));
   const traversal = deterministicTraversal(cfg, { signal: options.signal, includeUnreachable: true });
-  const syntheticRoots = unreachableRoots(cfg, options);
-  const initialState = new Map(entryDefinitionIds);
+  const unreachableInfo = unreachableComponents(cfg, options);
+  const syntheticRoots = unreachableInfo.roots;
+  const componentSeedByBlock = unreachableInfo.componentSeedByBlock;
+  const componentSeeds = [...new Set(componentSeedByBlock.values())].sort();
+  const unreachableEntryDefinitionIds = new Map(componentSeeds.map((componentSeed) => [
+    componentSeed,
+    new Map(regionIds.map((regionId) => [
+      regionId,
+      entityId('memdef', {
+        functionId: irFunction.functionId,
+        regionId,
+        blockId: componentSeed,
+        kind: 'unreachable-entry',
+      }),
+    ])),
+  ]));
+  const seedDefinitionIdFor = (blockId, regionId) => {
+    const componentSeed = componentSeedByBlock.get(blockId);
+    return componentSeed == null
+      ? entryDefinitionIds.get(regionId)
+      : unreachableEntryDefinitionIds.get(componentSeed).get(regionId);
+  };
+  const initialStateFor = (blockId) => new Map(regionIds.map((regionId) => [
+    regionId,
+    seedDefinitionIdFor(blockId, regionId),
+  ]));
   const inStateByBlock = new Map();
-  const outStateByBlock = new Map(cfg.blocks.map((block) => [block.id, cloneState(initialState)]));
+  const outStateByBlock = new Map(cfg.blocks.map((block) => [block.id, initialStateFor(block.id)]));
 
   const mergeBlockState = (blockId) => {
     const block = cfgBlockById.get(blockId);
     const state = new Map();
     for (const regionId of regionIds) {
       tick();
-      const candidates = block.predecessors.map((pred) => outStateByBlock.get(pred)?.get(regionId) ?? entryDefinitionIds.get(regionId));
-      if (syntheticRoots.has(blockId)) candidates.push(entryDefinitionIds.get(regionId));
-      if (!candidates.length) candidates.push(entryDefinitionIds.get(regionId));
+      const candidates = block.predecessors.map((pred) => outStateByBlock.get(pred)?.get(regionId)
+        ?? seedDefinitionIdFor(pred, regionId));
+      if (syntheticRoots.has(blockId)) candidates.push(seedDefinitionIdFor(blockId, regionId));
+      if (!candidates.length) candidates.push(seedDefinitionIdFor(blockId, regionId));
       const unique = [...new Set(candidates)];
       state.set(regionId, unique.length === 1 ? unique[0] : phiId(blockId, regionId));
     }
@@ -1126,6 +1181,28 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       proof: { kind: 'initial-memory-version' },
     });
   }
+  for (const region of regions) {
+    for (const componentSeed of componentSeeds) {
+      const id = unreachableEntryDefinitionIds.get(componentSeed).get(region.id);
+      addDefinition({
+        id,
+        kind: 'entry',
+        regionId: region.id,
+        blockId: null,
+        previousDefinitionIds: [],
+        incoming: [],
+        aliasRelation: null,
+        sourceEntityId: irFunction.functionId,
+        origin: transformOrigin(irFunction.origin, {
+          ruleId: 'unreachable-initial-memory-version',
+          consumedEntityIds: [irFunction.functionId, componentSeed],
+          producedEntityIds: [id],
+          proofKind: 'unreachable-initial-memory-version',
+        }),
+        proof: { kind: 'unreachable-initial-memory-version', seedBlockId: componentSeed },
+      });
+    }
+  }
   for (const blockId of traversal) {
     const block = cfgBlockById.get(blockId);
     for (const regionId of regionIds) {
@@ -1135,7 +1212,9 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
         predecessorBlockId: pred,
         definitionId: outStateByBlock.get(pred).get(regionId),
       }));
-      const previousDefinitionIds = syntheticRoots.has(blockId) ? [entryDefinitionIds.get(regionId)] : [];
+      const previousDefinitionIds = syntheticRoots.has(blockId)
+        ? [seedDefinitionIdFor(blockId, regionId)]
+        : [];
       const baseOrigin = irBlockById.get(blockId)?.origin ?? irFunction.origin;
       addDefinition({
         id: expectedPhiId,

@@ -286,8 +286,12 @@ class TraceProviderSession extends RuntimeProviderSession {
 
 export class TraceProvider {
   constructor(recording, options = {}) {
+    if (options.verifyModuleIdentity != null && typeof options.verifyModuleIdentity !== 'function') {
+      throw new DebugAdapterError('trace-module-identity-verifier-invalid', 'trace module identity verifier must be a function');
+    }
     this.recording = normalizeRecording(recording, options);
     this.options = options;
+    this.verifyModuleIdentity = options.verifyModuleIdentity ?? null;
     this.activeSession = null;
     this._descriptor = createRuntimeProviderDescriptor({
       id: options.id ?? `trace:${this.recording.sourceProvider}`,
@@ -332,20 +336,34 @@ export class TraceProvider {
       const identityEvidenceIds = rawEvidenceIds.filter((id) => typeof id === 'string' && id.trim().length > 0);
       const hasCanonicalIdentityEvidence = identityEvidenceIds.length > 0 && identityEvidenceIds.length === rawEvidenceIds.length;
       const hasExplicitNegativeIdentityState = module.identityState === 'unresolved' || module.identityState === 'mismatch';
-      const hasProvenStaticIdentity = !hasExplicitNegativeIdentityState
+      const hasDeclaredStaticIdentity = !hasExplicitNegativeIdentityState
         && module.binaryId != null
         && (module.identityState === 'exact' || (module.identityState === 'resolved' && hasCanonicalIdentityEvidence) || hasCanonicalIdentityEvidence);
+      // Imported trace metadata is external input. Shape-valid evidence IDs and
+      // self-declared exact/resolved states are not authority by themselves:
+      // only an out-of-band verifier supplied by the embedding application may
+      // authenticate the complete module mapping (#5165). Requiring strict
+      // boolean true prevents truthy/structured verifier results from granting
+      // identity authority accidentally.
+      const hasVerifiedStaticIdentity = hasDeclaredStaticIdentity
+        && this.verifyModuleIdentity != null
+        && this.verifyModuleIdentity(module, Object.freeze({
+          recordingId: this.recording.recordingId,
+          binaryId,
+          sliceId: this.recording.sliceId,
+          requestBinaryId: request.binaryId ?? request.binaryHash ?? null,
+        })) === true;
       session.modules.load({
         bindingKey: module.bindingKey ?? module.moduleKey ?? module.id ?? module.uuid ?? module.name ?? `trace-module:${i}`,
         runtimeBase: module.runtimeBase ?? module.base,
         runtimeSize: module.runtimeSize ?? module.size,
         staticBase: module.staticBase ?? module.imageBase ?? null,
         pathHint: module.pathHint ?? module.path ?? module.name ?? null,
-        binaryId: hasProvenStaticIdentity ? module.binaryId : null,
-        sliceId: hasProvenStaticIdentity ? (module.sliceId ?? null) : null,
-        imageId: hasProvenStaticIdentity ? (module.imageId ?? null) : null,
+        binaryId: hasVerifiedStaticIdentity ? module.binaryId : null,
+        sliceId: hasVerifiedStaticIdentity ? (module.sliceId ?? null) : null,
+        imageId: hasVerifiedStaticIdentity ? (module.imageId ?? null) : null,
         buildIdentity: module.buildIdentity ?? module.uuid ?? null,
-        identityState: hasProvenStaticIdentity ? (module.identityState ?? 'resolved') : 'unresolved',
+        identityState: hasVerifiedStaticIdentity ? (module.identityState ?? 'resolved') : 'unresolved',
         identityEvidenceIds,
         loadedSequence: module.loadedSequence,
       });

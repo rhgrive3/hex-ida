@@ -24,6 +24,11 @@ function safeCoverage(value) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
 }
 
+function defineOwn(target, key, value) {
+  Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });
+  return target;
+}
+
 export function boundedProjection(value, { depth = 0, arrayLimit = DEFAULT_ARRAY_LIMIT, stringLimit = DEFAULT_STRING_LIMIT, objectLimit = 64 } = {}) {
   if (depth > 6) return '[detailRef]';
   if (typeof value === 'string') return value.length > stringLimit ? `${value.slice(0, stringLimit)}…` : value;
@@ -33,7 +38,7 @@ export function boundedProjection(value, { depth = 0, arrayLimit = DEFAULT_ARRAY
   if (typeof value === 'object') {
     const out = {};
     for (const [key, item] of Object.entries(value).slice(0, objectLimit)) {
-      out[key] = boundedProjection(item, { depth: depth + 1, arrayLimit, stringLimit, objectLimit });
+      defineOwn(out, key, boundedProjection(item, { depth: depth + 1, arrayLimit, stringLimit, objectLimit }));
     }
     return out;
   }
@@ -57,10 +62,15 @@ export function completenessOf(result) {
   if (malformed) return { complete: false, returned: 0, total: null, coverage: null, reason: 'malformed-completeness' };
   const returned = returnedValue === undefined ? rows.length : returnedValue;
   const total = totalValue === undefined ? (truncatedValue === true ? null : returned) : totalValue;
-  const complete = completeValue === undefined ? truncatedValue !== true : completeValue;
+  const behindCounts = total != null && returned < total;
+  const contradictsCounts = behindCounts && completeValue === true;
+  const complete = contradictsCounts ? false
+    : completeValue === undefined ? (truncatedValue !== true && !behindCounts)
+      : completeValue;
   const coverage = coverageValue !== undefined ? safeCoverage(coverageValue) :
     (total != null && total > 0 ? Math.min(1, returned / total) : (complete ? 1 : null));
-  const reason = explicit?.reason ?? result?.reason ?? (complete ? null : 'result-limit');
+  const reason = contradictsCounts ? 'malformed-completeness'
+    : (explicit?.reason ?? result?.reason ?? (complete ? null : 'result-limit'));
   return { complete, returned, total, coverage, reason };
 }
 
@@ -192,6 +202,9 @@ export function projectGraph(result, meta = {}) {
   };
   for (const key of ['results', 'functions', 'sites', 'callers', 'callees', 'nodes', 'blocks', 'paths', 'edges']) {
     if (Array.isArray(result?.[key])) data[key] = result[key].slice(0, key === 'edges' ? 40 : 28).map((row) => boundedProjection(row, { arrayLimit: 16, stringLimit: 1400, objectLimit: 48 }));
+  }
+  for (const key of ['callersPage', 'calleesPage', 'continuations']) {
+    if (result?.[key] && typeof result[key] === 'object') data[key] = boundedProjection(result[key], { arrayLimit: 8, stringLimit: 1400, objectLimit: 24 });
   }
   if (result?.from !== undefined) data.from = result.from;
   if (result?.to !== undefined) data.to = result.to;

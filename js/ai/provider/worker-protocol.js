@@ -1,3 +1,5 @@
+import { PROPOSAL_DRAFT_SCHEMA } from '../schema.js';
+import { compactUntrustedTarget } from '../context/broker.js';
 import { boundedText, byteLength, HttpError, MAX_CONTEXT_CHARS } from './worker-transport.js';
 
 const MAX_QUESTION_CHARS = 6000;
@@ -87,7 +89,8 @@ export function finalResultTool() {
       answer: { type: 'string', maxLength: 30000 }, confidence: { type: 'number', minimum: 0, maximum: 1 },
       evidenceIds: { type: 'array', items: { type: 'string' } }, hypothesisIds: { type: 'array', items: { type: 'string' } },
       hypotheses: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, claim: { type: 'string' }, confidence: { type: 'number' }, status: { type: 'string' }, supportEvidenceIds: { type: 'array', items: { type: 'string' } }, contradictionEvidenceIds: { type: 'array', items: { type: 'string' } }, missingEvidence: { type: 'array', items: { type: 'string' } } } } },
-      suggestedActions: { type: 'array', items: { type: 'object', required: ['kind'], properties: { kind: { type: 'string' }, target: { type: 'string' }, label: { type: 'string' }, evidenceId: { type: 'string' } } } }, followups: { type: 'array', items: { type: 'string' } },
+      suggestedActions: { type: 'array', items: { type: 'object', required: ['kind'], properties: { kind: { type: 'string' }, target: { type: 'string' }, label: { type: 'string' }, evidenceId: { type: 'string' } } } },
+      proposals: { type: 'array', maxItems: 8, items: PROPOSAL_DRAFT_SCHEMA }, followups: { type: 'array', items: { type: 'string' } },
     },
   } };
 }
@@ -97,8 +100,10 @@ export function normalizeAIInteraction(value, allowedTools) {
   if (Array.isArray(value?.steps)) steps.push(...value.steps);
   if (Array.isArray(value?.output)) steps.push(...value.output);
   if (Array.isArray(value?.response?.steps)) steps.push(...value.response.steps);
-  const call = steps.find((step) => step && (step.type === 'function_call' || step.type === 'tool_call'));
-  if (!call) throw new Error('The model did not return a complete function call.');
+  const calls = steps.filter((step) => step && (step.type === 'function_call' || step.type === 'tool_call'));
+  if (calls.length === 0) throw new Error('The model did not return a complete function call.');
+  if (calls.length !== 1) throw new Error('The model must return exactly one function call.');
+  const [call] = calls;
   // A tool/function name is a string identity in the tool schema the Worker
   // publishes. `String()` coercion let a 1-element array (`['submit_hex_result']`)
   // launder into that exact name and claim final-result or tool authority
@@ -111,7 +116,7 @@ export function normalizeAIInteraction(value, allowedTools) {
   if (!isObject(args)) throw new Error('The model function arguments must be an object.');
   if (name === 'submit_hex_result') {
     const answer = boundedText(args.answer, 30000).trim(); if (!answer) throw new Error('The final answer is empty.');
-    return { type: 'final', answer, confidence: finiteConfidence(args.confidence), evidenceIds: stringList(args.evidenceIds, 100), hypothesisIds: stringList(args.hypothesisIds, 100), hypotheses: normalizeList(args.hypotheses, 30), suggestedActions: normalizeList(args.suggestedActions, 30), followups: stringList(args.followups, 20) };
+    return { type: 'final', answer, confidence: finiteConfidence(args.confidence), evidenceIds: stringList(args.evidenceIds, 100), hypothesisIds: stringList(args.hypothesisIds, 100), hypotheses: normalizeList(args.hypotheses, 30), suggestedActions: normalizeList(args.suggestedActions, 30), proposals: normalizeList(args.proposals, 8), followups: stringList(args.followups, 20) };
   }
   if (!allowedTools.includes(name)) throw new Error('The model requested an unknown tool.');
   return { type: 'tool', tool: name, arguments: sanitizeValue(args, 0), purpose: boundedText(call.purpose, 1000) };
@@ -126,6 +131,8 @@ export function normalizeRequest(value) {
   const thinkingLevel = value.thinkingLevel == null ? 'high' : value.thinkingLevel; if (typeof thinkingLevel !== 'string' || !THINKING_LEVELS.has(thinkingLevel)) throw new HttpError(422, 'invalid_thinking_level', 'thinkingLevel must be minimal, low, medium, or high.');
   const currentFunction = normalizeCurrentFunction(value.currentFunction);
   const context = { question, currentFunction, xrefs: normalizeList(value.xrefs, 60), callers: normalizeList(value.callers, 60), callees: normalizeList(value.callees, 60), strings: normalizeList(value.strings, 60), globals: normalizeList(value.globals, 60) };
+  const untrustedTarget = compactUntrustedTarget(value.untrustedTarget);
+  if (untrustedTarget) context.untrustedTarget = untrustedTarget;
   if (JSON.stringify(context).length > MAX_CONTEXT_CHARS) throw new HttpError(413, 'request_too_large', 'The selected analysis context is too large.');
   return { thinkingLevel, context };
 }

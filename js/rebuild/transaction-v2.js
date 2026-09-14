@@ -37,6 +37,26 @@ export function registerCanonicalIndependentOracleProvider(provider) {
 function isCanonicalIndependentOracleProvider(provider) {
   return typeof provider === 'function' && TRUSTED_INDEPENDENT_ORACLE_PROVIDERS.has(provider);
 }
+
+const TRUSTED_ATOMIC_PUBLICATION_PROVIDERS = new WeakSet();
+const TRUSTED_ATOMIC_PUBLICATION_RECEIPTS = new WeakSet();
+
+// Atomic publication is a proof boundary, so the promoter that reaches it must
+// be host-owned: only a registered trusted provider can mint a publication
+// receipt, and a receipt-shaped object copied by a caller carries no authority.
+export function registerCanonicalAtomicPublicationProvider(provider) {
+  if (typeof provider !== 'function') throw new TypeError('atomic-publication-provider-required');
+  TRUSTED_ATOMIC_PUBLICATION_PROVIDERS.add(provider);
+  return provider;
+}
+
+function isCanonicalAtomicPublicationProvider(provider) {
+  return typeof provider === 'function' && TRUSTED_ATOMIC_PUBLICATION_PROVIDERS.has(provider);
+}
+
+export function isValidatedAtomicPublicationReceipt(value) {
+  return !!value && value.status === 'published' && TRUSTED_ATOMIC_PUBLICATION_RECEIPTS.has(value);
+}
 export const F6_UNIMPLEMENTED_OPERATION_UNITS = Object.freeze([]);
 // These are evaluator-level bounded capabilities, not replacements for the
 // locked profile-wide F6 units above.  A capability can close only when its
@@ -52,8 +72,13 @@ export const F6_BOUNDED_OPERATION_CELLS = Object.freeze([
 const BYTE_HASH_RE = /^bytes:[0-9a-f]{32}$/;
 const VALID_REBUILD_PROFILE_SUPPORT = new WeakSet();
 
+// Identity-bearing fields must be primitive strings. String(value) makes
+// ['elf'], {toString(){return 'elf'}} and 'elf' indistinguishable, so a
+// structured input would be minted into the canonical transactionId of a
+// publishable rebuild proposal (#3969).
 function required(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new TypeError(code);
+  const text = value.trim();
   if (!text) throw new TypeError(code);
   return text;
 }
@@ -151,18 +176,32 @@ function operationShapeValid(operations) {
   return true;
 }
 
+function validatorIdentityValues(result, image, fields, imageField) {
+  // Presence is distinct from a nullish value. Validate every supplied alias
+  // before choosing the first one, so a fallback cannot hide malformed proof.
+  const values = fields.filter((field) => field in result).map((field) => result[field]);
+  if (image != null && imageField in Object(image)) values.push(image[imageField]);
+  return values;
+}
+
 function formatIdentityMismatch(result, transaction, expectedOutputHash) {
   if (!result || typeof result !== 'object') return null;
-  const format = result.format ?? result.image?.format;
-  if (format != null && String(format).toLowerCase() !== transaction.format) return 'validator-format-mismatch';
-  const architecture = result.architecture ?? result.arch ?? result.image?.arch;
-  if (architecture != null && String(architecture).toLowerCase() !== transaction.architecture) return 'validator-architecture-mismatch';
-  const loaderVersion = result.loaderVersion ?? result.parserVersion ?? result.image?.loaderVersion;
-  if (loaderVersion != null && String(loaderVersion) !== transaction.loaderVersion) return 'validator-loader-identity-mismatch';
-  const sourceHash = result.sourceHash ?? result.inputHash ?? result.image?.sourceHash;
-  if (sourceHash != null && String(sourceHash).toLowerCase() !== transaction.sourceHash) return 'validator-source-identity-mismatch';
-  const outputHash = result.outputHash ?? result.bytesHash ?? result.image?.outputHash;
-  if (outputHash != null && String(outputHash).toLowerCase() !== expectedOutputHash) return 'validator-output-identity-mismatch';
+  const image = result.image;
+  const formats = validatorIdentityValues(result, image, ['format'], 'format');
+  if (formats.some((value) => typeof value !== 'string')) return 'validator-format-invalid';
+  if (formats.length && formats[0].toLowerCase() !== transaction.format) return 'validator-format-mismatch';
+  const architectures = validatorIdentityValues(result, image, ['architecture', 'arch'], 'arch');
+  if (architectures.some((value) => typeof value !== 'string')) return 'validator-architecture-invalid';
+  if (architectures.length && architectures[0].toLowerCase() !== transaction.architecture) return 'validator-architecture-mismatch';
+  const loaderVersions = validatorIdentityValues(result, image, ['loaderVersion', 'parserVersion'], 'loaderVersion');
+  if (loaderVersions.some((value) => typeof value !== 'string')) return 'validator-loader-identity-invalid';
+  if (loaderVersions.length && loaderVersions[0] !== transaction.loaderVersion) return 'validator-loader-identity-mismatch';
+  const sourceHashes = validatorIdentityValues(result, image, ['sourceHash', 'inputHash'], 'sourceHash');
+  if (sourceHashes.some((value) => typeof value !== 'string')) return 'validator-source-identity-invalid';
+  if (sourceHashes.length && sourceHashes[0].toLowerCase() !== transaction.sourceHash) return 'validator-source-identity-mismatch';
+  const outputHashes = validatorIdentityValues(result, image, ['outputHash', 'bytesHash'], 'outputHash');
+  if (outputHashes.some((value) => typeof value !== 'string')) return 'validator-output-identity-invalid';
+  if (outputHashes.length && outputHashes[0].toLowerCase() !== expectedOutputHash) return 'validator-output-identity-mismatch';
   return null;
 }
 
@@ -396,6 +435,7 @@ export function evaluateF6RebuildDenominator({ transaction, validation, publicat
     && rebuildIdentityMatches(validation, transaction)
     && validationIdentityValid(validation);
   const publicationComplete = publication?.status === 'published'
+    && isValidatedAtomicPublicationReceipt(publication)
     && publication.atomic === true
     && publication.committed === true
     && publication.transactionId === transaction?.transactionId
@@ -590,6 +630,8 @@ export function createRebuildTransaction(input = {}) {
   expectedOriginalState.sourceHash = sourceHash;
   const relocationBindings = input.relocationBindings ?? declaredImpact.relocationBindings ?? [];
   if (!Array.isArray(relocationBindings)) throw new TypeError('rebuild-v2-relocation-bindings-invalid');
+  const sections = input.sections ?? declaredImpact.sections ?? [];
+  if (!Array.isArray(sections)) throw new TypeError('rebuild-v2-sections-invalid');
   const impact = {
     layoutMoving: sizeDelta !== 0 || declaredImpact.layoutMoving === true,
     relocations: declaredImpact.relocations === true || relocationBindings.length > 0,
@@ -597,7 +639,7 @@ export function createRebuildTransaction(input = {}) {
     unwind: declaredImpact.unwind === true,
     importsExports: declaredImpact.importsExports === true,
     signature: declaredImpact.signature === true,
-    sections: clone(declaredImpact.sections || []),
+    sections: clone(sections),
     relocationBindings: clone(relocationBindings),
   };
   const requireIndependentOracle = input.requireIndependentOracle === true;
@@ -860,15 +902,15 @@ async function executeExternal(name, fn, context) {
     // success tokens. A result that says both `ok:false` and `status:'passed'`
     // is a contradiction, and contradictions must never count as passed.
     if (!result) return validatorResult(name, true, false, 'validator-rejected', null);
+    if (name === 'independent-differential') {
+      const contractFailure = independentOracleResultFailure(result, context);
+      if (contractFailure) return validatorResult(name, true, false, contractFailure, result);
+    }
     if (result.ok === false) return validatorResult(name, true, false, result?.reason || 'validator-reported-failure', result);
     if (result.status === 'failed' || result.status === 'invalid' || result.status === 'rejected') {
       return validatorResult(name, true, false, result?.reason || `validator-status-${result.status}`, result);
     }
     if (result.ok !== true && result.status !== 'passed' && result.status !== 'valid') return validatorResult(name, true, false, result?.reason || 'validator-rejected', result || null);
-    if (name === 'independent-differential') {
-      const contractFailure = independentOracleResultFailure(result, context);
-      if (contractFailure) return validatorResult(name, true, false, contractFailure, result);
-    }
     const identityFailure = formatIdentityMismatch(result, context.transaction, context.expectedOutputHash);
     if (identityFailure) return validatorResult(name, true, false, identityFailure, result);
     const relocationFailure = name === 'relocations' ? relocationResultFailure(result) : null;
@@ -964,25 +1006,44 @@ export async function publishRebuildTransaction(materialized, validation, option
     // able to mutate the validated temporary output after its identity is fixed.
     const result = await options.atomicPromote(materialized.bytes.slice(), { materialized, validation });
     if (!result || result.atomic !== true || result.committed !== true) return { status: 'rejected', reason: 'rebuild-v2-publication-not-atomic' };
-    const protocol = String(result.protocol || '');
-    if (!ATOMIC_PUBLICATION_PROTOCOLS.has(protocol)) return { status: 'rejected', reason: 'rebuild-v2-publication-protocol-invalid' };
-    const publicationIdentity = String(result.publicationIdentity || '').trim();
+    const protocol = result.protocol;
+    if (typeof protocol !== 'string' || !ATOMIC_PUBLICATION_PROTOCOLS.has(protocol)) return { status: 'rejected', reason: 'rebuild-v2-publication-protocol-invalid' };
+    if (result.publicationIdentity != null && typeof result.publicationIdentity !== 'string') return { status: 'rejected', reason: 'rebuild-v2-publication-identity-invalid' };
+    const publicationIdentity = typeof result.publicationIdentity === 'string' ? result.publicationIdentity.trim() : '';
     if (!publicationIdentity) return { status: 'rejected', reason: 'rebuild-v2-publication-identity-required' };
     if (result.transactionId == null || result.outputHash == null || result.outputIdentity == null) return { status: 'rejected', reason: 'rebuild-v2-publication-identity-incomplete' };
-    if (String(result.transactionId) !== materialized.transactionId) return { status: 'rejected', reason: 'rebuild-v2-publication-transaction-mismatch' };
-    if (String(result.outputHash) !== materialized.outputHash) return { status: 'rejected', reason: 'rebuild-v2-publication-output-mismatch' };
+    if (typeof result.transactionId !== 'string' || typeof result.outputHash !== 'string' || typeof result.outputIdentity !== 'string') return { status: 'rejected', reason: 'rebuild-v2-publication-identity-invalid' };
+    if (result.transactionId !== materialized.transactionId) return { status: 'rejected', reason: 'rebuild-v2-publication-transaction-mismatch' };
+    if (result.outputHash !== materialized.outputHash) return { status: 'rejected', reason: 'rebuild-v2-publication-output-mismatch' };
     const outputIdentity = canonicalOutputIdentity(materialized.transactionId, materialized.outputHash);
-    if (String(result.outputIdentity) !== outputIdentity) return { status: 'rejected', reason: 'rebuild-v2-publication-output-identity-mismatch' };
+    if (result.outputIdentity !== outputIdentity) return { status: 'rejected', reason: 'rebuild-v2-publication-output-identity-mismatch' };
     for (const field of ['binaryId', 'format', 'architecture', 'loaderVersion', 'sourceHash']) {
-      if (result[field] != null) {
+      if (field in result) {
+        const observed = result[field];
+        if (typeof observed !== 'string') return { status: 'rejected', reason: 'rebuild-v2-publication-identity-invalid' };
         const expected = materialized[field];
-        const observed = String(result[field]);
         if ((field === 'sourceHash' ? observed.toLowerCase() : observed) !== (field === 'sourceHash' ? String(expected).toLowerCase() : String(expected))) {
           return { status: 'rejected', reason: 'rebuild-v2-publication-identity-mismatch' };
         }
       }
     }
-    return deepFreeze({ status: 'published', atomic: true, committed: true, protocol, transactionId: materialized.transactionId, outputHash: materialized.outputHash, outputIdentity, publicationIdentity, result: clone(result) });
+    const authority = isCanonicalAtomicPublicationProvider(options.atomicPromote)
+      ? 'trusted-atomic-publication'
+      : 'untrusted-atomic-promotion';
+    const publication = deepFreeze({
+      status: 'published',
+      atomic: true,
+      committed: true,
+      protocol,
+      transactionId: materialized.transactionId,
+      outputHash: materialized.outputHash,
+      outputIdentity,
+      publicationIdentity,
+      authority,
+      result: clone(result),
+    });
+    if (authority === 'trusted-atomic-publication') TRUSTED_ATOMIC_PUBLICATION_RECEIPTS.add(publication);
+    return publication;
   } catch (error) {
     return { status: 'rejected', reason: 'rebuild-v2-publication-failed', detail: String(error?.message || error) };
   }
@@ -1018,6 +1079,7 @@ export function rebuildProfileSupport({ transaction, validation, publication, pr
     && JSON.stringify(validation.requiredValidators) === JSON.stringify(transaction.requiredValidators)
     && validation.outputIdentity === outputIdentity
     && publication?.status === 'published'
+    && isValidatedAtomicPublicationReceipt(publication)
     && publication.atomic === true
     && publication.committed === true
     && publication.transactionId === transaction.transactionId

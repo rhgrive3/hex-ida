@@ -9,6 +9,7 @@ export const REMOTE_SECURITY_PROFILE_ID = 'collaboration:remote-security-v1';
 const VALID_REMOTE_COLLABORATION_SUPPORT = new WeakSet();
 const VERIFIED_TRANSPORT_PROOFS = new WeakMap();
 const VALIDATED_REMOTE_SNAPSHOTS = new WeakMap();
+const TRUSTED_TRANSPORT_VERIFIER_IDENTITIES = new WeakMap();
 const MAX_MESSAGE_ID_LENGTH = 512;
 
 function validMessageId(value) {
@@ -27,8 +28,8 @@ function validRawIdentity(value) {
 }
 
 function positive(value, fallback, max, code) {
-  const n = value == null ? fallback : Number(value);
-  if (!Number.isSafeInteger(n) || n < 1 || n > max) throw new TypeError(code);
+  const n = value == null ? fallback : value;
+  if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 1 || n > max) throw new TypeError(code);
   return n;
 }
 
@@ -109,37 +110,67 @@ function isSharedMemory(value) {
   return isSharedArrayBuffer(value.buffer);
 }
 
-function scanMapEntries(value, depth, seen) {
-  let entries;
-  try { entries = Map.prototype.entries.call(value); }
-  catch { return null; }
-  for (const [key, item] of entries) {
-    if (!scanForSnapshotUnsafeValues(key, depth + 1, seen)) return false;
-    if (!scanForSnapshotUnsafeValues(item, depth + 1, seen)) return false;
+export function containsRawBinaryBytes(value, depth = 0, seen = new WeakSet()) {
+  if (value == null || typeof value !== 'object') return false;
+  try {
+    if (isSharedMemory(value) || ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return true;
+    if (value.__binaryByteBacking === true) return true;
+    if (depth > SNAPSHOT_SCAN_DEPTH_LIMIT) return true;
+    if (seen.has(value)) return false;
+    seen.add(value);
+    if (value instanceof Map) {
+      for (const [key, item] of value) {
+        if (containsRawBinaryBytes(key, depth + 1, seen)) return true;
+        if (containsRawBinaryBytes(item, depth + 1, seen)) return true;
+      }
+      return false;
+    }
+    if (value instanceof Set) {
+      for (const item of value) {
+        if (containsRawBinaryBytes(item, depth + 1, seen)) return true;
+      }
+      return false;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (containsRawBinaryBytes(item, depth + 1, seen)) return true;
+      }
+      return false;
+    }
+    for (const key of Object.keys(value)) {
+      if (containsRawBinaryBytes(value[key], depth + 1, seen)) return true;
+    }
+    return false;
+  } catch {
+    return true;
   }
-  return true;
 }
 
-function scanSetValues(value, depth, seen) {
-  let values;
-  try { values = Set.prototype.values.call(value); }
-  catch { return null; }
-  for (const item of values) {
-    if (!scanForSnapshotUnsafeValues(item, depth + 1, seen)) return false;
+function isMutableCollection(value) {
+  if (value == null || typeof value !== 'object') return false;
+  try { Map.prototype.has.call(value, undefined); return true; } catch { }
+  try { Set.prototype.has.call(value, undefined); return true; } catch { }
+  return false;
+}
+
+function containsMutableCollection(value, seen = new WeakSet()) {
+  if (value == null || typeof value !== 'object') return false;
+  if (isMutableCollection(value)) return true;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  for (const key of Object.keys(value)) {
+    if (containsMutableCollection(value[key], seen)) return true;
   }
-  return true;
+  return false;
 }
 
 function scanForSnapshotUnsafeValues(value, depth, seen) {
   if (value == null || typeof value !== 'object') return true;
   if (isSharedMemory(value)) return false;
+  if (isMutableCollection(value)) return false;
   if (depth > SNAPSHOT_SCAN_DEPTH_LIMIT) return false;
   if (seen.has(value)) return true;
   seen.add(value);
-  const mapSafe = scanMapEntries(value, depth, seen);
-  if (mapSafe !== null) return mapSafe;
-  const setSafe = scanSetValues(value, depth, seen);
-  if (setSafe !== null) return setSafe;
   if (Object.getOwnPropertySymbols(value).length > 0) return false;
   for (const key of Object.keys(value)) {
     if (hasAccessorProperty(value, key)) return false;
@@ -192,6 +223,11 @@ export function createRemoteCollaborationEnvelope(input = {}) {
   const sequence = input.sequence;
   if (!validSequence(sequence)) throw new TypeError('remote-sequence-invalid');
   if (!Array.isArray(input.operations) || input.operations.length === 0) throw new TypeError('remote-operations-required');
+  if (input.egress?.rawBinaryBytes !== true && input.egress?.derivedDataOnly !== false
+    && containsRawBinaryBytes(input.operations)) {
+    throw new TypeError('remote-raw-binary-egress-forbidden');
+  }
+  if (containsMutableCollection(input.operations)) throw new TypeError('remote-operation-mutable-collection-forbidden');
   const operations = input.operations.map((operation) => createProjectOperation({
     ...operation,
     projectIdentity,
@@ -200,6 +236,11 @@ export function createRemoteCollaborationEnvelope(input = {}) {
     deviceIdentity,
     provenance: { ...(operation.provenance || {}), source: 'collaborator', transport: 'remote', actorIdentity, deviceIdentity },
   }));
+  if (input.egress?.rawBinaryBytes !== true && input.egress?.derivedDataOnly !== false) {
+    for (const operation of operations) {
+      if (containsRawBinaryBytes(operation)) throw new TypeError('remote-raw-binary-egress-forbidden');
+    }
+  }
   const envelope = {
     schemaVersion: REMOTE_COLLAB_SCHEMA,
     operationSchemaVersion: CHANGELOG_SCHEMA_VERSION,
@@ -228,6 +269,21 @@ export function createRemoteCollaborationEnvelope(input = {}) {
   return deepFreeze({ ...envelope, envelopeId: envelopeIdentity(envelope) });
 }
 
+export function createRemoteTransportVerifier({ oracleIdentity, verifyTransportProof } = {}) {
+  const identity = required(oracleIdentity, 'remote-gate-transport-verifier-identity-invalid');
+  if (typeof verifyTransportProof !== 'function') throw new TypeError('remote-gate-transport-verifier-required');
+  if (TRUSTED_TRANSPORT_VERIFIER_IDENTITIES.has(verifyTransportProof)
+    && TRUSTED_TRANSPORT_VERIFIER_IDENTITIES.get(verifyTransportProof) !== identity) {
+    throw new TypeError('remote-gate-transport-verifier-identity-conflict');
+  }
+  TRUSTED_TRANSPORT_VERIFIER_IDENTITIES.set(verifyTransportProof, identity);
+  return Object.freeze({ verifyTransportProof, transportVerifierIdentity: identity });
+}
+
+function remoteTransportVerifierIdentity(verifier) {
+  return typeof verifier === 'function' ? TRUSTED_TRANSPORT_VERIFIER_IDENTITIES.get(verifier) ?? null : null;
+}
+
 export class RemoteCollaborationGate {
   constructor(input = {}) {
     this.schemaVersion = REMOTE_GATE_SCHEMA;
@@ -252,6 +308,10 @@ export class RemoteCollaborationGate {
   validate(envelope) {
     VERIFIED_TRANSPORT_PROOFS.delete(this);
     VALIDATED_REMOTE_SNAPSHOTS.delete(envelope);
+    if (envelope?.egress?.rawBinaryBytes !== true && envelope?.egress?.derivedDataOnly !== false
+      && Array.isArray(envelope?.operations) && containsRawBinaryBytes(envelope.operations)) {
+      return { ok: false, reason: 'remote-raw-binary-egress-forbidden' };
+    }
     const snap = snapshotRemoteEnvelope(envelope);
     if (!snap) return { ok: false, reason: 'remote-envelope-shape-invalid' };
     if (!this.supportedEnvelopeSchemas.has(snap.schemaVersion)) return { ok: false, reason: 'remote-envelope-schema-unsupported' };
@@ -287,6 +347,7 @@ export class RemoteCollaborationGate {
     if (snap.egress?.userAuthorized !== true) return { ok: false, reason: 'remote-egress-user-authorization-required' };
     if (snap.egress?.rawBinaryBytes === true || snap.egress?.derivedDataOnly !== true) return { ok: false, reason: 'remote-raw-binary-egress-forbidden' };
     for (const operation of snap.operations) {
+      if (containsRawBinaryBytes(operation)) return { ok: false, reason: 'remote-raw-binary-egress-forbidden' };
       if (!isCanonicalRemoteOperation(operation)) return { ok: false, reason: 'remote-operation-shape-invalid' };
       if (operation.projectIdentity !== this.projectIdentity || (operation.binaryIdentity ?? null) !== this.binaryIdentity) return { ok: false, reason: 'remote-operation-scope-mismatch' };
       if (operation.authorIdentity !== snap.actorIdentity || operation.deviceIdentity !== snap.deviceIdentity) return { ok: false, reason: 'remote-operation-actor-binding-mismatch' };
@@ -386,14 +447,18 @@ export function remoteCollaborationSupport({
   expectedCommitSha = null,
   expectedTreeSha = null,
 } = {}) {
-  const commitSha = String(expectedCommitSha || '').toLowerCase();
-  const treeSha = String(expectedTreeSha || '').toLowerCase();
+  const commitSha = typeof expectedCommitSha === 'string' ? expectedCommitSha.toLowerCase() : '';
+  const treeSha = typeof expectedTreeSha === 'string' ? expectedTreeSha.toLowerCase() : '';
   const exactIdentity = /^[0-9a-f]{40}$/.test(commitSha) && /^[0-9a-f]{40}$/.test(treeSha);
   const brandedProfile = isValidatedStage2CapabilityProof(profileProof, {
     itemId: 'S2-P12-COLLAB-REMOTE',
     profileIds: [REMOTE_SECURITY_PROFILE_ID],
   });
   const transportVerifierIdentity = gate instanceof RemoteCollaborationGate ? gate.transportVerifierIdentity : null;
+  const gateVerifier = gate instanceof RemoteCollaborationGate ? gate.verifyTransportProof : null;
+  const verifierProvenanceIdentity = remoteTransportVerifierIdentity(gateVerifier);
+  const verifierProvenanceBound = typeof verifierProvenanceIdentity === 'string'
+    && verifierProvenanceIdentity === transportVerifierIdentity;
   const transportVerifierBound = typeof transportVerifierIdentity === 'string'
     && Array.isArray(profileProof?.independentOracleIdentities)
     && profileProof.independentOracleIdentities.includes(transportVerifierIdentity);
@@ -403,6 +468,7 @@ export function remoteCollaborationSupport({
     && activeTransportProof.verifierIdentity === transportVerifierIdentity;
   const ready = gate instanceof RemoteCollaborationGate
     && typeof gate.verifyTransportProof === 'function'
+    && verifierProvenanceBound
     && transportVerifierBound
     && activeVerificationBound
     && exactIdentity

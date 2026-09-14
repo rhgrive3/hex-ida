@@ -12,9 +12,33 @@ const BUDGET = 256 * 1024;
 
 function loadOutputSize() {
   const src = fs.readFileSync(path.join(ROOT, 'js/sandbox.js'), 'utf8');
-  const match = src.match(/const OUTPUT_MAX_BYTES = 256 \* 1024;([\s\S]*?)\n  const outputLimit/);
+  const match = src.match(/  const outputSize = ([\s\S]*?)\n  const outputLimit/);
   assert.ok(match, 'worker prelude must still define outputSize next to outputLimit');
-  const factory = new Function(`const OUTPUT_MAX_BYTES = 256 * 1024;${match[1]}; return { outputSize };`);
+  const factory = new Function(`
+    const OUTPUT_MAX_BYTES = 256 * 1024;
+    const NativeObjectPrototype = Object.prototype;
+    const NativeSet = Set;
+    const nativeArrayIsArray = Array.isArray.bind(Array);
+    const nativeArrayBufferIsView = ArrayBuffer.isView.bind(ArrayBuffer);
+    const nativeGetPrototypeOf = Object.getPrototypeOf.bind(Object);
+    const nativeKeys = Object.keys.bind(Object);
+    const nativeDescriptor = Object.getOwnPropertyDescriptor.bind(Object);
+    const nativeSetHas = Function.prototype.call.bind(Set.prototype.has);
+    const nativeSetAdd = Function.prototype.call.bind(Set.prototype.add);
+    const nativeArrayPop = Function.prototype.call.bind(Array.prototype.pop);
+    const nativeArrayPush = Function.prototype.call.bind(Array.prototype.push);
+    const nativeArrayBufferByteLength = Function.prototype.call.bind(
+      Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get
+    );
+    const nativeTypedArrayBuffer = Function.prototype.call.bind(
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), 'buffer').get
+    );
+    const nativeDataViewBuffer = Function.prototype.call.bind(
+      Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer').get
+    );
+    const outputSize = ${match[1]}
+    return { outputSize };
+  `);
   return factory().outputSize;
 }
 

@@ -132,7 +132,7 @@ export function analysisFromBinaryImage(image) {
   };
 
   for (const symbol of image.symbols || []) {
-    if (symbol?.defined === false || symbol?.address == null || !symbol.name) continue;
+    if (symbol?.defined !== true || symbol?.address == null || !symbol.name) continue;
     add(symbol.address, symbol.name, 0, !!symbol.exported, provenance(symbol.source || 'symbol-table', 0.99), 10);
   }
   for (const exp of image.exports || []) {

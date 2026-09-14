@@ -68,28 +68,40 @@
     return (value & (sign - 1n)) - (value & sign);
   }
 
+  /**
+   * A64 の address は 64-bit の bit pattern であって符号つき JS BigInt ではない。
+   * 低 address から下へ飛ぶ命令（B/BL/ADR/ADRP/LDR literal）を素朴に足すと
+   * -4n のような負値になり、program scan の address truth として公開される
+   * 値が 0xffff... 側の 64-bit target と食い違う (#4032)。
+   */
+  function canonical64(value) { return BigInt.asUintN(64, value); }
+
   const rd = (w) => w & 0x1f;
   const rn = (w) => (w >>> 5) & 0x1f;
   const rm = (w) => (w >>> 16) & 0x1f;
+
+  const isPrefetchImmediate = (w) => masked(w, 0xffc00000) === 0xf9800000;
+  const isPrefetchLiteral = (w) => masked(w, 0x3b000000) === 0x18000000
+    && ((w >>> 30) & 3) === 3 && ((w >>> 26) & 1) === 0;
 
   /* ── 分岐 ───────────────────────────────────────────────── */
 
   /** b / bl の飛び先。違う命令なら null。 */
   function branchImm26(w, pc) {
     if (masked(w, 0x7c000000) !== 0x14000000) return null;
-    return pc + (signExtend(BigInt(w >>> 0) & 0x3ffffffn, 26) << 2n);
+    return canonical64(pc + (signExtend(BigInt(w >>> 0) & 0x3ffffffn, 26) << 2n));
   }
 
   function isCallImm(w) { return masked(w, 0xfc000000) === 0x94000000; }
   function isBranchImm(w) { return masked(w, 0xfc000000) === 0x14000000; }
-  function isRet(w) { return masked(w, 0xfffffc1f) === 0xd65f0000; }
-  function isBr(w) { return masked(w, 0xfffffc1f) === 0xd61f0000; }
+  function isRet(w) { return masked(w, 0xfffffc1f) === 0xd65f0000 || masked(w, 0xfffffbff) === 0xd65f0bff; }
+  function isBr(w) { return masked(w, 0xfffffc1f) === 0xd61f0000 || masked(w, 0xfffff81f) === 0xd61f081f || masked(w, 0xfffff800) === 0xd71f0800; }
 
   /** blr / blraa / blrab — 行き先が実行時に決まる呼び出し。 */
   function isIndirectCall(w) {
     if (masked(w, 0xfffffc1f) === 0xd63f0000) return true;         // blr
     if (masked(w, 0xfffff800) === 0xd63f0800) return true;         // blraaz / blrabz
-    if (masked(w, 0xffe0f800) === 0xd73f0800) return true;         // blraa / blrab
+    if (masked(w, 0xfffff800) === 0xd73f0800) return true;         // blraa / blrab
     return false;
   }
 
@@ -103,16 +115,16 @@
   /** 条件つき分岐の飛び先。 */
   function condBranchTarget(w, pc) {
     const bw = BigInt(w >>> 0);
-    if (masked(w, 0xff000010) === 0x54000000) return pc + (signExtend((bw >> 5n) & 0x7ffffn, 19) << 2n);
-    if (masked(w, 0x7e000000) === 0x34000000) return pc + (signExtend((bw >> 5n) & 0x7ffffn, 19) << 2n);
-    if (masked(w, 0x7e000000) === 0x36000000) return pc + (signExtend((bw >> 5n) & 0x3fffn, 14) << 2n);
+    if (masked(w, 0xff000010) === 0x54000000) return canonical64(pc + (signExtend((bw >> 5n) & 0x7ffffn, 19) << 2n));
+    if (masked(w, 0x7e000000) === 0x34000000) return canonical64(pc + (signExtend((bw >> 5n) & 0x7ffffn, 19) << 2n));
+    if (masked(w, 0x7e000000) === 0x36000000) return canonical64(pc + (signExtend((bw >> 5n) & 0x3fffn, 14) << 2n));
     return null;
   }
 
   /** ldr (literal) — 手近に置かれた定数を読む形。 */
   function literalTarget(w, pc) {
     if (masked(w, 0x3b000000) !== 0x18000000) return null;
-    return pc + (signExtend((BigInt(w >>> 0) >> 5n) & 0x7ffffn, 19) << 2n);
+    return canonical64(pc + (signExtend((BigInt(w >>> 0) >> 5n) & 0x7ffffn, 19) << 2n));
   }
 
   /** この語が「どこかのアドレスを指している」なら、その先。分からなければ null。 */
@@ -133,8 +145,8 @@
     const immlo = (bw >> 29n) & 0x3n;
     const immhi = (bw >> 5n) & 0x7ffffn;
     const imm = signExtend((immhi << 2n) | immlo, 21);
-    if (w & 0x80000000) return { reg: rd(w), value: (pc & ~0xfffn) + (imm << 12n), page: true };
-    return { reg: rd(w), value: pc + imm, page: false };
+    if (w & 0x80000000) return { reg: rd(w), value: canonical64((pc & ~0xfffn) + (imm << 12n)), page: true };
+    return { reg: rd(w), value: canonical64(pc + imm), page: false };
   }
 
   /**
@@ -146,22 +158,28 @@
    * 返すのは {rn, rd, imm, load}。組でないものは null。
    */
   function pairedOffset(w) {
-    // ADD (immediate, 64-bit, shift 0)
-    if (((w >>> 23) & 0x1ff) === 0x122 && !((w >>> 22) & 1)) {
-      return { rn: rn(w), rd: rd(w), imm: BigInt((w >>> 10) & 0xfff), load: false };
+    // ADD (immediate, 64-bit)。bit22 の sh は LSL #12 形式を選び、ADRP の後で
+    // 4095 を超える page offset を表す正規の書き方。ここを shift 0 だけに
+    // 限定すると、その組がまるごと ProgramIndex から落ちる (#3936)。
+    if (((w >>> 23) & 0x1ff) === 0x122) {
+      const shift = (w >>> 22) & 1;
+      const imm = BigInt((w >>> 10) & 0xfff) << BigInt(shift ? 12 : 0);
+      return { rn: rn(w), rd: rd(w), imm, load: false };
     }
     // LDR/LDRB/LDRH/STR… (immediate, unsigned offset) — 倍率は転送サイズで決まる
     if (masked(w, 0x3b000000) === 0x39000000) {
       const scale = transferScale(w);
       const isLoad = transferIsLoad(w);
+      const prefetch = isPrefetchImmediate(w);
       return {
         rn: rn(w), rd: rd(w),
         imm: BigInt((w >>> 10) & 0xfff) << BigInt(scale),
-        load: isLoad, store: !isLoad,
+        load: isLoad, store: !isLoad && !prefetch,
+        prefetch,
         // SIMD/FP loads write vN/dN/sN, not xN/wN.  Consumers that track
         // general-purpose register provenance must not invalidate xN merely
         // because the architectural register number is encoded in the same bits.
-        gpDest: ((w >>> 26) & 1) === 0,
+        gpDest: !prefetch && ((w >>> 26) & 1) === 0,
       };
     }
     return null;
@@ -291,11 +309,25 @@ acquire, release,
       }
     }
 
-    // Pair (ldp / stp / ldnp / stnp / ldpsw) — 7-bit signed scaled offset.
+    // Pair (ldp / stp / ldnp / stnp / ldpsw / stgp) — 7-bit signed scaled offset.
     if (masked(w, 0x3a000000) === 0x28000000) {
       const load = ((w >>> 22) & 1) === 1;
       const opc = (w >>> 30) & 3;
       const vector = ((w >>> 26) & 1) === 1;
+      const index = (w >>> 23) & 3;
+      const mode = index === 1 ? 'post' : index === 3 ? 'pre' : 'offset';
+      if (opc === 3) return null;
+      // FEAT_MTE STGP: opc=01, VR=0, L=0. It stores two 64-bit registers plus
+      // the allocation tag and scales its signed offset by the 16-byte tag
+      // granule, not by 4 like an integer W pair (#3975).
+      if (opc === 1 && !vector && !load) {
+        const imm7 = Number(signExtend(BigInt((w >>> 15) & 0x7f), 7));
+        return {
+          load: false, store: true, size: 16, elementSize: 8, pair: true, vector: false,
+          signed: false, signExtendTo: null, tag: true,
+          base: rn(w), reg: rd(w), reg2: (w >>> 10) & 0x1f, disp: BigInt(imm7 * 16), mode,
+        };
+      }
       const signedWordPair = !vector && load && opc === 1; // LDPSW: two 32-bit words -> X regs
       // Integer opc=0 => W pair, opc=1 => LDPSW, opc=2 => X pair.
       // SIMD opc=0/1/2 => S/D/Q pairs.
@@ -305,15 +337,17 @@ acquire, release,
         load, store: !load, size: elementSize * 2, elementSize, pair: true, vector,
         signed: signedWordPair, signExtendTo: signedWordPair ? 8 : null,
         base: rn(w), reg: rd(w), reg2: (w >>> 10) & 0x1f, disp: BigInt(imm7 * elementSize),
-        mode: ((w >>> 23) & 3) === 1 ? 'post' : ((w >>> 23) & 3) === 3 ? 'pre' : 'offset',
+        mode,
       };
     }
     // Unsigned immediate (the most common scalar/SIMD form).
     if (masked(w, 0x3b000000) === 0x39000000) {
       const scale = transferScale(w);
       const load = transferIsLoad(w);
+      const prefetch = isPrefetchImmediate(w);
       return {
-        load, store: !load, size: 1 << scale, vector: ((w >>> 26) & 1) === 1, base: rn(w), reg: rd(w),
+        load, store: !load, size: 1 << scale, vector: ((w >>> 26) & 1) === 1,
+        prefetch, gpDest: !prefetch && ((w >>> 26) & 1) === 0, base: rn(w), reg: rd(w),
         disp: BigInt((w >>> 10) & 0xfff) << BigInt(scale),
       };
     }
@@ -582,7 +616,7 @@ acquire, release,
     KIND, KIND_NAME,
     masked, signExtend,
     branchImm26, condBranchTarget, literalTarget, wordTarget, pcRelTarget, pairedOffset,
-    memoryAccess, compareImmediate,
+    memoryAccess, compareImmediate, isPrefetchImmediate, isPrefetchLiteral,
     isCallImm, isBranchImm, isCondBranch, isIndirectCall, isRet, isBr,
     isCompare, isMultiply, isDivide, isShiftOp, isFpMulDiv, isFpAddSub, isFpCondSelect, isSimd, isMoveWide,
     isNop,

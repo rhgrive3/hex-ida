@@ -312,12 +312,14 @@ function parseMacho(bytes) {
     if (command === MACHO_LC_SEGMENT_64) {
       if (size < 72) fail('format-safe-macho-segment-command-invalid');
       const segmentName = text(bytes.slice(offset + 8, offset + 24));
+      const vmaddr = boundedNumber(u64(bytes, offset + 24));
+      const vmsize = boundedNumber(u64(bytes, offset + 32));
       const fileOffset = boundedNumber(u64(bytes, offset + 40));
       const fileSize = boundedNumber(u64(bytes, offset + 48));
       const sectionCount = u32(bytes, offset + 64);
       if (size !== 72 + sectionCount * 80) fail('format-safe-macho-segment-section-table-invalid');
       ensureRange(bytes, fileOffset, fileSize, 'format-safe-macho-segment-file-range-invalid');
-      const segment = { commandIndex: index, name: segmentName, fileOffset, fileSize, sectionCount };
+      const segment = { commandIndex: index, name: segmentName, vmaddr, vmsize, fileOffset, fileSize, sectionCount };
       segments.push(segment);
       for (let sectionIndex = 0; sectionIndex < sectionCount; sectionIndex++) {
         const sectionOffset = offset + 72 + sectionIndex * 80;
@@ -611,6 +613,8 @@ function machoSectionSizePlan(source, image, mutation) {
     const availableVmGap = nextByAddress.address - (target.address + target.size);
     if (availableVmGap < availableGap) availableGap = availableVmGap;
   }
+  const segmentVmAvailable = (segment.vmaddr + segment.vmsize) - (target.address + target.size);
+  if (segmentVmAvailable < availableGap) availableGap = segmentVmAvailable;
   const requestedSize = integerInRange(mutation.size, target.size + 1, target.size + availableGap, 'format-safe-macho-layout-size-invalid');
   const sectionHeaderOffset = target.headerOffset;
   return {
@@ -867,7 +871,8 @@ export function validateFormatSafeMutation({ transaction, original, output } = {
       const sourceSegment = sourceImage.segments.find((item) => item.commandIndex === safeState.segmentCommandIndex);
       const outputSegment = outputImage.segments.find((item) => item.commandIndex === safeState.segmentCommandIndex);
       if (!sourceSegment || !outputSegment || sourceSegment.name !== outputSegment.name || sourceSegment.fileOffset !== outputSegment.fileOffset
-        || sourceSegment.fileSize !== outputSegment.fileSize || sourceSegment.sectionCount !== outputSegment.sectionCount) return reject('format-safe-macho-segment-changed');
+        || sourceSegment.fileSize !== outputSegment.fileSize || sourceSegment.sectionCount !== outputSegment.sectionCount
+        || sourceSegment.vmaddr !== outputSegment.vmaddr || sourceSegment.vmsize !== outputSegment.vmsize) return reject('format-safe-macho-segment-changed');
       const maskedSourceDigest = bytesDigestMasked(source, safeState.sectionHeaderOffset + 40, 8);
       const maskedOutputDigest = bytesDigestMasked(candidate, safeState.sectionHeaderOffset + 40, 8);
       if (maskedSourceDigest !== maskedOutputDigest) return reject('format-safe-macho-unchanged-bytes-differ');

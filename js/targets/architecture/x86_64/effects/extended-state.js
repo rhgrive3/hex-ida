@@ -6,10 +6,10 @@ import { X87_FAMILIES, baseFamily, exactBase, vexInfo, vectorIndex } from './ext
 import { liftVzero, liftEmms, liftX87, lift3DNow } from './extended-state-x87.js';
 import { liftEvex, classifyEvexCategory } from './extended-state-evex.js';
 
-export function dispatchX86ExtendedStateEffects(instruction, context = {}) {
+export function dispatchX86ExtendedStateEffects(instruction, context = {}, provenanceSource = instruction) {
   const family = String(instruction?.instructionFamily || '').toLowerCase(), base = baseFamily(family);
   if (X87_FAMILIES.has(base)) {
-    const result = liftX87(instruction, context, family);
+    const result = liftX87(instruction, context, family, provenanceSource);
     if (result != null) return { ownerId: 'fp', result };
   }
   if (family === 'emms' || family === 'femms') {
@@ -21,7 +21,7 @@ export function dispatchX86ExtendedStateEffects(instruction, context = {}) {
     if (result != null) return { ownerId: 'simd', result };
   }
   if (String(instruction?.detail?.prefixes?.vector?.kind || '').toLowerCase() === 'evex') {
-    const result = liftEvex(instruction, context, family);
+    const result = liftEvex(instruction, context, family, provenanceSource);
     if (result != null) {
       const ownerId = classifyEvexCategory(family);
       return { ownerId, result };
@@ -32,8 +32,8 @@ export function dispatchX86ExtendedStateEffects(instruction, context = {}) {
   return null;
 }
 
-export function liftX86ExtendedStateEffects(instruction, context = {}) {
-  const dispatch = dispatchX86ExtendedStateEffects(instruction, context);
+export function liftX86ExtendedStateEffects(instruction, context = {}, provenanceSource = instruction) {
+  const dispatch = dispatchX86ExtendedStateEffects(instruction, context, provenanceSource);
   return dispatch?.result ?? null;
 }
 

@@ -1,3 +1,4 @@
+import { publishFixtureAnalyses } from '../helpers/analysis-fixtures.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -52,12 +53,12 @@ test('GVN refuses a scalar artifact with stale identity', () => {
   f.ret();
   const ir = f.build();
   const state = seedAnalysisState(ir);
-  state.__write('ranges', Object.freeze({
+  publishFixtureAnalyses(state, { ranges: Object.freeze({
     completeness: 'complete',
     identity: { ...VALID_IDENTITY, snapshotId: 'old-snapshot' },
     facts: new Map(),
     constants: new Map(),
-  }));
+  }) });
   const outcome = runPassTransaction(state, { descriptor: GVN_PASS, run: runGvnPass }, {
     analysis: state,
     ir,

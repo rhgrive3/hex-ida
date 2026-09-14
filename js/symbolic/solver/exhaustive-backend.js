@@ -25,14 +25,10 @@ import { isVerificationQuery } from '../verify/query.js';
 import { PROOF_AUTHORITY, SolverBackend } from './backend.js';
 import { SOLVER_STATUS, createSolverResult } from './result.js';
 import { SolverSession } from './session.js';
+import { positiveFiniteBudget } from './budget.js';
 
 export const EXHAUSTIVE_BACKEND_ID = 'hex-exhaustive-bv';
 export const EXHAUSTIVE_BACKEND_VERSION = '1.0.0';
-
-function positiveFiniteBudget(...values) {
-  const value = values.find((candidate) => typeof candidate === 'number' && Number.isFinite(candidate));
-  return Math.max(1, Math.floor(value));
-}
 
 function childExpressions(expr) {
   if (!expr || typeof expr !== 'object') return [];
@@ -186,9 +182,42 @@ function domainValue(symbol, index) {
   return index;
 }
 
+const hasMonotonicClock = typeof performance !== 'undefined' && typeof performance.now === 'function';
+function monotonicNow() {
+  return hasMonotonicClock ? performance.now() : Date.now();
+}
+
+// Microtask-only yields (await Promise.resolve()) never let host timers, UI
+// callbacks, or same-realm AbortSignal producers run, so a long enumeration can
+// starve its own timeout/cancellation budget (#3959). Yield to a real
+// event-loop turn instead: a MessageChannel port task (browser + worker + Node)
+// with a bounded setTimeout(0) fallback for runtimes without MessageChannel.
+let yieldPort = null;
+let yieldSource = null;
+function yieldToEventLoop() {
+  if (typeof MessageChannel === 'function') {
+    if (!yieldPort) {
+      const channel = new MessageChannel();
+      channel.port1.unref?.();
+      yieldPort = channel.port1;
+      yieldSource = channel.port2;
+    }
+    return new Promise((resolve) => {
+      const port = yieldPort;
+      port.onmessage = () => { port.onmessage = null; resolve(); };
+      yieldSource.postMessage(0);
+    });
+  }
+  return new Promise((resolve) => {
+    const handle = setTimeout(resolve, 0);
+    handle?.unref?.();
+  });
+}
+
 class ExhaustiveSolverSession extends SolverSession {
   async _executeCheck(query, options = {}, token, signal) {
     const startedAt = Date.now();
+    const startedMono = monotonicNow();
     if (!isVerificationQuery(query)) {
       return createSolverResult({
         status: SOLVER_STATUS.INVALID_QUERY,
@@ -242,6 +271,12 @@ class ExhaustiveSolverSession extends SolverSession {
 
     let nodesEvaluated = 0;
     const yieldEvery = positiveFiniteBudget(options.yieldEvery, 4096);
+    const timeoutBudget = Number.isFinite(options.timeoutMs)
+      ? options.timeoutMs
+      : Number.isFinite(this.options.timeoutMs)
+        ? this.options.timeoutMs
+        : 0;
+    const deadlineAt = timeoutBudget > 0 ? startedMono + timeoutBudget : null;
     let found = null;
     const visit = async (position) => {
       if (signal?.aborted) return 'cancelled';
@@ -250,7 +285,11 @@ class ExhaustiveSolverSession extends SolverSession {
         nodesEvaluated++;
         const model = assignmentModel(collected.symbols, assignments);
         if (evaluateAll(query, model)) found = model;
-        if (nodesEvaluated % yieldEvery === 0) await Promise.resolve();
+        if (nodesEvaluated % yieldEvery === 0) {
+          await yieldToEventLoop();
+          if (signal?.aborted) return 'cancelled';
+          if (deadlineAt !== null && monotonicNow() >= deadlineAt) return 'timeout';
+        }
         return found ? 'found' : 'continue';
       }
       const symbol = freeSymbols[position];
@@ -259,7 +298,7 @@ class ExhaustiveSolverSession extends SolverSession {
         if (signal?.aborted) return 'cancelled';
         assignments.set(symbol.key, domainValue(symbol, index));
         const outcome = await visit(position + 1);
-        if (outcome === 'cancelled' || outcome === 'found') return outcome;
+        if (outcome === 'cancelled' || outcome === 'found' || outcome === 'timeout') return outcome;
       }
       assignments.delete(symbol.key);
       return 'continue';
@@ -268,6 +307,9 @@ class ExhaustiveSolverSession extends SolverSession {
     const outcome = await visit(0);
     if (outcome === 'cancelled') {
       return createSolverResult({ status: SOLVER_STATUS.CANCELLED, reason: 'provider-aborted', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { cancelled: true, publishable: false } });
+    }
+    if (outcome === 'timeout') {
+      return createSolverResult({ status: SOLVER_STATUS.TIMEOUT, reason: 'internal-deadline-exceeded', stats: { solveTimeMs: Date.now() - startedAt, nodesEvaluated }, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { timedOut: true, publishable: false } });
     }
     const stats = { solveTimeMs: Date.now() - startedAt, nodesEvaluated };
     if (found) return createSolverResult({ status: SOLVER_STATUS.SAT, model: found, stats, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });

@@ -12,7 +12,7 @@ import { isDebugRecordAuthoritative } from '../../../js/analysis/debug/provider.
 const GUID = 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE';
 
 function buildPdb({ infoAge = 1, dbiAge = 1, dbiSize = 64, dbiVersionSignature = -1, dbiVersionHeader = 19990903 } = {}) {
-  const blockSize = 64;
+  const blockSize = 512;
   const blockCount = 6;
   const bytes = new Uint8Array(blockSize * blockCount);
   const view = new DataView(bytes.buffer);

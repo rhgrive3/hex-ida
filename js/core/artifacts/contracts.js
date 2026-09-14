@@ -1,3 +1,4 @@
+import { normalizeDependencyScope } from './dependencies.js';
 import {
   createArtifactId,
   deepFreeze,
@@ -8,6 +9,7 @@ import {
 
 export const ARTIFACT_CONTRACT_VERSION = 'hex-artifact-contract-v1';
 export const ARTIFACT_RECORD_SCHEMA_VERSION = 1;
+export const SCOPED_ARTIFACT_RECORD_SCHEMA_VERSION = 2;
 export const ARTIFACT_STORE_VERSION = 'hex-artifact-store-v1';
 export const ARTIFACT_PAYLOAD_ENCODING = 'canonical-json-v1';
 export const ARTIFACT_NOT_APPLICABLE_VERSION = 'n/a';
@@ -123,8 +125,10 @@ export function createArtifactDescriptor(input = {}) {
   const config = canonicalArtifactKeyValue(input.config ?? {});
   const keyExtras = canonicalArtifactKeyValue(input.keyExtras ?? {});
   const upstreamArtifactIds = sortedStrings(input.upstreamArtifactIds ?? input.inputArtifactIds ?? [], 'artifact-upstream-ids-invalid');
+  const dependencyScope = input.dependencyScope == null ? null : normalizeDependencyScope(input.dependencyScope);
+  if (dependencyScope?.positiveArtifactIds.some((id) => !upstreamArtifactIds.includes(id))) throw new ArtifactError('artifact-dependency-upstream-missing');
   const canonicalConfig = stableDigest(config);
-  const keyMaterialHash = stableDigest({ config, keyExtras });
+  const keyMaterialHash = stableDigest({ config, keyExtras, ...(dependencyScope ? { dependencyScope } : {}) });
   // Snapshot identity fields once so descriptor and artifactId material cannot diverge.
   const artifactKind = required(input.artifactKind ?? input.kind, 'artifact-kind-required');
   const descriptor = {
@@ -150,6 +154,7 @@ export function createArtifactDescriptor(input = {}) {
     keyMaterialHash,
     upstreamArtifactIds,
     originRefs:sortedStrings(input.originRefs ?? [], 'artifact-origin-refs-invalid'),
+    ...(dependencyScope ? { dependencyScope } : {}),
   };
   const optionsHash = stableDigest({
     artifactContractVersion:ARTIFACT_CONTRACT_VERSION,
@@ -161,6 +166,7 @@ export function createArtifactDescriptor(input = {}) {
     pluginVersion:descriptor.versions.plugin,
     providerVersion:descriptor.versions.provider,
     runtimeSnapshotId:descriptor.runtimeSnapshotId,
+    ...(dependencyScope ? { dependencyScope } : {}),
   });
   descriptor.artifactId = createArtifactId({
     binaryId:descriptor.binaryId,
@@ -175,6 +181,7 @@ export function createArtifactDescriptor(input = {}) {
     optionsHash,
     inputArtifactIds:upstreamArtifactIds,
   });
+  if (upstreamArtifactIds.includes(descriptor.artifactId)) throw new ArtifactError('artifact-self-dependency');
   const frozen = deepFreeze(descriptor);
   CANONICAL_ARTIFACT_DESCRIPTORS.add(frozen);
   return frozen;
@@ -215,7 +222,7 @@ export function createArtifactRecord(descriptor, payloadBytes, metadata = {}) {
   const completeness = metadata.completeness ?? 'complete';
   if (!COMPLETENESS.has(completeness)) throw new ArtifactError('artifact-completeness-invalid');
   return deepFreeze({
-    recordSchemaVersion:ARTIFACT_RECORD_SCHEMA_VERSION,
+    recordSchemaVersion:descriptor.dependencyScope ? SCOPED_ARTIFACT_RECORD_SCHEMA_VERSION : ARTIFACT_RECORD_SCHEMA_VERSION,
     artifactContractVersion:ARTIFACT_CONTRACT_VERSION,
     artifactId:descriptor.artifactId,
     artifactKind:descriptor.artifactKind,
@@ -229,6 +236,7 @@ export function createArtifactRecord(descriptor, payloadBytes, metadata = {}) {
     entityId:descriptor.entityId,
     runtimeSnapshotId:descriptor.runtimeSnapshotId,
     originRefs:descriptor.originRefs,
+    ...(descriptor.dependencyScope ? { dependencyScope:descriptor.dependencyScope } : {}),
     payloadEncoding:ARTIFACT_PAYLOAD_ENCODING,
     payloadEncodingVersion:1,
     payloadChecksum:artifactPayloadChecksum(bytes),
@@ -240,7 +248,7 @@ export function createArtifactRecord(descriptor, payloadBytes, metadata = {}) {
 
 export function validateArtifactRecord(record, payloadBytes, expected = {}) {
   if (!record || typeof record !== 'object') throw new ArtifactCorruptionError('artifact-record-malformed');
-  if (record.recordSchemaVersion !== ARTIFACT_RECORD_SCHEMA_VERSION) throw new ArtifactCorruptionError('artifact-record-schema-mismatch');
+  if (record.recordSchemaVersion !== (Object.hasOwn(record, 'dependencyScope') ? SCOPED_ARTIFACT_RECORD_SCHEMA_VERSION : ARTIFACT_RECORD_SCHEMA_VERSION)) throw new ArtifactCorruptionError('artifact-record-schema-mismatch');
   if (record.artifactContractVersion !== ARTIFACT_CONTRACT_VERSION) throw new ArtifactCorruptionError('artifact-contract-version-mismatch');
   if (!record.artifactId || !record.producerId || !record.producerVersion) throw new ArtifactCorruptionError('artifact-record-required-field-missing');
   if (record.payloadEncoding !== ARTIFACT_PAYLOAD_ENCODING || record.payloadEncodingVersion !== 1) throw new ArtifactCorruptionError('artifact-payload-encoding-unsupported');

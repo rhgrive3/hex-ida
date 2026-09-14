@@ -1,6 +1,7 @@
 import { boundedInteger } from '../debug/adapter.js';
 import { GROUP } from '../evidence.js';
-import { stableDigest } from '../core/identity/index.js';
+import { stableDigest, deepFreeze } from '../core/identity/index.js';
+import { snapshotContractData, recordFields, exactString, exactInteger, stringSet, contractFail } from '../core/identity/structured.js';
 
 function nowIso() { return new Date().toISOString(); }
 let RUN_OCCURRENCE_SEQUENCE = 0;
@@ -71,7 +72,37 @@ function runtimeEvidenceId(value, fallback) {
   return value;
 }
 
+
+/** Optional scoped provenance is observational data, never an execution grant.
+ * Keep synthetic/intervened experiments out of legacy natural-fact promotion.
+ */
+export function normalizeScopedExperimentObservation(input) {
+  const value = snapshotContractData(input, { maxNodes: 512, maxBytes: 32768 });
+  recordFields(value, ['schema', 'worldId', 'assumptionsId', 'snapshotId', 'planId', 'authorizationId',
+    'sessionEpoch', 'observationMode', 'interventionIds', 'classification', 'moduleBinding'], 'scoped-observation-fields');
+  if (value.schema !== 'scoped-experiment-observation/v1' || value.observationMode !== 'intervened'
+    || value.classification !== 'observation-only') contractFail('scoped-observation-classification');
+  for (const key of ['worldId', 'assumptionsId', 'snapshotId', 'planId', 'authorizationId']) exactString(value[key], 'scoped-observation-binding');
+  exactInteger(value.sessionEpoch, 'scoped-observation-epoch', { min: 1 });
+  const interventionIds = stringSet(value.interventionIds, 'scoped-observation-interventions', 16);
+  if (!interventionIds.includes(value.planId)) contractFail('scoped-observation-missing-intervention');
+  if (value.moduleBinding != null) {
+    const b = value.moduleBinding;
+    recordFields(b, ['schema', 'worldId', 'assumptionsId', 'snapshotId', 'runtimeSessionId', 'debugSessionId',
+      'providerId', 'providerVersion', 'sessionEpoch', 'moduleBindingKey', 'moduleGeneration', 'runtimeAddress',
+      'staticAddress', 'binaryId', 'sliceId', 'identityEvidenceIds', 'authority'], 'scoped-observation-module-fields');
+    if (b.schema !== 'scoped-experiment-module-binding/v1' || b.authority !== 'current-provider-owner-premise'
+      || b.worldId !== value.worldId || b.assumptionsId !== value.assumptionsId || b.snapshotId !== value.snapshotId
+      || b.sessionEpoch !== value.sessionEpoch) contractFail('scoped-observation-module-binding');
+    for (const k of ['runtimeSessionId', 'debugSessionId', 'providerId', 'providerVersion', 'moduleBindingKey',
+      'runtimeAddress', 'staticAddress', 'binaryId', 'sliceId']) exactString(b[k], 'scoped-observation-module-identity');
+    exactInteger(b.moduleGeneration, 'scoped-observation-module-generation', { min: 1 });
+    if (!stringSet(b.identityEvidenceIds, 'scoped-observation-module-evidence', 64).length) contractFail('scoped-observation-module-evidence');
+  }
+  return deepFreeze({ ...value, interventionIds });
+}
 export function createRuntimeEvidenceRecord(input = {}) {
+  const scopedObservation = input.scopedObservation == null ? null : normalizeScopedExperimentObservation(input.scopedObservation);
   const rawSessionId = input.sessionId;
   const rawExperimentId = input.experimentId;
   const rawCaseId = input.caseId;
@@ -94,6 +125,7 @@ export function createRuntimeEvidenceRecord(input = {}) {
     branchPath: Array.isArray(input.branchPath) ? input.branchPath : [],
     verdict: input.verdict ?? 'inconclusive',
     runTimestamp: isBare4327Shape ? null : resolvedTimestamp,
+    ...(scopedObservation ? { scopedObservation } : {}),
   };
   let occurrence = '';
   if (input.id == null && !isBare4327Shape) {
@@ -107,22 +139,24 @@ export function createRuntimeEvidenceRecord(input = {}) {
     id:runtimeEvidenceId(input.id, generatedId),
     source:'runtime', backend:String(input.backend || 'unknown').slice(0,128), binaryHash:input.binaryHash || null, sliceIdentity:input.sliceIdentity || null,
     function:input.function == null ? null : input.function, address:input.address == null ? null : input.address,
-    input:input.input || null, initialState:input.initialState || null, observedState:input.observedState || null,
+    input:input.input ?? null, initialState:input.initialState ?? null, observedState:input.observedState ?? null,
     branchPath:Array.isArray(input.branchPath) ? input.branchPath.slice(0,4096) : [], timestamp:resolvedTimestamp, sessionId,
     reproducibility:input.reproducibility || { replayable:false, runs:1, consistent:null },
     confidence:safeConfidence(input.confidence), verdict:input.verdict || 'inconclusive', kind:input.kind || 'observation',
     provenance:{ group:GROUP.RUNTIME, observationGroup:traceGroup, independent:false, parent:input.parentEvidenceId || null },
+    ...(scopedObservation ? { scopedObservation, verdict: 'inconclusive', confidence: 0.35 } : {}),
   };
 }
 
-export function evidenceFromExperiment({ experiment, testCase, observation, comparison, backend = 'unknown', binaryHash = null, sliceIdentity = null, sessionId = null, replayable = false }) {
+export function evidenceFromExperiment({ experiment, testCase, observation, comparison, launchCanonicalInput = null, backend = 'unknown', binaryHash = null, sliceIdentity = null, sessionId = null, replayable = false }) {
   const group = `runtime:${provenancePart(sessionId, 'session', 'sessionId')}:${provenancePart(experiment.id, null, 'experimentId')}:${provenancePart(testCase.id, null, 'caseId')}`;
   return createRuntimeEvidenceRecord({
-    backend, binaryHash:binaryHash || experiment.binaryHash, sliceIdentity, function:experiment.functionAddress, input:testCase.input,
+    backend, binaryHash:binaryHash || experiment.binaryHash, sliceIdentity, function:experiment.functionAddress, input:launchCanonicalInput || testCase.input,
     initialState:testCase.initialState, observedState:{ returnValue:observation.returnValue, registerDelta:observation.registerDelta, memoryDelta:observation.memoryDelta, memoryAfter:observation.memoryAfter, stop:observation.stop },
     branchPath:observation.branches || [], sessionId, experimentId:experiment.id, caseId:testCase.id, verdict:comparison.status,
     confidence:comparison.status === 'supported' ? 0.8 : comparison.status === 'contradicted' ? 0.9 : 0.35,
-    kind:'experiment', provenanceGroup:group, reproducibility:{ replayable:!!replayable, runs:1, consistent:null }
+    kind:'experiment', provenanceGroup:group, reproducibility:{ replayable:!!replayable, runs:1, consistent:null },
+    scopedObservation: experiment.scopedObservation ?? null
   });
 }
 

@@ -191,7 +191,9 @@ export function installAssistant(app, ui) {
     if (options.style) session.setStyle(options.style);
     if (options.scope) session.setScope(options.scope);
     panel.update({ stick: false });
-    return session.ask(question, { context: workbenchContext(app) });
+    const context = workbenchContext(app);
+    if (options.untrustedTarget != null) context.untrustedTarget = options.untrustedTarget;
+    return session.ask(question, { context });
   }
 
   session.on((event) => {

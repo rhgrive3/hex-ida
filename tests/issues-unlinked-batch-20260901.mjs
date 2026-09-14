@@ -33,6 +33,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
       { name: '_RC3foo', address: 0x1000n },
       { name: 'someCFunc', address: 0x2000n },
     ],
+    binaryIdentity: 'sha256:batch-3269',
   }).probe();
   assert.equal(nonRust.identity.verdict, 'matched-authoritative');
   assert.equal(nonRust.completeness.complete, true);
@@ -196,7 +197,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
   };
   await assert.rejects(
     waitForAppProducer(entry, signal),
-    (error) => error?.name === 'AbortError' && error?.code === 'ABORT_ERR',
+    (error) => error === 'late-consumer-abort',
     'post-subscribe re-check must collect the late abort',
   );
   assert.equal(entry.waiters, 0, 'late-aborted consumer must detach exactly once');
@@ -409,7 +410,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
   const recording = (identityEvidenceIds, identityState = 'resolved') => new TraceProvider({
     recordingId: 'r1', schemaVersion: '1', binaryId: 'bin', events: [], dropped: 0, completeness: 'partial',
     modules: [{ id: 'm1', runtimeBase: 0x1000n, runtimeSize: 0x100n, staticBase: 0x2000n, binaryId: 'attacker-bin', identityState, identityEvidenceIds }],
-  });
+  }, { verifyModuleIdentity: () => true });
   const load = async (provider) => {
     const session = await provider.openSession({});
     const binding = session.modules.get('m1');

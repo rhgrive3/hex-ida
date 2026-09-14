@@ -460,8 +460,17 @@ function throwIfAborted(signal) {
 function defaultSleep(ms, signal) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(programError('cancelled', String(signal.reason || 'cancelled')));
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener?.('abort', () => { clearTimeout(timer); reject(programError('cancelled', String(signal.reason || 'cancelled'))); }, { once: true });
+    let settled = false;
+    const finish = (settle) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener?.('abort', onAbort);
+      settle();
+    };
+    const onAbort = () => finish(() => reject(programError('cancelled', String(signal.reason || 'cancelled'))));
+    const timer = setTimeout(() => finish(resolve), ms);
+    signal?.addEventListener?.('abort', onAbort, { once: true });
   });
 }
 function programError(code, message) { const error = new Error(message); error.code = code; return error; }
