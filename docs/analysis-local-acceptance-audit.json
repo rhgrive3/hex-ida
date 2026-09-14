@@ -1728,6 +1728,168 @@
         "fullRoadmapComplete": false,
         "merged": false
       }
+    },
+    "nonC4Continuation": {
+      "date": "2026-09-14",
+      "branch": "codex/analysis-remaining-20260914",
+      "pullRequest": "https://github.com/rhgrive3/hex-ida/pull/8888",
+      "recordedAgainstHead": "3ea388914f4a1d002bfb619ec2e619a7ca75f319",
+      "status": "IN PROGRESS",
+      "assignedScopeComplete": false,
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false,
+      "userOwned": [
+        "C4 all areas",
+        "PHI/CFG",
+        "flags/NZCV",
+        "fault/exception/unwind"
+      ],
+      "physicalDeviceAcceptance": {
+        "status": "SKIPPED",
+        "requestedBy": "user",
+        "instruction": "実機はスキップしてください。",
+        "countsAsPass": false,
+        "scope": "physical iPad/Safari/Apple arm64e and physical ordering/signing/runtime acceptance"
+      },
+      "changes": [
+        "restored original ARM64 operand dependency helper omitted by main reconciliation",
+        "moved unchanged query completeness data away from IR lowering and preserved public re-export identity",
+        "aligned simulated clocks in aggregate minimization deadline regression"
+      ],
+      "toolchainReceipt": "evidence/analysis-remaining-20260914/toolchain-restored.json",
+      "llvmVersion": "Ubuntu LLVM version 18.1.3",
+      "gitVersion": "2.49.1",
+      "x02CurrentEnvironmentClassification": {
+        "pass": 115,
+        "productGap": 0,
+        "evidenceGap": 4,
+        "environmentExcluded": 1,
+        "denominator": 120,
+        "changedRow": "X02-H-02",
+        "reason": "actual independent LLVM reparse succeeded; frozen historical row retained"
+      },
+      "verificationReceipts": [
+        {
+          "label": "focused-restored",
+          "sourceHead": "1957bc55b33b0fcf79328bbf88d9e2675f6d0847",
+          "cleanAtStart": null,
+          "command": [
+            "node",
+            "--test",
+            "tests/phase7/integration/analysis-entrypoint-dependencies.test.mjs",
+            "tests/phase4/issue-3911-blocks-base-call-arg-provenance.test.mjs",
+            "tests/phase7/summary/c1-02-recursive-return-discovery.test.mjs",
+            "tests/phase8/abi/c3-combined-acceptance.test.mjs",
+            "tests/phase8/memory/c2-byte-forwarding-matrix.test.mjs",
+            "tests/scpa/x02-apple-version-matrix.test.mjs"
+          ],
+          "testCount": 266,
+          "scope": "entrypoint/C1 recursive returns/C2 bytes/C3 ABI/X02 additional matrix",
+          "exitCode": 0,
+          "logSha256": "d68cafac2da457a0ee7fc3a2cce64db4a2e48478c4cd933da675a75de76ee18a"
+        },
+        {
+          "label": "llvm-restored",
+          "sourceHead": "fd0ad1dfed445e72265ebd78cba8e0aaa5211746",
+          "cleanAtStart": true,
+          "command": [
+            "node",
+            "--test",
+            "--test-concurrency=1",
+            "tests/machine-effects/arm64-a64-integer-denominator.test.mjs",
+            "tests/machine-effects/arm64-a64-memory-denominator.test.mjs",
+            "tests/scpa/x02-prior120-apple-version-matrix.test.mjs"
+          ],
+          "testCount": 122,
+          "scope": "ARM64 integer and memory denominators plus X02 prior120",
+          "exitCode": 0,
+          "logSha256": "504d48f7940ea2e22e9f5be83dc345981113fe1b4900eb0e0cd2876451f02419"
+        },
+        {
+          "label": "worker-contracts-committed",
+          "sourceHead": "c051ab2ede7b2dc211c9ad9ab5540602d4575f37",
+          "cleanAtStart": true,
+          "command": [
+            "node",
+            "--test",
+            "--test-concurrency=1",
+            "tests/phase9/solver/worker-import-boundary.test.mjs",
+            "tests/phase9/solver/worker-lifecycle.test.mjs",
+            "tests/phase9/translate/support-matrix.test.mjs",
+            "tests/phase9/verify/query-data-boundaries-v6.test.mjs",
+            "tests/phase7/ownership/roadmap-v8-integration.test.mjs"
+          ],
+          "testCount": 48,
+          "scope": "Worker dependencies/query/lifecycle/translator/ownership",
+          "exitCode": 0,
+          "logSha256": "4fca9ea43c7ee0b9b7d9bc3e9ee82c48e306cda11018665dceada87bc88d2a24"
+        },
+        {
+          "label": "rebuild-independent-restored",
+          "sourceHead": "c051ab2ede7b2dc211c9ad9ab5540602d4575f37",
+          "cleanAtStart": true,
+          "command": [
+            "node",
+            "--test",
+            "--test-concurrency=1",
+            "tests/phase12/rebuild/f6-real-fixtures.test.mjs",
+            "tests/phase12/rebuild/f6-pe-layout-cell.test.mjs",
+            "tests/phase12/rebuild/f6-macho-layout-cell.test.mjs",
+            "tests/stage2/x03-rebuild-discovery.test.mjs"
+          ],
+          "testCount": 4,
+          "scope": "ELF64/PE32+/PE32/Mach-O64 finite rebuild cells and discovery",
+          "exitCode": 0,
+          "logSha256": "ed2a906f3149cfc30eb5b9e86f7f0261b4fdbbcc378a6c55064cba66f2c6f40e"
+        },
+        {
+          "label": "minimization-clock-aligned",
+          "sourceHead": "c051ab2ede7b2dc211c9ad9ab5540602d4575f37",
+          "cleanAtStart": false,
+          "command": [
+            "node",
+            "--test",
+            "tests/machine-effects/mismatch-minimization.test.mjs",
+            "tests/machine-effects/sequence-mismatch-minimization.test.mjs"
+          ],
+          "testCount": 13,
+          "scope": "single-instruction and sequence mismatch minimization",
+          "exitCode": 0,
+          "logSha256": "0e4d20357ba94d235ec81f105a12f59ca33853f0198392cf7655ad2ac4871fd7"
+        },
+        {
+          "label": "managed-identity-current",
+          "sourceHead": "3ea388914f4a1d002bfb619ec2e619a7ca75f319",
+          "cleanAtStart": true,
+          "command": [
+            "node",
+            "--test",
+            "--test-concurrency=1",
+            "tests/phase11/cil/cil-module-identity-7689.test.mjs",
+            "tests/phase11/shared/issue-5401-5294-5384-identity-batch.test.mjs",
+            "tests/phase11/shared/issue-4794-managed-profile-identity-validation.test.mjs",
+            "tests/phase11/foundation/issue-4391-managed-identity-primitives.test.mjs"
+          ],
+          "testCount": 43,
+          "scope": "selected CIL/shared managed identity tests",
+          "exitCode": 0,
+          "logSha256": "df6003af3d61f606bc80dbd221bfbc0b64ff582160372ab2ca60faaa66d1b411"
+        }
+      ],
+      "generatedReproducedTwice": true,
+      "generatedHashes": {
+        "userscript/hex.user.template.js": "5e57ede0ef9a85e7a9503989c200cf270e847738a6b6f6dde044ecd6c85b1ee6",
+        "userscript/release-version.json": "5e27c4badb1e85c71fdb2b6ce4ceb062e78dd279906c703c81474129c0851095"
+      },
+      "remaining": [
+        "C1 non-escape positive versus both-root proof contract",
+        "canonical Linux Worker cold startup exceeds unchanged 2000ms budget",
+        "machine-effects x86 closure/decoder regressions and canonical check not green",
+        "candidate merge-tree against main conflicts in 6 paths",
+        "Stage2 active local provider dependencies being installed; canonical suite not passed",
+        "independent review authentication and exact-head integration acceptance"
+      ],
+      "checkpoint": "docs/analysis-remaining-20260914.md"
     }
   },
   "integrationFollowupHistory": [
