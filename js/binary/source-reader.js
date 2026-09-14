@@ -149,6 +149,7 @@ export async function parseSourceRanges(source, parser, parserOptions = {}, opti
   if (!Number.isSafeInteger(maxCachedBytes) || maxCachedBytes <= 0) throw new ByteSourceLimitError('maxCachedBytes must be a positive safe integer');
   if (!Number.isSafeInteger(maxReads) || maxReads <= 0) throw new ByteSourceLimitError('maxReads must be a positive safe integer');
   const sparse = new SparseByteBuffer(source.size);
+  sparse.readAheadSize = maxPageSize;
   let reads = 0;
   let parserPasses = 0;
   let cachedBytes = 0;
