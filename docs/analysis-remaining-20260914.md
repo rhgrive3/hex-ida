@@ -147,3 +147,7 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
   query/translator/Worker lifecycle/ownershipを含む48検査成功（commit前診断）。
 - canonical browser検査は変更後もChromium初回SATで2秒timeout。Linux runtime受入は未完了。
   重い依存の除去を性能合格に読み替えない。生成物はこの変更から次にcanonical再生成する。
+
+- Worker依存分離は `c59ad876485f2eb83f3fac0ccb92007d42102f9c` としてpush済み。
+  canonical生成を2回実行し、tracked userscript/release-versionのhash一致を確認。
+  `generated-lightweight-{first,second}.json` と `generated-lightweight-hashes.json` に保存した。
