@@ -112,7 +112,7 @@ function abortError(){const e=new Error('aborted');e.name='AbortError';return e;
   assert.match(workspace,/signal\?\.addEventListener\('abort',onAbort/); assert.match(workspace,/if\(ownedBackend\)other\?\.dispose\?\.\(\)/);
   assert.match(app,/async loadDiffBaseline\(file, options=\{\}\)\{return this\.workspace\.loadBaseline\(file, options\);\}/);
   const funcs=Array.from({length:350000},(_,i)=>BigInt(i*4)); const symbols={funcs,addrs:funcs,names:[],functionStartsComplete:true};
-  const set=createCompactFunctionSet(symbols,'arm64',350000); assert.equal(set.functionAddresses,funcs); assert.equal(set.count,350000); assert.equal(Object.prototype.hasOwnProperty.call(set,'functions'),false,'main realm must not allocate 350k function objects');
+  const set=createCompactFunctionSet(symbols,'arm64',350000); assert.notEqual(set.functionAddresses,funcs);assert.deepEqual([...set.functionAddresses],[...funcs]); assert.equal(set.count,350000); assert.equal(Object.prototype.hasOwnProperty.call(set,'functions'),false,'main realm must not allocate 350k function objects');
 }
 
 console.log('reopened final seven contracts: PASS');
