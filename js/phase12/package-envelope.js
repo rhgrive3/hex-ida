@@ -479,6 +479,37 @@ export function createPackageArtifactDescriptor(envelope, input = {}) {
 const ALLOWED_OUTPUT_FIELDS = new Set(['schemaVersion', 'provenance', 'completeness', 'targetIdentity', 'items', 'results', 'unique']);
 const ALLOWED_ITEM_FIELDS = new Set(['id', 'targetIdentity', 'value', 'confidence', 'metadata', 'evidence', 'provenance']);
 
+// #8760: provider-output preflight resource guard. Reuses the #5219 iterative
+// single-admission scanner to bound depth, entry count, string budget, byte
+// budget and cycles BEFORE stableStringify/deepFreeze touch the same graph.
+// The scan result is intentionally discarded — validation and the detached
+// #7127 return keep operating on the caller's live graph so Date/Map/Set/
+// TypedArray/function payload type semantics (and structuredClone's unclonable
+// fail-closed contract in the provider boundary) are unchanged. Package-input
+// resource codes are remapped to provider-output-* typed codes so an untrusted
+// provider cannot distinguish host internals through error identity, and a raw
+// RangeError from stableStringify/deepFreeze never escapes the boundary.
+function providerOutputResourceCode(packageCode) {
+  switch (packageCode) {
+    case 'package-input-too-large': return 'provider-output-too-large';
+    case 'package-entry-budget-exceeded': return 'provider-output-entry-budget-exceeded';
+    case 'package-string-budget-exceeded': return 'provider-output-string-budget-exceeded';
+    case 'package-nesting-budget-exceeded': return 'provider-output-nesting-budget-exceeded';
+    case 'package-input-structure-invalid': return 'provider-output-structure-invalid';
+    default: return 'provider-output-resource-exhausted';
+  }
+}
+function admitProviderOutputShape(value, limits, maxBytes) {
+  try {
+    scanObjectBudget(value, limits, maxBytes);
+  } catch (error) {
+    if (error instanceof PackageValidationError) {
+      throw new PackageValidationError(providerOutputResourceCode(error.code), error.message, error.detail);
+    }
+    throw error;
+  }
+}
+
 export function validateProviderOutput(value, options = {}) {
   try {
     const maxEntries = positiveLimit(options.maxEntries, 100_000, 'maxEntries', 'provider-output-resource-limit-invalid');
@@ -487,15 +518,44 @@ export function validateProviderOutput(value, options = {}) {
     for (const key of Object.keys(value)) {
       if (!ALLOWED_OUTPUT_FIELDS.has(key)) throw new PackageValidationError('provider-output-unknown-field', `unknown field: ${key}`);
     }
-    const encoded = stableStringify(value);
-    if (new TextEncoder().encode(encoded).byteLength > maxBytes) throw new PackageValidationError('provider-output-too-large');
+    // Shallow collection shape checks run on the caller's own object so an
+    // explicitly-present-but-invalid `items`/`results` (including `undefined`,
+    // false, null, a string or a number) still fails closed; the #5219 scanner
+    // applies jsonSafe key-omission parity and would otherwise drop an
+    // `items: undefined` property before it could be observed. The array
+    // length bound is applied here too, on the live array's `length` (O(1)),
+    // so an over-budget collection is rejected before its elements are walked.
     const hasItems = Object.hasOwn(value, 'items');
     const hasResults = Object.hasOwn(value, 'results');
     if (hasItems && !Array.isArray(value.items)) throw new PackageValidationError('provider-output-schema-invalid', 'items must be an array when supplied');
     if (hasResults && !Array.isArray(value.results)) throw new PackageValidationError('provider-output-schema-invalid', 'results must be an array when supplied');
     if (hasItems && hasResults) throw new PackageValidationError('provider-output-entry-collection-ambiguous');
+    if (hasItems && value.items.length > maxEntries) throw new PackageValidationError('provider-output-entry-budget-exceeded');
+    if (hasResults && value.results.length > maxEntries) throw new PackageValidationError('provider-output-entry-budget-exceeded');
+    // #8760: provider output is untrusted, so its configured resource limits
+    // must act as an ADMISSION boundary, not a post-hoc assertion. The
+    // iterative, cycle-rejecting #5219 scanner runs first as a bounded
+    // preflight, so a hostile deep / wide / cyclic / getter-bearing graph can
+    // no longer reach stableStringify()'s or deepFreeze()'s recursion (and the
+    // raw RangeError / proportional heap cost) before the depth/string/byte
+    // budgets are consulted. The preflight snapshot is deliberately discarded:
+    // validation and the detached #7127 return keep operating on the caller's
+    // own graph so Date/Map/Set/TypedArray/function payload type semantics
+    // (and structuredClone's uncloneable fail-closed contract in the provider
+    // boundary) are unchanged. The scanner's node budget is a *graph*-structure
+    // bound (every key and element), distinct from the caller's collection-item
+    // `maxEntries`, sized above any valid in-budget payload and paired with the
+    // canonical-byte lower bound so a hostile deep/wide graph is stopped.
+    const admissionLimits = {
+      maxDepth: positiveLimit(options.maxDepth, DEFAULT_PACKAGE_LIMITS.maxDepth, 'maxDepth', 'provider-output-resource-limit-invalid'),
+      maxStrings: positiveLimit(options.maxStrings, DEFAULT_PACKAGE_LIMITS.maxStrings, 'maxStrings', 'provider-output-resource-limit-invalid'),
+      maxStringBytes: positiveLimit(options.maxStringBytes, DEFAULT_PACKAGE_LIMITS.maxStringBytes, 'maxStringBytes', 'provider-output-resource-limit-invalid'),
+      maxEntries: DEFAULT_PACKAGE_LIMITS.maxEntries,
+    };
+    admitProviderOutputShape(value, admissionLimits, maxBytes);
+    const encoded = stableStringify(value);
+    if (new TextEncoder().encode(encoded).byteLength > maxBytes) throw new PackageValidationError('provider-output-too-large');
     const entries = hasItems ? value.items : hasResults ? value.results : [];
-    if (entries.length > maxEntries) throw new PackageValidationError('provider-output-entry-budget-exceeded');
     if (value.schemaVersion !== PHASE12_PROVIDER_OUTPUT_SCHEMA) throw new PackageValidationError('provider-output-schema-unsupported');
     if (!value.provenance || typeof value.provenance !== 'object' || Array.isArray(value.provenance)) throw new PackageValidationError('provider-output-provenance-required');
     if (!['complete', 'partial', 'truncated'].includes(value.completeness)) throw new PackageValidationError('provider-output-completeness-invalid');
