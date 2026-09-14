@@ -254,3 +254,11 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
 - `worker-host-browser` ではChromiumの既存2秒SAT/UNSAT、32/64bit、stale拒否、
   proofが全て成功。WebKitはlibxslt等の環境ライブラリ不足で起動できず、
   browser全体は未合格。以前のChromium timeout記録は履歴として保持する。
+
+- WebKit共有ライブラリを永続cacheから復旧し、clean `70fe267fd` で
+  canonical browser検査を再実行。**Chromium / WebKit両方PASS**。
+  既存2000ms予算、narrow SAT/UNSAT、32/64bit、stale拒否、exact proofは変更なし。
+  `worker-host-browser-committed.json` のlog SHA256は
+  `42be5bf15faf94d25227ae135a3c169489e8769c43f1c7666d2209828c0c819b`。
+  同clean commitの関連51検査も成功（`worker-host-contracts-committed.json`）。
+  Worker browser受入の残件はこの環境・commitで解消した。実機成功とはしない。

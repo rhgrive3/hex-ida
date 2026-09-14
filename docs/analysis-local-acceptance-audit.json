@@ -1883,7 +1883,6 @@
       },
       "remaining": [
         "C1 non-escape positive versus both-root proof contract",
-        "canonical Linux Worker cold startup exceeds unchanged 2000ms budget",
         "machine-effects x86 closure/decoder regressions and canonical check not green",
         "candidate merge-tree against main conflicts in 6 paths",
         "Stage2 cross ARM64/arm64e/RISC-V and x86 baseline ran; x86 attach launcher PR_SET_PTRACER returns EINVAL in this environment (Yama interface absent). Canonical Stage2 not green.",
@@ -2027,6 +2026,56 @@
           "tests/phase4/issue-3911-blocks-base-call-arg-provenance.test.mjs"
         ],
         "independentReview": "Old R2 issue repaired; current-head independent approval remains pending"
+      },
+      "workerStartupAcceptance": {
+        "status": "PASSED",
+        "sourceHead": "70fe267fd9fcff9cd1117e753c3b3628afe75767",
+        "engines": [
+          "Chromium",
+          "WebKit"
+        ],
+        "timeoutMs": 2000,
+        "requiredWidths": [
+          32,
+          64
+        ],
+        "checks": [
+          "narrow SAT/model",
+          "narrow UNSAT",
+          "wide bitblast SAT",
+          "stale query rejection",
+          "exact edge proof",
+          "dedicated Worker"
+        ],
+        "contractTestsPassed": 51,
+        "receipts": [
+          {
+            "label": "worker-host-contracts-committed",
+            "sourceHead": "70fe267fd9fcff9cd1117e753c3b3628afe75767",
+            "dirtyAtStart": [],
+            "exitCode": 0,
+            "logSha256": "60099f89b6efdc6bd631f8e0ef7a84361b26632a9b5b7a8f6e0dc7a524f3e9d1"
+          },
+          {
+            "label": "worker-host-browser-committed",
+            "sourceHead": "70fe267fd9fcff9cd1117e753c3b3628afe75767",
+            "dirtyAtStart": [],
+            "exitCode": 0,
+            "logSha256": "42be5bf15faf94d25227ae135a3c169489e8769c43f1c7666d2209828c0c819b"
+          }
+        ],
+        "generatedHashes": {
+          "first": {
+            "userscript/hex.user.template.js": "3efda39591bbb396f5de0ce6ecbb1f16298c5917d893f83014c59bcae7fa4a24",
+            "userscript/release-version.json": "ab2629e3778bc53cc6b1f42190ffc5592e15bdefffd91bca4bc47bdfb1d72f41"
+          },
+          "second": {
+            "userscript/hex.user.template.js": "3efda39591bbb396f5de0ce6ecbb1f16298c5917d893f83014c59bcae7fa4a24",
+            "userscript/release-version.json": "ab2629e3778bc53cc6b1f42190ffc5592e15bdefffd91bca4bc47bdfb1d72f41"
+          },
+          "identical": true
+        },
+        "physicalDeviceAcceptance": false
       }
     }
   },
