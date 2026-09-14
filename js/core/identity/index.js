@@ -1,4 +1,4 @@
-import { fnv64Text } from './fnv64.js';
+import { fnv64Hex, fnv64Text } from './fnv64.js';
 
 const ID_SCHEMA_VERSION = 1;
 const HEX_RE = /^[0-9a-f]+$/i;
@@ -95,6 +95,44 @@ export function stableStringify(value) {
 export function stableDigest(value) {
   const text = stableStringify(value);
   return fnv64Text(text) + fnv64Text(text, 0xcbf29ce4, 0x84222325);
+}
+
+/*
+ * Byte-oriented digest that is exactly equal to stableDigest(Array.from(bytes))
+ * for byte-domain inputs without materializing a boxed number array or the
+ * whole canonical decimal JSON text (#8796). Canonicalization is streamed as
+ * bounded chunks, so transient memory stays O(chunk) instead of
+ * O(bytes x boxed/JSON expansion) while the public digest value is unchanged.
+ */
+const DECIMAL_BYTE_TEXT = Array.from({ length: 256 }, (_, byte) => String(byte));
+const DIGEST_BYTE_CHUNK = 16_384;
+
+function fnv64State(text, state) {
+  const hex = fnv64Text(text, state.low, state.high);
+  return { high: Number.parseInt(hex.slice(0, 8), 16), low: Number.parseInt(hex.slice(8, 16), 16) };
+}
+
+export function stableDigestBytes(bytes) {
+  if (!(bytes instanceof Uint8Array)) throw new TypeError('identity-digest-bytes-required');
+  let first = { low: 0x84222325, high: 0xcbf29ce4 };
+  let second = { low: 0xcbf29ce4, high: 0x84222325 };
+  const feed = (text) => {
+    first = fnv64State(text, first);
+    second = fnv64State(text, second);
+  };
+  feed('[');
+  for (let start = 0; start < bytes.length; start += DIGEST_BYTE_CHUNK) {
+    const end = Math.min(start + DIGEST_BYTE_CHUNK, bytes.length);
+    const parts = [];
+    for (let index = start; index < end; index += 1) {
+      if (index !== start) parts.push(',');
+      parts.push(DECIMAL_BYTE_TEXT[bytes[index]]);
+    }
+    if (start !== 0) feed(',');
+    feed(parts.join(''));
+  }
+  feed(']');
+  return fnv64Hex(first.low, first.high) + fnv64Hex(second.low, second.high);
 }
 
 function canonicalWitnessParts(value, seen = new WeakSet()) {

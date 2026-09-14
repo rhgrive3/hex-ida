@@ -1,4 +1,4 @@
-import { deepFreeze, stableDigest } from '../core/identity/index.js';
+import { deepFreeze, stableDigest, stableDigestBytes } from '../core/identity/index.js';
 import { isValidatedStage2CapabilityProof } from '../platform/stage2-profile-evidence.js';
 
 export const REBUILD_TRANSACTION_SCHEMA = 'hex-rebuild-transaction-v2';
@@ -103,8 +103,22 @@ function clone(value) {
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, clone(item)]));
 }
 
+function toView(value) {
+  // Non-copying byte view for identity hashing: the whole-binary copy that
+  // toBytes() makes for mutation safety is not needed to read a digest (#8796).
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  return toBytes(value);
+}
+
+// #8796: byte identity is streamed in bounded chunks directly over the byte
+// view instead of `stableDigest(Array.from(bytes))`, which boxed and
+// JSON-materialized the entire binary before any budget was consulted. The
+// digest VALUE is unchanged, so persisted/compared `bytes:<hex>` identities
+// keep their exact contract.
 function hashBytes(value) {
-  return `bytes:${stableDigest(Array.from(toBytes(value)))}`;
+  return `bytes:${stableDigestBytes(toView(value))}`;
 }
 
 function sorted(value) {
@@ -670,6 +684,23 @@ async function sourceBytes(source) {
   return toBytes(source).slice();
 }
 
+// #8796: an admissible length is available from primitive metadata (typed
+// views, ArrayBuffers, arrays, and a Blob's declared size) before any whole
+// Blob/File read, so output-budget admission no longer has to pay for a full
+// source materialization first.
+function declaredSourceLength(source) {
+  if (typeof Blob !== 'undefined' && source instanceof Blob) {
+    return Number.isSafeInteger(source.size) && source.size >= 0 ? source.size : null;
+  }
+  if (source instanceof Uint8Array || source instanceof ArrayBuffer || ArrayBuffer.isView(source)) return source.byteLength;
+  if (Array.isArray(source)) return source.length;
+  return null;
+}
+
+function outputBudgetLimit(sourceLength) {
+  return Math.min(Math.max(sourceLength * 4 + 1024 * 1024, 16 * 1024 * 1024), 2_147_483_647);
+}
+
 function transactionIdentityValid(transaction) {
   try {
     if (!transaction || transaction.schemaVersion !== REBUILD_TRANSACTION_SCHEMA) return false;
@@ -796,18 +827,32 @@ export async function materializeRebuildTransaction(transaction, source, options
   if (!transaction || transaction.schemaVersion !== REBUILD_TRANSACTION_SCHEMA) return { status: 'rejected', reason: 'rebuild-v2-transaction-schema-invalid' };
   if (!transactionIdentityValid(transaction)) return { status: 'rejected', reason: 'rebuild-v2-transaction-identity-invalid', transactionId: transaction.transactionId || null };
   if (options.signal?.aborted) return { status: 'cancelled', reason: 'rebuild-v2-cancelled-before-materialization', transactionId: transaction.transactionId };
+  // #8796: output-budget admission runs on primitive metadata BEFORE the
+  // source is materialized or hashed, so a small maxOutputBytes rejects with
+  // a bounded status instead of paying for a full read/hash of a huge binary.
+  let explicitMaxOutputBytes = null;
+  if (options.maxOutputBytes != null) {
+    try { explicitMaxOutputBytes = positiveSafe(options.maxOutputBytes, 2_147_483_647, 2_147_483_647, 'rebuild-v2-max-output-budget-invalid'); }
+    catch { return { status: 'rejected', reason: 'rebuild-v2-max-output-budget-invalid' }; }
+  }
+  const declaredLength = declaredSourceLength(source);
+  if (declaredLength != null) {
+    const declaredFinal = declaredLength + transaction.sizeDelta;
+    const declaredLimit = explicitMaxOutputBytes ?? outputBudgetLimit(declaredLength);
+    if (!Number.isSafeInteger(declaredFinal) || declaredFinal < 0 || declaredFinal > declaredLimit) {
+      return { status: 'rejected', reason: 'rebuild-v2-output-budget-exceeded', finalLength: declaredFinal, maxOutputBytes: declaredLimit };
+    }
+  }
   let original;
   try { original = await sourceBytes(source); }
   catch (error) { return { status: 'rejected', reason: 'rebuild-v2-source-unavailable', detail: String(error?.message || error), transactionId: transaction.transactionId }; }
-  const observedHash = hashBytes(original);
-  if (observedHash !== transaction.sourceHash) return { status: 'rejected', reason: 'rebuild-v2-source-identity-mismatch', expected: transaction.sourceHash, observed: observedHash, transactionId: transaction.transactionId };
 
   const finalLength = original.length + transaction.sizeDelta;
-  const defaultBudget = Math.min(Math.max(original.length * 4 + 1024 * 1024, 16 * 1024 * 1024), 2_147_483_647);
-  let maxOutputBytes;
-  try { maxOutputBytes = positiveSafe(options.maxOutputBytes, defaultBudget, 2_147_483_647, 'rebuild-v2-max-output-budget-invalid'); }
-  catch { return { status: 'rejected', reason: 'rebuild-v2-max-output-budget-invalid' }; }
+  const maxOutputBytes = explicitMaxOutputBytes ?? outputBudgetLimit(original.length);
   if (!Number.isSafeInteger(finalLength) || finalLength < 0 || finalLength > maxOutputBytes) return { status: 'rejected', reason: 'rebuild-v2-output-budget-exceeded', finalLength, maxOutputBytes };
+
+  const observedHash = hashBytes(original);
+  if (observedHash !== transaction.sourceHash) return { status: 'rejected', reason: 'rebuild-v2-source-identity-mismatch', expected: transaction.sourceHash, observed: observedHash, transactionId: transaction.transactionId };
 
   const output = new Uint8Array(finalLength);
   const mappings = [];
@@ -837,6 +882,7 @@ export async function materializeRebuildTransaction(transaction, source, options
   outputCursor += tailLength;
   if (outputCursor !== output.length) return { status: 'rejected', reason: 'rebuild-v2-materialization-length-mismatch' };
 
+  const outputHash = hashBytes(output);
   return deepFreeze({
     status: 'materialized',
     transactionId: transaction.transactionId,
@@ -845,8 +891,8 @@ export async function materializeRebuildTransaction(transaction, source, options
     architecture: transaction.architecture,
     loaderVersion: transaction.loaderVersion,
     sourceHash: observedHash,
-    outputHash: hashBytes(output),
-    outputIdentity: canonicalOutputIdentity(transaction.transactionId, hashBytes(output)),
+    outputHash,
+    outputIdentity: canonicalOutputIdentity(transaction.transactionId, outputHash),
     requiredValidators: [...transaction.requiredValidators],
     sourceLength: original.length,
     outputLength: output.length,

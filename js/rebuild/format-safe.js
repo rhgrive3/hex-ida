@@ -1,4 +1,4 @@
-import { stableDigest } from '../core/identity/index.js';
+import { stableDigest, stableDigestBytes } from '../core/identity/index.js';
 import { createRebuildTransaction } from './transaction-v2.js';
 
 /**
@@ -57,7 +57,7 @@ function bytesOf(value, code = 'format-safe-bytes-required') {
 }
 
 function digestBytes(value) {
-  return `bytes:${stableDigest(Array.from(bytesOf(value)))}`;
+  return `bytes:${stableDigestBytes(bytesOf(value))}`;
 }
 
 function sameBytes(left, right) {
@@ -114,7 +114,7 @@ function bytesDigestMasked(bytes, offset, length) {
   const masked = bytesOf(bytes);
   ensureRange(masked, offset, length);
   masked.fill(0, offset, offset + length);
-  return stableDigest(Array.from(masked));
+  return stableDigestBytes(masked);
 }
 
 function elfSections(bytes, header) {
@@ -195,8 +195,8 @@ function parseElf(bytes) {
     header,
     sections,
     target: comment,
-    programHeadersDigest: stableDigest(Array.from(bytes.slice(header.programHeaderOffset, header.programHeaderOffset + header.programHeaderSize * header.programHeaderCount))),
-    sectionTableDigest: stableDigest(Array.from(bytes.slice(header.sectionTableOffset, header.sectionTableOffset + header.sectionHeaderSize * header.sectionCount))),
+    programHeadersDigest: stableDigestBytes(bytes.subarray(header.programHeaderOffset, header.programHeaderOffset + header.programHeaderSize * header.programHeaderCount)),
+    sectionTableDigest: stableDigestBytes(bytes.subarray(header.sectionTableOffset, header.sectionTableOffset + header.sectionHeaderSize * header.sectionCount)),
     maskedFileDigest: bytesDigestMasked(bytes, comment.offset, comment.size),
     signatureState: signatureSensitiveSections.length === 0 ? 'unsigned' : 'signature-or-build-identity-present',
   };
@@ -307,7 +307,7 @@ function parseMacho(bytes) {
     const command = u32(bytes, offset);
     const size = u32(bytes, offset + 4);
     if (size < 8 || size % 8 !== 0 || offset > commandsEnd - size) fail('format-safe-macho-load-command-size-invalid');
-    const entry = { index, command, offset, size, digest: stableDigest(Array.from(bytes.slice(offset, offset + size))) };
+    const entry = { index, command, offset, size, digest: stableDigestBytes(bytes.subarray(offset, offset + size)) };
     if (command === LC_CODE_SIGNATURE) hasCodeSignature = true;
     if (command === MACHO_LC_SEGMENT_64) {
       if (size < 72) fail('format-safe-macho-segment-command-invalid');
