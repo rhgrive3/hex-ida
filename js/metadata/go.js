@@ -29,6 +29,13 @@ import {
 export const GO_PROVIDER_ID = 'metadata.go';
 export const GO_PROVIDER_VERSION = '1.0.0';
 
+// Go function metadata is variable-width output. Keep the common byte
+// budget authoritative and add bounded retained-output/object accounting so
+// a record cap cannot turn into an unbounded resident-memory allocation.
+const DEFAULT_GO_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
+const DEFAULT_GO_MAX_ESTIMATED_HEAP_BYTES = 16 * 1024 * 1024;
+const DEFAULT_GO_ESTIMATED_RECORD_BYTES = 1024;
+
 export const GO_PCLNTAB_MAGICS = Object.freeze({
   0xfffffffb: { version: '1.2', name: 'go1.2' },
   0xfffffffa: { version: '1.16', name: 'go1.16' },
@@ -103,20 +110,27 @@ function readPtr(buf, off, ptrSize, little = true) {
   return ptrSize === 4 ? BigInt(u32(buf, off, little) ?? 0) : (u64(buf, off, little) ?? 0n);
 }
 
-function readCString(buf, off, maxLen = 1024) {
-  if (off < 0 || off >= buf.length) return null;
-  let end = off;
-  const limit = Math.min(buf.length, off + maxLen);
-  while (end < limit && buf[end] !== 0) {
-    if (buf[end] < 0x20 || buf[end] === 0x7f) return null; // control chars
-    end++;
-  }
-  if (end >= limit || end === off) return null;
+function decodeCString(buf, off, end) {
+  if (off < 0 || end <= off || end > buf.length) return null;
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(buf.subarray(off, end));
   } catch {
     return null;
   }
+}
+
+function goBudgetOption(options, names, fallback, code) {
+  let value = fallback;
+  for (const name of names) {
+    if (options[name] != null) {
+      value = options[name];
+      break;
+    }
+  }
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(code);
+  }
+  return value;
 }
 
 /**
@@ -262,10 +276,38 @@ export function parsePclntabHeader(buf) {
  * Parses Go pclntab function entries with bounds checking.
  */
 export function parseGoFunctions(buf, header, options = {}) {
-  const maxRecords = options.maxRecords ?? 50000;
+  // Keep the historical 50,000 default while honoring the common provider
+  // maximum when it is tightened centrally.
+  const maxRecords = options.maxRecords ?? Math.min(50000, METADATA_DEFAULT_BUDGET.maxRecords);
   if (typeof maxRecords !== 'number' || !Number.isSafeInteger(maxRecords) || maxRecords < 0) {
     throw new TypeError('go-metadata-invalid-max-records');
   }
+
+  const maxBytesScanned = goBudgetOption(
+    options,
+    ['maxBytesScanned', 'maxScanBytes'],
+    METADATA_DEFAULT_BUDGET.maxBytesScanned,
+    'go-metadata-invalid-max-bytes-scanned',
+  );
+  const maxOutputBytes = goBudgetOption(
+    options,
+    ['maxOutputBytes', 'maxDecodedNameBytes', 'maxRetainedStringBytes'],
+    DEFAULT_GO_MAX_OUTPUT_BYTES,
+    'go-metadata-invalid-max-output-bytes',
+  );
+  const maxEstimatedHeapBytes = goBudgetOption(
+    options,
+    ['maxEstimatedHeapBytes', 'maxHeapBytes', 'maxRetainedBytes'],
+    DEFAULT_GO_MAX_ESTIMATED_HEAP_BYTES,
+    'go-metadata-invalid-max-estimated-heap-bytes',
+  );
+  const estimatedRecordBytes = goBudgetOption(
+    options,
+    ['estimatedRecordBytes', 'recordOverheadBytes'],
+    DEFAULT_GO_ESTIMATED_RECORD_BYTES,
+    'go-metadata-invalid-record-overhead-bytes',
+  );
+
   const maxFuncs = Math.min(header.nfunc, maxRecords);
   const functions = [];
   let unreadableEntries = 0;
@@ -275,10 +317,108 @@ export function parseGoFunctions(buf, header, options = {}) {
   const funcDataBase = header.version === '1.2' ? 0 : header.pclnOff;
   const is118Plus = header.version === '1.18' || header.version === '1.20+';
   const entrySize = is118Plus ? 8 : header.ptrSize * 2;
+  const descriptorBytes = is118Plus
+    ? 12
+    : header.version === '1.16'
+      ? header.ptrSize + 8
+      : header.ptrSize + 12;
+
+  const budget = {
+    maxRecords,
+    maxBytesScanned,
+    maxOutputBytes,
+    maxEstimatedHeapBytes,
+    estimatedRecordBytes,
+    bytesScanned: 0,
+    outputBytes: 0,
+    estimatedHeapBytes: 0,
+    uniqueNames: 0,
+    nameCacheEntries: 0,
+    nameCacheHits: 0,
+    nameDecodes: 0,
+    invalidNameCacheEntries: 0,
+    exhausted: false,
+    exhaustedReason: null,
+  };
+
+  const exhaust = (reason) => {
+    if (!budget.exhausted) {
+      budget.exhausted = true;
+      budget.exhaustedReason = reason;
+    }
+    return false;
+  };
+  const takeBytes = (count) => {
+    if (count === 0) return true;
+    if (!Number.isSafeInteger(count) || count < 0
+        || count > budget.maxBytesScanned - budget.bytesScanned) {
+      budget.bytesScanned = budget.maxBytesScanned;
+      return exhaust('go-metadata-byte-budget-exhausted');
+    }
+    budget.bytesScanned += count;
+    return true;
+  };
 
   // Number of declared entries whose slot was actually examined. Iterations
   // after an early break were never attempted and must not be counted (#5861).
   let scanned = 0;
+  const nameCache = new Map();
+
+  const resolveName = (namePos) => {
+    if (nameCache.has(namePos)) {
+      budget.nameCacheHits++;
+      return nameCache.get(namePos);
+    }
+    if (!Number.isSafeInteger(namePos) || namePos < 0 || namePos >= buf.length) {
+      const invalid = { name: null, payloadBytes: 0, retained: false };
+      nameCache.set(namePos, invalid);
+      budget.nameCacheEntries++;
+      budget.invalidNameCacheEntries++;
+      return invalid;
+    }
+
+    const limit = Math.min(buf.length, namePos + 1024);
+    let end = namePos;
+    while (end < limit) {
+      if (!takeBytes(1)) return { budgetExhausted: true };
+      const byte = buf[end];
+      if (byte === 0) {
+        if (end === namePos) {
+          const invalid = { name: null, payloadBytes: 0, retained: false };
+          nameCache.set(namePos, invalid);
+          budget.nameCacheEntries++;
+          budget.invalidNameCacheEntries++;
+          return invalid;
+        }
+        const name = decodeCString(buf, namePos, end);
+        if (!name) {
+          const invalid = { name: null, payloadBytes: end - namePos, retained: false };
+          nameCache.set(namePos, invalid);
+          budget.nameCacheEntries++;
+          budget.invalidNameCacheEntries++;
+          return invalid;
+        }
+        const resolved = { name, payloadBytes: end - namePos, retained: false };
+        nameCache.set(namePos, resolved);
+        budget.nameCacheEntries++;
+        budget.nameDecodes++;
+        return resolved;
+      }
+      if (byte < 0x20 || byte === 0x7f) {
+        const invalid = { name: null, payloadBytes: end - namePos + 1, retained: false };
+        nameCache.set(namePos, invalid);
+        budget.nameCacheEntries++;
+        budget.invalidNameCacheEntries++;
+        return invalid;
+      }
+      end++;
+    }
+    const invalid = { name: null, payloadBytes: end - namePos, retained: false };
+    nameCache.set(namePos, invalid);
+    budget.nameCacheEntries++;
+    budget.invalidNameCacheEntries++;
+    return invalid;
+  };
 
   for (let i = 0; i < maxFuncs; i++) {
     scanned++;
@@ -287,6 +427,7 @@ export function parseGoFunctions(buf, header, options = {}) {
       unreadableEntries++;
       break;
     }
+    if (!takeBytes(entrySize)) break;
 
     let entryPC = 0n;
     let funcOff = 0;
@@ -306,31 +447,60 @@ export function parseGoFunctions(buf, header, options = {}) {
       invalidEntries++;
       continue;
     }
+    const readableDescriptorBytes = Math.min(descriptorBytes, buf.length - funcPos);
+    if (!takeBytes(readableDescriptorBytes)) break;
+    if (readableDescriptorBytes < descriptorBytes) {
+      invalidEntries++;
+      continue;
+    }
 
-    // Read function descriptor _func
+    // Read function descriptor _func.
     let name = null;
     let frameSize = null;
     let argsSize = null;
+    let namePosition = null;
 
     if (is118Plus) {
       const nameOff = i32(buf, funcPos + 4, header.little);
       argsSize = i32(buf, funcPos + 8, header.little);
-      if (nameOff != null && header.funcnametabOff + nameOff < buf.length) {
-        name = readCString(buf, header.funcnametabOff + nameOff);
-      }
+      if (nameOff != null) namePosition = header.funcnametabOff + nameOff;
     } else if (header.version === '1.16') {
       const nameOff = i32(buf, funcPos + header.ptrSize, header.little);
       argsSize = i32(buf, funcPos + header.ptrSize + 4, header.little);
-      if (nameOff != null && header.funcnametabOff + nameOff < buf.length) {
-        name = readCString(buf, header.funcnametabOff + nameOff);
-      }
+      if (nameOff != null) namePosition = header.funcnametabOff + nameOff;
     } else {
       // 1.2
       const nameOff = i32(buf, funcPos + header.ptrSize, header.little);
       argsSize = i32(buf, funcPos + header.ptrSize + 4, header.little);
       frameSize = i32(buf, funcPos + header.ptrSize + 8, header.little);
-      if (nameOff != null && nameOff < buf.length) {
-        name = readCString(buf, nameOff);
+      if (nameOff != null) namePosition = nameOff;
+    }
+
+    if (namePosition != null) {
+      const resolved = resolveName(namePosition);
+      if (resolved.budgetExhausted) break;
+      name = resolved.name;
+      if (name) {
+        // Charge the decoded string once per validated offset and charge
+        // every retained function record, including cache hits.
+        const uniqueStringBytes = resolved.retained
+          ? 0
+          : resolved.payloadBytes + name.length * 2 + 16;
+        if (uniqueStringBytes > budget.maxOutputBytes - budget.outputBytes) {
+          exhaust('go-metadata-output-budget-exhausted');
+          break;
+        }
+        const nextHeapBytes = budget.estimatedHeapBytes + estimatedRecordBytes + uniqueStringBytes;
+        if (nextHeapBytes > budget.maxEstimatedHeapBytes) {
+          exhaust('go-metadata-estimated-heap-budget-exhausted');
+          break;
+        }
+        if (!resolved.retained) {
+          resolved.retained = true;
+          budget.uniqueNames++;
+          budget.outputBytes += uniqueStringBytes;
+        }
+        budget.estimatedHeapBytes = nextHeapBytes;
       }
     }
 
@@ -350,11 +520,35 @@ export function parseGoFunctions(buf, header, options = {}) {
     });
   }
 
-  const capped = header.nfunc > maxFuncs;
+  const capped = header.nfunc > maxFuncs || budget.exhausted;
   const complete = !capped && unreadableEntries === 0 && invalidEntries === 0 && functions.length === header.nfunc;
+  // Keep the public completeness contract stable across the byte, output, and
+  // heap sub-budgets. The detailed sub-budget remains available for callers
+  // that need diagnostics without making the reason string part of the
+  // provider's allocation strategy.
+  const reasons = budget.exhausted ? ['go-metadata-budget-exhausted'] : [];
 
   return {
     functions,
+    budget: {
+      ...budget,
+      nameCacheEntries: nameCache.size,
+    },
+    resourceAccounting: {
+      maxBytesScanned: budget.maxBytesScanned,
+      maxOutputBytes: budget.maxOutputBytes,
+      maxEstimatedHeapBytes: budget.maxEstimatedHeapBytes,
+      bytesScanned: budget.bytesScanned,
+      outputBytes: budget.outputBytes,
+      estimatedHeapBytes: budget.estimatedHeapBytes,
+      nameCacheMisses: nameCache.size,
+      nameCacheHits: budget.nameCacheHits,
+      nameDecodes: budget.nameDecodes,
+      uniqueNames: budget.uniqueNames,
+      invalidNameCacheEntries: budget.invalidNameCacheEntries,
+      exhausted: budget.exhausted,
+      exhaustedReason: budget.exhaustedReason,
+    },
     completeness: {
       present: true,
       declared: header.nfunc,
@@ -364,10 +558,13 @@ export function parseGoFunctions(buf, header, options = {}) {
       unreadableEntries,
       invalidEntries,
       complete,
+      reasons,
+      bytesScanned: budget.bytesScanned,
+      uniqueNames: budget.uniqueNames,
+      nameCacheEntries: nameCache.size,
     },
   };
 }
-
 const GO_TYPE_LAYOUT_CURRENT = Object.freeze({
   strNameOffset: (ptrSize) => ptrSize * 4 + 8,
   headerBytes: (ptrSize) => ptrSize * 4 + 16,
@@ -601,6 +798,7 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
     });
 
     return createLanguageMetadataResult({
+
       providerId: this.id,
       providerVersion: this.version,
       ecosystem: 'go',

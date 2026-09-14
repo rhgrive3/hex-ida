@@ -36,6 +36,75 @@ function partialBranch(node) {
   };
 }
 
+function ownershipFailure() {
+  throw new TypeError('jvm-control-overlay-block-node-owner-invalid');
+}
+
+function buildBlocksFromOriginalOrder(old, nodes, additionsBefore, replacements) {
+  const originalNodeById = new Map();
+  for (const node of old.nodes) {
+    if (!node || typeof node.id !== 'string' || originalNodeById.has(node.id)) ownershipFailure();
+    originalNodeById.set(node.id, node);
+  }
+
+  const transformedNodeById = new Map();
+  for (const node of nodes) {
+    if (!node || typeof node.id !== 'string' || transformedNodeById.has(node.id)) ownershipFailure();
+    transformedNodeById.set(node.id, node);
+  }
+
+  for (const [originalNodeId, additions] of additionsBefore) {
+    const original = originalNodeById.get(originalNodeId);
+    if (!original || !Array.isArray(additions)) ownershipFailure();
+    for (const addition of additions) {
+      if (!addition || addition.blockId !== original.blockId
+          || transformedNodeById.get(addition.id) !== addition) {
+        ownershipFailure();
+      }
+    }
+  }
+  for (const originalNodeId of replacements.keys()) {
+    if (!originalNodeById.has(originalNodeId)) ownershipFailure();
+  }
+
+  const placedOriginalNodeIds = new Set();
+  const placedTransformedNodeIds = new Set();
+  const blocks = old.blocks.map((block) => {
+    if (!Array.isArray(block.nodeIds)) {
+      throw new TypeError('jvm-control-overlay-block-order-missing');
+    }
+    const nodeIds = [];
+    for (const originalNodeId of block.nodeIds) {
+      if (typeof originalNodeId !== 'string' || placedOriginalNodeIds.has(originalNodeId)) {
+        throw new TypeError('jvm-control-overlay-block-node-identity-invalid');
+      }
+      const original = originalNodeById.get(originalNodeId);
+      if (!original || original.blockId !== block.id) ownershipFailure();
+      placedOriginalNodeIds.add(originalNodeId);
+
+      for (const addition of additionsBefore.get(originalNodeId) ?? []) {
+        if (placedTransformedNodeIds.has(addition.id)) ownershipFailure();
+        placedTransformedNodeIds.add(addition.id);
+        nodeIds.push(addition.id);
+      }
+
+      const replacement = replacements.get(originalNodeId) ?? original;
+      if (!replacement || replacement.blockId !== block.id
+          || transformedNodeById.get(replacement.id) !== replacement
+          || placedTransformedNodeIds.has(replacement.id)) {
+        ownershipFailure();
+      }
+      placedTransformedNodeIds.add(replacement.id);
+      nodeIds.push(replacement.id);
+    }
+    return { ...block, nodeIds };
+  });
+
+  if (placedOriginalNodeIds.size !== old.nodes.length
+      || placedTransformedNodeIds.size !== nodes.length) ownershipFailure();
+  return blocks;
+}
+
 export function overlayJvmControlLowering(fn, lowered, options = {}) {
   if (fn?.frontendId !== 'jvm') return lowered;
   const old = lowered.semanticIr;
@@ -147,10 +216,7 @@ export function overlayJvmControlLowering(fn, lowered, options = {}) {
     nodes.push(...(additionsBefore.get(node.id) ?? []));
     nodes.push(replacements.get(node.id) ?? node);
   }
-  const nodeIdsByBlock = new Map();
-  for (const block of old.blocks) nodeIdsByBlock.set(block.id, []);
-  for (const node of nodes) nodeIdsByBlock.get(node.blockId)?.push(node.id);
-  const blocks = old.blocks.map((block) => ({ ...block, nodeIds: nodeIdsByBlock.get(block.id) ?? [] }));
+  const blocks = buildBlocksFromOriginalOrder(old, nodes, additionsBefore, replacements);
   const unknowns = unresolved
     ? [...(old.unknowns ?? []), { reason: 'jvm-branch-predicate-unresolved', categories: ['control'] }]
     : old.unknowns;
