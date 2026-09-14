@@ -13,11 +13,9 @@ const PROVEN_GENERIC_EVEX_FAMILIES = new Set([
   'v4fmaddss',
   'v4fnmaddps',
   'v4fnmaddss',
-  'vaddps',
   'valignd',
   'vblendmpd',
   'vblendmps',
-  'vcomiss',
   'vbroadcastf32x4',
   'vbroadcastf32x8',
   'vbroadcastf64x4',
@@ -33,12 +31,10 @@ const PROVEN_GENERIC_EVEX_FAMILIES = new Set([
   'vgatherpf1qps',
   'vp4dpwssds',
   'vp4dpwssd',
-  'vpaddd',
   'vpblendmb',
   'vpblendmd',
   'vpblendmq',
   'vpblendmw',
-  'vpcmpeqd',
   'vpshufbitqmb',
   'vptestmb',
   'vptestmd',
@@ -55,8 +51,7 @@ const PROVEN_GENERIC_EVEX_FAMILIES = new Set([
   'vscatterpf1dpd',
   'vscatterpf1dps',
   'vscatterpf1qpd',
-  'vscatterpf1qps',
-  'vxorps'
+  'vscatterpf1qps'
 ]);
 
 export function classifyEvexCategory(name) {
@@ -127,7 +122,7 @@ function evexVectorWrite(ctx, operand, value) {
   return full ? ctx.writeRegister(full, value) : false;
 }
 
-export function liftEvex(instruction, context, family) {
+export function liftEvex(instruction, context, family, provenanceSource = instruction) {
   const info = evexInfo(instruction);
   if (!info || !family.startsWith('v')) return null;
   const category = classifyEvexCategory(family);
@@ -141,8 +136,13 @@ export function liftEvex(instruction, context, family) {
   // identity proof before claiming every broader family (for example
   // `vpmulld`). Canonical decoder rows carry that proof and remain owned.
   const knownDedicatedFamily = FP_EVEX_BASES.has(base) || SIMD_EVEX_BASES.has(base);
-  const trusted = trustedCapstoneInstruction(instruction, family);
-  if (!trusted && !knownDedicatedFamily) return null;
+  const trusted = trustedCapstoneInstruction(instruction, family, provenanceSource);
+  // Families in the frozen generic denominator still have an explicit
+  // semantic owner even when the row lacks receiver authority. Keep that
+  // owner visible as a fail-closed partial instead of falling through to an
+  // unowned/null result that could hide the provenance divergence.
+  const knownGenericFamily = PROVEN_GENERIC_EVEX_FAMILIES.has(family);
+  if (!trusted && !knownDedicatedFamily && !knownGenericFamily) return null;
 
   if (!trusted) {
     const ctx = createX86EffectContext(instruction, context);
@@ -168,7 +168,6 @@ export function liftEvex(instruction, context, family) {
   const activeWidth = activeVectorWidth(operands);
   const isFp = category === 'fp';
   const embeddedRoundingOrSae = isFp && info.broadcastOrRounding && !hasMemory;
-  const roundingMode = embeddedRoundingOrSae && !compare ? evexRoundingMode(info.lengthOrRoundingCode) : null;
 
   const inputs = [], registersRead = [], registerTargets = [], memoryReads = [], memoryWrites = [];
   let faults = [];
@@ -256,7 +255,7 @@ export function liftEvex(instruction, context, family) {
       maskSemantics: info.maskRegister ? (info.zeroing ? 'zero' : 'merge') : 'none',
       broadcast: info.broadcastOrRounding && hasMemory,
       embeddedRoundingOrSae,
-      roundingMode,
+      roundingMode: embeddedRoundingOrSae ? evexRoundingMode(info.lengthOrRoundingCode) : null,
       suppressAllExceptions: embeddedRoundingOrSae,
       opcodeMap: info.map,
       mandatoryPrefixCode: info.mandatoryPrefixCode,
@@ -292,7 +291,7 @@ export function liftEvex(instruction, context, family) {
       maskSemantics: info.maskRegister ? (info.zeroing ? 'zero' : 'merge') : 'none',
       broadcast: info.broadcastOrRounding && hasMemory,
       embeddedRoundingOrSae,
-      roundingMode
+      roundingMode: embeddedRoundingOrSae ? evexRoundingMode(info.lengthOrRoundingCode) : null
     }
   });
 }

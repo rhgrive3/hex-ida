@@ -1,4 +1,5 @@
 import { x86EffectiveAddressExpression } from './addressing.js';
+import { hasReceiverRevalidatedX86Row } from '../receiver-provenance.js';
 
 const familyOf = (instruction, family) => String(
   family || instruction?.instructionFamily || instruction?.opcodeName || instruction?.mnemonic || '',
@@ -88,12 +89,22 @@ export function vexInfo(instruction){
 export function exactBase(bundle){return bundle&&['exact','exact-with-intrinsic'].includes(bundle.completeness);}
 export function memoryAddress(ctx,operand){if(operand?.type!=='memory'||operand.memory?.addressSizeBits!==64||operand.memory?.segment!=null)return null;return x86EffectiveAddressExpression(ctx.instruction,operand);}
 export function possibleFeatureFault(kind){return Object.freeze({kind,condition:{kind:'x86-feature-state-condition'},detail:{architectural:true}});}
-export function trustedCapstoneInstruction(instruction,family){
-  return instruction?.detailStatus==='complete'
-    && instruction?.detailAvailable===true
-    && instruction?.decoderSemanticVersion==='capstone-5-x86-structured-v2'
-    && Number.isSafeInteger(Number(instruction?.instructionCode))
-    && Number(instruction.instructionCode)>0
-    && String(instruction?.opcodeName||'').toLowerCase()===family;
+export function trustedCapstoneInstruction(instruction,family,provenanceSource=instruction){
+  const source = provenanceSource ?? instruction;
+  const instructionCode = source?.instructionCode;
+  const opcodeName = source?.opcodeName;
+  return hasReceiverRevalidatedX86Row(source)
+    && typeof source?.detailStatus === 'string'
+    && source.detailStatus === 'complete'
+    && source?.detailAvailable === true
+    && source?.decoderSemanticVersion === 'capstone-5-x86-structured-v2'
+    && typeof instructionCode === 'number'
+    && Number.isSafeInteger(instructionCode)
+    && instructionCode > 0
+    && typeof opcodeName === 'string'
+    && opcodeName.toLowerCase() === family
+    && instruction?.detailStatus === 'complete'
+    && instruction?.detailAvailable === true
+    && instruction?.decoderSemanticVersion === 'capstone-5-x86-structured-v2';
 }
 export function physicalIds(register){if(!register)return[];if(Array.isArray(register.compositeParts))return register.compositeParts.map((part)=>part.physicalId);return register.physicalId?[register.physicalId]:[];}
