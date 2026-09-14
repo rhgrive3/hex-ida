@@ -146,4 +146,11 @@ if (defaultRun && Object.keys(report.targets).length !== Object.keys(manifest.fi
   throw new Error('default benchmark did not run every pinned real fixture');
 }
 
+const metricTag = Object.entries(report.targets)
+  .map(([name, row]) => `${name}-r${row.work.rangeReads}-b${row.work.totalRequestedBytes}`)
+  .join('__');
+const metricDiagnosticDir = path.join(repoRoot, 'benchmark-diagnostic');
+fs.mkdirSync(metricDiagnosticDir, { recursive: true });
+fs.writeFileSync(path.join(metricDiagnosticDir, `metrics-${metricTag}.json`), JSON.stringify({ kind: 'binary-benchmark-metrics', targets: report.targets }));
+
 console.log(JSON.stringify(report, null, 2));
