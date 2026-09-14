@@ -236,6 +236,10 @@ export class InstrumentationProvider {
     // instead of running the old unbounded recursion into a native stack overflow /
     // unbounded allocation outside events.maxBytes.
     const ingest = (raw, normalizerOptions = {}) => {
+      // #8891: a closing/closed session must not admit new events or mint runtime
+      // module/address authority from either the direct facet or a racing backend
+      // callback. Revocation is enforced before the normalizer or session.modules.
+      session.assertAdmissible();
       let ownedRaw;
       try {
         ownedRaw = materializeRuntimeEvent(raw, envelopeMaxBytes);
@@ -453,8 +457,8 @@ export class InstrumentationProvider {
         const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         return { result, intervention };
       },
-      getObjCRuntimeInfo: async (...args) => requiredMethod(this.backend, 'getObjCRuntimeInfo', 'Objective-C runtime metadata')(...args),
-      getSwiftRuntimeInfo: async (...args) => requiredMethod(this.backend, 'getSwiftRuntimeInfo', 'Swift runtime metadata')(...args),
+      getObjCRuntimeInfo: async (...args) => { session.assertAdmissible(); return requiredMethod(this.backend, 'getObjCRuntimeInfo', 'Objective-C runtime metadata')(...args); },
+      getSwiftRuntimeInfo: async (...args) => { session.assertAdmissible(); return requiredMethod(this.backend, 'getSwiftRuntimeInfo', 'Swift runtime metadata')(...args); },
       events: Object.freeze({
         // Direct facet ingress occurs synchronously at the current provider
         // boundary, so it may attest the current epoch for legacy callers.
