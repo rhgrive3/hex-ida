@@ -36,11 +36,12 @@ test('#8678: 2,499 sections sharing one 256 KiB sh_name decode it exactly once',
   assert.equal(metadata.complete, true);
   assert.deepEqual(metadata.reasons, []);
   // One shared offset = one scan and one retained string, not one per reference.
+  // Raw section-header admission is also charged before each object is built.
   assert.equal(metadata.used.stringBytes, shared.length * 2);
-  assert.equal(metadata.used.inputBytes, 262143 + 1);
-  assert.equal(metadata.used.records, 2);
-  // Two distinct offsets resolved (offset 0 is the canonical empty name).
-  assert.equal(metadata.used.estimatedHeapBytes, shared.length * 2 + 2 * 32);
+  assert.equal(metadata.used.inputBytes, 2500 * 64 + 262143 + 1);
+  assert.equal(metadata.used.records, 2500 + 2);
+  // 2,500 structural header objects plus two distinct resolved name offsets.
+  assert.equal(metadata.used.estimatedHeapBytes, 2500 * 384 + shared.length * 2 + 2 * 32);
 });
 
 test('#8678: the shared-name counterexample survives a 128 MiB heap', () => {
@@ -62,8 +63,8 @@ test('#8678: one repeated unterminated sh_name is scanned once and never publish
   assert.ok(names.every((name) => /^section_\d+$/.test(name)), 'no unterminated name may be published');
   assert.equal(new Set(names).size, 300);
   assert.equal(metadata.complete, true);
-  assert.equal(metadata.used.inputBytes, 65536 + 1);
-  assert.equal(metadata.used.records, 2);
+  assert.equal(metadata.used.inputBytes, 300 * 64 + 65536 + 1);
+  assert.equal(metadata.used.records, 300 + 2);
   assert.equal(metadata.used.stringBytes, 0);
 });
 
@@ -104,7 +105,7 @@ for (const bits of [32, 64]) {
       const { names, metadata } = summarize(bytes);
       assert.equal(names.filter((name) => name === 'A'.repeat(4096)).length, 39);
       assert.equal(metadata.used.stringBytes, 4096 * 2);
-      assert.equal(metadata.used.records, 2);
+      assert.equal(metadata.used.records, 40 + 2);
       assert.equal(metadata.complete, true);
     });
   }

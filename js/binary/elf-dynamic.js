@@ -114,15 +114,21 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   // and charge the decoded text against the caller's dynamic budget *before* the
   // string is retained, so repeated aliases cannot multiply heap (#8821).
   const dynamicStrings = new Map();
-  const stringAt = (offset, budget = null) => {
+  const stringAt = (offset, options = {}) => {
     if (strOff == null || strSize == null || !strSpan) return '';
+    const budget = options.budget || null;
     const n = Number(offset);
-    if (!Number.isSafeInteger(n) || n < 0 || n >= strSize || strOff + n >= strSpan.spanEnd) return '';
+    const inRange = Number.isSafeInteger(n) && n >= 0 && n < strSize && strOff + n < strSpan.spanEnd;
+    if (!inRange) {
+      if (n === 0 && options.allowZeroOffset) return '';
+      markDynamicPartial(image, 'dynamic string table reference is out of range');
+      return null;
+    }
     const cached = dynamicStrings.get(n);
     if (cached !== undefined) {
       if (budget && !cached.charged) {
+        if (!budget.claimString(cached.chars, `dynamic string at offset ${n}`)) return '';
         cached.charged = true;
-        budget.claimString(cached.chars, `dynamic string at offset ${n}`);
       }
       return cached.value;
     }
@@ -243,10 +249,11 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
     markDynamicPartial(image, `dynamic symbol count ${declaredSymbolCount} exceeds symbol record limit ${symbolBudget.limits.maxSymbolRecords}; clamped`);
   }
 
-  const versions = parseDynamicSymbolVersions(r, tags, image, symbolCount, (offset) => stringAt(offset, symbolBudget), { budget: symbolBudget });
+  const budgetedStringAt = (offset, options = {}) => stringAt(offset, { ...options, budget: symbolBudget });
+  const versions = parseDynamicSymbolVersions(r, tags, image, symbolCount, budgetedStringAt, { budget: symbolBudget });
   let symbols = [];
   if (!symbolBudget.stopped && opts.symbols !== false && symtab != null && symbolCount > 0) {
-    symbols = parseDynamicSymbols(r, image, bits, symtab, syment, symbolCount, (offset) => stringAt(offset, symbolBudget), tags, versions, symbolBudget);
+    symbols = parseDynamicSymbols(r, image, bits, symtab, syment, symbolCount, budgetedStringAt, tags, versions, symbolBudget);
   } else if (symtab != null && symbolCount > 0) {
     symbols = dynamicSymbolsFromImage(image, symbolCount);
   }
@@ -299,7 +306,7 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
       info = r.u8(p + 12); other = r.u8(p + 13); shndx = r.u16(p + 14);
     }
     if (budget && !budget.claimOutput(1, 224, 'DT_SYMTAB symbols')) break;
-    const name = stringAt(BigInt(nameOff));
+    const name = stringAt(BigInt(nameOff), { allowZeroOffset: i === 0 }) ?? '';
     const bind = info >>> 4;
     const type = info & 0xf;
     const sectionIdentity = resolveDynamicSectionIndex(r, image, tags, i, shndx);

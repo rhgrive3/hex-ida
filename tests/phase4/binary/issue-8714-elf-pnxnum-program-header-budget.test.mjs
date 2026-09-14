@@ -16,6 +16,7 @@ import { parseELF } from '../../../js/binary/elf.js';
 const PN_XNUM = 0xffff;
 const PHENTSIZE = 56;
 const PHOFF = 64;
+const SHENTSIZE = 64;
 
 function buildELF({ size, phnum, extendedPhnum = null, phent = PHENTSIZE, phoff = PHOFF }) {
   const bytes = new Uint8Array(size);
@@ -29,13 +30,13 @@ function buildELF({ size, phnum, extendedPhnum = null, phent = PHENTSIZE, phoff 
   u32(20, 1);
   u64(24, 0x401000);          // e_entry
   u64(32, phoff);             // e_phoff
-  const shoff = size - 64;
+  const shoff = size - SHENTSIZE;
   u64(40, shoff);
   u32(48, 0);
   u16(52, 64);                // e_ehsize
   u16(54, phent);             // e_phentsize
   u16(56, phnum);             // e_phnum
-  u16(58, 64);                // e_shentsize
+  u16(58, SHENTSIZE);         // e_shentsize
   u16(60, 1);                 // e_shnum
   u16(62, 0);                 // e_shstrndx
   // Section 0 is the canonical all-zero null section unless it carries the
@@ -62,15 +63,15 @@ test('#8714: a PN_XNUM count beyond the file is clamped to the readable prefix',
   assert.equal(metadata.complete, false);
   assert.ok(metadata.reasons.includes('program-headers:truncated'), JSON.stringify(metadata.reasons));
   assert.equal(expanded, capacity);
-  assert.equal(metadata.used.records, capacity);
-  assert.equal(metadata.used.objects, capacity);
-  assert.equal(metadata.used.inputBytes, capacity * PHENTSIZE);
+  assert.equal(metadata.used.records, capacity + 1);
+  assert.equal(metadata.used.objects, capacity + 1);
+  assert.equal(metadata.used.inputBytes, capacity * PHENTSIZE + SHENTSIZE);
   assert.equal(segments, 0);   // every readable entry is PT_NULL
 });
 
 test('#8714: program-header decoding is admitted through the metadata budget', () => {
   // 20,000 valid PT_NULL rows all fit the file, so only the budget may stop them.
-  const { bytes } = buildELF({ size: PHOFF + 20000 * PHENTSIZE + 64, phnum: PN_XNUM, extendedPhnum: 20000 });
+  const { bytes } = buildELF({ size: PHOFF + 20000 * PHENTSIZE + SHENTSIZE, phnum: PN_XNUM, extendedPhnum: 20000 });
   const { metadata, expanded } = summarize(bytes, { metadataLimits: { records: 500 } });
   assert.equal(metadata.complete, false);
   assert.ok(metadata.reasons.includes('budget:program-header:records'), JSON.stringify(metadata.reasons));
@@ -80,17 +81,17 @@ test('#8714: program-header decoding is admitted through the metadata budget', (
 });
 
 test('#8714: a truncated non-extended table is partial metadata, not silence', () => {
-  const { bytes } = buildELF({ size: PHOFF + 4 * PHENTSIZE + 64, phnum: 10 });
+  const { bytes } = buildELF({ size: PHOFF + 4 * PHENTSIZE + SHENTSIZE, phnum: 10 });
   const capacity = Math.floor((bytes.length - PHOFF) / PHENTSIZE);
   const { metadata, expanded } = summarize(bytes);
   assert.equal(metadata.complete, false);
   assert.ok(metadata.reasons.includes('program-headers:truncated'));
-  assert.equal(metadata.used.records, capacity);
+  assert.equal(metadata.used.records, capacity + 1);
   assert.equal(expanded, null);   // no PN_XNUM expansion happened, so nothing to publish
 });
 
 test('#8714: an in-file PN_XNUM table stays complete and reports its real count', () => {
-  const { bytes } = buildELF({ size: PHOFF + 1 * PHENTSIZE + 64, phnum: PN_XNUM, extendedPhnum: 1 });
+  const { bytes } = buildELF({ size: PHOFF + 1 * PHENTSIZE + SHENTSIZE, phnum: PN_XNUM, extendedPhnum: 1 });
   const { metadata, expanded } = summarize(bytes);
   assert.equal(expanded, 1);
   assert.equal(metadata.complete, true);
@@ -100,7 +101,7 @@ test('#8714: an in-file PN_XNUM table stays complete and reports its real count'
 test('#8714: an already-aborted signal consumes no header budget at all', () => {
   const controller = new AbortController();
   controller.abort();
-  const { bytes } = buildELF({ size: PHOFF + 100 * PHENTSIZE + 64, phnum: PN_XNUM, extendedPhnum: 100 });
+  const { bytes } = buildELF({ size: PHOFF + 100 * PHENTSIZE + SHENTSIZE, phnum: PN_XNUM, extendedPhnum: 100 });
   const { metadata, expanded, segments } = summarize(bytes, { signal: controller.signal });
   assert.equal(expanded, 0);
   assert.equal(segments, 0);
@@ -122,8 +123,8 @@ test('#8714: PT_LOAD mapping authority survives the budget admission', () => {
   view.setBigUint64(PHOFF + 48, 0x1000n, true);   // p_align
   const { metadata, segments } = summarize(bytes);
   assert.equal(segments, 1);
-  assert.equal(metadata.used.records, 3);
-  assert.equal(metadata.used.inputBytes, 3 * PHENTSIZE);
+  assert.equal(metadata.used.records, 3 + 1);
+  assert.equal(metadata.used.inputBytes, 3 * PHENTSIZE + SHENTSIZE);
   assert.equal(metadata.complete, true);
   assert.deepEqual(metadata.reasons, []);
 });

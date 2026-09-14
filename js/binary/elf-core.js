@@ -74,14 +74,12 @@ export function parseELF(input, options = {}) {
     },
   });
 
-  // Program headers and section names are both decoded before any bounded
-  // metadata work used to exist, so they must sit inside the same finite ELF
-  // metadata budget as the rest of the pass: an expanded `PN_XNUM` count or a
-  // table full of repeated `.shstrtab` offsets could otherwise materialize
-  // hundreds of MiB outside every limit (#8714, #8678).
+  // Program headers, raw section headers, and section names are all structural
+  // metadata fan-out and therefore share one finite budget. Admission must
+  // happen before materializing each header object (#8714).
   const metadataBudget = createELFMetadataBudget(image, { signal: options.signal, limits: options.metadataLimits });
   const programHeaders = parseProgramHeaders(r, h, image, bits, metadataBudget);
-  const rawSections = parseSectionHeaders(r, h, bits, image);
+  const rawSections = parseSectionHeaders(r, h, bits, image, metadataBudget);
   // Keep section-table presence separate from parse success. `[]` can mean a
   // genuinely sectionless ELF *or* a declared table that was truncated /
   // invalid; PT_DYNAMIC symbol authority must not conflate those cases (#4197).
@@ -466,7 +464,7 @@ function parseProgramHeaders(r, h, image, bits, budget) {
   return out;
 }
 
-function parseSectionHeaders(r, h, bits, image) {
+function parseSectionHeaders(r, h, bits, image, budget) {
   const off = safeOffset(h.shoff);
   let count = h.shnum;
   if (off == null) { image.warnings.push('ELF section header offset is not safely representable'); return []; }
@@ -476,6 +474,7 @@ function parseSectionHeaders(r, h, bits, image) {
   if (count > 100000 || off + count * h.shentsize > r.length) { image.warnings.push(`invalid ELF section count ${count}`); return []; }
   const out = [];
   for (let i = 0; i < count; i++) {
+    if (!budget.take({ inputBytes: h.shentsize, records: 1, objects: 1, operations: 6, estimatedHeapBytes: 384 }, 'section-header')) break;
     const p = off + i * h.shentsize;
     if (bits === 64) {
       out.push({ index: i, nameOffset: r.u32(p), type: r.u32(p + 4), flags: r.u64(p + 8), addr: r.u64(p + 16), offset: r.u64(p + 24), size: r.u64(p + 32), link: r.u32(p + 40), info: r.u32(p + 44), addralign: r.u64(p + 48), entsize: r.u64(p + 56), name: '' });
