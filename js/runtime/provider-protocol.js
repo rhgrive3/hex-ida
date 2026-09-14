@@ -1,5 +1,5 @@
 import { DebugAdapterError, boundedInteger } from '../debug/adapter.js';
-import { decodeWireValue, encodeWireValue } from '../debug/remote-protocol.js';
+import { assertWireBytesAtMost, decodeWireValue, encodeWireValue } from '../debug/remote-protocol.js';
 import { RUNTIME_FACETS } from './provider.js';
 import { createRuntimeEventBatch } from './events.js';
 
@@ -10,6 +10,8 @@ const TYPES = new Set(['hello', 'hello-ack', 'request', 'response', 'event-batch
 const METHOD_NAMESPACE = /^(runtime\.(session|target|events)\.|debugger\.|instrumentation\.|trace\.|emulator\.)[a-zA-Z0-9_.:-]+$/;
 const BLOCKED_METHODS = /(^|\.)(exec|shell|spawn|system|hostCommand|runCommand)(\.|$)/i;
 const MAX_PACKET_BYTES = 1024 * 1024;
+// #8654: same rationale as `PACKET_PRE_ADMISSION_LIMIT` in remote-protocol.js.
+const PACKET_PRE_ADMISSION_LIMIT = MAX_PACKET_BYTES + (MAX_PACKET_BYTES >> 3);
 
 function byteSize(value) {
   const json = JSON.stringify(encodeWireValue(value));
@@ -98,6 +100,12 @@ function requestSignal(value) {
 
 export function validateProviderPacket(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new DebugAdapterError('malformed-provider-data', 'provider packet must be an object');
+  // #8654: the `encodeWireValue → decodeWireValue → JSON.stringify` pipeline
+  // below fully materializes the input graph *twice* before the 1 MiB check
+  // ever fires. Bound the aggregate byte size of the untrusted input at
+  // ingress so a rejected provider packet cannot force the receiver to
+  // allocate and traverse it first.
+  assertWireBytesAtMost(input, PACKET_PRE_ADMISSION_LIMIT, 'resource-limit', 'runtime provider packet exceeds 1 MiB');
   const packet = decodeWireValue(encodeWireValue(input));
   if (packet.protocol !== RUNTIME_PROVIDER_PROTOCOL) throw new DebugAdapterError('protocol-mismatch', 'invalid runtime provider protocol identity');
   if (packet.version !== RUNTIME_PROVIDER_PROTOCOL_VERSION) throw new DebugAdapterError('protocol-mismatch', `unsupported runtime provider protocol version: ${packet.version}`);
