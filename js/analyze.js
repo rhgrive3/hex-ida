@@ -139,7 +139,7 @@ function destIndex(mn) {
   if (ATOMIC_SOURCE_RESULT_RE.test(b)) return 1;
   // Without-return LSE aliases discard the loaded value, so operand 0 is a
   // source read and there is no destination register (#3702).
-  if (ATOMIC_STORE_ONLY_RE.test(b)) return -1;
+  if (ATOMIC_WITHOUT_RETURN_RE.test(b)) return -1;
   if (/^(str|stp|stur|strb|strh|sturb|sturh|stnp|sttr|st1|st2|st3|st4|stlr)/.test(b)) return -1;
   // Full-mnemonic matching only: a bare `b` alternative here also prefix-matched
   // every `b*` mnemonic with a destination register (bic/bfi/bfm/...), so their
@@ -262,7 +262,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
 
       const di = destIndex(mn);
       const destReg = di >= 0 && ops[di]?.k === 'reg' && ops[di]?.cls === 'gp' ? ops[di].num : null;
-      const pairDestReg = (/^(ldp|ldpsw|ldnp)$/.test(b) || ATOMIC_PAIR_READ_WRITE_DEST_RE.test(b)) && ops[1]?.k === 'reg' && ops[1]?.cls === 'gp'
+      const pairDestReg = (/^(ldp|ldpsw|ldnp|ldxp|ldaxp)$/.test(b) || ATOMIC_PAIR_READ_WRITE_DEST_RE.test(b)) && ops[1]?.k === 'reg' && ops[1]?.cls === 'gp'
         ? ops[1].num
         : null;
       const reads = new Set();
