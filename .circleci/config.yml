@@ -484,7 +484,7 @@ jobs:
             status=$?
             set -e
             if [ "$status" -ne 0 ]; then
-              failures="$(grep '^FAIL ' benchmark-compare.txt | sed -E 's/^FAIL ([^:]+).*/\\1/' | tr -cd '[:alnum:]_.-')"
+              failures="$(grep '^FAIL ' benchmark-compare.txt | sed -E 's/^FAIL ([^:]+).*/\\1/' | tr -cd '[:alnum:]_.-' || true)"
               mkdir -p benchmark-diagnostic
               touch "benchmark-diagnostic/compare-${failures:-unknown}.json"
             fi
