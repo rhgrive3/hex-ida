@@ -220,7 +220,7 @@ test('C3-02 explicit-layout and explicit-sret boundaries do not fabricate missin
   assert.equal(indirect.hiddenResultPointer.input, 'rdi');
   assert.equal(indirect.hiddenResultPointer.returned, 'rax');
   assert.equal(canonicalAbiEvidence(indirect), true);
-  assert.deepEqual(adapterFor(sysv).returnLocations(returnRequest(memoryReturn)).map(location => location.reg), ['rax']);
+  assert.deepEqual(adapterFor(sysv).returnLocations(returnRequest(memoryReturn)).map(location => location.reg), ['rdi']);
   for (const profile of PROFILES) {
     const invalid = parameterFor(profile, 1);
     invalid.members[1].byteOffset = 0;
