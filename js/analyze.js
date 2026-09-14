@@ -101,7 +101,7 @@ async function awaitAbortable(operation, signal) {
 const ATOMIC_SOURCE_RESULT_RE = /^(?:swp|ld(?:add|set|clr|eor|smax|smin|umax|umin))(?:al|a|l)?(?:b|h)?$/;
 // Without-return aliases (`LD<op> <Ws>, WZR, [<Xn>]`) have no GPR result, so the
 // lone register operand is a source read rather than a destination (#3702).
-const ATOMIC_STORE_ONLY_RE = /^st(?:add|clr|eor|set|smax|smin|umax|umin)l?(?:b|h)?$/;
+const ATOMIC_WITHOUT_RETURN_RE = /^st(?:add|clr|eor|set|smax|smin|umax|umin)(?:al|a|l)?(?:b|h)?$/;
 // Mnemonics without a writable destination register. Matched as whole words so
 // that e.g. `bic` is not swallowed by `b` (#2188).
 const NO_DEST_MNEMONICS = new Set([
@@ -310,7 +310,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         } else res.indirectCalls++;
         // AAPCS64 calls may clobber x0-x18; BL/BLR also overwrite LR/x30.
         // Keep x19-x29 provenance because those registers are callee-saved.
-        for (let r = 0; r <= 18; r++) pageOf.delete(r);
+        for (let r = 0; r <= 18; r++) { pageOf.delete(r); written.add(r); }
         pageOf.delete(30);
       } else if (isReturn(b)) {
         res.returns++;
