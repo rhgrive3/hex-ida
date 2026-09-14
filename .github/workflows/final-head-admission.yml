@@ -37,7 +37,7 @@ on:
       - UI regression
       - Universal binary platform
       - ChatGPT userscript host
-    types: [completed]
+    types: [in_progress, completed]
   workflow_dispatch:
     inputs:
       pr_number:

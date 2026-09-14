@@ -143,6 +143,24 @@ const resilienceFailure = check({
 assert.deepEqual(admissionAuthorityCheckRuns([resilienceFailure]), [resilienceFailure]);
 assert.equal(evaluate([resilienceFailure]).state, 'failure');
 
+// A same-HEAD rerun must invalidate a previously green admission as soon as
+// the authoritative workflow enters in_progress, before completion. GitHub
+// Actions does not emit check_run workflow events for its own checks, so the
+// workflow_run in_progress event is the scheduling edge that closes this gap.
+const fastCompleted = check({ name: 'fast', appSlug: 'github-actions' });
+const fastRerunInProgress = check({
+  name: 'fast',
+  appSlug: 'github-actions',
+  conclusion: null,
+  status: 'in_progress',
+});
+assert.equal(evaluate([fastCompleted]).state, 'success');
+assert.equal(evaluate([fastRerunInProgress]).state, 'pending');
+assert.notEqual(
+  admissionEvidenceRevision(evidence([fastCompleted])),
+  admissionEvidenceRevision(evidence([fastRerunInProgress])),
+);
+
 // Workflow display names are scheduling identities, not check-run identities;
 // they must not accidentally remain in the authority-name denominator.
 for (const [, workflowName, jobs] of workflowCheckContracts) {
@@ -180,6 +198,7 @@ const workflowSource = fs.readFileSync(
 );
 assert.match(workflowSource, /check_run:\s*\n\s*types: \[created, rerequested, completed, requested_action\]/);
 assert.match(workflowSource, /workflow_run:\s*\n\s*workflows:\s*\n\s*- PR fast gate/);
+assert.match(workflowSource, /workflow_run:[\s\S]*?\n\s*types: \[in_progress, completed\]/);
 assert.match(workflowSource, /context\.eventName === 'check_run'/);
 assert.match(workflowSource, /github\.event\.check_run\.head_sha/);
 assert.match(workflowSource, /required_review_thread_resolution/);
