@@ -4,7 +4,7 @@ import {
 } from './registry.js';
 import { AAPCS64_ABI, AAPCS64_ILP32_ABI } from './aapcs64.js';
 import { DARWIN_ARM64_ABI } from './darwin-arm64.js';
-import { SYSV_AMD64_ABI } from './sysv-amd64.js';
+import { SYSV_AMD64_ABI, SYSV_AMD64_ILP32_ABI } from './sysv-amd64.js';
 import { MICROSOFT_X64_ABI } from './microsoft-x64.js';
 import { MICROSOFT_VECTORCALL_ABI } from './microsoft-vectorcall.js';
 import { RISCV_LP64_ABI, RISCV_LP64F_ABI, RISCV_LP64D_ABI } from './riscv-lp64.js';
@@ -28,6 +28,7 @@ registerABIPlugin(DARWIN_ARM64_ABI);
 registerABIPlugin(AAPCS64_ABI);
 registerABIPlugin(AAPCS64_ILP32_ABI);
 registerABIPlugin(SYSV_AMD64_ABI);
+registerABIPlugin(SYSV_AMD64_ILP32_ABI);
 registerABIPlugin(MICROSOFT_X64_ABI);
 registerABIPlugin(MICROSOFT_VECTORCALL_ABI);
 registerABIPlugin(RISCV_LP64_ABI);
@@ -80,6 +81,19 @@ export function resolveABIPlugin(target = {}, { legacyDefault = false } = {}) {
   if (arch === 'arm64' && isIlp32) {
     return findABIPlugin({
       id: 'aapcs64-ilp32',
+      callingConvention,
+      architecture: arch,
+      platform: target?.platformId || target?.platform || target?.os,
+    }) || UNKNOWN_ABI;
+  }
+  // x86-64 ILP32 ("x32"): the loader already proved ELFCLASS32 + EM_X86_64 with
+  // pointerBits=32/dataModel=ilp32, so selecting the LP64 sysv-amd64 plugin would
+  // publish 64-bit pointer/long ABI facts against a 32-bit data model (#8885).
+  // Bind the ILP32 profile while keeping the AMD64 physical carrier. An explicit
+  // abiId:'sysv-amd64' above still resolves to LP64 exactly.
+  if (arch === 'x86_64' && isIlp32) {
+    return findABIPlugin({
+      id: 'sysv-amd64-ilp32',
       callingConvention,
       architecture: arch,
       platform: target?.platformId || target?.platform || target?.os,
