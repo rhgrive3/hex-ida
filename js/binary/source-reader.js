@@ -28,26 +28,13 @@ export class SparseByteBuffer {
     this.chunks = [];
   }
 
-  #firstChunkWithEndAfter(position) {
-    let lo = 0;
-    let hi = this.chunks.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (this.chunks[mid].end <= position) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo;
-  }
-
   additionalBytes(offset, length) {
     const start = nonNegativeBigInt(offset, 'cached range offset');
     const count = nonNegativeBigInt(length, 'cached range length');
     const end = start + count;
     if (end > this.size) throw new BinaryReadError('cached range exceeds source', start);
     let overlap = 0n;
-    for (let i = this.#firstChunkWithEndAfter(start); i < this.chunks.length; i++) {
-      const chunk = this.chunks[i];
-      if (chunk.start >= end) break;
+    for (const chunk of this.chunks) {
       const lo = chunk.start > start ? chunk.start : start;
       const hi = chunk.end < end ? chunk.end : end;
       if (hi > lo) overlap += hi - lo;
@@ -63,22 +50,22 @@ export class SparseByteBuffer {
     if (!bytes.length) return 0;
     const added = this.additionalBytes(start, bytes.length);
     let mergeStart = start, mergeEnd = end;
-    const first = this.#firstChunkWithEndAfter(start);
-    const keep = this.chunks.slice(0, first);
+    const keep = [];
     const merge = [];
-    let cursor = first;
-    for (; cursor < this.chunks.length; cursor++) {
-      const chunk = this.chunks[cursor];
-      if (chunk.start >= end) break;
-      merge.push(chunk);
-      if (chunk.start < mergeStart) mergeStart = chunk.start;
-      if (chunk.end > mergeEnd) mergeEnd = chunk.end;
+    for (const chunk of this.chunks) {
+      if (chunk.end <= start || chunk.start >= end) keep.push(chunk);
+      else {
+        merge.push(chunk);
+        if (chunk.start < mergeStart) mergeStart = chunk.start;
+        if (chunk.end > mergeEnd) mergeEnd = chunk.end;
+      }
     }
     const mergedLength = safeNumber(mergeEnd - mergeStart, 'merged cached range');
     const merged = new Uint8Array(mergedLength);
     for (const chunk of merge) merged.set(chunk.bytes, safeNumber(chunk.start - mergeStart, 'cached chunk offset'));
     merged.set(bytes, safeNumber(start - mergeStart, 'cached input offset'));
-    keep.push({ start: mergeStart, end: mergeEnd, bytes: merged }, ...this.chunks.slice(cursor));
+    keep.push({ start: mergeStart, end: mergeEnd, bytes: merged });
+    keep.sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : 0);
     this.chunks = keep;
     return added;
   }
@@ -90,8 +77,8 @@ export class SparseByteBuffer {
     const size = safeNumber(finish - begin, 'cached read length');
     if (!size) return new Uint8Array();
     let cursor = begin;
-    for (let i = this.#firstChunkWithEndAfter(begin); i < this.chunks.length; i++) {
-      const chunk = this.chunks[i];
+    for (const chunk of this.chunks) {
+      if (chunk.end <= cursor) continue;
       if (chunk.start > cursor) throw new SourceRangeMissingError(cursor, finish - cursor);
       cursor = finish < chunk.end ? finish : chunk.end;
       if (cursor === finish) break;
@@ -99,8 +86,8 @@ export class SparseByteBuffer {
     if (cursor !== finish) throw new SourceRangeMissingError(cursor, finish - cursor);
     const out = new Uint8Array(size);
     cursor = begin;
-    for (let i = this.#firstChunkWithEndAfter(begin); i < this.chunks.length; i++) {
-      const chunk = this.chunks[i];
+    for (const chunk of this.chunks) {
+      if (chunk.end <= cursor) continue;
       const takeEnd = finish < chunk.end ? finish : chunk.end;
       const from = safeNumber(cursor - chunk.start, 'cached chunk read offset');
       const to = safeNumber(takeEnd - chunk.start, 'cached chunk read end');
@@ -123,8 +110,8 @@ export class SparseByteBuffer {
     if (finish < begin || finish > this.size) throw new BinaryReadError('read outside file', begin);
     const spans = [];
     let cursor = begin;
-    for (let i = this.#firstChunkWithEndAfter(begin); i < this.chunks.length; i++) {
-      const chunk = this.chunks[i];
+    for (const chunk of this.chunks) {
+      if (chunk.end <= cursor) continue;
       // A chunk beyond the requested range still proves [cursor, finish) is
       // a single gap: stop here and let the post-loop push it exactly once.
       if (chunk.start >= finish) break;
@@ -149,7 +136,6 @@ export async function parseSourceRanges(source, parser, parserOptions = {}, opti
   if (!Number.isSafeInteger(maxCachedBytes) || maxCachedBytes <= 0) throw new ByteSourceLimitError('maxCachedBytes must be a positive safe integer');
   if (!Number.isSafeInteger(maxReads) || maxReads <= 0) throw new ByteSourceLimitError('maxReads must be a positive safe integer');
   const sparse = new SparseByteBuffer(source.size);
-  sparse.readAheadSize = Math.min(maxPageSize, Math.max(pageSize, 128 * 1024));
   let reads = 0;
   let parserPasses = 0;
   let cachedBytes = 0;
@@ -191,11 +177,8 @@ export async function parseSourceRanges(source, parser, parserOptions = {}, opti
       for (const span of spans) {
         let cursor = span.start;
         while (cursor < span.end) {
-          const nextMissing = sparse.missingSpans(cursor, span.end)[0];
-          if (!nextMissing) break;
-          cursor = nextMissing.start;
           throwIfSourceAborted(options.signal);
-          if (++reads > maxReads) throw new ByteSourceLimitError(`maxReads=${maxReads} cursor=${cursor} spanStart=${span.start} spanEnd=${span.end} pass=${parserPasses} cached=${cachedBytes}`);
+          if (++reads > maxReads) throw new ByteSourceLimitError(`binary metadata required more than ${maxReads} range reads`);
           const remaining = source.size - cursor;
           const budgetRemaining = maxCachedBytes - cachedBytes;
           if (budgetRemaining <= 0) throw new ByteSourceLimitError(`binary metadata exceeds the ${maxCachedBytes}-byte cache limit`);
@@ -205,9 +188,8 @@ export async function parseSourceRanges(source, parser, parserOptions = {}, opti
           const wantedByParser = missing > BigInt(maxPageSize) ? maxPageSize : safeNumber(missing, 'missing source range length');
           const requested = Math.max(pageSize, adaptive, wantedByParser);
           const requestLimit = Math.min(requested, maxPageSize, source.maxReadLength, budgetRemaining);
-          // A one-byte parser miss still gets a bounded read-ahead window.
-          // The cache tracks the requested gap separately, so extending the
-          // source read cannot change parser semantics and avoids one-read-per-byte storms.
+          // Keep the range bounded by the source and request limit while allowing
+          // a one-byte parser miss to pull a bounded read-ahead window.
           const availableRemaining = source.size - cursor;
           const length = Number(availableRemaining < BigInt(requestLimit) ? availableRemaining : BigInt(requestLimit));
           if (length <= 0) throw new ByteSourceLimitError(`binary metadata exceeds the ${maxCachedBytes}-byte cache limit`);
