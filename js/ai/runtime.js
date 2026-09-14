@@ -10,6 +10,7 @@ import { InvestigationSessionStore, isValidSessionId } from './session-core/inde
 import { sanitizeActions, addressText, validateSchema } from './validation.js';
 import { executeTurn } from './control/turn-executor.js';
 import { addressExistsAsync, assertLiveBindingsUnchanged, defaultMonotonicNow, deterministicConfidence, fallbackEvidence, presentAnswer } from './control/runtime-support.js';
+import { canonicalBindingId } from './control/snapshot.js';
 
 const BUDGET_LIMIT_REASONS = new Set([
   'budget_exhausted',
@@ -240,8 +241,8 @@ export function createAIRuntime(options) { return new AIRuntime(options); }
 
 function proposalBinding(context) {
   return {
-    binaryId: context?.binaryId == null ? null : String(context.binaryId),
-    projectId: context?.projectId == null ? null : String(context.projectId),
-    runtimeSessionId: context?.runtimeSessionId == null ? null : String(context.runtimeSessionId),
+    binaryId: canonicalBindingId(context?.binaryId),
+    projectId: canonicalBindingId(context?.projectId),
+    runtimeSessionId: canonicalBindingId(context?.runtimeSessionId),
   };
 }
