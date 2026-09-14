@@ -38,9 +38,12 @@ function fallbackClone(value, seen = new WeakMap(), depth = 0) {
     return copy;
   }
   if (ArrayBuffer.isView(value)) {
-    const buffer = fallbackClone(value.buffer, seen, depth + 1);
-    const copy = value instanceof DataView
-      ? new DataView(buffer, value.byteOffset, value.byteLength)
+    const dataView = dataViewMeta(value);
+    const backing = dataView?.buffer ?? viewBackingBuffer(value);
+    if (backing == null) throw new TypeError('plugin snapshot view backing is invalid');
+    const buffer = fallbackClone(backing, seen, depth + 1);
+    const copy = dataView != null
+      ? new DataView(buffer, dataView.byteOffset, dataView.byteLength)
       : new value.constructor(buffer, value.byteOffset, value.length);
     seen.set(value, copy);
     return copy;
@@ -54,12 +57,53 @@ function fallbackClone(value, seen = new WeakMap(), depth = 0) {
 }
 
 const SHARED_ARRAY_BUFFER_CTOR = typeof SharedArrayBuffer === 'function' ? SharedArrayBuffer : null;
+const SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER = SHARED_ARRAY_BUFFER_CTOR == null
+  ? null
+  : Object.getOwnPropertyDescriptor(SHARED_ARRAY_BUFFER_CTOR.prototype, 'byteLength')?.get ?? null;
+const TYPED_ARRAY_BUFFER_GETTER = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype),
+  'buffer',
+)?.get;
+const DATA_VIEW_BUFFER_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer')?.get;
+const DATA_VIEW_BYTE_OFFSET_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteOffset')?.get;
+const DATA_VIEW_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteLength')?.get;
+
 function isSharedBuffer(value) {
-  return SHARED_ARRAY_BUFFER_CTOR != null && value instanceof SHARED_ARRAY_BUFFER_CTOR;
+  if (typeof SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER !== 'function' || value == null || typeof value !== 'object') return false;
+  try {
+    SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER.call(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function viewBackingBuffer(value) {
+  if (typeof TYPED_ARRAY_BUFFER_GETTER === 'function') {
+    try { return TYPED_ARRAY_BUFFER_GETTER.call(value); } catch {}
+  }
+  if (typeof DATA_VIEW_BUFFER_GETTER === 'function') {
+    try { return DATA_VIEW_BUFFER_GETTER.call(value); } catch {}
+  }
+  return null;
+}
+function dataViewMeta(value) {
+  if (typeof DATA_VIEW_BUFFER_GETTER !== 'function'
+    || typeof DATA_VIEW_BYTE_OFFSET_GETTER !== 'function'
+    || typeof DATA_VIEW_BYTE_LENGTH_GETTER !== 'function') return null;
+  try {
+    return {
+      buffer: DATA_VIEW_BUFFER_GETTER.call(value),
+      byteOffset: DATA_VIEW_BYTE_OFFSET_GETTER.call(value),
+      byteLength: DATA_VIEW_BYTE_LENGTH_GETTER.call(value),
+    };
+  } catch {
+    return null;
+  }
 }
 function detachSharedBuffer(buffer) {
-  const copy = new ArrayBuffer(buffer.byteLength);
-  new Uint8Array(copy).set(new Uint8Array(buffer, 0, buffer.byteLength));
+  const byteLength = SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER.call(buffer);
+  const copy = new ArrayBuffer(byteLength);
+  new Uint8Array(copy).set(new Uint8Array(buffer, 0, byteLength));
   return copy;
 }
 
@@ -69,8 +113,8 @@ function detachSharedBuffer(buffer) {
 function containsSharedBuffer(value, seen = new WeakSet()) {
   if (value == null || typeof value !== 'object') return false;
   if (SHARED_ARRAY_BUFFER_CTOR == null) return false;
-  if (value instanceof SHARED_ARRAY_BUFFER_CTOR) return true;
-  if (ArrayBuffer.isView(value)) return value.buffer instanceof SHARED_ARRAY_BUFFER_CTOR;
+  if (isSharedBuffer(value)) return true;
+  if (ArrayBuffer.isView(value)) return isSharedBuffer(viewBackingBuffer(value));
   if (value instanceof ArrayBuffer) return false;
   if (seen.has(value)) return false;
   seen.add(value);
