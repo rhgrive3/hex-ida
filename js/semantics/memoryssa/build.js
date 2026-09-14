@@ -567,6 +567,31 @@ function nodesByIdForStack(irFunction) {
   return new Map((irFunction.nodes ?? []).map((node) => [String(node.id), node]));
 }
 
+function stackAddressPublishedBeforeCall(node, orderedNodes, stackValues) {
+  const callIndex = orderedNodes.findIndex((candidate) => candidate === node);
+  if (callIndex < 0) return true;
+  const stores = (upstream) => {
+    const list = [
+      ...(upstream.kind === 'store' ? [{ addressValueId: memoryAddressExpr(upstream.memory)?.valueId ?? upstream.inputs?.[0], storedValueId: upstream.inputs?.[1] }] : []),
+      ...(upstream.intrinsic?.memoryWrite?.accesses ?? []).map((access) => ({
+        addressValueId: access.addressExpr?.valueId,
+        storedValueId: access.valueId ?? null,
+      })),
+    ];
+    return list;
+  };
+  for (let index = 0; index < callIndex; index++) {
+    const upstream = orderedNodes[index];
+    if (!upstream) continue;
+    for (const store of stores(upstream)) {
+      const stored = store.storedValueId;
+      if (stored == null || !stackValues.derives(stored)) continue;
+      if (!stackValues.derives(store.addressValueId)) return true;
+    }
+  }
+  return false;
+}
+
 function discoverDescriptors(irFunction, cfg, options, fallbackRegion, orderedNodes = null) {
   const descriptors = [];
   const readsByNode = new Map();
@@ -615,7 +640,8 @@ function discoverDescriptors(irFunction, cfg, options, fallbackRegion, orderedNo
         && (descriptor.sourceKind === 'call'
           || (descriptor.sourceKind === 'unknown-memory-effect' && descriptor.node?.kind === 'call'))
         && !stackValues.nodeHasStackDerivedArgument(descriptor.node)
-        && !callMayExposeStackAddress(descriptor.node, nodes, irFunction, stackValues)) {
+        && !callMayExposeStackAddress(descriptor.node, nodes, irFunction, stackValues)
+        && !stackAddressPublishedBeforeCall(descriptor.node, nodes, stackValues)) {
       descriptor.noEscapeStack = true;
     }
   }

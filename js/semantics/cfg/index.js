@@ -184,12 +184,10 @@ export function predecessorsOf(cfg, blockId) {
   return block ? block.predecessors.slice() : [];
 }
 
-export function reachableBlocks(cfg, startBlockId = cfg.entryBlockId, options = {}) {
-  assertNotAborted(options);
+function reachableBlocksWithTick(cfg, startBlockId, tick) {
   const byId = cfgIndex(cfg);
   const start = String(startBlockId);
   if (!byId.has(start)) fail('semantic-cfg-invalid-reachability-start');
-  const tick = workCounter(options);
   const seen = new Set();
   const stack = [start];
   while (stack.length) {
@@ -203,9 +201,13 @@ export function reachableBlocks(cfg, startBlockId = cfg.entryBlockId, options = 
   return Object.freeze([...seen].sort());
 }
 
-function reversePostOrder(cfg, options = {}) {
+export function reachableBlocks(cfg, startBlockId = cfg.entryBlockId, options = {}) {
+  assertNotAborted(options);
+  return reachableBlocksWithTick(cfg, startBlockId, workCounter(options));
+}
+
+function reversePostOrderWithTick(cfg, tick) {
   const byId = cfgIndex(cfg);
-  const tick = workCounter(options);
   const seen = new Set([cfg.entryBlockId]);
   const post = [];
   const stack = [{
@@ -233,6 +235,11 @@ function reversePostOrder(cfg, options = {}) {
   return post.reverse();
 }
 
+function reversePostOrder(cfg, options = {}) {
+  assertNotAborted(options);
+  return reversePostOrderWithTick(cfg, workCounter(options));
+}
+
 export function deterministicTraversal(cfg, options = {}) {
   const rpo = reversePostOrder(cfg, options);
   const seen = new Set(rpo);
@@ -253,8 +260,8 @@ export function analyzeSemanticDominance(cfg, options = {}) {
   assertNotAborted(options);
   const tick = workCounter(options);
   const byId = cfgIndex(cfg);
-  const reachable = new Set(reachableBlocks(cfg, cfg.entryBlockId, options));
-  const rpo = reversePostOrder(cfg, options);
+  const reachable = new Set(reachableBlocksWithTick(cfg, cfg.entryBlockId, tick));
+  const rpo = reversePostOrderWithTick(cfg, tick);
   const allReachable = new Set(rpo);
   const dom = new Map();
   for (const block of cfg.blocks) {
