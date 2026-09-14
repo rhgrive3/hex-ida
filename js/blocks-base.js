@@ -1056,6 +1056,7 @@ export function analyzeDataFlow(insns, opts) {
         [ev(name ? 'call-named' : 'call-unknown', insn.row, { name, api: api ? api.id : null })], insn.row);
       set('x0', ret);
       flow('call->reg', insn.row, name || 'call', 'x0', ret);
+      for (let a = 0; a <= 7; a++) written.add('x' + a);
       markWritten(insn, written);
       continue;
     }
