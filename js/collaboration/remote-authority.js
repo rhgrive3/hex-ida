@@ -1,6 +1,6 @@
 import { deepFreeze, jsonSafe } from '../core/identity/index.js';
 import { isValidatedStage2CapabilityProof } from '../platform/stage2-profile-evidence.js';
-import { CHANGELOG_SCHEMA_VERSION, ChangeLog, collaborationDigest, createProjectOperation, canonicalizeProjectOperation, isCanonicalProjectOperation } from './index.js';
+import { CHANGELOG_SCHEMA_VERSION, ChangeLog, IMMUTABLE_BYTES_MARKER, collaborationDigest, createProjectOperation, canonicalizeProjectOperation, isCanonicalProjectOperation } from './index.js';
 import { applyRemoteEnvelopeQueued } from './remote-delivery.js';
 
 export const REMOTE_COLLAB_SCHEMA = 'hex-remote-collaboration-envelope/v1';
@@ -115,6 +115,8 @@ export function containsRawBinaryBytes(value, depth = 0, seen = new WeakSet()) {
   try {
     if (isSharedMemory(value) || ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return true;
     if (value.__binaryByteBacking === true) return true;
+    // #8869 canonical binary records still commit to raw byte content.
+    if (value[IMMUTABLE_BYTES_MARKER] !== undefined) return true;
     if (depth > SNAPSHOT_SCAN_DEPTH_LIMIT) return true;
     if (seen.has(value)) return false;
     seen.add(value);
@@ -254,6 +256,12 @@ function preflightMeasure(value, depth, state, inOperations) {
     const backing = ownEnumerableEntry(value, '__binaryByteBacking');
     if (backing.kind === 'accessor') return preflightStop(state, 'accessor');
     if (inOperations && backing.kind === 'data' && backing.value === true && state.rawEgressGuard) {
+      return preflightStop(state, 'raw-binary');
+    }
+    // #8869 canonical binary records commit to raw byte content as well.
+    const canonicalBytes = ownEnumerableEntry(value, IMMUTABLE_BYTES_MARKER);
+    if (canonicalBytes.kind === 'accessor') return preflightStop(state, 'accessor');
+    if (inOperations && canonicalBytes.kind === 'data' && canonicalBytes.value !== undefined && state.rawEgressGuard) {
       return preflightStop(state, 'raw-binary');
     }
     state.path.push(value);

@@ -92,6 +92,83 @@ function list(value) {
   return [...new Set(value.map((parent) => required(parent, 'operation-causal-parent-invalid')))].sort();
 }
 function factKey(target, kind) { return `${target}\u0000${kind}`; }
+
+// #8869 — a canonical operation ID commits to semantic content, so every stored
+// field must be immutable for the object's lifetime. `deepFreeze()` cannot freeze
+// binary views/buffers, Map/Set-style collections, Dates, or RegExps, so those
+// leaves are re-encoded into owned immutable canonical records *before* the
+// generated ID is computed. JSON-safe payloads keep their existing identity.
+export const IMMUTABLE_BYTES_MARKER = '$immutableBytes';
+const IMMUTABLE_DATE_MARKER = '$immutableDate';
+const IMMUTABLE_REGEXP_MARKER = '$immutableRegExp';
+const IMMUTABLE_COLLECTION_MARKER = '$immutableCollection';
+const MUTABLE_COLLECTION_REASON = 'operation-mutable-collection-forbidden';
+const INVALID_DATE_REASON = 'identity-invalid-date';
+
+function isMutableCollectionView(value) {
+  if (value instanceof WeakMap || value instanceof WeakSet) return true;
+  try { Map.prototype.has.call(value, undefined); return true; } catch { }
+  try { Set.prototype.has.call(value, undefined); return true; } catch { return false; }
+}
+
+function internalClassOf(value) { return Object.prototype.toString.call(value).slice(8, -1); }
+
+function immutableBytesRecord(value) {
+  const bytes = ArrayBuffer.isView(value)
+    ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+    : new Uint8Array(value);
+  return { [IMMUTABLE_BYTES_MARKER]: { type: internalClassOf(value), bytes: Array.from(bytes) } };
+}
+
+// Map/Set identity stays order-insensitive exactly like the existing canonical
+// digest entries, but the published record can no longer be mutated in place.
+function immutableCollectionRecord(kind, entries) {
+  const canonical = entries.map((entry) => entry.map((item) => canonicalImmutableContent(item, [])));
+  canonical.sort((left, right) => {
+    const a = stableStringify(left);
+    const b = stableStringify(right);
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+  return { [IMMUTABLE_COLLECTION_MARKER]: { kind, entries: canonical } };
+}
+
+function canonicalImmutableContent(value, path = []) {
+  if (value === null) return null;
+  const type = typeof value;
+  if (type !== 'object') {
+    // Functions and symbols cannot be cloned into an owned canonical record and
+    // must not be laundered into a digest-invisible null.
+    if (type === 'function' || type === 'symbol') throw new TypeError('operation-payload-type-unsupported');
+    return value;
+  }
+  if (path.includes(value)) throw new TypeError('operation-payload-cyclic');
+  const classOf = internalClassOf(value);
+  if (ArrayBuffer.isView(value) || classOf === 'ArrayBuffer' || classOf === 'SharedArrayBuffer') {
+    return immutableBytesRecord(value);
+  }
+  if (classOf === 'Date' || value instanceof Date) {
+    if (!Number.isFinite(value.getTime())) throw new TypeError(INVALID_DATE_REASON);
+    return { [IMMUTABLE_DATE_MARKER]: value.toISOString() };
+  }
+  if (classOf === 'RegExp' || value instanceof RegExp) {
+    return { [IMMUTABLE_REGEXP_MARKER]: { source: String(value.source), flags: String(value.flags) } };
+  }
+  if (value instanceof Map || classOf === 'Map' || isMutableCollectionView(value)) {
+    if (value instanceof WeakMap || value instanceof WeakSet) throw new TypeError(MUTABLE_COLLECTION_REASON);
+    if (value instanceof Set || classOf === 'Set') return immutableCollectionRecord('Set', [...value].map((item) => [item]));
+    if (!(value instanceof Map || classOf === 'Map')) throw new TypeError(MUTABLE_COLLECTION_REASON);
+    return immutableCollectionRecord('Map', [...value.entries()].map(([key, item]) => [key, item]));
+  }
+  path.push(value);
+  try {
+    if (Array.isArray(value)) return value.map((item) => canonicalImmutableContent(item, path));
+    const out = {};
+    for (const key of Object.keys(value)) out[key] = canonicalImmutableContent(value[key], path);
+    return out;
+  } finally {
+    path.pop();
+  }
+}
 function compareTombstones(a, b) {
   if (a.key < b.key) return -1;
   if (a.key > b.key) return 1;
@@ -145,7 +222,7 @@ export function createProjectOperation(input = {}) {
   if (typeof actionInput !== 'string' || !actionInput.trim()) throw new TypeError('operation-action-required');
   const action = actionInput;
   if (!OPERATION_ACTIONS.has(action)) throw new TypeError('operation-action-unsupported');
-  const payload = clone(input.payload ?? input.value ?? null);
+  const payload = canonicalImmutableContent(input.payload ?? input.value ?? null);
   const beforeFingerprintInput = input.beforeFingerprint;
   const beforeFingerprint = beforeFingerprintInput == null ? null : beforeFingerprintInput;
   if (beforeFingerprint !== null && (typeof beforeFingerprint !== 'string' || !beforeFingerprint.trim())) throw new TypeError('operation-before-fingerprint-invalid');
@@ -176,7 +253,7 @@ export function createProjectOperation(input = {}) {
     action,
     beforeFingerprint,
     payload,
-    provenance: clone(input.provenance || { source: 'local', actorIdentity: input.authorIdentity || null }),
+    provenance: canonicalImmutableContent(input.provenance || { source: 'local', actorIdentity: input.authorIdentity || null }),
   };
   deepFreeze(operation);
   CANONICAL_PROJECT_OPERATIONS.add(operation);
