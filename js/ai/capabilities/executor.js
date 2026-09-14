@@ -330,8 +330,31 @@ function renameSymbol(app, args) {
 
 function setType(app, args) {
   const address = BigInt(args.address), key = String(args.key || 'return'), value = String(args.value ?? '');
-  if (typeof app?.notes?.setType !== 'function') throw new AIError('tool_failed', 'Type annotation adapter is unavailable.');
-  if (app.notes.setType(address, key, value) === false) throw new AIError('tool_failed', 'Type annotation could not be persisted.');
+  const notes = app?.notes;
+  if (typeof notes?.setType !== 'function') throw new AIError('tool_failed', 'Type annotation adapter is unavailable.');
+  if (typeof notes.typeOf !== 'function') throw new AIError('tool_failed', 'Type annotation adapter cannot provide the snapshot required for atomic persistence.');
+  // NoteStore.setType() mutates the live type map before it attempts durable
+  // persistence, so a `false` persistence result must not leave the rejected
+  // type in memory: the next successful save() would promote it to durable
+  // state even though this proposal failed (#3758/#5132/#6255 for name/comment/
+  // struct-field). Capture the exact prior binding and store status first, then
+  // restore both on failure — the same atomicity contract its siblings enforce.
+  let previous;
+  try { previous = notes.typeOf(address, key); }
+  catch { throw new AIError('tool_failed', 'Type annotation adapter cannot provide the snapshot required for atomic persistence.'); }
+  const status = noteStatusSnapshot(notes);
+  if (notes.setType(address, key, value) === false) {
+    let restored = false;
+    try {
+      restored = notes.setType(address, key, previous == null ? '' : previous, { save: false }) !== false;
+    } catch (rollbackError) {
+      throw new AIError('tool_failed', `Type annotation could not be persisted and its in-memory mutation could not be rolled back: ${rollbackError?.message || rollbackError}`);
+    } finally {
+      restoreNoteStatus(notes, status);
+    }
+    if (!restored) throw new AIError('tool_failed', 'Type annotation could not be persisted and its in-memory mutation could not be rolled back.');
+    throw new AIError('tool_failed', 'Type annotation could not be persisted.');
+  }
   return { ok: true, address: address.toString(), key, value };
 }
 
