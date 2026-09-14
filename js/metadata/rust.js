@@ -61,6 +61,8 @@ const RUST_V0_BASIC_TYPES = Object.freeze({
 const RUST_V0_DEFAULT_MAX_OUTPUT_CHARS = 1_000_000;
 const RUST_V0_DEFAULT_MAX_OPS = 2_000_000;
 const RUST_V0_DEFAULT_MAX_SCALARS = 8_192;
+const RUST_V0_DEFAULT_MAX_ENCODED_BYTES = 65_536;
+const RUST_V0_DEFAULT_MAX_SPLICE_WORK = 2_000_000;
 
 function positiveBudget(value, fallback) {
   return Number.isSafeInteger(value) && value > 0 ? value : fallback;
@@ -72,9 +74,13 @@ function createDemangleBudget(overrides = {}) {
     ops: 0,
     outputChars: 0,
     scalars: 0,
+    encodedBytes: 0,
+    spliceWork: 0,
     maxOutputChars: positiveBudget(o.maxOutputChars, RUST_V0_DEFAULT_MAX_OUTPUT_CHARS),
     maxOps: positiveBudget(o.maxOps, RUST_V0_DEFAULT_MAX_OPS),
     maxScalars: positiveBudget(o.maxScalars, RUST_V0_DEFAULT_MAX_SCALARS),
+    maxEncodedBytes: positiveBudget(o.maxEncodedBytes, RUST_V0_DEFAULT_MAX_ENCODED_BYTES),
+    maxSpliceWork: positiveBudget(o.maxSpliceWork, RUST_V0_DEFAULT_MAX_SPLICE_WORK),
     exceeded: false,
   };
 }
@@ -89,6 +95,25 @@ function v0ChargeOp(state) {
   state.budget.ops += 1;
   if (state.budget.ops > state.budget.maxOps) state.budget.exceeded = true;
   return !state.budget.exceeded;
+}
+
+/**
+ * Charge Punycode decoding work (#8655): encoded input bytes, decoded scalars,
+ * and the quadratic element-shift cost of arbitrary-position insertions. An
+ * attacker can force every insertion to index 0, so `output.splice(0, 0, …)`
+ * moves the whole prefix once per scalar; charging the current output length
+ * per insertion bounds CPU by the configured budget instead of Θ(n²).
+ */
+function v0ChargePunycode(state, { encodedBytes = 0, scalars = 0, spliceWork = 0 } = {}) {
+  if (!state || !state.budget) return true;
+  const b = state.budget;
+  b.encodedBytes += encodedBytes;
+  b.scalars += scalars;
+  b.spliceWork += spliceWork;
+  if (b.encodedBytes > b.maxEncodedBytes || b.scalars > b.maxScalars || b.spliceWork > b.maxSpliceWork) {
+    b.exceeded = true;
+  }
+  return !b.exceeded;
 }
 
 /**
@@ -162,7 +187,7 @@ function parseV0Base62(str, pos) {
  * Decodes a Punycode string (RFC 3492) as used in Rust v0 mangling.
  * In Rust v0, the delimiter is '_' instead of '-'.
  */
-function decodePunycode(input) {
+function decodePunycode(input, state) {
   const base = 36;
   const tmin = 1;
   const tmax = 26;
@@ -170,6 +195,8 @@ function decodePunycode(input) {
   const damp = 700;
   const initialBias = 72;
   const initialN = 128;
+
+  if (!v0ChargePunycode(state, { encodedBytes: input.length })) return null;
 
   function adapt(delta, numpoints, firsttime) {
     let d = firsttime ? Math.floor(delta / damp) : Math.floor(delta / 2);
@@ -196,6 +223,7 @@ function decodePunycode(input) {
       output.push(String.fromCharCode(code));
     }
     pos = delimIndex + 1;
+    if (!v0ChargePunycode(state, { scalars: output.length })) return null;
   }
 
   while (pos < input.length) {
@@ -222,6 +250,10 @@ function decodePunycode(input) {
     n += Math.floor(i / outLen);
     if (n > 0x10ffff) return null;
     i = i % outLen;
+    // Charge the arbitrary-position insertion cost (Θ(current output length)
+    // element shifts) before performing it, so a crafted all-front sequence is
+    // bounded by the configured work budget instead of Θ(n²).
+    if (!v0ChargePunycode(state, { scalars: 1, spliceWork: outLen })) return null;
     output.splice(i, 0, String.fromCodePoint(n));
     i++;
   }
@@ -231,7 +263,7 @@ function decodePunycode(input) {
 /**
  * Parses a Rust v0 identifier (length-prefixed string, possibly with disambiguator).
  */
-function parseV0Identifier(str, pos) {
+function parseV0Identifier(str, pos, state) {
   let isDisambiguated = false;
   let p = pos;
   if (p < str.length && str[p] === 's') {
@@ -273,7 +305,7 @@ function parseV0Identifier(str, pos) {
   let identifier = rawIdent;
   if (isUnicode) {
     try {
-      const decoded = decodePunycode(rawIdent);
+      const decoded = decodePunycode(rawIdent, state);
       if (decoded === null) return null;
       identifier = decoded;
     } catch {
@@ -522,28 +554,35 @@ export function demangleRustV0(symbol, maxDepth = 32, budgetOverrides) {
     memo: new Map(),
     maxSeenDepth: 0,
   };
+  const stats = () => ({
+    ops: state.budget.ops,
+    outputChars: state.budget.outputChars,
+    scalars: state.budget.scalars,
+    encodedBytes: state.budget.encodedBytes,
+    spliceWork: state.budget.spliceWork,
+  });
   let demangled = null;
 
   try {
     demangled = parseV0Path(s, state, 0);
   } catch {
-    return { original: symbol, demangled: symbol, parsed: false, reason: 'demangle-error' };
+    return { original: symbol, demangled: symbol, parsed: false, reason: 'demangle-error', stats: stats() };
   }
 
   if (state.budget.exceeded) {
-    return { original: symbol, demangled: symbol, parsed: false, reason: 'v0-resource-budget-exceeded', resourceLimited: true };
+    return { original: symbol, demangled: symbol, parsed: false, reason: 'v0-resource-budget-exceeded', resourceLimited: true, stats: stats() };
   }
 
   if (state.depthExceeded) {
-    return { original: symbol, demangled: symbol, parsed: false, reason: 'v0-depth-limit-exceeded' };
+    return { original: symbol, demangled: symbol, parsed: false, reason: 'v0-depth-limit-exceeded', stats: stats() };
   }
 
   if (!demangled) {
-    return { original: symbol, demangled: symbol, parsed: false, reason: 'unrecognized-v0-structure' };
+    return { original: symbol, demangled: symbol, parsed: false, reason: 'unrecognized-v0-structure', stats: stats() };
   }
 
   if (state.pos < s.length && !v0SuffixParses(s, state.pos, depthLimit, state.budget, state.memo)) {
-    return { original: symbol, demangled: symbol, parsed: false, reason: 'unconsumed-v0-trailing-bytes' };
+    return { original: symbol, demangled: symbol, parsed: false, reason: state.budget.exceeded ? 'v0-resource-budget-exceeded' : 'unconsumed-v0-trailing-bytes', resourceLimited: state.budget.exceeded || undefined, stats: stats() };
   }
 
   const components = demangled.split('::');
@@ -554,6 +593,7 @@ export function demangleRustV0(symbol, maxDepth = 32, budgetOverrides) {
     components,
     crate: components[0] || null,
     generation: 'v0',
+    stats: stats(),
   };
 }
 
@@ -763,6 +803,25 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     this.platform = platform;
     this.options = options;
     this.cachedParsed = null;
+    // Per-symbol demangle ceilings (#8655/#8766) plus a provider-wide aggregate
+    // allowance so many individually-acceptable symbols cannot multiply the
+    // demangler's work without bound within one probe().
+    const dm = options && typeof options === 'object' && options.rustDemangle && typeof options.rustDemangle === 'object'
+      ? options.rustDemangle
+      : {};
+    this.demangleBudget = {
+      maxOutputChars: positiveBudget(dm.maxOutputChars, RUST_V0_DEFAULT_MAX_OUTPUT_CHARS),
+      maxOps: positiveBudget(dm.maxOps, RUST_V0_DEFAULT_MAX_OPS),
+      maxScalars: positiveBudget(dm.maxScalars, RUST_V0_DEFAULT_MAX_SCALARS),
+      maxEncodedBytes: positiveBudget(dm.maxEncodedBytes, RUST_V0_DEFAULT_MAX_ENCODED_BYTES),
+      maxSpliceWork: positiveBudget(dm.maxSpliceWork, RUST_V0_DEFAULT_MAX_SPLICE_WORK),
+    };
+    this.aggregateMax = {
+      ops: positiveBudget(dm.aggregateMaxOps, RUST_V0_DEFAULT_MAX_OPS * 10),
+      scalars: positiveBudget(dm.aggregateMaxScalars, RUST_V0_DEFAULT_MAX_SCALARS * 20),
+      spliceWork: positiveBudget(dm.aggregateMaxSpliceWork, RUST_V0_DEFAULT_MAX_SPLICE_WORK * 10),
+      outputChars: positiveBudget(dm.aggregateMaxOutputChars, RUST_V0_DEFAULT_MAX_OUTPUT_CHARS * 10),
+    };
   }
 
   probe() {
@@ -772,8 +831,19 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     const vtables = [];
     let unreadable = 0;
     let invalidEntries = 0;
+    let resourceLimited = 0;
 
     const isRustCandidateName = isRustCandidateSymbol;
+    // Identical symbol text is demangled at most once per probe (#8655: repeated
+    // records must not multiply the decoder cost).
+    const demangleCache = new Map();
+    const perSymbol = this.demangleBudget;
+    const aggMax = this.aggregateMax;
+    const aggregate = { ops: 0, scalars: 0, spliceWork: 0, outputChars: 0 };
+    const aggregateSpent = () => aggregate.ops > aggMax.ops
+      || aggregate.scalars > aggMax.scalars
+      || aggregate.spliceWork > aggMax.spliceWork
+      || aggregate.outputChars > aggMax.outputChars;
 
     for (const sym of rawSymbols) {
       const name = typeof sym?.name === 'string' ? sym.name
@@ -785,7 +855,22 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
         invalidEntries++;
         continue;
       }
-      const dem = demangleRustSymbol(name);
+      let dem = demangleCache.get(name);
+      if (dem === undefined) {
+        if (aggregateSpent()) {
+          dem = { original: name, demangled: name, parsed: false, resourceLimited: true, stats: null };
+        } else {
+          dem = demangleRustSymbol(name, perSymbol);
+          if (dem && dem.stats) {
+            aggregate.ops += dem.stats.ops;
+            aggregate.scalars += dem.stats.scalars;
+            aggregate.spliceWork += dem.stats.spliceWork;
+            aggregate.outputChars += dem.stats.outputChars;
+          }
+        }
+        demangleCache.set(name, dem);
+      }
+      if (dem.resourceLimited && !dem.parsed && isRustCandidateName(name)) resourceLimited++;
       if (dem.parsed) {
         let address;
         try {
@@ -839,7 +924,7 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
 
     this.cachedParsed = { rustSymbols, vtables };
 
-    const complete = unreadable === 0 && invalidEntries === 0 && rustSymbols.length > 0;
+    const complete = unreadable === 0 && invalidEntries === 0 && resourceLimited === 0 && rustSymbols.length > 0;
     const hasIdentityBinding = this.binaryIdentity != null;
     const identity = createLanguageMetadataIdentity({
       verdict: complete
@@ -881,6 +966,7 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
         parsed: rustSymbols.length,
         complete,
         unreadableEntries: unreadable,
+        capped: resourceLimited > 0,
         invalidEntries,
       },
     });
