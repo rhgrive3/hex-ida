@@ -421,35 +421,6 @@ function createRegionRootDescriptorProvider(architecturePlugin, architectureId, 
   };
 }
 
-function canonicalMemoryAccessProof(descriptor, architectureId) {
-  const memory = descriptor?.memory;
-  const machineEffects = descriptor?.node?.attributes?.machineEffects;
-  const family = machineEffects?.bundleMetadata?.family;
-  if (!memory || architectureId !== 'arm64' && architectureId !== 'arm64e'
-      || family !== 'arm64-memory') return null;
-  // The target producer deliberately leaves source-level qualifiers unknown at
-  // this boundary. Its ordinary memory-operation contract is the authority
-  // that these accesses are neither volatile nor atomic.
-  if (memory.ordering != null && memory.ordering !== 'unknown') return null;
-  if (memory.atomic === true || memory.volatility === true) return null;
-  return {
-    kind: 'canonical-memory-access-qualifiers',
-    sourceEntityId: String(descriptor.node.id),
-    architectureId: String(architectureId),
-    family,
-    widthBits: Number(memory.widthBits),
-    endian: memory.endian,
-    volatility: false,
-    atomic: false,
-    ordering: 'unknown',
-    evidence: {
-      operationKind: machineEffects.operationKind ?? null,
-      machineFamily: family,
-      sourceMnemonic: machineEffects.bundleMetadata?.mnemonic ?? null,
-    },
-  };
-}
-
 /**
  * Build the explicit Phase 3 migration route. There is deliberately no legacy
  * fallback here: callers either request this route and get a complete/partial/
@@ -956,8 +927,6 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     ...(options.memorySsaOptions ?? {}),
     ssa,
     rootDescriptorProvider,
-    accessProofForDescriptor: options.memorySsaOptions?.accessProofForDescriptor
-      ?? ((descriptor) => canonicalMemoryAccessProof(descriptor, architectureId)),
     identity: {
       ...(options.memorySsaOptions?.identity ?? {}),
       binaryId,

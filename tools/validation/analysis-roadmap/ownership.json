@@ -496,7 +496,15 @@
       "docs/analysis-local-acceptance-audit.json",
       "docs/analysis-local-handover.md",
       "docs/解析ツール改善.md",
-      "tests/semantic-v2/repair-v1-add-with-carry-def-use.test.mjs"
+      "tests/semantic-v2/repair-v1-add-with-carry-def-use.test.mjs",
+      "tests/architecture-abi.mjs",
+      "tests/semantic-v2/issue-c2-01-byte-exact-forwarding.test.mjs",
+      "js/semantics/memory-access-provider.js",
+      "js/targets/architecture/arm64/memory-access-qualifiers.js",
+      "tests/semantic-v2/issue-4513-memoryssa-access-provider-completeness.test.mjs",
+      "tests/issue-4135-pe-section-virtual-layout.mjs",
+      "tests/machine-effects/issue-6079-vblendmx-blend-category.test.mjs",
+      ".github/workflows/ghidra-differential.yml"
     ]
   }
 }

@@ -165,9 +165,43 @@ export class ByteView {
       const span = this.bytes.subarray(startNumber, endNumber);
       const nul = span.indexOf(0);
       raw = nul < 0 ? span : span.subarray(0, nul);
+    } else if (typeof this.bytes.cachedSpan === 'function') {
+      // Sparse buffers can expose already-cached contiguous bytes directly.
+      // Scan those chunks in bulk, but preserve the historical one-byte cache
+      // miss so cstring CPU batching never widens deterministic source I/O.
+      const pieces = [];
+      let total = 0;
+      let p = start;
+      while (p < end) {
+        const span = this.bytes.cachedSpan(exposedOffset(p), exposedOffset(end));
+        if (!span?.byteLength) {
+          const one = this.bytes.subarray(exposedOffset(p), exposedOffset(p + 1n));
+          const nul = one.indexOf(0);
+          if (nul >= 0) break;
+          if (!one.byteLength) break;
+          pieces.push(one);
+          total += one.byteLength;
+          p += BigInt(one.byteLength);
+          continue;
+        }
+        const nul = span.indexOf(0);
+        const take = nul < 0 ? span.byteLength : nul;
+        if (take) {
+          pieces.push(span.subarray(0, take));
+          total += take;
+          p += BigInt(take);
+        }
+        if (nul >= 0) break;
+      }
+      if (!pieces.length) raw = new Uint8Array();
+      else if (pieces.length === 1) raw = pieces[0];
+      else {
+        raw = new Uint8Array(total);
+        let at = 0;
+        for (const piece of pieces) { raw.set(piece, at); at += piece.byteLength; }
+      }
     } else {
-      // A sparse backing must scan in bounded blocks. Calling u8() one byte
-      // at a time turns every uncached character into a separate source read.
+      // Generic sparse-like backings still get bounded bulk scans.
       const blockSize = Number.isSafeInteger(this.bytes.readAheadSize) && this.bytes.readAheadSize > 0
         ? this.bytes.readAheadSize
         : 64 * 1024;

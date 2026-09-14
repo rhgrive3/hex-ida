@@ -52,10 +52,10 @@
     },
     {
       "id": "HEX-C2-01",
-      "localStatus": "existing-with-failed-gate",
-      "assessment": "byte forwardingは実装済み。canonical semantic-v2の該当回帰に開始時失敗があり、全byte×width×clobber受入は成功としない。",
+      "localStatus": "local-regression-repaired",
+      "assessment": "古いalias issuerとMemorySSA境界seedの陽性fixtureを修復。byte-exact forwarding/CFG/issuer拒否とsemantic-v2通常119ファイル・evidence chainは通過。全byte×width×clobber受入と広域必須ゲートは未完了。",
       "source": "js/semantics/memoryssa",
-      "verificationSuite": "semantic-v2-test",
+      "verificationSuite": "resume-semantic-v2-and-access-boundary",
       "originalRequirementAcceptedHere": false
     },
     {
@@ -304,8 +304,8 @@
       "mustWaitFor": "C1 boundary facts",
       "complexity": "L",
       "findingId": "HEX-C2-01",
-      "localStatus": "existing-with-failed-gate",
-      "currentAssessment": "byte forwardingは実装済み。canonical semantic-v2の該当回帰に開始時失敗があり、全byte×width×clobber受入は成功としない。",
+      "localStatus": "local-regression-repaired",
+      "currentAssessment": "古いalias issuerとMemorySSA境界seedの陽性fixtureを修復。byte-exact forwarding/CFG/issuer拒否とsemantic-v2通常119ファイル・evidence chainは通過。全byte×width×clobber受入と広域必須ゲートは未完了。",
       "originalRequirementAcceptedHere": false
     },
     {
@@ -1294,6 +1294,395 @@
         "scope": "Earlier whole-Phase8 refusal did not reproduce in the full file. This is not acceptance of an unrun complete final-head Phase8 gate."
       },
       "remaining": "Actual benchmark report/fix and final-head admission, complete whole/Phase8 acceptance, C4 full proof/120ms and independent device/runtime/release evidence remain required."
+    },
+    "completionResume": {
+      "recordedAt": "2026-09-14T07:32:49.352871+00:00",
+      "status": "CHECKPOINT-LOCKED",
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false,
+      "merged": false,
+      "inputHead": "b4fec5df31e8dbb9d803aa3ba5ffc20d49280d44",
+      "mainHead": "71900d5847a3136ebcbd965d63c17b0abfd4c8d7",
+      "mainSnapshots": [
+        "b8577228780c1d9c4e01cd87d7f6f07108759ada",
+        "71900d5847a3136ebcbd965d63c17b0abfd4c8d7"
+      ],
+      "mainAheadCommits": 77,
+      "mainReconciliation": "Authenticated commit/tree/blob objects and three-way reconciliation; four initial conflicts resolved, later 17 paths merged without conflicts. Existing shallow history boundaries retained.",
+      "progress": {
+        "scope": "X-02 original finite 120-row matrix only",
+        "passed": 114,
+        "total": 120,
+        "percentage": 95,
+        "evidenceGap": 4,
+        "environmentExcluded": 2,
+        "overallPercentage": null,
+        "overallReason": "23 findings / 21 tasks have heterogeneous unmet implementation, independent evidence, device and release requirements."
+      },
+      "repairs": [
+        "Preserve concurrent cachedSpan cstring repair and adopt bounded page readahead and main zero-fill audit correction; add cross-span string and read-budget regression.",
+        "Resolve x86 test integration against public decoder refusal versus real browser receiver authority. Preserve FP/MXCSR, mask, memory/fault and x87 assertions; no Node impersonation added.",
+        "Move existing ARM64 ordinary-memory qualifier interpretation to its target adapter with a private immutable composition boundary; canonical proof issuance stays private and caller callbacks remain inert. Remove the unused compat callback duplicate.",
+        "Keep exact ARM64/arm64e completeness and qualifier/shape refusals. 1080 before/after input combinations have identical complete proofs and digests.",
+        "Repair stale alias issuer, function-boundary MemorySSA seed, explicit ABI scalar width and complete low-alignment PE header fixtures; preserve corresponding refusal checks.",
+        "Replace stale SETSSBSY/IRET source-string expectations with public terminal behavior checks; move VBLENDMX positive controls to actual Chromium/WebKit receiver transport.",
+        "Declare each added repair path explicitly and retain missing-path, wrong-owner and foreign-path rejection."
+      ],
+      "sourceSha256": {
+        "js/analysis/debug/pdb.js": "47ebdef52d2eb9b401c72e12aa42e990ac604a2784c7b0427b868b38ba0a1743",
+        "js/analysis/debug/provider.js": "fb96c2e5582b7a85caf14ed74a8b5764341ea0ce91cf37ac97afe99223ed08fe",
+        "js/analysis/demand-driven-runtime.js": "a2d130cb399e8104fa9e35d2987ebf3870f7af8dee47093f86eeee3d172a5769",
+        "js/analysis/producer-wait.js": "b8738ddb0a9bcba3d0d7691c9cc744396efec8fe01de3d70ee05ab109d4f4b3b",
+        "js/binary/audit.js": "34b6fcea99c763dc14bb0d462e30bc2fd2223fddd799b10512e47f12011b60ee",
+        "js/binary/elf-dynamic.js": "0d616df5da48b576999052cf2f2b6b61ea0e6ad981f622826b7cf4268b9850d7",
+        "js/binary/elf-gnu-property.js": "1d4cdd2a59638b5970a82f338ddf8d4fb7f70dd1f264bdbcac3c5c997c1d18c2",
+        "js/binary/pe.js": "3ae06fd1fa490491a6c0ed70712830d635a945de26a481ee99f0266a18ad82c2",
+        "js/binary/source-reader.js": "d6e1b976e075f24c8aef1608b4578e63fbbc0def9062f1840e07d8bfb0e196ca",
+        "js/semantics/compat/index.js": "574051e6634a2e773cad75ff6a29333b9a066ae8ab45428e08655f58eb2d90de",
+        "js/semantics/memory-access-provider.js": "c603183e7caecba8f75e6ca7754a86d262f7122f2a4bdabd02111f8c9296ccdd",
+        "js/semantics/memoryssa/proof-core.js": "87544177e25be5c5ed685c649d8c3e7dbd1024f8046623421a0df1ad6f694a59",
+        "js/targets/architecture/arm64/memory-access-qualifiers.js": "b887d578c937f393c9e71f915ae0cbe9efdee07229e0215312d599a0df6f1846",
+        "js/targets/architecture/x86_64/effects/extended-state-evex.js": "72e07ba7bdcaf596b4a17a06418a5cade2d7fd0a1a37579db50c8170c69fe044",
+        "js/targets/architecture/x86_64/effects/extended-state-helpers.js": "b2d36a06a3bca4e94baf78a084c1422e798f823ef241425ccd1dd34e1e8cee89",
+        "js/targets/architecture/x86_64/effects/extended-state-x87.js": "38df8467bc336331e3f3296da47ddfb27ba1376dd030ee95113ab37aaf9e1978",
+        "js/targets/architecture/x86_64/effects/extended-state.js": "cceca4b06eb249578a04f2480c6c4433c86c1b45b44bc4bcb9260e012851f76c",
+        "js/targets/architecture/x86_64/effects/index.js": "ac8271fb3350369913ca2795f7272a021b37b71a4a2c1c1259e1bf3c9f40ffc5",
+        "js/targets/architecture/x86_64/receiver-provenance.js": "75989681ab891557debc0cb0d492f218e52c4f3cae832797f0566803d40b4e03",
+        "js/targets/architecture/x86_64/runtime-provenance.js": "a6c4bd5ee3645703f21bd39d7b15b1bb94abb002c7def5e6969a3d6d2777dd50",
+        "tests/architecture-abi.mjs": "6cdabd354abe585b7e19798083799e324a289a9e5a141cdcd0f5a5dcebb45669",
+        "tests/issue-4135-pe-section-virtual-layout.mjs": "f216ed03e0c843851cabdb571c8257e61751332a40f8b165e80ad033055b8576",
+        "tests/issue-970-virtual-read-span.mjs": "a205da527bd02c00cad173a94a0436b6c97b5f3ded9e1def3e43c9b7ffc0eafb",
+        "tests/machine-effects/issue-5563-iret-trusted-terminal-no-trap.test.mjs": "f8c4ef0fd1145b27018096a2f7a69e375dc0d0c6fb4e2799e46448e5c8fa4ed5",
+        "tests/machine-effects/issue-5566-x86-setssbsy-routing.test.mjs": "b2495c602d42d0b406d203eb0029016b474ef3e58c3f4d066d20364a811ac96d",
+        "tests/machine-effects/issue-6079-vblendmx-blend-category.test.mjs": "7251db7f2bc4b96fe15d19c7979e78cf9cfd660eb60462c4c826d00c0e3f79c1",
+        "tests/machine-effects/x86-long64-extended-state.test.mjs": "86ed806fc88465f195f1da8159e1048a154fba45aa1ee37e3382929ab2397aae",
+        "tests/machine-effects/x86-long64-fp-denominator.test.mjs": "7a88b50dd103e3a31f3a490338db0960e1e1f762ce6249f8461a31fcfe052661",
+        "tests/phase4/binary/issue-4168-gnu-hash-chain-length.test.mjs": "8284d5dbc197f98aa46c517a14f1337dfc39443e8e524f3caa61c3b227680157",
+        "tests/phase4/binary/issue-8727-elf-gnu-property-budget.test.mjs": "2befb9ef679939dd8fd288b1e669ab4da28b3800d020206ad0b048959e48bfd7",
+        "tests/phase6/effects/issue-8825-x86-evex-owner-provenance.test.mjs": "98775c32e9b955e6a886ad181ca227b37c207fbcb14239b4589cba3382e0f742",
+        "tests/phase7/debug/issue-8729-pdb-procedure-dag-budget.test.mjs": "352f9c765eec60a403d4d2b47fbd0f783d9c855bdf59c676de7956da0e58c621",
+        "tests/phase7/issue-3646-shared-producer-malformed-signal.test.mjs": "afcc9a5cb1c91db8da249c4087968bccc920c79d8d9de29e69d06a75172049e1",
+        "tests/phase7/issue-4243-region-cache-slice-identity.test.mjs": "ed0ab8c4b2ab91c38bff3b9744cc7008ded4f55c4d48e7f4869eac9a0312948b",
+        "tests/phase7/issue-4290-producer-wait-abort-reason.test.mjs": "f161d223feca2f77046428ce98c9db86ed0443671acfd1b03994cf9207668184",
+        "tests/phase7/ownership/roadmap-v8-integration.test.mjs": "3726a2d21f9c4bc53263e014856702b31a06f2015516f6c02485b526fa3a4812",
+        "tests/semantic-v2/issue-4513-memoryssa-access-provider-completeness.test.mjs": "2eca0b6e3f651bf33976ba9ea89a04ede91fd20470398e97428fc2147211b368",
+        "tests/semantic-v2/issue-c2-01-byte-exact-forwarding.test.mjs": "73f5280f8e5c269b26c5ff97590519dec5b69996ed8943ce044a622db0e76d8a",
+        "tests/semantic-v2/memoryssa-cfg.test.mjs": "518b74e4e66cc60a5be61e55963b7cfc5b4e2731b4907f4c1d99379db5f6e967",
+        "tests/universal-binary-source.mjs": "9146dfd905f0380a880087a8e621ec94dcff50d661dacca5ade729608dd294a4",
+        "tools/validation/analysis-roadmap/ownership.json": "a6979e0f7fabb5a03689a411659f4b2a9668b946924933b527b1e62aae295b64",
+        "tools/validation/analysis-roadmap/ownership.mjs": "96eafd4e1f9a54bb91e45409bec10c90bfe6ac34a4391326be306e4f18c003c3"
+      },
+      "generatedSha256": {
+        "userscript/hex.user.template.js": "74e4eb9b24c80ee7c6d4de6540392dc719bfc6cbe0433ed4cf04b8f4632ef525",
+        "userscript/release-version.json": "e0bb37e3c5f3b2305686f9266b00c44b54bc8f1609dd6e80631ee00ac39b76f4"
+      },
+      "trackedGeneratedRepeatIdentical": true,
+      "verificationReceipts": [
+        {
+          "label": "main-analysis",
+          "command": [
+            "node",
+            "--test",
+            "tests/phase7/issue-3646-shared-producer-malformed-signal.test.mjs",
+            "tests/phase7/issue-4243-region-cache-slice-identity.test.mjs",
+            "tests/phase7/issue-4290-producer-wait-abort-reason.test.mjs"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 0.386,
+          "logSha256": "1a9de98e3f5e68c661f01a40e49bc3ef01c007efc4cadb5c95bfdf2b41813a91"
+        },
+        {
+          "label": "binary-repaired",
+          "command": [
+            "node",
+            "scripts/run-quiet-command.mjs",
+            "--label",
+            "resume-binary",
+            "--",
+            "npm",
+            "run",
+            "binary:test"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 4.008,
+          "logSha256": "9e03b77dd7fa40bd54114f2afc8440da72ba495d54610cca472436859f7abe04"
+        },
+        {
+          "label": "memoryssa-fixtures-final",
+          "command": [
+            "node",
+            "--test",
+            "tests/semantic-v2/issue-c2-01-byte-exact-forwarding.test.mjs",
+            "tests/semantic-v2/memoryssa-cfg.test.mjs",
+            "tests/semantic-v2/issue-5862-alias-proof-issuer-relation-strict.test.mjs"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 0.635,
+          "logSha256": "4f3ade5529427bcb0765054d066d499b97e0c2cfb3169232158929dfba30035a"
+        },
+        {
+          "label": "platform-final",
+          "command": [
+            "node",
+            "scripts/run-quiet-command.mjs",
+            "--label",
+            "resume-platform",
+            "--",
+            "npm",
+            "run",
+            "platform:test"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 18.231,
+          "logSha256": "817cd65af68c8d9b4a5817502330ab9b097805bd4c21d0d4133591e1cf43e47c"
+        },
+        {
+          "label": "system-refusal",
+          "command": [
+            "node",
+            "tests/machine-effects/issue-5566-x86-setssbsy-routing.test.mjs"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 0.167,
+          "logSha256": "59e6682f145e41ac59d461b4358608bd88b077393c0800fcf0a1ddaaa78786a4"
+        },
+        {
+          "label": "access-boundary",
+          "command": [
+            "node",
+            "--test",
+            "tests/semantic-v2/issue-4513-memoryssa-access-provider-authority.test.mjs",
+            "tests/semantic-v2/issue-4513-memoryssa-access-provider-completeness.test.mjs",
+            "tests/semantic-v2/issue-c2-01-byte-exact-forwarding.test.mjs",
+            "tests/semantic-v2/memoryssa-cfg.test.mjs",
+            "tests/semantic-v2/issue-5862-alias-proof-issuer-relation-strict.test.mjs",
+            "tests/machine-effects/arm64-memory-addressing.test.mjs"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 0.578,
+          "logSha256": "9db7cec9ae2cd040658c0ea6cf6a53fa57f2ac0ea3e390a7b02334abe72d99e3"
+        },
+        {
+          "label": "architecture-neutrality",
+          "command": [
+            "node",
+            "--input-type=module",
+            "-e",
+            "import { scanArchitectureNeutrality } from \"./tools/validation/semantic-v2/architecture-neutrality.mjs\"; import assert from \"node:assert/strict\"; const result=scanArchitectureNeutrality({root:process.cwd()}); console.log(JSON.stringify(result)); assert.equal(result.architectureLeakCount,0);"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 0.164,
+          "logSha256": "a401427fe7292a468ba180718387173b730251ddb3d824fa9bdef5d12c0c12cf"
+        },
+        {
+          "label": "module-boundaries-final",
+          "command": [
+            "npm",
+            "run",
+            "module-boundaries:test"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 0.304,
+          "logSha256": "c4c28b12fb1e30e52acc903c2b03c3d569b451180ff7664532703cafead0f0bb"
+        },
+        {
+          "label": "proof-equivalence",
+          "command": [
+            "node",
+            "/workspace/scratch/6decb715e99a/resume-proof-equivalence.mjs"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 0.091,
+          "logSha256": "1270dce62b8e3b83d454c477f3cd461090a60bd8699b1feb4e4d1c3668f2d6c7"
+        },
+        {
+          "label": "extra-main-regressions-final",
+          "command": [
+            "node",
+            "--test",
+            "tests/issue-4135-pe-section-virtual-layout.mjs",
+            "tests/phase4/binary/issue-4168-gnu-hash-chain-length.test.mjs",
+            "tests/phase4/binary/issue-8727-elf-gnu-property-budget.test.mjs",
+            "tests/phase6/effects/issue-8825-x86-evex-owner-provenance.test.mjs",
+            "tests/phase7/debug/issue-8729-pdb-procedure-dag-budget.test.mjs"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 0.251,
+          "logSha256": "9bb4f185a1a12a899319bbb606f2b9827ec6e6c9c4ec8b8a6d615d7755a13b78"
+        },
+        {
+          "label": "lint-final",
+          "command": [
+            "npm",
+            "run",
+            "lint"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 1.498,
+          "logSha256": "1a3ab17fdad231c92805c99c9bd98846b1fa51cc89d82411e694f1ed60d94c39"
+        },
+        {
+          "label": "semantic-v2-final",
+          "command": [
+            "node",
+            "scripts/run-quiet-command.mjs",
+            "--label",
+            "resume-semantic-v2-final",
+            "--",
+            "npm",
+            "run",
+            "semantic-v2:test"
+          ],
+          "exitCode": 1,
+          "durationSeconds": 174.719,
+          "logSha256": "b00c7fee181f2984ae9cf3fad31f8c2b5f38532414fbf07bec51cd53b4512dcf"
+        },
+        {
+          "label": "remaining-effects-repaired",
+          "command": [
+            "node",
+            "--test",
+            "tests/machine-effects/issue-5563-iret-trusted-terminal-no-trap.test.mjs",
+            "tests/machine-effects/issue-6079-vblendmx-blend-category.test.mjs"
+          ],
+          "exitCode": 1,
+          "durationSeconds": 0.547,
+          "logSha256": "c9993da720ea0499a4d8886b14657e35e442a30a9635704291b3ce1c8350535a"
+        },
+        {
+          "label": "binary-final",
+          "command": [
+            "npm",
+            "run",
+            "binary:test"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 2.406,
+          "logSha256": "fce062d47ab515ce51a13d11759399b201af1f857de9d372890932f9d25a2e91"
+        },
+        {
+          "label": "generated-repeat",
+          "command": [
+            "npm",
+            "run",
+            "userscript:build"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 2.269,
+          "logSha256": "4467dd5edc345059c9597b5626f094efd96c909643746fc04a1cd5ce7741fd9b"
+        },
+        {
+          "label": "ownership-ready",
+          "command": [
+            "node",
+            "--test",
+            "tests/phase7/ownership/roadmap-v8-integration.test.mjs"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 6.168,
+          "logSha256": "63a01ea828950f7d7662bcb7346b7de034721a3bb869bc58a9c29be8e50b2f53"
+        }
+      ],
+      "semanticV2": {
+        "ordinaryFilesPassed": 119,
+        "ordinaryFilesTotal": 119,
+        "evidenceChain": "PASS",
+        "wholeGate": "FAIL",
+        "durationSeconds": 174.719,
+        "failedLanes": [
+          "required-regressions",
+          "userscript-sync"
+        ],
+        "nestedPass": [
+          "core:test",
+          "migration:test",
+          "semantic:test",
+          "platform:test",
+          "runtime:test",
+          "ui:test",
+          "decompiler:test",
+          "compiler-truth",
+          "benchmark:baseline"
+        ],
+        "nestedFail": [
+          "effects:test",
+          "invariants:test"
+        ],
+        "limitations": "Required effects/invariants failed with LLVM/browser absence and two stale x86 regression expectations. IRET was subsequently repaired and passed; VBLENDMX now completes public refusals but is blocked at the required Chromium launch. Userscript routes fail because uv_interface_addresses is denied in this environment. No lane is skipped or relabeled PASS.",
+        "postRunTestOnlyRepairs": [
+          "tests/machine-effects/issue-5563-iret-trusted-terminal-no-trap.test.mjs",
+          "tests/machine-effects/issue-6079-vblendmx-blend-category.test.mjs",
+          "tests/phase7/ownership/roadmap-v8-integration.test.mjs",
+          "tools/validation/analysis-roadmap/ownership.json",
+          "tools/validation/analysis-roadmap/ownership.mjs"
+        ]
+      },
+      "phase8": {
+        "status": "PENDING",
+        "earlierRun": "Concurrent diagnostic cancelled with exit 130 before the memory-access adapter change; not an acceptance result."
+      },
+      "independentReview": {
+        "status": "BLOCKED",
+        "provider": "CodeRabbit",
+        "reason": "CLI absent; official installer download failed: curl (28) Proxy CONNECT aborted due to timeout. No review ran; authenticated CLI and reachable service are required."
+      },
+      "previousHeadCi": {
+        "head": "b4fec5df31e8dbb9d803aa3ba5ffc20d49280d44",
+        "fastGate": "success",
+        "userscript": "success",
+        "otherCircleContexts": "7 success",
+        "benchmarkJob": 69079,
+        "benchmark": "failure",
+        "finalAdmissionRun": 34812506483,
+        "finalAdmission": "failure",
+        "smallBenchmarkReportRetrieved": false
+      },
+      "remainingGates": [
+        "Canonical whole Phase8 and exact published-head whole check, fixed-three-fixture benchmark and final admission.",
+        "C4 full region/PHI/CFG/flags/fault/exception/loop proof and standard 120ms acceptance.",
+        "Pinned LLVM 18.1.3 and Playwright Chromium/WebKit execution; userscript runtime route verification in a supported environment.",
+        "Independent normal and architecture review; a draft review skip is not approval.",
+        "Physical Apple arm64e/iPad, independent hardware/ordering oracle, signing, active runtime and release evidence."
+      ],
+      "ciTriggerFollowup": {
+        "recordedAt": "2026-09-14T07:40:13.187687+00:00",
+        "inputHead": "0bcc18787c9cb03caf46a3c842db173531e0a86a",
+        "firstDivergence": "Ghidra trigger misses reachable dependency js/semantics/memory-access-provider.js. Reproduced by both CI development-mode and CircleCI impact precheck.",
+        "repair": "Add the exact new composition-module path to the Ghidra trigger, with exact integration ownership for that workflow. No trigger exclusions or threshold changes.",
+        "sourceSha256": {
+          ".github/workflows/ghidra-differential.yml": "2ae7c5eb758b451a7d614ddcce5d5d589d5b7bfdaa43afbd14416076b4a38262",
+          "tools/validation/analysis-roadmap/ownership.mjs": "29c2ed2e2769c205bd76c3c6939766adf9016e2a2e472741623eaaf0d7de915c",
+          "tools/validation/analysis-roadmap/ownership.json": "10156fc4d379de705ce2b6513461c24b433bedb6fc505086bb001ea23a7fd93c",
+          "tests/phase7/ownership/roadmap-v8-integration.test.mjs": "2b945160c7e540adb82d5ca7fc7c755755b713263cf5683a4441c753718c6c3d"
+        },
+        "verification": {
+          "label": "ci-routing-fixed",
+          "command": [
+            "node",
+            "--test",
+            "tests/ci-development-mode.mjs",
+            "tests/ci/circleci-checkout.test.mjs",
+            "tests/ci/circleci-impact.test.mjs",
+            "tests/phase7/ownership/roadmap-v8-integration.test.mjs"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 6.657,
+          "logSha256": "e8302cbb688de8e244418d29e791662222a1f0ae12250793a8b634799bd0916d"
+        },
+        "runtimeAndGeneratedUnchanged": true,
+        "phase8Isolation": "Whole Phase8 continues on clean published 0bcc1878 in the original worktree; this CI-only followup was built in a detached worktree.",
+        "inputHeadCi": {
+          "universalPlatformBenchmark": "success",
+          "benchmarkJob": 69517,
+          "benchmarkUrl": "https://circleci.com/gh/rhgrive3/hex-ida/69517",
+          "userscript": "success",
+          "otherCircleContexts": "6 success",
+          "migration": "failure (same missing-trigger precheck reproduced locally)",
+          "fastGate": "failure at CI development-mode contract",
+          "finalAdmission": "failure"
+        },
+        "remaining": "New-head CI, complete Phase8/whole product gate, independent review, C4 full proof/120ms and physical device/runtime/release evidence remain required."
+      }
     }
   },
   "integrationFollowupHistory": [

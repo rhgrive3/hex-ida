@@ -67,7 +67,7 @@ test('#3646 malformed app-producer signal does not cancel another live waiter', 
   assert.equal(entry.controller.signal.aborted, false, 'malformed peer must not abort a producer with a live waiter');
 
   live.abort('test-live-waiter-done');
-  await assert.rejects(liveWait, (error) => error?.name === 'AbortError');
+  await assert.rejects(liveWait, (reason) => reason === 'test-live-waiter-done');
   assert.equal(entry.waiters, 0);
   assert.equal(entry.controller.signal.aborted, true, 'last real waiter still owns producer cancellation');
 });
@@ -79,9 +79,10 @@ test('#3646 null signal preserves the existing non-cancellable wait contract', a
 });
 
 test('#3646 poisoned abort reason cannot bypass app-producer cleanup', async () => {
-  for (const [name, reasonFactory] of [
-    ['reason-getter', () => { throw new Error('poisoned-reason-getter'); }],
-    ['reason-stringification', () => ({ toString() { throw new Error('poisoned-reason-string'); } })],
+  const structuredReason = { toString() { throw new Error('poisoned-reason-string'); } };
+  for (const [name, reasonFactory, accepts] of [
+    ['reason-getter', () => { throw new Error('poisoned-reason-getter'); }, (reason) => reason?.name === 'AbortError'],
+    ['reason-stringification', () => structuredReason, (reason) => reason === structuredReason],
   ]) {
     const { promise } = pendingOperation();
     const entry = sharedEntry(promise);
@@ -90,7 +91,7 @@ test('#3646 poisoned abort reason cannot bypass app-producer cleanup', async () 
 
     assert.equal(entry.waiters, 1, `${name}: waiter must attach before abort`);
     signal.abort();
-    await assert.rejects(wait, (error) => error?.name === 'AbortError', name);
+    await assert.rejects(wait, accepts, name);
     assert.equal(entry.waiters, 0, `${name}: abort must detach exactly once`);
     assert.equal(entry.controller.signal.aborted, true, `${name}: final consumer must cancel producer`);
   }

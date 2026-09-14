@@ -7732,3 +7732,24 @@ Node22 + CI=trueのcore/binaryが通過し、生成物は2回一致した。C4�
 型変換の対象ファイル全体は同headで42.8秒で通過したが、未実行の全Phase8合格へ読み替えない。
 最新source、生成hash、実行log hashは `integrationFollowup.movingMainReconciliation`。
 全23 finding / 21 FR、CHECKPOINT-LOCKEDと既存の独立実機・runtime・release要件を保持する。
+
+## 2026-09-14 completion resume on main 71900d58
+
+入力 b4fec5df31e8dbb9d803aa3ba5ffc20d49280d44 の並行cstring修復を保持し、
+main 71900d5847a3136ebcbd965d63c17b0abfd4c8d7 までを真正なGitオブジェクトと
+三者差分で統合した。4競合を解消し、その後のmain追加17パスも統合した。
+ARM64 ordinary-memory qualifier判定はtarget adapterへ移し、immutableな内部composition境界から
+canonical proof producerだけが証明を発行する。外部callback/登録APIへの権限追加はない。
+1080組で移動前後の証明とdigestが一致し、generic SSA/MemorySSA 13ファイルの依存違反は0件。
+
+canonical semantic-v2は通常119/119ファイルとevidence chainが通過。広域必須回帰では
+core/migration/semantic/platform/runtime/ui/decompiler/compiler-truth/benchmark:baselineが通過した。
+effects/invariantsとuserscript-syncは未合格。追加の古いIRET/SETSSBSY静的期待値をbehavior検査へ修正し、
+VBLENDMXはpublic拒否と実browser陽性を分けた。実Chromium/WebKit、LLVM、環境制限の解除が必要な
+Wrangler routeと独立CodeRabbitレビューを代用品で合格扱いしない。全Phase8は次のcheckpointで記録する。
+
+元23 finding / 21 FR、固定135 corpus、X-02元120行、全benchmark入力・閾値・sample数を保持。
+X-02有限行列は114 pass / 4 evidence-gap / 2 environment-excluded、95%は全体完了率ではない。
+全C4/120ms、独立実機、active runtime/signing/releaseが残るためCHECKPOINT-LOCKED、
+fullRoadmapComplete:false、transformAuthorization:false、マージ未実施を維持する。
+今回の全source/hash/log/生成物/失敗理由は監査JSONのintegrationFollowup.completionResume。

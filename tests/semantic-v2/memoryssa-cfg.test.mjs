@@ -154,8 +154,10 @@ function phi(memorySsa, blockId) {
   const loopPhi = phi(memorySsa, 'header');
   assert.ok(loopPhi);
   assert.deepEqual(loopPhi.incoming.map((item) => item.predecessorBlockId), ['body', 'entry']);
-  assert.equal(memorySsa.definitions.filter((definition) => definition.kind === 'entry' && definition.blockId === null).length, 0);
-  assert.equal(memorySsa.definitions.find((definition) => definition.kind === 'entry' && definition.regionId === regionA.id).blockId, 'entry');
+  const initial = memorySsa.definitions.find((definition) => definition.kind === 'entry' && definition.regionId === regionA.id);
+  assert.equal(initial.blockId, null, 'boundary memory must not pretend to execute in the live entry block');
+  assert.equal(initial.proof.kind, 'initial-memory-version');
+  assert.equal(loopPhi.incoming.find((item) => item.predecessorBlockId === 'entry').definitionId, initial.id);
   assert.equal(reachingMemoryDefinition(memorySsa, loadUse(memorySsa, 'exit_load')).id, loopPhi.id);
   assert.doesNotThrow(() => validateMemorySsa(memorySsa, { cfg }));
 }
@@ -214,7 +216,14 @@ function phi(memorySsa, blockId) {
   assert.equal(loadUse(memorySsa, 'dead_load').aliasRelation, 'unknown');
   assert.equal(reachingConcreteStore(memorySsa, loadUse(memorySsa, 'dead_load')), null);
   assert.equal(reachingConcreteStore(memorySsa, loadUse(memorySsa, 'live_load')).sourceEntityId, 'live_store');
-  assert.equal(memorySsa.definitions.filter((definition) => definition.kind === 'entry' && definition.blockId === null).length, 4);
+  const seeds = memorySsa.definitions.filter((definition) => definition.kind === 'entry');
+  assert.equal(seeds.length, 6, 'both regions retain their boundary and two unreachable-component seeds');
+  assert.ok(seeds.every((definition) => definition.blockId === null));
+  for (const region of [regionA, regionMaybe]) {
+    assert.deepEqual(seeds.filter((definition) => definition.regionId === region.id)
+      .map((definition) => definition.proof.seedBlockId ?? 'function-boundary').sort(),
+    ['dead_root', 'function-boundary', 'isolated_root']);
+  }
   assert.doesNotThrow(() => validateMemorySsa(memorySsa, { cfg }));
   const imported = JSON.parse(JSON.stringify({
     contractVersion: memorySsa.contractVersion,
