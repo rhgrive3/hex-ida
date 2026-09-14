@@ -41,7 +41,7 @@ export class ProposalExecutor {
     const address = target.address == null ? null : BigInt(target.address);
     switch (proposal.kind) {
       case 'rename': return address == null ? null : (this.app?.notes?.nameOf?.(address) || this.app?.symbols?.nameAt?.(address) || null);
-      case 'comment': return address == null ? null : (this.app?.notes?.comment?.(address) || null);
+      case 'comment': return address == null ? null : commentStateForExpected(this.app?.notes?.comment?.(address), proposal.before);
       case 'type': return address == null ? null : (this.app?.notes?.typeOf?.(address, String(target.key || 'return')) || null);
       case 'struct-field': return findStructField(this.app, target);
       case 'patch': {
@@ -155,6 +155,14 @@ function byteArray(value) {
   return Array.from(raw);
 }
 function same(a, b) { return JSON.stringify(normalize(a)) === JSON.stringify(normalize(b)); }
+function commentStateForExpected(value, expected) {
+  const live = value ?? null;
+  const liveAbsent = live == null || live === '';
+  const expectedAbsent = expected == null || expected === '';
+  if (liveAbsent && expectedAbsent) return expected ?? null;
+  return live;
+}
+
 function containsValue(actual, expected) {
   if (expected && typeof expected === 'object' && !Array.isArray(expected)) {
     if (!actual || typeof actual !== 'object') return false;

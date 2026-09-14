@@ -82,6 +82,25 @@ function validPEFileAlignment(fileAlignment, sectionAlignment) {
   return fileAlignment >= 0x200 && fileAlignment <= 0x10000;
 }
 
+// Microsoft IMAGE_OPTIONAL_HEADER32/64: SectionAlignment must be at least
+// FileAlignment, and when it is below the architecture page size the two must
+// be equal. An Optional Header that breaks this contract is not a canonical
+// image, so none of its section/entrypoint evidence may be promoted (#4118).
+function validatePEImageAlignment(sectionAlignment, fileAlignment) {
+  if (sectionAlignment <= 0) {
+    throw new Error(`PE SectionAlignment 0x${(sectionAlignment >>> 0).toString(16)} must be positive to map a canonical image`);
+  }
+  if (fileAlignment <= 0) {
+    throw new Error(`PE FileAlignment 0x${(fileAlignment >>> 0).toString(16)} must be positive to map a canonical image`);
+  }
+  if (sectionAlignment < fileAlignment) {
+    throw new Error(`PE SectionAlignment 0x${sectionAlignment.toString(16)} is smaller than FileAlignment 0x${fileAlignment.toString(16)}`);
+  }
+  if (sectionAlignment < 0x1000 && sectionAlignment !== fileAlignment) {
+    throw new Error(`PE SectionAlignment 0x${sectionAlignment.toString(16)} is below the 0x1000 page size, so FileAlignment must equal SectionAlignment (got 0x${fileAlignment.toString(16)})`);
+  }
+}
+
 function windowsImageSectionRawSize(sizeOfRawData, fileAlignment, sectionAlignment) {
   const alignmentValid = validPEFileAlignment(fileAlignment, sectionAlignment);
   if (sizeOfRawData === 0 || !alignmentValid) {
@@ -196,6 +215,7 @@ export function parsePE(input, options = {}) {
   const fileAlignment = r.u32(opt + 36);
   const sizeOfImage = r.u32(opt + 56);
   const sizeOfHeaders = r.u32(opt + 60);
+  validatePEImageAlignment(sectionAlignment, fileAlignment);
   if (numberOfSections > WINDOWS_IMAGE_MAX_SECTIONS) {
     throw new Error(`PE NumberOfSections ${numberOfSections} exceeds Windows image loader limit ${WINDOWS_IMAGE_MAX_SECTIONS}`);
   }
@@ -235,6 +255,7 @@ export function parsePE(input, options = {}) {
   }
 
   image.addSegment({ name: 'headers', address: imageBase, size: BigInt(sizeOfHeaders), fileOffset: 0n, fileSize: BigInt(Math.min(sizeOfHeaders, bytes.length)), perms: { read: true, write: false, execute: false }, source: 'PE-headers' });
+  let prevSectionLayout = null;
   for (let i = 0; i < numberOfSections; i++) {
     const p = secBase + i * 40;
     // Executable-image section-table names are literal 8-byte fields. The
@@ -258,6 +279,7 @@ export function parsePE(input, options = {}) {
     const beyondRvaDomain = endRva > rvaLimit;
     const beyondSizeOfImage = !peImageRvaRangeFits(sizeOfImage, startRva, virtualExtent);
     const virtualRangeInvalid = beyondRvaDomain || beyondSizeOfImage;
+    const virtualAddressMisaligned = sectionAlignment > 0 && virtualAddress % sectionAlignment !== 0;
     const rawMapping = windowsImageSectionRawMapping(ptrRaw, { sectionAlignment });
     const rawSize = windowsImageSectionRawSize(sizeRaw, fileAlignment, sectionAlignment);
     const lowAlignmentRawIdentityMismatch = peSectionRawIdentityMismatch({
@@ -310,6 +332,17 @@ export function parsePE(input, options = {}) {
       image.warnings.push(`PE section ${name || `#${i + 1}`} raw mapping is truncated: 0x${rawAvailableNumber.toString(16)} of 0x${rawSize.effectiveRawSize.toString(16)} bytes are available`);
     }
     const effectiveFileOffset = BigInt(rawMapping.effectiveFileOffset);
+    if (virtualAddressMisaligned) {
+      const reason = 'pe:section-virtual-address-misaligned';
+      image.metadata.peMetadata ||= { complete: true, reasons: [] };
+      image.metadata.peMetadata.complete = false;
+      if (!image.metadata.peMetadata.reasons.includes(reason)) image.metadata.peMetadata.reasons.push(reason);
+      image.metadata.peSectionsWithMisalignedVirtualAddress ||= [];
+      image.metadata.peSectionsWithMisalignedVirtualAddress.push({
+        sectionIndex: i + 1, name, virtualAddress, sectionAlignment,
+      });
+      image.warnings.push(`PE section ${name || `#${i + 1}`} VirtualAddress 0x${virtualAddress.toString(16)} is not aligned to SectionAlignment 0x${sectionAlignment.toString(16)}; excluded from canonical mapping`);
+    }
     if (lowAlignmentRawIdentityMismatch) {
       image.metadata.peMetadata ||= { complete: true, reasons: [] };
       image.metadata.peMetadata.complete = false;
@@ -334,8 +367,38 @@ export function parsePE(input, options = {}) {
         endRva: endRva.toString(), beyondRvaDomain, beyondSizeOfImage,
       });
       image.warnings.push(`PE section ${name || `#${i + 1}`} virtual range RVA 0x${virtualAddress.toString(16)}+0x${virtualExtent.toString(16)} exceeds ${beyondRvaDomain ? 'the 32-bit RVA domain' : `SizeOfImage 0x${sizeOfImage.toString(16)}`}; excluded from canonical mapping`);
+    }
+    // PE image section-layout contract (#4135): every section VirtualAddress is
+    // a multiple of SectionAlignment, the source section table is RVA-ascending,
+    // and virtual extents do not overlap. A violated section is excluded from
+    // canonical mapping and the image is marked partial, so exact downstream
+    // evidence is never promoted from a mapping no Windows loader would build.
+    // Every in-range section advances the running layout bound so ordering is
+    // judged against the declared source table, which finalize()'s address sort
+    // would otherwise hide.
+    const previous = prevSectionLayout;
+    const misaligned = sectionAlignment > 0 && virtualAddress % sectionAlignment !== 0;
+    const outOfOrder = previous !== null && startRva < previous.end;
+    prevSectionLayout = previous === null || endRva > previous.end
+      ? { start: startRva, end: endRva }
+      : { start: startRva, end: previous.end };
+    const violatesLayout = misaligned || outOfOrder;
+    if (violatesLayout) {
+      const layoutReason = misaligned ? 'pe:section-virtual-address-misaligned'
+        : startRva < previous.start ? 'pe:section-table-not-ascending'
+        : 'pe:section-virtual-range-overlap';
+      image.metadata.peMetadata ||= { complete: true, reasons: [] };
+      image.metadata.peMetadata.complete = false;
+      if (!image.metadata.peMetadata.reasons.includes(layoutReason)) image.metadata.peMetadata.reasons.push(layoutReason);
+      image.metadata.peSectionsWithInvalidVirtualLayout ||= [];
+      image.metadata.peSectionsWithInvalidVirtualLayout.push({
+        sectionIndex: i + 1, name, virtualAddress, virtualSize, sizeOfImage,
+        endRva: endRva.toString(), misaligned,
+      });
+      image.warnings.push(`PE section ${name || `#${i + 1}`} violates the image section-layout contract (${layoutReason}): RVA 0x${virtualAddress.toString(16)} extent 0x${virtualExtent.toString(16)}; excluded from canonical mapping`);
       continue;
     }
+    if (virtualAddressMisaligned || virtualRangeInvalid) continue;
     image.addSegment({ name, address, size: virtualExtent, fileOffset: effectiveFileOffset, fileSize: mappedFileSize, perms, flags, source: mappingSource });
     image.addSection({ name, address, size: virtualExtent, fileOffset: effectiveFileOffset, fileSize: mappedFileSize, perms, flags, type: null, index: i + 1, source: mappingSource });
   }

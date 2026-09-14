@@ -62,10 +62,15 @@ export function completenessOf(result) {
   if (malformed) return { complete: false, returned: 0, total: null, coverage: null, reason: 'malformed-completeness' };
   const returned = returnedValue === undefined ? rows.length : returnedValue;
   const total = totalValue === undefined ? (truncatedValue === true ? null : returned) : totalValue;
-  const complete = completeValue === undefined ? truncatedValue !== true : completeValue;
+  const behindCounts = total != null && returned < total;
+  const contradictsCounts = behindCounts && completeValue === true;
+  const complete = contradictsCounts ? false
+    : completeValue === undefined ? (truncatedValue !== true && !behindCounts)
+      : completeValue;
   const coverage = coverageValue !== undefined ? safeCoverage(coverageValue) :
     (total != null && total > 0 ? Math.min(1, returned / total) : (complete ? 1 : null));
-  const reason = explicit?.reason ?? result?.reason ?? (complete ? null : 'result-limit');
+  const reason = contradictsCounts ? 'malformed-completeness'
+    : (explicit?.reason ?? result?.reason ?? (complete ? null : 'result-limit'));
   return { complete, returned, total, coverage, reason };
 }
 

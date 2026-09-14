@@ -63,3 +63,26 @@ test('CircleCI derives the Phase 8 subset through the exact route helper', () =>
 });
 
 console.log('phase8 cross-lane ownership routing: PASS');
+
+
+test('Dependabot workflow group uses an exact Phase 8 cross-lane route', () => {
+  const branch = "dependabot/github_actions/github-actions-436ea2ae3a";
+  const owned = [
+    '.github/workflows/phase8-ownership.yml',
+    '.github/workflows/phase8-release-validation.yml',
+    'tests/phase8/ownership/cross-lane-routing.test.mjs',
+    'tools/validation/phase8/cross-lane-inventory.mjs',
+  ];
+  const inventory = [...owned, ...CROSS_LANE_ROUTES[branch]];
+  assert.deepEqual(
+    validateCrossLaneInventory(branch, inventory),
+    [...owned].sort((a, b) => Buffer.from(a).compare(Buffer.from(b))),
+  );
+  assert.throws(
+    () => validateCrossLaneInventory(branch, [...inventory, 'js/ui/unrelated.js']),
+    /unexpected foreign paths|outside-lane|forbidden/,
+  );
+  assert.ok(CONFIG.includes(branch));
+  const fallback = readFileSync('.github/workflows/phase8-ownership.yml', 'utf8');
+  assert.ok(fallback.includes(branch));
+});

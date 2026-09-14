@@ -23,6 +23,13 @@ const MEMORY_NODE_KINDS = new Set(['load', 'store']);
 const VARIABLE_NODE_KINDS = new Set(['state-read', 'state-write']);
 const CONTROL_NODE_KINDS = new Set(['branch', 'conditional-branch', 'switch']);
 
+// Fixed-arity control nodes have exact successor counts; a `switch` keeps its
+// n-ary case list.
+export const SEMANTIC_CONTROL_TARGET_COUNTS = Object.freeze({
+  branch: 1,
+  'conditional-branch': 2,
+});
+
 export function createSemanticValue(input) {
   input = object(input, 'semantic-ir-invalid-value');
   assertAllowedKeys(input, new Set([
@@ -108,6 +115,11 @@ export function createSemanticNode(input) {
     fail('semantic-ir-intrinsic-unknown-hidden-by-node');
   }
   if (CONTROL_NODE_KINDS.has(kind) && !out.targets.length) fail('semantic-ir-control-target-required');
+  if (kind === 'branch' && out.inputs.length !== 0) fail('semantic-ir-control-input-cardinality');
+  if (kind === 'conditional-branch' && out.inputs.length !== 1) fail('semantic-ir-control-input-cardinality');
+  if (Object.hasOwn(SEMANTIC_CONTROL_TARGET_COUNTS, kind) && out.targets.length !== SEMANTIC_CONTROL_TARGET_COUNTS[kind]) {
+    fail('semantic-ir-control-target-cardinality');
+  }
   if (SEMANTIC_SETS.unknownOperations.has(kind) && out.unknown == null) fail('semantic-ir-unknown-detail-required');
   if (SEMANTIC_SETS.unknownOperations.has(kind) && out.completeness === 'complete') fail('semantic-ir-unknown-cannot-be-complete');
   // A node-local unknown payload is explicit evidence of an unresolved

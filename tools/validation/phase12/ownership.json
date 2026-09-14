@@ -86,6 +86,7 @@
       "tests/phase10/runtime/runtime-intervention-ledger-collision-3579.test.mjs",
       "js/program.js",
       "tests/issue-2059-program-merge.mjs",
+      "tests/issue-4926-objc-partial-coverage-method-authority.mjs",
       "js/app.js",
       "js/agent/tools.js",
       "js/metadata/rust.js",

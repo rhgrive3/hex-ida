@@ -10,6 +10,7 @@ import {
   addressString, assertLiveBindingsUnchanged, compactCandidate, deterministicDecision,
   createMonotonicClock, ensureRunning, humanError, maxWireUsage, memoryAnchor, normalizeError, providerDiagnostics,
   remainingTime, requiredScopeForTool, resolveMonotonicClock, sessionMatchesSnapshot, stableStringify, wireMeta,
+  withPlanEvidenceBinding,
 } from './runtime-support.js';
 
 const MIN_MODEL_REPAIR_REMAINING_MS = 45000;
@@ -281,6 +282,12 @@ export async function executeTurn(input = {}, options = {}) {
           if (!limitReason && plan?.exhausted && registry.accounting.calls >= budget.maxToolCalls) limitReason = 'tool-call-budget';
           assertLiveBindingsUnchanged(this.localContext, snapshot);
           const plannedEvidence = evidenceStore.ingestPlan(plan);
+          // Publish the canonical record set this plan actually produced.
+          // `plan.evidence` holds raw planner source IDs, which are a different
+          // identity domain from EvidenceStore record IDs; finalization must
+          // consume the bound set instead of re-searching the session for
+          // arbitrary planner records (#8864).
+          plan = withPlanEvidenceBinding(plan, plannedEvidence);
           observations.push({
             tool: 'deterministic_goal_planner', summary: `${plan.candidates?.length || 0} ranked candidates`, evidenceIds: plannedEvidence.map((item) => item.id),
             data: { candidates: (plan.candidates || []).slice(0, 20).map(compactCandidate), best: plan.best ? { address: addressString(plan.best.address), name: plan.best.name, verified: !!plan.best.verification?.verified } : null, missingEvidence: plan.missingEvidence || [] },
@@ -299,11 +306,14 @@ export async function executeTurn(input = {}, options = {}) {
           while (modelCalls < budget.maxModelCalls) {
             ensureRunning(signal, started, turnTimeoutMs, monotonicNow);
             request.effectiveScope = scopeController.effectiveScope;
-            const caps = providerCapabilities(this.provider);
-            const maxTools = Math.max(1, Math.min(10, typeof caps.maxTools === 'number' && Number.isFinite(caps.maxTools) && caps.maxTools > 0 ? Math.floor(caps.maxTools) : 10));
+            const caps = providerCapabilities(this.provider, request);
+            const advertisedMaxTools = typeof caps.maxTools === 'number' && Number.isFinite(caps.maxTools) && caps.maxTools >= 0
+              ? Math.floor(caps.maxTools)
+              : 10;
+            const maxTools = Math.max(0, Math.min(10, advertisedMaxTools));
             const window = selectToolWindow(registry, { mode: request.mode, requestedScope: request.scope, effectiveScope: scopeController.effectiveScope, intent, observations, hypotheses: hypothesisStore.all(), maxTools });
             const tools = window.tools;
-            if (!tools.length) throw new AIError('invalid_tool_call', `No model-visible tools are available in ${scopeController.effectiveScope} scope.`);
+            if (!tools.length && maxTools > 0) throw new AIError('invalid_tool_call', `No model-visible tools are available in ${scopeController.effectiveScope} scope.`);
             const messages = session.messages.slice(-8).map(({ role, content }) => ({ role, content }));
             const semanticBytes = semanticBudgetFor({ messages, tools, meta: wireMeta(request, scopeController, intent, session.id), capabilities: caps, configuredBytes: budget.contextBytes });
             const built = this.contextBroker.buildModelContext({
@@ -441,7 +451,7 @@ export async function executeTurn(input = {}, options = {}) {
         effectiveScope: scopeController.effectiveScope, hypotheses: hypothesisStore.all(),
         confirmedFindings: typeof evidenceStore.byStatus === 'function'
           ? evidenceStore.byStatus('verified')
-          : evidenceStore.all().filter((item) => item.status === 'verified'), proposedActions: proposalStore.all(),
+          : evidenceStore.all().filter((item) => item.status === 'verified'), proposedActions: proposalStore.persistedActions(),
         lastActivity: activity[activity.length - 1] || null,
       }));
       result.sessionId = session.id;

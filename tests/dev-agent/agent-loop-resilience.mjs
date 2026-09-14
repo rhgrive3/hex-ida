@@ -25,7 +25,8 @@ async function testRunScopedRetryUsesBackoff() {
     { result: { status: 'failed', error: { code: 'transient', message: 'retry me' } } },
     { result: { status: 'completed', responseText: 'done' } },
   ]);
-  const host = graphHost(pool, { supervisorWatchdogTimeoutMs: 500, retryBaseDelayMs: 35 });
+  // This test targets retry backoff; tolerate event-loop contention on CI.
+  const host = graphHost(pool, { supervisorWatchdogTimeoutMs: 5_000, retryBaseDelayMs: 35 });
   await host.start({
     graphId: 'backoff',
     runId: 'run-backoff',

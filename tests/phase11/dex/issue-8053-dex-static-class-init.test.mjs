@@ -24,12 +24,21 @@ const FAILING_CLINIT = [
   0x000e,             // return-void
 ];
 
-function fixture(methods) {
-  return buildDex({
+function fixture(methods, interfaceTypes = []) {
+  const interfaceAnchor = interfaceTypes.length
+    ? [{ classType: 'LU;', name: 'interfaceTypeAnchor', returnType: 'V', params: interfaceTypes, flags: 0x9, registers: interfaceTypes.length, words: [0x000e] }]
+    : [];
+  const built = buildDex({
     classNames: ['LT;', 'LU;'],
     fields: [{ classType: 'LT;', type: 'I', name: 'x', static: true, flags: 0x8 }],
-    methods,
-  }).bytes;
+    methods: [...interfaceAnchor, ...methods],
+  });
+  const bytes = built.bytes.slice();
+  if (interfaceTypes.length) {
+    const typeListOffset = built.layout.maps.find(([type]) => type === 0x1001)[2];
+    new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setUint32(built.layout.classes + 12, typeListOffset, true);
+  }
+  return bytes;
 }
 
 async function lift(bytes, name) {
@@ -119,12 +128,13 @@ for (const [label, words] of [
   });
 }
 
-// 6. Modern DEX without canonical superinterface/default-method authority
-// cannot use the absence of a declaring-class `<clinit>` as proof that class
-// initialization has no executable trigger. Keep the access fail-closed; the
-// pre-037 exact control lives in the focused superclass/interface regression.
+// 6. A non-empty modern-Dex interface list cannot prove that no default-method
+// initialization trigger exists, so the access remains fail-closed.
 {
-  const { image, decoded } = await lift(fixture([ACCESSOR([0x0060, 0x0000, 0x000f])]), 'no-clinit');
+  const { image, decoded } = await lift(
+    fixture([ACCESSOR([0x0060, 0x0000, 0x000f])], ['LI;']),
+    'no-clinit',
+  );
   assert.equal(image.formatVersion, 'dex-039');
   const bundle = decoded.bundles.find((b) => b.mnemonic === 'sget');
   assert.equal(bundle.completeness, 'partial');

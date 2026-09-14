@@ -37,7 +37,7 @@ export class CilFrontend {
     yield {
       id: image.moduleId,
       imageId: image.imageId,
-      name: 'Assembly.dll',
+      name: image.module?.name || image.moduleName || 'Assembly.dll',
       formatVersion: image.formatVersion,
     };
   }

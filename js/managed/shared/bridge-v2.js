@@ -6,17 +6,78 @@ import * as legacy from './bridge.js';
 import { lowerVMEffectsToSemanticIr as lowerCore } from './bridge-lowering-v2.js';
 import { overlayDexLowering } from './bridge-dex-overlay-v2.js';
 import { overlayJvmControlLowering } from './bridge-jvm-control-overlay-v2.js';
+import { overlayWasmNarrowLoadExtensions } from './bridge-wasm-narrow-load-overlay-v2.js';
 import { assertVMEffectFunctionBundleOwnership } from './vm-effects.js';
+import { overlayWasmSelect, projectWasmSelectView } from './bridge-wasm-select-overlay-v2.js';
 import { isManagedExternalCall } from './call-classification.js';
 
 export const MANAGED_BRIDGE_VERSION = legacy.MANAGED_BRIDGE_VERSION;
 export const queryManagedSymbolicVerification = legacy.queryManagedSymbolicVerification;
 export const queryManagedRuntimeProvider = legacy.queryManagedRuntimeProvider;
 export const buildManagedTypeConstraintGraph = legacy.buildManagedTypeConstraintGraph;
+const UNREPRESENTABLE_EFFECT_REASON = 'managed-effect-shape-unrepresentable';
+const UNREPRESENTABLE_EFFECT_FIELDS = Object.freeze([
+  Object.freeze(['memoryEffects', 'memory']),
+  Object.freeze(['callEffects', 'calls']),
+  Object.freeze(['controlEffects', 'control']),
+]);
+const EXACT_BUNDLE_COMPLETENESS = new Set(['exact', 'exact-with-intrinsic']);
+
+function effectRepresentabilityGap(bundle) {
+  const categories = [];
+  let collapsed = false;
+  for (const [field, category] of UNREPRESENTABLE_EFFECT_FIELDS) {
+    const count = Array.isArray(bundle?.[field]) ? bundle[field].length : 0;
+    if (count > 0) categories.push(category);
+    if (field !== 'memoryEffects' && count > 1) collapsed = true;
+  }
+  return collapsed || categories.length > 1 ? categories : null;
+}
+
+function maskUnrepresentableEffects(value) {
+  if (!value || !Array.isArray(value.bundles)) return value;
+  let changed = false;
+  const bundles = value.bundles.map((bundle) => {
+    const categories = effectRepresentabilityGap(bundle);
+    if (!categories) return bundle;
+    changed = true;
+    const gaps = categories.map((category) => ({ category, categories: [category], reason: UNREPRESENTABLE_EFFECT_REASON }));
+    return deepFreeze({
+      ...bundle,
+      completeness: EXACT_BUNDLE_COMPLETENESS.has(bundle.completeness) ? 'partial' : bundle.completeness,
+      unknownEffects: [...gaps, ...(bundle.unknownEffects ?? [])],
+    });
+  });
+  if (!changed) return value;
+  return deepFreeze({
+    ...value,
+    bundles,
+    aggregateCompleteness: value.aggregateCompleteness === 'unknown' ? 'unknown' : 'partial',
+  });
+}
+
 export function lowerVMEffectsToSemanticIr(value, options = {}) {
   assertVMEffectFunctionBundleOwnership(value);
-  const lowered = overlayJvmControlLowering(value, lowerCore(value, options), options);
-  return overlayDexLowering(value, lowered);
+  const representable = maskUnrepresentableEffects(value);
+  const lowered = overlayJvmControlLowering(representable, overlayWasmSelect(representable, lowerCore(representable, options), options), options);
+  const wasmLowered = overlayWasmNarrowLoadExtensions(representable, lowered, options);
+  const overlaid = overlayDexLowering(representable, wasmLowered);
+  const hasUnrepresentedFunctionExit = representable.bundles?.some((bundle) =>
+    bundle.controlEffects?.some((effect) => effect.kind === 'switch'
+      && (effect.caseKinds?.some((kind) => kind === 'function-exit')
+        || effect.defaultKind === 'function-exit')),
+  );
+  if (!hasUnrepresentedFunctionExit || overlaid.semanticIr?.completeness !== 'complete') return overlaid;
+  const unknowns = Array.isArray(overlaid.semanticIr.unknowns) ? overlaid.semanticIr.unknowns : [];
+  if (unknowns.some((item) => item?.reason === 'switch-function-exit-edge-unrepresented')) return overlaid;
+  return deepFreeze({
+    ...overlaid,
+    semanticIr: deepFreeze({
+      ...overlaid.semanticIr,
+      completeness: 'partial',
+      unknowns: [...unknowns, { reason: 'switch-function-exit-edge-unrepresented', categories: ['control'] }],
+    }),
+  });
 }
 
 function ensureLowered(value, options) { return value && Array.isArray(value.bundles) ? lowerVMEffectsToSemanticIr(value, options) : value; }
@@ -106,4 +167,4 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
   return deepFreeze({methodId,summary,directCalls,dynamicCalls,externalCalls,thrownExceptions,hasExceptionEdges,completeness});
 }
 export function analyzeManagedInterprocedural(methods, options={}){const methodMap=new Map();for(const method of methods){const summary=buildManagedMethodSummary(method,options);methodMap.set(summary.methodId,summary)}const roots=[...methodMap.keys()],successorsOf=id=>{const entry=methodMap.get(id);return entry?entry.directCalls.map(c=>c.target).filter(t=>methodMap.has(t)):[]};const{components,truncated}=condenseCallGraph(roots,successorsOf,options);return deepFreeze({components,truncated,summaries:methodMap})}
-export function decompileManagedMethod(loweredOrFunction,options={}){return legacy.decompileManagedMethod(ensureLowered(loweredOrFunction,options),options)}
+export function decompileManagedMethod(loweredOrFunction,options={}){const lowered=ensureLowered(loweredOrFunction,options);return legacy.decompileManagedMethod(projectWasmSelectView(lowered),options)}

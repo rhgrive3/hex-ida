@@ -480,9 +480,13 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
       const ind = await readRange(base + BigInt(info.dysymtab.indirectsymoff), n * 4);
       if (ind.length >= 4) {
         try {
-          for (const s of MachO.stubSymbols(info, ind, sym)) {
+          const stubList = MachO.stubSymbols(info, ind, sym);
+          for (const s of stubList) {
             entries.push({ addr: s.addr, name: s.name, kind: s.stub ? 1 : 2 });
           }
+          // Indirect-symbol expansion hit its aggregate budget: symbol discovery
+          // is capped and must not be reported as complete (#8800).
+          if (stubList.truncated) capped = true;
         } catch { /* 壊れていても他は返す */ }
       }
     }
@@ -865,12 +869,19 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   const slice = slices.find((s) => (s.regions || []).some((r) => r.id === regionId));
   const imageBase = slice && slice.info ? slice.info.textVM : null;
   const unwind = slice ? (slice.regions || []).find((r) => r.section === '__unwind_info' && r.size > 0n) : null;
+  let unwindMetadataTruncated = false;
+  let unwindMetadataReason = null;
   if (unwind && imageBase != null && unwind.size < BigInt(16 * 1024 * 1024)) {
     try {
       const buf = await readRange(unwind.fileOffset, Number(unwind.size));
-      for (const a of MachO.parseUnwindStarts(buf, imageBase)) {
-        if (a >= lo && a < hi && found.size < cap) found.add(a);
+      const remaining = Math.max(0, cap - found.size);
+      if (remaining > 0) {
+        const unwindStarts = MachO.parseUnwindStarts(buf, imageBase, { maxResults: remaining, maxWork: remaining, shouldCancel: () => cancelled(requestId) });
+        for (const a of unwindStarts) if (a >= lo && a < hi && found.size < cap) found.add(a);
+        if (unwindStarts.truncated) { unwindMetadataTruncated = true; unwindMetadataReason = 'unwind-starts-' + (unwindStarts.truncationReason || 'truncated'); }
       }
+      await yieldToQueue();
+      if (cancelled(requestId)) return { starts: new BigUint64Array(0), cancelled: true };
     } catch { /* 読めなければ推測だけで進む */ }
   }
 
@@ -1300,8 +1311,8 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   const starts = new BigUint64Array(list.length);
   for (let i = 0; i < list.length; i++) starts[i] = list[i];
   const startCapHit = found.size >= cap;
-  const capped = startCapHit || candidateBudgetHit;
-  const truncationReason = candidateBudgetHit ? 'candidate-memory-budget' : startCapHit ? 'function-start-cap-reached' : null;
+  const capped = startCapHit || candidateBudgetHit || unwindMetadataTruncated;
+  const truncationReason = candidateBudgetHit ? 'candidate-memory-budget' : startCapHit ? 'function-start-cap-reached' : unwindMetadataReason;
   return {
     starts, cancelled: false, capped, truncated: capped, complete: !capped, cap, truncationReason,
     completeness: {
@@ -1425,7 +1436,7 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
       if (kind === Words.KIND.LITERAL) {
         const t = Words.literalTarget(w, pc);
         if (t != null) addRef(pc, t, 1);
-        provenance.kill(w & 0x1f);
+        if (!Words.isPrefetchLiteral(w)) provenance.kill(w & 0x1f);
         continue;
       }
 
@@ -1445,7 +1456,7 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
         // writing d8/q8 must not destroy an address held in x8.  Integer pair
         // loads/RMWs may overwrite two GP results, while exclusive stores also
         // write a separate status register.
-        if (memWrite.load && !memWrite.vector) {
+        if (memWrite.load && !memWrite.vector && !memWrite.prefetch) {
           provenance.kill(memWrite.reg);
           if (memWrite.pair && memWrite.reg2 != null) provenance.kill(memWrite.reg2);
         }
@@ -1455,7 +1466,7 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
       }
       if (kind === Words.KIND.FARITH || kind === Words.KIND.FMUL || kind === Words.KIND.SIMD ||
           (kind === Words.KIND.CSEL && Words.isFpCondSelect?.(w))) continue;
-      if (WRITES_LOW_REG[kind]) provenance.kill(w & 0x1f);
+      if (WRITES_LOW_REG[kind] && !Words.isPrefetchLiteral(w)) provenance.kill(w & 0x1f);
     }
 
     pos += n * 4;
@@ -1488,7 +1499,7 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
   };
 
   function addRef(pc, target, k) {
-    if (target == null || target <= 0n || refsCapped) return;
+    if (target == null || refsCapped) return;
     void lo; void hi;
     if (nRefs === refFrom.length && !growRefs()) refsCapped = memoryCapped = true;
     if (nRefs < refFrom.length) {
@@ -2193,7 +2204,7 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
             if (out.length >= cap) break;
           }
         }
-        if (memWrite.load && !memWrite.vector) {
+        if (memWrite.load && !memWrite.vector && !memWrite.prefetch) {
           provenance.kill(memWrite.reg);
           if (memWrite.pair && memWrite.reg2 != null) provenance.kill(memWrite.reg2);
         }
@@ -2203,7 +2214,7 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
       }
       if (kind === Words.KIND.FARITH || kind === Words.KIND.FMUL || kind === Words.KIND.SIMD ||
           (kind === Words.KIND.CSEL && Words.isFpCondSelect?.(w))) continue;
-      if (WRITES_LOW_REG[kind]) provenance.kill(w & 0x1f);
+      if (WRITES_LOW_REG[kind] && !Words.isPrefetchLiteral(w)) provenance.kill(w & 0x1f);
     }
     pos += words * 4;
     scanProgress(requestId, epoch, pos, total, out.length);

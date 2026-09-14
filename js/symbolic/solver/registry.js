@@ -36,6 +36,9 @@ export class SolverRegistry {
     if (!backend || !backend.id) {
       throw new TypeError('registerBackend: backend must have a valid id');
     }
+    if (this._backends.has(backend.id)) {
+      throw new Error(`registerBackend: backend '${backend.id}' is already registered`);
+    }
     this._backends.set(backend.id, backend);
     if (!this._defaultBackendId && qualifiesAsExactDefault(backend, this._allowNonExactDefault)) {
       this._defaultBackendId = backend.id;

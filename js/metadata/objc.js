@@ -163,6 +163,10 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
     this.cachedIndex = buildObjcRuntimeIndex(model);
 
     const isComplete = model.runtimeCompleteness?.complete === true;
+    const coveredEntityIds = isComplete
+      ? []
+      : [...this.types().records, ...this.methods().records].map((record) => record.entityId);
+    const hasIdentityBinding = this.binaryIdentity != null;
     // A pointer ABI the provider cannot decode is reported as an explicit
     // reason instead of arriving as an unexplained empty metadata set (#8280).
     const pointerAbiReason = model.pointerAbiReason
@@ -172,7 +176,9 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
       ].find((reason) => typeof reason === 'string' && reason.startsWith('objc-pointer-abi'))
       ?? null;
     const identity = createLanguageMetadataIdentity({
-      verdict: isComplete ? 'matched-authoritative' : 'matched-partial',
+      verdict: isComplete
+        ? (hasIdentityBinding ? 'matched-authoritative' : 'identity-unavailable')
+        : 'matched-partial',
       providerId: this.id,
       providerVersion: this.version,
       ecosystem: 'objc',
@@ -183,12 +189,12 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
       architecture: this.architecture,
       platform: this.platform,
       method: 'objc-2.0-runtime',
-      detail: `Objective-C 2.0 (${model.classes?.length || 0} classes, ${model.protocols?.length || 0} protocols)`,
+      detail: hasIdentityBinding
+        ? `Objective-C 2.0 (${model.classes?.length || 0} classes, ${model.protocols?.length || 0} protocols)`
+        : `Objective-C 2.0 without binary identity binding (${model.classes?.length || 0} classes, ${model.protocols?.length || 0} protocols)`,
       coverage: isComplete ? null : {
         recordKinds: ['type', 'method'],
-        addresses: (model.classes || [])
-          .filter((c) => c.address != null)
-          .map((c) => `0x${c.address.toString(16)}`),
+        entityIds: coveredEntityIds,
       },
     });
 

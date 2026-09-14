@@ -106,6 +106,8 @@ function __writesLowReg(w) {
   ]).has(kind);
 }
 
+const __XREF_PAIR_WINDOW = Number.MAX_SAFE_INTEGER;
+
 /* Canonical xref target identity (#5872): bigint, non-negative safe integer,
  * or exact integer numeric string. Structured values must never reach
  * BigInt()'s ToPrimitive: a malformed request gets a hard error instead of
@@ -177,7 +179,7 @@ findXrefs = async function findXrefsHardened({ regionId, target, limit, requestI
 
       const pair = Words.pairedOffset(w);
       let propagated = -1;
-      if (pair && pageOf[pair.rn] != null && index - pageAt[pair.rn] <= 8) {
+      if (pair && pageOf[pair.rn] != null && index - pageAt[pair.rn] <= __XREF_PAIR_WINDOW) {
         const full = pageOf[pair.rn] + pair.imm;
         if (full === want) {
           out.push({
@@ -242,7 +244,7 @@ function __addressBitmap(region) {
   };
 }
 
-async function __functionEvidence(region, slice, requestId) {
+async function __functionEvidence(region, slice, requestId, unwindLimit = 200_000) {
   const lo = region.vmAddr, hi = region.vmAddr + region.size;
   const imageBase = slice && slice.info ? slice.info.textVM : null;
   const data = new Set(), structured = new Set(), relativeCodeCandidates = new Set(), imageRelativeCodeCandidates = new Set();
@@ -269,6 +271,11 @@ async function __functionEvidence(region, slice, requestId) {
   const tailFrameCounts = new Map();
   const tailAddSpTargets = new Set(), tailFrameTargets = new Set();
   let ehFrameRanges = [];
+  let metadataIncomplete = false;
+  let metadataTruncationReason = null;
+  const boundedUnwindLimit = typeof unwindLimit === 'number' && Number.isSafeInteger(unwindLimit) && unwindLimit >= 0
+    ? Math.min(unwindLimit, 200_000)
+    : 0;
 
   if (slice && imageBase != null) {
     // Merge exact runtime metadata collectors from the current branch with
@@ -282,8 +289,13 @@ async function __functionEvidence(region, slice, requestId) {
     if (unwindRegion && unwindRegion.size < 16n * 1024n * 1024n) {
       try {
         const buf = await readRange(unwindRegion.fileOffset, Number(unwindRegion.size));
-        for (const a of MachO.parseUnwindStarts(buf, imageBase)) if (a >= lo && a < hi) unwind.add(a);
-        unwindLsdaEntries = MachO.parseUnwindLsdaEntries(buf, imageBase);
+        const unwindStarts = MachO.parseUnwindStarts(buf, imageBase, { maxResults: boundedUnwindLimit, maxWork: boundedUnwindLimit, shouldCancel: () => cancelled(requestId) });
+        for (const a of unwindStarts) if (a >= lo && a < hi) unwind.add(a);
+        if (unwindStarts.truncated) { metadataIncomplete = true; metadataTruncationReason ||= 'unwind-starts-' + (unwindStarts.truncationReason || 'truncated'); }
+        unwindLsdaEntries = MachO.parseUnwindLsdaEntries(buf, imageBase, { maxResults: boundedUnwindLimit, maxWork: boundedUnwindLimit, shouldCancel: () => cancelled(requestId) });
+        if (unwindLsdaEntries.truncated) { metadataIncomplete = true; metadataTruncationReason ||= 'unwind-lsda-' + (unwindLsdaEntries.truncationReason || 'truncated'); }
+        await yieldToQueue();
+        if (cancelled(requestId)) return { cancelled: true, incomplete: true, truncationReason: 'cancelled' };
       } catch { /* malformed unwind metadata is not evidence */ }
     }
 
@@ -739,7 +751,7 @@ async function __functionEvidence(region, slice, requestId) {
   for (const target of imageRelativeCodeCandidates) {
     if (indirectTerminalStarts.has(target) || trapTerminalStarts.has(target)) structured.add(target);
   }
-  return { data, structured, exactMetadata, directBranches, trapPeriodicGroups, trapStrideGroups, adrpReturnGroups, ehFrameRanges, exceptionLandingPads, interiorFrameSetups, denseAddressLeafStarts, unwind, directCalls, prologues, terminalStarts, indirectTerminalStarts, conditionalTargets, tailCalls, indirectThunkStarts, repeatedThunkStarts, repeatedDirectTailStarts };
+  return { data, structured, exactMetadata, directBranches, trapPeriodicGroups, trapStrideGroups, adrpReturnGroups, ehFrameRanges, exceptionLandingPads, interiorFrameSetups, denseAddressLeafStarts, unwind, directCalls, prologues, terminalStarts, indirectTerminalStarts, conditionalTargets, tailCalls, indirectThunkStarts, repeatedThunkStarts, repeatedDirectTailStarts, incomplete: metadataIncomplete, truncationReason: metadataTruncationReason };
 }
 
 const __FUNCTION_DIRECT_BYTES = 24n * 1024n * 1024n;
@@ -863,8 +875,8 @@ guessFunctions = async function guessFunctionsHardened(args) {
   const region = regions.get(args.regionId);
   const slice = slices.find((s) => (s.regions || []).some((r) => r.id === args.regionId));
   if (!region) return result;
-  const ev = await __functionEvidence(region, slice, args.requestId);
-  if (cancelled(args.requestId)) return { starts: new BigUint64Array(0), cancelled: true };
+  const ev = await __functionEvidence(region, slice, args.requestId, result.cap);
+  if (!ev || ev.cancelled || cancelled(args.requestId)) return { starts: new BigUint64Array(0), cancelled: true };
 
   const kept = new Set();
   let filteredDataCandidates = 0;
@@ -1016,11 +1028,17 @@ guessFunctions = async function guessFunctionsHardened(args) {
   const ordered = Array.from(kept).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const starts = new BigUint64Array(ordered.length);
   for (let i = 0; i < ordered.length; i++) starts[i] = ordered[i];
+  const evidenceIncomplete = ev.incomplete === true;
+  const capped = !!result.capped || evidenceIncomplete;
+  const truncationReason = result.truncationReason || (evidenceIncomplete ? (ev.truncationReason || 'function-evidence-truncated') : null);
+  const completeness = { ...(result.completeness || {}), complete: !capped, reason: truncationReason };
+  if (completeness.addressRange) completeness.addressRange = { ...completeness.addressRange, complete: !capped };
   return {
     ...result,
     starts,
     filteredDataCandidates,
     dataPointerRequiresConfirmation: true,
+    capped, truncated: capped, complete: !capped, truncationReason, completeness,
     __transfer: [starts.buffer],
   };
 };

@@ -75,8 +75,8 @@ const access = { classType: 'LUser;', name: 'access' };
     image: imageFor({ superType: null, superClinit: false, formatVersion: 'dex-035' }),
     method: access,
   });
-  assert.equal(effect.completeness, undefined);
-  assert.equal(effect.unknownEffects, undefined);
+  assert.equal(effect.completeness, 'exact');
+  assert.deepEqual(effect.unknownEffects, []);
   assert.deepEqual(effect.memoryEffects[0].classInitialization, {
     declaringClass: 'LSub;',
     clinitPresent: false,
@@ -85,14 +85,11 @@ const access = { classType: 'LUser;', name: 'access' };
   });
 }
 
-// DEX 037+ admits default interface methods. Current-main class metadata does
-// not provide canonical superinterface/default-method authority to this
-// resolver, so a clean declaring/superclass chain alone is insufficient to
-// publish an exact static access. Model the concrete counterexample explicitly
-// to ensure the absent authority is never mistaken for proof of absence.
+// DEX 037+ admits default interface methods. A non-empty interface list is
+// not enough to prove that class initialization has no additional effects.
 {
   const image = imageFor({ superType: 'LSuper;', formatVersion: 'dex-037' });
-  image.classes[0].interfaces = ['LI;'];
+  image.classes[0].interfaceTypes = ['LI;'];
   image.classes.push({
     classType: 'LI;',
     superType: null,

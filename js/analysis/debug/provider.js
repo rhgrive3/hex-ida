@@ -49,6 +49,10 @@ export const DEBUG_DEFAULT_BUDGET = Object.freeze({
   maxBytesScanned: 64 * 1024 * 1024,
   maxRecords: 200000,
   maxDepth: 64,
+  // PDB type names are materialized after parsing, so byte/record/depth
+  // limits alone cannot bound a shared type DAG's expansion cost.
+  maxTypeWork: 4096,
+  maxTypeOutputChars: 64 * 1024,
 });
 
 /**
@@ -60,10 +64,18 @@ export const DEBUG_DEFAULT_BUDGET = Object.freeze({
 export function resolveDebugBudget(budget) {
   const source = budget && typeof budget === 'object' ? budget : {};
   const bounded = (value) => (Number.isSafeInteger(value) && value > 0 ? value : null);
+  const typeWork = bounded(source.maxTypeWork)
+    ?? bounded(source.maxTypeExpansions)
+    ?? DEBUG_DEFAULT_BUDGET.maxTypeWork;
+  const typeOutputChars = bounded(source.maxTypeOutputChars)
+    ?? bounded(source.maxTypeNameChars)
+    ?? DEBUG_DEFAULT_BUDGET.maxTypeOutputChars;
   return Object.freeze({
     maxBytesScanned: bounded(source.maxBytesScanned) ?? DEBUG_DEFAULT_BUDGET.maxBytesScanned,
     maxRecords: bounded(source.maxRecords) ?? DEBUG_DEFAULT_BUDGET.maxRecords,
     maxDepth: bounded(source.maxDepth) ?? DEBUG_DEFAULT_BUDGET.maxDepth,
+    maxTypeWork: typeWork,
+    maxTypeOutputChars: typeOutputChars,
   });
 }
 

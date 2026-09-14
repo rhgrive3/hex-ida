@@ -27,7 +27,7 @@ import {
 } from './provider.js';
 
 export const PDB_PROVIDER_ID = 'phase7.debug.pdb';
-export const PDB_PROVIDER_VERSION = '1.0.0';
+export const PDB_PROVIDER_VERSION = '1.1.0';
 
 const MSF_MAGIC = 'Microsoft C/C++ MSF 7.00\r\n\u001aDS\0\0\0';
 const MSF_BLOCK_SIZES = Object.freeze([512, 1024, 2048, 4096]);
@@ -49,6 +49,7 @@ const LF_STRUCTURE = 0x1505;
 const LF_CLASS = 0x1504;
 const LF_UNION = 0x1506;
 const LF_ENUM = 0x1507;
+const LF_ENUMERATE = 0x1502;
 const LF_ARRAY = 0x1503;
 const LF_MEMBER = 0x150d;
 
@@ -57,6 +58,12 @@ const MODIFIER_CONST = 0x0001;
 const MODIFIER_VOLATILE = 0x0002;
 const MODIFIER_UNALIGNED = 0x0004;
 const MODIFIER_KNOWN_MASK = MODIFIER_CONST | MODIFIER_VOLATILE | MODIFIER_UNALIGNED;
+
+/** CodeView ClassOptions used by tag records, including LF_ENUM. */
+const CLASS_OPTION_FORWARD_REFERENCE = 0x0080;
+const CLASS_OPTION_HAS_UNIQUE_NAME = 0x0200;
+// LLVM's current ClassOptions set: all other bits are semantically unknown here.
+const CLASS_OPTIONS_KNOWN_MASK = 0x27ff;
 
 /** CV_PUBSYMFLAGS: bit 1 marks a function. */
 const CVPSF_FUNCTION = 0x00000002;
@@ -532,6 +539,7 @@ function parseTpiStreamWithBudget(bytes, recordBudget, context) {
   let offset = typeDataStart;
   let index = firstIndex;
   let fieldListsComplete = true;
+  let enumFieldListsComplete = true;
 
   while (offset + 4 <= typeDataEnd && index - firstIndex < expectedCount) {
     const length = view.getUint16(offset, true);
@@ -548,7 +556,7 @@ function parseTpiStreamWithBudget(bytes, recordBudget, context) {
     const bodyEnd = {
       [LF_STRUCTURE]: body + 18, [LF_CLASS]: body + 18, [LF_UNION]: body + 10,
       [LF_POINTER]: body + 8, [LF_MODIFIER]: body + 6, [LF_PROCEDURE]: body + 12,
-      [LF_ARRAY]: body + 8, [LF_ENUM]: body + 8,
+      [LF_ARRAY]: body + 8, [LF_ENUM]: body + 12,
     }[leaf] ?? end;
     if (bodyEnd > end) break;
 
@@ -572,7 +580,7 @@ function parseTpiStreamWithBudget(bytes, recordBudget, context) {
         leaf, kind: 'aggregate', keyword,
         // Bit 7 of the property field marks a forward reference: it names the
         // type but carries no layout, so it is not a complete fact.
-        forwardReference: (properties & 0x0080) !== 0,
+        forwardReference: (properties & CLASS_OPTION_FORWARD_REFERENCE) !== 0,
         memberCount: count,
         fieldList,
         sizeBytes,
@@ -597,11 +605,36 @@ function parseTpiStreamWithBudget(bytes, recordBudget, context) {
       const { value: sizeBytes } = numeric;
       types.set(index, { leaf, kind: 'array', elementType: view.getUint32(body, true), sizeBytes });
     } else if (leaf === LF_ENUM) {
-      types.set(index, { leaf, kind: 'enum', underlying: view.getUint32(body + 4, true), name: null });
+      // LF_ENUM is a TagRecord: NumEnumerators, Properties, UnderlyingType,
+      // FieldListType, Name, and (when HasUniqueName is set) UniqueName.
+      // Retaining only UnderlyingType made a recognized record render as
+      // `unknown`, while also skipping structural validation of its names
+      // (#4058).
+      const memberCount = view.getUint16(body, true);
+      const properties = view.getUint16(body + 2, true);
+      const underlying = view.getUint32(body + 4, true);
+      const fieldList = view.getUint32(body + 8, true);
+      const nameEntry = cstringWithNext(bytes, body + 12, end);
+      if (!nameEntry) break;
+      let uniqueName = null;
+      if ((properties & CLASS_OPTION_HAS_UNIQUE_NAME) !== 0) {
+        const uniqueNameEntry = cstringWithNext(bytes, nameEntry.next, end);
+        if (!uniqueNameEntry) break;
+        uniqueName = uniqueNameEntry.value;
+      }
+      const knownProperties = (properties & ~CLASS_OPTIONS_KNOWN_MASK) === 0;
+      if (!knownProperties) unmodelled.add(leaf);
+      types.set(index, {
+        leaf, kind: 'enum', memberCount, properties, underlying, fieldList,
+        name: nameEntry.value, uniqueName,
+        complete: knownProperties && (properties & CLASS_OPTION_FORWARD_REFERENCE) === 0,
+      });
     } else if (leaf === LF_FIELDLIST) {
       const fieldList = parseFieldList(view, bytes, body, end, unmodelled);
       if (!fieldList.complete) fieldListsComplete = false;
-      types.set(index, { leaf, kind: 'field-list', members: fieldList.members, complete: fieldList.complete });
+      types.set(index, {
+        leaf, kind: 'field-list', members: fieldList.members, enumerators: fieldList.enumerators, complete: fieldList.complete,
+      });
     } else if (leaf === LF_ARGLIST) {
       // Historical fixtures contain a leaf-only LF_ARGLIST. Preserve the
       // record boundary/stream walk, but never let that shape prove an exact
@@ -627,6 +660,27 @@ function parseTpiStreamWithBudget(bytes, recordBudget, context) {
     offset = end;
     index += 1;
   }
+  // LF_ENUM completeness also depends on the referenced LF_FIELDLIST: a
+  // non-forward enum is not authoritative unless the reference resolves to a
+  // complete enum-only field list whose LF_ENUMERATE count agrees with
+  // NumEnumerators. Resolve after the stream walk so forward TypeIndex
+  // references are handled without record-order assumptions (#4058).
+  for (const record of types.values()) {
+    if (record.kind !== 'enum' || record.complete !== true) continue;
+    const noMembers = record.memberCount === 0 && record.fieldList === 0;
+    const fields = record.fieldList === 0 ? null : types.get(record.fieldList);
+    const fieldListMatches = noMembers || (
+      fields?.kind === 'field-list'
+      && fields.complete === true
+      && fields.members.length === 0
+      && fields.enumerators.length === record.memberCount
+    );
+    if (!fieldListMatches) {
+      record.complete = false;
+      enumFieldListsComplete = false;
+    }
+  }
+
   // An incomplete field-list child (unsupported subrecord) fails the stream
   // closed (#5773). Complete also only when the declared record extent was
   // fully consumed and the parsed record count matches TypeIndexEnd -
@@ -635,7 +689,8 @@ function parseTpiStreamWithBudget(bytes, recordBudget, context) {
   return {
     types,
     unmodelled,
-    complete: fieldListsComplete && expectedCount >= 0 && offset >= typeDataEnd && index - firstIndex === expectedCount,
+    complete: fieldListsComplete && enumFieldListsComplete
+      && expectedCount >= 0 && offset >= typeDataEnd && index - firstIndex === expectedCount,
     firstIndex,
   };
 }
@@ -699,154 +754,384 @@ function readNumeric(view, bytes, offset, end = bytes.length) {
 }
 
 /**
- * Parses an LF_FIELDLIST's children. Only LF_MEMBER is modeled: any other
- * (valid) field-list subrecord — LF_STMEMBER, LF_BCLASS, LF_METHOD, ... —
- * cannot be skipped reliably, so the children after it are unreachable and
- * the field list is incomplete. That incompleteness propagates to the whole
- * TPI result instead of silently publishing a partial member list as an
- * exact layout (#5773).
+ * Parses the field-list children whose shapes this provider can validate.
+ * LF_MEMBER supplies aggregate layout facts; LF_ENUMERATE supplies enum member
+ * authority. Any other valid subrecord — LF_STMEMBER, LF_BCLASS, LF_METHOD,
+ * LF_INDEX, ... — cannot be skipped reliably here, so the list is incomplete
+ * instead of publishing a partial child set as exact evidence (#5773/#4058).
  */
 function parseFieldList(view, bytes, start, end, unmodelled) {
   const members = [];
+  const enumerators = [];
   let offset = start;
   let complete = true;
   while (offset + 2 <= end) {
     const leaf = view.getUint16(offset, true);
-    if (leaf !== LF_MEMBER) {
+    let nameEntry = null;
+    if (leaf === LF_MEMBER) {
+      if (offset + 8 > end) { complete = false; break; }
+      const typeIndex = view.getUint32(offset + 4, true);
+      const numeric = readNumeric(view, bytes, offset + 8, end);
+      if (!numeric || numeric.value == null) { complete = false; break; }
+      const { value: fieldOffset, next } = numeric;
+      nameEntry = cstringWithNext(bytes, next, end);
+      if (!nameEntry) { complete = false; break; }
+      members.push({ name: nameEntry.value, typeIndex, offset: fieldOffset });
+    } else if (leaf === LF_ENUMERATE) {
+      // LF_ENUMERATE = leaf, CV_fldattr_t, numeric value, NUL name. The
+      // enumerator value is retained so later consumers cannot mistake a
+      // counted-but-unparsed child for validated member authority.
+      if (offset + 4 > end) { complete = false; break; }
+      const attributes = view.getUint16(offset + 2, true);
+      const numeric = readNumeric(view, bytes, offset + 4, end);
+      if (!numeric || !Number.isSafeInteger(numeric.value)) { complete = false; break; }
+      nameEntry = cstringWithNext(bytes, numeric.next, end);
+      if (!nameEntry) { complete = false; break; }
+      enumerators.push({ name: nameEntry.value, value: numeric.value, attributes });
+    } else {
       unmodelled.add(leaf);
       complete = false;
       break;
     }
-    if (offset + 8 > end) { complete = false; break; }
-    const typeIndex = view.getUint32(offset + 4, true);
-    const numeric = readNumeric(view, bytes, offset + 8, end);
-    if (!numeric || numeric.value == null) { complete = false; break; }
-    const { value: fieldOffset, next } = numeric;
-    const nameEntry = cstringWithNext(bytes, next, end);
-    if (!nameEntry) { complete = false; break; }
-    members.push({ name: nameEntry.value, typeIndex, offset: fieldOffset });
     // Records are padded to a 4-byte boundary with 0xf1..0xf3 filler.
     let cursor = nameEntry.next;
     while (cursor < end && bytes[cursor] >= 0xf0) cursor += 1;
     if (cursor <= offset) { complete = false; break; }
     offset = cursor;
   }
-  return { members, complete: complete && offset === end };
+  return { members, enumerators, complete: complete && offset === end };
+}
+
+const TYPE_RENDER_CYCLE_REASON = 'type-render-cycle';
+const TYPE_RENDER_DEPTH_REASON = 'type-render-depth-limit';
+const TYPE_RENDER_WORK_REASON = 'type-render-work-budget';
+const TYPE_RENDER_OUTPUT_REASON = 'type-render-output-budget';
+
+function unknownTypeDescriptor() {
+  return { name: 'unknown', complete: false };
+}
+
+function createTypeRenderContext({
+  maxDepth = DEBUG_DEFAULT_BUDGET.maxDepth,
+  maxTypeWork = DEBUG_DEFAULT_BUDGET.maxTypeWork,
+  maxTypeOutputChars = DEBUG_DEFAULT_BUDGET.maxTypeOutputChars,
+} = {}) {
+  const context = {
+    maxDepth: Number.isSafeInteger(maxDepth) && maxDepth >= 0
+      ? maxDepth : DEBUG_DEFAULT_BUDGET.maxDepth,
+    maxTypeWork: Number.isSafeInteger(maxTypeWork) && maxTypeWork > 0
+      ? maxTypeWork : DEBUG_DEFAULT_BUDGET.maxTypeWork,
+    maxTypeOutputChars: Number.isSafeInteger(maxTypeOutputChars) && maxTypeOutputChars > 0
+      ? maxTypeOutputChars : DEBUG_DEFAULT_BUDGET.maxTypeOutputChars,
+    work: 0,
+    outputChars: 0,
+    memo: new Map(),
+    active: new Set(),
+    reasons: new Set(),
+    exhaustedReason: null,
+  };
+
+  context.addReason = (reason) => {
+    context.reasons.add(reason);
+  };
+  context.exhaust = (reason) => {
+    context.reasons.add(reason);
+    if (context.exhaustedReason == null) context.exhaustedReason = reason;
+  };
+  context.admitWork = () => {
+    if (context.exhaustedReason != null) return false;
+    if (context.work >= context.maxTypeWork) {
+      context.exhaust(TYPE_RENDER_WORK_REASON);
+      return false;
+    }
+    context.work += 1;
+    return true;
+  };
+  context.admitName = (parts) => {
+    if (context.exhaustedReason != null) return null;
+    let length = 0;
+    for (const part of parts) {
+      if (typeof part !== 'string' || !Number.isSafeInteger(part.length)) {
+        context.exhaust(TYPE_RENDER_OUTPUT_REASON);
+        return null;
+      }
+      length += part.length;
+      if (length > context.maxTypeOutputChars) {
+        context.exhaust(TYPE_RENDER_OUTPUT_REASON);
+        return null;
+      }
+    }
+    if (context.outputChars > context.maxTypeOutputChars - length) {
+      context.exhaust(TYPE_RENDER_OUTPUT_REASON);
+      return null;
+    }
+    const name = parts.join('');
+    context.outputChars += name.length;
+    return name;
+  };
+  return context;
+}
+
+function renderTypeIndex(index, types, depth, context) {
+  if (!context.admitWork()) return unknownTypeDescriptor();
+  if (!Number.isSafeInteger(depth) || depth < 0 || depth > context.maxDepth) {
+    context.addReason(TYPE_RENDER_DEPTH_REASON);
+    return unknownTypeDescriptor();
+  }
+
+  const activeKey = String(index);
+  if (context.active.has(activeKey)) {
+    context.addReason(TYPE_RENDER_CYCLE_REASON);
+    return unknownTypeDescriptor();
+  }
+  const cacheKey = activeKey + ':' + depth;
+  const cached = context.memo.get(cacheKey);
+  if (cached) return cached;
+
+  context.active.add(activeKey);
+  const finish = (descriptor) => {
+    context.memo.set(cacheKey, descriptor);
+    return descriptor;
+  };
+  try {
+    if (index < 0x1000) {
+      const primitive = PRIMITIVE_TYPES[index];
+      if (primitive) return finish({ ...primitive, complete: true });
+      // The high nibble of a primitive index encodes an indirection mode:
+      // 0x0400: NearPointer32, 0x0500: FarPointer32, 0x0600: NearPointer64, 0x0700: NearPointer128
+      const mode = index & 0x0700;
+      if (mode === 0x0400 || mode === 0x0500 || mode === 0x0600 || mode === 0x0700) {
+        const widthBits = (mode === 0x0400 || mode === 0x0500) ? 32 : (mode === 0x0600) ? 64 : 128;
+        const target = renderTypeIndex(index & 0x00ff, types, depth + 1, context);
+        if (context.exhaustedReason != null) return finish(unknownTypeDescriptor());
+        const isKnown = target.name !== 'unknown' && target.complete;
+        const name = isKnown ? context.admitName([target.name, ' *']) : 'unknown *';
+        return finish(name == null
+          ? unknownTypeDescriptor()
+          : { name, widthBits, class: 'pointer', complete: isKnown });
+      }
+      return finish(unknownTypeDescriptor());
+    }
+
+    const record = types?.get(index);
+    if (!record) return finish(unknownTypeDescriptor());
+    if (record.kind === 'aggregate') {
+      const keyword = typeof record.keyword === 'string' ? record.keyword : 'unknown';
+      const sourceName = record.name ? record.name : '<anonymous>';
+      if (typeof sourceName !== 'string') return finish(unknownTypeDescriptor());
+      const name = context.admitName([keyword, ' ', sourceName]);
+      return finish(name == null
+        ? unknownTypeDescriptor()
+        : {
+          name,
+          sizeBytes: record.sizeBytes,
+          isAggregate: true,
+          complete: !record.forwardReference && record.sizeBytes != null,
+        });
+    }
+    if (record.kind === 'pointer') {
+      const target = renderTypeIndex(record.referent, types, depth + 1, context);
+      if (context.exhaustedReason != null) return finish(unknownTypeDescriptor());
+      const attrs = typeof record.attributes === 'number' ? record.attributes : 0;
+      const sizeBytes = (attrs >> 13) & 0x3f;
+      const pointerKind = attrs & 0x1f;
+      let widthBits = sizeBytes > 0 ? sizeBytes * 8 : null;
+      if (widthBits == null) {
+        if (pointerKind === 0x0a || pointerKind === 0x0b) widthBits = 32;
+        else if (pointerKind === 0x0c) widthBits = 64;
+      }
+      const isContradictory = sizeBytes > 0 && (
+        ((pointerKind === 0x0a || pointerKind === 0x0b) && sizeBytes !== 4) ||
+        (pointerKind === 0x0c && sizeBytes !== 8)
+      );
+      const isMalformed = widthBits == null || widthBits === 0 || isContradictory;
+      const name = context.admitName([target.name, ' *']);
+      return finish(name == null
+        ? unknownTypeDescriptor()
+        : {
+          name,
+          widthBits: isMalformed ? null : widthBits,
+          class: 'pointer',
+          complete: !isMalformed && target.complete,
+        });
+    }
+    if (record.kind === 'modifier') {
+      const target = renderTypeIndex(record.underlying, types, depth + 1, context);
+      if (context.exhaustedReason != null) return finish(unknownTypeDescriptor());
+      const modifiers = record.modifiers;
+      const validModifiers = Number.isSafeInteger(modifiers) && modifiers >= 0 && modifiers <= 0xffff;
+      const qualifiers = [];
+      if (validModifiers && (modifiers & MODIFIER_CONST)) qualifiers.push('const');
+      if (validModifiers && (modifiers & MODIFIER_VOLATILE)) qualifiers.push('volatile');
+      if (validModifiers && (modifiers & MODIFIER_UNALIGNED)) qualifiers.push('unaligned');
+      // A future CodeView flag must not be dropped while retaining complete:true:
+      // the rendered name is useful context, but the modifier set is not fully
+      // understood and therefore cannot support an exact type claim.
+      const hasUnknownModifiers = !validModifiers || (modifiers & ~MODIFIER_KNOWN_MASK) !== 0;
+      const prefix = qualifiers.length ? qualifiers.join(' ') + ' ' : '';
+      const name = context.admitName([prefix, target.name]);
+      return finish(name == null
+        ? unknownTypeDescriptor()
+        : { ...target, name, complete: target.complete && !hasUnknownModifiers });
+    }
+    if (record.kind === 'procedure') {
+      const returns = renderTypeIndex(record.returnType, types, depth + 1, context);
+      if (context.exhaustedReason != null) return finish(unknownTypeDescriptor());
+      const argumentList = types?.get(record.argumentList);
+      const hasArgumentList = argumentList?.kind === 'arg-list'
+        && argumentList.complete === true
+        && Array.isArray(argumentList.arguments);
+      let canonicalArgumentIndices = hasArgumentList;
+      const remainingWork = context.maxTypeWork - context.work;
+      if (canonicalArgumentIndices && argumentList.arguments.length > remainingWork) {
+        context.exhaust(TYPE_RENDER_WORK_REASON);
+        return finish(unknownTypeDescriptor());
+      }
+      if (canonicalArgumentIndices) {
+        for (let i = 0; i < argumentList.arguments.length; i += 1) {
+          if (!Object.prototype.hasOwnProperty.call(argumentList.arguments, i)
+            || !Number.isSafeInteger(argumentList.arguments[i])
+            || argumentList.arguments[i] < 0
+            || argumentList.arguments[i] > 0xffffffff) {
+            canonicalArgumentIndices = false;
+            break;
+          }
+        }
+      }
+      const arguments_ = [];
+      if (canonicalArgumentIndices) {
+        for (const argument of argumentList.arguments) {
+          const described = renderTypeIndex(argument, types, depth + 1, context);
+          if (context.exhaustedReason != null) return finish(unknownTypeDescriptor());
+          arguments_.push(described);
+        }
+      }
+      const validParameterCount = Number.isSafeInteger(record.parameterCount)
+        && record.parameterCount >= 0 && record.parameterCount <= 0xffff;
+      // Calling convention/function-option semantics are not rendered yet. Only
+      // the canonical near-C/no-options encoding can therefore support an exact
+      // textual signature; other encodings remain useful context but fail closed.
+      const canonicalProcedureAttributes = record.callingConvention === 0 && record.functionOptions === 0;
+      const argumentsComplete = canonicalArgumentIndices
+        && validParameterCount
+        && argumentList.arguments.length === record.parameterCount
+        && arguments_.every((argument) => argument.complete === true);
+      const parts = [returns.name, ' (*)('];
+      if (canonicalArgumentIndices) {
+        for (let i = 0; i < arguments_.length; i += 1) {
+          if (i > 0) parts.push(', ');
+          parts.push(arguments_[i].name);
+        }
+      }
+      parts.push(')');
+      const name = context.admitName(parts);
+      return finish(name == null
+        ? unknownTypeDescriptor()
+        : {
+          name,
+          class: 'code',
+          complete: returns.complete && argumentsComplete && canonicalProcedureAttributes,
+        });
+    }
+    if (record.kind === 'array') {
+      const element = renderTypeIndex(record.elementType, types, depth + 1, context);
+      if (context.exhaustedReason != null) return finish(unknownTypeDescriptor());
+      const name = context.admitName([element.name, '[]']);
+      return finish(name == null
+        ? unknownTypeDescriptor()
+        : { name, sizeBytes: record.sizeBytes, class: 'array', complete: false });
+    }
+    if (record.kind === 'enum') {
+      const underlying = renderTypeIndex(record.underlying, types, depth + 1, context);
+      if (context.exhaustedReason != null) return finish(unknownTypeDescriptor());
+      // CodeView enumerations have an integral underlying machine type. Do not
+      // launder a malformed/unknown target into authoritative enum width/class.
+      const integralUnderlying = underlying.complete === true
+        && underlying.class === 'integer'
+        && Number.isSafeInteger(underlying.widthBits)
+        && underlying.widthBits > 0;
+      const sourceName = record.name ? record.name : '<anonymous>';
+      if (typeof sourceName !== 'string') return finish(unknownTypeDescriptor());
+      const name = context.admitName(['enum ', sourceName]);
+      return finish(name == null
+        ? unknownTypeDescriptor()
+        : {
+          name,
+          widthBits: integralUnderlying ? underlying.widthBits : undefined,
+          class: integralUnderlying ? 'integer' : undefined,
+          complete: record.complete === true && integralUnderlying,
+        });
+    }
+    return finish(unknownTypeDescriptor());
+  } finally {
+    context.active.delete(activeKey);
+  }
 }
 
 /** Renders a TPI type index as a nominal name plus machine facts. */
 export function describeTypeIndex(index, types, depth = 0, maxDepth = DEBUG_DEFAULT_BUDGET.maxDepth) {
-  if (depth > maxDepth) return { name: 'unknown', complete: false };
-  if (index < 0x1000) {
-    const primitive = PRIMITIVE_TYPES[index];
-    if (primitive) return { ...primitive, complete: true };
-    // The high nibble of a primitive index encodes an indirection mode:
-    // 0x0400: NearPointer32, 0x0500: FarPointer32, 0x0600: NearPointer64, 0x0700: NearPointer128
-    const mode = index & 0x0700;
-    if (mode === 0x0400 || mode === 0x0500 || mode === 0x0600 || mode === 0x0700) {
-      const widthBits = (mode === 0x0400 || mode === 0x0500) ? 32 : (mode === 0x0600) ? 64 : 128;
-      const target = describeTypeIndex(index & 0x00ff, types, depth + 1, maxDepth);
-      const isKnown = target.name !== 'unknown' && target.complete;
-      return {
-        name: isKnown ? `${target.name} *` : 'unknown *',
-        widthBits,
-        class: 'pointer',
-        complete: isKnown,
-      };
-    }
-    return { name: 'unknown', complete: false };
+  const context = createTypeRenderContext({ maxDepth });
+  const startDepth = Number.isSafeInteger(depth) && depth >= 0 ? depth : 0;
+  return renderTypeIndex(index, types, startDepth, context);
+}
+
+function typeRenderOutcome(context) {
+  if (context.reasons.size === 0) return null;
+  const reasons = [...context.reasons];
+  const budgetExhausted = context.exhaustedReason != null;
+  const incompleteReason = budgetExhausted
+    ? 'pdb-type-render-budget'
+    : reasons.includes(TYPE_RENDER_CYCLE_REASON)
+      ? 'pdb-type-cycle'
+      : reasons.includes(TYPE_RENDER_DEPTH_REASON)
+        ? 'pdb-type-depth-limit'
+        : 'pdb-type-render-incomplete';
+  const diagnostic = 'PDB type rendering incomplete: ' + reasons.join(', ')
+    + ' (work ' + context.work + '/' + context.maxTypeWork
+    + ', output ' + context.outputChars + '/' + context.maxTypeOutputChars + ' chars)';
+  return Object.freeze({
+    incompleteReason,
+    diagnostic,
+    budgetExhausted,
+    reasons: Object.freeze(reasons),
+    work: context.work,
+    maxWork: context.maxTypeWork,
+    outputChars: context.outputChars,
+    maxOutputChars: context.maxTypeOutputChars,
+  });
+}
+
+function typeRenderStatus(result, outcome) {
+  return createAnalysisStatus({
+    snapshotId: result?.status?.snapshotId ?? 'snapshot-unbound',
+    analyzerId: result?.providerId ?? PDB_PROVIDER_ID,
+    analyzerVersion: result?.providerVersion ?? PDB_PROVIDER_VERSION,
+    completeness: outcome.budgetExhausted ? 'truncated' : 'partial',
+    stopReason: outcome.budgetExhausted ? 'budget-exhausted' : 'evidence-missing',
+  });
+}
+
+function attachTypeRenderOutcome(value, result, context) {
+  const outcome = typeRenderOutcome(context);
+  if (!outcome) return value;
+  if (result?.parsed && !Object.isFrozen(result.parsed)) result.parsed.typeRender = outcome;
+  const status = typeRenderStatus(result, outcome);
+  if (Array.isArray(value)) {
+    Object.defineProperties(value, {
+      incompleteReason: { value: outcome.incompleteReason, enumerable: false },
+      diagnostics: { value: Object.freeze([outcome.diagnostic]), enumerable: false },
+      status: { value: status, enumerable: false },
+      typeRender: { value: outcome, enumerable: false },
+    });
+    return value;
   }
-  const record = types.get(index);
-  if (!record) return { name: 'unknown', complete: false };
-  if (record.kind === 'aggregate') {
-    return {
-      name: record.name ? `${record.keyword} ${record.name}` : `${record.keyword} <anonymous>`,
-      sizeBytes: record.sizeBytes,
-      isAggregate: true,
-      complete: !record.forwardReference && record.sizeBytes != null,
-    };
-  }
-  if (record.kind === 'pointer') {
-    const target = describeTypeIndex(record.referent, types, depth + 1, maxDepth);
-    const attrs = typeof record.attributes === 'number' ? record.attributes : 0;
-    const sizeBytes = (attrs >> 13) & 0x3f;
-    const pointerKind = attrs & 0x1f;
-    let widthBits = sizeBytes > 0 ? sizeBytes * 8 : null;
-    if (widthBits == null) {
-      if (pointerKind === 0x0a || pointerKind === 0x0b) widthBits = 32;
-      else if (pointerKind === 0x0c) widthBits = 64;
-    }
-    const isContradictory = sizeBytes > 0 && (
-      ((pointerKind === 0x0a || pointerKind === 0x0b) && sizeBytes !== 4) ||
-      (pointerKind === 0x0c && sizeBytes !== 8)
-    );
-    const isMalformed = widthBits == null || widthBits === 0 || isContradictory;
-    const complete = !isMalformed && target.complete;
-    return {
-      name: `${target.name} *`,
-      widthBits: isMalformed ? null : widthBits,
-      class: 'pointer',
-      complete,
-    };
-  }
-  if (record.kind === 'modifier') {
-    const target = describeTypeIndex(record.underlying, types, depth + 1, maxDepth);
-    const modifiers = record.modifiers;
-    const validModifiers = Number.isSafeInteger(modifiers) && modifiers >= 0 && modifiers <= 0xffff;
-    const qualifiers = [];
-    if (validModifiers && (modifiers & MODIFIER_CONST)) qualifiers.push('const');
-    if (validModifiers && (modifiers & MODIFIER_VOLATILE)) qualifiers.push('volatile');
-    if (validModifiers && (modifiers & MODIFIER_UNALIGNED)) qualifiers.push('unaligned');
-    // A future CodeView flag must not be dropped while retaining complete:true:
-    // the rendered name is useful context, but the modifier set is not fully
-    // understood and therefore cannot support an exact type claim.
-    const hasUnknownModifiers = !validModifiers || (modifiers & ~MODIFIER_KNOWN_MASK) !== 0;
-    const name = qualifiers.length ? `${qualifiers.join(' ')} ${target.name}` : target.name;
-    return { ...target, name, complete: target.complete && !hasUnknownModifiers };
-  }
-  if (record.kind === 'procedure') {
-    const returns = describeTypeIndex(record.returnType, types, depth + 1, maxDepth);
-    const argumentList = types.get(record.argumentList);
-    const hasArgumentList = argumentList?.kind === 'arg-list'
-      && argumentList.complete === true
-      && Array.isArray(argumentList.arguments);
-    let canonicalArgumentIndices = hasArgumentList;
-    if (canonicalArgumentIndices) {
-      for (let i = 0; i < argumentList.arguments.length; i += 1) {
-        if (!Object.prototype.hasOwnProperty.call(argumentList.arguments, i)
-          || !Number.isSafeInteger(argumentList.arguments[i])
-          || argumentList.arguments[i] < 0
-          || argumentList.arguments[i] > 0xffffffff) {
-          canonicalArgumentIndices = false;
-          break;
-        }
-      }
-    }
-    const arguments_ = canonicalArgumentIndices
-      ? argumentList.arguments.map((argument) => describeTypeIndex(argument, types, depth + 1, maxDepth))
-      : [];
-    const validParameterCount = Number.isSafeInteger(record.parameterCount)
-      && record.parameterCount >= 0 && record.parameterCount <= 0xffff;
-    // Calling convention/function-option semantics are not rendered yet. Only
-    // the canonical near-C/no-options encoding can therefore support an exact
-    // textual signature; other encodings remain useful context but fail closed.
-    const canonicalProcedureAttributes = record.callingConvention === 0 && record.functionOptions === 0;
-    const argumentsComplete = canonicalArgumentIndices
-      && validParameterCount
-      && argumentList.arguments.length === record.parameterCount
-      && arguments_.every((argument) => argument.complete === true);
-    const parameters = canonicalArgumentIndices ? arguments_.map((argument) => argument.name).join(', ') : '';
-    return {
-      name: `${returns.name} (*)(${parameters})`,
-      class: 'code',
-      complete: returns.complete && argumentsComplete && canonicalProcedureAttributes,
-    };
-  }
-  if (record.kind === 'array') {
-    const element = describeTypeIndex(record.elementType, types, depth + 1, maxDepth);
-    return { name: `${element.name}[]`, sizeBytes: record.sizeBytes, class: 'array', complete: false };
-  }
-  return { name: 'unknown', complete: false };
+  return Object.freeze({
+    ...value,
+    incompleteReason: outcome.incompleteReason,
+    diagnostics: Object.freeze([outcome.diagnostic]),
+    status,
+    typeRender: outcome,
+  });
 }
 
 const UINT64_MAX = (1n << 64n) - 1n;
@@ -1088,7 +1373,20 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
           ? status('complete', null)
           : status('partial', 'evidence-missing'),
     });
-    return Object.freeze({ ...result, parsed: { info, dbi, symbols, tpi, sectionHeaders, imageBase, maxDepth: resolvedBudget.maxDepth } });
+    return Object.freeze({
+      ...result,
+      parsed: {
+        info,
+        dbi,
+        symbols,
+        tpi,
+        sectionHeaders,
+        imageBase,
+        maxDepth: resolvedBudget.maxDepth,
+        maxTypeWork: resolvedBudget.maxTypeWork,
+        maxTypeOutputChars: resolvedBudget.maxTypeOutputChars,
+      },
+    });
   }
 
   symbols(result, { cursor = null, pageSize = DEBUG_DEFAULT_PAGE_SIZE } = {}) {
@@ -1141,14 +1439,19 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
   types(result, { cursor = null, pageSize = DEBUG_DEFAULT_PAGE_SIZE } = {}) {
     const parsed = result.parsed;
     if (!parsed) return createDebugPage({ records: [] });
+    const renderContext = createTypeRenderContext({
+      maxDepth: parsed.maxDepth ?? DEBUG_DEFAULT_BUDGET.maxDepth,
+      maxTypeWork: parsed.maxTypeWork ?? DEBUG_DEFAULT_BUDGET.maxTypeWork,
+      maxTypeOutputChars: parsed.maxTypeOutputChars ?? DEBUG_DEFAULT_BUDGET.maxTypeOutputChars,
+    });
     // Procedures carry the type index that names a function's signature; that
     // is the record the type graph can actually use.
     const typed = parsed.symbols.symbols.filter((symbol) => symbol.kind === 'procedure' && symbol.typeIndex);
-    return page(typed, cursor, pageSize, (symbol) => {
-      const described = describeTypeIndex(symbol.typeIndex, parsed.tpi.types, 0, parsed.maxDepth ?? DEBUG_DEFAULT_BUDGET.maxDepth);
+    const typePage = page(typed, cursor, pageSize, (symbol) => {
+      const described = renderTypeIndex(symbol.typeIndex, parsed.tpi.types, 0, renderContext);
       return createDebugRecord({
         kind: 'type',
-        entityId: `pdb_sym_${symbol.recordOffset}`,
+        entityId: 'pdb_sym_' + symbol.recordOffset,
         name: symbol.name,
         descriptor: {
           layer: 'nominal',
@@ -1159,20 +1462,26 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
         providerId: result.providerId,
         providerVersion: result.providerVersion,
         buildIdentity: result.identity.observed,
-        evidenceIds: [`pdb:type:${symbol.typeIndex}`],
+        evidenceIds: ['pdb:type:' + symbol.typeIndex],
       });
     });
+    return attachTypeRenderOutcome(typePage, result, renderContext);
   }
 
   /** Aggregate layouts, for the structural type layer. */
   aggregates(result) {
     const parsed = result.parsed;
     if (!parsed) return [];
+    const renderContext = createTypeRenderContext({
+      maxDepth: parsed.maxDepth ?? DEBUG_DEFAULT_BUDGET.maxDepth,
+      maxTypeWork: parsed.maxTypeWork ?? DEBUG_DEFAULT_BUDGET.maxTypeWork,
+      maxTypeOutputChars: parsed.maxTypeOutputChars ?? DEBUG_DEFAULT_BUDGET.maxTypeOutputChars,
+    });
     const out = [];
     for (const [index, record] of parsed.tpi.types) {
       if (record.kind !== 'aggregate' || record.forwardReference || !record.fieldList) continue;
       const fields = parsed.tpi.types.get(record.fieldList);
-      if (!fields || fields.kind !== 'field-list' || fields.complete !== true) continue;
+      if (!fields || fields.kind !== 'field-list' || fields.complete !== true || fields.enumerators?.length) continue;
       out.push({
         typeIndex: index,
         name: record.name,
@@ -1180,11 +1489,11 @@ export class PdbDebugInfoProvider extends DebugInfoProvider {
         members: fields.members.map((member) => ({
           name: member.name,
           offset: member.offset,
-          type: describeTypeIndex(member.typeIndex, parsed.tpi.types, 0, parsed.maxDepth ?? DEBUG_DEFAULT_BUDGET.maxDepth),
+          type: renderTypeIndex(member.typeIndex, parsed.tpi.types, 0, renderContext),
         })),
       });
     }
-    return out;
+    return attachTypeRenderOutcome(out, result, renderContext);
   }
 }
 

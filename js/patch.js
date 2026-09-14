@@ -114,7 +114,10 @@ export function assemble(text, at) {
     // encoding silently rewrote the mnemonic — `movz x0, x1` assembled to the
     // ORR alias of `mov x0, x1` (#5798).
     if (mn === 'movz' && imm == null) return { error: 'movz の右側は即値（#0〜#65535）で指定してください。' };
-    if (imm != null) { if (imm < 0n || imm > 0xFFFFn) return { error: 'この簡易アセンブラでは 0〜65535 の値だけ書けます。' }; if (dst.sp) return { error: 'SP へ即値を直接 mov することはできません。' }; const sf = dst.bits === 64 ? 1 : 0; return word((sf << 31) | (0xA5 << 23) | (Number(imm) << 5) | d); }
+    const shiftError = checkMoveWideShift(mn, ops, dst.bits);
+    if (shiftError) return { error: shiftError };
+    const hw = ops[1].shift ? Number(ops[1].shift.amount) / 16 : 0;
+    if (imm != null) { if (imm < 0n || imm > 0xFFFFn) return { error: 'この簡易アセンブラでは 0〜65535 の値だけ書けます。' }; if (dst.sp) return { error: 'SP へ即値を直接 mov することはできません。' }; const sf = dst.bits === 64 ? 1 : 0; return word((sf << 31) | (0xA5 << 23) | (hw << 21) | (Number(imm) << 5) | d); }
     const srcReg = regInfo(ops[1]); const m = srcReg && srcReg.num;
     if (m == null) return { error: 'mov の右側が読めません。' };
     if (dst.bits !== srcReg.bits) return { error: 'mov の左右は同じ幅（w同士 / x同士）で指定してください。' };
@@ -148,6 +151,18 @@ function checkOperandArity(mn, ops) {
   if (mn === 'mov' || mn === 'movz') return ops.length === 2 ? null : (mn === 'movz' ? 'movz はレジスタと即値（#0〜#65535）で指定してください。' : 'mov はレジスタ 2 個か、レジスタと即値（#0〜#65535）で指定してください。');
   if (mn === 'b' || mn === 'bl') return ops.length === 1 ? null : (mn === 'b' ? 'b は飛び先 1 個で指定してください。' : 'bl は飛び先 1 個で指定してください。');
   if (/^b\.\w+$/.test(mn)) return ops.length === 1 ? null : '条件分岐は飛び先 1 個で指定してください。';
+  return null;
+}
+function checkMoveWideShift(mn, ops, dstBits) {
+  const movMsg = 'mov はレジスタ 2 個か、レジスタと即値（#0〜#65535）で指定してください。';
+  const movzMsg = 'movz はレジスタと即値（#0〜#65535）に LSL #0/#16/#32/#48（W 形式は #0/#16）を指定してください。';
+  const msg = mn === 'movz' ? movzMsg : movMsg;
+  if (ops[0] && ops[0].shift) return msg;
+  const sh = ops[1] && ops[1].shift;
+  if (!sh) return null;
+  if (mn === 'mov') return msg;
+  if (sh.op !== 'lsl' || !Number.isInteger(sh.amount) || sh.amount < 0 || sh.amount > 48 || sh.amount % 16 !== 0) return msg;
+  if (dstBits === 32 && sh.amount > 16) return msg;
   return null;
 }
 function regNum(op) { if (!op || op.k !== 'reg') return null; if (op.cls === 'zr' || op.cls === 'sp') return 31; if (op.cls !== 'gp') return null; return op.num; }

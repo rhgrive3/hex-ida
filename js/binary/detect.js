@@ -1,6 +1,6 @@
 import { ByteView } from './reader.js';
 
-export function detectBinary(input) {
+export function detectBinary(input, options = {}) {
   const r = new ByteView(input, { littleEndian: true });
   if (r.length >= 4) {
     const b0 = r.u8(0), b1 = r.u8(1), b2 = r.u8(2), b3 = r.u8(3);
@@ -26,13 +26,28 @@ export function detectBinary(input) {
       // both MAGIC and CIGAM byte orders. JVM class files surface their
       // minor:major version words in bytes 4-7 with major_version >= 45 for
       // every real class file, so the 1..16 window rejects all of them while
-      // keeping every real fat image. Arch-entry bounds are verified by the
-      // Mach-O parser, which owns the full input; source-backed probes only
-      // see a short prefix.
+      // keeping every real fat image.
       if (r.length < 8) return { format: 'unknown' };
       const fatLittleEndian = be === 0xbebafeca || be === 0xbfbafeca;
       const nfatArch = r.u32(4, fatLittleEndian);
       if (nfatArch < 1 || nfatArch > 16) return { format: 'unknown' };
+      // Complete inputs must contain the declared arch table. Prefix probes
+      // may defer that structural check only when their size metadata is
+      // internally consistent, and stay explicitly provisional (#5647).
+      const entrySize = be === 0xcafebabf || be === 0xbfbafeca ? 32 : 20;
+      const tableEnd = 8 + nfatArch * entrySize;
+      const asSize = (value) => {
+        if (typeof value === 'bigint') return value;
+        if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+        return null;
+      };
+      const probeLength = asSize(options.probeLength);
+      const totalSize = asSize(options.totalSize);
+      const inputLength = BigInt(r.length);
+      const trustedPrefix = probeLength != null && totalSize != null
+        && probeLength === inputLength && totalSize > probeLength;
+      if (trustedPrefix) return { format: 'macho', fat: true, truncated: true };
+      if (r.length < tableEnd) return { format: 'unknown' };
       return { format: 'macho', fat: true };
     }
   }

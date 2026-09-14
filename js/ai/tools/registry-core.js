@@ -6,6 +6,9 @@ import { completenessOf, projectBounded } from "./projections/index.js";
 export const COST_WEIGHT = Object.freeze({ cheap: 1, medium: 4, expensive: 12 });
 export const TOOL_TIMEOUT_MS = Object.freeze({ cheap: 20_000, medium: 45_000, expensive: 60_000 });
 export const ADDRESS_KEYS = new Set(["address", "functionAddress", "from", "to", "start", "end", "target"]);
+// Only a tool that declares the verification contract category may hand
+// producer-controlled rows to EvidenceStore's deterministic verification path.
+const VERIFIER_AUTHORITY_CATEGORY = "verification";
 const TOOL_FUNCTION_ADDRESS_ARRAY_KEYS = new Map([
   ["find_constant", new Set(["functions"])],
   ["explain_evidence", new Set(["functions"])],
@@ -146,7 +149,12 @@ export class ToolRegistry {
       const resultLifecycle = raw?.solverResult?.lifecycle || raw?.lifecycle || {};
       const resultPublishable = resultLifecycle.publishable !== false && resultLifecycle.late !== true;
       if (resultPublishable && !evidence) {
-        evidence = this.evidenceStore ? this.evidenceStore.ingest(name, result, { verifier: tool.verifier === true, sourceRef, effectiveScope: scope, scopeBoundary }) : [];
+        // Deterministic verification authority is reserved for tools whose
+        // declared contract actually runs a verifier. A read/observation tool
+        // must not reach EvidenceStore's privileged ingestion path merely
+        // because a producer labelled its own rows (#8681).
+        const verifierAuthority = tool.verifier === true && tool.category === VERIFIER_AUTHORITY_CATEGORY;
+        evidence = this.evidenceStore ? this.evidenceStore.ingest(name, result, { verifier: verifierAuthority, sourceRef, effectiveScope: scope, scopeBoundary }) : [];
         if (record) record.evidence = evidence;
       }
       const evidenceList = Array.isArray(evidence) ? evidence : [];
@@ -226,7 +234,7 @@ function collectAddressTargets(value, tool = "") {
   for (const [key, item] of Object.entries(value)) {
     if ((ADDRESS_KEYS.has(key) || /Address$/.test(key)) && typeof item === "string" && addressText(item)) {
       out.push({ address:addressText(item), kind:"address" });
-    } else if (TOOL_FUNCTION_ADDRESS_ARRAY_KEYS.get(tool)?.has(key) && Array.isArray(item)) {
+    } else if ((key === "functions" && Array.isArray(item)) || (TOOL_FUNCTION_ADDRESS_ARRAY_KEYS.get(tool)?.has(key) && Array.isArray(item))) {
       for (const address of item) {
         if (typeof address === "string" && addressText(address)) out.push({ address:addressText(address), kind:"function" });
       }
