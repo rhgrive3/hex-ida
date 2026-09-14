@@ -343,13 +343,38 @@ function transactionMutationPromise(transaction, request) {
   return Promise.all([requestPromise(request), completion]).then(() => undefined);
 }
 
+function isSharedArrayBuffer(value) {
+  return typeof SharedArrayBuffer !== 'undefined' && value instanceof SharedArrayBuffer;
+}
+
+// Copy a byte range of any (shared or plain) buffer into a fresh, non-shared
+// ArrayBuffer so the cache snapshot owns its bytes (#8933).
+function ownedArrayBufferCopy(buffer, byteOffset, byteLength) {
+  const start = byteOffset || 0;
+  const length = byteLength == null ? buffer.byteLength - start : byteLength;
+  const copy = new ArrayBuffer(length);
+  new Uint8Array(copy).set(new Uint8Array(buffer, start, length));
+  return copy;
+}
+
 function fallbackClone(value, seen = new WeakMap()) {
   if (value == null || typeof value !== 'object') return value;
   if (seen.has(value)) return seen.get(value);
   if (value instanceof Date) return new Date(value.getTime());
+  if (isSharedArrayBuffer(value)) return ownedArrayBufferCopy(value, 0, value.byteLength);
   if (value instanceof ArrayBuffer) return value.slice(0);
   if (ArrayBuffer.isView(value)) {
-    if (value instanceof DataView) return new DataView(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+    const shared = isSharedArrayBuffer(value.buffer);
+    if (value instanceof DataView) {
+      return shared
+        ? new DataView(ownedArrayBufferCopy(value.buffer, value.byteOffset, value.byteLength))
+        : new DataView(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+    }
+    if (shared) {
+      const Ctor = value.constructor;
+      const copy = ownedArrayBufferCopy(value.buffer, value.byteOffset, value.byteLength);
+      return new Ctor(copy, 0, value.length);
+    }
     return value.slice ? value.slice() : new value.constructor(value);
   }
   if (value instanceof Map) { const out = new Map(); seen.set(value, out); for (const [k, v] of value) out.set(fallbackClone(k, seen), fallbackClone(v, seen)); return out; }
@@ -358,4 +383,27 @@ function fallbackClone(value, seen = new WeakMap()) {
   const out = {}; seen.set(value, out); for (const [k, v] of Object.entries(value)) Object.defineProperty(out, k, { value:fallbackClone(v, seen), enumerable:true, configurable:true, writable:true }); return out;
 }
 
-function structuredCloneSafe(value) { if (typeof structuredClone === 'function') return structuredClone(value); return fallbackClone(value); }
+// A structuredClone-safe snapshot is only an ownership boundary if it detaches
+// every byte the caller could still reach. Native structuredClone re-wraps a
+// SharedArrayBuffer (and views over one) onto the *same* shared memory block, so
+// a caller mutating the source after put()/get() silently rewrites the cached
+// authoritative payload (#8933). Detect shared memory transitively; if present,
+// use fallbackClone (which copies shared buffers into owned ArrayBuffers), else
+// keep the native fast path so non-shared payloads are unaffected.
+function containsSharedBuffer(value, seen) {
+  if (value == null || typeof value !== 'object') return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (isSharedArrayBuffer(value)) return true;
+  if (ArrayBuffer.isView(value)) return isSharedArrayBuffer(value.buffer);
+  if (value instanceof Map) { for (const [k, v] of value) if (containsSharedBuffer(k, seen) || containsSharedBuffer(v, seen)) return true; return false; }
+  if (value instanceof Set) { for (const v of value) if (containsSharedBuffer(v, seen)) return true; return false; }
+  if (Array.isArray(value)) { for (const v of value) if (containsSharedBuffer(v, seen)) return true; return false; }
+  for (const k of Object.keys(value)) if (containsSharedBuffer(value[k], seen)) return true;
+  return false;
+}
+
+function structuredCloneSafe(value) {
+  if (typeof structuredClone === 'function' && !containsSharedBuffer(value, new WeakSet())) return structuredClone(value);
+  return fallbackClone(value);
+}
