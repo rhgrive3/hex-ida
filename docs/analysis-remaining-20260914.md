@@ -105,3 +105,13 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
   並行変更があれば編集せず `automatic-publication.json` にblocked理由を保存する。
   push失敗でもcommitと全証拠は永続workspaceに残す。force-pushしない。
 - 自動記録は診断の保存であり、review/merge/releaseの承認ではない。
+
+## 全体check終了記録（自動保存）
+
+- コマンド: `node scripts/run-quiet-command.mjs --label check -- npm run check`。
+- 終了コード: `1`、実行時間: `2049.792` 秒。
+- 開始時HEAD: `2f8d57bd2728a4c8a592110f5073fc05d8678211`。
+- ログSHA256: `51d457a5db32990911d3e324a7b12b13655636540d9e1f90ed28f9448e161a13`。
+- 証拠: 永続evidenceの `check-first.json` / `check-first.log`。
+- この実行は修正commit前に開始し、実行中に生成物・環境が更新された診断。
+  exact-head全体受入・全finding完了の証拠にはしない。
