@@ -292,4 +292,14 @@ export const X86_LONG64_EVEX_DENOMINATOR_FAMILIES = Object.freeze([
   'vshufi64x2',
 ]);
 
-export const X86_LONG64_EVEX_DENOMINATOR_FAMILY_SET = new Set(X86_LONG64_EVEX_DENOMINATOR_FAMILIES);
+const X86_LONG64_EVEX_DENOMINATOR_FAMILY_MEMBERS = new Set(X86_LONG64_EVEX_DENOMINATOR_FAMILIES);
+
+// Keep the mutable Set itself module-private. Consumers only need membership
+// testing, so expose a frozen read-only facade; this prevents another importer
+// from extending owner authority at runtime while preserving the existing
+// `.has(family)` call site.
+export const X86_LONG64_EVEX_DENOMINATOR_FAMILY_SET = Object.freeze({
+  has(family) {
+    return X86_LONG64_EVEX_DENOMINATOR_FAMILY_MEMBERS.has(family);
+  },
+});
