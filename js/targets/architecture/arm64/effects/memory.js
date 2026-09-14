@@ -113,6 +113,19 @@ function accessAlignment(mnemonic, widthBits) {
   if (ACQUIRE_LOADS.has(mnemonic) || RELEASE_STORES.has(mnemonic)) return Math.max(1, widthBits / 8);
   return undefined;
 }
+// A64 gives LDAR/LDARB/LDARH Acquire semantics only when the destination is an
+// architectural register: with Rt == 31 the loaded value is discarded, so the
+// access carries no acquire edge even though the read, its address dependency,
+// and its faults remain (#8607). The suppressed form publishes the same explicit
+// `relaxed` authority that the exclusive/LSE owners already use for their
+// zero-register forms (#8603) rather than omitting the field, and `acquire` stays
+// the single RCsc-strength identity because the machine-effects ordering domain
+// cannot represent an RCpc acquire.
+function memoryOrdering(mnemonic, reg) {
+  if (ACQUIRE_LOADS.has(mnemonic)) return reg.zero ? 'relaxed' : 'acquire';
+  if (RELEASE_STORES.has(mnemonic)) return 'release';
+  return null;
+}
 function faultAlignment(widthBits) {
   return Math.max(1, widthBits / 8);
 }
@@ -411,7 +424,7 @@ function simpleMemory(decoded, context, mnemonic, isLoad) {
 
   const signed = isLoad && SIGNED_LOADS.has(mnemonic);
   const atomic = BASE_ONLY.has(mnemonic) ? true : null;
-  const ordering = ACQUIRE_LOADS.has(mnemonic) ? 'acquire' : RELEASE_STORES.has(mnemonic) ? 'release' : null;
+  const ordering = memoryOrdering(mnemonic, reg);
   const alignment = accessAlignment(mnemonic, widthBits);
   const access = accessFor({ ctx, addressExpr:addressing.addressExpr, widthBits, atomic, ordering, alignment });
   const operations = [...addressing.readOperations];
