@@ -61,7 +61,8 @@
       "js/analysis/summary/interprocedural.js",
       "js/analysis/summary/return-equations.js",
       "tests/phase7/summary/c1-02-recursive-return-discovery.test.mjs",
-      "tests/phase7/summary/issue-5242-contract-version-source-of-truth.test.mjs"
+      "tests/phase7/summary/issue-5242-contract-version-source-of-truth.test.mjs",
+      "tests/phase7/integration/analysis-entrypoint-dependencies.test.mjs"
     ],
     "phase8": [
       "tools/validation/phase8/decoded-function-adapter.mjs",
@@ -504,7 +505,9 @@
       "tests/semantic-v2/issue-4513-memoryssa-access-provider-completeness.test.mjs",
       "tests/issue-4135-pe-section-virtual-layout.mjs",
       "tests/machine-effects/issue-6079-vblendmx-blend-category.test.mjs",
-      ".github/workflows/ghidra-differential.yml"
+      ".github/workflows/ghidra-differential.yml",
+      "js/arm64.js",
+      "docs/analysis-remaining-20260914.md"
     ]
   }
 }

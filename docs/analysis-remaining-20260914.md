@@ -40,3 +40,24 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
 
 再開前に `git status` とリモートheadを照合し、このブランチの未push変更を保存する。
 全コマンドに永続 `TMPDIR/TMP/TEMP` を設定する。OS一時領域は使用しない。
+
+## Checkpoint 1: 解析入口の依存欠落
+
+- `2f8d57bd2` をリモートへ保存済み。
+- 開始時のC1/C2/C3受入は245件中241成功/4失敗。3ファイルは
+  `blocks-base.js` が存在しない `arm64ReadsDestination` をimportして読込不能。
+  残る1件はC1の `v2-frame-non-escaping` (`may` vs `no`)。未解消として保持する。
+- X-02も旧120行は通るが、追加行列が同じimport欠落で読込不能。
+- 根因: `d792b212` がmainのconsumerを採用した際、#3606のproducerが欠落。
+  元commit `cd7db4f5ebfebcea0e8b0389760cc769d5626114` のhelperを復元。
+  CFG/flags/faultやC4の変更は行っていない。
+- 新規回帰は修正前import失敗、修正後6件成功。既存所有権検査も成功。
+  実ファイルallowlistと未宣言差分を拒否する回帰を併せて更新。
+- npm依存はlockfile通り導入済み（Playwright 1.63.0）。Chromium1243/WebKit2359を
+  永続cacheへ取得済み。WebKit共有library不足の解消と実起動は進行中。
+- `npm run check` はquiet wrapperで実行中。現時点では合格とはしない。
+
+証拠: 永続evidence配下の `entrypoint-before.{json,log}`、
+`entrypoint-after.{json,log}`、`c1-c2-c3.{json,log}`、`x02.{json,log}`。
+修正後の実行はcommit前の作業ツリーであり、receiptのsourceHeadだけでexact-head証拠とはしない。
+次はcommit後の重点検査、全体の最初の失敗、C1 aliasの正の受入を確認する。
