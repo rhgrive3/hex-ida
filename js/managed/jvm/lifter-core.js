@@ -742,7 +742,32 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const classIdx = view.getUint16(pc, false);
           pc += 2;
           mnemonic = 'new';
-          producedValues.push({ bits: 64, cpClassIndex: classIdx });
+          // #8845: apply the same checked `CONSTANT_Class` + nested Utf8
+          // resolver introduced for #8848 (reqs 1, 2, 7). An out-of-range or
+          // wrong-tag operand must not publish an exact allocation.
+          const targetClassName = resolveJvmClassRefName(jvmClass, classIdx);
+          if (targetClassName == null) {
+            completeness = 'partial';
+            unknownEffects.push({ category: 'types', reason: 'jvm-new-cp-class-invalid' });
+            producedValues.push({ bits: 64, cpClassIndex: classIdx });
+          } else {
+            // Preserve the allocated class identity via `valueType` /
+            // `referenceKind`, which the shared bridge folds into canonical
+            // node metadata (req 3 — canonical managed-heap reference type is
+            // #8836's owned scope). Still fail closed: the current bundle
+            // cannot carry an allocation-site / fresh-object-identity /
+            // heap-effect schema, so a valid `new` cannot be published as
+            // `exact` either — DEX `new-instance` uses the same posture
+            // (reqs 5, 8).
+            producedValues.push({
+              bits: 64,
+              cpClassIndex: classIdx,
+              valueType: targetClassName,
+              referenceKind: 'new-allocation',
+            });
+            completeness = 'partial';
+            unknownEffects.push({ category: 'memory', reason: 'jvm-new-allocation-unrepresented' });
+          }
           currentStackHeight++;
         }
         break;
