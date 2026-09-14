@@ -49,7 +49,24 @@ async function sample(file) {
     const loaderMs = performance.now() - t0;
     const audit = auditBinary(image);
     const auditErrorCodes = audit.issues.filter((issue) => issue.level === 'error').map((issue) => issue.code).join('__') || 'none';
-    const auditErrorDetails = audit.issues.filter((issue) => issue.level === 'error').map((issue) => issue.message).join('__').replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 200);
+    const legacyOwner = (address) => {
+      let best = null;
+      const consider = (mapping, mapped = true) => {
+        if (!mapped || mapping.size <= 0n || address < mapping.address || address >= mapping.address + mapping.size) return;
+        if (!best || mapping.size < best.size) best = mapping;
+      };
+      for (const mapping of image.sections) consider(mapping, mapping.source !== 'unmapped-section' && !(mapping.source === 'section-header' && (BigInt(mapping.flags || 0) & 2n) === 0n));
+      for (const mapping of image.segments) consider(mapping);
+      return best;
+    };
+    const describeOwner = (mapping) => mapping
+      ? mapping.name + '@' + mapping.address.toString(16) + '/' + mapping.size.toString(16) + ':f' + mapping.fileOffset.toString(16) + '/' + mapping.fileSize.toString(16)
+      : 'none';
+    const auditErrorDetails = audit.issues.filter((issue) => issue.level === 'error').map((issue) => {
+      const values = [...String(issue.message).matchAll(/0x[0-9A-Fa-f]+/g)].map((match) => BigInt(match[0]));
+      const address = issue.code === 'offset-address-roundtrip' ? values[1] : values[0];
+      return issue.code + ':current=' + describeOwner(image._virtualMappingAt(address)) + ':legacy=' + describeOwner(legacyOwner(address));
+    }).join('__').replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 200);
     const auditDiagnosticDir = path.join(repoRoot, 'benchmark-diagnostic');
     fs.mkdirSync(auditDiagnosticDir, { recursive: true });
     const auditDiagnosticName = String(path.basename(file)) + '-audit-' + String(audit.errors) + '-' + auditErrorCodes.slice(0, 120) + '-' + auditErrorDetails + '.json';
