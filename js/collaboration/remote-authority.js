@@ -230,11 +230,44 @@ function preflightEntry(state) {
   return false;
 }
 
+// Count the JSON string representation directly instead of materializing an
+// escaped copy. This matches JSON.stringify + UTF-8 for strings and lets the
+// preflight stop as soon as the byte ceiling is crossed (#8652 review).
+function preflightJsonString(state, value) {
+  preflightAdd(state, 2); // surrounding quotes
+  for (let index = 0; index < value.length && state.stop === null; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code === 0x22 || code === 0x5c || code === 0x08 || code === 0x09
+      || code === 0x0a || code === 0x0c || code === 0x0d) {
+      preflightAdd(state, 2);
+    } else if (code <= 0x1f) {
+      preflightAdd(state, 6);
+    } else if (code <= 0x7f) {
+      preflightAdd(state, 1);
+    } else if (code <= 0x7ff) {
+      preflightAdd(state, 2);
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        preflightAdd(state, 4);
+        index += 1;
+      } else {
+        // Well-formed JSON.stringify escapes lone surrogates as \udxxx.
+        preflightAdd(state, 6);
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      preflightAdd(state, 6);
+    } else {
+      preflightAdd(state, 3);
+    }
+  }
+}
+
 function preflightMeasure(value, depth, state, inOperations) {
   if (state.stop !== null) return false;
   if (value === null) { preflightAdd(state, 4); return true; }
   const type = typeof value;
-  if (type === 'string') { preflightAdd(state, value.length + 2); return true; }
+  if (type === 'string') { preflightJsonString(state, value); return true; }
   if (type === 'number') {
     const finite = Number.isFinite(value);
     preflightAdd(state, finite ? String(value).length : 0);
@@ -299,7 +332,9 @@ function preflightMeasure(value, depth, state, inOperations) {
         // The child's own canonical lower bound was accumulated by the recursion.
         if (childKept) {
           if (preflightEntry(state)) break;
-          preflightAdd(state, key.length + 3 + (emitted > 0 ? 1 : 0));
+          preflightJsonString(state, key);
+          if (state.stop !== null) break;
+          preflightAdd(state, 1 + (emitted > 0 ? 1 : 0)); // colon + optional comma
           emitted += 1;
         }
       }
