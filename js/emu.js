@@ -917,8 +917,10 @@ export class Emulator {
       const bits = op.bits === 32 ? 32 : 64;
       return Number(BigInt.asIntN(bits,this.get(op.text)));
     }
-    const value=this.v[op.num];
-    return value === undefined ? 0 : value;
+    // The physical register's raw bits are the single truth; every read must
+    // reinterpret them at the operand's own width, otherwise a value written
+    // through one view (D) leaks into another (S) as the previous numeric.
+    return bitsToFloat(this.fpBits(op), this.fpSize(op));
   }
 
   fset(op,value) {
