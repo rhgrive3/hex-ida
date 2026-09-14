@@ -291,7 +291,7 @@ export class Emulator {
       throw new EmulatorFault('memory-read-failed', `backing read failed at 0x${page.toString(16)}`, { address: fault, page, cause:String(error && error.message || error) });
     }
     if (!(bytes instanceof Uint8Array) || bytes.length === 0) {
-      throw new EmulatorFault('unmapped-memory', `backing memory is unavailable at 0x${fault.toString(16)}`, { address: fault, page });
+      throw new EmulatorFault('unmapped-memory', `backing memory is unavailable at 0x${page.toString(16)}`, { address: fault, page });
     }
     const valid = Math.min(PAGE, bytes.length);
     this.loaded.set(key, padTo(bytes, PAGE));
