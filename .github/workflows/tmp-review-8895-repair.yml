@@ -1,0 +1,376 @@
+name: tmp-review-8895-repair
+
+on:
+  push:
+    branches:
+      - codex/issue-campaign-20260914-lane-15-batch-01
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Apply blocker fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          def replace_once(path, old, new):
+              p=Path(path); s=p.read_text(); n=s.count(old)
+              if n != 1: raise SystemExit(f'{path}: expected one match, got {n}')
+              p.write_text(s.replace(old,new,1))
+
+          replace_once('js/macho.js',
+          """  function attachTruncatedFlag(out) {
+            Object.defineProperty(out, 'truncated', { value: false, writable: true, enumerable: false, configurable: true });
+            return out;
+          }
+""",
+          """  function attachTruncatedFlag(out) {
+            Object.defineProperty(out, 'truncated', { value: false, writable: true, enumerable: false, configurable: true });
+            Object.defineProperty(out, 'truncationReason', { value: null, writable: true, enumerable: false, configurable: true });
+            return out;
+          }
+
+          function markTruncated(out, reason) {
+            out.truncated = true;
+            if (!out.truncationReason) out.truncationReason = reason || 'budget';
+            return out;
+          }
+
+          function boundedExpansionBudget(value, fallback, maximum) {
+            if (value == null) return fallback;
+            if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) return 0;
+            return Math.min(value, maximum);
+          }
+""")
+
+          replace_once('js/macho.js',
+          """  function parseUnwindStarts(buf, imageBase) {
+            const out = attachTruncatedFlag([]);
+            if (!buf || buf.length < 28) return out;
+            const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+            if (dv.getUint32(0, true) !== 1) return out;               // 知らない版は読まない
+            const indexOff = dv.getUint32(20, true);
+            const indexCount = dv.getUint32(24, true);
+            if (!indexCount || indexOff + indexCount * 12 > buf.length) return out;
+""",
+          """  function parseUnwindStarts(buf, imageBase, options = {}) {
+            const out = attachTruncatedFlag([]);
+            if (!buf || buf.length < 28) return out;
+            const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+            if (dv.getUint32(0, true) !== 1) return out;               // 知らない版は読まない
+            const indexOff = dv.getUint32(20, true);
+            const indexCount = dv.getUint32(24, true);
+            if (!indexCount || indexOff + indexCount * 12 > buf.length) return out;
+            const resultLimit = boundedExpansionBudget(options.maxResults, UNWIND_STARTS_MAX, UNWIND_STARTS_MAX);
+            const workLimit = boundedExpansionBudget(options.maxWork, UNWIND_STARTS_MAX, UNWIND_STARTS_MAX);
+            const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;
+            let work = 0;
+            const chargeWork = () => {
+              if (work >= workLimit) { markTruncated(out, 'work-limit'); return false; }
+              work++;
+              if (shouldCancel && ((work & 63) === 1) && shouldCancel()) { markTruncated(out, 'cancelled'); return false; }
+              return true;
+            };
+            if (resultLimit === 0) return markTruncated(out, 'result-limit');
+            if (workLimit === 0) return markTruncated(out, 'work-limit');
+""")
+
+          replace_once('js/macho.js',
+          """      for (const rel of rec.rel) {
+                if (out.length >= UNWIND_STARTS_MAX) { out.truncated = true; break; }
+                const value = imageBase + base + rel;
+                if (seen.has(value)) continue;                         // 関数先頭は一意
+                seen.add(value);
+                out.push(value);
+              }
+              if (out.truncated) break;
+""",
+          """      for (const rel of rec.rel) {
+                if (out.length >= resultLimit) { markTruncated(out, 'result-limit'); break; }
+                if (!chargeWork()) break;
+                const value = imageBase + base + rel;
+                if (seen.has(value)) continue;                         // 関数先頭は一意
+                seen.add(value);
+                out.push(value);
+              }
+              if (out.truncated) break;
+""")
+
+          replace_once('js/macho.js',
+          """  function parseUnwindLsdaEntries(buf, imageBase) {
+            const out = attachTruncatedFlag([]);
+            if (!buf || buf.length < 28 || imageBase == null) return out;
+            const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+            if (dv.getUint32(0, true) !== 1) return out;
+            const indexOff = dv.getUint32(20, true);
+            const indexCount = dv.getUint32(24, true);
+            if (indexCount < 2 || indexOff + indexCount * 12 > buf.length) return out;
+            const base = BigInt(imageBase);
+""",
+          """  function parseUnwindLsdaEntries(buf, imageBase, options = {}) {
+            const out = attachTruncatedFlag([]);
+            if (!buf || buf.length < 28 || imageBase == null) return out;
+            const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+            if (dv.getUint32(0, true) !== 1) return out;
+            const indexOff = dv.getUint32(20, true);
+            const indexCount = dv.getUint32(24, true);
+            if (indexCount < 2 || indexOff + indexCount * 12 > buf.length) return out;
+            const base = BigInt(imageBase);
+            const resultLimit = boundedExpansionBudget(options.maxResults, UNWIND_LSDA_MAX, UNWIND_LSDA_MAX);
+            const workLimit = boundedExpansionBudget(options.maxWork, UNWIND_LSDA_MAX, UNWIND_LSDA_MAX);
+            const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;
+            let work = 0;
+            const chargeWork = () => {
+              if (work >= workLimit) { markTruncated(out, 'work-limit'); return false; }
+              work++;
+              if (shouldCancel && ((work & 63) === 1) && shouldCancel()) { markTruncated(out, 'cancelled'); return false; }
+              return true;
+            };
+            if (resultLimit === 0) return markTruncated(out, 'result-limit');
+            if (workLimit === 0) return markTruncated(out, 'work-limit');
+""")
+
+          replace_once('js/macho.js',
+          """      for (let x = lsdaOff; x + 8 <= nextLsdaOff; x += 8) {
+                if (out.length >= UNWIND_LSDA_MAX) { out.truncated = true; break; }
+                const fnOff = dv.getUint32(x, true);
+""",
+          """      for (let x = lsdaOff; x + 8 <= nextLsdaOff; x += 8) {
+                if (out.length >= resultLimit) { markTruncated(out, 'result-limit'); break; }
+                if (!chargeWork()) break;
+                const fnOff = dv.getUint32(x, true);
+""")
+
+          replace_once('js/macho.js',
+          """    const uniq = attachTruncatedFlag([]);
+            uniq.truncated = out.truncated;
+""",
+          """    const uniq = attachTruncatedFlag([]);
+            uniq.truncated = out.truncated;
+            uniq.truncationReason = out.truncationReason;
+""")
+
+          replace_once('js/worker-legacy.js',
+          """  const unwind = slice ? (slice.regions || []).find((r) => r.section === '__unwind_info' && r.size > 0n) : null;
+            if (unwind && imageBase != null && unwind.size < BigInt(16 * 1024 * 1024)) {
+              try {
+                const buf = await readRange(unwind.fileOffset, Number(unwind.size));
+                for (const a of MachO.parseUnwindStarts(buf, imageBase)) {
+                  if (a >= lo && a < hi && found.size < cap) found.add(a);
+                }
+              } catch { /* 読めなければ推測だけで進む */ }
+            }
+""",
+          """  const unwind = slice ? (slice.regions || []).find((r) => r.section === '__unwind_info' && r.size > 0n) : null;
+            let unwindMetadataTruncated = false;
+            let unwindMetadataReason = null;
+            if (unwind && imageBase != null && unwind.size < BigInt(16 * 1024 * 1024)) {
+              try {
+                const buf = await readRange(unwind.fileOffset, Number(unwind.size));
+                const remaining = Math.max(0, cap - found.size);
+                if (remaining > 0) {
+                  const unwindStarts = MachO.parseUnwindStarts(buf, imageBase, {
+                    maxResults: remaining,
+                    maxWork: remaining,
+                    shouldCancel: () => cancelled(requestId),
+                  });
+                  for (const a of unwindStarts) {
+                    if (a >= lo && a < hi && found.size < cap) found.add(a);
+                  }
+                  if (unwindStarts.truncated) {
+                    unwindMetadataTruncated = true;
+                    unwindMetadataReason = 'unwind-starts-' + (unwindStarts.truncationReason || 'truncated');
+                  }
+                }
+                await yieldToQueue();
+                if (cancelled(requestId)) return { starts: new BigUint64Array(0), cancelled: true };
+              } catch { /* 読めなければ推測だけで進む */ }
+            }
+""")
+
+          replace_once('js/worker-legacy.js',
+          """  const startCapHit = found.size >= cap;
+            const capped = startCapHit || candidateBudgetHit;
+            const truncationReason = candidateBudgetHit ? 'candidate-memory-budget' : startCapHit ? 'function-start-cap-reached' : null;
+""",
+          """  const startCapHit = found.size >= cap;
+            const capped = startCapHit || candidateBudgetHit || unwindMetadataTruncated;
+            const truncationReason = candidateBudgetHit ? 'candidate-memory-budget' :
+              startCapHit ? 'function-start-cap-reached' : unwindMetadataReason;
+""")
+
+          replace_once('js/worker-fixes.js',
+          """  const tailAddSpTargets = new Set(), tailFrameTargets = new Set();
+            let ehFrameRanges = [];
+""",
+          """  const tailAddSpTargets = new Set(), tailFrameTargets = new Set();
+            let ehFrameRanges = [];
+            let metadataIncomplete = false;
+            let metadataTruncationReason = null;
+""")
+
+          replace_once('js/worker-fixes.js',
+          """        const buf = await readRange(unwindRegion.fileOffset, Number(unwindRegion.size));
+                for (const a of MachO.parseUnwindStarts(buf, imageBase)) if (a >= lo && a < hi) unwind.add(a);
+                unwindLsdaEntries = MachO.parseUnwindLsdaEntries(buf, imageBase);
+              } catch { /* malformed unwind metadata is not evidence */ }
+""",
+          """        const buf = await readRange(unwindRegion.fileOffset, Number(unwindRegion.size));
+                const unwindStarts = MachO.parseUnwindStarts(buf, imageBase, {
+                  maxResults: 200_000,
+                  maxWork: 200_000,
+                  shouldCancel: () => cancelled(requestId),
+                });
+                for (const a of unwindStarts) if (a >= lo && a < hi) unwind.add(a);
+                if (unwindStarts.truncated) {
+                  metadataIncomplete = true;
+                  metadataTruncationReason ||= 'unwind-starts-' + (unwindStarts.truncationReason || 'truncated');
+                }
+                unwindLsdaEntries = MachO.parseUnwindLsdaEntries(buf, imageBase, {
+                  maxResults: 200_000,
+                  maxWork: 200_000,
+                  shouldCancel: () => cancelled(requestId),
+                });
+                if (unwindLsdaEntries.truncated) {
+                  metadataIncomplete = true;
+                  metadataTruncationReason ||= 'unwind-lsda-' + (unwindLsdaEntries.truncationReason || 'truncated');
+                }
+                await yieldToQueue();
+                if (cancelled(requestId)) return { cancelled: true, incomplete: true, truncationReason: 'cancelled' };
+              } catch { /* malformed unwind metadata is not evidence */ }
+""")
+
+          replace_once('js/worker-fixes.js',
+          """  return { data, structured, exactMetadata, directBranches, trapPeriodicGroups, trapStrideGroups, adrpReturnGroups, ehFrameRanges, exceptionLandingPads, interiorFrameSetups, denseAddressLeafStarts, unwind, directCalls, prologues, terminalStarts, indirectTerminalStarts, conditionalTargets, tailCalls, indirectThunkStarts, repeatedThunkStarts, repeatedDirectTailStarts };
+""",
+          """  return { data, structured, exactMetadata, directBranches, trapPeriodicGroups, trapStrideGroups, adrpReturnGroups, ehFrameRanges, exceptionLandingPads, interiorFrameSetups, denseAddressLeafStarts, unwind, directCalls, prologues, terminalStarts, indirectTerminalStarts, conditionalTargets, tailCalls, indirectThunkStarts, repeatedThunkStarts, repeatedDirectTailStarts, incomplete: metadataIncomplete, truncationReason: metadataTruncationReason };
+""")
+
+          replace_once('js/worker-fixes.js',
+          """  const ev = await __functionEvidence(region, slice, args.requestId);
+            if (cancelled(args.requestId)) return { starts: new BigUint64Array(0), cancelled: true };
+""",
+          """  const ev = await __functionEvidence(region, slice, args.requestId);
+            if (!ev || ev.cancelled || cancelled(args.requestId)) return { starts: new BigUint64Array(0), cancelled: true };
+""")
+
+          replace_once('js/worker-fixes.js',
+          """  const starts = new BigUint64Array(ordered.length);
+            for (let i = 0; i < ordered.length; i++) starts[i] = ordered[i];
+            return {
+              ...result,
+              starts,
+              filteredDataCandidates,
+              dataPointerRequiresConfirmation: true,
+              __transfer: [starts.buffer],
+            };
+""",
+          """  const starts = new BigUint64Array(ordered.length);
+            for (let i = 0; i < ordered.length; i++) starts[i] = ordered[i];
+            const evidenceIncomplete = ev.incomplete === true;
+            const capped = !!result.capped || evidenceIncomplete;
+            const truncationReason = result.truncationReason ||
+              (evidenceIncomplete ? (ev.truncationReason || 'function-evidence-truncated') : null);
+            const completeness = {
+              ...(result.completeness || {}),
+              complete: !capped,
+              reason: truncationReason,
+            };
+            if (completeness.addressRange) completeness.addressRange = { ...completeness.addressRange, complete: !capped };
+            return {
+              ...result,
+              starts,
+              filteredDataCandidates,
+              dataPointerRequiresConfirmation: true,
+              capped,
+              truncated: capped,
+              complete: !capped,
+              truncationReason,
+              completeness,
+              __transfer: [starts.buffer],
+            };
+""")
+
+          Path('tests/issue-8789-8816-unwind-caller-bounds.mjs').write_text(textwrap.dedent(r'''
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { fileURLToPath } from 'node:url';
+
+          const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+          const machoSrc = fs.readFileSync(path.join(root, 'js/macho.js'), 'utf8');
+          new Function('root', machoSrc)(globalThis);
+          const { parseUnwindStarts, parseUnwindLsdaEntries } = globalThis.MachO;
+          const BASE=0x100000000n, HEADER=28, ROW=12, PAGE=0x1000;
+
+          function aliased(rows=1500, count=1022) {
+            const pageOff=HEADER+rows*ROW, buf=new Uint8Array(pageOff+PAGE+8), dv=new DataView(buf.buffer);
+            dv.setUint32(0,1,true); dv.setUint32(20,HEADER,true); dv.setUint32(24,rows,true);
+            dv.setUint32(pageOff,3,true); dv.setUint16(pageOff+4,8,true); dv.setUint16(pageOff+6,count,true);
+            for(let k=0;k<count;k++) dv.setUint32(pageOff+8+k*4,k,true);
+            for(let i=0;i<rows;i++){const e=HEADER+i*ROW;dv.setUint32(e,i*PAGE,true);dv.setUint32(e+4,pageOff,true);}
+            return buf;
+          }
+          function lsda(pairs=32){
+            const start=64,end=start+pairs*8,buf=new Uint8Array(end+8),dv=new DataView(buf.buffer);
+            dv.setUint32(0,1,true);dv.setUint32(20,HEADER,true);dv.setUint32(24,2,true);
+            dv.setUint32(HEADER+8,start,true);dv.setUint32(HEADER+ROW+8,end,true);
+            for(let k=0;k<pairs;k++){const x=start+k*8;dv.setUint32(x,k*4+1,true);dv.setUint32(x+4,k*8+1024,true);}
+            return buf;
+          }
+
+          const one=parseUnwindStarts(aliased(),BASE,{maxResults:1,maxWork:1});
+          assert.equal(one.length,1); assert.equal(one.truncated,true); assert.equal(one.truncationReason,'result-limit');
+          const cancelled=parseUnwindStarts(aliased(4,64),BASE,{maxResults:64,maxWork:64,shouldCancel:()=>true});
+          assert.equal(cancelled.length,0); assert.equal(cancelled.truncated,true); assert.equal(cancelled.truncationReason,'cancelled');
+          const oneLsda=parseUnwindLsdaEntries(lsda(),BASE,{maxResults:1,maxWork:1});
+          assert.equal(oneLsda.length,1); assert.equal(oneLsda.truncated,true); assert.equal(oneLsda.truncationReason,'result-limit');
+
+          const legacy=fs.readFileSync(path.join(root,'js/worker-legacy.js'),'utf8');
+          assert.match(legacy,/maxResults:\s*remaining[\s\S]*maxWork:\s*remaining[\s\S]*shouldCancel:/);
+          assert.match(legacy,/unwindMetadataTruncated[\s\S]*const capped = startCapHit \|\| candidateBudgetHit \|\| unwindMetadataTruncated/);
+          const fixes=fs.readFileSync(path.join(root,'js/worker-fixes.js'),'utf8');
+          assert.match(fixes,/unwindStarts\.truncated[\s\S]*unwindLsdaEntries\.truncated/);
+          assert.match(fixes,/const evidenceIncomplete = ev\.incomplete === true[\s\S]*complete: !capped/);
+          console.log('issues #8789/#8816 caller-budget and incomplete-authority regressions: PASS');
+          ''').lstrip())
+          PY
+      - name: Verify focused regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 25s node tests/issue-8789-8816-unwind-caller-bounds.mjs
+          timeout 30s node tests/issue-8789-macho-unwind-starts-budget.mjs
+          timeout 30s node tests/issue-8816-macho-lsda-budget.mjs
+          timeout 25s node tests/issue-8800-macho-stub-symbols-budget.mjs
+          timeout 25s node tests/issue-5371-macho-unwind-page-bounds.mjs
+          timeout 25s node tests/check.mjs
+      - name: Commit repair and remove temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/tmp-review-8895-repair.yml
+          git diff --check
+          changed="$(git status --short | awk '{print $2}' | sort)"
+          printf '%s\n' "$changed"
+          for p in js/macho.js js/worker-legacy.js js/worker-fixes.js tests/issue-8789-8816-unwind-caller-bounds.mjs .github/workflows/tmp-review-8895-repair.yml; do
+            printf '%s\n' "$changed" | grep -qx "$p"
+          done
+          test "$(printf '%s\n' "$changed" | wc -l)" -eq 5
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: propagate Mach-O unwind truncation and caller budgets'
+          git push origin HEAD:codex/issue-campaign-20260914-lane-15-batch-01
