@@ -48,20 +48,29 @@ function binaryTransportBytes(value, buffers, N) {
   return bytes;
 }
 
-const BINARY_TRANSPORT_NATIVES = Object.freeze({
-  bufferByteLength: Function.prototype.call.bind(
-    Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get
-  ),
-  typedArrayBuffer: Function.prototype.call.bind(
-    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), 'buffer').get
-  ),
-  dataViewBuffer: Function.prototype.call.bind(
-    Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer').get
-  ),
-  isView: ArrayBuffer.isView.bind(ArrayBuffer),
-  has: Function.prototype.call.bind(Set.prototype.has),
-  add: Function.prototype.call.bind(Set.prototype.add),
-});
+/*
+ * Builds the tamper-resistant accessor bag for the shared binary transport
+ * contract from whichever realm evaluates it, so the page, the sandbox iframe,
+ * and the untrusted Worker all apply the same policy to their own intrinsics.
+ */
+function createBinaryTransportNatives() {
+  return Object.freeze({
+    bufferByteLength: Function.prototype.call.bind(
+      Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get
+    ),
+    typedArrayBuffer: Function.prototype.call.bind(
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), 'buffer').get
+    ),
+    dataViewBuffer: Function.prototype.call.bind(
+      Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer').get
+    ),
+    isView: ArrayBuffer.isView.bind(ArrayBuffer),
+    has: Function.prototype.call.bind(Set.prototype.has),
+    add: Function.prototype.call.bind(Set.prototype.add),
+  });
+}
+
+const BINARY_TRANSPORT_NATIVES = createBinaryTransportNatives();
 
 const WORKER_PRELUDE = String.raw`
 (() => {
@@ -91,14 +100,7 @@ const WORKER_PRELUDE = String.raw`
   const nativeDataViewBuffer = Function.prototype.call.bind(
     Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer').get
   );
-  const BINARY_TRANSPORT_NATIVES_FOR_WORKER = Object.freeze({
-    bufferByteLength: nativeArrayBufferByteLength,
-    typedArrayBuffer: nativeTypedArrayBuffer,
-    dataViewBuffer: nativeDataViewBuffer,
-    isView: nativeArrayBufferIsView,
-    has: nativeSetHas,
-    add: nativeSetAdd,
-  });
+  const BINARY_TRANSPORT_NATIVES_FOR_WORKER = (${createBinaryTransportNatives.toString()})();
   ${binaryTransportBytes.toString()}
   for (const name of [
     'fetch', 'WebSocket', 'EventSource', 'XMLHttpRequest', 'Worker',
@@ -468,8 +470,11 @@ const FRAME = `<!doctype html><meta charset="utf-8">
   let publicOutputBytes = 0;
   let publicOutputWindow = Date.now();
   let publicOutputWindowCount = 0;
+  const BINARY_TRANSPORT_NATIVES_FOR_FRAME = (${createBinaryTransportNatives.toString()})();
+  ${binaryTransportBytes.toString()}
   const publicOutputSize = (value) => {
     const seen = new Set();
+    const buffers = new Set();
     const stack = [value];
     let bytes = 0;
     let nodes = 0;
@@ -481,8 +486,12 @@ const FRAME = `<!doctype html><meta charset="utf-8">
       if (typeof x === 'number' || typeof x === 'bigint') { bytes += 16; continue; }
       if (typeof x === 'boolean') { bytes += 4; continue; }
       if (typeof x === 'undefined') { bytes += 4; continue; }
-      if (x instanceof ArrayBuffer) { bytes += x.byteLength; continue; }
-      if (ArrayBuffer.isView(x)) { bytes += x.byteLength; continue; }
+      const binary = binaryTransportBytes(x, buffers, BINARY_TRANSPORT_NATIVES_FOR_FRAME);
+      if (binary !== null) {
+        if (binary < 0) return PUBLIC_OUTPUT_MAX_BYTES + 1;
+        bytes += binary;
+        continue;
+      }
       if (typeof x !== 'object') return PUBLIC_OUTPUT_MAX_BYTES + 1;
       if (seen.has(x)) continue;
       seen.add(x);
