@@ -151,3 +151,21 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
 - Worker依存分離は `c59ad876485f2eb83f3fac0ccb92007d42102f9c` としてpush済み。
   canonical生成を2回実行し、tracked userscript/release-versionのhash一致を確認。
   `generated-lightweight-{first,second}.json` と `generated-lightweight-hashes.json` に保存した。
+
+## Checkpoint 4: clean commitでの検証と時計回帰
+
+- `c051ab2ede7b2dc211c9ad9ab5540602d4575f37` はpush済み。
+  同clean commitでquery/Worker/translator/ownership 48検査とmodule-boundariesが成功。
+  `worker-contracts-committed.json` のlog SHA256は
+  `4fca9ea43c7ee0b9b7d9bc3e9ee82c48e306cda11018665dceada87bc88d2a24`。
+- 同commitで `f6-real-fixtures`、PE/Mach-O layout cell、X-03 discoveryの4ファイル成功。
+  4つの実fixture（ELF64、PE32+、PE32、Mach-O64）をLLVM18.1.3で独立reparseした。
+  証拠は `rebuild-independent-restored.json/.log`。有限mutation/layoutの受入であり全形式の完成ではない。
+- Worker追加計測では、2秒終了時点でもモジュール読込中で初期化完了に届いていない。
+  この環境のcold-start受入は未合格のまま。予算・warmup条件を変更していない。
+- 全体checkで落ちたmismatch minimizationは単独再実行では成功した。
+  aggregate期限の試験はperformance.nowだけを模擬し、内部oracleが使うDate.nowは実時間のままだった。
+  同じ模擬時計へ揃え、100ms総予算・1比較30ms・4比較で期限切れという既存期待値を保持した。
+  生産コードとISA意味論は変更せず、mismatch/sequence両検査が成功。
+  証拠は `minimization-before` と `minimization-clock-aligned`。
+- Stage2 canonical suiteは別receiptへ保存する。実機検証は引き続きユーザー指定でスキップ。

@@ -166,8 +166,13 @@ test('real producer ADD-to-SUB mutation is minimized through independent re-exec
     assert.equal(lost.reason,'final-counterexample-not-reproduced');
     assert.equal(lost.minimality,'not-established');
     const nowDescriptor=Object.getOwnPropertyDescriptor(performance,'now');
+    const dateNowDescriptor=Object.getOwnPropertyDescriptor(Date,'now');
     let elapsed=0;
     Object.defineProperty(performance,'now',{configurable:true,value:()=>elapsed});
+    // The minimizer uses performance.now, while each independent comparison
+    // uses Date.now. Both must observe this test's simulated elapsed time;
+    // host load must not expire a per-comparison budget before the aggregate.
+    Object.defineProperty(Date,'now',{configurable:true,value:()=>elapsed});
     try {
       const deadline = await minimizeMachineEffectsMismatch({corpusCase:original,timeoutMs:100,subject:context=>{
         const observation=observeRv64CorpusCase(context);
@@ -180,6 +185,7 @@ test('real producer ADD-to-SUB mutation is minimized through independent re-exec
     } finally {
       if(nowDescriptor)Object.defineProperty(performance,'now',nowDescriptor);
       else delete performance.now;
+      Object.defineProperty(Date,'now',dateNowDescriptor);
     }
     console.log('actual RV64 producer mismatch reduced to x1=0, x2=1; reference ADD=1, subject SUB=ffffffffffffffff');
   `;
