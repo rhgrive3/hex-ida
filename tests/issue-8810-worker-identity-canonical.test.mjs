@@ -182,6 +182,28 @@ test('the dedicated event run filter refuses non-canonical identity', async () =
   assert.equal(matched.type, 'worker.completed');
 });
 
+test('the dedicated coordinator refuses a non-canonical event run filter', async () => {
+  const coordinator = dedicatedCoordinator();
+  await coordinator.claim({ runId: 'run-A', workerId: 'worker-A' });
+  coordinator.onEvent({ kind: 'completed', data: {}, observedAt: 'now' });
+  const rejected = await coordinator.waitEvent({ events: ['worker.completed'], runId: ['run-A'] })
+    .then(() => null, (error) => error);
+  assert.ok(rejected instanceof TypeError, 'a structured run filter must not be accepted');
+  assert.equal(coordinator.events.length, 1, 'the refused filter must not consume the queued event');
+  assert.equal((await coordinator.waitEvent({ events: ['worker.completed'], runId: 'run-A' })).type, 'worker.completed');
+});
+
+test('the single-tab coordinator refuses a non-canonical event run filter', async () => {
+  const coordinator = singleTabCoordinator();
+  coordinator.claimed = { runId: 'run-A', workerId: 'worker-A' };
+  coordinator.onControllerEvent({ kind: 'heartbeat', data: {}, observedAt: 'now' });
+  const rejected = await coordinator.waitEvent({ events: ['worker.heartbeat'], runId: { toString() { return 'run-A'; } } })
+    .then(() => null, (error) => error);
+  assert.ok(rejected instanceof TypeError, 'a caller-formatted run filter must not be accepted');
+  assert.equal(coordinator.events.length, 1, 'the refused filter must not consume the queued event');
+  assert.equal((await coordinator.waitEvent({ events: ['worker.heartbeat'], runId: 'run-A' })).type, 'worker.heartbeat');
+});
+
 test('an Array identity surviving structured clone is still refused', async () => {
   const onTheWire = structuredClone({ runId: ['run-A'], workerId: ['worker-A'] });
   const claimed = dedicatedCoordinator();
