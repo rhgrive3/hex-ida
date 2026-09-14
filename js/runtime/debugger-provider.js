@@ -135,6 +135,11 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
        gets a distinct monotonic sequence. */
     let interventionSequence = 0;
     let unsubscribe = null;
+    // #8686: module-refresh publication authority, mirroring the legacy
+    // DebugSession.refreshState() contract established by #3928. Only the most
+    // recently started refresh, begun under the current session epoch, may
+    // commit into session.modules.
+    let moduleRefreshAuthority = null;
 
     const ingest = (raw) => {
       const event = normalizer.push(raw);
@@ -245,7 +250,31 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
       resolveAddress: (runtimeAddress, resolutionOptions = {}) => session.modules.resolve(runtimeAddress, resolutionOptions),
       refreshModules: async () => {
         if (!this.adapter.capabilities?.modules || typeof this.adapter.getModules !== 'function') return session.modules.active();
-        const modules = await this.adapter.getModules();
+        // #8686: capture the epoch and claim publication authority before the
+        // first await, and register a session-owned operation so
+        // newProviderEpoch()/close() abort an in-flight request even if the
+        // adapter later ignores cancellation. The completion-time check below
+        // remains authoritative because adapters may ignore abort.
+        const refreshToken = {};
+        const startedEpoch = session.epoch;
+        moduleRefreshAuthority = refreshToken;
+        const operation = createRuntimeOperationController(session);
+        let modules;
+        try {
+          modules = await this.adapter.getModules({ signal: operation.signal });
+          if (
+            operation.signal.aborted
+            || session.closed
+            || session.epoch !== startedEpoch
+            || moduleRefreshAuthority !== refreshToken
+          ) {
+            throw new DebugAdapterError('runtime-session-stale', 'module refresh completed after its runtime epoch or publication authority changed', {
+              startedEpoch, currentEpoch: session.epoch,
+            });
+          }
+        } finally {
+          operation.release();
+        }
         if (!Array.isArray(modules)) throw new DebugAdapterError('runtime-invalid-modules', 'debugger adapter getModules must return an array');
 
         // Transactional commit: validate every canonical binding in a scratch
