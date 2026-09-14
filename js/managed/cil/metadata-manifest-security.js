@@ -1,5 +1,5 @@
 import { deepFreeze } from '../../core/identity/index.js';
-import { metadataRowSize, validateMetadataTableValidMask, codedIndexSize, cilMetadataToken } from './metadata-layout.js';
+import { metadataRowSize, validateMetadataTableValidMask, codedIndexSize, cilMetadataToken, createCilMetadataBudget } from './metadata-layout.js';
 import { readCilMetadataStreams } from './metadata-streams.js';
 import { readCilDefinitions } from './metadata-definitions.js';
 import { readCilMetadataBlob } from './call-signature-metadata.js';
@@ -95,22 +95,31 @@ function tableLayout(bytes, view, stream) {
   return { rowCounts, tableOffsets, rowSizes, heapSizes, valid };
 }
 
-function readManifestSecurity(bytes, view, layout, stringsStream, blobStream, defs) {
+function readManifestSecurity(bytes, view, layout, stringsStream, blobStream, defs, budget = null) {
   const { rowCounts: counts, tableOffsets: offsets, rowSizes, heapSizes } = layout;
   const s = heapSizes & 1 ? 4 : 2;
   const b = heapSizes & 4 ? 4 : 2;
   const index = (pos, width) => width === 2 ? view.getUint16(pos, true) : view.getUint32(pos, true);
+  const textCache = new Map();
   const text = value => {
     if (value === 0) return null;
+    // #8699: intern shared #Strings heap offsets so repeated references decode
+    // and retain the value at most once (also used by File / ExportedType names).
+    if (textCache.has(value)) return textCache.get(value);
     if (!stringsStream || value >= stringsStream.size) fail('cil-definition-string-index-invalid');
     const start = stringsStream.offset + value, end = stringsStream.offset + stringsStream.size;
     let pos = start;
     while (pos < end && bytes[pos] !== 0) pos += 1;
     if (pos === end) fail('cil-definition-string-unterminated');
-    try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes.subarray(start, pos)); }
+    if (budget) budget.chargeString(pos - start);
+    let decoded;
+    try { decoded = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes.subarray(start, pos)); }
     catch { fail('cil-invalid-strings-utf8'); }
+    textCache.set(value, decoded);
+    return decoded;
   };
   const readRows = (table, decode) => Array.from({ length: counts[table] || 0 }, (_, i) => {
+    if (budget) budget.chargeRow();
     const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
     return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
   });
@@ -165,17 +174,37 @@ function readManifestSecurity(bytes, view, layout, stringsStream, blobStream, de
     if (table === 0x27 && typeNamespace.length !== 0) fail('cil-exported-type-nested-namespace-invalid');
     return { flags, typeDefId, typeName, typeNamespace, implementation: { table, rid, token: cilMetadataToken(table, rid) }, isForwarder };
   });
+  // #8797: resolve each ExportedType nested chain once and memoize the terminal
+  // (File | AssemblyRef) resolution for every rid on the walked path. The prior
+  // per-row from-scratch walk + fresh cycle Set made a valid N-row chain cost
+  // ~N + (N-1) + ... = O(N^2) traversals; path compression makes total work
+  // linear. Error authority (cycle / invalid-implementation) is preserved, and a
+  // work budget bounds admission cost for adversarial aggregate inputs.
+  const resolvedCache = new Map();
   for (const row of exportedTypes) {
-    const seen = new Set([row.rid]);
     let implementation = row.implementation;
-    while (implementation.table === 0x27) {
-      if (seen.has(implementation.rid)) fail('cil-exported-type-implementation-cycle');
-      seen.add(implementation.rid);
+    if (implementation.table !== 0x27) {
+      row.resolvedImplementation = { ...implementation };
+      continue;
+    }
+    const walked = [];
+    const onPath = new Set([row.rid]);
+    while (true) {
+      if (budget) budget.chargeWork();
+      const cached = resolvedCache.get(implementation.rid);
+      if (cached !== undefined) { implementation = cached; break; }
+      if (onPath.has(implementation.rid)) fail('cil-exported-type-implementation-cycle');
+      onPath.add(implementation.rid);
+      walked.push(implementation.rid);
       const target = exportedTypes[implementation.rid - 1];
       if (!target) fail('cil-exported-type-implementation-invalid');
       implementation = target.implementation;
+      if (implementation.table !== 0x27) break;
     }
-    row.resolvedImplementation = { ...implementation };
+    const resolved = { ...implementation };
+    resolvedCache.set(row.rid, resolved);
+    for (const rid of walked) resolvedCache.set(rid, resolved);
+    row.resolvedImplementation = { ...resolved };
   }
 
   const parentSize = codedIndexSize(counts, [0x02, 0x06, 0x20], 2), parentTables = [0x02, 0x06, 0x20];
@@ -200,11 +229,12 @@ function readManifestSecurity(bytes, view, layout, stringsStream, blobStream, de
   return { files, exportedTypes, declSecurity };
 }
 
-export function overlayCilManifestSecurity(bytes, parsed) {
+export function overlayCilManifestSecurity(bytes, parsed, options = {}) {
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
   const pe = peLayout(u8, view);
   if (!pe?.cliPresent) return parsed;
+  const budget = createCilMetadataBudget(options);
   const meta = readCilMetadataStreams(u8, pe.metadataOffset, pe.metadataSize);
   const tablesStream = meta.streams.find(s => s.name === '#~' || s.name === '#-');
   const stringsStream = meta.streams.find(s => s.name === '#Strings');
@@ -212,8 +242,8 @@ export function overlayCilManifestSecurity(bytes, parsed) {
   const guidStream = meta.streams.find(s => s.name === '#GUID');
   if (!tablesStream) fail('cil-metadata-tables-missing');
   const layout = tableLayout(u8, view, tablesStream);
-  const defs = readCilDefinitions(u8, view, layout, stringsStream, blobStream, guidStream);
-  const extra = readManifestSecurity(u8, view, layout, stringsStream, blobStream, defs);
+  const defs = readCilDefinitions(u8, view, layout, stringsStream, blobStream, guidStream, budget);
+  const extra = readManifestSecurity(u8, view, layout, stringsStream, blobStream, defs, budget);
   return deepFreeze({ ...parsed, files: extra.files, exportedTypes: extra.exportedTypes, declSecurity: extra.declSecurity });
 }
 
