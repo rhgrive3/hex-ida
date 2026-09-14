@@ -3,7 +3,7 @@ import { expr, structuralKey } from '../js/decompiler/ast/nodes.js';
 import { RewriteEngine } from '../js/decompiler/rewrite/engine.js';
 import { DEFAULT_RULES } from '../js/decompiler/rewrite/rules.js';
 import { evaluateExpression } from '../js/decompiler/verify/equivalence.js';
-import { u } from '../js/decompiler/truth/integer.js';
+import { u, fullMask } from '../js/decompiler/truth/integer.js';
 import { printExpression } from '../js/decompiler/pretty/c.js';
 
 const engine = new RewriteEngine(DEFAULT_RULES, { timeBudgetMs: 1000, nodeBudget: 4096, maxIterations: 16 });
@@ -68,4 +68,67 @@ for (const bits of [8, 16, 32, 64]) {
   }
 }
 assert.ok(checks > 5000);
-console.log(`decompiler rewrite property tests: ${checks} signed/unsigned semantic checks PASS`);
+
+// #8866: the corpus above deliberately used one common width. Cross-width
+// generation is required too, because each typed operation carries its own
+// modular boundary and the width of a removed node is the source-width
+// authority of the next extension/truncation.
+const CROSS_WIDTHS = [8, 16, 32, 64, 128];
+const rawConstant = (bits) => BigInt(rand32() % 0xffff) | (bits >= 32 ? 0x80000000n : 0n);
+let crossChecks = 0;
+for (const innerBits of CROSS_WIDTHS) {
+  for (const outerBits of CROSS_WIDTHS) {
+    if (innerBits === outerBits) continue;
+    for (const signed of [false, true]) {
+      const x = expr.variable('x', innerBits, signed);
+      const k = (value, bits) => expr.constant(BigInt(value), bits, signed);
+      const corpus = [
+        expr.binary('add', expr.binary('add', x, k(5, innerBits), innerBits, signed), k(7, outerBits), outerBits, signed),
+        expr.binary('add', expr.binary('sub', x, k(1, innerBits), innerBits, signed), k(1, outerBits), outerBits, signed),
+        expr.binary('sub', expr.binary('sub', x, k(1, innerBits), innerBits, signed), k(1, outerBits), outerBits, signed),
+        expr.binary('mul', expr.binary('mul', x, k(255, innerBits), innerBits, signed), k(2, outerBits), outerBits, signed),
+        expr.binary('and', expr.binary('and', x, k(0xf5, innerBits), innerBits, signed), k(0x3f, outerBits), outerBits, signed),
+        expr.binary('or', expr.binary('or', x, k(0x10, innerBits), innerBits, signed), k(0x20, outerBits), outerBits, signed),
+        expr.binary('xor', expr.binary('xor', x, k(0x10, innerBits), innerBits, signed), k(0x20, outerBits), outerBits, signed),
+        expr.binary('add', expr.binary('mul', expr.variable('a', innerBits, signed), x, innerBits, signed),
+          expr.binary('mul', expr.variable('a', innerBits, signed), k(3, innerBits), innerBits, signed), outerBits, signed),
+        expr.binary('add', x, k(0, outerBits), outerBits, signed),
+        expr.binary('mul', x, k(1, outerBits), outerBits, signed),
+        expr.binary('shl', x, k(0, outerBits), outerBits, signed),
+        expr.binary('and', x, k(Number(fullMask(outerBits)), outerBits, signed), outerBits, signed),
+        expr.unary('not', expr.unary('not', x, innerBits, signed), outerBits, signed),
+        expr.unary('sext', expr.binary('add', x, k(0, outerBits), outerBits, signed), outerBits * 2 > 128 ? outerBits : outerBits * 2, true),
+        expr.unary('zext', expr.unary('zext', x, innerBits === outerBits ? innerBits : Math.min(innerBits, outerBits), false), outerBits, false),
+      ];
+      for (const original of corpus) {
+        const rewritten = engine.rewrite(original, { deterministicTransforms: true });
+        const root = rewritten.root;
+        assert.equal(Number(root.bits), Number(original.bits),
+          `${original.bits}-bit root rewrote to ${root.bits} bits (${rewritten.proof.map((p) => p.rule).join(',')})`);
+        const values = boundaries.concat(Array.from({ length: 24 }, () => rawConstant(innerBits)));
+        for (let i = 0; i < values.length; i++) {
+          const env = { x: u(values[i], innerBits), a: u(values[(i + 5) % values.length], innerBits) };
+          const a = evaluateExpression(original, env), b = evaluateExpression(root, env);
+          assert.notEqual(a, null); assert.notEqual(b, null);
+          assert.equal(u(b, original.bits), u(a, original.bits),
+            `cross-width ${innerBits}->${outerBits} ${signed ? 'signed' : 'unsigned'} mismatch `
+            + `${printExpression(original)} -> ${printExpression(root)} rules=${rewritten.proof.map((p) => p.rule).join(',')}`);
+          crossChecks++;
+        }
+        // The rewritten node must also stay value-correct when a parent uses its
+        // declared width as extension/truncation authority.
+        for (const [ctxName, wrap] of [['sext', (n) => expr.unary('sext', n, 64, true)], ['zext', (n) => expr.unary('zext', n, 64, false)], ['trunc', (n) => expr.unary('trunc', n, 8, false)]]) {
+          for (let i = 0; i < 8; i++) {
+            const env = { x: u(values[i], innerBits), a: u(values[(i + 5) % values.length], innerBits) };
+            const a = evaluateExpression(wrap(original), env), b = evaluateExpression(wrap(root), env);
+            if (a == null || b == null) continue;
+            assert.equal(b, a, `cross-width ${innerBits}->${outerBits} ${ctxName}-context divergence`);
+            crossChecks++;
+          }
+        }
+      }
+    }
+  }
+}
+assert.ok(crossChecks > 10000, `cross-width corpus too small: ${crossChecks}`);
+console.log(`decompiler rewrite property tests: ${checks} signed/unsigned semantic checks + ${crossChecks} cross-width semantic checks PASS`);

@@ -8,61 +8,103 @@ const c = (v, like, bits = like?.bits || 64) => expr.constant(v, bits, like?.sig
 const cost = (n) => nodeCount(n);
 const proof = (kind, detail) => () => ({ kind, detail });
 
+/*
+ * #8866 — a typed node's `bits` is a real fixed-width modular boundary, not
+ * cosmetic metadata: the width-exact evaluator resolves each child at its own
+ * declared width and uses a child's width as the source-width authority for the
+ * next extension/truncation. So a rewrite may not remove, re-associate or
+ * replace a typed operation unless the domain it is deleting is provably the
+ * same domain as the node it replaces. Unknown/non-canonical width fails
+ * closed: an unproven compatibility is not a proven compatibility.
+ */
+const widthOf = (n) => {
+  const bits = Number(n?.bits);
+  return Number.isInteger(bits) && bits > 0 ? bits : null;
+};
+const sameWidthDomain = (...nodes) => {
+  const widths = nodes.map(widthOf);
+  return widths[0] != null && widths.every((w) => w === widths[0]);
+};
+// `sext`/`zext` whose declared result is narrower than their source truncate in
+// this typed AST, so extension composition may only cancel outwards.
+const wideningExtensionChain = (n) => {
+  const outer = widthOf(n), middle = widthOf(n?.arg), inner = widthOf(n?.arg?.arg);
+  return outer != null && middle != null && inner != null && outer >= middle && middle >= inner;
+};
+const algebraProof = (name, before, after) => ({
+  kind: 'integer-algebra',
+  detail: name,
+  bits: widthOf(before) ?? null,
+  domain: 'fixed-width-integer',
+});
+
 function binRule(name, phase, op, match, rewrite, precondition = null, extra = {}) {
   return { name, phase, match: (n, ctx) => n?.kind === 'binary' && n.op === op ? match(n, ctx) : null,
-    precondition, rewrite, proof: proof('integer-algebra', name), cost, ...extra };
+    precondition, rewrite, proof: (before, after) => algebraProof(name, before, after), cost, ...extra };
+}
+
+// A rewrite that returns an existing child instead of the matched node also
+// deletes the matched node's result width. Admit it only when the retained
+// child carries exactly that width (#8866).
+function childRule(name, phase, op, match, pick) {
+  return binRule(name, phase, op, match, pick, (n) => sameWidthDomain(n, pick(n)));
 }
 
 const identityRules = [
-  binRule('add-zero-right', 'canonical', 'add', (n) => isConst(n.right, 0) ? {} : null, (n) => n.left),
-  binRule('add-zero-left', 'canonical', 'add', (n) => isConst(n.left, 0) ? {} : null, (n) => n.right),
-  binRule('sub-zero', 'canonical', 'sub', (n) => isConst(n.right, 0) ? {} : null, (n) => n.left),
-  binRule('mul-one-right', 'canonical', 'mul', (n) => isConst(n.right, 1) ? {} : null, (n) => n.left),
-  binRule('mul-one-left', 'canonical', 'mul', (n) => isConst(n.left, 1) ? {} : null, (n) => n.right),
+  childRule('add-zero-right', 'canonical', 'add', (n) => isConst(n.right, 0) ? {} : null, (n) => n.left),
+  childRule('add-zero-left', 'canonical', 'add', (n) => isConst(n.left, 0) ? {} : null, (n) => n.right),
+  childRule('sub-zero', 'canonical', 'sub', (n) => isConst(n.right, 0) ? {} : null, (n) => n.left),
+  childRule('mul-one-right', 'canonical', 'mul', (n) => isConst(n.right, 1) ? {} : null, (n) => n.left),
+  childRule('mul-one-left', 'canonical', 'mul', (n) => isConst(n.left, 1) ? {} : null, (n) => n.right),
   binRule('mul-zero-right', 'canonical', 'mul', (n) => isConst(n.right, 0) && isPure(n.left) ? {} : null, (n) => c(0, n)),
   binRule('mul-zero-left', 'canonical', 'mul', (n) => isConst(n.left, 0) && isPure(n.right) ? {} : null, (n) => c(0, n)),
   binRule('and-zero-right', 'canonical', 'and', (n) => isConst(n.right, 0) && isPure(n.left) ? {} : null, (n) => c(0, n)),
   binRule('and-zero-left', 'canonical', 'and', (n) => isConst(n.left, 0) && isPure(n.right) ? {} : null, (n) => c(0, n)),
-  binRule('or-zero-right', 'canonical', 'or', (n) => isConst(n.right, 0) ? {} : null, (n) => n.left),
-  binRule('or-zero-left', 'canonical', 'or', (n) => isConst(n.left, 0) ? {} : null, (n) => n.right),
-  binRule('xor-zero-right', 'canonical', 'xor', (n) => isConst(n.right, 0) ? {} : null, (n) => n.left),
-  binRule('xor-zero-left', 'canonical', 'xor', (n) => isConst(n.left, 0) ? {} : null, (n) => n.right),
+  childRule('or-zero-right', 'canonical', 'or', (n) => isConst(n.right, 0) ? {} : null, (n) => n.left),
+  childRule('or-zero-left', 'canonical', 'or', (n) => isConst(n.left, 0) ? {} : null, (n) => n.right),
+  childRule('xor-zero-right', 'canonical', 'xor', (n) => isConst(n.right, 0) ? {} : null, (n) => n.left),
+  childRule('xor-zero-left', 'canonical', 'xor', (n) => isConst(n.left, 0) ? {} : null, (n) => n.right),
   binRule('xor-self', 'canonical', 'xor', (n) => sameExpr(n.left, n.right) && isPure(n.left) ? {} : null, (n) => c(0, n)),
   binRule('sub-self', 'canonical', 'sub', (n) => sameExpr(n.left, n.right) && isPure(n.left) ? {} : null, (n) => c(0, n)),
-  binRule('and-full-mask', 'canonical', 'and', (n) => isConst(n.right) && n.right.value === fullMask(n.bits) ? {} : null, (n) => n.left),
-  binRule('shift-zero-shl', 'canonical', 'shl', (n) => isConst(n.right, 0) ? {} : null, (n) => n.left),
-  binRule('shift-zero-lshr', 'canonical', 'lshr', (n) => isConst(n.right, 0) ? {} : null, (n) => n.left),
-  binRule('shift-zero-ashr', 'canonical', 'ashr', (n) => isConst(n.right, 0) ? {} : null, (n) => n.left),
-  binRule('and-self', 'canonical', 'and', (n) => sameExpr(n.left, n.right) && isStable(n.left) ? {} : null, (n) => n.left),
-  binRule('or-self', 'canonical', 'or', (n) => sameExpr(n.left, n.right) && isStable(n.left) ? {} : null, (n) => n.left),
-  binRule('udiv-one', 'canonical', 'udiv', (n) => isConst(n.right, 1) ? {} : null, (n) => n.left),
-  binRule('sdiv-one', 'canonical', 'sdiv', (n) => isConst(n.right, 1) ? {} : null, (n) => n.left),
+  childRule('and-full-mask', 'canonical', 'and', (n) => isConst(n.right) && constOperandValue(n.right) === fullMask(n.bits) ? {} : null, (n) => n.left),
+  childRule('shift-zero-shl', 'canonical', 'shl', (n) => isConst(n.right, 0) ? {} : null, (n) => n.left),
+  childRule('shift-zero-lshr', 'canonical', 'lshr', (n) => isConst(n.right, 0) ? {} : null, (n) => n.left),
+  childRule('shift-zero-ashr', 'canonical', 'ashr', (n) => isConst(n.right, 0) ? {} : null, (n) => n.left),
+  childRule('and-self', 'canonical', 'and', (n) => sameExpr(n.left, n.right) && isStable(n.left) ? {} : null, (n) => n.left),
+  childRule('or-self', 'canonical', 'or', (n) => sameExpr(n.left, n.right) && isStable(n.left) ? {} : null, (n) => n.left),
+  childRule('udiv-one', 'canonical', 'udiv', (n) => isConst(n.right, 1) ? {} : null, (n) => n.left),
+  childRule('sdiv-one', 'canonical', 'sdiv', (n) => isConst(n.right, 1) ? {} : null, (n) => n.left),
   binRule('umod-one', 'canonical', 'umod', (n) => isConst(n.right, 1) && isPure(n.left) ? {} : null, (n) => c(0, n)),
   binRule('smod-one', 'canonical', 'smod', (n) => isConst(n.right, 1) && isPure(n.left) ? {} : null, (n) => c(0, n)),
   {
     name: 'neg-zero', phase: 'canonical', match: (n) => n?.kind === 'unary' && n.op === 'neg' && isConst(n.arg, 0) ? {} : null,
-    rewrite: (n) => c(0, n), proof: proof('integer-algebra', '-0 == 0'), cost,
+    rewrite: (n) => c(0, n), proof: (before, after) => algebraProof('-0 == 0', before, after), cost,
   },
   {
     name: 'not-zero', phase: 'canonical', match: (n) => n?.kind === 'unary' && n.op === 'not' && isConst(n.arg, 0) ? {} : null,
-    rewrite: (n) => c(fullMask(n.bits), n), proof: proof('bitvector-identity', '~0 == full mask'), cost,
+    rewrite: (n) => c(fullMask(n.bits), n),
+    proof: (before, after) => ({ kind: 'bitvector-identity', detail: '~0 == full mask', bits: widthOf(before) ?? null, domain: 'fixed-width-integer' }), cost,
   },
 ];
 
 const constFoldOps = new Set(['add','sub','mul','and','or','xor','shl','lshr','ashr','ror','sdiv','udiv','smod','umod']);
+// A stored constant is only authoritative modulo its own declared width (#8866):
+// the width-exact evaluator resolves `const` as `u(value, node.bits)`, so folding
+// must apply the same per-operand width before combining at the result width.
+const constOperandValue = (n) => u(n.value, widthOf(n) ?? n.bits);
 const constantRules = [{
   name: 'constant-fold-binary', phase: 'fold',
   match: (n) => n?.kind === 'binary' && constFoldOps.has(n.op) && isConst(n.left) && isConst(n.right) ? {} : null,
   precondition: () => true,
-  rewrite: (n) => { const v = evalBinary(n.op, n.left.value, n.right.value, n.bits, n.signed); return v == null ? null : c(v, n); },
-  proof: (before, after) => ({ kind: 'width-exact-evaluation', bits: before.bits, result: after.value.toString() }),
+  rewrite: (n) => { const v = evalBinary(n.op, constOperandValue(n.left), constOperandValue(n.right), n.bits, n.signed); return v == null ? null : c(v, n); },
+  proof: (before, after) => ({ kind: 'width-exact-evaluation', bits: widthOf(before) ?? null, domain: 'fixed-width-integer', result: after.value.toString() }),
   cost,
 }, {
   name: 'constant-fold-unary', phase: 'fold',
   match: (n) => n?.kind === 'unary' && isConst(n.arg) ? {} : null,
   precondition: () => true,
-  rewrite: (n) => { const v = evalUnary(n.op, n.arg.value, n.bits, n.arg.bits); return v == null ? null : c(v, n); },
-  proof: (before, after) => ({ kind: 'width-exact-evaluation', bits: before.bits, result: after.value.toString() }),
+  rewrite: (n) => { const v = evalUnary(n.op, constOperandValue(n.arg), n.bits, n.arg.bits); return v == null ? null : c(v, n); },
+  proof: (before, after) => ({ kind: 'width-exact-evaluation', bits: widthOf(before) ?? null, domain: 'fixed-width-integer', result: after.value.toString() }),
   cost,
 }];
 
@@ -70,50 +112,60 @@ function nestedConst(op, n) {
   if (n?.kind !== 'binary' || n.op !== op || !isConst(n.right)) return null;
   const x = n.left;
   if (x?.kind !== 'binary' || x.op !== op || !isConst(x.right)) return null;
-  return { inner: x, a: x.right.value, b: n.right.value };
+  return { inner: x, a: constOperandValue(x.right), b: constOperandValue(n.right) };
 }
 
 const associativeRules = [
   binRule('collect-add-constants', 'algebra', 'add', (n) => nestedConst('add', n), (n, m) =>
     expr.binary('add', m.inner.left, c(u(m.a + m.b, n.bits), n), n.bits, n.signed, n.source),
-    (n, m) => mayReorder(m.inner.left, n.right)),
+    (n, m) => mayReorder(m.inner.left, n.right) && sameWidthDomain(n, m.inner)),
   binRule('collect-mul-constants', 'algebra', 'mul', (n) => nestedConst('mul', n), (n, m) =>
     expr.binary('mul', m.inner.left, c(u(m.a * m.b, n.bits), n), n.bits, n.signed, n.source),
-    (n, m) => mayReorder(m.inner.left, n.right)),
+    (n, m) => mayReorder(m.inner.left, n.right) && sameWidthDomain(n, m.inner)),
   binRule('double-term', 'algebra', 'add', (n) => sameExpr(n.left, n.right) && mayDuplicate(n.left) ? {} : null,
     (n) => expr.binary('mul', n.left, c(2, n), n.bits, n.signed, n.source)),
-  binRule('strength-mul-power-two', 'idiom', 'mul', (n) => isConst(n.right) && isPowerOfTwo(n.right.value) ? { sh: log2Exact(n.right.value) } : null,
+  binRule('strength-mul-power-two', 'idiom', 'mul', (n) => {
+    if (!isConst(n.right)) return null;
+    const factor = constOperandValue(n.right);
+    return isPowerOfTwo(factor) ? { sh: log2Exact(factor) } : null;
+  },
     (n, m) => expr.binary('shl', n.left, c(m.sh, n), n.bits, n.signed, n.source),
-    (n) => isPure(n.left)),
+    (n, m) => isPure(n.left) && widthOf(n) != null && m.sh < widthOf(n)),
 ];
 
 const arithmeticRules = [
   binRule('collect-add-sub-constants', 'algebra', 'sub', (n) => n.left?.kind === 'binary' && n.left.op === 'add' && isConst(n.left.right) && isConst(n.right) ? { inner:n.left } : null,
-    (n,m) => expr.binary('add', m.inner.left, c(u(m.inner.right.value - n.right.value, n.bits), n), n.bits, n.signed, n.source),
-    (n,m) => isStable(m.inner.left)),
+    (n,m) => expr.binary('add', m.inner.left, c(u(constOperandValue(m.inner.right) - constOperandValue(n.right), n.bits), n), n.bits, n.signed, n.source),
+    (n,m) => isStable(m.inner.left) && sameWidthDomain(n, m.inner)),
   binRule('collect-sub-add-constants', 'algebra', 'add', (n) => n.left?.kind === 'binary' && n.left.op === 'sub' && isConst(n.left.right) && isConst(n.right) ? { inner:n.left } : null,
-    (n,m) => expr.binary('add', m.inner.left, c(u(n.right.value - m.inner.right.value, n.bits), n), n.bits, n.signed, n.source),
-    (n,m) => isStable(m.inner.left)),
+    (n,m) => expr.binary('add', m.inner.left, c(u(constOperandValue(n.right) - constOperandValue(m.inner.right), n.bits), n), n.bits, n.signed, n.source),
+    (n,m) => isStable(m.inner.left) && sameWidthDomain(n, m.inner)),
   binRule('collect-sub-sub-constants', 'algebra', 'sub', (n) => n.left?.kind === 'binary' && n.left.op === 'sub' && isConst(n.left.right) && isConst(n.right) ? { inner:n.left } : null,
-    (n,m) => expr.binary('sub', m.inner.left, c(u(m.inner.right.value + n.right.value, n.bits), n), n.bits, n.signed, n.source),
-    (n,m) => isStable(m.inner.left)),
+    (n,m) => expr.binary('sub', m.inner.left, c(u(constOperandValue(m.inner.right) + constOperandValue(n.right), n.bits), n), n.bits, n.signed, n.source),
+    (n,m) => isStable(m.inner.left) && sameWidthDomain(n, m.inner)),
+  // Factoring moves a multiplication across an addition/subtraction. That is only
+  // sound when every intermediate it deletes wraps at the same fixed width as the
+  // parent, otherwise each narrower product loses its own modular boundary (#8866).
   binRule('factor-common-left-add', 'algebra', 'add', (n) => {
     const a=n.left,b=n.right;
     if (a?.kind!=='binary'||b?.kind!=='binary'||a.op!=='mul'||b.op!=='mul') return null;
     if (sameExpr(a.left,b.left) && isStable(a.left) && isPure(a.right) && isPure(b.right)) return { common:a.left, x:a.right, y:b.right };
     return null;
-  }, (n,m) => expr.binary('mul', m.common, expr.binary('add',m.x,m.y,n.bits,n.signed,n.source), n.bits,n.signed,n.source)),
+  }, (n,m) => expr.binary('mul', m.common, expr.binary('add',m.x,m.y,n.bits,n.signed,n.source), n.bits,n.signed,n.source),
+  (n) => sameWidthDomain(n, n.left, n.right)),
   binRule('factor-common-left-sub', 'algebra', 'sub', (n) => {
     const a=n.left,b=n.right;
     if (a?.kind!=='binary'||b?.kind!=='binary'||a.op!=='mul'||b.op!=='mul') return null;
     if (sameExpr(a.left,b.left) && isStable(a.left) && isPure(a.right) && isPure(b.right)) return { common:a.left, x:a.right, y:b.right };
     return null;
-  }, (n,m) => expr.binary('mul', m.common, expr.binary('sub',m.x,m.y,n.bits,n.signed,n.source), n.bits,n.signed,n.source)),
+  }, (n,m) => expr.binary('mul', m.common, expr.binary('sub',m.x,m.y,n.bits,n.signed,n.source), n.bits,n.signed,n.source),
+  (n) => sameWidthDomain(n, n.left, n.right)),
 ];
 
 const intrinsicRules = [{
   name:'idempotent-minmax', phase:'select',
   match:(n)=>n?.kind==='intrinsic' && ['min','max'].includes(n.name) && n.args?.length===2 && sameExpr(n.args[0],n.args[1]) && isStable(n.args[0]) ? {} : null,
+  precondition:(n)=>sameWidthDomain(n, n.args[0]),
   rewrite:(n)=>n.args[0], proof:proof('order-identity','min/max(x,x) == x'), cost,
 }, {
   name:'nested-minmax-idempotent', phase:'select',
@@ -125,24 +177,31 @@ const intrinsicRules = [{
 const bitRules = [
   binRule('merge-and-masks', 'bits', 'and', (n) => n.left?.kind === 'binary' && n.left.op === 'and' && isConst(n.left.right) && isConst(n.right)
     ? { inner: n.left } : null,
-    (n, m) => expr.binary('and', m.inner.left, c(m.inner.right.value & n.right.value, n), n.bits, n.signed, n.source),
-    (n, m) => isPure(m.inner.left)),
+    (n, m) => expr.binary('and', m.inner.left, c(u(constOperandValue(m.inner.right) & constOperandValue(n.right), n.bits), n), n.bits, n.signed, n.source),
+    (n, m) => isPure(m.inner.left) && sameWidthDomain(n, m.inner)),
   binRule('merge-or-masks', 'bits', 'or', (n) => n.left?.kind === 'binary' && n.left.op === 'or' && isConst(n.left.right) && isConst(n.right)
     ? { inner: n.left } : null,
-    (n, m) => expr.binary('or', m.inner.left, c(m.inner.right.value | n.right.value, n), n.bits, n.signed, n.source),
-    (n, m) => isPure(m.inner.left)),
+    (n, m) => expr.binary('or', m.inner.left, c(u(constOperandValue(m.inner.right) | constOperandValue(n.right), n.bits), n), n.bits, n.signed, n.source),
+    (n, m) => isPure(m.inner.left) && sameWidthDomain(n, m.inner)),
   {
+    // `~~x == x` only holds when the two NOTs share one fixed-width domain; the
+    // outer NOT also has to be the width the replacement keeps (#8866).
     name: 'double-bitwise-not', phase: 'bits',
     match: (n) => n?.kind === 'unary' && n.op === 'not' && n.arg?.kind === 'unary' && n.arg.op === 'not' ? {} : null,
-    precondition: (n) => isPure(n.arg.arg), rewrite: (n) => n.arg.arg,
-    proof: proof('bitvector-identity', '~~x == x'), cost,
+    precondition: (n) => isPure(n.arg.arg) && sameWidthDomain(n, n.arg, n.arg.arg),
+    rewrite: (n) => n.arg.arg,
+    proof: (before) => ({ kind: 'bitvector-identity', detail: '~~x == x', bits: widthOf(before) ?? null, domain: 'fixed-width-integer' }), cost,
   },
   {
     name: 'collapse-nested-extract', phase: 'bits',
     match: (n) => n?.kind === 'intrinsic' && n.name === 'bit_extract' && n.args?.[0]?.kind === 'intrinsic' && n.args[0].name === 'bit_extract'
       && isConst(n.args[1]) && isConst(n.args[2]) && isConst(n.args[0].args?.[1]) && isConst(n.args[0].args?.[2]) ? { inner: n.args[0] } : null,
-    precondition: (n, m) => n.args[1].value + n.args[2].value <= m.inner.args[2].value,
-    rewrite: (n, m) => expr.intrinsic('bit_extract', [m.inner.args[0], c(m.inner.args[1].value + n.args[1].value, n), n.args[2]], n.bits, n.signed, n.source),
+    precondition: (n, m) => {
+      const lsb = constOperandValue(n.args[1]), width = constOperandValue(n.args[2]);
+      const innerWidth = constOperandValue(m.inner.args[2]);
+      return lsb + width <= innerWidth;
+    },
+    rewrite: (n, m) => expr.intrinsic('bit_extract', [m.inner.args[0], c(constOperandValue(m.inner.args[1]) + constOperandValue(n.args[1]), n), n.args[2]], n.bits, n.signed, n.source),
     proof: proof('bit-slice-composition', 'nested fixed-width extraction'), cost,
   },
 ];
@@ -163,7 +222,7 @@ const compareRules = [{
 }, {
   name: 'double-logical-not', phase: 'boolean',
   match: (n) => n?.kind === 'unary' && n.op === 'lnot' && n.arg?.kind === 'unary' && n.arg.op === 'lnot' ? {} : null,
-  precondition: (n) => isPure(n.arg.arg) && n.arg.arg?.bits === 1, rewrite: (n) => n.arg.arg, proof: proof('boolean-identity', '!!bool'), cost,
+  precondition: (n) => isPure(n.arg.arg) && n.arg.arg?.bits === 1 && widthOf(n) === 1, rewrite: (n) => n.arg.arg, proof: proof('boolean-identity', '!!bool'), cost,
 }];
 
 const compareCanonicalRules = [{
@@ -220,14 +279,17 @@ const rangeRules = [{
 const selectRules = [{
   name: 'select-identical-arms', phase: 'select',
   match: (n) => n?.kind === 'select' && sameExpr(n.whenTrue, n.whenFalse) && isPure(n.condition) && mayDuplicate(n.whenTrue) ? {} : null,
+  precondition: (n) => sameWidthDomain(n, n.whenTrue),
   rewrite: (n) => n.whenTrue, proof: proof('conditional-identity', 'both select arms identical'), cost,
 }, {
   name: 'select-bool-materialize', phase: 'select',
   match: (n) => n?.kind === 'select' && n.condition?.bits === 1 && isConst(n.whenTrue, 1) && isConst(n.whenFalse, 0) ? {} : null,
+  precondition: (n) => sameWidthDomain(n, n.condition),
   rewrite: (n) => n.condition, proof: proof('conditional-identity', 'cond ? 1 : 0'), cost,
 }, {
   name: 'select-bool-invert', phase: 'select',
   match: (n) => n?.kind === 'select' && isConst(n.whenTrue, 0) && isConst(n.whenFalse, 1) ? {} : null,
+  precondition: (n) => widthOf(n) === 1,
   rewrite: (n) => expr.unary('lnot', n.condition, 1, false, n.source), proof: proof('conditional-identity', 'cond ? 0 : 1'), cost,
 }, {
   name: 'select-min-max', phase: 'select',
@@ -291,20 +353,27 @@ const extensionRules = [{
   match: (n) => n?.kind === 'unary' && n.op === 'sext' && Number(n.arg?.bits) === Number(n.bits) ? {} : null,
   rewrite: (n) => n.arg, proof: proof('width-identity', 'same-width sign extension'), cost,
 }, {
+  // A declared `zext`/`sext` whose result is *narrower* than its source is a
+  // truncation in this typed AST, so chain composition only cancels when the
+  // widths are monotonically non-decreasing outwards (#8866).
   name: 'collapse-zext-chain', phase: 'width',
-  match: (n) => n?.kind === 'unary' && n.op === 'zext' && n.arg?.kind === 'unary' && n.arg.op === 'zext' && n.bits >= n.arg.bits ? {} : null,
+  match: (n) => n?.kind === 'unary' && n.op === 'zext' && n.arg?.kind === 'unary' && n.arg.op === 'zext' ? {} : null,
+  precondition: (n) => wideningExtensionChain(n),
   rewrite: (n) => expr.unary('zext', n.arg.arg, n.bits, false, n.source), proof: proof('extension-composition', 'zext(zext(x))'), cost,
 }, {
   name: 'trunc-after-zext-to-source-width', phase: 'width',
   match: (n) => n?.kind === 'unary' && n.op === 'trunc' && n.arg?.kind === 'unary' && n.arg.op === 'zext' && Number(n.bits) === Number(n.arg.arg?.bits) ? {} : null,
+  precondition: (n) => wideningExtensionChain(n),
   rewrite: (n) => n.arg.arg, proof: proof('extension-truncation-cancel', 'trunc(zext(x)) to original width'), cost,
 }, {
   name: 'trunc-after-sext-to-source-width', phase: 'width',
   match: (n) => n?.kind === 'unary' && n.op === 'trunc' && n.arg?.kind === 'unary' && n.arg.op === 'sext' && Number(n.bits) === Number(n.arg.arg?.bits) ? {} : null,
+  precondition: (n) => wideningExtensionChain(n),
   rewrite: (n) => n.arg.arg, proof: proof('extension-truncation-cancel', 'trunc(sext(x)) to original width'), cost,
 }, {
   name: 'collapse-sext-chain', phase: 'width',
-  match: (n) => n?.kind === 'unary' && n.op === 'sext' && n.arg?.kind === 'unary' && n.arg.op === 'sext' && n.bits >= n.arg.bits ? {} : null,
+  match: (n) => n?.kind === 'unary' && n.op === 'sext' && n.arg?.kind === 'unary' && n.arg.op === 'sext' ? {} : null,
+  precondition: (n) => wideningExtensionChain(n),
   rewrite: (n) => expr.unary('sext', n.arg.arg, n.bits, true, n.source), proof: proof('extension-composition', 'sext(sext(x))'), cost,
 }];
 
