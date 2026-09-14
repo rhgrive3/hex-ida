@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { chainedImportSymbols } from '../js/chained.js';
+import { chainedImportSymbols, __chainedInternalsForTests } from '../js/chained.js';
 
 // Issue #8739: the supplemental Mach-O chained-import recovery eagerly decoded
 // every import record into a fresh string. Many records legally share one
@@ -10,8 +10,26 @@ import { chainedImportSymbols } from '../js/chained.js';
 
 const LE = true;
 
-function fixture({ name, count, ordinal = 0 }) {
-  const poolBytes = new TextEncoder().encode(name + '\0');
+function fixture({ name, names = null, count, ordinal = 0, chain = true }) {
+  const encoder = new TextEncoder();
+  const entries = names == null ? [encoder.encode(name + '\0')] : names.map((entry) => encoder.encode(entry + '\0'));
+  const nameOffsets = new Uint32Array(count);
+  let poolLength = 0;
+  if (names == null) {
+    poolLength = entries[0].length;
+  } else {
+    assert.equal(names.length, count, 'distinct-name fixture must provide one pool entry per import');
+    for (let i = 0; i < entries.length; i++) {
+      nameOffsets[i] = poolLength;
+      poolLength += entries[i].length;
+    }
+  }
+  const poolBytes = new Uint8Array(poolLength);
+  if (names == null) {
+    poolBytes.set(entries[0], 0);
+  } else {
+    for (let i = 0; i < entries.length; i++) poolBytes.set(entries[i], nameOffsets[i]);
+  }
   const stride = 8;               // imports_format 2 (64-bit import entries)
   const importsOffset = 76;       // relative to the fixup payload
   const symbolsOffset = importsOffset + count * stride + 4;
@@ -33,7 +51,7 @@ function fixture({ name, count, ordinal = 0 }) {
   dv.setUint32(p + 64, 1, LE);
   let q = p + 72;
   file.set(Buffer.from('__stubs\0\0\0\0\0\0\0\0\0'), q);
-  file.set(Buffer.from('__TEXT\0\0\0\0\0\0\0\0\0'), q + 16);
+  file.set(Buffer.from('__TEXT\0\0\0\0\0\0\0\0\0\0'), q + 16);
   dv.setBigUint64(q + 32, 0x100000000n, LE); dv.setBigUint64(q + 40, 12n, LE);
   dv.setUint32(q + 48, 0x1000, LE); dv.setUint32(q + 64, 0x8, LE); dv.setUint32(q + 72, 12, LE);
   dv.setUint32(0x1000, 0x90000030, LE); dv.setUint32(0x1004, 0xf9408210, LE); dv.setUint32(0x1008, 0xd61f0200, LE);
@@ -61,7 +79,11 @@ function fixture({ name, count, ordinal = 0 }) {
   dv.setUint32(F + 16, count, LE);        // imports_count
   dv.setUint32(F + 20, 2, LE);            // imports_format
   dv.setUint32(F + 24, 0, LE);            // symbols_format
-  file.set(poolBytes, F + symbolsOffset);  // one symbol at pool offset 0
+  for (let i = 0; i < count; i++) {
+    assert.ok(nameOffsets[i] < 0x800000, 'format-2 name offset must fit 23 bits');
+    dv.setUint32(F + importsOffset + i * stride, (nameOffsets[i] << 9) >>> 0, LE);
+  }
+  file.set(poolBytes, F + symbolsOffset);
   // starts_in_image: 2 segments; __DATA_CONST (index 1) declares the bind chain.
   dv.setUint32(F + 28, 2, LE);
   dv.setUint32(F + 32, 0, LE);
@@ -73,7 +95,7 @@ function fixture({ name, count, ordinal = 0 }) {
   dv.setBigUint64(S + 8, 0x4000n, LE);    // segment_offset
   dv.setUint32(S + 16, 0, LE);
   dv.setUint16(S + 20, 1, LE);            // page_count
-  dv.setUint16(S + 22, 0x100, LE);        // page_start[0]
+  dv.setUint16(S + 22, chain ? 0x100 : 0xffff, LE); // page_start[0]
   // GOT slot carries a chained-bind pointer to the requested ordinal.
   dv.setBigUint64(0x4100, (1n << 63n) | (4n << 51n) | BigInt(ordinal), LE);
   return new Blob([file]);
@@ -100,6 +122,45 @@ test('#8739 a small within-budget fixture still resolves the exact shared name',
   const out = await chainedImportSymbols(fixture({ name: 'aliasname', count: 50 }), 0);
   assert.ok(out.length > 0, 'a normal fixture must still recover the import');
   assert.equal(out[0].name, 'aliasname', 'the resolved name must be exact and shared across aliases');
+});
+
+test('#8739 review: distinct long names on a START_NONE page are never decoded', async () => {
+  const names = Array.from({ length: 256 }, (_, index) => `name_${index}_` + 'Q'.repeat(16_000));
+  const RealTextDecoder = globalThis.TextDecoder;
+  let decodeCalls = 0;
+  globalThis.TextDecoder = class CountingTextDecoder extends RealTextDecoder {
+    decode(...args) {
+      decodeCalls += 1;
+      return super.decode(...args);
+    }
+  };
+  try {
+    const out = await chainedImportSymbols(fixture({ names, count: names.length, chain: false }), 0);
+    assert.deepEqual(out, [], 'a page with START_NONE proves no import-name reachability');
+    assert.equal(decodeCalls, 0, 'unreachable distinct names must not be decoded eagerly');
+  } finally {
+    globalThis.TextDecoder = RealTextDecoder;
+  }
+});
+
+test('#8739 review: distinct reachable-name resolver admits retained bytes before decode', () => {
+  const count = 600;
+  const encoded = new TextEncoder().encode('R'.repeat(8192) + '\0');
+  const raw = new Uint8Array(encoded.length * count);
+  const offsets = new Uint32Array(count);
+  for (let i = 0; i < count; i++) {
+    offsets[i] = i * encoded.length;
+    raw.set(encoded, offsets[i]);
+  }
+  const resolver = __chainedInternalsForTests.createImportNameResolver(raw, 0, offsets);
+  let resolved = 0;
+  for (let i = 0; i < count && !resolver.exhausted; i++) {
+    if (resolver.resolve(i) != null) resolved += 1;
+  }
+  assert.equal(resolver.exhausted, true, 'distinct decoded names must hit the retained-output ceiling');
+  assert.ok(resolver.retainedBytes <= 8 * 1024 * 1024,
+    `retained-name accounting crossed its 8 MiB authority: ${resolver.retainedBytes}`);
+  assert.ok(resolved < count, 'the resolver must stop before decoding every distinct long name');
 });
 
 console.log('issue-8739 chained import name decode cache: ok');
