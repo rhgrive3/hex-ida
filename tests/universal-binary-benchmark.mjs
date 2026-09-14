@@ -123,6 +123,18 @@ try {
     },
   };
   }
+} catch (error) {
+  console.log(JSON.stringify({
+    kind: 'binary-benchmark-error',
+    target: currentTarget,
+    error: {
+      name: error?.name || 'Error',
+      code: error?.code || null,
+      message: String(error?.message || error),
+      stack: typeof error?.stack === 'string' ? error.stack : null,
+    },
+  }));
+  throw error;
 } finally {
   clearInterval(heartbeat);
 }
