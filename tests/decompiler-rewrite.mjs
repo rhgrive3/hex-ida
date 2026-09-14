@@ -131,4 +131,39 @@ for (const innerBits of CROSS_WIDTHS) {
   }
 }
 assert.ok(crossChecks > 10000, `cross-width corpus too small: ${crossChecks}`);
-console.log(`decompiler rewrite property tests: ${checks} signed/unsigned semantic checks + ${crossChecks} cross-width semantic checks PASS`);
+
+// #8877: the corpus above only varied integer signedness. Comparison *domain*
+// has to be generated too, because `min`/`max` are integer-domain intrinsics and
+// an IEEE-754 ordered predicate is not a signed-integer ordering of the encoding.
+let domainChecks = 0;
+for (const bits of [8, 16, 32, 64, 128]) {
+  const x = expr.variable('x', bits, null), y = expr.variable('y', bits, null);
+  for (const domain of ['integer', 'floating', 'missing']) {
+    for (const op of ['lt', 'le', 'gt', 'ge']) {
+      for (const arms of [[x, y], [y, x]]) {
+        const built = expr.compare(op, x, y, true, null, domain === 'missing' ? {} : { comparisonDomain: domain });
+        const condition = domain === 'missing'
+          ? (({ comparisonDomain, ...rest }) => ({ ...rest }))(built)
+          : built;
+        const select = expr.select(condition, arms[0], arms[1], bits, true);
+        const out = engine.rewrite(select, { deterministicTransforms: true });
+        const applied = out.proof.some((p) => p.rule === 'select-min-max');
+        if (domain === 'integer') {
+          assert.ok(applied, `${domain} ${op} select must still collapse to an integer intrinsic`);
+          assert.equal(out.root.kind, 'intrinsic');
+          assert.equal(out.root.name, (op === 'lt' || op === 'le') === (arms[0] === x) ? 'min' : 'max');
+          assert.equal(out.proof.find((p) => p.rule === 'select-min-max').evidence.comparisonDomain, 'integer');
+        } else {
+          assert.ok(!applied, `${domain} ${op} select must never collapse to an integer intrinsic`);
+          assert.equal(out.root.kind, 'select', `${domain} ${op} select must be preserved`);
+          assert.equal(out.root.condition.comparisonDomain, domain === 'missing' ? undefined : 'floating');
+          assert.ok(!out.proof.some((p) => p.evidence?.kind === 'select-comparison-equivalence'),
+            'an unproven comparison domain must not mint an equivalence proof');
+        }
+        domainChecks++;
+      }
+    }
+  }
+}
+assert.ok(domainChecks > 100, `comparison-domain corpus too small: ${domainChecks}`);
+console.log(`decompiler rewrite property tests: ${checks} signed/unsigned semantic checks + ${crossChecks} cross-width semantic checks + ${domainChecks} comparison-domain checks PASS`);

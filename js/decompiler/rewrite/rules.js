@@ -31,6 +31,18 @@ const wideningExtensionChain = (n) => {
   const outer = widthOf(n), middle = widthOf(n?.arg), inner = widthOf(n?.arg?.arg);
   return outer != null && middle != null && inner != null && outer >= middle && middle >= inner;
 };
+/*
+ * #8877 — `min`/`max`/`abs` are integer-domain intrinsics: the width-exact
+ * evaluator orders their operands as a signed or unsigned bitvector. IEEE-754
+ * ordering is not signed-integer ordering of the encoding (any pair of ordinary
+ * negative finite values disagrees), and FCMP/FCSEL additionally carries exact
+ * unordered, signed-zero and NaN selection rules that no integer intrinsic
+ * reproduces. A conditional select is therefore only ever collapsed into one of
+ * these intrinsics when its guarding comparison is provably integer-domain; an
+ * unknown or floating domain keeps the select and its `comparisonDomain` intact
+ * and emits no equivalence proof.
+ */
+const integerComparison = (q) => q?.kind === 'compare' && q.comparisonDomain === 'integer';
 const algebraProof = (name, before, after) => ({
   kind: 'integer-algebra',
   detail: name,
@@ -310,6 +322,9 @@ const selectRules = [{
   name: 'select-min-max', phase: 'select',
   match: (n) => {
     if (n?.kind !== 'select' || n.condition?.kind !== 'compare') return null;
+    // #8877: minting an integer intrinsic from a non-integer comparison changes
+    // the selected value, so the domain is admitted before any shape matching.
+    if (!integerComparison(n.condition)) return null;
     const q = n.condition;
     // Constant signedness/nominal width is metadata; select equivalence is over
     // the result bitvector. This keeps WZR and #0 equivalent after width-aware
@@ -334,11 +349,13 @@ const selectRules = [{
   // from the result storage type. This matters at -O0 where Clang spills both
   // arms to stack slots whose recovered value type can remain unsigned/unknown.
   rewrite: (n, m) => expr.intrinsic(m.name, [n.condition.left, n.condition.right], n.bits, n.condition.compareSigned ?? n.signed, n.source, { compareSigned: n.condition.compareSigned }),
-  proof: (before, after, m) => ({ kind: 'select-comparison-equivalence', operation: m.name, signed: before.condition.compareSigned }), cost,
+  proof: (before, after, m) => ({ kind: 'select-comparison-equivalence', operation: m.name, signed: before.condition.compareSigned,
+    comparisonDomain: before.condition.comparisonDomain, bits: widthOf(before) ?? null }), cost,
 }, {
   name: 'select-abs', phase: 'select',
   match: (n) => {
     if (n?.kind !== 'select' || n.condition?.kind !== 'compare') return null;
+    if (!integerComparison(n.condition)) return null;
     const q = n.condition;
     if (!isConst(q.right, 0) || !isStable(q.left)) return null;
     const unwrapCast = (x) => x?.kind === 'cast' ? unwrapCast(x.arg) : x;
@@ -352,7 +369,8 @@ const selectRules = [{
     return null;
   },
   rewrite: (n) => expr.intrinsic('abs', [n.condition.left], n.bits, true, n.source),
-  proof: proof('select-comparison-equivalence', 'two-arm signed absolute value'), cost,
+  proof: (before) => ({ kind: 'select-comparison-equivalence', detail: 'two-arm signed absolute value',
+    comparisonDomain: before.condition.comparisonDomain, bits: widthOf(before) ?? null }), cost,
 }];
 
 const extensionRules = [{
