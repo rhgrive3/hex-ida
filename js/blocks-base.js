@@ -790,6 +790,10 @@ export function analyzeDataFlow(insns, opts) {
   const joinRows = o.joinRows || new Set();
   const regs = new Map();            // regKey -> value
   const stack = new Map();           // 'sp+off' -> value
+  // Concrete stack bytes proven by a same-frame constant store, keyed by
+  // 'base#absOffset'. A present cell is a known 0..255 byte; clearing a cell
+  // marks it uncertain (#8763).
+  const stackBytes = new Map();
   const stackFrame = new Map();
   const stackFrameLost = new Set();
   const flows = [];                  // データの流れ（テストで検証する対象）
@@ -812,12 +816,56 @@ export function analyzeDataFlow(insns, opts) {
     return f;
   };
 
+  /*
+   * #8763: a stack slot's value can only be forwarded when the *accessed byte
+   * range* is proven. A narrower load, or a later overlapping partial store,
+   * changes which bytes a reload must return, so the concrete bytes are tracked
+   * per byte offset rather than per whole slot. Only an integer GP load/store
+   * with a stable stack offset is modelled; anything else keeps the previous
+   * behavior.
+   */
+  const byteCell = (baseKey, off) => baseKey + '#b#' + off;
+  const SIGNED_NARROW_LOAD = /^(ldrsb|ldrsh|ldursb|ldursh|ldrsw|ldursw|ldtrsb|ldtrsh|ldtrsw)$/;
+  const isGPWrite = (dst) => typeof dst === 'string' && dst.charCodeAt(0) === 120 /* 'x' */;
+  function concreteStoreBytes(v, width) {
+    if (!v || v.kind !== 'imm' || typeof v.value !== 'bigint') return null;
+    if (!Number.isInteger(width) || width < 1 || width > 8) return null;
+    const mod = 1n << BigInt(width * 8);
+    let x = ((v.value % mod) + mod) % mod;
+    const out = new Array(width);
+    for (let i = 0; i < width; i++) { out[i] = Number(x & 0xffn); x >>= 8n; }
+    return out;
+  }
+  function writeStackBytes(baseKey, absOff, width, v) {
+    if (baseKey == null || width == null) return;
+    const bytes = concreteStoreBytes(v, width);
+    for (let i = 0; i < width; i++) {
+      const cell = byteCell(baseKey, absOff + BigInt(i));
+      if (bytes) stackBytes.set(cell, bytes[i]);
+      else stackBytes.delete(cell);
+    }
+  }
+  function readStackBytes(baseKey, absOff, width, signed) {
+    if (baseKey == null || width == null || width < 1 || width > 8) return null;
+    let acc = 0n;
+    for (let i = 0; i < width; i++) {
+      const b = stackBytes.get(byteCell(baseKey, absOff + BigInt(i)));
+      if (b == null) return null;
+      acc |= BigInt(b) << BigInt(8 * i);
+    }
+    if (signed) {
+      const mod = 1n << BigInt(width * 8);
+      if (acc >= mod / 2n) acc -= mod;
+    }
+    return acc;
+  }
+
   for (let i = 0; i < insns.length; i++) {
     const insn = insns[i];
     const base = insn.mnemonic.toLowerCase();
 
     // 分岐で飛んでこられる場所 = 合流点。ここから先は前提を持ち越せない。
-    if (joinRows.has(insn.row)) { regs.clear(); stack.clear(); stackFrame.clear(); stackFrameLost.clear(); }
+    if (joinRows.has(insn.row)) { regs.clear(); stack.clear(); stackBytes.clear(); stackFrame.clear(); stackFrameLost.clear(); }
     if (rowKills && blockStartRows.has(insn.row)) written.clear();
 
     // 引数レジスタの検出は「自分で書く前に読んだか」で判定する
@@ -944,9 +992,11 @@ export function analyzeDataFlow(insns, opts) {
       const isPair = base === 'ldp' || base === 'ldpsw' || base === 'ldnp' ||
         base === 'stp' || base === 'stnp';
       const stride = isPair && accessDisp != null ? BigInt(Math.floor(m.size / 2)) : 0n;
+      const elemWidth = Number.isInteger(m.size) ? (isPair ? Math.floor(m.size / 2) : m.size) : null;
       const elemSlot = (idx) => (slot && idx > 0
         ? m.base + '+' + (frameDelta + accessDisp + stride * BigInt(idx)).toString()
         : slot);
+      const elemAbs = (idx) => (accessDisp == null ? null : frameDelta + accessDisp + stride * BigInt(idx));
 
       if (m.kind === 'load') {
         let di = 0;
@@ -961,7 +1011,23 @@ export function analyzeDataFlow(insns, opts) {
           const cached = !isPair || base === 'ldp' || base === 'ldnp'
             ? (dSlot ? stack.get(dSlot) : null)
             : null;
-          if (cached) {
+          const absOff = elemAbs(di - 1);
+          // #8763: only forward a concrete stack value when the exact accessed
+          // byte range is still proven by the per-byte cache. A narrower load,
+          // a signed load, or an overlapping partial store must not reuse the
+          // stale whole-slot value; fall back to an uncertain memory load.
+          if (cached && cached.kind === 'imm' && slot && absOff != null && elemWidth != null && isGPWrite(dst)) {
+            const assembled = readStackBytes(m.base, absOff, elemWidth, SIGNED_NARROW_LOAD.test(base));
+            if (assembled == null) {
+              v = value('loaded', { at: { base: m.base, disp: dDisp }, addr: null, size: elemWidth },
+                SCORE.inferred, [ev('stack-bytes-unknown', insn.row, { slot: dSlot, width: elemWidth })], insn.row);
+              flow('mem->reg', insn.row, m.base, dst, v);
+            } else {
+              v = value('imm', { value: assembled }, SCORE.confirmed,
+                cached.ev.concat([ev('stack-bytes', insn.row, { slot: dSlot, width: elemWidth })]), insn.row);
+              flow('stack->reg', insn.row, dSlot, dst, v);
+            }
+          } else if (cached) {
             v = Object.assign({}, cached, { def: insn.row, ev: cached.ev.concat([ev('stack-reload', insn.row, { slot: dSlot })]) });
             flow('stack->reg', insn.row, dSlot, dst, v);
           } else {
@@ -1000,6 +1066,8 @@ export function analyzeDataFlow(insns, opts) {
           if (sSlot) {
             if (v) stack.set(sSlot, Object.assign({}, v, { ev: v.ev.concat([ev('stack-save', insn.row, { slot: sSlot })]) }));
             else stack.set(sSlot, unknownValue(ev('untracked', insn.row)));
+            const absOff = elemAbs(idx);
+            if (absOff != null) writeStackBytes(m.base, absOff, elemWidth, v);
           }
         }
       }
@@ -1011,8 +1079,12 @@ export function analyzeDataFlow(insns, opts) {
           stackFrameLost.add(m.base);
           stackFrame.delete(m.base);
           const slotPrefix = m.base + '+';
+          const bytePrefix = m.base + '#b#';
           for (const k of Array.from(stack.keys())) {
             if (k.startsWith(slotPrefix)) stack.delete(k);
+          }
+          for (const k of Array.from(stackBytes.keys())) {
+            if (k.startsWith(bytePrefix)) stackBytes.delete(k);
           }
         }
       }
