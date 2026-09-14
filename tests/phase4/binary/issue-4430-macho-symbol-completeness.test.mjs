@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { parseMachO } from '../../../js/binary/macho.js';
 
-function machoWithSymbol({ strx, stringBytes, type = 0x01, value = 0n, desc = 0 } = {}) {
+function machoWithSymbol({ strx, stringBytes, type = 0x01, value = 0n, desc = 0, sect = 1 } = {}) {
   const symoff = 0x80;
   const stroff = symoff + 16;
   const bytes = new Uint8Array(stroff + stringBytes.length);
@@ -27,7 +27,7 @@ function machoWithSymbol({ strx, stringBytes, type = 0x01, value = 0n, desc = 0 
 
   view.setUint32(symoff, strx, true);
   view.setUint8(symoff + 4, type);
-  view.setUint8(symoff + 5, 1);
+  view.setUint8(symoff + 5, sect);
   view.setUint16(symoff + 6, desc, true);
   view.setBigUint64(symoff + 8, value, true);
   bytes.set(stringBytes, stroff);
@@ -74,7 +74,8 @@ test('#4430 does not treat a valid empty entry or terminated symbol as malformed
 
   const valid = parseMachO(machoWithSymbol({
     strx: 1,
-    type: 0x0f,
+    type: 0x03, // N_ABS | N_EXT: a valid defined symbol without a section table.
+    sect: 0,
     value: 0x1000n,
     stringBytes: Uint8Array.from([0, 0x5f, 0x6f, 0x6b, 0]),
   }));
