@@ -916,7 +916,13 @@ export function analyzeDataFlow(insns, opts) {
           ? immediate.value << BigInt(shift.amount)
           : null;
       if (dst && prev && prev.kind === 'address' && prev.partial && offset != null) {
-        const addr = prev.addr + offset;
+        let addr = prev.addr + offset;
+        // #8747: `add wD, xN, #imm` writes only the low destination width, so the
+        // completed address must be masked to that width; the upper bits were not
+        // written and cannot be claimed as part of the effective address.
+        const dreg = insn.ops[0];
+        const dstBits = (dreg && dreg.k === 'reg' && Number.isFinite(dreg.bits)) ? dreg.bits : 64;
+        if (dstBits < 64) addr = addr & ((1n << BigInt(dstBits)) - 1n);
         const v = value('address', { addr, page: false, partial: false }, SCORE.confirmed,
           prev.ev.concat([ev('adrp-add', insn.row, { addr })]), insn.row);
         set(dst, v);
@@ -938,11 +944,27 @@ export function analyzeDataFlow(insns, opts) {
       } else if (dst && s && s.k === 'reg') {
         const src = regKey(s);
         const prev = src ? get(src) : null;
-        const v = prev
-          ? Object.assign({}, prev, { def: insn.row, via: src, ev: prev.ev.concat([ev('copy', insn.row, { from: src, to: dst })]) })
-          : unknownValue(ev('untracked', insn.row, { from: src }));
-        set(dst, v);
-        flow('reg->reg', insn.row, src, dst, v);
+        // #8747: an integer MOV into a narrowed (sub-64-bit, e.g. W) destination
+        // zero-extends/truncates, so a full-width source value must not keep its
+        // complete constant or pointer authority. Publish only the low `dstBits`
+        // and drop any inherited full-register alias for the truncated result.
+        const dreg = insn.ops[0];
+        const dstBits = (base === 'mov' && dreg && dreg.k === 'reg' && Number.isFinite(dreg.bits)) ? dreg.bits : 64;
+        const concreteSrc = prev && (prev.kind === 'imm' ? prev.value : prev.kind === 'address' ? prev.addr : null);
+        if (prev && dstBits < 64 && typeof concreteSrc === 'bigint') {
+          const mask = (1n << BigInt(dstBits)) - 1n;
+          const low = concreteSrc & mask;
+          const v = value('imm', { value: low }, SCORE.confirmed,
+            prev.ev.concat([ev('copy-trunc', insn.row, { from: src, to: dst, bits: dstBits })]), insn.row);
+          set(dst, v);
+          flow('reg->reg', insn.row, src, dst, v);
+        } else {
+          const v = prev
+            ? Object.assign({}, prev, { def: insn.row, via: src, ev: prev.ev.concat([ev('copy', insn.row, { from: src, to: dst })]) })
+            : unknownValue(ev('untracked', insn.row, { from: src }));
+          set(dst, v);
+          flow('reg->reg', insn.row, src, dst, v);
+        }
       } else if (dst) {
         set(dst, unknownValue(ev('untracked', insn.row)));
       }
