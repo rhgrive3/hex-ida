@@ -41,8 +41,9 @@ async function verifyPinnedFixture(target) {
 
 async function sample(file) {
   const nodeSource = await NodeFileByteSource.open(file, { maxReadLength: 8 * 1024 * 1024 });
+  let source = null;
   try {
-    const source = new InstrumentedByteSource(nodeSource);
+    source = new InstrumentedByteSource(nodeSource);
     const before = process.memoryUsage().heapUsed;
     const t0 = performance.now();
     const image = await openBinarySource(source, { ranges: { pageSize: 64 * 1024, maxPageSize: 2 * 1024 * 1024, maxCachedBytes: 16 * 1024 * 1024 } });
@@ -73,6 +74,18 @@ async function sample(file) {
         auditWarnings: audit.warnings,
       },
     };
+  } catch (error) {
+    console.log(JSON.stringify({
+      kind: 'binary-benchmark-sample-error',
+      file,
+      metrics: source?.metrics?.() || null,
+      error: {
+        name: error?.name || 'Error',
+        code: error?.code || null,
+        message: String(error?.message || error),
+      },
+    }));
+    throw error;
   } finally {
     await nodeSource.close();
   }
