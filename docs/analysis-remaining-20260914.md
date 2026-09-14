@@ -61,3 +61,35 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
 `entrypoint-after.{json,log}`、`c1-c2-c3.{json,log}`、`x02.{json,log}`。
 修正後の実行はcommit前の作業ツリーであり、receiptのsourceHeadだけでexact-head証拠とはしない。
 次はcommit後の重点検査、全体の最初の失敗、C1 aliasの正の受入を確認する。
+
+## Checkpoint 2: 重点受入と環境
+
+- source commit `1957bc55b33b0fcf79328bbf88d9e2675f6d0847` はpush済み。
+- `focused-restored`: 266/266成功（C1再帰return、C3 ABI、C2 byte forwarding、
+  追加X-02、入口依存、call-boundary）。log SHA256:
+  `d68cafac2da457a0ee7fc3a2cce64db4a2e48478c4cd933da675a75de76ee18a`。
+- 入口依存+既存ownershipは29/29成功。`call-boundary` 単独も成功。
+- canonical userscript buildを2回実行し、一致。template SHA256:
+  `bed1dd7bb132db1c14f910c858d15a595df54b5d042713ff71552e1eef0a8446`。
+- Playwright 1.63.0の不足libraryを導入し、Linux x64上でChromium 153.0.8010.12と
+  WebKit26.6の実起動・ページ読込に成功。物理iPad/Safariの証拠ではない。
+- canonical `tests/phase9/browser/worker-runtime.mjs` は初回SATがtimeout、続くqueryが
+  invalid-queryとなり失敗。起動成功をsolver受入成功に読み替えない。閾値は不変更。
+- LLVMはUbuntu14.0.0のみで指定Ubuntu18.1.3は未導入。X02-H-02を成功にしない。
+- CodeRabbit0.7.6は未認証。`auth login --agent` はenvironment_unsupported
+  （localhost browser callbackが必要）。ユーザー側の `coderabbit auth login` が必要。
+  独立レビューは未実施、承認なし。
+- 全体checkはmachine-effects-contractを実行中。最終結果は
+  永続evidenceの `check-first.json` に終了後atomic保存される。
+
+### 残件の再開順
+
+1. `check-first.json` の有無とログを確認。失敗を削除せず最初の原因を調べる。
+2. C1の旧非escape正例と #4977 の両root証拠契約の衝突を解決する。
+   片側non-escapeだけでexactを許可する変更・期待値をmayへ変える変更は未実施。
+3. Worker初回SAT timeoutを原因分離し、同じ2秒予算・32/64-bit全分母で再検証。
+4. 指定LLVM、独立レビュー認証、物理Apple/iPad/ordering/signing/runtime証拠を揃える。
+5. 全canonical gates、exact-head CI、candidate tree、ユーザーC4との統合はそれから検証。
+
+環境再開時は `PLAYWRIGHT_BROWSERS_PATH=/mnt/workspace/.dev-state/agent-work/cache/analysis-remaining-20260914/browsers`。
+全体は引き続きIN PROGRESS。ユーザー担当の完了も、この分担の全完了も宣言していない。
