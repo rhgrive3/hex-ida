@@ -1,6 +1,9 @@
 import { isX87Instruction, isX87RflagsInstruction } from './effects/extended-state-helpers.js';
+import {
+  hasReceiverRevalidatedX86Row,
+  registerReceiverRevalidatedX86Row,
+} from './receiver-provenance.js';
 
-const RECEIVER_REVALIDATED_ROWS = new WeakSet();
 const REVALIDATION_WORKER_PATH = '/js/targets/architecture/x86_64/semantic-revalidation-worker.js';
 const PROTECTED_LOGICAL_PATH = 'js/targets/architecture/x86_64/semantic-revalidation-worker.js';
 
@@ -44,12 +47,7 @@ export function markReceiverRevalidatedX86Row(row) {
     throw new TypeError('x86-decoder-runtime-provenance-row-required');
   }
   const receiverRow = withReceiverX86FlagDomainEvidence(row);
-  RECEIVER_REVALIDATED_ROWS.add(receiverRow);
-  return receiverRow;
+  return registerReceiverRevalidatedX86Row(receiverRow);
 }
 
-export function hasReceiverRevalidatedX86Row(row) {
-  return row != null
-    && (typeof row === 'object' || typeof row === 'function')
-    && RECEIVER_REVALIDATED_ROWS.has(row);
-}
+export { hasReceiverRevalidatedX86Row };
