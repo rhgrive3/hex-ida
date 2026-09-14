@@ -7,7 +7,7 @@ import test from 'node:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { openBinary, openBinarySource } from '../../js/binary/index.js';
+import { openBinary, openBinarySource, MemoryByteSource } from '../../js/binary/index.js';
 import { describeMachOPointerSite, machOPointerMetadataRevision, resolveMachOPointer } from '../../js/binary/macho-dyld.js';
 import { SwiftMetadataProvider } from '../../js/metadata/swift.js';
 import { isLanguageRecordAuthoritative } from '../../js/metadata/provider.js';
@@ -22,12 +22,29 @@ import { materializeRebuildTransaction, validateRebuildTransaction, publishRebui
 import { LLVM_READOBJ_EXPECTED_VERSION, inspectLlvmReadobj, createLlvmReadobjOracle } from '../../tools/validation/rebuild-independent-oracle.mjs';
 import { fixture as worldFixture, workFor } from './helpers.mjs';
 import { inputFor, hashBytes, REAL_MACHO_PATH } from './fixtures/x02-prior120-apple-version-fixtures.mjs';
+import { BASE, SLIDE, makeCache } from './fixtures/x02-dyld-shared-cache.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const matrixBytes = fs.readFileSync(new URL('./fixtures/x02-prior120-apple-version-matrix.json', import.meta.url));
 const MATRIX_SHA256 = 'c95ea2ba89d072fe9110565072462d5efca496b72a66ff365d8b8d15a95274ad';
 assert.equal(hashBytes(matrixBytes), MATRIX_SHA256, 'Frozen denominator changed: audit and re-freeze explicitly, never silently drop rows');
 const matrix = JSON.parse(matrixBytes);
+// Keep the original 120 rows and byte hashes immutable. The cache rows now
+// retain their malformed historical input as a negative, and additionally
+// require a mapped cache through the same public entrypoint. The extra input
+// and current disposition are reported separately from the historical row.
+const currentDispositions = Object.freeze({
+  'X02-A-07':'pass', 'X02-B-01':'pass', 'X02-B-02':'pass',
+  'X02-D-13':'pass', 'X02-E-11':'pass', 'X02-G-03':'pass',
+});
+assert.deepEqual(matrix.rows.filter(row => Object.hasOwn(currentDispositions, row.id))
+  .map(row => [row.id, row.check, row.expectedDisposition]),
+  [
+    ['X02-A-07','build-tool-gap','product-gap'],
+    ['X02-B-01','cache-sync','product-gap'], ['X02-B-02','cache-async','product-gap'],
+    ['X02-D-13','swift-version-gap','product-gap'], ['X02-E-11','objc-classless-gap','product-gap'],
+    ['X02-G-03','signature-gap','product-gap'],
+  ]);
 const dispositions = ['pass', 'product-gap', 'evidence-gap', 'environment-excluded'];
 assert.equal(matrix.rowCount, 120);
 assert.equal(matrix.rows.length, matrix.rowCount);
@@ -39,7 +56,6 @@ for (const row of matrix.rows) {
 }
 const jsonSafe = value => JSON.parse(JSON.stringify(value, (_k,v) => typeof v === 'bigint' ? v.toString() : v));
 const passed = (observedStatus, details={}) => ({classification:'pass',observedStatus,details});
-const productGap = (observedStatus, details={}) => ({classification:'product-gap',observedStatus,details});
 const u64 = (bytes, at=0) => new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength).getBigUint64(at,true);
 const digest = bytes => `bytes:${stableDigest(Array.from(bytes))}`;
 const loaderVersion = 'hex-loader:openBinary:v1';
@@ -181,14 +197,37 @@ async function observe(t,row,bytes) {
     const v=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength),at=32+72+8*80;
     assert.equal(v.getUint32(at,true),0x32);assert.equal(v.getUint32(at+20,true),1);
     assert.equal(v.getUint32(at+24,true),e.declaredTool);assert.equal(v.getUint32(at+28,true),0x00120103);
-    assert.equal(version.tools,undefined);assert.equal(version.toolVersions,undefined);
-    return productGap('identity-not-retained',{declaredTool:e.declaredTool,declaredVersion:e.declaredVersion,observed:version});
+    for(const loaded of [image,await openBinarySource(new MemoryByteSource(bytes))]) {
+      const declared=loaded.metadata.buildVersion;
+      assert.deepEqual(declared.tools,[{tool:e.declaredTool,version:e.declaredVersion,rawVersion:0x00120103}]);
+      assert.equal(declared.ntools,1);assert.equal(declared.toolsComplete,true);assert.equal(declared.provenanceVerified,false);
+    }
+    return passed('declared-unverified',{declaredTool:e.declaredTool,declaredVersion:e.declaredVersion,observed:version,verifiedCompiler:null});
   }
   if(row.check==='cache-sync'||row.check==='cache-async') {
-    let error;
-    try { if(row.check==='cache-sync')openBinary(bytes);else await openBinarySource(bytes); } catch(caught) {error=caught;}
-    assert.ok(error instanceof Error);assert.match(error.message,/対応していない実行ファイル形式/);
-    return productGap('unsupported',{error:error.message,limitation:'Header dispatch only; not a complete real shared-cache fixture.'});
+    const load = input => row.check === 'cache-sync' ? openBinary(input,{slide:SLIDE})
+      : openBinarySource(new MemoryByteSource(input,{maxReadLength:8}),{slide:SLIDE});
+    await assert.rejects(async()=>load(bytes), /invalid dyld shared cache mapping offset/);
+    const positive=makeCache({architecture:row.architecture}), positiveSha256=hashBytes(positive);
+    assert.equal(row.architecture,'arm64');
+    assert.equal(positiveSha256,'5a72c6a1461e4009f2ecc5185ac4bcee503be3673c1e1aa76048536fcbb35a2b');
+    assert.equal(hashBytes(makeCache({architecture:row.architecture})),positiveSha256);
+    const image=await load(positive), metadata=image.metadata.dyldSharedCache;
+    assert.equal(image.format,'dyld-shared-cache');assert.equal(image.arch,row.architecture);
+    assert.equal(image.imageBase,BASE+SLIDE);
+    assert.equal(image.addressToOffset(BASE+0x1000n+SLIDE),0x2000n);
+    assert.equal(image.offsetToAddress(0x2000n),BASE+0x1000n+SLIDE);
+    assert.equal(u64(await image.readVirtualAsync(BASE+0x1000n+SLIDE,8)),0x80n);
+    assert.equal(metadata.mappingWithSlide[0].slideInfo.complete,true);
+    assert.deepEqual(metadata.mappingWithSlide[0].slideInfo.rebases,[{
+      storageAddress:BASE+0x1000n,runtimeStorageAddress:BASE+0x1000n+SLIDE,
+      rawValue:0x80n,targetAddress:BASE+0x80n,runtimeTargetAddress:BASE+0x80n+SLIDE,authenticated:false,
+    }]);
+    return passed('completed',{historicalInputRejected:true,supplementalInput:{
+      source:'tests/scpa/fixtures/x02-dyld-shared-cache.mjs',sha256:positiveSha256,
+      byteLength:positive.length,architecture:row.architecture,inputClass:'synthetic-layout',slideInfoVersion:2,
+    },authenticationExecuted:false,independentExternalExecuted:false,
+    limitation:'Finite mapping/slide_info2 contract; no real cache, subcache or runtime-version acceptance.'});
   }
   if(row.check==='source-cancel') {
     const c=new AbortController();c.abort(new Error('x02-cancelled'));
@@ -293,10 +332,12 @@ async function observe(t,row,bytes) {
       return passed('unsupported',{result,realInputDiscovery:false});
     }
     if(row.check==='swift-version-gap') {
-      const type=sm.types.find(x=>x.address===0x1000n);assert.equal(type.flags,e.knownObservedFlags);
-      assert.equal(sm.complete,true);assert.equal(owned.swiftProbe.identity.verdict,'matched-authoritative');
-      const result=await nativeQuery(t,row,owned,{kind:'swift-type',address:'0x1000'});notExecutionProof(result);assert.equal(result.total,1);
-      return productGap('completed-authoritative-for-unknown-version',{descriptorVersion:e.unknownVersion,modelComplete:sm.complete,providerIdentity:owned.swiftProbe.identity,result});
+      assert.equal(new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength).getUint32(0x2000,true),e.knownObservedFlags);
+      assert.equal(sm.types.some(x=>x.address===0x1000n),false);
+      assert.equal(sm.completeness.types.complete,false);assert.equal(sm.completeness.types.invalidEntries,1);
+      partialProvider(owned.swiftProbe,owned.swift);
+      const result=await nativeQuery(t,row,owned,{kind:'swift-type',address:'0x1000'});notExecutionProof(result);assert.equal(result.total,0);
+      return passed('partial',{descriptorVersion:e.unknownVersion,modelComplete:sm.complete,providerIdentity:owned.swiftProbe.identity,result});
     }
     if(row.check==='swift-generic-class') {
       const table=sm.vtables.find(v=>v.typeAddress===0x1200n);assert.equal(table.address,BigInt(e.tableAddress));assert.equal(table.methods[0].impl,BigInt(e.target));
@@ -338,11 +379,15 @@ async function observe(t,row,bytes) {
       return passed('completed',{result,runtimeSubstitutions:'unknown'});
     }
     if(row.check==='objc-classless-gap') {
-      assert.equal(owned.objcProbe.identity.verdict,e.providerVerdict);assert.equal(owned.objc.cachedIndex,null);
+      partialProvider(owned.objcProbe,owned.objc);assert.ok(owned.objc.cachedIndex);
       const direct=await buildObjcRuntimeModel(owned.readAt,null,{sections:owned.sections,binaryImage:owned.image,architecture:owned.image.arch,categoryList:owned.sections.find(s=>s.name==='__objc_catlist'),protocolList:owned.sections.find(s=>s.name==='__objc_protolist')},null,owned.image.imageBase);
       assert.equal(direct.categories.length,e.categoryCount);assert.equal(direct.protocols.length,e.protocolCount);
-      const result=await nativeQuery(t,row,owned,{kind:'objc-selector',selector:'save:'});assert.equal(result.status,'unsupported');assert.equal(result.exact,false);
-      return productGap('unsupported',{provider:owned.objcProbe,directCounts:{categories:direct.categories.length,protocols:direct.protocols.length},result});
+      assert.equal(om.categories.length,e.categoryCount);assert.equal(om.protocols.length,e.protocolCount);
+      assert.equal(om.runtimeCompleteness.classes.complete,false);
+      const result=await nativeQuery(t,row,owned,{kind:'objc-selector',selector:'save:'});notExecutionProof(result);
+      assert.ok(result.records.some(record=>record.source==='category'));
+      const dispatch=resolveObjcDispatch(owned.objc.cachedIndex,{selector:'save:'});assert.equal(dispatch.resolved,null);
+      return passed('partial',{provider:owned.objcProbe,directCounts:{categories:direct.categories.length,protocols:direct.protocols.length},result,dispatch});
     }
     if(row.check==='objc-partial') {
       assert.equal(om.runtimeCompleteness.complete,e.complete);partialProvider(owned.objcProbe,owned.objc);
@@ -379,8 +424,11 @@ async function observe(t,row,bytes) {
     const image=openBinary(bytes),safe=inspectFormatSafeImage(bytes);
     assert.equal(safe.snapshot.signatureState,'code-signature-present');
     if(row.check==='signature-gap') {
-      for(const field of ['signatureState','codeSignature','signature'])assert.equal(image.metadata[field],undefined);
-      return productGap('signature-state-not-retained',{publicMetadata:image.metadata,formatSafeSignature:safe.snapshot.signatureState,cryptographicVerification:false});
+      for(const loaded of [image,await openBinarySource(new MemoryByteSource(bytes))]) {
+        assert.equal(loaded.metadata.signatureState,'code-signature-present');
+        assert.deepEqual(loaded.metadata.codeSignature,{source:'LC_CODE_SIGNATURE',complete:true,cryptographicVerification:false,offset:0x10f00,size:12,rangeValid:true});
+      }
+      return passed('declared-unverified',{declaration:image.metadata.codeSignature,formatSafeSignature:safe.snapshot.signatureState,cryptographicVerification:false});
     }
     assert.throws(()=>createFormatSafeRebuildTransaction({binaryId:'x02:signed',source:bytes,sourceHash:digest(bytes),format:'macho',architecture:'arm64',loaderVersion,mutation:{kind:'macho-min-version',version:0x000d0100}}),/format-safe-signed-or-build-identified-input-unsupported/);
     return passed('rejected',{signatureState:safe.snapshot.signatureState,resigned:false,launched:false});
@@ -444,18 +492,19 @@ async function observe(t,row,bytes) {
 for (const row of matrix.rows) {
   test(`${row.id} ${row.requirement}`, {timeout:10000}, async t => {
     let outcome;
+    const expectedDisposition=currentDispositions[row.id]??row.expectedDisposition;
     try {
       const bytes=inputFor(row);
       assert.equal(bytes===null?null:hashBytes(bytes),row.inputSha256);
       assert.equal(bytes?.length??0,row.inputByteLength);
       assert.equal(bytes===null?null:hashBytes(inputFor(row)),row.inputSha256,'generator determinism');
       outcome=await observe(t,row,bytes);
-      assert.equal(outcome.classification,row.expectedDisposition,`${row.id}: requirement classification changed`);
+      assert.equal(outcome.classification,expectedDisposition,`${row.id}: requirement classification changed`);
       t.diagnostic('X02_RESULT '+JSON.stringify(jsonSafe({id:row.id,family:row.family,inputClass:row.inputClass,inputSha256:row.inputSha256,
-        matrixSha256:MATRIX_SHA256,expectedDisposition:row.expectedDisposition,...outcome})));
+        matrixSha256:MATRIX_SHA256,historicalExpectedDisposition:row.expectedDisposition,expectedDisposition,...outcome})));
     }catch(error) {
       t.diagnostic('X02_RESULT '+JSON.stringify(jsonSafe({id:row.id,family:row.family,inputClass:row.inputClass,inputSha256:row.inputSha256,
-        matrixSha256:MATRIX_SHA256,expectedDisposition:row.expectedDisposition,classification:outcome?.classification||'product-gap',
+        matrixSha256:MATRIX_SHA256,historicalExpectedDisposition:row.expectedDisposition,expectedDisposition,classification:outcome?.classification||'product-gap',
         observedStatus:'unexpected-test-failure',details:{message:error.message,stack:error.stack}})));
       throw error;
     }

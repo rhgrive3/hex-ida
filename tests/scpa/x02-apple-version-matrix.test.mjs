@@ -199,11 +199,11 @@ test('X02-SWIFT-UNKNOWN-KIND: an unsupported descriptor does not become a valid 
   assert.ok(!ctx.swift.types().records.some(row => row.name === 'Box'));
 });
 
-test('X02-SHARED-CACHE-GAP: direct dyld cache input is explicitly unsupported by both public loaders', async () => {
+test('X02-SHARED-CACHE-GAP: a header without cache mappings is rejected by both public loaders', async () => {
   const bytes = new Uint8Array(512);
   bytes.set(new TextEncoder().encode('dyld_v1  arm64e\0'));
-  assert.throws(() => openBinary(bytes));
-  await assert.rejects(() => openBinarySource(new MemoryByteSource(bytes)));
+  assert.throws(() => openBinary(bytes), /invalid dyld shared cache mapping offset/);
+  await assert.rejects(() => openBinarySource(new MemoryByteSource(bytes)), /invalid dyld shared cache mapping offset/);
   // This is a negative boundary test, NOT shared-cache/slide acceptance.
 });
 

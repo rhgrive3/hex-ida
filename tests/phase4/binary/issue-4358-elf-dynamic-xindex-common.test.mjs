@@ -12,7 +12,7 @@ const STRTAB_OFFSET = 0x118;
 const SHNDX_OFFSET = 0x140;
 const FUNCTION_OFFSET = 0x200;
 
-function buildExtendedCommonImage() {
+function buildExtendedCommonImage({ actualSection = true } = {}) {
   const bytes = new Uint8Array(0x300);
   const view = new DataView(bytes.buffer);
   const dynamic = [
@@ -45,6 +45,10 @@ function buildExtendedCommonImage() {
     perms: { read: true, write: false, execute: true },
   };
   const sections = new Array(SHN_COMMON + 1);
+  if (actualSection) sections[SHN_COMMON] = {
+    index: SHN_COMMON, name: '.text', address: BASE + BigInt(FUNCTION_OFFSET),
+    size: 12n, fileOffset: BigInt(FUNCTION_OFFSET), fileSize: 12n, perms: segment.perms,
+  };
   const image = {
     bits: 64,
     imageBase: BASE,
@@ -92,4 +96,15 @@ test('#4358 PT_DYNAMIC extended index numerically equal to SHN_COMMON remains se
   assert.equal(image.imports.length, 0);
   assert.equal(image.exports.find((entry) => entry.name === 'extended_fn')?.address, BASE + BigInt(FUNCTION_OFFSET));
   assert.equal(image.functions.find((entry) => entry.name === 'extended_fn')?.address, BASE + BigInt(FUNCTION_OFFSET));
+});
+
+test('#4358 an array hole cannot certify the same extended section index', () => {
+  const image = buildExtendedCommonImage({ actualSection: false });
+  const symbol = image.symbols.find((entry) => entry.name === 'extended_fn');
+  assert.ok(symbol);
+  assert.equal(symbol.defined, null);
+  assert.equal(symbol.sectionIndex, null);
+  assert.equal(symbol.address, BASE + BigInt(FUNCTION_OFFSET)); // retained declaration, without defined/export authority
+  assert.equal(image.exports.length, 0);
+  assert.equal(image.functions.length, 0);
 });

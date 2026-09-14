@@ -354,6 +354,18 @@ test('X-02 user acceptance reserves exact corpus paths without widening Apple ru
     'tests/scpa/x02-prior120-apple-version-matrix.test.mjs',
     'tests/scpa/fixtures/x02-prior120-apple-version-matrix.json',
     'tests/scpa/fixtures/x02-prior120-apple-version-fixtures.mjs',
+    'tests/phase4/binary/issue-4358-elf-dynamic-xindex-common.test.mjs',
+    'js/binary/macho-core.js',
+    'js/swift.js',
+    'js/objc.js',
+    'js/metadata/swift.js',
+    'tests/scpa/x02-declared-metadata-boundaries.test.mjs',
+    'tests/scpa/fixtures/x02-dyld-shared-cache.mjs',
+    'js/binary/detect.js',
+    'js/binary/dyld-shared-cache.js',
+    'js/binary/index.js',
+    'js/binary/source-loaders.js',
+    'tests/phase4/binary/issue-7036-dyld-shared-cache-public-input.test.mjs',
     'docs/analysis-x02-acceptance.md',
   ];
   const union = [...assignments.keys()];
@@ -365,7 +377,7 @@ test('X-02 user acceptance reserves exact corpus paths without widening Apple ru
       missing.owners.integration = missing.owners.integration.filter(path => path !== file);
       assert.throws(() => validateRoadmapInventory(BRANCH, phase, union, missing), /undeclared roadmap path/);
     }
-    for (const foreign of ['js/binary/macho-dyld.js', 'js/metadata/swift.js',
+    for (const foreign of ['js/binary/macho-dyld.js', 'js/metadata/swift-unreviewed.js',
       'tests/scpa/fixtures/x02-unreviewed.mjs']) {
       assert.throws(() => validateRoadmapInventory(BRANCH, phase, [...union, foreign]), /undeclared roadmap path/);
       const widened = structuredClone(manifest); widened.owners.integration.push(foreign);
@@ -432,7 +444,7 @@ test('local handover and ARM64 import require every exact path without broadenin
       assert.throws(() => validateRoadmapInventory(BRANCH, phase, union, missing), /undeclared roadmap path/);
     }
   }
-  for (const file of ['js/metadata/swift.js', 'js/targets/architecture/arm64/effects/flags.js',
+  for (const file of ['js/metadata/swift-unreviewed.js', 'js/targets/architecture/arm64/effects/flags.js',
     'js/targets/architecture/x86_64/effects/simd.js',
     'tests/semantic-v2/unreviewed.test.mjs', 'docs/analysis-unreviewed.md']) {
     const widened = structuredClone(manifest);

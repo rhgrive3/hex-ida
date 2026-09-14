@@ -7565,3 +7565,49 @@ RV64 subject/minimization や既存 ordering 行列の再作成は不要です�
 `/mnt/workspace/.dev-state/agent-work/evidence/analysis-roadmap-20260909/`、
 今回の計測とレビューはその下の `c4-proof-performance-20260913/` に保持しています。
 診断スクリプトは既存証拠を上書きしない新しいディレクトリへコピーしてから実行してください。
+
+## 2026-09-14 PR #7036 current-main regression and X-02 product-gap repair
+
+今回の依頼で作業を再開した。開始headは `bce2a7582b890af00686e91f462f381630b813bc`、
+mainは `2b9c1218e0c5bb394aab5b219adc7c253a764451`。Driveのmain mirrorにPR差分を適用し、
+GitHubの全5179 blobとmode、root tree `9087756fc8fa8e4fc00a70ec0d1e132778d3c900` を照合した。
+開始commitの実objectもSHA一致で復元した。古い添付ZIPを最新headへ上書きしていない。
+
+ARM64 controlは既存の `6821a397a` の厳密PC/旧text-only symbolic BL対応を再利用した。
+現mainの64-bit PC wrapを保持し、bytes/word/callTargetが存在する入力へsymbol fallbackを拡大しない。
+既存のdirect-branch/coherence/operand-shape検査を含む6ファイルが通過した。
+constant-historyのextract-bit陽性fixtureはdeterministic宣言に修正し、input-dependentの拒否は維持。
+provenance/consumer-bindingと関連回帰の97件、proof-projection-originの26件が通過。
+
+X-02の旧120行では、cache parser導入後も旧unsupported文言を期待する不整合がcore CIを停止していた。
+不正headerの拒否を現在の診断へ合わせ、同一arm64のmapped cacheを補足陽性として両入口で検証した。
+さらにLC_BUILD_VERSIONのtool宣言、未知Swift format/versionのpartial化、classlistなしObjCの
+category/protocol保持、LC_CODE_SIGNATUREの宣言保持を既存の所有経路に実装した。
+新しいdecoderやmetadata engineを併設していない。予算・不正range・重複・不正サイズを追加検査。
+source/manifest/policy/所有権の否定検査は実変更パスを厳密に列挙した。
+
+120行の固定JSON/helperとhashを保存し、現在分類を別欄で出力する。
+履歴108 pass/6 product-gap/4 evidence-gap/2 environment-excludedに対し、現在は
+114 pass/0 product-gap/4 evidence-gap/2 environment-excluded。6行の対応表と制限は
+`docs/analysis-x02-acceptance.md` 冒頭、log hash/command/source hashは
+`docs/analysis-local-acceptance-audit.json` のintegrationFollowupに記録した。
+手書きcacheを実Apple producer、tool宣言を認証済compiler、署名markerを有効署名とは扱わない。
+
+Phase4 binaryの広域検査では、mainにも同じELF #4358陽性fixture失敗を再現した。
+空の配列slotを実セクションと期待していたため、陽性に実index付きsectionを追加し、
+空slotではdefined=null/確定exportなしを維持する反対例を追加した。ELF runtimeは変更していない。
+
+実行結果: canonical core PASS (41.0s)、X-02/ObjC/所有権152件PASS、Mach-O36ファイル138件PASS、
+Phase4 binary153ファイルと既存独立verification oracle18件PASS、lint/module-boundaries PASS。
+C4 structuring5ファイル、egraph5ファイル、memory24ファイルも本sourceで通過。
+生成userscriptを2回buildし、tracked生成物のSHA-256一致を確認した。
+`hex.user.template.js`: `371750a5127762dd8e0e8f3b8db9397b8b7af47c1885b653fe5fb75b3c5cb65c`。
+`release-version.json`: `2a44bc368226ec6c789c38ba4ebc1bf48e9c8da803fd43506f5e5f82e55dc1b6`。
+
+全体check/受入は未合格。effects全体はLLVM/Playwright/旧baseline Git object不足で停止した。
+追加ARM64失敗は修正済みだが、全effects合格へ読み替えない。full Phase8は120秒timeoutで未完了。
+browser取得はCDN timeout、LLVMのapt更新はsetgroups/setuid権限制約で失敗した。
+権限や必要versionのgateを緩めず、CodeRabbit取得のproxy CONNECT timeoutも独立レビュー未実施と記録する。
+C4全領域/PHI/CFG削除/flags/exception/unwind/bounded-loop、独立hardware/PAC/物理iPad、
+activation/releaseを未完了のまま保持する。全23 finding/21 FR、全体完了・mainマージは宣言しない。
+GitHubへの反映とCI結果は、このsourceの公開commit SHAに結び付くPR記録で確認する。

@@ -238,6 +238,9 @@ export async function parseSwiftNominalDescriptor(read, address) {
   const addr = BigInt(address);
   const prefix = await exact(read, addr, 20); if (!prefix) return null;
   const flags = u32(prefix, 0), kind = contextKind(flags); if (!['class','struct','enum'].includes(kind)) return null;
+  // Only the zero format/version byte is supported. Nonzero reserved bits
+  // must not borrow today's descriptor layout or publish authoritative types.
+  if (((flags >>> 8) & 0xff) !== 0) return null;
   const name = await relativeString(read, addr + 8n, i32(prefix, 8)); if (!name) return null;
   const out = { runtime:'swift', kind, address:addr, flags, name, parent:rel(addr+4n,i32(prefix,4)), metadataAccessor:rel(addr+12n,i32(prefix,12)), fieldDescriptor:rel(addr+16n,i32(prefix,16)), generic:!!(flags&0x80), unique:!!(flags&0x40), fields:[], methods:[], vtable:[], warnings:[] };
   if (kind === 'class') {

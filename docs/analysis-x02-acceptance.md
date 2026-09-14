@@ -1,5 +1,41 @@
 # X-02 Apple 横断受入 — 2026-09-13 ローカル検証
 
+## 2026-09-14 現在headへの修正と再検証
+
+開始元はPR #7036の `bce2a7582b890af00686e91f462f381630b813bc`、mainは
+`2b9c1218e0c5bb394aab5b219adc7c253a764451`。以下の旧記録は当時の履歴として保持する。
+元120行のJSONとhelperは変更せず、current dispositionとhistorical dispositionを検査結果に併記する。
+元の108 pass / 6 product-gap / 4 evidence-gap / 2 environment-excludedに対し、
+**現在の有限分類は114 pass / 0 product-gap / 4 evidence-gap / 2 environment-excluded**。
+全120行を実行しており、4 evidence-gapと2 environment-excludedを合格へ移していない。
+
+| 固定行 | 修正と実入口 | 保持する制限 |
+|---|---|---|
+| X02-A-07 | LC_BUILD_VERSIONのtool ID/raw version/表示versionを両公開loaderで保持。共通metadata予算を適用 | producerの宣言。provenanceVerified=false |
+| X02-B-01/B-02 | 旧不正headerを否定例に残し、同一architectureのmapped cacheを両公開loaderで追加検査 | synthetic arm64/slide_info2。実Apple cache・subcache・PAC実行証拠ではない |
+| X02-D-13 | 未対応のdescriptor format/version byteを既知Swift layoutとして解釈せずpartial。下流の型照会も0件 | 未知版のname/tailを読まない。Swift provider 1.0.1 |
+| X02-E-11 | 既存ObjC parserと統一providerでclasslistなしのcategory/protocolを保持。欠落class coverageはpartial | dispatchを一意確定しない。範囲不正・重複tableは拒否。ObjC provider 1.1.1 |
+| X02-G-03 | 両公開loaderでLC_CODE_SIGNATURE宣言・range validity・presenceを保持 | cryptographicVerification=false。空/範囲外/重複/短いcommandはpartial。署名検証・再署名ではない |
+
+補足cacheは既存Phase4 fixtureを `tests/scpa/fixtures/x02-dyld-shared-cache.mjs` へ共通化したもの。
+arm64入力SHA-256は `5a72c6a1461e4009f2ecc5185ac4bcee503be3673c1e1aa76048536fcbb35a2b`。
+120行の固定JSON SHA-256は `c95ea2ba89d072fe9110565072462d5efca496b72a66ff365d8b8d15a95274ad`、
+固定helperは `2448aec993b4b7151f05ae5be4fb03574649926f2b9eab23d90dc851962e2b2a` のまま。
+別の2026-09-13 59-case/49-input JSONは当時の評価を保存しており、現在のcache能力の判定には
+本節とPhase4の陽性検査を用いる。分母・旧入力を編集して新たな成功率を作らない。
+
+検査: prior120・新境界10件・ObjC既存module・所有権を合わせて152件PASS、
+既存Mach-O36ファイル/138件PASS、canonical `npm run core:test` PASS。
+広域Phase4でmainにも再現したELF陽性fixture欠落を修正し、反対例を追加した後、
+binary153ファイルと既存独立oracle18件もPASSした。
+各コマンドとlog hashは `analysis-local-acceptance-audit.json` の `integrationFollowup` に記録する。
+
+自己確認のみ。CodeRabbitの取得は接続timeoutで失敗し、独立レビューは未実施。
+指定LLVM 18.1.3、実Apple OS/署名/PAC、物理iPad、Playwright 1.63のbrowser取得は未成立。
+X-02全体とreleaseは引き続きCHECKPOINT-LOCKED。metadataの宣言保持を実行成功へ換算しない。
+
+---
+
 **有限の公開入口検査を実装・実行。X-02 全体は未完了、CHECKPOINT-LOCKED。**
 今回の正本は添付 ZIP。全体の記録は [ローカル引き継ぎ](analysis-local-handover.md)。
 

@@ -165,7 +165,7 @@
     {
       "id": "HEX-X-02",
       "localStatus": "partial-local-matrix",
-      "assessment": "49入力/59機能case+2manifest検査。別remoteの120行はZIP未同梱・未取得で統合未検証。この有限matrixで置き換えない。",
+      "assessment": "元120行と既存59機能case+2manifestを保持。現在の有限120行は114 pass/0 product-gap/4 evidence-gap/2 environment-excluded。X-02全体・実機・独立reparseは未完了。",
       "source": "docs/analysis-x02-acceptance.md",
       "verificationSuite": "scpa-test",
       "originalRequirementAcceptedHere": false
@@ -529,7 +529,7 @@
       "complexity": "XL",
       "findingId": "HEX-X-02",
       "localStatus": "partial-local-matrix",
-      "currentAssessment": "49入力/59機能case+2manifest検査。別remoteの120行はZIP未同梱・未取得で統合未検証。この有限matrixで置き換えない。",
+      "currentAssessment": "元120行をcanonical統合し製品不足6行を修正。未知版partial、宣言metadata、classless ObjC、有限cacheを検証。実機・独立reparseと全Apple版受入は未完了。",
       "originalRequirementAcceptedHere": false
     }
   ],
@@ -564,11 +564,130 @@
   },
   "integrationFollowup": {
     "date": "2026-09-14",
-    "inputHead": "53b6d2a7ef0695e63111689f7d36598724722f49",
+    "inputHead": "bce2a7582b890af00686e91f462f381630b813bc",
+    "mainHead": "2b9c1218e0c5bb394aab5b219adc7c253a764451",
     "status": "CHECKPOINT-LOCKED",
-    "recordedMeasurementsAreHistorical": true,
-    "checkpoint": "docs/analysis-roadmap-v8-integration-checkpoint.md",
     "fullRoadmapComplete": false,
-    "x02Prior120RowsIntegrated": false
-  }
+    "transformAuthorization": false,
+    "x02Prior120RowsIntegrated": true,
+    "x02HistoricalClassification": {
+      "pass": 108,
+      "product-gap": 6,
+      "evidence-gap": 4,
+      "environment-excluded": 2
+    },
+    "x02CurrentFiniteClassification": {
+      "pass": 114,
+      "product-gap": 0,
+      "evidence-gap": 4,
+      "environment-excluded": 2
+    },
+    "x02ChangedRows": [
+      "X02-A-07",
+      "X02-B-01",
+      "X02-B-02",
+      "X02-D-13",
+      "X02-E-11",
+      "X02-G-03"
+    ],
+    "x02FrozenMatrixSha256": "c95ea2ba89d072fe9110565072462d5efca496b72a66ff365d8b8d15a95274ad",
+    "runtimeSourceSha256": {
+      "js/binary/macho-core.js": "34e495abec4f5a7aae588910247416c74e19e6655adc377c7464038065e5f263",
+      "js/metadata/objc.js": "0331bd74410a38e02014f06e9e46e31daed62383404c49dc33cbdb17beea7c5b",
+      "js/metadata/swift.js": "98ff133e8a454c1bb203af26eea7b4ba5c93b069761e86098dbde32ba88cb431",
+      "js/objc.js": "a7b1c7f399b47057c7625dd6b68ce77379a24350a3a15d2b15cb370017007433",
+      "js/swift.js": "622464c024e46fc00dada51889524a8cc77600583a1118f73b7bbbc2e39a7d7b",
+      "js/targets/architecture/arm64/effects/control.js": "6f0dd26d416f3edb189fc257a31ceac08841c224ad1b0860c4fd9aaca6be0f94"
+    },
+    "generatedSha256": {
+      "userscript/hex.user.template.js": "371750a5127762dd8e0e8f3b8db9397b8b7af47c1885b653fe5fb75b3c5cb65c",
+      "userscript/release-version.json": "2a44bc368226ec6c789c38ba4ebc1bf48e9c8da803fd43506f5e5f82e55dc1b6"
+    },
+    "verificationReceipts": [
+      {
+        "name": "core",
+        "command": "node scripts/run-quiet-command.mjs --label pr7036-core-final -- npm run core:test",
+        "exitCode": 0,
+        "result": "PASS; 41.0s",
+        "logSha256": "f60bf020206b3dbfeeb4dfc918d4f8ac52ff8e2da53ac30e4b9b51bb0540dc10",
+        "logBytes": 32
+      },
+      {
+        "name": "x02-focused",
+        "command": "node --test --test-reporter=tap tests/scpa/x02-declared-metadata-boundaries.test.mjs tests/phase7/ownership/roadmap-v8-integration.test.mjs tests/metadata-apple.test.mjs tests/scpa/x02-prior120-apple-version-matrix.test.mjs",
+        "exitCode": 0,
+        "result": "152 pass / 0 fail",
+        "logSha256": "ddd26121e8cd08d246e53b7010da2691f8a44415537c16962e6e60a6a4846dbd",
+        "logBytes": 190597
+      },
+      {
+        "name": "macho-regressions",
+        "command": "node --test --test-reporter=tap tests/phase4/binary/*macho*.mjs",
+        "exitCode": 0,
+        "result": "36 files / 138 pass",
+        "logSha256": "b92df86a0a29a66c47517395ef331e699784f99677c735c3f11cf235e8c71a72",
+        "logBytes": 30882
+      },
+      {
+        "name": "phase4-binary",
+        "command": "node tests/phase4/run.mjs --group binary",
+        "exitCode": 0,
+        "result": "153 files + 18 existing independent verification cases pass",
+        "logSha256": "c7d9539ec5b9720e0e59b65f753850b5c6fe3fa18dac0787ab4bd71bdd118dba",
+        "logBytes": 6283
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "exitCode": 0,
+        "result": "PASS",
+        "logSha256": "a3c672ef332c78d50bc0b1d3121563829077111b1926d2e7a252d74a41260b7c",
+        "logBytes": 158
+      },
+      {
+        "name": "module-boundaries",
+        "command": "npm run module-boundaries:test",
+        "exitCode": 0,
+        "result": "PASS",
+        "logSha256": "a7dd19fe35f5103c96dc162ed63aa349d7ad61b630f892287a80315335091ebb",
+        "logBytes": 346
+      },
+      {
+        "name": "build-first",
+        "command": "npm run userscript:build",
+        "exitCode": 0,
+        "result": "PASS",
+        "logSha256": "032c651ddbb28c3fb5b4c2c23968974278d926faeb5801a21a8e506c63458497",
+        "logBytes": 3325
+      },
+      {
+        "name": "build-second",
+        "command": "npm run userscript:build",
+        "exitCode": 0,
+        "result": "PASS; tracked generated file hashes identical",
+        "logSha256": "7de76c9323254d41098e9e12fd6116c9323f76160f68b0b719883033157cac8b",
+        "logBytes": 3306
+      }
+    ],
+    "remainingGates": [
+      "C4 full region/PHI/CFG/flags/exception/bounded-loop acceptance",
+      "independent review: CodeRabbit download proxy CONNECT timeout",
+      "Ubuntu LLVM 18.1.3 oracle unavailable",
+      "Playwright 1.63.0 browser binaries unavailable; installation timed out",
+      "physical Apple arm64e/iPad runtime/signature/activation/release evidence absent",
+      "complete current-source check; old pinned baseline Git objects unavailable in source mirror"
+    ],
+    "checkpoint": "docs/analysis-roadmap-v8-integration-checkpoint.md"
+  },
+  "integrationFollowupHistory": [
+    {
+      "date": "2026-09-14",
+      "inputHead": "53b6d2a7ef0695e63111689f7d36598724722f49",
+      "status": "CHECKPOINT-LOCKED",
+      "recordedMeasurementsAreHistorical": true,
+      "checkpoint": "docs/analysis-roadmap-v8-integration-checkpoint.md",
+      "fullRoadmapComplete": false,
+      "x02Prior120RowsIntegrated": false
+    }
+  ]
 }

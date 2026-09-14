@@ -168,7 +168,7 @@ test('MOV, unary, binary and bitfield folding classes retain the actual written 
       node.attributes = { machineEffects:{ operationMetadata:{ bit:1 } } };
       node.intrinsic = { inputs, outputs:['sum'], stateReads:[], stateWrites:[],
         memoryRead:{ scope:'none' }, memoryWrite:{ scope:'none' }, controlEffects:[],
-        determinism:'input-dependent', symbolicDetail:'summary-only' };
+        determinism:'deterministic', symbolicDetail:'summary-only' };
     }
     const ir = projectSemanticIrV2ToLegacyV1(input), source = ir.instructions.find(inst => inst.semanticNodeId === 'n_sum');
     assert.equal(source.dst.const, expected, `${kind}/${operator}`);

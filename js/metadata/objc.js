@@ -8,7 +8,7 @@ import {
 import { buildObjcRuntimeModel, buildObjcRuntimeIndex } from '../objc.js';
 
 export const OBJC_PROVIDER_ID = 'metadata.objc';
-export const OBJC_PROVIDER_VERSION = '1.1.0';
+export const OBJC_PROVIDER_VERSION = '1.1.1';
 
 function sectionName(section) {
   for (const key of ['section', 'name', 'sectname']) {
@@ -125,7 +125,7 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
       });
     }
 
-    if (!classList) {
+    if (!classList && !tables.categoryList.length && !tables.protocolList.length) {
       const reason = 'objc metadata sections found but objc_classlist section is missing';
       return createLanguageMetadataResult({
         providerId: this.id,
@@ -160,14 +160,18 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
       // another declaration and then call that incomplete universe complete.
       if (ranges.length > 1) return incomplete(`objc-multiple-${kind}-sections`);
     }
-    const address = classList.vmAddr;
-    const addressValid = (typeof address === 'bigint' && address >= 0n)
-      || (typeof address === 'number' && Number.isSafeInteger(address) && address >= 0);
-    const size = classList.size;
-    const sizeValid = (typeof size === 'bigint' && size >= 0n && size <= BigInt(Number.MAX_SAFE_INTEGER))
-      || (typeof size === 'number' && Number.isSafeInteger(size) && size >= 0);
-    if (!addressValid || !sizeValid) return incomplete('objc-classList-range-invalid');
-    classList.vmAddr = BigInt(address);
+    for (const [kind, ranges] of Object.entries(tables)) {
+      const range = ranges[0];
+      if (!range) continue;
+      const address = range.vmAddr;
+      const addressValid = (typeof address === 'bigint' && address >= 0n)
+        || (typeof address === 'number' && Number.isSafeInteger(address) && address >= 0);
+      const size = range.size;
+      const sizeValid = (typeof size === 'bigint' && size >= 0n && size <= BigInt(Number.MAX_SAFE_INTEGER))
+        || (typeof size === 'number' && Number.isSafeInteger(size) && size >= 0);
+      if (!addressValid || !sizeValid) return incomplete(`objc-${kind}-range-invalid`);
+      range.vmAddr = BigInt(address);
+    }
     const runtimeSections = {
       sections: this.sections,
       architecture: this.architecture,
@@ -278,7 +282,7 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
         reasons: [...new Set([...reasons, ...(pointerAbiReason ? [pointerAbiReason] : [])])],
         ...(pointerAbiReason ? { pointerAbi: pointerAbiReason } : {}),
       },
-      ...(pointerAbiReason ? { diagnostics: [pointerAbiReason] } : {}),
+      diagnostics: [...new Set([...reasons, ...(pointerAbiReason ? [pointerAbiReason] : [])])],
     });
   }
 
