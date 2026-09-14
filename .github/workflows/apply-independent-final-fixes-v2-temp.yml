@@ -1,4 +1,4 @@
-name: Temporary apply independent final fixes v2
+name: Temporary apply independent final fixes v3
 
 on:
   push:
@@ -30,7 +30,6 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git fetch --no-tags origin refs/heads/feat/analysis-roadmap-v8-current-main-20260907:refs/remotes/origin/feat/analysis-roadmap-v8-current-main-20260907
-          git rev-parse refs/remotes/origin/feat/analysis-roadmap-v8-current-main-20260907
 
       - name: Merge latest #7036
         shell: bash
@@ -39,17 +38,29 @@ jobs:
           BASE="$(git rev-parse refs/remotes/origin/feat/analysis-roadmap-v8-current-main-20260907)"
           git merge --no-ff --no-edit "$BASE"
 
-      - name: Verify patch applies
+      - name: Check blocks-base patch
         shell: bash
-        run: |
-          set -euo pipefail
-          git apply --check .github/independent-final-fixes.patch
+        run: git apply --check --include='js/blocks-base.js' .github/independent-final-fixes.patch
+
+      - name: Check architecture ABI patch
+        shell: bash
+        run: git apply --check --include='tests/architecture-abi.mjs' .github/independent-final-fixes.patch
+
+      - name: Check ABI discovery regression patch
+        shell: bash
+        run: git apply --check --include='tests/phase4/architecture-abi-compat-regressions.test.mjs' .github/independent-final-fixes.patch
+
+      - name: Check memory presentation regression patch
+        shell: bash
+        run: git apply --check --include='tests/phase4/arm64-memory-presentation-contract.test.mjs' .github/independent-final-fixes.patch
+
+      - name: Check ELF regression patch
+        shell: bash
+        run: git apply --check --include='tests/phase4/issue-3630-elf-dynamic-section-authority.test.mjs' .github/independent-final-fixes.patch
 
       - name: Apply verified fixes
         shell: bash
-        run: |
-          set -euo pipefail
-          git apply .github/independent-final-fixes.patch
+        run: git apply .github/independent-final-fixes.patch
 
       - name: Architecture ABI focused test
         shell: bash
