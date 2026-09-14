@@ -54,6 +54,69 @@ function ownedClone(value) {
   return out;
 }
 
+// #8868: a canonical intervention record is immutable identity-bearing
+// provenance, but the shared core deepFreeze() helper intentionally returns
+// without freezing any ArrayBuffer/ArrayBufferView/SharedArrayBuffer (freezing
+// a typed-array view does not stop element writes through its backing store).
+// That generic policy is correct for ordinary consumers yet is not a complete
+// immutability boundary here: after publication a caller holding the returned
+// record — or InterventionLedger.get()/all()/ancestry(), which hand back the
+// same stored object — could rewrite committed requested/acknowledged bytes in
+// place under an unchanged interventionId, falsify downstream evidence
+// ancestry, and make an exact persisted replay collide against the mutated
+// record. Canonicalize every binary leaf to an owned, frozen byte array BEFORE
+// identity derivation and insertion so the stored content is the exact bytes the
+// generated identity commits to. This mirrors the consumer-side #6214
+// authority-record approach and deliberately does not change global deepFreeze().
+// jsonSafe()/stableDigest already collapse typed views to an array of byte
+// values, so a frozen byte array of the same values keeps the generated
+// interventionId byte-for-byte identical to the previous representation.
+function sharedArrayBuffer(value) {
+  return typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer;
+}
+
+function canonicalizeBinaryLeaf(value) {
+  if (value instanceof ArrayBuffer || sharedArrayBuffer(value)) return Object.freeze(Array.from(new Uint8Array(value)));
+  if (value instanceof DataView) return Object.freeze(Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)));
+  if (ArrayBuffer.isView(value)) return Object.freeze(Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)));
+  return null;
+}
+
+function canonicalizeInterventionValue(value, seen = new WeakSet()) {
+  if (value == null || typeof value !== 'object') return value;
+  const binary = canonicalizeBinaryLeaf(value);
+  if (binary !== null) return binary;
+  if (seen.has(value)) return value;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    const out = new Array(value.length);
+    for (let index = 0; index < value.length; index += 1) out[index] = canonicalizeInterventionValue(value[index], seen);
+    return out;
+  }
+  if (value instanceof Map) {
+    const out = new Map();
+    for (const [key, item] of value) out.set(canonicalizeInterventionValue(key, seen), canonicalizeInterventionValue(item, seen));
+    return out;
+  }
+  if (value instanceof Set) {
+    const out = new Set();
+    for (const item of value) out.add(canonicalizeInterventionValue(item, seen));
+    return out;
+  }
+  if (value instanceof Date || value instanceof RegExp) return value;
+  const out = {};
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string') continue;
+    Object.defineProperty(out, key, {
+      value: canonicalizeInterventionValue(value[key], seen),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return out;
+}
+
 function completeness(value, fallback = 'partial') {
   // Completeness is canonical evidence authority. A structured value must not
   // launder into a ranking through String() coercion (String(['complete']).
@@ -92,9 +155,9 @@ export function createInterventionRecord(input = {}) {
   const kind = required(input.kind, 'runtime-intervention-kind-required', 'intervention kind is required');
   const sequence = optionalSequence(input.sequence);
   const parentInterventionIds = stringArray(input.parentInterventionIds, 'parentInterventionIds');
-  const target = ownedClone(input.target ?? null);
-  const requestedChange = ownedClone(input.requestedChange ?? null);
-  const acknowledgedResult = ownedClone(input.acknowledgedResult ?? null);
+  const target = canonicalizeInterventionValue(ownedClone(input.target ?? null));
+  const requestedChange = canonicalizeInterventionValue(ownedClone(input.requestedChange ?? null));
+  const acknowledgedResult = canonicalizeInterventionValue(ownedClone(input.acknowledgedResult ?? null));
   const identity = {
     runtimeSessionId,
     providerId,
