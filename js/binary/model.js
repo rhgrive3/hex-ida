@@ -92,63 +92,17 @@ function buildVirtualMappingLookup(sections, segments) {
     if (maxEnd === null || items[i].end > maxEnd) maxEnd = items[i].end;
     prefixEnds[i] = maxEnd;
   }
-  return { items, starts, prefixEnds, runs: buildVirtualMappingRuns(items) };
-}
-
-function buildVirtualMappingRuns(items) {
-  const events = [];
-  for (const item of items) {
-    events.push({ point: item.start, kind: 1, item });
-    events.push({ point: item.end, kind: -1, item });
-  }
-  events.sort((a, b) => a.point < b.point ? -1 : a.point > b.point ? 1 : a.kind - b.kind);
-  const starts = [];
-  const owners = [];
-  const active = new Set();
-  let previous = null;
-  let cursor = 0;
-  const bestActive = () => {
-    let best = null;
-    for (const item of active) {
-      if (!best || item.size < best.size || (item.size === best.size && item.order < best.order)) best = item;
-    }
-    return best?.mapping || null;
-  };
-  while (cursor < events.length) {
-    const point = events[cursor].point;
-    if (previous !== null && previous < point) {
-      starts.push(previous);
-      owners.push(bestActive());
-    }
-    const groupEnd = cursor;
-    while (cursor < events.length && events[cursor].point === point) cursor++;
-    for (let i = groupEnd; i < cursor; i++) {
-      if (events[i].kind < 0) active.delete(events[i].item);
-    }
-    for (let i = groupEnd; i < cursor; i++) {
-      if (events[i].kind > 0) active.add(events[i].item);
-    }
-    previous = point;
-  }
-  if (previous !== null) {
-    starts.push(previous);
-    owners.push(bestActive());
-  }
-  return { starts, owners };
+  return { items, starts, prefixEnds };
 }
 
 function lookupVirtualMapping(lookup, address) {
-  const runs = lookup.runs;
   let lo = 0;
-  let hi = runs ? runs.starts.length : lookup.starts.length;
-  const starts = runs ? runs.starts : lookup.starts;
+  let hi = lookup.starts.length;
   while (lo < hi) {
     const mid = (lo + hi) >>> 1;
-    if (starts[mid] <= address) lo = mid + 1;
+    if (lookup.starts[mid] <= address) lo = mid + 1;
     else hi = mid;
   }
-  if (lo === 0) return null;
-  if (runs) return runs.owners[lo - 1] || null;
   const upper = lo;
   let best = null;
   for (let i = upper - 1; i >= 0 && lookup.prefixEnds[i] > address; i--) {
@@ -242,27 +196,6 @@ function buildDataInCodeLookup(entries) {
 function lookupDataInCode(lookup, address) {
   const range = lookupMapping(lookup, address);
   return range?.entry || null;
-}
-
-function dataInCodeOverlaps(lookup, address, size) {
-  const end = address + size;
-  let lo = 0;
-  let hi = lookup.starts.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (lookup.starts[mid] < end) lo = mid + 1;
-    else hi = mid;
-  }
-  const upper = lo;
-  if (upper === 0) return false;
-  lo = 0;
-  hi = upper;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (lookup.prefixEnds[mid] > address) hi = mid;
-    else lo = mid + 1;
-  }
-  return lo < upper;
 }
 
 export const MAX_VIRTUAL_READ_BYTES = 64 * 1024 * 1024;
@@ -540,17 +473,12 @@ export class BinaryImage {
     if (offStart === null || offEnd === null) return false;
 
     const instEnd = a + instructionBytes;
-    if (this._dataInCodeSorted) {
-      if (!this._dataInCodeLookup) this._dataInCodeLookup = buildDataInCodeLookup(this.dataInCode);
-      if (dataInCodeOverlaps(this._dataInCodeLookup, a, instructionBytes)) return false;
-    } else {
-      for (const entry of this.dataInCode) {
-        if (entry.address == null) continue;
-        const dataStart = entry.address;
-        const dataEnd = entry.address + BigInt(entry.length);
-        if (a < dataEnd && instEnd > dataStart) {
-          return false;
-        }
+    for (const entry of this.dataInCode) {
+      if (entry.address == null) continue;
+      const dataStart = entry.address;
+      const dataEnd = entry.address + BigInt(entry.length);
+      if (a < dataEnd && instEnd > dataStart) {
+        return false;
       }
     }
 
