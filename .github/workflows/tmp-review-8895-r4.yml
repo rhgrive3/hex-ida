@@ -1,0 +1,55 @@
+name: tmp-review-8895-r4
+on:
+  push:
+    branches: [codex/issue-campaign-20260914-lane-15-batch-01]
+permissions:
+  contents: write
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Apply end-to-end caller cap
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          def rep(path, old, new, count=1):
+              p=Path(path); s=p.read_text(); n=s.count(old)
+              if n != count: raise SystemExit(f'{path}: expected {count} match(es), got {n}')
+              p.write_text(s.replace(old,new,count))
+
+          rep('js/worker-fixes.js',
+              'async function __functionEvidence(region, slice, requestId) {',
+              'async function __functionEvidence(region, slice, requestId, unwindLimit = 200_000) {')
+          rep('js/worker-fixes.js',
+              '  let metadataIncomplete = false;\n  let metadataTruncationReason = null;\n',
+              "  let metadataIncomplete = false;\n  let metadataTruncationReason = null;\n  const boundedUnwindLimit = typeof unwindLimit === 'number' && Number.isSafeInteger(unwindLimit) && unwindLimit >= 0\n    ? Math.min(unwindLimit, 200_000)\n    : 0;\n")
+          rep('js/worker-fixes.js',
+              'maxResults: 200_000, maxWork: 200_000, shouldCancel: () => cancelled(requestId)',
+              'maxResults: boundedUnwindLimit, maxWork: boundedUnwindLimit, shouldCancel: () => cancelled(requestId)',
+              2)
+          rep('js/worker-fixes.js',
+              'const ev = await __functionEvidence(region, slice, args.requestId);',
+              'const ev = await __functionEvidence(region, slice, args.requestId, result.cap);')
+
+          p=Path('tests/issue-8789-8816-unwind-caller-bounds.mjs')
+          s=p.read_text()
+          old="const fixes=fs.readFileSync(path.join(root,'js/worker-fixes.js'),'utf8'); assert.match(fixes,/unwindStarts\\.truncated[\\s\\S]*unwindLsdaEntries\\.truncated/); assert.match(fixes,/const evidenceIncomplete = ev\\.incomplete === true[\\s\\S]*complete: !capped/);\nconsole.log('issues #8789/#8816 caller bounds and incomplete authority: PASS');"
+          new="const fixes=fs.readFileSync(path.join(root,'js/worker-fixes.js'),'utf8'); assert.match(fixes,/unwindStarts\\.truncated[\\s\\S]*unwindLsdaEntries\\.truncated/); assert.match(fixes,/const evidenceIncomplete = ev\\.incomplete === true[\\s\\S]*complete: !capped/);\nassert.match(fixes,/__functionEvidence\\(region, slice, requestId, unwindLimit = 200_000\\)/);\nassert.match(fixes,/maxResults: boundedUnwindLimit, maxWork: boundedUnwindLimit/);\nassert.match(fixes,/__functionEvidence\\(region, slice, args\\.requestId, result\\.cap\\)/);\nassert.doesNotMatch(fixes,/parseUnwind(?:Starts|LsdaEntries)\\(buf, imageBase, \\{ maxResults: 200_000/);\nconsole.log('issues #8789/#8816 caller bounds and incomplete authority: PASS');"
+          if s.count(old) != 1: raise SystemExit('test tail mismatch')
+          p.write_text(s.replace(old,new,1))
+          PY
+          node --check js/worker-fixes.js
+          node tests/issue-8789-8816-unwind-caller-bounds.mjs
+          git rm .github/workflows/tmp-review-8895-r4.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add js/worker-fixes.js tests/issue-8789-8816-unwind-caller-bounds.mjs
+          git commit -m 'fix(review): enforce Mach-O unwind caller cap end-to-end'
+          git push origin HEAD:codex/issue-campaign-20260914-lane-15-batch-01
