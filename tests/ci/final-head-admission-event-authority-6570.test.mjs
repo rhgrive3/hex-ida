@@ -53,8 +53,17 @@ const evidence = (checkRuns = [], unresolvedReviewThreads = 0) => ({
   unresolvedReviewThreads,
 });
 
-const ghaFailure = check({
+const unlistedGhaFailure = check({
   name: 'Unlisted GitHub Actions job',
+  appSlug: 'github-actions',
+  conclusion: 'failure',
+});
+const prFastGateSuccess = check({
+  name: 'PR fast gate',
+  appSlug: 'github-actions',
+});
+const prFastGateFailure = check({
+  name: 'PR fast gate',
   appSlug: 'github-actions',
   conclusion: 'failure',
 });
@@ -68,17 +77,21 @@ const externalFailure = check({
   conclusion: 'failure',
 });
 
-// GitHub Actions check-run changes do not reliably emit check_run workflows.
-// They are therefore outside this controller's check authority. Required CI
-// remains fail-closed through the explicit commit-status denominator.
-assert.deepEqual(admissionAuthorityCheckRuns([ghaFailure]), []);
-assert.equal(evaluate([ghaFailure]).state, 'success');
-assert.equal(
-  admissionEvidenceRevision(evidence([ghaFailure])),
-  admissionEvidenceRevision(evidence([])),
+// Unknown/non-event-covered GitHub Actions checks remain outside controller
+// authority. The event-covered PR fast gate is authoritative and must fail
+// closed when its exact-head check is not green.
+assert.deepEqual(admissionAuthorityCheckRuns([unlistedGhaFailure]), []);
+assert.equal(evaluate([unlistedGhaFailure]).state, 'success');
+assert.deepEqual(admissionAuthorityCheckRuns([prFastGateSuccess]), [prFastGateSuccess]);
+assert.equal(evaluate([prFastGateSuccess]).state, 'success');
+assert.deepEqual(admissionAuthorityCheckRuns([prFastGateFailure]), [prFastGateFailure]);
+assert.equal(evaluate([prFastGateFailure]).state, 'failure');
+assert.notEqual(
+  admissionEvidenceRevision(evidence([prFastGateSuccess])),
+  admissionEvidenceRevision(evidence([prFastGateFailure])),
 );
 
-// External check runs do emit check_run events, so they remain authority.
+// External check runs emit check_run events, so they remain authority.
 assert.deepEqual(admissionAuthorityCheckRuns([externalSuccess]), [externalSuccess]);
 assert.equal(evaluate([externalSuccess]).state, 'success');
 assert.equal(evaluate([externalFailure]).state, 'failure');
@@ -87,9 +100,6 @@ assert.notEqual(
   admissionEvidenceRevision(evidence([externalFailure])),
 );
 
-// Review-thread resolution is independently enforced by the active native
-// required-thread-resolution ruleset. It must not be mutable controller evidence
-// because Actions has no resolve/unresolve trigger for that thread state.
 assert.equal(evaluate([], 1).state, 'success');
 assert.equal(
   admissionEvidenceRevision(evidence([], 0)),
@@ -101,6 +111,7 @@ const workflowSource = fs.readFileSync(
   'utf8',
 );
 assert.match(workflowSource, /check_run:\s*\n\s*types: \[created, rerequested, completed, requested_action\]/);
+assert.match(workflowSource, /workflow_run:\s*\n\s*workflows:\s*\n\s*- PR fast gate/);
 assert.match(workflowSource, /context\.eventName === 'check_run'/);
 assert.match(workflowSource, /github\.event\.check_run\.head_sha/);
 assert.match(workflowSource, /required_review_thread_resolution/);

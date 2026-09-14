@@ -9,6 +9,32 @@ import {
 const SHA_RE = /^[0-9a-f]{40}$/i;
 const EVIDENCE_REVISION_RE = /^[0-9a-f]{64}$/i;
 
+const EVENT_COVERED_GITHUB_ACTIONS_CHECKS = new Set([
+  'PR fast gate',
+  'Invariant Gates',
+  'Agent loop resilience',
+  'AI evaluation contract',
+  'Issue 2528 canonical claims authority',
+  'Phase 7 ownership',
+  'Phase 8 ownership',
+  'Phase 4 exact-SHA release validation',
+  'Phase 6 release validation',
+  'Phase 7 release validation',
+  'Phase 8 release validation',
+  'Phase 9 preflight',
+  'Phase 10 release validation',
+  'Phase 11 release validation',
+  'Phase 12 release validation',
+  'Stage 1 analysis truth validation',
+  'Stage 2 authority runtime rebuild validation',
+  'Stage 2 non-physical closure proof',
+  'Cross-binary accuracy',
+  'Ghidra decompiler differential',
+  'UI regression',
+  'Universal binary platform',
+  'ChatGPT userscript host',
+]);
+
 function text(value) {
   return typeof value === 'string' ? value : '';
 }
@@ -64,13 +90,20 @@ function checkAppSlug(check) {
   return text(check?.app?.slug).trim().toLowerCase();
 }
 
-// GitHub Actions-created check suites do not schedule check_run workflows.
-// Keep them outside this controller's mutable authority; the required CI
-// denominator is the explicit commit-status set. External checks remain
-// authority because their check_run lifecycle is event-covered below.
+function isEventCoveredGitHubActionsCheck(check) {
+  return checkAppSlug(check) === 'github-actions'
+    && EVENT_COVERED_GITHUB_ACTIONS_CHECKS.has(text(check?.name).trim());
+}
+
+// GitHub Actions checks are authority only when their workflow is explicitly
+// covered by this controller's event surface. Unknown GHA checks remain outside
+// the mutable authority set, while external checks stay event-covered by
+// check_run. The admission controller's own check is always excluded to avoid
+// recursion.
 export function admissionAuthorityCheckRuns(checkRuns = []) {
   return checkRuns.filter((check) => (
-    !isAdmissionCheck(check) && checkAppSlug(check) !== 'github-actions'
+    !isAdmissionCheck(check)
+      && (checkAppSlug(check) !== 'github-actions' || isEventCoveredGitHubActionsCheck(check))
   ));
 }
 
