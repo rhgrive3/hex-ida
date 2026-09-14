@@ -55,216 +55,6 @@ function normalizePerms(p) {
 
 function minBigInt(a, b) { return a < b ? a : b; }
 
-
-function buildVirtualMappingLookup(sections, segments) {
-  const items = [];
-  let order = 0;
-  for (const mapping of sections) {
-    if (sectionHasMappedAddress(mapping) && mapping.size > 0n) {
-      items.push({
-        mapping,
-        order,
-        start: mapping.address,
-        size: mapping.size,
-        end: mapping.address + mapping.size,
-      });
-    }
-    order++;
-  }
-  for (const mapping of segments) {
-    if (mapping.size > 0n) {
-      items.push({
-        mapping,
-        order,
-        start: mapping.address,
-        size: mapping.size,
-        end: mapping.address + mapping.size,
-      });
-    }
-    order++;
-  }
-  items.sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : a.order - b.order);
-  const starts = new Array(items.length);
-  const prefixEnds = new Array(items.length);
-  let maxEnd = null;
-  for (let i = 0; i < items.length; i++) {
-    starts[i] = items[i].start;
-    if (maxEnd === null || items[i].end > maxEnd) maxEnd = items[i].end;
-    prefixEnds[i] = maxEnd;
-  }
-  return { items, starts, prefixEnds, runs: buildVirtualMappingRuns(items) };
-}
-
-function buildVirtualMappingRuns(items) {
-  const events = [];
-  for (const item of items) {
-    events.push({ point: item.start, kind: 1, item });
-    events.push({ point: item.end, kind: -1, item });
-  }
-  events.sort((a, b) => a.point < b.point ? -1 : a.point > b.point ? 1 : a.kind - b.kind);
-  const starts = [];
-  const owners = [];
-  const active = new Set();
-  let previous = null;
-  let cursor = 0;
-  const bestActive = () => {
-    let best = null;
-    for (const item of active) {
-      if (!best || item.size < best.size || (item.size === best.size && item.order < best.order)) best = item;
-    }
-    return best?.mapping || null;
-  };
-  while (cursor < events.length) {
-    const point = events[cursor].point;
-    if (previous !== null && previous < point) {
-      starts.push(previous);
-      owners.push(bestActive());
-    }
-    const groupEnd = cursor;
-    while (cursor < events.length && events[cursor].point === point) cursor++;
-    for (let i = groupEnd; i < cursor; i++) {
-      if (events[i].kind < 0) active.delete(events[i].item);
-    }
-    for (let i = groupEnd; i < cursor; i++) {
-      if (events[i].kind > 0) active.add(events[i].item);
-    }
-    previous = point;
-  }
-  if (previous !== null) {
-    starts.push(previous);
-    owners.push(bestActive());
-  }
-  return { starts, owners };
-}
-
-function lookupVirtualMapping(lookup, address) {
-  const runs = lookup.runs;
-  let lo = 0;
-  let hi = runs ? runs.starts.length : lookup.starts.length;
-  const starts = runs ? runs.starts : lookup.starts;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (starts[mid] <= address) lo = mid + 1;
-    else hi = mid;
-  }
-  if (lo === 0) return null;
-  if (runs) return runs.owners[lo - 1] || null;
-  const upper = lo;
-  let best = null;
-  for (let i = upper - 1; i >= 0 && lookup.prefixEnds[i] > address; i--) {
-    const item = lookup.items[i];
-    if (item.end <= address) continue;
-    if (!best || item.size < best.size || (item.size === best.size && item.order < best.order)) best = item;
-  }
-  return best?.mapping || null;
-}
-
-
-function isAddressSorted(items) {
-  for (let i = 1; i < items.length; i++) {
-    if (items[i - 1].address > items[i].address) return false;
-  }
-  return true;
-}
-
-function isDataInCodeAddressSorted(entries) {
-  let previous = null;
-  for (const entry of entries) {
-    if (entry.address == null) continue;
-    if (previous !== null && entry.address < previous) return false;
-    previous = entry.address;
-  }
-  return true;
-}
-
-function buildMappingLookup(items) {
-  const starts = new Array(items.length);
-  const prefixEnds = new Array(items.length);
-  let maxEnd = null;
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    const start = item.address;
-    const end = start + item.size;
-    starts[i] = start;
-    if (maxEnd === null || end > maxEnd) maxEnd = end;
-    prefixEnds[i] = maxEnd;
-  }
-  return { items, starts, prefixEnds };
-}
-
-function lookupMapping(lookup, address) {
-  let lo = 0;
-  let hi = lookup.starts.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (lookup.starts[mid] <= address) lo = mid + 1;
-    else hi = mid;
-  }
-  const upper = lo;
-  if (upper === 0) return null;
-
-  lo = 0;
-  hi = upper;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (lookup.prefixEnds[mid] > address) hi = mid;
-    else lo = mid + 1;
-  }
-  if (lo >= upper) return null;
-  const item = lookup.items[lo];
-  return address < item.address + item.size ? item : null;
-}
-
-
-
-function buildDataInCodeLookup(entries) {
-  const ranges = [];
-  for (let order = 0; order < entries.length; order++) {
-    const entry = entries[order];
-    if (entry.address == null) continue;
-    const size = BigInt(entry.length);
-    if (size <= 0n) continue;
-    ranges.push({ entry, order, address: entry.address, size });
-  }
-  ranges.sort((a, b) => a.address < b.address ? -1 : a.address > b.address ? 1 : a.order - b.order);
-  const starts = new Array(ranges.length);
-  const prefixEnds = new Array(ranges.length);
-  let maxEnd = null;
-  for (let i = 0; i < ranges.length; i++) {
-    starts[i] = ranges[i].address;
-    const end = ranges[i].address + ranges[i].size;
-    if (maxEnd === null || end > maxEnd) maxEnd = end;
-    prefixEnds[i] = maxEnd;
-  }
-  return { items: ranges, starts, prefixEnds };
-}
-
-function lookupDataInCode(lookup, address) {
-  const range = lookupMapping(lookup, address);
-  return range?.entry || null;
-}
-
-function dataInCodeOverlaps(lookup, address, size) {
-  const end = address + size;
-  let lo = 0;
-  let hi = lookup.starts.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (lookup.starts[mid] < end) lo = mid + 1;
-    else hi = mid;
-  }
-  const upper = lo;
-  if (upper === 0) return false;
-  lo = 0;
-  hi = upper;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (lookup.prefixEnds[mid] > address) hi = mid;
-    else lo = mid + 1;
-  }
-  return lo < upper;
-}
-
 export const MAX_VIRTUAL_READ_BYTES = 64 * 1024 * 1024;
 
 export class BinaryImage {
@@ -307,11 +97,6 @@ export class BinaryImage {
     this.dataInCode = [];
     this.warnings = [];
     this.metadata = meta.metadata || {};
-    this._finalized = false;
-    this._mappingLookups = { sections: null, segments: null, virtual: null };
-    this._mappingSorted = { sections: null, segments: null };
-    this._dataInCodeLookup = null;
-    this._dataInCodeSorted = null;
   }
 
   addSegment(s) {
@@ -333,10 +118,6 @@ export class BinaryImage {
       source: s.source || this.format,
     };
     this.segments.push(seg);
-    this._finalized = false;
-    this._mappingLookups.segments = null;
-    this._mappingLookups.virtual = null;
-    this._mappingSorted.segments = null;
     return seg;
   }
 
@@ -362,10 +143,6 @@ export class BinaryImage {
       source: s.source || this.format,
     };
     this.sections.push(sec);
-    this._finalized = false;
-    this._mappingLookups.sections = null;
-    this._mappingLookups.virtual = null;
-    this._mappingSorted.sections = null;
     return sec;
   }
 
@@ -412,26 +189,26 @@ export class BinaryImage {
   sectionAt(address) {
     const a = strictBigIntOrNull(address);
     if (a === null || a < 0n) return null;
-    if (this._mappingSorted.sections === null) this._mappingSorted.sections = isAddressSorted(this.sections);
-    if (!this._mappingSorted.sections) return this.sections.find((s) => inRange(a, s.address, s.size)) || null;
-    if (!this._mappingLookups.sections) this._mappingLookups.sections = buildMappingLookup(this.sections);
-    return lookupMapping(this._mappingLookups.sections, a);
+    return this.sections.find((s) => inRange(a, s.address, s.size)) || null;
   }
 
   segmentAt(address) {
     const a = strictBigIntOrNull(address);
     if (a === null || a < 0n) return null;
-    if (this._mappingSorted.segments === null) this._mappingSorted.segments = isAddressSorted(this.segments);
-    if (!this._mappingSorted.segments) return this.segments.find((s) => inRange(a, s.address, s.size)) || null;
-    if (!this._mappingLookups.segments) this._mappingLookups.segments = buildMappingLookup(this.segments);
-    return lookupMapping(this._mappingLookups.segments, a);
+    return this.segments.find((s) => inRange(a, s.address, s.size)) || null;
   }
 
   _virtualMappingAt(address) {
     const a = strictBigIntOrNull(address);
     if (a === null || a < 0n) return null;
-    if (!this._mappingLookups.virtual) this._mappingLookups.virtual = buildVirtualMappingLookup(this.sections, this.segments);
-    return lookupVirtualMapping(this._mappingLookups.virtual, a);
+    let best = null;
+    for (const s of this.sections) {
+      if (sectionHasMappedAddress(s) && s.size > 0n && inRange(a, s.address, s.size) && (!best || s.size < best.size)) best = s;
+    }
+    for (const s of this.segments) {
+      if (s.size > 0n && inRange(a, s.address, s.size) && (!best || s.size < best.size)) best = s;
+    }
+    return best;
   }
 
   _nextMappingBoundary(current, owner) {
@@ -482,19 +259,12 @@ export class BinaryImage {
       address,
     };
     this.dataInCode.push(normalized);
-    this._dataInCodeLookup = null;
-    this._dataInCodeSorted = null;
     return normalized;
   }
 
   isDataInCode(address) {
     const a = strictBigIntOrNull(address);
     if (a === null) return false;
-    if (this._dataInCodeSorted === null) this._dataInCodeSorted = isDataInCodeAddressSorted(this.dataInCode);
-    if (this._dataInCodeSorted) {
-      if (!this._dataInCodeLookup) this._dataInCodeLookup = buildDataInCodeLookup(this.dataInCode);
-      return lookupDataInCode(this._dataInCodeLookup, a) !== null;
-    }
     for (const entry of this.dataInCode) {
       if (entry.address == null) continue;
       if (a >= entry.address && a < entry.address + BigInt(entry.length)) {
@@ -507,11 +277,6 @@ export class BinaryImage {
   dataInCodeAt(address) {
     const a = strictBigIntOrNull(address);
     if (a === null) return null;
-    if (this._dataInCodeSorted === null) this._dataInCodeSorted = isDataInCodeAddressSorted(this.dataInCode);
-    if (this._dataInCodeSorted) {
-      if (!this._dataInCodeLookup) this._dataInCodeLookup = buildDataInCodeLookup(this.dataInCode);
-      return lookupDataInCode(this._dataInCodeLookup, a);
-    }
     for (const entry of this.dataInCode) {
       if (entry.address == null) continue;
       if (a >= entry.address && a < entry.address + BigInt(entry.length)) {
@@ -540,18 +305,12 @@ export class BinaryImage {
     if (offStart === null || offEnd === null) return false;
 
     const instEnd = a + instructionBytes;
-    if (this._dataInCodeSorted === null) this._dataInCodeSorted = isDataInCodeAddressSorted(this.dataInCode);
-    if (this._dataInCodeSorted) {
-      if (!this._dataInCodeLookup) this._dataInCodeLookup = buildDataInCodeLookup(this.dataInCode);
-      if (dataInCodeOverlaps(this._dataInCodeLookup, a, instructionBytes)) return false;
-    } else {
-      for (const entry of this.dataInCode) {
-        if (entry.address == null) continue;
-        const dataStart = entry.address;
-        const dataEnd = entry.address + BigInt(entry.length);
-        if (a < dataEnd && instEnd > dataStart) {
-          return false;
-        }
+    for (const entry of this.dataInCode) {
+      if (entry.address == null) continue;
+      const dataStart = entry.address;
+      const dataEnd = entry.address + BigInt(entry.length);
+      if (a < dataEnd && instEnd > dataStart) {
+        return false;
       }
     }
 
@@ -647,18 +406,12 @@ export class BinaryImage {
     const byAddr = (a, b) => a.address < b.address ? -1 : a.address > b.address ? 1 : 0;
     this.segments.sort(byAddr);
     this.sections.sort(byAddr);
-    this._mappingLookups.segments = null;
-    this._mappingLookups.sections = null;
-    this._mappingLookups.virtual = null;
-    this._mappingSorted.segments = true;
-    this._mappingSorted.sections = true;
     this.symbols.sort(byAddr);
     this.exports.sort(byAddr);
     this.relocations.sort(byAddr);
     this.functions = mergeFunctionSeeds(this.functions, { sections:this.sections, segments:this.segments });
     this.imports = dedupeImports(this.imports);
     this.libraries = [...new Set(this.libraries.filter(Boolean))];
-    this._finalized = true;
     return this;
   }
 
@@ -738,69 +491,6 @@ export function functionSeed(address, opts = {}) {
     extentInherited: !!opts.extentInherited,
     callingConvention: opts.callingConvention || null,
     abiMetadata: opts.abiMetadata == null ? null : { ...opts.abiMetadata },
-  };
-}
-
-
-function createMonotonicRegionLookup(regions) {
-  const ordered = regions.map((region, order) => ({
-    region,
-    order,
-    start: BigInt(region.address),
-    size: BigInt(region.size),
-    end: BigInt(region.address) + BigInt(region.size),
-  })).sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : a.order - b.order);
-
-  const heap = [];
-  let cursor = 0;
-  let lastAddress = null;
-
-  const before = (a, b) => a.size < b.size || (a.size === b.size && a.order < b.order);
-
-  const push = (item) => {
-    heap.push(item);
-    let index = heap.length - 1;
-    while (index > 0) {
-      const parent = (index - 1) >>> 1;
-      if (!before(heap[index], heap[parent])) break;
-      [heap[index], heap[parent]] = [heap[parent], heap[index]];
-      index = parent;
-    }
-  };
-
-  const pop = () => {
-    const top = heap[0];
-    const last = heap.pop();
-    if (heap.length > 0) {
-      heap[0] = last;
-      let index = 0;
-      while (true) {
-        const left = index * 2 + 1;
-        const right = left + 1;
-        let smallest = index;
-        if (left < heap.length && before(heap[left], heap[smallest])) smallest = left;
-        if (right < heap.length && before(heap[right], heap[smallest])) smallest = right;
-        if (smallest === index) break;
-        [heap[index], heap[smallest]] = [heap[smallest], heap[index]];
-        index = smallest;
-      }
-    }
-    return top;
-  };
-
-  const reset = () => {
-    cursor = 0;
-    heap.length = 0;
-    lastAddress = null;
-  };
-
-  return (address) => {
-    const value = BigInt(address);
-    if (lastAddress !== null && value < lastAddress) reset();
-    lastAddress = value;
-    while (cursor < ordered.length && ordered[cursor].start <= value) push(ordered[cursor++]);
-    while (heap.length > 0 && heap[0].end <= value) pop();
-    return heap[0]?.region || null;
   };
 }
 
@@ -888,7 +578,7 @@ export function mergeFunctionSeeds(input, context = {}) {
   const regions = [...(context.sections || []), ...(context.segments || [])]
     .filter((r) => r && r.address != null && r.size != null && BigInt(r.size) > 0n && r.perms?.execute)
     .sort((a,b) => BigInt(a.size) < BigInt(b.size) ? -1 : BigInt(a.size) > BigInt(b.size) ? 1 : 0);
-  const regionFor = createMonotonicRegionLookup(regions);
+  const regionFor = (addr) => regions.find((r) => BigInt(addr) >= BigInt(r.address) && BigInt(addr) < BigInt(r.address) + BigInt(r.size)) || null;
   for (let i = 0; i < out.length; i++) {
     const f = out[i];
     if (f.end == null && f.size != null) f.end = f.address + f.size;
