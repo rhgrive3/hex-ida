@@ -55,6 +55,45 @@ function normalizePerms(p) {
 
 function minBigInt(a, b) { return a < b ? a : b; }
 
+function buildMappingLookup(items) {
+  const starts = new Array(items.length);
+  const prefixEnds = new Array(items.length);
+  let maxEnd = null;
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const start = item.address;
+    const end = start + item.size;
+    starts[i] = start;
+    if (maxEnd === null || end > maxEnd) maxEnd = end;
+    prefixEnds[i] = maxEnd;
+  }
+  return { items, starts, prefixEnds };
+}
+
+function lookupMapping(lookup, address) {
+  let lo = 0;
+  let hi = lookup.starts.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (lookup.starts[mid] <= address) lo = mid + 1;
+    else hi = mid;
+  }
+  const upper = lo;
+  if (upper === 0) return null;
+
+  lo = 0;
+  hi = upper;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (lookup.prefixEnds[mid] > address) hi = mid;
+    else lo = mid + 1;
+  }
+  if (lo >= upper) return null;
+  const item = lookup.items[lo];
+  return address < item.address + item.size ? item : null;
+}
+
+
 export const MAX_VIRTUAL_READ_BYTES = 64 * 1024 * 1024;
 
 export class BinaryImage {
@@ -97,6 +136,8 @@ export class BinaryImage {
     this.dataInCode = [];
     this.warnings = [];
     this.metadata = meta.metadata || {};
+    this._finalized = false;
+    this._mappingLookups = { sections: null, segments: null };
   }
 
   addSegment(s) {
@@ -118,6 +159,8 @@ export class BinaryImage {
       source: s.source || this.format,
     };
     this.segments.push(seg);
+    this._finalized = false;
+    this._mappingLookups.segments = null;
     return seg;
   }
 
@@ -143,6 +186,8 @@ export class BinaryImage {
       source: s.source || this.format,
     };
     this.sections.push(sec);
+    this._finalized = false;
+    this._mappingLookups.sections = null;
     return sec;
   }
 
@@ -189,13 +234,17 @@ export class BinaryImage {
   sectionAt(address) {
     const a = strictBigIntOrNull(address);
     if (a === null || a < 0n) return null;
-    return this.sections.find((s) => inRange(a, s.address, s.size)) || null;
+    if (!this._finalized) return this.sections.find((s) => inRange(a, s.address, s.size)) || null;
+    if (!this._mappingLookups.sections) this._mappingLookups.sections = buildMappingLookup(this.sections);
+    return lookupMapping(this._mappingLookups.sections, a);
   }
 
   segmentAt(address) {
     const a = strictBigIntOrNull(address);
     if (a === null || a < 0n) return null;
-    return this.segments.find((s) => inRange(a, s.address, s.size)) || null;
+    if (!this._finalized) return this.segments.find((s) => inRange(a, s.address, s.size)) || null;
+    if (!this._mappingLookups.segments) this._mappingLookups.segments = buildMappingLookup(this.segments);
+    return lookupMapping(this._mappingLookups.segments, a);
   }
 
   _virtualMappingAt(address) {
@@ -406,12 +455,15 @@ export class BinaryImage {
     const byAddr = (a, b) => a.address < b.address ? -1 : a.address > b.address ? 1 : 0;
     this.segments.sort(byAddr);
     this.sections.sort(byAddr);
+    this._mappingLookups.segments = null;
+    this._mappingLookups.sections = null;
     this.symbols.sort(byAddr);
     this.exports.sort(byAddr);
     this.relocations.sort(byAddr);
     this.functions = mergeFunctionSeeds(this.functions, { sections:this.sections, segments:this.segments });
     this.imports = dedupeImports(this.imports);
     this.libraries = [...new Set(this.libraries.filter(Boolean))];
+    this._finalized = true;
     return this;
   }
 
@@ -491,6 +543,69 @@ export function functionSeed(address, opts = {}) {
     extentInherited: !!opts.extentInherited,
     callingConvention: opts.callingConvention || null,
     abiMetadata: opts.abiMetadata == null ? null : { ...opts.abiMetadata },
+  };
+}
+
+
+function createMonotonicRegionLookup(regions) {
+  const ordered = regions.map((region, order) => ({
+    region,
+    order,
+    start: BigInt(region.address),
+    size: BigInt(region.size),
+    end: BigInt(region.address) + BigInt(region.size),
+  })).sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : a.order - b.order);
+
+  const heap = [];
+  let cursor = 0;
+  let lastAddress = null;
+
+  const before = (a, b) => a.size < b.size || (a.size === b.size && a.order < b.order);
+
+  const push = (item) => {
+    heap.push(item);
+    let index = heap.length - 1;
+    while (index > 0) {
+      const parent = (index - 1) >>> 1;
+      if (!before(heap[index], heap[parent])) break;
+      [heap[index], heap[parent]] = [heap[parent], heap[index]];
+      index = parent;
+    }
+  };
+
+  const pop = () => {
+    const top = heap[0];
+    const last = heap.pop();
+    if (heap.length > 0) {
+      heap[0] = last;
+      let index = 0;
+      while (true) {
+        const left = index * 2 + 1;
+        const right = left + 1;
+        let smallest = index;
+        if (left < heap.length && before(heap[left], heap[smallest])) smallest = left;
+        if (right < heap.length && before(heap[right], heap[smallest])) smallest = right;
+        if (smallest === index) break;
+        [heap[index], heap[smallest]] = [heap[smallest], heap[index]];
+        index = smallest;
+      }
+    }
+    return top;
+  };
+
+  const reset = () => {
+    cursor = 0;
+    heap.length = 0;
+    lastAddress = null;
+  };
+
+  return (address) => {
+    const value = BigInt(address);
+    if (lastAddress !== null && value < lastAddress) reset();
+    lastAddress = value;
+    while (cursor < ordered.length && ordered[cursor].start <= value) push(ordered[cursor++]);
+    while (heap.length > 0 && heap[0].end <= value) pop();
+    return heap[0]?.region || null;
   };
 }
 
@@ -578,7 +693,7 @@ export function mergeFunctionSeeds(input, context = {}) {
   const regions = [...(context.sections || []), ...(context.segments || [])]
     .filter((r) => r && r.address != null && r.size != null && BigInt(r.size) > 0n && r.perms?.execute)
     .sort((a,b) => BigInt(a.size) < BigInt(b.size) ? -1 : BigInt(a.size) > BigInt(b.size) ? 1 : 0);
-  const regionFor = (addr) => regions.find((r) => BigInt(addr) >= BigInt(r.address) && BigInt(addr) < BigInt(r.address) + BigInt(r.size)) || null;
+  const regionFor = createMonotonicRegionLookup(regions);
   for (let i = 0; i < out.length; i++) {
     const f = out[i];
     if (f.end == null && f.size != null) f.end = f.address + f.size;
