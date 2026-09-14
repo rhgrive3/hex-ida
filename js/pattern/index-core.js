@@ -16,41 +16,117 @@ const PRIMITIVES = new Map([
 
 function text(value) { return String(value ?? ''); }
 function list(value) { return Array.isArray(value) ? value : []; }
+
+// #8841: pattern compilation admitted caller input only after recursive
+// hashing/freezing/cloning, so a deep or wide object graph could exhaust the
+// native stack or materialize huge transient state before any budget existed.
+// One iterative bounded admission pass now precedes every canonicalizing
+// recursion over caller-controlled pattern input.
+export const PATTERN_COMPILE_MAX_NODES = 50_000;
+export const PATTERN_COMPILE_MAX_DEPTH = 512;
+export const PATTERN_COMPILE_MAX_CONTENT_BYTES = 4 * 1024 * 1024;
+export const PATTERN_SOURCE_MAX_TEXT_BYTES = 256 * 1024;
+export const PATTERN_SOURCE_MAX_TOKENS = 20_000;
+export const PATTERN_TYPE_MAX_NESTING = 65;
+export const PATTERN_SHAPE_MAX_CHILDREN = 10_000;
+
+export function admitCompiledGraph(root) {
+  const stack = [[root, 0]];
+  const seen = new WeakSet();
+  let nodes = 0;
+  let contentBytes = 0;
+  while (stack.length) {
+    const [value, depth] = stack.pop();
+    if (depth > PATTERN_COMPILE_MAX_DEPTH) fail('pattern-source-depth-exceeded');
+    nodes += 1;
+    if (nodes > PATTERN_COMPILE_MAX_NODES) fail('pattern-source-node-limit');
+    const type = typeof value;
+    if (type === 'string') {
+      contentBytes += value.length;
+      if (contentBytes > PATTERN_COMPILE_MAX_CONTENT_BYTES) fail('pattern-source-content-limit');
+      continue;
+    }
+    if (value === null || type !== 'object') continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    if (ArrayBuffer.isView(value)) {
+      contentBytes += value.byteLength;
+      if (contentBytes > PATTERN_COMPILE_MAX_CONTENT_BYTES) fail('pattern-source-content-limit');
+      continue;
+    }
+    if (value instanceof ArrayBuffer) {
+      contentBytes += value.byteLength;
+      if (contentBytes > PATTERN_COMPILE_MAX_CONTENT_BYTES) fail('pattern-source-content-limit');
+      continue;
+    }
+    if (value instanceof Date || value instanceof Error) continue;
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index++) stack.push([value[index], depth + 1]);
+      continue;
+    }
+    if (value instanceof Map) {
+      for (const [key, entry] of value) { stack.push([key, depth + 1]); stack.push([entry, depth + 1]); }
+      continue;
+    }
+    if (value instanceof Set) {
+      for (const entry of value) stack.push([entry, depth + 1]);
+      continue;
+    }
+    for (const key of Object.keys(value)) {
+      contentBytes += key.length;
+      if (contentBytes > PATTERN_COMPILE_MAX_CONTENT_BYTES) fail('pattern-source-content-limit');
+      stack.push([value[key], depth + 1]);
+    }
+  }
+}
+
+const NUMBER_TOKEN_RE = /(?:0x[0-9a-f]+|[0-9]+)/iy;
+const IDENTIFIER_TOKEN_RE = /[A-Za-z_][A-Za-z0-9_.-]*/y;
 function tokenize(source) {
   const tokens = []; let i = 0;
   while (i < source.length) {
+    if (tokens.length > PATTERN_SOURCE_MAX_TOKENS) fail('pattern-source-token-limit');
     if (/\s/.test(source[i])) { i++; continue; }
     if (source.startsWith('//', i)) { const end = source.indexOf('\n', i + 2); i = end < 0 ? source.length : end + 1; continue; }
     const char = source[i];
     if ('{}[]():;,*<>'.includes(char)) { tokens.push({ type: char, value: char }); i++; continue; }
     if (char === '"' || char === "'") { const quote = char; let value = ''; i++; while (i < source.length && source[i] !== quote) { if (source[i] === '\\') { i++; if (i >= source.length) throw new SyntaxError('pattern unterminated string'); } value += source[i++]; } if (source[i] !== quote) throw new SyntaxError('pattern unterminated string'); i++; tokens.push({ type: 'string', value }); continue; }
-    const number = /^(?:0x[0-9a-f]+|[0-9]+)/i.exec(source.slice(i));
+    NUMBER_TOKEN_RE.lastIndex = i;
+    const number = NUMBER_TOKEN_RE.exec(source);
     if (number) { tokens.push({ type: 'number', value: number[0] }); i += number[0].length; continue; }
-    const identifier = /^[A-Za-z_][A-Za-z0-9_.-]*/.exec(source.slice(i));
+    IDENTIFIER_TOKEN_RE.lastIndex = i;
+    const identifier = IDENTIFIER_TOKEN_RE.exec(source);
     if (identifier) { tokens.push({ type: 'identifier', value: identifier[0] }); i += identifier[0].length; continue; }
     throw new SyntaxError(`pattern unexpected character: ${char}`);
   }
+  if (tokens.length > PATTERN_SOURCE_MAX_TOKENS) fail('pattern-source-token-limit');
   tokens.push({ type: 'eof', value: '' });
   return tokens;
 }
 
 export function parsePattern(source) {
-  if (source && typeof source === 'object') return deepFreeze({ languageVersion: PATTERN_LANGUAGE_VERSION, ast: source, source: stableDigest(source) });
+  if (source && typeof source === 'object') {
+    admitCompiledGraph(source);
+    return deepFreeze({ languageVersion: PATTERN_LANGUAGE_VERSION, ast: source, source: stableDigest(source) });
+  }
   const raw = text(source).trim();
   if (!raw) throw new SyntaxError('pattern source is empty');
+  if (raw.length > PATTERN_SOURCE_MAX_TEXT_BYTES) fail('pattern-source-text-limit');
   if (raw.startsWith('{') || raw.startsWith('[')) {
     let ast;
     try { ast = JSON.parse(raw); } catch (error) { throw new SyntaxError(`pattern JSON malformed: ${error.message}`); }
+    admitCompiledGraph(ast);
     return deepFreeze({ languageVersion: PATTERN_LANGUAGE_VERSION, ast, source: raw });
   }
   const tokens = tokenize(raw); let cursor = 0;
   const peek = () => tokens[cursor];
   const take = (type, value = null) => { const token = tokens[cursor]; if (token.type !== type || value != null && token.value !== value) throw new SyntaxError(`pattern expected ${value || type}`); cursor++; return token; };
-  const parseType = () => {
+  const parseType = (depth = 0) => {
+    if (depth > PATTERN_TYPE_MAX_NESTING) fail('pattern-type-nesting-too-deep');
     const base = take('identifier').value;
     let type = PRIMITIVES.has(base) ? { kind: 'primitive', name: base } : { kind: 'named', name: base };
-    if (peek().type === '<') { take('<'); const target = parseType(); take('>'); type = { kind: base === 'ptr' || base === 'pointer' ? 'pointer' : 'offset', space: 'file', target }; }
-    if (peek().type === '[') { take('['); const count = peek().type === 'number' ? Number(take('number').value) : take('identifier').value; take(']'); type = { kind: 'array', element: type, count }; }
+    if (peek().type === '<') { take('<'); const target = parseType(depth + 1); take('>'); type = { kind: base === 'ptr' || base === 'pointer' ? 'pointer' : 'offset', space: 'file', target }; }
+    if (peek().type === '[') { take('['); const count = peek().type === 'number' ? Number(take('number').value) : take('identifier').value; take(']'); type = { kind: 'array', element: type, count }; return type; }
     return type;
   };
   take('identifier', 'struct'); const name = take('identifier').value; take('{'); const fields = [];
@@ -67,7 +143,7 @@ function validateExpression(expression, depth = 0) {
   if (op === 'const') return;
   if (op === 'ref') { if (typeof expression.path !== 'string' || !expression.path) fail('pattern-expression-ref-invalid'); return; }
   if (op === 'not') return validateExpression(expression.arg, depth + 1);
-  if (['and', 'or'].includes(op)) { if (!Array.isArray(expression.args) || !expression.args.length) fail('pattern-expression-args-invalid'); expression.args.forEach((item) => validateExpression(item, depth + 1)); return; }
+  if (['and', 'or'].includes(op)) { if (!Array.isArray(expression.args) || !expression.args.length || expression.args.length > PATTERN_SHAPE_MAX_CHILDREN) fail('pattern-expression-args-invalid'); expression.args.forEach((item) => validateExpression(item, depth + 1)); return; }
   validateExpression(expression.left, depth + 1); validateExpression(expression.right, depth + 1);
 }
 
@@ -92,9 +168,9 @@ function validateType(type, depth = 0, names = new Set()) {
   }
   if (type.kind === 'pointer' || type.kind === 'offset') { if (typeof type.space !== 'string' || !type.space) fail('pattern-address-space-required'); validateType(type.target, depth + 1, names); return; }
   if (type.kind === 'conditional') { validateExpression(type.when); validateType(type.then, depth + 1, names); if (type.else) validateType(type.else, depth + 1, names); return; }
-  if (type.kind === 'union') { if (!list(type.options).length) fail('pattern-union-empty'); type.options.forEach((item) => validateType(item, depth + 1, names)); return; }
+  if (type.kind === 'union') { const options = list(type.options); if (!options.length) fail('pattern-union-empty'); if (options.length > PATTERN_SHAPE_MAX_CHILDREN) fail('pattern-union-options-invalid'); options.forEach((item) => validateType(item, depth + 1, names)); return; }
   if (type.kind === 'enum') { validateType(type.base, depth + 1, names); return; }
-  if (type.kind === 'bitfield') { validateType(type.base, depth + 1, names); if (!Array.isArray(type.fields)) fail('pattern-bitfield-fields-invalid'); return; }
+  if (type.kind === 'bitfield') { validateType(type.base, depth + 1, names); if (!Array.isArray(type.fields) || type.fields.length > PATTERN_SHAPE_MAX_CHILDREN) fail('pattern-bitfield-fields-invalid'); return; }
   fail(`pattern-type-kind-unsupported:${type.kind}`);
 }
 
@@ -102,6 +178,7 @@ export function typeCheckPattern(parsed) {
   const input = parsed?.ast ? parsed : parsePattern(parsed);
   const ast = input.ast;
   const structs = ast.kind === 'module' ? list(ast.structs) : [ast];
+  if (ast.kind === 'module' && structs.length > PATTERN_SHAPE_MAX_CHILDREN) fail('pattern-module-structs-invalid');
   // Named types form one namespace: the evaluator resolves duplicates
   // last-wins, so accepting them here would let definition order silently
   // decide the canonical layout of a shared type name.
@@ -120,6 +197,7 @@ export function compilePattern(source, options = {}) {
   const parsed = typeCheckPattern(parsePattern(source));
   const sourceHash = stableDigest(parsed.ast);
   const compileOptions = { targetAddressSpace: options.targetAddressSpace || 'file', semanticVersion: PATTERN_LANGUAGE_VERSION, options: options.compileOptions || {} };
+  admitCompiledGraph(compileOptions.options);
   return deepFreeze({ languageVersion: PATTERN_LANGUAGE_VERSION, sourceHash, patternId: `pattern:${stableDigest({ sourceHash, compileOptions })}`, ast: parsed.ast, snapshotId: options.snapshotId || null, compileOptions });
 }
 
