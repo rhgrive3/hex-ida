@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
-import { openBinary, openBinarySource, auditBinary } from '../js/binary/index.js';
+import { openBinarySource, auditBinary } from '../js/binary/index.js';
 import { NodeFileByteSource } from '../js/bytesource/node.js';
 import { InstrumentedByteSource } from '../js/bytesource/cached.js';
 import { median, SCHEMA_VERSION } from '../tools/benchmark/schema.mjs';
@@ -45,31 +45,9 @@ async function sample(file) {
     const source = new InstrumentedByteSource(nodeSource);
     const before = process.memoryUsage().heapUsed;
     const t0 = performance.now();
-    const image = openBinary(fs.readFileSync(file));
+    const image = await openBinarySource(source, { ranges: { pageSize: 64 * 1024, maxPageSize: 2 * 1024 * 1024, maxCachedBytes: 16 * 1024 * 1024 } });
     const loaderMs = performance.now() - t0;
     const audit = auditBinary(image);
-    const auditErrorCodes = audit.issues.filter((issue) => issue.level === 'error').map((issue) => issue.code).join('__') || 'none';
-    const legacyOwner = (address) => {
-      let best = null;
-      const consider = (mapping, mapped = true) => {
-        if (!mapped || mapping.size <= 0n || address < mapping.address || address >= mapping.address + mapping.size) return;
-        if (!best || mapping.size < best.size) best = mapping;
-      };
-      for (const mapping of image.sections) consider(mapping, mapping.source !== 'unmapped-section' && !(mapping.source === 'section-header' && (BigInt(mapping.flags || 0) & 2n) === 0n));
-      for (const mapping of image.segments) consider(mapping);
-      return best;
-    };
-    const describeOwner = (mapping) => mapping
-      ? mapping.name + '@' + mapping.address.toString(16) + '/s' + mapping.size.toString(16) + '/f' + mapping.fileSize.toString(16)
-      : 'none';
-    const auditErrorDetails = audit.issues.filter((issue) => issue.level === 'error').slice(0, 1).map((issue) => {
-      const values = [...String(issue.message).matchAll(/0x[0-9A-Fa-f]+/g)].map((match) => BigInt(match[0]));
-      const address = issue.code === 'offset-address-roundtrip' ? values[1] : values[0];
-      return issue.code + ':L=' + describeOwner(legacyOwner(address)) + ':C=' + describeOwner(image._virtualMappingAt(address));
-    }).join('__').replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 170);    const auditDiagnosticDir = path.join(repoRoot, 'benchmark-diagnostic');
-    fs.mkdirSync(auditDiagnosticDir, { recursive: true });
-    const auditDiagnosticName = String(path.basename(file)) + '-audit-' + String(audit.errors) + '-' + auditErrorCodes.slice(0, 120) + '-' + auditErrorDetails + '.json';
-    fs.writeFileSync(path.join(auditDiagnosticDir, auditDiagnosticName), JSON.stringify({ errors: audit.errors, issues: audit.issues.filter((issue) => issue.level === 'error') }));
     const after = process.memoryUsage().heapUsed;
     const io = source.metrics();
     return {
@@ -145,21 +123,6 @@ try {
     },
   };
   }
-} catch (error) {
-  const diagnosticName = String(error?.name || 'Error').replace(/[^A-Za-z0-9._-]+/g, '-');
-  const diagnosticCode = String(error?.code || 'NO_CODE').replace(/[^A-Za-z0-9._-]+/g, '-');
-  const diagnosticTarget = String(currentTarget || 'unknown').replace(/[^A-Za-z0-9._-]+/g, '-');
-  const diagnosticMessage = String(error?.message || error)
-    .replace(/[^A-Za-z0-9._-]+/g, '-')
-    .slice(0, 96)
-    .replace(/-+$/g, '');
-  const diagnosticDir = path.join(repoRoot, 'benchmark-diagnostic');
-  fs.mkdirSync(diagnosticDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(diagnosticDir, `${diagnosticTarget}-${diagnosticCode}-${diagnosticName}-${diagnosticMessage || 'failure'}.json`),
-    JSON.stringify({ target: currentTarget, name: error?.name || 'Error', code: error?.code || null, message: String(error?.message || error) }),
-  );
-  throw error;
 } finally {
   clearInterval(heartbeat);
 }
@@ -168,11 +131,5 @@ if (defaultRun && Object.keys(report.targets).length !== Object.keys(manifest.fi
   throw new Error('default benchmark did not run every pinned real fixture');
 }
 
-const metricTag = Object.entries(report.targets)
-  .map(([name, row]) => `${name}-r${row.work.rangeReads}-b${row.work.totalRequestedBytes}`)
-  .join('__');
-const metricDiagnosticDir = path.join(repoRoot, 'benchmark-diagnostic');
-fs.mkdirSync(metricDiagnosticDir, { recursive: true });
-fs.writeFileSync(path.join(metricDiagnosticDir, `metrics-${metricTag}.json`), JSON.stringify({ kind: 'binary-benchmark-metrics', targets: report.targets }));
 
 console.log(JSON.stringify(report, null, 2));
