@@ -17,149 +17,23 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-
-      - name: Apply DWARF pre-decode string budget repair
-        shell: bash
+      - name: Repair
         run: |
           set -euo pipefail
           test "$(git hash-object js/analysis/debug/dwarf.js)" = "fe4457e169efffcf3283a192813571cb07410bfc"
           test "$(git hash-object tests/phase7/debug/issue-8733-dwarf-strp-alias-budget.test.mjs)" = "a80cf476ffaa054d191a9fbd42c5702aee73c2ef"
-          python - <<'PY'
-          from pathlib import Path
-
-          p = Path('js/analysis/debug/dwarf.js')
-          s = p.read_text()
-          old_const = "const DECODED_STRING_ENTRY_OVERHEAD_BYTES = 64;\n"
-          new_const = old_const + "// Preflight decoding uses bounded transient chunks; the full JS string is only\n// materialized after its exact UTF-16 footprint has been admitted (#8739).\nconst STRING_DECODE_PREFLIGHT_CHUNK_BYTES = 64 * 1024;\n"
-          if s.count(old_const) != 1:
-              raise SystemExit(f'constant anchor mismatch: {s.count(old_const)}')
-          s = s.replace(old_const, new_const, 1)
-
-          old_fn = '''function decodeSectionString(bytes, offset, byteBudget = null) {
-  if (!bytes || offset < 0 || offset >= bytes.length) return null;
-  let end = offset;
-  while (end < bytes.length) {
-    byteBudget?.charge(1);
-    if (bytes[end] === 0) break;
-    end += 1;
-  }
-  if (end === bytes.length) return null;
-  return new TextDecoder('utf8').decode(bytes.subarray(offset, end));
-}
-'''
-          new_fn = '''function decodedUtf16CodeUnits(bytes, start, end) {
-  const decoder = new TextDecoder('utf8');
-  let codeUnits = 0;
-  for (let at = start; at < end; at += STRING_DECODE_PREFLIGHT_CHUNK_BYTES) {
-    const next = Math.min(end, at + STRING_DECODE_PREFLIGHT_CHUNK_BYTES);
-    // Streaming preserves UTF-8 sequences split at a chunk boundary while each
-    // temporary decoded string remains bounded by the fixed chunk size.
-    codeUnits += decoder.decode(bytes.subarray(at, next), { stream: next < end }).length;
-  }
-  return codeUnits;
-}
-
-function decodeSectionString(bytes, offset, byteBudget = null, decodedBudget = null) {
-  if (!bytes || offset < 0 || offset >= bytes.length) return null;
-  let end = offset;
-  while (end < bytes.length) {
-    byteBudget?.charge(1);
-    if (bytes[end] === 0) break;
-    end += 1;
-  }
-  if (end === bytes.length) return null;
-
-  if (decodedBudget) {
-    // Count the exact retained UTF-16 footprint with bounded transient chunks,
-    // reserve it, and only then allow the one full TextDecoder allocation.
-    const codeUnits = decodedUtf16CodeUnits(bytes, offset, end);
-    decodedBudget.charge(codeUnits * DECODED_STRING_BYTES_PER_CHAR);
-  }
-  return new TextDecoder('utf8').decode(bytes.subarray(offset, end));
-}
-'''
-          if s.count(old_fn) != 1:
-              raise SystemExit(f'decode function anchor mismatch: {s.count(old_fn)}')
-          s = s.replace(old_fn, new_fn, 1)
-
-          old_resolve = '''      const value = decodeSectionString(bytes, offset, byteBudget);
-      // Charge before caching so neither an unbounded decoded-string set nor an
-      // unbounded negative-result set can grow past the budget.
-      decodedBudget.charge(DECODED_STRING_ENTRY_OVERHEAD_BYTES
-        + (value == null ? 0 : value.length * DECODED_STRING_BYTES_PER_CHAR));
-      cache.byOffset.set(offset, value);
-'''
-          new_resolve = '''      // Reserve the retained cache entry before any potentially large decode.
-      // decodeSectionString then reserves the exact UTF-16 payload before the
-      // full TextDecoder allocation. Negative cached results retain only this
-      // fixed entry charge.
-      decodedBudget.charge(DECODED_STRING_ENTRY_OVERHEAD_BYTES);
-      const value = decodeSectionString(bytes, offset, byteBudget, decodedBudget);
-      cache.byOffset.set(offset, value);
-'''
-          if s.count(old_resolve) != 1:
-              raise SystemExit(f'resolve anchor mismatch: {s.count(old_resolve)}')
-          s = s.replace(old_resolve, new_resolve, 1)
-          p.write_text(s)
-
-          p = Path('tests/phase7/debug/issue-8733-dwarf-strp-alias-budget.test.mjs')
-          s = p.read_text()
-          marker = "#8739 over-budget entry is rejected before a large TextDecoder allocation"
-          if marker in s:
-              raise SystemExit('unexpected pre-existing #8739 regression')
-          s += r'''
-
-test('#8739 over-budget entry is rejected before a large TextDecoder allocation', () => {
-  const OriginalTextDecoder = globalThis.TextDecoder;
-  let largestDecodeInput = 0;
-  globalThis.TextDecoder = class BoundedDecoder extends OriginalTextDecoder {
-    decode(input, options) {
-      const size = input?.byteLength ?? 0;
-      largestDecodeInput = Math.max(largestDecodeInput, size);
-      if (size > 64 * 1024) throw new Error(`oversized-decoder-allocation:${size}`);
-      return super.decode(input, options);
-    }
-  };
-
-  try {
-    const sections = strpAliasReproducer({ aliases: 1, stringLength: 256 * 1024 });
-    const parsed = parseDebugInfo(sections, {
-      maxBytesScanned: 1024 * 1024,
-      maxRecords: 200_000,
-      maxDepth: 8,
-      maxDecodedStringBytes: 64 * 1024,
-    });
-    assert.equal(parsed.complete, false);
-    assert.ok(parsed.diagnostics.includes('decoded string budget exhausted'), parsed.diagnostics.join('; '));
-    assert.ok(largestDecodeInput <= 64 * 1024,
-      `full over-budget string reached TextDecoder: ${largestDecodeInput}`);
-  } finally {
-    globalThis.TextDecoder = OriginalTextDecoder;
-  }
-});
-'''
-          p.write_text(s)
-          PY
-
-      - name: Verify focused DWARF string-budget regressions
-        shell: bash
+          node .github/tmp-review-8893-r2.mjs
+      - name: Verify
         run: |
           set -euo pipefail
           timeout 20s node --check js/analysis/debug/dwarf.js
           timeout 90s node --test tests/phase7/debug/issue-8733-dwarf-strp-alias-budget.test.mjs
           timeout 60s node tests/check.mjs
-          {
-            echo '### #8893 R2 repair'
-            echo '- over-budget section string rejected before full TextDecoder allocation: PASS'
-            echo '- #8733 cache/string-budget regressions: PASS'
-            echo '- syntax: PASS'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Commit repaired head and remove workflow
-        shell: bash
+          echo '### #8893 R2: focused regressions and syntax PASS' >> "$GITHUB_STEP_SUMMARY"
+      - name: Commit
         run: |
           set -euo pipefail
-          rm .github/workflows/tmp-review-8893-r2.yml
+          rm .github/tmp-review-8893-r2.mjs .github/workflows/tmp-review-8893-r2.yml
           git diff --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
