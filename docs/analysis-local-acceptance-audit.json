@@ -677,7 +677,28 @@
       "physical Apple arm64e/iPad runtime/signature/activation/release evidence absent",
       "complete current-source check; old pinned baseline Git objects unavailable in source mirror"
     ],
-    "checkpoint": "docs/analysis-roadmap-v8-integration-checkpoint.md"
+    "checkpoint": "docs/analysis-roadmap-v8-integration-checkpoint.md",
+    "node22Followup": {
+      "inputHead": "e68f0af46b1b45c3380dd6a36fd9831dd6f98b2d",
+      "runtime": "v22.23.2",
+      "CI": true,
+      "coreResult": "PASS (44.1s)",
+      "coreLogSha256": "7f14456749b15679464b1c971378534f5f38b44954deaee40dee57dcc3743453",
+      "admissionResult": "CI development-mode and both existing final-head admission modules PASS",
+      "admissionLogSha256": "d51ff9550e4967064037b16c9567928311eaa265195895f93ab5521127414188",
+      "remoteObservedRun": 34797450294,
+      "remoteObservedResult": "core step failed; syntax/module-boundaries/evidence-writers succeeded",
+      "remoteLogsDownloaded": false,
+      "llvmEnvironmentContract": "X02-H-02 requires actual reparse and executable digest/version/format/architecture match if the pinned tool is present; unavailable or wrong version remains environment-excluded.",
+      "localFiniteClassification": {
+        "pass": 114,
+        "product-gap": 0,
+        "evidence-gap": 4,
+        "environment-excluded": 2
+      },
+      "conditionalCiClassification": "115/0/4/1 only if pinned LLVM is available and the real independent oracle succeeds; not asserted as observed here",
+      "fullRoadmapComplete": false
+    }
   },
   "integrationFollowupHistory": [
     {

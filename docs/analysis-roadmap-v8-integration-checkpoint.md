@@ -7611,3 +7611,23 @@ browser取得はCDN timeout、LLVMのapt更新はsetgroups/setuid権限制約で
 C4全領域/PHI/CFG削除/flags/exception/unwind/bounded-loop、独立hardware/PAC/物理iPad、
 activation/releaseを未完了のまま保持する。全23 finding/21 FR、全体完了・mainマージは宣言しない。
 GitHubへの反映とCI結果は、このsourceの公開commit SHAに結び付くPR記録で確認する。
+
+### 同日追記: Node 22 / CI環境差の修正
+
+上記22ファイルを `e68f0af46b1b45c3380dd6a36fd9831dd6f98b2d` として既存PRへ反映した。
+remote treeはローカルの `2f671fc8f3a6ca24d66313e54ef8711c81c81219` と一致し、
+mainとの454パス差分を所有権検査へ通した。GitHub PR fast gateはcore stepで失敗し、
+syntax/module-boundaries/evidence-writersは成功。job全ログは取得していない。
+
+CIと同じNode 22.23.2を隔離導入して再実行すると、portable CLIの否定検査が
+stderrのruntime warningをJSONとして読んで失敗した。CLIが発行する1つのJSON recordを
+検証するようにし、終了コード1/semanticProof=false/record数1の条件を維持した。
+警告やネットワーク制御を無効化していない。修正後のNode22 + CI=trueのcanonical coreは44.1秒でPASS。
+CI development-modeとfinal-head admissionの既存2 moduleもNode22でPASS。
+
+X02-H-02は、元環境のLLVM不在を全環境へ強制するassertionも修正した。
+preflightで指定版の実ツールが見つかる場合は、実際の独立reparseに加え実行ファイルdigest、
+version、format、architectureの一致を必須にしてpassとする。不在/別版なら元の
+environment-excludedとfail-closed結果を維持する。元120行とJSON/helper hashは変更しない。
+ローカル分類は引き続き114/0/4/2であり、指定版LLVMのあるCIは実行成功時のみ115/0/4/1になる。
+これはCI実行結果を先取りする主張ではない。独立レビュー・C4全領域・実機・releaseの残件は維持する。

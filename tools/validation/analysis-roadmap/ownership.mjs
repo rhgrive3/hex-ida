@@ -41,6 +41,7 @@ const SPECIAL_PATHS = Object.freeze({
     'js/swift.js',
     'js/objc.js',
     'js/metadata/swift.js',
+    'tests/scpa/portable-checker.test.mjs',
     'tests/scpa/x02-declared-metadata-boundaries.test.mjs',
     'tests/scpa/fixtures/x02-dyld-shared-cache.mjs',
     'js/binary/detect.js',

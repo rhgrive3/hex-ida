@@ -9,6 +9,11 @@
 **現在の有限分類は114 pass / 0 product-gap / 4 evidence-gap / 2 environment-excluded**。
 全120行を実行しており、4 evidence-gapと2 environment-excludedを合格へ移していない。
 
+追記: X02-H-02は各環境のpreflightで指定版LLVMの有無を評価する。指定版が存在する場合は
+実reparseと実行ファイルdigest/version/format/architectureを検証して初めてpassとする。
+その場合の有限分類は115/0/4/1。不在/版違いの本ローカル環境は114/0/4/2のままで、
+元環境の不在をCIに強制せず、未実行の独立検証を成功扱いしない。
+
 | 固定行 | 修正と実入口 | 保持する制限 |
 |---|---|---|
 | X02-A-07 | LC_BUILD_VERSIONのtool ID/raw version/表示versionを両公開loaderで保持。共通metadata予算を適用 | producerの宣言。provenanceVerified=false |

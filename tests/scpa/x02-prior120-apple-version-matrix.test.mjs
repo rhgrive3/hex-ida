@@ -37,6 +37,12 @@ const currentDispositions = Object.freeze({
   'X02-A-07':'pass', 'X02-B-01':'pass', 'X02-B-02':'pass',
   'X02-D-13':'pass', 'X02-E-11':'pass', 'X02-G-03':'pass',
 });
+// The frozen donor lacked LLVM. CI may contain the exact required tool, so
+// assess availability before running the row and demand its real reparse.
+const llvmEnvironment = inspectLlvmReadobj();
+const currentEnvironmentDispositions = Object.freeze({ 'X02-H-02': llvmEnvironment.available ? 'pass' : 'environment-excluded' });
+assert.equal(matrix.rows.find(row=>row.id==='X02-H-02')?.check,'llvm-environment');
+assert.equal(matrix.rows.find(row=>row.id==='X02-H-02')?.expectedDisposition,'environment-excluded');
 assert.deepEqual(matrix.rows.filter(row => Object.hasOwn(currentDispositions, row.id))
   .map(row => [row.id, row.check, row.expectedDisposition]),
   [
@@ -436,15 +442,23 @@ async function observe(t,row,bytes) {
   if(['G','H'].includes(row.family)) {
     const {transaction,materialized}=await rebuilt(bytes),output=materialized.bytes;
     if(row.check==='llvm-environment') {
-      const tool=inspectLlvmReadobj();
+      const tool=llvmEnvironment;
       assert.equal(LLVM_READOBJ_EXPECTED_VERSION,e.requiredVersion);
       assert.equal(tool.expectedVersion,e.requiredVersion);
-      assert.equal(e.available,false);assert.equal(tool.available,false);
+      assert.equal(e.available,false); // frozen historical environment only
+      const result=await createLlvmReadobjOracle()({transaction,original:bytes,output});
+      if(tool.available) {
+        assert.equal(result.ok,true,JSON.stringify(result));
+        assert.equal(result.oracleExecutableDigest,tool.executableDigest);
+        assert.equal(result.oracleVersion,tool.version);
+        assert.equal(result.format,'macho');assert.equal(result.architecture,'x86_64');
+        return passed('independent-reparse',{tool,result,independentOraclePassed:true});
+      }
       assert.deepEqual(e.unavailableReasons,['independent-oracle-tool-unavailable','independent-oracle-tool-version-mismatch']);
       assert.ok(e.unavailableReasons.includes(tool.reason), 'Pinned oracle must fail closed with an explicit unavailability reason');
       if(tool.reason==='independent-oracle-tool-unavailable')assert.equal(tool.executable,null);
       else {assert.ok(tool.executable);assert.equal(tool.version?.includes(e.requiredVersion)??false,false);}
-      const result=await createLlvmReadobjOracle()({transaction,original:bytes,output});assert.equal(result.ok,false);
+      assert.equal(result.ok,false);
       return {classification:'environment-excluded',observedStatus:'unavailable',details:{tool,result,independentOraclePassed:false}};
     }
     if(row.check==='oracle-blocks-publication') {
@@ -492,7 +506,7 @@ async function observe(t,row,bytes) {
 for (const row of matrix.rows) {
   test(`${row.id} ${row.requirement}`, {timeout:10000}, async t => {
     let outcome;
-    const expectedDisposition=currentDispositions[row.id]??row.expectedDisposition;
+    const expectedDisposition=currentEnvironmentDispositions[row.id]??currentDispositions[row.id]??row.expectedDisposition;
     try {
       const bytes=inputFor(row);
       assert.equal(bytes===null?null:hashBytes(bytes),row.inputSha256);
