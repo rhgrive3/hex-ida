@@ -998,7 +998,7 @@ export class Emulator {
     if (/^(scvtf|ucvtf)$/.test(mn)) {
       const bits=ops[1]?.bits === 32 ? 32 : 64, raw=this.get(ops[1].text);
       const value=mn === 'scvtf' ? BigInt.asIntN(bits,raw) : BigInt.asUintN(bits,raw);
-      const fractionBits = fixedPointFractionBits(mn, ops[2], bits - 1);
+      const fractionBits = fixedPointFractionBits(mn, ops[2], bits);
       // The destination format must round once, directly from the integer.
       // Going through binary64 first would round twice and flip boundary
       // cases by one ULP (#5235). The fixed-point form only shifts that
@@ -1231,14 +1231,14 @@ const FLOAT_ARITHMETIC = Object.assign(Object.create(null), {
   fmaxnm: (a, b) => (Number.isNaN(a) !== Number.isNaN(b) ? (Number.isNaN(a) ? b : a) : Math.max(a, b)),
 });
 
-// The element-wise floating-point arrangements, exactly: 2S/4S and 1D/2D.
-// Binary16 element formats and the integer element formats need a 16-bit or
-// byte element model this emulator does not have, so they are refused instead
-// of being silently widened to the nearest supported format.
+// The element-wise floating-point arrangements, exactly: 2S/4S/2D. .1D is a
+// generally valid register arrangement spelling but is RESERVED for these
+// AdvSIMD floating-point arithmetic encodings, and binary16/byte element
+// formats need a 16-bit or byte element model this emulator does not have, so
+// they are refused instead of being silently widened to a supported format.
 const FLOAT_VECTOR_ARRANGEMENTS = new Map([
   ['2s', { elementBytes: 4, count: 2 }],
   ['4s', { elementBytes: 4, count: 4 }],
-  ['1d', { elementBytes: 8, count: 1 }],
   ['2d', { elementBytes: 8, count: 2 }],
 ]);
 
@@ -1248,7 +1248,7 @@ const FLOAT_VECTOR_ARRANGEMENTS = new Map([
 function vectorElementShape(mn, op) {
   const shape = typeof op?.arr === 'string' ? FLOAT_VECTOR_ARRANGEMENTS.get(op.arr) : undefined;
   if (!shape) {
-    throw new EmulatorFault('unsupported-arrangement', `${mn} ${op?.arr ? op.arr + ': ' : ''}only 2s/4s/1d/2d floating-point vector arrangements are modelled`, { operand: op });
+    throw new EmulatorFault('unsupported-arrangement', `${mn} ${op?.arr ? op.arr + ': ' : ''}only 2S/4S/2D floating-point arrangements are modelled`, { operand: op });
   }
   return shape;
 }
