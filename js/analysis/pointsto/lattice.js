@@ -510,7 +510,37 @@ function mergeSameRootTargets(prior, target) {
  * silently dropping a target (dropping one would falsely prove separation).
  */
 export function joinPointsTo(a, b, budget = POINTS_TO_DEFAULT_BUDGET) {
+  // Validate the public budget boundary before any algebraic fast path; invalid
+  // caps must remain fail-closed even when the join result itself is obvious.
   const targetLimit = maxTargetsPerSet(budget);
+  // Fixed-point transfer repeatedly joins the current canonical set with an
+  // equivalent freshly-constructed set. Rebuilding every target in that case
+  // is pure allocation/canonicalization work. Bottom is the exact join
+  // identity, and an equal set can be reused only when doing so preserves the
+  // root-descriptor proof metadata that mergeSameRootTargets() would publish.
+  if (!a.top && a.targets.length === 0 && a.lossReasons.length === 0) return b;
+  if (!b.top && b.targets.length === 0 && b.lossReasons.length === 0) return a;
+  if (pointsToEqual(a, b)) {
+    let reusable = true;
+    const seenRoots = new Set();
+    for (let index = 0; index < a.targets.length; index += 1) {
+      const left = a.targets[index];
+      const right = b.targets[index];
+      if (seenRoots.has(left.rootKey)) { reusable = false; break; }
+      seenRoots.add(left.rootKey);
+      const leftProof = canonicalProofForTarget(left);
+      const rightProof = canonicalProofForTarget(right);
+      if ((leftProof == null) !== (rightProof == null)
+        || (leftProof != null && leftProof.separationClass !== rightProof.separationClass)
+        || (leftProof == null && (left.separationClass !== right.separationClass
+          || left.separationAuthority !== right.separationAuthority))) {
+        reusable = false;
+        break;
+      }
+    }
+    if (reusable) return a;
+  }
+
   if (a.top || b.top) {
     return createPointsToSet({ top: true, lossReasons: [...a.lossReasons, ...b.lossReasons] });
   }
@@ -568,8 +598,27 @@ export function widenPointsTo(previous, next, budget = POINTS_TO_DEFAULT_BUDGET)
 /** Structural equality, used as the fixed-point stop condition. */
 export function pointsToEqual(a, b) {
   if (a === b) return true;
-  if (a == null || b == null) return false;
-  return pointsToDigest(a) === pointsToDigest(b);
+  if (a == null || b == null || a.top !== b.top) return false;
+  if (a.lossReasons.length !== b.lossReasons.length || a.targets.length !== b.targets.length) return false;
+  for (let index = 0; index < a.lossReasons.length; index += 1) {
+    if (a.lossReasons[index] !== b.lossReasons[index]) return false;
+  }
+  // createPointsToSet() canonicalizes both lists, so this compares exactly the
+  // fields pointsToDigest() has historically used as fixed-point identity,
+  // without serializing and hashing every set on every iteration.
+  for (let index = 0; index < a.targets.length; index += 1) {
+    const left = a.targets[index];
+    const right = b.targets[index];
+    if (left.rootKey !== right.rootKey
+      || left.offsetRange.min !== right.offsetRange.min
+      || left.offsetRange.max !== right.offsetRange.max
+      || left.widthBits !== right.widthBits
+      || left.evidenceIds.length !== right.evidenceIds.length) return false;
+    for (let evidenceIndex = 0; evidenceIndex < left.evidenceIds.length; evidenceIndex += 1) {
+      if (left.evidenceIds[evidenceIndex] !== right.evidenceIds[evidenceIndex]) return false;
+    }
+  }
+  return true;
 }
 
 export function pointsToDigest(set) {
