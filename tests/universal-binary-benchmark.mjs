@@ -66,7 +66,7 @@ async function sample(file) {
       const values = [...String(issue.message).matchAll(/0x[0-9A-Fa-f]+/g)].map((match) => BigInt(match[0]));
       const address = issue.code === 'offset-address-roundtrip' ? values[1] : values[0];
       return issue.code + ':current=' + describeOwner(image._virtualMappingAt(address)) + ':legacy=' + describeOwner(legacyOwner(address));
-    }).join('__').replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 200);
+    }).join('__').replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 70);
     const auditDiagnosticDir = path.join(repoRoot, 'benchmark-diagnostic');
     fs.mkdirSync(auditDiagnosticDir, { recursive: true });
     const auditDiagnosticName = String(path.basename(file)) + '-audit-' + String(audit.errors) + '-' + auditErrorCodes.slice(0, 120) + '-' + auditErrorDetails + '.json';
