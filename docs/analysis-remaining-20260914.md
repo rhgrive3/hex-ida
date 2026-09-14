@@ -93,3 +93,15 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
 
 環境再開時は `PLAYWRIGHT_BROWSERS_PATH=/mnt/workspace/.dev-state/agent-work/cache/analysis-remaining-20260914/browsers`。
 全体は引き続きIN PROGRESS。ユーザー担当の完了も、この分担の全完了も宣言していない。
+
+## リモート提出と継続検証
+
+- Draft PR: https://github.com/rhgrive3/hex-ida/pull/8888 （既存 #7036 のブランチ向け）。
+- `76f7b6926d8edb009443f973789862ddec0b5008` をpush済み。
+- このclean commitでcanonical buildを再実行し、tracked生成物の差分ゼロ。
+  `generated-committed.json` / `.log` に記録。module-boundariesも同commitで成功。
+- 全体check終了後、永続checkpointの `publish-check.py` がreceiptのログhash、
+  branch/head、clean treeを照合してこの文書だけに結果を追記し、commit/pushする。
+  並行変更があれば編集せず `automatic-publication.json` にblocked理由を保存する。
+  push失敗でもcommitと全証拠は永続workspaceに残す。force-pushしない。
+- 自動記録は診断の保存であり、review/merge/releaseの承認ではない。
