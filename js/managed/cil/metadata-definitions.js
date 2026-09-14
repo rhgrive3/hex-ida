@@ -102,20 +102,28 @@ function formatCilGuid(bytes, offset) {
 }
 
 // Read only definitions, but use the complete, already-bounds-checked table layout.
-export function readCilDefinitions(bytes, view, layout, stringsStream, blobStream = null, guidStream = null) {
+export function readCilDefinitions(bytes, view, layout, stringsStream, blobStream = null, guidStream = null, budget = null) {
   const { rowCounts: counts, tableOffsets: offsets, rowSizes, heapSizes, valid } = layout;
   const s = heapSizes & 1 ? 4 : 2, g = heapSizes & 2 ? 4 : 2, b = heapSizes & 4 ? 4 : 2;
   const index = (pos, width) => width === 2 ? view.getUint16(pos, true) : view.getUint32(pos, true);
+  const textCache = new Map();
   const text = value => {
     // Preserve legacy minimal metadata with an absent optional heap and null names.
     if (value === 0) return null;
+    // #8699: many rows legally alias the same #Strings offset. Intern by exact
+    // heap offset so a shared entry is scanned/decoded/retained at most once.
+    if (textCache.has(value)) return textCache.get(value);
     if (!stringsStream || value >= stringsStream.size) fail('cil-definition-string-index-invalid');
     const start = stringsStream.offset + value, end = stringsStream.offset + stringsStream.size;
     let pos = start;
     while (pos < end && bytes[pos] !== 0) pos++;
     if (pos === end) fail('cil-definition-string-unterminated');
-    try { return utf8.decode(bytes.subarray(start, pos)); }
+    if (budget) budget.chargeString(pos - start);
+    let decoded;
+    try { decoded = utf8.decode(bytes.subarray(start, pos)); }
     catch { fail('cil-invalid-strings-utf8'); }
+    textCache.set(value, decoded);
+    return decoded;
   };
   const requiredText = (value, code) => {
     const valueText = text(value);
@@ -123,6 +131,7 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     return valueText;
   };
   const readRows = (table, decode) => Array.from({ length: counts[table] }, (_, i) => {
+    if (budget) budget.chargeRow();
     const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
     return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
   });

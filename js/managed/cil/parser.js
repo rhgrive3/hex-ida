@@ -9,5 +9,5 @@ export function probeCil(bytes) {
 }
 export function parseCil(bytes,options={}) {
   const probe=probeCil(bytes); if(!probe.supported)throw new TypeError('cil-unsupported-binary');
-  return overlayCilManifestSecurity(bytes,overlayCilMetadata(bytes,parseCilBase(bytes,options)));
+  return overlayCilManifestSecurity(bytes,overlayCilMetadata(bytes,parseCilBase(bytes,options),options));
 }

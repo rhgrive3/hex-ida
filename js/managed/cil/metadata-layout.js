@@ -81,3 +81,54 @@ export function cilMetadataToken(table, rid) {
       || !Number.isInteger(rid) || rid < 1 || rid > 0xffffff) fail('cil-metadata-token-invalid');
   return `0x${(table * 0x1000000 + rid).toString(16).padStart(8, '0')}`;
 }
+
+// #8699/#8797: one aggregate admission budget for the CIL metadata readers. A
+// single accounting surface covers unique decoded #Strings bytes, materialized
+// definition rows, and bounded resolution/scan work so that aliased or repeated
+// metadata references cannot expand a sub-MiB image into an unbounded
+// synchronous CPU / retained-heap blow-up. Admission is charged BEFORE the
+// decode/materialization it authorizes, so a rejected image never allocates the
+// oversized value first. Limits are injectable via `options.resourceBudget`
+// (parser/CI seam) with generous production defaults.
+export const CIL_METADATA_BUDGET_DEFAULTS = Object.freeze({
+  maxStrings: 4_000_000,
+  maxStringBytes: 512 * 1024 * 1024,
+  maxRows: 5_000_000,
+  maxWork: 200_000_000,
+  maxEstimatedHeapBytes: 384 * 1024 * 1024,
+  deadlineMs: 30000,
+});
+
+export function createCilMetadataBudget(options = {}) {
+  const limits = { ...CIL_METADATA_BUDGET_DEFAULTS, ...(options.resourceBudget || {}) };
+  const signal = options.signal || null;
+  const startedAt = Date.now();
+  let strings = 0, stringBytes = 0, rows = 0, work = 0, heapBytes = 0;
+  function checkpoint() {
+    work++;
+    if (work > limits.maxWork) fail('cil-metadata-resource-limit-work');
+    if ((work & 0x3fff) === 0) {
+      if (signal && signal.aborted) fail('cil-metadata-resource-limit-cancelled');
+      if (Date.now() - startedAt > limits.deadlineMs) fail('cil-metadata-resource-limit-deadline');
+    }
+  }
+  return {
+    // Must be called only on a cache miss, immediately before decoding a #Strings entry.
+    chargeString(byteLength) {
+      strings++;
+      if (strings > limits.maxStrings) fail('cil-metadata-resource-limit-strings');
+      stringBytes += byteLength;
+      if (stringBytes > limits.maxStringBytes) fail('cil-metadata-resource-limit-strings');
+      heapBytes += byteLength * 2;
+      if (heapBytes > limits.maxEstimatedHeapBytes) fail('cil-metadata-resource-limit-heap');
+      checkpoint();
+    },
+    chargeRow() {
+      rows++;
+      if (rows > limits.maxRows) fail('cil-metadata-resource-limit-rows');
+      checkpoint();
+    },
+    chargeWork() { checkpoint(); },
+    checkpoint,
+  };
+}

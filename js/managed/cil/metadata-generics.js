@@ -6,23 +6,33 @@ function fail(code) { throw new TypeError(code); }
 // Decode the GenericParam / GenericParamConstraint authority after the shared
 // metadata layout has been validated. Raw table row order stays lossless;
 // bound TypeDef/MethodDef semantic views are canonicalized by Number/token.
-export function readCilGenericMetadata(bytes, view, layout, stringsStream, defs) {
+export function readCilGenericMetadata(bytes, view, layout, stringsStream, defs, budget = null) {
   const { rowCounts: counts, tableOffsets: offsets, rowSizes, heapSizes } = layout;
   const s = heapSizes & 1 ? 4 : 2;
   const index = (pos, width) => width === 2 ? view.getUint16(pos, true) : view.getUint32(pos, true);
+  const textCache = new Map();
   const requiredText = (value) => {
-    if (value === 0 || !stringsStream || value >= stringsStream.size) fail('cil-generic-param-name-required');
+    if (value === 0) fail('cil-generic-param-name-required');
+    if (textCache.has(value)) {
+      const cached = textCache.get(value);
+      if (cached.length === 0) fail('cil-generic-param-name-required');
+      return cached;
+    }
+    if (!stringsStream || value >= stringsStream.size) fail('cil-generic-param-name-required');
     const start = stringsStream.offset + value, end = stringsStream.offset + stringsStream.size;
     let pos = start;
     while (pos < end && bytes[pos] !== 0) pos++;
     if (pos === end) fail('cil-definition-string-unterminated');
+    if (budget) budget.chargeString(pos - start);
     let valueText;
     try { valueText = utf8.decode(bytes.subarray(start, pos)); }
     catch { fail('cil-invalid-strings-utf8'); }
     if (valueText.length === 0) fail('cil-generic-param-name-required');
+    textCache.set(value, valueText);
     return valueText;
   };
   const readRows = (table, decode) => Array.from({ length: counts[table] }, (_, i) => {
+    if (budget) budget.chargeRow();
     const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
     return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
   });
@@ -47,14 +57,17 @@ export function readCilGenericMetadata(bytes, view, layout, stringsStream, defs)
     };
   });
 
+  // #8699: per-owner duplicate-number detection was O(k^2) via Array.includes();
+  // a Set keeps it linear while preserving the exact duplicate/contiguity authority.
   const numbersByOwner = new Map();
   for (const row of genericParams) {
-    const numbers = numbersByOwner.get(row.ownerToken) ?? [];
-    if (numbers.includes(row.number)) fail('cil-generic-param-number-duplicate');
-    numbers.push(row.number);
-    numbersByOwner.set(row.ownerToken, numbers);
+    let entry = numbersByOwner.get(row.ownerToken);
+    if (!entry) { entry = { set: new Set(), numbers: [] }; numbersByOwner.set(row.ownerToken, entry); }
+    if (entry.set.has(row.number)) fail('cil-generic-param-number-duplicate');
+    entry.set.add(row.number);
+    entry.numbers.push(row.number);
   }
-  for (const numbers of numbersByOwner.values()) {
+  for (const { numbers } of numbersByOwner.values()) {
     const ordered = [...numbers].sort((a, b) => a - b);
     if (ordered.some((value, i) => value !== i)) fail('cil-generic-param-number-invalid');
   }
