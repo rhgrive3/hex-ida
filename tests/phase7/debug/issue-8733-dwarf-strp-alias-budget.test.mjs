@@ -188,3 +188,33 @@ test('#8733 the reproducer finishes inside a small child heap', () => {
   // cached path must stay an order of magnitude below a 64 MiB heap.
   assert.ok(report.heapUsedMiB < 24, `retained heap must stay bounded, got ${report.heapUsedMiB} MiB`);
 });
+
+
+test('#8739 over-budget entry is rejected before a large TextDecoder allocation', () => {
+  const OriginalTextDecoder = globalThis.TextDecoder;
+  let largestDecodeInput = 0;
+  globalThis.TextDecoder = class BoundedDecoder extends OriginalTextDecoder {
+    decode(input, options) {
+      const size = input?.byteLength ?? 0;
+      largestDecodeInput = Math.max(largestDecodeInput, size);
+      if (size > 64 * 1024) throw new Error('oversized-decoder-allocation:' + size);
+      return super.decode(input, options);
+    }
+  };
+
+  try {
+    const sections = strpAliasReproducer({ aliases: 1, stringLength: 256 * 1024 });
+    const parsed = parseDebugInfo(sections, {
+      maxBytesScanned: 1024 * 1024,
+      maxRecords: 200_000,
+      maxDepth: 8,
+      maxDecodedStringBytes: 64 * 1024,
+    });
+    assert.equal(parsed.complete, false);
+    assert.ok(parsed.diagnostics.includes('decoded string budget exhausted'), parsed.diagnostics.join('; '));
+    assert.ok(largestDecodeInput <= 64 * 1024,
+      'full over-budget string reached TextDecoder: ' + largestDecodeInput);
+  } finally {
+    globalThis.TextDecoder = OriginalTextDecoder;
+  }
+});

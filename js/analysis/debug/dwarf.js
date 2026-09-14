@@ -181,6 +181,9 @@ const DEFAULT_MAX_DECODED_STRING_BYTES = 8 * 1024 * 1024;
 const DECODED_STRING_BYTES_PER_CHAR = 2;
 // One cache entry is itself retained state, so it is charged too.
 const DECODED_STRING_ENTRY_OVERHEAD_BYTES = 64;
+// Preflight decoding uses bounded transient chunks; the full JS string is only
+// materialized after its exact UTF-16 footprint has been admitted (#8739).
+const STRING_DECODE_PREFLIGHT_CHUNK_BYTES = 64 * 1024;
 const BYTE_BUDGET_DIAGNOSTIC = 'byte budget exhausted';
 const BYTE_BUDGET_ERROR_CODE = 'dwarf-byte-budget-exhausted';
 const STRING_BUDGET_DIAGNOSTIC = 'decoded string budget exhausted';
@@ -342,7 +345,19 @@ class Cursor {
  * returns `null`, which callers propagate as an unresolved attribute instead of
  * silently decoding an empty or unterminated span.
  */
-function decodeSectionString(bytes, offset, byteBudget = null) {
+function decodedUtf16CodeUnits(bytes, start, end) {
+  const decoder = new TextDecoder('utf8');
+  let codeUnits = 0;
+  for (let at = start; at < end; at += STRING_DECODE_PREFLIGHT_CHUNK_BYTES) {
+    const next = Math.min(end, at + STRING_DECODE_PREFLIGHT_CHUNK_BYTES);
+    // Streaming preserves UTF-8 sequences split at a chunk boundary while each
+    // temporary decoded string remains bounded by the fixed chunk size.
+    codeUnits += decoder.decode(bytes.subarray(at, next), { stream: next < end }).length;
+  }
+  return codeUnits;
+}
+
+function decodeSectionString(bytes, offset, byteBudget = null, decodedBudget = null) {
   if (!bytes || offset < 0 || offset >= bytes.length) return null;
   let end = offset;
   while (end < bytes.length) {
@@ -351,6 +366,13 @@ function decodeSectionString(bytes, offset, byteBudget = null) {
     end += 1;
   }
   if (end === bytes.length) return null;
+
+  if (decodedBudget) {
+    // Count the exact retained UTF-16 footprint with bounded transient chunks,
+    // reserve it, and only then allow the one full TextDecoder allocation.
+    const codeUnits = decodedUtf16CodeUnits(bytes, offset, end);
+    decodedBudget.charge(codeUnits * DECODED_STRING_BYTES_PER_CHAR);
+  }
   return new TextDecoder('utf8').decode(bytes.subarray(offset, end));
 }
 
@@ -380,11 +402,12 @@ function createStringResolver(byteBudget, maxDecodedStringBytes) {
         namespaces.set(namespace, cache);
       }
       if (cache.byOffset.has(offset)) return cache.byOffset.get(offset);
-      const value = decodeSectionString(bytes, offset, byteBudget);
-      // Charge before caching so neither an unbounded decoded-string set nor an
-      // unbounded negative-result set can grow past the budget.
-      decodedBudget.charge(DECODED_STRING_ENTRY_OVERHEAD_BYTES
-        + (value == null ? 0 : value.length * DECODED_STRING_BYTES_PER_CHAR));
+      // Reserve the retained cache entry before any potentially large decode.
+      // decodeSectionString then reserves the exact UTF-16 payload before the
+      // full TextDecoder allocation. Negative cached results retain only this
+      // fixed entry charge.
+      decodedBudget.charge(DECODED_STRING_ENTRY_OVERHEAD_BYTES);
+      const value = decodeSectionString(bytes, offset, byteBudget, decodedBudget);
       cache.byOffset.set(offset, value);
       return value;
     },
