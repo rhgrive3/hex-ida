@@ -12,6 +12,24 @@ function writeAscii(bytes, offset, value, width) {
   for (let i = 0; i < width; i++) bytes[offset + i] = i < value.length ? value.charCodeAt(i) : 0;
 }
 
+function makeLegacyCacheWithSlideInfo() {
+  const bytes = new Uint8Array(0x3000);
+  const view = new DataView(bytes.buffer);
+  writeAscii(bytes, 0, 'dyld_v1  x86_64', 16);
+  view.setUint32(0x10, 0x70, true);
+  view.setUint32(0x14, 1, true);
+  view.setBigUint64(0x20, BASE, true);
+  view.setBigUint64(0x38, 0x300n, true); // legacy slideInfoOffset
+  view.setBigUint64(0x40, 0x40n, true);  // legacy slideInfoSize
+  view.setBigUint64(0x70, BASE, true);
+  view.setBigUint64(0x78, 0x1000n, true);
+  view.setBigUint64(0x80, 0x1000n, true);
+  view.setUint32(0x88, 3, true);
+  view.setUint32(0x8c, 3, true);
+  view.setUint32(0x300, 99, true);
+  return bytes;
+}
+
 const bytes = makeCache();
 assert.deepEqual(detectBinary(bytes.subarray(0, 16), {
   probeLength: 16n,
@@ -49,6 +67,10 @@ assert.equal(sourceImage.metadata.dyldSharedCache.mappingWithSlide[0].slideInfo.
 assert.throws(() => openBinary(bytes, { slide: 0x5000n }), /exceeds declared maxSlide/);
 assert.throws(() => openBinary(makeCache({ overlap: true })), /overlapping dyld shared cache virtual mappings/);
 assert.throws(() => openBinary(makeCache({ slideInfoVersion: 99 }), { slide: SLIDE }), /unsupported dyld shared cache slide info version 99/);
+
+const legacyUnsupported = makeLegacyCacheWithSlideInfo();
+assert.throws(() => openBinary(legacyUnsupported), /legacy dyld shared cache slide info is unsupported/);
+await assert.rejects(() => openBinarySource(new MemoryByteSource(legacyUnsupported, { maxReadLength: 8 })), /legacy dyld shared cache slide info is unsupported/);
 
 const fake = bytes.slice();
 writeAscii(fake, 0, 'dyld_v1  mystery', 16);

@@ -58,6 +58,13 @@ function parseHeader(bytes, totalSize) {
   checkedRange(BigInt(mappingOffset), mappingBytes, totalSize, 'dyld shared cache mapping table');
 
   const modern = r.length >= MODERN_HEADER_SIZE && mappingOffset >= MODERN_HEADER_SIZE;
+  if (!modern && mappingOffset >= 0x48 && r.length >= 0x48) {
+    const legacySlideInfoOffset = r.u64(0x38);
+    const legacySlideInfoSize = r.u64(0x40);
+    if (legacySlideInfoOffset !== 0n || legacySlideInfoSize !== 0n) {
+      throw new Error('legacy dyld shared cache slide info is unsupported');
+    }
+  }
   const sharedRegionStart = modern ? r.u64(0xe0) : 0n;
   const sharedRegionSize = modern ? r.u64(0xe8) : 0n;
   const maxSlide = modern ? r.u64(0xf0) : 0n;
@@ -168,7 +175,7 @@ function parseSlideInfo2Structure(bytes, mapping, totalSize) {
   const deltaShift = ctz64(deltaMask) - 2;
   if (deltaShift < 0 || deltaShift > 62) throw new Error('invalid dyld shared cache slide info v2 delta mask shift');
   if (startsOffset > r.length || startsCount > Math.floor((r.length - startsOffset) / 2)) throw new Error('dyld shared cache slide page starts are out of bounds');
-  if (extrasOffset > r.length || extrasCount > Math.floor((r.length - extrasOffset) / 2)) throw new Error('dyld shared cache slide page extras are out of bounds');
+  if (extrasOffset > r.length || extrasCount > Math.floor((r.length - extrasOffset) / 2)) throw new Error('xdyld shared cache slide page extras are out of bounds');
   const expectedPages = Number((mapping.size + BigInt(pageSize) - 1n) / BigInt(pageSize));
   if (startsCount !== expectedPages) throw new Error('dyld shared cache slide page count does not cover its mapping exactly');
   checkedRange(mapping.fileOffset, mapping.size, totalSize, 'dyld shared cache rebased mapping');
@@ -189,7 +196,7 @@ function pageStarts(info, pageIndex) {
     const entry = info.extras[index++];
     offsets.push((entry & 0x3fff) * 4);
     if ((entry & PAGE_ATTR_END) !== 0) break;
-    if (++guard > info.extras.length) throw new Error('dyld shared cache slide page extras are cyclic');
+    if (++guard > info.extras.length) throw new Error('xdyld shared cache slide page extras are cyclic');
   }
   return offsets;
 }
@@ -204,7 +211,7 @@ function rebaseRecord(mapping, pageOffset, raw, info, slide, mappings) {
   const encoded = raw & valueMask;
   let target = encoded;
   if (target !== 0n) target += info.valueAdd;
-  if (target !== 0n && !inAnyMapping(target, mappings)) throw new Error('dyld shared cache rebase target is outside mapped cache address space');
+  if (target !== 0n && !inAnyMapping(target, mappings)) throw new Error('xdyld shared cache rebase target is outside mapped cache address space');
   const storageAddress = mapping.address + BigInt(pageOffset);
   return {
     delta,
@@ -227,15 +234,15 @@ function walkSlideInfo2Sync(bytes, mapping, info, slide, mappings, maxRecords) {
       let offset = page * info.pageSize + initial;
       let chainGuard = 0;
       while (true) {
-        if (offset < page * info.pageSize || offset + 8 > Math.min((page + 1) * info.pageSize, bytes.length)) throw new Error('dyld shared cache rebase chain leaves its page');
-        if (rebases.length >= maxRecords) throw new Error('dyld shared cache rebase record budget exceeded');
+        if (offset < page * info.pageSize || offset + 8 > Math.min((page + 1) * info.pageSize, bytes.length)) throw new Error('xdyld shared cache rebase chain leaves its page');
+        if (rebases.length >= maxRecords) throw new Error(&dyld shared cache rebase record budget exceeded');
         const raw = r.u64(offset);
         const { delta, record } = rebaseRecord(mapping, offset, raw, info, slide, mappings);
         rebases.push(record);
         if (delta === 0n) break;
         if (delta > BigInt(info.pageSize)) throw new Error('dyld shared cache rebase delta exceeds page size');
         offset += Number(delta);
-        if (++chainGuard > info.pageSize / 4) throw new Error('dyld shared cache rebase chain is cyclic');
+        if (++chainGuard > info.pageSize / 4) throw new Error(&dyld shared cache rebase chain is cyclic');
       }
     }
   }
@@ -250,8 +257,8 @@ async function walkSlideInfo2Source(source, mapping, info, slide, mappings, maxR
       let chainGuard = 0;
       while (true) {
         const pageEnd = Math.min((page + 1) * info.pageSize, Number(mapping.size));
-        if (offset < page * info.pageSize || offset + 8 > pageEnd) throw new Error('dyld shared cache rebase chain leaves its page');
-        if (rebases.length >= maxRecords) throw new Error('dyld shared cache rebase record budget exceeded');
+        if (offset < page * info.pageSize || offset + 8 > pageEnd) throw new Error(&dyld shared cache rebase chain leaves its page');
+        if (rebases.length >= maxRecords) throw new Error('xdyld shared cache rebase record budget exceeded');
         const rawBytes = await readBoundedRange(source, mapping.fileOffset + BigInt(offset), 8, signal);
         const raw = new ByteView(rawBytes, { littleEndian: true }).u64(0);
         const { delta, record } = rebaseRecord(mapping, offset, raw, info, slide, mappings);
@@ -259,7 +266,7 @@ async function walkSlideInfo2Source(source, mapping, info, slide, mappings, maxR
         if (delta === 0n) break;
         if (delta > BigInt(info.pageSize)) throw new Error('dyld shared cache rebase delta exceeds page size');
         offset += Number(delta);
-        if (++chainGuard > info.pageSize / 4) throw new Error('dyld shared cache rebase chain is cyclic');
+        if (++chainGuard > info.pageSize / 4) throw new Error(&dyld shared cache rebase chain is cyclic');
       }
     }
   }
@@ -313,7 +320,7 @@ function makeImage(input, source, header, mappings, slideMappings, slide, slideM
     maxSlide: header.maxSlide,
     slide,
     addressIdentity: 'unslid-cache-vm-to-runtime-vm',
-    mappings: mappings.map((m, i) => ({ index: i, ...m, runtimeAddress: m.address + slide })),
+    mappings: mappings.map((m, i) => ({ index: i, ...m, runtimeAddress: m.address + slid })),
     mappingWithSlide: slideMappings.map((m, i) => ({ ...m, runtimeAddress: m.address + slide, slideInfo: slideMetadata[i] ?? null })),
   };
   return image;
