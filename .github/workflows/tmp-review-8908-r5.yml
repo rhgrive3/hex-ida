@@ -1,0 +1,162 @@
+name: tmp-review-8908-r5
+
+on:
+  push:
+    branches:
+      - codex/issue-campaign-20260914-lane-03-batch-03
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Repair MethodAccess and blob-content identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          p = Path('js/managed/cil/metadata-definitions.js')
+          s = p.read_text()
+          old = """  const FIELD_COMPILER_CONTROLLED = flags => (flags & 0x0007) === 0x0000;
+          const METHOD_COMPILER_CONTROLLED = flags => (flags & 0x0080) !== 0;
+          const assertUniqueKeys = (rows, keyOf, code) => {
+          """
+          new = """  const FIELD_COMPILER_CONTROLLED = flags => (flags & 0x0007) === 0x0000;
+          const METHOD_COMPILER_CONTROLLED = flags => (flags & 0x0007) === 0x0000;
+          const definitionBlobKeys = new Map();
+          const definitionBlobKey = (blobIndex, code) => {
+            if (definitionBlobKeys.has(blobIndex)) return definitionBlobKeys.get(blobIndex);
+            if (!blobHeap) fail(code);
+            const raw = readCilMetadataBlob(blobHeap, blobIndex, code);
+            let hex = '';
+            for (const byte of raw) hex += byte.toString(16).padStart(2, '0');
+            const key = `${raw.length}:${hex}`;
+            definitionBlobKeys.set(blobIndex, key);
+            return key;
+          };
+          const assertUniqueKeys = (rows, keyOf, code) => {
+          """
+          if s.count(old) != 1:
+              raise SystemExit(f'identity helper anchor mismatch: {s.count(old)}')
+          s = s.replace(old, new, 1)
+          replacements = [
+            ("`F\\u0000${field.declaringTypeToken ?? ''}\\u0000${field.name ?? ''}\\u0000${field.signatureBlobIndex}`",
+             "`F\\u0000${field.declaringTypeToken ?? ''}\\u0000${field.name ?? ''}\\u0000${definitionBlobKey(field.signatureBlobIndex, 'cil-field-signature-blob-invalid')}`"),
+            ("`M\\u0000${method.declaringTypeToken ?? ''}\\u0000${method.name ?? ''}\\u0000${method.signatureBlobIndex}`",
+             "`M\\u0000${method.declaringTypeToken ?? ''}\\u0000${method.name ?? ''}\\u0000${definitionBlobKey(method.signatureBlobIndex, 'cil-methoddef-signature-blob-invalid')}`"),
+            ("`P\\u0000${property.ownerToken ?? ''}\\u0000${property.name ?? ''}\\u0000${property.typeBlobIndex}`",
+             "`P\\u0000${property.ownerToken ?? ''}\\u0000${property.name ?? ''}\\u0000${definitionBlobKey(property.typeBlobIndex, 'cil-property-signature-blob-invalid')}`"),
+          ]
+          for old_key, new_key in replacements:
+              if s.count(old_key) != 1:
+                  raise SystemExit(f'identity key anchor mismatch: {old_key} -> {s.count(old_key)}')
+              s = s.replace(old_key, new_key, 1)
+          p.write_text(s)
+
+          p = Path('tests/phase11/cil/issue-8778-cil-definition-identity.test.mjs')
+          s = p.read_text()
+          marker = "console.log('[phase11] issue #8778 CIL ECMA-335 duplicate-definition identity tests passed');\n"
+          extra = textwrap.dedent("""\
+          // MethodAccess CompilerControlled is access-mask value 0 only. Public|HideBySig
+          // (0x0086) and Private (0x0001) remain ordinary semantic definitions.
+          for (const flags of [0x0086, 0x0001]) {
+            const b = buildCil({
+              methods: [
+                { name: 'DupMethod', flags, signature: [0x00, 0x00, 0x01], body: [0x2a] },
+                { name: 'DupMethod', flags, signature: [0x00, 0x00, 0x01], body: [0x2a] },
+              ],
+              types: [{ name: 'T', namespace: 'N', fieldList: 1, methodList: 1 }],
+              imageSize: 0x6000, metadataSize: 0x5000,
+            }).bytes;
+            assert.throws(() => rawParse(b, { binaryId: `dupmethod-${flags}` }), /cil-methoddef-identity-duplicate/,
+              `duplicate MethodDef identity must fail for access flags 0x${flags.toString(16)}`);
+          }
+
+          // CompilerControlled MethodDef rows (access mask 0) are the sole exemption.
+          {
+            const b = buildCil({
+              methods: [
+                { name: 'CC', flags: 0x0000, signature: [0x00, 0x00, 0x01], body: [0x2a] },
+                { name: 'CC', flags: 0x0000, signature: [0x00, 0x00, 0x01], body: [0x2a] },
+              ],
+              types: [{ name: 'T', namespace: 'N', fieldList: 1, methodList: 1 }],
+              imageSize: 0x6000, metadataSize: 0x5000,
+            }).bytes;
+            assert.doesNotThrow(() => parseCil(b, { binaryId: 'ccmethod' }));
+          }
+
+          // Same signature payload stored at distinct #Blob offsets is still the same
+          // Field semantic identity; heap placement is not authority.
+          {
+            const b = buildCil({
+              methods: [],
+              types: [{ name: 'T', namespace: 'N', fieldList: 1, methodList: 1 }],
+              fields: [
+                { name: 'dupBlobField', flags: 6, signature: [0x06, 0x08] },
+                { name: 'dupBlobField', flags: 6, signature: [0x06, 0x08] },
+              ],
+              imageSize: 0x6000, metadataSize: 0x5000,
+            }).bytes;
+            assert.throws(() => rawParse(b, { binaryId: 'dup-field-content' }), /cil-field-identity-duplicate/);
+          }
+
+          // Property signatures use the same content identity rule. The two one-byte
+          // payloads below are deliberately stored at different heap offsets 8 and 10.
+          {
+            const properties = new Uint8Array(12);
+            const pv = new DataView(properties.buffer);
+            for (const [i, blobIndex] of [8, 10].entries()) {
+              pv.setUint16(i * 6, 0, true);
+              pv.setUint16(i * 6 + 2, 1, true);
+              pv.setUint16(i * 6 + 4, blobIndex, true);
+            }
+            const propertyMap = new Uint8Array(4);
+            const pmv = new DataView(propertyMap.buffer);
+            pmv.setUint16(0, 1, true);
+            pmv.setUint16(2, 1, true);
+            const b = buildCil({
+              methods: [], fields: [],
+              types: [{ name: 'T', namespace: 'N', fieldList: 1, methodList: 1 }],
+              leadingStrings: ['DupProperty'],
+              blobs: [[0x08], [0x08]],
+              extraRows: new Map([
+                [0x15, { count: 1, bytes: propertyMap }],
+                [0x17, { count: 2, bytes: properties }],
+              ]),
+              imageSize: 0x6000, metadataSize: 0x5000,
+            }).bytes;
+            assert.throws(() => rawParse(b, { binaryId: 'dup-property-content' }), /cil-property-identity-duplicate/);
+          }
+
+          """)
+          if s.count(marker) != 1:
+              raise SystemExit(f'test marker mismatch: {s.count(marker)}')
+          p.write_text(s.replace(marker, extra + marker, 1))
+          PY
+      - name: Verify focused CIL identity regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 20s node --check js/managed/cil/metadata-definitions.js
+          timeout 40s node tests/phase11/cil/issue-8778-cil-definition-identity.test.mjs
+      - name: Commit repaired head and remove workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/tmp-review-8908-r5.yml
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix(review): enforce CIL semantic duplicate identity'
+          git push origin HEAD:codex/issue-campaign-20260914-lane-03-batch-03
