@@ -36,6 +36,7 @@ test('main reconciliation regression changes require their exact existing owners
     ['tests/machine-effects/x86-long64-integer-denominator.test.mjs', 'integration'],
     ['tests/issue-4957-worker-budget-type-contract.mjs', 'integration'],
     ['tests/issue-4961-worker-request-id-identity.mjs', 'integration'],
+    ['tests/phase11/jvm/issue-8724-control-overlay-order.test.mjs', 'integration'],
     ['tests/phase7/summary/issue-6208-local-summary-identity.test.mjs', 'phase7'],
     ['tests/phase7/types/issue-5184-structural-member-order.test.mjs', 'phase7'],
   ]) {

@@ -52,6 +52,7 @@ const SPECIAL_PATHS = Object.freeze({
     'js/binary/source-reader.js',
     'tests/universal-binary-benchmark.mjs',
     'tests/universal-binary-source.mjs',
+    'tests/phase11/jvm/issue-8724-control-overlay-order.test.mjs',
     'js/binary/dyld-shared-cache.js',
     'js/binary/index.js',
     'js/binary/source-loaders.js',

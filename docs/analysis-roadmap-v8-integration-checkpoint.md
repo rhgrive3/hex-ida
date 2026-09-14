@@ -7716,3 +7716,19 @@ CodeRabbitのDraftによるskipを独立レビュー成功へ読み替えない�
 全C4のflags/fault/exception/領域削除、120ms、独立レビュー、Apple実機/active runtime/
 signing/releaseの受入も残る。**23 finding / 21 FR、CHECKPOINT-LOCKED、
 fullRoadmapComplete:false、transformAuthorization:falseを維持し、マージは未実施。**
+
+## 2026-09-14 direct-main-reference reconciliation
+
+PR-info の旧 base SHA だけでは最新 main を示さなかった。`refs/heads/main` を直接読み、
+`5676d9ccaf5ba957e87b56b0504b2e3c72c167fa` までの4コミット・8ファイルを取り込んだ。
+commit/tree/blobをSHA照合し、`bdb22111d040d8c7549b159211405e32e64bdd56` と
+真正なmainを両親とするmerge候補を作成した。追加JVM回帰のordinary classに
+super_class=0が指定されていたため、実Objectのsuperclassを与え、ゼロの拒否を追加確認した。
+JVM parserは変更せず、この1テストのexact所有権を補完した。runtime/JVM/DEX/Goの追加4回帰、
+Node22 + CI=trueのcore/binaryが通過し、生成物は2回一致した。C4の解析runtimeのsource hashは同一。
+
+`bdb22111` のPR fast gateは全step成功、userscriptとCircleCIの他7 contextも成功した。
+ただしbenchmark job 68814と最終承認run 34807515179は失敗。小さい実測reportは取得できていない。
+型変換の対象ファイル全体は同headで42.8秒で通過したが、未実行の全Phase8合格へ読み替えない。
+最新source、生成hash、実行log hashは `integrationFollowup.movingMainReconciliation`。
+全23 finding / 21 FR、CHECKPOINT-LOCKEDと既存の独立実機・runtime・release要件を保持する。
