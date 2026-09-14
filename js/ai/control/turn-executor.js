@@ -10,6 +10,7 @@ import {
   addressString, assertLiveBindingsUnchanged, compactCandidate, deterministicDecision,
   createMonotonicClock, ensureRunning, humanError, maxWireUsage, memoryAnchor, normalizeError, providerDiagnostics,
   remainingTime, requiredScopeForTool, resolveMonotonicClock, sessionMatchesSnapshot, stableStringify, wireMeta,
+  withPlanEvidenceBinding,
 } from './runtime-support.js';
 
 const MIN_MODEL_REPAIR_REMAINING_MS = 45000;
@@ -281,6 +282,12 @@ export async function executeTurn(input = {}, options = {}) {
           if (!limitReason && plan?.exhausted && registry.accounting.calls >= budget.maxToolCalls) limitReason = 'tool-call-budget';
           assertLiveBindingsUnchanged(this.localContext, snapshot);
           const plannedEvidence = evidenceStore.ingestPlan(plan);
+          // Publish the canonical record set this plan actually produced.
+          // `plan.evidence` holds raw planner source IDs, which are a different
+          // identity domain from EvidenceStore record IDs; finalization must
+          // consume the bound set instead of re-searching the session for
+          // arbitrary planner records (#8864).
+          plan = withPlanEvidenceBinding(plan, plannedEvidence);
           observations.push({
             tool: 'deterministic_goal_planner', summary: `${plan.candidates?.length || 0} ranked candidates`, evidenceIds: plannedEvidence.map((item) => item.id),
             data: { candidates: (plan.candidates || []).slice(0, 20).map(compactCandidate), best: plan.best ? { address: addressString(plan.best.address), name: plan.best.name, verified: !!plan.best.verification?.verified } : null, missingEvidence: plan.missingEvidence || [] },

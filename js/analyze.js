@@ -25,15 +25,40 @@ const ARM64_SEMANTIC_POINTER_WIDTH_BYTES = new Map([['arm64', 8], ['arm64e', 8],
 export function supportsArm64SemanticAnalysis(architecture) {
   return typeof architecture === 'string' && ARM64_SEMANTIC_ARCHES.has(architecture.toLowerCase());
 }
-function modelPointerWidth(opts = {}) {
-  const width = opts?.pointerWidth;
-  if (width === 4 || width === 8) return width;
-  const architecture = opts?.architecture;
-  if (typeof architecture === 'string' && architecture) {
-    const mapped = ARM64_SEMANTIC_POINTER_WIDTH_BYTES.get(architecture.toLowerCase());
-    return mapped === undefined ? null : mapped;
-  }
-  return 8;
+export function resolvePointerBytes(context = {}) {
+  let opts = context;
+  if (typeof context === 'string') opts = { architecture: context };
+  else if (typeof context === 'number') opts = { pointerBytes: context };
+  if (!opts || typeof opts !== 'object') return null;
+
+  const rawWidth = opts.pointerWidth;
+  const rawBytes = opts.pointerBytes ?? opts.pointerSize;
+  const rawBits = opts.pointerBits;
+  const width = rawWidth === 4 || rawWidth === 8 ? rawWidth : null;
+  const bytes = rawBytes === 4 || rawBytes === 8 ? rawBytes : null;
+  const bits = rawBits === 32 ? 4 : rawBits === 64 ? 8 : null;
+  if ((rawWidth != null && width == null)
+      || (rawBytes != null && bytes == null)
+      || (rawBits != null && bits == null)) return null;
+
+const rawArchitecture = opts.architecture ?? opts.arch ?? opts.cpu ?? null;
+let architectureWidth = null;
+if (rawArchitecture != null) {
+  if (typeof rawArchitecture !== 'string') return null;
+  const architecture = rawArchitecture.trim().toLowerCase();
+  const mapped = ARM64_SEMANTIC_POINTER_WIDTH_BYTES.get(architecture);
+  if (mapped === undefined) return null;
+  architectureWidth = mapped;
+}
+
+const explicit = [width, bytes, bits].filter((value) => value != null);
+if (explicit.length) {
+  if (explicit.some((value) => value !== explicit[0])) return null;
+  if (architectureWidth != null && explicit[0] !== architectureWidth) return null;
+  return explicit[0];
+}
+
+return architectureWidth;
 }
 function rowBudget(opts = {}) {
   const raw = opts?.maxRows;
@@ -682,8 +707,10 @@ async function ensureTextsForKey(key, backend, res, signal, opts = {}) {
     entry = makeShared(textInflight, key, async (producerSignal) => {
       await resolveModelTexts(backend, res.model, MODEL_TEXTS, {
         signal: producerSignal,
-        architecture: opts?.architecture,
+        architecture: opts?.architecture ?? opts?.arch,
         pointerWidth: opts?.pointerWidth,
+        pointerBytes: opts?.pointerBytes ?? opts?.pointerSize,
+        pointerBits: opts?.pointerBits,
       });
       // Only a complete resolution is final. An incomplete one leaves the entry
       // unresolved so a later request retries instead of retrying never (#5360).
@@ -755,7 +782,13 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
     if (model) modelTextsComplete.set(model, true);
     return model;
   }
-  const pointerWidth = modelPointerWidth(opts);
+  const pointerContext = {
+    architecture: opts?.architecture ?? opts?.arch ?? model?.architecture ?? model?.arch ?? backend?.architecture ?? backend?.arch ?? null,
+    pointerWidth: opts?.pointerWidth ?? model?.pointerWidth ?? backend?.pointerWidth ?? null,
+    pointerBytes: opts?.pointerBytes ?? model?.pointerBytes ?? backend?.pointerBytes ?? null,
+    pointerBits: opts?.pointerBits ?? model?.pointerBits ?? backend?.pointerBits ?? null,
+  };
+  const pointerWidth = resolvePointerBytes(pointerContext);
   const wanted = [];
   const seen = new Set();
   for (const r of model.addressRefs) {
@@ -788,7 +821,7 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
     if (pointerWidth != null && g && g.found && g.bytes && g.bytes.length >= pointerWidth) deref.push({ i, bytes: g.bytes });
   });
   if (deref.length) {
-    const ptrs = deref.map((d) => pointerAt(d.bytes, pointerWidth));
+    const ptrs = deref.map((d) => pointerAt(d.bytes, pointerContext));
     const got2 = await mapBounded(
       ptrs,
       MODEL_TEXT_READ_CONCURRENCY,
@@ -816,14 +849,26 @@ function looksLikeText(g) {
   return /[\p{L}\p{N}]/u.test(g.text);
 }
 
-function pointerAt(bytes, width) {
-  if (width !== 4 && width !== 8) return null;
+export function pointerAt(bytes, opts = {}) {
+  if (!bytes || bytes.length < 4) return null;
+  let context = opts;
+  if (typeof opts === 'string') context = { architecture: opts };
+  else if (typeof opts === 'number') context = { pointerBytes: opts };
+
+  const pointerWidth = resolvePointerBytes(context);
+  if (pointerWidth == null || bytes.length < pointerWidth) return null;
+
   let v = 0n;
-  for (let i = width - 1; i >= 0; i--) v = (v << 8n) | BigInt(bytes[i]);
+  for (let i = pointerWidth - 1; i >= 0; i--) v = (v << 8n) | BigInt(bytes[i]);
   if (v === 0n) return null;
-  if (width === 4) return v;
-  if (v < 0x0001000000000000n) return v;
-  return v & 0x0000ffffffffffffn;
+  if (pointerWidth === 4 || v < 0x0001000000000000n) return v;
+
+  const rawArchitecture = context?.architecture ?? context?.arch ?? context?.cpu ?? null;
+  if (typeof rawArchitecture !== 'string') return null;
+  const architecture = rawArchitecture.trim().toLowerCase();
+  if (architecture !== 'arm64' && architecture !== 'arm64e') return null;
+  const canonical = v & 0x0000ffffffffffffn;
+  return canonical === 0n ? null : canonical;
 }
 
 const HINTS = [
