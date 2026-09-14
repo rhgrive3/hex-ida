@@ -1,4 +1,4 @@
-name: Temporary independent local routes
+name: Temporary independent completion source export
 on:
   push:
     branches: [diagnostic/independent-source-20260914]
@@ -6,59 +6,35 @@ on:
 permissions:
   contents: read
 jobs:
-  local-routes:
+  source-export:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 4
     steps:
       - uses: actions/checkout@v7
         timeout-minutes: 2
         with:
-          ref: b87d18c188c04371460b74b1c1aa36f7ef037306
+          ref: 02f95f4c53338a72281b6ecde5feff31b9b6de30
           fetch-depth: 1
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - name: Export exact upstream source without deployment
         timeout-minutes: 1
-        with:
-          node-version: '22'
-      - name: Install pinned dependencies and build without deployment
-        timeout-minutes: 3
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = b87d18c188c04371460b74b1c1aa36f7ef037306
-          test "$(git rev-parse HEAD^{tree})" = 88207454ffeb4bd50787fe6a29344032b455fe9b
-          timeout --kill-after=3s 120s npm ci --no-audit --no-fund
-          timeout --kill-after=3s 50s npm run userscript:build
-      - name: Verify only local routes and emit minimum evidence
-        timeout-minutes: 3
-        shell: bash
-        env:
-          WRANGLER_SEND_METRICS: 'false'
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/independent-route-evidence"
-          timeout --kill-after=3s 165s node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-          import path from 'node:path';
-          import { spawnSync } from 'node:child_process';
-          const results = [];
-          for (const file of ['tests/userscript-routes.mjs', 'tests/userscript-embed-route.mjs']) {
-            const started = Date.now();
-            const child = spawnSync('timeout', ['--kill-after=3s', '75s', process.execPath, file], { encoding: 'utf8', timeout: 80000, maxBuffer: 1024 * 1024 });
-            const output = (child.stdout || '') + '\n' + (child.stderr || '');
-            const firstFailure = output.split('\n').filter(line => /AssertionError|^Error:|actual:|expected:|operator:|^\s+at .*tests\//.test(line)).slice(0, 8).map(line => line.slice(0, 400));
-            results.push({ file, exitCode: child.status, signal: child.signal, error: child.error?.code ?? null, elapsedMs: Date.now() - started, passed: child.status === 0 && !child.error, firstFailure });
-          }
-          const evidence = { sourceCommit: 'b87d18c188c04371460b74b1c1aa36f7ef037306', sourceTree: '88207454ffeb4bd50787fe6a29344032b455fe9b', node: process.version, scope: 'Wrangler dev --local; no deployment and no browser/device acceptance', results };
-          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'independent-route-evidence', 'results.json'), JSON.stringify(evidence, null, 2) + '\n');
-          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, results.map(row => `${row.passed ? 'PASS' : 'FAIL'} ${row.file} (${row.exitCode})`).join('\n') + '\n');
-          if (results.some(row => !row.passed)) process.exitCode = 1;
-          NODE
+          test "$(git rev-parse HEAD)" = 02f95f4c53338a72281b6ecde5feff31b9b6de30
+          test "$(git rev-parse HEAD^{tree})" = fca76e7720842df91c0a1a4ac6a767f2aee5ed23
+          mkdir -p "$RUNNER_TEMP/independent-completion-source"
+          timeout --kill-after=3s 40s git archive --format=zip --output="$RUNNER_TEMP/independent-completion-source/source.zip.tmp" HEAD
+          test -s "$RUNNER_TEMP/independent-completion-source/source.zip.tmp"
+          mv "$RUNNER_TEMP/independent-completion-source/source.zip.tmp" "$RUNNER_TEMP/independent-completion-source/source.zip"
+          cd "$RUNNER_TEMP/independent-completion-source"
+          sha256sum source.zip > SHA256SUMS
+          printf '%s\n' 'Source commit: 02f95f4c53338a72281b6ecde5feff31b9b6de30' 'Source tree: fca76e7720842df91c0a1a4ac6a767f2aee5ed23' > SOURCE.txt
+          cat SOURCE.txt >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
-        if: always()
         timeout-minutes: 1
         with:
-          name: independent-local-routes-b87d18c1
-          path: ${{ runner.temp }}/independent-route-evidence/results.json
-          if-no-files-found: warn
-          retention-days: 7
+          name: independent-completion-source-02f95f4c
+          path: ${{ runner.temp }}/independent-completion-source/
+          if-no-files-found: error
+          retention-days: 1
