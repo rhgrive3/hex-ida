@@ -1,4 +1,5 @@
 import { AIError } from '../schema.js';
+import { globalCandidateAuthority } from '../../agent/candidate-authority.js';
 import { canonicalBindingId, firstBinding, resolveBinaryIdentity, sameStrongIdentity } from './snapshot.js';
 
 export function requiredScopeForTool(tool) {
@@ -104,11 +105,30 @@ export function compactCandidate(candidate) { return { address: addressString(ca
 export function deterministicDecision(plan, request, error = null) {
   if (error?.type === 'cancelled') return { type: 'final', answer: humanError(error), confidence: 0, evidenceIds: [], hypothesisIds: [], suggestedActions: [], followups: [] };
   const best = plan?.best;
-  if (best) { const address = addressString(best.address); return { type: 'final', answer: `最も強い候補は ${best.name || address} です。Hex の決定論的 planner が候補を順位付けし、${best.verification?.verified ? '更新経路を検証しました。' : '追加検証が必要です。'}`, confidence: deterministicConfidence(plan), evidenceIds: plan.evidence || [], hypothesisIds: [], suggestedActions: address ? [{ kind: 'open-function', target: address, label: '候補関数を開く' }] : [], followups: plan.missingEvidence || [] }; }
+  if (best) {
+    const address = addressString(best.address);
+    const verified = best.verification?.verified === true;
+    // #8673: the planner's own coverage state, not the local verification flag,
+    // decides whether this turn may claim a terminal strongest-candidate result.
+    const authority = globalCandidateAuthority(plan);
+    const label = best.name || address;
+    const answer = authority.authoritative
+      ? `最も強い候補は ${label} です。Hex の決定論的 planner が候補を順位付けし、${verified ? '更新経路を検証しました。' : '追加検証が必要です。'}`
+      : `暫定的な最有力候補は ${label} です。Hex の決定論的 planner が候補を順位付けし、${verified ? 'その候補の更新経路を局所的に検証しました' : '候補の順位付けまで完了しました'}が、候補探索または意味解析が未完了のため、最も強い候補の確定は保留しています。`;
+    return { type: 'final', answer, confidence: deterministicConfidence(plan), evidenceIds: plan.evidence || [], hypothesisIds: [], suggestedActions: address ? [{ kind: 'open-function', target: address, label: '候補関数を開く' }] : [], followups: plan.missingEvidence || [] };
+  }
   return { type: 'final', answer: error ? humanError(error) : (request.mode === 'chat' ? '利用できるローカル根拠だけでは回答を確定できませんでした。' : '有力な候補を特定できませんでした。'), confidence: 0, evidenceIds: [], suggestedActions: [], followups: plan?.missingEvidence || [] };
 }
 export function fallbackEvidence(store, plan) { const planIds = new Set(plan?.evidence || []), exact = store.all().filter((item) => planIds.has(item.id)); if (exact.length) return exact.slice(0, 50); const planned = store.all().filter((item) => item.sourceTool === 'deterministic-goal-planner'); if (planned.length) return planned.slice(-50); return store.all().filter((item) => item.status === 'verified').slice(-50); }
-export function deterministicConfidence(plan) { if (plan?.best?.verification?.verified) return 0.98; if (plan?.best?.semanticFacts?.length) return 0.78; return plan?.best ? 0.45 : 0; }
+export function deterministicConfidence(plan) {
+  const staticConfidence = plan?.best?.semanticFacts?.length ? 0.78 : 0.45;
+  // A positive local verification is not global coverage proof: the 0.98
+  // terminal authority requires the planner/candidate/semantic coverage state
+  // to be complete as well (#8673).
+  if (plan?.best?.verification?.verified === true) return globalCandidateAuthority(plan).authoritative ? 0.98 : staticConfidence;
+  if (plan?.best?.semanticFacts?.length) return 0.78;
+  return plan?.best ? 0.45 : 0;
+}
 export function presentAnswer(answer, style, evidence, plan) { if (style === 'analyst') return answer; const suffix = evidence.length ? `\n\nHex が確認できた根拠は ${evidence.length} 件です。` : '\n\nこの回答には、Hex が確認済みにした根拠がまだありません。'; return `${answer}${suffix}${plan?.missingEvidence?.length ? ` 次に確認する点: ${plan.missingEvidence.slice(0, 3).join('、')}。` : ''}`; }
 export function defaultMonotonicNow() {
   try {
