@@ -1,5 +1,7 @@
 import { asByteSource } from '../binary/source.js';
 
+const MAX_STRING_LENGTH = 64 * 1024;
+
 function printableAscii(c) {
   return c === 9 || (c >= 0x20 && c <= 0x7e);
 }
@@ -72,8 +74,16 @@ function finiteNumberOption(value, fallback, { zeroUsesDefault = false } = {}) {
 
 export async function scanSourceStrings(image, input, opts = {}) {
   const source = asByteSource(input);
+  if (opts.signal?.aborted) return { results: [], cancelled: true, capped: false };
   const min = Math.max(2, finiteNumberOption(opts.minLength, 4, { zeroUsesDefault: true }));
-  const max = Math.max(min, Math.min(64 * 1024, finiteNumberOption(opts.maxLength, 4096, { zeroUsesDefault: true })));
+  // Do not silently lower the caller's minimum or let it override the carry
+  // budget through Math.max(min, max). Reject an impossible plan before I/O.
+  if (min > MAX_STRING_LENGTH) {
+    const error = new RangeError('minLength exceeds the string scan resource limit');
+    error.code = 'STRING_SCAN_RESOURCE_LIMIT';
+    throw error;
+  }
+  const max = Math.max(min, Math.min(MAX_STRING_LENGTH, finiteNumberOption(opts.maxLength, 4096, { zeroUsesDefault: true })));
   const rawLimit = finiteNumberOption(opts.limit, 200_000);
   const limit = Math.max(1, Math.min(1_000_000, Math.floor(rawLimit)));
   const utf16Encodings = chooseUtf16Encodings(image, opts.utf16);
@@ -108,7 +118,8 @@ export async function scanSourceStrings(image, input, opts = {}) {
         capped = true;
         break;
       }
-      utf8Carry = utf8Bytes.slice(utf8Res.unfinishedStart);
+      // Buffer.slice() is a view: the next source read may overwrite it.
+      utf8Carry = new Uint8Array(utf8Bytes.subarray(utf8Res.unfinishedStart));
 
       for (const encoding of utf16Encodings) {
         const carry = utf16Carries.get(encoding);
@@ -119,7 +130,7 @@ export async function scanSourceStrings(image, input, opts = {}) {
           capped = true;
           break;
         }
-        utf16Carries.set(encoding, utf16Bytes.slice(utf16Res.unfinishedStart));
+        utf16Carries.set(encoding, new Uint8Array(utf16Bytes.subarray(utf16Res.unfinishedStart)));
       }
       if (capped) break;
 
@@ -129,7 +140,9 @@ export async function scanSourceStrings(image, input, opts = {}) {
     }
     if (capped) break;
   }
-  return { results: out, cancelled: false, capped };
+  // Progress/address callbacks can abort during the final synchronous scan.
+  const cancelled = Boolean(opts.signal?.aborted);
+  return { results: out, cancelled, capped: cancelled ? false : capped };
 }
 
 function normalizeRange(item, sourceSize) {

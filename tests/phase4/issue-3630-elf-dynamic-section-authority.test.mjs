@@ -124,7 +124,7 @@ function fixture(sectionIndex, companion = null, options = {}) {
     libraries: [],
     metadata: { machine: 62 },
     segments: [segment],
-    sections: [],
+    sections: options.sections || [],
     symbols: [],
     imports: options.seedImport === true ? [{
       name: 'mystery',
@@ -178,9 +178,14 @@ test('PT_DYNAMIC SHN_XINDEX without companion remains unknown, not an import', (
   assertUnknown(fixture(SHN_XINDEX), 'missing-companion');
 });
 
-test('PT_DYNAMIC SHN_XINDEX with truncated or invalid companion remains unknown', () => {
+test('PT_DYNAMIC SHN_XINDEX with a truncated companion remains unknown', () => {
   assertUnknown(fixture(SHN_XINDEX, 'truncated'), 'truncated-companion');
-  assertUnknown(fixture(SHN_XINDEX, 0xff10), 'invalid-extended-index');
+});
+
+test('PT_DYNAMIC SHN_XINDEX without a backing extended section remains unknown', () => {
+  // #4197: the companion is an actual 32-bit section index. The reserved
+  // 16-bit range alone does not invalidate it; missing section authority does.
+  assertUnknown(fixture(SHN_XINDEX, 0xff10), 'out-of-range-section-index-65296');
 });
 
 test('version metadata does not promote an unresolved symbol into an existing import', () => {
@@ -226,4 +231,18 @@ test('PT_DYNAMIC known section identity remains a definite export', () => {
     assert.equal(image.exports.length, 1);
     assert.equal(image.exports[0].name, 'mystery');
   }
+});
+
+
+test('PT_DYNAMIC a real extended section index is not rejected as a reserved 16-bit value', () => {
+  const extendedIndex = 0xff10;
+  const image = fixture(SHN_XINDEX, extendedIndex, {
+    sections:Array.from({length:extendedIndex + 1}, (_, index) => ({index})),
+  });
+  assert.equal(image.symbols[0].defined, true);
+  assert.equal(image.symbols[0].sectionIndex, extendedIndex);
+  assert.equal(image.imports.length, 0);
+  assert.equal(image.exports.length, 1);
+  assert.equal(image.exports[0].name, 'mystery');
+  assert.equal(image.warnings.some((warning) => /(?:section-index|extended-index)/.test(warning)), false);
 });
