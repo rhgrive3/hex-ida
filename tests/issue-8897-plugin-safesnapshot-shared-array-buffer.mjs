@@ -6,6 +6,7 @@
 // accepted result live-linked to plugin memory (outbound).
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import vm from 'node:vm';
 
 import { PlatformPluginRegistry } from '../js/platform/plugin-api.js';
 
@@ -122,4 +123,39 @@ test('#8897 SAB-backed views preserve offsets, repeated references, and cloned b
     sharedBacking: false,
   });
   assert.deepEqual(Array.from(hostBytes), [0, 1, 2, 3, 4, 5, 6, 7], 'detached topology must not alias host shared memory');
+});
+
+test('#8897 cross-realm SAB and DataView are detached without losing view bounds', { skip: !HAS_SAB && 'SharedArrayBuffer unavailable' }, async () => {
+  const foreign = vm.runInNewContext(`(() => {
+    const sab = new SharedArrayBuffer(8);
+    const bytes = new Uint8Array(sab);
+    bytes.set([0, 1, 2, 3, 4, 5, 6, 7]);
+    return { sab, view: new DataView(sab, 2, 3) };
+  })()`);
+  const hostBytes = new Uint8Array(foreign.sab);
+
+  const registry = new PlatformPluginRegistry({ timeoutMs: 1000 });
+  registry.registerAnalyzer('sab.cross-realm', {
+    async analyze(context) {
+      const { sab, view } = context.project;
+      view.setUint8(0, 0xcc);
+      return {
+        byteOffset: view.byteOffset,
+        byteLength: view.byteLength,
+        sameBacking: sab === view.buffer,
+        sharedBacking: view.buffer instanceof SharedArrayBuffer,
+        bytes: Array.from(new Uint8Array(sab)),
+      };
+    },
+  });
+
+  const result = await registry.invoke('analyzer', 'sab.cross-realm', 'analyze', { project: foreign });
+  assert.deepEqual(result.value, {
+    byteOffset: 2,
+    byteLength: 3,
+    sameBacking: true,
+    sharedBacking: false,
+    bytes: [0, 1, 0xcc, 3, 4, 5, 6, 7],
+  });
+  assert.deepEqual(Array.from(hostBytes), [0, 1, 2, 3, 4, 5, 6, 7], 'cross-realm shared memory must remain detached');
 });
