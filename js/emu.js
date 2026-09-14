@@ -298,6 +298,16 @@ export class Emulator {
     this.loadedValid.set(key, valid);
   }
 
+  async _ensurePageRange(start, end) {
+    await this.ensure(start);
+    const startPage = (start / BigInt(PAGE)) * BigInt(PAGE);
+    const endPage = (end / BigInt(PAGE)) * BigInt(PAGE);
+    for (let page = startPage + BigInt(PAGE); page < endPage; page += BigInt(PAGE)) {
+      await this.ensure(page);
+    }
+    if (endPage !== startPage) await this.ensure(end);
+  }
+
   byteAt(addr) {
     const address = BigInt(addr);
     const page = (address / BigInt(PAGE)) * BigInt(PAGE);
@@ -364,10 +374,7 @@ export class Emulator {
     const n = normalizeMemorySize(size);
     const start = BigInt(addr);
     const end = start + BigInt(n - 1);
-    const firstPage = (start / BigInt(PAGE)) * BigInt(PAGE);
-    for (let p = firstPage; p <= end; p += BigInt(PAGE)) {
-      await this.ensure(p, p === firstPage ? start : p);
-    }
+    await this._ensurePageRange(start, end)
     let v = 0n;
     for (let i = n - 1; i >= 0; i--) v = (v << 8n) | BigInt(this.byteAt(start + BigInt(i)));
     return v;
@@ -411,8 +418,7 @@ export class Emulator {
     const start = BigInt(addr);
     const out = new Uint8Array(n);
     if (!n) return out;
-    for (let i = 0; i < n; i += PAGE) await this.ensure(start + BigInt(i));
-    await this.ensure(start + BigInt(n - 1));
+    await this._ensurePageRange(start, start + BigInt(n - 1));
     for (let i = 0; i < n; i++) out[i] = this.byteAt(start + BigInt(i));
     return out;
   }
