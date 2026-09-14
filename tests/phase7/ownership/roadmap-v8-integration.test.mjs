@@ -34,6 +34,7 @@ test('main reconciliation regression changes require their exact existing owners
   const union = [...assignments.keys()];
   for (const [file, owner] of [
     ['js/symbolic/translate/completeness.js', 'symbolic'],
+    ['js/symbolic/solver/worker-protocol.js', 'symbolic'],
     ['tests/phase9/solver/worker-import-boundary.test.mjs', 'symbolic'],
     ['js/arm64.js', 'integration'],
     ['js/analyze.js', 'integration'],

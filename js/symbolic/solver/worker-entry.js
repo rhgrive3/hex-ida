@@ -5,9 +5,8 @@
  */
 
 import { ExhaustiveBvBackend } from './exhaustive-backend.js';
-import { WORKER_BACKEND_ID, WORKER_BACKEND_VERSION } from './worker-backend.js';
 import { solverResultToTransport } from './result.js';
-import { isCanonicalRequestId } from './worker-protocol.js';
+import { isCanonicalRequestId, WORKER_BACKEND_ID, WORKER_BACKEND_VERSION } from './worker-protocol.js';
 
 const backend = new ExhaustiveBvBackend({
   id: WORKER_BACKEND_ID,

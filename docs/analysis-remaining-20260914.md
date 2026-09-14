@@ -242,3 +242,15 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
 - C1の固定corpusと非escape契約、Workerの2秒browser受入、全体check、
   Phase12の5失敗、main競合と最新headの独立受入は残る。
   実機はユーザー指定でSKIPPED。監査JSONの23 finding / 21 taskと未完了状態を保持。
+
+## Checkpoint 9: Worker起動依存の追加修正
+
+- Worker entrypointがID/version定数のためにhost transportをimportしていた。
+  既存worker-protocolへ同一定数を移し、両host APIのre-exportを保持した。
+  exhaustive/tiered両Workerの実import graphでhost transport不在を検査する。
+- 修正前2回帰失敗、修正後の関連51検査とexact path所有権回帰が成功。
+  canonical生成物は2回buildで同一。receiptは `worker-host-import-*`、
+  `worker-protocol-ownership`、`worker-protocol-generated-*`。
+- `worker-host-browser` ではChromiumの既存2秒SAT/UNSAT、32/64bit、stale拒否、
+  proofが全て成功。WebKitはlibxslt等の環境ライブラリ不足で起動できず、
+  browser全体は未合格。以前のChromium timeout記録は履歴として保持する。

@@ -12,10 +12,9 @@ import { collectSymbols, ExhaustiveBvBackend } from './exhaustive-backend.js';
 import { validateExactModelBindings } from './model-boundary.js';
 import { SOLVER_STATUS, createSolverResult, isValidSolverResult } from './result.js';
 import { SolverSession } from './session.js';
-import { isCanonicalRequestId } from './worker-protocol.js';
+import { isCanonicalRequestId, WORKER_BACKEND_ID, WORKER_BACKEND_VERSION } from './worker-protocol.js';
 
-export const WORKER_BACKEND_ID = 'hex-exhaustive-bv-worker';
-export const WORKER_BACKEND_VERSION = '1.0.0';
+export { WORKER_BACKEND_ID, WORKER_BACKEND_VERSION } from './worker-protocol.js';
 
 function defaultWorkerFactory() {
   if (typeof globalThis.Worker !== 'function') throw new Error('solver-worker-unavailable');

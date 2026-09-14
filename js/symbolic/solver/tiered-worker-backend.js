@@ -12,10 +12,9 @@ import { validateExactModelBindings } from './model-boundary.js';
 import { SOLVER_STATUS, createSolverResult, isValidSolverResult } from './result.js';
 import { SolverSession } from './session.js';
 import { TieredBvBackend, classifyTieredQuery } from './tiered-backend.js';
-import { isCanonicalRequestId } from './worker-protocol.js';
+import { isCanonicalRequestId, TIERED_WORKER_BACKEND_ID, TIERED_WORKER_BACKEND_VERSION } from './worker-protocol.js';
 
-export const TIERED_WORKER_BACKEND_ID = 'hex-tiered-qfbv-worker';
-export const TIERED_WORKER_BACKEND_VERSION = '1.0.0';
+export { TIERED_WORKER_BACKEND_ID, TIERED_WORKER_BACKEND_VERSION } from './worker-protocol.js';
 
 function defaultWorkerFactory() {
   if (typeof globalThis.Worker !== 'function') throw new Error('solver-worker-unavailable');

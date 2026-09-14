@@ -5,9 +5,8 @@
  */
 
 import { TieredBvBackend } from './tiered-backend.js';
-import { TIERED_WORKER_BACKEND_ID, TIERED_WORKER_BACKEND_VERSION } from './tiered-worker-backend.js';
 import { solverResultToTransport } from './result.js';
-import { isCanonicalRequestId } from './worker-protocol.js';
+import { isCanonicalRequestId, TIERED_WORKER_BACKEND_ID, TIERED_WORKER_BACKEND_VERSION } from './worker-protocol.js';
 
 const backend = new TieredBvBackend({
   id: TIERED_WORKER_BACKEND_ID,

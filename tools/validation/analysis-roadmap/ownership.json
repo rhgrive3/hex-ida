@@ -305,6 +305,7 @@
       "tests/phase9/verify/wide-memory-v6.test.mjs",
       "js/symbolic/solver/worker-backend.js",
       "js/symbolic/solver/worker-entry.js",
+      "js/symbolic/solver/worker-protocol.js",
       "tests/phase9/browser/worker-runtime.mjs",
       "tests/phase9/release/release-evidence.test.mjs",
       "tests/phase9/solver/bitblast-sym01-differential.test.mjs",
