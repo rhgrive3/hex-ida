@@ -152,6 +152,54 @@ function currentAddressOf(context) {
   try { return toBigInt(context.currentAddress); } catch { return null; }
 }
 
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function identityGeneration(value, code) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new TypeError(code);
+  return value;
+}
+
+function stableIdentityValue(value, depth = 0, ancestors = null) {
+  if (depth > 64) throw new TypeError('analysis-query-artifact-versions-invalid');
+  if (value == null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new TypeError('analysis-query-artifact-versions-invalid');
+    return JSON.stringify(value);
+  }
+  if (typeof value === 'bigint') return JSON.stringify(`0x${value.toString(16)}`);
+  if (typeof value !== 'object') throw new TypeError('analysis-query-artifact-versions-invalid');
+  const path = ancestors || new Set();
+  if (path.has(value)) throw new TypeError('analysis-query-artifact-versions-invalid');
+  path.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return `[${value.map((item) => stableIdentityValue(item, depth + 1, path)).join(',')}]`;
+    }
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableIdentityValue(value[key], depth + 1, path)}`).join(',')}}`;
+  } finally {
+    path.delete(value);
+  }
+}
+
+function canonicalAnalysisRevision(app) {
+  const rawEpoch = app?.backend?.gen ?? app?.analysisEpoch ?? null;
+  if (rawEpoch == null) return null;
+  const analysisEpoch = identityGeneration(rawEpoch, 'analysis-query-epoch-invalid');
+  const project = app?.workspace?.project ?? app?.activeProject ?? null;
+  const projectRevision = identityGeneration(
+    project?.revision ?? app?.projectRevision ?? app?.workspace?.bindingRevision ?? 0,
+    'analysis-query-project-revision-invalid',
+  );
+  const rawVersions = app?.analysisArtifactVersions ?? app?.artifactVersions;
+  const artifactVersions = isPlainObject(rawVersions) ? { ...rawVersions } : {};
+  return `analysis-query:${stableIdentityValue({ analysisEpoch, artifactVersions, projectRevision })}`;
+}
+
 /**
  * Build the live first-party AI capability object. Product App instances always
  * expose AnalysisQueryAPI; hosts without it are explicit compatibility oracles.
@@ -177,18 +225,16 @@ export function createHexAIContext(app) {
     get() { return app?.backend?.binaryId ?? legacy.binaryId ?? null; },
   });
 
-  // #8931: first-party AnalysisQueryAPI owns a canonical analysis epoch
-  // (`js/analysis/query/app-adapter.js::currentIdentity`). The AI
-  // ObservationStore folds `context.analysisRevision` into its deterministic
-  // binding key, so without this getter the cache falls back to the constant
-  // `analysis:0` for the entire session and a second identical tool call is a
-  // cache hit even after QueryAPI's epoch has advanced. Publishing the epoch
-  // makes QueryAPI's snapshot-freshness/stale-retry boundary authoritative at
-  // the AI cache too. A host that exposes no epoch stays explicit-unknown
-  // (null), which ObservationStore treats as unresolved (per-context ephemeral
-  // nonce) rather than a shared cross-epoch authority.
+  // #8931: the outer AI cache must vary on the same semantic identity
+  // dimensions that make an AnalysisQueryAPI snapshot current. Epoch alone is
+  // insufficient: artifact-only rebuilds are new analysis, and malformed
+  // generations must not stringify into a prior valid cache key. Project
+  // revision is included too (even though ObservationStore also carries it)
+  // so this getter fails closed with QueryAPI's generation contract before a
+  // deterministic cache lookup can hide an invalid live identity. Hosts with
+  // no epoch remain explicit-unknown and retain #5887's per-context nonce.
   define(context, 'analysisRevision', {
-    get() { return app?.backend?.gen ?? app?.analysisEpoch ?? null; },
+    get() { return canonicalAnalysisRevision(app); },
   });
 
   // Direct analysis indexes are intentionally not part of the production AI
