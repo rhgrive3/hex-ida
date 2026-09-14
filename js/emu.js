@@ -392,10 +392,7 @@ export class Emulator {
        below would fail open and writeByte() would mint undeclared mem
        backing. An interior page without backing fails closed here. */
     const end = start + BigInt(n - 1);
-    const firstPage = (start / BigInt(PAGE)) * BigInt(PAGE);
-    for (let p = firstPage; p <= end; p += BigInt(PAGE)) {
-      await this.ensure(p, p === firstPage ? start : p);
-    }
+    await this._ensurePageRange(start, end)
     /* #7968: admit every byte of the store before committing any of it — a
        range that straddles the write-authority boundary fails closed without
        partially writing the bytes inside the prefix. */
