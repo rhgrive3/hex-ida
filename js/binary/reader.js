@@ -192,7 +192,7 @@ export class ByteView {
           }
           throw error;
         }
-        const nul = span.indexOf(0);
+        const nul = span.indexOf(0, Number(start - p));
         if (nul >= 0) {
           raw = this.bytes.subarray(o, exposedOffset(p + BigInt(nul)));
           break;
