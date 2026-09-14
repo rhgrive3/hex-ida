@@ -19,6 +19,7 @@ import {
   canonicalMemorySsaDigest,
   canonicalStoreValueProofDigest,
 } from './proof.js';
+import { snapshotIdIdentity } from './contract.js';
 
 function fail(code) { throw new TypeError(code); }
 function assertNotAborted(options) {
@@ -1077,8 +1078,11 @@ function forwardingStatusFromArtifact(memorySsa, options) {
   if (options.functionId != null && String(artifact.functionId) !== String(options.functionId)) {
     throw new ForwardingStop('stale', 'memoryssa-stale-function');
   }
+  // Exact canonical token comparison. `String()` on either side let a structured
+  // snapshot (`['S-1']`, a custom `toString()` object) match the primitive id it
+  // coerced to, so a stale artifact passed the ownership/staleness boundary (#8804).
   if (artifact.snapshotId != null && options.snapshotId != null
-      && String(artifact.snapshotId) !== String(options.snapshotId)) {
+      && snapshotIdIdentity(artifact.snapshotId) !== snapshotIdIdentity(options.snapshotId)) {
     throw new ForwardingStop('stale', 'memoryssa-stale-snapshot');
   }
   if (options.memorySsaBuildVersion != null
@@ -1106,7 +1110,8 @@ function forwardingStatusFromArtifact(memorySsa, options) {
     if (artifact.functionId == null || String(identity.functionId) !== String(artifact.functionId)) {
       throw new ForwardingStop('stale', 'memoryssa-identity-function-mismatch');
     }
-    if (artifact.snapshotId == null || String(identity.snapshotId) !== String(artifact.snapshotId)) {
+    if (artifact.snapshotId == null
+        || snapshotIdIdentity(identity.snapshotId) !== snapshotIdIdentity(artifact.snapshotId)) {
       throw new ForwardingStop('stale', 'memoryssa-identity-snapshot-mismatch');
     }
     if (artifact.buildVersion != null && String(identity.memorySsaBuildVersion) !== String(artifact.buildVersion)) {
@@ -1456,7 +1461,7 @@ function forwardingCapabilityDetails(artifact, use, context, options) {
     loadNodeId: String(context.useMeta?.nodeId ?? use.sourceEntityId ?? ''),
     loadEntityId: String(context.useMeta?.memorySsaEntityId ?? use.id),
     loadRegionId: String(use.regionId ?? ''),
-    snapshotId: artifact.snapshotId == null ? null : String(artifact.snapshotId),
+    snapshotId: artifact.snapshotId == null ? null : snapshotIdIdentity(artifact.snapshotId),
     consumerId: options.consumerId,
     purpose: options.purpose,
   };
@@ -1468,7 +1473,7 @@ function forwardingRegisterExactFact(fact, artifact, use, context) {
     artifact,
     useId: String(use.id),
     sourceEntityId: String(use.sourceEntityId ?? ''),
-    snapshotId: String(artifact.snapshotId ?? ''),
+    snapshotId: snapshotIdIdentity(artifact.snapshotId) ?? '',
     artifactDigest: String(fact.artifactDigest ?? ''),
     identityDigest: String(fact.identity?.digest ?? ''),
     nodeId: String(context.useMeta?.nodeId ?? use.sourceEntityId ?? ''),
@@ -1504,7 +1509,7 @@ function forwardingFactBindingIsCurrent(fact, expectedContext = null) {
       || expected.consumerId !== binding.consumerId
       || expected.purpose !== binding.purpose
       || String(expected.artifactDigest ?? '') !== binding.artifactDigest
-      || String(expected.snapshotId ?? '') !== binding.snapshotId
+      || (snapshotIdIdentity(expected.snapshotId) ?? '') !== binding.snapshotId
       || String(expected.useId ?? '') !== binding.useId
       || String(expected.sourceEntityId ?? '') !== binding.sourceEntityId
       || String(expected.nodeId ?? '') !== binding.nodeId
@@ -1516,7 +1521,7 @@ function forwardingFactBindingIsCurrent(fact, expectedContext = null) {
         || !isCanonicalMemorySsaProducerArtifact(artifact)
         || String(artifact.canonicalDigest ?? '') !== binding.artifactDigest
         || String(canonicalMemorySsaDigest(artifact)) !== binding.artifactDigest
-        || String(artifact.snapshotId ?? '') !== binding.snapshotId
+        || (snapshotIdIdentity(artifact.snapshotId) ?? '') !== binding.snapshotId
         || String(fact.artifactDigest ?? '') !== binding.artifactDigest
         || String(fact.identity?.digest ?? '') !== binding.identityDigest
         || String(fact.useId ?? '') !== binding.useId

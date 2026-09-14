@@ -134,6 +134,36 @@ function limit(options, key) {
   return positiveInteger(options.budget[key], `memory-ssa-invalid-budget-${key}`);
 }
 
+/**
+ * Snapshot provenance is an ownership and staleness boundary, not display text:
+ * it decides `memoryssa-stale-snapshot`, cache identity and exact-forwarding
+ * capability binding. It therefore keeps the same primitive token domain as every
+ * other canonical id (#4473 hardened the compat identity fields around it, and
+ * `createAnalysisStatus` already requires a primitive non-empty string).
+ *
+ * `String()` is a conversion API: `String(['S-1'])`, `String({toString(){...}})`,
+ * `String(1)` and `String(true)` all produce a canonical-looking id, so coercing
+ * at the producer and again at each consumer let structured snapshots alias a
+ * real snapshot and executed caller-controlled `toString()` hooks inside
+ * provenance validation (#8804). Anything that is not already a primitive
+ * non-empty string is rejected, and no coercion is ever invoked.
+ */
+export function canonicalSnapshotId(value, code = 'memory-ssa-snapshot-id-invalid') {
+  return nonEmpty(value, code);
+}
+
+/**
+ * Consumer-side view of the same policy: the canonical token, or `null` when the
+ * value proves nothing. A comparison against `null` can only ever mismatch, so a
+ * structured or blank snapshot on either side fails closed to `stale` instead of
+ * being repaired into a matching id (#8804).
+ */
+export function snapshotIdIdentity(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text || null;
+}
+
 export function createMemoryRegionRef(input) {
   input = object(input, 'memory-ssa-invalid-region');
   assertAllowedKeys(input, new Set(['id','kind','functionId','binaryId','offset','address','rootEntityId','addressSpace','rootIdentity','uncertaintyIdentity','widthBits','origin','metadata']), 'memory-ssa-unexpected-region-field');
