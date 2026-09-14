@@ -9,35 +9,40 @@ import {
 const SHA_RE = /^[0-9a-f]{40}$/i;
 const EVIDENCE_REVISION_RE = /^[0-9a-f]{64}$/i;
 
-const EVENT_COVERED_GITHUB_ACTIONS_CHECKS = new Set([
-  // GitHub check-run names are job names, not workflow display names.
-  // `.github/workflows/pr-fast-gate.yml` publishes its `jobs.fast` check as `fast`.
-  // `.github/workflows/invariant-gates.yml` publishes its terminal aggregate
-  // `jobs.invariant-gates` check as `invariant-gates`.
-  'fast',
-  'invariant-gates',
-  'Agent loop resilience',
-  'AI evaluation contract',
-  'Issue 2528 canonical claims authority',
-  'Phase 7 ownership',
-  'Phase 8 ownership',
-  'Phase 4 exact-SHA release validation',
-  'Phase 6 release validation',
-  'Phase 7 release validation',
-  'Phase 8 release validation',
-  'Phase 9 preflight',
-  'Phase 10 release validation',
-  'Phase 11 release validation',
-  'Phase 12 release validation',
-  'Stage 1 analysis truth validation',
-  'Stage 2 authority runtime rebuild validation',
-  'Stage 2 non-physical closure proof',
-  'Cross-binary accuracy',
-  'Ghidra decompiler differential',
-  'UI regression',
-  'Universal binary platform',
-  'ChatGPT userscript host',
-]);
+const EVENT_COVERED_GITHUB_ACTIONS_CHECKS_BY_WORKFLOW = Object.freeze({
+  // GitHub check-run names are emitted job names, not workflow display names.
+  // Keep this mapping aligned with the workflow_run surface in
+  // `.github/workflows/final-head-admission.yml`; aggregate workflows bind to
+  // their terminal gate, while workflows with independent terminal jobs list
+  // each such job explicitly.
+  'PR fast gate': Object.freeze(['fast']),
+  'Invariant Gates': Object.freeze(['invariant-gates']),
+  'Agent loop resilience': Object.freeze(['resilience']),
+  'AI evaluation contract': Object.freeze(['contract']),
+  'Issue 2528 canonical claims authority': Object.freeze(['canonical-claims']),
+  'Phase 7 ownership': Object.freeze(['ownership']),
+  'Phase 8 ownership': Object.freeze(['ownership']),
+  'Phase 4 exact-SHA release validation': Object.freeze(['phase4-exact-sha-proof']),
+  'Phase 6 release validation': Object.freeze(['verify']),
+  'Phase 7 release validation': Object.freeze(['verify']),
+  'Phase 8 release validation': Object.freeze(['verify']),
+  'Phase 9 preflight': Object.freeze(['preflight']),
+  'Phase 10 release validation': Object.freeze(['verify']),
+  'Phase 11 release validation': Object.freeze(['verify']),
+  'Phase 12 release validation': Object.freeze(['verify']),
+  'Stage 1 analysis truth validation': Object.freeze(['exact-candidate']),
+  'Stage 2 authority runtime rebuild validation': Object.freeze(['final-exact-product']),
+  'Stage 2 non-physical closure proof': Object.freeze(['exact-nonphysical-closure']),
+  'Cross-binary accuracy': Object.freeze(['accuracy']),
+  'Ghidra decompiler differential': Object.freeze(['compiler-truth-vs-ghidra']),
+  'UI regression': Object.freeze(['browser-matrix']),
+  'Universal binary platform': Object.freeze(['verify', 'benchmark']),
+  'ChatGPT userscript host': Object.freeze(['userscript', 'embed-browser']),
+});
+
+const EVENT_COVERED_GITHUB_ACTIONS_CHECKS = new Set(
+  Object.values(EVENT_COVERED_GITHUB_ACTIONS_CHECKS_BY_WORKFLOW).flat(),
+);
 
 function text(value) {
   return typeof value === 'string' ? value : '';
