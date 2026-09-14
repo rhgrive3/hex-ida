@@ -8,7 +8,7 @@ import test from 'node:test';
 
 import { parseMetadata, parseMetadataAuto, parseMetadataAutoAsync } from '../js/il2cpp.js';
 
-const REQUIRED_HEADER_BYTES = 176;
+const REQUIRED_HEADER_BYTES = 184;
 
 function buildFixture() {
   const enc = new TextEncoder();
@@ -56,7 +56,9 @@ function buildFixture() {
   const dv = new DataView(buf.buffer);
 
   dv.setUint32(0, 0xfab11baf, true);
-  dv.setInt32(4, 29, true);
+  // 92/40 is the legacy/unversioned layout retained by the current parser.
+  // Use v33 so parseMetadata() selects that layout directly.
+  dv.setInt32(4, 33, true);
   dv.setUint32(8 + 2 * 8, stringOffset, true);
   dv.setUint32(8 + 2 * 8 + 4, stringTable.length, true);
   dv.setUint32(8 + 5 * 8, methodOffset, true);
