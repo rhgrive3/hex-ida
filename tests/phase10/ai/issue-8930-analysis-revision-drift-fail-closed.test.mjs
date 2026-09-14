@@ -1,73 +1,194 @@
-// #8930 — analysisRevision drift mid-turn is not detected, so a result derived
-// from a stale analysis could finalize as an authoritative turn outcome. The
-// turn snapshot must capture the revision its deterministic tools were
-// evaluated against, and the executor must fail closed if the live workbench
-// analysis is re-derived before finalize.
 import assert from 'node:assert/strict';
-import { createTurnSnapshot, resolveAnalysisRevision } from '../../../js/ai/control/snapshot.js';
+import test from 'node:test';
+
+import { AIRuntime } from '../../../js/ai/runtime.js';
+import { createTurnSnapshot, createSnapshotContext, resolveAnalysisRevision } from '../../../js/ai/control/snapshot.js';
 import { assertAnalysisRevisionUnchanged } from '../../../js/ai/control/turn-executor.js';
 
 function makeLocal(extra = {}) {
   return {
-    binaryFingerprint: { algorithm: 'fnv1a64', hash: 'abc123' },
-    sliceIndex: 0,
+    binaryHash: 'hash-a',
+    binaryId: 'bin-a',
+    projectId: 'proj-a',
     currentAddress: 0x1000n,
-    activeFunction: { address: 0x1000n, start: 0x1000n, end: 0x10ffn, name: 'A' },
+    analysisRevision: 'r1',
     ...extra,
   };
 }
 
-// The snapshot records the revision present on the context at capture time.
-{
-  const snap = createTurnSnapshot(makeLocal({ analysisRevision: 'rev-7' }), { scope: 'auto' });
-  assert.equal(snap.analysisRevision, 'rev-7', 'turn snapshot captures the live analysis revision');
-}
-{
-  const snap = createTurnSnapshot(makeLocal({ binary: { analysisRevision: 'rev-nested' } }), { scope: 'auto' });
-  assert.equal(snap.analysisRevision, 'rev-nested', 'nested binary revision is captured');
-}
-{
-  const snap = createTurnSnapshot(makeLocal(), { scope: 'auto' });
-  assert.equal(snap.analysisRevision, null, 'a context that omits the revision captures null');
+function finalDecision(extra = {}) {
+  return {
+    type: 'final', answer: 'ok', confidence: 0.2,
+    evidenceIds: [], hypothesisIds: [], hypotheses: [],
+    suggestedActions: [], proposals: [], followups: [],
+    ...extra,
+  };
 }
 
-// The resolver follows the same primary-first fallback chain the tool layer uses.
-{
-  assert.equal(resolveAnalysisRevision({ analysisRevision: 'a', binary: { analysisRevision: 'b' } }), 'a');
-  assert.equal(resolveAnalysisRevision({ binary: { analysisRevision: 'b' } }), 'b');
-  assert.equal(resolveAnalysisRevision({}), null);
+function assistantMessages(runtime) {
+  return runtime.sessionStore.list()
+    .flatMap((session) => session.messages || [])
+    .filter((message) => message.role === 'assistant');
 }
 
-// The guard is a no-op when there is no captured revision to compare against.
-{
-  const snapshot = { analysisRevision: null };
-  assert.doesNotThrow(() => assertAnalysisRevisionUnchanged(makeLocal({ analysisRevision: 'anything' }), snapshot));
-}
-
-// Unchanged revision across the turn passes.
-{
-  const snapshot = createTurnSnapshot(makeLocal({ analysisRevision: 'rev-7' }), { scope: 'auto' });
-  assert.doesNotThrow(() => assertAnalysisRevisionUnchanged(makeLocal({ analysisRevision: 'rev-7' }), snapshot));
-}
-
-// Mid-turn re-analysis fails closed at finalize instead of persisting a
-// stale-analysis result as current.
-{
-  const local = makeLocal({ analysisRevision: 'rev-7' });
+test('#8930 snapshot captures canonical analysis revision and snapshot context pins it', () => {
+  const local = makeLocal({ analysisRevision: 'r1' });
   const snapshot = createTurnSnapshot(local, { scope: 'auto' });
-  local.analysisRevision = 'rev-8'; // workbench re-analyzes while the turn is running
-  assert.throws(
-    () => assertAnalysisRevisionUnchanged(local, snapshot),
-    (error) => error?.type === 'scope_violation',
-    'analysis revision drift must fail closed with scope_violation',
-  );
-  // A live analysis that drops the revision entirely is still a change from the
-  // captured revision and must not be treated as an unchanged snapshot.
-  const dropped = { ...local, analysisRevision: undefined, binary: undefined };
-  assert.throws(
-    () => assertAnalysisRevisionUnchanged(dropped, snapshot),
-    (error) => error?.type === 'scope_violation',
-  );
-}
+  local.analysisRevision = 'r2';
+  const context = createSnapshotContext(local, snapshot);
+  assert.equal(snapshot.analysisRevision, 'r1');
+  assert.equal(context.analysisRevision, 'r1');
+  assert.throws(() => assertAnalysisRevisionUnchanged(local, snapshot), (error) => error?.type === 'scope_violation');
+});
 
-console.log('#8930 analysis revision drift fails closed: PASS');
+test('#8930 structured/malformed analysis revision is never String-coerced into authority', () => {
+  assert.equal(resolveAnalysisRevision({ analysisRevision: { id: 'r1' } }), null);
+  assert.equal(resolveAnalysisRevision({ analysisRevision: ['r1'] }), null);
+  assert.equal(resolveAnalysisRevision({ analysisRevision: NaN }), null);
+  assert.equal(resolveAnalysisRevision({ analysisRevision: 7 }), '7');
+  assert.equal(resolveAnalysisRevision({ analysisRevision: 7n }), '7');
+});
+
+test('#8930 planner await drift fails before plan/evidence ingestion and assistant persistence', async () => {
+  const local = makeLocal();
+  const runtime = new AIRuntime({
+    context: local,
+    provider: null,
+    planner: async () => {
+      await Promise.resolve();
+      local.analysisRevision = 'r2';
+      return { candidates: [], best: null, missingEvidence: [], evidence: [], stats: { analyzedFunctions: 0, disassembly: 0 } };
+    },
+  });
+  let ingests = 0;
+  const original = runtime.evidenceStore.ingestPlan.bind(runtime.evidenceStore);
+  runtime.evidenceStore.ingestPlan = (...args) => { ingests++; return original(...args); };
+  await assert.rejects(
+    () => runtime.turn({ mode: 'agent', goal: 'find function foo', scope: 'project' }),
+    (error) => error?.type === 'scope_violation',
+  );
+  assert.equal(ingests, 0);
+  assert.equal(assistantMessages(runtime).length, 0);
+});
+
+test('#8930 model await drift rejects the model result before adoption', async () => {
+  const local = makeLocal();
+  const runtime = new AIRuntime({
+    context: local,
+    planner: false,
+    provider: {
+      getCapabilities() { return { contextTokens: 32768, maxOutputTokens: 4096, maxTools: 10, maxRequestBytes: 65536 }; },
+      async nextTurn() {
+        await Promise.resolve();
+        local.analysisRevision = 'r2';
+        return finalDecision();
+      },
+    },
+  });
+  await assert.rejects(
+    () => runtime.turn({ mode: 'agent', goal: 'explain this function', scope: 'auto', budget: { maxModelCalls: 1 } }),
+    (error) => error?.type === 'scope_violation',
+  );
+  assert.equal(assistantMessages(runtime).length, 0);
+});
+
+test('#8930 tool await drift fails before ToolRegistry publishes observation/evidence', async () => {
+  const local = makeLocal({
+    async searchFunctions() {
+      await Promise.resolve();
+      local.analysisRevision = 'r2';
+      return { results: [], total: 0, complete: true };
+    },
+  });
+  const runtime = new AIRuntime({
+    context: local,
+    planner: false,
+    provider: {
+      getCapabilities() { return { contextTokens: 32768, maxOutputTokens: 4096, maxTools: 10, maxRequestBytes: 65536 }; },
+      async nextTurn() {
+        return { type: 'tool', tool: 'search_functions', arguments: { query: 'foo' }, purpose: 'locate candidate' };
+      },
+    },
+  });
+  let evidenceIngests = 0;
+  const originalIngest = runtime.evidenceStore.ingest.bind(runtime.evidenceStore);
+  runtime.evidenceStore.ingest = (...args) => { evidenceIngests++; return originalIngest(...args); };
+  await assert.rejects(
+    () => runtime.turn({ mode: 'agent', goal: 'find foo', scope: 'auto', budget: { maxModelCalls: 2, maxToolCalls: 2 } }),
+    (error) => error?.type === 'scope_violation',
+  );
+  assert.equal(evidenceIngests, 0, 'stale tool output must not enter EvidenceStore');
+  assert.equal(assistantMessages(runtime).length, 0);
+});
+
+test('#8930 finalize/address-validation await drift rejects before proposal/action publication', async () => {
+  const local = makeLocal({
+    async addressExists() {
+      await Promise.resolve();
+      local.analysisRevision = 'r2';
+      return true;
+    },
+  });
+  const runtime = new AIRuntime({
+    context: local,
+    planner: false,
+    provider: {
+      getCapabilities() { return { contextTokens: 32768, maxOutputTokens: 4096, maxTools: 10, maxRequestBytes: 65536 }; },
+      async nextTurn() {
+        return finalDecision({
+          suggestedActions: [{ kind: 'open-function', target: '0x1000' }],
+          proposals: [{ kind: 'rename', target: '0x1000', before: 'old', after: 'new', evidenceIds: ['ev-stale'] }],
+        });
+      },
+    },
+  });
+  let proposalCreates = 0;
+  const originalCreate = runtime.proposalStore.create.bind(runtime.proposalStore);
+  runtime.proposalStore.create = (...args) => { proposalCreates++; return originalCreate(...args); };
+  await assert.rejects(
+    () => runtime.turn({ mode: 'agent', goal: 'review target', scope: 'auto', budget: { maxModelCalls: 1 } }),
+    (error) => error?.type === 'scope_violation',
+  );
+  assert.equal(proposalCreates, 0, 'drift during address validation must stop before ProposalStore publication');
+  assert.equal(assistantMessages(runtime).length, 0);
+});
+
+test('#8930 persistence await drift cannot complete normally or continue later final writes', async () => {
+  const local = makeLocal();
+  const runtime = new AIRuntime({
+    context: local,
+    planner: false,
+    provider: { async nextTurn() { return finalDecision(); } },
+  });
+  const originalAppend = runtime.sessionStore.appendMessage.bind(runtime.sessionStore);
+  const originalUpdateMemory = runtime.sessionStore.updateMemory.bind(runtime.sessionStore);
+  let finalMemoryWrites = 0;
+  runtime.sessionStore.appendMessage = async (id, message) => {
+    if (message.role === 'assistant') {
+      await Promise.resolve();
+      local.analysisRevision = 'r2';
+    }
+    return originalAppend(id, message);
+  };
+  runtime.sessionStore.updateMemory = async (id, patch) => {
+    if (Object.prototype.hasOwnProperty.call(patch, 'confirmedFacts')) finalMemoryWrites++;
+    return originalUpdateMemory(id, patch);
+  };
+  await assert.rejects(
+    () => runtime.turn({ mode: 'chat', goal: 'explain', scope: 'auto', budget: { maxModelCalls: 1 } }),
+    (error) => error?.type === 'scope_violation',
+  );
+  assert.equal(finalMemoryWrites, 0, 'post-write freshness failure must stop later persistence');
+});
+
+test('#8930 unchanged revision preserves normal turn behavior', async () => {
+  const local = makeLocal();
+  const runtime = new AIRuntime({
+    context: local,
+    planner: false,
+    provider: { async nextTurn() { return finalDecision(); } },
+  });
+  const result = await runtime.turn({ mode: 'chat', goal: 'explain', scope: 'auto', budget: { maxModelCalls: 1 } });
+  assert.ok(result.sessionId);
+  assert.equal(assistantMessages(runtime).length, 1);
+});
