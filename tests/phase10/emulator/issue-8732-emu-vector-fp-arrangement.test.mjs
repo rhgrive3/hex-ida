@@ -84,6 +84,11 @@ async function vectorOperation({ mnemonic, arrangement, operands, unary = false 
     operands: { a: float64Bytes([1.5, -2.5]), b: float64Bytes([1.5, -2.5]) },
   });
   assert.deepEqual(readFloat64(wide), [3, -5], '.2D FADD doubles both elements');
+  const single = await vectorOperation({
+    mnemonic: 'fadd', arrangement: '1d',
+    operands: { a: float64Bytes([1.5, 7]), b: float64Bytes([1.5, 7]) },
+  });
+  assert.deepEqual(readFloat64(single), [3, 0], '.1D FADD computes the one named element and zeroes the rest');
 }
 
 // Every element-wise mnemonic shares one per-element definition.
@@ -142,8 +147,10 @@ for (const [text, code] of [
   ['fadd v2.4h, v0.4h, v1.4h', 'unsupported-arrangement'],
   ['fadd v2.8h, v0.8h, v1.8h', 'unsupported-arrangement'],
   ['fadd v2.16b, v0.16b, v1.16b', 'unsupported-arrangement'],
-  ['fadd q2.4s, q0.4s, q1.4s', 'unsupported-instruction'],
+  ['fadd v2.8b, v0.8b, v1.8b', 'unsupported-arrangement'],
   ['fadd v2, v0, v1', 'unsupported-arrangement'],
+  ['fadd q2.4s, q0.4s, q1.4s', 'unsupported-instruction'],
+  ['fadd v2.1s, v0.1s, v1.1s', 'unsupported-instruction'],
 ]) {
   const lines = ['fmov d0, x0', text, 'fmov x0, d1'];
   const emu = new Emulator({ fetch: async (pc) => {

@@ -894,20 +894,22 @@ export class Emulator {
 
   // The physical FP/SIMD register file holds 128 raw bits per register. Every
   // narrower view is a truncation or reinterpretation of that single state.
+  // vRawNumber records which numeric produced the stored bits, so a caller that
+  // replaces the numeric without replacing the bits is still honoured.
   fpRaw(op) {
     if (!op || op.k !== 'reg' || !isFloatReg(op)) return 0n;
-    const raw = this.vRaw[op.num];
-    if (raw != null) return BigInt.asUintN(128, raw);
     const current = this.v[op.num] === undefined ? 0 : Number(this.v[op.num]);
+    const raw = this.vRaw[op.num];
+    if (raw != null && Object.is(this.vRawNumber[op.num], current)) return BigInt.asUintN(128, raw);
     return BigInt.asUintN(128, floatToBits(current, 8));
   }
 
   fpBits(op) {
     if (!op || op.k !== 'reg' || !isFloatReg(op)) return 0n;
     const size = this.fpSize(op);
-    const raw = this.vRaw[op.num];
-    if (raw != null) return BigInt.asUintN(size * 8, raw);
     const current = this.v[op.num] === undefined ? 0 : Number(this.v[op.num]);
+    const raw = this.vRaw[op.num];
+    if (raw != null && Object.is(this.vRawNumber[op.num], current)) return BigInt.asUintN(size * 8, raw);
     return floatToBits(size === 4 ? Math.fround(current) : current, size);
   }
 
@@ -966,7 +968,7 @@ export class Emulator {
     }
     // The mnemonic alone cannot separate the scalar form from the AdvSIMD
     // vector form; the operand shape does (#8732).
-    if (Object.prototype.hasOwnProperty.call(FLOAT_ARITHMETIC, mn)) {
+    if (FLOAT_ARITHMETIC[mn] !== undefined) {
       if (isFloatReg(ops[0]) && (ops[0].arr != null || ops[0].bits === 128)) return this.vectorFloatInsn(mn, ops);
       if (!isFloatReg(ops[0])) {
         throw new EmulatorFault('unsupported-instruction', `${mn} has a destination this emulator cannot interpret`, { mnemonic: mn, operands: ops.map((o) => (o && o.text) || null) });
@@ -1213,8 +1215,9 @@ function fixedPointFractionBits(mn, op, max) {
 }
 
 // One semantic definition of each floating-point arithmetic operation, shared by
-// the scalar form and by every element of the AdvSIMD vector form.
-const FLOAT_ARITHMETIC = {
+// the scalar form and by every element of the AdvSIMD vector form. A null
+// prototype keeps a mnemonic from matching an inherited Object property.
+const FLOAT_ARITHMETIC = Object.assign(Object.create(null), {
   fadd: (a, b) => a + b,
   fsub: (a, b) => a - b,
   fmul: (a, b) => a * b,
@@ -1226,26 +1229,28 @@ const FLOAT_ARITHMETIC = {
   fmax: (a, b) => Math.max(a, b),
   fminnm: (a, b) => (Number.isNaN(a) !== Number.isNaN(b) ? (Number.isNaN(a) ? b : a) : Math.min(a, b)),
   fmaxnm: (a, b) => (Number.isNaN(a) !== Number.isNaN(b) ? (Number.isNaN(a) ? b : a) : Math.max(a, b)),
-};
+});
 
-const VECTOR_ELEMENT_BYTES = { b: 1, h: 2, s: 4, d: 8 };
+// The element-wise floating-point arrangements, exactly: 2S/4S and 1D/2D.
+// Binary16 element formats and the integer element formats need a 16-bit or
+// byte element model this emulator does not have, so they are refused instead
+// of being silently widened to the nearest supported format.
+const FLOAT_VECTOR_ARRANGEMENTS = new Map([
+  ['2s', { elementBytes: 4, count: 2 }],
+  ['4s', { elementBytes: 4, count: 4 }],
+  ['1d', { elementBytes: 8, count: 1 }],
+  ['2d', { elementBytes: 8, count: 2 }],
+]);
 
 // AdvSIMD element-wise floating-point arithmetic names the elements it operates
-// on with an arrangement such as .2s. Binary16 element formats are not modelled
-// by this emulator, so they are refused rather than silently widened.
+// on with an arrangement such as .2s. Scalar and vector forms are separated by
+// that shape, and an arrangement outside the modelled set fails closed.
 function vectorElementShape(mn, op) {
-  const arr = typeof op?.arr === 'string' ? op.arr : null;
-  const match = arr && /^([1-9]|1[0-6])([bhsd])$/.exec(arr);
-  if (!match) {
-    throw new EmulatorFault('unsupported-arrangement', `${mn} needs a vector arrangement this emulator does not model`, { operand: op });
+  const shape = typeof op?.arr === 'string' ? FLOAT_VECTOR_ARRANGEMENTS.get(op.arr) : undefined;
+  if (!shape) {
+    throw new EmulatorFault('unsupported-arrangement', `${mn} ${op?.arr ? op.arr + ': ' : ''}only 2s/4s/1d/2d floating-point vector arrangements are modelled`, { operand: op });
   }
-  const count = Number(match[1]);
-  const code = match[2];
-  const elementBytes = VECTOR_ELEMENT_BYTES[code];
-  if (code === 'b' || code === 'h' || count * elementBytes > 16) {
-    throw new EmulatorFault('unsupported-arrangement', `${mn} ${arr}: only 32/64-bit floating-point element arrangements are modelled`, { operand: op });
-  }
-  return { elementBytes, count };
+  return shape;
 }
 
 function pairElementSize(op) {
