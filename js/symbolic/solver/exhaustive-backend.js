@@ -55,7 +55,10 @@ function validateExprNode(expr) {
   switch (expr.kind) {
     case EXPR_KIND.CONST:
       if (isBoolSort(expr.sort) && typeof expr.value !== 'boolean') return 'invalid-bool-constant';
-      if (isBvSort(expr.sort) && typeof expr.value !== 'bigint') return 'invalid-bv-constant';
+      if (isBvSort(expr.sort)) {
+        if (typeof expr.value !== 'bigint') return 'invalid-bv-constant';
+        if (expr.value < 0n || expr.value >= 1n << BigInt(expr.sort.width)) return 'non-canonical-bv-constant';
+      }
       return null;
     case EXPR_KIND.FRESH_SYMBOL:
       return typeof expr.name === 'string' && expr.name && typeof (expr.symbolId || expr.name) === 'string' ? null : 'malformed-symbol';
