@@ -23,6 +23,7 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
+          import textwrap
 
           def replace_once(path, old, new):
               p = Path(path)
@@ -102,7 +103,8 @@ jobs:
           p.write_text(s.replace(old_load, new_load, 1).replace(old_store, new_store, 1))
 
           test = Path('tests/phase11/shared/issue-4811-4786-4971-4973-5000-r1-regressions.test.mjs')
-          test.write_text(r'''import test from 'node:test';
+          test.write_text(textwrap.dedent(r'''
+          import test from 'node:test';
           import assert from 'node:assert/strict';
           import { runDiffInWorker } from '../../../js/diff/runtime.js';
           import { buildManagedMethodSummary } from '../../../js/managed/shared/bridge.js';
@@ -159,7 +161,7 @@ jobs:
             const a={id:'a'},b={id:'b'}; const phi={kind:'phi',incoming:[{node:{kind:'store',inst:a}},{node:{kind:'store',inst:b}}]};
             for (const bad of [1.9, Number.MAX_SAFE_INTEGER+1, 1e30]) { const r=memoryOrigins(phi,{maxNodes:bad,maxEdges:bad}); assert.equal(r.truncated,false,String(bad)); assert.equal(r.stores.length,2); }
           });
-          '''.replace(/^          /gm, ''))
+          ''').lstrip())
           PY
       - name: Verify focused regressions
         shell: bash
