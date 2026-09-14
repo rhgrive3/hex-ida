@@ -13,4 +13,8 @@ const stop=parseUnwindStarts(alias(4,64),BASE,{maxResults:64,maxWork:64,shouldCa
 const le=parseUnwindLsdaEntries(lsda(),BASE,{maxResults:1,maxWork:1}); assert.equal(le.length,1); assert.equal(le.truncated,true); assert.equal(le.truncationReason,'result-limit');
 const legacy=fs.readFileSync(path.join(root,'js/worker-legacy.js'),'utf8'); assert.match(legacy,/maxResults: remaining, maxWork: remaining, shouldCancel:/); assert.match(legacy,/candidateBudgetHit \|\| unwindMetadataTruncated/);
 const fixes=fs.readFileSync(path.join(root,'js/worker-fixes.js'),'utf8'); assert.match(fixes,/unwindStarts\.truncated[\s\S]*unwindLsdaEntries\.truncated/); assert.match(fixes,/const evidenceIncomplete = ev\.incomplete === true[\s\S]*complete: !capped/);
+assert.match(fixes,/__functionEvidence\(region, slice, requestId, unwindLimit = 200_000\)/);
+assert.match(fixes,/maxResults: boundedUnwindLimit, maxWork: boundedUnwindLimit/);
+assert.match(fixes,/__functionEvidence\(region, slice, args\.requestId, result\.cap\)/);
+assert.doesNotMatch(fixes,/parseUnwind(?:Starts|LsdaEntries)\(buf, imageBase, \{ maxResults: 200_000/);
 console.log('issues #8789/#8816 caller bounds and incomplete authority: PASS');

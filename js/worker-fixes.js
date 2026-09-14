@@ -244,7 +244,7 @@ function __addressBitmap(region) {
   };
 }
 
-async function __functionEvidence(region, slice, requestId) {
+async function __functionEvidence(region, slice, requestId, unwindLimit = 200_000) {
   const lo = region.vmAddr, hi = region.vmAddr + region.size;
   const imageBase = slice && slice.info ? slice.info.textVM : null;
   const data = new Set(), structured = new Set(), relativeCodeCandidates = new Set(), imageRelativeCodeCandidates = new Set();
@@ -273,6 +273,9 @@ async function __functionEvidence(region, slice, requestId) {
   let ehFrameRanges = [];
   let metadataIncomplete = false;
   let metadataTruncationReason = null;
+  const boundedUnwindLimit = typeof unwindLimit === 'number' && Number.isSafeInteger(unwindLimit) && unwindLimit >= 0
+    ? Math.min(unwindLimit, 200_000)
+    : 0;
 
   if (slice && imageBase != null) {
     // Merge exact runtime metadata collectors from the current branch with
@@ -286,10 +289,10 @@ async function __functionEvidence(region, slice, requestId) {
     if (unwindRegion && unwindRegion.size < 16n * 1024n * 1024n) {
       try {
         const buf = await readRange(unwindRegion.fileOffset, Number(unwindRegion.size));
-        const unwindStarts = MachO.parseUnwindStarts(buf, imageBase, { maxResults: 200_000, maxWork: 200_000, shouldCancel: () => cancelled(requestId) });
+        const unwindStarts = MachO.parseUnwindStarts(buf, imageBase, { maxResults: boundedUnwindLimit, maxWork: boundedUnwindLimit, shouldCancel: () => cancelled(requestId) });
         for (const a of unwindStarts) if (a >= lo && a < hi) unwind.add(a);
         if (unwindStarts.truncated) { metadataIncomplete = true; metadataTruncationReason ||= 'unwind-starts-' + (unwindStarts.truncationReason || 'truncated'); }
-        unwindLsdaEntries = MachO.parseUnwindLsdaEntries(buf, imageBase, { maxResults: 200_000, maxWork: 200_000, shouldCancel: () => cancelled(requestId) });
+        unwindLsdaEntries = MachO.parseUnwindLsdaEntries(buf, imageBase, { maxResults: boundedUnwindLimit, maxWork: boundedUnwindLimit, shouldCancel: () => cancelled(requestId) });
         if (unwindLsdaEntries.truncated) { metadataIncomplete = true; metadataTruncationReason ||= 'unwind-lsda-' + (unwindLsdaEntries.truncationReason || 'truncated'); }
         await yieldToQueue();
         if (cancelled(requestId)) return { cancelled: true, incomplete: true, truncationReason: 'cancelled' };
@@ -872,7 +875,7 @@ guessFunctions = async function guessFunctionsHardened(args) {
   const region = regions.get(args.regionId);
   const slice = slices.find((s) => (s.regions || []).some((r) => r.id === args.regionId));
   if (!region) return result;
-  const ev = await __functionEvidence(region, slice, args.requestId);
+  const ev = await __functionEvidence(region, slice, args.requestId, result.cap);
   if (!ev || ev.cancelled || cancelled(args.requestId)) return { starts: new BigUint64Array(0), cancelled: true };
 
   const kept = new Set();
