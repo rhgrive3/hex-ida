@@ -66,4 +66,88 @@ const typeRow = (name, namespace = 'N') => ({ name, namespace, flags: 1, fieldLi
     'duplicate CompilerControlled Field identities must remain accepted');
 }
 
+// MethodAccess CompilerControlled is the access-mask value 0 only.
+// Public|HideBySig (0x0086) and Private (0x0001) are ordinary methods.
+for (const flags of [0x0086, 0x0001]) {
+  const b = buildCil({
+    methods: [
+      { name: 'DupMethod', flags, signature: [0x00, 0x00, 0x01], body: [0x2a] },
+      { name: 'DupMethod', flags, signature: [0x00, 0x00, 0x01], body: [0x2a] },
+    ],
+    types: [{ name: 'T', namespace: 'N', fieldList: 1, methodList: 1 }],
+    imageSize: 0x6000, metadataSize: 0x5000,
+  }).bytes;
+  assert.throws(() => rawParse(b, { binaryId: `dupmethod-${flags}` }), /cil-methoddef-identity-duplicate/,
+    `duplicate MethodDef identity must fail for access flags 0x${flags.toString(16)}`);
+}
+
+// Actual CompilerControlled methods (access mask 0) are the exemption.
+{
+  const b = buildCil({
+    methods: [
+      { name: 'CC', flags: 0x0000, signature: [0x00, 0x00, 0x01], body: [0x2a] },
+      { name: 'CC', flags: 0x0000, signature: [0x00, 0x00, 0x01], body: [0x2a] },
+    ],
+    types: [{ name: 'T', namespace: 'N', fieldList: 1, methodList: 1 }],
+    imageSize: 0x6000, metadataSize: 0x5000,
+  }).bytes;
+  assert.doesNotThrow(() => parseCil(b, { binaryId: 'ccmethod' }));
+}
+
+// Two distinct #Blob offsets with identical MethodDef signature bytes
+// are still the same semantic signature.
+{
+  const b = buildCil({
+    methods: [
+      { name: 'SameSig', flags: 0x0006, signature: [0x00, 0x00, 0x01], body: [0x2a] },
+      { name: 'SameSig', flags: 0x0006, signature: [0x00, 0x00, 0x01], body: [0x2a] },
+    ],
+    types: [{ name: 'T', namespace: 'N', fieldList: 1, methodList: 1 }],
+    imageSize: 0x6000, metadataSize: 0x5000,
+  }).bytes;
+  assert.throws(() => rawParse(b, { binaryId: 'dup-method-content' }), /cil-methoddef-identity-duplicate/);
+}
+
+// The same content rule applies to fields.
+{
+  const b = buildCil({
+    methods: [],
+    types: [{ name: 'T', namespace: 'N', fieldList: 1, methodList: 1 }],
+    fields: [
+      { name: 'dupBlobField', flags: 6, signature: [0x06, 0x08] },
+      { name: 'dupBlobField', flags: 6, signature: [0x06, 0x08] },
+    ],
+    imageSize: 0x6000, metadataSize: 0x5000,
+  }).bytes;
+  assert.throws(() => rawParse(b, { binaryId: 'dup-field-content' }), /cil-field-identity-duplicate/);
+}
+
+// Property signatures use the same exact-content rule. Each one-byte
+// payload occupies a different #Blob heap entry (offsets 8 and 10).
+{
+  const properties = new Uint8Array(12);
+  const pv = new DataView(properties.buffer);
+  for (const [i, blobIndex] of [8, 10].entries()) {
+    pv.setUint16(i * 6, 0, true);
+    pv.setUint16(i * 6 + 2, 1, true);
+    pv.setUint16(i * 6 + 4, blobIndex, true);
+  }
+  const propertyMap = new Uint8Array(4);
+  const pmv = new DataView(propertyMap.buffer);
+  pmv.setUint16(0, 1, true);
+  pmv.setUint16(2, 1, true);
+  const b = buildCil({
+    methods: [], fields: [],
+    types: [{ name: 'T', namespace: 'N', fieldList: 1, methodList: 1 }],
+    leadingStrings: ['DupProperty'],
+    blobs: [[0x08], [0x08]],
+    extraRows: new Map([
+      [0x15, { count: 1, bytes: propertyMap }],
+      [0x17, { count: 2, bytes: properties }],
+    ]),
+    imageSize: 0x6000, metadataSize: 0x5000,
+  }).bytes;
+  assert.throws(() => rawParse(b, { binaryId: 'dup-property-content' }), /cil-property-identity-duplicate/);
+}
+
 console.log('[phase11] issue #8778 CIL ECMA-335 duplicate-definition identity tests passed');

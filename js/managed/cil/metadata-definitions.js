@@ -904,7 +904,30 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     nestedEnclosingToken.set(row.nested, types[row.enclosing - 1]?.token ?? null);
   }
   const FIELD_COMPILER_CONTROLLED = flags => (flags & 0x0007) === 0x0000;
-  const METHOD_COMPILER_CONTROLLED = flags => (flags & 0x0080) !== 0;
+  const METHOD_COMPILER_CONTROLLED = flags => (flags & 0x0007) === 0x0000;
+const sameDefinitionBlob = (left, right) => {
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) if (left[i] !== right[i]) return false;
+  return true;
+};
+const signatureIdentityBuckets = new Map();
+const assertUniqueSignatureRows = (rows, prefixOf, blobIndexOf, code, blobCode) => {
+  for (const row of rows) {
+    const prefix = prefixOf(row);
+    if (prefix === null) continue;
+    if (!blobHeap) fail(blobCode);
+    const raw = readCilMetadataBlob(blobHeap, blobIndexOf(row), blobCode);
+    // Hash only narrows the exact-byte candidates. A collision never
+    // becomes duplicate authority without the byte-for-byte check.
+    let hash = 0x811c9dc5;
+    for (const byte of raw) hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
+    const bucketKey = `${prefix}\u0000${raw.length}\u0000${hash}`;
+    const bucket = signatureIdentityBuckets.get(bucketKey);
+    if (bucket?.some(previous => sameDefinitionBlob(previous, raw))) fail(code);
+    if (bucket) bucket.push(raw);
+    else signatureIdentityBuckets.set(bucketKey, [raw]);
+  }
+};
   const assertUniqueKeys = (rows, keyOf, code) => {
     const seen = new Set();
     for (const row of rows) {
@@ -921,17 +944,20 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     }
     return `T\u0000${type.namespace ?? ''}\u0000${type.name ?? ''}`;
   }, 'cil-typedef-identity-duplicate');
-  assertUniqueKeys(fields, field =>
-    FIELD_COMPILER_CONTROLLED(field.accessFlags) ? null
-      : `F\u0000${field.declaringTypeToken ?? ''}\u0000${field.name ?? ''}\u0000${field.signatureBlobIndex}`,
-  'cil-field-identity-duplicate');
-  assertUniqueKeys(methods, method =>
-    METHOD_COMPILER_CONTROLLED(method.accessFlags) ? null
-      : `M\u0000${method.declaringTypeToken ?? ''}\u0000${method.name ?? ''}\u0000${method.signatureBlobIndex}`,
-  'cil-methoddef-identity-duplicate');
-  assertUniqueKeys(properties, property =>
-    `P\u0000${property.ownerToken ?? ''}\u0000${property.name ?? ''}\u0000${property.typeBlobIndex}`,
-  'cil-property-identity-duplicate');
+  assertUniqueSignatureRows(fields,
+    field => FIELD_COMPILER_CONTROLLED(field.accessFlags) ? null
+      : `F\u0000${field.declaringTypeToken ?? ''}\u0000${field.name ?? ''}`,
+    field => field.signatureBlobIndex,
+    'cil-field-identity-duplicate', 'cil-field-signature-blob-invalid');
+  assertUniqueSignatureRows(methods,
+    method => METHOD_COMPILER_CONTROLLED(method.accessFlags) ? null
+      : `M\u0000${method.declaringTypeToken ?? ''}\u0000${method.name ?? ''}`,
+    method => method.signatureBlobIndex,
+    'cil-methoddef-identity-duplicate', 'cil-method-signature-blob-invalid');
+  assertUniqueSignatureRows(properties,
+    property => `P\u0000${property.ownerToken ?? ''}\u0000${property.name ?? ''}`,
+    property => property.typeBlobIndex,
+    'cil-property-identity-duplicate', 'cil-property-signature-blob-invalid');
   assertUniqueKeys(events, event =>
     `E\u0000${event.ownerToken ?? ''}\u0000${event.name ?? ''}`,
   'cil-event-identity-duplicate');
