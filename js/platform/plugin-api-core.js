@@ -24,14 +24,26 @@ function fallbackClone(value, seen = new WeakMap(), depth = 0) {
   if (value instanceof Date) return new Date(value.getTime());
   // A snapshot must be detached: `structuredClone` and `TypedArray.prototype.slice`
   // both keep a SharedArrayBuffer's backing shared, so a plugin could still reach
-  // host bytes through the "snapshot". Copy the bytes into a fresh, non-shared
-  // ArrayBuffer so writes on either side of the boundary cannot alias.
-  if (isSharedBuffer(value)) return detachSharedBuffer(value);
-  if (value instanceof ArrayBuffer) return value.slice(0);
+  // host bytes through the "snapshot". Clone the complete backing store into a
+  // fresh ordinary ArrayBuffer so view offsets and shared-view topology survive
+  // while writes on either side of the boundary cannot alias the source.
+  if (isSharedBuffer(value)) {
+    const copy = detachSharedBuffer(value);
+    seen.set(value, copy);
+    return copy;
+  }
+  if (value instanceof ArrayBuffer) {
+    const copy = value.slice(0);
+    seen.set(value, copy);
+    return copy;
+  }
   if (ArrayBuffer.isView(value)) {
-    const buffer = isSharedBuffer(value.buffer) ? detachSharedBuffer(value.buffer) : value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
-    if (value instanceof DataView) return new DataView(buffer, 0, value.byteLength);
-    return new value.constructor(buffer, 0, value.length);
+    const buffer = fallbackClone(value.buffer, seen, depth + 1);
+    const copy = value instanceof DataView
+      ? new DataView(buffer, value.byteOffset, value.byteLength)
+      : new value.constructor(buffer, value.byteOffset, value.length);
+    seen.set(value, copy);
+    return copy;
   }
   if (value instanceof Map) { const out = new Map(); seen.set(value, out); for (const [k, v] of value) out.set(fallbackClone(k, seen, depth + 1), fallbackClone(v, seen, depth + 1)); return out; }
   if (value instanceof Set) { const out = new Set(); seen.set(value, out); for (const v of value) out.add(fallbackClone(v, seen, depth + 1)); return out; }
