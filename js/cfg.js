@@ -138,8 +138,8 @@ export function buildCfg(model, opts) {
       continue;
     }
     if (indirect) {
+      // An unresolved indirect transfer is an unknown boundary, not a proven exit (#5364).
       node.succ.push({ to: -1, kind: EDGE.UNKNOWN });
-      node.isExit = true;
       continue;
     }
     if (next >= 0) node.succ.push({ to: next, kind: EDGE.FALL });
