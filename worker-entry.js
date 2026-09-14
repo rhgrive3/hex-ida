@@ -99,15 +99,64 @@ async function serveChatGPTEmbed(request, env, url) {
   return new Response(request.method === 'HEAD' ? null : source.body, { status: source.status, statusText: source.statusText, headers });
 }
 
+// #8703 (stage A): bounded streaming read that enforces `limit` during ingress,
+// cancelling as soon as the accumulated byte size is known to exceed it, so an
+// oversized body never reaches the JSON parse and peak memory stays ~limit plus
+// one delivered chunk. Throws an `bootstrapRequestTooLarge`-flagged error on
+// cap overflow (caller maps to 413); other stream/read failures propagate for
+// the caller's 400 mapping. Mirrors the existing `readLimitedText` ingress
+// pattern; exact UTF-8 semantics preserved via a fatal TextDecoder.
+async function readBoundedBootstrapText(request, limit) {
+  const body = request.body;
+  if (!body) return '';
+  const reader = body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+      size += value.byteLength;
+      if (size > limit) {
+        const error = new Error('bootstrap-request-too-large');
+        error.bootstrapRequestTooLarge = true;
+        await reader.cancel();
+        throw error;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    try { reader.releaseLock(); } catch { /* already released after cancel */ }
+  }
+  const joined = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { joined.set(chunk, offset); offset += chunk.byteLength; }
+  return new TextDecoder('utf-8', { fatal: true }).decode(joined);
+}
+
 async function runtimeBootstrap(request, env, url) {
   if (request.method === 'OPTIONS') return runtimePreflight(request.headers.get('origin'), url.origin);
   if (request.method !== 'POST') return methodNotAllowed('POST, OPTIONS');
   const origin = request.headers.get('origin');
   if (!isAllowedRequestOrigin(origin, url.origin)) return json({ error: 'origin-not-allowed' }, 403);
-  const length = Number(request.headers.get('content-length') || 0);
-  if (length > BOOTSTRAP_MAX_BYTES) return json({ error: 'request-too-large' }, 413);
+  const declaredLength = Number(request.headers.get('content-length') || 0);
+  if (Number.isFinite(declaredLength) && declaredLength > BOOTSTRAP_MAX_BYTES) return json({ error: 'request-too-large' }, 413);
+  // #8703 (stage A): the advertised 16 KiB cap must be an ingress work/allocation
+  // authority, not a check applied only after `request.text()` has materialized
+  // the entire body. Read through a bounded streaming preflight so an absent or
+  // under-reported Content-Length oversized body is rejected at the cap before
+  // the remainder is consumed, and is never re-buffered whole. Malformed or
+  // non-UTF-8 bodies that stay within budget still yield `400` unchanged; only a
+  // body whose encoded size crosses the cap becomes `413`.
+  let text;
+  try { text = await readBoundedBootstrapText(request, BOOTSTRAP_MAX_BYTES); }
+  catch (error) {
+    if (error && error.bootstrapRequestTooLarge) return json({ error: 'request-too-large' }, 413);
+    return json({ error: 'invalid-bootstrap-request' }, 400);
+  }
   let input;
-  try { const text = await request.text(); if (new TextEncoder().encode(text).length > BOOTSTRAP_MAX_BYTES) throw new Error('large'); input = JSON.parse(text); } catch { return json({ error: 'invalid-bootstrap-request' }, 400); }
+  try { input = JSON.parse(text); } catch { return json({ error: 'invalid-bootstrap-request' }, 400); }
   const validation = validateRuntimeBootstrap(input, { buildId: RUNTIME_BUILD.manifest.buildId });
   if (validation) return json({ error: validation }, validation === 'wrong-build' ? 409 : 400);
 
