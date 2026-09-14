@@ -30,6 +30,20 @@ export function canonicalIdentityStringList(value, errorCode) {
   return value.map((entry) => canonicalIdentityString(entry, errorCode));
 }
 
+// One ordered-source resolver for MachineEffects identity fields, shared by the
+// ARM64 base owners and the ARM64e extension. The first evidence that is
+// actually PRESENT decides, and only a primitive non-empty string is accepted:
+// `String()` must never run on semantic identity, and a present-but-malformed
+// value must not fall through to a later source or a default (#5992, #8815).
+export function canonicalIdentityField(values, { fallback = null, errorCode }) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    return canonicalIdentityString(value, errorCode);
+  }
+  if (fallback === null) throw new TypeError(errorCode);
+  return fallback;
+}
+
 
 export function bitMask(widthBits) {
   return (1n << BigInt(widthBits)) - 1n;
