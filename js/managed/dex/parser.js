@@ -17,6 +17,40 @@ function requireIndex(table, idx, code) {
   return table[idx];
 }
 
+function compareDexIndexTuples(left, right) {
+  for (let i = 0; i < left.length; i++) {
+    if (left[i] < right[i]) return -1;
+    if (left[i] > right[i]) return 1;
+  }
+  return 0;
+}
+
+// DEX string_ids use a locale-independent UTF-16 ordering. Keep this
+// comparison explicit rather than using localeCompare, whose result can vary
+// with the host locale and would not validate the on-disk identity order.
+function compareDexStrings(left, right) {
+  const length = Math.min(left.length, right.length);
+  for (let i = 0; i < length; i++) {
+    const leftUnit = left.charCodeAt(i), rightUnit = right.charCodeAt(i);
+    if (leftUnit < rightUnit) return -1;
+    if (leftUnit > rightUnit) return 1;
+  }
+  return left.length < right.length ? -1 : left.length > right.length ? 1 : 0;
+}
+
+function compareDexProtoKeys(left, right) {
+  if (left.returnTypeIdx < right.returnTypeIdx) return -1;
+  if (left.returnTypeIdx > right.returnTypeIdx) return 1;
+  const length = Math.min(left.parameterTypeIndices.length, right.parameterTypeIndices.length);
+  for (let i = 0; i < length; i++) {
+    if (left.parameterTypeIndices[i] < right.parameterTypeIndices[i]) return -1;
+    if (left.parameterTypeIndices[i] > right.parameterTypeIndices[i]) return 1;
+  }
+  return left.parameterTypeIndices.length < right.parameterTypeIndices.length
+    ? -1
+    : left.parameterTypeIndices.length > right.parameterTypeIndices.length ? 1 : 0;
+}
+
 function requireFieldOwnerType(descriptor) {
   if (!descriptor.startsWith('L')) fail('dex-invalid-field-owner-type');
   return descriptor;
@@ -24,6 +58,18 @@ function requireFieldOwnerType(descriptor) {
 
 function requireMethodOwnerType(descriptor) {
   if (!descriptor.startsWith('L') && !descriptor.startsWith('[')) fail('dex-invalid-method-owner-type');
+  return descriptor;
+}
+
+// AOSP dex-format#class-def-item: class_idx and non-NO_INDEX superclass_idx
+// must be class types. type_ids legitimately hold primitives, arrays and void
+// for other roles, so the definer role resolves through its own contract —
+// a non-array object descriptor (L...;) — or the role violation is lost
+// after parsing and a primitive masquerades as a defined class (#7436).
+function requireClassType(types, idx, code) {
+  const descriptor = requireIndex(types, idx, code);
+  const info = dexTypeInfo(descriptor);
+  if (info.category !== 'object' || !descriptor.startsWith('L')) fail(code);
   return descriptor;
 }
 
@@ -55,18 +101,6 @@ function requireDexMemberName(name, dexVersion, code) {
   const simpleName = wrapped ? name.slice(1, -1) : name;
   if (!isDexSimpleName(simpleName, dexVersion)) fail(code);
   return name;
-}
-
-// AOSP dex-format#class-def-item: class_idx and non-NO_INDEX superclass_idx
-// must be class types. type_ids legitimately hold primitives, arrays and void
-// for other roles, so the definer role resolves through its own contract —
-// a non-array object descriptor (L...;) — or the role violation is lost
-// after parsing and a primitive masquerades as a defined class (#7436).
-function requireClassType(types, idx, code) {
-  const descriptor = requireIndex(types, idx, code);
-  const info = dexTypeInfo(descriptor);
-  if (info.category !== 'object' || !descriptor.startsWith('L')) fail(code);
-  return descriptor;
 }
 
 const SUPPORTED_DEX_VERSIONS = new Set(['035', '037', '038', '039', '040']);
@@ -191,64 +225,99 @@ export function parseDex(bytes, options = {}) {
   };
 
   const strings = [];
+  let previousString = null;
   for (let i=0;i<stringIdsSize;i++) {
     const off=stringIdsOff+i*4;
     if (off+4>fileSize) fail('dex-truncated-string-ids');
     const dataOff=view.getUint32(off,true);
     dataRange(dataOff,1,'dex-invalid-string-data-offset');
-    strings.push(decodeMutf8(dataBytes,dataOff));
+    const string = decodeMutf8(dataBytes,dataOff);
+    if (previousString !== null && compareDexStrings(previousString, string) >= 0) {
+      fail('dex-string-ids-order-invalid');
+    }
+    previousString = string;
+    strings.push(string);
   }
 
   const types=[];
+  let previousDescriptorIdx = -1;
   for (let i=0;i<typeIdsSize;i++) {
     const off=typeIdsOff+i*4;
     if (off+4>u8.length) fail('dex-truncated-type-ids');
     const descriptorIdx=view.getUint32(off,true);
-    if (descriptorIdx>=strings.length) fail('dex-invalid-type-descriptor-index');
-    dexTypeInfo(strings[descriptorIdx], { allowVoid:true });
-    types.push(strings[descriptorIdx]);
+    const descriptor = requireIndex(strings, descriptorIdx, 'dex-invalid-type-descriptor-index');
+    dexTypeInfo(descriptor, { allowVoid:true });
+    if (descriptorIdx <= previousDescriptorIdx) fail('dex-type-ids-order-invalid');
+    previousDescriptorIdx = descriptorIdx;
+    types.push(descriptor);
   }
 
   const protos=[];
+  let previousProtoKey = null;
   for (let i=0;i<protoIdsSize;i++) {
     const off=protoIdsOff+i*12;
     if (off+12>u8.length) fail('dex-truncated-proto-ids');
     const shortyIdx=view.getUint32(off,true), returnTypeIdx=view.getUint32(off+4,true), paramsOff=view.getUint32(off+8,true);
     const params=[];
+    const parameterTypeIndices=[];
     if (paramsOff>0) {
       dataRange(paramsOff,4,'dex-invalid-proto-params-range',4);
       const pSize=view.getUint32(paramsOff,true);
       if (pSize>Math.floor((fileSize-paramsOff-4)/2)) fail('dex-invalid-proto-params-range');
       dataRange(paramsOff+4,pSize*2,'dex-invalid-proto-params-range');
-      for(let p=0;p<pSize;p++) params.push(requireIndex(types,view.getUint16(paramsOff+4+p*2,true),'dex-invalid-proto-param-type-index'));
+      for(let p=0;p<pSize;p++) {
+        const typeIdx = view.getUint16(paramsOff+4+p*2,true);
+        parameterTypeIndices.push(typeIdx);
+        params.push(requireIndex(types,typeIdx,'dex-invalid-proto-param-type-index'));
+      }
     }
     const shorty = requireIndex(strings,shortyIdx,'dex-invalid-proto-shorty-index');
     const returnType = requireIndex(types,returnTypeIdx,'dex-invalid-proto-return-type-index');
     if (shorty !== dexPrototypeShorty(returnType, params)) fail('dex-invalid-proto-shorty');
+    const protoKey = { returnTypeIdx, parameterTypeIndices };
+    if (previousProtoKey !== null && compareDexProtoKeys(previousProtoKey, protoKey) >= 0) {
+      fail('dex-proto-ids-order-invalid');
+    }
+    previousProtoKey = protoKey;
     protos.push({shorty,returnType,params});
   }
 
   const fields=[];
+  let previousFieldKey = null;
   for(let i=0;i<fieldIdsSize;i++) {
     const off=fieldIdsOff+i*8;
     if(off+8>u8.length) fail('dex-truncated-field-ids');
     const classIdx=view.getUint16(off,true),typeIdx=view.getUint16(off+2,true),nameIdx=view.getUint32(off+4,true);
     const classType = requireFieldOwnerType(requireIndex(types,classIdx,'dex-invalid-field-class-index'));
     const name = requireDexMemberName(requireIndex(strings,nameIdx,'dex-invalid-field-name-index'),dexVersion,'dex-invalid-field-name');
-    fields.push({classType,type:requireIndex(types,typeIdx,'dex-invalid-field-type-index'),name});
+    const fieldType = requireIndex(types,typeIdx,'dex-invalid-field-type-index');
+    const fieldKey = [classIdx,nameIdx,typeIdx];
+    if (previousFieldKey !== null && compareDexIndexTuples(previousFieldKey, fieldKey) >= 0) {
+      fail('dex-field-ids-order-invalid');
+    }
+    previousFieldKey = fieldKey;
+    fields.push({classType,type:fieldType,name});
   }
 
   const methods=[];
+  let previousMethodKey = null;
   for(let i=0;i<methodIdsSize;i++) {
     const off=methodIdsOff+i*8;
     if(off+8>u8.length) fail('dex-truncated-method-ids');
     const classIdx=view.getUint16(off,true),protoIdx=view.getUint16(off+2,true),nameIdx=view.getUint32(off+4,true);
     const classType = requireMethodOwnerType(requireIndex(types,classIdx,'dex-invalid-method-class-index'));
     const name = requireDexMemberName(requireIndex(strings,nameIdx,'dex-invalid-method-name-index'),dexVersion,'dex-invalid-method-name');
-    methods.push({classType,proto:requireIndex(protos,protoIdx,'dex-invalid-method-proto-index'),name});
+    const proto = requireIndex(protos,protoIdx,'dex-invalid-method-proto-index');
+    const methodKey = [classIdx,nameIdx,protoIdx];
+    if (previousMethodKey !== null && compareDexIndexTuples(previousMethodKey, methodKey) >= 0) {
+      fail('dex-method-ids-order-invalid');
+    }
+    previousMethodKey = methodKey;
+    methods.push({classType,proto,name});
   }
 
   const classes=[];
+  let previousClassIdx = -1;
   for(let i=0;i<classDefsSize;i++) {
     const off=classDefsOff+i*32;
     if(off+32>u8.length) fail('dex-truncated-class-defs');
@@ -260,6 +329,8 @@ export function parseDex(bytes, options = {}) {
     dataRange(annotationsOff,16,'dex-invalid-annotations-offset',4,true);
     dataRange(staticValuesOff,1,'dex-invalid-static-values-offset',1,true);
     const classType = requireClassType(types, classIdx, 'dex-invalid-class-definer-type');
+    if (classIdx <= previousClassIdx) fail('dex-class-defs-order-invalid');
+    previousClassIdx = classIdx;
     const directMethods=[],virtualMethods=[],staticFields=[],instanceFields=[];
     if(classDataOff>0) {
       dataRange(classDataOff,4,'dex-invalid-class-data-offset');
