@@ -648,11 +648,22 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
             break;
           }
 
+          // #8955: the resolved field descriptor already proves the IEEE-754
+          // domain (`F` → binary32, `D` → binary64). Without a canonical
+          // machine `type` on the produced/consumed value, `bridge-lowering-v2.js::mt()`
+          // defaults the missing `type` to `{kind:'bitvector', widthBits:bits}`,
+          // so the entire Semantic IR publishes a `complete` integer view of a
+          // known floating field. `ldc` float/double constants use the same
+          // canonical `type` contract (see the `floatPrimitive` helper above);
+          // `fload/dload` locals were fixed in #7971. Field results were the
+          // remaining JVM float-domain authority escape.
           const value = {
             bits: field.bits,
             category: field.category,
             valueKind: field.valueKind,
             descriptor: field.descriptor,
+            ...(field.valueKind === 'float' ? { type: { kind: 'float', widthBits: 32, format: 'binary32' } } : {}),
+            ...(field.valueKind === 'double' ? { type: { kind: 'float', widthBits: 64, format: 'binary64' } } : {}),
           };
           if (isWrite) {
             consumedValues.push({ id: 'val', ...value });
