@@ -469,6 +469,10 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
     const strBuf = await readRange(base + BigInt(info.symtab.stroff), strLen);
     if (symBuf.length >= entry && strBuf.length) {
       try { sym = MachO.parseSymbols(symBuf, strBuf, info.is64); } catch { sym = null; }
+      // The aggregate decoded-name budget ran out inside the parser: some
+      // names were refused before materialization, so the symbol view is
+      // incomplete and must be reported capped, not hidden (#8745).
+      if (sym && sym.capped) capped = true;
     }
   }
 

@@ -111,6 +111,54 @@
     return Math.min(value, maximum);
   }
 
+  /*
+   * Bounded decoded-name retention for the legacy Mach-O string paths (#8745,
+   * and shared with the load-command decoder for #8776 so the two cannot
+   * diverge again). The input-side caps (SYMBOL_MAX rows / STRTAB_MAX bytes)
+   * bound the bytes read, not the JS strings built from them: cstr/cstrNul
+   * assembled names one immutable concatenation per byte, so one valid long
+   * name retained a ~32x rope graph and every nlist alias of the same
+   * n_strx rebuilt it, letting 67 KiB of metadata OOM a 192 MiB heap (#8745).
+   * decodeLatin1 materializes each admitted span in one bounded chunked pass
+   * (temporaries proportional to the source bytes), and the decoding budget
+   * is charged *before* each string is constructed. On exhaustion the parser
+   * never blesses a prefix as a complete name (#3806 semantics preserved):
+   * the result carries an explicit non-enumerable `capped` marker and the
+   * remaining names fail closed to ''.
+   */
+  const STRING_DECODE_CHUNK = 8192;
+  const SYMBOL_NAMES_MAX_BYTES = 48 * 1024 * 1024;  // matches the worker's STRTAB_MAX input ceiling
+  const SYMBOL_NAME_ROW_OVERHEAD = 64;              // per-unique-entry array-slot/Map overhead
+
+  function decodeLatin1(u8, start, end) {
+    if (end - start <= STRING_DECODE_CHUNK) {
+      return String.fromCharCode.apply(null, u8.subarray(start, end));
+    }
+    const parts = [];
+    for (let i = start; i < end; i += STRING_DECODE_CHUNK) {
+      parts.push(String.fromCharCode.apply(null, u8.subarray(i, Math.min(i + STRING_DECODE_CHUNK, end))));
+    }
+    return parts.join('');
+  }
+
+  function createStringDecodingBudget(maxBytes) {
+    return { retained: 0, limit: maxBytes, capped: false, reason: null };
+  }
+
+  // Decode [start,end) only if the retained-decoded-byte budget still admits
+  // it. Returns null without scanning-then-allocating when the budget is
+  // exhausted, so the (limit+1)-th string is never materialized.
+  function budgetedDecodeLatin1(u8, start, end, budget) {
+    const len = end - start + SYMBOL_NAME_ROW_OVERHEAD;
+    if (budget.retained + len > budget.limit) {
+      budget.capped = true;
+      if (!budget.reason) budget.reason = 'decoded-name-budget';
+      return null;
+    }
+    budget.retained += len;
+    return decodeLatin1(u8, start, end);
+  }
+
   function cpuName(type, sub) {
     const s = sub & 0x00ffffff;
     switch (type) {
@@ -137,15 +185,16 @@
   // string table itself: the format has no 1024-byte symbol-name cap. Read to
   // the first NUL inside the table and fail closed when the entry is not
   // terminated, instead of laundering a fixed-length prefix as a complete name
-  // (#3806).
-  function cstrNul(u8, off) {
+  // (#3806). With a decoding budget the constructed string is additionally
+  // admitted before allocation (#8745); without one the semantics are the
+  // plain bounded single-pass decode.
+  function cstrNul(u8, off, budget) {
     if (off < 0 || off >= u8.length) return null;
     let end = off;
     while (end < u8.length && u8[end] !== 0) end++;
     if (end >= u8.length) return null;
-    let s = '';
-    for (let i = off; i < end; i++) s += String.fromCharCode(u8[i]);
-    return s;
+    if (!budget) return decodeLatin1(u8, off, end);
+    return budgetedDecodeLatin1(u8, off, end, budget);
   }
 
   function ver32(v) {
@@ -471,7 +520,7 @@
    * @returns {{names: string[], values: BigUint64Array, types: Uint8Array, sects: Uint8Array}}
    *          添字はシンボル番号。間接シンボルの解決にそのまま使える。
    */
-  function parseSymbols(symBuf, strBuf, is64) {
+  function parseSymbols(symBuf, strBuf, is64, options = {}) {
     const entry = is64 ? 16 : 12;
     const n = Math.floor(symBuf.length / entry);
     const dv = new DataView(symBuf.buffer, symBuf.byteOffset, symBuf.byteLength);
@@ -479,16 +528,37 @@
     const values = new BigUint64Array(n);
     const types = new Uint8Array(n);
     const sects = new Uint8Array(n);
+    /*
+     * Many nlist rows may share one n_strx, and one shared entry used to be
+     * rescanned and re-assembled character-by-character per row: 100 aliases
+     * of a 65,535-byte name retained ~214 MiB from 67 KiB of metadata
+     * (#8745). Decode each distinct offset at most once per invocation and
+     * charge the retained unique bytes (plus per-entry row overhead) to the
+     * decoding budget BEFORE the string is constructed. Budget exhaustion is
+     * reported through the non-enumerable `capped` marker and remaining
+     * names fail closed to ''; no admitted name is ever shortened (#3806).
+     */
+    const budgetLimit = boundedExpansionBudget(options.maxDecodedBytes, SYMBOL_NAMES_MAX_BYTES, SYMBOL_NAMES_MAX_BYTES);
+    const budget = createStringDecodingBudget(budgetLimit);
+    const decoded = new Map();
     for (let i = 0; i < n; i++) {
       const o = i * entry;
       const strx = dv.getUint32(o, true);
       types[i] = symBuf[o + 4];
       sects[i] = symBuf[o + 5];
       values[i] = is64 ? dv.getBigUint64(o + 8, true) : BigInt(dv.getUint32(o + 8, true));
-      const name = strx > 0 && strx < strBuf.length ? cstrNul(strBuf, strx) : null;
+      if (!(strx > 0 && strx < strBuf.length)) { names[i] = ''; continue; }
+      let name = decoded.get(strx);
+      if (name === undefined) {
+        name = cstrNul(strBuf, strx, budget);
+        decoded.set(strx, name);
+      }
       names[i] = name == null ? '' : name;
     }
-    return { names, values, types, sects };
+    const out = { names, values, types, sects };
+    Object.defineProperty(out, 'capped', { value: budget.capped, enumerable: false, writable: true, configurable: true });
+    Object.defineProperty(out, 'truncationReason', { value: budget.reason, enumerable: false, writable: true, configurable: true });
+    return out;
   }
 
   /** セクションに定義されている（＝アドレスを持つ）シンボルだけを取り出す。 */
