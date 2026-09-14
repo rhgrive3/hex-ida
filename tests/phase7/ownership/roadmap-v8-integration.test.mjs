@@ -511,3 +511,26 @@ test('local handover and ARM64 import require every exact path without broadenin
     assert.throws(() => validateRoadmapManifest(widened), /outside integration owner/);
   }
 });
+
+test('C1 corpus erratum and baseline paths require exact Phase 7 ownership', () => {
+  const manifest = loadRoadmapManifest();
+  const assignments = validateRoadmapManifest(manifest);
+  const union = [...assignments.keys()];
+  for (const file of [
+    "tools/validation/phase7/corpus-manifest.mjs",
+    "tests/phase7/foundation/corpus-manifest.test.mjs",
+    "tests/phase7/helpers/fixtures.mjs",
+    "tests/phase7/corpus/fixtures.mjs",
+    "tests/phase7/corpus/manifest.json",
+    "tools/validation/phase7/scoring.mjs",
+    "reports/phase7/baseline-metrics.json",
+    "tests/phase7/summary/escape.test.mjs",
+    "tests/phase7/alias/precision-v2.test.mjs",
+    "tests/phase7/alias/c1-frame-truth-erratum.test.mjs"
+]) {
+    assert.equal(assignments.get(file), 'phase7');
+    const missing = structuredClone(manifest);
+    missing.owners.phase7 = missing.owners.phase7.filter(path => path !== file);
+    assert.throws(() => validateRoadmapInventory(BRANCH, 'phase7', union, missing), /undeclared/);
+  }
+});

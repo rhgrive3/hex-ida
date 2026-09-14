@@ -59,15 +59,15 @@ test('a frame nothing publishes is proven non-escaping', () => {
   assert.equal(escape.status.completeness, 'complete');
 });
 
-test('escape evidence proves separation A2 alone cannot', () => {
-  // The caller cannot hold a pointer into a frame it never saw.
+test('non-escape does not establish fresh storage or exclude incoming aliases', () => {
+  // Incoming SP may already equal the argument; no allocation was modeled.
   const result = aliasOf('frame-non-escaping', 'node_st_slot', 'node_st_arg');
-  assert.equal(result.relation, 'no');
-  assert.ok(result.reasonCodes.includes('distinct-non-escaping-allocation'));
+  assert.equal(result.relation, 'may');
+  assert.ok(!result.reasonCodes.includes('distinct-non-escaping-allocation'));
 });
 
-test('publishing the frame withdraws exactly that separation', () => {
-  // Same query, same shape, one extra store: the proof must disappear.
+test('publishing the frame withdraws non-escape evidence', () => {
+  // Same query, same shape, one extra store: the non-escape proof disappears.
   const { escape } = escapeOf('frame-escapes-through-argument');
   assert.ok(escape.escapes.some((record) => record.reason === 'stored-through-argument'));
   assert.equal(escape.nonEscapingRoots.size, 0);

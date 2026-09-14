@@ -26,9 +26,9 @@ test('alias v2 solver achieves 100% exact precision and recall on v2 ground trut
   const score = scoreAliasQueriesV2(candidateAnswer, { queries: ALIAS_QUERIES_V2 });
 
   assert.equal(score.queryCount, 30);
-  assert.equal(score.exactAvailable, 15);
-  assert.equal(score.exactClaimed, 15);
-  assert.equal(score.exactCorrect, 15);
+  assert.equal(score.exactAvailable, 12);
+  assert.equal(score.exactClaimed, 12);
+  assert.equal(score.exactCorrect, 12);
   assert.equal(score.exactPrecision, 1.0);
   assert.equal(score.exactRecall, 1.0);
   assert.equal(score.falseMustAlias, 0);

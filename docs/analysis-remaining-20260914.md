@@ -293,3 +293,14 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
 - #7036へ `972c01bc0` をpush後、GitHubで#8888のMERGEDと
   main比較の **behind=0 / ahead=259** を確認。統合前の108 behindは解消した。
   #7036自身をmainへmergeしたという意味ではない。今後の作業先は#7036へ統一する。
+
+
+## Checkpoint 11 — C1 truth erratum (2026-09-15)
+
+- C1の不整合はfixtureの期待値にある。`frame-non-escaping` のSPとx0は入力値であり、非escapeでも同じアドレスを指せる。`callee-returned-pointer` もx0をpure callの**前**に読み、callにreturn bindingはない。`tls-vs-stack` は両方memory空間で、SP側のlocal-stack storage/disjointness証拠がない。
+- 3件とも重複・非重複の具体的なDataView witnessを追加した。誤ったNoAliasをMayへ訂正し、v1の対応するframe queryも訂正。元のv2 **30 query ID/categoryをすべて保持**し、正例/保守例は旧15/15から **12/18** へ変更した。精度改善の実績とは扱わない。
+- `CORPUS_VERSION:2`、v1 truth generator `2.0.0`、v2 truth generator `3.0.0`。スコア算出式、precision/recall=1、falseNo/falseMust=0の閾値、runtime alias/escapeの証明条件は変更しない。旧版の受入証拠はこの訂正版の証拠には流用しない。
+- frozen manifestにv2全30行と明示的erratumを追加。旧digest `519bd15f3a918dbc2b436aca4870455d` → 新digest `896de134032f78f88732e2513677e4b7`。除外なし。
+- legacy safety-floor baselineを訂正版の同じmanifestで再測定した。これは訂正後の再計算であり、candidate実装前に採取したbaselineという意味ではない。旧manifestとbaselineはGit履歴 `9c105b5e0` および永続evidenceの `c1-before-*` に残す。
+- mainのcontrol-input cardinalityにfixture helperを適合させた。条件分岐へ未制約のentry predicateを与え、両経路を保持する。canonical CFG/PHI実装は変更しない。
+- witness・全30行precision・frozen corpusの12検査は成功。commit後のC1結合・関連回帰・canonical Phase7とownershipの結果を追記する。全ロードマップの完了宣言ではない。

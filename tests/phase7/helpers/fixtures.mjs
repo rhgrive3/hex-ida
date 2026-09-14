@@ -191,9 +191,13 @@ export class FunctionFixture {
 
   branch(id, targets, { blockId = this.current, conditional = false } = {}) {
     const nodeId = `node_${id}`;
+    // An unconstrained incoming boolean retains both paths and satisfies the
+    // canonical control-input contract without inventing a constant branch.
+    const inputs = conditional
+      ? [this.entryValue(`${id}_condition`, { machineType: { kind: 'predicate', widthBits: 1 } })] : [];
     this.#push({
       id: nodeId, kind: conditional ? 'conditional-branch' : 'branch', blockId,
-      inputs: [], outputs: [], targets, origin: origin(nodeId),
+      inputs, outputs: [], targets, origin: origin(nodeId),
     });
     return nodeId;
   }

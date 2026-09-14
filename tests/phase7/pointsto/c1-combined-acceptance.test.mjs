@@ -76,7 +76,8 @@ test('C1-03 frozen root corpus retains exact positives and conservative negative
     });
     assert.equal(reverse.relation, answer.relation, `${query.id} symmetry`);
   }
-  assert.equal(exact, 15); assert.equal(conservative, 15);
+  // Corpus v2 corrects three unsound oracles without changing the 30-query set.
+  assert.equal(exact, 12); assert.equal(conservative, 18);
 });
 
 test('C1 combined cancellation and iteration limits withhold recovered field pointers', () => {

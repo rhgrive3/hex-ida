@@ -1,16 +1,16 @@
 {
   "schemaVersion": 1,
-  "capturedAt": "2026-08-19T12:49:43.411Z",
-  "manifestDigest": "519bd15f3a918dbc2b436aca4870455d",
+  "capturedAt": "2026-09-14T16:17:54.893Z",
+  "manifestDigest": "896de134032f78f88732e2513677e4b7",
   "corpusId": "phase7-alias-memory-corpus",
-  "corpusVersion": 1,
+  "corpusVersion": 2,
   "scoring": {
     "id": "phase7.scoring",
     "version": "1.0.0"
   },
   "truthGenerator": {
     "id": "phase7.corpus.declared-truth",
-    "version": "1.0.0"
+    "version": "2.0.0"
   },
   "architectureLanes": {
     "mandatory": [
@@ -26,7 +26,7 @@
     "scoringId": "phase7.scoring",
     "scoringVersion": "1.0.0",
     "truthGeneratorId": "phase7.corpus.declared-truth",
-    "truthGeneratorVersion": "1.0.0",
+    "truthGeneratorVersion": "2.0.0",
     "total": 16,
     "counts": {
       "must": 1,
@@ -37,7 +37,7 @@
     "falseNoAlias": 0,
     "falseMustAlias": 0,
     "exactProven": 1,
-    "exactAvailable": 3,
+    "exactAvailable": 2,
     "unknownRate": 0,
     "mayRate": 0.9375,
     "strongProvenRate": 0.0625,
@@ -111,8 +111,8 @@
       {
         "id": "q-frame-non-escaping",
         "relation": "may",
-        "truth": "no",
-        "expectStrong": true
+        "truth": "may-or-weaker",
+        "expectStrong": false
       },
       {
         "id": "q-frame-escaped-argument",
@@ -198,33 +198,33 @@
   },
   "performance": {
     "coldActiveFunction": {
-      "medianMs": 25.745,
+      "medianMs": 365.496,
       "samples": [
-        27.238,
-        25.745,
-        28.34,
-        22.38,
-        20.001
+        511.279,
+        491.405,
+        365.496,
+        316.784,
+        306.116
       ]
     },
     "warmActiveFunction": {
-      "medianMs": 3.721,
+      "medianMs": 12.561,
       "samples": [
-        3.399,
-        3.764,
-        4.04,
-        3.721,
-        3.418
+        11.929,
+        12.561,
+        54.227,
+        24.088,
+        8.036
       ]
     },
     "pathologicalPointerPhi": {
-      "medianMs": 5.46,
+      "medianMs": 75.027,
       "samples": [
-        5.46,
-        5.795,
-        5.619,
-        5.095,
-        3.87
+        75.027,
+        33.05,
+        89.219,
+        79.362,
+        32.047
       ]
     }
   }
