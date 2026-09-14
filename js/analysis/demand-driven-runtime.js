@@ -34,6 +34,24 @@ function abortError(signal, message = 'Analysis query aborted') {
   const error = new Error(message); error.name = 'AbortError'; return error;
 }
 function abortIfNeeded(signal) { if (signal?.aborted) throw abortError(signal); }
+
+async function settleMetadataWithinCancellation(promises, signal) {
+  const settled = Promise.allSettled(promises);
+  if (!signal || typeof signal.addEventListener !== 'function') return settled;
+  abortIfNeeded(signal);
+  let onAbort;
+  try {
+    return await Promise.race([
+      settled,
+      new Promise((_resolve, reject) => {
+        onAbort = () => reject(abortError(signal));
+        signal.addEventListener('abort', onAbort, { once:true });
+      }),
+    ]);
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  }
+}
 function waitForSearchRequest(request, signal) {
   const task = Promise.resolve(request);
   if (signal?.aborted) {
@@ -358,9 +376,10 @@ function installDemandRecognition(app) {
     abortIfNeeded(options.signal);
     const metadata = [];
     const sliceIndex = recognitionSliceIndex(app);
-    if (originalObjc && sliceIndex >= 0) metadata.push(app.ensureObjc(sliceIndex));
-    if (originalSwift) metadata.push(app.ensureSwift());
-    if (metadata.length) await Promise.allSettled(metadata);
+    const producerOptions = { signal: options.signal ?? null, priority: options.priority, budget: options.budget ?? null };
+    if (originalObjc && sliceIndex >= 0) metadata.push(app.ensureObjc(sliceIndex, producerOptions));
+    if (originalSwift) metadata.push(app.ensureSwift(producerOptions));
+    if (metadata.length) await settleMetadataWithinCancellation(metadata, options.signal);
     abortIfNeeded(options.signal);
     const key = recognitionInputKey(app);
     if (app.recognition && acceptedKey === key) return app.recognition;
