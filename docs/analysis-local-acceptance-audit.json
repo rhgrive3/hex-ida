@@ -1886,10 +1886,23 @@
         "canonical Linux Worker cold startup exceeds unchanged 2000ms budget",
         "machine-effects x86 closure/decoder regressions and canonical check not green",
         "candidate merge-tree against main conflicts in 6 paths",
-        "Stage2 active local provider dependencies being installed; canonical suite not passed",
+        "Stage2 local ARM64/arm64e steps ran; RISC-V LLDB command failed; preparing LLDB18",
         "independent review authentication and exact-head integration acceptance"
       ],
-      "checkpoint": "docs/analysis-remaining-20260914.md"
+      "checkpoint": "docs/analysis-remaining-20260914.md",
+      "additionalCanonicalResults": [
+        {
+          "label": "phase12-current",
+          "sourceHead": "ed4027f6a8c84466e8bd9cf020b0cbc0d72d961d",
+          "cleanAtStart": true,
+          "exitCode": 1,
+          "passedFiles": 228,
+          "failedFiles": 5,
+          "totalFiles": 233,
+          "logSha256": "12124ccfa96ef3100aa6e8a2e97eee7f4b1c29c33f92c95da875cfe0a7c15c71",
+          "completeLog": "evidence/analysis-remaining-20260914/phase12-current-full.log"
+        }
+      ]
     }
   },
   "integrationFollowupHistory": [

@@ -169,3 +169,21 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
   生産コードとISA意味論は変更せず、mismatch/sequence両検査が成功。
   証拠は `minimization-before` と `minimization-clock-aligned`。
 - Stage2 canonical suiteは別receiptへ保存する。実機検証は引き続きユーザー指定でスキップ。
+
+## Checkpoint 5: 追加ゲートの実測
+
+- 正本監査JSONにも `integrationFollowup.nonC4Continuation` を追加し、`ed4027f6a` までpush済み。
+  既存23 finding / 21 task、ユーザー担当、全体未完了を保持した。
+- clean `3ea388914` で管理対象モジュールのidentity重点43検査が成功。
+  CIL Module、shared identity、profile identity、identity primitivesの範囲。
+  Phase11全体成功に読み替えない。
+- clean `ed4027f6a` のPhase12 canonical suiteは **228ファイル成功 / 5ファイル失敗**。
+  全233ファイルを実行した。残る失敗はremote collaborationの2件、foundation denominator、
+  checkout action旧版を期待するCI契約、EvidenceStoreの旧verified昇格期待。
+  独立再構築の重点成功と区別し、この解析修正からremote権限や証拠昇格を緩めない。
+  receiptは `phase12-current.json`、完全ログは `phase12-current-full.log` に保持。
+- Stage2はclean treeを要求するため、dirty実行の停止を保存し、commit後に再実行した。
+  不足していたLLDB14/QEMU6.2を導入。LLDBが報告するPythonディレクトリの欠落を、
+  実際にインストールされた同版モジュールへの接続で補正した（`lldb-package-layout.json`）。
+  ARM64/arm64eのローカル検証を経て、RISC-V LLDB接続で失敗した。Stage2全体は未合格。
+  実機の検証・実機成功の証拠ではない。LLVM18系LLDB環境を継続準備している。
