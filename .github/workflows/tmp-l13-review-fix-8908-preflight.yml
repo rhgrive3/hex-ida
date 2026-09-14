@@ -15,7 +15,11 @@ jobs:
           ref: codex/issue-campaign-20260914-lane-03-batch-03
           fetch-depth: 0
       - name: Guard exact reviewed parent
-        run: test "$(git rev-parse HEAD^)" = "f26f33edb939d89681b6dc9254e239b86be620be"
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "f141c839f5071e0e781913becdaa56d7bb633c6f"
+          test "$(git rev-parse HEAD^^)" = "f26f33edb939d89681b6dc9254e239b86be620be"
       - name: Apply pre-allocation row admission
         shell: bash
         run: |
@@ -28,12 +32,12 @@ jobs:
               text = p.read_text()
               n = text.count(old)
               if n != 1:
-                  raise SystemExit(f'{path}: expected one match, got {n}')
+                  raise SystemExit(f'{path}: expected one match, got {n}: {old[:100]!r}')
               p.write_text(text.replace(old, new, 1))
 
-          path = 'js/managed/cil/metadata-layout.js'
-          old = "    chargeRow(encodedByteLength = 0) {\n"
-          new = (
+          replace_once(
+              'js/managed/cil/metadata-layout.js',
+              "    chargeRow(encodedByteLength = 0) {\n",
               "    preflightRows(count, encodedByteLength = 0) {\n"
               "      if (!Number.isSafeInteger(count) || count < 0\n"
               "          || !Number.isSafeInteger(encodedByteLength) || encodedByteLength < 0)\n"
@@ -47,42 +51,40 @@ jobs:
               "          || heapBytes + addedHeapBytes > limits.maxEstimatedHeapBytes)\n"
               "        fail('cil-metadata-resource-limit-heap');\n"
               "    },\n"
-              "    chargeRow(encodedByteLength = 0) {\n"
+              "    chargeRow(encodedByteLength = 0) {\n",
           )
-          replace_once(path, old, new)
 
-          for path in [
-              'js/managed/cil/metadata-definitions.js',
-              'js/managed/cil/metadata-generics.js',
-              'js/managed/cil/metadata-manifest-security.js',
-          ]:
+          def wrap_read_rows(path, count_expr):
               p = Path(path)
               text = p.read_text()
-              old = "  const readRows = (table, decode) => Array.from({ length: counts[table] }, (_, i) => {\n"
+              old = f"  const readRows = (table, decode) => Array.from({{ length: {count_expr} }}, (_, i) => {{\n"
               new = (
                   "  const readRows = (table, decode) => {\n"
-                  "    if (budget) budget.preflightRows(counts[table], rowSizes[table]);\n"
-                  "    return Array.from({ length: counts[table] }, (_, i) => {\n"
+                  f"    const count = {count_expr};\n"
+                  "    if (budget) budget.preflightRows(count, rowSizes[table]);\n"
+                  "    return Array.from({ length: count }, (_, i) => {\n"
               )
               if text.count(old) != 1:
-                  raise SystemExit(f'{path}: readRows match count={text.count(old)}')
+                  raise SystemExit(f'{path}: readRows start count={text.count(old)}')
               text = text.replace(old, new, 1)
               old_end = "    return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };\n  });"
               new_end = "      return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };\n    });\n  };"
               if text.count(old_end) != 1:
-                  raise SystemExit(f'{path}: readRows end match count={text.count(old_end)}')
+                  raise SystemExit(f'{path}: readRows end count={text.count(old_end)}')
               p.write_text(text.replace(old_end, new_end, 1))
 
-          path = 'js/managed/cil/metadata-definitions.js'
+          wrap_read_rows('js/managed/cil/metadata-definitions.js', 'counts[table]')
+          wrap_read_rows('js/managed/cil/metadata-generics.js', 'counts[table]')
+          wrap_read_rows('js/managed/cil/metadata-manifest-security.js', 'counts[table] || 0')
+
           replace_once(
-              path,
+              'js/managed/cil/metadata-definitions.js',
               "  const typeSpecs = counts[0x1b] ? Array.from({ length: counts[0x1b] }, (_, i) => {\n",
               "  if (budget && counts[0x1b]) budget.preflightRows(counts[0x1b], rowSizes[0x1b]);\n"
               "  const typeSpecs = counts[0x1b] ? Array.from({ length: counts[0x1b] }, (_, i) => {\n",
           )
 
-          path = 'tests/phase11/cil/issue-8699-retained-row-heap-budget.test.mjs'
-          p = Path(path)
+          p = Path('tests/phase11/cil/issue-8699-retained-row-heap-budget.test.mjs')
           text = p.read_text()
           anchor = "  }\n\n  function genericParamAliasFixture(n) {"
           insert = "  }\n\n  {\n    const budget = createCilMetadataBudget({ resourceBudget: {\n      maxRows: 10_000_000, maxEstimatedHeapBytes: 1024, maxWork: 1000, deadlineMs: 10_000,\n    } });\n    assert.throws(() => budget.preflightRows(1_000_000, 8), /cil-metadata-resource-limit-heap/,\n      'table-sized result allocation must be rejected before Array.from materializes it');\n  }\n\n  function genericParamAliasFixture(n) {"
