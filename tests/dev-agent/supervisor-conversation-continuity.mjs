@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 import { DevSupervisorEngineV0 } from '../../js/ai/dev/supervisor/dev-supervisor-engine-v0.js';
 import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
 import { DevAgentUiSettings } from '../../js/ai/dev/ui/settings.js';
@@ -16,7 +17,7 @@ await testReleaseAdoptsAlreadyRoutedSupervisorSurfaceAfterVirtualization();
 console.log('dev-agent supervisor conversation continuity: ok');
 
 async function testWaitingHumanResumeRequiresConcreteConversationIdentity() {
-  const settings = new DevAgentUiSettings({ storage:null });
+  const settings = new DevAgentUiSettings({ authProvider: new AllowAllAdminProvider(), storage:null });
   const waitingRun = { status:'WAITING_HUMAN', hexConversationId:null };
   settings.setLastRun(waitingRun);
   const engine = new DevSupervisorEngineV0({ supervisor:{}, settings });
@@ -31,12 +32,12 @@ async function testWaitingHumanResumeRequiresConcreteConversationIdentity() {
 }
 
 async function testDevSupervisorRunReusesSessionWithinHexConversation() {
-  const settings = new DevAgentUiSettings({ storage: null });
+  const settings = new DevAgentUiSettings({ authProvider: new AllowAllAdminProvider(), storage: null });
   settings.setAgentProfile('dev');
   settings.setDecisionPolicy('yolo');
 
   let sequence = 0;
-  const supervisor = new DevSupervisorV0({
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
     idFactory: (kind) => `${kind}-${++sequence}`,
     now: () => '2026-08-18T00:00:00.000Z',
   });
