@@ -281,3 +281,15 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
 - canonical userscriptは2回buildで同一
   （`integration-7036-generated-hashes.json`）。
   この統合はbranch集約とmain追従であり、未解決の全体受入を成功に変えない。
+
+- clean `972c01bc0cdd6dc4cc81c14738cd2ee8ebcb2918` で関連305検査と
+  Phase7/8の実changed-file ownershipが成功。
+  Chromium/WebKitは並行検証時のproof unknownを記録し、同headで単独再実行すると
+  両方成功した。2000ms・分母・assertionは維持。両receiptを保存する。
+  `integration-7036-tests-committed`、`integration-7036-inventory-committed`、
+  `integration-7036-browser-committed`、`integration-7036-browser-isolated` を参照。
+  旧「mainに6競合」の残件は今回解消。全体受入と実機SKIPPEDは別扱い。
+
+- #7036へ `972c01bc0` をpush後、GitHubで#8888のMERGEDと
+  main比較の **behind=0 / ahead=259** を確認。統合前の108 behindは解消した。
+  #7036自身をmainへmergeしたという意味ではない。今後の作業先は#7036へ統一する。

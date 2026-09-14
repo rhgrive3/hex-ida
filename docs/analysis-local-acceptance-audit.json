@@ -1731,8 +1731,8 @@
     },
     "nonC4Continuation": {
       "date": "2026-09-14",
-      "branch": "codex/analysis-remaining-20260914",
-      "pullRequest": "https://github.com/rhgrive3/hex-ida/pull/8888",
+      "branch": "feat/analysis-roadmap-v8-current-main-20260907",
+      "pullRequest": 7036,
       "recordedAgainstHead": "3ea388914f4a1d002bfb619ec2e619a7ca75f319",
       "status": "IN PROGRESS",
       "assignedScopeComplete": false,
@@ -1884,7 +1884,6 @@
       "remaining": [
         "C1 non-escape positive versus both-root proof contract",
         "machine-effects x86 closure/decoder regressions and canonical check not green",
-        "candidate merge-tree against main conflicts in 6 paths",
         "Stage2 cross ARM64/arm64e/RISC-V and x86 baseline ran; x86 attach launcher PR_SET_PTRACER returns EINVAL in this environment (Yama interface absent). Canonical Stage2 not green.",
         "current-head independent review and integration acceptance; old PR R2 issue repaired, CLI review authentication still unavailable"
       ],
@@ -2085,8 +2084,46 @@
         "mainInput": "f1af93b04a9511703fba61e1b6b14d9fbce4b572",
         "behindBefore": 108,
         "method": "non-fast-forward merge; no force-push",
-        "fullAcceptance": false
-      }
+        "fullAcceptance": false,
+        "validatedIntegrationHead": "972c01bc0cdd6dc4cc81c14738cd2ee8ebcb2918",
+        "focusedTestsPassed": 305,
+        "receipts": [
+          {
+            "label": "integration-7036-tests-committed",
+            "sourceHead": "972c01bc0cdd6dc4cc81c14738cd2ee8ebcb2918",
+            "dirtyAtStart": [],
+            "exitCode": 0,
+            "logSha256": "bc02299e6884a8dd6fdb7a3c7143966953c6a7094d0d6c565d0febb348207b54"
+          },
+          {
+            "label": "integration-7036-inventory-committed",
+            "sourceHead": "972c01bc0cdd6dc4cc81c14738cd2ee8ebcb2918",
+            "dirtyAtStart": [],
+            "exitCode": 0,
+            "logSha256": "e2bd2471fbb7d28ed192f1abd394fc83ea8c065222e04a56702e528c9b69093f"
+          },
+          {
+            "label": "integration-7036-browser-committed",
+            "sourceHead": "972c01bc0cdd6dc4cc81c14738cd2ee8ebcb2918",
+            "dirtyAtStart": [],
+            "exitCode": 1,
+            "logSha256": "42ea79104186f68ce25c86d0162c6750709907dc5da3de4f34fa327e76a1a725"
+          },
+          {
+            "label": "integration-7036-browser-isolated",
+            "sourceHead": "972c01bc0cdd6dc4cc81c14738cd2ee8ebcb2918",
+            "dirtyAtStart": [],
+            "exitCode": 0,
+            "logSha256": "42be5bf15faf94d25227ae135a3c169489e8769c43f1c7666d2209828c0c819b"
+          }
+        ],
+        "browserNote": "Concurrent run failed at proof verdict; isolated unchanged-2000ms rerun passed both engines. Both receipts retained.",
+        "behindAfter": 0,
+        "supersededPullRequestState": "MERGED",
+        "mergedAt": "2026-09-14T16:01:45Z",
+        "publishedIntegrationHead": "972c01bc0cdd6dc4cc81c14738cd2ee8ebcb2918"
+      },
+      "backupBranch": "codex/analysis-remaining-20260914"
     }
   },
   "integrationFollowupHistory": [
