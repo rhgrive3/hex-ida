@@ -1,0 +1,76 @@
+name: tmp-l13-review-fix-8908-final
+on:
+  push:
+    branches:
+      - codex/issue-campaign-20260914-lane-03-batch-03
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/issue-campaign-20260914-lane-03-batch-03
+          fetch-depth: 0
+      - name: Guard exact reviewed ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "046196bc73abdcd1ddf26e272ca4ae366f84d511"
+          test "$(git rev-parse HEAD^^^^^)" = "63bc4e12d3ab4800421d6647ad69893108556e93"
+      - name: Apply repair and update aggregate-budget regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+          text = Path('.github/workflows/tmp-l13-review-fix-8908.yml').read_text()
+          start = "          python3 - <<'PY'\n"
+          end = "\n          PY"
+          script = text.split(start, 1)[1].split(end, 1)[0]
+          Path('/tmp/l13-apply.py').write_text(dedent(script))
+          PY
+          python3 /tmp/l13-apply.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('tests/phase11/cil/issue-8699-8797-public-parse-single-pass.test.mjs')
+          text = p.read_text()
+          old = "// #8797: a successful public parse performs each semantic overlay once. Each\n// overlay constructs one aggregate metadata budget, so one authoritative parse\n// creates two budgets total (metadata + manifest), not four from probe+parse."
+          new = "// #8797/#8699: a successful public parse performs each semantic overlay once,\n// and both overlays share one parser-wide aggregate metadata budget. This keeps\n// the retained-row/string/work ceiling authoritative across the whole parse."
+          if text.count(old) != 1:
+              raise SystemExit('single-pass budget comment mismatch')
+          text = text.replace(old, new, 1)
+          old_assert = "  assert.equal(starts, 2,\n    'public parse must not repeat completed metadata/manifest semantic overlays');"
+          new_assert = "  assert.equal(starts, 1,\n    'public parse must use one shared aggregate budget across metadata/manifest overlays');"
+          if text.count(old_assert) != 1:
+              raise SystemExit('single-pass budget assertion mismatch')
+          p.write_text(text.replace(old_assert, new_assert, 1))
+          PY
+      - name: Syntax validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in js/managed/cil/metadata-layout.js js/managed/cil/metadata-definitions.js js/managed/cil/metadata-generics.js js/managed/cil/metadata-manifest-security.js js/managed/cil/parser-overlay.js js/managed/cil/parser.js tests/phase11/cil/issue-8699-retained-row-heap-budget.test.mjs tests/phase11/cil/issue-8699-8797-public-parse-single-pass.test.mjs; do timeout 10s node --check "$f"; done
+      - name: Retained-row heap regression
+        run: timeout 45s node tests/phase11/cil/issue-8699-retained-row-heap-budget.test.mjs
+      - name: String alias and GenericParam regression
+        run: timeout 90s node tests/phase11/cil/issue-8699-cil-metadata-string-alias-budget.test.mjs
+      - name: Public parse single-pass regression
+        run: timeout 90s node tests/phase11/cil/issue-8699-8797-public-parse-single-pass.test.mjs
+      - name: ExportedType resolution regression
+        run: timeout 90s node tests/phase11/cil/issue-8797-cil-exportedtype-resolution-budget.test.mjs
+      - name: Definition identity regression
+        run: timeout 90s node tests/phase11/cil/issue-8778-cil-definition-identity.test.mjs
+      - name: Commit repair and remove transports
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/tmp-l13-review-fix-8908.yml .github/workflows/tmp-l13-review-fix-8908-diagnostic.yml .github/workflows/tmp-l13-review-fix-8908-final.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/managed/cil tests/phase11/cil .github/workflows/tmp-l13-review-fix-8908.yml .github/workflows/tmp-l13-review-fix-8908-diagnostic.yml .github/workflows/tmp-l13-review-fix-8908-final.yml
+          git commit -m "fix(cil): charge retained metadata rows against heap budget"
+          git push origin HEAD:codex/issue-campaign-20260914-lane-03-batch-03
