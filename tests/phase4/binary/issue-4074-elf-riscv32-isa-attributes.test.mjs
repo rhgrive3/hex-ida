@@ -47,7 +47,7 @@ function makeRiscv32Fixture() {
   w32(ph + 16, 0x100); // p_filesz
   w32(ph + 20, 0x100); // p_memsz
   w32(ph + 24, 7); // PF_R | PF_W | PF_X
-  w32(ph + 28, 0x1000); // p_align
+  w32(ph + 28, 0x100); // p_align; p_vaddr and p_offset are congruent modulo alignment
 
   // Section 1: .text at file offset 0x100, VA 0x1000, size 0x20
   b.fill(0x13, 0x100, 0x120); // nop
