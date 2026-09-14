@@ -113,6 +113,28 @@ async function testIssue48To60Regressions() {
   assert.equal(sparse.chunks.length, 1);
   assert.deepEqual([...sparse.subarray(0n, 6n)], [1, 2, 9, 9, 9, 9]);
 
+  // Review #7036: sparse cstring decoding must scan cached bytes by the
+  // range loader's bounded read-ahead, not by one subarray lookup per byte.
+  const cstringSize = 4096;
+  const cstringBytes = new Uint8Array(cstringSize).fill(0x41);
+  cstringBytes[cstringSize - 1] = 0;
+  const cstringSparse = new SparseByteBuffer(BigInt(cstringSize));
+  cstringSparse.add(0n, cstringBytes);
+  let cstringSubarrayCalls = 0;
+  const cstringBacking = {
+    __binaryByteBacking: true,
+    size: cstringSparse.size,
+    length: cstringSparse.length,
+    readAheadSize: cstringSize,
+    subarray(start, end) {
+      cstringSubarrayCalls++;
+      return cstringSparse.subarray(start, end);
+    },
+  };
+  const cstring = new ByteView(cstringBacking).cstring(0, cstringSize);
+  assert.equal(cstring.length, cstringSize - 1);
+  assert.ok(cstringSubarrayCalls <= 4, `sparse cstring used ${cstringSubarrayCalls} subarray calls for ${cstringSize} cached bytes`);
+
   let parserPasses = 0;
   const stagedSource = new MemoryByteSource(new Uint8Array(4096), { maxReadLength: 64 });
   const staged = await parseSourceRanges(stagedSource, (backing) => {

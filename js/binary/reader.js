@@ -166,9 +166,39 @@ export class ByteView {
       const nul = span.indexOf(0);
       raw = nul < 0 ? span : span.subarray(0, nul);
     } else {
+      // A sparse backing must scan in bounded blocks. Calling u8() one byte
+      // at a time turns every uncached character into a separate source read.
+      const blockSize = Number.isSafeInteger(this.bytes.readAheadSize) && this.bytes.readAheadSize > 0
+        ? this.bytes.readAheadSize
+        : 64 * 1024;
       let p = start;
-      while (p < end && this.u8(p) !== 0) p++;
-      raw = this.bytes.subarray(o, exposedOffset(p));
+      raw = this.bytes.subarray(o, o);
+      while (p < end) {
+        const blockEnd = p + BigInt(Math.min(blockSize, Number(end - p)));
+        let span;
+        try {
+          span = this.bytes.subarray(exposedOffset(p), exposedOffset(blockEnd));
+        } catch (error) {
+          if (error?.code !== 'BINARY_SOURCE_RANGE_MISSING') throw error;
+          const missing = typeof error.offset === 'bigint' ? error.offset : BigInt(error.offset ?? p);
+          if (missing > p) {
+            const cached = this.bytes.subarray(exposedOffset(p), exposedOffset(missing));
+            const cachedNul = cached.indexOf(0);
+            if (cachedNul >= 0) {
+              raw = this.bytes.subarray(o, exposedOffset(p + BigInt(cachedNul)));
+              break;
+            }
+          }
+          throw error;
+        }
+        const nul = span.indexOf(0);
+        if (nul >= 0) {
+          raw = this.bytes.subarray(o, exposedOffset(p + BigInt(nul)));
+          break;
+        }
+        p = blockEnd;
+        raw = this.bytes.subarray(o, exposedOffset(p));
+      }
     }
     try { return new TextDecoder('utf-8', { fatal: false }).decode(raw); }
     catch {
@@ -214,7 +244,7 @@ export class ByteView {
     let value = 0n;
     let shift = 0n;
     for (let i = 0; i < byteLimit; i++, p++) {
-      if (p >= hardEndBig) throw new BinaryReadError('ULEB128 crosses bounded substream', this.base + p);
+      if (p >= hardEndBig) throw new BinaryReadError(ULEB128 crosses bounded substream', this.base + p);
       this.check(p, 1);
       const b = this.u8(p);
       value |= BigInt(b & 0x7f) << shift;
@@ -244,7 +274,7 @@ export class ByteView {
       for (let i = 0; i < byteLimit; i++, p++) {
         if (p >= hardEnd) throw new BinaryReadError('SLEB128 crosses bounded substream', this.base + BigInt(p));
         this.check(p, 1);
-        b = this.u8(p);
+      b = this.u8(p);
         value |= BigInt(b & 0x7f) << shift;
         shift += 7n;
         if ((b & 0x80) === 0) {

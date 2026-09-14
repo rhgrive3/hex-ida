@@ -90,11 +90,20 @@ const report = {
   targets: {},
 };
 
-for (const target of files) {
-  const fixtureDigest = await verifyPinnedFixture(target);
+let currentTarget = 'initializing';
+const heartbeat = setInterval(() => {
+  console.error(`[binary-benchmark] still running (${currentTarget})`);
+}, 30_000);
+try {
+  for (const target of files) {
+    currentTarget = target.name;
+    const fixtureDigest = await verifyPinnedFixture(target);
   if (!target.spec && !fs.existsSync(target.path)) throw new Error(`${target.name}: benchmark input is missing at ${target.path}`);
   const samples = [];
-  for (let i = 0; i < sampleCount; i++) samples.push(await sample(target.path));
+    for (let i = 0; i < sampleCount; i++) {
+      console.error(`[binary-benchmark] ${target.name} sample ${i + 1}/${sampleCount}`);
+      samples.push(await sample(target.path));
+    }
   const identity = samples[0].identity;
   for (const row of samples.slice(1)) {
     if (JSON.stringify(row.identity) !== JSON.stringify(identity)) throw new Error(`${target.name}: non-deterministic loader identity across benchmark samples`);
@@ -113,6 +122,9 @@ for (const target of files) {
       samples: samples.map((x) => x.work),
     },
   };
+  }
+} finally {
+  clearInterval(heartbeat);
 }
 
 if (defaultRun && Object.keys(report.targets).length !== Object.keys(manifest.fixtures).length) {
