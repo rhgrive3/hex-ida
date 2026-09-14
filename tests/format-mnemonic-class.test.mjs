@@ -1,0 +1,96 @@
+import assert from 'node:assert/strict';
+import { mnemonicClass, parseHexPattern } from '../js/format.js';
+
+// --- Test 1: #6218 x86_64 control flow mnemonics ---
+{
+  assert.equal(mnemonicClass('jmp'), 'flow');
+  assert.equal(mnemonicClass('JMP'), 'flow');
+  assert.equal(mnemonicClass('call'), 'flow');
+  assert.equal(mnemonicClass('CALL'), 'flow');
+  assert.equal(mnemonicClass('ret'), 'flow');
+  assert.equal(mnemonicClass('retn'), 'flow');
+  assert.equal(mnemonicClass('retf'), 'flow');
+
+  const jcc = ['je', 'jne', 'jz', 'jnz', 'ja', 'jae', 'jb', 'jbe', 'jg', 'jge', 'jl', 'jle', 'jo', 'jno', 'js', 'jns', 'jp', 'jnp', 'jcxz', 'jecxz', 'jrcxz'];
+  for (const mn of jcc) {
+    assert.equal(mnemonicClass(mn), 'flow', `mnemonicClass('${mn}') must be 'flow'`);
+    assert.equal(mnemonicClass(mn.toUpperCase()), 'flow', `mnemonicClass('${mn.toUpperCase()}') must be 'flow'`);
+  }
+
+  // Non-flow x86 mnemonics
+  const nonFlow = ['mov', 'add', 'sub', 'xor', 'and', 'lea', 'nop', 'push', 'pop', 'test', 'cmp'];
+  for (const mn of nonFlow) {
+    assert.equal(mnemonicClass(mn), '', `mnemonicClass('${mn}') must be empty`);
+  }
+  console.log('✔ #6218 x86_64 control-flow classification passed');
+}
+
+// --- Test 2: #6161 ARM64e authenticated branch/exception-return mnemonics ---
+{
+  const pauth = ['braa', 'brab', 'braaz', 'brabz', 'blraa', 'blrab', 'blraaz', 'blrabz', 'retaa', 'retab', 'eret', 'eretaa', 'eretab'];
+  for (const mn of pauth) {
+    assert.equal(mnemonicClass(mn), 'flow', `mnemonicClass('${mn}') must be 'flow'`);
+    assert.equal(mnemonicClass(mn.toUpperCase()), 'flow', `mnemonicClass('${mn.toUpperCase()}') must be 'flow'`);
+  }
+
+  // Classic ARM64 branch mnemonics
+  const armClassic = ['b', 'bl', 'blr', 'br', 'cbz', 'cbnz', 'tbz', 'tbnz', 'b.eq', 'b.ne', 'b.gt', 'b.le', 'b.lt', 'svc', 'brk', 'hlt', 'bti'];
+  for (const mn of armClassic) {
+    assert.equal(mnemonicClass(mn), 'flow', `mnemonicClass('${mn}') must be 'flow'`);
+  }
+
+  // #5258: ARM64 logical, bitfield, and SIMD mnemonics are not branches.
+  const armNonFlowB = ['bic', 'bfc', 'bfi', 'bif', 'bit', 'bsl'];
+  for (const mn of armNonFlowB) {
+    assert.equal(mnemonicClass(mn), '', `mnemonicClass('${mn}') must be empty`);
+    assert.equal(mnemonicClass(mn.toUpperCase()), '', `mnemonicClass('${mn.toUpperCase()}') must be empty`);
+  }
+  assert.equal(mnemonicClass('b.zz'), '', "mnemonicClass('b.zz') must reject unknown condition codes");
+
+  // Non-flow ARM mnemonics
+  const armNonFlow = ['mov', 'add', 'ldr', 'str', 'stp', 'ldp', 'adrp', 'csel'];
+  for (const mn of armNonFlow) {
+    assert.equal(mnemonicClass(mn), '', `mnemonicClass('${mn}') must be empty`);
+  }
+  console.log('✔ #6161 ARM64e authenticated branch aliases passed');
+}
+
+// --- Test 3: Edge cases ---
+{
+  assert.equal(mnemonicClass(null), '');
+  assert.equal(mnemonicClass(undefined), '');
+  assert.equal(mnemonicClass(''), '');
+  assert.equal(mnemonicClass('.byte'), 'data');
+  console.log('✔ Edge cases passed');
+}
+
+// --- Test 4: #4664 hex prefix grammar ---
+{
+  const shape = (text) => {
+    const parsed = parseHexPattern(text);
+    return parsed && { bytes: [...parsed.bytes], mask: [...parsed.mask] };
+  };
+
+  assert.deepEqual(shape('48 65 6C'), {
+    bytes: [0x48, 0x65, 0x6c], mask: [0xff, 0xff, 0xff],
+  });
+  assert.deepEqual(shape('4865??6C'), {
+    bytes: [0x48, 0x65, 0x00, 0x6c], mask: [0xff, 0xff, 0x00, 0xff],
+  });
+  assert.deepEqual(shape('A? ?B'), {
+    bytes: [0xa0, 0x0b], mask: [0xf0, 0x0f],
+  });
+  assert.deepEqual(shape('0x48,0X65'), {
+    bytes: [0x48, 0x65], mask: [0xff, 0xff],
+  });
+  assert.deepEqual(shape('48_65-6C'), {
+    bytes: [0x48, 0x65, 0x6c], mask: [0xff, 0xff, 0xff],
+  });
+
+  for (const malformed of ['10x2', 'A0xB', '0x48x65', '0x', '0x 48', '0x,48', '0x0x48', '0x48,0x']) {
+    assert.equal(parseHexPattern(malformed), null, `${malformed} must not be laundered into another pattern`);
+  }
+  console.log('✔ #4664 misplaced hex prefixes are rejected');
+}
+
+console.log('\nAll format mnemonic-class tests PASSED!');

@@ -1,0 +1,277 @@
+import {
+  createPEMetadataBudget,
+  mappedFileSpanForRva,
+  parseCoffSymbols as parseCoffSymbolsCore,
+  parseDelayImports as parseDelayImportsCore,
+  parseImports as parseImportsCore,
+} from './pe-loader-core.js';
+
+function exactCStringAccounting(reader, budget) {
+  const rawCStringBytes = [];
+  const descriptorState = {
+    import: { seen: 0, terminated: false, budgetStopped: false },
+    delayImport: { seen: 0, terminated: false, budgetStopped: false, attrs: null, expectThunkRead: false },
+  };
+  let descriptorCapture = null;
+
+  const accountingReader = new Proxy(reader, {
+    get(target, property) {
+      if (property === 'cstring') {
+        return (start, max) => {
+          const value = target.cstring(start, max);
+          const nulAt = target.slice(start, max).indexOf(0);
+          rawCStringBytes.push(nulAt >= 0 ? nulAt + 1 : null);
+          return value;
+        };
+      }
+      if (property === 'u32') {
+        return (offset) => {
+          if (descriptorCapture?.kind === 'delay-import') {
+            const capture = descriptorCapture;
+            if (!capture.snapshot) {
+              capture.baseOffset = offset;
+              capture.snapshot = Array.from({ length: 8 }, (_, index) => target.u32(offset + index * 4));
+              capture.state.attrs = capture.snapshot[0];
+              if (capture.snapshot.every((field) => field === 0)) capture.state.terminated = true;
+            }
+            const index = (offset - capture.baseOffset) / 4;
+            if (Number.isInteger(index) && index >= 0 && index < 8) {
+              const value = capture.snapshot[index];
+              if (index === 7) descriptorCapture = null;
+              return value;
+            }
+          }
+          const value = target.u32(offset);
+          if (descriptorState.delayImport.expectThunkRead) {
+            descriptorState.delayImport.expectThunkRead = false;
+          }
+          if (descriptorCapture) {
+            descriptorCapture.values.push(value);
+            if (descriptorCapture.values.length === descriptorCapture.expected) {
+              if (descriptorCapture.values.every((field) => field === 0)) descriptorCapture.state.terminated = true;
+              descriptorCapture = null;
+            }
+          }
+          return value;
+        };
+      }
+      if (property === 'u64') {
+        return (offset) => {
+          const value = target.u64(offset);
+          const state = descriptorState.delayImport;
+          if (state.expectThunkRead) {
+            state.expectThunkRead = false;
+            const ordinalMask = 0x8000000000000000n;
+            const masked = value & 0x7fffffffffffffffn;
+            if ((state.attrs & 1) && value !== 0n && !(value & ordinalMask) && masked > 0xffffffffn) {
+              budget.partial(
+                'delay-imports:malformed-thunk',
+                'Ignored malformed PE delay-import thunk with out-of-range name RVA',
+              );
+            }
+          }
+          return value;
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+
+  const accountingBudget = new Proxy(budget, {
+    get(target, property) {
+      if (property === 'take') {
+        return (cost = {}, reason = 'metadata') => {
+          let exactCost = cost;
+          if (typeof reason === 'string' && reason.endsWith('-string') && rawCStringBytes.length) {
+            const inputBytes = rawCStringBytes.shift();
+            if (inputBytes != null) exactCost = { ...cost, inputBytes };
+          }
+          const accepted = Reflect.apply(Reflect.get(target, 'take', target), target, [exactCost, reason]);
+          const descriptor = reason === 'import-descriptor'
+            ? { state: descriptorState.import, expected: 5 }
+            : reason === 'delay-import-descriptor'
+              ? { state: descriptorState.delayImport, expected: 8, kind: 'delay-import' }
+              : null;
+          if (descriptor) {
+            if (accepted) {
+              descriptor.state.seen++;
+              descriptorCapture = { ...descriptor, values: [] };
+            } else {
+              descriptor.state.budgetStopped = true;
+              descriptorCapture = null;
+            }
+          }
+          if (reason === 'delay-import-thunk') {
+            descriptorState.delayImport.expectThunkRead = accepted;
+          }
+          return accepted;
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+
+  return { reader: accountingReader, budget: accountingBudget, descriptorState };
+}
+
+function delegatedContext(reader, image, sharedBudget) {
+  const budget = sharedBudget || createPEMetadataBudget(image);
+  return exactCStringAccounting(reader, budget);
+}
+
+// The core parser walks the *mapped* file-backed span for the directory
+// (mappedFileSpanForRva), never the raw declared directory.size: capacity
+// beyond the mapped span is not reachable and must not drive exhaustion
+// classification. Mirrors parseImportsCore's loop conditions exactly.
+function mappedDescriptorCapacity(directory, image, descriptorSize) {
+  const dirRange = mappedFileSpanForRva(image, directory.rva, directory.size);
+  if (!dirRange) return null;
+  const mappedBytes = Math.min(directory.size, dirRange.spanEnd - dirRange.start);
+  return Math.floor(mappedBytes / descriptorSize);
+}
+
+function markImportDescriptorGuard(context, directory, image) {
+  const state = context.descriptorState.import;
+  const capacity = mappedDescriptorCapacity(directory, image, 20);
+  if (!capacity || state.terminated || state.budgetStopped || state.seen !== 65536) return;
+  const hasTrailingDescriptor = capacity > state.seen;
+  if (!hasTrailingDescriptor) return;
+  image.metadata.peImports ||= { complete: true, truncatedTables: 0 };
+  image.metadata.peImports.complete = false;
+  image.metadata.peImports.truncatedTables++;
+  context.budget.partial('imports-partial', 'PE import descriptor table exceeded its 65536-record safety guard without a zero descriptor');
+}
+
+function markDelayImportDescriptorTermination(context, directory, image) {
+  const state = context.descriptorState.delayImport;
+  if (state.seen === 0) return;
+  const capacity = mappedDescriptorCapacity(directory, image, 32);
+  if (state.terminated || state.budgetStopped) return;
+  const hitGuardWithTrailingCapacity = state.seen === 65536 && capacity !== null && capacity > state.seen;
+  context.budget.partial(
+    'delay-imports:unterminated-descriptor',
+    hitGuardWithTrailingCapacity
+      ? 'PE delay-import descriptor table exceeded its 65536-record safety guard without a zero descriptor'
+      : 'PE delay-import descriptor table reached its mapped boundary without a zero descriptor',
+  );
+}
+
+function coffSectionNumberGuard(reader, image, budget, pointer, count) {
+  const tableBytes = count * 18;
+  const tableEnd = Number.isSafeInteger(pointer) && Number.isSafeInteger(tableBytes)
+    ? pointer + tableBytes
+    : null;
+  if (!Number.isSafeInteger(tableEnd) || pointer < 0 || tableBytes < 0) {
+    return { reader, image };
+  }
+
+  const sectionIndexes = new Set(
+    (Array.isArray(image.sections) ? image.sections : [])
+      .map((section) => section?.index)
+      .filter((index) => Number.isInteger(index) && index > 0),
+  );
+  const invalidSectionNumber = (sectionNumber) => (
+    (sectionNumber > 0 && !sectionIndexes.has(sectionNumber))
+    || sectionNumber < -2
+  );
+
+  const validatingReader = new Proxy(reader, {
+    get(target, property) {
+      if (property === 'i16') {
+        return (offset) => {
+          const sectionNumber = target.i16(offset);
+          const relative = offset - pointer;
+          if (
+            Number.isSafeInteger(relative)
+            && relative >= 12
+            && offset < tableEnd
+            && relative % 18 === 12
+            && invalidSectionNumber(sectionNumber)
+          ) {
+            budget.partial(
+              'coff:invalid-section-number',
+              `Ignored PE COFF symbol with invalid SectionNumber ${sectionNumber}`,
+            );
+          }
+          return sectionNumber;
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+
+  const validatingSymbols = new Proxy(image.symbols, {
+    get(target, property) {
+      if (property === 'push') {
+        return (...entries) => {
+          const accepted = entries.filter((entry) => !(
+            entry?.source === 'COFF'
+            && invalidSectionNumber(entry.sectionIndex)
+          ));
+          return accepted.length ? target.push(...accepted) : target.length;
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+
+  const validatingImage = new Proxy(image, {
+    get(target, property) {
+      if (property === 'symbols') return validatingSymbols;
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+
+  return { reader: validatingReader, image: validatingImage };
+}
+
+export function parseImports(reader, directory, image, sharedBudget = null) {
+  if (!directory || !directory.rva || !directory.size) {
+    return parseImportsCore(reader, directory, image, sharedBudget);
+  }
+  const context = delegatedContext(reader, image, sharedBudget);
+  const result = parseImportsCore(context.reader, directory, image, context.budget);
+  markImportDescriptorGuard(context, directory, image);
+  return result;
+}
+
+export function parseCoffSymbols(reader, pointer, count, image, sharedBudget = null) {
+  if (!pointer || !count) {
+    return parseCoffSymbolsCore(reader, pointer, count, image, sharedBudget);
+  }
+  const context = delegatedContext(reader, image, sharedBudget);
+  const tableBytes = count * 18;
+  const stringBase = Number.isSafeInteger(pointer) && Number.isSafeInteger(tableBytes)
+    ? pointer + tableBytes
+    : null;
+  if (Number.isSafeInteger(stringBase) && stringBase >= 0 && stringBase + 4 <= reader.length) {
+    const stringSize = reader.u32(stringBase);
+    if (stringSize < 4) {
+      context.budget.partial(
+        'coff:string-table-size',
+        `PE COFF string table size ${stringSize} is smaller than 4`,
+      );
+    }
+  }
+  const guarded = coffSectionNumberGuard(context.reader, image, context.budget, pointer, count);
+  return parseCoffSymbolsCore(guarded.reader, pointer, count, guarded.image, context.budget);
+}
+
+export function parseDelayImports(reader, directory, image, sharedBudget = null) {
+  if (!directory || !directory.rva || directory.size < 32) {
+    return parseDelayImportsCore(reader, directory, image, sharedBudget);
+  }
+  const context = delegatedContext(reader, image, sharedBudget);
+  const warningStart = image.warnings.length;
+  const result = parseDelayImportsCore(context.reader, directory, image, context.budget);
+  if (image.warnings.slice(warningStart).some((warning) => warning.startsWith('Ignored malformed PE delay-import thunk'))) {
+    context.budget.partial('delay-imports:malformed-thunk');
+  }
+  markDelayImportDescriptorTermination(context, directory, image);
+  return result;
+}

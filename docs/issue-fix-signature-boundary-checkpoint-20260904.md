@@ -1,0 +1,38 @@
+# Simple issue owner-lane checkpoint — signature collection boundaries
+
+Status: `CHECKS_PENDING`
+
+This checkpoint records the resumable state for the `codex` owner lane for the
+library recognition collection issue. Update it at every branch, PR, or merge stage.
+
+## Scope and ownership
+
+- Issues: #6103 (non-array library recognition collections leak TypeError), #6050 (structured leaf evidence coercion)
+- Source owner: `js/signature/index.js`
+- Regression owner: `tests/phase4/issue-6103-signature-boundary.test.mjs`
+- Shared-board claim: lanes message #262
+- Branch: `fix/issues-signature-boundary-6103`
+- Candidate base: `origin/main` at `f00154dcb9b2234cbacb4c6a3c2186d00c8a4b3a`
+- Implementation head: `58d88d03e76e7d940b231de5b3da6be573a23c2f`
+- Current remote head: `origin/fix/issues-signature-boundary-6103` at `86766e754cdbfb14bedd579c5ffb3a0935ba1bdf`
+- Pull request: #6490 — https://github.com/rhgrive3/hex-ida/pull/6490
+
+## Stages
+
+- [x] Read shared-board lanes through message #261 and checked open-PR path overlap.
+- [x] Claimed `js/signature/index.js` and its focused regression path on the shared board (#262).
+- [x] Reproduced raw TypeErrors for non-array `symbols`, `imports`, `libraries`, and `strings` on the candidate base.
+- [x] Added fail-soft collection materialization while preserving Array and Set recognition.
+- [x] Added primitive-string validation for object `name`/`library`/`text` leaves.
+- [x] Focused regression and lint passed locally.
+- [x] Candidate tree `9b924261e337eaa8127af02a0187af83ba8632ce` passed focused regression and lint; Phase 4 reached 33-file PASS before the known pristine-main ownership-contract failure.
+- [x] Created one owner PR for #6103 and #6050: #6490.
+- [x] Exact-head candidate evidence and required-check status were recorded in PR #6490; the common Phase 4 ownership-contract failure remains reproducible on pristine `origin/main`.
+- [ ] Merge only after exact-head evidence is green; otherwise record the blocker here and on the board.
+
+## Resume procedure
+
+Fetch `origin/main`, verify this branch and its exact base, read the shared board
+after #262, then continue from the first unchecked stage. Repository-wide red
+gates must be compared with a pristine `origin/main` baseline before being
+treated as a lane regression.

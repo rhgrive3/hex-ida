@@ -1,0 +1,293 @@
+import { boundedInteger } from '../debug/adapter.js';
+import { GROUP } from '../evidence.js';
+import { stableDigest, deepFreeze } from '../core/identity/index.js';
+import { snapshotContractData, recordFields, exactString, exactInteger, stringSet, contractFail } from '../core/identity/structured.js';
+
+function nowIso() { return new Date().toISOString(); }
+let RUN_OCCURRENCE_SEQUENCE = 0;
+function safeConfidence(value, fallback = 0.5) { return typeof value === 'number' && Number.isFinite(value) ? Math.max(0,Math.min(1,value)) : fallback; }
+function idPart(value) {
+  const raw = String(value == null ? '' : value);
+  if (/^[a-zA-Z0-9_.:-]*$/.test(raw)) {
+    if (raw.length <= 160) return raw;
+    return `${raw.slice(0, 160)}~${stableDigest(raw)}`;
+  }
+  return `${raw.slice(0, 160).replace(/[^a-zA-Z0-9_.:-]/g, '_')}~${stableDigest(raw)}`;
+}
+function occurrencePart(value) {
+  if (typeof value === 'string') {
+    if (!value || idPart(value) !== value) throw new TypeError('runtime evidence occurrence must be a canonical primitive identity');
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) throw new TypeError('runtime evidence occurrence must be a canonical primitive identity');
+    return String(value);
+  }
+  if (typeof value === 'bigint') {
+    if (value < 0n) throw new TypeError('runtime evidence occurrence must be a canonical primitive identity');
+    return value.toString();
+  }
+  throw new TypeError('runtime evidence occurrence must be a canonical primitive identity');
+}
+function provenanceIdentity(value, fallback, field) {
+  const identity = value == null ? fallback : value;
+  if (typeof identity !== 'string' || identity.length === 0 || idPart(identity) !== identity) {
+    throw new TypeError(`runtime provenance ${field} must be a non-empty string`);
+  }
+  return identity;
+}
+function provenancePart(value, fallback, field) { return idPart(provenanceIdentity(value, fallback, field)); }
+function addressValue(value) {
+  let address;
+  if (typeof value === 'bigint') address = value;
+  else if (typeof value === 'number') address = Number.isSafeInteger(value) ? BigInt(value) : null;
+  else {
+    if (typeof value !== 'string' || value.trim() === '') return null;
+    try { address = BigInt(value.trim()); } catch { return null; }
+  }
+  return address != null && address >= 0n ? address : null;
+}
+function sameAddress(a,b) { const left=addressValue(a); const right=addressValue(b); return left != null && right != null && left === right; }
+const VERDICT_PRIORITY = Object.freeze({ unsupported:0, inconclusive:1, supported:2, confirmed:3, contradicted:4 });
+function verdictPriority(value) { return VERDICT_PRIORITY[value] ?? 1; }
+function runtimeEvidenceGroupKey(item) {
+  const provenance = item && item.provenance;
+  if (provenance && typeof provenance === 'object') {
+    const raw = provenance.observationGroup ?? provenance.group;
+    if (raw != null) return typeof raw === 'string' && raw.length > 0 && raw.trim() === raw ? raw : null;
+  }
+  // No-group fallback accepts only canonical primitive non-empty strings as
+  // group authority. Malformed ids (arrays, objects, padded/empty strings)
+  // return null so the caller counts them as ignored evidence instead of
+  // minting one independence group per distinct Array instance (or worse,
+  // collapsing distinct instances through String() coercion).
+  const id = item && item.id;
+  return typeof id === 'string' && id.length > 0 && id.trim() === id ? id : null;
+}
+function runtimeEvidenceId(value, fallback) {
+  if (value == null) return fallback;
+  if (typeof value !== 'string' || value.length === 0 || value.trim() !== value) {
+    throw new TypeError('runtime evidence id must be a non-empty canonical string');
+  }
+  return value;
+}
+
+
+/** Optional scoped provenance is observational data, never an execution grant.
+ * Keep synthetic/intervened experiments out of legacy natural-fact promotion.
+ */
+export function normalizeScopedExperimentObservation(input) {
+  const value = snapshotContractData(input, { maxNodes: 512, maxBytes: 32768 });
+  recordFields(value, ['schema', 'worldId', 'assumptionsId', 'snapshotId', 'planId', 'authorizationId',
+    'sessionEpoch', 'observationMode', 'interventionIds', 'classification', 'moduleBinding'], 'scoped-observation-fields');
+  if (value.schema !== 'scoped-experiment-observation/v1' || value.observationMode !== 'intervened'
+    || value.classification !== 'observation-only') contractFail('scoped-observation-classification');
+  for (const key of ['worldId', 'assumptionsId', 'snapshotId', 'planId', 'authorizationId']) exactString(value[key], 'scoped-observation-binding');
+  exactInteger(value.sessionEpoch, 'scoped-observation-epoch', { min: 1 });
+  const interventionIds = stringSet(value.interventionIds, 'scoped-observation-interventions', 16);
+  if (!interventionIds.includes(value.planId)) contractFail('scoped-observation-missing-intervention');
+  if (value.moduleBinding != null) {
+    const b = value.moduleBinding;
+    recordFields(b, ['schema', 'worldId', 'assumptionsId', 'snapshotId', 'runtimeSessionId', 'debugSessionId',
+      'providerId', 'providerVersion', 'sessionEpoch', 'moduleBindingKey', 'moduleGeneration', 'runtimeAddress',
+      'staticAddress', 'binaryId', 'sliceId', 'identityEvidenceIds', 'authority'], 'scoped-observation-module-fields');
+    if (b.schema !== 'scoped-experiment-module-binding/v1' || b.authority !== 'current-provider-owner-premise'
+      || b.worldId !== value.worldId || b.assumptionsId !== value.assumptionsId || b.snapshotId !== value.snapshotId
+      || b.sessionEpoch !== value.sessionEpoch) contractFail('scoped-observation-module-binding');
+    for (const k of ['runtimeSessionId', 'debugSessionId', 'providerId', 'providerVersion', 'moduleBindingKey',
+      'runtimeAddress', 'staticAddress', 'binaryId', 'sliceId']) exactString(b[k], 'scoped-observation-module-identity');
+    exactInteger(b.moduleGeneration, 'scoped-observation-module-generation', { min: 1 });
+    if (!stringSet(b.identityEvidenceIds, 'scoped-observation-module-evidence', 64).length) contractFail('scoped-observation-module-evidence');
+  }
+  return deepFreeze({ ...value, interventionIds });
+}
+export function createRuntimeEvidenceRecord(input = {}) {
+  const scopedObservation = input.scopedObservation == null ? null : normalizeScopedExperimentObservation(input.scopedObservation);
+  const rawSessionId = input.sessionId;
+  const rawExperimentId = input.experimentId;
+  const rawCaseId = input.caseId;
+  const rawProvenanceGroup = input.provenanceGroup;
+  const sessionId = rawSessionId == null ? null : provenanceIdentity(rawSessionId, null, 'sessionId');
+  const experimentId = rawExperimentId == null ? null : provenanceIdentity(rawExperimentId, null, 'experimentId');
+  const caseId = rawCaseId == null ? null : provenanceIdentity(rawCaseId, null, 'caseId');
+  const explicitGroup = rawProvenanceGroup == null ? null : provenanceIdentity(rawProvenanceGroup, null, 'provenanceGroup');
+  const traceGroup = explicitGroup || `runtime:${idPart(sessionId || 'session')}:${idPart(experimentId || input.function || 'observation')}:${idPart(caseId || 'case')}`;
+  const resolvedTimestamp = input.timestamp || nowIso();
+  const hasObservationPayload = input.input != null || input.initialState != null
+    || input.observedState != null || (Array.isArray(input.branchPath) && input.branchPath.length > 0);
+  const isBare4327Shape = !hasObservationPayload
+    && (input.verdict ?? 'inconclusive') === 'inconclusive'
+    && input.timestamp == null;
+  const observationContent = {
+    input: input.input ?? null,
+    initialState: input.initialState ?? null,
+    observedState: input.observedState ?? null,
+    branchPath: Array.isArray(input.branchPath) ? input.branchPath : [],
+    verdict: input.verdict ?? 'inconclusive',
+    runTimestamp: isBare4327Shape ? null : resolvedTimestamp,
+    ...(scopedObservation ? { scopedObservation } : {}),
+  };
+  let occurrence = '';
+  if (input.id == null && !isBare4327Shape) {
+    const identity = input.occurrence == null
+      ? `auto-${(RUN_OCCURRENCE_SEQUENCE++).toString(36)}`
+      : occurrencePart(input.occurrence);
+    occurrence = `:${stableDigest(observationContent)}#${identity}`;
+  }
+  const generatedId = `${traceGroup}:${idPart(input.kind || 'observation')}${occurrence}`;
+  return {
+    id:runtimeEvidenceId(input.id, generatedId),
+    source:'runtime', backend:String(input.backend || 'unknown').slice(0,128), binaryHash:input.binaryHash || null, sliceIdentity:input.sliceIdentity || null,
+    function:input.function == null ? null : input.function, address:input.address == null ? null : input.address,
+    input:input.input ?? null, initialState:input.initialState ?? null, observedState:input.observedState ?? null,
+    branchPath:Array.isArray(input.branchPath) ? input.branchPath.slice(0,4096) : [], timestamp:resolvedTimestamp, sessionId,
+    reproducibility:input.reproducibility || { replayable:false, runs:1, consistent:null },
+    confidence:safeConfidence(input.confidence), verdict:input.verdict || 'inconclusive', kind:input.kind || 'observation',
+    provenance:{ group:GROUP.RUNTIME, observationGroup:traceGroup, independent:false, parent:input.parentEvidenceId || null },
+    ...(scopedObservation ? { scopedObservation, verdict: 'inconclusive', confidence: 0.35 } : {}),
+  };
+}
+
+export function evidenceFromExperiment({ experiment, testCase, observation, comparison, backend = 'unknown', binaryHash = null, sliceIdentity = null, sessionId = null, replayable = false }) {
+  const group = `runtime:${provenancePart(sessionId, 'session', 'sessionId')}:${provenancePart(experiment.id, null, 'experimentId')}:${provenancePart(testCase.id, null, 'caseId')}`;
+  return createRuntimeEvidenceRecord({
+    backend, binaryHash:binaryHash || experiment.binaryHash, sliceIdentity, function:experiment.functionAddress, input:testCase.input,
+    initialState:testCase.initialState, observedState:{ returnValue:observation.returnValue, registerDelta:observation.registerDelta, memoryDelta:observation.memoryDelta, memoryAfter:observation.memoryAfter, stop:observation.stop },
+    branchPath:observation.branches || [], sessionId, experimentId:experiment.id, caseId:testCase.id, verdict:comparison.status,
+    confidence:comparison.status === 'supported' ? 0.8 : comparison.status === 'contradicted' ? 0.9 : 0.35,
+    kind:'experiment', provenanceGroup:group, reproducibility:{ replayable:!!replayable, runs:1, consistent:null },
+    scopedObservation: experiment.scopedObservation ?? null
+  });
+}
+
+function attachFactExtractionMetadata(facts, metadata) {
+  Object.defineProperty(facts, 'facts', { value:facts, enumerable:false, configurable:false, writable:false });
+  for (const [key, value] of Object.entries(metadata)) {
+    Object.defineProperty(facts, key, { value, enumerable:false, configurable:false, writable:false });
+  }
+  return facts;
+}
+
+export function traceToSemanticFacts(trace, context = {}) {
+  let events = [];
+  if (Array.isArray(trace)) events = trace;
+  else if (trace && typeof trace === 'object') {
+    if (trace.events != null && !Array.isArray(trace.events)) throw new TypeError('runtime trace events must be an array');
+    events = trace.events || [];
+  }
+  const limit = boundedInteger(context.limit, 10000, 1, 50000, 'fact limit');
+  const rawSessionId = context.sessionId;
+  const rawTraceId = context.traceId;
+  const rawProvenanceGroup = context.provenanceGroup;
+  const sessionId = rawSessionId == null ? null : provenanceIdentity(rawSessionId, null, 'sessionId');
+  const traceId = rawTraceId == null ? null : provenanceIdentity(rawTraceId, null, 'traceId');
+  const explicitGroup = rawProvenanceGroup == null ? null : provenanceIdentity(rawProvenanceGroup, null, 'provenanceGroup');
+  const group = explicitGroup || `trace:${idPart(sessionId || 'session')}:${idPart(traceId || 'trace')}`;
+  const facts = [];
+  let processedEvents = 0;
+  let hitFactLimit = false;
+  for (const event of events) {
+    if (facts.length >= limit) { hitFactLimit = true; break; }
+    processedEvents++;
+    const common = { runtime:true, sessionId, binaryHash:context.binaryHash || null, provenance:{ group:GROUP.RUNTIME, observationGroup:group, independent:false }, address:event.address ?? null, confidence:safeConfidence(context.confidence,0.8) };
+    if (event.type === 'memory-read') facts.push({ ...common, kind:'reads-field', location:{ address:event.address, region:event.region, size:event.size }, value:event.value });
+    else if (event.type === 'memory-write') facts.push({ ...common, kind:'writes-field', location:{ address:event.address, region:event.region, size:event.size }, before:event.before, value:event.after });
+    else if (event.type === 'call') facts.push({ ...common, kind:'calls-target', target:event.target ?? null, text:event.text || null });
+    else if (event.type === 'branch') facts.push({ ...common, kind:'branch-taken', target:event.next ?? null, taken:event.taken !== false, text:event.text || null });
+    else if (event.type === 'return') facts.push({ ...common, kind:'returns-value', value:event.value ?? null, text:event.text || null });
+    else if (event.type === 'objc-dispatch') facts.push({ ...common, kind:'objc-dispatch', className:event.className || null, selector:event.selector || null, imp:event.imp || null });
+    else if (event.type === 'swift-dispatch') facts.push({ ...common, kind:'swift-dispatch', dynamicType:event.dynamicType || null, metadata:event.metadata || null, witnessTarget:event.witnessTarget || null, vtableTarget:event.vtableTarget || null, asyncContext:event.asyncContext || null });
+  }
+  const sourceTruncated = !!(trace && !Array.isArray(trace) && (trace.truncated || Number(trace.dropped || 0) > 0));
+  const truncated = hitFactLimit || sourceTruncated;
+  const reasons = [];
+  if (hitFactLimit) reasons.push('fact-limit');
+  if (sourceTruncated) reasons.push('source-trace-truncated');
+  const complete = !truncated;
+  for (const fact of facts) fact.observationComplete = complete;
+  return attachFactExtractionMetadata(facts, {
+    complete,
+    truncated,
+    processedEvents,
+    totalEvents: events.length,
+    factCount: facts.length,
+    limit,
+    reasons,
+  });
+}
+
+export function compareRuntimeDispatch(staticTargets, runtimeEvent) {
+  const candidates = (Array.isArray(staticTargets) ? staticTargets : [staticTargets]).filter((v) => v != null).map(addressValue).filter((v) => v != null);
+  const observedRaw = runtimeEvent && (runtimeEvent.imp ?? runtimeEvent.witnessTarget ?? runtimeEvent.vtableTarget ?? runtimeEvent.target);
+  if (observedRaw == null) return { status:'inconclusive', observed:null, candidates };
+  const observed = addressValue(observedRaw);
+  if (observed == null) return { status:'inconclusive', observed:null, candidates };
+  if (!candidates.length) return { status:'inconclusive', observed, candidates, reason:'runtime-target-observed-without-static-candidate' };
+  return candidates.some((c) => c === observed)
+    ? { status:'supported', observed, candidates, reason:'runtime-target-matches-static-candidate' }
+    : { status:'contradicted', observed, candidates, reason:'runtime-target-not-in-static-candidates' };
+}
+
+export function dynamicTypeAnnotation(event, context = {}) {
+  if (!event || (!event.dynamicType && !event.className)) return null;
+  return {
+    kind:'runtime-type-annotation', candidate:event.dynamicType || event.className, address:event.object ?? event.address ?? null,
+    source:'runtime', binaryHash:context.binaryHash || null, sessionId:context.sessionId || null, backend:context.backend || null,
+    confidence:safeConfidence(context.confidence,0.85), permanent:false, timestamp:nowIso(),
+  };
+}
+
+export function fuseStaticDynamic(staticCandidate, runtimeEvidence = []) {
+  const candidateHash = staticCandidate && staticCandidate.binaryHash || null;
+  const candidateFunction = staticCandidate && staticCandidate.functionAddress != null ? staticCandidate.functionAddress : null;
+  const candidateSlice = staticCandidate && staticCandidate.sliceIdentity || null;
+  const evidence = runtimeEvidence.filter((item) => item && (item.source === 'runtime' || item.provenance && item.provenance.group === GROUP.RUNTIME));
+  if (!candidateHash || candidateFunction == null) {
+    return { candidate:staticCandidate, status:'inconclusive', reason:'identity-missing', confidence:safeConfidence(staticCandidate && staticCandidate.confidence,0.5), runtimeGroups:0, support:0, contradictions:0, ignoredEvidence:evidence.length, evidence:[] };
+  }
+  const compatible = [];
+  let ignoredEvidence = 0;
+  for (const item of evidence) {
+    if (candidateHash && item.binaryHash !== candidateHash) { ignoredEvidence++; continue; }
+    const itemSlice = item.sliceIdentity || null;
+    if (itemSlice !== candidateSlice) { ignoredEvidence++; continue; }
+    if (candidateFunction != null && (item.function == null || !sameAddress(candidateFunction,item.function))) { ignoredEvidence++; continue; }
+    compatible.push(item);
+  }
+  const groups = new Map();
+  for (const item of compatible) {
+    const group = runtimeEvidenceGroupKey(item);
+    if (group == null) { ignoredEvidence++; continue; }
+    const existing = groups.get(group);
+    if (!existing || verdictPriority(item.verdict) > verdictPriority(existing.verdict)) groups.set(group,item);
+  }
+  const independent = [...groups.values()];
+  const contradictions = independent.filter((e) => e.verdict === 'contradicted').length;
+  const support = independent.filter((e) => e.verdict === 'supported' || e.verdict === 'confirmed').length;
+  const base = safeConfidence(staticCandidate && staticCandidate.confidence,0.5);
+  let confidence = base; let status = 'inconclusive';
+  if (contradictions) { confidence = Math.max(0.02, base * Math.pow(0.35,contradictions)); status='contradicted'; }
+  else if (support) { confidence = Math.min(0.98, 1 - (1-base) * Math.pow(0.55,support)); status='supported'; }
+  return { candidate:staticCandidate, status, confidence, runtimeGroups:independent.length, support, contradictions, ignoredEvidence, evidence:independent.map((e) => e.id) };
+}
+
+export function createRuntimeAgentTools(platform) {
+  const requirePlatform = () => { if (!platform) throw new Error('runtime-platform-unavailable'); return platform; };
+  const ensureEvidence = (result) => { if (!result || !result.evidence || (Array.isArray(result.evidence) && !result.evidence.length)) throw new Error('runtime-evidence-required'); return result; };
+  return {
+    runtime_verify_function: async (functionAddress, options) => ensureEvidence(await requirePlatform().verifyFunction(functionAddress, options || {})),
+    run_experiment: async (experiment, options) => ensureEvidence(await requirePlatform().runExperiment(experiment, options || {})),
+    trace_function: async (functionAddress, options) => ensureEvidence(await requirePlatform().traceFunction(functionAddress, options || {})),
+    read_runtime_field: async (address, size = 8) => ensureEvidence(await requirePlatform().readRuntimeField(address, size)),
+    compare_before_after: async (experiment, options) => ensureEvidence(await requirePlatform().runExperiment(experiment, { ...(options || {}), compareOnly:true })),
+    verify_hypothesis: async (hypothesis, options) => ensureEvidence(await requirePlatform().verifyHypothesis(hypothesis, options || {})),
+  };
+}
+
+export function registerRuntimeAgentTools(target, platform) {
+  if (!target || typeof target !== 'object') throw new Error('runtime-tool-target-required');
+  Object.assign(target, createRuntimeAgentTools(platform));
+  return target;
+}
+
+export const RUNTIME_TOOL_NAMES = Object.freeze(['runtime_verify_function','run_experiment','trace_function','read_runtime_field','compare_before_after','verify_hypothesis']);

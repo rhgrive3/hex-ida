@@ -1,0 +1,712 @@
+import { AnalysisQueryAPI } from './query/api.js';
+import { createAppAnalysisQueryAdapter as createBaseQueryAdapter } from './query/app-adapter.js';
+import { createBinaryIdFromDigest } from '../core/identity/index.js';
+import { canonicalContentDigest } from './binary-identity-digest.js';
+import { ProgramIndex, mergeProgramScans, PROGRAM_MERGE_LIMITS } from '../program.js';
+import { foldShapes } from '../shapes.js';
+
+const RUNTIME_VERSION = 'demand-driven-analysis/v1';
+const MAX_PAGE = 5000;
+const MAX_LOCAL_SCAN_CACHE = 32;
+const OBJECT_IDS = new WeakMap();
+let nextObjectId = 1;
+
+function objectId(value) {
+  if (!value || (typeof value !== 'object' && typeof value !== 'function')) return String(value ?? 'null');
+  let id = OBJECT_IDS.get(value);
+  if (!id) { id = nextObjectId++; OBJECT_IDS.set(value, id); }
+  return String(id);
+}
+function storeValue(app, key) {
+  try { return typeof app?.store?.get === 'function' ? app.store.get(key) : app?.store?.[key]; }
+  catch { return null; }
+}
+function architectureOf(app) {
+  const value = storeValue(app, 'architecture')
+    || app?.currentSlice?.()?.capability?.architecture
+    || 'unknown';
+  if (typeof value !== 'string') return 'unknown';
+  const architecture = value.trim().toLowerCase();
+  return architecture || 'unknown';
+}
+function abortError(signal, message = 'Analysis query aborted') {
+  if (signal?.reason instanceof Error) return signal.reason;
+  const error = new Error(message); error.name = 'AbortError'; return error;
+}
+function abortIfNeeded(signal) { if (signal?.aborted) throw abortError(signal); }
+function waitForSearchRequest(request, signal) {
+  const task = Promise.resolve(request);
+  if (signal?.aborted) {
+    try { request?.cancel?.(); } catch { /* cancellation is best-effort */ }
+    void task.catch(() => {});
+    return Promise.reject(abortError(signal, 'Search aborted'));
+  }
+  if (!signal?.addEventListener) return task;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener?.('abort', onAbort);
+      fn(value);
+    };
+    const onAbort = () => {
+      if (settled) return;
+      try { request?.cancel?.(); } catch { /* cancellation is best-effort */ }
+      finish(reject, abortError(signal, 'Search aborted'));
+    };
+    signal.addEventListener('abort', onAbort, { once:true });
+    task.then((value) => finish(resolve, value), (error) => finish(reject, error));
+    if (signal.aborted && !settled) onAbort();
+  });
+}
+function optionalCallback(value) { return typeof value === 'function' ? value : null; }
+// Demand-driven cache/single-flight identities are analysis authority. JavaScript
+// numeric coercion collapses distinct raw states (for example ['7'] and 7) onto
+// one producer key, so validate the identity before it can select or populate a
+// cached artifact (#4020). Missing generations keep the legacy zero default.
+function nonNegativeIdentity(value, code) {
+  if (value == null) return 0;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new TypeError(code);
+  return value;
+}
+function demandAnalysisEpoch(app) {
+  return nonNegativeIdentity(app?.backend?.gen ?? app?.analysisEpoch ?? 0, 'demand-analysis-epoch-invalid');
+}
+function demandSymbolGeneration(app) {
+  return nonNegativeIdentity(app?.symbols?.gen ?? 0, 'demand-symbol-generation-invalid');
+}
+function demandKnowledgeRevision(app) {
+  return nonNegativeIdentity(app?.knowledge?.revision ?? 0, 'demand-knowledge-revision-invalid');
+}
+function recognitionSliceIndex(app) {
+  const value = storeValue(app, 'sliceIndex');
+  if (value == null || value === -1) return -1;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError('demand-slice-index-invalid');
+  }
+  return value;
+}
+function addressOf(value) {
+  // Same canonical address-domain contract as the query adapter: an address
+  // is a non-negative integer regardless of representation. Only the number
+  // branch checked the sign before (#5196), letting -1n / '-1' /
+  // 'function:-1' reach demand-driven backend calls.
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  if (typeof value === 'string') {
+    const text = value.trim().replace(/^(?:fn|function):/i, '');
+    if (!text) return null;
+    try { const parsed = BigInt(text); return parsed >= 0n ? parsed : null; } catch { return null; }
+  }
+  if (value && typeof value === 'object') return addressOf(value.address ?? value.startAddress ?? value.startAddr ?? value.start ?? value.functionId ?? value.id);
+  return null;
+}
+function pageOf(page = {}) {
+  const rawOffset = page.offset ?? page.start ?? 0;
+  const rawLimit = page.limit ?? page.size ?? 200;
+  return {
+    offset: typeof rawOffset === 'number' && Number.isSafeInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0,
+    limit: typeof rawLimit === 'number' && Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(MAX_PAGE, rawLimit) : 200,
+  };
+}
+function cumulativePageLimit(offset, limit) {
+  return offset > Number.MAX_SAFE_INTEGER - limit ? null : offset + limit;
+}
+function paged(values, page, completeness = 'complete', status = {}) {
+  const source = Array.from(values || []);
+  const { offset, limit } = pageOf(page);
+  const items = source.slice(offset, offset + limit);
+  return {
+    value: items,
+    page: { offset, limit, returned: items.length, total: completeness === 'complete' ? source.length : null, next: offset + items.length < source.length ? offset + items.length : null },
+    status: { ...status, completeness, paged: true },
+  };
+}
+function unsupported(reason) { return { value: null, status: { completeness: 'unsupported', reason } }; }
+function executableRegions(app) {
+  try {
+    const regions = typeof app?.programRegions === 'function' ? app.programRegions() : (storeValue(app, 'regions') || []).filter((r) => r?.exec === true && canonicalRegionId(r) != null && BigInt(r.size ?? 0) > 0n);
+    return Array.from(regions || []).filter((r) => r?.exec === true && canonicalRegionId(r) != null && BigInt(r.size ?? 0) > 0n);
+  } catch { return []; }
+}
+function regionForAddress(app, address) {
+  if (address == null) return null;
+  if (typeof app?.executableRegionFor === 'function') {
+    try { return app.executableRegionFor(address); } catch { /* derive below */ }
+  }
+  const value = BigInt(address);
+  return executableRegions(app).find((r) => value >= BigInt(r.vmAddr) && value < BigInt(r.vmAddr) + BigInt(r.size)) ?? null;
+}
+function dedupeRegions(regions) {
+  const seen = new Set();
+  return regions.filter((r) => { if (!r?.id || seen.has(r.id)) return false; seen.add(r.id); return true; });
+}
+// Region identity is a single canonical string. Template literals and join()
+// coerce structured ids (`['text']` → `'text'`), which collides the cache and
+// single-flight keys of different region values and lets one region's producer
+// result be served to another (#5771, #5772). Regions without a canonical
+// string id are not scannable, so they are rejected here instead of being
+// coerced behind the caller's back.
+function canonicalRegionId(region) {
+  const id = region?.id;
+  return typeof id === 'string' && id ? id : null;
+}
+function regionScanLimits(count) {
+  const divisor = Math.max(1, Number(count) || 1);
+  const share = (value) => Math.max(1, Math.floor(Number(value || 0) / divisor));
+  return { callLimit: share(PROGRAM_MERGE_LIMITS.calls), refLimit: share(PROGRAM_MERGE_LIMITS.refs), kindLimit: share(PROGRAM_MERGE_LIMITS.kindWords) };
+}
+function localRegionPlan(app, address, kind) {
+  const allRegions = executableRegions(app);
+  const candidate = regionForAddress(app, address);
+  const target = canonicalRegionId(candidate) != null ? candidate : null;
+  const current = storeValue(app, 'currentRegion');
+  const currentExec = current?.exec === true && canonicalRegionId(current) != null && BigInt(current?.size ?? 0) > 0n ? current : null;
+  const local = kind === 'callees' ? dedupeRegions([target].filter(Boolean)) : dedupeRegions([target, currentExec].filter(Boolean));
+  const unscanned = allRegions.filter((region) => !local.some((item) => item.id === region.id));
+  return { allRegions, target, local, unscanned };
+}
+function pruneCache(cache) { while (cache.size > MAX_LOCAL_SCAN_CACHE) cache.delete(cache.keys().next().value); }
+// Shared scan producers may exceed the settled cache budget while work is in
+// flight. Only completed entries are evictable, and the same pruning rule runs
+// again when each producer settles so a burst converges without a later insert.
+function pruneSettledCache(cache) {
+  for (const [cacheKey, cacheEntry] of cache) {
+    if (cache.size <= MAX_LOCAL_SCAN_CACHE) break;
+    if (cacheEntry?.settled !== true) continue;
+    cache.delete(cacheKey);
+  }
+}
+// Discovery producers are registered per app so tests can observe the bounded
+// retention contract (#5267) without reaching into the closure.
+const discoveryProducersByApp = new WeakMap();
+function waitForShared(entry, signal, onDetach = null) {
+  // A producer can be created before the caller reaches this shared-waiter
+  // boundary (for example a region scan). If that caller was aborted in the
+  // gap, it never becomes a waiter; retire a genuinely unowned producer here
+  // rather than leaving zero-consumer work alive. Existing waiters protect a
+  // shared producer from a pre-aborted joiner (#4749).
+  if (signal?.aborted) {
+    if (!entry.settled && entry.waiters === 0) {
+      entry.cancelled = true;
+      // This path intentionally leaves no consumer attached to the shared
+      // producer. Observe its eventual cancellation rejection before invoking
+      // cancel so a zero-waiter producer cannot escape as an unhandled promise.
+      void Promise.resolve(entry.promise).catch(() => {});
+      try { entry.cancel?.(); } catch { /* cancellation is best-effort */ }
+      try { entry.request?.cancel?.(); } catch { /* cancellation is best-effort */ }
+    }
+    throw abortError(signal);
+  }
+  entry.waiters++;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const detach = () => {
+      if (!onDetach) return;
+      const cleanup = onDetach; onDetach = null;
+      cleanup();
+    };
+    const finish = (fn, value) => {
+      if (settled) return; settled = true; signal?.removeEventListener('abort', onAbort); entry.waiters = Math.max(0, entry.waiters - 1); detach(); fn(value);
+    };
+    const onAbort = () => {
+      if (settled) return; settled = true; signal?.removeEventListener('abort', onAbort); entry.waiters = Math.max(0, entry.waiters - 1); detach();
+      if (!entry.settled && entry.waiters === 0) {
+        entry.cancelled = true;
+        entry.cancel?.();
+        entry.request?.cancel?.();
+      }
+      reject(abortError(signal));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
+    if (signal?.aborted && !settled) onAbort();
+  });
+}
+function mergeMapCounts(target, source) { for (const [key, value] of source || []) target.set(key, (target.get(key) || 0) + Number(value || 0)); }
+function cloneShapeEntry(entry) {
+  return { ...entry, amountFrom: new Map(entry.amountFrom || []), usedAgainst: new Map(entry.usedAgainst || []), sites: Array.from(entry.sites || []).slice(0, 8) };
+}
+function mergeShapeMaps(maps, reasons = []) {
+  const out = new Map(); let capped = false; let allUnsupported = maps.length > 0; let complete = maps.length > 0;
+  for (const folded of maps) {
+    capped ||= folded?.capped === true; allUnsupported &&= folded?.unsupported === true; complete &&= folded?.complete === true;
+    if (folded?.complete === false && folded?.incompleteReason) reasons.push(String(folded.incompleteReason));
+    for (const [key, entry] of folded || []) {
+      let target = out.get(key);
+      if (!target) { out.set(key, cloneShapeEntry(entry)); continue; }
+      for (const field of ['decreases','increases','clamped','crossObject','scaled','amountFromCall','amountFromImm','usedAsAmount','usedScaled','usedCross','events','inBigObject']) target[field] = Number(target[field] || 0) + Number(entry[field] || 0);
+      target.size ||= entry.size; target.objectSpan = Math.max(Number(target.objectSpan || 0), Number(entry.objectSpan || 0));
+      mergeMapCounts(target.amountFrom, entry.amountFrom); mergeMapCounts(target.usedAgainst, entry.usedAgainst);
+      for (const site of entry.sites || []) if (target.sites.length < 8) target.sites.push(site);
+    }
+  }
+  const uniqueReasons = [...new Set(reasons.filter(Boolean))];
+  Object.defineProperties(out, {
+    complete: { value: complete && uniqueReasons.length === 0, enumerable:false, configurable:true },
+    capped: { value:capped, enumerable:false, configurable:true },
+    unsupported: { value:allUnsupported, enumerable:false, configurable:true },
+    incompleteReason: { value: uniqueReasons.length ? uniqueReasons.join(';') : (allUnsupported ? 'unsupported-architecture' : capped ? 'capped' : null), enumerable:false, configurable:true },
+  });
+  return out;
+}
+function recognitionInputKey(app) {
+  return [demandAnalysisEpoch(app), demandSymbolGeneration(app), demandKnowledgeRevision(app), objectId(app?.fields), objectId(app?.objcModel), objectId(app?.objcRuntime), objectId(app?.swiftModel), objectId(app?.swiftRuntime)].join(':');
+}
+
+
+function scheduleBackgroundIdentity(signal) {
+  abortIfNeeded(signal);
+  if (globalThis.scheduler?.postTask) {
+    return globalThis.scheduler.postTask(() => undefined, { priority:'background', signal:signal ?? undefined });
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      fn(value);
+    };
+    const onAbort = () => finish(reject, abortError(signal, 'Binary identity scheduling aborted'));
+    signal?.addEventListener('abort', onAbort, { once:true });
+    if (signal?.aborted) { onAbort(); return; }
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(() => finish(resolve), { timeout:250 });
+    } else {
+      setTimeout(() => finish(resolve), 0);
+    }
+  });
+}
+
+function installWorkerBackedIdentity(app) {
+  const backend = app?.backend;
+  if (!backend || typeof backend.ensureContentHash !== 'function') return;
+  backend.ensureBinaryId = function ensureBinaryIdFromPlatformWorker(options = {}) {
+    if (this.binaryId) return Promise.resolve(this.binaryId);
+    if (!this.file) return Promise.reject(new Error('binary-id-file-unavailable'));
+    // Do not create the first shared producer for a caller that has already
+    // left. Cache hits remain usable without starting any new work (#4749).
+    abortIfNeeded(options.signal);
+    let entry = this._binaryIdEntry;
+    // #4611: a single-flight entry whose last waiter aborted is cancelled but
+    // may not have settled yet; the owner must not hand it to a new caller.
+    if (entry?.cancelled) entry = null;
+    if (!entry) {
+      const file = this.file; const epoch = this.gen;
+      const controller = new AbortController();
+      entry = {
+        controller,
+        waiters:0,
+        settled:false,
+        promise:null,
+        cancel:() => { if (!controller.signal.aborted) controller.abort('binary-id-no-consumers'); },
+      };
+      entry.promise = scheduleBackgroundIdentity(controller.signal)
+        .then(() => this.ensureContentHash(options.onProgress, controller.signal))
+        .then((hash) => {
+          abortIfNeeded(controller.signal);
+          if (this.file !== file || this.gen !== epoch) { const error = new Error('stale binary identity'); error.stale = true; throw error; }
+          // The platform content hash is an FNV cache key; `bin_sha256_` identities
+          // must bind an exact SHA-256 digest, so re-derive from the canonical
+          // full-content producer instead of laundering the cache hash (#7054).
+          return canonicalContentDigest(this, hash, controller.signal, options.onProgress);
+        })
+        .then((digest) => {
+          abortIfNeeded(controller.signal);
+          if (this.file !== file || this.gen !== epoch) { const error = new Error('stale binary identity'); error.stale = true; throw error; }
+          const binaryId = createBinaryIdFromDigest(digest); this.binaryId = binaryId; return binaryId;
+        })
+        .finally(() => {
+          entry.settled = true;
+          if (this._binaryIdEntry === entry) this._binaryIdEntry = null;
+          if (this._binaryIdPromise === entry.promise) this._binaryIdPromise = null;
+        });
+      this._binaryIdEntry = entry;
+      this._binaryIdPromise = entry.promise;
+    }
+    return waitForShared(entry, options.signal ?? null);
+  };
+}
+function installDemandRecognition(app) {
+  if (typeof app?.ensureRecognition !== 'function') return () => recognitionInputKey(app);
+  const originalRecognition = app.ensureRecognition.bind(app);
+  const originalApplySlice = typeof app.applySlice === 'function' ? app.applySlice.bind(app) : null;
+  const originalObjc = typeof app.ensureObjc === 'function' ? app.ensureObjc.bind(app) : null;
+  const originalSwift = typeof app.ensureSwift === 'function' ? app.ensureSwift.bind(app) : null;
+  const bootstrapEpochs = new Map(); let acceptedKey = null;
+  const beginBootstrap = (epoch) => bootstrapEpochs.set(epoch, (bootstrapEpochs.get(epoch) ?? 0) + 1);
+  const endBootstrap = (epoch) => { const owners = bootstrapEpochs.get(epoch) ?? 0; if (owners <= 1) bootstrapEpochs.delete(epoch); else bootstrapEpochs.set(epoch, owners - 1); };
+  const invalidate = (before) => {
+    let after;
+    try { after = recognitionInputKey(app); }
+    catch (error) { app.recognition = null; acceptedKey = null; throw error; }
+    if (before !== after && app.recognition) app.recognition = null;
+    if (before !== after) acceptedKey = null;
+  };
+  if (originalObjc) app.ensureObjc = async function (...args) { const before = recognitionInputKey(app); try { return await originalObjc(...args); } finally { invalidate(before); } };
+  if (originalSwift) app.ensureSwift = async function (...args) { const before = recognitionInputKey(app); try { return await originalSwift(...args); } finally { invalidate(before); } };
+  app.ensureRecognition = async function demandRecognition(options = {}) {
+  const epoch = demandAnalysisEpoch(app);
+  if (bootstrapEpochs.has(epoch) && options.force !== true) return app.recognition ?? null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    abortIfNeeded(options.signal);
+    const metadata = [];
+    const sliceIndex = recognitionSliceIndex(app);
+    if (originalObjc && sliceIndex >= 0) metadata.push(app.ensureObjc(sliceIndex));
+    if (originalSwift) metadata.push(app.ensureSwift());
+    if (metadata.length) await Promise.allSettled(metadata);
+    abortIfNeeded(options.signal);
+    const key = recognitionInputKey(app);
+    if (app.recognition && acceptedKey === key) return app.recognition;
+    if (app.recognition) app.recognition = null;
+    acceptedKey = null;
+    const value = await originalRecognition(options);
+    abortIfNeeded(options.signal);
+    let after;
+    try { after = recognitionInputKey(app); }
+    catch (error) { app.recognition = null; acceptedKey = null; throw error; }
+    if (value && after === key) {
+      acceptedKey = key;
+      return value;
+    }
+    app.recognition = null;
+  }
+  const error = new Error('recognition inputs changed while producing the result');
+  error.code = 'RECOGNITION_INPUTS_CHANGED';
+  throw error;
+};
+if (originalApplySlice) app.applySlice = function demandApplySlice(...args) {
+    const epoch = demandAnalysisEpoch(app); beginBootstrap(epoch);
+    try {
+      const result = originalApplySlice(...args); const clearBootstrap = () => endBootstrap(epoch); void Promise.resolve(app.symbolsReady).then(clearBootstrap, clearBootstrap); return result;
+    } catch (error) {
+      endBootstrap(epoch);
+      throw error;
+    }
+  };
+  return () => `${RUNTIME_VERSION}:${acceptedKey ?? recognitionInputKey(app)}`;
+}
+function installMultiRegionShapes(app) {
+  if (!app?.backend || typeof app.backend.valueShapes !== 'function') return;
+  const regionCache = new Map(); let combinedKey = null;
+  app.ensureShapes = async function demandShapes(progressOrOptions = {}) {
+    const onProgress = optionalCallback(typeof progressOrOptions === 'function' ? progressOrOptions : progressOrOptions?.onProgress);
+    const signal = typeof progressOrOptions === 'object' ? progressOrOptions?.signal ?? null : null;
+    abortIfNeeded(signal);
+    const epoch = demandAnalysisEpoch(app); const regions = executableRegions(app);
+    if (!regions.length) return null;
+    const key = `${epoch}:${regions.map((r) => r.id).join('|')}`;
+    if (app.shapes && combinedKey === key) return app.shapes;
+    if (app.shapesBusy && app.shapesBusyEpoch === epoch && !app.shapesBusy.cancelled) return waitForShared(app.shapesBusy, signal);
+    app.shapesBusyEpoch = epoch;
+    const producerController = new AbortController();
+    const entry = {
+      request:{ cancel:() => { if (!producerController.signal.aborted) producerController.abort('shapes-no-consumers'); } },
+      promise:null, settled:false, cancelled:false, waiters:0,
+    };
+    entry.promise = (async () => {
+      const folded = []; const reasons = [];
+      for (let index = 0; index < regions.length; index++) {
+        abortIfNeeded(producerController.signal); const region = regions[index]; const cacheKey = `${epoch}:${region.id}`; let value = regionCache.get(cacheKey);
+        if (!value) {
+          const request = app.backend.valueShapes(region.id, (progress) => onProgress?.({ phase:'shapes', region:region.id, done:index + (progress?.all ? Math.min(1, progress.done / progress.all) : 0), all:regions.length }));
+          const onAbort = () => request.cancel?.();
+          producerController.signal.addEventListener('abort', onAbort, { once:true });
+          if (producerController.signal.aborted) request.cancel?.();
+          try {
+            value = await new Promise((resolve, reject) => {
+              const onProducerAbort = () => { producerController.signal.removeEventListener('abort', onProducerAbort); reject(abortError(producerController.signal)); };
+              producerController.signal.addEventListener('abort', onProducerAbort, { once:true });
+              if (producerController.signal.aborted) { onProducerAbort(); return; }
+              Promise.resolve(request).then(
+                (result) => { producerController.signal.removeEventListener('abort', onProducerAbort); resolve(result); },
+                (error) => { producerController.signal.removeEventListener('abort', onProducerAbort); reject(error); },
+              );
+            });
+            if (value && !value.cancelled && epoch === demandAnalysisEpoch(app)) regionCache.set(cacheKey, value);
+          } catch (error) { if (producerController.signal.aborted || error?.name === 'AbortError') throw error; reasons.push(`${region.id}:shape-scan-failed`); continue; }
+          finally { producerController.signal.removeEventListener('abort', onAbort); }
+        }
+        if (!value || value.cancelled) { reasons.push(`${region.id}:shape-scan-cancelled`); continue; }
+        folded.push(foldShapes(value));
+      }
+      if (epoch !== demandAnalysisEpoch(app)) return null;
+      const merged = mergeShapeMaps(folded, reasons);
+      // Partial results remain visible to this caller but are not pinned as the
+      // epoch-wide canonical shapes. Missing regions can therefore be retried.
+      if (merged.complete !== false) { app.shapes = merged; combinedKey = key; }
+      pruneCache(regionCache); return merged;
+    })().then((value) => { entry.settled = true; return value; }).finally(() => { if (app.shapesBusy === entry) { app.shapesBusy = null; app.shapesBusyEpoch = -1; } });
+    app.shapesBusy = entry;
+    return waitForShared(entry, signal);
+  };
+}
+
+function installCancellableFunctionDiscovery(app) {
+  if (!app?.backend || typeof app.backend.guessFunctions !== 'function') return;
+  const producers = new Map();
+  discoveryProducersByApp.set(app, producers);
+  app.ensureFunctions = function demandFunctionDiscovery(region, rawOptions = {}) {
+    const options = typeof rawOptions === 'function' ? { onProgress:rawOptions, signal:null } : (rawOptions || {});
+    abortIfNeeded(options.signal);
+    const run = async () => {
+      if (app.symbolsReady) {
+        try { await app.symbolsReady; } catch { /* symbol seeds are optional */ }
+      }
+      abortIfNeeded(options.signal);
+      const epoch = demandAnalysisEpoch(app);
+      const symbols = app.symbols;
+      if (!symbols || symbols.functionStartsComplete === true || symbols.functionDiscovery?.complete === true) return symbols;
+      const targets = executableRegions(app);
+      if (region?.exec === true && canonicalRegionId(region) != null && !targets.some((item) => item.id === region.id)) targets.push(region);
+      const unique = dedupeRegions(targets);
+      if (!unique.length) return symbols;
+      const key = `${epoch}:${unique.map((item) => item.id).join('|')}`;
+      if (symbols.functionDiscovery?.attempted === true && symbols.functionDiscovery?.regionSetKey === unique.map((item) => item.id).join('|')) return symbols;
+      let entry = producers.get(key);
+      if (entry?.cancelled) entry = null;
+      if (!entry) {
+        const producerController = new AbortController();
+        entry = {
+          request:{ cancel:() => producerController.abort('function-discovery-no-consumers') },
+          promise:null, settled:false, waiters:0,
+          // Every consumer's progress observer is registered here so the
+          // shared producer notifies all of them, not only the consumer that
+          // happened to create the entry (#5860).
+          observers:new Set(),
+        };
+        entry.promise = (async () => {
+          let remaining = Math.max(0, 400_000 - Math.min(400_000, symbols.functionCount || 0));
+          let remainingBytes = unique.reduce((sum, item) => sum + BigInt(item.size), 0n);
+          const results = [], reasons = [];
+          const emitProgress = (index, item, progress) => {
+            const payload = {
+              phase:'functions', region:item.id,
+              done:index + (progress?.all ? Math.min(1, progress.done / progress.all) : 0), all:unique.length,
+            };
+            for (const observer of entry.observers) {
+              try { observer.callback(payload); } catch { /* a broken observer never breaks discovery */ }
+            }
+          };
+          for (let index = 0; index < unique.length; index++) {
+            abortIfNeeded(producerController.signal);
+            if (epoch !== demandAnalysisEpoch(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
+            const item = unique[index], size = BigInt(item.size);
+            const share = remaining > 0 && remainingBytes > 0n
+              ? Math.max(1, Math.min(remaining, Number((BigInt(remaining) * size + remainingBytes - 1n) / remainingBytes)))
+              : 0;
+            if (share <= 0) {
+              results.push({ regionId:item.id, complete:false, skipped:true });
+              reasons.push(`function-global-budget:${item.id}`);
+              remainingBytes -= size;
+              continue;
+            }
+            const request = app.backend.guessFunctions(item.id, share, (progress) => emitProgress(index, item, progress));
+            const onAbort = () => request.cancel?.();
+            producerController.signal.addEventListener('abort', onAbort, { once:true });
+            try {
+              const result = await request;
+              if (epoch !== demandAnalysisEpoch(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
+              if (result?.starts?.length) {
+                symbols.addFunctions(result.starts, { source:'heuristic', confidence:0.55, confirmed:false });
+                symbols.guessed = true;
+                remaining = Math.max(0, remaining - result.starts.length);
+              }
+              const complete = result?.discoveryComplete === true || result?.completeness?.complete === true || result?.complete === true;
+              results.push({ regionId:item.id, complete, capped:!!result?.capped, discovered:result?.starts?.length || 0 });
+              if (!complete) reasons.push(`${item.id}:${result?.completeness?.reason || result?.truncationReason || 'function-discovery-incomplete'}`);
+            } finally {
+              producerController.signal.removeEventListener('abort', onAbort);
+            }
+            remainingBytes -= size;
+          }
+          abortIfNeeded(producerController.signal);
+          if (epoch !== demandAnalysisEpoch(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
+          const complete = results.length === unique.length && results.every((item) => item.complete === true);
+          const regionSetKey = unique.map((item) => item.id).join('|');
+          symbols.functionDiscovery = {
+            complete, attempted:true, regionSetKey, regions:results,
+            reasons:[...new Set(reasons)], capped:results.some((item) => item.capped),
+          };
+          symbols.functionStartsComplete = complete;
+          symbols.functionStartsCapped = symbols.functionDiscovery.capped || reasons.some((reason) => reason.includes('budget'));
+          app.viewer?.setSymbols?.(symbols);
+          return symbols;
+        })().then((value) => {
+          entry.settled = true;
+          // A settled success keeps its entry only while the bounded cache has
+          // room. Same-key re-entry short-circuits on symbols.functionDiscovery
+          // before consulting this map, so eviction cannot re-run discovery;
+          // leaving entries in forever would retain every past epoch's symbols
+          // closure for the lifetime of the app (#5267).
+          pruneSettledCache(producers);
+          return value;
+        }).catch((error) => {
+          if (producers.get(key) === entry) producers.delete(key);
+          throw error;
+        });
+        producers.set(key, entry);
+        pruneSettledCache(producers);
+      }
+      // Register every consumer's observer on the shared entry, whether it
+      // created the producer or attached to an existing one (#5860).
+      const onProgress = optionalCallback(options.onProgress);
+      const observer = onProgress ? { callback:onProgress } : null;
+      if (observer) entry.observers.add(observer);
+      try {
+        return waitForShared(entry, options.signal ?? null, () => {
+          if (observer) entry.observers.delete(observer);
+        });
+      } catch (error) {
+        if (observer) entry.observers.delete(observer);
+        throw error;
+      }
+    };
+    return run();
+  };
+}
+
+function installDemandQueryAPI(app, recognitionVersion) {
+  const base = createBaseQueryAdapter(app); const regionScans = new Map();
+  const scanRegion = async (region, options = {}, localCount = 1) => {
+    const epoch = demandAnalysisEpoch(app);
+    const limits = regionScanLimits(localCount);
+    const profile = `${limits.callLimit}:${limits.refLimit}:${limits.kindLimit}`;
+    const architecture = architectureOf(app);
+    const key = JSON.stringify([epoch, region.id, architecture, profile]);
+    let entry = regionScans.get(key);
+    if (entry?.cancelled) entry = null;
+    if (!entry) {
+      const request = app.backend.scanProgram(region.id, options.onProgress, {
+        ...limits,
+        architecture,
+        analysisPriority:options.priority || 'interactive',
+      });
+      entry = { request, promise:null, settled:false, waiters:0 };
+      entry.promise = Promise.resolve(request)
+        .then((scan) => {
+          if (!scan || scan.cancelled) throw Object.assign(new Error('program scan cancelled'), { name:'AbortError' });
+          return scan;
+        })
+        .catch((error) => {
+          if (regionScans.get(key) === entry) regionScans.delete(key);
+          throw error;
+        })
+        .finally(() => {
+          entry.settled = true;
+          pruneSettledCache(regionScans);
+        });
+      regionScans.set(key, entry);
+      pruneSettledCache(regionScans);
+    }
+    return waitForShared(entry, options.signal ?? null);
+  };
+  const localProgram = async (id, kind, options = {}) => {
+    abortIfNeeded(options.signal); const address = addressOf(id); if (address == null) return { program:null, reason:'function-address-invalid', scannedRegionIds:[], unscannedRegionIds:[] };
+    const { allRegions, target, local, unscanned } = localRegionPlan(app, address, kind);
+    if (!local.length) return { program:null, reason:'program-region-unavailable', scannedRegionIds:[], unscannedRegionIds:allRegions.map((r) => r.id) };
+    const scans = []; for (const region of local) scans.push(await scanRegion(region, options, local.length)); abortIfNeeded(options.signal);
+    // Outgoing callees are function-local once the function extent is proven; incoming
+    // callers/xrefs still require the remaining executable regions for global absence.
+    const reasons = kind === 'callees' ? [] : unscanned.map((region) => `program-region-unscanned:${region.id}`);
+    const coverageRegions = kind === 'callees' ? local : allRegions;
+    const merged = mergeProgramScans(scans, { regions:coverageRegions, reasons, limits:PROGRAM_MERGE_LIMITS });
+    return {
+      program:new ProgramIndex(merged, app.symbols, target ?? local[0]),
+      reason:reasons[0] ?? null,
+      scannedRegionIds:local.map((r) => r.id),
+      unscannedRegionIds:unscanned.map((r) => r.id),
+    };
+  };
+  const graphUnsupported = (program) => program?.unsupported === true || (program?.graphCompleteness && (!program.graphCompleteness.supported || program.graphCompleteness.unsupported));
+  const adapter = {
+    ...base,
+    async currentIdentity(options = {}) {
+      const identity = await base.currentIdentity(options);
+      return { ...identity, artifactVersions:{ ...(identity.artifactVersions || {}), demandQueryRuntime:RUNTIME_VERSION, recognitionInputs:recognitionVersion() } };
+    },
+    async functions(snapshot, query = {}, page = {}, options = {}) {
+      const region = typeof app.codeRegion === 'function' ? app.codeRegion() : storeValue(app, 'currentRegion');
+      if (typeof app.ensureFunctions === 'function') await app.ensureFunctions(region ?? null, { signal:options.signal ?? null, onProgress:options.onProgress });
+      abortIfNeeded(options.signal);
+      return base.functions(snapshot, query, page, options);
+    },
+    async callers(_snapshot, id, page = {}, options = {}) {
+      const { program, reason, scannedRegionIds, unscannedRegionIds } = await localProgram(id, 'callers', options);
+      if (!program?.callersOf) return unsupported(reason || 'program-index-unavailable');
+      if (graphUnsupported(program)) return unsupported(program.queryIncompleteReason || reason || 'unsupported-program-analysis');
+      const { offset, limit } = pageOf(page);
+      const cumulativeLimit = cumulativePageLimit(offset, limit);
+      if (cumulativeLimit == null) return paged([], page, 'unsupported', { reason:'page-range-overflow', scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
+      const source = program.callersOf(addressOf(id), cumulativeLimit);
+      const relationReason=source?.incompleteReason ?? reason ?? null;
+      const result = paged(Array.from(source || []), page, source?.complete === false || reason ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
+      if (source?.queryLimited === true && result.page.next == null && result.page.returned > 0) result.page.next = result.page.offset + result.page.returned; return result;
+    },
+    async callees(_snapshot, id, page = {}, options = {}) {
+      const address = addressOf(id); const range = address == null ? null : app.validatedFunctionRange?.(address);
+      if (!range?.ok) return unsupported(range?.reason || 'function-range-unavailable');
+      const { program, reason, scannedRegionIds, unscannedRegionIds } = await localProgram(address, 'callees', options);
+      if (!program?.calleesOf) return unsupported(reason || 'program-index-unavailable');
+      if (graphUnsupported(program)) return unsupported(program.queryIncompleteReason || reason || 'unsupported-program-analysis');
+      const { offset, limit } = pageOf(page);
+      const cumulativeLimit = offset > Number.MAX_SAFE_INTEGER - limit ? null : offset + limit;
+      if (cumulativeLimit == null) {
+        return { value:[], page:{ offset, limit, returned:0, total:0, next:null }, status:{ completeness:'unsupported', reason:'page-range-overflow', paged:true } };
+      }
+      const source = program.calleesOf(range.start, range.end, cumulativeLimit);
+      // The scan only covers the validated range. When the function extent
+      // itself is unproven (analysis window or region clip), the scan cannot
+      // be complete no matter how the local scan ended (#5991).
+      const rangeIncomplete = range.complete === false;
+      const queryLimited = source?.queryLimited === true;
+      const relationReason = source?.incompleteReason ?? (queryLimited ? 'query-limit' : (rangeIncomplete ? (range.reason ?? 'function-extent-unproven') : null)) ?? reason ?? null;
+      const incomplete = source?.complete === false || queryLimited || !!reason || rangeIncomplete;
+      const sourceRows = Array.from(source || []);
+      const result = paged(sourceRows, page, incomplete ? 'partial' : 'complete', { reason:relationReason, truncationReason:relationReason, scope:'active-function', scannedRegionIds, unscannedRegionIds });
+      if (queryLimited && result.page.next == null && sourceRows.length >= result.page.offset) {
+        result.page.next = result.page.offset + (result.page.returned > 0 ? result.page.returned : result.page.limit);
+      }
+      return result;
+    },
+    async xrefs(_snapshot, id, page = {}, options = {}) {
+      const address = addressOf(id); if (address == null) return unsupported('function-address-invalid');
+      const { program, reason, scannedRegionIds, unscannedRegionIds } = await localProgram(address, 'xrefs', options); if (!program) return unsupported(reason || 'program-index-unavailable');
+      if (graphUnsupported(program)) return unsupported(program.queryIncompleteReason || reason || 'unsupported-program-analysis');
+      const { offset, limit } = pageOf(page); const cap = Math.min(MAX_PAGE, offset + limit); const refs = program.refSitesTo?.(address, 1n, cap) || []; const calls = program.callSitesTo?.(address, cap) || [];
+      const rows = [...Array.from(refs).map((x) => ({ kind:'reference', site:x.site, target:x.target, refKind:x.kind ?? null })), ...Array.from(calls).map((x) => ({ kind:'call', site:x.site, target:address, caller:x.caller ?? null }))].sort((a,b) => BigInt(a.site) < BigInt(b.site) ? -1 : BigInt(a.site) > BigInt(b.site) ? 1 : 0);
+      const relationReason=refs.incompleteReason ?? calls.incompleteReason ?? reason ?? null;
+      const queryLimited=refs.queryLimited === true || calls.queryLimited === true;
+      return paged(rows, page, refs.complete === false || calls.complete === false || reason ? 'partial' : 'complete', { reason:relationReason, truncationReason:queryLimited ? 'query-limit' : relationReason, scope:'active-neighborhood', scannedRegionIds, unscannedRegionIds });
+    },
+    async search(_snapshot, query, page = {}, options = {}) {
+      if (!query || typeof query !== 'object' || typeof app?.backend?.search !== 'function') return unsupported('typed-search-producer-unavailable');
+      abortIfNeeded(options.signal); const request = app.backend.search(query, options.onProgress);
+      const value = await waitForSearchRequest(request, options.signal);
+      abortIfNeeded(options.signal);
+      // An explicit backend `unsupported` must survive the query boundary:
+      // "the backend cannot run this search" is not a complete empty result
+      // (#5840, #5833).
+      if (value?.unsupported === true) {
+        return unsupported(value?.unsupportedReason ?? 'search-kind-unsupported');
+      }
+      const completeness = value?.cancelled ? 'partial' : value?.capped ? 'truncated' : 'complete';
+      return paged(value?.results || [], page, completeness, { reason:value?.cancelled ? 'cancelled' : value?.capped ? 'search-result-cap' : null });
+    },
+  };
+  app.analysisQueries = new AnalysisQueryAPI(adapter);
+}
+
+export function installDemandDrivenAnalysis(app) {
+  if (!app || app.__demandDrivenAnalysisVersion === RUNTIME_VERSION) return app?.analysisQueries ?? null;
+  installWorkerBackedIdentity(app);
+  const recognitionVersion = installDemandRecognition(app);
+  installMultiRegionShapes(app);
+  installCancellableFunctionDiscovery(app);
+  installDemandQueryAPI(app, recognitionVersion);
+  Object.defineProperty(app, '__demandDrivenAnalysisVersion', { value:RUNTIME_VERSION, configurable:true });
+  return app.analysisQueries;
+}
+export const __demandDrivenInternalsForTests = Object.freeze({ addressOf, mergeShapeMaps, recognitionInputKey, localRegionPlan, regionScanLimits, installWorkerBackedIdentity, discoveryProducersByApp });

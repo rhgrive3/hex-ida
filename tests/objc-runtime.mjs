@@ -1,0 +1,226 @@
+import assert from 'node:assert/strict';
+import {
+  buildObjcRuntimeIndex, resolveObjcDispatch, objcMessage,
+  recognizeObjcBlockLiteral, buildSelectorIndex, resolveSelectorStub,
+} from '../js/objc.js';
+import { resolveObjcIMP, runtimeOriginForSymbol, buildAppleRuntimeIndex } from '../js/apple/runtime.js';
+
+const model = {
+  classes: [
+    {
+      name: 'NSObject', superName: null,
+      methods: [{ sel: 'description', addr: 0x1000n }], classMethods: [], protocols: [],
+    },
+    {
+      name: 'PlayerData', superName: 'NSObject', protocols: ['CoinProviding'],
+      methods: [{ sel: 'addCoins:', addr: 0x2000n }],
+      classMethods: [{ sel: 'shared', addr: 0x2100n }],
+      ivars: [{ name: '_coins', offset: 0x20, type: { kind: 'int', bytes: 4 } }],
+    },
+    { name: 'Root', superName: 'NSObject', methods: [{ sel: 'value', addr: 0x3000n }], classMethods: [], protocols: [] },
+    { name: 'Middle', superName: 'Root', methods: [{ sel: 'value', addr: 0x3100n }], classMethods: [], protocols: [] },
+    { name: 'Leaf', superName: 'Middle', methods: [{ sel: 'value', addr: 0x3200n }], classMethods: [], protocols: [] },
+    { name: 'InheritedLeaf', superName: 'Middle', methods: [], classMethods: [], protocols: [] },
+    { name: 'DeepLeaf', superName: 'Leaf', methods: [], classMethods: [], protocols: [] },
+    { name: 'Unrelated', superName: 'NSObject', methods: [{ sel: 'value', addr: 0x3300n }], classMethods: [], protocols: [] },
+  ],
+  protocols: [
+    { name: 'CoinProviding', methods: [{ sel: 'coinCount', addr: null }] },
+  ],
+  categories: [
+    { name: 'Debug', className: 'PlayerData', methods: [{ sel: 'debugName', addr: 0x2200n }] },
+  ],
+  runtimeCompleteness: { complete: true, categories: { complete: true } },
+};
+
+const index = buildObjcRuntimeIndex(model);
+{
+  const r = resolveObjcDispatch(index, { receiverType: 'PlayerData *', selector: 'addCoins:' });
+  assert.equal(r.resolved?.imp, 0x2000n);
+  assert.equal(r.resolved?.className, 'PlayerData');
+}
+{
+  const r = resolveObjcDispatch(index, { receiverType: 'PlayerData *', selector: 'description' });
+  assert.equal(r.resolved?.className, 'NSObject');
+}
+{
+  const r = resolveObjcDispatch(index, { receiverType: 'PlayerData *', selector: 'debugName' });
+  assert.equal(r.resolved?.source, 'category');
+}
+{
+  const r = resolveObjcDispatch(index, { receiverType: 'PlayerData *', selector: 'coinCount' });
+  assert.equal(r.resolved, null);
+  assert.equal(r.candidates.length, 0);
+  assert.equal(r.requirements.length, 1);
+  assert.equal(r.requirements[0].source, 'protocol');
+  assert.equal(r.requirements[0].selector, 'coinCount');
+}
+{
+  const inheritedProtocolIndex = buildObjcRuntimeIndex({
+    classes: [
+      { name: 'NSObject', superName: null, methods: [], classMethods: [], protocols: [] },
+      { name: 'ProtocolChild', superName: 'NSObject', methods: [], classMethods: [], protocols: ['DerivedProtocol'] },
+    ],
+    protocols: [
+      { name: 'BaseProtocol', methods: [{ sel: 'baseRequirement', addr: null }] },
+      { name: 'DerivedProtocol', protocols: ['BaseProtocol'], methods: [] },
+    ],
+    categories: [],
+    runtimeCompleteness: { complete: true, categories: { complete: true } },
+  });
+  const r = resolveObjcDispatch(inheritedProtocolIndex, { receiverType: 'ProtocolChild *', selector: 'baseRequirement' });
+  assert.equal(r.resolved, null);
+  assert.equal(r.candidates.length, 0);
+  assert.equal(r.requirements.length, 1, 'requirements inherited through adopted protocols must remain visible');
+  assert.equal(r.requirements[0].className, 'BaseProtocol');
+}
+{
+  const m = objcMessage(index, { receiver: 'player', receiverType: 'PlayerData *', selector: 'addCoins:', args: ['amount'] });
+  assert.equal(m.text, '[player addCoins:amount]');
+  assert.equal(m.dispatch.resolved?.imp, 0x2000n);
+}
+
+// #834: explicit receiver dispatch follows Objective-C lookup order, not score gaps.
+{
+  const r = resolveObjcDispatch(index, { receiverType: 'Leaf *', selector: 'value' });
+  assert.equal(r.resolved?.imp, 0x3200n, 'subclass override must shadow superclass implementations');
+  assert.deepEqual(r.candidates.map((x) => x.className), ['Leaf']);
+}
+{
+  const r = resolveObjcDispatch(index, { receiverType: 'InheritedLeaf *', selector: 'value' });
+  assert.equal(r.resolved?.imp, 0x3100n, 'nearest superclass implementation must resolve when subclass has no override');
+  assert.deepEqual(r.candidates.map((x) => x.className), ['Middle']);
+}
+{
+  const r = resolveObjcDispatch(index, { receiverType: 'DeepLeaf *', selector: 'value' });
+  assert.equal(r.resolved?.imp, 0x3200n, 'three-level hierarchy must stop at the first implementation');
+  assert.deepEqual(r.candidates.map((x) => x.className), ['Leaf']);
+  assert.equal(r.candidates.some((x) => x.className === 'Unrelated'), false, 'unrelated selector implementations must be excluded');
+}
+{
+  const partial = buildObjcRuntimeIndex({ ...model, runtimeCompleteness: { complete: true, categories: { complete: false } } });
+  const r = resolveObjcDispatch(partial, { receiverType: 'Leaf *', selector: 'value' });
+  assert.equal(r.resolved, null, 'incomplete category metadata must remain conservative');
+  assert.equal(r.partial, true);
+}
+{
+  const unknown = buildObjcRuntimeIndex({ classes: model.classes, protocols: model.protocols, categories: model.categories });
+  const r = resolveObjcDispatch(unknown, { receiverType: 'Leaf *', selector: 'value' });
+  assert.equal(r.resolved, null, 'unknown completeness must fail closed like partial metadata');
+  assert.equal(r.partial, true);
+}
+{
+  const collision = buildObjcRuntimeIndex({
+    ...model,
+    categories: [...model.categories, { name: 'Override', className: 'Leaf', methods: [{ sel: 'value', addr: 0x3400n }] }],
+  });
+  const r = resolveObjcDispatch(collision, { receiverType: 'Leaf *', selector: 'value' });
+  assert.equal(r.resolved, null, 'same-level category/class collision must remain ambiguous');
+  assert.equal(r.candidates.length, 2);
+}
+
+// #2778: malformed selector metadata must never collide with canonical string selector identity.
+{
+  const malformedSelectors = [
+    ['run'],
+    { toString() { return 'run'; } },
+    1,
+    true,
+  ];
+  for (const selector of malformedSelectors) {
+    const malformed = buildObjcRuntimeIndex({
+      implementationProofRequired: false,
+      runtimeCompleteness: { complete: true, categories: { complete: true } },
+      classes: [{ name:'Victim', superName:null, methods:[{ selector, imp:0x4444n }], classMethods:[], protocols:[] }],
+      protocols: [],
+      categories: [],
+    });
+    const result = resolveObjcDispatch(malformed, { receiverType:'Victim', selector:'run' });
+    assert.equal(result.resolved, null, `non-string selector ${typeof selector} must not enter canonical selector index`);
+    assert.equal(result.candidates.length, 0);
+  }
+
+  const canonical = buildObjcRuntimeIndex({
+    implementationProofRequired: false,
+    runtimeCompleteness: { complete: true, categories: { complete: true } },
+    classes: [{ name:'Victim', superName:null, methods:[{ selector:'run', imp:0x5555n }], classMethods:[], protocols:[] }],
+    protocols: [],
+    categories: [],
+  });
+  assert.equal(resolveObjcDispatch(canonical, { receiverType:'Victim', selector:'run' }).resolved?.imp, 0x5555n);
+  for (const selector of [[ 'run' ], { toString() { return 'run'; } }, 1, true]) {
+    const result = resolveObjcDispatch(canonical, { receiverType:'Victim', selector });
+    assert.equal(result.resolved, null, 'non-string query selector must fail closed');
+    assert.equal(result.candidates.length, 0);
+  }
+}
+
+{
+  const selectors = buildSelectorIndex({
+    selectorRefs: [{ addr: 0x4000n, selector: 'addCoins:' }],
+    stubs: [{ addr: 0x5000n, name: '_objc_msgSend$addCoins:' }],
+    fixups: [{ addr: 0x6000n, selector: 'description' }],
+  });
+  const r = resolveSelectorStub({ address: 0x5000n, symbol: '_objc_msgSend$addCoins:', selectorIndex: selectors });
+  assert.equal(r.selector, 'addCoins:');
+  assert.equal(r.ambiguous, false);
+}
+{
+  const block = recognizeObjcBlockLiteral(new Map([[0, 0x1111n], [8, 0x40000000], [16, 0x2222n], [24, 0x3333n], [32, 'capturedSelf']]));
+  assert.equal(block.kind, 'block');
+  assert.equal(block.invoke, 0x2222n);
+  assert.equal(block.captures.length, 1);
+}
+{
+  const imp = resolveObjcIMP(index, 0x2000n, { receiverType: 'PlayerData *', selector: 'addCoins:' });
+  assert.equal(imp.resolved?.selector, 'addCoins:');
+  assert.equal(imp.confidence, 0.98);
+  assert.equal(resolveObjcIMP(index, '8192', { receiverType: 'PlayerData *', selector: 'addCoins:' }).resolved?.selector, 'addCoins:', 'canonical numeric address strings remain supported');
+}
+
+// #2953: malformed structured IMP inputs must not be coerced into authoritative resolution.
+{
+  const malformedAddresses = [
+    ['8192'],
+    { toString() { return '8192'; } },
+    true,
+  ];
+  for (const address of malformedAddresses) {
+    const imp = resolveObjcIMP(index, address, { receiverType: 'PlayerData *', selector: 'addCoins:' });
+    assert.equal(imp.resolved, null, 'non-canonical IMP address input must fail closed');
+    assert.equal(imp.candidates.length, 0);
+    assert.equal(imp.confidence, 0);
+  }
+
+  const malformedReceiverTypes = [
+    ['PlayerData'],
+    { toString() { return 'PlayerData'; } },
+    true,
+    1,
+  ];
+  for (const receiverType of malformedReceiverTypes) {
+    const imp = resolveObjcIMP(index, 0x2000n, { receiverType, selector: 'addCoins:' });
+    assert.equal(imp.resolved, null, 'non-string receiverType must not narrow Objective-C IMP candidates');
+    assert.equal(imp.candidates.length, 0);
+    assert.equal(imp.confidence, 0);
+  }
+}
+{
+  const partial = buildObjcRuntimeIndex({ ...model, runtimeCompleteness: { complete: false, categories: { complete: false } } });
+  const imp = resolveObjcIMP(partial, 0x2000n, { receiverType: 'PlayerData *', selector: 'addCoins:' });
+  assert.equal(imp.resolved, null, 'a single parsed IMP candidate is not globally unique under partial metadata');
+  assert.equal(imp.candidates.length, 1);
+  assert.equal(imp.partial, true);
+  assert.equal(imp.confidence, 0.55);
+}
+{
+  assert.equal(runtimeOriginForSymbol('-[PlayerData addCoins:]'), 'objc');
+  assert.equal(runtimeOriginForSymbol('_ZN10GameObject6updateEv'), 'cpp');
+  assert.equal(runtimeOriginForSymbol('_$s4Game6updateyyF'), 'swift');
+  const mixed = buildAppleRuntimeIndex({ objc: model, swift: { types: [] } });
+  assert.equal(mixed.runtime, 'mixed');
+  assert.ok(mixed.objc.classes.has('PlayerData'));
+}
+
+console.log('objc-runtime: ok');
+// Re-run CI from the synchronized generated userscript head.

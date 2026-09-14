@@ -1,0 +1,924 @@
+import { ensureMachOMetadataBudget } from './macho-budget.js';
+import { functionSeed } from './model.js';
+import { chainedPointerReservedBitsReason } from './macho-chained-pointer.js';
+
+const CHAINED_POINTER_SITES = new WeakMap();
+const CHAINED_POINTER_COVERAGE = new WeakMap();
+const CHAINED_POINTER_REVISIONS = new WeakMap();
+export const MACHO_POINTER_SITE_VIEW_VERSION = '1.1.0';
+function advancePointerMetadata(image) {
+  CHAINED_POINTER_REVISIONS.set(image, (CHAINED_POINTER_REVISIONS.get(image) ?? 0n) + 1n);
+}
+/** Version of the existing loader-owned fixup site/coverage projection. */
+export function machOPointerMetadataRevision(image) {
+  return (CHAINED_POINTER_REVISIONS.get(image) ?? 0n).toString();
+}
+/** Read-only metadata description. A reconstructed encoded target is NOT proof
+ * that AUT succeeds, that a memory load occurred, or that execution can call it.
+ * Retained key/diversity fields are encoded metadata, not the runtime PAC key
+ * or the final discriminator after storage-address blending.
+ */
+export function describeMachOPointerSite(image, rawValue, addressValue) {
+  let raw, address;
+  try { raw = BigInt(rawValue); address = BigInt(addressValue); } catch { return null; }
+  if (!image || raw < 0n || raw > 0xffffffffffffffffn || address < 0n || address > 0xffffffffffffffffn) return null;
+  const revision = machOPointerMetadataRevision(image);
+  const site = CHAINED_POINTER_SITES.get(image)?.get(address) ?? null;
+  const coverage = chainedPointerCoverageAt(image, address);
+  const base = { schema: 'macho-pointer-site-view/v1', version: MACHO_POINTER_SITE_VIEW_VERSION, revision,
+    storageAddress: address, rawValue: raw, coverage: coverage ? Object.freeze({ ...coverage }) : null,
+    authority: 'loader-metadata-projection', authenticationVerified: false, executionTargetExact: false };
+  if (site && site.raw !== raw) return Object.freeze({ ...base, status: 'stale-raw-word', decoded: null });
+  if (site) {
+    const decoded = site.decoded;
+    return Object.freeze({ ...base, status: 'recorded-site', pointerFormat: site.pointerFormat,
+      decoded: decoded ? Object.freeze({ bind: decoded.bind === true, ordinal: decoded.ordinal ?? null,
+        addend: decoded.addend ?? null, target: decoded.target ?? null, next: decoded.next ?? null,
+        stride: decoded.stride ?? null,
+        ...(decoded.coOpted === true ? { coOpted: true, coOptedValue: decoded.coOptedValue ?? null } : {}),
+        authenticated: decoded.authenticated ?? null,
+        authenticationKey: decoded.authenticationKey ?? null, discriminator: decoded.discriminator ?? null,
+        addressDiversity: decoded.addressDiversity ?? null }) : null });
+  }
+  return Object.freeze({ ...base, status: coverage && !coverage.complete ? 'incomplete-owned-page' : 'no-recorded-fixup',
+    pointerFormat: null, decoded: null });
+}
+
+
+function rememberChainedPointerSite(image, address, raw, pointerFormat, decoded) {
+  let sites = CHAINED_POINTER_SITES.get(image);
+  if (!sites) { sites = new Map(); CHAINED_POINTER_SITES.set(image, sites); }
+  advancePointerMetadata(image);
+  sites.set(BigInt(address), { raw: BigInt(raw), pointerFormat, decoded });
+}
+
+function rememberChainedPointerCoverage(image, start, end) {
+  const rangeStart = BigInt(start);
+  const rangeEnd = BigInt(end);
+  if (rangeEnd <= rangeStart) return null;
+  let ranges = CHAINED_POINTER_COVERAGE.get(image);
+  if (!ranges) { ranges = new Map(); CHAINED_POINTER_COVERAGE.set(image, ranges); }
+  const key = `${rangeStart.toString(16)}:${rangeEnd.toString(16)}`;
+  // Re-observing a declared page starts conservatively. Only a full successful
+  // walk below may promote this ownership range to complete.
+  advancePointerMetadata(image);
+  ranges.set(key, { start: rangeStart, end: rangeEnd, complete: false });
+  return key;
+}
+
+function markChainedPointerCoverageComplete(image, key) {
+  if (key == null) return;
+  const range = CHAINED_POINTER_COVERAGE.get(image)?.get(key);
+  if (range && !range.complete) { advancePointerMetadata(image); range.complete = true; }
+}
+
+function chainedPointerCoverageAt(image, address) {
+  if (address == null) return null;
+  const target = BigInt(address);
+  for (const range of CHAINED_POINTER_COVERAGE.get(image)?.values() ?? []) {
+    if (target >= range.start && target < range.end) return range;
+  }
+  return null;
+}
+
+// Pointer-authority inputs must be parser-grade primitives (#5189): BigInt()
+// launders arrays and toString()-coercible objects into canonical VAs, which
+// then alias real sections, segments and chained-fixup sites.
+function canonicalPointerScalar(value) {
+  if (typeof value === 'bigint') return value >= 0n ? value : null;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  if (typeof value === 'string' && value === value.trim() && /^(?:0|[1-9][0-9]*|0x[0-9a-fA-F]+)$/.test(value)) {
+    try { return BigInt(value); } catch { return null; }
+  }
+  return null;
+}
+
+export function resolveMachOPointer(image, rawValue, options = {}) {
+  if (!image) return null;
+  const raw = canonicalPointerScalar(rawValue);
+  const address = options.address == null ? null : canonicalPointerScalar(options.address);
+  if (raw == null || (options.address != null && address == null)) return null;
+  if (raw <= 0n || raw > 0xffffffffffffffffn) return null;
+
+  const site = address == null ? null : CHAINED_POINTER_SITES.get(image)?.get(address);
+  if (site) {
+    if (site.raw !== raw) return null;
+    const decoded = site.decoded;
+    if (!decoded || decoded.bind || decoded.target == null) return null;
+    const target = BigInt(decoded.target);
+    return image.sectionAt?.(target) || image.segmentAt?.(target) ? target : null;
+  }
+
+  // A declared chained page remains loader-owned even when malformed input,
+  // unsupported encoding or a metadata budget prevents the exact chain site
+  // from being recovered. In that state the encoded word must never be
+  // reinterpreted as an ordinary absolute VA merely because its numeric value
+  // happens to map into this image.
+  const coverage = chainedPointerCoverageAt(image, address);
+  if (coverage && !coverage.complete) return null;
+
+  // A metadata field that is defined by Swift as an absolute pointer may also
+  // contain an ordinary materialized VA rather than a chained fixup. Accept it
+  // only when the loader can prove that the value belongs to this image.
+  return image.sectionAt?.(raw) || image.segmentAt?.(raw) ? raw : null;
+}
+
+export function parseChainedImports(r,dc,image,sharedBudget=null){
+  const budget=ensureMachOMetadataBudget(image,sharedBudget);
+  if (!dc?.size || dc.offset + dc.size > r.length || dc.size < 28) {
+    image.metadata.chainedFixups = { complete:false, symbolsComplete:false, importsComplete:false, bindingSitesComplete:false, partialReason:'invalid-or-truncated-payload' };
+    image.warnings.push('chained-fixups payload is missing or truncated; results are partial');
+    return null;
+  }
+  const base = dc.offset;
+  const version = r.u32(base);
+  const startsOffset = r.u32(base + 4);
+  const importsOffset = r.u32(base + 8);
+  const symbolsOffset = r.u32(base + 12);
+  const importsCount = r.u32(base + 16);
+  const importsFormat = r.u32(base + 20);
+  const symbolsFormat = r.u32(base + 24);
+  const status = image.metadata.chainedFixups = { version, startsOffset, importsCount, importsFormat, symbolsFormat, complete:true, symbolsComplete:true, importsComplete:true };
+  if (version !== 0) {
+    status.complete=false; status.importsComplete=false; status.importsPartialReason='unsupported-version';
+    image.warnings.push(`chained-fixups version ${version} is not supported; results are partial`);
+    return null;
+  }
+  if (symbolsFormat !== 0) {
+    image.metadata.chainedFixups.complete = false;
+    image.metadata.chainedFixups.symbolsComplete = false;
+    image.metadata.chainedFixups.partialReason = symbolsFormat === 1 ? 'compressed-symbol-pool' : 'unknown-symbol-pool-format';
+    image.warnings.push(`chained-fixups symbol pool format ${symbolsFormat} is not supported; results are partial`);
+    return null;
+  }
+  const importsBase = base + importsOffset;
+  const stringsBase = base + symbolsOffset;
+  const entrySize = importsFormat === 1 ? 4 : importsFormat === 2 ? 8 : importsFormat === 3 ? 16 : 0;
+  if (!entrySize) { status.complete=false; status.importsComplete=false; status.importsPartialReason='unsupported-import-format'; image.warnings.push(`unknown chained import format ${importsFormat}`); return null; }
+  if (importsOffset >= dc.size || symbolsOffset >= dc.size || importsBase + importsCount * entrySize > base + dc.size) { status.complete=false; status.importsComplete=false; status.importsPartialReason='truncated-import-table'; image.warnings.push('chained imports are truncated'); return null; }
+  const parsed = [];
+  for(let i=0;i<importsCount;i++){
+    if(!budget.take({inputBytes:entrySize,records:1,objects:1,operations:2,estimatedHeapBytes:224},'chained-import-record')){status.complete=false;status.importsComplete=false;status.importsPartialReason='metadata-budget';break;}
+    const p = importsBase + i * entrySize;
+    let ordinal, weak, nameOffset, addend = 0n;
+    if (importsFormat === 1 || importsFormat === 2) {
+      const raw = r.u32(p);
+      ordinal = decodeChainedImportOrdinal(raw & 0xff, 8);
+      weak = !!((raw >>> 8) & 1);
+      nameOffset = raw >>> 9;
+      if (importsFormat === 2) addend = BigInt(r.i32(p + 4));
+    } else {
+      const raw = r.u32(p);
+      ordinal = decodeChainedImportOrdinal(raw & 0xffff, 16);
+      weak = !!((raw >>> 16) & 1);
+      nameOffset = r.u32(p + 4);
+      addend = r.u64(p + 8);
+    }
+    const strp = stringsBase + nameOffset;
+    if (strp < base || strp >= base + dc.size) { status.complete=false;status.importsComplete=false;status.importsPartialReason ||= 'invalid-name-offset';continue; }
+    const span = r.bytes.subarray(strp, base + dc.size);
+    if (span.indexOf(0) === -1) { status.complete=false;status.importsComplete=false;status.importsPartialReason ||= 'non-terminated-import-name';continue; }
+    const name = r.cstring(strp, base + dc.size - strp);
+    if (!name) { status.complete=false;status.importsComplete=false;status.importsPartialReason ||= 'invalid-import-name';continue; }
+    if(!budget.take({stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'chained-import-name')){status.complete=false;status.importsComplete=false;status.importsPartialReason='metadata-budget';break;}
+    // A positive library ordinal is a 1-based index into the dependent dylib
+    // list; an ordinal beyond it references no library, so publishing it as
+    // canonical import metadata would launder a malformed reference (#5532).
+    const libraryCount = Array.isArray(image.libraries) ? image.libraries.length : 0;
+    if (ordinal > 0 && ordinal > libraryCount) {
+      status.complete = false; status.importsComplete = false;
+      status.importsPartialReason ||= 'dylib-ordinal-out-of-range';
+      image.warnings.push(`chained-fixups import ordinal ${ordinal} exceeds dependency count ${libraryCount}`);
+      continue;
+    }
+    const imp = { name, library: dylibForOrdinal(image, ordinal), ordinal, weak, addend, source: 'chained-fixups', sites: [], chainedIndex: i };
+    image.imports.push(imp);
+    parsed[i] = imp;
+  }
+  return parsed;
+}
+
+export function parseChainedBindingSites(r,dc,image,imports,segments=image.segments||[],sharedBudget=null){
+  const budget=ensureMachOMetadataBudget(image,sharedBudget);
+  const base = dc.offset;
+  const payloadEnd = base + dc.size;
+  image.metadata.chainedFixups ||= {};
+  const status = image.metadata.chainedFixups;
+  status.bindingSitesComplete = status.bindingSitesComplete !== false;
+  status.bindingSiteReasons ||= [];
+  let decoded = 0;
+  let failureEpoch = 0;
+  const fail = (message) => {
+    failureEpoch++;
+    status.complete = false;
+    status.bindingSitesComplete = false;
+    if (!status.bindingSiteReasons.includes(message)) status.bindingSiteReasons.push(message);
+    const warning = `chained-fixups: ${message}`;
+    if (!image.warnings.includes(warning)) image.warnings.push(warning);
+  };
+  if (status.importsComplete === false) {
+    fail('chained import table is incomplete; binding-site coverage cannot be complete');
+  }
+  const startsOffset = r.u32(base + 4);
+  if (!startsOffset || base + startsOffset + 4 > payloadEnd) {
+    fail('starts-in-image header is missing or truncated');
+    status.bindingSites = decoded;
+    return status;
+  }
+  const startsBase = base + startsOffset;
+  const segCount = r.u32(startsBase);
+  if (segCount > 4096 || startsBase + 4 + segCount * 4 > payloadEnd) {
+    fail('segment starts table is truncated or unreasonable');
+    status.bindingSites = decoded;
+    return status;
+  }
+  if (segCount !== segments.length) {
+    fail(`segment count ${segCount} does not match Mach-O load-command segment count ${segments.length}`);
+    // If the starts table omits load-command segments, no page-level ownership
+    // proof exists for those omitted segments. Keep the uncertainty scoped to
+    // those segments instead of globally disabling ordinary pointer recovery.
+    for (let i = segCount; i < segments.length; i++) {
+      const missing = segments[i];
+      if (!missing) continue;
+      const start = BigInt(missing.address ?? 0);
+      const size = BigInt(missing.size ?? 0);
+      if (size > 0n) rememberChainedPointerCoverage(image, start, start + size);
+    }
+  }
+  const count = Math.min(segCount, segments.length);
+  for (let segIndex = 0; segIndex < count; segIndex++) {
+    const rel = r.u32(startsBase + 4 + segIndex * 4);
+    if (!rel) continue;
+    const seg = segments[segIndex];
+    const segAddress = BigInt(seg?.address ?? 0);
+    const segSize = BigInt(seg?.size ?? 0);
+    const markSegmentIncomplete = () => {
+      if (seg && segSize > 0n) rememberChainedPointerCoverage(image, segAddress, segAddress + segSize);
+    };
+    const p = startsBase + rel;
+    if (!seg || p + 22 > payloadEnd) { markSegmentIncomplete(); fail(`segment ${segIndex} starts record is truncated`); continue; }
+    const structSize = r.u32(p);
+    const pageSize = r.u16(p + 4);
+    const pointerFormat = r.u16(p + 6);
+    const width = chainedPointerWidth(pointerFormat);
+    if (!width) markUnsupportedChainedFormat(image, pointerFormat);
+    const segmentOffset = r.u64(p + 8);
+    const maxValidPointer = r.u32(p + 16);
+    const pageCount = r.u16(p + 20);
+    if (structSize < 22 || p + structSize > payloadEnd || 22 + pageCount * 2 > structSize) {
+      markSegmentIncomplete(); fail(`segment ${segIndex} starts record size/page table is invalid`); continue;
+    }
+    if (pageSize !== 0x1000 && pageSize !== 0x4000) {
+      markSegmentIncomplete(); fail(`segment ${segIndex} has invalid chained page size 0x${pageSize.toString(16)}`); continue;
+    }
+    const segFileOffset = BigInt(seg.fileOffset ?? 0);
+    const segFileSize = BigInt(seg.fileSize ?? seg.size ?? 0);
+    if (segAddress < image.imageBase || segmentOffset !== segAddress - image.imageBase) {
+      markSegmentIncomplete(); fail(`segment ${segIndex} segment_offset does not identify its Mach-O segment`); continue;
+    }
+    const pageSizeBig = BigInt(pageSize);
+    const maxPages = segSize === 0n ? 0n : (segSize + pageSizeBig - 1n) / pageSizeBig;
+    if (BigInt(pageCount) > maxPages) {
+      markSegmentIncomplete(); fail(`segment ${segIndex} page_count exceeds segment VM range`); continue;
+    }
+    const structEnd = p + structSize;
+    const overflowBase = p + 22 + pageCount * 2;
+    if ((structEnd - overflowBase) % 2 !== 0) { markSegmentIncomplete(); fail(`segment ${segIndex} chain_starts array is misaligned`); continue; }
+    const overflowCount = (structEnd - overflowBase) / 2;
+
+    // Page ownership is established by the starts table itself, before decoding
+    // any site. Pre-registering every declared page means budget exhaustion,
+    // malformed multi-start data, unsupported formats, or a broken chain can
+    // never erase the fact that raw bytes in that page are encoded candidates.
+    const coverageKeys = new Map();
+    for (let page = 0; page < pageCount; page++) {
+      const start = r.u16(p + 22 + page * 2);
+      if (start === 0xffff) continue;
+      const pageOffset = BigInt(page) * pageSizeBig;
+      if (pageOffset >= segSize) continue;
+      const pageVmEnd = pageOffset + pageSizeBig < segSize ? pageOffset + pageSizeBig : segSize;
+      const key = rememberChainedPointerCoverage(
+        image,
+        segAddress + pageOffset,
+        segAddress + pageVmEnd,
+      );
+      coverageKeys.set(page, key);
+    }
+
+    if (!width) { fail(`segment ${segIndex} uses unsupported pointer format ${pointerFormat}`); continue; }
+
+    for (let page = 0; page < pageCount; page++) {
+      if(!budget.take({inputBytes:2,records:1,operations:1,estimatedHeapBytes:16},'chained-page')){fail('shared metadata budget exhausted while decoding pages');status.bindingSites=decoded;return status;}
+      const start = r.u16(p + 22 + page * 2);
+      if (start === 0xffff) continue;
+      const pageFailureEpoch = failureEpoch;
+      const coverageKey = coverageKeys.get(page) ?? null;
+      const pageOffset = BigInt(page) * pageSizeBig;
+      if (pageOffset >= segSize) { fail(`segment ${segIndex} page ${page} starts outside segment`); continue; }
+      const pageVmEnd = pageOffset + pageSizeBig < segSize ? pageOffset + pageSizeBig : segSize;
+      const pageFileEnd = pageVmEnd < segFileSize ? pageVmEnd : segFileSize;
+      const starts = [];
+      if (start & 0x8000) {
+        let oi = start & 0x7fff;
+        if (oi >= overflowCount) { fail(`segment ${segIndex} page ${page} chain_starts index is out of range`); continue; }
+        let terminated = false;
+        for (let guard = 0; guard < 4096 && oi < overflowCount; guard++, oi++) {
+          const x = r.u16(overflowBase + oi * 2);
+          starts.push(x & 0x7fff);
+          if (x & 0x8000) { terminated = true; break; }
+        }
+        if (!terminated) { fail(`segment ${segIndex} page ${page} multi-start list is unterminated`); continue; }
+      } else {
+        starts.push(start);
+      }
+
+      const pageAddress = segAddress + pageOffset;
+      const pageAddressEnd = segAddress + pageVmEnd;
+      const fileBackedAddressEnd = segAddress + pageFileEnd;
+      for (const chainStart of starts) {
+        if (chainStart >= pageSize || BigInt(chainStart) + BigInt(width) > pageVmEnd - pageOffset || BigInt(chainStart) + BigInt(width) > pageFileEnd - pageOffset) {
+          fail(`segment ${segIndex} page ${page} chain start 0x${chainStart.toString(16)} is outside file-backed page data`);
+          continue;
+        }
+        let address = pageAddress + BigInt(chainStart);
+        let terminated = false;
+        for (let guard = 0; guard < 100000; guard++) {
+          if(!budget.take({inputBytes:width,records:1,operations:1,estimatedHeapBytes:16},'chained-pointer')){fail('shared metadata budget exhausted while decoding pointer chain');status.bindingSites=decoded;return status;}
+          if (address < pageAddress || address + BigInt(width) > pageAddressEnd || address + BigInt(width) > fileBackedAddressEnd) {
+            fail(`segment ${segIndex} page ${page} chain leaves its page or file-backed segment range`); break;
+          }
+          const off = image.addressToOffset(address);
+          const expectedOff = segFileOffset + (address - segAddress);
+          if (off == null || BigInt(off) !== expectedOff || expectedOff + BigInt(width) > segFileOffset + segFileSize || expectedOff + BigInt(width) > BigInt(r.length)) {
+            fail(`segment ${segIndex} page ${page} chain address is not backed by its owning segment`); break;
+          }
+          const raw = width === 4 ? BigInt(r.u32(Number(expectedOff))) : r.u64(Number(expectedOff));
+          const d = decodeChainedPointer(raw, pointerFormat, image.imageBase, maxValidPointer);
+          if (!d) { markUnsupportedChainedFormat(image, pointerFormat); fail(`segment ${segIndex} pointer format ${pointerFormat} could not be decoded`); break; }
+          if (d.invalidReason) { fail(`segment ${segIndex} pointer format ${pointerFormat} has ${d.invalidReason}`); break; }
+          rememberChainedPointerSite(image, address, raw, pointerFormat, d);
+          if (d.bind) {
+            const imp = d.ordinal >= 0 && d.ordinal < imports.length ? imports[d.ordinal] : null;
+            if (!imp) {
+              fail(`invalid bind ordinal ${d.ordinal} does not reference a parsed chained import`);
+            } else {
+              if(!budget.take({objects:1,operations:1,estimatedHeapBytes:112},'chained-bind-site')){fail('shared metadata budget exhausted while recording bind site');status.bindingSites=decoded;return status;}
+              imp.sites.push({ address, offset: expectedOff, kind: 'chained-bind', pointerFormat, addend: d.addend });
+              decoded++;
+            }
+          }
+          if (!d.next) { terminated = true; break; }
+          const delta = BigInt(d.next) * BigInt(d.stride);
+          const nextAddress = address + delta;
+          if (delta <= 0n || nextAddress <= address || nextAddress + BigInt(width) > pageAddressEnd || nextAddress + BigInt(width) > fileBackedAddressEnd) {
+            fail(`segment ${segIndex} page ${page} chained next leaves its page`); break;
+          }
+          address = nextAddress;
+        }
+        if (!terminated && failureEpoch === pageFailureEpoch && starts.length) fail(`segment ${segIndex} page ${page} chain exceeded iteration budget`);
+      }
+      if (failureEpoch === pageFailureEpoch) markChainedPointerCoverageComplete(image, coverageKey);
+    }
+  }
+  status.bindingSites = decoded;
+  return status;
+}
+
+function chainedPointerWidth(format) {
+  if ([3, 4, 5].includes(format)) return 4;
+  if ([1, 2, 6, 7, 9, 10, 12].includes(format)) return 8;
+  return 0;
+}
+function markUnsupportedChainedFormat(image, format) {
+  image.metadata.chainedFixups ||= {};
+  image.metadata.chainedFixups.complete = false;
+  image.metadata.chainedFixups.bindingSitesComplete = false;
+  const list = image.metadata.chainedFixups.unsupportedPointerFormats ||= [];
+  if (!list.includes(format)) { list.push(format); image.warnings.push(`chained pointer format ${format} is not supported; binding sites are partial`); }
+}
+function decodeChainedPointer(raw, format, imageBase = null, maxValidPointer = null) {
+  const base = imageBase == null ? null : BigInt(imageBase);
+  const invalidReason = chainedPointerReservedBitsReason(raw, format);
+  if (invalidReason) return { invalidReason };
+  if (format === 3) {
+    const bind = !!((raw >> 31n) & 1n);
+    const next = Number((raw >> 26n) & 0x1fn);
+    if (!bind) {
+      // Apple fixup-chains.h dyld_chained_ptr_32_rebase: target is a 26-bit
+      // vmaddr. An entry above the starts record's max_valid_pointer is not a
+      // pointer at all but a value co-opted into the chain; dyld restores it
+      // by subtracting the bias (64MB + max_valid_pointer) / 2 (#4120).
+      const target = raw & 0x3ffffffn;
+      if (maxValidPointer != null && target > BigInt(maxValidPointer)) {
+        const bias = (0x4000000n + BigInt(maxValidPointer)) / 2n;
+        return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, target: null,
+          coOpted: true, coOptedValue: (target - bias) & 0xffffffffn };
+      }
+      return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, target };
+    }
+    const ordinal = Number(raw & 0xfffffn);
+    const addend = Number((raw >> 20n) & 0x3fn);
+    return { bind: true, ordinal, addend: BigInt(addend), next, stride: 4, target: null };
+  }
+  if (format === 2 || format === 6) {
+    const bind = !!(raw >> 63n);
+    const next = Number((raw >> 51n) & 0xfffn);
+    if (!bind) {
+      const target = raw & 0xfffffffffn;
+      const high8 = (raw >> 36n) & 0xffn;
+      const reconstructed = target | (high8 << 56n);
+      const resolved = format === 6 ? (base == null ? null : base + reconstructed) : reconstructed;
+      return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, target: resolved };
+    }
+    const ordinal = Number(raw & 0xffffffn);
+    const addend = Number((raw >> 24n) & 0xffn);
+    return { bind: true, ordinal, addend: BigInt(addend), next, stride: 4, target: null };
+  }
+  if ([1, 7, 9, 10, 12].includes(format)) {
+    const auth = !!((raw >> 63n) & 1n);
+    const bind = !!((raw >> 62n) & 1n);
+    const next = Number((raw >> 51n) & 0x7ffn);
+    const ordinalBits = format === 12 ? 24n : 16n;
+    const ordinalMask = (1n << ordinalBits) - 1n;
+    const ordinal = Number(raw & ordinalMask);
+    let addend = 0n;
+    if (bind && !auth) {
+      let a = Number((raw >> 32n) & 0x7ffffn);
+      if (a & 0x40000) a -= 0x80000;
+      addend = BigInt(a);
+    }
+    // dyld_chained_ptr_arm64e_auth_{rebase,bind,bind24}: retain exactly
+    // diversity[47:32], addrDiv[48], key[50:49]. Other pointer layouts
+    // do NOT reuse these fields. Nothing here authenticates a pointer.
+    const authentication = auth ? { authenticationKey: Number((raw >> 49n) & 3n),
+      discriminator: Number((raw >> 32n) & 0xffffn), addressDiversity: !!((raw >> 48n) & 1n) } : {};
+    const stride = format === 7 || format === 10 ? 4 : 8;
+    if (bind) return { bind, ordinal, addend, next, stride, target: null, authenticated: auth, ...authentication };
+    if (auth) {
+      const target = base == null ? null : base + (raw & 0xffffffffn);
+      return { bind, ordinal: -1, addend: 0n, next, stride, target, authenticated: true, ...authentication };
+    }
+    const target = raw & 0x7ffffffffffn;
+    const high8 = (raw >> 43n) & 0xffn;
+    const reconstructed = target | (high8 << 56n);
+    const vmOffset = format === 7 || format === 9 || format === 12;
+    const resolved = vmOffset ? (base == null ? null : base + reconstructed) : reconstructed;
+    return { bind, ordinal: -1, addend: 0n, next, stride, target: resolved, authenticated: false };
+  }
+  return null;
+}
+
+function classicBindPointerSize(image) {
+  // ARM64_32 uses the 64-bit Mach-O container format but a 32-bit native
+  // pointer ABI. Keep image.bits as file-class authority and derive the
+  // classic dyld bind slot width from the target ABI instead.
+  return image?.arch === 'arm64_32' ? 4n : image?.bits === 64 ? 8n : 4n;
+}
+
+export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=null){
+  const budget=ensureMachOMetadataBudget(image,sharedBudget);
+  image.metadata.dyldBindings ||= { complete:true, streams:{} };
+  if (!dc || !dc.size) return null;
+  if (dc.offset + dc.size > r.length) {
+    const invalid={source,complete:false,decodedBinds:0,threadedApplies:0,unsupportedOpcodes:[],partialReason:'truncated-range'};
+    image.metadata.dyldBindings.complete=false;image.metadata.dyldBindings.streams[source]=invalid;
+    image.warnings.push(`${source}: binding stream is truncated`);return invalid;
+  }
+  const BIND_OPCODE_MASK = 0xf0, BIND_IMMEDIATE_MASK = 0x0f, BIND_SYMBOL_FLAGS_KNOWN_MASK = 0x09;
+  const ptrSize = classicBindPointerSize(image);
+  let p = dc.offset;
+  const end = dc.offset + dc.size;
+  // Classic bind state mirrors dyld's BindOpcodes state machine: only
+  // lazy-bind streams carry an implicit pointer type and weak-bind streams an
+  // implicit library ordinal (-3); a bind location exists only after
+  // SET_SEGMENT_AND_OFFSET_ULEB has run, and normal/lazy binds must have set a
+  // library ordinal explicitly (issues #5834/#5835/#5832).
+  let libOrdinal = source === 'weak-bind' ? -3 : 0, symbol = '', symbolFlags = 0, type = source === 'lazy-bind' ? 1 : 0, addend = 0n, segIndex = 0, segOffset = 0n, locationSet = false;
+  let libraryOrdinalSet = source === 'weak-bind';
+  let threadedTable = null, threadedTableLimit = 0;
+  let sawDone = false;
+  const status = { source, complete: true, decodedBinds: 0, threadedApplies: 0, unsupportedOpcodes: [] };
+  image.metadata.dyldBindings ||= { complete: true, streams: {} };
+  image.metadata.dyldBindings.streams[source] = status;
+  const fail = (message, opcode = null) => {
+    status.complete = false; image.metadata.dyldBindings.complete = false;
+    if (opcode != null && !status.unsupportedOpcodes.includes(opcode)) status.unsupportedOpcodes.push(opcode);
+    image.warnings.push(`${source}: ${message}`);
+  };
+  const validDylibOrdinal = () => {
+    if (!Number.isSafeInteger(libOrdinal)) { fail('dylib ordinal exceeds safe integer range'); return false; }
+    const libraryCount = Array.isArray(image.libraries) ? image.libraries.length : 0;
+    if (libOrdinal > 0 && libOrdinal > libraryCount) { fail(`dylib ordinal ${libOrdinal} exceeds dependency count ${libraryCount}`); return false; }
+    return true;
+  };
+  const snapshotImport = () => ({ name: symbol, library: dylibForOrdinal(image, libOrdinal), ordinal: libOrdinal, weak: !!(symbolFlags & 1), symbolFlags, nonWeakDefinition: !!(symbolFlags & 8), addend, type, source, sites: [] });
+  const validLocation = (width = ptrSize) => {
+    if (!locationSet) return false;
+    const seg = segments[segIndex];
+    return !!seg && segOffset >= 0n && segOffset <= seg.size && width <= seg.size - segOffset;
+  };
+  const bind = () => {
+    if (!symbol) { fail('bind encountered before a symbol was set'); return; }
+    if (!validDylibOrdinal()) return;
+    if (threadedTable) {
+      if (type !== 1) { fail(`unknown threaded bind type ${type}`); return; }
+      if (threadedTable.length < threadedTableLimit) { threadedTable.push(snapshotImport()); return; }
+      fail(`threaded ordinal table exceeds declared ${threadedTableLimit} entries`);
+      return;
+    }
+    if (type !== 1 && type !== 2 && type !== 3) { fail(`unknown bind type ${type} at bind site`); return; }
+    if (!libraryOrdinalSet) { fail('missing preceding BIND_OPCODE_SET_DYLIB_ORDINAL'); return; }
+    if (!validLocation()) { fail(`bind location is outside segment ${segIndex} at +0x${segOffset.toString(16)}`); return; }
+    const seg = segments[segIndex];
+    const address = seg.address + segOffset;
+    const imp = snapshotImport();
+    imp.sites.push({ address, offset: image.addressToOffset(address), kind: source, type, addend, weak: imp.weak });
+    // The retained import name is resident metadata: account its string bytes
+    // alongside the fixed object cost (issue #6303).
+    if(!budget.take({objects:2,operations:1,stringBytes:symbol.length*2,estimatedHeapBytes:320+symbol.length*2},'classic-bind-output')){fail('shared metadata budget exhausted while recording bind');return;}
+    image.imports.push(imp); status.decodedBinds++;
+  };
+  const threadedPointerFileOffset = (address) => {
+    const width = 8n;
+    if (typeof image.resolveVirtualMapping === 'function') {
+      const first = image.resolveVirtualMapping(address);
+      if (!first || first.kind !== 'file' || first.offset == null || first.available < width) return null;
+      const last = image.resolveVirtualMapping(address + width - 1n);
+      if (!last || last.kind !== 'file' || last.mapping !== first.mapping || last.offset !== first.offset + width - 1n) return null;
+
+      // A narrower canonical mapping can begin in the middle of the word even
+      // when both endpoints belong to the parent mapping. Do not stitch bytes
+      // across that ownership boundary merely because their file offsets are
+      // contiguous (#4296).
+      const owner = first.mapping;
+      const end = address + width;
+      const crossesNarrowerMapping = (mappings) => {
+        for (const mapping of mappings || []) {
+          if (mapping === owner || mapping.size <= 0n || mapping.size >= owner.size) continue;
+          if (mapping.address > address && mapping.address < end) return true;
+        }
+        return false;
+      };
+      if (crossesNarrowerMapping(image.sections) || crossesNarrowerMapping(image.segments)) return null;
+      return first.offset;
+    }
+
+    // Lightweight parser test doubles predate resolveVirtualMapping(). Still
+    // require the complete word to map to one contiguous file span rather than
+    // preserving the old first-byte-only proof.
+    const first = image.addressToOffset(address);
+    const last = image.addressToOffset(address + width - 1n);
+    if (first == null || last == null || last !== first + width - 1n) return null;
+    return first;
+  };
+  const applyThreaded = () => {
+    if (!threadedTable) { fail('threaded APPLY encountered before ordinal table'); return; }
+    // BIND_OPCODE_THREADED encodes 64-bit chain words even when a target's
+    // ordinary native pointer ABI differs. Do not let ARM64_32's 4-byte
+    // classic-bind slot width weaken this separate chain-word bounds proof.
+    if (!validLocation(8n)) { fail('threaded APPLY starts outside its segment'); return; }
+    const seg = segments[segIndex];
+    let address = seg.address + segOffset;
+    for (let guard = 0; guard < 100000; guard++) {
+      const off = threadedPointerFileOffset(address);
+      if (off == null || off + 8n > BigInt(r.length)) { fail('threaded binding chain leaves mapped file data'); return; }
+      const raw = r.u64(Number(off));
+      const isBind = !!((raw >> 62n) & 1n);
+      const delta = Number((raw >> 51n) & 0x7ffn);
+      if (isBind) {
+        const ordinal = Number(raw & 0xffffn);
+        const template = threadedTable[ordinal];
+        if (!template) fail(`threaded bind ordinal ${ordinal} is outside table`);
+        else {
+          const imp = { ...template, sites: [{ address, offset: off, kind: 'threaded-bind', type: template.type, addend: template.addend, weak: template.weak }] };
+          if(!budget.take({objects:2,operations:1,estimatedHeapBytes:320},'classic-bind-output')){fail('shared metadata budget exhausted while recording bind');return;}
+    image.imports.push(imp); status.decodedBinds++;
+        }
+      }
+      if (!delta) { status.threadedApplies++; return; }
+      address += BigInt(delta * 8);
+      if (address < seg.address || address + 8n > seg.address + seg.size) { fail('threaded binding delta leaves segment'); return; }
+    }
+    fail('threaded binding chain exceeded the 100000-entry budget');
+  };
+  try {
+    while (p < end) {
+    if(!budget.take({inputBytes:1,records:1,operations:1,estimatedHeapBytes:8},'classic-bind-opcode')){fail('shared metadata budget exhausted while decoding bind stream');break;}
+    const byte = r.u8(p++);
+    const op = byte & BIND_OPCODE_MASK;
+    const imm = byte & BIND_IMMEDIATE_MASK;
+    // dyld's lazy-bind decoder accepts only DONE, the dylib-ordinal setters,
+    // SET_SYMBOL_TRAILING_FLAGS_IMM, SET_ADDEND_SLEB, SET_SEGMENT_AND_OFFSET_ULEB
+    // and DO_BIND; everything else is "bad lazy bind opcode" (issue #5889).
+    if (source === 'lazy-bind' && ![0x00, 0x10, 0x20, 0x30, 0x40, 0x60, 0x70, 0x90].includes(op)) {
+      fail(`bad lazy bind opcode 0x${byte.toString(16)}`, byte);
+      break;
+    }
+    if (op === 0x00) {
+      if (source === 'lazy-bind') { symbol = ''; symbolFlags = 0; libOrdinal = 0; libraryOrdinalSet = false; addend = 0n; continue; }
+      sawDone = true;
+      break;
+    } else if (op === 0x10) {
+      if (source === 'weak-bind') { fail('dylib ordinal opcode is not allowed in weak-bind stream'); break; }
+      libOrdinal = imm; libraryOrdinalSet = true;
+    }
+    else if (op === 0x20) {
+      if (source === 'weak-bind') { fail('dylib ordinal opcode is not allowed in weak-bind stream'); break; }
+      const x = r.uleb(p, 10, end); p = x.next; libOrdinal = Number(x.value); libraryOrdinalSet = true;
+    }
+    else if (op === 0x30) {
+      if (source === 'weak-bind') { fail('dylib ordinal opcode is not allowed in weak-bind stream'); break; }
+      libOrdinal = imm === 0 ? 0 : signExtend(imm | 0xf0, 8); libraryOrdinalSet = true;
+    }
+    else if (op === 0x40) {
+      if ((imm & ~BIND_SYMBOL_FLAGS_KNOWN_MASK) !== 0) { fail(`reserved symbol flags 0x${imm.toString(16)}`); break; }
+      const x = rawCString(r, p, end);
+      // The symbol C-string is a variable-length cost: charge its raw bytes to
+      // inputBytes and the decoded string to the shared string budget before
+      // retaining it, otherwise a crafted stream routes unbounded metadata
+      // past the declared stringBytes ceiling (issue #6303).
+      if (!budget.take({ inputBytes:x.bytes, stringBytes:x.text.length*2, estimatedHeapBytes:x.text.length*2+32 }, 'classic-bind-symbol')) { fail('shared metadata budget exhausted while decoding bind symbol'); break; }
+      symbol = x.text; symbolFlags = imm; p = x.next;
+    }
+    else if (op === 0x50) type = imm;
+    else if (op === 0x60) { const x = r.sleb(p, 10, end); p = x.next; addend = x.value; }
+    else if (op === 0x70) { segIndex = imm; const x = r.uleb(p, 10, end); p = x.next; segOffset = x.value; locationSet = true; }
+    else if (op === 0x80) { const x = r.uleb(p, 10, end); p = x.next; segOffset += x.value; }
+    else if (op === 0x90) { bind(); segOffset += ptrSize; }
+    else if (op === 0xa0) { bind(); const x = r.uleb(p, 10, end); p = x.next; segOffset += ptrSize + x.value; }
+    else if (op === 0xb0) { bind(); segOffset += ptrSize + BigInt(imm) * ptrSize; }
+    else if (op === 0xc0) {
+      const a = r.uleb(p, 10, end); p = a.next; const b = r.uleb(p, 10, end); p = b.next;
+      if(a.value>BigInt(Number.MAX_SAFE_INTEGER)){fail('bind repeat count exceeds safe integer range');break;}
+      const repeat=Number(a.value),step=ptrSize+b.value,owner=segments[segIndex];
+      const maxBySegment=owner&&step>0n&&segOffset>=0n&&segOffset+ptrSize<=owner.size?Number(((owner.size-segOffset-ptrSize)/step)+1n):0;
+      const maxByBudget=Math.min(budget.remaining('operations'),Math.floor(budget.remaining('objects')/2));
+      const allowed=Math.max(0,Math.min(repeat,maxBySegment,maxByBudget));
+      for(let i=0;i<allowed;i++){bind();segOffset+=step;}
+      if(allowed<repeat){fail(`bind repeat count ${repeat} exceeds segment/shared metadata capacity ${allowed}`);break;}
+    } else if (op === 0xd0) {
+      if (imm === 0) {
+        const x = r.uleb(p, 10, end); p = x.next;
+        if (x.value > 65536n) { fail('threaded ordinal table exceeds 65536 entries'); break; }
+        threadedTableLimit = Number(x.value); threadedTable = [];
+        // Threaded bind entries are pointer-form chained fixups: the stream has
+        // no SET_TYPE_IMM opcode, so the implicit pointer type applies here.
+        type = 1;
+      } else if (imm === 1) applyThreaded();
+      else { fail(`unknown threaded bind subopcode 0x${imm.toString(16)}`, byte); break; }
+    } else { fail(`unknown dyld bind opcode 0x${op.toString(16)}`, byte); break; }
+    }
+  } catch (e) {
+    if (e?.code === 'BINARY_SOURCE_RANGE_MISSING') throw e;
+    fail(`bounded stream operand is truncated: ${e.message}`);
+  }
+  if (threadedTable && threadedTable.length !== threadedTableLimit) fail(`threaded ordinal table expected ${threadedTableLimit} entries, decoded ${threadedTable.length}`);
+  if (source !== 'lazy-bind' && status.complete && !sawDone) fail('binding stream ended without BIND_OPCODE_DONE');
+  return status;
+}
+
+export function parseExportTrie(r,dc,image,sharedBudget=null){
+  const budget=ensureMachOMetadataBudget(image,sharedBudget);
+  if (!dc || !dc.size) return null;
+  if (dc.offset + dc.size > r.length) {
+    const invalid={complete:false,nodes:0,edges:0,cycleDetected:false,budgetExceeded:false,partialReason:'truncated-range'};
+    image.metadata.exportTrie=invalid;image.warnings.push('exports trie: payload is truncated');return invalid;
+  }
+  const base = dc.offset, end = dc.offset + dc.size;
+  const active = new Set();
+  const status = { complete: true, nodes: 0, edges: 0, cycleDetected: false, budgetExceeded: false };
+  image.metadata.exportTrie = status;
+  const markPartial = (message, field) => { status.complete = false; if (field) status[field] = true; image.warnings.push(`exports trie: ${message}`); };
+  const walk = (nodeOff, path, depth) => {
+    if (depth > 256) { markPartial('depth budget exceeded', 'budgetExceeded'); return; }
+    if (!Number.isSafeInteger(nodeOff) || nodeOff < 0 || base + nodeOff >= end) { markPartial('child node offset is outside trie'); return; }
+    if (active.has(nodeOff)) { markPartial(`cycle detected at node 0x${nodeOff.toString(16)}`, 'cycleDetected'); return; }
+    if(!budget.take({records:1,objects:1,operations:1,estimatedHeapBytes:48},'export-trie-node')){markPartial('shared metadata node budget exceeded','budgetExceeded');return;} status.nodes++;
+    active.add(nodeOff);
+    try {
+      let p = base + nodeOff;
+      const term = r.uleb(p, 10, end); p = term.next;
+      const terminalSize = Number(term.value);
+      if (!Number.isSafeInteger(terminalSize) || terminalSize < 0 || p + terminalSize > end) { markPartial('terminal payload is truncated'); return; }
+      const terminalEnd = p + terminalSize;
+      if (term.value) {
+        const flagsX = r.uleb(p, 10, terminalEnd); p = flagsX.next;
+        // Flag bits must be tested on the exact ULEB128 BigInt BEFORE any
+        // Number() conversion: a rounded double loses the low REEXPORT/STUB
+        // bits (mod 2^32) and even silences the high-bit guard, mis-decoding
+        // the terminal layout while keeping complete:true (#5030). After the
+        // >=6 guard the value is <= 0x3f, so Number() is exact below.
+        const flagsBig = flagsX.value;
+        const flags = Number(flagsBig);
+        // Apple dyld's ExportsTrie.cpp rejects terminals with bits >= 6 set
+        // ("unknown exports flag bits"). Laundering them into regular
+        // exports would mint export metadata the container cannot mean
+        // (#5392).
+        if ((flagsBig >> 6n) !== 0n) {
+          markPartial(`unknown exports flag bits 0x${flagsBig.toString(16)}`);
+        } else if (flags & 0x08) {
+          const ord = r.uleb(p, 10, terminalEnd); p = ord.next;
+          const importedX = readBudgetedExportTrieCString(r, p, terminalEnd, budget, 'export-trie-reexport-string');
+          if (!importedX) { markPartial('shared metadata re-export string budget exceeded', 'budgetExceeded'); return; }
+          p = importedX.next;
+          const imported = importedX.text || null;
+          const ordinal = Number(ord.value);
+          // A positive library ordinal is a 1-based index into the dependent
+          // dylib list; an ordinal beyond it references no library and must
+          // not become canonical export metadata (dyld binding semantics,
+          // #5532).
+          const libraryCount = Array.isArray(image.libraries) ? image.libraries.length : 0;
+          if (ordinal > 0 && ordinal > libraryCount) {
+            markPartial(`reexport ordinal ${ordinal} exceeds dependency count ${libraryCount}`);
+          } else {
+            const prefix = materializeExportTriePath(path, budget);
+            if (prefix == null) { markPartial('shared metadata path string budget exceeded', 'budgetExceeded'); return; }
+            if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'export-trie-reexport-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;}
+            image.exports.push({ name: prefix, address: 0n, kind: 'reexport', flags, ordinal, imported, source: 'exports-trie' });
+          }
+        } else {
+            const exportKind = flags & 0x03;
+            if (exportKind === 3) {
+              markPartial(`unsupported export kind ${exportKind}`);
+            } else if (flags & 0x20) {
+              // EXPORT_SYMBOL_FLAGS_FUNCTION_VARIANT: the terminal carries a
+              // default-implementation offset plus a function-variant table
+              // index. Decoding it as a regular export would drop the table
+              // index and downgrade a variant-aware symbol to plain export
+              // provenance (#5387). The variant table itself is not modeled
+              // here yet, so publish typed provenance without an exact
+              // address and keep the trie explicitly partial.
+              const addrX = r.uleb(p, 10, terminalEnd); p = addrX.next;
+              const tableIndexX = r.uleb(p, 10, terminalEnd); p = tableIndexX.next;
+              if (tableIndexX.value == null) {
+                markPartial('function-variant terminal is missing its variant table index');
+              } else {
+                const prefix = materializeExportTriePath(path, budget);
+                if (prefix == null) { markPartial('shared metadata path string budget exceeded', 'budgetExceeded'); return; }
+                if (!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'export-trie-output')) {
+                  markPartial('shared metadata output budget exceeded','budgetExceeded');
+                } else {
+                  image.exports.push({ name: prefix, address: null, kind: 'function-variant', flags, defaultImplementationOffset: addrX.value, variantTableIndex: Number(tableIndexX.value), source: 'exports-trie' });
+                  markPartial(`function-variant export ${prefix} recorded without variant-table resolution`);
+                }
+              }
+            } else {
+            const addrX = r.uleb(p, 10, terminalEnd); p = addrX.next;
+            // REGULAR and THREAD_LOCAL terminal values are implementation
+            // offsets relative to the image; only ABSOLUTE is already a raw
+            // address (dyld ExportsTrie semantics, #4366).
+            const address = exportKind === 2 ? addrX.value : image.imageBase + addrX.value;
+            const kind = exportKind === 1 ? 'thread-local' : exportKind === 2 ? 'absolute' : 'export';
+            const prefix = materializeExportTriePath(path, budget);
+            if (prefix == null) { markPartial('shared metadata path string budget exceeded', 'budgetExceeded'); return; }
+            const ex = { name: prefix, address, kind, flags, source: 'exports-trie' };
+            if (flags & 0x10) { const resolverX = r.uleb(p, 10, terminalEnd); p = resolverX.next; ex.resolver = image.imageBase + resolverX.value; }
+            if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'export-trie-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;} image.exports.push(ex);
+            if (exportKind === 0) {
+              const sec = image.sectionAt(address);
+              if (sec && sec.perms.execute && image.addressToOffset(address) != null) {
+                if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'export-function')){markPartial('shared metadata function budget exceeded','budgetExceeded');return;}
+                image.functions.push(functionSeed(address, { name: prefix, source: 'export', confidence: 0.9 }));
+              }
+            }
+          }
+        }
+      }
+      p = terminalEnd; if (p >= end) return;
+      const children = r.u8(p++);
+      for (let i = 0; i < children; i++) {
+        if(!budget.take({records:1,operations:1,estimatedHeapBytes:32},'export-trie-edge')){markPartial('shared metadata edge budget exceeded','budgetExceeded');return;} status.edges++;
+        const edgeX = readBudgetedExportTrieCString(r, p, end, budget, 'export-trie-edge-string');
+        if (!edgeX) { markPartial('shared metadata edge string budget exceeded', 'budgetExceeded'); return; }
+        const edge = edgeX.text; p = edgeX.next;
+        if (p >= end) { markPartial('child offset is truncated'); return; }
+        const child = r.uleb(p, 10, end); p = child.next;
+        path.push(edge);
+        try { walk(Number(child.value), path, depth + 1); }
+        finally { path.pop(); }
+      }
+    } finally { active.delete(nodeOff); }
+  };
+  try { walk(0, [], 0); } catch (e) {
+    if (e?.code === 'BINARY_SOURCE_RANGE_MISSING') throw e; markPartial(e.message);
+  }
+  return status;
+}
+
+function stopExportTrieBudget(budget, key, label) {
+  return budget.take({ [key]: budget.remaining(key) + 1 }, label);
+}
+
+function utf8CodeUnitsAt(r, p, end) {
+  const b0 = r.u8(p);
+  const cont = (value) => value >= 0x80 && value <= 0xbf;
+  if (b0 < 0x80) return { width: 1, units: 1 };
+  if (b0 >= 0xc2 && b0 <= 0xdf && p + 1 < end) {
+    const b1 = r.u8(p + 1);
+    if (cont(b1)) return { width: 2, units: 1 };
+  } else if (b0 >= 0xe0 && b0 <= 0xef && p + 2 < end) {
+    const b1 = r.u8(p + 1), b2 = r.u8(p + 2);
+    const validB1 = b0 === 0xe0 ? b1 >= 0xa0 && b1 <= 0xbf
+      : b0 === 0xed ? b1 >= 0x80 && b1 <= 0x9f
+        : cont(b1);
+    if (validB1 && cont(b2)) return { width: 3, units: 1 };
+  } else if (b0 >= 0xf0 && b0 <= 0xf4 && p + 3 < end) {
+    const b1 = r.u8(p + 1), b2 = r.u8(p + 2), b3 = r.u8(p + 3);
+    const validB1 = b0 === 0xf0 ? b1 >= 0x90 && b1 <= 0xbf
+      : b0 === 0xf4 ? b1 >= 0x80 && b1 <= 0x8f
+        : cont(b1);
+    if (validB1 && cont(b2) && cont(b3)) return { width: 4, units: 2 };
+  }
+  // TextDecoder({fatal:false}) replaces malformed input. Advancing one byte
+  // at a time can only overestimate the resulting UTF-16 length, so it is a
+  // safe pre-allocation bound without accepting an oversized string (#4154).
+  return { width: 1, units: 1 };
+}
+
+function readBudgetedExportTrieCString(r, start, end, budget, label) {
+  if (!budget.take({ operations: 1 }, `${label}-scan`)) return null;
+  const inputRemaining = budget.remaining('inputBytes');
+  const stringRemaining = budget.remaining('stringBytes');
+  const heapRemaining = budget.remaining('estimatedHeapBytes');
+  const scanEnd = start + Math.min(end - start, inputRemaining);
+  const maxStringUnits = Math.floor(stringRemaining / 2);
+  const maxHeapUnits = Math.floor(Math.max(0, heapRemaining - 32) / 2);
+  let p = start, utf16Units = 0, nextScanCheck = start + 4096;
+  while (p < scanEnd) {
+    if (p >= nextScanCheck) {
+      if (!budget.take({ operations: 1 }, `${label}-scan`)) return null;
+      nextScanCheck = p + 4096;
+    }
+    if (r.u8(p) === 0) {
+      const inputBytes = p + 1 - start;
+      const stringBytes = utf16Units * 2;
+      const estimatedHeapBytes = stringBytes + 32;
+      if (!budget.take({ inputBytes, stringBytes, estimatedHeapBytes }, label)) return null;
+      const raw = r.slice(start, p - start);
+      const text = new TextDecoder('utf-8', { fatal: false }).decode(raw);
+      return { text, next: p + 1, bytes: inputBytes };
+    }
+    const next = utf8CodeUnitsAt(r, p, scanEnd);
+    const nextUnits = utf16Units + next.units;
+    if (nextUnits > maxStringUnits) {
+      stopExportTrieBudget(budget, 'stringBytes', label);
+      return null;
+    }
+    if (nextUnits > maxHeapUnits) {
+      stopExportTrieBudget(budget, 'estimatedHeapBytes', label);
+      return null;
+    }
+    utf16Units = nextUnits;
+    p += next.width;
+  }
+  if (scanEnd < end) {
+    stopExportTrieBudget(budget, 'inputBytes', label);
+    return null;
+  }
+  throw new Error('unterminated C string');
+}
+
+function materializeExportTriePath(path, budget) {
+  if (!path.length) return '';
+  if (path.length === 1) return path[0];
+  let units = 0;
+  for (const segment of path) {
+    units += segment.length;
+    if (!Number.isSafeInteger(units)) {
+      stopExportTrieBudget(budget, 'stringBytes', 'export-trie-path');
+      return null;
+    }
+  }
+  const stringBytes = units * 2;
+  if (!budget.take({ operations: 1, stringBytes, estimatedHeapBytes:stringBytes+32 }, 'export-trie-path')) return null;
+  return path.join('');
+}
+
+function rawCString(r, p, end) {
+  const start = p;
+  while (p < end && r.u8(p) !== 0) p++;
+  if (p >= end) throw new Error('unterminated C string');
+  const raw = r.slice(start, p - start);
+  let text;
+  try { text = new TextDecoder('utf-8', { fatal: false }).decode(raw); }
+  catch { text = Array.from(raw, (c) => c >= 0x20 && c <= 0x7e ? String.fromCharCode(c) : '\uFFFD').join(''); }
+  return { text, next: p + 1, bytes: p + 1 - start };
+}
+
+function decodeChainedImportOrdinal(raw, bits) {
+  if (bits === 8) {
+    const v = raw & 0xff;
+    return v >= 0xf1 ? v - 0x100 : v;
+  }
+  const v = raw & 0xffff;
+  return v >= 0xfff1 ? v - 0x10000 : v;
+}
+
+function dylibForOrdinal(image, ordinal) {
+  if (ordinal === 0) return null;
+  if (ordinal === -1 || ordinal === 0xff) return '<main-executable>';
+  if (ordinal === -2 || ordinal === 0xfe) return '<flat-lookup>';
+  if (ordinal === -3) return '<weak-lookup>';
+  return ordinal > 0 ? image.libraries[ordinal - 1] || null : null;
+}
+function signExtend(v, bits) { const sign = 1 << (bits - 1); const mask = (1 << bits) - 1; v &= mask; return (v & sign) ? v - (1 << bits) : v; }

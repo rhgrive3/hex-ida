@@ -1,0 +1,177 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import {
+  createDebugIdentity,
+  createDebugPage,
+  createDebugProviderResult,
+  createDebugRecord,
+  debugFunctionEvidence,
+} from '../../../js/analysis/debug/provider.js';
+import {
+  createDiscoveryEvidence,
+} from '../../../js/analysis/discovery/candidates.js';
+import {
+  DiscoveryProducerRegistry,
+  fuseFunctionCandidates,
+} from '../../../js/analysis/discovery/fusion.js';
+import {
+  createDebugEvidenceProducer,
+} from '../../../js/analysis/discovery/producers.js';
+
+function resultFor(identity) {
+  return createDebugProviderResult({
+    identity,
+    ecosystem: 'pdb',
+    status: {
+      snapshotId: 'snapshot-4050',
+      analyzerId: 'debug-4050',
+      analyzerVersion: '1',
+      completeness: 'complete',
+    },
+  });
+}
+
+function symbol({
+  entityId = 'fn',
+  address = '0x1000',
+  sizeBytes = 32,
+  buildIdentity = 'build-A',
+} = {}) {
+  return createDebugRecord({
+    kind: 'symbol',
+    entityId,
+    address,
+    sizeBytes,
+    name: entityId,
+    providerId: 'pdb',
+    providerVersion: '1',
+    buildIdentity,
+    descriptor: { isFunction: true },
+    evidenceIds: [`debug:${entityId}`],
+  });
+}
+
+function collectAndFuse(rows) {
+  const registry = new DiscoveryProducerRegistry();
+  registry.register(createDebugEvidenceProducer(rows));
+  const collected = registry.collect({}, 'arm64');
+  return {
+    evidence: collected.evidence,
+    fused: fuseFunctionCandidates(collected.evidence, {
+      architectureId: 'arm64',
+      snapshotId: 'snapshot-4050',
+    }),
+  };
+}
+
+test('#4050 identity-mismatch debug symbols remain heuristic through discovery fusion', () => {
+  const result = resultFor(createDebugIdentity({
+    verdict: 'identity-mismatch',
+    providerId: 'pdb',
+    providerVersion: '1',
+    expected: 'build-A',
+    observed: 'build-B',
+    method: 'guid-age',
+  }));
+  const page = createDebugPage({ records: [symbol({ buildIdentity: 'build-B' })] });
+  const weak = debugFunctionEvidence(result, page);
+  assert.equal(weak[0]?.confidence, 'heuristic');
+
+  const { evidence, fused } = collectAndFuse(weak);
+  assert.equal(evidence.length, 1);
+  assert.equal(evidence[0].kind, 'debug-symbol-heuristic');
+  assert.equal(evidence[0].authority, 'heuristic');
+  assert.equal(evidence[0].confidence, 'heuristic');
+  assert.equal(fused.candidates[0]?.startState, 'heuristic');
+  assert.equal(fused.candidates[0]?.extentState, 'heuristic');
+});
+
+test('#4050 matched-partial authority remains per-record after the discovery adapter', () => {
+  const result = resultFor(createDebugIdentity({
+    verdict: 'matched-partial',
+    providerId: 'pdb',
+    providerVersion: '1',
+    expected: 'build-A',
+    observed: 'build-A-partial',
+    method: 'partial-id',
+    coverage: { entityIds: ['covered'] },
+  }));
+  const page = createDebugPage({ records: [
+    symbol({ entityId: 'covered', address: '0x1000', buildIdentity: 'build-A-partial' }),
+    symbol({ entityId: 'outside', address: '0x2000', buildIdentity: 'build-A-partial' }),
+  ] });
+  const rows = debugFunctionEvidence(result, page);
+  assert.deepEqual(rows.map((row) => row.confidence), ['exact', 'heuristic']);
+
+  const { evidence, fused } = collectAndFuse(rows);
+  assert.deepEqual(evidence.map((row) => row.kind), ['debug-symbol', 'debug-symbol-heuristic']);
+  assert.deepEqual(evidence.map((row) => row.authority), ['authoritative', 'heuristic']);
+  assert.deepEqual(fused.candidates.map((candidate) => candidate.startState), ['exact', 'heuristic']);
+  assert.deepEqual(fused.candidates.map((candidate) => candidate.extentState), ['exact', 'heuristic']);
+});
+
+test('#4050 matched-authoritative debug symbols retain exact start and extent authority', () => {
+  const result = resultFor(createDebugIdentity({
+    verdict: 'matched-authoritative',
+    providerId: 'pdb',
+    providerVersion: '1',
+    expected: 'build-A',
+    observed: 'build-A',
+    method: 'guid-age',
+  }));
+  const rows = debugFunctionEvidence(result, createDebugPage({ records: [symbol()] }));
+  assert.equal(rows[0]?.confidence, 'exact');
+
+  const { evidence, fused } = collectAndFuse(rows);
+  assert.equal(evidence[0]?.authority, 'authoritative');
+  assert.equal(fused.candidates[0]?.startState, 'exact');
+  assert.equal(fused.candidates[0]?.extentState, 'exact');
+});
+
+test('#4050 only the canonical exact confidence token can select authoritative debug evidence', () => {
+  let coercions = 0;
+  const coercible = {
+    [Symbol.toPrimitive]() { coercions += 1; return 'exact'; },
+    toString() { coercions += 1; return 'exact'; },
+  };
+  const rows = [
+    { address: '0x1000', confidence: undefined, name: 'missing' },
+    { address: '0x2000', confidence: null, name: 'null' },
+    { address: '0x3000', confidence: 'heuristic', name: 'heuristic' },
+    { address: '0x4000', confidence: 'exact ', name: 'padded' },
+    { address: '0x5000', confidence: new String('exact'), name: 'boxed' },
+    { address: '0x6000', confidence: coercible, name: 'coercible' },
+    { address: '0x7000', confidence: 'exact', name: 'exact' },
+  ];
+
+  const produced = createDebugEvidenceProducer(rows).produce();
+  assert.deepEqual(produced.map((row) => row.authority), [
+    'heuristic',
+    'heuristic',
+    'heuristic',
+    'heuristic',
+    'heuristic',
+    'heuristic',
+    'authoritative',
+  ]);
+  assert.equal(coercions, 0, 'authority selection must not coerce caller-owned confidence objects');
+});
+
+test('#4050 canonical debug-symbol evidence and non-debug authority rules remain unchanged', () => {
+  assert.equal(createDiscoveryEvidence({
+    kind: 'debug-symbol',
+    start: '4096',
+    producerId: 'validated-debug',
+  }).authority, 'authoritative');
+  assert.equal(createDiscoveryEvidence({
+    kind: 'loader-function-start',
+    start: '8192',
+    producerId: 'loader',
+  }).authority, 'authoritative');
+  assert.equal(createDiscoveryEvidence({
+    kind: 'prologue-candidate',
+    start: '12288',
+    producerId: 'pattern',
+  }).authority, 'heuristic');
+});

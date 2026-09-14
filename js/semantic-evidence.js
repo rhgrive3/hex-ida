@@ -1,0 +1,154 @@
+/*
+ * semantic-evidence.js — Semantic IR / runtime proof -> existing evidence fusion.
+ *
+ * One IR instruction is one evidence origin even when it yields read, RMW,
+ * threshold and semantic facts simultaneously. This adapter de-duplicates by the
+ * evidence ID/group emitted by semantic.js before handing items to fuse().
+ */
+import { GROUP, fuse, adapterEvidence } from './evidence.js';
+
+function boundedStrength(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return 0;
+  return Math.max(0, Math.min(1, v));
+}
+function boundedLikelihoodRatio(value, fallback) {
+  if (value == null) return fallback;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(1, value);
+}
+function primitiveVerificationOrigin(v) {
+  return typeof v === 'string' && v.trim() !== '';
+}
+function isExplicitSemanticProof(f, e) {
+  if (f?.verified === true || e?.verified === true) return true;
+  if (primitiveVerificationOrigin(f?.verificationOrigin) || primitiveVerificationOrigin(e?.verificationOrigin)) return true;
+  const rawGrade = f?.proofGrade || e?.proofGrade || f?.grade || e?.grade || '';
+  if (typeof rawGrade !== 'string') return false;
+  return ['verified','proof','proof-grade','deterministic'].includes(rawGrade.toLowerCase());
+}
+function runtimeCompleted(r) {
+  if (!r || typeof r !== 'object') return false;
+  // A structured status must not launder into a completion alias via String()
+  // coercion (#5367): String(['complete']) === 'complete' minted VERIFIED
+  // evidence from schema-external shapes. Only primitive strings may carry the
+  // status/state alias; the boolean completion flags below stay strict.
+  const rawStatus = r.status || r.state;
+  const status = typeof rawStatus === 'string' ? rawStatus.toLowerCase() : '';
+  if (r.ok === false || r.success === false || r.complete === false || r.completed === false || r.truncated === true
+      || r.timedOut === true || r.timeout === true || r.budgetExceeded === true
+      || ['timeout','timed-out','failed','failure','error','crashed','truncated','partial','aborted','budget-exceeded'].includes(status)) return false;
+  return r.ok === true || r.success === true || r.complete === true || r.completed === true
+    || ['ok','success','succeeded','complete','completed'].includes(status);
+}
+
+/**
+ * Convert deterministic Semantic Facts into corroborating DATAFLOW evidence.
+ * These items intentionally do not identify HP/XP/etc by themselves.
+ */
+export function semanticEvidenceItems(facts, opts) {
+  const o = opts || {};
+  const seen = new Set();
+  const out = [];
+  const lr = boundedLikelihoodRatio(o.lr, 8);
+  for (const f of facts || []) {
+    for (const e of f && f.evidence || []) {
+      if (!e) continue;
+      const key = e.group || e.id || ('ir-row:' + String(e.row));
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const strength=boundedStrength(f.confidence);
+      if (strength <= 0) continue;
+      const verified=isExplicitSemanticProof(f,e);
+      out.push(adapterEvidence(
+        verified ? 'semantic-ir-proof' : 'semantic-ir-observation',
+        strength,
+        {
+          evidenceId: e.id || null,
+          instructionId: e.instructionId == null ? null : e.instructionId,
+          address: e.address == null ? null : e.address,
+          row: e.row == null ? null : e.row,
+          fact: f.kind || null,
+          relation: f.relation || e.relation || null,
+          group: GROUP.DATAFLOW,
+        },
+        verified ? lr : Math.min(lr, 4),
+      ));
+    }
+  }
+  return out;
+}
+
+const CANONICAL_ORDINAL_TEXT = /^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/;
+
+function canonicalOrdinalIdentity(kind, value) {
+  let address = null;
+  if (typeof value === 'bigint') address = value;
+  else if (typeof value === 'number' && Number.isSafeInteger(value)) address = BigInt(value);
+  else if (typeof value === 'string' && CANONICAL_ORDINAL_TEXT.test(value.trim())) {
+    try { address = BigInt(value.trim()); } catch { address = null; }
+  }
+  if (address == null || address < 0n) return null;
+  return kind + ':' + address.toString();
+}
+
+function canonicalTextIdentity(kind, value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text ? kind + ':' + text : null;
+}
+
+function fieldIdentityKey(t) {
+  if (t.address != null) return canonicalOrdinalIdentity('field:addr', t.address);
+  if (t.offset != null) return canonicalOrdinalIdentity('field:offset', t.offset);
+  if (t.key != null) return canonicalTextIdentity('field:key', t.key);
+  return null;
+}
+
+function branchIdentityKey(b) {
+  if (b.address != null) return canonicalOrdinalIdentity('branch:addr', b.address);
+  if (b.row != null) return canonicalOrdinalIdentity('branch:row', b.row);
+  return null;
+}
+
+/**
+ * Runtime/sandbox verification is an independent RUNTIME origin. The code prefix
+ * is understood by evidence.groupOf(), so it cannot be double-counted as the
+ * DATAFLOW proof that selected the same instruction.
+ */
+export function runtimeEvidenceItems(runtimeResult, opts) {
+  if (!runtimeCompleted(runtimeResult)) return [];
+  const o = opts || {};
+  const out = [];
+  const touched = runtimeResult.touchedFields || runtimeResult.modifiedFields || [];
+  const branches = runtimeResult.takenBranches || [];
+  const lr = boundedLikelihoodRatio(o.lr, 18);
+  const strength = boundedStrength(o.strength == null ? 1 : o.strength);
+  if (strength <= 0) return [];
+  const seen = new Set();
+  for (const t of touched) {
+    if (!t || typeof t !== 'object') continue;
+    const key = fieldIdentityKey(t);
+    if (key == null) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(adapterEvidence('runtime-field-verified', strength, { ...t, group: GROUP.RUNTIME }, lr));
+  }
+  for (const b of branches) {
+    if (!b || typeof b !== 'object') continue;
+    const key = branchIdentityKey(b);
+    if (key == null) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(adapterEvidence('runtime-branch-verified', strength, { ...b, group: GROUP.RUNTIME }, Math.max(1, Math.sqrt(lr))));
+  }
+  return out;
+}
+
+export function fuseSemanticEvidence(baseItems, facts, runtimeResult, opts) {
+  const items = [
+    ...(baseItems || []),
+    ...semanticEvidenceItems(facts, opts && opts.semantic),
+    ...runtimeEvidenceItems(runtimeResult, opts && opts.runtime),
+  ];
+  return fuse(items, opts && opts.fuse);
+}

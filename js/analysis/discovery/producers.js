@@ -1,0 +1,478 @@
+/**
+ * P7-6 — evidence producers.
+ *
+ * The producers here are the *generic* ones: they read structures that mean the
+ * same thing on every architecture (loader tables, unwind entries, symbols,
+ * exports, relocation targets, call edges in the semantic IR). None of them
+ * decodes an instruction.
+ *
+ * Architecture-specific producers — prologue recognition above all — belong
+ * behind the target boundary, which Phase 7 does not own. What Phase 7 supplies
+ * is the contract they implement and, for the cases where a pattern really is
+ * just data, a declarative byte-pattern producer that takes its patterns from
+ * the caller instead of hard-coding any architecture's encoding.
+ */
+
+import { EVIDENCE_AUTHORITY, createDiscoveryEvidence } from './candidates.js';
+import { regionFromSize } from './fusion.js';
+
+function toAddress(value) {
+  if (value == null) return null;
+  const type = typeof value;
+  if (type !== 'bigint' && type !== 'string' && !(type === 'number' && Number.isSafeInteger(value))) return null;
+  if (type === 'string' && value.trim().length === 0) return null;
+  try {
+    const address = BigInt(value);
+    return address >= 0n ? address.toString() : null;
+  } catch { return null; }
+}
+
+function evidence(kind, input) {
+  if (!EVIDENCE_AUTHORITY[kind]) throw new TypeError(`discovery-producer-unknown-kind:${kind}`);
+  return createDiscoveryEvidence({ kind, ...input });
+}
+
+function loaderStartArray(value, code) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new TypeError(code);
+  return value;
+}
+
+const VALIDATED_LOADER_SEED_SOURCES = new Set([
+  'function_starts',
+  'exception',
+  'dt-init',
+  'tls-callback',
+  'guard-cf',
+  'unwind',
+]);
+const EXPLICIT_EXACT_SEED_SOURCES = new Set(['symbol', 'ifunc-resolver']);
+
+function seedSources(start) {
+  return new Set([
+    start?.source,
+    ...(Array.isArray(start?.sources) ? start.sources : []),
+  ].filter((source) => typeof source === 'string' && source.length > 0));
+}
+
+function hasHighExactConfidence(start) {
+  const confidence = start?.exactFunctionStartConfidence != null
+    ? start.exactFunctionStartConfidence
+    : start?.confidence;
+  return typeof confidence === 'number'
+    && Number.isFinite(confidence)
+    && confidence >= 0.9;
+}
+
+function isCanonicalLoaderSeed(start) {
+  const sources = seedSources(start);
+  if ([...sources].some((source) => VALIDATED_LOADER_SEED_SOURCES.has(source))) return true;
+  if (start?.exactFunctionStart !== true) return false;
+  return [...sources].some((source) => EXPLICIT_EXACT_SEED_SOURCES.has(source)) && hasHighExactConfidence(start);
+}
+
+function extentRegion(record, address) {
+  const rawSize = record?.sizeBytes ?? record?.size;
+  if (rawSize != null) {
+    const size = toAddress(rawSize);
+    return size == null ? null : regionFromSize(address, size);
+  }
+  const end = toAddress(record?.end);
+  if (end == null) return null;
+  try {
+    return regionFromSize(address, BigInt(end) - BigInt(address));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Loader-supplied function starts and unwind entries.
+ *
+ * Loader-owned seeds live canonically in `image.functions`; the legacy
+ * `image.functionStarts` projection is accepted only as a compatibility input.
+ * Unwind ranges remain in `image.unwindEntries`.
+ */
+function loaderFunctionStarts(image) {
+  const out = [];
+  const seen = new Set();
+  const add = (start) => {
+    const address = toAddress(start?.address ?? start);
+    if (address == null || seen.has(address)) return;
+    seen.add(address);
+    out.push(start);
+  };
+
+  // Canonical loader truth must win deduplication. The legacy projection is
+  // compatibility-only and may omit provenance/extent fields carried by the
+  // canonical BinaryImage.functions seed.
+  for (const start of loaderStartArray(image?.functions, 'discovery-loader-invalid-functions')) {
+    if (isCanonicalLoaderSeed(start)) add(start);
+  }
+  for (const start of loaderStartArray(image?.functionStarts, 'discovery-loader-invalid-function-starts')) add(start);
+  return out;
+}
+
+export const loaderProducer = Object.freeze({
+  id: 'discovery.loader',
+  architectureId: null,
+  produce(input) {
+    const out = [];
+    for (const start of loaderFunctionStarts(input?.image)) {
+      const address = toAddress(start.address ?? start);
+      if (address == null) continue;
+      const sources = seedSources(start);
+      const sourceEvidenceIds = [...sources].sort().map((source) => `loader:source:${source}:${address}`);
+      const region = extentRegion(start, address);
+      out.push(evidence('loader-function-start', {
+        start: address,
+        name: start.name ?? null,
+        regions: region ? [region] : [],
+        confidence: start.confidence ?? null,
+        evidenceIds: [`loader:start:${address}`, ...sourceEvidenceIds],
+      }));
+    }
+    // A function body can be split across several unwind entries; the loader
+    // marks the continuations and names the range they belong to. Those are
+    // *not* separate function starts, and treating them as such is a false
+    // split — so they contribute a partial extent to their owner instead.
+    const unwindEntries = input?.image?.unwindEntries ?? [];
+    const ownersWithContinuations = new Set(
+      unwindEntries
+        .filter((entry) => entry.primary === false && entry.ownerStart != null)
+        .map((entry) => toAddress(entry.ownerStart))
+        .filter(Boolean),
+    );
+    for (const entry of unwindEntries) {
+      const isContinuation = entry.primary === false && entry.ownerStart != null;
+      const address = isContinuation ? toAddress(entry.ownerStart) : toAddress(entry.start ?? entry.address);
+      if (address == null) continue;
+      const rangeStart = toAddress(entry.start ?? entry.address);
+      const rangeEnd = entry.end == null ? null : toAddress(entry.end);
+      const region = rangeStart != null && rangeEnd != null
+        ? { start: rangeStart, end: rangeEnd, ownership: 'exclusive' }
+        : entry.end == null && entry.sizeBytes != null && rangeStart != null ? regionFromSize(rangeStart, entry.sizeBytes) : null;
+      out.push(evidence('unwind-entry', {
+        start: address,
+        regions: region ? [region] : [],
+        extentRole: isContinuation || ownersWithContinuations.has(address) ? 'partial' : 'complete',
+        evidenceIds: [`unwind:${rangeStart}`],
+      }));
+    }
+    return out;
+  },
+});
+
+/** Exports and the image entrypoint. */
+export const exportProducer = Object.freeze({
+  id: 'discovery.exports',
+  architectureId: null,
+  produce(input) {
+    const out = [];
+    const image = input?.image;
+    const symbolsByAddress = new Set(
+      (image?.symbols ?? [])
+        .map((symbol) => toAddress(symbol?.address))
+        .filter(Boolean),
+    );
+    for (const entry of image?.exports ?? []) {
+      const address = toAddress(entry.address);
+      if (address == null) continue;
+      const explicitlyFunction = entry.isFunction === true || entry.kind === 'function';
+      if (explicitlyFunction) {
+        out.push(evidence('export', { start: address, name: entry.name ?? null, evidenceIds: [`export:${address}`] }));
+      } else if (!symbolsByAddress.has(address)) {
+        // Export visibility alone is not function-start proof. Keep an untyped
+        // export only as one corroborating name/address observation; a loader
+        // start, unwind record, debug symbol, etc. must supply the proof.
+        out.push(evidence('symbol-table', { start: address, name: entry.name ?? null, evidenceIds: [`export:${address}`] }));
+      }
+    }
+
+    const entrypoint = toAddress(image?.entrypoint);
+    if (entrypoint != null) {
+      const explicitlyRejected = image?.metadata?.entrypointValid === false;
+      const entrypointSeedValidated = (image?.functions ?? []).some((seed) => {
+        if (toAddress(seed?.address) !== entrypoint) return false;
+        const sources = new Set([seed?.source, ...(seed?.sources ?? [])].filter(Boolean));
+        return sources.has('entrypoint');
+      });
+      // An explicit loader rejection is authoritative negative truth. A stale or
+      // contradictory compatibility seed must never resurrect the entrypoint.
+      const loaderValidated = !explicitlyRejected
+        && (image?.metadata?.entrypointValid === true || entrypointSeedValidated);
+      if (loaderValidated) {
+        out.push(evidence('entrypoint', { start: entrypoint, name: 'entrypoint', evidenceIds: [`entrypoint:${entrypoint}`] }));
+      }
+    }
+    return out;
+  },
+});
+
+/**
+ * Symbol-table entries.
+ *
+ * Corroborating rather than authoritative: a symbol table can carry labels that
+ * are not function starts, and a stripped-then-partially-restored table is a
+ * common source of plausible-looking wrong starts.
+ */
+export const symbolTableProducer = Object.freeze({
+  id: 'discovery.symbols',
+  architectureId: null,
+  produce(input) {
+    const out = [];
+    for (const symbol of input?.image?.symbols ?? []) {
+      const address = toAddress(symbol.address);
+      const explicitlyNonFunction = symbol.kind != null
+        && symbol.kind !== 'function'
+        && symbol.kind !== 'indirect-function';
+      if (address == null || symbol.isFunction === false || explicitlyNonFunction) continue;
+      const region = extentRegion(symbol, address);
+      out.push(evidence('symbol-table', {
+        start: address,
+        name: symbol.name ?? null,
+        regions: region ? [region] : [],
+        evidenceIds: [`symbol:${address}`],
+      }));
+    }
+    return out;
+  },
+});
+
+/** Relocation and vtable targets. */
+export const referenceProducer = Object.freeze({
+  id: 'discovery.references',
+  architectureId: null,
+  produce(input) {
+    const out = [];
+    for (const target of input?.image?.relocationTargets ?? []) {
+      const address = toAddress(target.address ?? target);
+      if (address == null) continue;
+      out.push(evidence('relocation-target', { start: address, evidenceIds: [`reloc:${address}`] }));
+    }
+    for (const target of input?.image?.vtableEntries ?? []) {
+      const address = toAddress(target.address ?? target);
+      if (address == null) continue;
+      out.push(evidence('vtable-entry', { start: address, evidenceIds: [`vtable:${address}`] }));
+    }
+    for (const target of input?.image?.exceptionMetadata ?? []) {
+      const address = toAddress(target.address ?? target);
+      if (address == null) continue;
+      out.push(evidence('exception-metadata', { start: address, evidenceIds: [`eh:${address}`] }));
+    }
+    return out;
+  },
+});
+
+/**
+ * Direct call targets taken from the semantic IR.
+ *
+ * This is generic despite being derived from code: the IR's `call` node and its
+ * target entity are architecture-neutral by construction, so no instruction
+ * text is read here.
+ */
+export const callGraphProducer = Object.freeze({
+  id: 'discovery.call-targets',
+  architectureId: null,
+  produce(input) {
+    const out = [];
+    for (const call of input?.callTargets ?? []) {
+      const address = toAddress(call.address);
+      if (address == null) continue;
+      out.push(evidence('direct-call-target', {
+        start: address,
+        name: call.name ?? null,
+        evidenceIds: [`call:${call.callSiteId ?? address}`],
+      }));
+    }
+    return out;
+  },
+});
+
+/** Debug-provider symbols, already gated by identity at the provider boundary. */
+export function createDebugEvidenceProducer(debugEvidence) {
+  return Object.freeze({
+    id: 'discovery.debug',
+    architectureId: null,
+    produce() {
+      // A debug record only validates its address as a non-empty string, so a
+      // single malformed symbol must degrade to "no start / no region" and be
+      // filtered like any other unusable row — it must never abort the whole
+      // producer ahead of the start filter (#4930).
+      return (debugEvidence ?? []).map((item) => {
+        const start = toAddress(item.address);
+        const regions = [];
+        if (start != null && item.sizeBytes != null) {
+          const size = toAddress(item.sizeBytes);
+          if (size != null) {
+            const region = regionFromSize(start, size);
+            if (region != null) regions.push(region);
+          }
+        }
+        // `debugFunctionEvidence()` has already applied the provider identity
+        // and partial-coverage gate. Only its canonical `exact` token may keep
+        // the authoritative debug-symbol kind; every other representation is
+        // a weak fact. Select the authority-bearing kind before canonical
+        // evidence construction so `String()` coercion cannot turn a boxed or
+        // structured value into an authority token (#4050).
+        const rawConfidence = item?.confidence;
+        const exact = rawConfidence === 'exact';
+        const confidence = typeof rawConfidence === 'string' ? rawConfidence : null;
+        return evidence(exact ? 'debug-symbol' : 'debug-symbol-heuristic', {
+          start,
+          name: item.name ?? null,
+          regions,
+          confidence,
+          evidenceIds: item.evidenceIds ?? [],
+        });
+      }).filter((item) => item.start != null);
+    },
+  });
+}
+
+function requiredPatternId(value, code) {
+  if (typeof value !== 'string' || value.length === 0) throw new TypeError(code);
+  return value;
+}
+
+function patternBytes(value, code) {
+  if (value instanceof Uint8Array) {
+    if (value.length === 0) throw new TypeError(code);
+    return new Uint8Array(value);
+  }
+  if (!Array.isArray(value) || value.length === 0) throw new TypeError(code);
+  const bytes = new Uint8Array(value.length);
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.hasOwn(value, index)) throw new TypeError(code);
+    const byte = value[index];
+    if (!Number.isInteger(byte) || byte < 0 || byte > 0xff) throw new TypeError(code);
+    bytes[index] = byte;
+  }
+  return bytes;
+}
+
+const PATTERN_SCAN_CANCEL_CHECK_INTERVAL = 4096;
+
+function patternScanBudget(options) {
+  const budget = options?.budget;
+  if (budget != null && (typeof budget !== 'object' || Array.isArray(budget))) {
+    throw new TypeError('discovery-pattern-budget-invalid');
+  }
+  const limit = (name) => {
+    const value = budget?.[name];
+    if (value == null) return null;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+      throw new TypeError(`discovery-pattern-budget-${name}-invalid`);
+    }
+    return value;
+  };
+  return {
+    maxComparisons: limit('maxPatternComparisons'),
+    maxEvidence: limit('maxPatternEvidence'),
+  };
+}
+
+/**
+ * A declarative byte-pattern producer.
+ *
+ * The patterns are *data supplied by the caller*, not knowledge held here. An
+ * architecture boundary that knows its own prologue encodings can register one
+ * of these without Phase 7 learning anything about that architecture, which is
+ * what keeps the generic solver honest (P7-INV-007, FM-9).
+ *
+ * Output is always `heuristic`: a byte pattern alone never establishes a start.
+ */
+export function createPatternProducer({ id, architectureId, patterns, alignment = 1 }) {
+  if (!Number.isSafeInteger(alignment) || alignment <= 0) {
+    throw new TypeError('discovery-pattern-invalid-alignment');
+  }
+  const producerId = requiredPatternId(id, 'discovery-pattern-invalid-id');
+  const producerArchitectureId = architectureId == null
+    ? null
+    : requiredPatternId(architectureId, 'discovery-pattern-invalid-architecture-id');
+  if (!Array.isArray(patterns)) {
+    throw new TypeError('discovery-pattern-empty-patterns');
+  }
+  const compiled = [];
+  for (let patternIndex = 0; patternIndex < patterns.length; patternIndex += 1) {
+    if (!Object.hasOwn(patterns, patternIndex)) throw new TypeError('discovery-pattern-invalid-bytes');
+    const pattern = patterns[patternIndex];
+    if (!pattern) throw new TypeError('discovery-pattern-invalid-bytes');
+    const bytes = patternBytes(pattern.bytes, 'discovery-pattern-invalid-bytes');
+    let mask = null;
+    if (pattern.mask != null) {
+      mask = patternBytes(pattern.mask, 'discovery-pattern-invalid-mask');
+      if (mask.length !== bytes.length) {
+        throw new TypeError('discovery-pattern-mask-length-mismatch');
+      }
+    }
+    compiled.push({
+      id: pattern.id == null ? 'pattern' : requiredPatternId(pattern.id, 'discovery-pattern-invalid-id'),
+      bytes,
+      mask,
+    });
+  }
+  return Object.freeze({
+    id: producerId,
+    architectureId: producerArchitectureId,
+    produce(input, options = {}) {
+      const bytes = input?.image?.code;
+      const base = input?.image?.codeBaseAddress;
+      if (!bytes || base == null || compiled.length === 0) return [];
+      const canonicalBase = toAddress(base);
+      if (canonicalBase == null) return [];
+      const { maxComparisons, maxEvidence } = patternScanBudget(options);
+      const signal = options?.signal;
+      const baseAddress = BigInt(canonicalBase);
+      const alignmentWidth = BigInt(alignment);
+      const firstOffset = Number((alignmentWidth - (baseAddress % alignmentWidth)) % alignmentWidth);
+      const out = [];
+      let comparisons = 0;
+      let lastObserved = 0;
+      let stopReason = null;
+      scan:
+      for (let offset = firstOffset; offset + 1 <= bytes.length; offset += alignment) {
+        for (const pattern of compiled) {
+          if (offset + pattern.bytes.length > bytes.length) continue;
+          let matched = true;
+          for (let index = 0; index < pattern.bytes.length; index += 1) {
+            comparisons += 1;
+            if (maxComparisons != null && comparisons > maxComparisons) {
+              stopReason = 'budget-exhausted';
+              break scan;
+            }
+            if (comparisons - lastObserved >= PATTERN_SCAN_CANCEL_CHECK_INTERVAL) {
+              lastObserved = comparisons;
+              if (signal?.aborted) {
+                stopReason = 'cancelled';
+                break scan;
+              }
+            }
+            const mask = pattern.mask ? pattern.mask[index] : 0xff;
+            if ((bytes[offset + index] & mask) !== (pattern.bytes[index] & mask)) { matched = false; break; }
+          }
+          if (!matched) continue;
+          if (maxEvidence != null && out.length >= maxEvidence) {
+            stopReason = 'budget-exhausted';
+            break scan;
+          }
+          out.push(evidence('prologue-candidate', {
+            start: (baseAddress + BigInt(offset)).toString(),
+            evidenceIds: [`pattern:${pattern.id}:${offset}`],
+          }));
+          break;
+        }
+      }
+      if (stopReason != null) return Object.freeze({ evidence: out, truncated: true, stopReason });
+      return out;
+    },
+  });
+}
+
+export const GENERIC_PRODUCERS = Object.freeze([
+  loaderProducer,
+  exportProducer,
+  symbolTableProducer,
+  referenceProducer,
+  callGraphProducer,
+]);

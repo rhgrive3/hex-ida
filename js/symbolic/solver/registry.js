@@ -1,0 +1,114 @@
+/**
+ * js/symbolic/solver/registry.js
+ *
+ * Central registry for SolverBackend providers.
+ */
+
+import { FakeSolverBackend } from './fake-backend.js';
+import { isExactProofBackend } from './backend.js';
+import { ExhaustiveBvBackend } from './exhaustive-backend.js';
+import { WorkerSolverBackend } from './worker-backend.js';
+
+/* #5391: production mode (allowNonExactDefault:false) must not let a backend
+   promote itself to the exact proof authority with a single self-declared
+   property. Default-exact selection is gated on the full isExactProofBackend()
+   trust contract (identity, capabilities, exactProofs, model extraction and
+   fingerprint pairing), not on proofAuthority alone. */
+function qualifiesAsExactDefault(backend, allowNonExactDefault) {
+  if (allowNonExactDefault) return true;
+  try {
+    return isExactProofBackend(backend);
+  } catch {
+    // Capability providers are external plugin surfaces. A malformed provider
+    // is ineligible, but must not block selection of a later exact backend.
+    return false;
+  }
+}
+
+export class SolverRegistry {
+  constructor({ allowNonExactDefault = true } = {}) {
+    this._backends = new Map();
+    this._defaultBackendId = null;
+    this._allowNonExactDefault = allowNonExactDefault;
+  }
+
+  registerBackend(backend) {
+    if (!backend || !backend.id) {
+      throw new TypeError('registerBackend: backend must have a valid id');
+    }
+    if (this._backends.has(backend.id)) {
+      throw new Error(`registerBackend: backend '${backend.id}' is already registered`);
+    }
+    this._backends.set(backend.id, backend);
+    if (!this._defaultBackendId && qualifiesAsExactDefault(backend, this._allowNonExactDefault)) {
+      this._defaultBackendId = backend.id;
+    }
+  }
+
+  unregisterBackend(id) {
+    this._backends.delete(id);
+    if (this._defaultBackendId === id) {
+      const replacement = [...this._backends.values()].find((backend) =>
+        qualifiesAsExactDefault(backend, this._allowNonExactDefault)
+      );
+      this._defaultBackendId = replacement?.id || null;
+    }
+  }
+
+  getBackend(id = null) {
+    const targetId = id || this._defaultBackendId;
+    if (!targetId) return null;
+    return this._backends.get(targetId) || null;
+  }
+
+  hasBackend(id) {
+    return this._backends.has(id);
+  }
+
+  setDefaultBackend(id) {
+    if (!this._backends.has(id)) {
+      throw new Error(`setDefaultBackend: backend '${id}' is not registered`);
+    }
+    if (!qualifiesAsExactDefault(this._backends.get(id), this._allowNonExactDefault)) {
+      throw new Error(`setDefaultBackend: backend '${id}' is not an exact production backend`);
+    }
+    this._defaultBackendId = id;
+  }
+
+  getDefaultBackend() {
+    return this.getBackend(this._defaultBackendId);
+  }
+
+  listBackends() {
+    return [...this._backends.values()].map((b) => ({
+      id: b.id,
+      version: b.version,
+      proofAuthority: b.proofAuthority,
+      isRemote: b.isRemote,
+      isWasm: b.isWasm,
+      capabilityFingerprint: b.capabilityFingerprint?.() || null,
+      capabilities: b.capabilities(),
+    }));
+  }
+}
+
+export function createProductionSolverRegistry({ workerFactory = null, preferWorker = true } = {}) {
+  const registry = new SolverRegistry({ allowNonExactDefault: false });
+  const canUseWorker = preferWorker && (workerFactory || typeof globalThis.Worker === 'function');
+  const backend = canUseWorker
+    ? new WorkerSolverBackend({ workerFactory: workerFactory || undefined })
+    : new ExhaustiveBvBackend();
+  registry.registerBackend(backend);
+  return registry;
+}
+
+export function createTestSolverRegistry() {
+  const registry = new SolverRegistry();
+  registry.registerBackend(new FakeSolverBackend({ id: 'test-fake-solver', version: '1.0.0' }));
+  return registry;
+}
+
+// Production imports never receive a fake provider. Browser targets select the
+// isolated worker transport; Node/CI uses the same exact finite-domain backend
+// directly because Worker is not a browser primitive there.
+export const defaultSolverRegistry = createProductionSolverRegistry();

@@ -1,0 +1,300 @@
+import { AIError } from "../schema.js";
+import { assertSchema, addressText, jsonSafe } from "../validation.js";
+import { ObservationStore } from "./storage/observation-store.js";
+import { completenessOf, projectBounded } from "./projections/index.js";
+
+export const COST_WEIGHT = Object.freeze({ cheap: 1, medium: 4, expensive: 12 });
+export const TOOL_TIMEOUT_MS = Object.freeze({ cheap: 20_000, medium: 45_000, expensive: 60_000 });
+export const ADDRESS_KEYS = new Set(["address", "functionAddress", "from", "to", "start", "end", "target"]);
+const TOOL_FUNCTION_ADDRESS_ARRAY_KEYS = new Map([
+  ["find_constant", new Set(["functions"])],
+  ["explain_evidence", new Set(["functions"])],
+]);
+
+// These zero-argument tools are deterministic for one immutable turn snapshot,
+// but their result depends on UI state that is not part of ObservationStore's
+// analysis binding. Keep them observable/evidence-producing without allowing
+// cross-turn cache reuse (#4065).
+const SNAPSHOT_DEPENDENT_UNKEYED_TOOLS = new Set(["get_current_function", "get_selection_context"]);
+
+function boundaryIdentity(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return String(value);
+  if (typeof value !== 'object') return null;
+  for (const key of ['identity', 'id', 'uuid', 'address', 'functionAddress', 'selectionId']) {
+    if (value[key] != null) return boundaryIdentity(value[key]);
+  }
+  const start = value.startAddress ?? value.start;
+  const end = value.endAddress ?? value.end;
+  if (start != null || end != null) return (boundaryIdentity(start) || '') + ':' + (boundaryIdentity(end) || '');
+  return null;
+}
+
+function scopeBoundaryFor(scope, args = {}, options = {}, context = {}) {
+  if (scope !== 'function' && scope !== 'selection') return null;
+  const candidate = options.scopeBoundary ?? options.scopeIdentity ??
+    (scope === 'function'
+      ? options.functionIdentity ?? args.functionAddress ?? args.function ?? context.functionIdentity ??
+        context.currentFunction?.address ?? context.currentFunction?.id
+      : options.selectionIdentity ?? args.selectionId ?? args.selection ?? args.selectionAddress ??
+        context.selectionIdentity ?? context.selection?.id);
+  const identity = boundaryIdentity(candidate);
+  if (!identity) return null;
+  return identity.startsWith(scope + ':') ? identity : scope + ':' + identity;
+}
+
+export class ToolRegistry {
+  constructor({ context = {}, evidenceStore = null, onActivity = null, observationStore = null } = {}) {
+    this.context = context;
+    this.evidenceStore = evidenceStore;
+    this.onActivity = onActivity;
+    this.observationStore = observationStore || new ObservationStore({ context });
+    if (this.evidenceStore?.setObservationStore) this.evidenceStore.setObservationStore(this.observationStore);
+    this.tools = new Map();
+    this.accounting = { calls: 0, cost: 0, elapsedMs: 0, failures: 0, cacheHits: 0 };
+    this.executionSignal = null;
+  }
+
+  register(definition) {
+    if (!definition || !/^[a-z][a-z0-9_]{1,63}$/.test(definition.name || "")) throw new Error("invalid-tool-definition");
+    if (this.tools.has(definition.name)) throw new Error(`duplicate-tool:${definition.name}`);
+    if (typeof definition.execute !== "function") throw new Error(`tool-execute-required:${definition.name}`);
+    this.tools.set(definition.name, Object.freeze({
+      description: "", inputSchema: { type: "object" }, outputSchema: null, cost: "cheap",
+      scopeSupport: ["auto", "binary", "project"], mutability: "read-only", needsApproval: false,
+      category: "discovery", preferredPrerequisites: [], resultKind: "observation",
+      deterministic: true, cacheable: true, storeResult: true, modelProjection: projectBounded,
+      ...definition,
+      // Reserved snapshot-dependent reads must never be made reusable by a
+      // custom definition; their UI snapshot is absent from the cache key.
+      cacheable: SNAPSHOT_DEPENDENT_UNKEYED_TOOLS.has(definition.name) ? false : (definition.cacheable ?? true),
+    }));
+    return this;
+  }
+
+  has(name) { return typeof name === "string" && this.tools.has(name); }
+  get(name) { return (typeof name === "string" && this.tools.get(name)) || null; }
+  costWeight(name) { return COST_WEIGHT[this.get(name)?.cost] || 1; }
+  names({ scope = "auto", includeMutations = false } = {}) {
+    return Array.from(this.tools.values()).filter((tool) => (scope === "auto" || tool.scopeSupport.includes(scope)) && (includeMutations || tool.mutability === "read-only")).map((tool) => tool.name);
+  }
+  definitionsForModel(options = {}) {
+    return this.names(options).map((name) => {
+      const tool = this.get(name);
+      return {
+        name: tool.name, description: tool.description, inputSchema: tool.inputSchema, cost: tool.cost,
+        scopeSupport: tool.scopeSupport, mutability: tool.mutability, needsApproval: tool.needsApproval,
+        category: tool.category, preferredPrerequisites: tool.preferredPrerequisites, resultKind: tool.resultKind,
+      };
+    });
+  }
+
+  async execute(name, args = {}, options = {}) {
+    const tool = this.get(name);
+    if (!tool) throw new AIError("invalid_tool_call", `Unknown tool: ${name}`);
+    if (options.signal?.aborted) throw abortError(options.signal);
+    const started = Date.now();
+    const scope = options.scope || "auto";
+    const scopeBoundary = scopeBoundaryFor(scope, args, options, this.context);
+    const previousSignal = this.executionSignal;
+    const timeoutMs = resolveToolTimeout(tool, options);
+    const execution = createExecutionSignal(options.signal, timeoutMs);
+    this.executionSignal = execution.signal;
+    try {
+      assertSchema(args, tool.inputSchema, "invalid_tool_call");
+      this.assertScope(tool, args, scope);
+      await this.assertAddresses(tool.name, args, scope, execution.signal);
+      if (tool.mutability !== "read-only" || tool.needsApproval) throw new AIError("approval_required", `${name} cannot execute from the model tool loop.`);
+      this.activity({ type: "tool-start", tool: name, label: `${name} を実行中` });
+      let record = null;
+      let raw;
+      let cached = false;
+      if (tool.storeResult !== false && tool.deterministic !== false && tool.cacheable !== false) {
+        record = this.observationStore.getCached(name, args, {}, scope, scopeBoundary);
+        if (record) { raw = record.fullResult; cached = true; this.accounting.cacheHits++; }
+      }
+      if (!record) {
+        raw = await raceAbort(tool.execute(args, { ...options, scopeBoundary, signal: execution.signal, context: this.context }), execution.signal);
+        if (tool.outputSchema) assertSchema(raw, tool.outputSchema, "tool_failed");
+        const lifecycle = raw?.solverResult?.lifecycle || raw?.lifecycle || {};
+        const publishable = lifecycle.publishable !== false && lifecycle.late !== true;
+        if (publishable && tool.storeResult !== false) {
+          record = this.observationStore.put({
+            tool: name, arguments: jsonSafe(args), fullResult: raw,
+            functionIdentity: args.functionAddress ?? args.address ?? null,
+            deterministic: tool.deterministic !== false,
+            cacheable: tool.cacheable !== false,
+            // Record the turn scope that acquired this data (#5641): detail
+            // retrieval must not re-expose it inside a narrower explicit turn.
+            effectiveScope: scope,
+            scopeBoundary,
+          });
+        }
+      }
+      const result = jsonSafe(raw);
+      // Array results can carry non-enumerable completeness metadata (for
+      // example KnowledgeDB's bounded search marker). Preserve it across the
+      // JSON-safe array copy so the tool envelope cannot call a partial scan
+      // complete merely because the array itself is otherwise valid.
+      if (Array.isArray(raw) && Array.isArray(result)) {
+        for (const key of ['truncated', 'reason']) {
+          if (raw[key] !== undefined) Object.defineProperty(result, key, { value: raw[key], enumerable:false, configurable:true });
+        }
+      }
+      const sourceRef = record ? { detailRef: record.id, path: "$", bindingKey: record.binding.key } : null;
+      let evidence = record?.evidence || null;
+      const resultLifecycle = raw?.solverResult?.lifecycle || raw?.lifecycle || {};
+      const resultPublishable = resultLifecycle.publishable !== false && resultLifecycle.late !== true;
+      if (resultPublishable && !evidence) {
+        evidence = this.evidenceStore ? this.evidenceStore.ingest(name, result, { verifier: tool.verifier === true, sourceRef, effectiveScope: scope, scopeBoundary }) : [];
+        if (record) record.evidence = evidence;
+      }
+      const evidenceList = Array.isArray(evidence) ? evidence : [];
+      const evidenceIds = evidenceList.map((item) => item.id);
+      const completeness = completenessOf(result);
+      const continuation = result?.continuation?.cursor ? { cursor: result.continuation.cursor } : null;
+      const detailRef = record?.id || result?.detailRef || null;
+      const projectionMeta = { detailRef, completeness, continuation, evidenceIds, context: this.context, tool };
+      const modelData = jsonSafe(tool.modelProjection(result, projectionMeta));
+      const elapsedMs = Date.now() - started;
+      this.accounting.calls++;
+      this.accounting.cost += cached ? 0 : (COST_WEIGHT[tool.cost] || 1);
+      this.accounting.elapsedMs += elapsedMs;
+      const summary = summarizeToolResult(name, result);
+      this.activity({ type: "tool-result", tool: name, label: summary, count: resultCount(result), elapsedMs, cached });
+      return {
+        tool: name, result, modelData, summary,
+        completeness, ...(continuation ? { continuation } : {}), ...(detailRef ? { detailRef } : {}),
+        evidence: evidenceList, evidenceIds, cost: tool.cost, elapsedMs, ...(cached ? { cached: true } : {}),
+      };
+    } catch (error) {
+      this.accounting.failures++;
+      if (execution.timedOut()) throw new AIError("tool_failed", `${name} timed out.`, { timeoutMs });
+      if (error instanceof AIError) throw error;
+      const message = error?.message || String(error);
+      if (message === "cancelled" || options.signal?.aborted) throw new AIError("cancelled", "AI investigation was cancelled.");
+      if (message === "timeout") throw new AIError("tool_failed", `${name} timed out.`, { cause: message });
+      if (message === "scope_violation") throw new AIError("scope_violation", `${name} is outside the current scope boundary.`);
+      if (/^(invalid-cursor|stale-cursor|cursor-|unknown-detail-ref|stale-detail-ref|detail-path|invalid-detail-path)/.test(message)) {
+        throw new AIError("invalid_tool_call", `${name} rejected stale or invalid retrieval state.`, { cause: message });
+      }
+      throw new AIError("tool_failed", `${name} failed: ${message}`);
+    } finally {
+      execution.dispose();
+      this.executionSignal = previousSignal;
+    }
+  }
+
+  assertScope(tool, args, scope) {
+    if (scope !== "auto" && !tool.scopeSupport.includes(scope)) throw new AIError("scope_violation", `${tool.name} is outside the explicit ${scope} scope.`);
+    if (typeof this.context.scopeAllowsTool === "function" && !this.context.scopeAllowsTool(scope, tool.name, args)) throw new AIError("scope_violation", `${tool.name} was rejected by the local scope boundary.`);
+  }
+
+  async assertAddresses(tool, args, scope, signal) {
+    for (const target of collectAddressTargets(args, tool)) {
+      const { address, kind } = target;
+      if (typeof this.context.addressExists === "function") {
+        const exists = await raceAbort(
+          Promise.resolve().then(() => this.context.addressExists(address, { signal })),
+          signal,
+        );
+        if (exists !== true) throw new AIError("invalid_tool_call", `Address does not exist: ${address}`);
+      }
+      if (scope !== "auto") {
+        const contains = kind === "function" && typeof this.context.scopeContainsFunction === "function"
+          ? this.context.scopeContainsFunction
+          : this.context.scopeContainsAddress;
+        if (typeof contains === "function") {
+          const contained = await raceAbort(
+            Promise.resolve().then(() => contains.call(this.context, scope, address, { signal })),
+            signal,
+          );
+          if (!contained) throw new AIError("scope_violation", `${kind === "function" ? "Function" : "Address"} ${address} is outside ${scope} scope.`);
+        }
+      }
+    }
+  }
+
+  activity(event) {
+    if (typeof this.onActivity === "function") this.onActivity({ ...event, timestamp: event.timestamp || new Date().toISOString() });
+  }
+}
+
+function collectAddressTargets(value, tool = "") {
+  const out = [];
+  if (!value || typeof value !== "object") return out;
+  for (const [key, item] of Object.entries(value)) {
+    if ((ADDRESS_KEYS.has(key) || /Address$/.test(key)) && typeof item === "string" && addressText(item)) {
+      out.push({ address:addressText(item), kind:"address" });
+    } else if ((key === "functions" && Array.isArray(item)) || (TOOL_FUNCTION_ADDRESS_ARRAY_KEYS.get(tool)?.has(key) && Array.isArray(item))) {
+      for (const address of item) {
+        if (typeof address === "string" && addressText(address)) out.push({ address:addressText(address), kind:"function" });
+      }
+    } else if (item && typeof item === "object") {
+      out.push(...collectAddressTargets(item, tool));
+    }
+  }
+  return out;
+}
+
+export function collectAddresses(value, tool = "") {
+  return collectAddressTargets(value, tool).map((target) => target.address);
+}
+
+export function summarizeToolResult(name, result) {
+  const count = resultCount(result);
+  if (count != null) return `${name}: ${count} 件${result?.truncated ? "（続きあり）" : ""}`;
+  if (result?.verified === true) return `${name}: 検証済み`;
+  if (result?.found === false) return `${name}: 対象なし`;
+  return `${name}: 完了`;
+}
+
+export function resultCount(result) {
+  if (Number.isFinite(result?.returned)) return result.returned;
+  for (const key of ["results", "sites", "functions", "updates", "nodes", "paths", "blocks"]) if (Array.isArray(result?.[key])) return result[key].length;
+  return null;
+}
+
+function resolveToolTimeout(tool, options) {
+  const requested = Number(options?.toolTimeoutMs);
+  if (Number.isFinite(requested) && requested > 0) return Math.max(1, Math.min(120_000, Math.floor(requested)));
+  return TOOL_TIMEOUT_MS[tool?.cost] || TOOL_TIMEOUT_MS.cheap;
+}
+
+function createExecutionSignal(parentSignal, timeoutMs) {
+  const controller = new AbortController();
+  let didTimeout = false;
+  let timer = null;
+  let onParentAbort = null;
+  if (parentSignal) {
+    onParentAbort = () => controller.abort(parentSignal.reason ?? "cancelled");
+    parentSignal.addEventListener("abort", onParentAbort, { once: true });
+    if (parentSignal.aborted) onParentAbort();
+  }
+  timer = setTimeout(() => {
+    if (controller.signal.aborted) return;
+    didTimeout = true;
+    controller.abort("tool-timeout");
+  }, timeoutMs);
+  return {
+    signal: controller.signal,
+    timedOut: () => didTimeout,
+    dispose() {
+      if (timer != null) clearTimeout(timer);
+      if (parentSignal && onParentAbort) parentSignal.removeEventListener("abort", onParentAbort);
+    },
+  };
+}
+
+export async function raceAbort(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) throw abortError(signal);
+  let onAbort;
+  const aborted = new Promise((_, reject) => { onAbort = () => reject(abortError(signal)); signal.addEventListener("abort", onAbort, { once: true }); });
+  try { return await Promise.race([promise, aborted]); }
+  finally { signal.removeEventListener("abort", onAbort); }
+}
+
+export function abortError(signal) {
+  return signal?.reason === "timeout" ? new AIError("budget_exhausted", "The tool execution exceeded the turn timeout.") : new AIError("cancelled", "AI investigation was cancelled.");
+}

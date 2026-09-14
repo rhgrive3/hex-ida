@@ -1,0 +1,481 @@
+/* UI -> AI core bridge. Core is lazy so the workbench remains usable on failure. */
+import { createHexAIContext } from './hex-context.js';
+import { createLocalEngine } from './local-engine.js';
+import { composePrompt } from '../prompts/compose.js';
+import { createCapabilityCatalog } from '../capabilities/catalog.js';
+import { createCapabilityExecutor } from '../capabilities/executor.js';
+import { createProposalExecutor } from '../interaction/proposal-executor.js';
+import { createProjectSessionPersistence } from '../session-core/index.js';
+import { sessionMatchesSnapshot } from '../control/runtime-support.js';
+import { resolveBinaryIdentity } from '../control/snapshot.js';
+
+async function loadCoreRuntime(localContext, persistence = null) {
+  const runtimeModule = await import('../runtime.js');
+  if (!runtimeModule || typeof runtimeModule.createAIRuntime !== 'function') return null;
+  let provider = null;
+  try {
+    // Standalone Web keeps the Worker provider. The userscript host injects a
+    // browser-local ChatGPT bridge and owns the ChatGPT/Gemini selection.
+    if (globalThis.__HEX_CHATGPT_BRIDGE__) {
+      const userscriptModule = await import('../provider/chatgpt-web.js');
+      if (userscriptModule && typeof userscriptModule.UserscriptAIProvider === 'function') {
+        provider = new userscriptModule.UserscriptAIProvider({ bridge: globalThis.__HEX_CHATGPT_BRIDGE__ });
+      }
+    }
+    if (!provider) {
+      const providerModule = await import('../provider/index.js');
+      if (providerModule && typeof providerModule.WorkerAIProvider === 'function') provider = new providerModule.WorkerAIProvider();
+    }
+  } catch { /* deterministic core remains available */ }
+  return runtimeModule.createAIRuntime({ context: localContext, provider, persistence });
+}
+
+export function createAiEngine(app, options = {}) {
+  const localContext = createHexAIContext(app);
+  exposeStableIdentityInputs(localContext, app);
+  exposeRuntimeSessionBinding(localContext);
+  const local = createLocalEngine(app, localContext);
+  const capabilityCatalog = createCapabilityCatalog();
+  const capabilityExecutor = createCapabilityExecutor({ catalog: capabilityCatalog, app, binaryId: () => localContext.binaryId, runtimePlatform: () => localContext.runtime?.platform?.() });
+  const sessionPersistence = createLiveProjectSessionPersistence(app);
+  const loadCore = options.loadCore || ((context) => loadCoreRuntime(context, sessionPersistence));
+  let corePromise = null, core = null;
+  const sessions = loadConversationBindings();
+  let defaultSessionId = null;
+
+  const runtime = () => {
+    if (!corePromise) corePromise = Promise.resolve().then(() => loadCore(localContext)).then((value) => { core = value || null; return core; }).catch(() => { core = null; return null; });
+    return corePromise;
+  };
+
+  return {
+    id: 'bridge', localContext, runtime,
+    get sessionStore() { return core?.sessionStore || null; },
+    // Borrow only an ALREADY instantiated core with an exactly matching source
+    // namespace. Do not call runtime(): even lazy provider initialization is
+    // outside a read-only inventory query. Cross-scheme identity aliases need
+    // an owner-issued relation; matching filenames or hashes alone is not one.
+    async getScopedInvestigationContext(jobId, context) {
+      const owner = core;
+      if (!owner || typeof owner.createScopedInvestigationProvider !== 'function') return null;
+      const identity = resolveBinaryIdentity(localContext, {});
+      if (identity.confidence !== 'strong' || identity.state !== 'ready'
+        || !context.world.binarySet.some((member) => member.binaryId === identity.id)) return null;
+      const current = () => core === owner && resolveBinaryIdentity(localContext, {}).id === identity.id;
+      context.work.checkpoint();
+      const provider = await context.work.await(() => owner.createScopedInvestigationProvider({ binaryId: identity.id }));
+      if (!current()) throw new Error('scoped-investigation-runtime-changed');
+      const borrowed = await context.work.await((signal) => provider(jobId, { ...context, signal }));
+      if (!current()) throw new Error('scoped-investigation-runtime-changed');
+      if (!borrowed) return null;
+      return Object.freeze({ ...borrowed, isCurrent: () => current() && borrowed.isCurrent() === true });
+    },
+    proposals: () => (core && core.proposalStore) || null,
+    capabilities: () => capabilityCatalog.list(capabilityExecutor.context()),
+    capabilityExecutor,
+    proposalExecutor: (store = null) => {
+      const target = store || core?.proposalStore || null;
+      return target ? createProposalExecutor({ store: target, capabilityExecutor, app }) : null;
+    },
+    async run(input) {
+      const { question, mode, style, scope, signal, onActivity, context } = input;
+      const conversationKey = input.conversationId == null ? null : String(input.conversationId);
+      let sessionId = conversationKey ? (sessions.get(conversationKey) || null) : defaultSessionId;
+      if (!sessionId) sessionId = persistedSessionForConversation(sessionPersistence, conversationKey, localContext);
+      const prompt = composePrompt({ mode, style, scope, question, context });
+      const engine = await runtime();
+      if (engine && typeof engine.turn === 'function') {
+        const runCore = () => engine.turn({
+          goal: question, mode, style, scope, sessionId, task: prompt.task,
+          untrustedTarget: context?.untrustedTarget ?? null,
+          conversationId: conversationKey, provider: input.provider || null,
+          model: input.model || null, reasoning: input.reasoning || null,
+        }, { signal, onActivity: (event) => onActivity && onActivity(event) });
+        try {
+          let result;
+          try {
+            result = await runCore();
+          } catch (error) {
+            if (!isSessionBindingMismatch(error)) throw error;
+            // A new user turn after a binary/project switch must start a new
+            // investigation rather than repeatedly presenting the old session.
+            sessionId = null;
+            if (conversationKey) { sessions.delete(conversationKey); persistConversationBindings(sessions); } else defaultSessionId = null;
+            onActivity?.({ type: 'session-rebind', label: '新しい解析対象へAIセッションを切り替え' });
+            result = await runCore();
+          }
+          if (result?.sessionId) {
+            if (conversationKey) { sessions.set(conversationKey, result.sessionId); persistConversationBindings(sessions); }
+            else defaultSessionId = result.sessionId;
+          }
+          return result;
+        } catch (error) {
+          if (signal?.aborted) throw error;
+          // Scope/binding failures are safety boundaries. Falling through to a
+          // live local engine here would re-run the same turn against a newly
+          // visible function/binary and defeat TurnSnapshot semantics.
+          if (isSafetyBoundaryError(error)) throw error;
+          onActivity?.({ type: 'error', label: 'AI core unavailable', detail: String(error?.message || error).slice(0, 120) });
+          // Never label a local/Gemini fallback as a ChatGPT answer.
+          if (globalThis.__HEX_CHATGPT_BRIDGE__ && globalThis.__HEX_AI_PROVIDER__ !== 'gemini') throw error;
+        }
+      }
+      return local.run(input);
+    },
+    cancel() { if (core && typeof core.cancel === 'function') core.cancel(); },
+    async createAgentJob(input = {}) {
+      const engine = await runtime();
+      const key = input.conversationId == null ? null : String(input.conversationId);
+      return engine.createJob({ ...input, sessionId: input.sessionId || (key ? sessions.get(key) : defaultSessionId) || null });
+    },
+    async runAgentJobSlice(jobOrId, options = {}) {
+      const engine = await runtime(); const checkpoint = await engine.runJobSlice(jobOrId, options);
+      bindJobSession(checkpoint, sessions, (value) => { defaultSessionId = value; }); persistConversationBindings(sessions); return checkpoint;
+    },
+    async resumeAgentJob(id, options = {}) {
+      const engine = await runtime(); const checkpoint = await engine.resumeJob(id, options);
+      bindJobSession(checkpoint, sessions, (value) => { defaultSessionId = value; }); persistConversationBindings(sessions); return checkpoint;
+    },
+    async aiCapabilities(options = {}) {
+      const engine = await runtime();
+      return discoverProviderCapabilities(engine?.provider, options);
+    },
+    async aiStatus() {
+      const engine = await runtime();
+      const provider = engine?.provider;
+      return typeof provider?.status === 'function' ? provider.status() : { ready: !!engine };
+    },
+    getAISelection() { return core?.provider?.getSelection?.() || null; },
+    async setAISelection(selection, options = {}) {
+      const engine = await runtime();
+      if (typeof engine?.provider?.setSelection !== 'function') throw new Error('The active AI provider does not support model selection.');
+      return engine.provider.setSelection(selection, options);
+    },
+    async deleteSession(conversationId, { reason = 'user-delete' } = {}) {
+      if (conversationId == null) return false;
+      const key = String(conversationId);
+      const sessionId = sessions.get(key) || null;
+      const removed = sessions.delete(key);
+      persistConversationBindings(sessions);
+      if (!sessionId) return removed;
+      const deletePersisted = reason === 'user-delete';
+      if (core?.releaseSession) await core.releaseSession(sessionId, { deletePersisted });
+      else if (deletePersisted) await sessionPersistence.delete(sessionId);
+      return true;
+    },
+    forgetAIConversation(conversationId) {
+      if (conversationId == null) return false;
+      const removed = sessions.delete(String(conversationId)); persistConversationBindings(sessions); return removed;
+    },
+  };
+}
+
+async function discoverProviderCapabilities(provider, options) {
+  if (!provider) return { providers: [] };
+  if (typeof provider.capabilities === 'function') {
+    const discovery = await provider.capabilities(options);
+    if (discovery && typeof discovery === 'object' && Array.isArray(discovery.providers)) return discovery;
+    return adaptProviderCapabilityState(discovery);
+  }
+  if (typeof provider.prepareCapabilities === 'function') return adaptProviderCapabilityState(await provider.prepareCapabilities(options));
+  if (typeof provider.getCapabilities === 'function') return adaptProviderCapabilityState(provider.getCapabilities());
+  return { providers: [] };
+}
+
+function adaptProviderCapabilityState(capabilities) {
+  const id = typeof capabilities?.provider === 'string' ? capabilities.provider.trim() : '';
+  if (!id || id.toLowerCase() === 'unknown') return { providers: [] };
+  const entry = { id, available: true };
+  if (typeof capabilities.displayName === 'string' && capabilities.displayName) entry.displayName = capabilities.displayName;
+  if (capabilities.models != null) entry.models = capabilities.models;
+  if (capabilities.reasoning != null) entry.reasoning = capabilities.reasoning;
+  if (capabilities.defaultModel != null) entry.defaultModel = String(capabilities.defaultModel);
+  return { providers: [entry] };
+}
+
+// The live persistence defers its durable write to a debounced
+// workspace.autosave(), but `InvestigationSessionStore.persist()/delete()`
+// callers treat a resolved save as durable. save()/delete() therefore await
+// the shared flush and surface the autosave's boolean failure contract
+// (#5648).
+export function createLiveProjectSessionPersistence(app) {
+  let saveTimer = null;
+  let flush = null;
+  const saveMutations = new WeakMap();
+  const projectFor = () => app?.workspace?.project || app?.activeProject || app?.project || null;
+  const ensureProject = () => projectFor() || app?.workspace?.snapshot?.() || null;
+  const completeFlush = (error) => {
+    const pending = flush;
+    flush = null;
+    if (pending) error ? pending.reject(error) : pending.resolve();
+  };
+  const runAutosave = () => {
+    try {
+      const saved = app?.workspace?.autosave?.();
+      if (saved === false) throw new Error('workspace-autosave-failed');
+      completeFlush(null);
+    } catch (error) {
+      completeFlush(error instanceof Error ? error : new Error(String(error)));
+    }
+  };
+  const changed = (project) => {
+    if (app?.workspace) app.workspace.project = project;
+    app.activeProject = project;
+    if (typeof setTimeout !== 'function') { runAutosave(); return; }
+    if (flush == null) {
+      let resolve, reject;
+      flush = { promise: new Promise((res, rej) => { resolve = res; reject = rej; }), resolve, reject };
+    }
+    if (saveTimer != null) return;
+    saveTimer = setTimeout(() => { saveTimer = null; runAutosave(); }, 250);
+  };
+  const awaitFlush = () => (flush ? flush.promise : Promise.resolve());
+  const adapterFor = (project) => project ? createProjectSessionPersistence(project, { onChange: changed }) : null;
+  const committedRecord = (record) => {
+    while (saveMutations.has(record)) {
+      const mutation = saveMutations.get(record);
+      // A concurrent edit that survived rollback owns this slot. Hiding it
+      // would let a later create overwrite that other owner's record.
+      if (mutation.failed && !mutation.unchanged()) {
+        saveMutations.delete(record);
+        break;
+      }
+      record = mutation.previous;
+    }
+    return record;
+  };
+  return {
+    list() {
+      return (adapterFor(projectFor())?.list?.() || []).flatMap((record) => {
+        const committed = committedRecord(record);
+        return committed == null && saveMutations.has(record) ? [] : [committed];
+      });
+    },
+    async load(id) {
+      // Keep the original project binding across the durability wait. Returning
+      // null before a pending write settles would permit another store's create
+      // to overwrite it; returning the staged row would publish a failed save.
+      const adapter = adapterFor(projectFor());
+      if (!adapter) return null;
+      for (;;) {
+        const record = await adapter.load(id);
+        const mutation = saveMutations.get(record);
+        if (!mutation) return record || null;
+        if (mutation.failed) return committedRecord(record) || null;
+        await mutation.settled;
+      }
+    },
+    async save(session) {
+      const project = ensureProject();
+      const adapter = adapterFor(project);
+      if (!adapter) return;
+      const previous = adapter.list().find((item) => item && item.id === session?.id);
+      const pending = adapter.save(session);
+      const durability = awaitFlush();
+      const completion = pending.then(() => durability);
+      // Readers observe settlement, while save() retains the rejection. Attach
+      // both handlers immediately so a delayed reader cannot leak a rejection.
+      const settled = completion.then(() => undefined, () => undefined);
+      // The project adapter stages its detached record synchronously. Keep
+      // ownership of that exact write until the shared autosave settles.
+      const written = adapter.list().find((item) => item && item.id === session?.id);
+      const mutation = written && written !== previous
+        ? { previous, failed: false, settled, unchanged: captureSessionWrite(written) } : null;
+      if (mutation) saveMutations.set(written, mutation);
+      try {
+        await completion;
+        if (mutation) saveMutations.delete(written);
+      } catch (error) {
+        if (mutation) {
+          mutation.failed = true;
+          const entries = project.findings?.investigationSessions;
+          const index = Array.isArray(entries) ? entries.indexOf(written) : -1;
+          // Once another owner has edited the record, its slot remains claimed
+          // and no longer needs our failed write's predecessor history.
+          if (!mutation.unchanged()) saveMutations.delete(written);
+          else if (index >= 0) {
+            let restore = previous;
+            // Coalesced writes can fail together: do not resurrect an earlier
+            // failed write when rolling back the last write for the same ID.
+            while (saveMutations.get(restore)?.failed && saveMutations.get(restore).unchanged()) {
+              restore = saveMutations.get(restore).previous;
+            }
+            if (restore) entries[index] = restore; else entries.splice(index, 1);
+          }
+        }
+        throw error;
+      }
+    },
+    async delete(id) {
+      const adapter = adapterFor(projectFor());
+      if (!adapter) return;
+      await adapter.delete(id);
+      await awaitFlush();
+    },
+  };
+}
+
+// Rollback may only remove our unmodified record. Capture data descriptors,
+// including nested fields, without invoking caller-added getters or toJSON.
+function captureSessionWrite(record) {
+  const observations = [];
+  const seen = new Set();
+  const visit = (value) => {
+    if (!value || typeof value !== 'object' || seen.has(value)) return;
+    seen.add(value);
+    const entries = Reflect.ownKeys(value).map((key) => [key, Object.getOwnPropertyDescriptor(value, key)]);
+    observations.push({ value, entries, prototype: Object.getPrototypeOf(value) });
+    for (const [, descriptor] of entries) if ('value' in descriptor) visit(descriptor.value);
+  };
+  visit(record);
+  return () => observations.every(({ value, entries, prototype }) => (
+    Object.getPrototypeOf(value) === prototype
+    && Reflect.ownKeys(value).length === entries.length
+    && entries.every(([key, before]) => {
+      const current = Object.getOwnPropertyDescriptor(value, key);
+      return current && Reflect.ownKeys(before).every((field) => Object.is(current[field], before[field]));
+    })
+  ));
+}
+
+function persistedSessionForConversation(persistence, conversationId, context) {
+  const sessions = persistence?.list?.() || [];
+  const binaryIdentity = context?.binaryIdentity || null;
+  const binaryId = binaryIdentity?.id || context?.binaryId || null;
+  const projectId = context?.projectId || null;
+  const runtimeSessionId = context?.runtimeSessionId ?? null;
+  const runtimeSessionKnown = context?.runtimeSessionKnown === true || runtimeSessionId != null;
+  const snapshot = {
+    binaryId,
+    binaryIdentity,
+    legacyBinaryId: binaryIdentity?.legacyId || (binaryIdentity ? null : context?.binaryId || null),
+    projectIdentity: projectId,
+    runtimeSessionIdentity: runtimeSessionId,
+    runtimeSessionState: runtimeSessionKnown ? (runtimeSessionId == null ? 'none' : 'bound') : 'unknown',
+  };
+  const compatible = sessions.filter((session) => {
+    if (!session?.id) return false;
+    return sessionMatchesSnapshot(session, snapshot);
+  });
+  if (conversationId != null) {
+    // An explicit conversation identity is authoritative: reuse only the exact
+    // persisted session of THIS conversation. Falling back to "the single
+    // compatible session" would let a new chat adopt another conversation's
+    // investigation memory and rewrite its ownership (#6011).
+    const exact = compatible.find((session) => String(session.conversationId || '') === String(conversationId));
+    return exact ? String(exact.id) : null;
+  }
+  return compatible.length === 1 ? String(compatible[0].id) : null;
+}
+
+function exposeStableIdentityInputs(context, app) {
+  // The live Backend content hash is the authority. When a new file has just
+  // opened Backend intentionally clears contentHash; in that window an older
+  // ProductWorkspace/project hash must not be reused for the new file.
+  const define = (name, get) => {
+    if (Object.prototype.hasOwnProperty.call(context, name)) return;
+    try { Object.defineProperty(context, name, { enumerable: true, configurable: false, get }); } catch { /* optional */ }
+  };
+  const workspaceHash = () => {
+    const live = app.backend?.contentHash || null;
+    if (live) return String(live);
+    if (app.backend && Object.prototype.hasOwnProperty.call(app.backend, 'contentHash')) return null;
+    return app.workspace?.identity?.hash || app.workspace?.project?.binary?.hash ||
+      app.activeProject?.binary?.hash || app.project?.binary?.hash || app.currentProject?.binary?.hash ||
+      app.project?.binaryHash || app.currentProject?.binaryHash || null;
+  };
+  define('binaryFingerprint', () => {
+    const liveHash = workspaceHash();
+    if (liveHash) return { algorithm: 'content-hash', hash: String(liveHash) };
+    // Compatibility fallback for embedding hosts that do not expose Backend.
+    const stored = app.backend ? null : (app.store?.get?.('binaryFingerprint') || app.store?.get?.('contentFingerprint') || app.binaryFingerprint || null);
+    return stored?.hash ? stored : null;
+  });
+  define('binaryHash', () => context.binaryFingerprint?.hash || null);
+  define('binaryIdentity', () => {
+    const fingerprint = context.binaryFingerprint;
+    if (!fingerprint?.hash) return null;
+    const slice = app.store?.get?.('sliceIndex');
+    const hash = String(fingerprint.hash);
+    return {
+      id: `content:${hash}${slice == null ? '' : `:${String(slice)}`}`,
+      kind: 'content-derived', confidence: 'strong', state: 'ready',
+      algorithm: String(fingerprint.algorithm || 'existing-hash'), hash,
+      legacyId: context.binaryId == null ? null : String(context.binaryId),
+    };
+  });
+  define('projectId', () => app.project?.id || app.currentProject?.id || app.workspace?.project?.binary?.hash || app.activeProject?.binary?.hash || app.project?.binaryHash || null);
+  define('sliceIndex', () => app.store?.get?.('sliceIndex') ?? null);
+  define('architecture', () => app.store?.get?.('architecture') || app.store?.get?.('capability')?.architecture || null);
+  define('fileInfo', () => app.store?.get?.('fileInfo') || null);
+}
+
+function exposeRuntimeSessionBinding(context) {
+  if (!context?.runtime || typeof context.runtime !== 'object') return;
+  const state = { binaryId: null, known: false, sessionId: null };
+  const originalPlatform = typeof context.runtime.platform === 'function' ? context.runtime.platform.bind(context.runtime) : null;
+  const originalVerify = typeof context.runtime.verifyHypothesis === 'function' ? context.runtime.verifyHypothesis.bind(context.runtime) : null;
+  const currentBinaryId = () => {
+    const identity = context.binaryIdentity;
+    const strong = identity && typeof identity === 'object' ? identity.id : identity;
+    const value = strong ?? context.binaryId;
+    return value == null ? null : String(value);
+  };
+  const capture = (platform) => {
+    state.binaryId = currentBinaryId();
+    state.known = true;
+    state.sessionId = platform?.sessions?.current?.id == null ? null : String(platform.sessions.current.id);
+    return platform;
+  };
+  const sameBinary = () => state.binaryId != null && state.binaryId === currentBinaryId();
+
+  if (originalPlatform) {
+    context.runtime.platform = async (...args) => capture(await originalPlatform(...args));
+  }
+  if (originalVerify && originalPlatform) {
+    context.runtime.verifyHypothesis = async (...args) => {
+      try { return await originalVerify(...args); }
+      finally {
+        // verifyHypothesis can lazily create the RuntimeAnalysisPlatform. Read
+        // back the already-created platform so the next user turn can bind to
+        // its concrete session ID without reaching into js/runtime internals.
+        try { capture(await originalPlatform()); } catch { /* runtime remains unknown */ }
+      }
+    };
+  }
+
+  const define = (name, get) => {
+    if (Object.prototype.hasOwnProperty.call(context, name)) return;
+    try { Object.defineProperty(context, name, { enumerable: true, configurable: false, get }); } catch { /* optional */ }
+  };
+  define('runtimeSessionId', () => sameBinary() ? state.sessionId : null);
+  define('runtimeSessionKnown', () => sameBinary() ? state.known : false);
+}
+
+function isSessionBindingMismatch(error) {
+  return error?.type === 'scope_violation' && /requested AI session belongs to a different binary or project/i.test(String(error?.message || ''));
+}
+function isSafetyBoundaryError(error) {
+  return error?.type === 'scope_violation' || error?.type === 'cancelled' || error?.type === 'context_too_large';
+}
+
+function bindJobSession(checkpoint, sessions, setDefault) {
+  if (!checkpoint?.sessionId) return;
+  if (checkpoint.conversationId != null) sessions.set(String(checkpoint.conversationId), checkpoint.sessionId);
+  else setDefault(checkpoint.sessionId);
+}
+
+const CONVERSATION_BINDING_KEY = 'hex.ai.conversation-sessions.v1';
+function loadConversationBindings() {
+  const out = new Map();
+  try {
+    const raw = JSON.parse(globalThis.localStorage?.getItem?.(CONVERSATION_BINDING_KEY) || '{}');
+    for (const [conversationId, sessionId] of Object.entries(raw || {})) if (conversationId && typeof sessionId === 'string' && sessionId) out.set(conversationId, sessionId);
+  } catch { /* optional persistence */ }
+  return out;
+}
+function persistConversationBindings(bindings) {
+  try { globalThis.localStorage?.setItem?.(CONVERSATION_BINDING_KEY, JSON.stringify(Object.fromEntries(bindings))); } catch { /* private mode */ }
+}
+
+export default createAiEngine;

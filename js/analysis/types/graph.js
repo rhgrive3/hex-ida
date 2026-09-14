@@ -1,0 +1,1110 @@
+/**
+ * P7-4 — TypeConstraintGraph.
+ *
+ * Constraints are added per entity and per layer; solving produces one
+ * `TypeResult` per entity. The graph's job is not to pick the nicest-looking
+ * type — it is to keep hard facts, soft rankings and contradictions apart so
+ * that a consumer can tell the difference (P7-INV-005, FM-6).
+ *
+ * Two rules decide every answer:
+ *
+ *  1. A layer with contradictory *hard* constraints has no selected type.
+ *     Confidence is not lowered — selection is withheld entirely, because a
+ *     "70% certain" answer between two mutually exclusive hard facts is a
+ *     fabrication.
+ *  2. Soft evidence orders the candidates that survive the hard constraints. It
+ *     never introduces a candidate that a hard constraint excludes, and it
+ *     never raises a conclusion to `certain`.
+ *
+ * Contradictions stay localized to the entity and layer that carry them, so one
+ * bad debug record cannot poison unrelated components of the graph.
+ *
+ * HEX-C3-01 extends this shell with:
+ *  - Recursive struct recovery (self-referential & mutually recursive pointers)
+ *  - Cyclic type dependency graph condensation into SCCs via Tarjan's algorithm
+ *  - Fixed-point iteration with finite recursion budgets
+ *  - Ambiguity-preserving candidate sets and multi-entity graph solving
+ *  - Deterministic, bounded, cancellation-safe structural type reconstruction
+ */
+
+import { deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
+import { ANALYSIS_STATUS_SCHEMA_VERSION, createAnalysisStatus, isCompleteStatus, weakestCompleteness } from '../status.js';
+import {
+  TYPE_LAYERS,
+  canonicalDependencyIdentity,
+  canonicalizeStructuralMembers,
+  claimsConflict,
+  createContradiction,
+  createHardConstraint,
+  createSoftEvidence,
+  createTypeClaim,
+} from './constraints.js';
+import { condenseTypeGraph } from './scc.js';
+
+export const TYPE_GRAPH_ANALYZER_ID = 'phase7.types.constraint-graph';
+export const TYPE_GRAPH_ANALYZER_VERSION = '1.1.1';
+export const TYPE_RESULT_SCHEMA_VERSION = 1;
+export const TYPE_GRAPH_RESULT_SCHEMA_VERSION = 1;
+
+export const TYPE_GRAPH_DEFAULT_LIMITS = Object.freeze({
+  maxConstraintsPerLayer: 4096,
+  maxComparisonsPerLayer: 50000,
+  maxContradictionsPerLayer: 1024,
+  maxIterationsPerComponent: 16,
+  maxComponents: 4096,
+  maxNodes: 10000,
+  maxEdges: 50000,
+});
+
+/**
+ * Confidence bands. `certain` is reachable only from an uncontradicted hard
+ * constraint; everything soft tops out at `probable`.
+ */
+export const TYPE_CONFIDENCE = Object.freeze(['certain', 'probable', 'possible', 'unknown']);
+
+function fail(code) { throw new TypeError(code); }
+
+function positiveLimit(value, fallback, code) {
+  if (value == null) return fallback;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) fail(code);
+  return value;
+}
+
+function defaultAlign(sizeBytes) {
+  const size = Number(sizeBytes ?? 0);
+  if (!Number.isSafeInteger(size) || size <= 0) return 1;
+  if (size >= 8) return 8;
+  if (size >= 4) return 4;
+  if (size >= 2) return 2;
+  return 1;
+}
+
+const MAX_SAFE_LAYOUT_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
+
+function exactStructuralInteger(value, fallback = null) {
+  if (value == null) return fallback;
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) return null;
+    return BigInt(value);
+  }
+  if (typeof value === 'string') {
+    try { return BigInt(value); } catch { return null; }
+  }
+  return null;
+}
+
+const ARRAY_NUMERIC_FIELDS = new Set(['sizeBytes', 'alignBytes', 'strideBytes', 'length']);
+const POINTER_NUMERIC_FIELDS = new Set(['sizeBytes', 'alignBytes']);
+
+function needsStructuralReconstruction(descriptor) {
+  if (descriptor.kind === 'struct' || descriptor.kind === 'field') return true;
+  if (descriptor.kind != null) return false;
+  return descriptor.offset != null
+    || descriptor.fieldName != null
+    || descriptor.memberType != null
+    || Array.isArray(descriptor.members)
+    || descriptor.sizeBytes != null
+    || descriptor.alignBytes != null;
+}
+
+function mergeCompatiblePointerDescriptors(entityId, descriptors) {
+  const merged = {};
+  for (const descriptor of descriptors) {
+    for (const [key, value] of Object.entries(descriptor)) {
+      if (!(key in merged)) {
+        merged[key] = value;
+        continue;
+      }
+      if (POINTER_NUMERIC_FIELDS.has(key)) {
+        const left = exactStructuralInteger(merged[key]);
+        const right = exactStructuralInteger(value);
+        if (left != null && right != null && left === right) continue;
+      }
+      if (stableStringify(merged[key]) !== stableStringify(value)) return null;
+    }
+  }
+  return createTypeClaim({ layer: 'structural', entityId, descriptor: merged });
+}
+
+function mergeCompatibleArrayDescriptors(entityId, descriptors) {
+  const merged = {};
+  for (const descriptor of descriptors) {
+    for (const [key, value] of Object.entries(descriptor)) {
+      if (!(key in merged)) {
+        merged[key] = value;
+        continue;
+      }
+      if (ARRAY_NUMERIC_FIELDS.has(key)) {
+        const left = exactStructuralInteger(merged[key]);
+        const right = exactStructuralInteger(value);
+        if (left != null && right != null && left === right) continue;
+      }
+      if (stableStringify(merged[key]) !== stableStringify(value)) return null;
+    }
+  }
+  return createTypeClaim({ layer: 'structural', entityId, descriptor: merged });
+}
+
+function structuralIntegerWire(value) {
+  return value <= MAX_SAFE_LAYOUT_INTEGER ? Number(value) : value.toString();
+}
+
+function defaultStructuralAlign(sizeBytes) {
+  const size = exactStructuralInteger(sizeBytes, 0n);
+  if (size == null || size <= 0n) return 1n;
+  if (size >= 8n) return 8n;
+  if (size >= 4n) return 4n;
+  if (size >= 2n) return 2n;
+  return 1n;
+}
+
+function mergedEvidenceIds(left, right) {
+  return [...new Set([...(left ?? []), ...(right ?? [])])].sort();
+}
+
+function constraintOrderKey(constraint) {
+  return stableDigest(constraint);
+}
+
+function hardIdentity(constraint) {
+  return stableDigest({
+    kind: constraint.kind,
+    origin: constraint.origin,
+    claim: constraint.claim,
+    providerVersion: constraint.providerVersion,
+    buildIdentity: constraint.buildIdentity,
+    abiProfile: constraint.abiProfile,
+  });
+}
+
+function softIdentity(evidence) {
+  return stableDigest({
+    kind: evidence.kind,
+    origin: evidence.origin,
+    claim: evidence.claim,
+    weight: evidence.weight,
+  });
+}
+
+function addDependencyIdentity(deps, value) {
+  const identity = canonicalDependencyIdentity(value);
+  if (identity != null) deps.add(identity);
+}
+
+const TYPE_DEPENDENCY_IDENTITY_KEYS = Object.freeze(['targetEntityId', 'elementEntityId']);
+const TYPE_DEPENDENCY_CHILD_KEYS = Object.freeze(['elementType', 'pointeeType', 'memberType', 'members']);
+const MAX_TYPE_DEPENDENCY_NODES = 4096;
+const MAX_TYPE_DEPENDENCY_DEPTH = 256;
+
+function walkTypeDependencies(root) {
+  const deps = new Set();
+  let exhausted = false;
+  if (!root || typeof root !== 'object') return { deps, exhausted };
+  const visited = new Set();
+  const stack = [[root, 0]];
+  let nodes = 0;
+  while (stack.length) {
+    const [node, depth] = stack.pop();
+    if (!node || typeof node !== 'object' || visited.has(node)) continue;
+    if (depth > MAX_TYPE_DEPENDENCY_DEPTH || nodes >= MAX_TYPE_DEPENDENCY_NODES) {
+      exhausted = true;
+      continue;
+    }
+    visited.add(node);
+    nodes += 1;
+    if (Array.isArray(node)) {
+      for (const child of node) stack.push([child, depth + 1]);
+      continue;
+    }
+    for (const key of TYPE_DEPENDENCY_IDENTITY_KEYS) addDependencyIdentity(deps, node[key]);
+    for (const key of TYPE_DEPENDENCY_CHILD_KEYS) {
+      const child = node[key];
+      if (child && typeof child === 'object') stack.push([child, depth + 1]);
+    }
+  }
+  return { deps, exhausted };
+}
+
+function extractDependencies(claim) {
+  const deps = new Set();
+  const d = claim?.descriptor;
+  if (!d || typeof d !== 'object') return { deps, exhausted: false };
+
+  addDependencyIdentity(deps, d.targetEntityId);
+  addDependencyIdentity(deps, d.elementEntityId);
+  if (typeof d.entityId === 'string' && d.entityId.trim() && d.entityId !== claim.entityId) deps.add(d.entityId.trim());
+
+  let exhausted = false;
+  for (const root of [d.memberType, ...(Array.isArray(d.members) ? d.members : [])]) {
+    const walked = walkTypeDependencies(root);
+    for (const dep of walked.deps) deps.add(dep);
+    exhausted = exhausted || walked.exhausted;
+  }
+  return { deps, exhausted };
+}
+
+function memberDependencyIdentities(member) {
+  const walked = walkTypeDependencies(member);
+  return walked.deps;
+}
+
+function isMemberRecursive(member, entityId, sccMembers = []) {
+  for (const identity of memberDependencyIdentities(member)) {
+    if (identity === entityId || sccMembers.includes(identity)) return true;
+  }
+  return member?.isRecursive === true || member?.memberType?.isRecursive === true;
+}
+
+const STRUCTURAL_NUMERIC_FACT_KEYS = new Set(['widthBits', 'sizeBytes', 'alignBytes', 'offset', 'strideBytes', 'length']);
+const MEMBER_FACT_CONFLICT = Symbol('member-fact-conflict');
+
+function mergeCompatibleMemberFacts(left, right, key = null) {
+  if (stableStringify(left) === stableStringify(right)) return left;
+  if (key != null && STRUCTURAL_NUMERIC_FACT_KEYS.has(key)) {
+    const a = exactStructuralInteger(left);
+    const b = exactStructuralInteger(right);
+    return a != null && b != null && a === b ? left : MEMBER_FACT_CONFLICT;
+  }
+  if (left == null || right == null
+    || typeof left !== 'object' || typeof right !== 'object'
+    || Array.isArray(left) || Array.isArray(right)) return MEMBER_FACT_CONFLICT;
+
+  const merged = { ...left };
+  for (const [childKey, value] of Object.entries(right)) {
+    if (!Object.hasOwn(merged, childKey)) {
+      merged[childKey] = value;
+      continue;
+    }
+    const combined = mergeCompatibleMemberFacts(merged[childKey], value, childKey);
+    if (combined === MEMBER_FACT_CONFLICT) return MEMBER_FACT_CONFLICT;
+    merged[childKey] = combined;
+  }
+  return merged;
+}
+
+function mergeCompatibleHardClaims(entityId, layer, claims, sccContext = null) {
+  const distinct = [...new Map(claims.map((claim) => [claim.key, claim])).values()]
+    .sort((left, right) => left.key.localeCompare(right.key));
+  if (distinct.length === 1 && (layer !== 'structural' || !needsStructuralReconstruction(distinct[0].descriptor))) return distinct[0];
+
+  const descriptors = distinct.map((claim) => claim.descriptor);
+  if (descriptors.some((descriptor) => !descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor))) return null;
+
+  if (layer === 'structural' && descriptors.some((descriptor) => descriptor.kind === 'pointer')) {
+    if (!descriptors.every((descriptor) => descriptor.kind === 'pointer')) return null;
+    return mergeCompatiblePointerDescriptors(entityId, descriptors);
+  }
+
+  if (layer === 'structural' && descriptors.every((descriptor) => descriptor.kind === 'array')) {
+    return mergeCompatibleArrayDescriptors(entityId, descriptors);
+  }
+
+  if (layer === 'structural') {
+    const rawMembers = [];
+    let explicitSize = null;
+    let explicitAlign = null;
+    // Only an explicitly typed aggregate may establish whole-object size or
+    // alignment. Offset-less structural-field metadata is member evidence.
+    const isExplicitAggregateDescriptor = (descriptor) => (
+      descriptor.kind === 'struct'
+      && descriptor.offset == null
+      && descriptor.fieldName == null
+      && descriptor.memberType == null
+    );
+
+    for (const desc of descriptors) {
+      if (Array.isArray(desc.members)) {
+        rawMembers.push(...desc.members);
+      } else if (desc.offset != null && desc.sizeBytes != null) {
+        rawMembers.push(desc);
+      }
+      if (isExplicitAggregateDescriptor(desc) && desc.sizeBytes != null) {
+        explicitSize = exactStructuralInteger(desc.sizeBytes);
+        if (explicitSize == null) return null;
+      }
+      if (isExplicitAggregateDescriptor(desc) && desc.alignBytes != null) {
+        explicitAlign = exactStructuralInteger(desc.alignBytes);
+        if (explicitAlign == null) return null;
+      }
+    }
+
+    const membersByOffset = new Map();
+    for (const member of rawMembers) {
+      const offset = exactStructuralInteger(member.offset, 0n);
+      if (offset == null) return null;
+      const key = offset.toString();
+      const existing = membersByOffset.get(key);
+      if (existing) {
+        const merged = mergeCompatibleMemberFacts(existing.member, member);
+        if (merged === MEMBER_FACT_CONFLICT) return null;
+        membersByOffset.set(key, { offset, member: merged });
+      } else {
+        membersByOffset.set(key, { offset, member });
+      }
+    }
+
+    const members = canonicalizeStructuralMembers(
+      [...membersByOffset.values()].map((entry) => entry.member),
+    );
+
+    const sccMembers = sccContext?.sccMembers ?? [entityId];
+    const isRecursive = sccContext?.isRecursive === true
+      || members.some((m) => isMemberRecursive(m, entityId, sccMembers));
+
+    const updatedMembers = members.map((m) => {
+      if (isMemberRecursive(m, entityId, sccMembers)) {
+        const memberType = typeof m.memberType === 'object' && m.memberType
+          ? { ...m.memberType, isRecursive: true }
+          : { kind: 'pointer', targetEntityId: entityId, isRecursive: true };
+        return { ...m, memberType, isRecursive: true };
+      }
+      return m;
+    });
+
+    // Absence of size evidence means unknown, not a zero-byte aggregate.
+    // Keep size nullable until an explicit aggregate fact or complete member
+    // extents prove it (#5190).
+    let maxAlign = explicitAlign ?? 1n;
+    for (const m of updatedMembers) {
+      let mAlign = null;
+      if (m.alignBytes == null) {
+        mAlign = defaultStructuralAlign(m.sizeBytes);
+      } else {
+        mAlign = exactStructuralInteger(m.alignBytes);
+        if (mAlign == null) return null;
+      }
+      if (mAlign > maxAlign) maxAlign = mAlign;
+    }
+
+    let calculatedSize = explicitSize;
+    if (updatedMembers.length > 0) {
+      let maxOffsetSpan = 0n;
+      let allExtentsKnown = true;
+      for (const m of updatedMembers) {
+        const offset = exactStructuralInteger(m.offset, 0n);
+        if (offset == null) return null;
+        if (m.sizeBytes == null) {
+          allExtentsKnown = false;
+          // Even without an extent, a start beyond the explicit bound conflicts.
+          if (explicitSize != null && offset > explicitSize) return null;
+          continue;
+        }
+        const size = exactStructuralInteger(m.sizeBytes);
+        if (size == null) return null;
+        const span = offset + size;
+        if (span > maxOffsetSpan) maxOffsetSpan = span;
+      }
+      // A hard explicit aggregate size is a bound, not a suggestion (#5819):
+      // member extents beyond it are incompatible hard facts, never a reason
+      // to silently grow the struct and publish it as certain.
+      if (explicitSize != null && maxOffsetSpan > explicitSize) return null;
+      calculatedSize = explicitSize != null
+        ? explicitSize
+        : !allExtentsKnown ? null
+        : maxAlign > 1n
+          ? ((maxOffsetSpan + maxAlign - 1n) / maxAlign) * maxAlign
+          : maxOffsetSpan;
+    }
+
+    const structDescriptor = {
+      kind: 'struct',
+      members: updatedMembers,
+      ...(calculatedSize == null ? {} : {
+        sizeBytes: structuralIntegerWire(calculatedSize),
+        totalSizeBytes: structuralIntegerWire(calculatedSize),
+      }),
+      alignBytes: structuralIntegerWire(maxAlign),
+      isRecursive,
+      recursiveIdentity: isRecursive ? entityId : null,
+      sccMembers: sccMembers.length > 1 ? sccMembers : (isRecursive ? [entityId] : null),
+    };
+
+    return createTypeClaim({ layer, entityId, descriptor: structDescriptor });
+  }
+
+  const merged = {};
+  if (layer === 'nominal') {
+    const names = [...new Set(descriptors.flatMap((descriptor) => [descriptor.name, ...(descriptor.aliases ?? [])]).filter(Boolean))].sort();
+    if (names.length > 0) {
+      merged.name = names[0];
+      merged.aliases = names;
+    }
+  }
+  for (const descriptor of descriptors) {
+    for (const [key, value] of Object.entries(descriptor).sort(([left], [right]) => left.localeCompare(right))) {
+      if (layer === 'nominal' && (key === 'name' || key === 'aliases')) continue;
+      if (!(key in merged)) merged[key] = value;
+      else if (stableStringify(merged[key]) !== stableStringify(value)) return null;
+    }
+  }
+  return createTypeClaim({ layer, entityId, descriptor: merged });
+}
+
+export class TypeConstraintGraph {
+  constructor({ snapshotId = 'snapshot-unbound', budgetClass = null, limits = {} } = {}) {
+    this.snapshotId = snapshotId;
+    this.budgetClass = budgetClass;
+    this.limits = Object.freeze({
+      maxConstraintsPerLayer: positiveLimit(limits.maxConstraintsPerLayer, TYPE_GRAPH_DEFAULT_LIMITS.maxConstraintsPerLayer, 'type-graph-invalid-constraint-limit'),
+      maxComparisonsPerLayer: positiveLimit(limits.maxComparisonsPerLayer, TYPE_GRAPH_DEFAULT_LIMITS.maxComparisonsPerLayer, 'type-graph-invalid-comparison-limit'),
+      maxContradictionsPerLayer: positiveLimit(limits.maxContradictionsPerLayer, TYPE_GRAPH_DEFAULT_LIMITS.maxContradictionsPerLayer, 'type-graph-invalid-contradiction-limit'),
+      maxIterationsPerComponent: positiveLimit(limits.maxIterationsPerComponent, TYPE_GRAPH_DEFAULT_LIMITS.maxIterationsPerComponent, 'type-graph-invalid-iteration-limit'),
+      maxComponents: positiveLimit(limits.maxComponents, TYPE_GRAPH_DEFAULT_LIMITS.maxComponents, 'type-graph-invalid-component-limit'),
+      maxNodes: positiveLimit(limits.maxNodes, TYPE_GRAPH_DEFAULT_LIMITS.maxNodes, 'type-graph-invalid-node-limit'),
+      maxEdges: positiveLimit(limits.maxEdges, TYPE_GRAPH_DEFAULT_LIMITS.maxEdges, 'type-graph-invalid-edge-limit'),
+    });
+    /** entityId -> layer -> bounded constraint bucket */
+    this.entities = new Map();
+    /** entityId -> Set<dependentEntityId> */
+    this.dependencies = new Map();
+    this.dependencyTruncated = new Set();
+    this.userConstraintDigests = new Set();
+  }
+
+  #bucket(entityId, layer) {
+    if (!this.entities.has(entityId)) this.entities.set(entityId, new Map());
+    const layers = this.entities.get(entityId);
+    if (!layers.has(layer)) {
+      layers.set(layer, {
+        hard: [],
+        soft: [],
+        hardIndex: new Map(),
+        softIndex: new Map(),
+        truncated: false,
+      });
+    }
+    return layers.get(layer);
+  }
+
+  #recordDependencies(claim) {
+    const { deps, exhausted } = extractDependencies(claim);
+    if (exhausted) this.dependencyTruncated.add(claim.entityId);
+    if (deps.size === 0) return;
+    if (!this.dependencies.has(claim.entityId)) {
+      this.dependencies.set(claim.entityId, new Set());
+    }
+    const current = this.dependencies.get(claim.entityId);
+    for (const dep of deps) current.add(dep);
+  }
+
+  dependenciesOf(entityId) {
+    return new Set(this.dependencies.get(entityId) ?? []);
+  }
+
+  addHardConstraint(input) {
+    const constraint = createHardConstraint(input);
+    const bucket = this.#bucket(constraint.claim.entityId, constraint.claim.layer);
+    const identity = hardIdentity(constraint);
+    const duplicateIndex = bucket.hardIndex.get(identity);
+    let retained = false;
+    if (duplicateIndex == null) {
+      if (bucket.hard.length + bucket.soft.length >= this.limits.maxConstraintsPerLayer) {
+        bucket.truncated = true;
+      } else {
+        bucket.hardIndex.set(identity, bucket.hard.length);
+        bucket.hard.push(constraint);
+        retained = true;
+      }
+    } else {
+      retained = true;
+      const existing = bucket.hard[duplicateIndex];
+      const evidenceIds = mergedEvidenceIds(existing.evidenceIds, constraint.evidenceIds);
+      if (evidenceIds.length !== existing.evidenceIds.length) {
+        bucket.hard[duplicateIndex] = createHardConstraint({
+          kind: existing.kind,
+          origin: existing.origin,
+          claim: existing.claim,
+          evidenceIds,
+          providerVersion: existing.providerVersion,
+          buildIdentity: existing.buildIdentity,
+          abiProfile: existing.abiProfile,
+        });
+      }
+    }
+    // Only retained hard evidence may influence graph semantics. A truncated
+    // constraint is returned to the caller for accounting, but must not leave
+    // a dependency/SCC edge or user-constraint marker behind.
+    if (retained) this.#recordDependencies(constraint.claim);
+    if (retained && constraint.origin === 'user-approved') {
+      this.userConstraintDigests.add(stableDigest(constraint.claim));
+    }
+    return constraint;
+  }
+
+  addSoftEvidence(input) {
+    const evidence = createSoftEvidence(input);
+    const bucket = this.#bucket(evidence.claim.entityId, evidence.claim.layer);
+    const identity = softIdentity(evidence);
+    const duplicateIndex = bucket.softIndex.get(identity);
+    if (duplicateIndex == null) {
+      if (bucket.hard.length + bucket.soft.length >= this.limits.maxConstraintsPerLayer) {
+        bucket.truncated = true;
+      } else {
+        bucket.softIndex.set(identity, bucket.soft.length);
+        bucket.soft.push(evidence);
+      }
+    } else {
+      const existing = bucket.soft[duplicateIndex];
+      const evidenceIds = mergedEvidenceIds(existing.evidenceIds, evidence.evidenceIds);
+      if (evidenceIds.length !== existing.evidenceIds.length) {
+        bucket.soft[duplicateIndex] = createSoftEvidence({
+          kind: existing.kind,
+          origin: existing.origin,
+          claim: existing.claim,
+          weight: existing.weight,
+          evidenceIds,
+        });
+      }
+    }
+    return evidence;
+  }
+
+  entityIds() {
+    return [...this.entities.keys()].sort();
+  }
+
+  /** Every layer's answer for one entity. */
+  solveEntity(entityId, { signal = null, sccContext = null } = {}) {
+    if (typeof entityId !== 'string' || entityId.length === 0) {
+      return createTypeResult({
+        entityId: '',
+        status: this.#status('unsupported', 'unsupported-input'),
+        layers: {},
+      });
+    }
+    const layers = this.entities.get(entityId);
+    if (!layers) {
+      return createTypeResult({
+        entityId,
+        status: this.#status('unsupported', 'evidence-missing'),
+        layers: {},
+      });
+    }
+    if (signal?.aborted) {
+      return createTypeResult({ entityId, status: this.#status('partial', 'cancelled'), layers: {} });
+    }
+
+    const effectiveSccContext = sccContext ?? {
+      isRecursive: this.dependenciesOf(entityId).has(entityId),
+      sccMembers: [entityId],
+    };
+
+    const solvedLayers = {};
+    let stopReason = null;
+    for (const layer of TYPE_LAYERS) {
+      const bucket = layers.get(layer);
+      if (!bucket) continue;
+      const solved = solveLayer(entityId, layer, bucket, {
+        signal,
+        maxComparisons: this.limits.maxComparisonsPerLayer,
+        maxContradictions: this.limits.maxContradictionsPerLayer,
+        sccContext: effectiveSccContext,
+      });
+      solvedLayers[layer] = solved.layer;
+      if (solved.stopReason === 'cancelled') {
+        stopReason = 'cancelled';
+        break;
+      }
+      if (solved.stopReason === 'budget-exhausted') stopReason = stopReason ?? 'budget-exhausted';
+    }
+    if (this.dependencyTruncated.has(entityId)) stopReason = stopReason ?? 'budget-exhausted';
+    return createTypeResult({
+      entityId,
+      status: stopReason === 'cancelled'
+        ? this.#status('partial', 'cancelled')
+        : stopReason === 'budget-exhausted'
+          ? this.#status('truncated', 'budget-exhausted')
+          : this.#status('complete', null),
+      layers: solvedLayers,
+      userConstrained: [...this.userConstraintDigests].some((digest) => (
+        Object.values(solvedLayers).some((solved) => solved.hardConstraints.some((constraint) => (
+          constraint.origin === 'user-approved' && stableDigest(constraint.claim) === digest
+        )))
+      )),
+    });
+  }
+
+  /**
+   * Solves all registered entities across the type graph, handling recursive SCCs
+   * in bottom-up reverse topological order using fixed-point iteration.
+   */
+  solveGraph({ roots = null, maxIterationsPerComponent = null, signal = null } = {}) {
+    const iterationLimit = maxIterationsPerComponent != null
+      ? positiveLimit(maxIterationsPerComponent, this.limits.maxIterationsPerComponent, 'type-graph-invalid-iteration-limit')
+      : this.limits.maxIterationsPerComponent;
+
+    const allEntities = (roots ? [...new Set(roots)] : this.entityIds())
+      .filter((id) => this.entities.has(id))
+      .sort();
+
+    const {
+      components,
+      recursiveComponents,
+      isRecursiveMap,
+      sccMembersMap,
+      truncated,
+      cancelled,
+    } = condenseTypeGraph(allEntities, (id) => this.dependenciesOf(id), {
+      signal,
+      maxComponents: this.limits.maxComponents,
+      maxNodes: this.limits.maxNodes,
+      maxEdges: this.limits.maxEdges,
+    });
+
+    if (cancelled || signal?.aborted) {
+      return createTypeGraphResult({
+        snapshotId: this.snapshotId,
+        results: new Map(),
+        components,
+        recursiveComponents,
+        iterations: 0,
+        status: this.#status('partial', 'cancelled'),
+      });
+    }
+
+    if (truncated) {
+      return createTypeGraphResult({
+        snapshotId: this.snapshotId,
+        results: new Map(),
+        components,
+        recursiveComponents,
+        iterations: 0,
+        status: this.#status('truncated', 'budget-exhausted'),
+      });
+    }
+
+    const solvedResults = new Map();
+    let totalIterations = 0;
+    let worstStopReason = null;
+    let worstCompleteness = 'complete';
+
+    for (const component of components) {
+      if (signal?.aborted) {
+        return createTypeGraphResult({
+          snapshotId: this.snapshotId,
+          results: solvedResults,
+          components,
+          recursiveComponents,
+          iterations: totalIterations,
+          status: this.#status('partial', 'cancelled'),
+        });
+      }
+
+      const isRecursive = isRecursiveMap.get(component[0]) === true;
+      const sccMembers = sccMembersMap.get(component[0]) ?? component;
+      const sccContext = { isRecursive, sccMembers };
+
+      let iterations = 0;
+      let changed = true;
+      let converged = true;
+      const componentDigests = new Map();
+
+      while (changed) {
+        if (iterations >= iterationLimit) {
+          converged = false;
+          break;
+        }
+        iterations += 1;
+        totalIterations += 1;
+        changed = false;
+
+        for (const entityId of component) {
+          if (!this.entities.has(entityId)) continue;
+          const solved = this.solveEntity(entityId, { signal, sccContext });
+          const digest = stableDigest(solved);
+          if (componentDigests.get(entityId) !== digest) {
+            componentDigests.set(entityId, digest);
+            solvedResults.set(entityId, solved);
+            changed = true;
+          }
+        }
+        if (!isRecursive) break;
+      }
+
+      if (!converged) {
+        for (const entityId of component) {
+          const existing = solvedResults.get(entityId);
+          const truncatedResult = createTypeResult({
+            entityId,
+            layers: existing?.layers ?? {},
+            userConstrained: existing?.userConstrained ?? false,
+            status: this.#status('truncated', 'iteration-limit'),
+          });
+          solvedResults.set(entityId, truncatedResult);
+        }
+        worstStopReason = 'iteration-limit';
+        worstCompleteness = weakestCompleteness(worstCompleteness, 'truncated');
+      }
+    }
+
+    for (const result of solvedResults.values()) {
+      worstCompleteness = weakestCompleteness(worstCompleteness, result.status.completeness);
+      if (result.status.stopReason && !worstStopReason) worstStopReason = result.status.stopReason;
+    }
+    if (worstCompleteness === 'complete') worstStopReason = null;
+    else if (!worstStopReason) worstStopReason = 'evidence-missing';
+
+    return createTypeGraphResult({
+      snapshotId: this.snapshotId,
+      results: solvedResults,
+      components,
+      recursiveComponents,
+      iterations: totalIterations,
+      status: this.#status(worstCompleteness, worstStopReason),
+    });
+  }
+
+  #status(completeness, stopReason) {
+    return createAnalysisStatus({
+      snapshotId: this.snapshotId,
+      analyzerId: TYPE_GRAPH_ANALYZER_ID,
+      analyzerVersion: TYPE_GRAPH_ANALYZER_VERSION,
+      completeness,
+      budgetClass: this.budgetClass,
+      stopReason,
+    });
+  }
+}
+
+function solveLayer(entityId, layer, bucket, { signal, maxComparisons, maxContradictions, sccContext = null }) {
+  const contradictions = [];
+  let comparisons = 0;
+  let stopReason = bucket.truncated ? 'budget-exhausted' : null;
+
+  const canCompare = () => {
+    if (signal?.aborted) {
+      stopReason = 'cancelled';
+      return false;
+    }
+    if (comparisons >= maxComparisons) {
+      stopReason = 'budget-exhausted';
+      return false;
+    }
+    comparisons += 1;
+    return true;
+  };
+
+  if (!stopReason) {
+    hardPairs: for (let i = 0; i < bucket.hard.length; i += 1) {
+      for (let j = i + 1; j < bucket.hard.length; j += 1) {
+        if (!canCompare()) break hardPairs;
+        if (claimsConflict(bucket.hard[i].claim, bucket.hard[j].claim)) {
+          if (contradictions.length >= maxContradictions) {
+            stopReason = 'budget-exhausted';
+            break hardPairs;
+          }
+          const pair = [bucket.hard[i], bucket.hard[j]].sort((left, right) => constraintOrderKey(left).localeCompare(constraintOrderKey(right)));
+          contradictions.push(createContradiction({
+            layer,
+            entityId,
+            left: pair[0],
+            right: pair[1],
+            detail: `hard constraints disagree: ${pair[0].kind} vs ${pair[1].kind}`,
+          }));
+        }
+      }
+    }
+  }
+
+  const hardClaims = bucket.hard.map((constraint) => constraint.claim);
+  const candidates = new Map();
+  const add = (claim, weight, source) => {
+    const existing = candidates.get(claim.key);
+    if (existing) {
+      existing.weight = Math.max(existing.weight, weight);
+      existing.sources.add(source);
+      return;
+    }
+    candidates.set(claim.key, { claim, weight, sources: new Set([source]) });
+  };
+  for (const constraint of bucket.hard) add(constraint.claim, 1, 'hard');
+  if (!stopReason) {
+    softEvidence: for (const evidence of bucket.soft) {
+      let conflicts = false;
+      for (const hard of hardClaims) {
+        if (!canCompare()) break softEvidence;
+        if (claimsConflict(hard, evidence.claim)) {
+          conflicts = true;
+          break;
+        }
+      }
+      if (!conflicts) add(evidence.claim, evidence.weight, 'soft');
+    }
+  }
+
+  const ranked = [...candidates.values()].sort((left, right) => (
+    right.weight - left.weight || left.claim.key.localeCompare(right.claim.key)
+  ));
+
+  let selected = null;
+  let confidence = 'unknown';
+  if (stopReason != null) {
+    selected = null;
+    confidence = 'unknown';
+  } else if (contradictions.length > 0) {
+    confidence = 'unknown';
+  } else if (bucket.hard.length > 0) {
+    selected = mergeCompatibleHardClaims(entityId, layer, hardClaims, sccContext);
+    confidence = selected == null ? 'unknown' : 'certain';
+  } else if (ranked.length === 1) {
+    selected = ranked[0].claim;
+    confidence = ranked[0].weight >= 0.75 ? 'probable' : 'possible';
+  } else if (ranked.length > 1 && ranked[0].weight > ranked[1].weight) {
+    selected = ranked[0].claim;
+    confidence = ranked[0].weight >= 0.75 ? 'probable' : 'possible';
+  } else if (ranked.length > 1) {
+    confidence = 'unknown';
+  }
+
+  return {
+    stopReason,
+    layer: deepFreeze({
+      layer,
+      candidates: deepFreeze(ranked.map((entry) => ({
+        claim: entry.claim,
+        weight: entry.weight,
+        sources: [...entry.sources].sort(),
+      }))),
+      selected,
+      confidence,
+      hardConstraints: deepFreeze([...bucket.hard].sort((left, right) => constraintOrderKey(left).localeCompare(constraintOrderKey(right)))),
+      softEvidence: deepFreeze([...bucket.soft].sort((left, right) => constraintOrderKey(left).localeCompare(constraintOrderKey(right)))),
+      contradictions: deepFreeze(contradictions.sort((left, right) => stableDigest(left).localeCompare(stableDigest(right)))),
+    }),
+  };
+}
+
+export function createTypeResult(input = {}) {
+  const layers = input.layers ?? {};
+  // The exported constructor is the boundary every serialized, cached or
+  // plugin-supplied TypeResult passes through. Layer names and confidence
+  // values come from the module's own vocabularies — a malformed envelope must
+  // fail closed here instead of flowing into the certainty authority (#4733).
+  for (const [layer, solved] of Object.entries(layers)) {
+    if (!TYPE_LAYERS.includes(layer)) fail('type-result-layer-unknown');
+    if (!TYPE_CONFIDENCE.includes(solved?.confidence)) fail('type-result-confidence-invalid');
+  }
+  const contradictions = Object.values(layers).flatMap((layer) => layer.contradictions ?? []);
+  const status = input.status;
+  if (!status) fail('type-result-status-required');
+  return deepFreeze({
+    schemaVersion: TYPE_RESULT_SCHEMA_VERSION,
+    entityId: typeof input.entityId === 'string' ? input.entityId : '',
+    layers: deepFreeze(layers),
+    contradictions: deepFreeze(contradictions),
+    userConstrained: input.userConstrained === true,
+    status,
+  });
+}
+
+export function createTypeGraphResult(input = {}) {
+  const status = input.status;
+  if (!status) fail('type-graph-result-status-required');
+  const rawMap = input.results instanceof Map ? input.results : new Map(Object.entries(input.results ?? {}));
+  // Overwriting instance mutators cannot actually seal a Map: the real data
+  // lives in an internal slot, so `Map.prototype.set.call(...)` would mutate a
+  // published result (#6070). The only honest read-only view is a frozen proxy
+  // that exposes the read API and rejects every mutator outright — the
+  // internal Map is never reachable from the returned object.
+  const internal = new Map();
+  for (const [key, value] of rawMap) {
+    internal.set(key, value);
+  }
+  const readOnlyMap = new Proxy(internal, {
+    get(target, property, receiver) {
+      if (property === 'forEach') {
+        return (callback, thisArg) => {
+          if (typeof callback !== 'function') return Map.prototype.forEach.call(target, callback, thisArg);
+          return Map.prototype.forEach.call(target, (value, key) => Reflect.apply(callback, thisArg, [value, key, receiver]));
+        };
+      }
+      if (property === 'set' || property === 'delete' || property === 'clear') {
+        return () => { throw new TypeError('TypeGraphResult.results is read-only'); };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+    defineProperty() { throw new TypeError('TypeGraphResult.results is read-only'); },
+    deleteProperty() { throw new TypeError('TypeGraphResult.results is read-only'); },
+    set() { throw new TypeError('TypeGraphResult.results is read-only'); },
+    setPrototypeOf() { throw new TypeError('TypeGraphResult.results is read-only'); },
+  });
+
+  return Object.freeze({
+    schemaVersion: TYPE_GRAPH_RESULT_SCHEMA_VERSION,
+    snapshotId: String(input.snapshotId ?? 'snapshot-unbound'),
+    results: readOnlyMap,
+    components: deepFreeze((input.components ?? []).map((c) => [...c].sort())),
+    recursiveComponents: deepFreeze((input.recursiveComponents ?? []).map((c) => [...c].sort())),
+    iterations: Number(input.iterations ?? 0),
+    status,
+  });
+}
+
+/**
+ * Reconstructs a canonical structural type definition from solved TypeResult
+ * or TypeConstraintGraph.
+ */
+export function reconstructStructuralType(graphOrResult, entityId, options = {}) {
+  let result = null;
+  if (graphOrResult instanceof TypeConstraintGraph) {
+    result = graphOrResult.solveEntity(entityId, options);
+  } else if (graphOrResult && graphOrResult.layers) {
+    result = graphOrResult;
+  } else {
+    return null;
+  }
+
+  // A graph query is the authority for the returned identity. In particular,
+  // solveEntity() deliberately returns an empty identity for malformed input;
+  // re-stringifying the raw argument here would turn ['A'] back into 'A' and
+  // reintroduce the lookup/result mismatch at this consumer boundary.
+  const canonicalEntityId = typeof result?.entityId === 'string'
+    ? result.entityId
+    : typeof entityId === 'string' ? entityId : '';
+
+  const structuralLayer = result?.layers?.structural;
+  const nominalLayer = result?.layers?.nominal;
+  const selected = structuralLayer?.selected?.descriptor;
+  const nominalName = nominalLayer?.selected?.descriptor?.name ?? null;
+
+  if (!selected) {
+    return deepFreeze({
+      kind: 'unknown',
+      entityId: canonicalEntityId,
+      name: nominalName,
+      sizeBytes: null,
+      alignBytes: null,
+      members: [],
+      isRecursive: false,
+      recursiveIdentity: null,
+      sccMembers: null,
+      confidence: structuralLayer?.confidence ?? 'unknown',
+      status: result?.status ?? null,
+    });
+  }
+
+  // Layout integers are exact BigInt in the canonical layer; the projection
+  // must not round >2^53 values through Number (#5339). Safe-range integers
+  // keep projecting to Number for existing consumers; anything outside the
+  // safe range stays an exact BigInt (or canonical decimal string).
+  const exactLayout = (value, fallback = 0) => {
+    if (value == null) return fallback;
+    if (typeof value === 'bigint') {
+      return value >= Number.MIN_SAFE_INTEGER && value <= Number.MAX_SAFE_INTEGER ? Number(value) : value;
+    }
+    if (typeof value === 'string') {
+      const parsed = BigInt(value);
+      return parsed >= Number.MIN_SAFE_INTEGER && parsed <= Number.MAX_SAFE_INTEGER ? Number(parsed) : parsed;
+    }
+    return Number(value);
+  };
+  const exactAdd = (a, b) => (typeof a === 'bigint' || typeof b === 'bigint')
+    ? BigInt(a) + BigInt(b)
+    : a + b;
+  const exactAlignUp = (value, align) => {
+    if (typeof value === 'bigint' || typeof align === 'bigint') {
+      const v = BigInt(value), a = BigInt(align);
+      return a > 1n ? ((v + a - 1n) / a) * a : v;
+    }
+    return align > 1 ? Math.ceil(value / align) * align : value;
+  };
+
+  const members = (selected.members ?? []).map((m) => deepFreeze({
+    offset: exactLayout(m.offset),
+    sizeBytes: exactLayout(m.sizeBytes, null),
+    alignBytes: exactLayout(m.alignBytes, defaultAlign(m.sizeBytes)),
+    name: m.fieldName ?? m.name ?? null,
+    type: deepFreeze(m.memberType ?? { kind: 'unknown' }),
+  }));
+
+  let maxAlign = selected.alignBytes != null ? exactLayout(selected.alignBytes, 1) : 1;
+  for (const m of members) {
+    if (m.alignBytes > maxAlign) maxAlign = m.alignBytes;
+  }
+
+  let totalSize = selected.totalSizeBytes != null
+    ? exactLayout(selected.totalSizeBytes, null)
+    : selected.sizeBytes != null
+      ? exactLayout(selected.sizeBytes, null)
+      : null;
+
+  if (members.length > 0 && members.every((m) => m.sizeBytes != null)) {
+    let maxOffsetSpan = exactAdd(members[0].offset, members[0].sizeBytes);
+    for (const m of members) {
+      const span = exactAdd(m.offset, m.sizeBytes);
+      if (span > maxOffsetSpan) maxOffsetSpan = span;
+    }
+    if (totalSize == null || totalSize < maxOffsetSpan) {
+      totalSize = exactAlignUp(maxOffsetSpan, maxAlign);
+    }
+  }
+
+  return deepFreeze({
+    kind: selected.kind ?? 'struct',
+    entityId: canonicalEntityId,
+    name: nominalName,
+    sizeBytes: totalSize,
+    alignBytes: maxAlign,
+    isRecursive: selected.isRecursive === true,
+    recursiveIdentity: selected.recursiveIdentity ?? (selected.isRecursive ? canonicalEntityId : null),
+    sccMembers: selected.sccMembers ?? null,
+    members: deepFreeze(members),
+    confidence: structuralLayer.confidence,
+    status: result.status,
+  });
+}
+
+/**
+ * The one question a consumer may ask before printing a type as fact.
+ *
+ * It requires an uncontradicted hard constraint *and* a sound status, so a
+ * cancelled or budget-limited solve can never present a certain type.
+ */
+
+/**
+ * The lightweight completeness predicate is not a status validator: a forged
+ * `{completeness:'complete', stopReason:null}` object satisfies it while
+ * carrying none of the canonical AnalysisStatus identity created by
+ * `createAnalysisStatus()`. The certainty accessors therefore require those
+ * identity fields as well, so a malformed or forged envelope can never be
+ * read as an authoritative answer (#4733).
+ */
+function hasCanonicalStatusIdentity(status) {
+  return !!status
+    && status.schemaVersion === ANALYSIS_STATUS_SCHEMA_VERSION
+    && typeof status.snapshotId === 'string' && status.snapshotId.length > 0
+    && typeof status.analyzerId === 'string' && status.analyzerId.length > 0
+    && typeof status.analyzerVersion === 'string' && status.analyzerVersion.length > 0;
+}
+
+/**
+ * P7-INV-005: `certain` is only ever backed by uncontradicted hard
+ * constraints. `solveLayer()` guarantees that invariant for its own output;
+ * enforcing it again at the certainty accessors keeps a forged or truncated
+ * serialized layer (borrowed confidence, empty hard evidence) from minting an
+ * authoritative conclusion (#4733).
+ */
+function provedCertainLayer(solved) {
+  return solved?.confidence === 'certain'
+    && Array.isArray(solved.contradictions) && solved.contradictions.length === 0
+    && Array.isArray(solved.hardConstraints) && solved.hardConstraints.length > 0;
+}
+
+export function selectedTypeIfCertain(result, layer) {
+  const solved = result?.layers?.[layer];
+  if (!solved) return null;
+  if (!hasCanonicalStatusIdentity(result.status) || !isCompleteStatus(result.status)) return null;
+  if (!provedCertainLayer(solved)) return null;
+  return solved.selected;
+}
+
+/** Counts conclusions presented as certain, for the false-certainty metric. */
+export function certainConclusions(result) {
+  const status = result?.status;
+  if (!hasCanonicalStatusIdentity(status) || !isCompleteStatus(status)) return [];
+  return Object.entries(result.layers ?? {})
+    .filter(([, solved]) => provedCertainLayer(solved))
+    .map(([layer, solved]) => ({ layer, claim: solved.selected }));
+}

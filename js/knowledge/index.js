@@ -1,0 +1,408 @@
+import { queryScopedKnowledgeIndex, readScopedKnowledgeRecords, invalidateScopedKnowledgeIndex } from './scoped-index.js';
+import { readScopedKnowledgePage, cancelScopedKnowledgePage } from './scoped-pages.js';
+import { compareFingerprints, fingerprintFunction } from '../fingerprint/index.js';
+import { recognizeLibraries } from '../signature/index.js';
+import { FunctionMatchIndex } from '../recognition/matcher.js';
+
+export const KNOWLEDGE_SCHEMA_VERSION = 3;
+export const CONFIRMATION_LEVELS = Object.freeze(['user-confirmed','debugger-confirmed','metadata-confirmed','high-confidence-inferred','weak-inferred']);
+
+function clamp(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return 0;
+  return Math.max(0, Math.min(1, v));
+}
+function explicitConfidence(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) throw new TypeError('knowledge-confidence-must-be-finite-number');
+  return clamp(v);
+}
+function uniq(values) { return [...new Set((values || []).filter((x) => x != null && String(x).length).map(String))]; }
+function clone(value) {
+  if (typeof structuredClone === 'function') return structuredClone(value);
+  if (value == null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(clone);
+  if (value instanceof Uint8Array) return value.slice();
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    Object.defineProperty(out, key, { value: clone(item), enumerable:true, writable:true, configurable:true });
+  }
+  return out;
+}
+function searchTermsOf(input = {}) {
+  const values = [...(input.names || []), ...(input.roles || []), ...(input.semanticLabels || []), ...(input.comments || [])];
+  const out = new Set();
+  for (const value of values) {
+    const text = String(value || '').trim().toLowerCase(); if (!text) continue; out.add(text);
+    for (const token of text.split(/[^\p{L}\p{N}_+.-]+/u)) if (token) out.add(token);
+  }
+  return [...out].slice(0, 512);
+}
+function addrText(value) {
+  if (value == null) return 'unknown';
+  if (typeof value === 'number') {
+    // A number above 2^53-1 has already lost address bits before reaching this
+    // boundary; accepting it would pin a rounded value as canonical address
+    // identity and collide distinct addresses (#6135). Callers must pass
+    // BigInt or an integer string for such addresses.
+    if (!Number.isSafeInteger(value)) throw new TypeError('address number must be a safe integer');
+    return BigInt(value).toString(16);
+  }
+  if (typeof value === 'bigint') return value.toString(16);
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text) throw new TypeError('address must be a non-empty integer string');
+    return BigInt(text).toString(16);
+  }
+  throw new TypeError('address must be an integer primitive');
+}
+function validateAddressSources(input) {
+  if (input == null || (typeof input !== 'object' && typeof input !== 'function')) return;
+  for (const value of [input.address, input.fingerprint?.address]) {
+    if (value != null) addrText(value);
+  }
+}
+function requestPromise(request) { return new Promise((resolve,reject) => { request.onsuccess=()=>resolve(request.result); request.onerror=()=>reject(request.error); }); }
+function transactionPromise(transaction) {
+  const done = new Promise((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error || new Error('Knowledge transaction failed'));
+    transaction.onabort = () => reject(transaction.error || new Error('Knowledge transaction aborted'));
+  });
+  // A synchronous objectStore/put/clear failure can precede the await below.
+  done.catch(() => {});
+  return done;
+}
+const KNOWLEDGE_SEARCH_SCAN_CAP = 2000;
+
+function candidateBatch(values, truncated = false, reason = null) {
+  const out = Array.isArray(values) ? values : [];
+  Object.defineProperty(out, 'truncated', { value:!!truncated, enumerable:false, configurable:true });
+  if (reason) Object.defineProperty(out, 'reason', { value:String(reason), enumerable:false, configurable:true });
+  return out;
+}
+
+export class KnowledgeDB {
+  constructor(options = {}) {
+    this.indexedDB = options.indexedDB === undefined ? globalThis.indexedDB : options.indexedDB;
+    this.dbName = options.dbName || 'hex-knowledge';
+    this.memory = options.memory || (!this.indexedDB ? new Map() : null);
+    this.negativeMemory = options.negativeMemory || (!this.indexedDB ? new Map() : null);
+    this._db = null;
+    // Changes only after a semantic mutation successfully commits (#5723).
+    this.revision = 0;
+    const maxCandidates = Number(options.maxCandidates || 1000);
+    this.maxCandidates = Number.isFinite(maxCandidates) ? Math.max(50, maxCandidates) : 1000;
+  }
+
+  async remember(input = {}) {
+    validateAddressSources(input);
+    const fingerprint = input.fingerprint?.schema ? fingerprintFunction(input.fingerprint) : fingerprintFunction(input.fingerprint || input);
+    const sourceBinaryHash = input.sourceBinaryHash || 'unknown';
+    const address = input.address ?? fingerprint.address;
+    const identityKey = input.identityKey || fingerprint.semanticHash || fingerprint.normalizedBytesHash || fingerprint.hash || null;
+    const id = input.id || `${sourceBinaryHash}:${addrText(address)}:${identityKey || 'sparse'}`;
+    const requestedConfirmation = CONFIRMATION_LEVELS.includes(input.confirmation) ? input.confirmation : null;
+    const userConfirmed = input.userConfirmed === true || requestedConfirmation === 'user-confirmed';
+    const debuggerConfirmed = input.debuggerConfirmed === true || requestedConfirmation === 'debugger-confirmed';
+    const metadataConfirmed = input.metadataConfirmed === true || requestedConfirmation === 'metadata-confirmed';
+    const resolvedConfidence = input.confidence == null ? (userConfirmed || debuggerConfirmed ? 1 : metadataConfirmed ? 0.95 : 0.5) : explicitConfidence(input.confidence);
+    const confirmation = requestedConfirmation || (userConfirmed ? 'user-confirmed' : debuggerConfirmed ? 'debugger-confirmed' : metadataConfirmed ? 'metadata-confirmed' : resolvedConfidence >= 0.9 ? 'high-confidence-inferred' : 'weak-inferred');
+    const record = {
+      schemaVersion: KNOWLEDGE_SCHEMA_VERSION, id, identityKey, fingerprint, fingerprints: uniq(input.fingerprints || (fingerprint.hash ? [fingerprint.hash] : [])),
+      names: uniq(input.names || (input.name ? [input.name] : [])), roles: uniq(input.roles), types: uniq(input.types),
+      comments: uniq(input.comments || (input.comment ? [input.comment] : [])), semanticLabels: uniq(input.semanticLabels),
+      fieldInterpretations: Array.isArray(input.fieldInterpretations) ? clone(input.fieldInterpretations) : [],
+      sourceBinaryHash, versions: uniq(input.versions), confidence: resolvedConfidence, confirmation,
+      evidence: Array.isArray(input.evidence) ? clone(input.evidence.slice(0,1000)) : [], userConfirmed: confirmation === 'user-confirmed',
+      searchTerms: [], updatedAt: Date.now(), createdAt: input.createdAt || Date.now(),
+    };
+    record.searchTerms = searchTermsOf(record);
+    if (this.memory) this.memory.set(id, clone(record)); else await this.#put('functions', record);
+    this.revision++; invalidateScopedKnowledgeIndex(this);
+    return record;
+  }
+
+  async reject(input = {}) {
+    validateAddressSources(input);
+    const targetFingerprint = input.fingerprint ? fingerprintFunction(input.fingerprint) : null;
+    const key = input.id || [input.sourceBinaryHash || 'unknown', input.candidateName || input.candidateIdentity || 'unknown', targetFingerprint?.semanticHash || targetFingerprint?.normalizedBytesHash || targetFingerprint?.hash || addrText(input.address)].join(':');
+    const targetAddress = input.address ?? targetFingerprint?.address ?? null;
+    const record = { id:key, sourceBinaryHash:input.sourceBinaryHash || 'unknown', candidateName:input.candidateName || null, candidateIdentity:input.candidateIdentity || null,
+      targetHash:targetFingerprint?.hash || null, targetSemanticHash:targetFingerprint?.semanticHash || null, targetNormalizedBytesHash:targetFingerprint?.normalizedBytesHash || null,
+      targetAddress:targetAddress == null ? null : addrText(targetAddress), targetSize:targetFingerprint?.size || null, reason:input.reason || 'rejected', updatedAt:Date.now() };
+    if (this.negativeMemory) this.negativeMemory.set(key, clone(record)); else await this.#put('negative', record);
+    this.revision++; invalidateScopedKnowledgeIndex(this);
+    return record;
+  }
+
+  async isRejected(input = {}) {
+    validateAddressSources(input);
+    const name = input.candidateName || null, identity = input.candidateIdentity || null;
+    const fp = input.fingerprint ? fingerprintFunction(input.fingerprint) : null;
+    const matches = (r) => {
+      if (r.candidateName && r.candidateName !== name) return false;
+      if (r.candidateIdentity && r.candidateIdentity !== identity) return false;
+      if (fp) {
+        if (r.targetHash && fp.hash && r.targetHash === fp.hash) return true;
+        if (r.targetNormalizedBytesHash && fp.normalizedBytesHash && r.targetNormalizedBytesHash === fp.normalizedBytesHash) return true;
+        if (r.candidateIdentity && r.targetSemanticHash && fp.semanticHash && r.targetSemanticHash === fp.semanticHash && (!r.targetSize || !fp.size || r.targetSize === fp.size)) return true;
+      }
+      const address = input.address ?? fp?.address ?? null;
+      const sameBinary = r.sourceBinaryHash !== 'unknown' && input.sourceBinaryHash && r.sourceBinaryHash === input.sourceBinaryHash;
+      return !r.targetHash && !r.targetNormalizedBytesHash && !r.targetSemanticHash && sameBinary && address != null && r.targetAddress === addrText(address);
+    };
+    if (this.negativeMemory) {
+      for (const record of this.negativeMemory.values()) if (matches(record)) return true;
+      return false;
+    }
+    return this.#hasNegativeCandidate(matches, name, identity);
+  }
+
+  async findMatches(input, options = {}) {
+    validateAddressSources(input);
+    const fingerprint = fingerprintFunction(input);
+    const limit = Math.min(50, Math.max(1, Number(options.limit) || 10));
+    const records = this.memory ? this.#memoryCandidates(fingerprint) : await this.#candidateRecords(fingerprint, this.maxCandidates);
+    const matches = [];
+    for (const record of records) {
+      const cmp = compareFingerprints(fingerprint, record.fingerprint);
+      const confirmationBoost = record.confirmation === 'user-confirmed' || record.confirmation === 'debugger-confirmed' ? 1 : record.confirmation === 'metadata-confirmed' ? 0.98 : 0.92;
+      const confidence = clamp(cmp.confidence * (0.55 + 0.45 * clamp(record.confidence)) * confirmationBoost);
+      if (confidence < (options.threshold ?? 0.55) || cmp.identity === 'unrelated') continue;
+      const rejected = await this.isRejected({ candidateIdentity:record.identityKey, candidateName:record.names[0], fingerprint });
+      if (rejected) continue;
+      matches.push({ record:clone(record), confidence, identity:cmp.identity, reasons:cmp.reasons, evidence:cmp.evidence });
+    }
+    matches.sort((a,b) => b.confidence - a.confidence || b.record.updatedAt - a.record.updatedAt);
+    const selected = matches.slice(0,limit);
+    return candidateBatch(selected, records.truncated === true || matches.length > limit);
+  }
+
+  async reidentify(input, options = {}) {
+    const matches = await this.findMatches(input, { threshold:options.threshold ?? 0.58, limit:Math.max(5, options.limit || 5) });
+    if (!matches.length) return { matched:false, ambiguous:matches.truncated === true, truncated:matches.truncated === true, confidence:0, candidates:[] };
+    const best = matches[0], second = matches[1];
+    const truncated = matches.truncated === true;
+    const rawAmbiguityWindow = Number(options.ambiguityWindow ?? 0.045);
+    const ambiguityWindow = Number.isFinite(rawAmbiguityWindow) && rawAmbiguityWindow >= 0 ? rawAmbiguityWindow : 0.045;
+    const ambiguous = truncated || (!!second && best.confidence - second.confidence < ambiguityWindow);
+    const accepted = !ambiguous && best.confidence >= (options.acceptThreshold ?? 0.82) && ['exact','normalized-identical','semantic-equivalent','probable-same'].includes(best.identity);
+    return {
+      matched:accepted, ambiguous, truncated, confidence:best.confidence, knowledge:accepted ? best.record : null, reasons:best.reasons,
+      candidates:matches.map((x) => ({ id:x.record.id, names:x.record.names, roles:x.record.roles, confirmation:x.record.confirmation, confidence:x.confidence, identity:x.identity, reasons:x.reasons })),
+    };
+  }
+
+  async propagate(input, options = {}) {
+    const result = await this.reidentify(input, { acceptThreshold:options.threshold ?? 0.84, ambiguityWindow:options.ambiguityWindow ?? 0.035 });
+    if (!result.matched) return { propagated:false, ...result };
+    const source = result.knowledge;
+    const status = source.confirmation === 'user-confirmed' || source.confirmation === 'debugger-confirmed' ? 'high-confidence-inferred' : 'weak-inferred';
+    return { propagated:true, confidence:result.confidence, sourceId:source.id, confirmation:status,
+      candidate:{ names:source.names, roles:source.roles, types:source.types, comments:source.comments, semanticLabels:source.semanticLabels, fieldInterpretations:source.fieldInterpretations }, evidence:result.reasons };
+  }
+
+  async query(text, functions = [], options = {}) {
+    const q = String(text || '').trim().toLowerCase();
+    if (!q) return [];
+    const terms = q.split(/\s+/).filter(Boolean);
+    const fps = functions.map((fn) => fingerprintFunction(fn));
+    const scored = new Map();
+    const addScore = (index, amount, reason, knowledge = null) => {
+      const current = scored.get(index) || { function:fps[index], score:0, reasons:[], knowledge:null };
+      current.score = Math.min(1, current.score + amount);
+      if (reason && !current.reasons.includes(reason)) current.reasons.push(reason);
+      if (knowledge) current.knowledge = knowledge;
+      scored.set(index, current);
+    };
+
+    for (let i = 0; i < fps.length; i++) {
+      const fp = fps[i];
+      const textFields = [fp.name, ...fp.strings].filter(Boolean).map((x) => String(x).toLowerCase());
+      const hits = terms.filter((term) => textFields.some((x) => x.includes(term))).length;
+      if (hits) addScore(i, 0.4 * hits / terms.length, 'text');
+      if (fp.semantic.writes.length && terms.some((t) => /coin|xp|experience|money|reward|経験|所持|報酬/.test(t))) addScore(i, 0.22, 'semantic-writer');
+    }
+
+    let records = [];
+    if (options.useKnowledge !== false && fps.length) {
+      records = await this.#searchKnowledgeRecords(q, terms, Math.min(100, options.knowledgeLimit || 50));
+      if (records.length) {
+        const index = new FunctionMatchIndex(fps);
+        for (const record of records) {
+          const candidateIds = index.candidates(record.fingerprint, { maxCandidates:Math.min(128, options.maxCandidates || 64) });
+          for (const candidateIndex of candidateIds) {
+            const cmp = compareFingerprints(record.fingerprint, fps[candidateIndex]);
+            if (cmp.confidence < 0.7 || !['exact','normalized-identical','semantic-equivalent','probable-same'].includes(cmp.identity)) continue;
+            const candidateName = record.names?.[0] || null;
+            if (await this.isRejected({ candidateIdentity:record.identityKey, candidateName, fingerprint:fps[candidateIndex] })) continue;
+            const knowledge = { id:record.id, names:record.names || [], roles:record.roles || [], confirmation:record.confirmation, confidence:cmp.confidence, identity:cmp.identity, reasons:cmp.reasons };
+            addScore(candidateIndex, 0.25 * cmp.confidence, 'prior-knowledge', knowledge);
+          }
+        }
+      }
+    }
+    const selected = [...scored.values()].sort((a,b) => b.score - a.score).slice(0, Math.min(500, options.limit || 100));
+    return candidateBatch(selected, records.truncated === true, records.reason || null);
+  }
+
+  async page(options = {}) {
+    const limit = Math.min(500, Math.max(1, Math.floor(Number(options.limit) || 100)));
+    const after = options.after || null;
+    if (this.memory) {
+      const ids = [...this.memory.keys()].sort(); const found = after == null ? 0 : ids.findIndex((id) => id > after); const start = found < 0 ? ids.length : found;
+      const selected = ids.slice(start, start + limit); const records = selected.map((id) => clone(this.memory.get(id)));
+      return { records, nextCursor:selected.length === limit ? selected[selected.length - 1] : null };
+    }
+    const db = await this.#dbOpen(); const store = db.transaction('functions','readonly').objectStore('functions');
+    const range = after != null && globalThis.IDBKeyRange ? globalThis.IDBKeyRange.lowerBound(after, true) : null;
+    return new Promise((resolve,reject) => {
+      const records=[]; let last=null; const req=store.openCursor(range);
+      req.onsuccess=()=>{ const c=req.result; if (!c || records.length>=limit) return resolve({records,nextCursor:records.length===limit?last:null}); records.push(clone(c.value)); last=c.key; c.continue(); };
+      req.onerror=()=>reject(req.error);
+    });
+  }
+
+  /** One-use, scope/revision-bound pages over the canonical database. */
+  async scopedPage(options = {}) {
+    return readScopedKnowledgePage(this, options, () => this.#dbOpen());
+  }
+  cancelScopedPage(cursor) { return cancelScopedKnowledgePage(this, cursor); }
+  async scopedIndexedCandidates(fingerprint, options = {}) {
+    return queryScopedKnowledgeIndex(this, fingerprint, options,
+      (ids, context) => readScopedKnowledgeRecords(this, ids, context, () => this.#dbOpen()));
+  }
+
+  async clear() {
+    if (this.memory) { this.memory.clear(); this.negativeMemory?.clear(); this.revision++; invalidateScopedKnowledgeIndex(this); return; }
+    const db = await this.#dbOpen(); const tx = db.transaction(['functions','negative'],'readwrite');
+    const done = transactionPromise(tx);
+    await Promise.all([done, ...['functions', 'negative'].map(async (name) =>
+      requestPromise(tx.objectStore(name).clear()))]);
+    this.revision++; invalidateScopedKnowledgeIndex(this);
+  }
+
+  #memoryCandidates(fp) {
+    const records = [...this.memory.values()];
+    const strong = records.filter((r) => (fp.normalizedBytesHash && (r.fingerprint?.normalizedBytesHash || r.fingerprint?.normalizedByteHash) === fp.normalizedBytesHash) || (fp.semanticHash && r.fingerprint?.semanticHash === fp.semanticHash) || (fp.instructionSequenceHash && r.fingerprint?.instructionSequenceHash === fp.instructionSequenceHash));
+    const pool = strong.length ? strong : records.filter((r) => r.fingerprint?.size && fp.size && Math.min(r.fingerprint.size,fp.size)/Math.max(r.fingerprint.size,fp.size) >= 0.7);
+    return candidateBatch(pool.slice(0,this.maxCandidates), pool.length > this.maxCandidates);
+  }
+
+  async #dbOpen() {
+    if (this._db) return this._db;
+    this._db = await new Promise((resolve,reject) => {
+      const req = this.indexedDB.open(this.dbName, KNOWLEDGE_SCHEMA_VERSION);
+      req.onupgradeneeded = () => {
+        const db=req.result;
+        let store;
+        if (!db.objectStoreNames.contains('functions')) store=db.createObjectStore('functions',{keyPath:'id'}); else store=req.transaction.objectStore('functions');
+        for (const [name,path,opts] of [['normalizedBytesHash','fingerprint.normalizedBytesHash',{}],['semanticHash','fingerprint.semanticHash',{}],['instructionSequenceHash','fingerprint.instructionSequenceHash',{}],['sourceBinaryHash','sourceBinaryHash',{}],['identityKey','identityKey',{}],['searchTerms','searchTerms',{multiEntry:true}]]) if (!store.indexNames.contains(name)) store.createIndex(name,path,{unique:false,...opts});
+        let neg;
+        if (!db.objectStoreNames.contains('negative')) neg=db.createObjectStore('negative',{keyPath:'id'}); else neg=req.transaction.objectStore('negative');
+        if (!neg.indexNames.contains('candidateName')) neg.createIndex('candidateName','candidateName',{unique:false});
+        if (!neg.indexNames.contains('candidateIdentity')) neg.createIndex('candidateIdentity','candidateIdentity',{unique:false});
+      };
+      req.onsuccess=()=>resolve(req.result); req.onerror=()=>reject(req.error);
+    });
+    return this._db;
+  }
+  async #put(storeName,record) {
+    const db = await this.#dbOpen();
+    const tx = db.transaction(storeName, 'readwrite');
+    const done = transactionPromise(tx);
+    await Promise.all([done, requestPromise(tx.objectStore(storeName).put(record))]);
+  }
+  async #candidateRecords(fp,limit) {
+    const db=await this.#dbOpen(); const store=db.transaction('functions','readonly').objectStore('functions'); const out=new Map();
+    let truncated=false;
+    for (const [index,value] of [['normalizedBytesHash',fp.normalizedBytesHash],['semanticHash',fp.semanticHash],['instructionSequenceHash',fp.instructionSequenceHash]]) {
+      if (!value || !store.indexNames.contains(index)) continue;
+      const cap=Math.min(limit,250);
+      const found=await requestPromise(store.index(index).getAll(value, cap + 1));
+      if (found.length > cap) truncated=true;
+      for (const r of found.slice(0,cap)) out.set(r.id,r);
+      if (out.size>=limit) { truncated=true; break; }
+    }
+    if (out.size) return candidateBatch([...out.values()].slice(0,limit), truncated || out.size > limit);
+    // Bounded cursor fallback; scan one extra matching row so a cap can never be
+    // mistaken for exhaustive evidence. A hard scan cap itself is truncation.
+    return new Promise((resolve,reject) => {
+      const rows=[]; let scanned=0; const scanCap=Math.max(2000,limit*20); const req=store.openCursor();
+      req.onsuccess=()=>{ const c=req.result; if (!c || rows.length>limit || scanned>=scanCap) return resolve(candidateBatch(rows.slice(0,limit), rows.length>limit || (!!c && scanned>=scanCap))); scanned++; const r=c.value, sz=r.fingerprint?.size; if (sz && fp.size && Math.min(sz,fp.size)/Math.max(sz,fp.size)>=0.7) rows.push(r); c.continue(); };
+      req.onerror=()=>reject(req.error);
+    });
+  }
+  async #searchKnowledgeRecords(query, terms, limit) {
+    const matches = (record) => {
+      const hay = record.searchTerms?.length ? record.searchTerms : searchTermsOf(record);
+      return hay.some((value) => value.includes(query) || terms.some((term) => value.includes(term)));
+    };
+    if (this.memory) {
+      const ids = [...this.memory.keys()].sort();
+      const scanned = ids.slice(0, KNOWLEDGE_SEARCH_SCAN_CAP);
+      const truncated = ids.length > KNOWLEDGE_SEARCH_SCAN_CAP;
+      return candidateBatch(scanned.map((id) => this.memory.get(id)).filter(matches).slice(0, limit), truncated, truncated ? 'scan-budget' : null);
+    }
+    const db=await this.#dbOpen(); const store=db.transaction('functions','readonly').objectStore('functions');
+    // The multiEntry index only answers exact-key lookups. Scan the object
+    // store so substring matches use the same predicate and ID order as the
+    // memory backend; an exact hit must not change the candidate set or order.
+    return new Promise((resolve,reject) => {
+      const records=[]; let scanned=0; const req=store.openCursor();
+      req.onsuccess=()=>{
+        const c=req.result;
+        if (!c) return resolve(candidateBatch(records, false));
+        if (scanned >= KNOWLEDGE_SEARCH_SCAN_CAP) return resolve(candidateBatch(records, true, 'scan-budget'));
+        scanned++;
+        if (matches(c.value) && records.length < limit) records.push(c.value);
+        c.continue();
+      };
+      req.onerror=()=>reject(req.error);
+    });
+  }
+
+  async #hasNegativeCandidate(matches, name, identity) {
+    const db = await this.#dbOpen();
+    const tx = db.transaction('negative', 'readonly');
+    const store = tx.objectStore('negative');
+
+    // Real IndexedDB stores expose a cursor. Stream the complete relation so
+    // no finite getAll cap can be mistaken for evidence of absence (#6134).
+    // Waiting for transaction completion also preserves read/abort failures.
+    if (typeof store.openCursor === 'function') {
+      const done = transactionPromise(tx);
+      const result = new Promise((resolve, reject) => {
+        const request = store.openCursor();
+        request.onerror = () => reject(request.error || new Error('Knowledge negative lookup failed'));
+        request.onsuccess = () => {
+          try {
+            const cursor = request.result;
+            if (!cursor) return resolve(false);
+            if (matches(cursor.value)) return resolve(true);
+            cursor.continue();
+          } catch (error) { reject(error); }
+        };
+      });
+      const [found] = await Promise.all([result, done]);
+      return found;
+    }
+
+    // Some embedders/test doubles implement only index.getAll(). Do not
+    // reintroduce the old 200-row cap: retrieve the complete selective index
+    // result and apply the exact same predicate locally.
+    const candidates = new Map();
+    const readIndex = async (indexName, value) => {
+      if (value == null || !store.indexNames?.contains?.(indexName)) return;
+      const rows = await requestPromise(store.index(indexName).getAll(value));
+      for (const row of rows || []) candidates.set(row.id, row);
+    };
+    await readIndex('candidateIdentity', identity);
+    await readIndex('candidateName', name);
+    return [...candidates.values()].some(matches);
+  }
+
+}
+
+export function fingerprintVendors(input = {}) {
+  return recognizeLibraries(input).map((x) => ({ name:x.name, kind:x.kind, confidence:x.confidence, confirmed:false, reasons:x.evidence, classification:x.classification }));
+}

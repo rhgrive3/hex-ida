@@ -1,0 +1,24 @@
+{
+  "rule": {
+    "id": "fixture-has-xor",
+    "version": "1",
+    "capabilityId": "crypto.xor",
+    "scope": "function",
+    "requiredFeatures": ["effects"],
+    "when": {
+      "op": "all",
+      "args": [
+        { "op": "contains", "path": "effects", "value": "xor" },
+        { "op": "gte", "path": "loopCount", "value": 1 }
+      ]
+    }
+  },
+  "features": {
+    "effects": ["load", "xor"],
+    "loopCount": 2
+  },
+  "negativeFeatures": {
+    "effects": ["load"],
+    "loopCount": 2
+  }
+}

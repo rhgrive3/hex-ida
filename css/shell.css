@@ -1,0 +1,195 @@
+.product-ui-ready .app {
+  min-width: 0;
+  min-height: var(--ui-visual-height);
+  background: var(--ui-bg);
+}
+
+/* The surviving file action is part of the product shell on every layout, not just phone. */
+.product-ui-ready .titlebar .tb-btn {
+  min-height: var(--ui-touch);
+  min-width: var(--ui-touch);
+}
+
+/*
+ * Identity row, kept at 46px.
+ *
+ * Every pixel here is a pixel of disassembly, so the row holds only the mark,
+ * the file, its architecture, and the file action; the format/size line drops
+ * to the same line as the name instead of stacking under it.
+ */
+.product-ui-ready .titlebar {
+  min-height: 46px;
+  padding: 2px max(var(--ui-space-3), var(--ui-safe-right)) 2px max(var(--ui-space-3), var(--ui-safe-left));
+  gap: var(--ui-space-2);
+}
+.product-ui-ready .titlebar .tb-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ui-space-2);
+  text-align: left;
+  overflow: hidden;
+}
+.product-ui-ready .titlebar .tb-name { font-size: var(--ui-font-sm); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.product-ui-ready .titlebar .tb-sub { font-size: var(--ui-font-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.product-ui-ready .toolbar,
+.product-ui-ready .nav-history {
+  display: none !important;
+}
+.product-ui-ready .ui-code-route > .toolbar {
+  display: flex !important;
+  flex: 0 0 auto;
+  justify-content: flex-start;
+  overflow: visible;
+  padding-block: 4px;
+}
+.product-ui-ready .ui-code-route > .toolbar .tb-spacer { display: none; }
+
+/*
+ * One chrome row: destinations, the omnibox, and overflow.
+ *
+ * Solid background rather than a blur — a translucent bar over scrolling
+ * disassembly costs a compositor layer on iPad for no legibility, and it would
+ * also trap the fixed bottom navigation inside this element on phones.
+ */
+.product-ui-ready .ui-product-chrome {
+  position: sticky;
+  top: 0;
+  z-index: var(--ui-z-sticky);
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  flex: 0 0 auto;
+  min-height: 46px;
+  padding: 3px max(var(--ui-space-3), var(--ui-safe-right)) 3px max(var(--ui-space-3), var(--ui-safe-left));
+  border-bottom: 1px solid var(--ui-border);
+  background: var(--ui-bg);
+}
+
+.product-ui-ready .ui-command-center {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: var(--ui-space-2);
+}
+
+/* What Enter will do, stated before it is pressed. */
+.product-ui-ready .ui-command-hint {
+  flex: 0 0 auto;
+  color: var(--ui-text-muted);
+  font-size: var(--ui-font-xs);
+  white-space: nowrap;
+}
+.product-ui-ready .ui-command-hint:empty { display: none; }
+.product-ui-ready .ui-command-center[data-intent="ai"] .ui-command-hint { color: var(--ui-accent-strong); font-weight: 600; }
+.product-ui-ready .ui-global-command,
+.product-ui-ready .ui-command-input,
+.product-ui-ready .ui-search-field {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--ui-touch);
+  padding: 0 var(--ui-space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+}
+.product-ui-ready .ui-command-go,
+.product-ui-ready .ui-more-button {
+  min-width: var(--ui-touch);
+  min-height: var(--ui-touch);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+}
+
+.product-ui-ready .ui-route-host {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: var(--ui-space-5) max(var(--ui-space-4), var(--ui-safe-right)) calc(var(--ui-space-10) + var(--ui-safe-bottom)) max(var(--ui-space-4), var(--ui-safe-left));
+}
+
+.product-ui-ready .ui-screen-route > .addrbar,
+.product-ui-ready .ui-screen-route > .colhead,
+.product-ui-ready .ui-screen-route > .viewwrap,
+.product-ui-ready .ui-screen-route > .statusbar,
+.product-ui-ready .ui-screen-route > .selbar {
+  display: none !important;
+}
+
+.product-ui-ready .ui-code-route > .ui-route-host { display: none !important; }
+
+.product-ui-ready .ui-bottom-nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: var(--ui-z-sticky);
+  display: none;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 2px;
+  padding: 5px max(6px, var(--ui-safe-right)) max(5px, var(--ui-safe-bottom)) max(6px, var(--ui-safe-left));
+  border-top: 1px solid var(--ui-border);
+  background: var(--ui-surface);
+}
+
+.product-ui-ready .ui-nav-item {
+  min-width: 0;
+  min-height: 48px;
+  border: 0;
+  border-radius: var(--ui-radius-sm);
+  background: transparent;
+  color: var(--ui-text-muted);
+  white-space: pre-line;
+  line-height: 1.1;
+  font-size: var(--ui-font-xs);
+}
+.product-ui-ready .ui-nav-item[aria-current="page"] { background: var(--ui-accent-soft); color: var(--ui-accent-strong); font-weight: 700; }
+
+@media (min-width: 900px) {
+  /*
+   * No left rail. The four destinations are compact tabs at the start of the
+   * chrome row, which gives the code back the 76px the rail used to reserve
+   * and removes a diagonal eye movement from every navigation.
+   */
+  .product-ui-ready .ui-bottom-nav {
+    order: -1;
+    position: static;
+    display: flex;
+    flex: 0 0 auto;
+    gap: 2px;
+    width: auto;
+    padding: 2px;
+    border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius-md);
+    background: var(--ui-surface-2);
+    transform: none;
+  }
+  .product-ui-ready .ui-nav-item {
+    min-height: var(--ui-touch);
+    padding-inline: 10px;
+    /* The icon and label are one line here; `nowrap` folds the newline. */
+    white-space: nowrap;
+    font-size: var(--ui-font-sm);
+  }
+  .product-ui-ready .ui-route-host {
+    max-width: var(--ui-content);
+    width: 100%;
+    margin-inline: auto;
+  }
+}
+
+/*
+ * Nothing open yet: the address bar and column headings describe a file that
+ * does not exist, so they stay out of the way until one is loaded. `:has()`
+ * keeps this in CSS; where it is unsupported the rows simply render empty.
+ */
+.product-ui-ready .app:has(#empty:not([hidden])) .addrbar,
+.product-ui-ready .app:has(#empty:not([hidden])) .colhead,
+.product-ui-ready .app:has(#empty:not([hidden])) .statusbar { display: none; }
+.product-ui-ready .app:has(#empty:not([hidden])) .toolbar { display: none !important; }

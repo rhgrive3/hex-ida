@@ -1,0 +1,197 @@
+'use strict';
+importScripts(
+  '../targets/architecture/x86_64/capstone-structured.js',
+  '../targets/architecture/riscv64/capstone-structured.js',
+  '../../capstone.js',
+);
+
+const CS_INSN_STRUCT = 240;
+const OFF_SIZE = 16, OFF_MNEMONIC = 42, OFF_OP_STR = 74;
+let modulePromise = null;
+const handles = new Map();
+
+async function getModule() {
+  if (!modulePromise) modulePromise = MCapstone({
+    locateFile: (p) => new URL('../../' + p, self.location.href).href,
+    print: () => {}, printErr: () => {},
+  }).catch((error) => { throw new Error(`Capstone disassembler initialization: ${error?.message || String(error)}`); });
+  return modulePromise;
+}
+
+async function handleFor(architecture, decodeProfile = null) {
+  const compressedInstructions = architecture === 'riscv64' ? decodeProfile?.compressedInstructions !== false : null;
+  const handleKey = architecture === 'riscv64' ? `riscv64:${compressedInstructions ? 'compressed' : 'base'}` : architecture;
+  if (handles.has(handleKey)) return handles.get(handleKey);
+  const M = await getModule();
+  let arch, mode;
+  if (architecture === 'arm64') { arch = M.ARCH_ARM64; mode = M.MODE_ARM | M.MODE_LITTLE_ENDIAN; }
+  else if (architecture === 'x86_64') { arch = M.ARCH_X86; mode = M.MODE_64 | M.MODE_LITTLE_ENDIAN; }
+  else if (architecture === 'riscv64') { arch = M.ARCH_RISCV; mode = M.MODE_RISCV64 | (compressedInstructions ? M.MODE_RISCVC : 0) | M.MODE_LITTLE_ENDIAN; }
+  else throw new Error(`Unsupported architecture: ${architecture}`);
+  const hp = M._malloc(4);
+  const rc = M.ccall('cs_open', 'number', ['number', 'number', 'pointer'], [arch, mode, hp]);
+  if (rc !== 0) { M._free(hp); throw new Error(`Capstone cannot open ${architecture} (error ${rc})`); }
+  const handle = M.getValue(hp, 'i32');
+  let out = 0;
+  try {
+    M.ccall('cs_option', 'number', ['number', 'number', 'number'], [handle, M.OPT_SKIPDATA, M.OPT_ON]);
+    if (architecture === 'x86_64') {
+      globalThis.HexX86CapstoneStructured.verifyVersion(M);
+      const detailRc = M.ccall('cs_option', 'number', ['number', 'number', 'number'], [handle, M.OPT_DETAIL, M.OPT_ON]);
+      if (detailRc !== 0) throw new Error(`Capstone cannot enable x86 detail (error ${detailRc})`);
+    } else if (architecture === 'riscv64') {
+      globalThis.HexRiscv64CapstoneStructured.verifyVersion(M);
+      const detailRc = M.ccall('cs_option', 'number', ['number', 'number', 'number'], [handle, M.OPT_DETAIL, M.OPT_ON]);
+      if (detailRc !== 0) throw new Error(`Capstone cannot enable RISC-V detail (error ${detailRc})`);
+    }
+    out = M._malloc(4);
+    const state = { M, hp, handle, out };
+    handles.set(handleKey, state);
+    return state;
+  } catch (error) {
+    if (out) M._free(out);
+    try { M.ccall('cs_close', 'number', ['pointer'], [hp]); } catch { /* preserve initialization failure */ }
+    M._free(hp);
+    throw error;
+  }
+}
+
+const PRIORITY_ORDER = {
+  visible: 0,
+  current: 0,
+  near: 1,
+  prefetch: 2,
+  idle: 3,
+};
+
+function priorityValueOf(p) {
+  return PRIORITY_ORDER[String(p).toLowerCase()] ?? 0;
+}
+
+const queue = [];
+let processing = false;
+let activeRequestId = null;
+const cancelledIds = new Set();
+
+async function decodeMessage(msg) {
+  try {
+    const { M, handle, out } = await handleFor(msg.architecture, msg.riscvIsa || null);
+    if (cancelledIds.has(msg.id)) {
+      cancelledIds.delete(msg.id);
+      return;
+    }
+    const bytes = msg.bytes instanceof Uint8Array ? msg.bytes : new Uint8Array(msg.bytes || 0);
+    if (bytes.length > 1024 * 1024) throw new Error('disassembly request exceeds 1 MiB');
+    const buf = M._malloc(Math.max(1, bytes.length));
+    try {
+      if (bytes.length) M.writeArrayToMemory(bytes, buf);
+      const count = M.ccall('cs_disasm', 'number', ['number','number','number','number','number','number'],
+        [handle, buf, bytes.length, msg.address, 0, out]);
+      const base = count ? M.getValue(out, 'i32') : 0;
+      const instructions = [];
+      let consumed = 0;
+      try {
+        for (let i = 0; i < count; i++) {
+          const p = base + i * CS_INSN_STRUCT;
+          const size = M.getValue(p + OFF_SIZE, 'i16');
+          if (!(size > 0)) break;
+          if (msg.architecture === 'x86_64') {
+            instructions.push(globalThis.HexX86CapstoneStructured.parseInstruction(M, handle, p, {
+              address:BigInt(msg.address) + BigInt(consumed),
+              mode:'long-64',
+            }));
+          } else if (msg.architecture === 'riscv64') {
+            instructions.push(globalThis.HexRiscv64CapstoneStructured.parseInstruction(M, handle, p, {
+              address:BigInt(msg.address) + BigInt(consumed),
+              mode:msg.riscvIsa?.compressedInstructions === false ? 'rv64im' : 'rv64imc',
+              isaIdentity:msg.riscvIsa?.canonical ?? null,
+              isaEvidence:msg.riscvIsa?.evidence ?? null,
+              instructionAlignment:msg.riscvIsa?.instructionAlignment ?? null,
+              compressedInstructions:msg.riscvIsa?.compressedInstructions ?? null,
+            }));
+          } else {
+            instructions.push({
+              address: BigInt(msg.address) + BigInt(consumed),
+              size,
+              mnemonic: M.UTF8ToString(p + OFF_MNEMONIC),
+              opStr: M.UTF8ToString(p + OFF_OP_STR),
+            });
+          }
+          consumed += size;
+        }
+      } finally {
+        if (base) M.ccall('cs_free', 'void', ['number','number'], [base, count]);
+      }
+      if (cancelledIds.has(msg.id)) {
+        cancelledIds.delete(msg.id);
+        return;
+      }
+      self.postMessage({ id: msg.id, ok: true, instructions, bytesConsumed: consumed });
+    } finally { M._free(buf); }
+  } catch (error) {
+    if (cancelledIds.has(msg.id)) {
+      cancelledIds.delete(msg.id);
+      return;
+    }
+    self.postMessage({ id: msg.id, ok: false, error: error?.message || String(error) });
+  }
+}
+
+async function processQueue() {
+  if (processing) return;
+  processing = true;
+  while (queue.length > 0) {
+    const msg = queue.shift();
+    if (cancelledIds.has(msg.id)) {
+      cancelledIds.delete(msg.id);
+      continue;
+    }
+    activeRequestId = msg.id;
+    try {
+      await decodeMessage(msg);
+    } finally {
+      if (activeRequestId === msg.id) activeRequestId = null;
+      cancelledIds.delete(msg.id);
+    }
+  }
+  processing = false;
+}
+
+self.onmessage = (event) => {
+  const msg = event.data;
+  if (!msg) return;
+  if (msg.t === 'cancel') {
+    if (msg.id != null) {
+      if (activeRequestId === msg.id) {
+        cancelledIds.add(msg.id);
+        return;
+      }
+      const idx = queue.findIndex((j) => j.id === msg.id);
+      if (idx >= 0) queue.splice(idx, 1);
+    }
+    return;
+  }
+
+  // Generation safety: a bare id cannot distinguish two live generations of
+  // the same id (active A + queued B). Cancelling by id would then hit the
+  // wrong generation, so live id reuse is rejected fail-closed at entry.
+  // Sequential reuse after settle/cancel remains valid.
+  if (msg.id != null
+      && (activeRequestId === msg.id
+        || queue.some((pending) => pending.id === msg.id)
+        || cancelledIds.has(msg.id))) {
+    self.postMessage({ id: msg.id, ok: false, error: `duplicate live request id: ${msg.id}` });
+    return;
+  }
+
+  const pVal = priorityValueOf(msg.priority);
+  let insertIdx = queue.length;
+  for (let i = 0; i < queue.length; i++) {
+    if (priorityValueOf(queue[i].priority) > pVal) {
+      insertIdx = i;
+      break;
+    }
+  }
+  queue.splice(insertIdx, 0, msg);
+  processQueue();
+};

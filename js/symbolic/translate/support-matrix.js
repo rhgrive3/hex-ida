@@ -1,0 +1,157 @@
+/**
+ * js/symbolic/translate/support-matrix.js
+ *
+ * Machine-readable support matrix and taxonomy for Semantic IR to Expr translation.
+ * Enforces fail-closed classification across exact, exact-with-assumptions,
+ * partial, and unsupported boundaries.
+ */
+
+import { OP, MK } from '../../ir-base.js';
+import {
+  canonicalMemoryForwardingContextForLoad,
+  isCanonicalExactMemoryForwarding,
+} from '../../semantics/memoryssa/queries.js';
+
+export const TRANSLATION_STATUS = Object.freeze({
+  EXACT: 'exact',
+  EXACT_WITH_ASSUMPTIONS: 'exact_with_assumptions',
+  PARTIAL: 'partial',
+  UNSUPPORTED: 'unsupported',
+});
+
+export const ASSUMPTION_TRUST = Object.freeze({
+  SEMANTIC_FACT: 'semantic-fact',
+  USER_PRECONDITION: 'user-precondition',
+  QUERY_SCOPE: 'query-scope',
+  BOUNDED_UNROLL: 'bounded-unroll',
+});
+
+export const COMPLETENESS_STATUS = Object.freeze({
+  COMPLETE: 'complete',
+  PARTIAL: 'partial',
+  UNSUPPORTED: 'unsupported',
+});
+
+function requireAssumptionString(value, field) {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new TypeError(`createAssumption: ${field} must be a non-empty string`);
+  }
+  return value;
+}
+
+export function createAssumption({ id, kind, statement, source, originIds = [], trust = ASSUMPTION_TRUST.SEMANTIC_FACT }) {
+  requireAssumptionString(id, 'id');
+  requireAssumptionString(kind, 'kind');
+  requireAssumptionString(statement, 'statement');
+  const resolvedSource = source === undefined ? 'translator' : requireAssumptionString(source, 'source');
+  if (!Object.values(ASSUMPTION_TRUST).includes(trust)) {
+    throw new TypeError(`createAssumption: unknown trust classification '${trust}'`);
+  }
+  if (!Array.isArray(originIds)) {
+    throw new TypeError('createAssumption: originIds must be an array of non-empty strings');
+  }
+  const normalizedOriginIds = Array.from(
+    { length: originIds.length },
+    (_, index) => requireAssumptionString(originIds[index], 'originIds entry'),
+  );
+  return Object.freeze({
+    id,
+    kind,
+    statement,
+    source: resolvedSource,
+    originIds: Object.freeze(normalizedOriginIds),
+    trust,
+  });
+}
+
+export function createCompleteness({
+  translation = COMPLETENESS_STATUS.COMPLETE,
+  controlFlow = COMPLETENESS_STATUS.COMPLETE,
+  memoryEffects = COMPLETENESS_STATUS.COMPLETE,
+  pathCoverage = COMPLETENESS_STATUS.COMPLETE,
+  queryScope = COMPLETENESS_STATUS.COMPLETE,
+} = {}) {
+  return Object.freeze({
+    translation,
+    controlFlow,
+    memoryEffects,
+    pathCoverage,
+    queryScope,
+  });
+}
+
+export function classifyOpSupport(op, inst = null) {
+  if (!op) return TRANSLATION_STATUS.UNSUPPORTED;
+
+  switch (op) {
+    case OP.CONST:
+    case OP.MOV:
+    case OP.ADDR:
+      return TRANSLATION_STATUS.EXACT;
+
+    case OP.BIN: {
+      const sub = inst?.subOp || inst?.name;
+      const supportedBin = ['add', 'sub', 'mul', 'and', 'or', 'orr', 'xor', 'eor', 'shl', 'lshr', 'ashr', 'udiv', 'sdiv', 'urem', 'srem'];
+      /* #5202: a missing subOp/name is a semantic discriminator the source IR
+         never supplied. Defaulting it to ADD would invent exact semantics, so
+         a BIN instruction without one is unsupported. */
+      if (!sub) return TRANSLATION_STATUS.UNSUPPORTED;
+      if (supportedBin.includes(sub)) {
+        return TRANSLATION_STATUS.EXACT;
+      }
+      return TRANSLATION_STATUS.UNSUPPORTED;
+    }
+
+    case OP.UN: {
+      const sub = inst?.subOp || inst?.name;
+      const supportedUn = ['not', 'neg'];
+      /* #5202: missing unary discriminator must not default to NOT. */
+      if (!sub) return TRANSLATION_STATUS.UNSUPPORTED;
+      if (supportedUn.includes(sub)) {
+        return TRANSLATION_STATUS.EXACT;
+      }
+      return TRANSLATION_STATUS.UNSUPPORTED;
+    }
+
+    case OP.CMP:
+      /* #5202: a comparison without cond/subOp has no ordering or equality
+         semantic; '==' must not be invented. */
+      if (!(inst?.cond || inst?.subOp)) return TRANSLATION_STATUS.UNSUPPORTED;
+      return TRANSLATION_STATUS.EXACT;
+
+    case OP.SEL:
+      /* #5202: a select without a condition must not become an
+         always-true ITE. */
+      if (!inst?.cond) return TRANSLATION_STATUS.UNSUPPORTED;
+      return TRANSLATION_STATUS.EXACT;
+
+    case OP.BFX:
+    case OP.BFI:
+      return TRANSLATION_STATUS.UNSUPPORTED;
+
+    case OP.LOAD: {
+      if (!inst?.loc) return TRANSLATION_STATUS.UNSUPPORTED;
+      if (inst.loc.kind === MK.UNKNOWN) return TRANSLATION_STATUS.UNSUPPORTED;
+      if (isCanonicalExactMemoryForwarding(inst.memoryForwarding,
+        canonicalMemoryForwardingContextForLoad(inst.memoryForwarding, inst,
+          inst.memoryForwardingContext ?? inst.extra?.memoryForwardingContext))) return TRANSLATION_STATUS.EXACT;
+      // A location name is not a reaching definition. Without a unique
+      // MemorySSA/alias proof, treating the load as a fresh stable symbol
+      // would turn incomplete memory semantics into an exact proof.
+      return TRANSLATION_STATUS.UNSUPPORTED;
+    }
+
+    case OP.PHI:
+      return TRANSLATION_STATUS.EXACT;
+
+    case OP.STORE:
+    case OP.CALL:
+    case OP.CLOBBER:
+    case OP.RET:
+    case OP.BR:
+    case OP.CBR:
+    case OP.UNKNOWN:
+    default:
+      return TRANSLATION_STATUS.UNSUPPORTED;
+  }
+}

@@ -1,0 +1,212 @@
+import { AIError } from '../schema.js';
+import { readBoundedText, requestJSON } from '../transport.js';
+import { validateModelDecision } from '../validation.js';
+import { SAFE_PROVIDER_CAPABILITIES } from '../budget/wire.js';
+
+const CAPABILITIES_MAX_RESPONSE_BYTES = 64 * 1024;
+
+export class AIProvider {
+  constructor({ capabilities } = {}) {
+    // Capability STATE must not live on an own property named `capabilities`:
+    // that shadowed the UI discovery method `capabilities()` on subclasses
+    // and made `typeof provider.capabilities === 'function'` false, breaking
+    // provider/model discovery (#5708). The constructor option keeps its
+    // public name; the owned state field is namespaced.
+    this.providerCapabilities = { ...SAFE_PROVIDER_CAPABILITIES, ...(capabilities || {}) };
+  }
+  getCapabilities() { return { ...this.providerCapabilities }; }
+  turnTimeoutMs(mode) { return mode === 'agent' ? 120000 : 30000; }
+  async prepareCapabilities() { return this.getCapabilities(); }
+  async nextTurn() { throw new AIError('provider_error', 'AIProvider.nextTurn is not implemented.'); }
+  async streamTurn() { throw new AIError('provider_error', 'Streaming is not implemented by this provider.'); }
+  cancel() {}
+}
+
+export class WorkerAIProvider extends AIProvider {
+  constructor({ endpoint = '/api/ai/turn', capabilitiesEndpoint = null, fetchImpl = globalThis.fetch, timeoutMs = 110000, capabilities = {} } = {}) {
+    // Before the first Worker response reveals the selected inference adapter,
+    // use the conservative envelope-safe limit. A quota-free preflight normally
+    // replaces this with the server-derived provider-aware limit before turn 1.
+    super({ capabilities: { provider: 'worker', contextTokens: 32768, maxOutputTokens: 8192, maxTools: 10, maxRequestBytes: 64 * 1024, ...capabilities } });
+    this.endpoint = endpoint;
+    this.capabilitiesEndpoint = capabilitiesEndpoint || deriveCapabilitiesEndpoint(endpoint);
+    this.fetchImpl = fetchImpl;
+    this.timeoutMs = timeoutMs;
+    this.controllers = new Set();
+    this.capabilitiesPrepared = false;
+    this.capabilitiesPromise = null;
+    this.capabilitiesController = null;
+    this.capabilitiesFlight = null;
+    this.capabilitiesWaiters = 0;
+  }
+
+  async prepareCapabilities(options = {}) {
+    if (this.capabilitiesPrepared) return this.getCapabilities();
+    if (options.signal?.aborted) throw interruptionError(options.signal);
+    if (!this.capabilitiesPromise || this.capabilitiesFlight?.retired) {
+      const controller = new AbortController();
+      const flight = { controller, retired: false };
+      this.capabilitiesFlight = flight;
+      this.capabilitiesController = controller;
+      const promise = this.#loadCapabilities({ timeoutMs: options.timeoutMs, signal: controller.signal })
+        .finally(() => {
+          if (this.capabilitiesFlight === flight) {
+            this.capabilitiesPromise = null;
+            this.capabilitiesController = null;
+            this.capabilitiesFlight = null;
+          }
+        });
+      this.capabilitiesPromise = promise;
+    }
+    return this.#waitForCapabilities(this.capabilitiesPromise, options.signal);
+  }
+
+  #waitForCapabilities(promise, signal) {
+    /* #5144: the waiter is accounted only after the signal contract is proven
+       usable. A malformed truthy signal used to increment capabilitiesWaiters
+       and then throw synchronously inside the executor below, leaking a ghost
+       waiter that permanently disabled shared-preflight cancellation. */
+    if (signal
+      && (typeof signal.addEventListener !== 'function'
+        || typeof signal.removeEventListener !== 'function'
+        || typeof signal.aborted !== 'boolean')) {
+      throw new TypeError('signal must be an AbortSignal.');
+    }
+    this.capabilitiesWaiters += 1;
+    let released = false;
+    const release = (cancelled = false) => {
+      if (released) return;
+      released = true;
+      this.capabilitiesWaiters = Math.max(0, this.capabilitiesWaiters - 1);
+      if (cancelled && this.capabilitiesWaiters === 0 && this.capabilitiesPromise === promise) {
+        if (this.capabilitiesFlight) this.capabilitiesFlight.retired = true;
+        this.capabilitiesController?.abort(signal?.reason ?? 'cancelled');
+      }
+    };
+    if (!signal) return promise.finally(() => release(false));
+    return new Promise((resolve, reject) => {
+      try {
+        const onAbort = () => {
+          signal.removeEventListener('abort', onAbort);
+          release(true);
+          reject(interruptionError(signal));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        promise.then(
+          (value) => {
+            signal.removeEventListener('abort', onAbort);
+            release(false);
+            resolve(value);
+          },
+          (error) => {
+            signal.removeEventListener('abort', onAbort);
+            release(false);
+            reject(error);
+          },
+        );
+      } catch (error) {
+        /* The waiter count must be reusable no matter what the wiring throws:
+           release before rejecting so cancellation accounting cannot leak. */
+        release(false);
+        reject(error);
+      }
+    });
+  }
+
+  async #loadCapabilities(options = {}) {
+    if (options.signal?.aborted) throw interruptionError(options.signal);
+    if (typeof this.fetchImpl !== 'function') { this.capabilitiesPrepared = true; return this.getCapabilities(); }
+    const controller = new AbortController();
+    const onAbort = () => controller.abort(options.signal?.reason ?? 'cancelled');
+    const timeout = setTimeout(() => controller.abort('timeout'), Math.max(1, Math.min(Number(options.timeoutMs) || 5000, 5000)));
+    if (options.signal) { options.signal.addEventListener('abort', onAbort, { once: true }); if (options.signal.aborted) onAbort(); }
+    this.controllers.add(controller);
+    try {
+      const response = await this.fetchImpl(this.capabilitiesEndpoint, { method: 'GET', headers: { accept: 'application/json' }, signal: controller.signal });
+      if (!response?.ok) { this.capabilitiesPrepared = true; return this.getCapabilities(); }
+      // Capability discovery is optional, but its 64 KiB budget is a hard
+      // transport bound: reject a declared oversize before materializing any body.
+      const contentLength = Number(response.headers?.get?.('content-length'));
+      if (contentLength > CAPABILITIES_MAX_RESPONSE_BYTES) {
+        controller.abort('response-too-large');
+        try { await response.body?.cancel?.('response-too-large'); } catch { /* best effort */ }
+        this.capabilitiesPrepared = true;
+        return this.getCapabilities();
+      }
+      // Missing/untrusted Content-Length still stays bounded by the shared
+      // streaming reader, which cancels on the first chunk crossing the cap.
+      const text = await readBoundedText(response, CAPABILITIES_MAX_RESPONSE_BYTES, controller);
+      let payload = null;
+      try { payload = JSON.parse(text); } catch { /* conservative fallback below */ }
+      if (payload?.capabilities && typeof payload.capabilities === 'object') this.providerCapabilities = { ...this.providerCapabilities, ...payload.capabilities };
+      this.capabilitiesPrepared = true;
+      return this.getCapabilities();
+    } catch (error) {
+      // response-too-large is our own conservative-fallback sentinel, not a
+      // caller cancellation. Explicit/shared cancellation must still reject.
+      if (options.signal?.aborted
+          || (controller.signal.aborted
+            && controller.signal.reason !== 'timeout'
+            && controller.signal.reason !== 'response-too-large')) {
+        throw interruptionError(options.signal || controller.signal);
+      }
+      // Capability discovery must not make the provider unavailable. A failed or
+      // timed-out preflight falls back to the conservative built-in budget.
+      this.capabilitiesPrepared = true;
+      return this.getCapabilities();
+    } finally {
+      clearTimeout(timeout);
+      this.controllers.delete(controller);
+      if (options.signal) options.signal.removeEventListener('abort', onAbort);
+    }
+  }
+
+  async nextTurn(request, options = {}) {
+    if (options.signal?.aborted) throw interruptionError(options.signal);
+    const controller = new AbortController();
+    const onAbort = () => controller.abort(options.signal?.reason ?? 'cancelled');
+    if (options.signal) { options.signal.addEventListener('abort', onAbort, { once: true }); if (options.signal.aborted) onAbort(); }
+    this.controllers.add(controller);
+    try {
+      if (controller.signal.aborted) throw interruptionError(options.signal || controller.signal);
+      const response = await requestJSON(this.endpoint, {
+        sessionId: request.sessionId || null,
+        mode: request.mode,
+        style: request.style,
+        scope: request.effectiveScope || request.scope,
+        requestedScope: request.requestedScope || request.scope,
+        effectiveScope: request.effectiveScope || request.scope,
+        intent: request.intent || null,
+        task: request.task || null,
+        messages: request.messages || [],
+        context: request.context || {},
+        tools: request.tools || [],
+        responseSchema: request.responseSchema || null,
+      }, { signal: controller.signal, timeoutMs: options.timeoutMs || this.timeoutMs, fetchImpl: this.fetchImpl });
+      if (response.capabilities && typeof response.capabilities === 'object') this.providerCapabilities = { ...this.providerCapabilities, ...response.capabilities };
+      return validateModelDecision(response.decision, (request.tools || []).map((tool) => tool.name));
+    } finally {
+      this.controllers.delete(controller);
+      if (options.signal) options.signal.removeEventListener('abort', onAbort);
+    }
+  }
+
+  cancel() { for (const controller of this.controllers) controller.abort('cancelled'); this.controllers.clear(); }
+}
+
+function deriveCapabilitiesEndpoint(endpoint) {
+  const value = String(endpoint || '/api/ai/turn');
+  return value.endsWith('/turn') ? `${value.slice(0, -5)}/capabilities` : '/api/ai/capabilities';
+}
+
+function interruptionError(signal) {
+  const timedOut = signal?.reason === 'timeout';
+  return new AIError(
+    timedOut ? 'budget_exhausted' : 'cancelled',
+    timedOut ? 'The AI investigation timed out.' : 'AI investigation was cancelled.',
+  );
+}
