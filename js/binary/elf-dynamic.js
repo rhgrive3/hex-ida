@@ -106,10 +106,15 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   if (strtab != null && strSize > 0 && !strSpan) markDynamicPartial(image, 'DT_STRTAB/DT_STRSZ crosses a file-backed PT_LOAD boundary');
   const strOff = strSpan?.start ?? null;
 
-  const stringAt = (offset) => {
+  const stringAt = (offset, options = {}) => {
     if (strOff == null || strSize == null || !strSpan) return '';
     const n = Number(offset);
-    if (!Number.isSafeInteger(n) || n < 0 || n >= strSize || strOff + n >= strSpan.spanEnd) return '';
+    const inRange = Number.isSafeInteger(n) && n >= 0 && n < strSize && strOff + n < strSpan.spanEnd;
+    if (!inRange) {
+      if (n === 0 && options.allowZeroOffset) return '';
+      markDynamicPartial(image, 'dynamic string table reference is out of range');
+      return null;
+    }
     const maxLength = Math.min(strSize - n, strSpan.spanEnd - strOff - n, 1 << 20);
     const bytes = r.slice(strOff + n, maxLength);
     if (bytes.indexOf(0) < 0) {
@@ -121,7 +126,8 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
 
   for (const needed of tags.get(DT_NEEDED) || []) {
     const name = stringAt(needed);
-    if (name) image.libraries.push(name);
+    if (!name) continue;
+    image.libraries.push(name);
   }
   const soname = one(DT_SONAME);
   if (soname != null) {
@@ -263,7 +269,7 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
       info = r.u8(p + 12); other = r.u8(p + 13); shndx = r.u16(p + 14);
     }
     if (budget && !budget.claimOutput(1, 224, 'DT_SYMTAB symbols')) break;
-    const name = stringAt(BigInt(nameOff));
+    const name = stringAt(BigInt(nameOff), { allowZeroOffset: i === 0 }) ?? '';
     const bind = info >>> 4;
     const type = info & 0xf;
     const sectionIdentity = resolveDynamicSectionIndex(r, image, tags, i, shndx);
