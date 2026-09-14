@@ -98,6 +98,42 @@ const DW_FORM = Object.freeze({
 const ADDRX_FORMS = Object.freeze([DW_FORM.addrx, DW_FORM.addrx1, DW_FORM.addrx2, DW_FORM.addrx3, DW_FORM.addrx4]);
 /** Forms whose resolved value is an absolute address (direct or addrx-resolved). */
 const ADDRESS_CLASS_FORMS = Object.freeze([DW_FORM.addr, ...ADDRX_FORMS]);
+/** The largest extent the canonical DebugRecord `sizeBytes` domain can hold. */
+const MAX_EXACT_DEBUG_EXTENT = BigInt(Number.MAX_SAFE_INTEGER);
+
+/**
+ * Reads one parsed DWARF value in the integer domain, or null when the form that
+ * produced it was not numeric at all.
+ *
+ * A hostile abbreviation table may bind an address-valued attribute to a form
+ * whose parsed value is a block or a string. Coercing that with `BigInt()`/
+ * `Number()` throws out of the provider instead of yielding missing evidence.
+ */
+function bigNumeric(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  return null;
+}
+
+/**
+ * Converts one DWARF extent to the canonical `sizeBytes` domain: a non-negative
+ * safe integer, or null when it cannot be represented exactly.
+ */
+function exactDebugExtent(value) {
+  const magnitude = bigNumeric(value);
+  if (magnitude == null || magnitude < 0n || magnitude > MAX_EXACT_DEBUG_EXTENT) return null;
+  return Number(magnitude);
+}
+
+/**
+ * The BigInt distance between two parsed DWARF values, or null when either side
+ * is not numeric. A missing extent is unknown evidence, never a coercion.
+ */
+function debugExtentBetween(low, high) {
+  const base = bigNumeric(low);
+  const end = bigNumeric(high);
+  return base == null || end == null ? null : end - base;
+}
 // DWARF5 indexed string forms resolve through `.debug_str_offsets` after the
 // attribute list is read, because DW_AT_str_offsets_base may arrive on the unit
 // root that owns them.
@@ -1144,22 +1180,38 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
         }
       }
 
+      const lowPcEntry = attributes.get(DW_AT.low_pc);
+      const highPcEntry = attributes.get(DW_AT.high_pc);
+      // DW_AT_low_pc is an address. A form that yields a block or a string has
+      // no address meaning at all, and the provider must not publish a DIE whose
+      // address symbols() cannot render (#8814).
+      if (lowPcEntry?.value != null && bigNumeric(lowPcEntry.value) == null) {
+        dieComplete = false;
+        complete = false;
+        diagnostics.push(`DW_AT_low_pc is not an address at 0x${dieOffset.toString(16)}`);
+      }
       // An address-class DW_AT_high_pc is an absolute end address, not an
       // unsigned size. A reversed range is malformed debug evidence: keep the
       // DIE for pagination/diagnostics, but withhold completeness so it cannot
       // become an exact function extent (#4232).
-      const lowPcEntry = attributes.get(DW_AT.low_pc);
-      const highPcEntry = attributes.get(DW_AT.high_pc);
       if (lowPcEntry?.value != null && highPcEntry?.value != null && ADDRESS_CLASS_FORMS.includes(highPcEntry.form)) {
-        const low = BigInt(lowPcEntry.value);
-        const high = BigInt(highPcEntry.value);
-        const extent = high - low;
-        if (extent < 0n || extent > BigInt(Number.MAX_SAFE_INTEGER)) {
+        const extent = debugExtentBetween(lowPcEntry.value, highPcEntry.value);
+        if (extent == null || extent < 0n || extent > MAX_EXACT_DEBUG_EXTENT) {
           dieComplete = false;
           complete = false;
-          diagnostics.push(extent < 0n
+          diagnostics.push(extent != null && extent < 0n
             ? `DW_AT_high_pc precedes DW_AT_low_pc at 0x${dieOffset.toString(16)}`
             : `DW_AT_high_pc range exceeds exact size bounds at 0x${dieOffset.toString(16)}`);
+        }
+      } else if (highPcEntry?.value != null && !ADDRESS_CLASS_FORMS.includes(highPcEntry.form)) {
+        // DWARF4 §3.3.5: a constant-class DW_AT_high_pc *is* the extent — an
+        // offset from low_pc. It still has to be representable in the canonical
+        // DebugRecord sizeBytes domain, or the provider would publish evidence
+        // it cannot convert when a consumer lists symbols (#8814).
+        if (exactDebugExtent(highPcEntry.value) == null) {
+          dieComplete = false;
+          complete = false;
+          diagnostics.push(`DW_AT_high_pc constant extent exceeds exact size bounds at 0x${dieOffset.toString(16)}`);
         }
       }
 
@@ -1405,8 +1457,8 @@ function describeType(die, dies, depth = 0, seen = new Set()) {
 }
 
 function toAddress(value) {
-  if (value == null) return null;
-  return `0x${BigInt(value).toString(16)}`;
+  const magnitude = bigNumeric(value);
+  return magnitude == null ? null : `0x${magnitude.toString(16)}`;
 }
 
 /**
@@ -1650,16 +1702,16 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
       // an addrx form resolved through .debug_addr, #6184).
       const highForm = die.attributes.get(DW_AT.high_pc)?.form;
       const highIsAddress = ADDRESS_CLASS_FORMS.includes(highForm);
-      const absoluteRange = highPc != null && highIsAddress && lowPc != null
-        ? BigInt(highPc) - BigInt(lowPc)
-        : null;
+      // Record construction cannot reject an unrepresentable extent later: the
+      // canonical sizeBytes domain is a safe non-negative integer, so the
+      // conversion is validated here and an out-of-domain extent stays unknown
+      // instead of throwing during pagination (#8814).
+      const absoluteRange = highIsAddress ? debugExtentBetween(lowPc, highPc) : null;
       const sizeBytes = highPc == null
         ? null
         : highIsAddress
-          ? absoluteRange != null && absoluteRange >= 0n && absoluteRange <= BigInt(Number.MAX_SAFE_INTEGER)
-            ? Number(absoluteRange)
-            : null
-          : Number(highPc);
+          ? exactDebugExtent(absoluteRange)
+          : exactDebugExtent(highPc);
       const descriptor = {
         isFunction,
         external: attributeFlag(die, DW_AT.external),
