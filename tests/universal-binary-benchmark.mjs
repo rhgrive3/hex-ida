@@ -49,9 +49,10 @@ async function sample(file) {
     const loaderMs = performance.now() - t0;
     const audit = auditBinary(image);
     const auditErrorCodes = audit.issues.filter((issue) => issue.level === 'error').map((issue) => issue.code).join('__') || 'none';
+    const auditErrorDetails = audit.issues.filter((issue) => issue.level === 'error').map((issue) => issue.message).join('__').replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 200);
     const auditDiagnosticDir = path.join(repoRoot, 'benchmark-diagnostic');
     fs.mkdirSync(auditDiagnosticDir, { recursive: true });
-    const auditDiagnosticName = String(path.basename(file)) + '-audit-' + String(audit.errors) + '-' + auditErrorCodes.slice(0, 200) + '.json';
+    const auditDiagnosticName = String(path.basename(file)) + '-audit-' + String(audit.errors) + '-' + auditErrorCodes.slice(0, 120) + '-' + auditErrorDetails + '.json';
     fs.writeFileSync(path.join(auditDiagnosticDir, auditDiagnosticName), JSON.stringify({ errors: audit.errors, issues: audit.issues.filter((issue) => issue.level === 'error') }));
     const after = process.memoryUsage().heapUsed;
     const io = source.metrics();
