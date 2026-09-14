@@ -509,6 +509,7 @@
       "tests/machine-effects/issue-6079-vblendmx-blend-category.test.mjs",
       ".github/workflows/ghidra-differential.yml",
       "js/arm64.js",
+      "js/analyze.js",
       "docs/analysis-remaining-20260914.md"
     ]
   }

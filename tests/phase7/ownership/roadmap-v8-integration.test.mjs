@@ -36,6 +36,7 @@ test('main reconciliation regression changes require their exact existing owners
     ['js/symbolic/translate/completeness.js', 'symbolic'],
     ['tests/phase9/solver/worker-import-boundary.test.mjs', 'symbolic'],
     ['js/arm64.js', 'integration'],
+    ['js/analyze.js', 'integration'],
     ['docs/analysis-remaining-20260914.md', 'integration'],
     ['tests/phase7/integration/analysis-entrypoint-dependencies.test.mjs', 'phase7'],
     ['tests/machine-effects/x86-long64-integer-denominator.test.mjs', 'integration'],

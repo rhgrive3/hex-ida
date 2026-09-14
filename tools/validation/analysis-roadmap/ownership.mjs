@@ -11,7 +11,7 @@ const ROUTED_BRANCHES = Object.freeze([BRANCH, BRANCH_ALIAS]);
 const SPECIAL_PATHS = Object.freeze({
   semanticCompat: ['js/core/identity/live-data.js', 'js/core/identity/origin.js', 'tests/core-origin-canonical-reuse.test.mjs', 'js/ir-core.js', 'js/ir-base.js', 'js/decompiler/semantic.js', 'js/decompiler/semantic-views.js', 'js/semantics/compat/index.js', 'js/semantics/compat/legacy-value-ranges.js', 'js/semantics/compat/semantic-ir-v2-to-v1.js', 'js/semantics/compat/semantic-ir-v2-to-v1-core.js', 'js/semantics/compat/semantic-ir-v2-to-v1-finalize.js', 'js/semantics/compat/semantic-ir-v2-to-v1-memory.js', 'js/semantics/compat/semantic-ir-v2-to-v1-nodes.js'],
   integration: [
-    "js/arm64.js", "docs/analysis-remaining-20260914.md",
+    "js/arm64.js", "js/analyze.js", "docs/analysis-remaining-20260914.md",
     "docs/解析ツール改善.md.txt",
     "js/metadata/objc.js",
     "js/targets/architecture/arm64/effects/common.js",

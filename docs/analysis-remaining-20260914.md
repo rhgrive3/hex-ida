@@ -187,3 +187,19 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
   実際にインストールされた同版モジュールへの接続で補正した（`lldb-package-layout.json`）。
   ARM64/arm64eのローカル検証を経て、RISC-V LLDB接続で失敗した。Stage2全体は未合格。
   実機の検証・実機成功の証拠ではない。LLVM18系LLDB環境を継続準備している。
+
+## Checkpoint 6: 関数要約の入力依存も復元
+
+- PR #8888のレビュー指摘に従い、`analyzeFunction` 側にも #3606 の共通
+  `arm64ReadsDestination` を接続した。MOVK/PACIA/BFIの入力x0欠落を修正。
+  CASPの入力ペア処理を保持し、MOVZ/MOVNは入力x0を要求しない。
+- 修正前は追加5検査中3件が失敗。修正後はentrypoint・ownership・既存CASP/
+  exclusive-store検査の36件が成功（`summary-entrypoint-repaired.json`）。
+  このreceiptは編集差分付き検査であり、exact-head受入ではない。
+- canonical userscriptを2回再生成し同一hashを確認
+  （`summary-generated-hashes.json`）。
+- CircleCIの実ログで作業ブランチがroadmap用ownership経路に未登録と確認。
+  別の修正で正確なbranch名の経路を追加し、全diffの宣言検査を維持する。
+- LLDB18.1.3によるStage2のARM64/arm64e/RISC-Vローカルprovider検証は成功。
+  続くx86 native fixtureのLLDB起動で失敗し、Stage2全体は未合格。
+  `stage2-lldb18.json` と完全ログを保存。実機検証の代替成功とはしない。
