@@ -184,6 +184,15 @@ function parseImportNames(raw) {
   const stride = format === 1 ? 4 : format === 2 ? 8 : format === 3 ? 16 : 0;
   if (!stride || importsOffset + count * stride > raw.length) return null;
   const names = new Array(count);
+  /* Import records may carry an arbitrary number of repeated `name_offset`
+     values referencing one physical symbol-pool string. Decode and retain each
+     distinct pool offset exactly once for the lifetime of this parse (#8739):
+     repeated aliases share one immutable string instead of re-scanning and
+     re-materializing a fresh copy per record, which let a ~70 KiB file retain
+     tens of MiB. The cache also memoizes invalid/unterminated offsets so
+     repeated malformed aliases do not re-rescan the pool tail. Distinct decoded
+     bytes remain bounded by the fixup payload read cap (MAX_FIXUP_BYTES). */
+  const decodedNames = new Map();
   for (let i = 0; i < count; i++) {
     const p = importsOffset + i * stride;
     let nameOffset;
@@ -194,7 +203,13 @@ function parseImportNames(raw) {
       const word = dv.getBigUint64(p, true);
       nameOffset = Number((word >> 32n) & 0xffffffffn);
     }
-    names[i] = utf8z(raw, symbolsOffset + nameOffset);
+    const poolOffset = symbolsOffset + nameOffset;
+    let name = decodedNames.get(poolOffset);
+    if (name === undefined && !decodedNames.has(poolOffset)) {
+      name = utf8z(raw, poolOffset);
+      decodedNames.set(poolOffset, name);
+    }
+    names[i] = name ?? null;
   }
 
   /* starts_in_image uses the Mach-O segment order.  Keep the pointer format
