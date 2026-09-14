@@ -857,6 +857,7 @@ export class Emulator {
   }
 
   async loadInsn(mn, ops) {
+    refuseScalarBinary16(mn, ops); // #8734: no 16-bit FP format is modelled
     const mem = ops.find((o) => o.k === 'mem');
     if (!mem) throw new Error('読み出し先が分かりませんでした: ' + mn);
     const addr = this.effectiveAddress(mem, false);
@@ -894,6 +895,7 @@ export class Emulator {
   }
 
   async storeInsn(mn, ops) {
+    refuseScalarBinary16(mn, ops); // #8734: no 16-bit FP format is modelled
     const mem = ops.find((o) => o.k === 'mem');
     if (!mem) throw new Error('書き込み先が分かりませんでした: ' + mn);
     const exclusive = /^(stxr|stlxr)/.test(mn);
@@ -995,6 +997,7 @@ export class Emulator {
   }
 
   floatInsn(mn,ops) {
+    refuseScalarBinary16(mn, ops); // #8734: refuse scalar binary16 H before any state change
     if (mn === 'fcmp' || mn === 'fcmpe') {
       const lhs=this.fget(ops[0]);
       const rhs=ops[1]?.k === 'imm' ? (ops[1].float != null ? Number(ops[1].float) : Number(ops[1].value ?? 0n)) : this.fget(ops[1]);
@@ -1238,6 +1241,30 @@ function storeSize(mn, src) {
 }
 
 function isFloatReg(op) { return !!op && op.k === 'reg' && (op.cls === 'fp' || op.cls === 'vec'); }
+
+/* #8734: scalar binary16 (H) registers carry a 16-bit floating-point format the
+   emulator does not model. fpSize() only distinguishes S (4 bytes) and Q
+   (16 bytes) and otherwise falls through to the 8-byte double width, so
+   `fmov h0, #1.0`, `fadd h1, h0, h0`, an H<->GPR fmov or an H load/store would
+   silently execute as FP64 and report step.ok === true with fabricated bits
+   (e.g. 1.0h + 1.0h surfacing as 0x0 through a W transfer instead of 0x4000).
+   The vector path already refuses binary16 element formats through
+   vectorElementShape (#8904); this applies the same "refused instead of silently
+   widened to a supported format" rule to scalar H operands, before any register
+   or memory state changes. S/D/Q scalar forms and vector arrangements are
+   unaffected. */
+function isScalarBinary16(op) {
+  return !!op && op.k === 'reg' && op.cls === 'fp' && op.bits === 16;
+}
+function refuseScalarBinary16(mn, ops) {
+  for (const op of ops || []) {
+    if (isScalarBinary16(op)) {
+      throw new EmulatorFault('unsupported-instruction',
+        `${mn} ${op.text} uses the scalar binary16 (H) format, which this emulator does not model`,
+        { mnemonic: mn, operands: (ops || []).map((o) => (o && o.text) || null) });
+    }
+  }
+}
 
 // Fixed-point SCVTF/UCVTF/FCVTZS/FCVTZU carry a third #fbits operand naming the
 // number of fraction bits of the integer format. Absent it, the plain integer
