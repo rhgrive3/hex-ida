@@ -88,7 +88,7 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
 2. C1の旧非escape正例と #4977 の両root証拠契約の衝突を解決する。
    片側non-escapeだけでexactを許可する変更・期待値をmayへ変える変更は未実施。
 3. Worker初回SAT timeoutを原因分離し、同じ2秒予算・32/64-bit全分母で再検証。
-4. 指定LLVM、独立レビュー認証、物理Apple/iPad/ordering/signing/runtime証拠を揃える。
+4. 指定LLVMと独立レビュー認証を揃える。物理実機検証は下記ユーザー指示により今回スキップ。
 5. 全canonical gates、exact-head CI、candidate tree、ユーザーC4との統合はそれから検証。
 
 環境再開時は `PLAYWRIGHT_BROWSERS_PATH=/mnt/workspace/.dev-state/agent-work/cache/analysis-remaining-20260914/browsers`。
@@ -115,3 +115,14 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
 - 証拠: 永続evidenceの `check-first.json` / `check-first.log`。
 - この実行は修正commit前に開始し、実行中に生成物・環境が更新された診断。
   exact-head全体受入・全finding完了の証拠にはしない。
+
+## 実機検証の分担更新（2026-09-14）
+
+- ユーザー指示: 「実機はスキップしてください。」
+- 今回の担当作業では物理iPad/Safari、Apple arm64e、実機上のordering/signing/runtime検証を
+  `SKIPPED (user-requested)` として対象外にする。接続先・過去の実機記録の提出待ちは解除。
+- Linux Chromium/WebKit、指定LLVM、コードの回帰検査は継続する。
+- 実機成功の記録、全体ロードマップの完了、リリース承認に読み替えない。
+  製品の実機受入validator・分母・必須証拠の規則は変更しない。
+- 全体checkはmachine-effectsの8ファイルで失敗し、後続のcanonical gateは未実行。
+  LLVM非対応、oracle証拠、x86 decoder/診断契約を含む。ユーザー担当の意味論と区別して調査する。
