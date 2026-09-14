@@ -166,24 +166,13 @@ export class ByteView {
       const nul = span.indexOf(0);
       raw = nul < 0 ? span : span.subarray(0, nul);
     } else {
-      // A sparse backing must scan in bounded blocks. Calling u8() one byte
-      // at a time turns every uncached character into a separate source read;
-      // the block request lets SourceRangeMissingError expose the whole
-      // bounded span so the range loader can fill it in one pass.
-      const blockSize = 64 * 1024;
-      let p = start;
-      raw = this.bytes.subarray(o, o);
-      while (p < end) {
-        const blockEnd = p + BigInt(Math.min(blockSize, Number(end - p)));
-        const span = this.bytes.subarray(exposedOffset(p), exposedOffset(blockEnd));
-        const nul = span.indexOf(0);
-        if (nul >= 0) {
-          raw = this.bytes.subarray(o, exposedOffset(p + BigInt(nul)));
-          break;
-        }
-        p = blockEnd;
-        raw = this.bytes.subarray(o, exposedOffset(p));
-      }
+      // A sparse backing must request the bounded span at once. Calling u8()
+      // one byte at a time turns every uncached character into a separate
+      // source read; the bounded subarray exposes the whole missing suffix so
+      // the range loader can fill it using its adaptive read-ahead.
+      const span = this.bytes.subarray(o, exposedOffset(end));
+      const nul = span.indexOf(0);
+      raw = nul < 0 ? span : span.subarray(0, nul);
     }
     try { return new TextDecoder('utf-8', { fatal: false }).decode(raw); }
     catch {
@@ -296,19 +285,4 @@ export function align(value, alignment) {
   const a = integerValue(alignment, 'alignment');
   if (a <= 0n) return v;
   return (v + a - 1n) / a * a;
-}
-
-export function inRange(value, start, size) {
-  const v = integerValue(value, 'value');
-  const s = integerValue(start, 'start');
-  const n = integerValue(size, 'size');
-  return n > 0n && v >= s && v < s + n;
-}
-
-export function hex(value) {
-  if (value == null) return null;
-  const integer = integerValue(value, 'value');
-  return integer < 0n
-    ? '-0x' + (-integer).toString(16).toUpperCase()
-    : '0x' + integer.toString(16).toUpperCase();
 }
