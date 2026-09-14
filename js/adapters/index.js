@@ -333,13 +333,27 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       }
       throw error;
     }
+    const canonicalHeap = [];
     for (const item of spec.heap || []) {
       if (signal?.aborted) throw new DebugAdapterError('cancelled', 'local sandbox launch was cancelled during setup', { kind: 'cancelled' });
-      await emu.store(asAddress(item.address), initialMemorySize(item.size), initialMemoryValue(item.value));
+      const heapAddress = asAddress(item.address);
+      const heapSize = initialMemorySize(item.size);
+      const heapValue = BigInt.asUintN(heapSize * 8, initialMemoryValue(item.value));
+      await emu.store(heapAddress, heapSize, heapValue);
+      canonicalHeap.push({ address:heapAddress.toString(), size:heapSize, value:heapValue.toString() });
     }
+    const canonicalGlobals = [];
     for (const item of spec.globalValues || []) {
       if (signal?.aborted) throw new DebugAdapterError('cancelled', 'local sandbox launch was cancelled during setup', { kind: 'cancelled' });
-      await emu.store(asAddress(item.address), initialMemorySize(item.size), initialMemoryValue(item.value));
+      const globalAddress = asAddress(item.address);
+      const globalSize = initialMemorySize(item.size);
+      const globalValue = BigInt.asUintN(globalSize * 8, initialMemoryValue(item.value));
+      await emu.store(globalAddress, globalSize, globalValue);
+      canonicalGlobals.push({ address:globalAddress.toString(), size:globalSize, value:globalValue.toString() });
+    }
+    if (canonicalHeap.length || canonicalGlobals.length) {
+      sandbox.canonicalInput.heap = canonicalHeap;
+      sandbox.canonicalInput.globalValues = canonicalGlobals;
     }
     const initialRegisters = cloneRegisters(emu);
     initializing = false;
