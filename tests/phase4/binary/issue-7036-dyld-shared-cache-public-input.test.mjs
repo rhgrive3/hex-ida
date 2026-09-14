@@ -65,6 +65,13 @@ assert.equal(sourceImage.metadata.dyldSharedCache.mappingWithSlide[0].slideInfo.
 assert.equal(sourceImage.metadata.dyldSharedCache.mappingWithSlide[0].slideInfo.rebases[0].runtimeTargetAddress, BASE + 0x80n + SLIDE);
 
 assert.throws(() => openBinary(bytes, { slide: 0x5000n }), /exceeds declared maxSlide/);
+const zeroMaxSlide = makeCache();
+new DataView(zeroMaxSlide.buffer, zeroMaxSlide.byteOffset, zeroMaxSlide.byteLength).setBigUint64(0xf0, 0n, true);
+assert.throws(() => openBinary(zeroMaxSlide, { slide: SLIDE }), /exceeds declared maxSlide/);
+await assert.rejects(
+  () => openBinarySource(new MemoryByteSource(zeroMaxSlide, { maxReadLength: 8 }), { slide: SLIDE }),
+  /exceeds declared maxSlide/,
+);
 assert.throws(() => openBinary(makeCache({ overlap: true })), /overlapping dyld shared cache virtual mappings/);
 assert.throws(() => openBinary(makeCache({ slideInfoVersion: 99 }), { slide: SLIDE }), /unsupported dyld shared cache slide info version 99/);
 

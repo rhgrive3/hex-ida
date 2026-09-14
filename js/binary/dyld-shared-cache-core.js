@@ -268,7 +268,7 @@ async function walkSlideInfo2Source(source, mapping, info, slide, mappings, maxR
 
 function normalizeSlide(header, opts) {
   const slide = exactNonNegativeBigInt(opts.slide ?? 0n, 'dyld shared cache slide');
-  if (header.maxSlide !== 0n && slide > header.maxSlide) throw new Error(`dyld shared cache slide 0x${slide.toString(16)} exceeds declared maxSlide 0x${header.maxSlide.toString(16)}`);
+  if (slide > header.maxSlide) throw new Error(`dyld shared cache slide 0x${slide.toString(16)} exceeds declared maxSlide 0x${header.maxSlide.toString(16)}`);
   const alignment = exactNonNegativeBigInt(opts.slideAlignment ?? 0x1000n, 'dyld shared cache slide alignment');
   if (slide !== 0n && alignment !== 0n && (slide % alignment) !== 0n) throw new Error('dyld shared cache slide is not aligned');
   return slide;
