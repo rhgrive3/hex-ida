@@ -1,0 +1,55 @@
+name: Independent residual repair transport (temporary)
+on:
+  push:
+    branches: [verify/independent-residual-transport-20260914]
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Preserve bounded verifier and exact patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .github/independent-residual/repairs.patch "$RUNNER_TEMP/repairs.patch"
+          cp .github/independent-residual/verify.py "$RUNNER_TEMP/verify.py"
+          echo '415c30308c32fb25d835098c13794294810ade1841260e5a58e93e0d227a9da0  '"$RUNNER_TEMP/repairs.patch" | sha256sum -c -
+      - uses: actions/checkout@v7
+        with:
+          ref: 8d6c91824eee2fb81fdf1fcc71df2d5a0b133d3a
+          fetch-depth: 16
+          persist-credentials: true
+      - name: Construct only the locally verified source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 8d6c91824eee2fb81fdf1fcc71df2d5a0b133d3a
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          timeout 90s git fetch --no-tags --depth=16 origin b4fec5df31e8dbb9d803aa3ba5ffc20d49280d44
+          timeout 30s git merge --no-commit --no-ff b4fec5df31e8dbb9d803aa3ba5ffc20d49280d44
+          git apply --index "$RUNNER_TEMP/repairs.patch"
+          test "$(git write-tree)" = e415c7371bc17508c2460394642880209d2bf7d5
+          git diff --cached --check
+          git commit -m 'fix(analysis): resolve residual memory effects and contract regressions'
+          test "$(git rev-parse HEAD^{tree})" = e415c7371bc17508c2460394642880209d2bf7d5
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install exact locked tooling
+        run: timeout 240s npm ci --no-audit --no-fund
+      - name: Verify exact source, build twice, and publish candidate only
+        run: timeout 900s python3 "$RUNNER_TEMP/verify.py"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: independent-residual-exact-tree
+          path: ${{ runner.temp }}/residual-evidence/result.json
+          if-no-files-found: warn
+          retention-days: 7

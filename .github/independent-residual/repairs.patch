@@ -1,0 +1,226 @@
+diff --git a/js/blocks-base.js b/js/blocks-base.js
+index 277540c..12711e5 100644
+--- a/js/blocks-base.js
++++ b/js/blocks-base.js
+@@ -479,9 +479,19 @@ function accessSize(base, ops) {
+   }
+   if (STRUCTURE_MN.test(base)) {
+     const list = ops.find((o) => o.k === 'list');
++    // A lane/unparsed member or a bare vector register proves no transfer
++    // width. Never substitute the physical register width or sum only the
++    // understood part of a list into an apparently exact memory extent.
++    const regs = list?.regs;
++    if (!regs?.length || regs.length > 4) return null;
++    const arrangement = regs[0].arr?.toLowerCase();
+     let total = 0;
+-    for (const r of list ? (list.regs || []) : []) total += vectorRegisterBytes(r);
+-    return total > 0 ? total : 8;
++    for (const reg of regs) {
++      const bytes = vectorRegisterBytes(reg);
++      if (bytes == null || reg.arr?.toLowerCase() !== arrangement) return null;
++      total += bytes;
++    }
++    return total;
+   }
+   const reg = ops.find((o) => o.k === 'reg');
+   const w = reg && reg.bits ? reg.bits / 8 : 8;
+@@ -491,10 +501,11 @@ function accessSize(base, ops) {
+ 
+ /** Structure-register-list element width. `v0.8b` moves 8 bytes, not 16. */
+ function vectorRegisterBytes(reg) {
+-  if (!reg || reg.k !== 'reg') return 0;
++  if (!reg || reg.k !== 'reg' || reg.cls !== 'vec') return null;
+   const m = /^(\d+)([bhsd])$/i.exec(reg.arr || '');
+-  if (m) return Number(m[1]) * ({ b: 1, h: 2, s: 4, d: 8 }[m[2].toLowerCase()] || 0);
+-  return reg.bits ? reg.bits / 8 : 0;
++  if (!m) return null;
++  const bytes = Number(m[1]) * ({ b: 1, h: 2, s: 4, d: 8 }[m[2].toLowerCase()]);
++  return bytes === 8 || bytes === 16 ? bytes : null;
+ }
+ 
+ /**
+@@ -639,9 +650,8 @@ function instructionRole(insn, base) {
+   if (base === 'adrp' || base === 'adr') return ROLE.ADDRESS_CALCULATION;
+   if (insn.memory) {
+     if (insn.memory.kind === 'load') return ROLE.MEMORY_READ;
+-    // An atomic RMW keeps the established 'quiet' atomic role; its read/write
+-    // fact is published on `insn.memory`, not through the block role (#3602).
+-    if (insn.memory.kind === 'atomic') return 'quiet';
++    // Atomic RMW is observable memory mutation, not quiet register setup.
++    // The memory-write role keeps it visible; the group retains both halves.
+     return ROLE.MEMORY_WRITE;
+   }
+   if (/^(paciasp|pacibsp|bti|nop|hint)$/.test(base)) return 'quiet';
+@@ -1270,7 +1280,8 @@ function finishBlock(g, ctx) {
+       }
+     }
+     if (insn.memory) {
+-      g.effects.push(insn.memory.kind === 'load' ? 'read' : 'write');
++      if (insn.memory.kind === 'load' || insn.memory.read === true) g.effects.push('read');
++      if (insn.memory.kind === 'store' || insn.memory.write === true) g.effects.push('write');
+       if (insn.memory.stack) g.facts.stack = true;
+     }
+     if (insn.branchTarget != null) {
+diff --git a/tests/architecture-abi.mjs b/tests/architecture-abi.mjs
+index 4b64492..e3a1202 100644
+--- a/tests/architecture-abi.mjs
++++ b/tests/architecture-abi.mjs
+@@ -91,11 +91,24 @@ const region = { vmAddr:BASE, size:0x100n };
+   assert.equal(unknownCall.evidence, 'conservative-aapcs64');
+   assert.deepEqual(classifyCallArguments({}), unknownCall, 'public legacy export must preserve AAPCS64 classification');
+ 
+-  const insn = { callPrototype:{ args:[{ type:'int' }, { type:'double', abiClass:'fp' }], returnType:'double' } };
++  // Exact scalar arguments require owner-supplied widths; type labels alone
++  // cannot bypass the canonical AAPCS64 unknown-layout contract.
++  const insn = { callPrototype:{ args:[{ type:'int', bits:32, bytes:4 }, { type:'double', abiClass:'fp', bits:64, bytes:8 }], returnType:'double', returnBits:64 } };
+   const classified = AAPCS64_ABI.classifyArguments(insn);
+   assert.equal(classified.arguments[0].reg, 'x0');
+   assert.equal(classified.arguments[1].reg, 'v0');
+   assert.deepEqual(AAPCS64_ABI.classifyCallReturn(insn), { reg:'v0', bits:64 });
++  assert.equal(classified.arguments[0].bits, 32);
++  assert.equal(classified.arguments[1].bits, 64);
++  assert.deepEqual(classifyCallArguments(insn), classified, 'legacy facade must keep explicit scalar layout');
++
++  const unproved = AAPCS64_ABI.classifyArguments({ callPrototype:{ args:[{ type:'int' }, { type:'double', abiClass:'fp', bits:64, bytes:8 }] } });
++  assert.equal(unproved.partial, true);
++  assert.equal(unproved.arguments[0].location, 'unknown');
++  assert.equal(unproved.arguments[0].reason, 'scalar-width-size-not-proven');
++  assert.equal(unproved.arguments[1].location, 'unknown', 'an unknown preceding argument blocks exact subsequent allocation');
++  assert.equal(unproved.arguments[1].reason, 'preceding-argument-layout-not-proven');
++  assert.ok(unproved.arguments.every((argument) => argument.exact === false && argument.reg == null));
+   assert.equal(AAPCS64_ABI.classifyCallReturn({ callPrototype:{ returnType:'int', returnBits:-1, returnsValue:true } }), null);
+   assert.equal(AAPCS64_ABI.classifyCallReturn({ callPrototype:{ returnType:'double', returnBits:Number.POSITIVE_INFINITY, returnsValue:true } }), null);
+   assert.equal(AAPCS64_ABI.classifyFunctionReturn({ functionPrototype:{ returnType:'int', returnBits:1.5, returnsValue:true } }), null);
+diff --git a/tests/phase4/arm64-memory-role-width-regression.test.mjs b/tests/phase4/arm64-memory-role-width-regression.test.mjs
+new file mode 100644
+index 0000000..2bf0502
+--- /dev/null
++++ b/tests/phase4/arm64-memory-role-width-regression.test.mjs
+@@ -0,0 +1,73 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++import { ROLE, buildSemanticModel, makeInstruction } from '../../js/blocks.js';
++
++const instruction = (mn, ops, row = 0) => makeInstruction({ mn, ops, row, address: 0x1000n + BigInt(row * 4) });
++
++// An unparsed or partly parsed list is not a smaller, exact memory access.
++test('structure access size stays unknown for lane, bare, mixed and malformed lists', () => {
++  const lists = [
++    '{v0.h}[3]', '{v0.h, v1.h}[3]', '{v0}', '{}', '{x0}',
++    '{v0.16b, v1}', '{v0.16b, invalid}', '{v0.16b, v1.8b}',
++    '{v0.3s}', '{v0.0b}', '{v0.32b}',
++  ];
++  for (const mn of ['ld1', 'ld2', 'ld3', 'ld4', 'st1', 'st2', 'st3', 'st4']) {
++    for (const list of lists) {
++      const insn = instruction(mn, `${list}, [x5], #16`);
++      assert.equal(insn.memory?.kind, mn.startsWith('ld') ? 'load' : 'store', `${mn} ${list}`);
++      assert.equal(insn.memory.size, null, `${mn} ${list}: no invented or partial extent`);
++      assert.equal(insn.memory.base, 'x5');
++      assert.equal(insn.memory.mode, 'post');
++      assert.ok(insn.writes.includes('x5'), 'unknown width must not erase base writeback');
++    }
++  }
++});
++
++test('proved whole-register arrangements keep every transferred byte', () => {
++  const arrangements = new Map([['8b', 8], ['16b', 16], ['4h', 8], ['8h', 16], ['2s', 8], ['4s', 16], ['1d', 8], ['2d', 16]]);
++  for (const [arrangement, size] of arrangements) {
++    for (const count of [1, 2, 3, 4]) {
++      const regs = Array.from({ length: count }, (_, n) => `v${n}.${arrangement}`);
++      for (const mn of ['ld1', 'st1']) {
++        const insn = instruction(mn, `{${regs.join(', ')}}, [x5]`);
++        assert.equal(insn.memory.size, size * count, `${mn} ${regs}`);
++      }
++    }
++  }
++});
++
++test('all supported LSE returning and store aliases retain both memory effects', () => {
++  const returning = ['swp', 'cas', 'ldadd', 'ldset', 'ldclr', 'ldeor', 'ldsmax', 'ldsmin', 'ldumax', 'ldumin'];
++  const storing = ['stadd', 'stset', 'stclr', 'steor', 'stsmax', 'stsmin', 'stumax', 'stumin'];
++  for (const family of [...returning, ...storing]) {
++    const storeAlias = storing.includes(family);
++    for (const ordering of storeAlias ? ['', 'l'] : ['', 'a', 'l', 'al']) {
++      for (const [suffix, reg, size] of [['', 'x', 8], ['', 'w', 4], ['b', 'w', 1], ['h', 'w', 2]]) {
++        const mn = family + ordering + suffix;
++        const ops = storeAlias ? `${reg}0, [x2]` : `${reg}0, ${reg}1, [x2]`;
++        const insn = instruction(mn, ops);
++        assert.equal(insn.role, ROLE.MEMORY_WRITE, `${mn}: RMW cannot be quiet`);
++        assert.equal(insn.memory.size, size, mn);
++        assert.equal(insn.memory.read, true, mn);
++        assert.equal(insn.memory.write, true, mn);
++        const model = buildSemanticModel([{ row: 0, address: 0x1000n, mn, ops }], { rowOfAddress: () => null });
++        const group = model.semantic.find((candidate) => candidate.role === ROLE.MEMORY_WRITE);
++        assert.ok(group, `${mn}: visible memory group`);
++        assert.deepEqual([...group.effects].sort(), ['read', 'write'], `${mn}: no lost effect half`);
++      }
++    }
++  }
++});
++
++test('ordinary loads, stores and no-op groups keep their previous roles and effects', () => {
++  for (const [mn, ops, role, effects] of [
++    ['ldr', 'x0, [x1]', ROLE.MEMORY_READ, ['read']],
++    ['str', 'x0, [x1]', ROLE.MEMORY_WRITE, ['write']],
++    ['nop', '', 'quiet', []],
++  ]) {
++    assert.equal(instruction(mn, ops).role, role);
++    const model = buildSemanticModel([{ row: 0, address: 0x1000n, mn, ops }], { rowOfAddress: () => null });
++    const allEffects = [...new Set(model.semantic.flatMap((group) => group.effects))].sort();
++    assert.deepEqual(allEffects, effects, mn);
++  }
++});
+diff --git a/tests/phase4/issue-3630-elf-dynamic-section-authority.test.mjs b/tests/phase4/issue-3630-elf-dynamic-section-authority.test.mjs
+index 54916f6..ee4533c 100644
+--- a/tests/phase4/issue-3630-elf-dynamic-section-authority.test.mjs
++++ b/tests/phase4/issue-3630-elf-dynamic-section-authority.test.mjs
+@@ -122,9 +122,9 @@ function fixture(sectionIndex, companion = null, options = {}) {
+   const image = {
+     warnings: [],
+     libraries: [],
+-    metadata: { machine: 62 },
++    metadata: { machine: 62, ...(options.sectionTableAuthority ? { elfSectionTableAuthority: options.sectionTableAuthority } : {}) },
+     segments: [segment],
+-    sections: [],
++    sections: options.sections ?? [],
+     symbols: [],
+     imports: options.seedImport === true ? [{
+       name: 'mystery',
+@@ -180,7 +180,10 @@ test('PT_DYNAMIC SHN_XINDEX without companion remains unknown, not an import', (
+ 
+ test('PT_DYNAMIC SHN_XINDEX with truncated or invalid companion remains unknown', () => {
+   assertUnknown(fixture(SHN_XINDEX, 'truncated'), 'truncated-companion');
+-  assertUnknown(fixture(SHN_XINDEX, 0xff10), 'invalid-extended-index');
++  // #4197: the companion is a full 32-bit section index, so reserved-range
++  // values are not intrinsically invalid. This fixture has no section table
++  // proving index 0xff10; preserve the precise range diagnostic and unknown.
++  assertUnknown(fixture(SHN_XINDEX, 0xff10), 'out-of-range-section-index-65296');
+ });
+ 
+ test('version metadata does not promote an unresolved symbol into an existing import', () => {
+@@ -227,3 +230,25 @@ test('PT_DYNAMIC known section identity remains a definite export', () => {
+     assert.equal(image.exports[0].name, 'mystery');
+   }
+ });
++
++// The 32-bit companion may legitimately name an actual section at an index
++// which would be reserved in the 16-bit st_shndx field (gABI / #4197).
++test('PT_DYNAMIC extended index is exact only with admissible section-table evidence', () => {
++  const index = 0xff10;
++  const sections = [{ index: 0 }, { index }];
++  const image = fixture(SHN_XINDEX, index, {
++    sections,
++    sectionTableAuthority: { declared: true, valid: true },
++  });
++  assert.equal(image.symbols[0].defined, true);
++  assert.equal(image.symbols[0].sectionIndex, index);
++  assert.equal(image.imports.length, 0);
++  assert.equal(image.exports.length, 1);
++
++  for (const invalidOptions of [
++    { sections: [{ index: 0 }, { index: 1 }], sectionTableAuthority: { declared: true, valid: true } },
++    { sections, sectionTableAuthority: { declared: true, valid: false } },
++  ]) {
++    assertUnknown(fixture(SHN_XINDEX, index, invalidOptions), `out-of-range-section-index-${index}`);
++  }
++});
