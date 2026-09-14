@@ -20,6 +20,10 @@ const FIELD_TOKEN = 0x04000001;
 const TOKEN_BYTES = [0x01, 0x00, 0x00, 0x04];
 const NRE = { kind: 'null-reference', condition: 'obj==null' };
 const RET = 0x2a;
+// #3971: the token must name a real FieldDef row (default FieldSig is
+// FIELD int32) — an unresolvable field token no longer lifts as exact.
+const FIELD_DEF = [{ name: 'Value' }];
+const fieldEffectCore = (effect) => ({ space: effect.space, token: effect.token, isWrite: effect.isWrite });
 
 function fixture(body) {
   const image = buildCil({
@@ -29,6 +33,7 @@ function fixture(body) {
       flags: 0x0006,
       signature: [0x20, 0x00, 0x01],
     }],
+    fields: FIELD_DEF,
   });
   return image.bytes;
 }
@@ -46,7 +51,7 @@ function lifterBundle(mnemonic, body) {
   const { bundle } = lifterBundle('ldfld', [0x02, 0x7b, ...TOKEN_BYTES, 0x26]);
   assert.deepEqual(bundle.possibleExceptions, [NRE]);
   assert.equal(bundle.completeness, 'exact');
-  assert.deepEqual(bundle.memoryEffects, [{ space: 'field', token: FIELD_TOKEN, isWrite: false }]);
+  assert.deepEqual(fieldEffectCore(bundle.memoryEffects[0]), { space: 'field', token: FIELD_TOKEN, isWrite: false });
 }
 
 // stfld keeps its store operand order (val pushed after obj, consumed first)
@@ -56,7 +61,7 @@ function lifterBundle(mnemonic, body) {
   assert.deepEqual(bundle.consumedValues.map((v) => v.id), ['val', 'obj']);
   assert.deepEqual(bundle.possibleExceptions, [NRE]);
   assert.equal(bundle.completeness, 'exact');
-  assert.deepEqual(bundle.memoryEffects, [{ space: 'field', token: FIELD_TOKEN, isWrite: true }]);
+  assert.deepEqual(fieldEffectCore(bundle.memoryEffects[0]), { space: 'field', token: FIELD_TOKEN, isWrite: true });
 }
 
 // ldsfld/stsfld address no receiver: the exception-free contract is unchanged.
@@ -64,13 +69,13 @@ function lifterBundle(mnemonic, body) {
   const { bundle: ldsfld } = lifterBundle('ldsfld', [0x7e, ...TOKEN_BYTES, 0x26]);
   assert.deepEqual(ldsfld.possibleExceptions, []);
   assert.equal(ldsfld.completeness, 'exact');
-  assert.deepEqual(ldsfld.memoryEffects, [{ space: 'static-field', token: FIELD_TOKEN, isWrite: false }]);
+  assert.deepEqual(fieldEffectCore(ldsfld.memoryEffects[0]), { space: 'static-field', token: FIELD_TOKEN, isWrite: false });
 }
 {
   const { bundle: stsfld } = lifterBundle('stsfld', [0x17, 0x80, ...TOKEN_BYTES]);
   assert.deepEqual(stsfld.possibleExceptions, []);
   assert.equal(stsfld.completeness, 'exact');
-  assert.deepEqual(stsfld.memoryEffects, [{ space: 'static-field', token: FIELD_TOKEN, isWrite: true }]);
+  assert.deepEqual(fieldEffectCore(stsfld.memoryEffects[0]), { space: 'static-field', token: FIELD_TOKEN, isWrite: true });
 }
 
 // Concrete-null receiver: the condition remains published and evaluates true
@@ -95,6 +100,7 @@ function lifterBundle(mnemonic, body) {
 async function frontendCase(body) {
   const { bytes } = buildCil({
     methods: [{ name: 'FieldAccess', body, flags: 0x0006, signature: [0x20, 0x00, 0x01] }],
+    fields: FIELD_DEF,
   });
   const frontend = new CilFrontend();
   const image = await frontend.open(bytes, { binaryId: 'issue-7987' });
@@ -123,6 +129,7 @@ async function frontendCase(body) {
 {
   const { bytes, layout } = buildCil({
     methods: [{ name: 'FieldTryCatch', body: [0x02, 0x7b, ...TOKEN_BYTES, 0x26, RET], flags: 0x0006, signature: [0x20, 0x00, 0x01] }],
+    fields: FIELD_DEF,
   });
   const method = layout.bodyOffsets[0];
   const view = new DataView(bytes.buffer);

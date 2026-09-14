@@ -1,7 +1,7 @@
 import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedExceptionRegionId, createManagedMethodId, createVMOperationId } from '../shared/identity.js';
 import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
-import { createCilLocalTypeResolver } from './call-signatures.js';
+import { createCilFieldSignatureResolver, createCilLocalTypeResolver } from './call-signatures.js';
 import { cilTokenText } from './metadata-layout.js';
 import { cilImageLookups } from './image-lookup.js';
 import { cilStackValueWidth } from './stack-width.js';
@@ -55,6 +55,31 @@ function integerOperandWidths(widthRun, integerRun, count) {
   const widths = widthRun.slice(widthRun.length - count);
   const integers = integerRun.slice(integerRun.length - count);
   return widths.every((bits, i) => bits != null && integers[i] === true) ? widths : null;
+}
+
+// Field load/store value shape (#3971): the FieldSig decides the
+// evaluation-stack value. int32/int64 widths come from the canonical type
+// grammar; the float family pins r4/r8; reference and native-size values stay
+// unstated until the image's pointer-width authority (#7775) attaches them —
+// a resolved field never borrows a fabricated 32-bit integer identity.
+const FLOAT_STACK_BITS = Object.freeze({ r4:32, r8:64 });
+function fieldStackValue(fieldType) {
+  const value = { ...fieldType };
+  if (value.bits == null && value.stackType === 'float') {
+    const bits = FLOAT_STACK_BITS[value.primitive];
+    if (bits != null) value.bits = bits;
+  }
+  return value;
+}
+
+function fieldEffectKeys(resolution) {
+  if (!resolution.complete) return { fieldResolved:false };
+  return {
+    fieldName:resolution.fieldName,
+    ...(resolution.declaringType ? { declaringType:resolution.declaringType } : {}),
+    fieldType:resolution.fieldType,
+    fieldProvenance:resolution.provenance,
+  };
 }
 
 function typedLocationAccess(kind, index, slotType, unknownEffects) {
@@ -194,6 +219,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
   // MethodDef signature (resolved by the caller into methodAuthority), locals
   // from the fat header's LocalVarSigTok → StandAloneSig chain.
   const resolveLocal = createCilLocalTypeResolver(cilImage);
+  const resolveField = createCilFieldSignatureResolver(cilImage);
   const localSlots = resolveLocal(methodBody);
   const localSlotType = (index) => {
     if (!localSlots.complete) {
@@ -669,18 +695,29 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
             pc += 4;
             const isWrite = opcode === 0x7d;
             mnemonic = isWrite ? 'stfld' : 'ldfld';
+            // Field value identity comes from the resolved FieldSig, never a
+            // fabricated 32-bit claim; unresolved tokens stay inexact (#3971).
+            const field = resolveField(token);
             if (isWrite) {
-              consumedValues.push({ id: 'val' }, { id: 'obj' });
+              consumedValues.push({
+                id:'val',
+                ...(field.complete ? fieldStackValue(field.fieldType) : {}),
+              }, { id: 'obj' });
               currentStackHeight -= 2;
             } else {
               consumedValues.push({ id: 'obj' });
-              producedValues.push({ bits: 32 });
+              producedValues.push(field.complete ? fieldStackValue(field.fieldType) : {});
             }
             memoryEffects.push({
               space: 'field',
               token,
               isWrite,
+              ...fieldEffectKeys(field),
             });
+            if (!field.complete) {
+              completeness = 'partial';
+              unknownEffects.push({ category: 'types', reason: field.reason });
+            }
             possibleExceptions.push({ kind: 'null-reference', condition: 'obj==null' });
           }
           break;
@@ -693,11 +730,17 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
             pc += 4;
             const isWrite = opcode === 0x80;
             mnemonic = isWrite ? 'stsfld' : 'ldsfld';
+            // Static field values are typed by the resolved FieldSig too; an
+            // unresolved token can never publish an exact load/store (#3971).
+            const field = resolveField(token);
             if (isWrite) {
-              consumedValues.push({ id: 'val' });
+              consumedValues.push({
+                id:'val',
+                ...(field.complete ? fieldStackValue(field.fieldType) : {}),
+              });
               currentStackHeight--;
             } else {
-              producedValues.push({ bits: 32 });
+              producedValues.push(field.complete ? fieldStackValue(field.fieldType) : {});
               currentStackHeight++;
             }
             // Type-initializer authority rides on the static-field effect
@@ -725,7 +768,12 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
               token,
               isWrite,
               typeInitialization,
+              ...fieldEffectKeys(field),
             });
+            if (!field.complete) {
+              completeness = 'partial';
+              unknownEffects.push({ category: 'types', reason: field.reason });
+            }
             if (!initialization.resolved) {
               completeness = 'partial';
               unknownEffects.push({ category: 'calls', reason: initialization.reason });

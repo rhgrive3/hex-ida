@@ -114,7 +114,9 @@ async function discoverBaselineFunctions(baseline, { signal = null, onProgress =
       } else {
         const starts = rawStarts || [];
         const budget = Math.min(share, remaining);
-        const accepted = starts.length > budget ? starts.slice(0, budget) : starts;
+        const overReturned = starts.length > budget;
+        const accepted = overReturned ? starts.slice(0, budget) : starts;
+        let exceedsBudget = false;
         if (accepted.length) {
           // #5558: addFunctions() deduplicates known starts and returns the
           // number actually added. The global discovery budget must be debited
@@ -124,9 +126,15 @@ async function discoverBaselineFunctions(baseline, { signal = null, onProgress =
           symbols.guessed = true;
           remaining = Math.max(0, remaining - added);
         }
-        // Duplicates in the admitted prefix say nothing about the unexamined
-        // suffix. Dropping any suffix prevents a complete-discovery claim.
-        const exceedsBudget = starts.length > budget;
+        // #5105: an over-returned suffix is safe to drop only when the
+        // canonical symbol index proves every dropped start was already known.
+        // A deduplicated admitted prefix cannot prove anything about an unseen
+        // tail.
+        if (overReturned) {
+          const droppedTailProvenKnown = typeof symbols.functionEvidence === 'function' &&
+            starts.slice(budget).every((start) => symbols.functionEvidence(start) != null);
+          exceedsBudget = !droppedTailProvenKnown;
+        }
         const complete = !exceedsBudget && (result?.discoveryComplete === true || result?.completeness?.complete === true || result?.complete === true);
         results.push({ regionId:region.id, complete, capped:!!result?.capped || exceedsBudget, discovered:accepted.length });
         if (!complete) reasons.push(exceedsBudget ? `${region.id}:backend-result-exceeds-budget` : `${region.id}:${result?.completeness?.reason || result?.truncationReason || 'function-discovery-incomplete'}`);
