@@ -13,9 +13,11 @@ const PROVEN_GENERIC_EVEX_FAMILIES = new Set([
   'v4fmaddss',
   'v4fnmaddps',
   'v4fnmaddss',
+  'vaddps',
   'valignd',
   'vblendmpd',
   'vblendmps',
+  'vcomiss',
   'vbroadcastf32x4',
   'vbroadcastf32x8',
   'vbroadcastf64x4',
@@ -31,10 +33,12 @@ const PROVEN_GENERIC_EVEX_FAMILIES = new Set([
   'vgatherpf1qps',
   'vp4dpwssds',
   'vp4dpwssd',
+  'vpaddd',
   'vpblendmb',
   'vpblendmd',
   'vpblendmq',
   'vpblendmw',
+  'vpcmpeqd',
   'vpshufbitqmb',
   'vptestmb',
   'vptestmd',
@@ -51,7 +55,8 @@ const PROVEN_GENERIC_EVEX_FAMILIES = new Set([
   'vscatterpf1dpd',
   'vscatterpf1dps',
   'vscatterpf1qpd',
-  'vscatterpf1qps'
+  'vscatterpf1qps',
+  'vxorps'
 ]);
 
 export function classifyEvexCategory(name) {
@@ -163,6 +168,7 @@ export function liftEvex(instruction, context, family) {
   const activeWidth = activeVectorWidth(operands);
   const isFp = category === 'fp';
   const embeddedRoundingOrSae = isFp && info.broadcastOrRounding && !hasMemory;
+  const roundingMode = embeddedRoundingOrSae && !compare ? evexRoundingMode(info.lengthOrRoundingCode) : null;
 
   const inputs = [], registersRead = [], registerTargets = [], memoryReads = [], memoryWrites = [];
   let faults = [];
@@ -250,7 +256,7 @@ export function liftEvex(instruction, context, family) {
       maskSemantics: info.maskRegister ? (info.zeroing ? 'zero' : 'merge') : 'none',
       broadcast: info.broadcastOrRounding && hasMemory,
       embeddedRoundingOrSae,
-      roundingMode: embeddedRoundingOrSae ? evexRoundingMode(info.lengthOrRoundingCode) : null,
+      roundingMode,
       suppressAllExceptions: embeddedRoundingOrSae,
       opcodeMap: info.map,
       mandatoryPrefixCode: info.mandatoryPrefixCode,
@@ -286,7 +292,7 @@ export function liftEvex(instruction, context, family) {
       maskSemantics: info.maskRegister ? (info.zeroing ? 'zero' : 'merge') : 'none',
       broadcast: info.broadcastOrRounding && hasMemory,
       embeddedRoundingOrSae,
-      roundingMode: embeddedRoundingOrSae ? evexRoundingMode(info.lengthOrRoundingCode) : null
+      roundingMode
     }
   });
 }
