@@ -798,3 +798,49 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
     });
 
     return createLanguageMetadataResult({
+
+      providerId: this.id,
+      providerVersion: this.version,
+      ecosystem: 'go',
+      identity,
+      sections: this.sections.map((s) => s.name || s.section || String(s)),
+      counts: {
+        symbols: funcResult.functions.length,
+      },
+      completeness,
+    });
+  }
+
+  symbols() {
+    if (!this.cachedFunctions) {
+      const probeResult = this.probe();
+      if (!probeResult.completeness.present || !this.cachedFunctions) {
+        return createLanguageMetadataPage({ records: [] });
+      }
+    }
+
+    const records = this.cachedFunctions.functions.map((fn) =>
+      createLanguageMetadataRecord({
+        kind: 'symbol',
+        entityId: `sym@${fn.address}`,
+        name: fn.name,
+        address: fn.address,
+        providerId: this.id,
+        providerVersion: this.version,
+        ecosystem: 'go',
+        buildIdentity: this.binaryIdentity,
+        descriptor: {
+          isFunction: true,
+          argsSize: fn.argsSize,
+          frameSize: fn.frameSize,
+          entryPC: fn.entryPC.toString(),
+        },
+      })
+    );
+
+    return createLanguageMetadataPage({
+      records,
+      truncated: this.cachedFunctions.completeness.capped,
+    });
+  }
+}
