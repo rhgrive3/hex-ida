@@ -33,6 +33,8 @@ test('main reconciliation regression changes require their exact existing owners
   const manifest = loadRoadmapManifest(), assignments = validateRoadmapManifest(manifest);
   const union = [...assignments.keys()];
   for (const [file, owner] of [
+    ['js/symbolic/translate/completeness.js', 'symbolic'],
+    ['tests/phase9/solver/worker-import-boundary.test.mjs', 'symbolic'],
     ['js/arm64.js', 'integration'],
     ['docs/analysis-remaining-20260914.md', 'integration'],
     ['tests/phase7/integration/analysis-entrypoint-dependencies.test.mjs', 'phase7'],

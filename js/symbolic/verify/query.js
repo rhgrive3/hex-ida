@@ -8,7 +8,7 @@
 import { ownDataEntries, inspectCanonicalData } from '../expr/data-boundary.js';
 import { stableDigest } from '../../core/identity/index.js';
 import { computeStructuralHashesBounded } from '../expr/hash.js';
-import { createCompleteness } from '../translate/support-matrix.js';
+import { createCompleteness } from '../translate/completeness.js';
 
 export const VERIFICATION_QUERY_KIND = Object.freeze({
   CONDITIONAL_EDGE_FEASIBILITY: 'conditional_edge_feasibility',

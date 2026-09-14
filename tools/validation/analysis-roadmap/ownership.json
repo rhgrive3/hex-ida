@@ -313,7 +313,9 @@
       "tests/phase9/solver/worker-lifecycle.test.mjs",
       "js/symbolic/memory/terminal-control.js",
       "tests/phase9/memory/terminal-control.test.mjs",
-      "tests/phase9/memory/terminal-control-equivalence.test.mjs"
+      "tests/phase9/memory/terminal-control-equivalence.test.mjs",
+      "js/symbolic/translate/completeness.js",
+      "tests/phase9/solver/worker-import-boundary.test.mjs"
     ],
     "semanticCompat": [
       "js/core/identity/live-data.js",

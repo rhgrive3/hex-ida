@@ -6,6 +6,8 @@
  * partial, and unsupported boundaries.
  */
 
+export { COMPLETENESS_STATUS, createCompleteness } from './completeness.js';
+
 import { scalarOperationSupported, scalarBitfieldSupported } from './scalar.js';
 import { OP, MK } from '../../ir-base.js';
 import {
@@ -25,12 +27,6 @@ export const ASSUMPTION_TRUST = Object.freeze({
   USER_PRECONDITION: 'user-precondition',
   QUERY_SCOPE: 'query-scope',
   BOUNDED_UNROLL: 'bounded-unroll',
-});
-
-export const COMPLETENESS_STATUS = Object.freeze({
-  COMPLETE: 'complete',
-  PARTIAL: 'partial',
-  UNSUPPORTED: 'unsupported',
 });
 
 function requireAssumptionString(value, field) {
@@ -62,22 +58,6 @@ export function createAssumption({ id, kind, statement, source, originIds = [], 
     source: resolvedSource,
     originIds: Object.freeze(normalizedOriginIds),
     trust,
-  });
-}
-
-export function createCompleteness({
-  translation = COMPLETENESS_STATUS.COMPLETE,
-  controlFlow = COMPLETENESS_STATUS.COMPLETE,
-  memoryEffects = COMPLETENESS_STATUS.COMPLETE,
-  pathCoverage = COMPLETENESS_STATUS.COMPLETE,
-  queryScope = COMPLETENESS_STATUS.COMPLETE,
-} = {}) {
-  return Object.freeze({
-    translation,
-    controlFlow,
-    memoryEffects,
-    pathCoverage,
-    queryScope,
   });
 }
 

@@ -126,3 +126,24 @@ main統合は既存PRの統合責任と競合させず、まずこの分担の�
   製品の実機受入validator・分母・必須証拠の規則は変更しない。
 - 全体checkはmachine-effectsの8ファイルで失敗し、後続のcanonical gateは未実行。
   LLVM非対応、oracle証拠、x86 decoder/診断契約を含む。ユーザー担当の意味論と区別して調査する。
+
+## Checkpoint 3: LLVM受入とWorker依存境界
+
+- 指定LLVM18.1.3とGit2.49.1の永続インストールを発見し、実体・hash・版を確認した。
+  LLVMはUbuntu署名と11パッケージのhashを再照合。証拠は `toolchain-restored.json`。
+  `/usr/bin/{llvm-readobj,llvm-mc,llvm-objdump,clang}-18` の未使用パスから永続wrapperへ接続。
+  Gitは `/mnt/workspace/.local/hex-stage-a-toolchain/install/bin` をPATHの先頭にする。
+- `fd0ad1dfe` のclean treeでARM64整数・メモリ全分母とX-02元120行の122検査が成功。
+  `llvm-restored.json/.log`、log SHA256 `504d48f7940ea2e22e9f5be83dc345981113fe1b4900eb0e0cd2876451f02419`。
+  X02-H-02は実llvm-readobjによる変更後Mach-Oの独立reparse成功。
+  元120行の環境依存分類は115 pass / 4 evidence-gap / 1 environment-excluded。
+  凍結行列の履歴・分母・実機スキップは保持する。
+- 新しいGitでoracle report検査は実行可能になったが、origin/mainとのcandidate treeに
+  6パスの競合があり拒否された。機能テストの合格やこのPRのマージ可能性とは別に保持する。
+- Worker計測でqueryの `createCompleteness` importがsupport-matrix経由でIR、全target、
+  decompilerまで読み込むことを確認。完全性データの同じ定義を依存のないモジュールへ移し、
+  public support-matrixは同じ関数と定数を再exportする。query内容・hash・判定・予算は不変更。
+- Workerの実依存graphをesbuildで検査する回帰は修正前失敗、修正後成功。
+  query/translator/Worker lifecycle/ownershipを含む48検査成功（commit前診断）。
+- canonical browser検査は変更後もChromium初回SATで2秒timeout。Linux runtime受入は未完了。
+  重い依存の除去を性能合格に読み替えない。生成物はこの変更から次にcanonical再生成する。
