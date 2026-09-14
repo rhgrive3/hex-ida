@@ -137,11 +137,13 @@ async function vectorOperation({ mnemonic, arrangement, operands, unary = false 
 }
 
 // Arrangements and shapes this emulator does not model fail closed before any
-// destination write.
+// destination write. .1D is a generally valid register arrangement spelling,
+// but it is RESERVED for these AdvSIMD floating-point arithmetic encodings.
 for (const [text, code] of [
   ['fadd v2.4h, v0.4h, v1.4h', 'unsupported-arrangement'],
   ['fadd v2.8h, v0.8h, v1.8h', 'unsupported-arrangement'],
   ['fadd v2.16b, v0.16b, v1.16b', 'unsupported-arrangement'],
+  ['fadd v2.1d, v0.1d, v1.1d', 'unsupported-arrangement'],
   ['fadd q2.4s, q0.4s, q1.4s', 'unsupported-instruction'],
   ['fadd v2, v0, v1', 'unsupported-arrangement'],
 ]) {

@@ -291,7 +291,7 @@ export class Emulator {
       throw new EmulatorFault('memory-read-failed', `backing read failed at 0x${page.toString(16)}`, { address: fault, page, cause:String(error && error.message || error) });
     }
     if (!(bytes instanceof Uint8Array) || bytes.length === 0) {
-      throw new EmulatorFault('unmapped-memory', `backing memory is unavailable at 0x${page.toString(16)}`, { address: fault, page });
+      throw new EmulatorFault('unmapped-memory', `backing memory is unavailable at 0x${fault.toString(16)}`, { address: fault, page });
     }
     const valid = Math.min(PAGE, bytes.length);
     this.loaded.set(key, padTo(bytes, PAGE));
@@ -996,7 +996,7 @@ export class Emulator {
     if (/^(scvtf|ucvtf)$/.test(mn)) {
       const bits=ops[1]?.bits === 32 ? 32 : 64, raw=this.get(ops[1].text);
       const value=mn === 'scvtf' ? BigInt.asIntN(bits,raw) : BigInt.asUintN(bits,raw);
-      const fractionBits = fixedPointFractionBits(mn, ops[2], bits - 1);
+      const fractionBits = fixedPointFractionBits(mn, ops[2], bits);
       // The destination format must round once, directly from the integer.
       // Going through binary64 first would round twice and flip boundary
       // cases by one ULP (#5235). The fixed-point form only shifts that
@@ -1242,8 +1242,8 @@ function vectorElementShape(mn, op) {
   const count = Number(match[1]);
   const code = match[2];
   const elementBytes = VECTOR_ELEMENT_BYTES[code];
-  if (code === 'b' || code === 'h' || count * elementBytes > 16) {
-    throw new EmulatorFault('unsupported-arrangement', `${mn} ${arr}: only 32/64-bit floating-point element arrangements are modelled`, { operand: op });
+  if (!((code === 's' && (count === 2 || count === 4)) || (code === 'd' && count === 2))) {
+    throw new EmulatorFault('unsupported-arrangement', `${mn} ${arr}: only 2S/4S/2D floating-point arrangements are modelled`, { operand: op });
   }
   return { elementBytes, count };
 }

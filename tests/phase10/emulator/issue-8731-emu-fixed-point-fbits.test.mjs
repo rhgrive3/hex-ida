@@ -43,16 +43,21 @@ assert.equal(await run(['fmov s0, w0', 'fcvtzu w0, s0, #8'], 0x3fc00000n), 384n,
 assert.equal(await run(['scvtf d0, x0', 'fmov x0, d0'], 384n), 0x4078000000000000n, 'scvtf without #fbits is unchanged');
 assert.equal(await run(['fmov d0, #1.5', 'fcvtzs x0, d0']), 1n, 'fcvtzs without #fbits is unchanged');
 
-// Largest legal #fbits for each form.
-assert.equal(await run(['scvtf d0, x0, #63', 'fmov x0, d0'], 1n), 0x3c00000000000000n, 'scvtf d accepts #63');
-assert.equal(await run(['scvtf s0, w0, #31', 'fmov w0, s0'], 1n), 0x30000000n, 'scvtf s accepts #31');
+// Largest legal #fbits for each source/destination width. Arm defines the
+// fixed-point range as 1..operand-width, so W forms accept #32 and X forms #64.
+assert.equal(await run(['scvtf d0, x0, #64', 'fmov x0, d0'], 1n), 0x3bf0000000000000n, 'scvtf x accepts #64');
+assert.equal(await run(['scvtf s0, w0, #32', 'fmov w0, s0'], 1n), 0x2f800000n, 'scvtf w accepts #32');
+assert.equal(await run(['ucvtf d0, x0, #64', 'fmov x0, d0'], 1n), 0x3bf0000000000000n, 'ucvtf x accepts #64');
+assert.equal(await run(['ucvtf s0, w0, #32', 'fmov w0, s0'], 1n), 0x2f800000n, 'ucvtf w accepts #32');
 assert.equal(await run(['fmov d0, #0.25', 'fcvtzs x0, d0, #64']), 4611686018427387904n, 'fcvtzs x accepts #64');
 assert.equal(await run(['fmov s0, w0', 'fcvtzs w0, s0, #32'], 0x3f000000n), 0x7fffffffn, 'fcvtzs w saturates at #32');
 
 // Out-of-range #fbits must fail closed before any state changes.
 for (const [text, x0] of [
-  ['scvtf d0, x0, #64', 384n],
-  ['scvtf s0, w0, #32', 384n],
+  ['scvtf d0, x0, #65', 384n],
+  ['scvtf s0, w0, #33', 384n],
+  ['ucvtf d0, x0, #65', 384n],
+  ['ucvtf s0, w0, #33', 384n],
 ]) {
   const { step, emu } = await expectFault([text, 'add x0, x0, #1'], x0);
   assert.equal(step.code, 'invalid-fp-immediate', `${text} exceeds its source width`);
