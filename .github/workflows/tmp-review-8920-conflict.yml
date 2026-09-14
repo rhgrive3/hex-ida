@@ -1,0 +1,126 @@
+name: tmp-review-8920-conflict
+on:
+  push:
+    branches: [fix/review-8599-current-main-r1]
+permissions:
+  contents: write
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Apply conflicting-authority fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          p=Path('js/analyze.js')
+          s=p.read_text()
+          old="""  const explicit = [width, bytes, bits].filter((value) => value != null);
+            if (explicit.length) {
+              if (explicit.some((value) => value !== explicit[0])) return null;
+              return explicit[0];
+            }
+
+            const rawArchitecture = opts.architecture ?? opts.arch ?? opts.cpu ?? null;
+            if (rawArchitecture == null) return null;
+            if (typeof rawArchitecture !== 'string') return null;
+            const architecture = rawArchitecture.trim().toLowerCase();
+            const mapped = ARM64_SEMANTIC_POINTER_WIDTH_BYTES.get(architecture);
+            return mapped === undefined ? null : mapped;
+          }"""
+          new="""  const explicit = [width, bytes, bits].filter((value) => value != null);
+            if (explicit.length && explicit.some((value) => value !== explicit[0])) return null;
+
+            const rawArchitecture = opts.architecture ?? opts.arch ?? opts.cpu ?? null;
+            let mapped = null;
+            if (rawArchitecture != null) {
+              if (typeof rawArchitecture !== 'string') return null;
+              const architecture = rawArchitecture.trim().toLowerCase();
+              mapped = ARM64_SEMANTIC_POINTER_WIDTH_BYTES.get(architecture) ?? null;
+              if (mapped == null) return null;
+            }
+
+            if (explicit.length) {
+              if (mapped != null && explicit[0] !== mapped) return null;
+              return explicit[0];
+            }
+            return mapped;
+          }"""
+          if s.count(old) != 1:
+              raise SystemExit(f'analyze resolver pattern count={s.count(old)}')
+          p.write_text(s.replace(old,new,1))
+
+          t=Path('tests/phase11/shared/issue-8599-no-context-pointer-authority.test.mjs')
+          text=t.read_text()
+          marker="test('#4973: resolveModelTexts with no ABI evidence performs no second read', async () => {"
+          if text.count(marker) != 1:
+              raise SystemExit('test insertion marker changed')
+          addition=r'''
+
+test('#4973: conflicting architecture and explicit width authority fails closed', () => {
+  const adjacent = new Uint8Array([0x78, 0x56, 0x34, 0x12, 0x04, 0x20, 0x00, 0x00]);
+  assert.equal(resolvePointerBytes({ architecture: 'arm64_32', pointerWidth: 8 }), null);
+  assert.equal(resolvePointerBytes({ architecture: 'arm64', pointerBytes: 4 }), null);
+  assert.equal(resolvePointerBytes({ architecture: 'arm64e', pointerBits: 32 }), null);
+  assert.equal(pointerAt(adjacent, { architecture: 'arm64_32', pointerWidth: 8 }), null);
+});
+
+test('#4973: mixed opts/model/backend ABI conflict performs no second read', async () => {
+  const model = {
+    architecture: null,
+    pointerWidth: 8,
+    addressRefs: [{ row: 0, addr: 0x4000n }],
+    semantic: [],
+    calls: [],
+    facts: { stringRefs: [] },
+  };
+  const reads = [];
+  const backend = {
+    pointerBits: 64,
+    async readAt(addr) {
+      reads.push(addr);
+      if (addr === 0x4000n) {
+        return { found: true, terminated: false, text: null, bytes: new Uint8Array([0x78, 0x56, 0x34, 0x12, 0x04, 0x20, 0x00, 0x00]) };
+      }
+      return { found: true, terminated: true, text: 'must not dereference contradictory ABI evidence', bytes: new Uint8Array() };
+    },
+  };
+  await resolveModelTexts(backend, model, 96, { architecture: 'arm64_32' });
+  assert.deepEqual(reads, [0x4000n]);
+});
+'''
+          t.write_text(text.replace('\n'+marker, addition+'\n'+marker, 1))
+          PY
+      - name: Verify authority regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 25s node --test tests/phase11/shared/issue-8599-no-context-pointer-authority.test.mjs
+          timeout 25s node tests/issue-4973-arm64-32-pointer-width.mjs
+          timeout 25s node --test tests/phase11/shared/issue-4811-4786-4971-4973-5000-r1-regressions.test.mjs
+          timeout 25s node tests/issue-5360-model-texts-transient-read-retry.mjs
+          timeout 30s node tests/check.mjs
+      - name: Commit repaired head and remove temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/tmp-review-8920-conflict.yml
+          git diff --check
+          changed="$(git status --short | awk '{print $2}' | sort)"
+          printf '%s\n' "$changed"
+          for p in .github/workflows/tmp-review-8920-conflict.yml js/analyze.js tests/phase11/shared/issue-8599-no-context-pointer-authority.test.mjs; do
+            printf '%s\n' "$changed" | grep -qx "$p"
+          done
+          test "$(printf '%s\n' "$changed" | wc -l)" -eq 3
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: reject conflicting pointer-width authority'
+          git push origin HEAD:fix/review-8599-current-main-r1
