@@ -97,6 +97,7 @@ export function createSnapshotContext(local = {}, snapshot, scopeController = nu
   frozen.binaryIdentity = snapshot.binaryIdentity;
   frozen.binaryId = snapshot.binaryId;
   frozen.projectId = snapshot.projectIdentity;
+  frozen.analysisRevision = snapshot.analysisRevision;
   frozen.currentAddress = parseAddress(snapshot.currentAddress ?? snapshot.currentFunction?.address);
   frozen.activeFunction = snapshot.currentFunction ? {
     address: parseAddress(snapshot.currentFunction.address),
@@ -336,13 +337,16 @@ function snapshotNeighborhood(local, current) {
 
 function safeName(local, address) { try { return local.functionName?.(address) || null; } catch { return null; } }
 function copyScalar(value) { return ['string', 'number', 'boolean'].includes(typeof value) ? value : value == null ? null : String(value); }
-// The analysis revision is the identity of the workbench analysis snapshot a
-// turn's deterministic tools were evaluated against. It is captured once per
-// turn snapshot so the executor can fail closed if the live analysis is
-// re-derived mid-turn (#8930). Read from the same context fields the tool layer
-// uses; a context that does not expose it yields null (no revision to compare).
+// Analysis revision is freshness authority. Accept only scalar identities;
+// never turn structured/untrusted values into authority via generic String().
 export function resolveAnalysisRevision(local = {}) {
-  return copyScalar(first(local.analysisRevision, local.binary?.analysisRevision, local.program?.analysisRevision, local.revision));
+  const value = first(local.analysisRevision, local.binary?.analysisRevision, local.program?.analysisRevision, local.revision);
+  if (value == null || value === '') return null;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'bigint') return value.toString();
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? String(value) : null;
+  if (typeof value === 'boolean') return String(value);
+  return null;
 }
 function first(...values) { return values.find((value) => value !== undefined && value !== null) ?? null; }
 function parseAddress(value) { try { return value == null ? null : BigInt(value); } catch { return value; } }
