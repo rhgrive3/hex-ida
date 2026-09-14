@@ -205,9 +205,10 @@ function lookupVirtualMapping(lookup, address) {
 
 // #8772: file-offset resolution is a mapping query, not a display scan. Sections and
 // segments are indexed by their file range so a lookup costs O(log N + the ranges that
-// actually contain the offset) instead of O(sections + segments) per call. The candidate
-// order is preserved exactly: ascending virtual size, ties broken by the original
-// enumeration order (sections first, then segments).
+// actually contain the offset) instead of O(sections + segments) per call, and the
+// containing window is answered from its first resolution-order candidate instead of a
+// per-call sort. The candidate order is preserved exactly: ascending virtual size, ties
+// broken by the original enumeration order (sections first, then segments).
 function buildFileOffsetLookup(sections, segments) {
   const items = [];
   let rank = 0;
@@ -240,7 +241,7 @@ function buildFileOffsetLookup(sections, segments) {
   return { items, starts, prefixEnds };
 }
 
-function lookupFileOffsetCandidates(lookup, offset) {
+function fileOffsetCandidateWindow(lookup, offset) {
   const { items, starts, prefixEnds } = lookup;
   let lo = 0;
   let hi = items.length;
@@ -250,7 +251,7 @@ function lookupFileOffsetCandidates(lookup, offset) {
     else hi = mid;
   }
   const upper = lo;
-  if (upper === 0) return [];
+  if (upper === 0) return null;
   lo = 0;
   hi = upper;
   while (lo < hi) {
@@ -258,14 +259,35 @@ function lookupFileOffsetCandidates(lookup, offset) {
     if (prefixEnds[mid] > offset) hi = mid;
     else lo = mid + 1;
   }
+  return { lo, hi: upper };
+}
+
+const beforeCandidate = (a, b) => (a.size < b.size ? true : a.size > b.size ? false : a.rank < b.rank);
+
+// The first candidate in resolution order, without materializing or sorting the window.
+// Alias-heavy images (every section mapping the same bytes) have windows as wide as the
+// section count, so a per-call sort made each resolution Θ(N log N) even though the
+// earliest smallest mapping answers it; this keeps the common answer at one probe.
+function firstFileOffsetCandidate(lookup, window, offset) {
+  const { items } = lookup;
+  let best = null;
+  for (let i = window.lo; i < window.hi; i++) {
+    const item = items[i];
+    if (item.end <= offset) continue;
+    if (best === null || beforeCandidate(item, best)) best = item;
+  }
+  return best;
+}
+
+function orderedFileOffsetCandidates(lookup, window, offset) {
+  const { items } = lookup;
   const candidates = [];
-  for (let i = lo; i < upper; i++) {
+  for (let i = window.lo; i < window.hi; i++) {
     if (items[i].end > offset) candidates.push(items[i]);
   }
   candidates.sort((a, b) => (a.size < b.size ? -1 : a.size > b.size ? 1 : a.rank - b.rank));
   return candidates;
 }
-
 
 function isAddressSorted(items) {
   for (let i = 1; i < items.length; i++) {
@@ -545,17 +567,26 @@ export class BinaryImage {
     const o = strictBigIntOrNull(offset);
     if (o === null || o < 0n) return null;
     if (!this._mappingLookups.offsets) this._mappingLookups.offsets = buildFileOffsetLookup(this.sections, this.segments);
-    for (const candidate of lookupFileOffsetCandidates(this._mappingLookups.offsets, o)) {
+    const lookup = this._mappingLookups.offsets;
+    const window = fileOffsetCandidateWindow(lookup, o);
+    if (window === null) return null;
+    const resolve = (candidate) => {
       const s = candidate.mapping;
       const a = s.address + (o - s.fileOffset);
       const owner = this._virtualMappingAt(a);
-      if (owner) {
-        const delta = a - owner.address;
-        const fileSize = owner.fileSize ?? 0n;
-        if (delta < fileSize && (owner.fileOffset + delta) === o) {
-          return a;
-        }
-      }
+      if (!owner) return null;
+      const delta = a - owner.address;
+      const fileSize = owner.fileSize ?? 0n;
+      return delta < fileSize && (owner.fileOffset + delta) === o ? a : null;
+    };
+    const first = firstFileOffsetCandidate(lookup, window, o);
+    if (first !== null) {
+      const resolved = resolve(first);
+      if (resolved !== null) return resolved;
+    }
+    for (const candidate of orderedFileOffsetCandidates(lookup, window, o)) {
+      const resolved = resolve(candidate);
+      if (resolved !== null) return resolved;
     }
     return null;
   }

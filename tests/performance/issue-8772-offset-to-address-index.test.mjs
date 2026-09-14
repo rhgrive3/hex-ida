@@ -148,3 +148,31 @@ test('#8772 the string-scale counterexample stays bounded instead of quadratic',
   // index existed; the bounded path stays far below this ceiling.
   assert.ok(elapsedMs < 10000, `${count} resolutions took ${elapsedMs.toFixed(0)} ms`);
 });
+
+test('#8772 an aliasing window is answered by its first candidate, not probed alias by alias', () => {
+  const aliases = 6000;
+  const image = new BinaryImage(new Uint8Array(4096), { format: 'test', arch: 'x86_64', bits: 64 });
+  for (let i = 0; i < aliases; i++) {
+    image.addSection({
+      name: `.alias${i}`, address: BigInt(0x10000 + i * 0x1000), size: 0x10000n,
+      fileOffset: 0n, fileSize: 4096n, perms: { read: true },
+    });
+  }
+  // Every alias contains every offset in the file range, so the pre-fix scan resolved
+  // offset → address → virtual owner once per alias, per lookup: Θ(aliases × hits).
+  assert.equal(image.offsetToAddress(8n), 0x10008n); // warms both indices
+  let ownerProbes = 0;
+  const virtual = image._virtualMappingAt.bind(image);
+  image._virtualMappingAt = (address) => { ownerProbes++; return virtual(address); };
+  const hits = [];
+  for (let i = 0; i < 40; i++) hits.push(image.offsetToAddress(BigInt(i * 64 + 8)));
+  image._virtualMappingAt = virtual;
+  assert.equal(hits[0], 0x10008n);
+  assert.equal(hits[39], 0x109c8n);
+  assert.ok(ownerProbes <= 2 * hits.length,
+    `${hits.length} resolutions over ${aliases} aliases probed virtual ownership ${ownerProbes} times`);
+  // Same answers as the pre-fix scan, so the fast path is not a semantic shortcut.
+  for (let i = 0; i < 40; i++) {
+    assert.equal(hits[i], offsetToAddressByScan(image, BigInt(i * 64 + 8)));
+  }
+});
