@@ -41,18 +41,24 @@ export function resolvePointerBytes(context = {}) {
       || (rawBytes != null && bytes == null)
       || (rawBits != null && bits == null)) return null;
 
-  const explicit = [width, bytes, bits].filter((value) => value != null);
-  if (explicit.length) {
-    if (explicit.some((value) => value !== explicit[0])) return null;
-    return explicit[0];
-  }
-
-  const rawArchitecture = opts.architecture ?? opts.arch ?? opts.cpu ?? null;
-  if (rawArchitecture == null) return null;
+const rawArchitecture = opts.architecture ?? opts.arch ?? opts.cpu ?? null;
+let architectureWidth = null;
+if (rawArchitecture != null) {
   if (typeof rawArchitecture !== 'string') return null;
   const architecture = rawArchitecture.trim().toLowerCase();
   const mapped = ARM64_SEMANTIC_POINTER_WIDTH_BYTES.get(architecture);
-  return mapped === undefined ? null : mapped;
+  if (mapped === undefined) return null;
+  architectureWidth = mapped;
+}
+
+const explicit = [width, bytes, bits].filter((value) => value != null);
+if (explicit.length) {
+  if (explicit.some((value) => value !== explicit[0])) return null;
+  if (architectureWidth != null && explicit[0] !== architectureWidth) return null;
+  return explicit[0];
+}
+
+return architectureWidth;
 }
 function rowBudget(opts = {}) {
   const raw = opts?.maxRows;
