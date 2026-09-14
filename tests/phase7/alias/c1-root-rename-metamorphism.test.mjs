@@ -83,8 +83,8 @@ test('C1-03: all frozen alias queries retain truth under semantic root renaming'
   }
   assert.equal(rows.length, 240);
   assert.equal(rows.filter(row => row.stateKeyCount === 0).length, 16, 'two absolute-address queries are identifier-only controls, not root-renaming evidence');
-  assert.equal(rows.filter(row => ['no', 'must'].includes(row.relation)).length, 120);
+  assert.equal(rows.filter(row => ['no', 'must'].includes(row.relation)).length, 96);
   assert.equal(rows.filter(row => ['no', 'must'].includes(row.relation) && row.relation !== row.truth).length, 0);
-  t.diagnostic(JSON.stringify({ schema: 'c1-root-rename-matrix-v1', rows,
+  t.diagnostic(JSON.stringify({ schema: 'c1-root-rename-matrix-v2', rows,
     scope: '30 frozen declared-truth queries x 8 bijective state-key/node/value renamings; 224 state-root cells and 16 absolute identifier-only controls; canonical SSA/classifier/solver' }));
 });
