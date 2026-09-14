@@ -5,6 +5,7 @@ export const DEFAULT_DYNAMIC_SYMBOL_LIMITS = Object.freeze({
   maxOperations: 2_000_000,
   maxWallMs: 2_000,
   maxEstimatedBytes: 96 * 1024 * 1024,
+  maxStringBytes: 16 * 1024 * 1024,
 });
 
 function positiveLimit(value, fallback) {
@@ -19,6 +20,7 @@ export function createDynamicSymbolBudget({ limits = {}, onLimit = null, signal 
     maxOperations: positiveLimit(limits.maxOperations, DEFAULT_DYNAMIC_SYMBOL_LIMITS.maxOperations),
     maxWallMs: positiveLimit(limits.maxWallMs, DEFAULT_DYNAMIC_SYMBOL_LIMITS.maxWallMs),
     maxEstimatedBytes: positiveLimit(limits.maxEstimatedBytes, DEFAULT_DYNAMIC_SYMBOL_LIMITS.maxEstimatedBytes),
+    maxStringBytes: positiveLimit(limits.maxStringBytes, DEFAULT_DYNAMIC_SYMBOL_LIMITS.maxStringBytes),
   };
   const now = typeof limits.now === 'function' ? limits.now : Date.now;
   const started = now();
@@ -26,6 +28,7 @@ export function createDynamicSymbolBudget({ limits = {}, onLimit = null, signal 
   let operations = 0;
   let outputObjects = 0;
   let estimatedBytes = 0;
+  let stringBytes = 0;
   let stopped = false;
   let reason = null;
   let nextTimeCheck = 4096;
@@ -49,6 +52,11 @@ export function createDynamicSymbolBudget({ limits = {}, onLimit = null, signal 
     limits: resolved,
     get stopped() { return stopped; },
     get reason() { return reason; },
+    // Remaining budget expressed as string-table characters, so a resolver can
+    // bound its own scan window instead of allocating first and accounting later.
+    get remainingStringChars() {
+      return stopped ? 0 : Math.max(0, Math.floor((resolved.maxStringBytes - stringBytes) / 2));
+    },
     claimInput(bytes, source = 'dynamic symbol table') {
       if (stopped) return false;
       if (signal?.aborted) return stop('aborted');
@@ -79,9 +87,24 @@ export function createDynamicSymbolBudget({ limits = {}, onLimit = null, signal 
       estimatedBytes += bytes;
       return true;
     },
+    // Decoded dynamic strings are retained JS text, so they need their own
+    // aggregate dimension: per-record object estimates alone undercount a shared
+    // long `st_name` by hundreds of times (#8821).
+    claimString(chars = 1, source = 'dynamic string') {
+      if (stopped) return false;
+      if (signal?.aborted) return stop('aborted');
+      if (!Number.isSafeInteger(chars) || chars < 0) return stop(`${source} decoded length is invalid`);
+      const bytes = chars * 2;
+      if (!Number.isSafeInteger(bytes)) return stop(`${source} decoded bytes exceed safe integer range`);
+      if (bytes > resolved.maxStringBytes - stringBytes) return stop(`${source} decoded string bytes exceed ${resolved.maxStringBytes}`);
+      if (bytes > resolved.maxEstimatedBytes - estimatedBytes) return stop(`${source} estimated memory exceeds ${resolved.maxEstimatedBytes} bytes`);
+      stringBytes += bytes;
+      estimatedBytes += bytes;
+      return true;
+    },
     checkWall(stage = 'dynamic symbol decode') { return wallOkay(stage); },
     snapshot() {
-      return { ...resolved, inputBytes, operations, outputObjects, estimatedBytes, stopped, reason };
+      return { ...resolved, inputBytes, operations, outputObjects, stringBytes, estimatedBytes, stopped, reason };
     },
   };
 }
