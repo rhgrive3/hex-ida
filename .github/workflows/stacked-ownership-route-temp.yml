@@ -1,0 +1,107 @@
+name: Temporary stacked ownership route apply
+
+on:
+  push:
+    branches:
+      - fix/independent-io-pr7036-aware-20260914
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Add fail-closed stacked PR ownership routing
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.circleci/config.yml')
+          s = p.read_text()
+          branch = 'fix/independent-io-pr7036-aware-20260914'
+          parent = 'feat/analysis-roadmap-v8-current-main-20260907'
+
+          phase7_anchor = '''            case "${CIRCLE_BRANCH:-}" in
+'''
+          phase7_case = f'''              {branch})
+                # Stacked component PR: validate impact against the live #7036 parent,
+                # not main. Any fetch/ancestry/matching uncertainty fails closed by
+                # running the normal ownership validator.
+                parent_branch='{parent}'
+                parent_ref="refs/remotes/origin/$parent_branch"
+                if timeout 30s git fetch --no-tags origin "$parent_branch:$parent_ref" >/dev/null 2>&1 \\
+                  && git merge-base --is-ancestor "$parent_ref" HEAD; then
+                  changed="$(git diff --name-only "$parent_ref...HEAD")"
+                  set +e
+                  printf '%s\\n' "$changed" | grep -Eq '^(js/analysis/|js/semantics/compat/index\\.js$|tests/phase7/|tools/validation/phase7/|tools/validation/phase7-ownership\\.mjs$|tools/validation/phase-ownership/phase7\\.json$|reports/phase7/|\\.github/workflows/phase7-ownership\\.yml$|tools/validation/phase5-ownership\\.mjs$|tools/validation/scpa-integration-ownership\\.mjs$|tools/validation/phase-ownership/scpa-integration\\.json$|tests/ci/scpa-integration-ownership\\.test\\.mjs$)'
+                  match_status=$?
+                  set -e
+                  case "$match_status" in
+                    0) run_it=true ;;
+                    1) run_it=false ;;
+                    *) echo 'stacked Phase 7 impact matching failed; running conservatively' >&2; run_it=true ;;
+                  esac
+                else
+                  echo 'stacked #7036 parent unavailable or not an ancestor; running Phase 7 conservatively' >&2
+                  run_it=true
+                fi
+                ;;
+'''
+          if branch not in s:
+              if phase7_anchor not in s:
+                  raise SystemExit('phase7 anchor missing')
+              s = s.replace(phase7_anchor, phase7_anchor + phase7_case, 1)
+
+          phase8_anchor = '''            if [ "${CIRCLE_BRANCH:-}" = 'feat/scpa-functional-acceptance-20260912' ]; then
+              run_it=true
+            else
+'''
+          phase8_replacement = f'''            if [ "${{CIRCLE_BRANCH:-}}" = '{branch}' ]; then
+              # Same stacked-PR rule as Phase 7: only the child delta may decide
+              # impact. Uncertainty runs conservatively instead of skipping.
+              parent_branch='{parent}'
+              parent_ref="refs/remotes/origin/$parent_branch"
+              if timeout 30s git fetch --no-tags origin "$parent_branch:$parent_ref" >/dev/null 2>&1 \\
+                && git merge-base --is-ancestor "$parent_ref" HEAD; then
+                changed="$(git diff --name-only "$parent_ref...HEAD")"
+                set +e
+                printf '%s\\n' "$changed" | grep -Eq '^(js/decompiler/|tests/phase8/|tools/validation/phase8/|tools/validation/phase8-ownership\\.mjs$|tools/validation/phase-ownership/phase8\\.json$|reports/phase8/|docs/PHASE8_CHECKPOINT\\.md$|docs/PHASE8_HANDOFF\\.md$|\\.github/workflows/phase8-ownership\\.yml$|\\.github/workflows/phase8-release-validation\\.yml$|tools/validation/phase5-ownership\\.mjs$|tools/validation/scpa-integration-ownership\\.mjs$|tools/validation/phase-ownership/scpa-integration\\.json$|tests/ci/scpa-integration-ownership\\.test\\.mjs$)'
+                match_status=$?
+                set -e
+                case "$match_status" in
+                  0) run_it=true ;;
+                  1) run_it=false ;;
+                  *) echo 'stacked Phase 8 impact matching failed; running conservatively' >&2; run_it=true ;;
+                esac
+              else
+                echo 'stacked #7036 parent unavailable or not an ancestor; running Phase 8 conservatively' >&2
+                run_it=true
+              fi
+            elif [ "${{CIRCLE_BRANCH:-}}" = 'feat/scpa-functional-acceptance-20260912' ]; then
+              run_it=true
+            else
+'''
+          if phase8_anchor not in s:
+              raise SystemExit('phase8 anchor missing')
+          s = s.replace(phase8_anchor, phase8_replacement, 1)
+          p.write_text(s)
+          PY
+          grep -F "fix/independent-io-pr7036-aware-20260914" .circleci/config.yml >/dev/null
+          node tests/ci/circleci-impact.test.mjs
+      - name: Commit route and remove temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f .github/workflows/stacked-ownership-route-temp.yml
+          git add .circleci/config.yml .github/workflows/stacked-ownership-route-temp.yml
+          git commit -m 'ci: validate stacked ownership against live #7036 parent'
+          git push origin HEAD:fix/independent-io-pr7036-aware-20260914
