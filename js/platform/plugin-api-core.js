@@ -22,8 +22,17 @@ function fallbackClone(value, seen = new WeakMap(), depth = 0) {
   if (depth > 32) throw new Error('plugin context nesting exceeds safety limit');
   if (seen.has(value)) return seen.get(value);
   if (value instanceof Date) return new Date(value.getTime());
+  // A snapshot must be detached: `structuredClone` and `TypedArray.prototype.slice`
+  // both keep a SharedArrayBuffer's backing shared, so a plugin could still reach
+  // host bytes through the "snapshot". Copy the bytes into a fresh, non-shared
+  // ArrayBuffer so writes on either side of the boundary cannot alias.
+  if (isSharedBuffer(value)) return detachSharedBuffer(value);
   if (value instanceof ArrayBuffer) return value.slice(0);
-  if (ArrayBuffer.isView(value)) { if (value instanceof DataView) return new DataView(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength)); return value.slice ? value.slice() : new value.constructor(value); }
+  if (ArrayBuffer.isView(value)) {
+    const buffer = isSharedBuffer(value.buffer) ? detachSharedBuffer(value.buffer) : value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+    if (value instanceof DataView) return new DataView(buffer, 0, value.byteLength);
+    return new value.constructor(buffer, 0, value.length);
+  }
   if (value instanceof Map) { const out = new Map(); seen.set(value, out); for (const [k, v] of value) out.set(fallbackClone(k, seen, depth + 1), fallbackClone(v, seen, depth + 1)); return out; }
   if (value instanceof Set) { const out = new Set(); seen.set(value, out); for (const v of value) out.add(fallbackClone(v, seen, depth + 1)); return out; }
   if (Array.isArray(value)) { const out = []; seen.set(value, out); for (const v of value) out.push(fallbackClone(v, seen, depth + 1)); return out; }
@@ -32,11 +41,45 @@ function fallbackClone(value, seen = new WeakMap(), depth = 0) {
   return out;
 }
 
+const SHARED_ARRAY_BUFFER_CTOR = typeof SharedArrayBuffer === 'function' ? SharedArrayBuffer : null;
+function isSharedBuffer(value) {
+  return SHARED_ARRAY_BUFFER_CTOR != null && value instanceof SHARED_ARRAY_BUFFER_CTOR;
+}
+function detachSharedBuffer(buffer) {
+  const copy = new ArrayBuffer(buffer.byteLength);
+  new Uint8Array(copy).set(new Uint8Array(buffer, 0, buffer.byteLength));
+  return copy;
+}
+
+// Only graphs that actually contain a SharedArrayBuffer need the
+// detach-preserving fallback clone; everything else keeps using the platform's
+// `structuredClone` unchanged so no existing snapshot behaviour or cost shifts.
+function containsSharedBuffer(value, seen = new WeakSet()) {
+  if (value == null || typeof value !== 'object') return false;
+  if (SHARED_ARRAY_BUFFER_CTOR == null) return false;
+  if (value instanceof SHARED_ARRAY_BUFFER_CTOR) return true;
+  if (ArrayBuffer.isView(value)) return value.buffer instanceof SHARED_ARRAY_BUFFER_CTOR;
+  if (value instanceof ArrayBuffer) return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) { for (const item of value) if (containsSharedBuffer(item, seen)) return true; return false; }
+  if (value instanceof Map) { for (const [k, v] of value) { if (containsSharedBuffer(k, seen) || containsSharedBuffer(v, seen)) return true; } return false; }
+  if (value instanceof Set) { for (const v of value) if (containsSharedBuffer(v, seen)) return true; return false; }
+  for (const key of Reflect.ownKeys(value)) {
+    const desc = Object.getOwnPropertyDescriptor(value, key);
+    if (desc && 'value' in desc && containsSharedBuffer(desc.value, seen)) return true;
+  }
+  return false;
+}
+
 function safeSnapshot(value) {
   if (value == null) return null;
   let clone;
-  if (typeof structuredClone === 'function') { try { clone = structuredClone(value); } catch { clone = fallbackClone(value); } }
-  else clone = fallbackClone(value);
+  if (typeof structuredClone === 'function' && !containsSharedBuffer(value)) {
+    try { clone = structuredClone(value); } catch { clone = fallbackClone(value); }
+  } else {
+    clone = fallbackClone(value);
+  }
   return deepFreeze(clone);
 }
 
