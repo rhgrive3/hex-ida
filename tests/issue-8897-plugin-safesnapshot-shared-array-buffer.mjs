@@ -77,3 +77,49 @@ test('#8897 DataView over a SharedArrayBuffer is detached too', { skip: !HAS_SAB
   assert.equal(result.value, 0x7f);
   assert.equal(dv.getUint8(0), 1, 'host DataView must be unaffected by plugin write');
 });
+
+test('#8897 SAB-backed views preserve offsets, repeated references, and cloned backing topology', { skip: !HAS_SAB && 'SharedArrayBuffer unavailable' }, async () => {
+  const sab = new SharedArrayBuffer(8);
+  const hostBytes = new Uint8Array(sab);
+  hostBytes.set([0, 1, 2, 3, 4, 5, 6, 7]);
+  const bytes = new Uint8Array(sab, 4, 2);
+  const view = new DataView(sab, 2, 4);
+
+  const registry = new PlatformPluginRegistry({ timeoutMs: 1000 });
+  registry.registerAnalyzer('sab.view-topology', {
+    async analyze(context) {
+      const project = context.project;
+      const before = Array.from(project.bytes);
+      const sameView = project.bytes === project.repeatedBytes;
+      const sameBacking = project.buffer === project.bytes.buffer && project.bytes.buffer === project.view.buffer;
+      project.bytes[0] = 0xaa;
+      return {
+        before,
+        byteOffset: project.bytes.byteOffset,
+        length: project.bytes.length,
+        dataViewOffset: project.view.byteOffset,
+        dataViewLength: project.view.byteLength,
+        sameView,
+        sameBacking,
+        overlappingByte: project.view.getUint8(2),
+        sharedBacking: project.bytes.buffer instanceof SharedArrayBuffer,
+      };
+    },
+  });
+
+  const result = await registry.invoke('analyzer', 'sab.view-topology', 'analyze', {
+    project: { buffer: sab, bytes, repeatedBytes: bytes, view },
+  });
+  assert.deepEqual(result.value, {
+    before: [4, 5],
+    byteOffset: 4,
+    length: 2,
+    dataViewOffset: 2,
+    dataViewLength: 4,
+    sameView: true,
+    sameBacking: true,
+    overlappingByte: 0xaa,
+    sharedBacking: false,
+  });
+  assert.deepEqual(Array.from(hostBytes), [0, 1, 2, 3, 4, 5, 6, 7], 'detached topology must not alias host shared memory');
+});
