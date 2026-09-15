@@ -4,7 +4,8 @@ import {
 } from './registry.js';
 import { AAPCS64_ABI, AAPCS64_ILP32_ABI } from './aapcs64.js';
 import { DARWIN_ARM64_ABI } from './darwin-arm64.js';
-import { SYSV_AMD64_ABI, SYSV_AMD64_ILP32_ABI } from './sysv-amd64.js';
+import { SYSV_AMD64_ABI } from './sysv-amd64.js';
+import { SYSV_AMD64_ILP32_ABI } from './sysv-amd64-ilp32.js';
 import { MICROSOFT_X64_ABI } from './microsoft-x64.js';
 import { MICROSOFT_VECTORCALL_ABI } from './microsoft-vectorcall.js';
 import { RISCV_LP64_ABI, RISCV_LP64F_ABI, RISCV_LP64D_ABI } from './riscv-lp64.js';
