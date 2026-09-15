@@ -108,3 +108,16 @@ test('#8976: a class_data-less (external) method stays a soft structural error, 
   assert.equal(dexMethodDefinitions(image).has(1), false, 'index must omit a class_data-less method');
   assert.equal(dexMethodDefinitions(image).has(0), true, 'index must contain the defined method');
 });
+
+test('#8976: a shallow-frozen image with mutable nested class_data is NEVER memoized', () => {
+  const image = {
+    methods: [{ classType: 'LTest;' }, { classType: 'LTest;' }],
+    classes: [{ classType: 'LTest;', directMethods: [{ methodIdx: 0, codeOff: 4, accessFlags: 9 }], virtualMethods: [] }],
+  };
+  Object.freeze(image);
+  const first = dexMethodDefinitions(image);
+  image.classes[0].directMethods.push({ methodIdx: 1, codeOff: 4, accessFlags: 9 });
+  const second = dexMethodDefinitions(image);
+  assert.notEqual(second, first, 'shallow-frozen caller images must not reuse a stale derived index');
+  assert.deepEqual([...second.keys()], [0, 1]);
+});
