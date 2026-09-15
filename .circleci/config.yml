@@ -325,6 +325,34 @@ jobs:
                   --head-sha "$OWNERSHIP_HEAD_SHA")"
                 node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
                 ;;
+              codex/issue-campaign-20260914-lane-12-batch-02)
+                # PR #8939 is an exact, review-driven cross-lane repair batch.
+                # Fail closed unless the complete changed-file inventory remains
+                # exactly this reviewed set, then validate its Phase 7-owned file.
+                FILES_JSON="$(git diff --name-only --diff-filter=ACMR "$OWNERSHIP_BASE_SHA" "$OWNERSHIP_HEAD_SHA" | node -e '
+                  const fs = require("node:fs");
+                  const actual = fs.readFileSync(0, "utf8").split(/\r?\n/).filter(Boolean).sort();
+                  const expected = [
+                    ".circleci/config.yml",
+                    "js/analysis/summary/interprocedural.js",
+                    "js/apple/objc-runtime.js",
+                    "js/controlflow.js",
+                    "js/decompiler/semantic-core.js",
+                    "tests/performance/issue-8872-nested-escape-provenance-budget.test.mjs",
+                    "tests/performance/issue-8872-summary-resident-payload-budget.test.mjs",
+                    "tests/performance/issue-8887-natural-loop-membership-budget.test.mjs",
+                    "tests/performance/issue-8899-objc-category-protocol-merge-linear.test.mjs",
+                    "tools/validation/phase8/cross-lane-inventory.mjs",
+                  ].sort();
+                  if (actual.length !== expected.length || actual.some((file, i) => file !== expected[i])) {
+                    console.error("PR #8939 Phase 7 route inventory mismatch");
+                    console.error(JSON.stringify({ actual, expected }));
+                    process.exit(1);
+                  }
+                  process.stdout.write(JSON.stringify(["js/analysis/summary/interprocedural.js"]));
+                ')"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
               codex/consolidate-arm64-repairs-20260913)
                 # The consolidated repair batch spans multiple ownership lanes.
                 # Enumerate every foreign path before validating the Phase 7
@@ -391,6 +419,12 @@ jobs:
                 --head-sha "$OWNERSHIP_HEAD_SHA")"
               node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"
             elif [ "${CIRCLE_BRANCH:-}" = 'fix/main-gate-recovery-20260913' ]; then
+              FILES_JSON="$(node tools/validation/phase8/cross-lane-inventory.mjs \
+                --branch "$CIRCLE_BRANCH" \
+                --base-sha "$OWNERSHIP_BASE_SHA" \
+                --head-sha "$OWNERSHIP_HEAD_SHA")"
+              node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"
+            elif [ "${CIRCLE_BRANCH:-}" = 'codex/issue-campaign-20260914-lane-12-batch-02' ]; then
               FILES_JSON="$(node tools/validation/phase8/cross-lane-inventory.mjs \
                 --branch "$CIRCLE_BRANCH" \
                 --base-sha "$OWNERSHIP_BASE_SHA" \
