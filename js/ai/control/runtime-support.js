@@ -43,7 +43,15 @@ export function sessionMatchesSnapshot(session, snapshot) {
     const sessionLegacy = sessionIdentity?.legacyId ?? (!sessionIdentity ? sessionBindingId : null);
     const snapshotLegacy = snapshot.legacyBinaryId ?? snapshotIdentity?.legacyId ?? null;
 
-    if (!sessionStrong && snapshotStrong) binaryMatches = sameLegacy(sessionLegacy, snapshotLegacy);
+    // #8967: a legacy session's `filename:slice` binding is not a collision-
+    // resistant proof that its bytes equal a strong snapshot's identity. When
+    // the session carries no strong identity but the snapshot does, matching
+    // by `sameLegacy()` promotes weak string equality into a strong binary
+    // identity and lets a byte-different file with the same name hydrate the
+    // prior conversation/confirmed findings across binaries. Fail closed; only
+    // symmetric legacy↔legacy comparisons (no strong upgrade) keep the old
+    // compatibility behaviour.
+    if (!sessionStrong && snapshotStrong) binaryMatches = false;
     else if (!sessionStrong && !snapshotStrong) binaryMatches = sameLegacy(sessionLegacy, snapshotLegacy);
     else binaryMatches = false;
   }

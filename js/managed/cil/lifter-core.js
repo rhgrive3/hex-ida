@@ -2,6 +2,8 @@ import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedExceptionRegionId, createManagedMethodId, createVMOperationId } from '../shared/identity.js';
 import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
 import { createCilFieldSignatureResolver, createCilLocalTypeResolver } from './call-signatures.js';
+import { cilTokenText } from './metadata-layout.js';
+import { cilImageLookups } from './image-lookup.js';
 import { cilStackValueWidth } from './stack-width.js';
 import { decodeCilInstructionBoundary } from './instruction-boundary.js';
 
@@ -27,6 +29,32 @@ function operandWidths(run, count) {
   if (run.length < count) return null;
   const top = run.slice(run.length - count);
   return top.every((bits) => bits != null) ? top : null;
+}
+
+// ECMA-335 §III.3:1.5: plain `ceq`/`cgt`/`clt` compare the values currently on
+// the stack, and `cgt`/`clt` are SIGNED unless the instruction is spelled `.un`.
+// A managed reference (`ldnull`, `newobj`, a pointer field) and a floating value
+// have different ordering semantics, so integral operand authority may only come
+// from a push that states it: the int32/int64 evaluation-stack categories, or an
+// integer literal. Anything else stays unresolved instead of minting a signed
+// comparison the image never proved (#8785).
+function cilStackValueIsIntegral(value) {
+  if (cilStackValueWidth(value) == null) return false;
+  if (value.isNull === true || value.stringToken != null || value.stringRef != null) return false;
+  if (value.pointee != null || value.typeToken != null || value.valueType != null || value.referenceKind != null) return false;
+  if (value.floating === true || value.type?.kind === 'float') return false;
+  if (value.stackType != null) return value.stackType === 'int32' || value.stackType === 'int64';
+  return value.constant != null && Number.isSafeInteger(Number(value.constant));
+}
+
+// Both the width and the integral category of the stack top must be proven for
+// the same run of pushes, so a compare cannot borrow an integer shape from an
+// unrelated reference push of the same size.
+function integerOperandWidths(widthRun, integerRun, count) {
+  if (widthRun.length < count || integerRun.length < count) return null;
+  const widths = widthRun.slice(widthRun.length - count);
+  const integers = integerRun.slice(integerRun.length - count);
+  return widths.every((bits, i) => bits != null && integers[i] === true) ? widths : null;
 }
 
 // Field load/store value shape (#3971): the FieldSig decides the
@@ -106,20 +134,17 @@ function resolveCilStaticFieldInitialization(cilImage, token, currentMethod) {
   if (table !== CIL_FIELD_DEF_TABLE) {
     return { resolved:false, reason:'cil-static-field-token-unresolved' };
   }
-  if (!Array.isArray(cilImage.methods)) {
+  // Row identity lookups are indexed once per parsed image instead of being
+  // rescanned per method instruction (#8791).
+  const lookups = cilImageLookups(cilImage);
+  if (!lookups.hasMethodRows) {
     return { resolved:false, reason:'cil-method-definitions-unavailable' };
   }
-  const field = (cilImage.fields ?? []).find(
-    (row) => row?.token === `0x${token.toString(16).padStart(8, '0')}`,
-  );
+  const field = lookups.fieldByToken.get(`0x${token.toString(16).padStart(8, '0')}`);
   if (!field) return { resolved:false, reason:'cil-static-field-row-missing' };
-  const ownerType = (cilImage.types ?? []).find(
-    (row) => row?.token === field.declaringTypeToken,
-  );
+  const ownerType = lookups.typeByToken.get(field.declaringTypeToken);
   if (!ownerType) return { resolved:false, reason:'cil-static-field-owner-type-missing' };
-  const initializers = cilImage.methods.filter(
-    (row) => row?.declaringTypeToken === ownerType.token && row?.name === '.cctor',
-  );
+  const initializers = ownerType.token == null ? [] : lookups.initializersByOwner.get(ownerType.token) ?? [];
   if (initializers.length > 1) {
     return { resolved:false, reason:'cil-type-initializer-ambiguous' };
   }
@@ -140,16 +165,11 @@ function resolveCilStaticFieldInitialization(cilImage, token, currentMethod) {
   };
 }
 
-function cilTokenText(token) {
-  const numeric = typeof token === 'number' ? token >>> 0 : Number.parseInt(String(token), 16);
-  return Number.isSafeInteger(numeric) ? `0x${(numeric >>> 0).toString(16).padStart(8, '0')}` : null;
-}
-
 function resolveCilCalleeIdentity(cilImage, token) {
   const tokenText = cilTokenText(token);
   if (!tokenText) return null;
-  const rows = Array.isArray(cilImage.methods) ? cilImage.methods : [];
-  if (!rows.some((row) => cilTokenText(row?.token) === tokenText)) return null;
+  const lookups = cilImageLookups(cilImage);
+  if (!lookups.hasMethodRows || !lookups.methodTokens.has(tokenText)) return null;
   return { tokenText, methodId: createManagedMethodId(cilImage.moduleId, tokenText) };
 }
 
@@ -170,9 +190,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
   const methodId = createManagedMethodId(cilImage.moduleId, methodTokenText(bodyIndex, methodAuthority));
   // Enclosing MethodDef identity for initializer self-access discharge (#8048).
   const currentMethodToken = methodTokenText(bodyIndex, methodAuthority);
-  const currentMethod = (cilImage.methods ?? []).find(
-    (row) => row?.token === currentMethodToken,
-  ) ?? null;
+  const currentMethod = cilImageLookups(cilImage).methodByToken.get(currentMethodToken) ?? null;
   const returnSignature = methodAuthority?.complete ? methodAuthority?.signature : null;
   const returnStackSlots = returnSignature ? (returnSignature.returnValue === null ? 0 : 1) : null;
   const bytecode = methodBody.bytecode;
@@ -193,6 +211,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
   let opSeq = 0;
   let currentStackHeight = 0;
   let pushWidthRun = [];
+  let pushIntegerRun = [];
   const bundles = [];
   let stoppedOnUnsupported = false;
 
@@ -281,6 +300,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
     let producedValues = [];
     let consumedValues = [];
     let unknownEffects = [];
+    let compare = null;
     let stackEffectUnmodeled = false;
 
     if (!isPrefixFE) {
@@ -812,8 +832,28 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
         case 0x02: // cgt
         case 0x04: // clt
           mnemonic = subOp === 0x01 ? 'ceq' : subOp === 0x02 ? 'cgt' : 'clt';
+          {
+            // The comparison predicate and its signedness are only liftable when
+            // the stack top proves two integral operands of one width; without
+            // that authority the bundle fails closed to partial instead of
+            // publishing a complete compare that carries no canonical operator
+            // (#8785). `.un` and float/unordered spellings are not decoded here,
+            // so no unsigned authority is ever claimed from these mnemonics.
+            const widths = integerOperandWidths(pushWidthRun, pushIntegerRun, 2);
+            const operandBits = widths != null && widths[0] === widths[1] ? widths[0] : null;
+            if (operandBits != null) {
+              compare = subOp === 0x01
+                ? { predicate: 'eq', operandBits, arity: 2 }
+                : { predicate: subOp === 0x02 ? 'gt' : 'lt', signedness: 'signed', operandBits, arity: 2 };
+            } else {
+              completeness = 'partial';
+              unknownEffects.push({ category: 'types', reason: 'cil-compare-operand-authority-unresolved' });
+            }
+          }
           consumedValues.push({ id: 'rhs', bits: 32 }, { id: 'lhs', bits: 32 });
-          producedValues.push({ bits: 32 });
+          // III.1.5: the result is an int32 0/1 flag, which is itself integral
+          // authority for a chained comparison.
+          producedValues.push({ bits: 32, stackType: 'int32' });
           currentStackHeight--;
           break;
 
@@ -937,9 +977,14 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
     if (stackEffectUnmodeled || callEffects.length > 0 || controlEffects.length > 0
       || consumedValues.length > pushWidthRun.length) {
       pushWidthRun = [];
+      pushIntegerRun = [];
     } else {
       pushWidthRun.length -= consumedValues.length;
-      for (const value of producedValues) pushWidthRun.push(cilStackValueWidth(value));
+      pushIntegerRun.length -= consumedValues.length;
+      for (const value of producedValues) {
+        pushWidthRun.push(cilStackValueWidth(value));
+        pushIntegerRun.push(cilStackValueIsIntegral(value));
+      }
     }
 
     const origin = createOriginSet({
@@ -969,6 +1014,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
       origin,
       completeness,
       unknownEffects,
+      compare,
     }, options));
     if (stoppedOnUnsupported) break;
   }
