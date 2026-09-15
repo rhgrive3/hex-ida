@@ -13,6 +13,12 @@ import { buildSwiftMetadataModel, parseSwiftFieldDescriptorScan } from '../js/sw
 function u32LE(v) { return [v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255]; }
 function i32LE(v) { return u32LE(Number(BigInt.asUintN(32, BigInt(v)))); }
 function u16LE(v) { return [v & 255, (v >>> 8) & 255]; }
+function u64LE(v) {
+  let n = BigInt(v);
+  const out = [];
+  for (let i = 0; i < 8; i++) { out.push(Number(n & 0xffn)); n >>= 8n; }
+  return out;
+}
 
 function writeBytes(target, offset, bytes) {
   for (let i = 0; i < bytes.length; i++) target[offset + i] = bytes[i];
@@ -78,6 +84,57 @@ function buildSharedFieldImage({ typeCount, fdAddress, recordCount }) {
     return mem.subarray(Number(start - BASE), Number(end - BASE));
   };
   return { read, sections: [{ section: '__swift5_types', vmAddr: typesSectionAddr, size: BigInt(typeCount * 4) }], fdAddr, readHeaderCount };
+}
+
+// Minimal protocol/vtable/witness image used to prove that all nested families
+// consume the SAME parse-wide allowance, rather than each getting a fresh cap.
+function buildNestedFamilyImage({ protocolCount = 1, requirementsPerProtocol = 3 } = {}) {
+  const SIZE = 0x8000;
+  const mem = new Uint8Array(SIZE);
+  const BASE = 0x1000n;
+  const off = (a) => Number(BigInt(a) - BASE);
+  const protoSectionAddr = BASE;
+  const firstProtoAddr = BASE + 0x400n;
+  const vtableAddr = BASE + 0x3000n;
+  const witnessAddr = BASE + 0x3200n;
+
+  for (let i = 0; i < protocolCount; i++) {
+    const entryAddr = protoSectionAddr + BigInt(i * 4);
+    const protoAddr = firstProtoAddr + BigInt(i * 0x100);
+    const nameAddr = BASE + 0x2000n + BigInt(i * 0x20);
+    writeBytes(mem, off(entryAddr), i32LE(protoAddr - entryAddr));
+    writeBytes(mem, off(protoAddr), u32LE(3)); // ContextDescriptorKind::Protocol
+    writeBytes(mem, off(protoAddr + 4n), u32LE(0));
+    writeBytes(mem, off(protoAddr + 8n), i32LE(nameAddr - (protoAddr + 8n)));
+    writeBytes(mem, off(protoAddr + 12n), u32LE(0)); // signature requirements
+    writeBytes(mem, off(protoAddr + 16n), u32LE(requirementsPerProtocol));
+    writeBytes(mem, off(protoAddr + 20n), u32LE(0));
+    writeBytes(mem, off(nameAddr), new TextEncoder().encode(`P${i}\0`));
+    for (let k = 0; k < requirementsPerProtocol; k++) {
+      const reqAddr = protoAddr + 24n + BigInt(k * 8);
+      writeBytes(mem, off(reqAddr), u32LE(1)); // callable method requirement
+      writeBytes(mem, off(reqAddr + 4n), i32LE(0));
+    }
+  }
+
+  for (let i = 0; i < 4; i++) {
+    const row = vtableAddr + BigInt(i * 8);
+    writeBytes(mem, off(row), u32LE(0));
+    writeBytes(mem, off(row + 4n), i32LE(0));
+    writeBytes(mem, off(witnessAddr + BigInt(i * 8)), u64LE(0x5000n + BigInt(i * 8)));
+  }
+
+  const read = async (addr, len) => {
+    const start = BigInt(addr), end = start + BigInt(len);
+    if (start < BASE || end > BASE + BigInt(SIZE)) return null;
+    return mem.subarray(Number(start - BASE), Number(end - BASE));
+  };
+  return {
+    read,
+    sections: [{ section: '__swift5_protos', vmAddr: protoSectionAddr, size: BigInt(protocolCount * 4) }],
+    vtableAddr,
+    witnessAddr,
+  };
 }
 
 const cases = [];
@@ -194,6 +251,52 @@ expect('distinct normal descriptors still parse losslessly up to the aggregate b
   // Distinct descriptors => distinct arrays (not shared identity).
   assert.notEqual(model.types[0].fields, model.types[1].fields);
   assert.equal(model.complete, true);
+});
+
+expect('protocol requirements share the same aggregate nested allowance', async () => {
+  const { read, sections } = buildNestedFamilyImage({ protocolCount: 2, requirementsPerProtocol: 3 });
+  const model = await buildSwiftMetadataModel(read, sections, { reader: read, budget: 4 });
+  assert.equal(model.protocols.length, 2);
+  assert.equal(model.protocols[0].requirements.length, 3, 'first protocol consumes three nested rows');
+  assert.equal(model.protocols[0].requirementsComplete, true);
+  assert.equal(model.protocols[1].requirements.length, 0, 'second protocol is refused instead of receiving a fresh allowance');
+  assert.equal(model.protocols[1].requirementsComplete, false);
+  assert.ok(model.warnings.some((w) => w.includes('nested-record-budget-exhausted')),
+    'protocol exhaustion reports the aggregate reason');
+  assert.equal(model.completeness.protocols.complete, false);
+  assert.equal(model.complete, false);
+});
+
+expect('vtable rows consume the protocol-shared aggregate allowance', async () => {
+  const { read, sections, vtableAddr } = buildNestedFamilyImage({ protocolCount: 1, requirementsPerProtocol: 3 });
+  const model = await buildSwiftMetadataModel(read, sections, {
+    reader: read,
+    budget: 4,
+    vtables: [{ address: vtableAddr, count: 2 }],
+  });
+  assert.equal(model.protocols[0].requirements.length, 3);
+  assert.equal(model.vtables.length, 1);
+  assert.equal(model.vtables[0].methods.length, 0,
+    'vtable scan must fail before materializing rows once the shared cap would be exceeded');
+  assert.equal(model.completeness.vtables.complete, false);
+  assert.equal(model.complete, false);
+});
+
+expect('witness rows consume the protocol-shared aggregate allowance', async () => {
+  const { read, sections, witnessAddr } = buildNestedFamilyImage({ protocolCount: 1, requirementsPerProtocol: 3 });
+  const model = await buildSwiftMetadataModel(read, sections, {
+    reader: read,
+    budget: 4,
+    pointerBytes: 8,
+    allowRawPointers: true,
+    witnessTables: [{ address: witnessAddr, count: 2 }],
+  });
+  assert.equal(model.protocols[0].requirements.length, 3);
+  assert.equal(model.witnessTables.length, 1);
+  assert.equal(model.witnessTables[0].entries.length, 0,
+    'witness scan must fail before materializing rows once the shared cap would be exceeded');
+  assert.equal(model.completeness.witnessTables.complete, false);
+  assert.equal(model.complete, false);
 });
 
 expect('standalone parseSwiftFieldDescriptorScan keeps legacy semantics without a nested state', async () => {
