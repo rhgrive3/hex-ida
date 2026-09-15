@@ -31,6 +31,13 @@ const wideningExtensionChain = (n) => {
   const outer = widthOf(n), middle = widthOf(n?.arg), inner = widthOf(n?.arg?.arg);
   return outer != null && middle != null && inner != null && outer >= middle && middle >= inner;
 };
+// Cancellation is a different shape: trunc(ext(x)) may cancel when the
+// extension is non-narrowing and the truncation returns exactly to x's width.
+const cancellableExtensionToSourceWidth = (n) => {
+  const truncWidth = widthOf(n), extensionWidth = widthOf(n?.arg), sourceWidth = widthOf(n?.arg?.arg);
+  return truncWidth != null && extensionWidth != null && sourceWidth != null
+    && truncWidth === sourceWidth && extensionWidth >= sourceWidth;
+};
 /*
  * #8877 — `min`/`max`/`abs` are integer-domain intrinsics: the width-exact
  * evaluator orders their operands as a signed or unsigned bitvector. IEEE-754
@@ -183,8 +190,20 @@ const arithmeticRules = [
  * (result width, resolved signedness, retained comparison provenance) and fails
  * closed on any mismatch or one-sided unknown metadata.
  */
-const orderSignature = (n) => `${n?.signed === false ? 'unsigned' : n?.signed === true ? 'signed' : 'unknown'}:${n?.compareSigned === undefined ? null : n.compareSigned}`;
-const sameOrderDomain = (a, b) => orderSignature(a) === orderSignature(b) && a?.signed != null && b?.signed != null;
+const orderSignature = (n) => {
+  const signed = n?.signed;
+  if (signed !== true && signed !== false) return null;
+  const compareSigned = n?.compareSigned;
+  if (compareSigned !== undefined && compareSigned !== null) {
+    if (compareSigned !== true && compareSigned !== false) return null;
+    if (compareSigned !== signed) return null;
+  }
+  return `${signed ? 'signed' : 'unsigned'}:${compareSigned == null ? null : compareSigned}`;
+};
+const sameOrderDomain = (a, b) => {
+  const left = orderSignature(a), right = orderSignature(b);
+  return left != null && left === right;
+};
 
 const intrinsicRules = [{
   name:'idempotent-minmax', phase:'select',
@@ -396,12 +415,12 @@ const extensionRules = [{
 }, {
   name: 'trunc-after-zext-to-source-width', phase: 'width',
   match: (n) => n?.kind === 'unary' && n.op === 'trunc' && n.arg?.kind === 'unary' && n.arg.op === 'zext' && Number(n.bits) === Number(n.arg.arg?.bits) ? {} : null,
-  precondition: (n) => wideningExtensionChain(n),
+  precondition: (n) => cancellableExtensionToSourceWidth(n),
   rewrite: (n) => n.arg.arg, proof: proof('extension-truncation-cancel', 'trunc(zext(x)) to original width'), cost,
 }, {
   name: 'trunc-after-sext-to-source-width', phase: 'width',
   match: (n) => n?.kind === 'unary' && n.op === 'trunc' && n.arg?.kind === 'unary' && n.arg.op === 'sext' && Number(n.bits) === Number(n.arg.arg?.bits) ? {} : null,
-  precondition: (n) => wideningExtensionChain(n),
+  precondition: (n) => cancellableExtensionToSourceWidth(n),
   rewrite: (n) => n.arg.arg, proof: proof('extension-truncation-cancel', 'trunc(sext(x)) to original width'), cost,
 }, {
   name: 'collapse-sext-chain', phase: 'width',
