@@ -15,9 +15,9 @@ import {
   createRuntimeAuthorityBinding,
   createRuntimeObservation,
   validateRuntimeObservation,
-} from '../js/runtime/authority.js';
+} from '../../../js/runtime/authority.js';
 
-const AUTHORITY_MODULE = new URL('../js/runtime/authority.js', import.meta.url).href;
+const AUTHORITY_MODULE = new URL('../../../js/runtime/authority.js', import.meta.url).href;
 const ONE_MiB = 1024 * 1024;
 
 const binding = createRuntimeAuthorityBinding({
