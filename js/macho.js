@@ -463,14 +463,14 @@
       off=commandEnd;
     }
 
-     info.textVM=textVM; info.textFileOff=textFileOff;
+    info.textVM=textVM; info.textFileOff=textFileOff;
     // #8828: reject ambiguous segment byte-ownership before any consumer picks a
     // winner by load-command order. The canonical loader fails closed on the same
     // layout (#7064); the classic path demotes both conflicting segments to a
     // non-authoritative mapping so `execSegments`/`regionsFrom` publish neither.
     rejectAmbiguousSegmentOwnership(info);
-     const align=instructionAlignment(architecture);
-     const execSegments=info.segments.filter((seg)=>seg.validMapping && !!(seg.initprot&4) && seg.vmsize>0n);
+    const align=instructionAlignment(architecture);
+    const execSegments=info.segments.filter((seg)=>seg.validMapping && !!(seg.initprot&4) && seg.vmsize>0n);
     const validPc=(pc)=>pc!=null && pc%align===0n && execSegments.some((seg)=>inRange(pc,seg.vmaddr,seg.vmsize));
     if (info.entryOff != null) {
       const seg=execSegments.find((candidate)=>inRange(info.entryOff,candidate.fileoff,candidate.filesize));
