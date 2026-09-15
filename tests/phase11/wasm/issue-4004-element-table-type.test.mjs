@@ -101,4 +101,19 @@ assert.throws(
   'existing element table-index bounds remain authoritative',
 );
 
+for (const [label, flags] of [['passive', 1], ['declarative', 3]]) {
+  const passiveModule = wasm(
+    typeSection,
+    importSection(functionImportEntry),
+    tableSection(FUNCREF),
+    section(9, [0x01, flags, 0x00, 0x01, 0x00]),
+  );
+  assert.equal(WebAssembly.validate(passiveModule), true, `${label}: independent engine accepts legacy ${label} segment`);
+  assert.equal(
+    parseWasm(passiveModule).elements[0].refType,
+    FUNCREF,
+    `${label} legacy index segment carries the same funcref authority`,
+  );
+}
+
 console.log('  ok Wasm element/table reference-type regression #4004 passed');

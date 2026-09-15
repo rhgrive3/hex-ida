@@ -1,4 +1,4 @@
-import { deepFreeze, stableDigest } from '../core/identity/index.js';
+import { deepFreeze, stableDigest, stableDigestBytes } from '../core/identity/index.js';
 import { isValidatedStage2CapabilityProof } from '../platform/stage2-profile-evidence.js';
 
 export const REBUILD_TRANSACTION_SCHEMA = 'hex-rebuild-transaction-v2';
@@ -104,7 +104,7 @@ function clone(value) {
 }
 
 function hashBytes(value) {
-  return `bytes:${stableDigest(Array.from(toBytes(value)))}`;
+  return `bytes:${stableDigestBytes(toBytes(value))}`;
 }
 
 function sorted(value) {
