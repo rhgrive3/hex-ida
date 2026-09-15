@@ -1,5 +1,4 @@
 import { composePrompt } from '../prompts/compose.js';
-import { authorizedAITurnContext } from '../turn-authorization.js';
 import { clientSafeCapabilities, clientToolBudget, resolveInferenceAdapter } from './worker-adapters.js';
 import { finalResultTool, normalizeAIInteraction, normalizeAITurnRequest, promptWorkbench } from './worker-protocol.js';
 import {
@@ -33,13 +32,7 @@ export async function handleAITurn(request, env) {
     return jsonError(422, 'tool_budget_exceeded', `This provider accepts at most ${clientToolLimit} client tool(s) alongside the required final-result tool.`);
   }
 
-  // The deployed ingress records the verified capability context on the Request.
-  // When present, the signed session id—not a client-controlled body field—is
-  // the quota identity. Direct worker unit tests intentionally retain the
-  // historical body-session fallback because worker-entry.js is the production
-  // authorization boundary.
-  const authorizedSessionId = authorizedAITurnContext(request)?.sid;
-  const quota = await acquireDistributedQuota(request, env, authorizedSessionId || payload.sessionId);
+  const quota = await acquireDistributedQuota(request, env, payload.sessionId);
   if (quota.response) return quota.response;
   let quotaReleased = false;
   const releaseQuota = async () => { if (quotaReleased) return; quotaReleased = true; await releaseDistributedQuota(quota.lease); };
