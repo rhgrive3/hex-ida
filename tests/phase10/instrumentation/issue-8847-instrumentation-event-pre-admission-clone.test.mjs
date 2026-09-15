@@ -37,6 +37,20 @@ test('#8847 a deep hostile event is dropped, never a native stack overflow', asy
   await session.close();
 });
 
+test('#8847 shallow wide events do not consume the nesting-depth budget', async () => {
+  const session = await openSession(openProvider({ maxBytes: 4096 }));
+  const rows = Array.from({ length: 65 }, (_, index) => ({ index }));
+  const event = session.facets.instrumentation.events.ingest({
+    type: 'instrumentation-observation', epoch: 1, streamId: 'thread:1', sequence: 1, payload: { rows },
+  });
+  assert.ok(event, 'more than 64 shallow sibling objects remain admissible when the byte budget is not exceeded');
+  const batch = session.facets.instrumentation.events.flush();
+  const observed = batch.events.find((item) => item.kind === 'instrumentation-observation');
+  assert.equal(observed.payload.rows.length, 65);
+  assert.equal(observed.payload.rows[64].index, 64);
+  await session.close();
+});
+
 test('#8847 an oversized flat byte/array payload is rejected before full allocation', async () => {
   const session = await openSession(openProvider());
   assert.equal(session.facets.instrumentation.events.ingest({
