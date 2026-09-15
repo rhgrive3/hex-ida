@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { parseWasm } from '../../../js/managed/wasm/parser.js';
 import { liftWasmFunction } from '../../../js/managed/wasm/lifter.js';
 import { liftWasmFunction as liftWasmFunctionCore } from '../../../js/managed/wasm/lifter-core.js';
@@ -86,6 +88,28 @@ async function countCallsOf(methodName, target, run) {
   return count;
 }
 
+// The 12,000 x 12,000 envelope fixture is materialized in a child process so
+// its heap pressure can never pollute heap-sensitive assertions of later test
+// files inside the single-process phase11 chain (notably #8946 retention).
+if (process.env.HEX_8768_ENVELOPE_CHILD === '1') {
+  const image = parseWasm(callModule(12000, 12000));
+  const frontend = new WasmFrontend();
+  const startedAt = Date.now();
+  const decoded = await frontend.decodeMethod({ funcIndex: 12000 }, { image });
+  const elapsedMs = Date.now() - startedAt;
+  const calls = decoded.bundles.filter((b) => b.mnemonic === 'call').length;
+  if (calls !== 12000) {
+    console.error(`call-bundle-count-mismatch ${calls}`);
+    process.exit(2);
+  }
+  if (elapsedMs >= 5000) {
+    console.error(`envelope-exceeded ${elapsedMs}ms`);
+    process.exit(3);
+  }
+  console.log(`envelope-ok ${elapsedMs}ms`);
+  process.exit(0);
+}
+
 // 1) Exact callee resolution across the import/internal boundary.
 {
   const imports = [funcImport('f0', 0), funcImport('f1', 0)];
@@ -170,16 +194,18 @@ async function countCallsOf(methodName, target, run) {
   assert.equal(fewScans, 0);
 }
 
-// 6) Bounded linear envelope on the issue's counterexample shape:
-//    12,000 function imports + 12,000 direct calls decoded through the public path.
+// 6) Bounded linear envelope on the issue's counterexample shape, executed in
+//    a child process: 12,000 function imports + 12,000 direct calls decoded
+//    through the public path. The child enforces the <5s / exact-count bound
+//    (see the HEX_8768_ENVELOPE_CHILD guard above).
 {
-  const image = parseWasm(callModule(12000, 12000));
-  const frontend = new WasmFrontend();
-  const startedAt = Date.now();
-  const decoded = await frontend.decodeMethod({ funcIndex: 12000 }, { image });
-  const elapsedMs = Date.now() - startedAt;
-  assert.equal(decoded.bundles.filter((b) => b.mnemonic === 'call').length, 12000);
-  assert.ok(elapsedMs < 5000, `12,000 direct calls over 12,000 imports must decode boundedly, took ${elapsedMs}ms`);
+  const childPath = fileURLToPath(import.meta.url);
+  const out = execFileSync(process.execPath, [childPath], {
+    env: { ...process.env, HEX_8768_ENVELOPE_CHILD: '1' },
+    encoding: 'utf8',
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  assert.match(out, /envelope-ok \d+ms/, `child envelope must succeed, got: ${out}`);
 }
 
 console.log('[phase11] issue #8768 Wasm module import/export index regression passed');
