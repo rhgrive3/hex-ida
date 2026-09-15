@@ -72,7 +72,12 @@ function sortedProjectionEdges(edges) {
 function projectedControlEdges(node) {
   if (node.kind === 'branch') return node.targets.map((to) => ({ to, kind: 'branch' }));
   if (node.kind === 'conditional-branch') {
-    return node.targets.map((to, index) => ({ to, kind: index === 0 ? 'conditional-true' : 'conditional-false' }));
+    const arms = node.targets.map((to, index) => ({ to, kind: index === 0 ? 'conditional-true' : 'conditional-false' }));
+    // Converging arms (taken === fallthrough) keep conditional identity in the
+    // node while contributing one successor to the CFG (#865), matching the
+    // successor-set dedupe in the integration CFG assembly.
+    if (arms.length === 2 && arms[0].to === arms[1].to) return [arms[0]];
+    return arms;
   }
   if (node.kind === 'switch') return node.targets.map((to) => ({ to, kind: 'switch-case' }));
   if (node.kind === 'unknown-control-effect' || node.kind === 'incomplete') {

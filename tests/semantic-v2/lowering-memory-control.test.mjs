@@ -114,9 +114,11 @@ const tmp = (id, bits) => createTemporaryValue(id, bv(bits));
   });
   const ir = lowerMachineEffectBundleToSemanticIr(bundle, context('same-successor-conditional'));
   const control = ir.nodes.find((node) => node.kind === 'branch' || node.kind === 'conditional-branch');
-  assert.equal(control?.kind, 'branch', 'equal taken and fallthrough successors normalize to an unconditional branch');
-  assert.equal(control.targets.length, 1);
-  assert.deepEqual(control.inputs, []);
+  assert.equal(control?.kind, 'conditional-branch', '#865: equal taken and fallthrough successors keep the syntactic conditional identity');
+  assert.equal(control.targets.length, 2);
+  assert.equal(control.targets[0], control.targets[1], 'both arms resolve to the same successor block');
+  assert.equal(control.inputs.length, 1, 'the condition value must remain a control input');
+  assert.equal(control.attributes.degenerateConditional, true, 'the converging-arms case must stay identifiable');
 }
 
 {
