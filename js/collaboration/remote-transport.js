@@ -1,4 +1,4 @@
-import { stableStringify } from '../core/identity/index.js';
+import { stableStringify, lossyTypeWitness } from '../core/identity/index.js';
 import { containsRawBinaryBytes, createRemoteCollaborationEnvelope } from './remote-authority.js';
 
 export const REMOTE_CANONICAL_TRANSPORT_SCHEMA = 'hex-remote-canonical-transport/v1';
@@ -211,6 +211,24 @@ export function remoteCanonicalTransportBinding(envelope) {
   });
 }
 
+// The transport proof must bind to the *same* type-sensitive canonical identity
+// that the collaboration operation layer already uses (#8819). Bare
+// stableStringify() goes through core jsonSafe(), which intentionally collapses
+// several distinct JS values (1n vs "1", NaN vs null, Date vs an ISO string, a
+// binary view vs a numeric array). Project-operation identity accounts for that
+// with lossyTypeWitness() inside collaborationDigest(); the transport binding did
+// not, so a proof authorized for one canonical envelope still verified a
+// type-distinct envelope. Encode with the same witness convention: when the
+// binding carries no lossy-normalizable value the text is byte-identical to the
+// historical form, and whenever a type distinction exists it participates in the
+// digest. Used consistently for authorization, the proof cache, verification and
+// delivery so all four agree on one canonical identity contract.
+function canonicalTransportBindingText(envelope) {
+  const binding = remoteCanonicalTransportBinding(envelope);
+  const witness = lossyTypeWitness(binding);
+  return stableStringify(witness ? { value:binding, valueTypes:witness } : binding);
+}
+
 function signedResponsePayload(response) {
   return {
     schemaVersion:REMOTE_CANONICAL_RESPONSE_SCHEMA,
@@ -276,7 +294,7 @@ export class RemoteCanonicalHttpTransport {
         || proof?.integrity !== 'verified') return false;
       const proofIdentity = String(proof?.proofIdentity || '');
       const entry = this.#verifiedBindings.get(proofIdentity);
-      if (!entry || entry.binding !== stableStringify(remoteCanonicalTransportBinding(envelope))) return false;
+      if (!entry || entry.binding !== canonicalTransportBindingText(envelope)) return false;
       this.#verifiedBindings.delete(proofIdentity);
       this.#verifiedBindings.set(proofIdentity, entry);
       return true;
@@ -325,8 +343,7 @@ export class RemoteCanonicalHttpTransport {
       if (provisional.egress?.userAuthorized !== true) throw new Error('remote-transport-egress-authorization-required');
       if (provisional.egress?.rawBinaryBytes === true) throw new Error('remote-transport-raw-binary-egress-forbidden');
       if (provisional.egress?.derivedDataOnly !== true) throw new Error('remote-transport-derived-data-only-required');
-      const binding = remoteCanonicalTransportBinding(provisional);
-      const canonicalBinding = stableStringify(binding);
+      const canonicalBinding = canonicalTransportBindingText(provisional);
       const plaintext = textEncoder.encode(canonicalBinding);
       const bindingDigest = await deadline.race(sha256(plaintext));
       deadline.assertActive();
@@ -384,7 +401,7 @@ export class RemoteCanonicalHttpTransport {
       deadline.assertActive();
       const envelopeId = required(envelope?.envelopeId, 'remote-transport-delivery-envelope-id-required');
       const proofIdentity = required(envelope?.transportProof?.proofIdentity, 'remote-transport-delivery-proof-identity-required');
-      const bindingDigest = await deadline.race(sha256(textEncoder.encode(stableStringify(remoteCanonicalTransportBinding(envelope)))));
+      const bindingDigest = await deadline.race(sha256(textEncoder.encode(canonicalTransportBindingText(envelope))));
       deadline.assertActive();
       const requestId = `remote-delivery:${await deadline.race(sha256(textEncoder.encode(stableStringify({
         schemaVersion:REMOTE_CANONICAL_DELIVERY_SCHEMA,

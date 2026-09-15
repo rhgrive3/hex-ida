@@ -112,6 +112,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
   const localTotalCount = localParamCount + localDecls.length;
   const localTypeAt = (index) => (index < localParamCount ? localParams[index] : localDecls[index - localParamCount]);
   const drafts = [];
+  const switchResolutions = [];
   let pos = 0;
   let opSeq = 0;
   let currentStackHeight = 0;
@@ -243,8 +244,13 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
       }
       case 0x0e: {
         const cr = decodeUleb128(bytecode, pos); pos = cr.nextOffset;
+        // #8945: switch edge cardinality is attacker-controlled inside one
+        // admitted opcode; it is pre-admitted against the value budget before
+        // any per-target array or effect record materializes, and long walks
+        // keep bounded cancellation latency.
+        budget.chargeValues(cr.value + 1);
         const labelDepths = [];
-        for (let i = 0; i < cr.value; i++) { const r = decodeUleb128(bytecode, pos); pos = r.nextOffset; labelDepths.push(r.value); }
+        for (let i = 0; i < cr.value; i++) { const r = decodeUleb128(bytecode, pos); pos = r.nextOffset; labelDepths.push(r.value); if ((i & 0x3ff) === 0x3ff) budget.checkpoint(); }
         const dr = decodeUleb128(bytecode, pos); pos = dr.nextOffset;
         labelDepths.push(dr.value);
         for (const depth of labelDepths) if (depth >= controlStack.length) fail('wasm-invalid-branch-depth');
@@ -252,11 +258,22 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         consumedValues.push({ id: 'index', bits: 32 }); consume(1);
         const ce = { kind: 'switch', targetOffsets: new Array(labelDepths.length - 1).fill(null), defaultTargetOffset: null, labelDepths: labelDepths.slice(0, -1), defaultLabelDepth: labelDepths.at(-1) };
         const caseFrames = [];
-        for (let i = 0; i < labelDepths.length - 1; i++) { const target = controlStack[controlStack.length - 1 - labelDepths[i]]; caseFrames.push(target); labelTarget(target, ce, `__case_${i}`); }
+        const caseHolders = [];
+        for (let i = 0; i < labelDepths.length - 1; i++) {
+          const target = controlStack[controlStack.length - 1 - labelDepths[i]];
+          caseFrames.push(target);
+          // #8945: pending case targets use indexed holder records instead of
+          // per-case dynamic `__case_<i>` properties on the shared effect.
+          if (target.kind === 'loop') ce.targetOffsets[i] = target.bodyOffset;
+          else if (target.kind !== 'function') { const holder = { targetOffset: null }; target.pendingBranches.push({ effect: holder, field: 'targetOffset' }); caseHolders.push({ holder, index: i }); }
+        }
         const defFrame = controlStack[controlStack.length - 1 - labelDepths.at(-1)];
-        const defHolder = { kind: 'branch', targetOffset: null }; labelTarget(defFrame, defHolder); ce.__defaultHolder = defHolder;
+        const defHolder = { targetOffset: null };
+        if (defFrame.kind === 'loop') defHolder.targetOffset = defFrame.bodyOffset;
+        else if (defFrame.kind !== 'function') defFrame.pendingBranches.push({ effect: defHolder, field: 'targetOffset' });
         ce.caseKinds = caseFrames.map((frame) => (frame.kind === 'function' ? 'function-exit' : 'offset'));
         ce.defaultKind = defFrame.kind === 'function' ? 'function-exit' : 'offset';
+        switchResolutions.push({ effect: ce, cases: caseHolders, defaultHolder: defHolder });
         controlEffects.push(ce);
         markUnreachable();
         break;
@@ -393,10 +410,9 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
   }
 
   if (!stoppedOnUnsupported && controlStack.length !== 0) fail('wasm-missing-function-end');
-  for (const d of drafts) for (const c of d.controlEffects) if (c.kind === 'switch') {
-    for (let i = 0; i < c.targetOffsets.length; i++) { const k = `__case_${i}`; if (c[k] != null) c.targetOffsets[i] = c[k]; delete c[k]; }
-    if (c.__defaultHolder) { c.defaultTargetOffset = c.__defaultHolder.targetOffset; if (c.defaultKind == null && c.__defaultHolder.targetKind === 'function-exit') c.defaultKind = 'function-exit'; delete c.__defaultHolder; }
-    delete c.targetKind;
+  for (const { effect: c, cases, defaultHolder } of switchResolutions) {
+    for (const { holder, index } of cases) c.targetOffsets[index] = holder.targetOffset;
+    c.defaultTargetOffset = defaultHolder.targetOffset;
   }
   const bundles = drafts.map((d) => createVMEffectBundle(d, options));
   const aggregateCompleteness = bundles.some((b) => b.completeness === 'unknown') ? 'unknown' : bundles.some((b) => b.completeness === 'partial') ? 'partial' : bundles.some((b) => b.completeness === 'exact-with-intrinsic') ? 'exact-with-intrinsic' : 'exact';
