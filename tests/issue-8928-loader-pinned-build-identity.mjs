@@ -31,7 +31,7 @@ const VALID_RUNTIME_SOURCE = [
 ].join('\n');
 const FULL_PIN = sha256Hex(utf8(VALID_RUNTIME_SOURCE));
 const PIN = FULL_PIN.slice(0, 24);
-const ASSET_PATH = `/.runtime/runtime.${PIN}.bin`;
+const RUNTIME_LOCATOR = `/_runtime/${PIN}`;
 const EXPECTED_RUNTIME_BYTES = gzipSync(Buffer.from(VALID_RUNTIME_SOURCE)).byteLength + 16; // AES-GCM tag
 
 function releaseManifestHash({
@@ -39,10 +39,10 @@ function releaseManifestHash({
   runtimeVersion = RUNTIME_VERSION,
   contentHash = FULL_PIN,
   compression = 'gzip',
-  assetPath = ASSET_PATH,
+  runtimeLocator = RUNTIME_LOCATOR,
   byteLength = EXPECTED_RUNTIME_BYTES,
 } = {}) {
-  return sha256Hex(Buffer.from(JSON.stringify({ buildId, runtimeVersion, contentHash, compression, assetPath, byteLength }), 'utf8'));
+  return sha256Hex(Buffer.from(JSON.stringify({ buildId, runtimeVersion, contentHash, compression, runtimeLocator, byteLength }), 'utf8'));
 }
 
 async function gcmEncrypt(key, iv, aad, plaintext) {
@@ -84,7 +84,7 @@ async function createAuthority({ expectedBuild = PIN, runtimeSource = VALID_RUNT
     keyEnvelope: { salt: b64url(salt), iv: b64url(envelopeIv), ciphertext: '' },
     session: b64url(randomBytes(18)),
     sessionId,
-    runtimeLocator: `/.runtime/runtime.${expectedBuild}.bin`,
+    runtimeLocator: `/_runtime/${expectedBuild}`,
     manifest,
   };
   forgeBootstrap?.(bootstrap);
@@ -110,7 +110,7 @@ async function createAuthority({ expectedBuild = PIN, runtimeSource = VALID_RUNT
         const json = utf8(JSON.stringify(bootstrap));
         return boundedResponse(200, json, { 'content-length': String(json.byteLength), 'content-type': 'application/json' });
       }
-      if (target.includes('/.runtime/runtime.')) {
+      if (target.includes('/_runtime/')) {
         runtimeBytesServed += ciphertext.byteLength + inflateBodyBytes;
         const served = inflateBodyBytes > 0
           ? new Uint8Array([...ciphertext, ...new Uint8Array(inflateBodyBytes)])
@@ -140,7 +140,7 @@ async function runLoader({
   pinnedContentHash = FULL_PIN,
   pinnedRuntimeVersion = RUNTIME_VERSION,
   pinnedRuntimeBytes = EXPECTED_RUNTIME_BYTES,
-  pinnedAssetPath = ASSET_PATH,
+  pinnedRuntimeLocator = RUNTIME_LOCATOR,
   pinnedReleaseManifestHash = releaseManifestHash(),
   runtimeSource,
   forgeManifest,
@@ -184,7 +184,7 @@ async function runLoader({
       .replaceAll("'__HEX_CONTENT_HASH__'", `'${pinnedContentHash}'`)
       .replaceAll("'__HEX_RUNTIME_VERSION__'", `'${pinnedRuntimeVersion}'`)
       .replaceAll("'__HEX_RUNTIME_BYTE_LENGTH__'", `'${pinnedRuntimeBytes}'`)
-      .replaceAll("'__HEX_RUNTIME_ASSET_PATH__'", `'${pinnedAssetPath}'`)
+      .replaceAll("'__HEX_RUNTIME_LOCATOR__'", `'${pinnedRuntimeLocator}'`)
       .replaceAll("'__HEX_RELEASE_MANIFEST_HASH__'", `'${pinnedReleaseManifestHash}'`)
       .replace(/from '\.\/([a-z0-9-]+\.js)'/g, (_all, file) => `from '${pathToFileURL(join(LOADER_DIR, file)).href}'`);
     const entry = join(scratch, `loader-${Math.random().toString(36).slice(2)}.mjs`);
@@ -300,7 +300,7 @@ async function waitFor(predicate, timeoutMs) {
 
 // 9. Runtime locator/build route cannot be rebound by the bootstrap authority.
 {
-  const run = await runLoader({ forgeBootstrap: (bootstrap) => { bootstrap.runtimeLocator = '/.runtime/runtime.attacker.bin'; } });
+  const run = await runLoader({ forgeBootstrap: (bootstrap) => { bootstrap.runtimeLocator = '/_runtime/attacker'; } });
   assert.equal(run.started, null);
   assert.match(run.failure, /locator does not match the pinned release identity/i);
   assert.equal(run.authority.stats.runtimeBytesServed, 0);
