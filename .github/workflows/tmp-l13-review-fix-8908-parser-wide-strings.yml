@@ -18,7 +18,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "de104f410822c75ba8b895561fe917a66185b3d0"
+          test "$(git rev-parse HEAD^^)" = "de104f410822c75ba8b895561fe917a66185b3d0"
           timeout 30s git fetch origin main --quiet
           test "$(git rev-parse origin/main)" = "86cb8a1a36a2eecb205be43ecacd4c9cafefebaf"
       - name: Apply parser-wide string and definition reuse repair
@@ -39,7 +39,37 @@ jobs:
           helper = Path('js/managed/cil/metadata-string-cache.js')
           if helper.exists():
               raise SystemExit('metadata-string-cache.js already exists on guarded head')
-          helper.write_text("""// #8699: one exact #Strings interning authority per aggregate metadata budget.\n// The budget object is parse-scoped; the backing buffer/view and stream range\n// keep unrelated heaps separate while allowing later readers/overlays to reuse\n// the same exact heap offsets without re-decoding or re-charging them.\nconst cachesByBudget = new WeakMap();\n\nfunction isObjectKey(value) {\n  return value !== null && (typeof value === 'object' || typeof value === 'function');\n}\n\nexport function cilStringCacheFor(budget, bytes, stringsStream) {\n  if (!isObjectKey(budget) || !isObjectKey(bytes?.buffer) || stringsStream == null) return new Map();\n  let byBuffer = cachesByBudget.get(budget);\n  if (byBuffer == null) {\n    byBuffer = new WeakMap();\n    cachesByBudget.set(budget, byBuffer);\n  }\n  let byRange = byBuffer.get(bytes.buffer);\n  if (byRange == null) {\n    byRange = new Map();\n    byBuffer.set(bytes.buffer, byRange);\n  }\n  const key = `${bytes.byteOffset ?? 0}:${bytes.byteLength ?? bytes.length ?? 0}:${stringsStream.offset}:${stringsStream.size}`;\n  let cache = byRange.get(key);\n  if (cache == null) {\n    cache = new Map();\n    byRange.set(key, cache);\n  }\n  return cache;\n}\n""")
+          helper.write_text('''// #8699: one exact #Strings interning authority per aggregate metadata budget.
+          // The budget object is parse-scoped; the backing buffer/view and stream range
+          // keep unrelated heaps separate while allowing later readers/overlays to reuse
+          // the same exact heap offsets without re-decoding or re-charging them.
+          const cachesByBudget = new WeakMap();
+
+          function isObjectKey(value) {
+            return value !== null && (typeof value === 'object' || typeof value === 'function');
+          }
+
+          export function cilStringCacheFor(budget, bytes, stringsStream) {
+            if (!isObjectKey(budget) || !isObjectKey(bytes?.buffer) || stringsStream == null) return new Map();
+            let byBuffer = cachesByBudget.get(budget);
+            if (byBuffer == null) {
+              byBuffer = new WeakMap();
+              cachesByBudget.set(budget, byBuffer);
+            }
+            let byRange = byBuffer.get(bytes.buffer);
+            if (byRange == null) {
+              byRange = new Map();
+              byBuffer.set(bytes.buffer, byRange);
+            }
+            const key = `${bytes.byteOffset ?? 0}:${bytes.byteLength ?? bytes.length ?? 0}:${stringsStream.offset}:${stringsStream.size}`;
+            let cache = byRange.get(key);
+            if (cache == null) {
+              cache = new Map();
+              byRange.set(key, cache);
+            }
+            return cache;
+          }
+          ''')
 
           replace_once(
               'js/managed/cil/metadata-definitions.js',
@@ -97,69 +127,69 @@ jobs:
           if test_text.count(anchor) != 1:
               raise SystemExit(f'cross-reader fixture anchor count={test_text.count(anchor)}')
           fixture = r'''
-function crossReaderAliasFixture(n = 4, nameLen = 2048) {
-  const shared = 'x'.repeat(nameLen);
-  const pre = buildCil({
-    methods: [],
-    types: [{ name: 'placeholder-owner', namespace: '', flags: 1, fieldList: 1, methodList: 1 }],
-    leadingStrings: [shared],
-  });
-  const nameOff = pre.layout.leadingStringIndex[shared];
-  const rows = new Uint8Array(n * 8);
-  const v = new DataView(rows.buffer);
-  for (let i = 0; i < n; i++) {
-    const p = i * 8;
-    v.setUint16(p, i, true);
-    v.setUint16(p + 2, 0, true);
-    v.setUint16(p + 4, 2, true); // TypeDef rid 1, tag 0
-    v.setUint16(p + 6, nameOff, true);
-  }
-  const built = buildCil({
-    methods: [],
-    types: [{ name: 'placeholder-owner', namespace: '', flags: 1, fieldList: 1, methodList: 1 }],
-    leadingStrings: [shared],
-    extraRows: new Map([[0x2a, { count: n, bytes: rows }]]),
-  });
-  // Point TypeDef.Name at the same exact first leading #Strings offset used by
-  // every GenericParam. The unreferenced placeholder remains in the heap so the
-  // test checks reference accounting, not whole-heap content.
-  const tablesStream = built.layout.streams.find(stream => stream.name === '#~' || stream.name === '#-');
-  const typeDefPos = tablesStream.offset + built.layout.tables.offsets.get(0x02);
-  new DataView(built.bytes.buffer, built.bytes.byteOffset, built.bytes.byteLength)
-    .setUint16(typeDefPos + 4, nameOff, true);
-  return built.bytes;
-}
-'''
+          function crossReaderAliasFixture(n = 4, nameLen = 2048) {
+            const shared = 'x'.repeat(nameLen);
+            const pre = buildCil({
+              methods: [],
+              types: [{ name: 'placeholder-owner', namespace: '', flags: 1, fieldList: 1, methodList: 1 }],
+              leadingStrings: [shared],
+            });
+            const nameOff = pre.layout.leadingStringIndex[shared];
+            const rows = new Uint8Array(n * 8);
+            const v = new DataView(rows.buffer);
+            for (let i = 0; i < n; i++) {
+              const p = i * 8;
+              v.setUint16(p, i, true);
+              v.setUint16(p + 2, 0, true);
+              v.setUint16(p + 4, 2, true); // TypeDef rid 1, tag 0
+              v.setUint16(p + 6, nameOff, true);
+            }
+            const built = buildCil({
+              methods: [],
+              types: [{ name: 'placeholder-owner', namespace: '', flags: 1, fieldList: 1, methodList: 1 }],
+              leadingStrings: [shared],
+              extraRows: new Map([[0x2a, { count: n, bytes: rows }]]),
+            });
+            // Point TypeDef.Name at the same exact first leading #Strings offset used by
+            // every GenericParam. The unreferenced placeholder remains in the heap so the
+            // test checks reference accounting, not whole-heap content.
+            const tablesStream = built.layout.streams.find(stream => stream.name === '#~' || stream.name === '#-');
+            const typeDefPos = tablesStream.offset + built.layout.tables.offsets.get(0x02);
+            new DataView(built.bytes.buffer, built.bytes.byteOffset, built.bytes.byteLength)
+              .setUint16(typeDefPos + 4, nameOff, true);
+            return built.bytes;
+          }
+          '''
           test_text = test_text.replace(anchor, '\n' + fixture + anchor, 1)
           anchor2 = "\n// GenericParam duplicate-number detection must remain exact with the Set.\n"
           if test_text.count(anchor2) != 1:
               raise SystemExit(f'cross-reader test anchor count={test_text.count(anchor2)}')
           regression = r'''
-// #8699: the aggregate parse budget owns exact #Strings interning across
-// definitions and GenericParam readers. The one 2 KiB referenced heap entry is
-// admitted once, not once per reader.
-{
-  const image = parseCil(crossReaderAliasFixture(), {
-    binaryId: 'parser-wide-string-cache',
-    resourceBudget: { maxStrings: 1, maxStringBytes: 2048 },
-  });
-  assert.equal(image.types[0].name.length, 2048);
-  assert.equal(image.genericParams.length, 4);
-  assert.ok(image.genericParams.every(row => row.name === image.types[0].name));
-}
+          // #8699: the aggregate parse budget owns exact #Strings interning across
+          // definitions and GenericParam readers. The one 2 KiB referenced heap entry is
+          // admitted once, not once per reader.
+          {
+            const image = parseCil(crossReaderAliasFixture(), {
+              binaryId: 'parser-wide-string-cache',
+              resourceBudget: { maxStrings: 1, maxStringBytes: 2048 },
+            });
+            assert.equal(image.types[0].name.length, 2048);
+            assert.equal(image.genericParams.length, 4);
+            assert.ok(image.genericParams.every(row => row.name === image.types[0].name));
+          }
 
-// The public metadata + manifest pipeline must likewise charge each canonical
-// retained definition row once. One TypeDef + four GenericParam rows is exactly
-// five rows; reconstructing TypeDef for manifest/security would exceed this.
-{
-  const image = parseCil(crossReaderAliasFixture(), {
-    binaryId: 'parser-wide-row-reuse',
-    resourceBudget: { maxRows: 5 },
-  });
-  assert.equal(image.types.length, 1);
-  assert.equal(image.genericParams.length, 4);
-}
-'''
+          // The public metadata + manifest pipeline must likewise charge each canonical
+          // retained definition row once. One TypeDef + four GenericParam rows is exactly
+          // five rows; reconstructing TypeDef for manifest/security would exceed this.
+          {
+            const image = parseCil(crossReaderAliasFixture(), {
+              binaryId: 'parser-wide-row-reuse',
+              resourceBudget: { maxRows: 5 },
+            });
+            assert.equal(image.types.length, 1);
+            assert.equal(image.genericParams.length, 4);
+          }
+          '''
           test_path.write_text(test_text.replace(anchor2, '\n' + regression + anchor2, 1))
           PY
       - name: Syntax validation
