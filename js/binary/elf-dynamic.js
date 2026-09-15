@@ -118,7 +118,6 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
     if (strOff == null || strSize == null || !strSpan) return '';
     const budget = options.budget || null;
     const n = Number(offset);
-    if (n === 0 && options.allowZeroOffset) return '';
     const cached = dynamicStrings.get(n);
     if (cached !== undefined) {
       if (budget && !cached.charged) {
@@ -129,6 +128,7 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
     }
     const inRange = Number.isSafeInteger(n) && n >= 0 && n < strSize && strOff + n < strSpan.spanEnd;
     if (!inRange) {
+      if (n === 0 && options.allowZeroOffset) return '';
       markDynamicPartial(image, 'dynamic string table reference is out of range');
       dynamicStrings.set(n, { value: null, chars: 0, charged: true });
       return null;

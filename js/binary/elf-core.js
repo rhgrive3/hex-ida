@@ -704,6 +704,13 @@ export function parseSymbols(r, table, sections, image, bits, elfType, budget) {
 }
 
 function reconcileDynamicSymbolFallbackEvidence(image) {
+  // The reconciliation only ever replaces section-backed `dynsym` records that
+  // duplicate a PT_DYNAMIC fallback. A sectionless PT_DYNAMIC image carries no
+  // `dynsym`-source symbols (and therefore no `elf-dynsym` imports or dynsym
+  // exports), so the pass is a strict no-op there; keying every large aliased
+  // `st_name` on such an image would re-materialize the shared name once per
+  // record and defeat #8821's interning budget (#8821). Skip it in that case.
+  if (!image.symbols.some((symbol) => symbol.source === 'dynsym')) return;
   const scalar = (value) => typeof value === 'bigint' ? value.toString() : value ?? null;
   const key = (values) => JSON.stringify(values.map(scalar));
   const symbolKey = (symbol) => key([
