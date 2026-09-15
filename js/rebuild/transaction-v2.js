@@ -670,6 +670,19 @@ async function sourceBytes(source) {
   return toBytes(source).slice();
 }
 
+// #8796: an admissible length is available from primitive source metadata
+// (typed views, ArrayBuffers, arrays, and a Blob's declared size) before any
+// whole-binary read, so an explicit output budget can be admitted before the
+// source is materialized and hashed.
+function declaredSourceLength(source) {
+  if (typeof Blob !== 'undefined' && source instanceof Blob) {
+    return Number.isSafeInteger(source.size) && source.size >= 0 ? source.size : null;
+  }
+  if (source instanceof Uint8Array || source instanceof ArrayBuffer || ArrayBuffer.isView(source)) return source.byteLength;
+  if (Array.isArray(source)) return source.length;
+  return null;
+}
+
 function transactionIdentityValid(transaction) {
   try {
     if (!transaction || transaction.schemaVersion !== REBUILD_TRANSACTION_SCHEMA) return false;
@@ -796,6 +809,22 @@ export async function materializeRebuildTransaction(transaction, source, options
   if (!transaction || transaction.schemaVersion !== REBUILD_TRANSACTION_SCHEMA) return { status: 'rejected', reason: 'rebuild-v2-transaction-schema-invalid' };
   if (!transactionIdentityValid(transaction)) return { status: 'rejected', reason: 'rebuild-v2-transaction-identity-invalid', transactionId: transaction.transactionId || null };
   if (options.signal?.aborted) return { status: 'cancelled', reason: 'rebuild-v2-cancelled-before-materialization', transactionId: transaction.transactionId };
+  // #8796: a caller-supplied output budget must be admitted before the source
+  // is read, hashed, and copied; otherwise the advertised resource budget
+  // cannot protect materialization admission. The implicit budget is derived
+  // from the source length itself, so only an explicit limit is evaluable here.
+  if (options.maxOutputBytes != null) {
+    let declaredLimit;
+    try { declaredLimit = positiveSafe(options.maxOutputBytes, 2_147_483_647, 2_147_483_647, 'rebuild-v2-max-output-budget-invalid'); }
+    catch { return { status: 'rejected', reason: 'rebuild-v2-max-output-budget-invalid' }; }
+    const declaredLength = declaredSourceLength(source);
+    if (declaredLength != null) {
+      const declaredFinal = declaredLength + transaction.sizeDelta;
+      if (!Number.isSafeInteger(declaredFinal) || declaredFinal < 0 || declaredFinal > declaredLimit) {
+        return { status: 'rejected', reason: 'rebuild-v2-output-budget-exceeded', finalLength: declaredFinal, maxOutputBytes: declaredLimit };
+      }
+    }
+  }
   let original;
   try { original = await sourceBytes(source); }
   catch (error) { return { status: 'rejected', reason: 'rebuild-v2-source-unavailable', detail: String(error?.message || error), transactionId: transaction.transactionId }; }
