@@ -3,6 +3,7 @@ import { createManagedMethodId, createVMOperationId } from '../shared/identity.j
 import { createVMEffectBudgetTracker, createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
 import { decodeSleb128, decodeSleb128_64, decodeUleb128 } from './parser.js';
 import { createWasmMemoryValidationContext, decodeWasmMemarg, validateWasmMemoryInstruction } from './memory-validation.js';
+import { wasmModuleIndex } from './module-index.js';
 
 function fail(code) { throw new TypeError(code); }
 
@@ -45,12 +46,12 @@ function decodeBlockType(bytecode, pos, wasmModule, budget = null) {
   return { params: t.params.slice(), results: t.results.slice(), nextOffset: r.nextOffset, typeIndex: r.value, kind: 'type-index' };
 }
 
-function functionTypeForIndex(wasmModule, funcIndex) {
-  const imported = wasmModule.imports.filter((i) => i.desc.kind === 0);
+function functionTypeForIndex(wasmModule, funcIndex, moduleIndex = wasmModuleIndex(wasmModule)) {
+  const importedCount = moduleIndex.importedFunctionCount;
   let typeIndex;
-  if (funcIndex < imported.length) typeIndex = imported[funcIndex].desc.typeIndex;
+  if (funcIndex < importedCount) typeIndex = moduleIndex.functionTypeIndices[funcIndex];
   else {
-    const internal = funcIndex - imported.length;
+    const internal = funcIndex - importedCount;
     if (internal < 0 || internal >= wasmModule.functions.length) fail('wasm-invalid-callee-index');
     typeIndex = wasmModule.functions[internal];
   }
@@ -72,7 +73,8 @@ function unsupportedInstructionBoundary(bytecode, operandOffset, opcode) {
 
 export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
   const methodId = createManagedMethodId(wasmModule.moduleId, funcIndex);
-  const importedFuncs = wasmModule.imports.filter((i) => i.desc.kind === 0);
+  const moduleIndex = wasmModuleIndex(wasmModule);
+  const importedFuncs = moduleIndex.importedFunctions;
   const budget = createVMEffectBudgetTracker(options);
 
   if (funcIndex < importedFuncs.length) {
@@ -290,7 +292,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         break;
       case 0x10: {
         const r = decodeUleb128(bytecode, pos); pos = r.nextOffset;
-        const calleeType = functionTypeForIndex(wasmModule, r.value);
+        const calleeType = functionTypeForIndex(wasmModule, r.value, moduleIndex);
         // #8711: value admission is authoritative only if it precedes the
         // per-argument effect objects; a stack-polymorphic unreachable call to
         // a multi-million-parameter signature used to materialize the whole
@@ -309,8 +311,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         const tr = decodeUleb128(bytecode, pos); pos = tr.nextOffset;
         const type = wasmModule.types[tr.value]; if (!type) fail('wasm-invalid-call-indirect-type-index');
         const table = decodeUleb128(bytecode, pos); pos = table.nextOffset;
-        const importedTables = wasmModule.imports.filter((i) => i.desc.kind === 1).length;
-        if (table.value >= importedTables + wasmModule.tables.length) fail('wasm-invalid-call-indirect-table-index');
+        if (table.value >= moduleIndex.tableCount) fail('wasm-invalid-call-indirect-table-index');
         // #8711: same pre-admission boundary as `call` (plus the selector operand).
         preChargedValues = 1 + type.params.length + type.results.length;
         budget.chargeValues(preChargedValues);
@@ -344,8 +345,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
       }
       case 0x23: case 0x24: {
         const r = decodeUleb128(bytecode, pos); pos = r.nextOffset;
-        const importedGlobals = wasmModule.imports.filter((i) => i.desc.kind === 3);
-        const globals = [...importedGlobals.map((i) => i.desc), ...wasmModule.globals]; if (r.value >= globals.length) fail('wasm-invalid-global-index');
+        const globals = moduleIndex.globals; if (r.value >= globals.length) fail('wasm-invalid-global-index');
         const t = globals[r.value].valType;
         if (opcode === 0x23) { mnemonic = 'global.get'; locationReads.push({ kind: 'global', index: r.value, bits: typeBits(t), type: t }); producedValues.push({ bits: typeBits(t), type: t, fromLocationRead: 0 }); produce(1); }
         else { mnemonic = 'global.set'; if (!globals[r.value].mutable) fail('wasm-write-immutable-global'); consumedValues.push({ id: 'value', bits: typeBits(t), type: t }); consume(1); locationWrites.push({ kind: 'global', index: r.value, bits: typeBits(t), type: t }); }

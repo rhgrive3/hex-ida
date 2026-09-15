@@ -242,6 +242,65 @@ export class ByteView {
     }
   }
 
+  /**
+   * Absolute offset of the first 0 byte in [offset, end), or -1 when the range
+   * holds no NUL. Unlike `bytes.subarray(offset, end).indexOf(0)` this never
+   * materializes a range wider than one read-ahead block, so on a sparse
+   * source a terminated C string costs O(block) bytes rather than O(tail of the
+   * table) — the #8651 scalar-termination amplification. It still propagates
+   * `BINARY_SOURCE_RANGE_MISSING`, so source-backed fetch/replay semantics are
+   * unchanged, and it scans a resident buffer byte-identically to a plain view.
+   */
+  findZero(offset, end) {
+    const o = this.check(offset, 0);
+    const start = BigInt(o);
+    let endBig = end == null ? this.lengthBigInt : byteOffset(end);
+    if (endBig == null || endBig > this.lengthBigInt) endBig = this.lengthBigInt;
+    if (endBig <= start) return -1;
+    if (this.view) {
+      const nul = this.bytes.subarray(Number(start), Number(endBig)).indexOf(0);
+      return nul < 0 ? -1 : Number(start) + nul;
+    }
+    const blockSize = Number.isSafeInteger(this.bytes.readAheadSize) && this.bytes.readAheadSize > 0
+      ? this.bytes.readAheadSize
+      : 64 * 1024;
+    // Forward scan in windows no wider than the source read-ahead size. Each
+    // window allocates at most `scanStep` bytes (so a short terminated name
+    // costs O(name) rather than O(strtable tail)); `subarray` still surfaces a
+    // genuine cache miss as `BINARY_SOURCE_RANGE_MISSING` so the source-backed
+    // fetch loop is unchanged.
+    const scanStep = Math.min(blockSize, 4096);
+    const scanStepBig = BigInt(scanStep);
+    for (let p = start; p < endBig; p += scanStepBig) {
+      const remaining = endBig - p;
+      const winEnd = p + (scanStepBig < remaining ? scanStepBig : remaining);
+      const nul = this.bytes.subarray(exposedOffset(p), exposedOffset(winEnd)).indexOf(0);
+      if (nul >= 0) return Number(p) + nul;
+    }
+    return -1;
+  }
+
+  /**
+   * Decode the known-bounded byte span [start, end) as UTF-8, allocating only
+   * that span. Pair with `findZero` so a caller that has already located the
+   * terminator never re-scans (or re-materializes) the wider string table
+   * (#8651). Resident spans are plain views, matching `cstring`.
+   */
+  decodeString(start, end) {
+    const o = this.check(start, 0);
+    const s = BigInt(o);
+    let e = end == null ? this.lengthBigInt : byteOffset(end);
+    if (e == null || e > this.lengthBigInt) e = this.lengthBigInt;
+    if (e < s) e = s;
+    const raw = this.bytes.subarray(exposedOffset(s), exposedOffset(e));
+    try { return new TextDecoder('utf-8', { fatal: false }).decode(raw); }
+    catch {
+      let out = '';
+      for (const c of raw) out += c >= 0x20 && c <= 0x7e ? String.fromCharCode(c) : '\uFFFD';
+      return out;
+    }
+  }
+
   _lebEnd(end) {
     if (end == null) return this.lengthBigInt;
     const n = byteOffset(end);
