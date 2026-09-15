@@ -90,7 +90,7 @@ export function classifyOpSupport(op, inst = null) {
       return TRANSLATION_STATUS.EXACT;
 
     case OP.BIN: {
-      const sub = inst?.subOp || inst?.name;
+      const sub = inst?.sub || inst?.subOp || inst?.name;
       const supportedBin = ['add', 'sub', 'mul', 'and', 'or', 'orr', 'xor', 'eor', 'shl', 'lshr', 'ashr', 'udiv', 'sdiv', 'urem', 'srem'];
       /* #5202: a missing subOp/name is a semantic discriminator the source IR
          never supplied. Defaulting it to ADD would invent exact semantics, so
@@ -103,7 +103,7 @@ export function classifyOpSupport(op, inst = null) {
     }
 
     case OP.UN: {
-      const sub = inst?.subOp || inst?.name;
+      const sub = inst?.sub || inst?.subOp || inst?.name;
       const supportedUn = ['not', 'neg'];
       /* #5202: missing unary discriminator must not default to NOT. */
       if (!sub) return TRANSLATION_STATUS.UNSUPPORTED;
@@ -116,7 +116,7 @@ export function classifyOpSupport(op, inst = null) {
     case OP.CMP:
       /* #5202: a comparison without cond/subOp has no ordering or equality
          semantic; '==' must not be invented. */
-      if (!(inst?.cond || inst?.subOp)) return TRANSLATION_STATUS.UNSUPPORTED;
+      if (!(inst?.extra?.comparison || inst?.comparison || inst?.cond || inst?.subOp)) return TRANSLATION_STATUS.UNSUPPORTED;
       return TRANSLATION_STATUS.EXACT;
 
     case OP.SEL:

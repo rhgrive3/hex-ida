@@ -38,7 +38,8 @@ const identityB = resolveBinaryIdentity({ binaryFingerprint: { hash: 'B' }, bina
 const snapshotA = { binaryId: identityA.id, binaryIdentity: identityA, legacyBinaryId: identityA.legacyId, projectIdentity: null };
 const snapshotB = { binaryId: identityB.id, binaryIdentity: identityB, legacyBinaryId: identityB.legacyId, projectIdentity: null };
 assert.equal(sessionMatchesSnapshot({ binaryId: identityA.id, binaryIdentity: identityA }, snapshotB), false, 'same legacy name must not equate different strong content identities');
-assert.equal(sessionMatchesSnapshot({ binaryId: 'same.ipa:0' }, snapshotB), true, 'legacy-only sessions remain upgrade-compatible');
+assert.equal(sessionMatchesSnapshot({ binaryId: 'same.ipa:0' }, snapshotB), false,
+  '#8967: a filename:slice legacy binding alone must not be promoted to a strong snapshot identity');
 assert.throws(() => assertLiveBindingsUnchanged({ binaryIdentity: identityB }, snapshotA), /binary changed/i, 'mid-turn same-name binary replacement must fail closed');
 
 // B2: UI bridge rebinds a stale session once, but never bypasses a live scope/binding failure via local fallback.

@@ -168,11 +168,14 @@ export class ByteView {
     } else {
       // A sparse backing must scan in bounded blocks. Calling u8() one byte
       // at a time turns every uncached character into a separate source read.
+      // Scan strictly forward from the string start: rounding the cursor back
+      // to a read-ahead boundary would demand bytes before the string and
+      // fabricate budget failures for fully cached inputs (#8870).
       const blockSize = Number.isSafeInteger(this.bytes.readAheadSize) && this.bytes.readAheadSize > 0
         ? this.bytes.readAheadSize
         : 64 * 1024;
       const blockSizeBig = BigInt(blockSize);
-      let p = start - (start % blockSizeBig);
+      let p = start;
       raw = this.bytes.subarray(o, o);
       while (p < end) {
         const blockEnd = p + BigInt(Math.min(blockSize, Number(end - p)));

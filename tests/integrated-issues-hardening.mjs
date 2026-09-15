@@ -66,7 +66,14 @@ console.log('Testing integrated PRs and issue fixes...');
 
   // flush queue
   const batch = normalizer.flush();
-  assert.equal(batch.dropped, 1);
+  // #8706 sync with the #4384 bounded-flush contract: the dropped-events
+  // marker must itself fit inside maxEvents:1, so the previously held event
+  // #1 is also evicted. Both events were genuinely lost; the marker payload
+  // and batch metadata must agree so loss accounting cannot under-report.
+  assert.equal(batch.dropped, 2);
+  assert.equal(batch.events.length, 1);
+  assert.equal(batch.events[0].kind, 'dropped-events');
+  assert.equal(batch.events[0].payload.dropped, batch.dropped);
 
   // retry e2: should now succeed because it wasn't permanently marked seen when dropped
   const e2retry = normalizer.push({ kind: 'trace-marker', streamId: 'st1', sequence: 2 });
@@ -414,6 +421,7 @@ console.log('Testing integrated PRs and issue fixes...');
   const { buildFixture } = await import('./phase7/corpus/fixtures.mjs');
   const built = buildFixture('stack-disjoint');
   const surface = createAnalysisSurface({
+    snapshotId: 'snapshot-integrated-1099',
     ir: built.ir,
     cfg: built.cfg,
     ssa: built.ssa,
@@ -451,6 +459,12 @@ console.log('Testing integrated PRs and issue fixes...');
   const valid = createPhase7ArtifactDescriptor({
     ...descriptorBase,
     abiId: 'darwin-aapcs64',
+    // #5751: budget relevance must be bound; a producer without an explicit
+    // budget declaration fails closed instead of minting a budget-blind id.
+    budgetClass: 'exhaustive',
+    // #5849: constraint-graph declares the debugIdentity class, so the
+    // canonical debug identity digest is a required dependency dimension.
+    debugIdentityDigest: 'debug-digest-integrated-1097',
   });
   assert.ok(valid.artifactId);
   console.log('  ok #1097 Phase 7 artifact descriptor abiId requirement');
