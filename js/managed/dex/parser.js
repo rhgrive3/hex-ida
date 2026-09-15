@@ -6,6 +6,27 @@ import { readDexUleb128 as readUleb128 } from './leb128.js';
 import { dexPrototypeShorty, dexTypeInfo } from './descriptor.js';
 import { dexDefinitionCodeError, dexMethodDefinitions } from './method-definitions.js';
 
+// #8705 — aggregate pre-materialization bound on DEX metadata admitted by one
+// `parseDex()` call. Every fixed identity/class table is charged a conservative
+// per-row estimate (canonical row object + retained graph + final deep-freeze
+// traversal) before its decode loop starts, and per-item growth (decoded
+// string units, type_list entries, class-data entries) is charged before the
+// allocation it protects. The default sits far above any legitimate real-world
+// image (the spec-capped 65 535 method/file rows cost well under a tenth of
+// this) while refusing attacker-shaped inputs that would otherwise terminate a
+// constrained worker with a V8 heap abort instead of a deterministic `dex-*`
+// error. `options.maxMetadataBytes` overrides it explicitly.
+export const DEX_METADATA_ADMISSION_BUDGET = 64 * 1024 * 1024;
+const DEX_ADMISSION_STRING_ROW_BYTES = 40;
+const DEX_ADMISSION_TYPE_ROW_BYTES = 48;
+const DEX_ADMISSION_PROTO_ROW_BYTES = 128;
+const DEX_ADMISSION_FIELD_ROW_BYTES = 160;
+const DEX_ADMISSION_METHOD_ROW_BYTES = 160;
+const DEX_ADMISSION_CLASS_DEF_ROW_BYTES = 320;
+const DEX_ADMISSION_STRING_UNIT_BYTES = 4;
+const DEX_ADMISSION_TYPE_LIST_ENTRY_BYTES = 64;
+const DEX_ADMISSION_CLASS_DATA_ENTRY_BYTES = 80;
+
 function requireOptionalDataItemOffset(limit, offset, alignment, minSize, code) {
   if (offset === 0) return;
   if (!Number.isSafeInteger(offset) || offset < 0 || offset % alignment !== 0) fail(code);
@@ -211,6 +232,29 @@ export function parseDex(bytes, options = {}) {
   validateTable(methodIdsSize, methodIdsOff, 8, 'dex-invalid-method-ids-range');
   validateTable(classDefsSize, classDefsOff, 32, 'dex-invalid-class-defs-range');
 
+  // #8705 — table-size validation only proves the rows fit the file; each row
+  // still materializes canonical objects, retained graph, and the final deep
+  // freeze traversal, so an ordinary multi-megabyte unique-`method_ids` image
+  // exhausts a fixed worker heap with zero aliasing or contract violations.
+  // One aggregate admission charge per physical table is taken up front,
+  // before any decoding or materialization, and per-item growth is charged
+  // before its allocation. Format-level topology authority (validateTable,
+  // validateDexMap, ordering and MUTF-8 codes) stays separate and unchanged.
+  const maxMetadataBytes = Number.isSafeInteger(options.maxMetadataBytes) && options.maxMetadataBytes >= 0
+    ? options.maxMetadataBytes
+    : DEX_METADATA_ADMISSION_BUDGET;
+  let metadataBytesAdmitted = 0;
+  function chargeMetadata(bytes) {
+    if (bytes > maxMetadataBytes - metadataBytesAdmitted) fail('dex-metadata-admission-budget-exceeded');
+    metadataBytesAdmitted += bytes;
+  }
+  chargeMetadata(stringIdsSize * DEX_ADMISSION_STRING_ROW_BYTES);
+  chargeMetadata(typeIdsSize * DEX_ADMISSION_TYPE_ROW_BYTES);
+  chargeMetadata(protoIdsSize * DEX_ADMISSION_PROTO_ROW_BYTES);
+  chargeMetadata(fieldIdsSize * DEX_ADMISSION_FIELD_ROW_BYTES);
+  chargeMetadata(methodIdsSize * DEX_ADMISSION_METHOD_ROW_BYTES);
+  chargeMetadata(classDefsSize * DEX_ADMISSION_CLASS_DEF_ROW_BYTES);
+
   // Validate the complete map topology before decoding payloads, while preserving
   // established payload-specific error authority for malformed variable-size items.
   validateDexMap(u8, { validateVariableItems: false });
@@ -231,6 +275,11 @@ export function parseDex(bytes, options = {}) {
     if (off+4>fileSize) fail('dex-truncated-string-ids');
     const dataOff=view.getUint32(off,true);
     dataRange(dataOff,1,'dex-invalid-string-data-offset');
+    // The declared UTF-16 unit count bounds the decode before any chars[] or
+    // retained string is built (#8705); the same ULEB is read again inside
+    // decodeMutf8, so malformed/oversized headers keep their existing
+    // dex-malformed-string-data authority once admission is affordable.
+    chargeMetadata(readUleb128(dataBytes,dataOff).value * DEX_ADMISSION_STRING_UNIT_BYTES);
     const string = decodeMutf8(dataBytes,dataOff);
     if (previousString !== null && compareDexStrings(previousString, string) >= 0) {
       fail('dex-string-ids-order-invalid');
@@ -265,6 +314,7 @@ export function parseDex(bytes, options = {}) {
       const pSize=view.getUint32(paramsOff,true);
       if (pSize>Math.floor((fileSize-paramsOff-4)/2)) fail('dex-invalid-proto-params-range');
       dataRange(paramsOff+4,pSize*2,'dex-invalid-proto-params-range');
+      chargeMetadata(pSize * DEX_ADMISSION_TYPE_LIST_ENTRY_BYTES);
       for(let p=0;p<pSize;p++) {
         const typeIdx = view.getUint16(paramsOff+4+p*2,true);
         parameterTypeIndices.push(typeIdx);
@@ -339,6 +389,8 @@ export function parseDex(bytes, options = {}) {
       const {value:instanceFieldsSize,nextOffset:iOff}=readUleb128(dataBytes,sOff);
       const {value:directMethodsSize,nextOffset:dOff}=readUleb128(dataBytes,iOff);
       const {value:virtualMethodsSize,nextOffset:vOff}=readUleb128(dataBytes,dOff); cPos=vOff;
+      chargeMetadata((staticFieldsSize + instanceFieldsSize + directMethodsSize + virtualMethodsSize)
+        * DEX_ADMISSION_CLASS_DATA_ENTRY_BYTES);
       const fieldDefinitions = new Set();
       for (const [count, output] of [[staticFieldsSize, staticFields], [instanceFieldsSize, instanceFields]]) {
         let lastFieldIdx = 0;
@@ -382,6 +434,7 @@ export function parseDex(bytes, options = {}) {
       dataRange(interfacesOff,4,'dex-invalid-interfaces-offset',4);
       const interfaceCount=view.getUint32(interfacesOff,true);
       dataRange(interfacesOff+4,interfaceCount*2,'dex-invalid-interfaces-range',2);
+      chargeMetadata(interfaceCount * DEX_ADMISSION_TYPE_LIST_ENTRY_BYTES);
       const seenInterfaces=new Set();
       for(let entry=0;entry<interfaceCount;entry++){
         const typeIdx=view.getUint16(interfacesOff+4+entry*2,true);
