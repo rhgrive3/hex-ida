@@ -1,4 +1,5 @@
 import { deepFreeze, stableDigest } from '../core/identity/index.js';
+import { fnv64ByteView, fnv64Hex } from '../core/identity/fnv64.js';
 import { createResourceBudget } from '../phase12/resource-budget.js';
 
 export const PATTERN_LANGUAGE_VERSION = 'hex-pattern-language-v1';
@@ -104,8 +105,71 @@ function tokenize(source) {
   return tokens;
 }
 
+// Deterministic, content-complete snapshot identity for a raw-byte source. It
+// walks the byte view with indexed reads in constant space, so hashing an
+// arbitrarily large buffer never boxes one JS number per byte nor builds a
+// decimal JSON string (the pre-budget amplification removed by #8749). The
+// two-limb structure mirrors `stableDigest` so a raw digest keeps the same
+// hex-string shape used everywhere else, and every byte (including bytes the
+// pattern never reads) feeds the result.
+export function byteViewDigest(bytes) {
+  const primary = fnv64ByteView(bytes);
+  const secondary = fnv64ByteView(bytes, 0xcbf29ce4, 0x84222325);
+  return fnv64Hex(primary.low, primary.high) + fnv64Hex(secondary.low, secondary.high);
+}
+
+// Pattern Language identity is derived before the evaluator/compile resource
+// budget exists, so a caller-supplied structured AST/options value must not be
+// handed to the materializing generic identity helper unmeasured (#8749). This
+// is an O(nodes) early-bail accounting of raw binary/string payloads, not a
+// repository-wide identity rewrite.
+const PATTERN_IDENTITY_MAX_INPUT_BYTES = 8 * 1024 * 1024;
+const PATTERN_IDENTITY_MAX_INPUT_NODES = 500_000;
+function identityInputTooLarge(code, reason) {
+  const error = new TypeError(code);
+  error.code = code;
+  error.patternIdentityStop = reason;
+  throw error;
+}
+function assertBoundedIdentityInput(value, code) {
+  let bytes = 0;
+  let nodes = 0;
+  const stack = [value];
+  const seen = new WeakSet();
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (typeof current === 'string') {
+      bytes += current.length;
+      if (bytes > PATTERN_IDENTITY_MAX_INPUT_BYTES) identityInputTooLarge(code, 'bytes');
+      continue;
+    }
+    if (ArrayBuffer.isView(current)) {
+      bytes += current.byteLength;
+      if (bytes > PATTERN_IDENTITY_MAX_INPUT_BYTES) identityInputTooLarge(code, 'bytes');
+      continue;
+    }
+    if (current instanceof ArrayBuffer) {
+      bytes += current.byteLength;
+      if (bytes > PATTERN_IDENTITY_MAX_INPUT_BYTES) identityInputTooLarge(code, 'bytes');
+      continue;
+    }
+    if (current && typeof current === 'object') {
+      if (seen.has(current)) continue;
+      seen.add(current);
+      nodes += 1;
+      if (nodes > PATTERN_IDENTITY_MAX_INPUT_NODES) identityInputTooLarge(code, 'nodes');
+      if (Array.isArray(current)) {
+        for (let index = current.length - 1; index >= 0; index -= 1) stack.push(current[index]);
+      } else {
+        for (const key in current) stack.push(current[key]);
+      }
+    }
+  }
+}
+
 export function parsePattern(source) {
   if (source && typeof source === 'object') {
+    assertBoundedIdentityInput(source, 'pattern-identity-input-too-large');
     admitCompiledGraph(source);
     return deepFreeze({ languageVersion: PATTERN_LANGUAGE_VERSION, ast: source, source: stableDigest(source) });
   }
@@ -195,8 +259,10 @@ export function typeCheckPattern(parsed) {
 
 export function compilePattern(source, options = {}) {
   const parsed = typeCheckPattern(parsePattern(source));
+  assertBoundedIdentityInput(parsed.ast, 'pattern-identity-input-too-large');
   const sourceHash = stableDigest(parsed.ast);
   const compileOptions = { targetAddressSpace: options.targetAddressSpace || 'file', semanticVersion: PATTERN_LANGUAGE_VERSION, options: options.compileOptions || {} };
+  assertBoundedIdentityInput(compileOptions, 'pattern-identity-input-too-large');
   admitCompiledGraph(compileOptions.options);
   return deepFreeze({ languageVersion: PATTERN_LANGUAGE_VERSION, sourceHash, patternId: `pattern:${stableDigest({ sourceHash, compileOptions })}`, ast: parsed.ast, snapshotId: options.snapshotId || null, compileOptions });
 }
@@ -210,7 +276,7 @@ function toBytes(value) {
 function createSource(input, options = {}) {
   const bytes = toBytes(input);
   if (bytes) {
-    const snapshotId = options.snapshotId || stableDigest(Array.from(bytes));
+    const snapshotId = options.snapshotId || byteViewDigest(bytes);
     return { snapshotId, size: bytes.byteLength, read(offset, length, space = 'file') { if (space !== 'file') throw new Error('pattern-address-space-unavailable'); const at = Number(offset), n = Number(length); if (!Number.isSafeInteger(at) || !Number.isSafeInteger(n) || at < 0 || n < 0 || at + n > bytes.byteLength) throw new RangeError('pattern-read-out-of-range'); return bytes.slice(at, at + n); } };
   }
   if (input && typeof input.read === 'function') return {

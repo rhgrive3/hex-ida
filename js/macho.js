@@ -73,6 +73,45 @@
   const N_EXT = 0x01;   // 外へ公開されている名前（エクスポート）の印
   const INDIRECT_SYMBOL_LOCAL = 0x80000000, INDIRECT_SYMBOL_ABS = 0x40000000;
 
+  /*
+   * Aggregate output ceilings for the legacy __unwind_info / indirect-symbol
+   * expansion helpers. These helpers build their full result *inside*
+   * js/macho.js, before worker-legacy.js / worker-fixes.js can apply their own
+   * SYMBOL_MAX / candidate-cap / Set-dedup bounds. A small, structurally-valid
+   * input (first-level index aliases of one page, a wide LSDA interval, or many
+   * pointer/stub sections reusing one indirect table) therefore multiplied into
+   * millions of BigInts/objects and OOM-killed the analysis worker
+   * (#8789, #8816, #8800). Charging this budget before each allocation keeps the
+   * peak heap bounded; on exhaustion the returned array carries an explicit
+   * `truncated` marker so a reduced result is never silently blessed as complete
+   * (same authority discipline as parseFunctionStarts' `complete`/`rejected`).
+   */
+  const UNWIND_STARTS_MAX = 200_000;   // #8789 decoded compact-unwind function starts
+  const UNWIND_LSDA_MAX   = 200_000;   // #8816 deduplicated LSDA (functionStart, lsda) pairs
+  const STUB_SYMBOLS_MAX  = 200_000;   // #8800 indirect stub/GOT symbol mappings
+  const OBJC_METHOD_STARTS_MAX = 200_000;  // #8811 validated ObjC method entries / unique starts
+
+  // Attach the truncation signal as a NON-enumerable property so the returned
+  // value stays a plain array for deep-equality callers/tests (#5371 asserts
+  // deepEqual(result, [...])) while `result.truncated` remains readable.
+  function attachTruncatedFlag(out) {
+    Object.defineProperty(out, 'truncated', { value: false, writable: true, enumerable: false, configurable: true });
+    Object.defineProperty(out, 'truncationReason', { value: null, writable: true, enumerable: false, configurable: true });
+    return out;
+  }
+
+  function markTruncated(out, reason) {
+    out.truncated = true;
+    if (!out.truncationReason) out.truncationReason = reason || 'budget';
+    return out;
+  }
+
+  function boundedExpansionBudget(value, fallback, maximum) {
+    if (value == null) return fallback;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) return 0;
+    return Math.min(value, maximum);
+  }
+
   function cpuName(type, sub) {
     const s = sub & 0x00ffffff;
     switch (type) {
@@ -510,45 +549,81 @@
    * @param {Uint8Array} buf  __unwind_info の中身
    * @param {BigInt} imageBase  マッハヘッダのアドレス（関数の位置はここからの差）
    */
-  function parseUnwindStarts(buf, imageBase) {
-    const out = [];
+  function parseUnwindStarts(buf, imageBase, options = {}) {
+    const out = attachTruncatedFlag([]);
     if (!buf || buf.length < 28) return out;
     const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     if (dv.getUint32(0, true) !== 1) return out;               // 知らない版は読まない
     const indexOff = dv.getUint32(20, true);
     const indexCount = dv.getUint32(24, true);
     if (!indexCount || indexOff + indexCount * 12 > buf.length) return out;
+    const resultLimit = boundedExpansionBudget(options.maxResults, UNWIND_STARTS_MAX, UNWIND_STARTS_MAX);
+    const workLimit = boundedExpansionBudget(options.maxWork, UNWIND_STARTS_MAX, UNWIND_STARTS_MAX);
+    const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;
+    let work = 0;
+    const chargeWork = () => {
+      if (work >= workLimit) { markTruncated(out, 'work-limit'); return false; }
+      work++;
+      if (shouldCancel && ((work & 63) === 1) && shouldCancel()) { markTruncated(out, 'cancelled'); return false; }
+      return true;
+    };
+    if (resultLimit === 0) return markTruncated(out, 'result-limit');
+    if (workLimit === 0) return markTruncated(out, 'work-limit');
 
-    for (let i = 0; i < indexCount; i++) {
-      const e = indexOff + i * 12;
-      const funcOffset = dv.getUint32(e, true);
-      const pageOff = dv.getUint32(e + 4, true);
-      if (!pageOff || pageOff + 8 > buf.length) continue;      // 最後の番人の行
-      const kind = dv.getUint32(pageOff, true);
-      /* Second-level entries live inside their own 4 KiB page (lld emits
-       * exactly 4096-byte pages). Only bounding against buf.length let a
-       * malformed entryPageOffset/entryCount walk into the next page, the
-       * LSDA index, or any other __unwind_info payload and reinterpret those
-       * bytes as compact-unwind entries (#5371). */
+    /*
+     * A first-level index row may alias a second-level page, and many rows may
+     * share one page, so decoding independently per row multiplied a single
+     * 4 KiB page into 1.5M BigInts and OOMed the worker (#8789). Decode each
+     * physical page once (keyed by its offset) and apply the row's own
+     * funcOffset base when emitting compressed entries. The #5371 per-page
+     * 4 KiB bound stays intact; the shared UNWIND_STARTS_MAX caps aggregate
+     * expansion across distinct pages, and function starts are deduplicated as
+     * they are emitted so aliases do not grow the result.
+     */
+    const pageCache = new Map();
+    const decodePage = (pageOff) => {
+      const cached = pageCache.get(pageOff);
+      if (cached) return cached;
+      const rec = { kind: dv.getUint32(pageOff, true), rel: [] };
+      pageCache.set(pageOff, rec);
       const pageEnd = Math.min(buf.length, pageOff + 0x1000);
-      if (kind === 2) {                                        // そのまま並んでいる形
+      if (rec.kind === 2) {                                    // そのまま並んでいる形
         const entryOff = dv.getUint16(pageOff + 4, true);
         const count = dv.getUint16(pageOff + 6, true);
         for (let k = 0; k < count; k++) {
           const p = pageOff + entryOff + k * 8;
           if (p + 8 > pageEnd) break;
-          out.push(imageBase + BigInt(dv.getUint32(p, true)));
+          rec.rel.push(BigInt(dv.getUint32(p, true)));         // 画像相対、行 base 不要
         }
-      } else if (kind === 3) {                                 // 圧縮された形
+      } else if (rec.kind === 3) {                             // 圧縮された形
         const entryOff = dv.getUint16(pageOff + 4, true);
         const count = dv.getUint16(pageOff + 6, true);
         for (let k = 0; k < count; k++) {
           const p = pageOff + entryOff + k * 4;
           if (p + 4 > pageEnd) break;
-          const v = dv.getUint32(p, true);
-          out.push(imageBase + BigInt(funcOffset + (v & 0x00ffffff)));
+          rec.rel.push(BigInt(dv.getUint32(p, true) & 0x00ffffff)); // 行 funcOffset を後で加算
         }
       }
+      return rec;
+    };
+
+    const seen = new Set();
+    for (let i = 0; i < indexCount; i++) {
+      const e = indexOff + i * 12;
+      const funcOffset = dv.getUint32(e, true);
+      const pageOff = dv.getUint32(e + 4, true);
+      if (!pageOff || pageOff + 8 > buf.length) continue;      // 最後の番人の行
+      const rec = decodePage(pageOff);
+      const base = rec.kind === 3 ? BigInt(funcOffset) : 0n;
+      for (const rel of rec.rel) {
+        if (out.length >= resultLimit) { markTruncated(out, 'result-limit'); break; }
+        if (!chargeWork()) break;
+        const value = imageBase + base + rel;
+        if (seen.has(value)) continue;                         // 関数先頭は一意
+        seen.add(value);
+        out.push(value);
+      }
+      if (out.truncated) break;
     }
     out.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     return out;
@@ -562,8 +637,8 @@
    * Each pair associates an exact function start with one `__gcc_except_tab`
    * record. Values are image-relative 32-bit offsets by Mach-O ABI.
    */
-  function parseUnwindLsdaEntries(buf, imageBase) {
-    const out = [];
+  function parseUnwindLsdaEntries(buf, imageBase, options = {}) {
+    const out = attachTruncatedFlag([]);
     if (!buf || buf.length < 28 || imageBase == null) return out;
     const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     if (dv.getUint32(0, true) !== 1) return out;
@@ -571,7 +646,27 @@
     const indexCount = dv.getUint32(24, true);
     if (indexCount < 2 || indexOff + indexCount * 12 > buf.length) return out;
     const base = BigInt(imageBase);
-    const seen = new Set();
+    const resultLimit = boundedExpansionBudget(options.maxResults, UNWIND_LSDA_MAX, UNWIND_LSDA_MAX);
+    const workLimit = boundedExpansionBudget(options.maxWork, UNWIND_LSDA_MAX, UNWIND_LSDA_MAX);
+    const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;
+    let work = 0;
+    const chargeWork = () => {
+      if (work >= workLimit) { markTruncated(out, 'work-limit'); return false; }
+      work++;
+      if (shouldCancel && ((work & 63) === 1) && shouldCancel()) { markTruncated(out, 'cancelled'); return false; }
+      return true;
+    };
+    if (resultLimit === 0) return markTruncated(out, 'result-limit');
+    if (workLimit === 0) return markTruncated(out, 'work-limit');
+    /*
+     * Eagerly materializing one `fnOff + ':' + tableOff` string key per pair on
+     * top of a BigInt-object output let a ~5.2 MiB __unwind_info retain enough
+     * JS state to OOM a 128 MiB heap (#8816). Drop the string Set entirely:
+     * charge the shared UNWIND_LSDA_MAX budget before each output object, then
+     * sort the bounded set and collapse exact adjacent duplicates. (fnOff,
+     * tableOff) map injectively onto (functionStart, lsda) for a fixed base, so
+     * adjacent-after-sort dedup is equivalent to the old global key Set.
+     */
     for (let i = 0; i + 1 < indexCount; i++) {
       const p = indexOff + i * 12;
       const q = p + 12;
@@ -579,17 +674,25 @@
       const nextLsdaOff = dv.getUint32(q + 8, true);
       if (!lsdaOff || !nextLsdaOff || nextLsdaOff < lsdaOff || nextLsdaOff > buf.length) continue;
       for (let x = lsdaOff; x + 8 <= nextLsdaOff; x += 8) {
+        if (out.length >= resultLimit) { markTruncated(out, 'result-limit'); break; }
+        if (!chargeWork()) break;
         const fnOff = dv.getUint32(x, true);
         const tableOff = dv.getUint32(x + 4, true);
         if (!tableOff) continue;
-        const key = fnOff + ':' + tableOff;
-        if (seen.has(key)) continue;
-        seen.add(key);
         out.push({ functionStart: base + BigInt(fnOff), lsda: base + BigInt(tableOff) });
       }
+      if (out.truncated) break;
     }
     out.sort((a, b) => (a.lsda < b.lsda ? -1 : a.lsda > b.lsda ? 1 : a.functionStart < b.functionStart ? -1 : 1));
-    return out;
+    const uniq = attachTruncatedFlag([]);
+    uniq.truncated = out.truncated;
+    uniq.truncationReason = out.truncationReason;
+    let prev = null;
+    for (const e of out) {
+      if (prev && prev.lsda === e.lsda && prev.functionStart === e.functionStart) continue;
+      uniq.push(e); prev = e;
+    }
+    return uniq;
   }
 
   /**
@@ -850,6 +953,48 @@
     return low;
   }
 
+  /*
+   * Immutable per-authority-category interval indexes for
+   * parseObjcMethodStarts() (#8798). Method validation checked selector/type/
+   * IMP membership with a linear `some()` over every section for every field,
+   * making exact Objective-C metadata recovery O(methods x regions) (a
+   * structurally valid 16k-method / 48k-region shape stalled ~8.5s). Sorting
+   * and merging each category into disjoint [lo,hi) intervals preserves the
+   * exact union membership semantics (overlapping or touching regions merge;
+   * membership never depends on enumeration order) while allowing binary
+   * search. Built once per regions array and reused through a WeakMap so many
+   * __objc_methlist sections inside one slice share one immutable index.
+   */
+  const OBJC_REGION_INDEX_CACHE = new WeakMap();
+
+  function objcRegionIndex(regions) {
+    if (!Array.isArray(regions)) regions = [];
+    const cached = OBJC_REGION_INDEX_CACHE.get(regions);
+    if (cached) return cached;
+    const build = (pred) => {
+      const spans = [];
+      for (const r of regions) {
+        if (r && r.size > 0n && pred(r)) spans.push([BigInt(r.vmAddr), BigInt(r.vmAddr) + BigInt(r.size)]);
+      }
+      spans.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
+      const merged = [];
+      for (const span of spans) {
+        const last = merged[merged.length - 1];
+        if (last && span[0] <= last[1]) { if (span[1] > last[1]) last[1] = span[1]; continue; }
+        merged.push(span);
+      }
+      return merged;
+    };
+    const index = {
+      exec: build((r) => !!r.exec),
+      selrefs: build((r) => r.section === '__objc_selrefs'),
+      selectorText: build((r) => r.section === '__objc_methname' || r.section === '__cstring'),
+      typeText: build((r) => r.section === '__objc_methtype' || r.section === '__cstring'),
+    };
+    if (regions.length) OBJC_REGION_INDEX_CACHE.set(regions, index);
+    return index;
+  }
+
   /**
    * Parse `__TEXT,__objc_methlist` and return implementation addresses.
    *
@@ -859,62 +1004,97 @@
    * every IMP lands in executable code.  This makes the result authoritative
    * metadata evidence rather than a heuristic code pointer.
    */
-  function parseObjcMethodStarts(buf, sectionVM, options = {}) {
-    const out = new Set();
-    if (!buf || buf.length < 20 || sectionVM == null) return [];
+   function parseObjcMethodStarts(buf, sectionVM, options = {}) {
+     const out = new Set();
+     if (!buf || buf.length < 20 || sectionVM == null) return attachTruncatedFlag([]);
+     const resultLimit = boundedExpansionBudget(options.maxResults, OBJC_METHOD_STARTS_MAX, OBJC_METHOD_STARTS_MAX);
+     const workLimit = boundedExpansionBudget(options.maxWork, OBJC_METHOD_STARTS_MAX, OBJC_METHOD_STARTS_MAX);
+     const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;
+     const finish = (truncationReason) => {
+       const list = Array.from(out).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+       const arr = attachTruncatedFlag(list);
+       if (truncationReason) markTruncated(arr, truncationReason);
+       return arr;
+     };
+     let work = 0;
     const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     const regions = Array.isArray(options.regions) ? options.regions : [];
+    const index = objcRegionIndex(options.regionIndex || regions);
     const imageBase = options.imageBase == null ? null : BigInt(options.imageBase);
     const align = instructionAlignment(options.architecture || 'arm64');
-    const ranges = (pred) => regions.filter((r) => r && r.size > 0n && pred(r))
-      .map((r) => [BigInt(r.vmAddr), BigInt(r.vmAddr) + BigInt(r.size)]);
-    const exec = ranges((r) => !!r.exec);
-    const selrefs = ranges((r) => r.section === '__objc_selrefs');
-    const selectorText = ranges((r) => r.section === '__objc_methname' || r.section === '__cstring');
-    const typeText = ranges((r) => r.section === '__objc_methtype' || r.section === '__cstring');
-    const inside = (addr, rs) => addr != null && rs.some(([lo, hi]) => addr >= lo && addr < hi);
-    const i32 = (p) => BigInt(dv.getInt32(p, true));
-    const u64 = (p) => dv.getBigUint64(p, true);
-    const vm = BigInt(sectionVM);
-
-    for (let p = 0; p + 8 <= buf.length; p += 4) {
-      const raw = dv.getUint32(p, true);
-      const count = dv.getUint32(p + 4, true);
-      if (!count || count > 20000) continue;
-      const relative = !!(raw & 0x80000000);
-      const directSelector = !!(raw & 0x40000000);
-      const stride = raw & 0xfffc;
-      if (relative ? (stride < 12 || stride > 256) : (stride < 24 || stride > 256)) continue;
-      const bytes = 8 + count * stride;
-      if (!Number.isSafeInteger(bytes) || p + bytes > buf.length) continue;
-
-      const imps = [];
-      let valid = true;
-      for (let i = 0; i < count; i++) {
-        const q = p + 8 + i * stride;
-        const entry = vm + BigInt(q);
-        let nameAddr, typeAddr, imp;
-        if (relative) {
-          nameAddr = entry + i32(q);
-          typeAddr = entry + 4n + i32(q + 4);
-          imp = entry + 8n + i32(q + 8);
-          const nameRanges = directSelector ? selectorText : selrefs;
-          if (!inside(nameAddr, nameRanges)) { valid = false; break; }
-        } else {
-          nameAddr = objcMethodPointer(u64(q), imageBase);
-          typeAddr = objcMethodPointer(u64(q + 8), imageBase);
-          imp = objcMethodPointer(u64(q + 16), imageBase);
-          if (!inside(nameAddr, selectorText)) { valid = false; break; }
-        }
-        if (!inside(typeAddr, typeText) || !inside(imp, exec) || (imp % align) !== 0n) {
-          valid = false; break;
-        }
-        imps.push(imp);
+    const inside = (addr, rs) => {
+      /* #8798: the authority sets are sorted disjoint interval lists, so an
+       * address membership check is a binary search instead of a linear
+       * `some()` over every section. Validation is O(methods x log regions)
+       * rather than O(methods x regions). */
+      if (addr == null || rs.length === 0) return false;
+      let lo = 0, hi = rs.length - 1, found = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (rs[mid][0] <= addr) { found = mid; lo = mid + 1; } else hi = mid - 1;
       }
-      if (valid) for (const imp of imps) out.add(imp);
-    }
-    return Array.from(out).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  }
+      return found >= 0 && addr < rs[found][1];
+    };
+     const i32 = (p) => BigInt(dv.getInt32(p, true));
+     const u64 = (p) => dv.getBigUint64(p, true);
+     const vm = BigInt(sectionVM);
+
+     for (let p = 0; p + 8 <= buf.length; p += 4) {
+       if (shouldCancel && shouldCancel()) return finish('cancelled');
+       if (++work > workLimit) return finish('work-limit');
+       const raw = dv.getUint32(p, true);
+       const count = dv.getUint32(p + 4, true);
+       if (!count || count > 20000) continue;
+       const relative = !!(raw & 0x80000000);
+       const directSelector = !!(raw & 0x40000000);
+       const stride = raw & 0xfffc;
+       if (relative ? (stride < 12 || stride > 256) : (stride < 24 || stride > 256)) continue;
+       const bytes = 8 + count * stride;
+       if (!Number.isSafeInteger(bytes) || p + bytes > buf.length) continue;
+
+       const imps = [];
+       let valid = true;
+       for (let i = 0; i < count; i++) {
+         work++;
+         if (work > workLimit || (shouldCancel && shouldCancel())) {
+           return finish(work > workLimit ? 'work-limit' : 'cancelled');
+         }
+         const q = p + 8 + i * stride;
+         const entry = vm + BigInt(q);
+         let nameAddr, typeAddr, imp;
+         if (relative) {
+           nameAddr = entry + i32(q);
+           typeAddr = entry + 4n + i32(q + 4);
+           imp = entry + 8n + i32(q + 8);
+           const nameRanges = directSelector ? index.selectorText : index.selrefs;
+           if (!inside(nameAddr, nameRanges)) { valid = false; break; }
+         } else {
+           nameAddr = objcMethodPointer(u64(q), imageBase);
+           typeAddr = objcMethodPointer(u64(q + 8), imageBase);
+           imp = objcMethodPointer(u64(q + 16), imageBase);
+           if (!inside(nameAddr, index.selectorText)) { valid = false; break; }
+         }
+         if (!inside(typeAddr, index.typeText) || !inside(imp, index.exec) || (imp % align) !== 0n) {
+           valid = false; break;
+         }
+         imps.push(imp);
+       }
+       if (valid) {
+         for (const imp of imps) {
+           if (out.size >= resultLimit) return finish('result-limit');
+           out.add(imp);
+         }
+         /* Dedicated method lists are packed consecutively/aligned. Skip past the
+          * body we just validated so entry payload cannot be reinterpreted as
+          * fresh overlapping list headers — the same invariant
+          * worker-legacy.js::objcMethodImplementationStarts() enforces (#8811).
+          * Without the skip a periodic byte pattern forged thousands of extra
+          * exact IMPs and made the walk quadratic in the accepted payload. */
+         p += bytes - 4;
+       }
+     }
+     return finish(null);
+   }
 
   /* ── 間接シンボル（__stubs / __got の名前） ───────────── */
 
@@ -923,17 +1103,28 @@
    * これがあると「_printf を呼んでいる」と読めるようになる。
    */
   function stubSymbols(info, indirectBuf, sym) {
-    const out = [];
+    const out = attachTruncatedFlag([]);
     if (!indirectBuf || !indirectBuf.length || !sym) return out;
     const dv = new DataView(indirectBuf.buffer, indirectBuf.byteOffset, indirectBuf.byteLength);
     const total = Math.floor(indirectBuf.length / 4);
     const pointerSize = info.pointerBits === 32 ? 4 : 8;
+    /*
+     * Several stub/pointer sections may reuse the same reserved1 indirect-symbol
+     * window (or describe overlapping ranges), and each section expanded that
+     * window independently with only a per-section bound, so a small indirect
+     * table multiplied by section count into millions of objects before
+     * analyzeSlice() could sort/dedup them (#8800). Validate each section's
+     * indirect interval against the loaded table and charge one shared
+     * STUB_SYMBOLS_MAX budget across all sections before materializing a
+     * mapping, marking the result truncated rather than over-allocating.
+     */
     for (const seg of info.segments) {
       for (const sec of seg.sections) {
         if (!sec.stubs && !sec.pointers) continue;
         const entSize = sec.stubs ? (sec.reserved2 || 12) : pointerSize;
         if (entSize <= 0) continue;
-        const count = Number(sec.size / BigInt(entSize));
+        if (sec.reserved1 >= total) continue;                  // window starts outside the table
+        const count = Math.min(Number(sec.size / BigInt(entSize)), total - sec.reserved1);
         for (let i = 0; i < count; i++) {
           const idx = sec.reserved1 + i;
           if (idx >= total) break;
@@ -941,6 +1132,7 @@
           if (symIdx & (INDIRECT_SYMBOL_LOCAL | INDIRECT_SYMBOL_ABS)) continue;
           const name = sym.names[symIdx];
           if (!name) continue;
+          if (out.length >= STUB_SYMBOLS_MAX) { out.truncated = true; return out; }
           out.push({ addr: sec.addr + BigInt(i * entSize), name, stub: !!sec.stubs });
         }
       }

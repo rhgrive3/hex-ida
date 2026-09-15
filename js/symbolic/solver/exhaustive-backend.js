@@ -73,7 +73,7 @@ function validateExprNode(expr) {
       return Object.values(BV_COMPARE_OP).includes(expr.op) && isBoolSort(expr.sort) && sameBvSort(expr.left, expr.right)
         ? null : 'invalid-compare-expression';
     case EXPR_KIND.CONNECTIVE: {
-      if (!Object.values(BOOL_CONNECTIVE_OP).includes(expr.op) || !isBoolSort(expr.sort) || !Array.isArray(expr.args) || !expr.args.every((arg) => isBoolSort(arg?.sort))) return 'invalid-connective-expression';
+      if (!Object.values(BOOL_CONNECTIVE_OP).includes(expr.op) || !isBoolSort(expr.sort) || !Array.isArray(expr.args)) return 'invalid-connective-expression';
       if (expr.args.length === 0 || (expr.op === BOOL_CONNECTIVE_OP.NOT && expr.args.length !== 1) ||
           ([BOOL_CONNECTIVE_OP.IMPLIES, BOOL_CONNECTIVE_OP.EQ, BOOL_CONNECTIVE_OP.NE].includes(expr.op) && expr.args.length !== 2)) return 'invalid-connective-arity';
       return null;
@@ -101,20 +101,39 @@ function validateExprNode(expr) {
   }
 }
 
-function collectSymbols(expressions) {
+function collectSymbols(expressions, maxExprNodes) {
   const symbols = new Map();
   const visited = new Set();
   let nodeCount = 0;
   let unsupportedReason = null;
+  let budgetExceeded = false;
+  // Keep only one sequence frame per nesting level. In particular, a wide
+  // CONNECTIVE must not enqueue every argument before the node budget can be
+  // observed (#5163). Each frame advances its child array incrementally.
+  const worklist = [{ expressions, index: 0, requireBoolSort: false }];
 
-  function visit(expr) {
+  while (worklist.length > 0) {
+    const frame = worklist[worklist.length - 1];
+    if (frame.index >= frame.expressions.length) {
+      worklist.pop();
+      continue;
+    }
+
+    const expr = frame.expressions[frame.index++];
+    if (frame.requireBoolSort && !isBoolSort(expr?.sort)) {
+      unsupportedReason ||= 'invalid-connective-expression';
+    }
     if (!expr || typeof expr !== 'object') {
       unsupportedReason ||= 'malformed-expression-node';
-      return;
+      continue;
     }
-    if (visited.has(expr)) return;
+    if (visited.has(expr)) continue;
     visited.add(expr);
     nodeCount++;
+    if (nodeCount > maxExprNodes) {
+      budgetExceeded = true;
+      break;
+    }
     unsupportedReason ||= validateExprNode(expr);
     if (expr.kind === EXPR_KIND.FRESH_SYMBOL) {
       const key = String(expr.symbolId || expr.name || '');
@@ -125,11 +144,18 @@ function collectSymbols(expressions) {
         symbols.set(key, { key, name: String(expr.name), symbolId: String(expr.symbolId || key), sort: expr.sort });
       }
     }
-    for (const child of childExpressions(expr)) visit(child);
+
+    const children = childExpressions(expr);
+    if (children.length > 0) {
+      worklist.push({
+        expressions: children,
+        index: 0,
+        requireBoolSort: expr.kind === EXPR_KIND.CONNECTIVE,
+      });
+    }
   }
 
-  for (const expr of expressions) visit(expr);
-  return { symbols: [...symbols.values()].sort((a, b) => a.key.localeCompare(b.key)), nodeCount, unsupportedReason };
+  return { symbols: [...symbols.values()].sort((a, b) => a.key.localeCompare(b.key)), nodeCount, unsupportedReason, budgetExceeded };
 }
 
 function symbolConstantPair(left, right) {
@@ -239,8 +265,8 @@ class ExhaustiveSolverSession extends SolverSession {
       return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'constraint-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
     }
 
-    const collected = collectSymbols(expressions);
-    if (collected.nodeCount > maxExprNodes) {
+    const collected = collectSymbols(expressions, maxExprNodes);
+    if (collected.budgetExceeded) {
       return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-node-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
     }
     if (collected.unsupportedReason) {

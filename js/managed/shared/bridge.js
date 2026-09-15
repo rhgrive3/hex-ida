@@ -858,18 +858,18 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
       }
     } else if (node.kind === 'load') {
       memoryReads.push(createMemoryEffect({
-        regionKind: 'heap',
-        broad: false,
-        addressSpaces: ['memory'],
-        source: 'instruction',
+        regionKind: 'unknown',
+        broad: true,
+        addressSpaces: [node.memory?.addressSpace || 'memory'],
+        source: 'proven-summary',
         evidenceIds: [node.id],
       }));
     } else if (node.kind === 'store') {
       memoryWrites.push(createMemoryEffect({
-        regionKind: 'heap',
-        broad: false,
-        addressSpaces: ['memory'],
-        source: 'instruction',
+        regionKind: 'unknown',
+        broad: true,
+        addressSpaces: [node.memory?.addressSpace || 'memory'],
+        source: 'proven-summary',
         evidenceIds: [node.id],
       }));
     } else if (node.kind === 'trap') {

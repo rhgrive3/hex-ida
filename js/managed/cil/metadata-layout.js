@@ -81,3 +81,11 @@ export function cilMetadataToken(table, rid) {
       || !Number.isInteger(rid) || rid < 1 || rid > 0xffffff) fail('cil-metadata-token-invalid');
   return `0x${(table * 0x1000000 + rid).toString(16).padStart(8, '0')}`;
 }
+
+// One canonical metadata token text: a numeric or '0x…' token string becomes the
+// same lowercase 8-digit form, and an identity that cannot be read returns null
+// instead of a guessed token.
+export function cilTokenText(token) {
+  const numeric = typeof token === 'number' ? token >>> 0 : Number.parseInt(String(token), 16);
+  return Number.isSafeInteger(numeric) ? `0x${(numeric >>> 0).toString(16).padStart(8, '0')}` : null;
+}
