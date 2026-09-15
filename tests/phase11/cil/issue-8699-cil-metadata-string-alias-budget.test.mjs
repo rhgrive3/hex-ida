@@ -58,6 +58,40 @@ function genericParamAliasFixture(n, nameLen = 2048) {
   }).bytes;
 }
 
+
+function crossReaderAliasFixture(n = 4, nameLen = 2048) {
+  const shared = 'x'.repeat(nameLen);
+  const pre = buildCil({
+    methods: [],
+    types: [{ name: 'placeholder-owner', namespace: '', flags: 1, fieldList: 1, methodList: 1 }],
+    leadingStrings: [shared],
+  });
+  const nameOff = pre.layout.leadingStringIndex[shared];
+  const rows = new Uint8Array(n * 8);
+  const v = new DataView(rows.buffer);
+  for (let i = 0; i < n; i++) {
+    const p = i * 8;
+    v.setUint16(p, i, true);
+    v.setUint16(p + 2, 0, true);
+    v.setUint16(p + 4, 2, true); // TypeDef rid 1, tag 0
+    v.setUint16(p + 6, nameOff, true);
+  }
+  const built = buildCil({
+    methods: [],
+    types: [{ name: 'placeholder-owner', namespace: '', flags: 1, fieldList: 1, methodList: 1 }],
+    leadingStrings: [shared],
+    extraRows: new Map([[0x2a, { count: n, bytes: rows }]]),
+  });
+  // Point TypeDef.Name at the same exact first leading #Strings offset used by
+  // every GenericParam. The unreferenced placeholder remains in the heap so the
+  // test checks reference accounting, not whole-heap content.
+  const tablesStream = built.layout.streams.find(stream => stream.name === '#~' || stream.name === '#-');
+  const typeDefPos = tablesStream.offset + built.layout.tables.offsets.get(0x02);
+  new DataView(built.bytes.buffer, built.bytes.byteOffset, built.bytes.byteLength)
+    .setUint16(typeDefPos + 4, nameOff, true);
+  return built.bytes;
+}
+
 // Correctness: distinct field names must still decode losslessly and stay distinct.
 {
   const nameA = 'alphaField', nameB = 'betaField';
@@ -121,6 +155,32 @@ assert.throws(
   const image = parseCil(genericParamAliasFixture(40, 2048), { binaryId: 'gparam' });
   assert.equal(image.genericParams.length, 40);
   assert.equal(image.genericParams[0].name.length, 2048);
+}
+
+
+// #8699: the aggregate parse budget owns exact #Strings interning across
+// definitions and GenericParam readers. The one 2 KiB referenced heap entry is
+// admitted once, not once per reader.
+{
+  const image = parseCil(crossReaderAliasFixture(), {
+    binaryId: 'parser-wide-string-cache',
+    resourceBudget: { maxStrings: 1, maxStringBytes: 2048 },
+  });
+  assert.equal(image.types[0].name.length, 2048);
+  assert.equal(image.genericParams.length, 4);
+  assert.ok(image.genericParams.every(row => row.name === image.types[0].name));
+}
+
+// The public metadata + manifest pipeline must likewise charge each canonical
+// retained definition row once. One TypeDef + four GenericParam rows is exactly
+// five rows; reconstructing TypeDef for manifest/security would exceed this.
+{
+  const image = parseCil(crossReaderAliasFixture(), {
+    binaryId: 'parser-wide-row-reuse',
+    resourceBudget: { maxRows: 5 },
+  });
+  assert.equal(image.types.length, 1);
+  assert.equal(image.genericParams.length, 4);
 }
 
 // GenericParam duplicate-number detection must remain exact with the Set.

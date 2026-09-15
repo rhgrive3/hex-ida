@@ -1,4 +1,5 @@
 import { codedIndexSize, tableIndexSize, cilMetadataToken } from './metadata-layout.js';
+import { cilStringCacheFor } from './metadata-string-cache.js';
 
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 function fail(code) { throw new TypeError(code); }
@@ -10,7 +11,7 @@ export function readCilGenericMetadata(bytes, view, layout, stringsStream, defs,
   const { rowCounts: counts, tableOffsets: offsets, rowSizes, heapSizes } = layout;
   const s = heapSizes & 1 ? 4 : 2;
   const index = (pos, width) => width === 2 ? view.getUint16(pos, true) : view.getUint32(pos, true);
-  const textCache = new Map();
+  const textCache = cilStringCacheFor(budget, bytes, stringsStream);
   const requiredText = (value) => {
     if (value === 0) fail('cil-generic-param-name-required');
     if (textCache.has(value)) {

@@ -4,6 +4,7 @@ import { readCilMetadataStreams } from './metadata-streams.js';
 import { readCilDefinitions } from './metadata-definitions.js';
 import { readCilMetadataBlob } from './call-signature-metadata.js';
 import { CLI_HEADER_SIZE, validateCliHeaderSize } from './cli-header.js';
+import { cilStringCacheFor } from './metadata-string-cache.js';
 
 const CLI_DIRECTORY_INDEX = 14;
 
@@ -100,7 +101,7 @@ function readManifestSecurity(bytes, view, layout, stringsStream, blobStream, de
   const s = heapSizes & 1 ? 4 : 2;
   const b = heapSizes & 4 ? 4 : 2;
   const index = (pos, width) => width === 2 ? view.getUint16(pos, true) : view.getUint32(pos, true);
-  const textCache = new Map();
+  const textCache = cilStringCacheFor(budget, bytes, stringsStream);
   const text = value => {
     if (value === 0) return null;
     // #8699: intern shared #Strings heap offsets so repeated references decode
@@ -246,7 +247,14 @@ export function overlayCilManifestSecurity(bytes, parsed, options = {}, internal
   const guidStream = meta.streams.find(s => s.name === '#GUID');
   if (!tablesStream) fail('cil-metadata-tables-missing');
   const layout = tableLayout(u8, view, tablesStream);
-  const defs = readCilDefinitions(u8, view, layout, stringsStream, blobStream, guidStream, budget);
+  // Public parse has already materialized and validated TypeDef/MethodDef in
+  // overlayCilMetadata(). Reuse that canonical authority instead of charging
+  // and retaining every definition row a second time. Standalone callers that
+  // pass a base parse (which has no runtimeVersion field) retain the old path.
+  const defs = Object.prototype.hasOwnProperty.call(parsed, 'runtimeVersion')
+    && Array.isArray(parsed.types) && Array.isArray(parsed.methods)
+    ? { types: parsed.types, methods: parsed.methods }
+    : readCilDefinitions(u8, view, layout, stringsStream, blobStream, guidStream, budget);
   const extra = readManifestSecurity(u8, view, layout, stringsStream, blobStream, defs, budget);
   return deepFreeze({ ...parsed, files: extra.files, exportedTypes: extra.exportedTypes, declSecurity: extra.declSecurity });
 }

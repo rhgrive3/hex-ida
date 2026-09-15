@@ -3,6 +3,7 @@ import { readCilMetadataBlob } from './call-signature-metadata.js';
 import { parseCilMethodSignature, parseCilPropertySignature, parseCilTypeSpecSignature, cilMethodSlotElementByte, cilPropertyTypeElementByte } from './call-signature-types.js';
 import { decodeCilCustomAttributeValue } from './custom-attribute-values.js';
 import { stableStringify } from '../../core/identity/index.js';
+import { cilStringCacheFor } from './metadata-string-cache.js';
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const utf16 = new TextDecoder('utf-16le');
 const constantValueTypes = new Map([
@@ -106,7 +107,7 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
   const { rowCounts: counts, tableOffsets: offsets, rowSizes, heapSizes, valid } = layout;
   const s = heapSizes & 1 ? 4 : 2, g = heapSizes & 2 ? 4 : 2, b = heapSizes & 4 ? 4 : 2;
   const index = (pos, width) => width === 2 ? view.getUint16(pos, true) : view.getUint32(pos, true);
-  const textCache = new Map();
+  const textCache = cilStringCacheFor(budget, bytes, stringsStream);
   const text = value => {
     // Preserve legacy minimal metadata with an absent optional heap and null names.
     if (value === 0) return null;
