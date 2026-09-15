@@ -1,5 +1,9 @@
 import { normalizeSchemaRecoveryLimit, recoverSchemas } from '../schema.js';
-import { annotateSchemaResult, dependencyCompleteness, schemaResultSatisfies } from './schema-recovery-contract.js';
+import { annotateSchemaResult, dependencyCompleteness, schemaDependencyGeneration, schemaResultSatisfies } from './schema-recovery-contract.js';
+
+function boundGenerationOf(program, requested) {
+  return Number.isSafeInteger(program?.gen) ? program.gen : requested;
+}
 
 const TASKS = new WeakMap();
 
@@ -41,20 +45,21 @@ function taskMap(app) {
   return map;
 }
 
-function taskKey(epoch, maxSchemas) {
-  return `${epoch}:${maxSchemas}`;
+function taskKey(epoch, maxSchemas, dependencyGeneration) {
+  return `${epoch}:${maxSchemas}:${dependencyGeneration}`;
 }
 
-function entrySatisfies(entry, epoch, maxSchemas) {
+function entrySatisfies(entry, epoch, maxSchemas, dependencyGeneration) {
   if (!entry || entry.epoch !== epoch) return false;
-  if (entry.result) return schemaResultSatisfies(entry.result, epoch, maxSchemas);
+  if (entry.dependencyGeneration !== dependencyGeneration) return false;
+  if (entry.result) return schemaResultSatisfies(entry.result, epoch, maxSchemas, dependencyGeneration);
   return !entry.controller.signal.aborted && entry.maxSchemas >= maxSchemas;
 }
 
-function satisfyingEntry(map, epoch, maxSchemas) {
+function satisfyingEntry(map, epoch, maxSchemas, dependencyGeneration) {
   let best = null;
   for (const entry of map.values()) {
-    if (!entrySatisfies(entry, epoch, maxSchemas)) continue;
+    if (!entrySatisfies(entry, epoch, maxSchemas, dependencyGeneration)) continue;
     if (entry.result?.complete === true) return entry;
     if (!best || entry.maxSchemas < best.maxSchemas || (entry.result && !best.result)) best = entry;
   }
@@ -63,6 +68,9 @@ function satisfyingEntry(map, epoch, maxSchemas) {
 
 function publishBestSchemaResult(app, entry) {
   if (entry.epoch !== app.backend?.gen) return;
+  // A result recovered from an older ProgramIndex / symbol generation must not
+  // become authoritative just because the backend epoch is unchanged (#8997).
+  if (entry.boundGeneration !== schemaDependencyGeneration(app)) return;
   const current = app.schemas;
   if (current?.complete === true && entry.result.complete !== true) return;
   const currentLimit = current?.schemaRecoveryEpoch === entry.epoch
@@ -74,13 +82,13 @@ function publishBestSchemaResult(app, entry) {
   }
 }
 
-function createTask(app, epoch, maxSchemas, { onProgress, priority, budget } = {}) {
+function createTask(app, epoch, maxSchemas, dependencyGeneration, { onProgress, priority, budget } = {}) {
   const reportProgress = typeof onProgress === 'function' ? onProgress : null;
   const controller = new AbortController();
   const signal = controller.signal;
   const map = taskMap(app);
-  const key = taskKey(epoch, maxSchemas);
-  const entry = { key, epoch, maxSchemas, controller, waiters:0, result:null, promise:null, priority, budget };
+  const key = taskKey(epoch, maxSchemas, dependencyGeneration);
+  const entry = { key, epoch, maxSchemas, dependencyGeneration, boundGeneration: dependencyGeneration, controller, waiters:0, result:null, promise:null, priority, budget };
 
   entry.promise = (async () => {
     const dependencyOptions = {
@@ -99,8 +107,12 @@ function createTask(app, epoch, maxSchemas, { onProgress, priority, budget } = {
     const [strings, program] = await Promise.all([stringsPromise, programPromise]);
     throwIfAborted(signal);
     if (epoch !== app.backend?.gen) throw Object.assign(new Error('Schema recovery became stale.'), { name:'StaleRequestError', stale:true });
+    // Bind the artifact to the generation actually produced by `ensureProgram()`;
+    // internal discovery during that await may legitimately advance it (#4487,
+    // checklist item: do not assume the pre-`ensureProgram()` generation is final).
+    entry.boundGeneration = boundGenerationOf(program, dependencyGeneration);
     if (!program) {
-      entry.result = annotateSchemaResult([], dependencyCompleteness(strings, program), { epoch, maxSchemas });
+      entry.result = annotateSchemaResult([], dependencyCompleteness(strings, program), { epoch, maxSchemas, dependencyGeneration: entry.boundGeneration });
       publishBestSchemaResult(app, entry);
       return entry.result;
     }
@@ -124,7 +136,8 @@ function createTask(app, epoch, maxSchemas, { onProgress, priority, budget } = {
     });
     throwIfAborted(signal);
     if (epoch !== app.backend?.gen) throw Object.assign(new Error('Schema recovery became stale.'), { name:'StaleRequestError', stale:true });
-    entry.result = annotateSchemaResult(schemas, dependencyCompleteness(strings, program), { epoch, maxSchemas });
+    entry.boundGeneration = boundGenerationOf(program, dependencyGeneration);
+    entry.result = annotateSchemaResult(schemas, dependencyCompleteness(strings, program), { epoch, maxSchemas, dependencyGeneration: entry.boundGeneration });
     publishBestSchemaResult(app, entry);
     return entry.result;
   })().catch((error) => {
@@ -138,11 +151,12 @@ function createTask(app, epoch, maxSchemas, { onProgress, priority, budget } = {
 
 export function recoverSchemasForUi(app, { signal = null, onProgress = null, priority = 'interactive', budget = null } = {}) {
   const epoch = app?.backend?.gen ?? -1;
+  const generation = schemaDependencyGeneration(app);
   const maxSchemas = normalizeSchemaRecoveryLimit(budget?.maxSchemas);
-  if (schemaResultSatisfies(app?.schemas, epoch, maxSchemas)) return Promise.resolve(app.schemas);
+  if (schemaResultSatisfies(app?.schemas, epoch, maxSchemas, generation)) return Promise.resolve(app.schemas);
   const map = taskMap(app);
-  let entry = satisfyingEntry(map, epoch, maxSchemas);
-  if (!entry) entry = createTask(app, epoch, maxSchemas, { onProgress, priority, budget });
+  let entry = satisfyingEntry(map, epoch, maxSchemas, generation);
+  if (!entry) entry = createTask(app, epoch, maxSchemas, generation, { onProgress, priority, budget });
   if (entry.result) return Promise.resolve(entry.result);
   entry.waiters++;
 
