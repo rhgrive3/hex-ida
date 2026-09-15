@@ -172,7 +172,9 @@ export function lowerScalarInstruction(inst, args, bits, condition = null) {
     if (signedDeclarations.some(x => typeof x !== 'boolean')) return undef(bits, 'invalid-comparison-signedness');
     if (signedDeclarations.some(x => x !== signedDeclarations[0])) return undef(bits, 'conflicting-comparison-signedness');
     if (args.some(x => x?.sort?.kind !== 'bv') || args[0].sort.width !== args[1].sort.width) return undef(bits, 'scalar-input-width-mismatch');
-    const conditionToken = inst.cond ?? operation;
+    // `extra.comparison`/`comparison` are the canonical producer spellings; the
+    // scalar sub-operation and legacy `cond` remain accepted fallbacks.
+    const conditionToken = inst.extra?.comparison ?? inst.comparison ?? inst.cond ?? operation;
     const signed = signedDeclarations[0] === true;
     const comparisons = { '==':'eq', eq:'eq', '!=':'ne', ne:'ne',
       '<':signed?'slt':'ult', lt:signed?'slt':'ult', '<=':signed?'sle':'ule', le:signed?'sle':'ule',

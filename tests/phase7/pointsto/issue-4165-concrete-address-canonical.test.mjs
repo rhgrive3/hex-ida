@@ -12,6 +12,10 @@ const complete = createAnalysisStatus({
   completeness:'complete',
 });
 
+// This suite is about concrete-address *spelling* authority. The absolute
+// interval branch needs a proven pointer width to compute the address-space
+// modulus at all (#4515), and borrowing the query's access width for that is
+// the laundering #8721 forbids, so the fixture states its own width explicitly.
 const target = (rootEntityId, address) => createPointsToTarget({
   addressSpace:'memory',
   rootKind:'absolute',
@@ -19,6 +23,7 @@ const target = (rootEntityId, address) => createPointsToTarget({
   rootEntityId,
   address,
   offsetRange:exactRange(0n),
+  widthBits:64,
 });
 
 const aliasOf = (left, right) => pointsToAlias(

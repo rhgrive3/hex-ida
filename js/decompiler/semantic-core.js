@@ -1630,6 +1630,12 @@ export function decompileSemantic(model, opts = {}) {
   if (ctx.unknown) warnings.push(`${ctx.unknown} unsupported IR instruction(s) remain as __asm.`);
   if (ctx.unknownCallArities) warnings.push(`${ctx.unknownCallArities} call site(s) have unknown arity; live argument registers were intentionally not guessed.`);
   if (ir.truncated) warnings.push('Semantic IR budget truncated this function; the result is partial.');
+  // #8887: canonical natural-loop materialization is resource-fenced. When the fence
+  // fires the graph keeps its exact dominance/SCC facts but publishes no loops, so
+  // this result must say so instead of reading like a loop-free function.
+  if (graph.loopAnalysis && graph.loopAnalysis.complete === false) {
+    warnings.push(`Natural-loop analysis stopped at the graph resource budget (${graph.loopAnalysis.stopReason}); loop structure is not proven and this result is not loop-structured.`);
+  }
 
   const summary = summarize(body, ctx);
   return bindConditionalRegionHistory(bindStatementRenderHistory(bindStatementRenderHistory(bindStoreRenderHistory(bindSuppressionHistory({

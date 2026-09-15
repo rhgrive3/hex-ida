@@ -4,13 +4,80 @@
  * optimized binaries routinely place cleanup/cold blocks before their callers.
  */
 
+/* Natural-loop materialization is the only part of this analysis whose output is
+ * superlinear in its input: a Θ(N)-edge graph whose loops nest Θ(N) deep has
+ * Θ(N²) legal loop-membership rows (#8887).  Dominance and post-dominance are
+ * compact views over immediate-dominator indexing, and the SCC/back-edge scans are
+ * linear, so the resource fence belongs exactly where the retained state is
+ * created and must be charged while it is being created.  Callers cannot opt out:
+ * a missing budget uses the default, and an over-ceiling budget is rejected rather
+ * than honoured, so no direct caller can re-open the unbounded path. */
+export const CONTROLFLOW_ANALYSIS_DEFAULT_BUDGET = Object.freeze({
+  maxNodes: 65536,
+  maxEdges: 262144,
+  maxLoopMemberships: 1048576,
+  maxLoopWalkSteps: 4194304,
+});
+
+export const CONTROLFLOW_ANALYSIS_MAXIMUM_BUDGET = Object.freeze({
+  maxNodes: 262144,
+  maxEdges: 4194304,
+  maxLoopMemberships: 8388608,
+  maxLoopWalkSteps: 33554432,
+});
+
+export const LOOP_ANALYSIS_SCHEMA = 'controlflow-loop-analysis/v1';
+
+function budgetInteger(value, key) {
+  const fallback = CONTROLFLOW_ANALYSIS_DEFAULT_BUDGET[key];
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > CONTROLFLOW_ANALYSIS_MAXIMUM_BUDGET[key]) {
+    throw new TypeError(`controlflow-invalid-budget:${key}`);
+  }
+  return value;
+}
+
+function analysisBudget(options) {
+  if (options === undefined || options === null) return { ...CONTROLFLOW_ANALYSIS_DEFAULT_BUDGET };
+  if (typeof options !== 'object' || Array.isArray(options)) throw new TypeError('controlflow-analysis-options-invalid');
+  const requested = options.budget;
+  if (requested !== undefined && requested !== null
+    && (typeof requested !== 'object' || Array.isArray(requested))) {
+    throw new TypeError('controlflow-invalid-budget-shape');
+  }
+  for (const key of Object.keys(requested || {})) {
+    if (!Object.hasOwn(CONTROLFLOW_ANALYSIS_DEFAULT_BUDGET, key)) throw new TypeError(`controlflow-invalid-budget:${key}`);
+  }
+  return {
+    maxNodes: budgetInteger(requested?.maxNodes, 'maxNodes'),
+    maxEdges: budgetInteger(requested?.maxEdges, 'maxEdges'),
+    maxLoopMemberships: budgetInteger(requested?.maxLoopMemberships, 'maxLoopMemberships'),
+    maxLoopWalkSteps: budgetInteger(requested?.maxLoopWalkSteps, 'maxLoopWalkSteps'),
+  };
+}
+
 function validNodeIndex(value, length) {
   return Number.isInteger(value) && value >= 0 && value < length;
 }
 
-function normalizedSuccessors(successors) {
+function normalizedSuccessors(successors, maxInputEdges = Number.POSITIVE_INFINITY) {
   const n = successors.length;
-  return successors.map((xs) => Array.from(new Set((xs || []).filter((x) => validNodeIndex(x, n)))));
+  const out = new Array(n);
+  let inputEdges = 0;
+  let edges = 0;
+  for (let i = 0; i < n; i++) {
+    const xs = successors[i] || [];
+    // Count the untrusted row before filtering/deduplicating it.  Otherwise a
+    // huge duplicate/invalid successor vector could burn unbounded normalization
+    // work while the canonical edge count stays tiny.
+    const rowLength = Number.isSafeInteger(xs.length) && xs.length >= 0 ? xs.length : 0;
+    if (rowLength > maxInputEdges - inputEdges) throw new RangeError('controlflow-graph-edge-budget');
+    inputEdges += rowLength;
+    const row = Array.from(new Set(xs.filter((x) => validNodeIndex(x, n))));
+    out[i] = row;
+    edges += row.length;
+  }
+  return { successors: out, edges, inputEdges };
 }
 
 function normalizedTerminatingNodes(terminating, length) {
@@ -281,9 +348,25 @@ function postDominatorsOf(succ, pred, reachable, components, componentOf, termin
  * @param {number} entry entry node index
  * @param {Iterable<number>} [terminating] nodes with a flow edge leaves the
  *   analyzed region, so the node terminates without reaching an internal sink
+ * @param {{budget?: {maxNodes?: number, maxEdges?: number, maxLoopMemberships?: number, maxLoopWalkSteps?: number}}} [options]
+ *   resource contract for this analysis. Omitting it uses
+ *   `CONTROLFLOW_ANALYSIS_DEFAULT_BUDGET`; every key has a hard ceiling, so a
+ *   caller cannot request an unbounded analysis. Node/edge admission is checked
+ *   before predecessor/dominator/SCC work and rejects over-budget graphs. Loop
+ *   materialization has its own work/resident fence: on exhaustion the returned
+ *   graph keeps its exact already-admitted graph facts and publishes
+ *   `loopAnalysis.complete === false` with no loop claims at all, which is never
+ *   a silently partial loop set.
  */
-export function analyzeGraph(successors, entry = 0, terminating = null) {
-  const succ = normalizedSuccessors(successors || []);
+export function analyzeGraph(successors, entry = 0, terminating = null, options = null) {
+  const limits = analysisBudget(options);
+  const input = successors || [];
+  if (!Array.isArray(input)) throw new TypeError('controlflow-successors-invalid');
+  const nodeCount = input.length;
+  if (nodeCount > limits.maxNodes) throw new RangeError('controlflow-graph-node-budget');
+  const normalized = normalizedSuccessors(input, limits.maxEdges);
+  const succ = normalized.successors;
+  const edgeCount = normalized.edges;
   const terminatingNodes = normalizedTerminatingNodes(terminating, succ.length);
   const canonicalEntry = validNodeIndex(entry, succ.length) ? entry : -1;
   const predecessors = predecessorsOf(succ);
@@ -304,7 +387,12 @@ export function analyzeGraph(successors, entry = 0, terminating = null) {
     }
   }
 
+  let loopStopReason = null;
+
+  let retainedMemberships = 0;
+  let walkSteps = 0;
   const loopByHeader = new Map();
+
   for (const edge of backEdges) {
     const header = edge.to, latch = edge.from;
     let loop = loopByHeader.get(header);
@@ -315,8 +403,11 @@ export function analyzeGraph(successors, entry = 0, terminating = null) {
     loop.latches.add(latch);
     const members = new Set([header, latch]);
     const stack = latch === header ? [] : [latch];
+    let walkExhausted = false;
     while (stack.length) {
       const x = stack.pop();
+      walkSteps += 1;
+      if (walkSteps > limits.maxLoopWalkSteps) { walkExhausted = true; break; }
       for (const p of predecessors[x]) {
         if (!reachable.has(p) || members.has(p)) continue;
         // Side-entry nodes make the region irreducible; do not absorb them.
@@ -326,11 +417,36 @@ export function analyzeGraph(successors, entry = 0, terminating = null) {
         if (p !== header) stack.push(p);
       }
     }
+    if (walkExhausted) { loopStopReason = 'loop-walk-budget'; break; }
+    const before = loop.nodes.size;
     for (const x of members) loop.nodes.add(x);
+    retainedMemberships += loop.nodes.size - before;
+    if (retainedMemberships > limits.maxLoopMemberships) { loopStopReason = 'loop-membership-budget'; break; }
   }
-  for (const loop of loopByHeader.values()) {
-    for (const x of loop.nodes) for (const y of succ[x]) if (!loop.nodes.has(y)) loop.exits.add(y);
+  if (loopStopReason === null) {
+    for (const loop of loopByHeader.values()) {
+      for (const x of loop.nodes) {
+        for (const y of succ[x]) {
+          walkSteps += 1;
+          if (walkSteps > limits.maxLoopWalkSteps) { loopStopReason = 'loop-walk-budget'; break; }
+          if (!loop.nodes.has(y)) loop.exits.add(y);
+        }
+        if (loopStopReason !== null) break;
+      }
+      if (loopStopReason !== null) break;
+    }
   }
+  const loopAnalysisComplete = loopStopReason === null;
+  if (!loopAnalysisComplete) {
+    // An abandoned materialization must not leave a prefix of exact loops that
+    // downstream induction/structuring logic could read as the whole answer.
+    loopByHeader.clear();
+    retainedMemberships = 0;
+  } else {
+    retainedMemberships = 0;
+    for (const loop of loopByHeader.values()) retainedMemberships += loop.nodes.size;
+  }
+  const loops = Array.from(loopByHeader.values());
 
   const post = postDominatorsOf(succ, predecessors, reachable, components, componentOf, terminatingNodes);
   return {
@@ -342,8 +458,19 @@ export function analyzeGraph(successors, entry = 0, terminating = null) {
     components,
     componentOf,
     backEdges,
-    loops: Array.from(loopByHeader.values()),
+    loops,
     loopByHeader,
+    loopAnalysis: Object.freeze({
+      schema: LOOP_ANALYSIS_SCHEMA,
+      complete: loopAnalysisComplete,
+      stopReason: loopStopReason,
+      loops: loops.length,
+      retainedMemberships,
+      walkSteps,
+      nodes: nodeCount,
+      edges: edgeCount,
+      budget: Object.freeze({ ...limits }),
+    }),
     postDominators: post.postDominators,
     immediatePostDominators: post.immediatePostDominators,
     nonTerminatingReachable: post.nonTerminatingReachable,

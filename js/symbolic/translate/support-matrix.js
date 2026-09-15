@@ -79,7 +79,7 @@ export function classifyOpSupport(op, inst = null) {
     case OP.CMP:
       /* #5202: a comparison without cond/subOp has no ordering or equality
          semantic; '==' must not be invented. */
-      if (!(inst?.cond || inst?.subOp)) return TRANSLATION_STATUS.UNSUPPORTED;
+      if (!(inst?.extra?.comparison || inst?.comparison || inst?.cond || inst?.subOp)) return TRANSLATION_STATUS.UNSUPPORTED;
       return TRANSLATION_STATUS.EXACT;
 
     case OP.SEL:

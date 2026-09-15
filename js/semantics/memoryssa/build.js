@@ -16,6 +16,7 @@ import {
   MEMORY_SSA_ALIAS_RELATIONS,
   MEMORY_SSA_CONTRACT_VERSION,
   MEMORY_SSA_DEFAULT_BUDGET,
+  canonicalSnapshotId,
   createMemoryRegionRef,
   createMemorySsaContract,
 } from './contract.js';
@@ -920,6 +921,13 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   // The serialized identity describes the canonical build, but is not an
   // authority for publication. The exact artifact object is bound privately
   // below; copying or re-signing its fields cannot copy that binding.
+  // Snapshot provenance is validated before it is published or jsonSafe'd: the
+  // identity block survives structured values, and a structured `snapshotId`
+  // there would otherwise be re-coerced by every consumer that compares it
+  // against the artifact (#8804).
+  if (options.identity?.snapshotId != null) {
+    canonicalSnapshotId(options.identity.snapshotId, 'memory-ssa-identity-snapshot-id-invalid');
+  }
   const identity = deepFreeze(jsonSafe(options.identity ?? {
     functionId: irFunction.functionId,
     memorySsaBuildVersion: MEMORY_SSA_BUILD_VERSION,
@@ -1539,7 +1547,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       functionId: irFunction.functionId,
       semanticIrDigest: identity?.semanticIrDigest ?? null,
     }),
-    ...(options.snapshotId == null ? {} : { snapshotId: String(options.snapshotId) }),
+    ...(options.snapshotId == null ? {} : { snapshotId: canonicalSnapshotId(options.snapshotId) }),
     useDefLinks,
     defUseLinks,
     accessMetadata,

@@ -118,6 +118,25 @@ export function solverResultToTransport(result) {
   return copy(result);
 }
 
+function requireIdentityString(value, field) {
+  // Exact typed identity (#4685): a solver result's backend/backendVersion must be
+  // primitive strings. Storing String(structuredValue) laundered ['exact-solver']
+  // into 'exact-solver', so a malformed provider result could satisfy exact
+  // backend identity. Reject instead of coercing.
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new TypeError(`createSolverResult: ${field} must be a non-empty primitive string`);
+  }
+  return value;
+}
+
+function requireQueryHash(value) {
+  if (value == null || value === '') return null;
+  if (typeof value !== 'string') {
+    throw new TypeError('createSolverResult: queryHash must be null or a primitive string');
+  }
+  return value;
+}
+
 export function createSolverResult({
   status,
   model = null,
@@ -131,6 +150,10 @@ export function createSolverResult({
   if (!Object.values(SOLVER_STATUS).includes(status)) {
     throw new TypeError(`createSolverResult: invalid solver status '${status}'`);
   }
+
+  const normalizedBackend = requireIdentityString(backend, 'backend');
+  const normalizedBackendVersion = requireIdentityString(backendVersion, 'backendVersion');
+  const normalizedQueryHash = requireQueryHash(queryHash);
 
   // Model is only permitted when status is SAT. Snapshot it deeply so
   // independent validation cannot be invalidated by post-publication mutation.
@@ -165,9 +188,9 @@ export function createSolverResult({
       nodesEvaluated: Number(stats.nodesEvaluated) || 0,
       memoryBytesDelta: Number(stats.memoryBytesDelta) || 0,
     }),
-    backend: String(backend),
-    backendVersion: String(backendVersion),
-    queryHash: queryHash ? String(queryHash) : null,
+    backend: normalizedBackend,
+    backendVersion: normalizedBackendVersion,
+    queryHash: normalizedQueryHash,
     lifecycle: normalizedLifecycle,
   });
 }
@@ -175,14 +198,16 @@ export function createSolverResult({
 export function isValidSolverResult(result, { query = null, backend = null } = {}) {
   if (!result || typeof result !== 'object' || !Object.values(SOLVER_STATUS).includes(result.status)) return false;
   if (backend) {
-    if (result.backend !== String(backend.id) || result.backendVersion !== String(backend.version)) return false;
+    // Compare exact typed identity; never String()-coerce either side (#4685).
+    if (typeof result.backend !== 'string' || typeof result.backendVersion !== 'string') return false;
+    if (result.backend !== backend.id || result.backendVersion !== backend.version) return false;
   }
   if (query?.queryHash) {
     // Query identity is verified against recomputed canonical content, not an
     // echoed caller string, so copying one forged hash into query and result
-    // cannot validate (#3963).
+    // cannot validate (#3963). Identity is compared as a primitive string only (#4685).
     if (!isVerificationQuery(query)) return false;
-    if (result.queryHash !== String(query.queryHash)) return false;
+    if (typeof query.queryHash !== 'string' || result.queryHash !== query.queryHash) return false;
   }
   if (result.lifecycle?.publishable === false && (result.status === SOLVER_STATUS.SAT || result.status === SOLVER_STATUS.UNSAT)) return false;
   if (result.status !== SOLVER_STATUS.SAT && result.model != null) return false;

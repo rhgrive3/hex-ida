@@ -99,7 +99,18 @@ export function canonicalMemorySsaPayload(artifact) {
     reachingDefinitionLinks: artifact?.reachingDefinitionLinks ?? null,
     useDefLinks: artifact?.useDefLinks ?? null,
     defUseLinks: artifact?.defUseLinks ?? null,
-    accessMetadata: artifact?.accessMetadata ?? null,
+    accessMetadata: Array.isArray(artifact?.accessMetadata)
+      ? artifact.accessMetadata.map((entry) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+        const canonicalValue = entry.canonicalValue;
+        return {
+          ...entry,
+          ...(canonicalValue && typeof canonicalValue === 'object' && !Array.isArray(canonicalValue)
+            ? { canonicalValue: { ...canonicalValue } }
+            : {}),
+        };
+      })
+      : (artifact?.accessMetadata ?? null),
     canonicalAccessBindings: artifact?.canonicalAccessBindings ?? null,
     byteCoverage: artifact?.byteCoverage ?? null,
     blockStates: artifact?.blockStates ?? null,

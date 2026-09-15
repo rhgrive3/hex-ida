@@ -113,7 +113,7 @@ function boundedAcyclicValue(value) {
   return inspectCanonicalData([value], {maxNodes:4096, maxEdges:16384, maxExpansion:16384}).ok;
 }
 
-function checkExpressionData(node) {
+function checkExpressionData(node, maxNodes) {
   ownDataEntries(node, 64); ownDataEntries(node.sort, 4);
   if (!Object.values(EXPR_KIND).includes(node.kind) || sortToString(node.sort) === 'UnknownSort') throw new TypeError('unsupported-expression-kind-or-sort');
   for (const key of ['kind', 'op', 'symbolId', 'name', 'reason']) {
@@ -123,8 +123,14 @@ function checkExpressionData(node) {
   if (node.kind === EXPR_KIND.FRESH_SYMBOL && (typeof node.name !== 'string' || !node.name || node.symbolId === '')) throw new TypeError('invalid-symbol-identity');
   if (node.kind === EXPR_KIND.CONST && typeof node.value !== (node.sort.kind === 'bool' ? 'boolean' : 'bigint')) throw new TypeError('noncanonical-expression-constant');
   if (node.kind === EXPR_KIND.CONNECTIVE) {
-    if (!Array.isArray(node.args) || node.args.length > 4096) throw new TypeError('expression-arity-budget-exceeded');
-    ownDataEntries(node.args, 4096);
+    if (!Array.isArray(node.args)) throw new TypeError('expression-arity-budget-exceeded');
+    // A wide CONNECTIVE is admissible exactly as far as the caller's own node
+    // budget admits its members: every argument is charged against `maxNodes`
+    // by the traversal below, so the fence must be that budget rather than a
+    // fixed arity that rejects an in-budget wide fanout before its budget can
+    // ever be observed (#5163).
+    if (node.args.length > maxNodes) throw new TypeError('expression-node-budget-exceeded');
+    ownDataEntries(node.args, node.args.length);
   }
 }
 
@@ -134,7 +140,13 @@ function checkExpressionData(node) {
  */
 export function computeStructuralHashesBounded(roots, options = {}) {
   try { return computeStructuralHashesData(roots, options); }
-  catch (error) { return Object.freeze({ ok: false, reason: error.message || 'malformed-expression-data', nodeCount: 0 }); }
+  catch (error) {
+    // A budget-shaped rejection is a resource limit, not a malformed query:
+    // callers must be able to answer RESOURCE_LIMIT so the caller's own budget
+    // remains observable (#5163).
+    const reason = error.message || 'malformed-expression-data';
+    return Object.freeze({ ok: false, reason, nodeCount: 0, limitExceeded: /(?:^|-)budget-exceeded$/.test(reason) });
+  }
 }
 
 function computeStructuralHashesData(roots, { maxNodes = 100000 } = {}) {
@@ -167,7 +179,7 @@ function computeStructuralHashesData(roots, { maxNodes = 100000 } = {}) {
         if (nodeCount > maxNodes) {
           return Object.freeze({ ok: false, reason: 'expression-node-budget-exceeded', nodeCount, limitExceeded: true });
         }
-        checkExpressionData(frame.node);
+        checkExpressionData(frame.node, maxNodes);
         frame.children = childExpressions(frame.node);
         frame.entered = true;
       }

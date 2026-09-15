@@ -132,8 +132,8 @@ function parseThin(bytes, opts) {
     if (!metadataBudget.take({ inputBytes:cmdsize, records:1, objects:1, operations:1, estimatedHeapBytes:64 }, 'load-command')) break;
     commands.push({ cmd, offset: p, size: cmdsize });
     try {
-      if (cmd === LC_SEGMENT_64 && bits === 64) parseSegment64(r, p, cmdsize, image, segmentOrder);
-      else if (cmd === LC_SEGMENT && bits === 32) parseSegment32(r, p, cmdsize, image, segmentOrder);
+      if (cmd === LC_SEGMENT_64 && bits === 64) parseSegment64(r, p, cmdsize, image, segmentOrder, metadataBudget);
+      else if (cmd === LC_SEGMENT && bits === 32) parseSegment32(r, p, cmdsize, image, segmentOrder, metadataBudget);
       else if (cmd === LC_SYMTAB) {
         requireExactCommandSize(cmdsize, 24, 'LC_SYMTAB');
         symtabs.push({ symoff: r.u32(p + 8), nsyms: r.u32(p + 12), stroff: r.u32(p + 16), strsize: r.u32(p + 20) });
@@ -375,7 +375,8 @@ function rejectAmbiguousSegmentOwnership(image, label, address, fileOffset, file
   }
 }
 
-function parseSegment64(r, p, cmdsize, image, order) {
+function parseSegment64(r, p, cmdsize, image, order, sharedBudget = null) {
+  const budget = ensureMachOMetadataBudget(image, sharedBudget);
   if (cmdsize < 72) throw new Error(`invalid LC_SEGMENT_64 size ${cmdsize}`);
   const name = r.ascii(p + 8, 16);
   const address = r.u64(p + 24);
@@ -388,10 +389,12 @@ function parseSegment64(r, p, cmdsize, image, order) {
   const flags = r.u32(p + 68);
   validateMappedRange(`segment ${name}`, address, size, fileOffset, fileSize, image);
   rejectAmbiguousSegmentOwnership(image, `segment ${name}`, address, fileOffset, fileSize, size);
+  if (!budget.take({ objects: 1, operations: 1, estimatedHeapBytes: 256 }, 'segment')) return;
   const seg = image.addSegment({ name, address, size, fileOffset, fileSize, perms: vmPerms(initprot), flags, source: 'LC_SEGMENT_64' });
   order.push(seg);
   let q = p + 72;
   for (let i = 0; i < nsects; i++, q += 80) {
+    if (!budget.take({ objects: 1, operations: 1, estimatedHeapBytes: 320 }, 'segment-section')) break;
     r.check(q, 80);
     const sectname = r.ascii(q, 16);
     const segname = r.ascii(q + 16, 16);
@@ -410,7 +413,8 @@ function requireExactCommandSize(actual, expected, label) {
   if (actual !== expected) throw new Error(`invalid ${label} size ${actual}; expected exactly ${expected}`);
 }
 
-function parseSegment32(r, p, cmdsize, image, order) {
+function parseSegment32(r, p, cmdsize, image, order, sharedBudget = null) {
+  const budget = ensureMachOMetadataBudget(image, sharedBudget);
   if (cmdsize < 56) throw new Error(`invalid LC_SEGMENT size ${cmdsize}`);
   const name = r.ascii(p + 8, 16);
   const address = BigInt(r.u32(p + 24));
@@ -423,10 +427,12 @@ function parseSegment32(r, p, cmdsize, image, order) {
   const flags = r.u32(p + 52);
   validateMappedRange(`segment ${name}`, address, size, fileOffset, fileSize, image);
   rejectAmbiguousSegmentOwnership(image, `segment ${name}`, address, fileOffset, fileSize, size);
+  if (!budget.take({ objects: 1, operations: 1, estimatedHeapBytes: 256 }, 'segment')) return;
   const seg = image.addSegment({ name, address, size, fileOffset, fileSize, perms: vmPerms(initprot), flags, source: 'LC_SEGMENT' });
   order.push(seg);
   let q = p + 56;
   for (let i = 0; i < nsects; i++, q += 68) {
+    if (!budget.take({ objects: 1, operations: 1, estimatedHeapBytes: 320 }, 'segment-section')) break;
     r.check(q, 68);
     const sectname = r.ascii(q, 16);
     const segname = r.ascii(q + 16, 16);
@@ -507,8 +513,15 @@ function parseDyldInfo(r, p) {
   };
 }
 
+const INDIRECT_TARGET_INVALID = Symbol('indirect-target-invalid');
+const INDIRECT_TARGET_STOP = Symbol('indirect-target-stop');
+
 function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
   const budget = ensureMachOMetadataBudget(image, sharedBudget);
+  // Intern decoded N_INDR target strings by string-table offset so repeated
+  // aliases share one immutable string instead of rescanning/redecoding and
+  // retaining a fresh copy per record (the retained-target budget bypass).
+  const indirectTargets = new Map();
   const ent = bits === 64 ? 16 : 12;
   if (st.symoff + st.nsyms * ent > r.length || st.stroff + st.strsize > r.length) {
     markMachOMetadataPartial(image, 'symbol-table-truncated');
@@ -549,7 +562,22 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
         continue;
       }
       const targetIndex = Number(value);
-      if (r.bytes.subarray(st.stroff + targetIndex, st.stroff + st.strsize).indexOf(0) === -1) {
+      let cached = indirectTargets.get(targetIndex);
+      if (cached === undefined) {
+        if (r.bytes.subarray(st.stroff + targetIndex, st.stroff + st.strsize).indexOf(0) === -1) {
+          cached = INDIRECT_TARGET_INVALID;
+        } else {
+          const target = r.cstring(st.stroff + targetIndex, st.strsize - targetIndex);
+          if (target && !budget.take({
+            stringBytes: target.length * 2,
+            estimatedHeapBytes: target.length * 2 + 32,
+          }, 'symbol-indirect-target')) cached = INDIRECT_TARGET_STOP;
+          else cached = target;
+        }
+        indirectTargets.set(targetIndex, cached);
+      }
+      if (cached === INDIRECT_TARGET_STOP) break;
+      if (cached === INDIRECT_TARGET_INVALID) {
         markMachOMetadataPartial(image, 'indirect-symbol-target-not-terminated');
         budget.warn(`Mach-O indirect symbol ${i} target name has no NUL terminator before string-table end`);
         continue;
@@ -560,7 +588,7 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
         size: null,
         common: false,
         kind: 'indirect',
-        indirectTarget: r.cstring(st.stroff + targetIndex, st.strsize - targetIndex),
+        indirectTarget: cached,
         binding: external ? 'global' : 'local',
         defined: false,
         sectionIndex: sect, desc, source: 'LC_SYMTAB',
