@@ -111,6 +111,54 @@
     return Math.min(value, maximum);
   }
 
+  /*
+   * Bounded decoded-name retention for the legacy Mach-O string paths (#8745,
+   * and shared with the load-command decoder for #8776 so the two cannot
+   * diverge again). The input-side caps (SYMBOL_MAX rows / STRTAB_MAX bytes)
+   * bound the bytes read, not the JS strings built from them: cstr/cstrNul
+   * assembled names one immutable concatenation per byte, so one valid long
+   * name retained a ~32x rope graph and every nlist alias of the same
+   * n_strx rebuilt it, letting 67 KiB of metadata OOM a 192 MiB heap (#8745).
+   * decodeLatin1 materializes each admitted span in one bounded chunked pass
+   * (temporaries proportional to the source bytes), and the decoding budget
+   * is charged *before* each string is constructed. On exhaustion the parser
+   * never blesses a prefix as a complete name (#3806 semantics preserved):
+   * the result carries an explicit non-enumerable `capped` marker and the
+   * remaining names fail closed to ''.
+   */
+  const STRING_DECODE_CHUNK = 8192;
+  const SYMBOL_NAMES_MAX_BYTES = 48 * 1024 * 1024;  // matches the worker's STRTAB_MAX input ceiling
+  const SYMBOL_NAME_ROW_OVERHEAD = 64;              // per-unique-entry array-slot/Map overhead
+
+  function decodeLatin1(u8, start, end) {
+    if (end - start <= STRING_DECODE_CHUNK) {
+      return String.fromCharCode.apply(null, u8.subarray(start, end));
+    }
+    const parts = [];
+    for (let i = start; i < end; i += STRING_DECODE_CHUNK) {
+      parts.push(String.fromCharCode.apply(null, u8.subarray(i, Math.min(i + STRING_DECODE_CHUNK, end))));
+    }
+    return parts.join('');
+  }
+
+  function createStringDecodingBudget(maxBytes) {
+    return { retained: 0, limit: maxBytes, capped: false, reason: null };
+  }
+
+  // Decode [start,end) only if the retained-decoded-byte budget still admits
+  // it. Returns null without scanning-then-allocating when the budget is
+  // exhausted, so the (limit+1)-th string is never materialized.
+  function budgetedDecodeLatin1(u8, start, end, budget) {
+    const len = end - start + SYMBOL_NAME_ROW_OVERHEAD;
+    if (budget.retained + len > budget.limit) {
+      budget.capped = true;
+      if (!budget.reason) budget.reason = 'decoded-name-budget';
+      return null;
+    }
+    budget.retained += len;
+    return decodeLatin1(u8, start, end);
+  }
+
   function cpuName(type, sub) {
     const s = sub & 0x00ffffff;
     switch (type) {
@@ -133,19 +181,50 @@
     return s;
   }
 
+  /*
+   * Bounded decode for NUL-terminated load-command strings (the dylib
+   * install-name family, #8776). Unlike the 16-byte fixed segment/section
+   * fields above, a dylib command name spans the rest of one structurally
+   * accepted command up to the worker's 4 MiB HEADER_MAX, and the old
+   * char-by-char cstr() assembled it with one immutable concatenation per
+   * byte: a ~3 MiB admitted command retained >100 MiB of rope and aborted
+   * the worker even though the *input* was inside its own read cap. The NUL
+   * terminator and the budgets are validated BEFORE any string is built; an
+   * unterminated name is rejected fail-closed (never laundered into a
+   * prefix), and a name beyond the per-string or aggregate retained budget
+   * marks load-command string metadata capped instead of blessing partial
+   * identity. decodeLatin1/budgetedDecodeLatin1 are shared with the #8745
+   * string-table path so the two cannot diverge again.
+   */
+  const LC_NAME_MAX = 256 * 1024;        // one install name beyond any legitimate Mach-O
+  const LC_STRINGS_MAX = 1024 * 1024;    // aggregate retained load-command names per slice
+
+  function lcName(u8, off, end, budget) {
+    let p = off;
+    while (p < end && u8[p] !== 0) p++;
+    if (p >= end) return null;           // unterminated inside the command: fail closed, not "capped"
+    if (p - off > LC_NAME_MAX) {
+      budget.capped = true;
+      if (!budget.reason) budget.reason = 'lc-name-budget';
+      return null;
+    }
+    return budgetedDecodeLatin1(u8, off, p, budget);
+  }
+
   // Mach-O string-table entries are NUL-terminated and are bounded only by the
   // string table itself: the format has no 1024-byte symbol-name cap. Read to
   // the first NUL inside the table and fail closed when the entry is not
   // terminated, instead of laundering a fixed-length prefix as a complete name
-  // (#3806).
-  function cstrNul(u8, off) {
+  // (#3806). With a decoding budget the constructed string is additionally
+  // admitted before allocation (#8745); without one the semantics are the
+  // plain bounded single-pass decode.
+  function cstrNul(u8, off, budget) {
     if (off < 0 || off >= u8.length) return null;
     let end = off;
     while (end < u8.length && u8[end] !== 0) end++;
     if (end >= u8.length) return null;
-    let s = '';
-    for (let i = off; i < end; i++) s += String.fromCharCode(u8[i]);
-    return s;
+    if (!budget) return decodeLatin1(u8, off, end);
+    return budgetedDecodeLatin1(u8, off, end, budget);
   }
 
   function ver32(v) {
@@ -298,6 +377,7 @@
     const end = hdrSize + sizeofcmds;
     let textVM = null, textFileOff = null;
     const threadEntries = [];
+    const lcStrings = createStringDecodingBudget(LC_STRINGS_MAX);
 
     for (let i = 0; i < ncmds; i++) {
       if (off + 8 > end) { info.diagnostics.push('truncated load-command header'); break; }
@@ -396,7 +476,11 @@
         case LC.LOAD_WEAK_DYLIB:
         case LC.REEXPORT_DYLIB: {
           info.dylibCount++; const nameOff=dv.getUint32(off+8,true);
-          if(nameOff>=24&&off+nameOff<commandEnd){const value=cstr(u8,off+nameOff,commandEnd-(off+nameOff));if(value)info.dylibs.push(value);} break;
+          if(nameOff>=24&&off+nameOff<commandEnd){
+            const value=lcName(u8,off+nameOff,commandEnd,lcStrings);
+            if(value==null) info.diagnostics.push(lcStrings.capped?'dylib install name exceeds the decoded-name budget':'unterminated dylib install name');
+            else if(value) info.dylibs.push(value);
+          } break;
         }
         case LC.SYMTAB: info.symtab={symoff:dv.getUint32(off+8,true),nsyms:dv.getUint32(off+12,true),stroff:dv.getUint32(off+16,true),strsize:dv.getUint32(off+20,true)}; break;
         case LC.DYSYMTAB: info.dysymtab={indirectsymoff:dv.getUint32(off+56,true),nindirectsyms:dv.getUint32(off+60,true)}; break;
@@ -414,6 +498,8 @@
     }
 
     info.textVM=textVM; info.textFileOff=textFileOff;
+    info.loadCommandStringsCapped=lcStrings.capped;
+    info.loadCommandStringsReason=lcStrings.reason||null;
     const align=instructionAlignment(architecture);
     const execSegments=info.segments.filter((seg)=>seg.validMapping && !!(seg.initprot&4) && seg.vmsize>0n);
     const validPc=(pc)=>pc!=null && pc%align===0n && execSegments.some((seg)=>inRange(pc,seg.vmaddr,seg.vmsize));
@@ -471,7 +557,7 @@
    * @returns {{names: string[], values: BigUint64Array, types: Uint8Array, sects: Uint8Array}}
    *          添字はシンボル番号。間接シンボルの解決にそのまま使える。
    */
-  function parseSymbols(symBuf, strBuf, is64) {
+  function parseSymbols(symBuf, strBuf, is64, options = {}) {
     const entry = is64 ? 16 : 12;
     const n = Math.floor(symBuf.length / entry);
     const dv = new DataView(symBuf.buffer, symBuf.byteOffset, symBuf.byteLength);
@@ -479,16 +565,37 @@
     const values = new BigUint64Array(n);
     const types = new Uint8Array(n);
     const sects = new Uint8Array(n);
+    /*
+     * Many nlist rows may share one n_strx, and one shared entry used to be
+     * rescanned and re-assembled character-by-character per row: 100 aliases
+     * of a 65,535-byte name retained ~214 MiB from 67 KiB of metadata
+     * (#8745). Decode each distinct offset at most once per invocation and
+     * charge the retained unique bytes (plus per-entry row overhead) to the
+     * decoding budget BEFORE the string is constructed. Budget exhaustion is
+     * reported through the non-enumerable `capped` marker and remaining
+     * names fail closed to ''; no admitted name is ever shortened (#3806).
+     */
+    const budgetLimit = boundedExpansionBudget(options.maxDecodedBytes, SYMBOL_NAMES_MAX_BYTES, SYMBOL_NAMES_MAX_BYTES);
+    const budget = createStringDecodingBudget(budgetLimit);
+    const decoded = new Map();
     for (let i = 0; i < n; i++) {
       const o = i * entry;
       const strx = dv.getUint32(o, true);
       types[i] = symBuf[o + 4];
       sects[i] = symBuf[o + 5];
       values[i] = is64 ? dv.getBigUint64(o + 8, true) : BigInt(dv.getUint32(o + 8, true));
-      const name = strx > 0 && strx < strBuf.length ? cstrNul(strBuf, strx) : null;
+      if (!(strx > 0 && strx < strBuf.length)) { names[i] = ''; continue; }
+      let name = decoded.get(strx);
+      if (name === undefined) {
+        name = cstrNul(strBuf, strx, budget);
+        decoded.set(strx, name);
+      }
       names[i] = name == null ? '' : name;
     }
-    return { names, values, types, sects };
+    const out = { names, values, types, sects };
+    Object.defineProperty(out, 'capped', { value: budget.capped, enumerable: false, writable: true, configurable: true });
+    Object.defineProperty(out, 'truncationReason', { value: budget.reason, enumerable: false, writable: true, configurable: true });
+    return out;
   }
 
   /** セクションに定義されている（＝アドレスを持つ）シンボルだけを取り出す。 */
@@ -511,26 +618,50 @@
 
   /* ── LC_FUNCTION_STARTS ───────────────────────────────── */
 
+  /*
+   * LC_FUNCTION_STARTS admits one valid ULEB delta per input byte, so the
+   * worker's 8 MiB metadata read cap is an input ceiling, not a retention
+   * ceiling: a dense 4 MiB stream materialized ~4M BigInts and aborted a
+   * 128 MiB heap before any caller could apply a result budget (#8805).
+   * Decode into a capped representation with the charge taken BEFORE the
+   * (limit+1)-th BigInt exists, observe cancellation at bounded intervals,
+   * and mark the list `truncated` (forcing `complete=false`) so the caller
+   * reports capped discovery instead of blessing a prefix as exact
+   * function-boundary evidence — the same fail-closed discipline as
+   * parseUnwindStarts (#8789) / stubSymbols (#8800). Delta-encoded starts
+   * are strictly increasing, so callers can consume the retained prefix
+   * without a copy-and-resort.
+   */
+  const FUNCTION_STARTS_MAX = 200_000;  // #8805 retained decoded function starts
+
   /** ULEB128 の差分列を、絶対アドレスの配列にほどく。 */
   function parseFunctionStarts(buf, base, options = {}) {
-    const out=[]; let addr=base; let i=0; let malformed=false; let rejected=0;
-    const regions=Array.isArray(options.regions)?options.regions:[];
-    const alignment=instructionAlignment(options.architecture||'arm64');
-    const valid=(value)=>value%alignment===0n && (!regions.length || regions.some((r)=>r.exec&&r.size>0n&&value>=r.vmAddr&&value-r.vmAddr<r.size));
-    while(i<buf.length){
-      let delta=0n,shift=0n,byte=0;
+    const out = attachTruncatedFlag([]);
+    let addr = base; let i = 0; let malformed = false; let rejected = 0;
+    const regions = Array.isArray(options.regions) ? options.regions : [];
+    const alignment = instructionAlignment(options.architecture || 'arm64');
+    const resultLimit = boundedExpansionBudget(options.maxStarts, FUNCTION_STARTS_MAX, FUNCTION_STARTS_MAX);
+    const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;
+    const valid = (value) => value % alignment === 0n && (!regions.length || regions.some((r) => r.exec && r.size > 0n && value >= r.vmAddr && value - r.vmAddr < r.size));
+    while (i < buf.length) {
+      let delta = 0n, shift = 0n, byte = 0;
       do {
-        if(i>=buf.length){malformed=true;break;}
-        byte=buf[i++]; delta|=BigInt(byte&0x7f)<<shift; shift+=7n;
-        if(shift>70n){malformed=true;break;}
-      } while(byte&0x80);
-      if(malformed||delta===0n) break;
-      const next=addr+delta;
-      if(next<addr){malformed=true;break;}
-      addr=next;
-      if(valid(addr)) out.push(addr); else rejected++;
+        if (i >= buf.length) { malformed = true; break; }
+        byte = buf[i++]; delta |= BigInt(byte & 0x7f) << shift; shift += 7n;
+        if (shift > 70n) { malformed = true; break; }
+      } while (byte & 0x80);
+      if (malformed || delta === 0n) break;
+      const next = addr + delta;
+      if (next < addr) { malformed = true; break; }
+      addr = next;
+      if (!valid(addr)) { rejected++; continue; }
+      if (out.length >= resultLimit) { markTruncated(out, 'result-limit'); break; }
+      out.push(addr);
+      if (shouldCancel && ((out.length & 63) === 0) && shouldCancel()) { markTruncated(out, 'cancelled'); break; }
     }
-    out.rejected=rejected; out.complete=!malformed&&rejected===0; out.malformed=malformed;
+    if (malformed && !out.truncated) { out.truncated = true; out.truncationReason = 'malformed'; }
+    out.rejected = rejected; out.malformed = malformed;
+    out.complete = !malformed && rejected === 0 && !out.truncated;
     return out;
   }
 
