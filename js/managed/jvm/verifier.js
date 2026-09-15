@@ -1,5 +1,13 @@
 import { validateJvmMethodFlags } from './method-flags.js';
 
+// Explicit dataflow budgets (#8716): retention is counted in frame cells
+// (locals entries published or re-published across the pass) and pending
+// worklist entries. Exhaustion fails closed to a resource-limited partial
+// result, never to `valid`, and before the host heap is threatened by
+// attacker-shaped max_locals/Code dimensions.
+const VERIFIER_DATAFLOW_FRAME_CELL_BUDGET = 1_000_000;
+const VERIFIER_DATAFLOW_STEP_BUDGET = 262_144;
+
 function asNonNegativeInteger(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
@@ -89,18 +97,11 @@ function stackSlots(stack) {
 }
 
 function cloneState(state) {
-  // #8715: the per-instruction working copy must never re-densify the locals
-  // frame. The stack is mutated in place by executeBundle, so it stays a
-  // fresh copy; locals are shared structurally until a local write copies
-  // them once (copy-on-write below).
-  return { stack: [...state.stack], locals: state.locals, localsOwned: false };
-}
-
-function statesEqual(a, b) {
-  if (!a || !b || a.stack.length !== b.stack.length || a.locals.length !== b.locals.length) return false;
-  for (let i = 0; i < a.stack.length; i++) if (a.stack[i] !== b.stack[i]) return false;
-  for (let i = 0; i < a.locals.length; i++) if ((a.locals[i] ?? null) !== (b.locals[i] ?? null)) return false;
-  return true;
+  // #8715: the per-instruction working copy shares the published sparse locals
+  // map structurally until a local write materializes it once (copy-on-write in
+  // setLocal), so untouched frames never re-densify; the stack stays a fresh
+  // copy because executeBundle mutates it in place.
+  return { stack: [...state.stack], locals: state.locals, localsOwned: false, frameCells: state.frameCells };
 }
 
 function stackCategory(kind) {
@@ -123,20 +124,31 @@ function mergeStackKind(left, right) {
   return { compatible: false, kind: null };
 }
 
+// Frame locals are stored sparsely: the map holds only slots whose kind is
+// non-null. Dense per-offset arrays let an attacker scale retention as
+// reachable-offsets x max_locals (#8716); absence is exactly a null slot.
+function localsEqual(a, b) {
+  if (a.size !== b.size) return false;
+  for (const [index, kind] of a) if (b.get(index) !== kind) return false;
+  return true;
+}
+
 function normalizeCategory2Locals(locals) {
-  for (let i = 0; i < locals.length; i++) {
-    const kind = locals[i];
+  const indices = [...locals.keys()].sort((left, right) => left - right);
+  for (const i of indices) {
+    const kind = locals.get(i);
+    if (kind === undefined) continue;
     if (kind === 'long' || kind === 'double') {
-      if (locals[i + 1] !== 'cat2-tail') locals[i] = null;
+      if (locals.get(i + 1) !== 'cat2-tail') locals.delete(i);
     } else if (kind === 'cat2-tail') {
-      const head = i > 0 ? locals[i - 1] : null;
-      if (head !== 'long' && head !== 'double') locals[i] = null;
+      const head = i > 0 ? locals.get(i - 1) : null;
+      if (head !== 'long' && head !== 'double') locals.delete(i);
     }
   }
 }
 
 function mergeStates(previous, incoming) {
-  if (!previous || !incoming || previous.stack.length !== incoming.stack.length || previous.locals.length !== incoming.locals.length) {
+  if (!previous || !incoming || previous.stack.length !== incoming.stack.length) {
     return { compatible: false, changed: false, state: previous };
   }
 
@@ -147,10 +159,15 @@ function mergeStates(previous, incoming) {
     stack.push(merged.kind);
   }
 
-  const locals = previous.locals.map((kind, index) => kind === incoming.locals[index] ? kind : null);
+  const locals = new Map();
+  for (const [index, kind] of previous.locals) {
+    if (incoming.locals.get(index) === kind) locals.set(index, kind);
+  }
   normalizeCategory2Locals(locals);
-  const state = { stack, locals };
-  return { compatible: true, changed: !statesEqual(previous, state), state };
+  const state = { stack, locals, localsOwned: true, frameCells: previous.frameCells };
+  const stackChanged = previous.stack.some((kind, index) => kind !== stack[index]);
+  const localsChanged = !localsEqual(previous.locals, locals);
+  return { compatible: true, changed: stackChanged || localsChanged, state };
 }
 
 function popKind(state, expected, errors, offset) {
@@ -170,23 +187,25 @@ function popKind(state, expected, errors, offset) {
 
 function setLocal(state, index, kind, slots, budget) {
   if (!state.localsOwned) {
-    // Copy-on-write: an untouched dense locals vector is never re-materialized
-    // per program point (#8715). The copy itself is reserved first so a
-    // high-write-count method cannot exceed the aggregate state budget.
-    if (budget && !budget.reserve(state.locals.length)) return;
-    state.locals = [...state.locals];
+    // Copy-on-write (#8715): a shared locals map is materialized only on an
+    // actual write, and the copy is reserved against the aggregate
+    // verifier-state budget first, so a high-write-count method cannot exceed
+    // it silently.
+    if (budget && !budget.reserve(state.frameCells ?? 0)) return;
+    state.locals = new Map(state.locals);
     state.localsOwned = true;
   }
-  if (state.locals[index] === 'cat2-tail' && index > 0) state.locals[index - 1] = null;
-  if (state.locals[index + 1] === 'cat2-tail') state.locals[index + 1] = null;
-  if (slots === 2 && state.locals[index + 1] && state.locals[index + 2] === 'cat2-tail') state.locals[index + 2] = null;
-  state.locals[index] = kind;
-  if (slots === 2) state.locals[index + 1] = 'cat2-tail';
+  const locals = state.locals;
+  if (locals.get(index) === 'cat2-tail' && index > 0) locals.delete(index - 1);
+  if (locals.get(index + 1) === 'cat2-tail') locals.delete(index + 1);
+  if (slots === 2 && locals.get(index + 1) && locals.get(index + 2) === 'cat2-tail') locals.delete(index + 2);
+  locals.set(index, kind);
+  if (slots === 2) locals.set(index + 1, 'cat2-tail');
 }
 
 function readLocal(state, index, kind, slots, errors, offset) {
-  const actual = state.locals[index] ?? null;
-  if (actual !== kind || (slots === 2 && state.locals[index + 1] !== 'cat2-tail')) {
+  const actual = state.locals.get(index) ?? null;
+  if (actual !== kind || (slots === 2 && state.locals.get(index + 1) !== 'cat2-tail')) {
     errors.push({ code: 'jvm-local-type-mismatch', offset, index, expected: kind, actual });
     return false;
   }
@@ -527,26 +546,42 @@ export function verifyJvmMethod(decoded, options = {}) {
   let dataflowChecked = false;
   if (descriptor && maxStack != null && maxLocals != null && errors.length === 0) {
     // #8715: retained/replayed verifier frame cells are reserved *before*
-    // every frame-array allocation. A method whose state churn exceeds the
+    // every frame allocation. A method whose state churn exceeds the
     // aggregate budget ends the pass as explicit unverified (partial), never
     // as a heap abort.
     const stateCells = new VerifierStateBudget(options.maxVerifierStateCells);
-    const initialLocals = Array(maxLocals).fill(null);
-    for (let i = 0; i < descriptor.initialLocals.length && i < maxLocals; i++) initialLocals[i] = descriptor.initialLocals[i] ?? null;
-    const states = new Map([[0, { stack: [], locals: initialLocals }]]);
+    const initialLocals = new Map();
+    for (let i = 0; i < descriptor.initialLocals.length && i < maxLocals; i++) {
+      const kind = descriptor.initialLocals[i];
+      if (kind != null) initialLocals.set(i, kind);
+    }
+    const states = new Map([[0, { stack: [], locals: initialLocals, localsOwned: false, frameCells: maxLocals }]]);
+    // An index-cured queue keeps worklist extraction O(1); Array.shift()
+    // would add a second quadratic cost on high-fanout methods (#8716).
     const queue = [0];
     let queueHead = 0;
     const bundleByOffset = new Map(bundles.map((bundle, index) => [bundle.bytecodeOffset, { bundle, index }]));
+    let retainedLocalCells = 0;
+    let budgetExceeded = false;
     if (!stateCells.reserve(maxLocals)) {
       unsupported.add('jvm-verifier-state-budget-exceeded');
     } else {
       while (queueHead < queue.length && errors.length === 0 && !stateCells.exceeded) {
+        if (queue.length - queueHead > VERIFIER_DATAFLOW_STEP_BUDGET) {
+          budgetExceeded = true;
+          break;
+        }
         const offset = queue[queueHead++];
         const entry = bundleByOffset.get(offset);
         if (!entry) continue;
-        const stored = states.get(offset);
-        if (!stateCells.reserve(stored.stack.length)) continue;
-        const state = cloneState(stored);
+        const published = states.get(offset);
+        if (!stateCells.reserve(published.stack.length)) continue;
+        const state = cloneState(published);
+        retainedLocalCells += state.locals.size;
+        if (retainedLocalCells > VERIFIER_DATAFLOW_FRAME_CELL_BUDGET) {
+          budgetExceeded = true;
+          break;
+        }
         const canPropagate = executeBundle(entry.bundle, state, descriptor, errors, unsupported, stateCells);
         const usedStack = stackSlots(state.stack);
         if (usedStack > maxStack) errors.push({ code: 'jvm-max-stack-exceeded', offset, actual: usedStack, maxStack });
@@ -555,27 +590,36 @@ export function verifyJvmMethod(decoded, options = {}) {
           if (!starts.has(successor)) continue;
           const previous = states.get(successor);
           if (!previous) {
-            if (!stateCells.reserve(state.stack.length)) continue;
-            const next = { stack: [...state.stack], locals: state.locals };
-            states.set(successor, next);
+            if (!stateCells.reserve(state.stack.length + state.locals.size)) continue;
+            states.set(successor, { stack: [...state.stack], locals: state.locals, localsOwned: false, frameCells: state.frameCells });
             queue.push(successor);
             continue;
           }
-          if (!stateCells.reserve(previous.stack.length + previous.locals.length)) continue;
+          if (!stateCells.reserve(previous.stack.length + previous.locals.size + state.stack.length + state.locals.size)) continue;
           const merged = mergeStates(previous, state);
           if (!merged.compatible) {
             errors.push({ code: 'jvm-incompatible-frame-merge', offset: successor });
             break;
           }
           if (merged.changed) {
+            retainedLocalCells += merged.state.locals.size;
             states.set(successor, merged.state);
             queue.push(successor);
           }
         }
+        if (retainedLocalCells > VERIFIER_DATAFLOW_FRAME_CELL_BUDGET) {
+          budgetExceeded = true;
+          break;
+        }
       }
     }
+    if (budgetExceeded) {
+      // Resource exhaustion is a conservative analysis stop, never a proof:
+      // the method degrades to partial and the dataflow fact stays unchecked.
+      unsupported.add('jvm-verifier-dataflow-resource-budget-exceeded');
+    }
     if (stateCells.exceeded) unsupported.add('jvm-verifier-state-budget-exceeded');
-    dataflowChecked = errors.length === 0 && !stateCells.exceeded;
+    dataflowChecked = errors.length === 0 && !budgetExceeded && !stateCells.exceeded;
   }
 
   const status = errors.length > 0 ? 'invalid' : unsupported.size > 0 ? 'partial' : 'valid';
