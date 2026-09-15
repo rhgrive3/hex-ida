@@ -135,11 +135,14 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
        gets a distinct monotonic sequence. */
     let interventionSequence = 0;
     let unsubscribe = null;
-    // #8686: module-refresh publication authority, mirroring the legacy
-    // DebugSession.refreshState() contract established by #3928. Only the most
-    // recently started refresh, begun under the current session epoch, may
-    // commit into session.modules.
-    let moduleRefreshAuthority = null;
+    // #8686: monotonic module-publication authority, shared by refreshes and
+    // accepted module load/unload lifecycle events (mirroring the legacy
+    // DebugSession.refreshState() contract established by #3928). A refresh
+    // claims and captures the value at start; any newer refresh start OR any
+    // accepted current-epoch lifecycle mutation advances it, so the commit-time
+    // check rejects a late refresh whose authoritative mapping has moved —
+    // either by a superseding refresh or by an event that replaced the binding.
+    let modulePublicationAuthority = 0;
 
     const ingest = (raw) => {
       const event = normalizer.push(raw);
@@ -154,11 +157,15 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
               bindingKey,
               loadedSequence: event.sequence,
             }));
+            modulePublicationAuthority++;
           }
         }
       } else if (event.kind === 'module-unload') {
         const bindingKey = module.bindingKey ?? module.moduleKey ?? module.id ?? module.uuid ?? module.name;
-        if (bindingKey) session.modules.unload(bindingKey, event.sequence);
+        if (bindingKey) {
+          session.modules.unload(bindingKey, event.sequence);
+          modulePublicationAuthority++;
+        }
       } else if (event.kind === 'paused' || event.kind === 'breakpoint-hit' || event.kind === 'watchpoint-hit') {
         session.setState('paused');
       } else if (event.kind === 'resumed') {
@@ -250,9 +257,9 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
         // newProviderEpoch()/close() abort an in-flight request even if the
         // adapter later ignores cancellation. The completion-time check below
         // remains authoritative because adapters may ignore abort.
-        const refreshToken = {};
         const startedEpoch = session.epoch;
-        moduleRefreshAuthority = refreshToken;
+        modulePublicationAuthority++;
+        const capturedAuthority = modulePublicationAuthority;
         const operation = createRuntimeOperationController(session);
         let modules;
         try {
@@ -261,9 +268,9 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
             operation.signal.aborted
             || session.closed
             || session.epoch !== startedEpoch
-            || moduleRefreshAuthority !== refreshToken
+            || modulePublicationAuthority !== capturedAuthority
           ) {
-            throw new DebugAdapterError('runtime-session-stale', 'module refresh completed after its runtime epoch or publication authority changed', {
+            throw new DebugAdapterError('runtime-session-stale', 'module refresh completed after its runtime epoch, a newer refresh, or an accepted module lifecycle event advanced publication authority', {
               startedEpoch, currentEpoch: session.epoch,
             });
           }
