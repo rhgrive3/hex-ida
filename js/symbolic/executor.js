@@ -1,3 +1,4 @@
+import { prepareCanonicalComparisonCarrierBindings } from "../ir-core.js";
 import { prepareMemoryObservations, observeTerminalMemory } from './memory/observations.js';
 import { validateExecutionContract } from './memory/execution-contract.js';
 import { readReturnControl, observeReturnControl } from './memory/terminal-control.js';
@@ -440,7 +441,7 @@ function executePaths(ir, opts) {
   const deadline = Date.now() + timeoutMs;
   const addressMap = opts?._addressMap ?? addressBlockMap(ir);
   const stats = opts?._executionMetrics ?? { paths: 0, stepsPerPath: 0, branches: 0, blockVisitsPerBlock: 0 };
-  const queue = [{ enforceExecutionOrder: !!opts?._byteMemory, executingInstruction: null, byteMemory: opts?._byteMemory, scalarCache: new Map(), inputExpressions: new Map(), valueIdentities: new Map(), semanticIdentities:new Map(), taint: opts?._taint, control: null, block: ir.entry || 0, prevBlock: -1, memory: new Map(), values: new Map(), constraints: [], branches: [], touchedFields: [], visits: new Map(), steps: 0 }];
+  const queue = [{ comparisonCarriers:opts._comparisonCarriers, enforceExecutionOrder: !!opts?._byteMemory, executingInstruction: null, byteMemory: opts?._byteMemory, scalarCache: new Map(), inputExpressions: new Map(), valueIdentities: new Map(), semanticIdentities:new Map(), taint: opts?._taint, control: null, block: ir.entry || 0, prevBlock: -1, memory: new Map(), values: new Map(), constraints: [], branches: [], touchedFields: [], visits: new Map(), steps: 0 }];
   const paths = [];
   let branchCount = 0;
   let truncated = false;
@@ -545,6 +546,11 @@ function executePaths(ir, opts) {
         state.byteMemory?.barrier('unknown-clobber');
         paths.push(stopResult(state, 'unsupported-instruction', inst)); transferred = true; break;
       }
+      if (state.byteMemory && inst.extra?.semanticComparisonCarrier === true) {
+        if (state.comparisonCarriers?.get(inst)?.kind !== 'display-carrier') throw new QueryFailure('unproved-display-carrier');
+        // No value or snapshot membership is issued for a display-only carrier.
+        continue;
+      }
       if (state.byteMemory && inst.dst && ![OP.PHI, OP.RET, OP.CBR, OP.BR].includes(inst.op)) {
         state.values.delete(inst.dst.id);
         const translated = evalValue(inst.dst, state, ir, opts, new Map(), new Set());
@@ -582,7 +588,7 @@ function executePaths(ir, opts) {
           ...(terminalControl ? {terminalControl} : {}),
           status: value && (value.kind === SYM.UNKNOWN || value.kind === 'unknown_semantic') ? 'unknown' : 'complete',
           reason: value && (value.kind === SYM.UNKNOWN || value.kind === 'unknown_semantic') ? value.reason : null,
-          ...(opts._executionCapture ? {snapshot:opts._executionCapture.capture(state,paths.length,observations)} : {}),
+          ...(opts.captureValues && opts._executionCapture ? {snapshot:opts._executionCapture.capture(state,paths.length,observations)} : {}),
           returnValue: value,
           returnText: expressionText(value),
           returnInferred: inferredReturn,
@@ -690,7 +696,13 @@ export function symbolicExecute(ir, opts = {}) {
         memory.chargeExecution((inst.args?.length ?? 0) + (inst.incoming?.length ?? 0));
       }
     }
-    const validatedAddressMap = validateExecutionContract(ir, memory);
+    const validatedAddressMap = validateExecutionContract(ir, memory, opts, memoryAssumptions);
+    const comparisonCarriers = prepareCanonicalComparisonCarrierBindings(ir, memory.identity);
+    if (comparisonCarriers) {
+      memory.chargeExecution(comparisonCarriers.workItems);
+      if (!comparisonCarriers.isCurrent()) throw new QueryFailure('unproved-display-carrier');
+    }
+    opts = { ...opts, _comparisonCarriers:comparisonCarriers };
     const observations = prepareMemoryObservations(opts.memoryObservations, memory);
     const semanticValues=new Map();
     if (ir.values!=null && !Array.isArray(ir.values)) throw new QueryFailure('invalid-ir-values');
@@ -703,8 +715,12 @@ export function symbolicExecute(ir, opts = {}) {
       }
     }
     if (opts.byteMemory.accessSemantics != null && opts.byteMemory.accessSemantics !== 'canonical-normal-completion') throw new QueryFailure('unsupported-memory-access-semantics');
-    const result = executePaths(ir, { ...opts, _sourceIr:ir, _memoryAssumptions:memoryAssumptions, _byteMemory: memory, _executionMetrics: executionMetrics, _semanticValues:semanticValues, _addressMap:validatedAddressMap, _memoryObservations:observations, _executionCapture:opts.captureValues?capture:null });
+    const result = executePaths(ir, { ...opts, _sourceIr:ir, _memoryAssumptions:memoryAssumptions, _byteMemory: memory, _executionMetrics: executionMetrics, _semanticValues:semanticValues, _addressMap:validatedAddressMap, _memoryObservations:observations, _executionCapture:opts.captureValues || opts.captureBranchTargets ? capture : null });
     capture?.check();
+    if (comparisonCarriers) {
+      memory.chargeExecution(comparisonCarriers.workItems);
+      if (!comparisonCarriers.isCurrent()) throw new QueryFailure('unproved-display-carrier');
+    }
     memory.check();
     const explorationPartial = result.truncated || result.paths.some(path => path.status !== 'complete');
     const controlUnproved = result.paths.some(path => path.terminalControl

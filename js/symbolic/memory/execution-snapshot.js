@@ -12,16 +12,22 @@ import { createAssumption, createCompleteness, ASSUMPTION_TRUST } from '../trans
 
 const issued = new WeakMap();
 const executions = new WeakMap();
+// The shapes below are the complete set of execution-relevant fields an issued
+// capability is bound to. Fault/unwind obligations are declared at several
+// layers, so the instruction and `extra` vocabularies both have to be watched:
+// an obligation added after publication is a new exceptional edge the capture
+// never accounted for, and must revoke the capability rather than be inherited
+// by a `complete` normal-completion result.
 const SHAPES = Object.freeze({
   ir: {entry:null,blocks:'blocks',instructions:'insts',values:'values',functionId:null,semanticIrVersion:null,truncated:null,architecture:null,arch:null,abiId:null,semanticsVersion:null,snapshotId:null,binaryId:null},
   block: {index:null,insts:'insts',phis:'insts',succ:'scalars'},
-  inst: {id:null,unknownEffects:null,op:null,sub:null,subOp:null,name:null,args:'args',dst:'value',incoming:'incoming',cond:'inst',signed:null,float:null,bits:null,conditionValue:'value',returnTargetValue:'value',possibleFaults:'faults',faults:'faults',row:null,address:null,addr:'addr',loc:'loc',extra:'extra',volatile:null,atomic:null,value:null},
+  inst: {id:null,unknownEffects:null,op:null,sub:null,subOp:null,name:null,args:'args',dst:'value',incoming:'incoming',cond:'inst',signed:null,float:null,bits:null,conditionValue:'value',returnTargetValue:'value',possibleFaults:'faults',faults:'faults',mayThrow:null,mayUnwind:null,unwindTarget:null,unwindMetadata:null,cleanupOrder:null,exceptionTargets:null,exceptionalEdges:null,row:null,address:null,addr:'addr',loc:'loc',extra:'extra',volatile:null,atomic:null,value:null},
   value: {id:null,bits:null,kind:null,const:null,float:null,floatConst:null,constKind:null,reg:null,index:null,def:'inst',semanticValueId:null,semanticSsaValueId:null,machineType:'machineType'},
   machineType: {kind:null,widthBits:null},
   argument: {value:'value',bits:null}, incomingItem: {from:null,value:'value'},
   addr: {base:'value',index:'value',disp:null,size:null,widthBits:null,precise:null,addressSpace:null},
   loc: {kind:null,key:null,address:null,size:null,disp:null,addressSpace:null,volatile:null,atomic:null},
-  extra: {stateWrite:null,unknownEffects:null,value:null,constKind:null,kind:null,bit:null,target:null,returnControlTargetValueId:null,returnControlTarget:'returnControlTarget',possibleFaults:'faults',faults:'faults',size:null,widthBits:null,memoryAccess:'descriptor',signed:null,float:null,sourceBits:null,targetBits:null,lsb:null,width:null,toward:null,bitfieldKind:null,volatile:null,atomic:null,addressPrecise:null,addressSemantic:null,completeness:null,attributes:'attributes'},
+  extra: {stateWrite:null,unknownEffects:null,value:null,constKind:null,kind:null,bit:null,target:null,returnControlTargetValueId:null,returnControlTarget:'returnControlTarget',possibleFaults:'faults',faults:'faults',mayThrow:null,mayUnwind:null,unwindTarget:null,unwindMetadata:null,cleanupOrder:null,exceptionTargets:null,exceptionalEdges:null,size:null,widthBits:null,memoryAccess:'descriptor',signed:null,float:null,sourceBits:null,targetBits:null,lsb:null,width:null,toward:null,bitfieldKind:null,volatile:null,atomic:null,addressPrecise:null,addressSemantic:null,completeness:null,attributes:'attributes'},
   returnControlTarget: {schema:null,state:null,valueId:null,reason:null},
   attributes: {float:null,unknownEffects:null,machineAddressExpression:'expression',machineEffects:'machineEffects',machineControlEffect:'controlEffect',possibleFaults:'faults',faults:'faults'},
   machineEffects: {bundleCompleteness:null,unknownEffects:null,architectureId:null,mode:null,possibleFaults:'faults',faults:'faults',operationMetadata:'operationMetadata'},

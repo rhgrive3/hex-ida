@@ -113,6 +113,52 @@ export function prepareCanonicalRegisterStateBindings(projected, identity) {
       catch { return false; }
     } });
 }
+const canonicalComparisonCarrierBindings = new WeakMap();
+
+/** Display-only semantic comparison carriers. This is bundle membership only:
+ * a carrier is admitted exactly while the projection's own evidence still holds
+ * (it is a `semantic-flag-result` comparison) and it stays display-only — no
+ * other instruction publishes its carried value as a destination and no other
+ * instruction consumes it as an operand. No predicate, operand equality, or
+ * flag fact is discharged here. A carrier that loses its display-only shape,
+ * or an identity that cannot be re-checked, fails closed as unavailable so the
+ * caller rejects it instead of publishing an unproved carrier. */
+export function prepareCanonicalComparisonCarrierBindings(projected, identity) {
+  // Unlike the register/return-fault helpers this binding is consumed without a
+  // status check, so the unavailable shape must stay usable and fail closed.
+  const unavailable = Object.freeze({ status:'unavailable', size:0, observationCount:0, workItems:0,
+    get: () => null, isCurrent: () => false });
+  try {
+    const instructions = Array.isArray(projected?.instructions) ? projected.instructions
+      : Array.isArray(projected?.blocks) ? projected.blocks.flatMap(block => block?.insts ?? []) : null;
+    if (!instructions) return unavailable;
+    const expected = instructions.filter(instruction => instruction?.extra?.semanticComparisonCarrier === true);
+    if (!expected.length) return null;
+    const records = new Map();
+    for (const instruction of expected) {
+      const carried = instruction.dst?.id ?? null;
+      const displayEvidence = instruction.extra?.comparison === 'semantic-flag-result';
+      const published = instructions.some(other => other !== instruction && other?.dst?.id === carried);
+      const consumed = instructions.some(other => other !== instruction
+        && (other.args ?? []).some(argument => argument?.id === carried));
+      if (carried == null || !displayEvidence || published || consumed) return unavailable;
+      records.set(instruction, Object.freeze({ kind:'display-carrier', carriedValueId:carried }));
+    }
+    const identityEntries = identity && typeof identity === 'object' ? Object.entries(identity) : null;
+    const contextCurrent = () => identityEntries != null
+      && identityEntries.every(([key, value]) => identity[key] === value);
+    const workItems = records.size * 16 + 2;
+    if (!Number.isSafeInteger(workItems)) return unavailable;
+    try { if (!contextCurrent()) return unavailable; } catch { return unavailable; }
+    const binding = Object.freeze({ status:'prepared', size:records.size, observationCount:records.size, workItems,
+      get:instruction => records.get(instruction) ?? null,
+      isCurrent() { try { return contextCurrent(); } catch { return false; } } });
+    canonicalComparisonCarrierBindings.set(projected, binding);
+    return binding;
+  }
+  catch { return unavailable; }
+}
+
 const facadeAbiBindings = new WeakMap();
 const expectedFacadeAbiBindings = new WeakMap();
 

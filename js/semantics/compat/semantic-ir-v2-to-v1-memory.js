@@ -18,6 +18,7 @@ import { canonicalGlobalAddress } from '../../architecture/compat/ir-core-arm64-
 // a reaching-store / MustAlias proof. It only describes this original access.
 const projectedAccesses = new WeakMap();
 const projectedAccessContexts = new WeakMap();
+const projectedNormalMemoryFragments = new WeakMap();
 function attachAccessCapabilities(projected, artifact, canonicalIr, instructionBySemanticId) {
   if (!isCanonicalMemorySsaProducerArtifact(artifact) || !canonicalIr
       || artifact.functionId !== canonicalIr.functionId || projected.functionId !== canonicalIr.functionId) return;
@@ -58,6 +59,26 @@ function attachAccessCapabilities(projected, artifact, canonicalIr, instructionB
     projectedAccesses.set(inst, { projected, artifact, canonicalIr, node, original:memory,
       op:inst.op, published });
   }
+  // A bundle fault is also copied to its address/value projections. Preserve
+  // the existing, explicitly conditional analysis route without making those
+  // fragments pure or allowing any caller-authored fragment to borrow a load.
+  const byInstruction = new Map();
+  for (const inst of instructionBySemanticId.values()) {
+    const access = projectedAccesses.get(inst);
+    const machine = access?.node?.attributes?.machineEffects;
+    if (access && typeof machine?.instructionId === 'string') {
+      byInstruction.set(machine.instructionId, { access:inst, machine });
+    }
+  }
+  for (const [id, inst] of instructionBySemanticId) {
+    const node = nodes.get(id), machine = node?.attributes?.machineEffects;
+    const owner = byInstruction.get(machine?.instructionId);
+    if (!owner || ![V1_OP.CONST,V1_OP.MOV,V1_OP.BIN,V1_OP.UN,V1_OP.LOAD,V1_OP.STORE].includes(inst.op)
+        || machine.bundleCompleteness !== 'exact' || inst.extra?.attributes !== node.attributes
+        || machine.architectureId !== owner.machine.architectureId || machine.mode !== owner.machine.mode
+        || stableDigest(machine.possibleFaults) !== stableDigest(owner.machine.possibleFaults)) continue;
+    projectedNormalMemoryFragments.set(inst, { projected, node, op:inst.op, owner:owner.access });
+  }
   projectedAccessContexts.set(projected, { context, canonicalIr, artifact });
 }
 /** Return canonical identity, not a caller-supplied same-shaped attestation. */
@@ -74,6 +95,15 @@ export function projectedMemoryAccessForInstruction(inst, projected, identity) {
   const context = record.published.context;
   if (!identity || !Object.keys(context).every(key => identity[key] === context[key])) return null;
   return record.published;
+}
+
+/** Conditional normal-completion analysis only; never transformation authority. */
+export function projectedNormalMemoryFragmentForInstruction(inst, projected, identity) {
+  const record = projectedNormalMemoryFragments.get(inst);
+  if (!record || record.projected !== projected || inst.op !== record.op
+      || inst.semanticNodeId !== record.node.id || inst.extra?.semanticNodeId !== record.node.id
+      || inst.extra?.attributes !== record.node.attributes || inst.extra?.completeness !== 'complete') return null;
+  return projectedMemoryAccessForInstruction(record.owner, projected, identity);
 }
 
 const MEMORY_CLOBBER_KINDS = new Set(['may-alias-clobber', 'unknown-clobber', 'call-clobber', 'intrinsic-clobber']);

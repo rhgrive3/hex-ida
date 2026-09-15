@@ -1,6 +1,7 @@
-/** Candidate for one precise projection change: the body of an arm excluded
- * by the issued canonical entry-path proof. The producer's rendered condition
- * is not yet proved equivalent to that CBR, so this never authorizes deletion.
+/** Canonical excluded-arm plans. An issued no-PHI flat-store-body packet may
+ * be consumed only by the existing projection writer, which must additionally
+ * commit exact copy correspondence and producer-bound removal tombstones.
+ * Other bodies remain candidates: no instruction, PHI or CFG edit is allowed.
  */
 import { stableDigest } from '../../core/identity/index.js';
 import { readConditionalRegionStructure } from './conditional-region-structure.js';
@@ -31,6 +32,14 @@ export function readRegionErasureCondition(plan, projection, ir, identity) {
   const binding = issued.get(plan);
   return binding.projection === projection
     ? readConditionalRegionCondition(binding.conditionPlan, projection, binding.structure, identity) : null;
+}
+
+/** Private capability for a narrow render-only deletion domain. Public plan
+ * fields, matching hashes, or copied packet data cannot issue this authority. */
+export function readRegionErasureBody(plan, projection, ir, identity) {
+  if (!readConditionalRegionErasure(plan, ir, identity)) return null;
+  const binding = issued.get(plan);
+  return binding.projection === projection && binding.body ? binding.body : null;
 }
 
 export function prepareConditionalRegionErasure(structure, reachability, ir, options = {}) {
@@ -72,12 +81,23 @@ export function prepareConditionalRegionErasure(structure, reachability, ir, opt
     const planId = stableDigest({ kind:'unreachable-arm-body', identity:guard.identity, beforeHash, afterHash,
       branchId:region.branch.id, role:erased.role, queryHash:dead[0].queryHash,
       domainQueryHash:reachability.domainQueryHash, liveQueryHash:live[0].queryHash, conditionPlanId:condition?.plan.planId ?? null });
-    const plan = freeze({ version:2, status:'complete', planId, beforeHash, afterHash, identity:guard.identity,
+    // No PHI correspondence is inferred, even for equal incoming values. The
+    // first deletion domain is a flat sequence of stores with a whole-entry
+    // infeasibility proof. Nested controls, assignments and PHIs stay intact.
+    const copiedArm = condition?.region.arms.find(arm => arm.original === erased);
+    const flatStores = condition && !structure.phis.length && !structure.memoryPhis.length
+      && removed.size > 0 && removed.size <= 256 && copiedArm?.nodes.length === removed.size
+      && copiedArm.nodes.every(node => node.kind === 'stmt' && node.semantic?.op === 'store')
+      && erased.nodes.every(node => node.kind === 'stmt');
+    const body = flatStores ? freeze({ scope:'unreachable-render-arm-body-no-phi', planId,
+      nodes:copiedArm.nodes, originalNodes:erased.nodes, header:condition.header,
+      condition, sourceCurrent:condition.sourceCurrent }) : null;
+    const plan = freeze({ version:3, status:'complete', planId, beforeHash, afterHash, identity:guard.identity,
       scope:removed.size ? 'canonical-unreachable-arm-erasure-candidate' : 'canonical-conditional-predicate-candidate',
-      transformAuthorization:false, renderValidation:'required',
+      transformAuthorization:false, renderValidation:'required', bodyValidation:body ? 'proved-no-phi-flat-stores' : 'required',
       conditionValidation:condition ? 'proved' : 'required', conditionPlanId:condition?.plan.planId ?? null,
       pendingValidation:freeze([...(condition ? [] : ['rendered-condition-equivalence','copied-region-carrier']),
-        'live-phi-render-correspondence','removed-entity-provenance']), region,
+        ...(body ? [] : ['live-phi-render-correspondence']),'removed-entity-provenance']), region,
       removedRole:erased.role, liveRole:retained.role, removedNodes:erased.nodes,
       candidateNodes:freeze(candidateNodes), retainedHeader:region.header,
       retainedInstructions:structure.instructions, retainedPhis:structure.phis,
@@ -88,7 +108,7 @@ export function prepareConditionalRegionErasure(structure, reachability, ir, opt
     if (readConditionalRegionReachabilityStructure(reachability, ir, guard.identity) !== structure
       || !readConditionalRegionStructure(structure, ir, guard.identity)) return reject('stale-region-erasure');
     if (condition && !condition.isCurrent()) return reject('stale-region-condition');
-    issued.set(plan, { ir, guard, structure, reachability, conditionPlan:submitted.conditionPlan, projection:submitted.projection });
+    issued.set(plan, { ir, guard, structure, reachability, body, conditionPlan:submitted.conditionPlan, projection:submitted.projection });
     return plan;
   } catch (error) { return reject(guard?.reason() ?? error.reason ?? 'region-erasure-unavailable'); }
 }
