@@ -580,6 +580,14 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     const seg = segments[segIndex];
     let address = seg.address + segOffset;
     for (let guard = 0; guard < 100000; guard++) {
+      // Every chain node re-reads an 8-byte word and re-scans every
+      // section/segment mapping inside threadedPointerFileOffset(), but only
+      // isBind hops used to charge the shared budget. A delta-only chain
+      // therefore advanced `guard` while leaving `used.operations` frozen, so
+      // the budget's every-1024-op wall-clock check never fired and
+      // `signal.aborted` was never observed (issue #8853). Charge one node
+      // before any pointer-byte work begins; exhaustion is fail-closed.
+      if (!budget.take({ inputBytes: 8, operations: 1 }, 'classic-bind-threaded-walk')) { fail('shared metadata budget exhausted while walking threaded bind chain'); return; }
       const off = threadedPointerFileOffset(address);
       if (off == null || off + 8n > BigInt(r.length)) { fail('threaded binding chain leaves mapped file data'); return; }
       const raw = r.u64(Number(off));
