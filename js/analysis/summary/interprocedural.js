@@ -73,11 +73,20 @@ export const SUMMARY_PAYLOAD_RESOURCES = Object.freeze({
   mergeRows: 'summaryMergeRows',
 });
 
-/** Rows the published summary keeps alive, across every bounded dimension. */
+/** Rows/provenance members the published summary keeps alive. */
 function summaryResidentRows(summary) {
-  return (summary.escapes?.length || 0) + (summary.unknownCallEffects?.length || 0)
+  let rows = (summary.escapes?.length || 0) + (summary.unknownCallEffects?.length || 0)
     + (summary.registerEffects?.length || 0)
     + (summary.memoryReadRegions?.length || 0) + (summary.memoryWriteRegions?.length || 0);
+  // Nested provenance is retained just as surely as a top-level row. Counting only
+  // `escapes.length` lets one logical escape carry an ever-growing evidence list
+  // through every solved suffix while the resident ledger still reports one row.
+  for (const escape of summary.escapes || []) rows += escape.evidenceIds?.length || 0;
+  for (const unknown of summary.unknownCallEffects || []) {
+    rows += unknown.targetEntityIds?.length || 0;
+    rows += unknown.evidenceIds?.length || 0;
+  }
+  return rows;
 }
 
 function fail(code) { throw new TypeError(code); }
@@ -327,24 +336,26 @@ function compareCodeUnitStrings(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function mergeEscapes(values) {
+function mergeEscapes(values, limit, charge) {
   const byKey = new Map();
+  let truncated = false;
   for (const escape of values) {
-    const evidenceIds = [...new Set(escape.evidenceIds)].sort();
+    const evidence = boundedUnion([], escape.evidenceIds, limit, (value) => value, charge);
+    if (evidence.truncated) truncated = true;
     const key = JSON.stringify([escape.kind, escape.target ?? null]);
     const prior = byKey.get(key);
     if (!prior) {
-      byKey.set(key, Object.freeze({ ...escape, evidenceIds }));
+      byKey.set(key, Object.freeze({ ...escape, evidenceIds: evidence.values }));
       continue;
     }
-    byKey.set(key, Object.freeze({
-      ...prior,
-      evidenceIds: [...new Set([...prior.evidenceIds, ...evidenceIds])].sort(),
-    }));
+    const merged = boundedUnion(prior.evidenceIds, evidence.values, limit, (value) => value, charge);
+    if (merged.truncated) truncated = true;
+    byKey.set(key, Object.freeze({ ...prior, evidenceIds: merged.values }));
   }
-  return [...byKey.entries()]
-    .sort(([left], [right]) => compareCodeUnitStrings(left, right))
-    .map(([, escape]) => escape);
+  const entries = [...byKey.entries()];
+  chargeSortWork(entries.length, charge);
+  entries.sort(([left], [right]) => compareCodeUnitStrings(left, right));
+  return { values: entries.map(([, escape]) => escape), truncated };
 }
 
 /**
@@ -371,19 +382,30 @@ function boundedAddAll(target, incoming, limit) {
   return truncated;
 }
 
-/** Deterministic capped union: keeps the lowest code-unit members of one row. */
-function boundedUnion(left, right, limit, normalize) {
+function chargeSortWork(length, charge) {
+  if (typeof charge !== 'function' || length < 2) return;
+  charge(length * Math.ceil(Math.log2(length)));
+}
+
+/** Deterministic capped union without allocating an unbounded concatenation first. */
+function boundedUnion(left, right, limit, normalize, charge = null) {
   const seen = new Set();
   const values = [];
   let truncated = false;
-  for (const value of [...left, ...right]) {
-    const member = normalize(value);
-    if (seen.has(member)) continue;
-    seen.add(member);
-    if (values.length >= limit) { truncated = true; continue; }
-    values.push(member);
-  }
-  if (truncated) values.sort();
+  const visit = (input) => {
+    for (const value of input || []) {
+      if (typeof charge === 'function') charge(1);
+      const member = normalize(value);
+      if (seen.has(member)) continue;
+      if (values.length >= limit) { truncated = true; return false; }
+      seen.add(member);
+      values.push(member);
+    }
+    return true;
+  };
+  if (visit(left)) visit(right);
+  chargeSortWork(values.length, charge);
+  values.sort(compareCodeUnitStrings);
   return { values, truncated };
 }
 
@@ -880,10 +902,10 @@ function composeSummary({
     // Same call site and reason means one logical unresolved call; the target
     // and evidence payloads must union rather than last-wins, or every
     // candidate but the final one vanishes from the published provenance.
-    chargeMergeRows(prior.targetEntityIds.length + prior.evidenceIds.length
-      + unknown.targetEntityIds.length + unknown.evidenceIds.length);
-    const targetEntityIds = boundedUnion(prior.targetEntityIds, unknown.targetEntityIds, rowLimit, (value) => value);
-    const evidenceIds = boundedUnion(prior.evidenceIds, unknown.evidenceIds, rowLimit, (value) => value);
+    const targetEntityIds = boundedUnion(
+      prior.targetEntityIds, unknown.targetEntityIds, rowLimit, (value) => value, chargeMergeRows);
+    const evidenceIds = boundedUnion(
+      prior.evidenceIds, unknown.evidenceIds, rowLimit, (value) => value, chargeMergeRows);
     if (targetEntityIds.truncated || evidenceIds.truncated) payloadTruncated = true;
     unknownsByKey.set(key, createUnknownCallEffect({
       callSiteId: unknown.callSiteId,
@@ -931,6 +953,22 @@ function composeSummary({
       dependencyIds: [...(baseStatus.dependencyIds ?? []), ...(localInput?.dependencyIds ?? [])],
     });
 
+  const mergedEscapes = mergeEscapes(escapes, rowLimit, chargeMergeRows);
+  if (mergedEscapes.truncated) payloadTruncated = true;
+  const mergedReads = mergeEffects(reads, limits.maxEffectsPerSummary);
+  const mergedWrites = mergeEffects(writes, limits.maxEffectsPerSummary);
+  // `createFunctionSummary()` detaches/freezes every published row. Charge that
+  // copy before invoking the constructor so nested provenance cannot escape the
+  // work ledger merely because it dedupes to one logical top-level escape.
+  let detachRows = mergedEscapes.values.length + dedupedUnknowns.length + registerEffects.size
+    + mergedReads.length + mergedWrites.length;
+  for (const escape of mergedEscapes.values) detachRows += escape.evidenceIds?.length || 0;
+  for (const unknown of dedupedUnknowns) {
+    detachRows += unknown.targetEntityIds?.length || 0;
+    detachRows += unknown.evidenceIds?.length || 0;
+  }
+  chargeMergeRows(detachRows);
+
   // #8872: dropping any distinct transitive row (escape / unknown-call /
   // register effect / provenance member) is an under-approximation of a
   // may-analysis, so this summary can no longer claim `complete`. Failing closed
@@ -962,9 +1000,9 @@ function composeSummary({
     // optimistic state is never allowed to publish exact provenance.
     returnProvenance: unconverged ? [] : local.returnProvenance,
     registerEffects: [...registerEffects],
-    memoryReadRegions: mergeEffects(reads, limits.maxEffectsPerSummary),
-    memoryWriteRegions: mergeEffects(writes, limits.maxEffectsPerSummary),
-    escapes: mergeEscapes(escapes),
+    memoryReadRegions: mergedReads,
+    memoryWriteRegions: mergedWrites,
+    escapes: mergedEscapes.values,
     allocations: local.allocations,
     frees: local.frees,
     directCalls: publishedDirectCalls,
