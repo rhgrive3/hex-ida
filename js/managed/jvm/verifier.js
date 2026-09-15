@@ -131,7 +131,9 @@ function mergeStates(previous, incoming) {
   }
   normalizeCategory2Locals(locals);
   const state = { stack, locals };
-  return { compatible: true, changed: !localsEqual(previous.locals, locals), state };
+  const stackChanged = previous.stack.some((kind, index) => kind !== stack[index]);
+  const localsChanged = !localsEqual(previous.locals, locals);
+  return { compatible: true, changed: stackChanged || localsChanged, state };
 }
 
 function popKind(state, expected, errors, offset) {
