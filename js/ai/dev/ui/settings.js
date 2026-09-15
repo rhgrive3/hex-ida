@@ -26,8 +26,29 @@ export class DevAgentUiSettings {
     this.lastRun = null;
   }
 
-  profiles() { return availableAgentProfiles(this.identity); }
+  refreshIdentity({ notify = true } = {}) {
+    const next = readAdminIdentity(this.authProvider);
+    const canUseDev = canSelectAgentProfile(next, AGENT_PROFILE.DEV);
+    const wasDev = this.agentProfile === AGENT_PROFILE.DEV;
+    const wasYolo = this.decisionPolicy === DEV_DECISION_POLICY.YOLO;
+    const identityChanged = this.identity !== next;
+    const downgraded = !canUseDev && (wasDev || wasYolo);
+    this.identity = next;
+    if (downgraded) {
+      this.agentProfile = AGENT_PROFILE.STANDARD;
+      this.decisionPolicy = DEV_DECISION_POLICY.NORMAL;
+      this.persist();
+      if (notify) this.emit();
+    }
+    return identityChanged || downgraded;
+  }
+
+  profiles() {
+    this.refreshIdentity();
+    return availableAgentProfiles(this.identity);
+  }
   setAgentProfile(profile) {
+    this.refreshIdentity();
     const next = assertAgentProfile(profile);
     if (!canSelectAgentProfile(this.identity, next)) throw new Error('Admin privileges are required for the Dev profile.');
     if (this.agentProfile === next) return false;
@@ -35,7 +56,11 @@ export class DevAgentUiSettings {
     this.persist(); this.emit(); return true;
   }
   setDecisionPolicy(policy) {
+    this.refreshIdentity();
     const next = assertDevDecisionPolicy(policy);
+    if (next === DEV_DECISION_POLICY.YOLO && !canSelectAgentProfile(this.identity, AGENT_PROFILE.DEV)) {
+      throw new Error('Admin privileges are required for the YOLO policy.');
+    }
     if (this.decisionPolicy === next) return false;
     this.decisionPolicy = next;
     this.persist(); this.emit(); return true;
@@ -54,6 +79,7 @@ export class DevAgentUiSettings {
   setLastRun(run) { this.lastRun = run || null; this.emit(); }
   on(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   snapshot() {
+    this.refreshIdentity({ notify: false });
     return Object.freeze({
       identity: this.identity,
       agentProfile: this.agentProfile,
