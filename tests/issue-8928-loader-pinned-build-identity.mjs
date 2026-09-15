@@ -1,18 +1,7 @@
-// Issue #8928 regression: the tiny loader's pinned EXPECTED_BUILD must bind the
-// runtime bytes it actually executes. A bootstrap authority that echoes the
-// pinned top-level buildId (with a correct ECDH key envelope but its own
-// manifest identity) used to have an unrelated runtime imported and started as
-// if it belonged to the pinned build: the loader checked only
-// `bootstrap.buildId` up front and then verified the plaintext against a
-// digest supplied by the same remote bootstrap. The loader now requires the
-// manifest build identity/AAD/content-hash prefix to match the local pin
-// before admission, and re-verifies the executed plaintext digest prefix
-// before the runtime module can start.
-//
-// These scenarios run the real js/userscript/loader.js module (build-time
-// placeholders substituted, relative imports rewritten to file URLs, written
-// to the scratch directory outside the repository) against a protocol-faithful
-// bootstrap authority double; the ECDH/HKDF/AES-GCM/gunzip pipeline is real.
+// Issue #8928 regression: the tiny loader must locally pin the full runtime
+// content digest and the deterministic execution-relevant release manifest.
+// Remote bootstrap/ECDH/AES-GCM authority is transport authority, not release
+// identity authority.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -25,6 +14,8 @@ import { gzipSync } from 'node:zlib';
 const LOADER_PATH = fileURLToPath(new URL('../js/userscript/loader.js', import.meta.url));
 const LOADER_DIR = LOADER_PATH.slice(0, LOADER_PATH.lastIndexOf('/'));
 const HEX_ORIGIN = 'https://hex.test';
+const LOADER_VERSION = '2.0.2322242211';
+const RUNTIME_VERSION = `2.${LOADER_VERSION}`;
 
 const sha256Hex = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const utf8 = (value) => new TextEncoder().encode(value);
@@ -38,47 +29,52 @@ const VALID_RUNTIME_SOURCE = [
   '  globalThis.__HEX_8928_SOURCE__ = new Uint8Array(options.runtimeSourceProvider());',
   '}',
 ].join('\n');
-const PIN = sha256Hex(utf8(VALID_RUNTIME_SOURCE)).slice(0, 24);
+const FULL_PIN = sha256Hex(utf8(VALID_RUNTIME_SOURCE));
+const PIN = FULL_PIN.slice(0, 24);
+const ASSET_PATH = `/.runtime/runtime.${PIN}.bin`;
+const EXPECTED_RUNTIME_BYTES = gzipSync(Buffer.from(VALID_RUNTIME_SOURCE)).byteLength + 16; // AES-GCM tag
+
+function releaseManifestHash({
+  buildId = PIN,
+  runtimeVersion = RUNTIME_VERSION,
+  contentHash = FULL_PIN,
+  compression = 'gzip',
+  assetPath = ASSET_PATH,
+  byteLength = EXPECTED_RUNTIME_BYTES,
+} = {}) {
+  return sha256Hex(Buffer.from(JSON.stringify({ buildId, runtimeVersion, contentHash, compression, assetPath, byteLength }), 'utf8'));
+}
 
 async function gcmEncrypt(key, iv, aad, plaintext) {
-  const imported = typeof key === 'uint8array' || key instanceof Uint8Array
+  const imported = key instanceof Uint8Array
     ? await crypto.subtle.importKey('raw', key, { name: 'AES-GCM' }, false, ['encrypt'])
     : key;
   return new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad, tagLength: 128 }, imported, plaintext));
 }
 
-/* ------------------------------------------------------------------------- *
- * Protocol-faithful bootstrap authority (mirrors worker-entry.js semantics):
- * the content key is wrapped under an ECDH+HKDF-derived key against the
- * loader-supplied client public key, and the runtime asset is AES-GCM(gzip())
- * keyed by the content key. `forge` lets a scenario perturb exactly the
- * manifest identity dimensions while the rest stays self-consistent.
- * ------------------------------------------------------------------------- */
-async function createAuthority({ expectedBuild = PIN, runtimeSource = VALID_RUNTIME_SOURCE, forge, inflateBodyBytes = 0 } = {}) {
+async function createAuthority({ expectedBuild = PIN, runtimeSource = VALID_RUNTIME_SOURCE, forgeManifest, forgeBootstrap, inflateBodyBytes = 0 } = {}) {
   const serverKeyPair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']);
   const serverPublicKey = await crypto.subtle.exportKey('jwk', serverKeyPair.publicKey);
-  const runtimeVersion = '2.0.2322242211';
   const sessionId = b64url(randomBytes(18));
   const salt = randomBytes(16);
   const envelopeIv = randomBytes(12);
   const contentKey = randomBytes(32);
   const contentIv = randomBytes(12);
+  const runtimeVersion = RUNTIME_VERSION;
+  const aad = `hex-runtime:${expectedBuild}:${runtimeVersion}`;
+  const ciphertext = await gcmEncrypt(contentKey, contentIv, utf8(aad), new Uint8Array(gzipSync(Buffer.from(runtimeSource))));
 
   const manifest = {
     buildId: expectedBuild,
     runtimeVersion,
-    ciphertextHash: '',
+    ciphertextHash: sha256Hex(ciphertext),
     contentHash: sha256Hex(utf8(runtimeSource)),
     iv: b64url(contentIv),
-    aad: `hex-runtime:${expectedBuild}:${runtimeVersion}`,
+    aad,
     compression: 'gzip',
-    byteLength: 0,
+    byteLength: ciphertext.byteLength,
   };
-  forge?.(manifest);
-
-  const ciphertext = await gcmEncrypt(contentKey, fromB64url(manifest.iv), utf8(manifest.aad), new Uint8Array(gzipSync(Buffer.from(runtimeSource))));
-  manifest.byteLength = ciphertext.byteLength;
-  manifest.ciphertextHash = sha256Hex(ciphertext);
+  forgeManifest?.(manifest);
 
   const bootstrap = {
     buildId: expectedBuild,
@@ -88,16 +84,16 @@ async function createAuthority({ expectedBuild = PIN, runtimeSource = VALID_RUNT
     keyEnvelope: { salt: b64url(salt), iv: b64url(envelopeIv), ciphertext: '' },
     session: b64url(randomBytes(18)),
     sessionId,
-    runtimeLocator: `/_runtime/${expectedBuild}`,
-    manifest: { ...manifest },
+    runtimeLocator: `/.runtime/runtime.${expectedBuild}.bin`,
+    manifest,
   };
+  forgeBootstrap?.(bootstrap);
 
   let runtimeBytesServed = 0;
   return {
     bootstrap,
-    stats: {
-      get runtimeBytesServed() { return runtimeBytesServed; },
-    },
+    ciphertext,
+    stats: { get runtimeBytesServed() { return runtimeBytesServed; } },
     async respond(url, init = {}) {
       const target = String(url);
       if (target.includes('/runtime/bootstrap')) {
@@ -114,7 +110,7 @@ async function createAuthority({ expectedBuild = PIN, runtimeSource = VALID_RUNT
         const json = utf8(JSON.stringify(bootstrap));
         return boundedResponse(200, json, { 'content-length': String(json.byteLength), 'content-type': 'application/json' });
       }
-      if (target.includes('/_runtime/')) {
+      if (target.includes('/.runtime/runtime.')) {
         runtimeBytesServed += ciphertext.byteLength + inflateBodyBytes;
         const served = inflateBodyBytes > 0
           ? new Uint8Array([...ciphertext, ...new Uint8Array(inflateBodyBytes)])
@@ -138,10 +134,22 @@ function boundedResponse(status, bytes, headers) {
 
 const scratch = await mkdtemp(join(tmpdir(), 'issue-8928-'));
 
-async function runLoader({ expectedBuild = PIN, pinnedBuild = expectedBuild, runtimeSource, forge, inflateBodyBytes = 0 } = {}) {
+async function runLoader({
+  expectedBuild = PIN,
+  pinnedBuild = PIN,
+  pinnedContentHash = FULL_PIN,
+  pinnedRuntimeVersion = RUNTIME_VERSION,
+  pinnedRuntimeBytes = EXPECTED_RUNTIME_BYTES,
+  pinnedAssetPath = ASSET_PATH,
+  pinnedReleaseManifestHash = releaseManifestHash(),
+  runtimeSource,
+  forgeManifest,
+  forgeBootstrap,
+  inflateBodyBytes = 0,
+} = {}) {
   delete globalThis.__HEX_8928_STARTED__;
   delete globalThis.__HEX_8928_SOURCE__;
-  const authority = await createAuthority({ expectedBuild, runtimeSource, forge, inflateBodyBytes });
+  const authority = await createAuthority({ expectedBuild, runtimeSource, forgeManifest, forgeBootstrap, inflateBodyBytes });
   const created = [];
   const saved = {
     document: globalThis.document,
@@ -161,14 +169,9 @@ async function runLoader({ expectedBuild = PIN, pinnedBuild = expectedBuild, run
     getElementById: (id) => created.find((node) => node.id === id) ?? null,
     querySelectorAll: () => [],
   };
-  globalThis.MutationObserver = function MutationObserverStub() {
-    this.observe = () => {};
-    this.disconnect = () => {};
-  };
+  globalThis.MutationObserver = function MutationObserverStub() { this.observe = () => {}; this.disconnect = () => {}; };
   const blobBytes = new WeakMap();
-  globalThis.Blob = class BlobDouble {
-    constructor(parts) { blobBytes.set(this, parts[0]); }
-  };
+  globalThis.Blob = class BlobDouble { constructor(parts) { blobBytes.set(this, parts[0]); } };
   URL.createObjectURL = (blob) => `data:text/javascript;base64,${Buffer.from(blobBytes.get(blob)).toString('base64')}`;
   URL.revokeObjectURL = () => {};
   globalThis.fetch = authority.respond;
@@ -176,8 +179,13 @@ async function runLoader({ expectedBuild = PIN, pinnedBuild = expectedBuild, run
   try {
     const source = readFileSync(LOADER_PATH, 'utf8')
       .replaceAll("'__HEX_ORIGIN__'", `'${HEX_ORIGIN}'`)
-      .replaceAll("'__HEX_LOADER_VERSION__'", "'test-8928'")
+      .replaceAll("'__HEX_LOADER_VERSION__'", `'${LOADER_VERSION}'`)
       .replaceAll("'__HEX_BUILD_ID__'", `'${pinnedBuild}'`)
+      .replaceAll("'__HEX_CONTENT_HASH__'", `'${pinnedContentHash}'`)
+      .replaceAll("'__HEX_RUNTIME_VERSION__'", `'${pinnedRuntimeVersion}'`)
+      .replaceAll("'__HEX_RUNTIME_BYTE_LENGTH__'", `'${pinnedRuntimeBytes}'`)
+      .replaceAll("'__HEX_RUNTIME_ASSET_PATH__'", `'${pinnedAssetPath}'`)
+      .replaceAll("'__HEX_RELEASE_MANIFEST_HASH__'", `'${pinnedReleaseManifestHash}'`)
       .replace(/from '\.\/([a-z0-9-]+\.js)'/g, (_all, file) => `from '${pathToFileURL(join(LOADER_DIR, file)).href}'`);
     const entry = join(scratch, `loader-${Math.random().toString(36).slice(2)}.mjs`);
     await writeFile(entry, source);
@@ -211,58 +219,114 @@ async function waitFor(predicate, timeoutMs) {
   }
 }
 
-// 1. Happy path: a pinned loader executes the runtime bound to that pin and
-//    forwards the locally proven content digest.
+// 1. Happy path: the locally pinned FULL digest is what reaches the runtime.
 {
   const run = await runLoader({});
   assert.ok(run.started, `valid pinned runtime must boot (failure: ${run.failure})`);
   assert.equal(run.started.buildId, PIN);
-  assert.equal(run.started.runtimeContentHash, sha256Hex(utf8(VALID_RUNTIME_SOURCE)));
-  assert.equal(run.started.runtimeContentHash.slice(0, 24), PIN);
-  assert.equal(run.sourceBytes.byteLength, utf8(VALID_RUNTIME_SOURCE).byteLength, 'the source provider must hand out the real runtime bytes');
+  assert.equal(run.started.runtimeContentHash, FULL_PIN);
+  assert.equal(run.sourceBytes.byteLength, utf8(VALID_RUNTIME_SOURCE).byteLength);
 }
 
-// 2. #8928 attack: the top-level bootstrap echoes the pin and the key envelope
-//    is valid, but the manifest names a different build identity. Rejected
-//    before the runtime asset is fetched at all.
+// 2. Outer/inner build identity mismatch is rejected before runtime fetch.
 {
-  const run = await runLoader({ forge: (manifest) => { manifest.buildId = 'attacker-controlled-build-id'; } });
-  assert.equal(run.started, null, 'an unbound manifest build identity must never start');
-  assert.match(run.failure, /manifest build identity does not match the pinned loader build/i);
-  assert.equal(run.authority.stats.runtimeBytesServed, 0, 'rejection must happen before any runtime fetch');
-}
-
-// 3. Attack variant: manifest buildId echoes the pin, but the content hash is
-//    an unrelated real digest. Rejected on the content-hash pin pre-fetch.
-{
-  const run = await runLoader({
-    forge: (manifest) => { manifest.contentHash = sha256Hex(utf8('export async function startProtectedRuntime(){globalThis.__ATTACKER__=1}')); },
-  });
-  assert.equal(run.started, null, 'an unrelated manifest content hash must never start');
-  assert.match(run.failure, /content hash is not bound to the pinned loader build/i);
+  const run = await runLoader({ forgeManifest: (manifest) => { manifest.buildId = 'attacker-controlled-build-id'; } });
+  assert.equal(run.started, null);
+  assert.match(run.failure, /manifest build identity does not match/i);
   assert.equal(run.authority.stats.runtimeBytesServed, 0);
 }
 
-// 4. Attack variant: manifest reports the pinned prefix for both identity and
-//    content hash, but ships different runtime bytes. The plaintext digest
-//    re-verification must stop it before the module is imported.
+// 3. A self-consistent remote digest for different executable code is rejected
+// against the loader's FULL local SHA, not merely the 96-bit build prefix.
 {
-  const attackerSource = 'export async function startProtectedRuntime(){ globalThis.__HEX_8928_STARTED__ = { attacker: true }; }\n';
-  const run = await runLoader({
-    runtimeSource: attackerSource,
-    forge: (manifest) => { manifest.contentHash = sha256Hex(utf8(attackerSource)); manifest.aad = `hex-runtime:${PIN}:2.0.2322242211`; },
-  });
-  assert.equal(run.started?.attacker, undefined, 'runtime bytes that hash away from the pin must never start');
-  assert.ok(!run.started || run.started.attacker !== true);
-  assert.match(run.failure, /content hash is not bound to the pinned loader build|not bound to the pinned/i);
+  const attackerSource = VALID_RUNTIME_SOURCE.replace('runtimeContentHash', 'runtimeContentHasx'); // one byte, same length
+  const run = await runLoader({ runtimeSource: attackerSource });
+  assert.equal(run.started, null);
+  assert.match(run.failure, /full local runtime pin/i);
+  assert.equal(run.authority.stats.runtimeBytesServed, 0, 'remote code identity must be rejected before runtime fetch');
 }
 
-// 5. #8927 loader-level integration: a runtime body inflated beyond the exact
-//    manifest length is rejected before hashing/decryption and never boots.
+// 4. Even if a hostile manifest LIES with the genuine pinned content hash and
+// all other pinned release fields, different plaintext dies on the post-decrypt
+// exact full digest before Blob creation/import.
+{
+  const attackerSource = VALID_RUNTIME_SOURCE.replace('runtimeContentHash', 'runtimeContentHasx');
+  const attackerBytes = gzipSync(Buffer.from(attackerSource)).byteLength + 16;
+  const pinnedHash = releaseManifestHash({ byteLength: attackerBytes });
+  const run = await runLoader({
+    runtimeSource: attackerSource,
+    pinnedRuntimeBytes: attackerBytes,
+    pinnedReleaseManifestHash: pinnedHash,
+    forgeManifest: (manifest) => {
+      manifest.contentHash = FULL_PIN;
+      manifest.byteLength = attackerBytes;
+    },
+  });
+  assert.equal(run.started, null);
+  assert.match(run.failure, /integrity verification failed/i);
+}
+
+// 5. Non-canonical full content hashes fail before transport.
+{
+  const run = await runLoader({ forgeManifest: (manifest) => { manifest.contentHash = FULL_PIN.toUpperCase(); } });
+  assert.equal(run.started, null);
+  assert.match(run.failure, /full local runtime pin/i);
+  assert.equal(run.authority.stats.runtimeBytesServed, 0);
+}
+
+// 6. runtimeVersion is part of the pinned release identity.
+{
+  const run = await runLoader({ forgeManifest: (manifest) => { manifest.runtimeVersion = '2.0.1'; } });
+  assert.equal(run.started, null);
+  assert.match(run.failure, /version does not match the pinned runtime version/i);
+  assert.equal(run.authority.stats.runtimeBytesServed, 0);
+}
+
+// 7. compression is locally pinned, not remote policy.
+{
+  const run = await runLoader({ forgeManifest: (manifest) => { manifest.compression = 'br'; } });
+  assert.equal(run.started, null);
+  assert.match(run.failure, /compression format does not match the pinned release identity/i);
+  assert.equal(run.authority.stats.runtimeBytesServed, 0);
+}
+
+// 8. expected ciphertext length is part of the deterministic release identity.
+{
+  const run = await runLoader({ forgeManifest: (manifest) => { manifest.byteLength += 1; } });
+  assert.equal(run.started, null);
+  assert.match(run.failure, /byte length does not match the pinned release identity/i);
+  assert.equal(run.authority.stats.runtimeBytesServed, 0);
+}
+
+// 9. Runtime locator/build route cannot be rebound by the bootstrap authority.
+{
+  const run = await runLoader({ forgeBootstrap: (bootstrap) => { bootstrap.runtimeLocator = '/.runtime/runtime.attacker.bin'; } });
+  assert.equal(run.started, null);
+  assert.match(run.failure, /locator does not match the pinned release identity/i);
+  assert.equal(run.authority.stats.runtimeBytesServed, 0);
+}
+
+// 10. AAD must bind the exact pinned build + runtime version.
+{
+  const run = await runLoader({ forgeManifest: (manifest) => { manifest.aad = `hex-runtime:${PIN}:2.0.attacker`; } });
+  assert.equal(run.started, null);
+  assert.match(run.failure, /AAD is not canonical/i);
+  assert.equal(run.authority.stats.runtimeBytesServed, 0);
+}
+
+// 11. The release-manifest digest itself is a local immutable pin.
+{
+  const run = await runLoader({ pinnedReleaseManifestHash: '0'.repeat(64) });
+  assert.equal(run.started, null);
+  assert.match(run.failure, /release manifest does not match the installed loader pin/i);
+  assert.equal(run.authority.stats.runtimeBytesServed, 0);
+}
+
+// 12. #8927 integration remains: bytes beyond exact manifest length fail closed.
 {
   const run = await runLoader({ inflateBodyBytes: 4096 });
-  assert.equal(run.started, null, 'an oversized runtime body must never boot');
+  assert.equal(run.started, null);
   assert.match(run.failure, /length did not match the bootstrap manifest/i);
 }
 
-console.log('issue-8928 pinned build identity regression: ok');
+console.log('issue-8928 full pinned release identity regression: ok');
