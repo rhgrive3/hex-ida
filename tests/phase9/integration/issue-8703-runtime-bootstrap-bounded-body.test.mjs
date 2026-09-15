@@ -28,13 +28,13 @@ const WORKER_ORIGIN = 'https://ida.rhgrive.workers.dev';
 const ALLOWED_ORIGIN = 'https://chatgpt.com';
 const BOOTSTRAP_MAX_BYTES = 16 * 1024;
 
-function post(path, { body, headers = {} } = {}) {
+function post(path, { body, headers = {}, env = {} } = {}) {
   return worker.fetch(new Request(`${WORKER_ORIGIN}${path}`, {
     method: 'POST',
     body,
     headers: { origin: ALLOWED_ORIGIN, ...headers },
     duplex: 'half',
-  }), {});
+  }), env);
 }
 
 // A lazily-produced streaming body that records how many bytes the consumer
@@ -103,6 +103,47 @@ test('#8703 stage A: a well-formed in-budget request passes the body read (is ne
   assert.ok(bootLength(body) <= BOOTSTRAP_MAX_BYTES);
   const response = await post('/runtime/bootstrap', { body });
   assert.notEqual(response.status, 413, 'in-budget valid JSON must not be size-rejected');
+});
+
+test('#8703 stage A: an exactly 16 KiB shape-valid bootstrap reaches normal admission', async () => {
+  const input = {
+    nonce: 'nonce-0123456789abcdef',
+    requestId: 'request-0123456789',
+    sessionIdentity: 'session-identity-0123456789',
+    loaderVersion: '2.0.1',
+    buildId: 'phase9-test-build',
+    clientPublicKey: {
+      kty: 'EC', crv: 'P-256',
+      x: 'AAAAAAAAAAAAAAAAAAAA',
+      y: 'BBBBBBBBBBBBBBBBBBBB',
+    },
+    padding: '',
+  };
+  const unpadded = JSON.stringify(input);
+  const paddingBytes = BOOTSTRAP_MAX_BYTES - bootLength(unpadded);
+  assert.ok(paddingBytes > 0, 'fixture must leave room for deterministic ASCII padding');
+  input.padding = 'A'.repeat(paddingBytes);
+  const body = JSON.stringify(input);
+  assert.equal(bootLength(body), BOOTSTRAP_MAX_BYTES, 'fixture must hit the byte limit exactly');
+
+  let beginCalls = 0;
+  const replay = {
+    async beginIssue() {
+      beginCalls += 1;
+      return { ok: false, reason: 'bootstrap-bucket-rate-limit' };
+    },
+  };
+  const env = {
+    RUNTIME_BOOTSTRAP: {
+      idFromName(name) { assert.equal(name, 'runtime-v1'); return name; },
+      get() { return replay; },
+    },
+  };
+  const response = await post('/runtime/bootstrap', { body, env });
+  assert.equal(response.status, 429,
+    'exactly-at-limit input must pass the byte boundary and reach normal admission, never 413');
+  assert.deepEqual(await response.json(), { error: 'bootstrap-bucket-rate-limit' });
+  assert.equal(beginCalls, 1, 'shape-valid exact-limit input must reach the admission authority once');
 });
 
 function bootLength(text) { return new TextEncoder().encode(text).length; }
