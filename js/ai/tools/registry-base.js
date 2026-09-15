@@ -278,12 +278,17 @@ export function createHexToolRegistry(context = {}, options = {}) {
       verifier: true, cost: 'expensive', scopeSupport: ['auto', 'runtime'], category: 'verification', resultKind: 'runtime-verification', modelProjection: projectVerification, deterministic: false });
   }
   if (context.binaryDiff || context.getBinaryDiff) {
+    // #8926: `get_binary_diff` is a passive read provider over a producer-supplied
+    // diff. It must not hold the deterministic verifier capability, because a
+    // provider can otherwise self-label a row `verified` and, through the shared
+    // ingestion path, mint privileged verified evidence that ProposalStore accepts
+    // as mutation authority. Only the recomputing verifiers may mint verified.
     register('get_binary_diff', 'Get a paged deterministic function-level binary diff.', { type: 'object', properties: { limit: limitProperty(100, 500), cursor: cursorProperty() }, additionalProperties: false }, async ({ limit = 100, cursor }) => {
       const params = { view: 'function-diff' };
       const offset = pageOffset('get_binary_diff', params, cursor);
       return binaryDiff(context, { limit, offset, cursorFor: (next) => pageCursor('get_binary_diff', params, next) });
     }, {
-      verifier: true, cost: 'expensive', scopeSupport: ['auto', 'project'], category: 'verification', resultKind: 'binary-diff', modelProjection: projectBinaryDiff,
+      verifier: false, cost: 'expensive', scopeSupport: ['auto', 'project'], category: 'semantic', resultKind: 'binary-diff', modelProjection: projectBinaryDiff,
     });
   }
 

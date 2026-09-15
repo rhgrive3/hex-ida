@@ -106,4 +106,33 @@ async function tryWriteAt(emu, address, byte) {
   assert.deepEqual(ranges[0], { lo: 2, hi: 6 });
 }
 
+// (E) Existing range-gated authority on the same page composes with heap
+//     authority instead of making ensure() return too early. The union is exact:
+//     mapZero contributes [0,1), heap contributes [2,6), and neither the gap nor
+//     the first byte after the heap is accidentally widened.
+{
+  const emu = new Emulator();
+  const base = HEAP_BASE + 2n, size = 4n;
+  emu.mapZero(HEAP_BASE, 1);
+  emu.configureHeap({ base, size });
+
+  await emu.ensure(base);
+  assert.equal(emu.byteAt(base), 0, 'declared heap byte is admitted on an already-loaded gated page');
+  await emu.store(base, 1, 0xcd);
+  assert.equal(emu.byteAt(base), 0xcd, 'in-range write uses the existing backing');
+
+  const gap = await tryReadAt(emu, HEAP_BASE + 1n);
+  assert.equal(gap.ok, false, 'gap between existing synthetic range and heap stays unmapped');
+  assert.equal(gap.code, 'unmapped-memory');
+
+  const end = await tryReadAt(emu, base + size);
+  assert.equal(end.ok, false, 'first byte after heap stays unmapped');
+  assert.equal(end.code, 'unmapped-memory');
+
+  const ranges = [...emu.syntheticRanges.get(HEAP_BASE.toString())]
+    .sort((a, b) => a.lo - b.lo || a.hi - b.hi);
+  assert.deepEqual(ranges, [{ lo: 0, hi: 1 }, { lo: 2, hi: 6 }], 'authority is the exact union of existing and heap windows');
+  assert.equal(emu.syntheticRangeGated.has(HEAP_BASE.toString()), true, 'existing page gating is preserved');
+}
+
 console.log('issue-8755 emu-configure-heap-byte-range-backing-parity: PASS');

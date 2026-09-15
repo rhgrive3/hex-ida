@@ -30,26 +30,26 @@ for (const mnemonic of ['paciasp', 'pacibsp']) {
   assert.equal(compatibleCall.metadata.btiCheck, 'compatible-call-btype');
 
   const zero = decorateArm64BtiGuardedPageEffects(paciasp(mnemonic), base, {
-    btiGuardedPage:{ mappedPageGuarded:true }, incomingBtype:0,
+    featBti:true, btiGuardedPage:{ mappedPageGuarded:true }, incomingBtype:0,
   });
   assert.equal(faults(zero).length, 0, `${mnemonic}: BTYPE 00 skips compatibility check`);
   assert.equal(zero.metadata.btiCheck, 'skipped-zero-btype');
 
   const policyOff = decorateArm64BtiGuardedPageEffects(paciasp(mnemonic), base, {
-    btiGuardedPage:{ mappedPageGuarded:true }, incomingBtype:3, sctlrBt:false,
+    featBti:true, btiGuardedPage:{ mappedPageGuarded:true }, incomingBtype:3, sctlrBt:false,
   });
   assert.equal(faults(policyOff).length, 0, `${mnemonic}: SCTLR.BT disabled accepts BTYPE 11`);
   assert.equal(policyOff.metadata.btiCheck, 'compatible-sctlr-policy');
 
   const incompatible = decorateArm64BtiGuardedPageEffects(paciasp(mnemonic), base, {
-    btiGuardedPage:{ mappedPageGuarded:true }, incomingBtype:3, sctlrBt:true,
+    featBti:true, btiGuardedPage:{ mappedPageGuarded:true }, incomingBtype:3, sctlrBt:true,
   });
   assert.equal(faults(incompatible).length, 1, `${mnemonic}: SCTLR.BT enabled rejects BTYPE 11`);
   assert.equal(faults(incompatible)[0].condition.kind, 'bti-incompatible');
   assert.equal(incompatible.metadata.btiCheck, 'incompatible-branch-target');
 
   const malformed = decorateArm64BtiGuardedPageEffects(paciasp(mnemonic), base, {
-    btiGuardedPage:{ mappedPageGuarded:true, state:'not-a-state' },
+    featBti:true, btiGuardedPage:{ mappedPageGuarded:true, state:'not-a-state' },
   });
   assert.equal(malformed.completeness, 'partial', `${mnemonic}: malformed guard alias must fail closed`);
   assert.equal(malformed.metadata.btiCheck, 'conflicting-page-guard-state');

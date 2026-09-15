@@ -51,7 +51,7 @@ test("issue #6180 - unbound session matches only an unbound snapshot", () => {
   assert.equal(sessionMatchesSnapshot(unboundSession, { ...strongSnapshot, binaryId: null, binaryIdentity: null, legacyBinaryId: null }), true);
 });
 
-test("issue #6180 - verifiable legacy binding still upgrades to a strong identity", () => {
+test("issue #6180 - a filename:slice legacy binding no longer auto-upgrades to a strong identity (#8967)", () => {
   const legacySession = {
     id: "legacy-session",
     binaryId: null,
@@ -60,7 +60,12 @@ test("issue #6180 - verifiable legacy binding still upgrades to a strong identit
     investigationMemory: { anchor: null },
   };
 
-  assert.equal(sessionMatchesSnapshot(legacySession, strongSnapshot), true);
+  // #6180 originally allowed a `legacyId`/`filename:slice` session to be promoted
+  // to a strong current-binary snapshot identity by string equality. #8967 shows
+  // that this is not collision-resistant: two byte-different files share a
+  // filename:slice, so the weak binding must not silently migrate a foreign
+  // binary's investigation state or upgrade its own session identity. Fail closed.
+  assert.equal(sessionMatchesSnapshot(legacySession, strongSnapshot), false);
 });
 
 test("issue #6180 - strong identity match and mismatch behave as before", () => {
