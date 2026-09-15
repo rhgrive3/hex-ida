@@ -8,6 +8,7 @@ import {
   decodeBase64URL, encodeBase64URL, publicRuntimeManifest,
   signRuntimeSession, validateRuntimeBootstrap, verifyRuntimeSession,
 } from './js/userscript/runtime-security.js';
+import { isProviderSpendPath, verifyAITurnAuthorization } from './js/ai/turn-authorization.js';
 
 const QUOTA_STATE_KEY = 'quota';
 const USER_SCRIPT_TEMPLATE = '/userscript/hex.user.template.js';
@@ -70,6 +71,17 @@ export default {
     if (url.pathname === '/runtime/bootstrap') return runtimeBootstrap(request, env, url);
     if (url.pathname.startsWith('/_runtime/')) return protectedRuntime(request, env, url);
     if (isPrivatePath(url.pathname)) return new Response('Not Found', { status: 404, headers: securityHeaders() });
+    // #8750: provider-backed spend requires a server-signed capability grant
+    // BEFORE quota attribution or any provider request. CORS/Origin stays a
+    // browser-isolation control only. Runs ahead of the generic /api/ dispatch
+    // so the preflight + withApiCors transport below remains byte-unchanged.
+    if (isProviderSpendPath(url.pathname) && request.method !== 'OPTIONS') {
+      const authority = await verifyAITurnAuthorization(request, {
+        signingKeyBytes: decodeBase64URL(RUNTIME_BUILD.signingKey),
+        buildId: RUNTIME_BUILD.manifest.buildId,
+      });
+      if (!authority.ok) return json({ error: authority.error, reason: authority.reason }, authority.status, request.headers.get('origin'));
+    }
     if (url.pathname.startsWith('/api/')) {
       const origin = request.headers.get('origin');
       if (request.method === 'OPTIONS') return apiPreflight(origin);
