@@ -41,17 +41,20 @@ function fieldBundle(descriptor, opcode, options = {}) {
   return liftJvmMethod(0, image).bundles[0];
 }
 
+// #8799 widened the descriptor contract additively: field *storage* width is now
+// carried beside the operand-stack value width. The value-width facts below are
+// unchanged from #3929.
 assert.deepEqual(classifyJvmFieldDescriptor('J'), {
-  descriptor: 'J', bits: 64, category: 2, slots: 2, valueKind: 'long',
+  descriptor: 'J', bits: 64, storageBits: 64, storageByteWidth: 8, category: 2, slots: 2, valueKind: 'long',
 });
 assert.deepEqual(classifyJvmFieldDescriptor('D'), {
-  descriptor: 'D', bits: 64, category: 2, slots: 2, valueKind: 'double',
+  descriptor: 'D', bits: 64, storageBits: 64, storageByteWidth: 8, category: 2, slots: 2, valueKind: 'double',
 });
 assert.deepEqual(classifyJvmFieldDescriptor('Ljava/lang/String;'), {
-  descriptor: 'Ljava/lang/String;', bits: 64, category: 1, slots: 1, valueKind: 'reference',
+  descriptor: 'Ljava/lang/String;', bits: 64, storageBits: 64, storageByteWidth: 8, category: 1, slots: 1, valueKind: 'reference',
 });
 assert.deepEqual(classifyJvmFieldDescriptor('[[I'), {
-  descriptor: '[[I', bits: 64, category: 1, slots: 1, valueKind: 'reference',
+  descriptor: '[[I', bits: 64, storageBits: 64, storageByteWidth: 8, category: 1, slots: 1, valueKind: 'reference',
 });
 for (const invalid of [
   'V', 'Lfoo.bar;', 'L/foo;', 'Lfoo//bar;', '[V', '[[', `${'['.repeat(256)}I`,
@@ -146,3 +149,12 @@ assert.equal(volatileBundle.memoryEffects[0].isVolatile, true);
 assert.equal(volatileBundle.memoryEffects[0].ordering, 'synchronizes-with');
 
 console.log('jvm field descriptor semantics #3929: PASS');
+
+// #8799: the same storage facts must reach the canonical field effect, and the
+// value/category/stack authority above must stay exactly as #3929 defined it.
+for (const [descriptor, storageBytes] of [['J', 8], ['D', 8], ['F', 4], ['I', 4], ['B', 1], ['Z', 1], ['C', 2], ['S', 2], ['Ljava/lang/String;', 8]]) {
+  const bundle = fieldBundle(descriptor, 0xb2);
+  assert.equal(bundle.memoryEffects[0].byteWidth, storageBytes, `${descriptor}: storage width published`);
+  assert.equal(bundle.memoryEffects[0].valueBits === 64, descriptor === 'J' || descriptor === 'D' || descriptor.startsWith('L'),
+    `${descriptor}: value width stays the #3929 fact`);
+}

@@ -36,8 +36,22 @@ function fixtureApp(overrides = {}) {
 function serviceFor(app) {
   const service = new InvestigationService(app);
   service.collectStrings = async () => Object.assign([], { complete:true });
-  service.buildProgram = async () => ({ gen:1, graphCompleteness:{ complete:true } });
-  service.collectShapes = async () => Object.assign(new Map(), { complete:true });
+  // #8809 sync: #5284's canonical program binding requires the built
+  // program to carry the published symbols identity; an unbound program is
+  // rejected as ANALYSIS_SNAPSHOT_STALE before the metadata assertions run.
+  // #8809 sync: the #5284 binding rejects unpublished artifacts, so the
+  // stubs must publish program/shapes onto the app like the real producers.
+  service.buildProgram = async () => {
+    const program = { gen:1, symbols:app.symbols, graphCompleteness:{ complete:true } };
+    app.program = program;
+    return program;
+  };
+  service.collectShapes = async () => {
+    if (app.shapes) return app.shapes;
+    const shapes = Object.assign(new Map(), { complete:true });
+    app.shapes = shapes;
+    return shapes;
+  };
   return service;
 }
 
@@ -111,7 +125,12 @@ test('#5279 a goal that needs no metadata keeps producer failures out of the den
   const service = serviceFor(app);
   const context = await service.prepareGoal(plainGoal);
 
-  assert.equal(context.metadata.complete, false, 'the producer failure is still recorded for observability');
+  // #8809 sync: for a goal without metadata demand the current contract
+  // collects no producer evidence at all (the producers must not run), so
+  // there is no recorded producer failure to observe; the guarantee under
+  // test is that completeness stays complete and no unused producer work
+  // is requested.
+  assert.equal(context.metadata.complete, undefined, 'metadata is not collected for a goal that does not demand it');
   assert.equal(context.completeness.complete, true,
     `a goal without metadata demand must not inherit metadata reasons, got ${JSON.stringify(context.completeness.reasons)}`);
   assert.equal(objcRuns, 0, 'objectionable unused producer work must stay unrequested');
@@ -142,8 +161,22 @@ test('#5279 metadata failure propagates to typed candidate completeness', async 
   app.stringIndex = Object.assign([], { complete:true, __lookup:() => null });
   const service = new InvestigationService(app);
   service.collectStrings = async () => Object.assign([], { complete:true });
-  service.buildProgram = async () => ({ gen:1, graphCompleteness:{ complete:true } });
-  service.collectShapes = async () => Object.assign(new Map([['shape', { offset:0 }]]), { complete:true });
+  // #8809 sync: #5284's canonical program binding requires the built
+  // program to carry the published symbols identity; an unbound program is
+  // rejected as ANALYSIS_SNAPSHOT_STALE before the metadata assertions run.
+  // #8809 sync: the #5284 binding rejects unpublished artifacts, so the
+  // stubs must publish program/shapes onto the app like the real producers.
+  service.buildProgram = async () => {
+    const program = { gen:1, symbols:app.symbols, graphCompleteness:{ complete:true } };
+    app.program = program;
+    return program;
+  };
+  service.collectShapes = async () => {
+    if (app.shapes) return app.shapes;
+    const shapes = Object.assign(new Map([['shape', { offset:0 }]]), { complete:true });
+    app.shapes = shapes;
+    return shapes;
+  };
   const report = await service.investigate(metadataGoal);
 
   assert.equal(report.completeness.complete, false);
