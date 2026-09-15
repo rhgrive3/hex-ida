@@ -197,7 +197,31 @@ function filterUnresolvedConditionalFallthrough(fragment, bundle, controlTargets
     const targets = node.targets.slice(0, -1);
     if (!targets.length) return node;
     changed = true;
-    return { ...node, targets };
+    // A missing fallthrough must not leave a 1-target conditional-branch
+    // (#4585 rejects that cardinality). It must not be laundered into an
+    // ordinary `branch` either: `semanticEdgeKind()` would then publish the
+    // taken target as exact, unconditional control, erasing the unresolved
+    // condition from CFG edge authority. Publish a partial
+    // `unknown-control-effect` projection that keeps the known taken target,
+    // the condition, and the missing-fallthrough evidence, so downstream
+    // reachability/dominance observe unresolved control rather than
+    // fabricated certainty (#8922).
+    return {
+      ...node,
+      kind: 'unknown-control-effect',
+      inputs: [],
+      targets,
+      completeness: 'partial',
+      unknown: {
+        reason: 'semantic-cfg-missing-fallthrough',
+        categories: ['control'],
+        knownParts: {
+          takenTargets: targets,
+          conditionInputs: Array.isArray(node.inputs) ? node.inputs : [],
+          expectedFallthroughAddress: fallthroughAddress == null ? null : String(fallthroughAddress),
+        },
+      },
+    };
   });
   return {
     ...fragment,
@@ -735,7 +759,14 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     for (const nodeId of block.nodeIds) {
       const node = nodeById.get(nodeId);
       if (!node?.targets?.length) continue;
-      node.targets.forEach((to, index) => addSuccessor(block.id, { to, kind: semanticEdgeKind(node, index) }));
+      for (let index = 0; index < node.targets.length; index += 1) {
+        const to = node.targets[index];
+        // A conditional branch whose taken and fallthrough arms resolve to the
+        // same block keeps its conditional identity in the IR node; the CFG
+        // successor set must not list that block twice.
+        if (node.kind === 'conditional-branch' && index > 0 && node.targets[index - 1] === to) continue;
+        addSuccessor(block.id, { to, kind: semanticEdgeKind(node, index) });
+      }
     }
   }
   const cfg = createSemanticCfg({

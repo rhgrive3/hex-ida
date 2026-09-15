@@ -23,28 +23,47 @@ function validInternalClassName(name) {
   return name.split('/').every(validUnqualifiedName);
 }
 
+// Storage width is a separate axis from operand-stack value width. JVMS §4.3.1
+// plus §2.11.1/§6.5 keep `B`/`Z` in one byte and `C`/`S` in two while every
+// stack value they take part in is a 32-bit `int`, and `J`/`D` occupy eight
+// bytes as one category-2 stack pair. Publishing only the value width let the
+// shared bridge default every field access to four bytes (#8799).
 const PRIMITIVE_FIELD_DESCRIPTORS = Object.freeze(Object.assign(Object.create(null), {
-  B: { bits: 32, category: 1, valueKind: 'int' },
-  C: { bits: 32, category: 1, valueKind: 'int' },
-  F: { bits: 32, category: 1, valueKind: 'float' },
-  I: { bits: 32, category: 1, valueKind: 'int' },
-  J: { bits: 64, category: 2, valueKind: 'long' },
-  S: { bits: 32, category: 1, valueKind: 'int' },
-  Z: { bits: 32, category: 1, valueKind: 'int' },
-  D: { bits: 64, category: 2, valueKind: 'double' },
+  B: { bits: 32, storageBits: 8, category: 1, valueKind: 'int' },
+  C: { bits: 32, storageBits: 16, category: 1, valueKind: 'int' },
+  F: { bits: 32, storageBits: 32, category: 1, valueKind: 'float' },
+  I: { bits: 32, storageBits: 32, category: 1, valueKind: 'int' },
+  J: { bits: 64, storageBits: 64, category: 2, valueKind: 'long' },
+  S: { bits: 32, storageBits: 16, category: 1, valueKind: 'int' },
+  Z: { bits: 32, storageBits: 8, category: 1, valueKind: 'int' },
+  D: { bits: 64, storageBits: 64, category: 2, valueKind: 'double' },
 }));
+
+// The project's JVM reference value model is 64-bit (`bits` below, and the
+// shared bridge's canonical field-address entry carries the same width), so a
+// reference field stores exactly that width; no separate HotSpot-style
+// compressed-oop authority is invented here (#8799).
+const JVM_REFERENCE_STORAGE_BITS = 64;
 
 export function classifyJvmFieldDescriptor(descriptor) {
   if (typeof descriptor !== 'string' || descriptor.length === 0) return null;
 
   const primitive = PRIMITIVE_FIELD_DESCRIPTORS[descriptor];
-  if (primitive) return Object.freeze({ descriptor, slots: primitive.category, ...primitive });
+  if (primitive) {
+    return Object.freeze({
+      descriptor, slots: primitive.category, ...primitive,
+      storageByteWidth: primitive.storageBits / 8,
+    });
+  }
 
   if (descriptor[0] === 'L') {
     if (descriptor.at(-1) !== ';') return null;
     const name = descriptor.slice(1, -1);
     if (!validInternalClassName(name)) return null;
-    return Object.freeze({ descriptor, bits: 64, category: 1, slots: 1, valueKind: 'reference' });
+    return Object.freeze({
+      descriptor, bits: 64, storageBits: JVM_REFERENCE_STORAGE_BITS, category: 1, slots: 1,
+      valueKind: 'reference', storageByteWidth: JVM_REFERENCE_STORAGE_BITS / 8,
+    });
   }
 
   if (descriptor[0] === '[') {
@@ -58,7 +77,10 @@ export function classifyJvmFieldDescriptor(descriptor) {
     } else if (!['B', 'C', 'D', 'F', 'I', 'J', 'S', 'Z'].includes(component)) {
       return null;
     }
-    return Object.freeze({ descriptor, bits: 64, category: 1, slots: 1, valueKind: 'reference' });
+    return Object.freeze({
+      descriptor, bits: 64, storageBits: JVM_REFERENCE_STORAGE_BITS, category: 1, slots: 1,
+      valueKind: 'reference', storageByteWidth: JVM_REFERENCE_STORAGE_BITS / 8,
+    });
   }
 
   return null;
@@ -115,6 +137,8 @@ export function resolveJvmFieldRef(jvmClass, cpIndex, { resolveDeclaredFlags = f
     name,
     descriptor,
     bits: value.bits,
+    storageBits: value.storageBits,
+    storageByteWidth: value.storageByteWidth,
     category: value.category,
     slots: value.slots,
     valueKind: value.valueKind,
