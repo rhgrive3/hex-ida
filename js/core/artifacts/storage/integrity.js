@@ -6,7 +6,7 @@ import {
   encodeArtifactPayload,
   validateArtifactRecord,
 } from '../contracts.js';
-import { stableDigest } from '../../identity/index.js';
+import { stableDigest, createArtifactId } from '../../identity/index.js';
 
 export const ARTIFACT_STORAGE_ENVELOPE_SCHEMA_VERSION = 1;
 
@@ -72,6 +72,10 @@ export function validateArtifactRecordShape(record) {
   nullableString(record.runtimeSnapshotId, 'artifact-record-malformed');
   requiredString(record.canonicalConfigHash, 'artifact-record-required-field-missing');
   requiredString(record.payloadChecksum, 'artifact-record-required-field-missing');
+  // #8808: the artifact-key `optionsHash` is durable identity material — the
+  // envelope's self-consistent checksum alone is not an identity proof, so a
+  // row without optionsHash cannot be authenticated from its own bytes.
+  requiredString(record.optionsHash, 'artifact-record-required-field-missing');
   if (!Number.isSafeInteger(record.payloadSize) || record.payloadSize < 0) throw new ArtifactCorruptionError('artifact-record-malformed');
   if (!isObject(record.versions)) throw new ArtifactCorruptionError('artifact-record-malformed');
   for (const key of ['loader', 'architectureSemantic', 'abiSemantic', 'semanticSchema', 'platform', 'runtime', 'plugin', 'provider']) {
@@ -96,6 +100,42 @@ export function canonicalStoredRecord(record) {
   } catch (error) {
     if (error instanceof ArtifactCorruptionError) throw error;
     throw new ArtifactCorruptionError('artifact-record-malformed', 'Artifact record cannot be canonically serialized', { cause:String(error) });
+  }
+}
+
+function assertArtifactIdRecomputable(record) {
+  // #8808: A stored row must recompute its own artifactId from durable
+  // identity material (binary/slice/producer/entity/versions/canonical
+  // config hash/upstream list plus the persisted `optionsHash`). The
+  // envelope's self-consistent checksum is only a corruption check, not an
+  // identity proof: an attacker who can mutate a record can also recompute
+  // the checksum from the mutated bytes. Recomputing the artifactId from the
+  // record's own material is the durable identity check; a forged row that
+  // changes only `record.artifactId` while keeping the rest of a foreign
+  // record's fields cannot survive this recompute because `optionsHash` is
+  // derived from the config/keyExtras/dependencyScope of the record it
+  // originally minted. A row missing `optionsHash` (legacy / pre-hardening)
+  // also fails: it has no durable identity material at all.
+  let recomputed;
+  try {
+    recomputed = createArtifactId({
+      binaryId:record.binaryId,
+      sliceId:record.sliceId,
+      loaderVersion:record.versions?.loader,
+      architectureSemanticVersion:record.versions?.architectureSemantic,
+      abiSemanticVersion:record.versions?.abiSemantic,
+      semanticSchemaVersion:record.versions?.semanticSchema,
+      entityId:record.entityId,
+      passId:record.producerId,
+      passVersion:record.producerVersion,
+      optionsHash:record.optionsHash,
+      inputArtifactIds:record.upstreamArtifactIds,
+    });
+  } catch {
+    throw new ArtifactCorruptionError('artifact-record-identity-mismatch', 'Artifact record identity material cannot recompute its artifactId');
+  }
+  if (recomputed !== record.artifactId) {
+    throw new ArtifactCorruptionError('artifact-record-identity-mismatch', 'Artifact record artifactId does not match its durable identity material (#8808)');
   }
 }
 
@@ -145,6 +185,12 @@ export function validateUpstreamRecordIdentity(record, { expectedArtifactId, pro
     }
     return true;
   }
+  // #8808: A row this store did not publish in this session must still carry a
+  // durable identity proof. The self-consistent storage envelope is only a
+  // byte-corruption check — the record's `optionsHash` and its own artifact
+  // key material are what prove the artifactId. `canonicalStoredRecord()`
+  // already recomputes the artifactId before this hook is reached, so a
+  // forged row has been rejected; here we simply return true.
   return true;
 }
 
@@ -201,6 +247,13 @@ export function validateStoredArtifact(raw, { artifactId, descriptor = null, all
     semanticSchemaVersion:descriptor?.versions?.semanticSchema,
     allowIncomplete,
   });
+  // #8808: after the caller-supplied artifactId/producer/semantic checks have
+  // run, the record must also recompute its own artifactId from durable
+  // identity material. The self-consistent envelope checksum cannot stand in
+  // for that proof (a party able to mutate a row can also recompute the
+  // checksum), and a swapped row is exactly the #5770 identity gap re-opened
+  // once a fresh store reads back a persisted envelope.
+  assertArtifactIdRecomputable(record);
   validateDescriptorRecord(record, descriptor);
   const envelope = validateStorageEnvelope(raw, record);
   const payload = decodeCanonicalArtifactPayload(payloadBytes);
