@@ -20,10 +20,6 @@ function stringArray(value, name) {
   const normalized = [];
   for (const item of value) {
     if (typeof item !== 'string') throw new DebugAdapterError('runtime-invalid-array', `${name} must contain only non-empty strings`);
-    // Same canonical contract as the scalar ids and the core evidence
-    // stringArray: trim, require non-empty, dedupe/sort canonicalized values.
-    // Keeping raw strings would alias padded duplicates and make parent
-    // references unresolvable against their canonical record ids (#5966).
     const text = item.trim();
     if (!text) throw new DebugAdapterError('runtime-invalid-array', `${name} must contain only non-empty strings`);
     normalized.push(text);
@@ -111,8 +107,6 @@ function canonicalizeInterventionValue(value, seen = new WeakSet()) {
 }
 
 function completeness(value, fallback = 'partial') {
-  // Completeness is canonical evidence authority. A structured value must not
-  // launder into a ranking through String() coercion (String(['complete']).
   const normalized = value ?? fallback;
   if (typeof normalized !== 'string') {
     throw new DebugAdapterError('runtime-invalid-completeness', `invalid evidence completeness: ${String(normalized)}`);
@@ -122,8 +116,6 @@ function completeness(value, fallback = 'partial') {
 }
 
 function canonicalConfidence(value) {
-  // Confidence is canonical evidence strength. Only a primitive finite number
-  // may define it; numeric strings, Arrays, booleans fail closed.
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     throw new DebugAdapterError('runtime-invalid-confidence', 'evidence confidence must be a finite number');
   }
@@ -148,9 +140,23 @@ export function createInterventionRecord(input = {}) {
   const kind = required(input.kind, 'runtime-intervention-kind-required', 'intervention kind is required');
   const sequence = optionalSequence(input.sequence);
   const parentInterventionIds = stringArray(input.parentInterventionIds, 'parentInterventionIds');
-  const target = ownedClone(input.target ?? null);
-  const requestedChange = ownedClone(input.requestedChange ?? null);
-  const acknowledgedResult = ownedClone(input.acknowledgedResult ?? null);
+
+  const sourceTarget = ownedClone(input.target ?? null);
+  const sourceRequestedChange = ownedClone(input.requestedChange ?? null);
+  const sourceAcknowledgedResult = ownedClone(input.acknowledgedResult ?? null);
+  const sourceIdentity = {
+    runtimeSessionId,
+    providerId,
+    kind,
+    target: sourceTarget,
+    requestedChange: sourceRequestedChange,
+    sequence,
+    parentInterventionIds,
+  };
+
+  const target = canonicalizeInterventionValue(sourceTarget);
+  const requestedChange = canonicalizeInterventionValue(sourceRequestedChange);
+  const acknowledgedResult = canonicalizeInterventionValue(sourceAcknowledgedResult);
   const identity = {
     runtimeSessionId,
     providerId,
@@ -160,31 +166,35 @@ export function createInterventionRecord(input = {}) {
     sequence,
     parentInterventionIds,
   };
-  // The auto-derived id must distinguish type-distinct provenance. `1n` and
-  // `'1'` (or a `Uint8Array` and a plain numeric `Array`) share a
-  // `stableStringify`/`stableDigest` representation, so `intervention_${stableDigest(identity)}`
-  // aliased them to the same id and the ledger silently treated the second
-  // mutation as a replay (#8794). Decorate the digest input with the same
-  // `lossyTypeWitness` the ai/apple scoped-identity modules already use so the
-  // type-only difference participates in identity. Caller-supplied ids stay
-  // authoritative and unchanged.
+
+  // #8794 requires the type domain to participate in identity, while #8868
+  // requires the generated id to commit to the exact canonical snapshot that
+  // is actually stored. Persist the source type witness alongside that
+  // canonical snapshot and hash both. Full persisted-record replay can then
+  // reproduce the same commitment without reintroducing mutable binary views.
+  const computedTypeWitness = lossyTypeWitness(sourceIdentity);
+  const identityTypeWitness = input.interventionId != null && input.identityTypeWitness != null
+    ? ownedClone(input.identityTypeWitness)
+    : computedTypeWitness;
+  // Validate that a caller-supplied persisted witness is serializable before it
+  // becomes part of an authoritative record/collision comparison.
+  stableStringify(identityTypeWitness);
   const interventionId = input.interventionId == null
-    ? `intervention_${stableDigest({ identity, typed: lossyTypeWitness(identity) })}`
+    ? `intervention_${stableDigest({ identity, typed: identityTypeWitness })}`
     : required(input.interventionId, 'runtime-intervention-id-invalid', 'intervention id must be a non-empty string');
-  const storedTarget = canonicalizeInterventionValue(target);
-  const storedRequestedChange = canonicalizeInterventionValue(requestedChange);
-  const storedAcknowledgedResult = canonicalizeInterventionValue(acknowledgedResult);
+
   return deepFreeze({
     interventionId,
     runtimeSessionId,
     providerId,
     kind,
-    target: storedTarget,
-    requestedChange: storedRequestedChange,
-    acknowledgedResult: storedAcknowledgedResult,
+    target,
+    requestedChange,
+    acknowledgedResult,
     sequence,
     parentInterventionIds,
     evidenceIds: stringArray(input.evidenceIds, 'evidenceIds'),
+    identityTypeWitness,
   });
 }
 
@@ -198,12 +208,6 @@ export class InterventionLedger {
     return record;
   }
 
-  // Every executed intervention occurrence gets a ledger-local monotonic
-  // sequence (#5327): repeated identical target/change operations are
-  // distinct executions, so their auto-derived intervention identity must
-  // differ — otherwise add() silently dedups the later execution and its
-  // acknowledged backend result is lost. Caller-provided sequences stay
-  // authoritative; a sequence is allocated only when the draft omits it.
   nextSequence() {
     const sequence = this.#sequence;
     this.#sequence += 1;
@@ -214,11 +218,6 @@ export class InterventionLedger {
     const record = createInterventionRecord(input);
     const existing = this.#records.get(record.interventionId);
     if (existing) {
-      // Same id is idempotent only for the same canonical record content
-      // (#5327, superseding the #3579 identity-only idempotency): silently
-      // returning the existing record for a different execution (a different
-      // acknowledged backend result) loses the later occurrence and its
-      // provenance. Identical re-ingestion (persisted replay) stays allowed.
       if (stableStringify([existing, lossyTypeWitness(existing)]) !== stableStringify([record, lossyTypeWitness(record)])) {
         throw new DebugAdapterError(
           'runtime-intervention-id-collision',
@@ -386,8 +385,6 @@ export class RuntimeEvidenceBridge {
   }
 
   linkClaim(claimId, evidenceId, relation, resolution = null) {
-    // Relation edges decide EvidenceGraph semantics; a structured relation must
-    // not coerce into a canonical edge type via String().
     if (typeof relation !== 'string') throw new DebugAdapterError('runtime-invalid-evidence-relation', `invalid runtime evidence relation: ${String(relation)}`);
     const type = relation;
     if (!RELATIONS.includes(type)) throw new DebugAdapterError('runtime-invalid-evidence-relation', `invalid runtime evidence relation: ${type}`);
