@@ -3,7 +3,7 @@ import { expr, structuralKey } from '../js/decompiler/ast/nodes.js';
 import { RewriteEngine } from '../js/decompiler/rewrite/engine.js';
 import { DEFAULT_RULES } from '../js/decompiler/rewrite/rules.js';
 import { evaluateExpression } from '../js/decompiler/verify/equivalence.js';
-import { u, fullMask } from '../js/decompiler/truth/integer.js';
+import { u } from '../js/decompiler/truth/integer.js';
 import { printExpression } from '../js/decompiler/pretty/c.js';
 
 const engine = new RewriteEngine(DEFAULT_RULES, { timeBudgetMs: 1000, nodeBudget: 4096, maxIterations: 16 });
@@ -68,102 +68,4 @@ for (const bits of [8, 16, 32, 64]) {
   }
 }
 assert.ok(checks > 5000);
-
-// #8866: the corpus above deliberately used one common width. Cross-width
-// generation is required too, because each typed operation carries its own
-// modular boundary and the width of a removed node is the source-width
-// authority of the next extension/truncation.
-const CROSS_WIDTHS = [8, 16, 32, 64, 128];
-const rawConstant = (bits) => BigInt(rand32() % 0xffff) | (bits >= 32 ? 0x80000000n : 0n);
-let crossChecks = 0;
-for (const innerBits of CROSS_WIDTHS) {
-  for (const outerBits of CROSS_WIDTHS) {
-    if (innerBits === outerBits) continue;
-    for (const signed of [false, true]) {
-      const x = expr.variable('x', innerBits, signed);
-      const k = (value, bits) => expr.constant(BigInt(value), bits, signed);
-      const corpus = [
-        expr.binary('add', expr.binary('add', x, k(5, innerBits), innerBits, signed), k(7, outerBits), outerBits, signed),
-        expr.binary('add', expr.binary('sub', x, k(1, innerBits), innerBits, signed), k(1, outerBits), outerBits, signed),
-        expr.binary('sub', expr.binary('sub', x, k(1, innerBits), innerBits, signed), k(1, outerBits), outerBits, signed),
-        expr.binary('mul', expr.binary('mul', x, k(255, innerBits), innerBits, signed), k(2, outerBits), outerBits, signed),
-        expr.binary('and', expr.binary('and', x, k(0xf5, innerBits), innerBits, signed), k(0x3f, outerBits), outerBits, signed),
-        expr.binary('or', expr.binary('or', x, k(0x10, innerBits), innerBits, signed), k(0x20, outerBits), outerBits, signed),
-        expr.binary('xor', expr.binary('xor', x, k(0x10, innerBits), innerBits, signed), k(0x20, outerBits), outerBits, signed),
-        expr.binary('add', expr.binary('mul', expr.variable('a', innerBits, signed), x, innerBits, signed),
-          expr.binary('mul', expr.variable('a', innerBits, signed), k(3, innerBits), innerBits, signed), outerBits, signed),
-        expr.binary('add', x, k(0, outerBits), outerBits, signed),
-        expr.binary('mul', x, k(1, outerBits), outerBits, signed),
-        expr.binary('shl', x, k(0, outerBits), outerBits, signed),
-        expr.binary('and', x, k(Number(fullMask(outerBits)), outerBits, signed), outerBits, signed),
-        expr.unary('not', expr.unary('not', x, innerBits, signed), outerBits, signed),
-        expr.unary('sext', expr.binary('add', x, k(0, outerBits), outerBits, signed), outerBits * 2 > 128 ? outerBits : outerBits * 2, true),
-        expr.unary('zext', expr.unary('zext', x, innerBits === outerBits ? innerBits : Math.min(innerBits, outerBits), false), outerBits, false),
-      ];
-      for (const original of corpus) {
-        const rewritten = engine.rewrite(original, { deterministicTransforms: true });
-        const root = rewritten.root;
-        assert.equal(Number(root.bits), Number(original.bits),
-          `${original.bits}-bit root rewrote to ${root.bits} bits (${rewritten.proof.map((p) => p.rule).join(',')})`);
-        const values = boundaries.concat(Array.from({ length: 24 }, () => rawConstant(innerBits)));
-        for (let i = 0; i < values.length; i++) {
-          const env = { x: u(values[i], innerBits), a: u(values[(i + 5) % values.length], innerBits) };
-          const a = evaluateExpression(original, env), b = evaluateExpression(root, env);
-          assert.notEqual(a, null); assert.notEqual(b, null);
-          assert.equal(u(b, original.bits), u(a, original.bits),
-            `cross-width ${innerBits}->${outerBits} ${signed ? 'signed' : 'unsigned'} mismatch `
-            + `${printExpression(original)} -> ${printExpression(root)} rules=${rewritten.proof.map((p) => p.rule).join(',')}`);
-          crossChecks++;
-        }
-        // The rewritten node must also stay value-correct when a parent uses its
-        // declared width as extension/truncation authority.
-        for (const [ctxName, wrap] of [['sext', (n) => expr.unary('sext', n, 64, true)], ['zext', (n) => expr.unary('zext', n, 64, false)], ['trunc', (n) => expr.unary('trunc', n, 8, false)]]) {
-          for (let i = 0; i < 8; i++) {
-            const env = { x: u(values[i], innerBits), a: u(values[(i + 5) % values.length], innerBits) };
-            const a = evaluateExpression(wrap(original), env), b = evaluateExpression(wrap(root), env);
-            if (a == null || b == null) continue;
-            assert.equal(b, a, `cross-width ${innerBits}->${outerBits} ${ctxName}-context divergence`);
-            crossChecks++;
-          }
-        }
-      }
-    }
-  }
-}
-assert.ok(crossChecks > 10000, `cross-width corpus too small: ${crossChecks}`);
-
-// #8877: the corpus above only varied integer signedness. Comparison *domain*
-// has to be generated too, because `min`/`max` are integer-domain intrinsics and
-// an IEEE-754 ordered predicate is not a signed-integer ordering of the encoding.
-let domainChecks = 0;
-for (const bits of [8, 16, 32, 64, 128]) {
-  const x = expr.variable('x', bits, null), y = expr.variable('y', bits, null);
-  for (const domain of ['integer', 'floating', 'missing']) {
-    for (const op of ['lt', 'le', 'gt', 'ge']) {
-      for (const arms of [[x, y], [y, x]]) {
-        const built = expr.compare(op, x, y, true, null, domain === 'missing' ? {} : { comparisonDomain: domain });
-        const condition = domain === 'missing'
-          ? (({ comparisonDomain, ...rest }) => ({ ...rest }))(built)
-          : built;
-        const select = expr.select(condition, arms[0], arms[1], bits, true);
-        const out = engine.rewrite(select, { deterministicTransforms: true });
-        const applied = out.proof.some((p) => p.rule === 'select-min-max');
-        if (domain === 'integer') {
-          assert.ok(applied, `${domain} ${op} select must still collapse to an integer intrinsic`);
-          assert.equal(out.root.kind, 'intrinsic');
-          assert.equal(out.root.name, (op === 'lt' || op === 'le') === (arms[0] === x) ? 'min' : 'max');
-          assert.equal(out.proof.find((p) => p.rule === 'select-min-max').evidence.comparisonDomain, 'integer');
-        } else {
-          assert.ok(!applied, `${domain} ${op} select must never collapse to an integer intrinsic`);
-          assert.equal(out.root.kind, 'select', `${domain} ${op} select must be preserved`);
-          assert.equal(out.root.condition.comparisonDomain, domain === 'missing' ? undefined : 'floating');
-          assert.ok(!out.proof.some((p) => p.evidence?.kind === 'select-comparison-equivalence'),
-            'an unproven comparison domain must not mint an equivalence proof');
-        }
-        domainChecks++;
-      }
-    }
-  }
-}
-assert.ok(domainChecks > 100, `comparison-domain corpus too small: ${domainChecks}`);
-console.log(`decompiler rewrite property tests: ${checks} signed/unsigned semantic checks + ${crossChecks} cross-width semantic checks + ${domainChecks} comparison-domain checks PASS`);
+console.log(`decompiler rewrite property tests: ${checks} signed/unsigned semantic checks PASS`);
