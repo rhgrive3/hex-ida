@@ -133,7 +133,8 @@ const ALLOC_EXEC = 0x3n;
 
 // ET_REL synthetic-section mapping is a separate contract: no program headers,
 // section addresses assigned relative to the file — no PT_LOAD consistency
-// requirement, no regression.
+// requirement, no regression. Keep the mandatory SHT_NULL sentinel at index 0
+// and place the real PROGBITS section at index 1 (#8741).
 {
   const size = 0x2000;
   const buf = new Uint8Array(size);
@@ -145,21 +146,22 @@ const ALLOC_EXEC = 0x3n;
   w16(0x10, 1); w16(0x12, 0x3e); w32(0x14, 1);
   w64(0x20, 0x40n); w64(0x28, 0x300n);
   w16(0x34, 0x40); w16(0x36, 0x38); w16(0x38, 0);
-  w16(0x3a, 0x40); w16(0x3c, 1); w16(0x3e, 0);
-  // one SHF_ALLOC PROGBITS section at synthetic addr 0
-  w32(0x300 + 0x00, 0); w32(0x300 + 0x04, 1);
-  w64(0x300 + 0x08, 0x3n); w64(0x300 + 0x10, 0n);
-  w64(0x300 + 0x18, 0x1000n); w64(0x300 + 0x20, 0x20n);
+  w16(0x3a, 0x40); w16(0x3c, 2); w16(0x3e, 0);
+  // Section header 0 remains the all-zero SHT_NULL sentinel. Section #1 is
+  // the real SHF_ALLOC PROGBITS section that must receive synthetic authority.
+  w32(0x340 + 0x00, 0); w32(0x340 + 0x04, 1);
+  w64(0x340 + 0x08, 0x3n); w64(0x340 + 0x10, 0n);
+  w64(0x340 + 0x18, 0x1000n); w64(0x340 + 0x20, 0x20n);
   const image = parseELF(buf);
-  assert.equal(image.sections.length, 1);
-  assert.equal(image.sections[0].source, 'ET_REL-synthetic-section');
+  assert.equal(image.sections.length, 2);
+  assert.equal(image.sections[0].source, 'unmapped-section', 'SHT_NULL section 0 is metadata-only');
+  assert.equal(image.sections[1].source, 'ET_REL-synthetic-section', 'real ET_REL section keeps synthetic mapping authority');
 }
 
 // SHT_NOBITS zero-fill authority (issue regression #6): a NOBITS section may
 // only claim zero-fill where the loader actually zero-fills — strictly inside
-// a single PT_LOAD's p_filesz..p_memsz tail. A NOBITS section overlapping
 // PT_LOAD file-backed bytes would shadow the loader's file bytes with
-// zero-fill (and make addressToOffset null), so it is de-authoritized.
+// zero-fill (and make addressToOffset null), so it is de-authorized.
 {
   const buf = buildELF({
     loads: [{ offset: 0x1000, vaddr: 0x400000, filesz: 0x1000 }],

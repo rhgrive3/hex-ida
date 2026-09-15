@@ -17,7 +17,7 @@
  *   どの推測にも evidence[] と confidence を必ず付ける。
  *   分からないものは kind:'unknown' のまま残す。無理に名前を付けない。
  */
-import { parseOperands, categoryOf } from './arm64.js';
+import { parseOperands, categoryOf, arm64ReadsDestination } from './arm64.js';
 import { analyzeGraph } from './controlflow.js';
 
 /* ────────────────────────────────────────────────────────────
@@ -355,8 +355,8 @@ export const FEATURE_OF_CATEGORY = {
  * its memory fact, and for stores the source read is inverted into a
  * destination write. The AdvSIMD structure register-list family belongs here
  * too (#3601). */
-const LOAD_MN = /^(ldr|ldrb|ldrh|ldrsb|ldrsh|ldrsw|ldur|ldurb|ldurh|ldursb|ldursh|ldursw|ldp|ldpsw|ldnp|ldar|ldarb|ldarh|ldxr|ldaxr|ldtr|ld1|ld2|ld3|ld4)$/;
-const STORE_MN = /^(str|strb|strh|stur|sturb|sturh|stp|stnp|stlr|stlrb|stlrh|sttr|stxr|stlxr|st1|st2|st3|st4)$/;
+const LOAD_MN = /^(ldr|ldrb|ldrh|ldrsb|ldrsh|ldrsw|ldur|ldurb|ldurh|ldursb|ldursh|ldp|ldpsw|ldnp|ldar|ldarb|ldarh|ldxr|ldaxr|ldtr|ldtrb|ldtrh|ldtrsb|ldtrsh|ldtrsw|ld1|ld2|ld3|ld4)$/;
+const STORE_MN = /^(str|strb|strh|stur|sturb|sturh|stp|stnp|stlr|stlrb|stlrh|sttr|sttrb|sttrh|stxr|stlxr|st1|st2|st3|st4)$/;
 const STRUCTURE_MN = /^(ld1|ld2|ld3|ld4|st1|st2|st3|st4)$/;
 /* Exclusive stores are memory stores that still define a 32-bit status result
  * in operand 0; the data operand after it carries the access width (#3592). */
@@ -462,9 +462,9 @@ function targetOf(base, ops) {
 
 /** アクセスするバイト数（分かる範囲で）。 */
 function accessSize(base, ops) {
-  if (/^(ldrb|ldrsb|strb|sturb|ldurb|ldursb|ldarb|stlrb)$/.test(base)) return 1;
-  if (/^(ldrh|ldrsh|strh|sturh|ldurh|ldursh|ldarh|stlrh)$/.test(base)) return 2;
-  if (/^(ldrsw|ldursw)$/.test(base)) return 4;
+  if (/^(ldrb|ldrsb|strb|sturb|ldurb|ldursb|ldarb|stlrb|ldtrb|ldtrsb|sttrb)$/.test(base)) return 1;
+  if (/^(ldrh|ldrsh|strh|sturh|ldurh|ldursh|ldarh|stlrh|ldtrh|ldtrsh|sttrh)$/.test(base)) return 2;
+  if (/^(ldrsw|ldursw|ldtrsw)$/.test(base)) return 4;
   // Exclusive stores move the data operand (operand 1), never the 32-bit
   // status result that comes first (#3592).
   if (EXCLUSIVE_STORE_MN.test(base)) {
@@ -479,9 +479,16 @@ function accessSize(base, ops) {
   }
   if (STRUCTURE_MN.test(base)) {
     const list = ops.find((o) => o.k === 'list');
+    const regs = list ? (list.regs || []) : [];
+    if (!regs.length) return null;
     let total = 0;
-    for (const r of list ? (list.regs || []) : []) total += vectorRegisterBytes(r);
-    return total > 0 ? total : 8;
+    for (const r of regs) {
+      const bytes = vectorRegisterBytes(r);
+      // One unproven list member makes the whole structure transfer unproven.
+      if (bytes === null) return null;
+      total += bytes;
+    }
+    return total > 0 ? total : null;
   }
   const reg = ops.find((o) => o.k === 'reg');
   const w = reg && reg.bits ? reg.bits / 8 : 8;
@@ -489,12 +496,17 @@ function accessSize(base, ops) {
   return w;
 }
 
-/** Structure-register-list element width. `v0.8b` moves 8 bytes, not 16. */
+/** Structure-register-list element width. `v0.8b` moves 8 bytes, not 16.
+ * Only an explicit arrangement proves the transfer width: a bare vector
+ * register (`{v0}`) publishes the physical 128-bit V width, not the memory
+ * footprint, and a lane spelling the operand grammar did not structure
+ * (`{v0.h}[3]`) proves nothing, so both fail closed to null (#8713, #8780). */
 function vectorRegisterBytes(reg) {
-  if (!reg || reg.k !== 'reg') return 0;
-  const m = /^(\d+)([bhsd])$/i.exec(reg.arr || '');
-  if (m) return Number(m[1]) * ({ b: 1, h: 2, s: 4, d: 8 }[m[2].toLowerCase()] || 0);
-  return reg.bits ? reg.bits / 8 : 0;
+  if (!reg || reg.k !== 'reg' || !reg.arr) return null;
+  const m = /^(\d+)([bhsd])$/i.exec(reg.arr);
+  if (!m) return null;
+  const bytes = Number(m[1]) * ({ b: 1, h: 2, s: 4, d: 8 }[m[2].toLowerCase()] || 0);
+  return bytes > 0 ? bytes : null;
 }
 
 /**
@@ -543,13 +555,14 @@ export function makeInstruction(raw) {
 
   const wIdx = writeIndexes(base, parsed);
   const reads = new Set();
+  const destIsRead = arm64ReadsDestination(base);
   for (let i = 0; i < parsed.length; i++) {
     const op = parsed[i];
     if (wIdx.includes(i) && (op.k === 'reg' || op.k === 'elem' || op.k === 'list')) {
       // A lane destination always merges into the physical register, CAS keeps
       // its compare/result register read-write (#3602), and a register-list
       // destination is write-only rather than also an input (#3601, #3877).
-      if (op.k !== 'elem' && !ATOMIC_READ_WRITE_DEST_RE.test(base)) continue;
+      if (op.k !== 'elem' && !(i === 0 && destIsRead) && !ATOMIC_READ_WRITE_DEST_RE.test(base)) continue;
     }
     collectReads(op, reads);
   }
@@ -639,9 +652,8 @@ function instructionRole(insn, base) {
   if (base === 'adrp' || base === 'adr') return ROLE.ADDRESS_CALCULATION;
   if (insn.memory) {
     if (insn.memory.kind === 'load') return ROLE.MEMORY_READ;
-    // An atomic RMW keeps the established 'quiet' atomic role; its read/write
-    // fact is published on `insn.memory`, not through the block role (#3602).
-    if (insn.memory.kind === 'atomic') return 'quiet';
+    // An atomic read-modify-write is memory-effect-bearing, not quiet: it keeps
+    // the MEMORY_WRITE role and publishes both effect halves on its group (#8781).
     return ROLE.MEMORY_WRITE;
   }
   if (/^(paciasp|pacibsp|bti|nop|hint)$/.test(base)) return 'quiet';
@@ -706,17 +718,91 @@ function toLinkReturnAddress(address) {
 
 const coordBig = (v) => typeof v === 'bigint' ? v : (typeof v === 'number' && Number.isSafeInteger(v) ? BigInt(v) : null);
 
+const ARG_UNIVERSE = ['x0', 'x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7'];
+
+// 「その命令地点に到達するまでに entry 値が必ず死んでいる」レジスタ集合を、
+// CFG を跨いで must-interpret で求める。join では全 predecessor で kill 済みの
+// ものだけを保つので、片側 path だけの書き込みが entry 引数を消さない（#3921）。
+// CFG 情報（blocks/preds）が無ければ null を返し、呼び出し側は従来の線形挙動。
+function computeEntryKillSets(insns, o) {
+  const blocks = o.blocks;
+  const preds = o.preds;
+  if (!Array.isArray(blocks) || !blocks.length || !Array.isArray(preds) || preds.length !== blocks.length) return null;
+  if (!insns.length) return null;
+
+  const byRow = new Map();
+  for (const insn of insns) byRow.set(insn.row, insn);
+
+  const genWrites = (block) => {
+    const gen = new Set();
+    for (const row of block.rows) {
+      const insn = byRow.get(row);
+      if (!insn || insn.data || insn.unknownMnemonic) continue;
+      for (const w of insn.writes) if (ARG_UNIVERSE.includes(w)) gen.add(w);
+    }
+    return gen;
+  };
+
+  let entryIndex = -1;
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    if (b.startRow <= insns[0].row && insns[0].row <= b.endRow) { entryIndex = i; break; }
+  }
+  if (entryIndex < 0) entryIndex = 0;
+
+  const top = () => new Set(ARG_UNIVERSE);
+  const killIn = blocks.map((b, i) => (i === entryIndex ? new Set() : top()));
+  const gen = blocks.map((b) => genWrites(b));
+  for (let iter = 0; iter <= blocks.length + 1; iter++) {
+    let changed = false;
+    for (let i = 0; i < blocks.length; i++) {
+      if (i === entryIndex) continue;
+      let next;
+      const ps = preds[i];
+      if (!Array.isArray(ps) || !ps.length) next = new Set();
+      else {
+        next = top();
+        for (const p of ps) {
+          const out = new Set(killIn[p]);
+          for (const w of gen[p]) out.add(w);
+          for (const r of next) if (!out.has(r)) next.delete(r);
+        }
+      }
+      if (next.size !== killIn[i].size) changed = true;
+      else for (const r of next) { if (!killIn[i].has(r)) { changed = true; break; } }
+      killIn[i] = next;
+    }
+    if (!changed) break;
+  }
+
+  const rowKills = new Map();
+  const blockStartRows = new Set();
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    blockStartRows.add(b.startRow);
+    for (const row of b.rows) rowKills.set(row, killIn[i]);
+  }
+  return { rowKills, blockStartRows };
+}
+
 export function analyzeDataFlow(insns, opts) {
   const o = opts || {};
   const joinRows = o.joinRows || new Set();
   const regs = new Map();            // regKey -> value
   const stack = new Map();           // 'sp+off' -> value
+  // Concrete stack bytes proven by a same-frame constant store, keyed by
+  // 'base#absOffset'. A present cell is a known 0..255 byte; clearing a cell
+  // marks it uncertain (#8763).
+  const stackBytes = new Map();
   const stackFrame = new Map();
   const stackFrameLost = new Set();
   const flows = [];                  // データの流れ（テストで検証する対象）
   const calls = [];
   const argsRead = new Set();        // 自分で書く前に読んだ x0〜x7 = 引数
   const written = new Set();
+  const cfgKills = computeEntryKillSets(insns, o);
+  const rowKills = cfgKills ? cfgKills.rowKills : null;
+  const blockStartRows = cfgKills ? cfgKills.blockStartRows : null;
   const addressRefs = [];            // {row, addr, value} — 文字列を後から埋める用
   const byRow = new Map();
 
@@ -730,17 +816,63 @@ export function analyzeDataFlow(insns, opts) {
     return f;
   };
 
+  /*
+   * #8763: a stack slot's value can only be forwarded when the *accessed byte
+   * range* is proven. A narrower load, or a later overlapping partial store,
+   * changes which bytes a reload must return, so the concrete bytes are tracked
+   * per byte offset rather than per whole slot. Only an integer GP load/store
+   * with a stable stack offset is modelled; anything else keeps the previous
+   * behavior.
+   */
+  const byteCell = (baseKey, off) => baseKey + '#b#' + off;
+  const SIGNED_NARROW_LOAD = /^(ldrsb|ldrsh|ldursb|ldursh|ldrsw|ldursw|ldtrsb|ldtrsh|ldtrsw)$/;
+  const isGPWrite = (dst) => typeof dst === 'string' && dst.charCodeAt(0) === 120 /* 'x' */;
+  function concreteStoreBytes(v, width) {
+    if (!v || v.kind !== 'imm' || typeof v.value !== 'bigint') return null;
+    if (!Number.isInteger(width) || width < 1 || width > 8) return null;
+    const mod = 1n << BigInt(width * 8);
+    let x = ((v.value % mod) + mod) % mod;
+    const out = new Array(width);
+    for (let i = 0; i < width; i++) { out[i] = Number(x & 0xffn); x >>= 8n; }
+    return out;
+  }
+  function writeStackBytes(baseKey, absOff, width, v) {
+    if (baseKey == null || width == null) return;
+    const bytes = concreteStoreBytes(v, width);
+    for (let i = 0; i < width; i++) {
+      const cell = byteCell(baseKey, absOff + BigInt(i));
+      if (bytes) stackBytes.set(cell, bytes[i]);
+      else stackBytes.delete(cell);
+    }
+  }
+  function readStackBytes(baseKey, absOff, width, signed) {
+    if (baseKey == null || width == null || width < 1 || width > 8) return null;
+    let acc = 0n;
+    for (let i = 0; i < width; i++) {
+      const b = stackBytes.get(byteCell(baseKey, absOff + BigInt(i)));
+      if (b == null) return null;
+      acc |= BigInt(b) << BigInt(8 * i);
+    }
+    if (signed) {
+      const mod = 1n << BigInt(width * 8);
+      if (acc >= mod / 2n) acc -= mod;
+    }
+    return acc;
+  }
+
   for (let i = 0; i < insns.length; i++) {
     const insn = insns[i];
     const base = insn.mnemonic.toLowerCase();
 
     // 分岐で飛んでこられる場所 = 合流点。ここから先は前提を持ち越せない。
-    if (joinRows.has(insn.row)) { regs.clear(); stack.clear(); stackFrame.clear(); stackFrameLost.clear(); }
+    if (joinRows.has(insn.row)) { regs.clear(); stack.clear(); stackBytes.clear(); stackFrame.clear(); stackFrameLost.clear(); }
+    if (rowKills && blockStartRows.has(insn.row)) written.clear();
 
     // 引数レジスタの検出は「自分で書く前に読んだか」で判定する
+    const pathKilled = rowKills ? rowKills.get(insn.row) : null;
     for (const r of insn.reads) {
       const n = gpNum(r);
-      if (n >= 0 && n <= 7 && !written.has(r)) {
+      if (n >= 0 && n <= 7 && !written.has(r) && !(pathKilled && pathKilled.has(r))) {
         argsRead.add(n);
         if (!regs.has(r)) {
           set(r, value('arg', { index: n }, SCORE.high, [ev('argreg', insn.row, { index: n })], -1));
@@ -784,7 +916,13 @@ export function analyzeDataFlow(insns, opts) {
           ? immediate.value << BigInt(shift.amount)
           : null;
       if (dst && prev && prev.kind === 'address' && prev.partial && offset != null) {
-        const addr = prev.addr + offset;
+        let addr = prev.addr + offset;
+        // #8747: `add wD, xN, #imm` writes only the low destination width, so the
+        // completed address must be masked to that width; the upper bits were not
+        // written and cannot be claimed as part of the effective address.
+        const dreg = insn.ops[0];
+        const dstBits = (dreg && dreg.k === 'reg' && Number.isFinite(dreg.bits)) ? dreg.bits : 64;
+        if (dstBits < 64) addr = addr & ((1n << BigInt(dstBits)) - 1n);
         const v = value('address', { addr, page: false, partial: false }, SCORE.confirmed,
           prev.ev.concat([ev('adrp-add', insn.row, { addr })]), insn.row);
         set(dst, v);
@@ -806,11 +944,27 @@ export function analyzeDataFlow(insns, opts) {
       } else if (dst && s && s.k === 'reg') {
         const src = regKey(s);
         const prev = src ? get(src) : null;
-        const v = prev
-          ? Object.assign({}, prev, { def: insn.row, via: src, ev: prev.ev.concat([ev('copy', insn.row, { from: src, to: dst })]) })
-          : unknownValue(ev('untracked', insn.row, { from: src }));
-        set(dst, v);
-        flow('reg->reg', insn.row, src, dst, v);
+        // #8747: an integer MOV into a narrowed (sub-64-bit, e.g. W) destination
+        // zero-extends/truncates, so a full-width source value must not keep its
+        // complete constant or pointer authority. Publish only the low `dstBits`
+        // and drop any inherited full-register alias for the truncated result.
+        const dreg = insn.ops[0];
+        const dstBits = (base === 'mov' && dreg && dreg.k === 'reg' && Number.isFinite(dreg.bits)) ? dreg.bits : 64;
+        const concreteSrc = prev && (prev.kind === 'imm' ? prev.value : prev.kind === 'address' ? prev.addr : null);
+        if (prev && dstBits < 64 && typeof concreteSrc === 'bigint') {
+          const mask = (1n << BigInt(dstBits)) - 1n;
+          const low = concreteSrc & mask;
+          const v = value('imm', { value: low }, SCORE.confirmed,
+            prev.ev.concat([ev('copy-trunc', insn.row, { from: src, to: dst, bits: dstBits })]), insn.row);
+          set(dst, v);
+          flow('reg->reg', insn.row, src, dst, v);
+        } else {
+          const v = prev
+            ? Object.assign({}, prev, { def: insn.row, via: src, ev: prev.ev.concat([ev('copy', insn.row, { from: src, to: dst })]) })
+            : unknownValue(ev('untracked', insn.row, { from: src }));
+          set(dst, v);
+          flow('reg->reg', insn.row, src, dst, v);
+        }
       } else if (dst) {
         set(dst, unknownValue(ev('untracked', insn.row)));
       }
@@ -857,22 +1011,55 @@ export function analyzeDataFlow(insns, opts) {
       if (m.stack && m.base && !m.indexed && !frameLost && accessDisp != null) {
         slot = m.base + '+' + (frameDelta + accessDisp).toString();
       }
+      const isPair = base === 'ldp' || base === 'ldpsw' || base === 'ldnp' ||
+        base === 'stp' || base === 'stnp';
+      const stride = isPair && accessDisp != null ? BigInt(Math.floor(m.size / 2)) : 0n;
+      const elemWidth = Number.isInteger(m.size) ? (isPair ? Math.floor(m.size / 2) : m.size) : null;
+      const elemSlot = (idx) => (slot && idx > 0
+        ? m.base + '+' + (frameDelta + accessDisp + stride * BigInt(idx)).toString()
+        : slot);
+      const elemAbs = (idx) => (accessDisp == null ? null : frameDelta + accessDisp + stride * BigInt(idx));
+
       if (m.kind === 'load') {
+        let di = 0;
         for (const dst of insn.writes) {
           if (dst === m.base && insn.ops.some((x) => x.k === 'mem' && (x.mode === 'pre' || x.mode === 'post'))) continue;
+          const dSlot = isPair ? elemSlot(di) : slot;
+          const dDisp = isPair && accessDisp != null
+            ? accessDisp + stride * BigInt(di)
+            : m.disp;
+          di++;
           let v;
-          const cached = slot ? stack.get(slot) : null;
-          if (cached) {
-            v = Object.assign({}, cached, { def: insn.row, ev: cached.ev.concat([ev('stack-reload', insn.row, { slot })]) });
-            flow('stack->reg', insn.row, slot, dst, v);
+          const cached = !isPair || base === 'ldp' || base === 'ldnp'
+            ? (dSlot ? stack.get(dSlot) : null)
+            : null;
+          const absOff = elemAbs(di - 1);
+          // #8763: only forward a concrete stack value when the exact accessed
+          // byte range is still proven by the per-byte cache. A narrower load,
+          // a signed load, or an overlapping partial store must not reuse the
+          // stale whole-slot value; fall back to an uncertain memory load.
+          if (cached && cached.kind === 'imm' && slot && absOff != null && elemWidth != null && isGPWrite(dst)) {
+            const assembled = readStackBytes(m.base, absOff, elemWidth, SIGNED_NARROW_LOAD.test(base));
+            if (assembled == null) {
+              v = value('loaded', { at: { base: m.base, disp: dDisp }, addr: null, size: elemWidth },
+                SCORE.inferred, [ev('stack-bytes-unknown', insn.row, { slot: dSlot, width: elemWidth })], insn.row);
+              flow('mem->reg', insn.row, m.base, dst, v);
+            } else {
+              v = value('imm', { value: assembled }, SCORE.confirmed,
+                cached.ev.concat([ev('stack-bytes', insn.row, { slot: dSlot, width: elemWidth })]), insn.row);
+              flow('stack->reg', insn.row, dSlot, dst, v);
+            }
+          } else if (cached) {
+            v = Object.assign({}, cached, { def: insn.row, ev: cached.ev.concat([ev('stack-reload', insn.row, { slot: dSlot })]) });
+            flow('stack->reg', insn.row, dSlot, dst, v);
           } else {
             const baseVal = m.base ? get(m.base) : null;
             // adrp（ページの先頭）＋ ldr の即値でも、指している場所は確定する。
             // __objc_selrefs からメソッド名を引くのがまさにこの形。
-            const addr = baseVal && baseVal.kind === 'address' && m.disp != null
-              ? baseVal.addr + m.disp : null;
-            v = value('loaded', { at: { base: m.base, disp: m.disp }, addr, size: m.size },
-              SCORE.high, [ev('load', insn.row, { base: m.base, disp: m.disp, addr })], insn.row);
+            const addr = baseVal && baseVal.kind === 'address' && dDisp != null
+              ? baseVal.addr + dDisp : null;
+            v = value('loaded', { at: { base: m.base, disp: dDisp }, addr, size: m.size },
+              SCORE.high, [ev('load', insn.row, { base: m.base, disp: dDisp, addr })], insn.row);
             flow('mem->reg', insn.row, m.base, dst, v);
             if (addr != null) addressRefs.push({ row: insn.row, addr, value: v, load: true });
           }
@@ -892,12 +1079,18 @@ export function analyzeDataFlow(insns, opts) {
           flow('mem->reg', insn.row, m.base, dst, v);
         }
       } else {
-        const src = insn.ops[0] ? regKey(insn.ops[0]) : null;
-        const v = src ? get(src) : null;
-        flow('reg->mem', insn.row, src, slot || (m.base || 'mem'), v);
-        if (slot) {
-          if (v) stack.set(slot, Object.assign({}, v, { ev: v.ev.concat([ev('stack-save', insn.row, { slot })]) }));
-          else stack.set(slot, unknownValue(ev('untracked', insn.row)));
+        const srcCount = isPair ? 2 : 1;
+        for (let idx = 0; idx < srcCount; idx++) {
+          const src = insn.ops[idx] ? regKey(insn.ops[idx]) : null;
+          const v = src ? get(src) : null;
+          const sSlot = isPair ? elemSlot(idx) : slot;
+          flow('reg->mem', insn.row, src, sSlot || (m.base || 'mem'), v);
+          if (sSlot) {
+            if (v) stack.set(sSlot, Object.assign({}, v, { ev: v.ev.concat([ev('stack-save', insn.row, { slot: sSlot })]) }));
+            else stack.set(sSlot, unknownValue(ev('untracked', insn.row)));
+            const absOff = elemAbs(idx);
+            if (absOff != null) writeStackBytes(m.base, absOff, elemWidth, v);
+          }
         }
       }
       if (m.stack && m.base && !m.indexed && (m.mode === 'pre' || m.mode === 'post')) {
@@ -908,8 +1101,12 @@ export function analyzeDataFlow(insns, opts) {
           stackFrameLost.add(m.base);
           stackFrame.delete(m.base);
           const slotPrefix = m.base + '+';
+          const bytePrefix = m.base + '#b#';
           for (const k of Array.from(stack.keys())) {
             if (k.startsWith(slotPrefix)) stack.delete(k);
+          }
+          for (const k of Array.from(stackBytes.keys())) {
+            if (k.startsWith(bytePrefix)) stackBytes.delete(k);
           }
         }
       }
@@ -964,6 +1161,7 @@ export function analyzeDataFlow(insns, opts) {
         [ev(name ? 'call-named' : 'call-unknown', insn.row, { name, api: api ? api.id : null })], insn.row);
       set('x0', ret);
       flow('call->reg', insn.row, name || 'call', 'x0', ret);
+      for (let a = 0; a <= 7; a++) written.add('x' + a);
       markWritten(insn, written);
       continue;
     }
@@ -1076,7 +1274,11 @@ export function buildBasicBlocks(insns, opts) {
   });
   const headers = new Set(graph.backEdges.map((e) => e.to));
   blocks.forEach((b, i) => { b.isLoopHeader = headers.has(i); });
-  return { blocks, joinRows, backEdges };
+  const preds = blocks.map(() => []);
+  for (let i = 0; i < succ.length; i++) {
+    for (const j of succ[i]) if (j >= 0 && j < preds.length && !preds[j].includes(i)) preds[j].push(i);
+  }
+  return { blocks, joinRows, backEdges, preds };
 }
 
 /* ────────────────────────────────────────────────────────────
@@ -1270,7 +1472,15 @@ function finishBlock(g, ctx) {
       }
     }
     if (insn.memory) {
-      g.effects.push(insn.memory.kind === 'load' ? 'read' : 'write');
+      // Project the instruction's own read/write truth. Only atomics carry both
+      // halves; a plain load or store keeps its single effect (#8781).
+      const mem = insn.memory;
+      if (mem.read || mem.write) {
+        if (mem.read) g.effects.push('read');
+        if (mem.write) g.effects.push('write');
+      } else {
+        g.effects.push(mem.kind === 'load' ? 'read' : 'write');
+      }
       if (insn.memory.stack) g.facts.stack = true;
     }
     if (insn.branchTarget != null) {
@@ -1395,7 +1605,7 @@ export function buildSemanticModel(raw, opts) {
 
   markTailCalls(insns, o, truncated);
   const bbInfo = buildBasicBlocks(insns, o);
-  const flow = analyzeDataFlow(insns, Object.assign({ joinRows: bbInfo.joinRows }, o));
+  const flow = analyzeDataFlow(insns, Object.assign({ joinRows: bbInfo.joinRows, blocks: bbInfo.blocks, preds: bbInfo.preds }, o));
   const semantic = buildSemanticBlocks(insns, bbInfo, flow, o);
 
   const model = {

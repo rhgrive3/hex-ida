@@ -119,7 +119,10 @@ test('#4092 last-consumer detach on the product classification route stops the u
   const pending = query.classification(SNAPSHOT, '0x1000', { signal: controller.signal });
   await producer.started.promise;
   controller.abort('panel-closed');
-  await assert.rejects(pending, (error) => error?.name === 'AbortError');
+  // #8809 sync: #4290 made `waitForAppProducer()` reject with the consumer's
+  // own AbortSignal.reason as the exact identity — not a synthesized
+  // AbortError — so the canonical expectation is the precise reason.
+  await assert.rejects(pending, (error) => error === 'panel-closed');
   producer.release.resolve();
   await waitFor(() => app.recognitionBusy === null, 'aborted recognition producer never retired');
   assert.equal(producer.calls(), 1,
@@ -139,7 +142,7 @@ test('#4092 one consumer aborting does not cancel a producer still owned by anot
   let failure;
   try {
     first.abort('consumer-a-left');
-    await assert.rejects(withDeadline(a, 'consumer detach'), (error) => error?.name === 'AbortError');
+    await assert.rejects(withDeadline(a, 'consumer detach'), (error) => error === 'consumer-a-left');
     producer.release.resolve();
     const state = await b;
     assert.ok(state, 'the remaining consumer must still receive the shared recognition state');
@@ -164,9 +167,9 @@ test('#4092 the last recognition consumer detaching aborts the shared producer e
   let failure;
   try {
     first.abort('consumer-a-left');
-    await assert.rejects(withDeadline(a, 'consumer detach'), (error) => error?.name === 'AbortError');
+    await assert.rejects(withDeadline(a, 'consumer detach'), (error) => error === 'consumer-a-left');
     second.abort('consumer-b-left');
-    await assert.rejects(withDeadline(b, 'last consumer detach'), (error) => error?.name === 'AbortError');
+    await assert.rejects(withDeadline(b, 'last consumer detach'), (error) => error === 'consumer-b-left');
     producer.release.resolve();
     await waitFor(() => app.recognitionBusy === null, 'the shared producer never retired after its last consumer detached');
     assert.equal(producer.calls(), 1,
