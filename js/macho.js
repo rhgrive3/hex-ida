@@ -463,9 +463,14 @@
       off=commandEnd;
     }
 
-    info.textVM=textVM; info.textFileOff=textFileOff;
-    const align=instructionAlignment(architecture);
-    const execSegments=info.segments.filter((seg)=>seg.validMapping && !!(seg.initprot&4) && seg.vmsize>0n);
+     info.textVM=textVM; info.textFileOff=textFileOff;
+    // #8828: reject ambiguous segment byte-ownership before any consumer picks a
+    // winner by load-command order. The canonical loader fails closed on the same
+    // layout (#7064); the classic path demotes both conflicting segments to a
+    // non-authoritative mapping so `execSegments`/`regionsFrom` publish neither.
+    rejectAmbiguousSegmentOwnership(info);
+     const align=instructionAlignment(architecture);
+     const execSegments=info.segments.filter((seg)=>seg.validMapping && !!(seg.initprot&4) && seg.vmsize>0n);
     const validPc=(pc)=>pc!=null && pc%align===0n && execSegments.some((seg)=>inRange(pc,seg.vmaddr,seg.vmsize));
     if (info.entryOff != null) {
       const seg=execSegments.find((candidate)=>inRange(info.entryOff,candidate.fileoff,candidate.filesize));
@@ -486,12 +491,66 @@
     return info;
   }
 
+  /*
+   * #8828 — classic Mach-O segment byte-ownership authority.
+   *
+   * Two individually valid LC_SEGMENT[_64] commands can claim the same VM range
+   * while mapping it to different file offsets. `regionsFrom()` would then
+   * publish both mappings in load-command order and classic consumers
+   * (`mappedFileOffset()` / `vmToFile()`) resolve the shared address to whichever
+   * segment came first — attacker-controlled byte provenance. The canonical
+   * loader rejects this outright (#7064). Here we mirror its exact per-sub-interval
+   * rule: a file-backed segment owns canonical bytes for [vmaddr, vmaddr+filesize);
+   * two file-backed segments whose full VM ownership extents intersect must agree
+   * on the file offset for every sub-interval, and a file-backed extent may not
+   * ambiguously overlap a zero-fill tail. On conflict both segments are demoted to
+   * `validMapping=false` + `mappingConflict=true` so no region is published for the
+   * ambiguous bytes (fail closed to "unknown", never to an order-picked owner).
+   */
+  function classicOwnershipAmbiguous(a, b) {
+    const aVmEnd = a.vmaddr + a.vmsize;
+    const bVmEnd = b.vmaddr + b.vmsize;
+    const overlapStart = a.vmaddr > b.vmaddr ? a.vmaddr : b.vmaddr;
+    const overlapEnd = aVmEnd < bVmEnd ? aVmEnd : bVmEnd;
+    if (overlapStart >= overlapEnd) return false;
+    const aFileEnd = a.vmaddr + a.filesize;
+    const bFileEnd = b.vmaddr + b.filesize;
+    const boundaries = [...new Set([overlapStart, overlapEnd, aFileEnd, bFileEnd]
+      .filter((p) => p > overlapStart && p < overlapEnd))].sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
+    const points = [overlapStart, ...boundaries, overlapEnd];
+    for (let i = 0; i + 1 < points.length; i++) {
+      const point = points[i];
+      const aBacked = point >= a.vmaddr && point < aFileEnd;
+      const bBacked = point >= b.vmaddr && point < bFileEnd;
+      if (!aBacked && !bBacked) continue;
+      if (aBacked !== bBacked) return true;                 // ambiguous file/zero ownership
+      const aOff = a.fileoff + (point - a.vmaddr);
+      const bOff = b.fileoff + (point - b.vmaddr);
+      if (aOff !== bOff) return true;                       // same VM -> different bytes
+    }
+    return false;
+  }
+
+  function rejectAmbiguousSegmentOwnership(info) {
+    const backed = (info.segments || []).filter((s) => s.validMapping && s.filesize > 0n);
+    for (let i = 0; i < backed.length; i++) {
+      for (let j = i + 1; j < backed.length; j++) {
+        const a = backed[i], b = backed[j];
+        if (!classicOwnershipAmbiguous(a, b)) continue;
+        a.validMapping = false; b.validMapping = false;
+        a.mappingConflict = true; b.mappingConflict = true;
+        info.segmentOwnershipConflict = true;
+        info.diagnostics.push(`${b.name}: VM range overlaps segment ${a.name} with a conflicting file mapping (ambiguous ownership)`);
+      }
+    }
+  }
+
   function regionsFrom(info, sliceOff, sliceSize, fileSize) {
     const regions=[]; let id=0;
     const sliceEnd=sliceOff+sliceSize;
     if (sliceEnd<sliceOff || sliceEnd>fileSize) return regions;
     for(const seg of info.segments||[]){
-      if(!seg.validMapping) continue;
+      if(!seg.validMapping || seg.mappingConflict) continue;
       for(const sec of seg.sections||[]){
         if(!sec.validMapping) continue;
         const fileOffset=sliceOff+sec.offset;
