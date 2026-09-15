@@ -263,7 +263,12 @@ const ELF_RELOCATABLE_SYNTHETIC_ADDRESS_BITS = 64;
 function assignRelocatableSectionAddresses(sections, image) {
   let cursor = 0x100000000n;
   for (const sec of sections) {
-    if (sec.index === 0) { sec.syntheticAddr = 0n; continue; }
+    // Section header 0 is the reserved SHT_NULL sentinel, never a real section.
+    // Extended-count ET_REL files store the section COUNT in its sh_size, so
+    // publishing it at synthetic address 0 with that size fabricates a VA-0
+    // mapped extent (#8741). Keep the sentinel listed for metadata but withhold
+    // mapping authority, the same 'unmapped-section' treatment as other invalid spans.
+    if (sec.index === 0) { sec.syntheticAddr = null; continue; }
     const requested = sec.addralign > 0n ? sec.addralign : 1n;
     if (!validELFSectionAlignment(requested)) {
       sec.syntheticAddr = null;
@@ -520,13 +525,21 @@ function nameSections(r, sections, h, image) {
       return;
     }
     shstrndx = link;
-  } else if (shstrndx !== 0 && shstrndx >= sections.length) {
+  }
+  // e_shstrndx == SHN_UNDEF (0) declares the file has NO section-name string
+  // table, and section header 0 is the reserved SHT_NULL sentinel: extended
+  // section-count files store the real section COUNT in its sh_size, so reading
+  // section 0 as a name table decodes the ELF header / start of the section
+  // table as bogus section names (#8741). A name table must be a real, in-range
+  // SHT_STRTAB section, never the index-0 sentinel.
+  if (shstrndx === 0) return;
+  if (shstrndx >= sections.length) {
     markELFMetadataPartial(image, 'section-names:shstrndx-invalid', `ELF e_shstrndx ${shstrndx} is outside the section header table (${sections.length} sections)`);
     return;
   }
   const str = sections[shstrndx];
-  if (!str || (shstrndx !== 0 && str.type !== SHT_STRTAB)) {
-    if (shstrndx !== 0) markELFMetadataPartial(image, 'section-names:shstrndx-not-strtab', `ELF e_shstrndx ${shstrndx} does not name an SHT_STRTAB section`);
+  if (!str || str.type !== SHT_STRTAB) {
+    markELFMetadataPartial(image, 'section-names:shstrndx-not-strtab', `ELF e_shstrndx ${shstrndx} does not name an SHT_STRTAB section`);
     return;
   }
   if (str.offset + str.size > BigInt(r.length)) return;
