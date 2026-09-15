@@ -644,6 +644,7 @@ export const CROSS_LANE_ROUTES = Object.freeze({
   "fix/batch-10-issues-20260915": Object.freeze([
     ".circleci/config.yml",
     ".github/workflows/phase8-ownership.yml",
+    "js/semantics/ssa/validate.js",
     "js/ai/runtime.js",
     "js/binary/reader.js",
     "js/collaboration/remote-transport.js",
