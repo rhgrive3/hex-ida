@@ -137,6 +137,9 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
     let unsubscribe = null;
 
     const ingest = (raw) => {
+      // #8891: revoke ingress for a closing/closed session so a stale facet or a
+      // backend callback racing teardown cannot mutate session.modules / setState.
+      session.assertAdmissible();
       const event = normalizer.push(raw);
       if (!event) return null;
       const module = moduleFields(event);
@@ -244,6 +247,9 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
       interventions,
       resolveAddress: (runtimeAddress, resolutionOptions = {}) => session.modules.resolve(runtimeAddress, resolutionOptions),
       refreshModules: async () => {
+        // #8891: adapter-touching refresh is a stateful capability — revoke it for
+        // a closing/closed session so a stale handle cannot drive the shared adapter.
+        session.assertAdmissible();
         if (!this.adapter.capabilities?.modules || typeof this.adapter.getModules !== 'function') return session.modules.active();
         const modules = await this.adapter.getModules();
         if (!Array.isArray(modules)) throw new DebugAdapterError('runtime-invalid-modules', 'debugger adapter getModules must return an array');
