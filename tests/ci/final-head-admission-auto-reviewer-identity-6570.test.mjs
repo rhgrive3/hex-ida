@@ -5,28 +5,31 @@ import { evaluateFinalHeadAdmission } from '../../tools/validation/final-head-ad
 
 const HEAD = '1340a18dd3f13b9a54f3e75b763cfbd8743202e7';
 const OLD = '8ee3431a41c3c836b1979eeac6a033c67e4c1eb1';
-const TRUSTED = 'rhgrive3';
 const REQUIRED = 'ci/circleci: phase7-ownership';
-const auto = (reviewerId, verdict, at) => ({
+const auto = (reviewerId, verdict, at, head = HEAD, author = 'rhgrive3') => ({
   state: 'COMMENTED',
-  commit_id: HEAD,
+  commit_id: head,
   submitted_at: at,
-  author: { login: TRUSTED },
-  body: `[AUTO-REVIEW:${reviewerId}][HEAD:${HEAD}][VERDICT:${verdict}]`,
+  author: { login: author },
+  body: `[AUTO-REVIEW:${reviewerId}][HEAD:${head}][VERDICT:${verdict}]`,
+});
+const formal = (state, at, author = 'reviewer-a') => ({
+  state,
+  submitted_at: at,
+  author: { login: author },
+  body: `formal ${state}`,
 });
 const greenEvidence = {
-  statuses: [
-    { context: REQUIRED, state: 'success', updated_at: '2026-09-07T00:03:00Z' },
-  ],
+  statuses: [{ context: REQUIRED, state: 'success', updated_at: '2026-09-07T00:03:00Z' }],
   checkRuns: [{ name: 'PR fast gate', status: 'completed', conclusion: 'success', app: { slug: 'github-actions' } }],
 };
-const evaluate = (reviews) => evaluateFinalHeadAdmission({
+const evaluate = (reviews, extra = {}) => evaluateFinalHeadAdmission({
   headSha: HEAD,
   reviews,
-  trustedAutoReviewers: [TRUSTED],
   requiredStatusContexts: [REQUIRED],
   unresolvedReviewThreads: 0,
   ...greenEvidence,
+  ...extra,
 });
 
 const workflowSource = fs.readFileSync(
@@ -35,7 +38,7 @@ const workflowSource = fs.readFileSync(
 );
 assert.ok(
   workflowSource.includes('pull_request_review_comment:\n    types: [created, edited, deleted]'),
-  'inline review-comment mutations must re-evaluate final-head admission',
+  'inline review-comment mutations must re-evaluate unresolved-thread state',
 );
 assert.ok(
   workflowSource.includes("context.eventName === 'pull_request_review_comment'"),
@@ -50,80 +53,77 @@ assert.ok(
   'the privileged controller checkout must remain credential-free',
 );
 
-// A green exact head must become blocking when a newly-created inline comment
-// creates an unresolved review thread. The workflow-source assertions above pin
-// the event that causes this evaluator path to be re-run.
+// AUTO markers are retained only as historical/commentary evidence. They no
+// longer grant or revoke admission authority; ordinary GitHub review blockers
+// plus exact-head CI are the authoritative policy.
 {
-  const reviews = [auto('R1', 'APPROVED', '2026-09-07T00:02:00Z')];
-  const before = evaluate(reviews);
-  assert.equal(before.state, 'success');
+  const noMarker = evaluate([]);
+  const trustedApprove = evaluate([auto('R1', 'APPROVED', '2026-09-07T00:02:00Z')]);
+  const trustedReject = evaluate([auto('R1', 'CHANGES_REQUESTED', '2026-09-07T00:02:00Z')]);
+  const untrustedApprove = evaluate([auto('R1', 'APPROVED', '2026-09-07T00:02:00Z', HEAD, 'someone-else')]);
+  const staleApprove = evaluate([auto('R1', 'APPROVED', '2026-09-07T00:02:00Z', OLD)]);
 
-  const after = evaluateFinalHeadAdmission({
-    headSha: HEAD,
-    reviews,
-    trustedAutoReviewers: [TRUSTED],
-    requiredStatusContexts: [REQUIRED],
-    unresolvedReviewThreads: 1,
-    ...greenEvidence,
-  });
-  assert.equal(after.state, 'failure');
-  assert.ok(after.blockers.includes('1 unresolved review thread(s)'));
-}
-
-// R0 and R1 are independent logical reviewers even when the same trusted
-// GitHub account mints both markers. A later R0 approval cannot erase R1's
-// still-active CHANGES_REQUESTED state.
-{
-  const result = evaluate([
-    auto('R1', 'CHANGES_REQUESTED', '2026-09-07T00:00:00Z'),
-    auto('R0', 'APPROVED', '2026-09-07T00:02:00Z'),
-  ]);
-  assert.equal(result.state, 'failure');
-  assert.equal(result.evidence.exactAutoApprovalCount, 1);
-  assert.equal(result.evidence.exactAutoChangesRequestedCount, 1);
-  assert.ok(result.blockers.includes('exact-head AUTO review requests changes'));
-}
-
-// Only a newer verdict from the same logical AUTO reviewer supersedes its
-// prior verdict.
-{
-  const result = evaluate([
-    auto('R1', 'CHANGES_REQUESTED', '2026-09-07T00:00:00Z'),
-    auto('R1', 'APPROVED', '2026-09-07T00:02:00Z'),
-  ]);
-  assert.equal(result.state, 'success');
-  assert.equal(result.evidence.exactAutoApprovalCount, 1);
-  assert.equal(result.evidence.exactAutoChangesRequestedCount, 0);
-}
-
-// The canonical marker is one inseparable authority tuple. An OLD marker on a
-// current commit cannot be laundered into current-head approval by a stray
-// marker-shaped HEAD token later in the review body.
-{
-  const review = auto('R1', 'APPROVED', '2026-09-07T00:02:00Z');
-  review.body = `[AUTO-REVIEW:R1][HEAD:${OLD}][VERDICT:APPROVED]\n[HEAD:${HEAD}]`;
-  const result = evaluate([review]);
-  assert.equal(result.state, 'pending');
-  assert.equal(result.evidence.exactAutoApprovalCount, 0);
-  assert.ok(result.pending.includes('missing exact-head AUTO approval'));
-}
-
-// Partial, non-leading, or multiple AUTO markers are never assembled into
-// approval authority from independently matching tokens.
-{
-  const malformedBodies = [
-    `[AUTO-REVIEW:R1]\n[HEAD:${HEAD}][VERDICT:APPROVED]`,
-    `review prose\n[AUTO-REVIEW:R1][HEAD:${HEAD}][VERDICT:APPROVED]`,
-    `[AUTO-REVIEW:R1][HEAD:${HEAD}][VERDICT:APPROVED]\n[AUTO-REVIEW:R0][HEAD:${HEAD}][VERDICT:APPROVED]`,
-  ];
-  for (const body of malformedBodies) {
-    const review = auto('R1', 'APPROVED', '2026-09-07T00:02:00Z');
-    review.body = body;
-    const result = evaluate([review]);
-    assert.equal(result.state, 'pending');
+  for (const result of [noMarker, trustedApprove, trustedReject, untrustedApprove, staleApprove]) {
+    assert.equal(result.state, 'success');
     assert.equal(result.evidence.exactAutoApprovalCount, 0);
-    assert.ok(result.pending.includes('missing exact-head AUTO approval'));
+    assert.equal(result.evidence.exactAutoChangesRequestedCount, 0);
   }
 }
 
-console.log('final-head admission AUTO reviewer identity regression: PASS');
+// Multiple logical AUTO reviewers likewise cannot manufacture a blocker or an
+// approval. Marker ordering/identity is no longer part of admission authority.
+{
+  const result = evaluate([
+    auto('R1', 'CHANGES_REQUESTED', '2026-09-07T00:00:00Z'),
+    auto('R0', 'APPROVED', '2026-09-07T00:01:00Z'),
+    auto('R1', 'APPROVED', '2026-09-07T00:02:00Z'),
+  ]);
+  assert.equal(result.state, 'success');
+  assert.equal(result.evidence.exactAutoApprovalCount, 0);
+  assert.equal(result.evidence.exactAutoChangesRequestedCount, 0);
+}
+
+// Retiring AUTO authority must not weaken real GitHub review blockers.
+{
+  const blocked = evaluate([
+    formal('CHANGES_REQUESTED', '2026-09-07T00:00:00Z'),
+    auto('R1', 'APPROVED', '2026-09-07T00:01:00Z'),
+  ]);
+  assert.equal(blocked.state, 'failure');
+  assert.ok(blocked.blockers.includes('active GitHub changes-requested review'));
+
+  const cleared = evaluate([
+    formal('CHANGES_REQUESTED', '2026-09-07T00:00:00Z'),
+    formal('APPROVED', '2026-09-07T00:02:00Z'),
+    auto('R1', 'CHANGES_REQUESTED', '2026-09-07T00:03:00Z'),
+  ]);
+  assert.equal(cleared.state, 'success');
+}
+
+// Reviewer trust configuration is now diagnostic-only. Omitting it must not
+// create the retired "missing exact-head AUTO approval" pending state.
+{
+  const result = evaluateFinalHeadAdmission({
+    headSha: HEAD,
+    reviews: [],
+    requiredStatusContexts: [REQUIRED],
+    unresolvedReviewThreads: 0,
+    ...greenEvidence,
+  });
+  assert.equal(result.state, 'success');
+  assert.equal(result.pending.includes('missing exact-head AUTO approval'), false);
+  assert.equal(result.pending.includes('no trusted AUTO reviewer configured'), false);
+  assert.equal(result.evidence.trustedAutoReviewerCount, 0);
+}
+
+// Review comments still re-trigger the controller because they can create or
+// resolve review threads even though their AUTO-shaped text carries no power.
+{
+  const result = evaluate([auto('R1', 'APPROVED', '2026-09-07T00:02:00Z')], {
+    unresolvedReviewThreads: 1,
+  });
+  assert.equal(result.state, 'failure');
+  assert.ok(result.blockers.includes('1 unresolved review thread(s)'));
+}
+
+console.log('final-head admission AUTO reviewer retirement regression: PASS');
