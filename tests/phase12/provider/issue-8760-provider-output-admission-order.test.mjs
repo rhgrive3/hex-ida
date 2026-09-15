@@ -9,8 +9,6 @@ const base = (over = {}) => ({
   ...over,
 });
 
-// (1) 50k-deep provenance with maxBytes=1024 must fail with a typed nesting
-//     resource error, never a raw RangeError from stableStringify/deepFreeze.
 {
   let provenance = { leaf: true };
   for (let i = 0; i < 50_000; i++) provenance = { next: provenance };
@@ -20,7 +18,6 @@ const base = (over = {}) => ({
   assert.doesNotMatch(out.error || '', /Maximum call stack size exceeded/, 'raw RangeError must never escape the boundary');
 }
 
-// (2) maxEntries=1 must fail before traversing/materializing every item.
 {
   let touched = 0;
   const items = Array.from({ length: 100_000 }, (_, i) => ({
@@ -34,7 +31,6 @@ const base = (over = {}) => ({
   assert.ok(touched <= 3, `getter items must not all be walked before the entry budget (touched ${touched})`);
 }
 
-// (3) A tiny maxBytes must prevent canonicalization of an oversized scalar/object.
 {
   const big = 'x'.repeat(4_000_000);
   const out = validateProviderOutput(base({ provenance: { blob: big } }), { maxBytes: 1024, maxEntries: 1_000 });
@@ -43,7 +39,6 @@ const base = (over = {}) => ({
   assert.doesNotMatch(out.error || '', /call stack/i);
 }
 
-// (4) Cyclic provider-output graph fails closed with a typed error (no crash).
 {
   const provenance = { a: 1 };
   provenance.self = provenance;
@@ -52,7 +47,6 @@ const base = (over = {}) => ({
   assert.equal(out.code, 'provider-output-structure-invalid');
 }
 
-// (5) A well-formed, in-budget provider output still validates and returns ok.
 {
   const out = validateProviderOutput(base({
     completeness: 'complete',
@@ -64,16 +58,40 @@ const base = (over = {}) => ({
   assert.ok(Object.isFrozen(out.value));
 }
 
-// (6) A getter-bearing provenance is admitted within budget and still
-//     validates: the preflight + stableStringify keep the boundary from ever
-//     crashing, and a small bounded number of property reads (not a heap/stack
-//     exhaustion) is the correct, type-preserving #7127 outcome.
 {
   let reads = 0;
-  const provenance = { get boom() { reads++; return { deep: 'x'.repeat(10) }; } };
-  const out = validateProviderOutput(base({ provenance }), { maxBytes: 8192, maxEntries: 100 });
-  assert.equal(out.ok, true);
-  assert.ok(reads >= 1 && reads <= 4, `bounded getter reads, saw ${reads}`);
+  let hostile = { leaf: true };
+  for (let i = 0; i < 50_000; i++) hostile = { next: hostile };
+  const value = base();
+  Object.defineProperty(value, 'provenance', {
+    enumerable: true,
+    get() {
+      reads++;
+      return reads === 1 ? { source: 'first-read' } : hostile;
+    },
+  });
+  const out = validateProviderOutput(value, { maxBytes: 8192, maxEntries: 100 });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(reads, 1, `provider-owned getter must be read exactly once, saw ${reads}`);
+  assert.deepEqual(out.value.provenance, { source: 'first-read' });
+}
+
+// Collection accessors are also single-admission: a safe first value cannot
+// be replaced by a huge second value after the maxEntries preflight.
+{
+  let reads = 0;
+  const value = base();
+  Object.defineProperty(value, 'items', {
+    enumerable: true,
+    get() {
+      reads++;
+      return reads === 1 ? [] : Array.from({ length: 100_000 }, (_, i) => ({ id: `late-${i}`, targetIdentity: 't' }));
+    },
+  });
+  const out = validateProviderOutput(value, { maxBytes: 8192, maxEntries: 1 });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(reads, 1, `items getter must be read exactly once, saw ${reads}`);
+  assert.deepEqual(out.value.items, []);
 }
 
 console.log('issue-8760 phase12 provider-output admission-order regression PASS');
