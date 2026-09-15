@@ -172,12 +172,18 @@ requireExports(pluginApi, 'js/platform/plugin-api.js', [
     resolved === 'js/ir-core.js' || resolved === 'js/decompiler/pipeline-core.js'
   ), 'UI imports private semantic internals instead of a facade');
 
-  // The existing CapabilityExecutor is the one sanctioned AI mutation adapter.
-  // It may validate patch targets, but every agent-exposed mutating capability stays approval-gated.
-  const mutationExecutor = 'js/ai/capabilities/executor.js';
-  const aiFiles = walk('js/ai').filter((file) => file !== mutationExecutor);
+  // CapabilityExecutor remains the one sanctioned AI mutation adapter. The
+  // implementation may be split behind its public executor.js facade, but the
+  // guardrail inspects every file in that logical adapter and excludes only
+  // those files from the patch-import ban.
+  const mutationExecutorFiles = [
+    'js/ai/capabilities/executor.js',
+    'js/ai/capabilities/executor-base.js',
+  ].filter((file) => fs.existsSync(path.join(root, file)));
+  const mutationExecutorSet = new Set(mutationExecutorFiles);
+  const aiFiles = walk('js/ai').filter((file) => !mutationExecutorSet.has(file));
   assertNoImport(aiFiles, ({ resolved }) => resolved === 'js/patch.js' || resolved.startsWith('js/patch/'), 'AI bypasses the approval-gated mutation executor');
-  const executorSource = source(mutationExecutor);
+  const executorSource = mutationExecutorFiles.map(source).join('\n');
   assert.match(executorSource, /entry\.requiresApproval\s*&&\s*!consumeProposalAuthorization\(options\.authorization/, 'AI mutation executor must enforce proposal-store authorization before execution');
   assert.match(executorSource, /value\?\.kind\s*===\s*['"]proposal['"]/, 'AI mutation authorization must remain proposal-scoped');
 

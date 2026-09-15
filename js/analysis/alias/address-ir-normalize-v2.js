@@ -101,6 +101,7 @@ export function normalizeAddressProofIr(ir) {
     if (node?.kind !== 'intrinsic' || typeof node.operator !== 'string' || node.operator.toLowerCase() !== 'add-with-carry') continue;
     if (!Array.isArray(node.inputs) || node.inputs.length !== 3) continue;
     if (!Array.isArray(node.outputs) || node.outputs.length < 1) continue;
+    if (node?.attributes?.machineEffects?.operationMetadata?.subtract === true) continue;
     if (node.inputs.some((id) => canonicalId(id) == null) || node.outputs.some((id) => canonicalId(id) == null)) continue;
     if (exactIntegerConstant(valuesById, nodesById, node.inputs[2]) !== 0n) continue;
 
