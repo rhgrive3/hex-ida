@@ -124,6 +124,22 @@
     }
   }
 
+  /*
+   * Architecture identity used to reject duplicate fat slices. It mirrors the
+   * canonical loader's `canonicalArchitectureSubtype()` in js/binary/macho-fat.js
+   * exactly (dyld canonicalizes only the pre-versioned fat-header arm64e value
+   * 2 to the ABI-v0 identity; every other subtype keeps its lower 24 bits) so
+   * the classic path cannot invent a second architecture-duplication policy.
+   */
+  function canonicalFatArchKey(cputype, cpusubtype) {
+    const cpu = cputype >>> 0;
+    const sub = cpusubtype >>> 0;
+    const id = cpu === CPU_TYPE_ARM64
+      ? (sub === 2 ? 0x80000002 : sub)
+      : (sub & 0x00ffffff);
+    return cpu + ':' + id;
+  }
+
   function cstr(u8, off, max) {
     let end = off;
     const lim = Math.min(off + max, u8.length);
@@ -169,7 +185,17 @@
   /**
    * Parse a fat header. `buf` must cover at least 8 + 32*nfat bytes.
    * Returns [{offset, size, cputype, cpusubtype, name}] or null when the
-   * CAFEBABE turns out to be something else (e.g. a Java class file).
+   * CAFEBABE turns out to be something else (e.g. a Java class file) or when
+   * the fat container violates physical slice ownership.
+   *
+   * The canonical loader (`js/binary/macho-core.js` via `js/binary/macho-fat.js`,
+   * #6314/#6316) rejects a container whose slice file ranges overlap or whose
+   * architecture identities are duplicated before any slice is opened, because a
+   * single physical byte range must not be published as regions of two different
+   * architectures / virtual-address spaces. The classic path previously checked
+   * only each entry against `fileSize`, so a crafted universal binary could map
+   * the same bytes under two owners; that source-identity divergence is closed
+   * here at the same authority point.
    */
   function parseFat(buf, fileSize) {
     const dv = new DataView(buf);
@@ -179,16 +205,40 @@
     if (n === 0 || n > 32) return null;               // sanity: not a real fat binary
     const entry = is64 ? 32 : 20;
     if (8 + n * entry > buf.byteLength) return null;
-    const out = [];
+    // Stage every declared entry as a descriptor first; publish nothing until
+    // the whole container's ownership is proven (#8840 expected-fix 1/7).
+    const staged = [];
     for (let i = 0; i < n; i++) {
       const o = 8 + i * entry;
       const cputype = dv.getInt32(o, false);
       const cpusubtype = dv.getInt32(o + 4, false);
       const offset = is64 ? dv.getBigUint64(o + 8, false) : BigInt(dv.getUint32(o + 8, false));
       const size = is64 ? dv.getBigUint64(o + 16, false) : BigInt(dv.getUint32(o + 12, false));
+      if (size <= 0n) return null;                    // empty slice: not a real fat binary
       if (offset + size > fileSize) return null;      // not a fat binary after all
-      const cn = cpuName(cputype, cpusubtype);
-      out.push({ offset, size, cputype, cpusubtype, name: cn.cpu + (cn.sub && cn.sub !== 'all' ? ' (' + cn.sub + ')' : '') });
+      staged.push({ cputype, cpusubtype, offset, size });
+    }
+    // Duplicate architecture identity (canonical subtype normalization).
+    const seen = new Set();
+    for (const e of staged) {
+      const key = canonicalFatArchKey(e.cputype, e.cpusubtype);
+      if (seen.has(key)) return null;                 // #8840: reject duplicate arch
+      seen.add(key);
+    }
+    // Pairwise physical slice-range overlap must be rejected before any slice is
+    // read/registered, so no file byte can gain a second architecture/VM owner.
+    for (let i = 0; i < staged.length; i++) {
+      const a = staged[i];
+      for (let j = i + 1; j < staged.length; j++) {
+        const b = staged[j];
+        if (a.offset < b.offset + b.size && b.offset < a.offset + a.size) return null;
+      }
+    }
+    const out = [];
+    for (const e of staged) {
+      const cn = cpuName(e.cputype, e.cpusubtype);
+      out.push({ offset: e.offset, size: e.size, cputype: e.cputype, cpusubtype: e.cpusubtype,
+        name: cn.cpu + (cn.sub && cn.sub !== 'all' ? ' (' + cn.sub + ')' : '') });
     }
     return out;
   }
