@@ -509,7 +509,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       addValue({
         id: valueId,
         kind: 'definition',
-        machineType: { kind: 'bitvector', widthBits },
+        machineType: { kind: 'address', widthBits, addressSpace: String(addressSpace) },
         definitionNodeId: nodeId,
         sourceEntityId: effect.sourceEffectId,
         origin,
@@ -1063,16 +1063,16 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
         emitUnknownEffects(effect, 'conditional-branch-not-fully-representable', ['control'], { control });
         return;
       }
-      const rawTargetsAreSame = stableStringify(rawTargets[0]) === stableStringify(rawTargets[1]);
-      const sameSuccessorTarget = rawTargetsAreSame ? ensureControlTargetBlock(rawTargets[0], 'branch-0') : null;
-      const targets = rawTargetsAreSame
-        ? [sameSuccessorTarget, sameSuccessorTarget]
-        : unique(rawTargets.map((target, index) => ensureControlTargetBlock(target, index === rawTargets.length - 1 ? 'fallthrough' : `branch-${index}`)));
+      const targets = rawTargets.map((target, index) => ensureControlTargetBlock(
+        target,
+        index === rawTargets.length - 1 ? 'fallthrough' : `branch-${index}`,
+      ));
       if (targets.length !== 2) {
         emitUnknownEffects(effect, 'conditional-branch-target-cardinality', ['control'], { control, targets });
         return;
       }
-      const nodeId = nodeIdFor(effect, rawTargetsAreSame ? 'conditional-branch-same-successor-control' : 'conditional-branch-control');
+      const sameSuccessor = targets[0] === targets[1];
+      const nodeId = nodeIdFor(effect, sameSuccessor ? 'conditional-branch-same-successor-control' : 'conditional-branch-control');
       addNode({
         id: nodeId,
         kind: 'conditional-branch',
@@ -1081,10 +1081,10 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
         targets,
         attributes: machineAttributes(effect, {
           machineControlEffect: control,
-          ...(rawTargetsAreSame ? { degenerateConditional: true } : {}),
+          ...(sameSuccessor ? { degenerateConditional: true } : {}),
         }),
         sourceEffectIds: [effect.sourceEffectId],
-        origin: effectOrigin(effect, rawTargetsAreSame
+        origin: effectOrigin(effect, sameSuccessor
           ? 'conditional-branch-same-successor-control-projection'
           : 'conditional-branch-control-projection', [nodeId]),
       });
