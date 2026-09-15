@@ -160,6 +160,28 @@ function loadValueIdentity(n) {
   return `anon:${id}`;
 }
 
+const anonymousVarIds = new WeakMap();
+let nextAnonymousVarId = 1;
+function anonymousVarIdentity(n) {
+  let id = anonymousVarIds.get(n);
+  if (id == null) { id = nextAnonymousVarId++; anonymousVarIds.set(n, id); }
+  return `anon:${id}`;
+}
+function canonicalVarScalar(v) {
+  return canonicalIdentity(v, { allowString: true });
+}
+function varValueIdentity(n) {
+  const source = n?.source || null;
+  const rawDefs = source?.ssaDefs ?? source?.ssaDef;
+  const defs = rawDefs == null ? [] : (Array.isArray(rawDefs) ? rawDefs : [rawDefs]);
+  const id = n?.ssaId == null ? null : canonicalVarScalar(n.ssaId);
+  const canonicalDefs = defs.map(canonicalVarScalar);
+  const hasRawIdentity = n?.ssaId != null || rawDefs != null;
+  if (!hasRawIdentity) return anonymousVarIdentity(n);
+  if (id === null || canonicalDefs.length !== 1 || canonicalDefs[0] === null || canonicalDefs[0] !== id) return anonymousVarIdentity(n);
+  return `ssa:${typeof id === 'string' ? `s:${JSON.stringify(id)}` : `n:${id}`}`;
+}
+
 // Post-order canonicalization without recursion. This handles deeply skewed ASTs safely.
 export function structuralKey(root) {
   if (!root) return 'null';
@@ -183,7 +205,7 @@ export function structuralKey(root) {
     switch (n.kind) {
       case 'const': value = `c:${semanticTag(n)}:${n.value}`; break;
       case 'float-const': { const fv=Number.isNaN(n.value)?'NaN':n.value===Infinity?'Infinity':n.value===-Infinity?'-Infinity':Object.is(n.value,-0)?'-0':String(n.value); value=`fc:${semanticTag(n)}:${fv}`; break; }
-      case 'var': value = `v:${n.name}:${semanticTag(n)}`; break;
+      case 'var': value = `v:${n.name}:${semanticTag(n)}:${varValueIdentity(n)}`; break;
       case 'unary': value = `u:${n.op}:${semanticTag(n)}:${k(n.arg)}`; break;
       case 'binary': value = `b:${n.op}:${semanticTag(n)}:${k(n.left)}:${k(n.right)}`; break;
       case 'compare': value = `cmp:${n.op}:${n.compareSigned}:${n.comparisonDomain ?? 'unknown'}:${k(n.left)}:${k(n.right)}`; break;
