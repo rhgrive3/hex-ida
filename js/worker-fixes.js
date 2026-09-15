@@ -283,7 +283,9 @@ async function __functionEvidence(region, slice, requestId, unwindLimit = 200_00
     // Objective-C, initializer, and Swift reflection function references.
     for (const a of await objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId)) exactMetadata.add(a);
     for (const a of await initializerFunctionStarts(slice, lo, hi, imageBase, requestId)) exactMetadata.add(a);
-    for (const a of await swiftReflectionFunctionStarts(slice, lo, hi, requestId)) exactMetadata.add(a);
+    const swiftStarts = await swiftReflectionFunctionStarts(slice, lo, hi, requestId);
+    for (const a of swiftStarts) exactMetadata.add(a);
+    if (swiftStarts.truncated) { metadataIncomplete = true; metadataTruncationReason ||= 'swift-reflection-' + (swiftStarts.truncationReason || 'truncated'); }
     const unwindRegion = (slice.regions || []).find((r) => r.section === '__unwind_info' && r.size > 0n);
     let unwindLsdaEntries = [];
     if (unwindRegion && unwindRegion.size < 16n * 1024n * 1024n) {
