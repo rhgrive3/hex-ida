@@ -86,6 +86,27 @@ export function classifyJvmFieldDescriptor(descriptor) {
   return null;
 }
 
+// A jvmClass's declared-field set is immutable during decoding, so the
+// same-owner ACC_VOLATILE authority (#7861) is a stable fact. Rescanning
+// `jvmClass.fields` for every field opcode hid O(class fields) work behind one
+// admitted semantic operation (#8829). Cache the resolved flags per class keyed
+// by the exact (owner, name, descriptor) triple so ambiguity/external-owner
+// fail-closed results are preserved.
+const declaredFlagsCache = new WeakMap();
+
+function resolveDeclaredAccessFlags(jvmClass, owner, name, descriptor) {
+  let byClass = declaredFlagsCache.get(jvmClass);
+  if (!byClass) { byClass = new Map(); declaredFlagsCache.set(jvmClass, byClass); }
+  const key = `${owner}\u0000${name}\u0000${descriptor}`;
+  if (byClass.has(key)) return byClass.get(key);
+  const declared = Array.isArray(jvmClass?.fields)
+    ? jvmClass.fields.filter((field) => field?.name === name && field?.descriptor === descriptor)
+    : [];
+  const flags = owner === jvmClass?.thisClassName && declared.length === 1 ? declared[0].accessFlags : null;
+  byClass.set(key, flags);
+  return flags;
+}
+
 export function resolveJvmFieldRef(jvmClass, cpIndex, { resolveDeclaredFlags = false } = {}) {
   const fieldRef = cpEntry(jvmClass, cpIndex);
   if (fieldRef?.tag !== 9) return null;
@@ -107,14 +128,7 @@ export function resolveJvmFieldRef(jvmClass, cpIndex, { resolveDeclaredFlags = f
   // declared flags bind only when exactly one declared field matches.
   let declaredAccessFlags;
   if (resolveDeclaredFlags) {
-    const declared = Array.isArray(jvmClass?.fields)
-      ? jvmClass.fields.filter((field) => field?.name === name && field?.descriptor === descriptor)
-      : [];
-    if (owner === jvmClass?.thisClassName && declared.length === 1) {
-      declaredAccessFlags = declared[0].accessFlags;
-    } else {
-      declaredAccessFlags = null;
-    }
+    declaredAccessFlags = resolveDeclaredAccessFlags(jvmClass, owner, name, descriptor);
   }
 
   return Object.freeze({
