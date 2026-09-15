@@ -144,11 +144,20 @@ export class InstrumentationProvider {
 
   descriptor() { return this._descriptor; }
 
-  async #authorizeMutation(kind, details, callOptions = {}) {
+  async #authorizeMutation(kind, details, callOptions = {}, operationIdentity = null) {
     const direct = kind === 'function-replacement' ? this.options.allowReplacement === true : kind === 'memory-write' ? this.options.allowMemoryWrite === true : false;
     if (direct) return true;
     if (typeof this.options.authorizeMutation !== 'function') return false;
-    return (await this.options.authorizeMutation({ kind, providerId: this._descriptor.id, details, context: callOptions.authorizationContext ?? null })) === true;
+    // #8692: bind the authorization decision to the canonical captured
+    // session/epoch identity of the operation that requested it, instead of
+    // letting policy callbacks infer freshness from mutable ambient state.
+    return (await this.options.authorizeMutation({
+      kind,
+      providerId: this._descriptor.id,
+      details,
+      context: callOptions.authorizationContext ?? null,
+      ...(operationIdentity ? { runtimeSessionId: operationIdentity.runtimeSessionId, sessionEpoch: operationIdentity.sessionEpoch } : {}),
+    })) === true;
   }
 
   async openSession(request = {}, options = {}) {
@@ -249,13 +258,14 @@ export class InstrumentationProvider {
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
         });
         const operation = createRuntimeOperationController(session, callOptions?.signal);
-        const startedEpoch = session.epoch;
         let result;
         try {
+          // #8692: fail closed before the side-effecting backend call when the
+          // request is already cancelled/closed/epoch-stale, so a probe can
+          // never be installed-and-orphaned by a dead request.
+          operation.throwIfStale('probe installation stopped before its backend invocation');
           result = await install(spec, { ...callOptions, signal: operation.signal });
-          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
-            throw new DebugAdapterError('runtime-session-stale', 'probe installation completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
-          }
+          operation.throwIfStale('probe installation completed after its runtime epoch changed');
         } finally {
           operation.release();
         }
@@ -278,13 +288,11 @@ export class InstrumentationProvider {
           parentInterventionIds: [...new Set([...(callOptions.parentInterventionIds ?? []), ...(parent ? [parent] : [])])],
         });
         const operation = createRuntimeOperationController(session, callOptions?.signal);
-        const startedEpoch = session.epoch;
         let result;
         try {
+          operation.throwIfStale('probe removal stopped before its backend invocation');
           result = await remove(handle, { ...callOptions, signal: operation.signal });
-          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
-            throw new DebugAdapterError('runtime-session-stale', 'probe removal completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
-          }
+          operation.throwIfStale('probe removal completed after its runtime epoch changed');
         } finally {
           operation.release();
         }
@@ -305,13 +313,11 @@ export class InstrumentationProvider {
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
         });
         const operation = createRuntimeOperationController(session, callOptions?.signal);
-        const startedEpoch = session.epoch;
         let result;
         try {
+          operation.throwIfStale('interception stopped before its backend invocation');
           result = await install(spec, { ...callOptions, signal: operation.signal });
-          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
-            throw new DebugAdapterError('runtime-session-stale', 'interception completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
-          }
+          operation.throwIfStale('interception completed after its runtime epoch changed');
         } finally {
           operation.release();
         }
@@ -321,25 +327,35 @@ export class InstrumentationProvider {
         return { result, intervention };
       },
       replace: async (target, replacement, callOptions = {}) => {
-        const authorized = await this.#authorizeMutation('function-replacement', { target, replacement }, callOptions);
-        if (!authorized) throw new DebugAdapterError('permission-denied', 'instrumentation replacement requires provider-authorized mutation capability');
-        const replace = requiredMethod(this.backend, 'replace', 'function replacement');
-        const draft = validateInterventionDraft(interventions, {
-          runtimeSessionId: session.runtimeSessionId,
-          providerId: session.providerId,
-          kind: 'function-replacement',
-          target,
-          requestedChange: replacement,
-          parentInterventionIds: callOptions.parentInterventionIds ?? [],
-        });
+        // #8692: establish the session-owned operation token and capture the
+        // starting epoch before the awaited authorization precondition, so an
+        // epoch transition/close/caller abort during authorization invalidates
+        // the request instead of letting it silently rebase onto a new
+        // generation. The completion-time check remains for abort-ignoring
+        // backends, and authorization receives the canonical captured identity.
         const operation = createRuntimeOperationController(session, callOptions?.signal);
-        const startedEpoch = session.epoch;
         let result;
+        let draft;
         try {
+          operation.throwIfStale('function replacement stopped before mutation authorization');
+          const authorized = await this.#authorizeMutation('function-replacement', { target, replacement }, callOptions, {
+            runtimeSessionId: session.runtimeSessionId,
+            sessionEpoch: operation.startedEpoch,
+          });
+          operation.throwIfStale('function replacement authorization completed after cancellation or a runtime epoch change');
+          if (!authorized) throw new DebugAdapterError('permission-denied', 'instrumentation replacement requires provider-authorized mutation capability');
+          const replace = requiredMethod(this.backend, 'replace', 'function replacement');
+          draft = validateInterventionDraft(interventions, {
+            runtimeSessionId: session.runtimeSessionId,
+            providerId: session.providerId,
+            kind: 'function-replacement',
+            target,
+            requestedChange: replacement,
+            parentInterventionIds: callOptions.parentInterventionIds ?? [],
+          });
+          operation.throwIfStale('function replacement stopped before its backend invocation');
           result = await replace(target, replacement, { ...callOptions, signal: operation.signal });
-          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
-            throw new DebugAdapterError('runtime-session-stale', 'function replacement completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
-          }
+          operation.throwIfStale('function replacement completed after its runtime epoch changed');
         } finally {
           operation.release();
         }
@@ -352,37 +368,45 @@ export class InstrumentationProvider {
       readMemory: async (address, size, callOptions = {}) => {
         const read = requiredMethod(this.backend, 'readMemory', 'memory read');
         const operation = createRuntimeOperationController(session, callOptions?.signal);
-        const startedEpoch = session.epoch;
         try {
+          // #8692: reads follow the same helper contract; an already-stale
+          // request never reaches the backend either.
+          operation.throwIfStale('memory read stopped before its backend invocation');
           const result = await read(address, size, { ...callOptions, signal: operation.signal });
-          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
-            throw new DebugAdapterError('runtime-session-stale', 'memory read completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
-          }
+          operation.throwIfStale('memory read completed after its runtime epoch changed');
           return result;
         } finally {
           operation.release();
         }
       },
       writeMemory: async (address, bytes, callOptions = {}) => {
-        const authorized = await this.#authorizeMutation('memory-write', { address, byteLength: bytes?.byteLength ?? bytes?.length ?? null }, callOptions);
-        if (!authorized) throw new DebugAdapterError('permission-denied', 'instrumentation memory write requires provider-authorized mutation capability');
-        const write = requiredMethod(this.backend, 'writeMemory', 'memory write');
-        const draft = validateInterventionDraft(interventions, {
-          runtimeSessionId: session.runtimeSessionId,
-          providerId: session.providerId,
-          kind: 'memory-write',
-          target: { address },
-          requestedChange: { bytes },
-          parentInterventionIds: callOptions.parentInterventionIds ?? [],
-        });
+        // #8692: same authorization-window repair as replace(): the session
+        // operation token and starting epoch exist before the first await,
+        // authorization is bound to that captured identity, and every awaited
+        // precondition is re-checked before the side-effecting backend call.
         const operation = createRuntimeOperationController(session, callOptions?.signal);
-        const startedEpoch = session.epoch;
         let result;
+        let draft;
         try {
+          operation.throwIfStale('memory write stopped before mutation authorization');
+          const authorized = await this.#authorizeMutation('memory-write', { address, byteLength: bytes?.byteLength ?? bytes?.length ?? null }, callOptions, {
+            runtimeSessionId: session.runtimeSessionId,
+            sessionEpoch: operation.startedEpoch,
+          });
+          operation.throwIfStale('memory write authorization completed after cancellation or a runtime epoch change');
+          if (!authorized) throw new DebugAdapterError('permission-denied', 'instrumentation memory write requires provider-authorized mutation capability');
+          const write = requiredMethod(this.backend, 'writeMemory', 'memory write');
+          draft = validateInterventionDraft(interventions, {
+            runtimeSessionId: session.runtimeSessionId,
+            providerId: session.providerId,
+            kind: 'memory-write',
+            target: { address },
+            requestedChange: { bytes },
+            parentInterventionIds: callOptions.parentInterventionIds ?? [],
+          });
+          operation.throwIfStale('memory write stopped before its backend invocation');
           result = await write(address, bytes, { ...callOptions, signal: operation.signal });
-          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
-            throw new DebugAdapterError('runtime-session-stale', 'memory write completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
-          }
+          operation.throwIfStale('memory write completed after its runtime epoch changed');
         } finally {
           operation.release();
         }
