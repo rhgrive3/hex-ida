@@ -6,6 +6,7 @@ import {
   fuseFunctionCandidates,
 } from '../../../js/analysis/discovery/fusion.js';
 import { createDebugEvidenceProducer } from '../../../js/analysis/discovery/producers.js';
+import { BinaryImage } from '../../../js/binary/model.js';
 
 function segment({ base, size, fileSize = size, execute = true }) {
   return {
@@ -169,4 +170,53 @@ test('#8833 heuristic rows are unaffected by the mapping gate', () => {
   const { evidence } = produceDebug([weak], { image: targetImage(CODE()) });
   assert.equal(evidence[0].kind, 'debug-symbol-heuristic');
   assert.equal(evidence[0].confidence, 'heuristic');
+});
+
+function overlappingImage(sectionName, sectionExecute) {
+  const image = new BinaryImage(new Uint8Array(0x1200), { format: 'elf', arch: 'aarch64' });
+  image.addSegment({
+    name: 'RX-code',
+    address: 0x1000n,
+    size: 0x100n,
+    fileOffset: 0x1000n,
+    fileSize: 0x100n,
+    perms: { read: true, write: false, execute: true },
+  });
+  image.addSection({
+    name: sectionName,
+    segment: 'RX-code',
+    address: 0x1040n,
+    size: 0x20n,
+    fileOffset: 0x1040n,
+    fileSize: 0x20n,
+    perms: { read: true, write: false, execute: sectionExecute },
+    flags: 0x2n | (sectionExecute ? 0x4n : 0n),
+    source: 'section-header',
+  });
+  return image;
+}
+
+test('#8833 real BinaryImage overlap: executable segment, non-executable canonical owner, stays heuristic', () => {
+  const image = overlappingImage('.rodata', false);
+  assert.equal(image.segmentAt(0x1040n).perms.execute, true);
+  const canonical = image.resolveVirtualMapping(0x1040n);
+  assert.equal(canonical.kind, 'file');
+  assert.equal(canonical.mapping.perms.execute, false);
+  assert.equal(canonical.available, 32n);
+  const { evidence, fused } = produceDebug([row({ address: '0x1040', sizeBytes: 0 })], { image });
+  assert.equal(evidence[0].kind, 'debug-symbol-heuristic');
+  assert.equal(evidence[0].authority, 'heuristic');
+  assert.equal(fused.candidates[0].startState, 'heuristic');
+});
+
+test('#8833 real BinaryImage overlap positive control: executable canonical owner retains exact authority', () => {
+  const image = overlappingImage('.text', true);
+  const canonical = image.resolveVirtualMapping(0x1040n);
+  assert.equal(canonical.kind, 'file');
+  assert.equal(canonical.mapping.perms.execute, true);
+  assert.equal(canonical.available, 32n);
+  const { evidence, fused } = produceDebug([row({ address: '0x1040', sizeBytes: 0 })], { image });
+  assert.equal(evidence[0].kind, 'debug-symbol');
+  assert.equal(evidence[0].authority, 'authoritative');
+  assert.equal(fused.candidates[0].startState, 'exact');
 });

@@ -310,11 +310,13 @@ function debugFunctionStartBytes(input, sizeBytesRaw) {
  * A debug identity match proves which build a companion describes; it proves
  * nothing about whether one claimed address denotes code in this binary. So
  * `exact` debug evidence becomes an authoritative start only after the target
- * image itself proves the claim: the address sits in an executable mapping,
- * the ISA minimum instruction span is contiguous file-backed bytes (never a
- * zero-fill tail), and a claimed extent is validated separately against the
- * same executable file-backed run (#8833). A missing or unusable target is
- * absence of proof, and absence of proof never mints authority.
+ * image itself proves the claim: the *canonical* mapping owner for the address
+ * — the narrowest section/segment `resolveVirtualMapping` selects, not merely
+ * an enclosing segment — is executable, the ISA minimum instruction span is
+ * contiguous file-backed bytes (never a zero-fill tail), and a claimed extent
+ * is validated separately against the same executable file-backed run
+ * (#8833). A missing or unusable target is absence of proof, and absence of
+ * proof never mints authority.
  */
 function debugFunctionStartIsProvableCode(input, startString, sizeBytesRaw) {
   const image = input?.image;
@@ -327,6 +329,7 @@ function debugFunctionStartIsProvableCode(input, startString, sizeBytesRaw) {
   if (!segment || segment.perms?.execute !== true) return false;
   const mapping = image.resolveVirtualMapping(start);
   if (!mapping || mapping.kind !== 'file') return false;
+  if (mapping.mapping?.perms?.execute !== true) return false;
   const available = mapping.available;
   const required = bytes.span > bytes.extent ? bytes.span : bytes.extent;
   if (typeof available !== 'bigint' || available < required) return false;
