@@ -24,7 +24,6 @@ function retainedMemberships(graph) {
 }
 
 test('natural-loop analysis keeps exact membership, latches, and exits below the fence', () => {
-  // 0 -> 1 -> 2 -> 1, plus 2 -> 3 exit.
   const graph = analyzeGraph([[1], [2], [1, 3], []], 0);
   assert.equal(graph.loopAnalysis.complete, true);
   assert.equal(graph.loopAnalysis.stopReason, null);
@@ -40,7 +39,6 @@ test('natural-loop analysis keeps exact membership, latches, and exits below the
 });
 
 test('nested and multi-latch loops still union exactly, and irreducible side entries stay excluded', () => {
-  // Two-level nesting: outer header 1 (latch 3), inner header 2 (latch 4).
   const nested = analyzeGraph([[1], [2], [3, 4], [1], [2]], 0);
   assert.equal(nested.loopAnalysis.complete, true);
   const outer = nested.loopByHeader.get(1);
@@ -51,15 +49,12 @@ test('nested and multi-latch loops still union exactly, and irreducible side ent
   assert.equal(outer.exits.size, 0);
   assert.equal(nested.loopAnalysis.retainedMemberships, 6);
 
-  // An irreducible region keeps its honest answer: 2 -> 4 is a backward address edge,
-  // but the header does not dominate the source, so it is not a natural back edge.
   const irreducible = analyzeGraph([[1], [2, 3], [4], [4], [2]], 0);
   assert.equal(irreducible.loopAnalysis.complete, true);
   assert.equal(irreducible.backEdges.length, 0);
   assert.equal(irreducible.loops.length, 0);
   assert.equal(irreducible.components.length, 4);
 
-  // Two latch edges share one header: the union must stay exact, not last-wins.
   const shared = analyzeGraph([[1], [2, 3], [1], [1]], 0);
   assert.deepEqual([...shared.loopByHeader.get(1).latches].sort((a, b) => a - b), [2, 3]);
   assert.deepEqual([...shared.loopByHeader.get(1).nodes].sort((a, b) => a - b), [1, 2, 3]);
@@ -76,13 +71,10 @@ test('the Θ(N²) nesting family stops at the configured fence instead of OOMing
   assert.equal(graph.loopAnalysis.stopReason, 'loop-membership-budget');
   assert.equal(graph.loopAnalysis.retainedMemberships, 0);
   assert.ok(graph.loopAnalysis.walkSteps <= graph.loopAnalysis.budget.maxLoopWalkSteps);
-  // Unbounded materialization retained N(N+1)/2 - 1 ≈ 3.38 M rows here; the fence must
-  // stop after at most one budget's worth of charge, never after the whole output.
   assert.ok(graph.loopAnalysis.walkSteps
     <= graph.loopAnalysis.budget.maxLoopMemberships + n,
   `walk ran past the fence: ${graph.loopAnalysis.walkSteps}`);
   assert.ok(growthMiB < 256, `loop analysis retained ${growthMiB.toFixed(0)} MiB of RSS growth`);
-  // The non-loop facts are still exact: every final-latch back edge is real.
   assert.equal(graph.backEdges.length, n - 1);
   assert.equal(graph.loopAnalysis.nodes, n);
   assert.equal(graph.loopAnalysis.edges, 2 * (n - 1));
@@ -106,14 +98,22 @@ test('predecessor-walk and exit-scan work are charged to the same contract', () 
   assert.ok(walked.loopAnalysis.walkSteps > 0);
 });
 
-test('over-admission graphs declare the skipped phase instead of analysing unbounded', () => {
-  const graph = analyzeGraph(nestingFamily(50), 0, null, { budget: { maxNodes: 20 } });
-  assert.equal(graph.loopAnalysis.complete, false);
-  assert.equal(graph.loopAnalysis.stopReason, 'graph-node-budget');
-  assert.equal(graph.loops.length, 0);
-  assert.equal(graph.backEdges.length, 49);
-  const edged = analyzeGraph(nestingFamily(50), 0, null, { budget: { maxEdges: 20 } });
-  assert.equal(edged.loopAnalysis.stopReason, 'graph-edge-budget');
+test('node/edge over-admission is rejected before graph-wide analysis', () => {
+  assert.throws(
+    () => analyzeGraph(nestingFamily(50), 0, null, { budget: { maxNodes: 20 } }),
+    (error) => error instanceof RangeError && error.message === 'controlflow-graph-node-budget',
+  );
+  assert.throws(
+    () => analyzeGraph(nestingFamily(50), 0, null, { budget: { maxEdges: 20 } }),
+    (error) => error instanceof RangeError && error.message === 'controlflow-graph-edge-budget',
+  );
+  // Raw duplicate/invalid edge slots are admission work too; filtering must not
+  // let a hostile row spend unbounded normalization work while canonical edges stay tiny.
+  const duplicateHeavy = [[...Array(21).fill(1)], []];
+  assert.throws(
+    () => analyzeGraph(duplicateHeavy, 0, null, { budget: { maxEdges: 20 } }),
+    (error) => error instanceof RangeError && error.message === 'controlflow-graph-edge-budget',
+  );
 });
 
 test('the contract cannot be bypassed by a caller-supplied budget', () => {
@@ -125,7 +125,6 @@ test('the contract cannot be bypassed by a caller-supplied budget', () => {
     (error) => error.message === 'controlflow-invalid-budget:unbounded');
   assert.throws(() => analyzeGraph(nestingFamily(8), 0, null, { budget: { maxNodes: 0 } }),
     (error) => error.message === 'controlflow-invalid-budget:maxNodes');
-  // Ceiling-sized budgets are honoured, so a legitimate large analysis is not squeezed.
   const graph = analyzeGraph(nestingFamily(60), 0, null, { budget: { maxLoopMemberships: CONTROLFLOW_ANALYSIS_MAXIMUM_BUDGET.maxLoopMemberships } });
   assert.equal(graph.loopAnalysis.complete, true);
   assert.equal(graph.loops.length, 59);
