@@ -21,10 +21,103 @@ function terminationAlias(raw) {
   }
 }
 
+function isSharedArrayBuffer(value) {
+  return typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer;
+}
+
+// A replay recording is a trust artifact: once published/frozen and admitted
+// for replay it must not share a data block with any caller- or engine-owned
+// buffer. Native structuredClone() rewraps SharedArrayBuffer (and SAB-backed
+// views) around the SAME shared block, so structuredClone alone is not proof
+// of storage detachment (#8950). This single post-pass neutralizes every shared
+// leaf in an already-cloned graph, replacing it with a private, non-shared copy,
+// while preserving cycles, repeated references and Map/Set structure. It runs on
+// the clone only, so it never consumes a source-side accessor a second time.
+const TYPED_ARRAY_PROTOTYPE = Object.getPrototypeOf(Uint8Array.prototype);
+const TYPED_ARRAY_KIND = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, Symbol.toStringTag).get;
+const TYPED_ARRAY_TYPES = new Map([
+  Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array,
+  Int32Array, Uint32Array, Float32Array, Float64Array, BigInt64Array,
+  BigUint64Array, globalThis.Float16Array,
+].filter((type) => typeof type === 'function').map((type) => [type.name, type]));
+
+function isSharedBackedLeaf(value) {
+  if (value == null || typeof value !== 'object') return false;
+  if (isSharedArrayBuffer(value)) return true;
+  return ArrayBuffer.isView(value) && isSharedArrayBuffer(value.buffer);
+}
+
+function privateBytesFrom(source, byteOffset, byteLength) {
+  const buffer = new ArrayBuffer(byteLength);
+  if (byteLength > 0) new Uint8Array(buffer).set(new Uint8Array(source, byteOffset, byteLength));
+  return buffer;
+}
+
+function detachSharedLeaf(value) {
+  if (isSharedArrayBuffer(value)) return privateBytesFrom(value, 0, value.byteLength);
+  const kind = TYPED_ARRAY_KIND.call(value);
+  const detached = privateBytesFrom(value.buffer, value.byteOffset, value.byteLength);
+  if (!kind) return new DataView(detached);
+  return new (TYPED_ARRAY_TYPES.get(kind))(detached, 0, value.length);
+}
+
+function detachSharedStorage(root) {
+  if (isSharedBackedLeaf(root)) return detachSharedLeaf(root);
+  if (root == null || typeof root !== 'object') return root;
+  const seen = new WeakSet();
+  const stack = [root];
+  while (stack.length) {
+    const node = stack.pop();
+    if (node == null || typeof node !== 'object' || seen.has(node)) continue;
+    seen.add(node);
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i += 1) {
+        const child = node[i];
+        if (isSharedBackedLeaf(child)) node[i] = detachSharedLeaf(child);
+        else stack.push(child);
+      }
+    } else if (node instanceof Map) {
+      const keyEdits = [];
+      for (const [key, value] of node) {
+        if (isSharedBackedLeaf(key)) {
+          keyEdits.push([key, detachSharedLeaf(key), isSharedBackedLeaf(value) ? detachSharedLeaf(value) : value]);
+          stack.push(keyEdits[keyEdits.length - 1][2]);
+        } else if (isSharedBackedLeaf(value)) {
+          node.set(key, detachSharedLeaf(value));
+        } else {
+          stack.push(value);
+        }
+        stack.push(key);
+      }
+      for (const [oldKey, newKey, value] of keyEdits) {
+        node.delete(oldKey);
+        node.set(newKey, value);
+      }
+    } else if (node instanceof Set) {
+      const edits = [];
+      for (const member of node) {
+        if (isSharedBackedLeaf(member)) edits.push([member, detachSharedLeaf(member)]);
+        else stack.push(member);
+      }
+      for (const [oldMember, newMember] of edits) {
+        node.delete(oldMember);
+        node.add(newMember);
+      }
+    } else {
+      for (const [key, value] of Object.entries(node)) {
+        if (isSharedBackedLeaf(value)) node[key] = detachSharedLeaf(value);
+        else stack.push(value);
+      }
+    }
+  }
+  return root;
+}
+
 function ownedClone(value) {
   if (typeof value === 'function' || typeof value === 'symbol') throw new TypeError('value is not replay-recordable');
-  if (typeof structuredClone === 'function') return structuredClone(value);
+  if (typeof structuredClone === 'function') return detachSharedStorage(structuredClone(value));
   if (value == null || typeof value !== 'object') return value;
+  if (isSharedArrayBuffer(value)) return privateBytesFrom(value, 0, value.byteLength);
   if (Array.isArray(value)) return value.map(ownedClone);
   if (value instanceof Uint8Array) return new Uint8Array(value);
   if (value instanceof ArrayBuffer) return value.slice(0);
