@@ -6,6 +6,7 @@
   "owners": {
     "phase7": [
       "js/analysis/alias/regions-v2.js",
+      "js/analysis/alias/regions-v2-core.js",
       "js/analysis/discovery/layout.js",
       "js/analysis/index.js",
       "js/analysis/query/app-adapter.js",
@@ -500,6 +501,7 @@
       "js/semantics/ir/from-machine-effects.js",
       "js/semantics/ir/normalize-effects.js",
       "js/semantics/ssa/build.js",
+      "js/semantics/ssa/build-core.js",
       "tests/semantic-v2/c4-return-control-target.test.mjs",
       "docs/解析ツール改善.md.txt",
       "js/metadata/objc.js",

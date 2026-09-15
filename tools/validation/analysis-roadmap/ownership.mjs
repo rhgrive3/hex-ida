@@ -32,6 +32,7 @@ const SPECIAL_PATHS = Object.freeze({
     'js/semantics/ir/from-machine-effects.js',
     'js/semantics/ir/normalize-effects.js',
     'js/semantics/ssa/build.js',
+    'js/semantics/ssa/build-core.js',
     'tests/semantic-v2/c4-return-control-target.test.mjs',
     'tests/scpa/x02-apple-version-matrix.test.mjs',
     'tests/scpa/fixtures/x02-apple-version-matrix.json',
