@@ -283,7 +283,9 @@ async function __functionEvidence(region, slice, requestId, unwindLimit = 200_00
     // Objective-C, initializer, and Swift reflection function references.
     for (const a of await objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId)) exactMetadata.add(a);
     for (const a of await initializerFunctionStarts(slice, lo, hi, imageBase, requestId)) exactMetadata.add(a);
-    for (const a of await swiftReflectionFunctionStarts(slice, lo, hi, requestId)) exactMetadata.add(a);
+    const swiftStarts = await swiftReflectionFunctionStarts(slice, lo, hi, requestId);
+    for (const a of swiftStarts) exactMetadata.add(a);
+    if (swiftStarts.truncated) { metadataIncomplete = true; metadataTruncationReason ||= 'swift-reflection-' + (swiftStarts.truncationReason || 'truncated'); }
     const unwindRegion = (slice.regions || []).find((r) => r.section === '__unwind_info' && r.size > 0n);
     let unwindLsdaEntries = [];
     if (unwindRegion && unwindRegion.size < 16n * 1024n * 1024n) {
@@ -343,11 +345,14 @@ async function __functionEvidence(region, slice, requestId, unwindLimit = 200_00
       if (r.section !== '__objc_methlist' || r.size <= 0n || r.size > 32n * 1024n * 1024n) continue;
       try {
         const buf = await readRange(r.fileOffset, Number(r.size));
-        for (const a of MachO.parseObjcMethodStarts(buf, r.vmAddr, {
+        const starts = MachO.parseObjcMethodStarts(buf, r.vmAddr, {
           regions: slice.regions || [], imageBase, architecture: slice.info?.architecture || 'arm64',
-        })) {
+          shouldCancel: () => cancelled(requestId),
+        });
+        for (const a of starts) {
           if (a >= lo && a < hi) { structured.add(a); exactMetadata.add(a); }
         }
+        if (starts.truncated) { metadataIncomplete = true; metadataTruncationReason ||= 'objc-method-starts-' + (starts.truncationReason || 'truncated'); }
       } catch { /* malformed Objective-C metadata is not evidence */ }
     }
 
