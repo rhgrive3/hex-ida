@@ -55,7 +55,6 @@ function normalizePerms(p) {
 
 function minBigInt(a, b) { return a < b ? a : b; }
 
-
 function buildVirtualMappingLookup(sections, segments) {
   const items = [];
   let order = 0;
@@ -95,6 +94,48 @@ function buildVirtualMappingLookup(sections, segments) {
   return { items, starts, prefixEnds, runs: buildVirtualMappingRuns(items) };
 }
 
+// Owner selection for overlapping mappings is "smallest size wins, earliest source
+// order breaks ties" and is queried while sweeping interval boundaries in ascending
+// order. One heap implements that comparator for both the virtual-mapping run index and
+// the function-seed region sweep so the two boundaries cannot drift apart.
+function createSizeOrderMinHeap() {
+  const heap = [];
+  const before = (a, b) => a.size < b.size || (a.size === b.size && a.order < b.order);
+
+  const push = (item) => {
+    heap.push(item);
+    let index = heap.length - 1;
+    while (index > 0) {
+      const parent = (index - 1) >>> 1;
+      if (!before(heap[index], heap[parent])) break;
+      [heap[index], heap[parent]] = [heap[parent], heap[index]];
+      index = parent;
+    }
+  };
+
+  const pop = () => {
+    const top = heap[0];
+    const last = heap.pop();
+    if (heap.length > 0) {
+      heap[0] = last;
+      let index = 0;
+      while (true) {
+        const left = index * 2 + 1;
+        const right = left + 1;
+        let smallest = index;
+        if (left < heap.length && before(heap[left], heap[smallest])) smallest = left;
+        if (right < heap.length && before(heap[right], heap[smallest])) smallest = right;
+        if (smallest === index) break;
+        [heap[index], heap[smallest]] = [heap[smallest], heap[index]];
+        index = smallest;
+      }
+    }
+    return top;
+  };
+
+  return { push, pop, clear: () => { heap.length = 0; }, top: () => heap[0], size: () => heap.length };
+}
+
 function buildVirtualMappingRuns(items) {
   const events = [];
   for (const item of items) {
@@ -104,16 +145,19 @@ function buildVirtualMappingRuns(items) {
   events.sort((a, b) => a.point < b.point ? -1 : a.point > b.point ? 1 : a.kind - b.kind);
   const starts = [];
   const owners = [];
-  const active = new Set();
+  // The owner of an interval is the smallest live mapping, so the minimum is carried
+  // across boundaries in a lazy-deletion heap. Rescanning the whole live set at every
+  // boundary made index construction Θ(N^2) on nested mappings, which let a small file
+  // spend far beyond the parser's advertised deadline in the first mapping query (#8880).
+  const live = new Set();
+  const heap = createSizeOrderMinHeap();
+  const bestActive = () => {
+    while (heap.size() > 0 && !live.has(heap.top())) heap.pop();
+    const best = heap.top();
+    return best ? best.mapping : null;
+  };
   let previous = null;
   let cursor = 0;
-  const bestActive = () => {
-    let best = null;
-    for (const item of active) {
-      if (!best || item.size < best.size || (item.size === best.size && item.order < best.order)) best = item;
-    }
-    return best?.mapping || null;
-  };
   while (cursor < events.length) {
     const point = events[cursor].point;
     if (previous !== null && previous < point) {
@@ -123,10 +167,10 @@ function buildVirtualMappingRuns(items) {
     const groupEnd = cursor;
     while (cursor < events.length && events[cursor].point === point) cursor++;
     for (let i = groupEnd; i < cursor; i++) {
-      if (events[i].kind < 0) active.delete(events[i].item);
+      if (events[i].kind < 0) live.delete(events[i].item);
     }
     for (let i = groupEnd; i < cursor; i++) {
-      if (events[i].kind > 0) active.add(events[i].item);
+      if (events[i].kind > 0) { live.add(events[i].item); heap.push(events[i].item); }
     }
     previous = point;
   }
@@ -159,6 +203,91 @@ function lookupVirtualMapping(lookup, address) {
   return best?.mapping || null;
 }
 
+// #8772: file-offset resolution is a mapping query, not a display scan. Sections and
+// segments are indexed by their file range so a lookup costs O(log N + the ranges that
+// actually contain the offset) instead of O(sections + segments) per call, and the
+// containing window is answered from its first resolution-order candidate instead of a
+// per-call sort. The candidate order is preserved exactly: ascending virtual size, ties
+// broken by the original enumeration order (sections first, then segments).
+function buildFileOffsetLookup(sections, segments) {
+  const items = [];
+  let rank = 0;
+  for (const mapping of sections) {
+    if (!sectionHasMappedAddress(mapping) || mapping.address == null) continue;
+    // Validate the raw range the same way the per-query scan did, so malformed
+    // provider output still fails closed at the identical boundary.
+    inRange(0n, mapping.fileOffset, mapping.fileSize);
+    const start = BigInt(mapping.fileOffset);
+    const end = start + BigInt(mapping.fileSize);
+    if (end > start) items.push({ mapping, rank, start, end, size: mapping.size });
+    rank++;
+  }
+  for (const mapping of segments) {
+    inRange(0n, mapping.fileOffset, mapping.fileSize);
+    const start = BigInt(mapping.fileOffset);
+    const end = start + BigInt(mapping.fileSize);
+    if (end > start) items.push({ mapping, rank, start, end, size: mapping.size });
+    rank++;
+  }
+  items.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.rank - b.rank));
+  const starts = new Array(items.length);
+  const prefixEnds = new Array(items.length);
+  let maxEnd = null;
+  for (let i = 0; i < items.length; i++) {
+    starts[i] = items[i].start;
+    if (maxEnd === null || items[i].end > maxEnd) maxEnd = items[i].end;
+    prefixEnds[i] = maxEnd;
+  }
+  return { items, starts, prefixEnds };
+}
+
+function fileOffsetCandidateWindow(lookup, offset) {
+  const { items, starts, prefixEnds } = lookup;
+  let lo = 0;
+  let hi = items.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (starts[mid] <= offset) lo = mid + 1;
+    else hi = mid;
+  }
+  const upper = lo;
+  if (upper === 0) return null;
+  lo = 0;
+  hi = upper;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (prefixEnds[mid] > offset) hi = mid;
+    else lo = mid + 1;
+  }
+  return { lo, hi: upper };
+}
+
+const beforeCandidate = (a, b) => (a.size < b.size ? true : a.size > b.size ? false : a.rank < b.rank);
+
+// The first candidate in resolution order, without materializing or sorting the window.
+// Alias-heavy images (every section mapping the same bytes) have windows as wide as the
+// section count, so a per-call sort made each resolution Θ(N log N) even though the
+// earliest smallest mapping answers it; this keeps the common answer at one probe.
+function firstFileOffsetCandidate(lookup, window, offset) {
+  const { items } = lookup;
+  let best = null;
+  for (let i = window.lo; i < window.hi; i++) {
+    const item = items[i];
+    if (item.end <= offset) continue;
+    if (best === null || beforeCandidate(item, best)) best = item;
+  }
+  return best;
+}
+
+function orderedFileOffsetCandidates(lookup, window, offset) {
+  const { items } = lookup;
+  const candidates = [];
+  for (let i = window.lo; i < window.hi; i++) {
+    if (items[i].end > offset) candidates.push(items[i]);
+  }
+  candidates.sort((a, b) => (a.size < b.size ? -1 : a.size > b.size ? 1 : a.rank - b.rank));
+  return candidates;
+}
 
 function isAddressSorted(items) {
   for (let i = 1; i < items.length; i++) {
@@ -266,6 +395,47 @@ function dataInCodeOverlaps(lookup, address, size) {
 }
 
 export const MAX_VIRTUAL_READ_BYTES = 64 * 1024 * 1024;
+// Keep the established all-at-once materialization cap as the default. The
+// separate name is the configurable resource-budget surface introduced for
+// streaming reads; the legacy hard cap remains authoritative for callers that
+// materialize one Uint8Array.
+export const DEFAULT_MAX_VIRTUAL_READ_BYTES = MAX_VIRTUAL_READ_BYTES;
+export const DEFAULT_MAX_VIRTUAL_READ_CHUNK_BYTES = 1024 * 1024;
+const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+
+export class BinaryImageResourceLimitError extends RangeError {
+  constructor(requested, limit) {
+    const requestedBytes = BigInt(requested);
+    const limitBytes = BigInt(limit);
+    super(`virtual read materialization ${requestedBytes} bytes exceeds the ${limitBytes}-byte limit; use readVirtualChunks()`);
+    this.name = 'BinaryImageResourceLimitError';
+    this.code = 'BINARY_VIRTUAL_READ_RESOURCE_LIMIT';
+    this.resource = 'residentBytes';
+    this.requested = requestedBytes;
+    this.limit = limitBytes;
+  }
+}
+
+function virtualReadLimit(value, fallback, field) {
+  if (value == null) return BigInt(fallback);
+  let limit = null;
+  if (typeof value === 'bigint') limit = value;
+  else if (typeof value === 'number' && Number.isSafeInteger(value)) limit = BigInt(value);
+  if (limit === null || limit < 0n || limit > MAX_SAFE_INTEGER_BIGINT) {
+    throw new TypeError(`${field} must be a non-negative safe integer or bigint`);
+  }
+  return limit;
+}
+
+function throwIfSignalAborted(signal) {
+  if (!signal?.aborted) return;
+  if (typeof signal.throwIfAborted === 'function') signal.throwIfAborted();
+  if (signal.reason !== undefined) throw signal.reason;
+  const error = new Error('virtual read was aborted');
+  error.name = 'AbortError';
+  error.code = 'ABORT_ERR';
+  throw error;
+}
 
 export class BinaryImage {
   constructor(input, meta = {}) {
@@ -295,6 +465,15 @@ export class BinaryImage {
       defaultFileSize = this.source.size;
     }
     this.fileSize = canonicalMappingBigInt(meta.fileSize, defaultFileSize, 'Image fileSize');
+    this.maxVirtualReadBytes = virtualReadLimit(
+      meta.maxVirtualReadBytes,
+      DEFAULT_MAX_VIRTUAL_READ_BYTES,
+      'maxVirtualReadBytes',
+    );
+    if (meta.resourceBudget != null && typeof meta.resourceBudget?.remaining !== 'function') {
+      throw new TypeError('resourceBudget must expose remaining(resource)');
+    }
+    this.resourceBudget = meta.resourceBudget || null;
     this.segments = [];
     this.sections = [];
     this.imports = [];
@@ -308,7 +487,7 @@ export class BinaryImage {
     this.warnings = [];
     this.metadata = meta.metadata || {};
     this._finalized = false;
-    this._mappingLookups = { sections: null, segments: null, virtual: null };
+    this._mappingLookups = { sections: null, segments: null, virtual: null, offsets: null };
     this._mappingSorted = { sections: null, segments: null };
     this._dataInCodeLookup = null;
     this._dataInCodeSorted = null;
@@ -336,6 +515,7 @@ export class BinaryImage {
     this._finalized = false;
     this._mappingLookups.segments = null;
     this._mappingLookups.virtual = null;
+    this._mappingLookups.offsets = null;
     this._mappingSorted.segments = null;
     return seg;
   }
@@ -365,6 +545,7 @@ export class BinaryImage {
     this._finalized = false;
     this._mappingLookups.sections = null;
     this._mappingLookups.virtual = null;
+    this._mappingLookups.offsets = null;
     this._mappingSorted.sections = null;
     return sec;
   }
@@ -385,26 +566,27 @@ export class BinaryImage {
   offsetToAddress(offset) {
     const o = strictBigIntOrNull(offset);
     if (o === null || o < 0n) return null;
-    const candidates = [];
-    for (const s of this.sections) {
-      if (!sectionHasMappedAddress(s) || s.address == null || !inRange(o, s.fileOffset, s.fileSize)) continue;
-      candidates.push(s);
-    }
-    for (const s of this.segments) {
-      if (!inRange(o, s.fileOffset, s.fileSize)) continue;
-      candidates.push(s);
-    }
-    candidates.sort((a, b) => (a.size < b.size ? -1 : a.size > b.size ? 1 : 0));
-    for (const s of candidates) {
+    if (!this._mappingLookups.offsets) this._mappingLookups.offsets = buildFileOffsetLookup(this.sections, this.segments);
+    const lookup = this._mappingLookups.offsets;
+    const window = fileOffsetCandidateWindow(lookup, o);
+    if (window === null) return null;
+    const resolve = (candidate) => {
+      const s = candidate.mapping;
       const a = s.address + (o - s.fileOffset);
       const owner = this._virtualMappingAt(a);
-      if (owner) {
-        const delta = a - owner.address;
-        const fileSize = owner.fileSize ?? 0n;
-        if (delta < fileSize && (owner.fileOffset + delta) === o) {
-          return a;
-        }
-      }
+      if (!owner) return null;
+      const delta = a - owner.address;
+      const fileSize = owner.fileSize ?? 0n;
+      return delta < fileSize && (owner.fileOffset + delta) === o ? a : null;
+    };
+    const first = firstFileOffsetCandidate(lookup, window, o);
+    if (first !== null) {
+      const resolved = resolve(first);
+      if (resolved !== null) return resolved;
+    }
+    for (const candidate of orderedFileOffsetCandidates(lookup, window, o)) {
+      const resolved = resolve(candidate);
+      if (resolved !== null) return resolved;
     }
     return null;
   }
@@ -558,13 +740,43 @@ export class BinaryImage {
     return true;
   }
 
-  _virtualReadPlan(address, size) {
-    let current;
-    let remaining;
-    current = strictBigIntOrNull(address);
-    remaining = strictBigIntOrNull(size);
+  _virtualReadRequest(address, size) {
+    const current = strictBigIntOrNull(address);
+    const remaining = strictBigIntOrNull(size);
     if (current === null || remaining === null) return null;
-    if (current < 0n || remaining < 0n || remaining > BigInt(MAX_VIRTUAL_READ_BYTES)) return null;
+    if (current < 0n || remaining < 0n || remaining > MAX_SAFE_INTEGER_BIGINT) return null;
+    return { address: current, size: remaining };
+  }
+
+  _virtualReadMaterializationLimit() {
+    let limit = this.maxVirtualReadBytes;
+    if (!this.resourceBudget) return limit;
+    const remaining = this.resourceBudget.remaining('residentBytes');
+    if (remaining === Infinity) return limit;
+    const budgetRemaining = typeof remaining === 'bigint'
+      ? remaining
+      : (typeof remaining === 'number' && Number.isSafeInteger(remaining) ? BigInt(remaining) : null);
+    if (budgetRemaining === null || budgetRemaining < 0n || budgetRemaining > MAX_SAFE_INTEGER_BIGINT) {
+      throw new TypeError('resourceBudget.remaining(\'residentBytes\') must return a non-negative safe integer, bigint, or Infinity');
+    }
+    limit = minBigInt(limit, budgetRemaining);
+    return limit;
+  }
+
+  _assertVirtualReadMaterialization(size) {
+    if (size === 0n) return;
+    const limit = this._virtualReadMaterializationLimit();
+    if (size > limit) throw new BinaryImageResourceLimitError(size, limit);
+  }
+
+  _virtualReadPlan(address, size, { materialize = false } = {}) {
+    const request = this._virtualReadRequest(address, size);
+    if (!request) return null;
+    // Preserve the established fail-closed all-at-once limit while allowing
+    // readVirtualChunks() to service larger logical ranges incrementally.
+    if (materialize && request.size > BigInt(MAX_VIRTUAL_READ_BYTES)) return null;
+    let current = request.address;
+    let remaining = request.size;
     if (remaining === 0n) return [];
     const chunks = [];
     while (remaining > 0n) {
@@ -589,10 +801,12 @@ export class BinaryImage {
 
   readVirtual(address, size) {
     if (!this.bytes) return null;
-    const plan = this._virtualReadPlan(address, size);
+    const request = this._virtualReadRequest(address, size);
+    if (!request) return null;
+    const plan = this._virtualReadPlan(request.address, request.size, { materialize: true });
     if (!plan) return null;
-    const total = plan.reduce((sum, chunk) => sum + Number(chunk.length), 0);
-    const out = new Uint8Array(total);
+    this._assertVirtualReadMaterialization(request.size);
+    const out = new Uint8Array(Number(request.size));
     let cursor = 0;
     for (const chunk of plan) {
       const length = Number(chunk.length);
@@ -609,10 +823,12 @@ export class BinaryImage {
     const resident = this.readVirtual(address, size);
     if (resident) return resident;
     if (!this.source) return null;
-    const plan = this._virtualReadPlan(address, size);
+    const request = this._virtualReadRequest(address, size);
+    if (!request) return null;
+    const plan = this._virtualReadPlan(request.address, request.size, { materialize: true });
     if (!plan) return null;
-    const total = plan.reduce((sum, chunk) => sum + Number(chunk.length), 0);
-    const out = new Uint8Array(total);
+    this._assertVirtualReadMaterialization(request.size);
+    const out = new Uint8Array(Number(request.size));
     const sourceReadLimit = Number.isSafeInteger(this.source.maxReadLength) && this.source.maxReadLength > 0
       ? BigInt(this.source.maxReadLength)
       : null;
@@ -636,6 +852,77 @@ export class BinaryImage {
     return out;
   }
 
+  async *readVirtualChunks(address, size, options = {}) {
+    const request = this._virtualReadRequest(address, size);
+    if (!request || (!this.bytes && !this.source)) return;
+    const requestedChunkLimit = virtualReadLimit(
+      options.maxChunkLength,
+      DEFAULT_MAX_VIRTUAL_READ_CHUNK_BYTES,
+      'maxChunkLength',
+    );
+    if (request.size > 0n && requestedChunkLimit === 0n) {
+      throw new BinaryImageResourceLimitError(request.size, 0n);
+    }
+    const materializationLimit = this._virtualReadMaterializationLimit();
+    if (request.size > 0n && materializationLimit === 0n) {
+      throw new BinaryImageResourceLimitError(request.size, 0n);
+    }
+    const chunkLimit = minBigInt(requestedChunkLimit, materializationLimit);
+    const plan = this._virtualReadPlan(request.address, request.size);
+    if (!plan) return;
+
+    // Prove every file-backed span before yielding anything. Streaming must not publish a
+    // valid prefix and only later discover that a subsequent virtual chunk points outside
+    // the resident/source file backing.
+    const residentLength = this.bytes == null
+      ? null
+      : (Number.isSafeInteger(this.bytes.length)
+        ? BigInt(this.bytes.length)
+        : (typeof this.bytes.size === 'bigint' ? this.bytes.size : null));
+    const sourceLength = typeof this.source?.size === 'bigint' ? this.source.size : null;
+    const sourceBackingSize = sourceLength == null ? this.fileSize : minBigInt(this.fileSize, sourceLength);
+    for (const chunk of plan) {
+      if (chunk.kind !== 'file') continue;
+      const backingSize = residentLength ?? sourceBackingSize;
+      if (chunk.offset < 0n || backingSize == null || chunk.offset > backingSize || chunk.length > backingSize - chunk.offset) return;
+    }
+
+    const sourceReadLimit = !this.bytes && Number.isSafeInteger(this.source?.maxReadLength) && this.source.maxReadLength > 0
+      ? BigInt(this.source.maxReadLength)
+      : null;
+    const signal = options.signal || null;
+    for (const chunk of plan) {
+      let done = 0n;
+      while (done < chunk.length) {
+        throwIfSignalAborted(signal);
+        const remaining = chunk.length - done;
+        let take = minBigInt(remaining, chunkLimit);
+        if (sourceReadLimit != null) take = minBigInt(take, sourceReadLimit);
+        if (take <= 0n) throw new BinaryImageResourceLimitError(remaining, 0n);
+        const length = Number(take);
+        if (chunk.kind === 'zero') {
+          yield new Uint8Array(length);
+          done += take;
+          continue;
+        }
+        const offset = chunk.offset + done;
+        if (this.bytes) {
+          const off = Number(offset);
+          if (!Number.isSafeInteger(off) || off < 0) return;
+          const bytes = this.bytes.subarray(off, off + length);
+          if (!bytes || bytes.length !== length) return;
+          yield bytes;
+        } else {
+          const bytes = await this.source.readExactly(offset, take, { signal });
+          throwIfSignalAborted(signal);
+          if (!bytes || bytes.length !== length) return;
+          yield bytes;
+        }
+        done += take;
+      }
+    }
+  }
+
   attachSource(source, { discardBytes = false } = {}) {
     this.source = source;
     this.fileSize = source.size;
@@ -650,6 +937,7 @@ export class BinaryImage {
     this._mappingLookups.segments = null;
     this._mappingLookups.sections = null;
     this._mappingLookups.virtual = null;
+    this._mappingLookups.offsets = null;
     this._mappingSorted.segments = true;
     this._mappingSorted.sections = true;
     this.symbols.sort(byAddr);
@@ -751,46 +1039,13 @@ function createMonotonicRegionLookup(regions) {
     end: BigInt(region.address) + BigInt(region.size),
   })).sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : a.order - b.order);
 
-  const heap = [];
+  const heap = createSizeOrderMinHeap();
   let cursor = 0;
   let lastAddress = null;
 
-  const before = (a, b) => a.size < b.size || (a.size === b.size && a.order < b.order);
-
-  const push = (item) => {
-    heap.push(item);
-    let index = heap.length - 1;
-    while (index > 0) {
-      const parent = (index - 1) >>> 1;
-      if (!before(heap[index], heap[parent])) break;
-      [heap[index], heap[parent]] = [heap[parent], heap[index]];
-      index = parent;
-    }
-  };
-
-  const pop = () => {
-    const top = heap[0];
-    const last = heap.pop();
-    if (heap.length > 0) {
-      heap[0] = last;
-      let index = 0;
-      while (true) {
-        const left = index * 2 + 1;
-        const right = left + 1;
-        let smallest = index;
-        if (left < heap.length && before(heap[left], heap[smallest])) smallest = left;
-        if (right < heap.length && before(heap[right], heap[smallest])) smallest = right;
-        if (smallest === index) break;
-        [heap[index], heap[smallest]] = [heap[smallest], heap[index]];
-        index = smallest;
-      }
-    }
-    return top;
-  };
-
   const reset = () => {
     cursor = 0;
-    heap.length = 0;
+    heap.clear();
     lastAddress = null;
   };
 
@@ -798,9 +1053,10 @@ function createMonotonicRegionLookup(regions) {
     const value = BigInt(address);
     if (lastAddress !== null && value < lastAddress) reset();
     lastAddress = value;
-    while (cursor < ordered.length && ordered[cursor].start <= value) push(ordered[cursor++]);
-    while (heap.length > 0 && heap[0].end <= value) pop();
-    return heap[0]?.region || null;
+    while (cursor < ordered.length && ordered[cursor].start <= value) heap.push(ordered[cursor++]);
+    while (heap.size() > 0 && heap.top().end <= value) heap.pop();
+    const best = heap.top();
+    return best ? best.region : null;
   };
 }
 
@@ -932,7 +1188,11 @@ function dedupeImports(input) {
       const seen = new Set();
       i.sites = i.sites.filter((s) => {
         const scalar = (value) => typeof value === 'bigint' ? value.toString() : value == null ? '' : String(value);
-        const key = [scalar(s.address), scalar(s.offset), s.kind || '', scalar(s.type), scalar(s.addend), scalar(s.pointerFormat), s.weak ? '1' : '0'].join(':');
+        const key = [
+          scalar(s.address), scalar(s.offset), s.kind || '', scalar(s.type), scalar(s.addend),
+          scalar(s.pointerFormat), s.weak ? '1' : '0', scalar(s.recordFileOffset), scalar(s.recordIndex),
+          scalar(s.recordEncoding),
+        ].join(':');
         if (seen.has(key)) return false;
         seen.add(key); return true;
       });

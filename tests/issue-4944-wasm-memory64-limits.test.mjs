@@ -34,21 +34,22 @@ const imported64 = parseWasm(importedMemory([0x04, 0x00]));
 assert.equal(imported64.imports[0].desc.addressType, 'i64');
 assert.equal(imported64.imports[0].desc.min, 0n);
 
-// 4. memory32 descriptors must stay byte-for-byte unchanged (no addressType key).
-assert.deepEqual(parseWasm(definedMemory([0x00, 0x01])).memories[0], { min: 1, max: null, shared: false, flags: 0 });
-assert.deepEqual(parseWasm(definedMemory([0x01, 0x01, 0x02])).memories[0], { min: 1, max: 2, shared: false, flags: 1 });
-assert.deepEqual(parseWasm(definedMemory([0x03, 0x01, 0x02])).memories[0], { min: 1, max: 2, shared: true, flags: 3 });
+// 4. memory32 descriptors keep the canonical explicit i32 width authority (#8943).
+assert.deepEqual(parseWasm(definedMemory([0x00, 0x01])).memories[0], { min: 1, max: null, shared: false, addressType: 'i32', flags: 0 });
+assert.deepEqual(parseWasm(definedMemory([0x01, 0x01, 0x02])).memories[0], { min: 1, max: 2, shared: false, addressType: 'i32', flags: 1 });
+assert.deepEqual(parseWasm(definedMemory([0x03, 0x01, 0x02])).memories[0], { min: 1, max: 2, shared: true, addressType: 'i32', flags: 3 });
 
 // 5. malformed / overflowing u64 LEB and reserved flag bits must fail closed.
-assert.throws(() => parseWasm(definedMemory([0x04, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02])), TypeError, 'overflowing u64 LEB must be rejected');
-assert.throws(() => parseWasm(definedMemory([0x04, 0x80, 0x80, 0x80])), TypeError, 'truncated u64 LEB must be rejected');
+assert.throws(() => parseWasm(definedMemory([0x04, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02])), /wasm-malformed-uleb128-64/, 'overflowing u64 LEB must be rejected');
+assert.throws(() => parseWasm(definedMemory([0x04, 0x80, 0x80, 0x80])), /wasm-malformed-uleb128-64/, 'truncated u64 LEB must be rejected');
 assert.throws(() => parseWasm(definedMemory([0x08, 0x00])), /wasm-invalid-memory-limits-flags/, 'reserved limits flag bit must be rejected');
+assert.throws(() => parseWasm(definedMemory([0x06, 0x01, 0x02])), /wasm-invalid-memory-limits-flags/, 'memory64 shared must be rejected at the flags gate');
 assert.throws(() => parseWasm(definedMemory([0x05, 0x01, 0x00])), /wasm-invalid-memory-limits-max-less-than-min/, 'memory64 maximum >= minimum invariant');
 
 // 6. decoded descriptor distinguishes i32 from i64 address width.
 const i32 = parseWasm(definedMemory([0x00, 0x01])).memories[0];
 const i64 = parseWasm(definedMemory([0x04, 0x00])).memories[0];
-assert.equal(i32.addressType, undefined);
+assert.equal(i32.addressType, 'i32');
 assert.equal(i32.flags & 0x04, 0);
 assert.equal(i64.addressType, 'i64');
 assert.notEqual(i64.flags & 0x04, 0);

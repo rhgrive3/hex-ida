@@ -93,21 +93,21 @@ test('#4537 accepts canonical branch and conditional projections', () => {
   );
 });
 
-test('#4537 rejects a declared one-target conditional edge missing from the CFG', () => {
+test('#4537 rejects one-target conditional nodes at the canonical boundary', () => {
   const ir = semanticIr({ kind: 'conditional-branch', targets: ['b1'] });
   assert.throws(
     () => validateSemanticSsa(emptySsa, ir, semanticCfg([])),
-    /semantic-ssa-control-flow-mismatch/,
+    /semantic-ir-control-target-cardinality/,
   );
   assert.throws(
     () => validateSemanticSsa(emptySsa, ir, semanticCfg([{ to: 'b2', kind: 'fallthrough' }])),
-    /semantic-ssa-control-flow-mismatch/,
+    /semantic-ir-control-target-cardinality/,
   );
-  assert.doesNotThrow(() => validateSemanticSsa(
+  assert.throws(() => validateSemanticSsa(
     emptySsa,
     ir,
     semanticCfg([{ to: 'b1', kind: 'conditional-true' }]),
-  ));
+  ), /semantic-ir-control-target-cardinality/);
 });
 
 test('#4537 compares switch destinations while retaining switch edge kinds', () => {
