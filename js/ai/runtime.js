@@ -9,7 +9,7 @@ import { createAgentJobManager } from './jobs/index.js';
 import { InvestigationSessionStore, isValidSessionId } from './session-core/index.js';
 import { sanitizeActions, addressText, validateSchema } from './validation.js';
 import { executeTurn } from './control/turn-executor.js';
-import { addressExistsAsync, assertLiveBindingsUnchanged, defaultMonotonicNow, deterministicConfidence, fallbackEvidence, presentAnswer } from './control/runtime-support.js';
+import { addressExistsAsync, assertLiveBindingsUnchanged, defaultMonotonicNow, deterministicConfidence, fallbackEvidence, presentAnswer, qualifyingEvidence } from './control/runtime-support.js';
 import { canonicalBindingId } from './control/snapshot.js';
 
 const BUDGET_LIMIT_REASONS = new Set([
@@ -161,7 +161,13 @@ export class AIRuntime {
     const proposalActions = proposals.map((proposal) => ({ kind: 'review-proposal', target: proposal.id }));
     const actions = sanitizeActions([...suggestedActions, ...proposalActions], { evidenceStore, proposalStore, addressExists: (address) => existence.get(address) ?? false });
     let confidence = Number.isFinite(decision.confidence) ? Math.max(0, Math.min(1, decision.confidence)) : deterministicConfidence(plan);
-    if (!finalEvidence.length) confidence = Math.min(confidence, 0.5);
+    // Evidence exposure and confidence authority are separate contracts. A
+    // current supported record may remain attached for provenance, whether it
+    // came from an explicit citation or planner fallback, but only qualifying
+    // authority may lift the no-authority confidence cap (#8864). #5159's
+    // invalid-explicit-citation no-substitution rule remains unchanged above.
+    const evidenceSatisfiesAuthority = qualifyingEvidence(finalEvidence).length > 0;
+    if (!evidenceSatisfiesAuthority) confidence = Math.min(confidence, 0.5);
     const budgetReason = BUDGET_LIMIT_REASONS.has(limitReason) ? limitReason : null;
     const elapsedNow = typeof monotonicNow === 'function' ? monotonicNow() : defaultMonotonicNow();
     const elapsedMs = Number.isFinite(elapsedNow) && Number.isFinite(started)

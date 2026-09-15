@@ -28,6 +28,16 @@ const app = {
   store: new Map([['fileInfo', { name: 'fixture' }], ['sliceIndex', 0], ['regions', []]]),
   notes: { structs: [] }, symbols: null, recognition: { records: [] }, stringIndex: [],
   candidateFunctions: [BASE],
+  // #8673: a goal-level `verified` hypothesis now requires planner coverage that
+  // spans the candidate universe. Without a Program the graph queries report
+  // themselves unsupported, the plan is legitimately partial, and the local
+  // fallback must stay `supported`. The #5797 invariant under test here is the
+  // verified path, so the fixture supplies a complete-coverage Program view.
+  program: {
+    callersOf: () => [],
+    calleesOf: () => [],
+    functionRange: () => ({ start: BASE, end: BASE + 16n, ok: true }),
+  },
   analyze: async () => modelOf([
     'ldr w8, [x0, #0x20]',
     'add w8, w8, w1',
