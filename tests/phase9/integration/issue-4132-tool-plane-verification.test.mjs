@@ -76,12 +76,40 @@ assert.equal(verified.result.query.assertion.left.op, BV_BINARY_OP.SUB, 'canonic
 assert.equal(verified.result.query.assertion.right.op, BV_BINARY_OP.SUB, 'both equivalence sides must use canonical SUB semantics');
 assert.notEqual(verified.result.query.assertion.left.op, BV_BINARY_OP.ADD, 'tampered model projection must not rewrite source semantics');
 
+// A non-Expr object must not become trusted merely because no function source
+// was supplied. The old wrapper returned the caller object unchanged when the
+// canonical IR lookup was absent, reopening the translation/proof fast path.
+await assert.rejects(
+  () => registry.execute('verify_bounded_equivalence', {
+    beforeTarget: forgedProjection,
+    afterTarget: forgedProjection,
+  }, { scope: 'function', timeoutMs: 2_000 }),
+  (error) => error?.type === 'invalid_tool_call' && /both function addresses|canonical Semantic IR/i.test(error.message),
+  'unbound semantic targets must fail closed when canonical producer IR is unavailable',
+);
+
+// Expr rejection is recursive: hiding a forged DAG under a precondition object
+// must not bypass the model boundary while otherwise-valid canonical targets
+// are used for both sides.
+await assert.rejects(
+  () => registry.execute('verify_bounded_equivalence', {
+    beforeFunctionAddress: '0x1000',
+    afterFunctionAddress: '0x1000',
+    beforeTarget: projectedSub,
+    afterTarget: projectedSub,
+    preconditions: { nested: { kind: 'const', sort: { kind: 'bool' }, value: true } },
+  }, { scope: 'function', timeoutMs: 2_000 }),
+  (error) => error?.type === 'invalid_tool_call' && /Expr DAG|canonical Semantic IR/i.test(error.message),
+  'nested caller-supplied Expr DAGs must be rejected before solver translation',
+);
+
 // A JSON object can mimic the shallow Expr `{kind, sort}` shape. Before this
 // remediation that object skipped translation and a forged Bool false could
 // receive an exact UNSAT/PROVED verdict. Model tool input is untrusted, so Expr
 // DAG-shaped objects are rejected rather than treated as internally-built ASTs.
 await assert.rejects(
   () => registry.execute('verify_edge_feasibility', {
+    functionAddress: '0x1000',
     fromBlock: 0,
     edgeCondition: { kind: 'const', sort: { kind: 'bool' }, value: false },
   }, { scope: 'function', timeoutMs: 2_000 }),

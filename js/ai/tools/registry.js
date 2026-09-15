@@ -33,12 +33,18 @@ function rejectUntrustedExpr(value, label) {
   if (typeof value.kind === 'string' && value.sort && typeof value.sort === 'object') {
     throw new AIError('invalid_tool_call', `${label} must come from canonical Semantic IR; caller-supplied Expr DAG objects are not accepted.`);
   }
+  for (const [key, nested] of Object.entries(value)) {
+    rejectUntrustedExpr(nested, `${label}.${key}`);
+  }
   return value;
 }
 
 function bindCanonicalTarget(value, ir, label) {
   rejectUntrustedExpr(value, label);
-  if (value == null || !ir) return value;
+  if (value == null) return value;
+  if (!ir) {
+    throw new AIError('invalid_tool_call', `${label} requires a functionAddress that resolves to canonical Semantic IR.`);
+  }
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new AIError('invalid_tool_call', `${label} must identify a canonical Semantic IR instruction.`);
   }
@@ -80,6 +86,9 @@ function installVerificationBoundary(registry) {
 
   replace(registry, 'verify_edge_feasibility', async ({ functionAddress, fromBlock, toBlock, edgeCondition, preconditions }, callOptions = {}) => {
     const ir = await canonicalVerificationIr(registry, functionAddress);
+    if (!ir) {
+      throw new AIError('invalid_tool_call', 'verify_edge_feasibility requires functionAddress to resolve to canonical Semantic IR.');
+    }
     const backend = defaultSolverRegistry.getDefaultBackend();
     return verifyConditionalEdgeFeasibility({
       ir,
@@ -95,6 +104,9 @@ function installVerificationBoundary(registry) {
   replace(registry, 'verify_bounded_equivalence', async ({ beforeFunctionAddress, afterFunctionAddress, beforeTarget, afterTarget, preconditions }, callOptions = {}) => {
     const beforeIr = await canonicalVerificationIr(registry, beforeFunctionAddress);
     const afterIr = await canonicalVerificationIr(registry, afterFunctionAddress);
+    if (!beforeIr || !afterIr) {
+      throw new AIError('invalid_tool_call', 'verify_bounded_equivalence requires both function addresses to resolve to canonical Semantic IR.');
+    }
     const backend = defaultSolverRegistry.getDefaultBackend();
     return verifyBoundedEquivalence({
       beforeIr,
