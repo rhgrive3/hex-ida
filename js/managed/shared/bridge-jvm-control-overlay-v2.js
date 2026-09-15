@@ -118,6 +118,11 @@ export function overlayJvmControlLowering(fn, lowered, options = {}) {
     if (node.kind !== 'conditional-branch') continue;
     const effectId = node.sourceEffectIds?.find((id) => bundleByEffect.has(id));
     const bundle = effectId == null ? null : bundleByEffect.get(effectId);
+    // Branches whose predicate was already materialized as a compare node
+    // during lowering carry comparisonArity 2 with a single predicate input;
+    // the overlay must not demote them for lacking raw-operand
+    // integer-comparison arity agreement (#8917).
+    if (node.inputs.length === 1 && node.attributes?.comparisonArity === 2) continue;
     const control = bundle?.controlEffects?.find((effect) => effect?.kind === 'conditional-branch') ?? null;
     const condition = normalizeJvmBranchCondition(control, node.inputs.length);
     if (!condition) {
