@@ -1,8 +1,8 @@
+import { AIError } from '../schema.js';
 import { addressText } from '../validation.js';
 
 let turnSequence = 1;
 
-/* Binding IDs are primitive evidence, not arbitrary adapter objects. */
 export function canonicalBindingId(value) {
   if (typeof value !== 'string') return null;
   const text = value.trim();
@@ -31,17 +31,28 @@ function canonicalSlice(value) {
 
 function selectedSlice(local) {
   const raw = first(local.sliceIndex, local.slice, local.binary?.sliceIndex);
-  if (raw == null) return { value: null, invalid: false };
+  if (raw == null) return { value:null, invalid:false };
   const value = canonicalSlice(raw);
-  return { value, invalid: value == null };
+  return { value, invalid:value == null };
 }
 
 export function createTurnSnapshot(local = {}, request = {}) {
-  const current = first(local.currentAddress, local.activeFunction?.address, local.currentFunction?.address);
-  const range = resolveFunctionRange(local, current);
+  const cursor = first(local.currentAddress, local.activeFunction?.address, local.currentFunction?.address);
+  const range = resolveFunctionRange(local, cursor);
+  // The cursor identifies the instruction the user is looking at; it is not
+  // necessarily the identity of the containing function. Prefer an explicit
+  // function identity, then an exact range boundary, and only use the cursor
+  // as the final fallback for contexts that have no function metadata.
+  const functionAddress = first(
+    local.activeFunction?.address,
+    local.currentFunction?.address,
+    range?.start,
+    cursor,
+  );
   const selection = snapshotSelection(local.selection);
-  const slice = selectedSlice(local);
-  const identity = resolveBinaryIdentityAtSlice(local, request, slice);
+  const binding = resolveBinaryBinding(local, request);
+  if (binding.conflict) throw new AIError('scope_violation', 'The requested binary identity does not match the live workbench binary.');
+  const identity = binding.identity;
   const projectId = firstBinding(request.projectId, local.projectId, local.project?.id, local.project?.binaryHash);
   const runtimeId = firstBinding(local.runtimeSession?.id, local.runtime?.sessionId, local.runtimeSessionId);
   const runtimeKnown = local.runtimeSessionKnown === true || runtimeId != null;
@@ -52,20 +63,24 @@ export function createTurnSnapshot(local = {}, request = {}) {
     binaryIdentity: identity,
     binaryId: identity.id,
     legacyBinaryId: identity.legacyId,
+    binaryIdentitySource: binding.source,
+    liveBinaryIdentity: binding.live,
     projectIdentity: projectId,
+    analysisRevision: resolveAnalysisRevision(local),
     architecture: copyScalar(first(local.architecture, local.binary?.architecture, local.capability?.architecture)),
-    slice: slice.value,
-    currentFunction: current == null ? null : {
-      address: addressText(current),
+    slice: copyScalar(first(local.slice, local.sliceIndex, local.binary?.sliceIndex)),
+    currentAddress: cursor == null ? null : addressText(cursor),
+    currentFunction: functionAddress == null ? null : {
+      address: addressText(functionAddress),
       range,
-      name: first(local.activeFunction?.name, local.currentFunction?.name, safeName(local, current)),
+      name: first(local.activeFunction?.name, local.currentFunction?.name, safeName(local, functionAddress)),
     },
     selection,
     runtimeSessionIdentity: runtimeId,
     runtimeSessionState: runtimeKnown ? (runtimeId == null ? 'none' : 'bound') : 'unknown',
     requestedScope,
     capabilities: snapshotCapabilities(local),
-    neighborhood: snapshotNeighborhood(local, current),
+    neighborhood: snapshotNeighborhood(local, cursor),
   });
 }
 
@@ -82,7 +97,8 @@ export function createSnapshotContext(local = {}, snapshot, scopeController = nu
   frozen.binaryIdentity = snapshot.binaryIdentity;
   frozen.binaryId = snapshot.binaryId;
   frozen.projectId = snapshot.projectIdentity;
-  frozen.currentAddress = parseAddress(snapshot.currentFunction?.address);
+  frozen.analysisRevision = snapshot.analysisRevision;
+  frozen.currentAddress = parseAddress(snapshot.currentAddress ?? snapshot.currentFunction?.address);
   frozen.activeFunction = snapshot.currentFunction ? {
     address: parseAddress(snapshot.currentFunction.address),
     name: snapshot.currentFunction.name,
@@ -100,24 +116,57 @@ export function createSnapshotContext(local = {}, snapshot, scopeController = nu
 }
 
 export function resolveBinaryIdentity(local = {}, request = {}) {
-  return resolveBinaryIdentityAtSlice(local, request, selectedSlice(local));
+  return resolveBinaryBinding(local, request).identity;
 }
 
-function resolveBinaryIdentityAtSlice(local, request, slice) {
+export function resolveBinaryBinding(local = {}, request = {}) {
+  const live = resolveLiveBinaryIdentity(local);
+  const requestBinding = resolveRequestedBinaryBinding(local, request);
+  const requested = requestBinding.identity;
+  const conflict = requestBinding.conflict || (!!requested && strongIdentity(live) && strongIdentity(requested)
+    && !sameStrongIdentity(live, requested, local));
+  if (strongIdentity(live)) return { identity:live, source:'live', live, requested, conflict };
+  if (requested) return { identity:requested, source:'request-fallback', live, requested, conflict };
+  return { identity:live, source:'live', live, requested:null, conflict };
+}
+
+function resolveLiveBinaryIdentity(local = {}) {
+  const explicit = normalizeIdentity(local.binaryIdentity);
   const contentHash = firstBinding(
-    request.binaryHash,
     local.binaryHash,
     local.binaryFingerprint?.hash,
     local.fingerprint?.hash,
     local.binary?.fingerprint?.hash,
     local.project?.binaryHash,
   );
-  const legacyId = firstBinding(request.binaryId, local.binaryId);
-  const explicit = normalizeIdentity(request.binaryIdentity ?? local.binaryIdentity);
-  if (explicit && explicitIdentityMatchesSlice(explicit, contentHash, slice)) return explicit;
+  const legacyId = firstBinding(local.binaryId);
+  const derived = derivedIdentity(local, { contentHash, legacyId, allowNameFallback:true });
+  if (strongIdentity(explicit)) return explicit;
+  if (strongIdentity(derived)) return derived;
+  return explicit || derived;
+}
+
+function resolveRequestedBinaryBinding(local = {}, request = {}) {
+  const explicit = normalizeIdentity(request.binaryIdentity);
+  const contentHash = firstBinding(request.binaryHash);
+  const legacyId = firstBinding(request.binaryId);
+  if (!explicit && contentHash == null && legacyId == null) return { identity:null, conflict:false };
+  const derived = derivedIdentity(local, { contentHash, legacyId, allowNameFallback:false });
+  const explicitStrong = strongIdentity(explicit);
+  const derivedStrong = strongIdentity(derived);
+  const conflict = (explicitStrong && !requestIdentityConsistent(explicit, local))
+    || (explicitStrong && derivedStrong && !sameStrongIdentity(explicit, derived, local));
+  if (explicitStrong) return { identity:explicit, conflict };
+  if (derivedStrong) return { identity:derived, conflict };
+  return { identity:explicit || derived, conflict };
+}
+
+function derivedIdentity(local, { contentHash = null, legacyId = null, allowNameFallback = false } = {}) {
+  const slice = selectedSlice(local);
   if (contentHash != null && !slice.invalid) {
+    const suffix = slice.value == null ? '' : `:${slice.value}`;
     return {
-      id: contentIdentityId(contentHash, slice),
+      id: `content:${contentHash}${suffix}`,
       kind: 'content-derived',
       confidence: 'strong',
       state: 'ready',
@@ -126,9 +175,9 @@ function resolveBinaryIdentityAtSlice(local, request, slice) {
       legacyId,
     };
   }
-  const name = typeof local.fileInfo?.name === 'string'
-    ? local.fileInfo.name
-    : typeof local.binary?.name === 'string' ? local.binary.name : null;
+  const name = allowNameFallback
+    ? (typeof local.fileInfo?.name === 'string' ? local.fileInfo.name : typeof local.binary?.name === 'string' ? local.binary.name : null)
+    : null;
   const fallback = legacyId != null ? legacyId : (!slice.invalid && name ? `${name}:${slice.value ?? '0'}` : null);
   return {
     id: fallback ? `fallback:${fallback}` : 'fallback:unbound',
@@ -137,19 +186,66 @@ function resolveBinaryIdentityAtSlice(local, request, slice) {
   };
 }
 
-function contentIdentityId(hash, slice) {
-  return `content:${hash}${slice.value == null ? '' : `:${slice.value}`}`;
+function strongIdentity(identity) {
+  const id = canonicalBindingId(identity?.id);
+  if (canonicalBindingId(identity?.hash) != null) return true;
+  if (typeof id === 'string' && id.startsWith('content:')) return true;
+  return identity?.confidence === 'strong' && identity?.state === 'ready' && typeof id === 'string' && !id.startsWith('fallback:');
 }
 
-function explicitIdentityMatchesSlice(identity, contentHash, slice) {
-  // External identities do not claim ownership of the local binary slice.
-  // Content-derived identities do: accepting the bridge's raw String(slice)
-  // here would let an invalid, reordered, or zero-padded slice become strong.
-  if (identity.kind !== 'content-derived') return true;
-  if (slice.invalid) return false;
-  if (contentHash == null) return slice.value == null;
-  if (identity.hash != null && identity.hash !== contentHash) return false;
-  return identity.id === contentIdentityId(contentHash, slice);
+export function sameStrongIdentity(left, right) {
+  const leftBinding = assertedContentBinding(left);
+  const rightBinding = assertedContentBinding(right);
+  if (leftBinding.invalid || rightBinding.invalid) return false;
+  if (leftBinding.hash != null && rightBinding.hash != null) {
+    if (leftBinding.hash !== rightBinding.hash) return false;
+    if (leftBinding.slice != null || rightBinding.slice != null) {
+      return leftBinding.slice != null && rightBinding.slice != null && leftBinding.slice === rightBinding.slice;
+    }
+    return true;
+  }
+  return canonicalBindingId(left?.id) === canonicalBindingId(right?.id);
+}
+
+function assertedContentBinding(identity) {
+  const hash = canonicalBindingId(identity?.hash);
+  const id = canonicalBindingId(identity?.id);
+  if (typeof id !== 'string' || !id.startsWith('content:')) {
+    return { hash, slice:null, invalid:false };
+  }
+
+  if (hash != null) {
+    const prefix = `content:${hash}`;
+    if (id === prefix) return { hash, slice:null, invalid:false };
+    if (id.startsWith(`${prefix}:`)) {
+      const suffix = id.slice(prefix.length + 1);
+      const slice = canonicalSlice(suffix);
+      if (slice != null && slice === suffix) return { hash, slice, invalid:false };
+    }
+    return { hash, slice:null, invalid:true };
+  }
+
+  const payload = id.slice('content:'.length);
+  if (!payload) return { hash:null, slice:null, invalid:true };
+  const separator = payload.lastIndexOf(':');
+  if (separator > 0) {
+    const suffix = payload.slice(separator + 1);
+    const slice = canonicalSlice(suffix);
+    if (slice != null && slice === suffix) {
+      const inferredHash = payload.slice(0, separator);
+      return { hash:inferredHash || null, slice, invalid:!inferredHash };
+    }
+  }
+  return { hash:payload, slice:null, invalid:false };
+}
+
+function requestIdentityConsistent(identity, local) {
+  const binding = assertedContentBinding(identity);
+  if (binding.invalid) return false;
+  const liveSlice = selectedSlice(local);
+  if (liveSlice.invalid) return false;
+  if (liveSlice.value == null || binding.slice == null) return true;
+  return binding.slice === liveSlice.value;
 }
 
 function normalizeIdentity(value) {
@@ -166,10 +262,7 @@ function normalizeIdentity(value) {
   const algorithm = value.algorithm == null ? null : canonicalBindingId(value.algorithm);
   const hash = value.hash == null ? null : canonicalBindingId(value.hash);
   const legacyId = value.legacyId == null ? null : canonicalBindingId(value.legacyId);
-  if (!id || !kind || !confidence || !state
-    || (value.algorithm != null && !algorithm)
-    || (value.hash != null && !hash)
-    || (value.legacyId != null && !legacyId)) return null;
+  if (!id || !kind || !confidence || !state || (value.algorithm != null && !algorithm) || (value.hash != null && !hash) || (value.legacyId != null && !legacyId)) return null;
   return {
     id, kind, confidence, state, algorithm, hash, legacyId,
   };
@@ -195,7 +288,7 @@ function resolveFunctionRange(local, current) {
     } catch { range = null; continue; }
     if (range) break;
   }
-  const start = first(range?.start, range?.address, range?.startAddr, local.activeFunction?.start, local.currentFunction?.start, current);
+  const start = first(range?.start, range?.address, range?.startAddr, local.activeFunction?.address, local.currentFunction?.address, local.activeFunction?.start, local.currentFunction?.start, current);
   const end = first(range?.end, range?.endAddr, local.activeFunction?.end, local.currentFunction?.end);
   return { start: addressText(start), end: addressText(end) };
 }
@@ -244,6 +337,17 @@ function snapshotNeighborhood(local, current) {
 
 function safeName(local, address) { try { return local.functionName?.(address) || null; } catch { return null; } }
 function copyScalar(value) { return ['string', 'number', 'boolean'].includes(typeof value) ? value : value == null ? null : String(value); }
+// Analysis revision is freshness authority. Accept only scalar identities;
+// never turn structured/untrusted values into authority via generic String().
+export function resolveAnalysisRevision(local = {}) {
+  const value = first(local.analysisRevision, local.binary?.analysisRevision, local.program?.analysisRevision, local.revision);
+  if (value == null || value === '') return null;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'bigint') return value.toString();
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? String(value) : null;
+  if (typeof value === 'boolean') return String(value);
+  return null;
+}
 function first(...values) { return values.find((value) => value !== undefined && value !== null) ?? null; }
 function parseAddress(value) { try { return value == null ? null : BigInt(value); } catch { return value; } }
 function deepFreeze(value) {

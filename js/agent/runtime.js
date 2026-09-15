@@ -4,7 +4,8 @@
  */
 import { compileGoal } from '../goalc.js';
 import { createAgentTools } from './tools.js';
-import { planAnalysisGoal } from '../query/planner.js';
+import { globalCandidateAuthority } from './candidate-authority.js';
+import { createToolCallBudget, planAnalysisGoal } from '../query/planner.js';
 
 function canonicalAddress(value) {
   if (typeof value === 'bigint') return value >= 0n ? value : null;
@@ -14,6 +15,8 @@ function canonicalAddress(value) {
   if (!/^(?:0[xX][0-9a-fA-F]+|[+]?\d+)$/.test(text)) return null;
   try { return BigInt(text); } catch { return null; }
 }
+
+const MAX_CANDIDATE_AUTHORITY_REASONS = 4;
 
 const FUNCTION_ADDRESS_FIRST_ARG_TOOLS = new Set([
   'get_function', 'get_callers', 'get_callees',
@@ -61,9 +64,16 @@ function verificationVerdict(verification) {
   return { status, confidence };
 }
 
-function confidenceFromEvidence({ semanticCount, explicitVerified, verdictStatus, verdictConfidence }) {
+function confidenceFromEvidence({ semanticCount, explicitVerified, verdictStatus, verdictConfidence, candidateAuthority }) {
   const staticConfidence = semanticCount ? 0.78 : 0.45;
-  if (!verdictStatus) return explicitVerified ? 0.98 : staticConfidence;
+  if (!verdictStatus) {
+    if (!explicitVerified) return staticConfidence;
+    // #8673: a positive candidate verification proves one property of one
+    // observed candidate. It may not mint the complete-plan 0.98 global
+    // conclusion while planner/candidate/semantic coverage is partial; the
+    // local proof stays valid, the terminal authority does not.
+    return candidateAuthority ? 0.98 : staticConfidence;
+  }
 
   if (verdictStatus === 'confirmed') {
     // Runtime confirmation is itself the strongest source. Never manufacture a
@@ -104,11 +114,19 @@ export function deterministicAnswer(plan) {
   const { status: verdict, confidence: verdictConfidence } = verificationVerdict(best.verification);
   const explicitVerified = best.verification?.verified === true;
   const verified = explicitVerified || verdict === 'confirmed';
+  const authority = globalCandidateAuthority(plan);
   const semanticCount = (best.semanticFacts || []).length;
   const reasons = [
     { kind: 'semantic-facts', count: semanticCount },
     { kind: 'deterministic-verification', verified },
   ];
+  if (explicitVerified) {
+    reasons.push({
+      kind: 'candidate-coverage-authority',
+      authoritative: authority.authoritative,
+      reasons: authority.reasons.slice(0, MAX_CANDIDATE_AUTHORITY_REASONS),
+    });
+  }
   if (verdict) reasons.push({
     kind: `runtime-${verdict}`,
     status: verdict,
@@ -120,7 +138,7 @@ export function deterministicAnswer(plan) {
     conclusion: { address: best.address, name: best.name || null },
     reasons,
     evidence: plan.evidence || [],
-    confidence: confidenceFromEvidence({ semanticCount, explicitVerified, verdictStatus: verdict, verdictConfidence }),
+    confidence: confidenceFromEvidence({ semanticCount, explicitVerified, verdictStatus: verdict, verdictConfidence, candidateAuthority: authority.authoritative }),
     missingEvidence: plan.missingEvidence || [],
   };
 }
@@ -203,6 +221,7 @@ export async function runAgent(config) {
   if (!llm || typeof llm.next !== 'function') return runDeterministicAgent(goal, context, { ...cfg, ...budget });
 
   const query = typeof goal === 'string' ? compileGoal(goal) : goal;
+  const toolCallBudget = createToolCallBudget(budget.maxToolCalls);
   const monotonicNow = monotonicClockOf(cfg);
   const started = monotonicNow();
   const elapsedMs = () => monotonicNow() - started;
@@ -279,7 +298,7 @@ export async function runAgent(config) {
       step = await awaitRunBudget((signal, remainingMs) => llm.next({
         goal, query, observations: observations.slice(), availableTools, signal,
         budget: {
-          remainingToolCalls: budget.maxToolCalls - call,
+          remainingToolCalls: toolCallBudget.remaining(),
           remainingFunctions: Math.max(0, budget.maxFunctions - usedFunctionCount()),
           remainingDisassembly: Math.max(0, budget.maxDisassembly - disassembly),
           remainingMs,
@@ -310,6 +329,7 @@ export async function runAgent(config) {
       functions.add(budgetKey);
       if (usedFunctionCount() > budget.maxFunctions) { stopReason = 'function-budget'; break; }
     }
+    if (!toolCallBudget.consume()) { stopReason = 'tool-call-budget'; break; }
     let result;
     try {
       result = await awaitRunBudget((signal) => tools[req.tool](...toolArgsWithRunSignal(req.tool, req.args, signal)));
@@ -338,6 +358,7 @@ export async function runAgent(config) {
     maxSearchResults: cfg.maxSearchResults,
     timeoutMs: remainingTimeout,
     isCancelled: cancelled,
+    toolCallBudget,
     tools,
   });
   for (const e of plan.evidence || []) evidence.add(e);
@@ -375,6 +396,6 @@ export async function runAgent(config) {
     plan,
     observations,
     mode: 'agent',
-    stats: { toolCalls: observations.length, functions: usedFunctionCount(), disassembly, elapsedMs: elapsedMs() },
+    stats: { toolCalls: toolCallBudget.used, functions: usedFunctionCount(), disassembly, elapsedMs: elapsedMs() },
   };
 }

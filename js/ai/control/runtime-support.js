@@ -1,5 +1,6 @@
 import { AIError } from '../schema.js';
-import { canonicalBindingId, firstBinding, resolveBinaryIdentity } from './snapshot.js';
+import { globalCandidateAuthority } from '../../agent/candidate-authority.js';
+import { canonicalBindingId, firstBinding, resolveBinaryIdentity, sameStrongIdentity } from './snapshot.js';
 
 export function requiredScopeForTool(tool) {
   if (['search_functions','search_strings','compare_functions','lookup_known_function'].includes(tool)) return 'binary';
@@ -42,14 +43,25 @@ export function sessionMatchesSnapshot(session, snapshot) {
     const sessionLegacy = sessionIdentity?.legacyId ?? (!sessionIdentity ? sessionBindingId : null);
     const snapshotLegacy = snapshot.legacyBinaryId ?? snapshotIdentity?.legacyId ?? null;
 
-    if (!sessionStrong && snapshotStrong) binaryMatches = sameLegacy(sessionLegacy, snapshotLegacy);
+    // #8967: a legacy session's `filename:slice` binding is not a collision-
+    // resistant proof that its bytes equal a strong snapshot's identity. When
+    // the session carries no strong identity but the snapshot does, matching
+    // by `sameLegacy()` promotes weak string equality into a strong binary
+    // identity and lets a byte-different file with the same name hydrate the
+    // prior conversation/confirmed findings across binaries. Fail closed; only
+    // symmetric legacy↔legacy comparisons (no strong upgrade) keep the old
+    // compatibility behaviour.
+    if (!sessionStrong && snapshotStrong) binaryMatches = false;
     else if (!sessionStrong && !snapshotStrong) binaryMatches = sameLegacy(sessionLegacy, snapshotLegacy);
     else binaryMatches = false;
   }
+  const sessionProjectId = canonicalBindingId(session.projectId);
+  const snapshotProjectId = canonicalBindingId(snapshot.projectIdentity);
+  if (session.projectId != null && sessionProjectId == null) return false;
+  if (snapshot.projectIdentity != null && snapshotProjectId == null) return false;
   const projectMatches = session.projectId == null
-    || (canonicalBindingId(session.projectId) != null
-      && canonicalBindingId(snapshot.projectIdentity) != null
-      && canonicalBindingId(session.projectId) === canonicalBindingId(snapshot.projectIdentity));
+    ? snapshot.projectIdentity == null
+    : sessionProjectId === snapshotProjectId;
   const priorAnchor = session.investigationMemory?.anchor || null;
   const priorRuntimeRaw = priorAnchor?.runtimeSessionId ?? null;
   const priorRuntime = canonicalBindingId(priorRuntimeRaw);
@@ -63,10 +75,21 @@ export function sessionMatchesSnapshot(session, snapshot) {
 }
 export function assertLiveBindingsUnchanged(local, snapshot) {
   const live = resolveBinaryIdentity(local, {});
-  const snapshotIdentity = snapshot.binaryIdentity || null;
-  const sameId = live.id === snapshotIdentity?.id;
-  const bothWeak = !strongIdentity(live, live.id) && !strongIdentity(snapshotIdentity, snapshot.binaryId);
-  const same = sameId || (bothWeak && sameLegacy(live.legacyId, snapshot.legacyBinaryId));
+  const expectedLive = snapshot.binaryIdentitySource === 'request-fallback'
+    ? (snapshot.liveBinaryIdentity || null)
+    : (snapshot.binaryIdentity || null);
+  const expectedId = snapshot.binaryIdentitySource === 'request-fallback'
+    ? expectedLive?.id
+    : snapshot.binaryId;
+  const expectedLegacy = snapshot.binaryIdentitySource === 'request-fallback'
+    ? expectedLive?.legacyId
+    : snapshot.legacyBinaryId;
+  const sameId = live.id === expectedLive?.id;
+  const liveStrong = strongIdentity(live, live.id);
+  const expectedStrong = strongIdentity(expectedLive, expectedId);
+  const same = liveStrong && expectedStrong
+    ? sameStrongIdentity(live, expectedLive, local)
+    : !liveStrong && !expectedStrong && (sameId || sameLegacy(live.legacyId, expectedLegacy));
   if (!same) throw new AIError('scope_violation', 'The binary changed while this AI turn was running; refusing to mix workbench states.');
   const liveProject = firstBinding(local.projectId, local.project?.id, local.project?.binaryHash);
   if (!sameNullableBinding(liveProject, snapshot.projectIdentity)) {
@@ -88,13 +111,101 @@ export function assertLiveBindingsUnchanged(local, snapshot) {
 }
 export function compactCandidate(candidate) { return { address: addressString(candidate.address), name: candidate.name, lexicalScore: candidate.lexicalScore, semanticScore: candidate.semanticScore, graphScore: candidate.graphScore, evidenceScore: candidate.evidenceScore, runtimeScore: candidate.runtimeScore, totalScore: candidate.totalScore, reasons: candidate.reasons }; }
 export function deterministicDecision(plan, request, error = null) {
+  if (error?.type === 'cancelled') return { type: 'final', answer: humanError(error), confidence: 0, evidenceIds: [], hypothesisIds: [], suggestedActions: [], followups: [] };
   const best = plan?.best;
-  if (best) { const address = addressString(best.address); return { type: 'final', answer: `最も強い候補は ${best.name || address} です。Hex の決定論的 planner が候補を順位付けし、${best.verification?.verified ? '更新経路を検証しました。' : '追加検証が必要です。'}`, confidence: deterministicConfidence(plan), evidenceIds: plan.evidence || [], hypothesisIds: [], suggestedActions: address ? [{ kind: 'open-function', target: address, label: '候補関数を開く' }] : [], followups: plan.missingEvidence || [] }; }
+  if (best) {
+    const address = addressString(best.address);
+    const verified = best.verification?.verified === true;
+    // #8673: the planner's own coverage state, not the local verification flag,
+    // decides whether this turn may claim a terminal strongest-candidate result.
+    const authority = globalCandidateAuthority(plan);
+    const label = best.name || address;
+    const answer = authority.authoritative
+      ? `最も強い候補は ${label} です。Hex の決定論的 planner が候補を順位付けし、${verified ? '更新経路を検証しました。' : '追加検証が必要です。'}`
+      : `暫定的な最有力候補は ${label} です。Hex の決定論的 planner が候補を順位付けし、${verified ? 'その候補の更新経路を局所的に検証しました' : '候補の順位付けまで完了しました'}が、候補探索または意味解析が未完了のため、最も強い候補の確定は保留しています。`;
+    // A plan that went through EvidenceStore.ingestPlan() carries the exact
+    // canonical record set it produced. Citing raw planner source IDs would
+    // never resolve against those records, so the deterministic fallback must
+    // consume the published binding when one exists (#8864).
+    const evidenceIds = Array.isArray(plan.evidenceRecordIds) ? plan.evidenceRecordIds : (plan.evidence || []);
+    return { type: 'final', answer, confidence: deterministicConfidence(plan), evidenceIds, hypothesisIds: [], suggestedActions: address ? [{ kind: 'open-function', target: address, label: '候補関数を開く' }] : [], followups: plan.missingEvidence || [] };
+  }
   return { type: 'final', answer: error ? humanError(error) : (request.mode === 'chat' ? '利用できるローカル根拠だけでは回答を確定できませんでした。' : '有力な候補を特定できませんでした。'), confidence: 0, evidenceIds: [], suggestedActions: [], followups: plan?.missingEvidence || [] };
 }
-export function fallbackEvidence(store, plan) { const planIds = new Set(plan?.evidence || []), exact = store.all().filter((item) => planIds.has(item.id)); if (exact.length) return exact.slice(0, 50); const planned = store.all().filter((item) => item.sourceTool === 'deterministic-goal-planner'); if (planned.length) return planned.slice(-50); return store.all().filter((item) => item.status === 'verified').slice(-50); }
-export function deterministicConfidence(plan) { if (plan?.best?.verification?.verified) return 0.98; if (plan?.best?.semanticFacts?.length) return 0.78; return plan?.best ? 0.45 : 0; }
-export function presentAnswer(answer, style, evidence, plan) { if (style === 'analyst') return answer; const suffix = evidence.length ? `\n\nHex が確認できた根拠は ${evidence.length} 件です。` : '\n\nこの回答には、Hex が確認済みにした根拠がまだありません。'; return `${answer}${suffix}${plan?.missingEvidence?.length ? ` 次に確認する点: ${plan.missingEvidence.slice(0, 3).join('、')}。` : ''}`; }
+/**
+ * Publish the canonical evidence binding for one plan.
+ *
+ * `EvidenceStore.ingestPlan()` projects a plan's raw source IDs into canonical
+ * `ev_<digest>` records, so finalization cannot consume `plan.evidence`
+ * directly. The turn executor calls this immediately after ingestion so the
+ * current plan carries the exact canonical record set it produced (#8864).
+ */
+export function withPlanEvidenceBinding(plan, records) {
+  if (!plan || typeof plan !== 'object') return plan;
+  const ids = [];
+  const seen = new Set();
+  for (const record of Array.isArray(records) ? records : []) {
+    const id = typeof record?.id === 'string' && record.id ? record.id : null;
+    if (id === null || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return { ...plan, evidenceRecordIds: ids };
+}
+
+const MAX_FALLBACK_EVIDENCE = 50;
+
+/**
+ * Records that carry the authority a final answer presents.
+ *
+ * `supported` planner ranking is useful provenance but it is not proof, so it
+ * may not satisfy the evidence requirement that lifts the evidence-free
+ * confidence cap (#8864).
+ */
+export function qualifyingEvidence(evidence) {
+  return (Array.isArray(evidence) ? evidence : []).filter((item) => item?.status === 'verified');
+}
+
+/**
+ * Substitute evidence for a decision that made no explicit citation.
+ *
+ * Only records bound to the *current* plan qualify, and only at the authority
+ * the presentation claims: a `supported` planner ranking record must never
+ * satisfy a confirmed-evidence check or lift the evidence-free confidence cap.
+ * The former session-wide `sourceTool === 'deterministic-goal-planner'` scan is
+ * removed because it re-attached earlier turns' records to unrelated answers
+ * (#8864). A turn with no planner result at all keeps the #5159 verified-session
+ * projection.
+ */
+export function fallbackEvidence(store, plan) {
+  if (plan && typeof plan === 'object') {
+    const bound = typeof store.planEvidence === 'function' ? store.planEvidence(plan, { verifiedOnly: false }) : [];
+    return bound.slice(0, MAX_FALLBACK_EVIDENCE);
+  }
+  return store.all().filter((item) => item.status === 'verified').slice(-MAX_FALLBACK_EVIDENCE);
+}
+export function deterministicConfidence(plan) {
+  const staticConfidence = plan?.best?.semanticFacts?.length ? 0.78 : 0.45;
+  // A positive local verification is not global coverage proof: the 0.98
+  // terminal authority requires the planner/candidate/semantic coverage state
+  // to be complete as well (#8673).
+  if (plan?.best?.verification?.verified === true) return globalCandidateAuthority(plan).authoritative ? 0.98 : staticConfidence;
+  if (plan?.best?.semanticFacts?.length) return 0.78;
+  return plan?.best ? 0.45 : 0;
+}
+export function presentAnswer(answer, style, evidence, plan) {
+  if (style === 'analyst') return answer;
+  const verified = (evidence || []).filter((item) => item?.status === 'verified').length;
+  const unverified = Math.max(0, (evidence || []).length - verified);
+  // Beginner prose must not call a merely `supported` ranking record a
+  // confirmed fact (#8864).
+  const suffix = verified
+    ? `\n\nHex が確認できた根拠は ${verified} 件です。${unverified ? ` 未検証の補強根拠も ${unverified} 件添付しています。` : ''}`
+    : (unverified
+      ? '\n\nこの回答には、Hex が確認済みにした根拠がまだありません（添付は未検証の補強根拠のみです）。'
+      : '\n\nこの回答には、Hex が確認済みにした根拠がまだありません。');
+  return `${answer}${suffix}${plan?.missingEvidence?.length ? ` 次に確認する点: ${plan.missingEvidence.slice(0, 3).join('、')}。` : ''}`;
+}
 export function defaultMonotonicNow() {
   try {
     if (typeof performance !== 'undefined' && typeof performance.now === 'function') return performance.now();
@@ -105,6 +216,9 @@ export function resolveMonotonicClock(...candidates) {
   for (const candidate of candidates) if (typeof candidate === 'function') return candidate;
   return defaultMonotonicNow;
 }
+// A caller-supplied clock is still an authority input. Freeze each turn's
+// observation to a finite, non-decreasing primitive so a clock correction
+// cannot extend a deadline or make elapsed time negative.
 export function createMonotonicClock(source = defaultMonotonicNow) {
   const now = resolveMonotonicClock(source);
   let last = null;
@@ -116,8 +230,30 @@ export function createMonotonicClock(source = defaultMonotonicNow) {
     return last;
   };
 }
-export function ensureRunning(signal, started, timeoutMs, nowFn = defaultMonotonicNow) { if (signal?.aborted) throw new AIError(signal.reason === 'timeout' ? 'budget_exhausted' : 'cancelled', signal.reason === 'timeout' ? 'The AI investigation timed out.' : 'AI investigation was cancelled.'); if (nowFn() - started >= timeoutMs) throw new AIError('budget_exhausted', 'The AI investigation timed out.'); }
-export function remainingTime(started, timeoutMs, nowFn = defaultMonotonicNow) { return Math.max(1, timeoutMs - (nowFn() - started)); }
+
+function elapsedSince(started, nowFn) {
+  const now = nowFn();
+  if (typeof now !== 'number' || !Number.isFinite(now)
+      || typeof started !== 'number' || !Number.isFinite(started)) return 0;
+  return Math.max(0, now - started);
+}
+
+export function ensureRunning(signal, started, timeoutMs, nowFn = defaultMonotonicNow) {
+  if (signal?.aborted) {
+    throw new AIError(
+      signal.reason === 'timeout' ? 'budget_exhausted' : 'cancelled',
+      signal.reason === 'timeout' ? 'The AI investigation timed out.' : 'AI investigation was cancelled.',
+    );
+  }
+  if (elapsedSince(started, nowFn) >= timeoutMs) {
+    throw new AIError('budget_exhausted', 'The AI investigation timed out.');
+  }
+}
+
+export function remainingTime(started, timeoutMs, nowFn = defaultMonotonicNow) {
+  const elapsed = elapsedSince(started, nowFn);
+  return Math.max(1, Math.min(timeoutMs, timeoutMs - elapsed));
+}
 export function normalizeError(error, signal) { if (error instanceof AIError) return error; if (signal?.aborted || error?.name === 'AbortError') return new AIError(signal?.reason === 'timeout' ? 'budget_exhausted' : 'cancelled', signal?.reason === 'timeout' ? 'The AI investigation timed out.' : 'AI investigation was cancelled.'); return new AIError('provider_error', error?.message || String(error), providerDiagnostics(error)); }
 export function providerDiagnostics(error) { const details = error instanceof AIError ? error.details : error; const provider = safeDiagnosticToken(details?.provider, /^[a-z][a-z0-9-]{0,63}$/); const bridgeCode = safeDiagnosticToken(details?.bridgeCode ?? error?.code, /^[A-Za-z0-9_.-]{1,64}$/); const bridgeStage = safeDiagnosticToken(details?.bridgeStage ?? error?.stage, /^[a-z][a-z0-9-]{0,63}$/); const runtimeBuildId = safeDiagnosticToken(details?.runtimeBuildId, /^[a-f0-9]{1,64}$/i); const out = {}; if (provider) out.provider = provider; if (bridgeCode) out.bridgeCode = bridgeCode; if (bridgeStage) out.bridgeStage = bridgeStage; if (runtimeBuildId) out.runtimeBuildId = runtimeBuildId; return Object.keys(out).length ? out : null; }
 function safeDiagnosticToken(value, pattern) { return typeof value === 'string' && pattern.test(value) ? value : null; }

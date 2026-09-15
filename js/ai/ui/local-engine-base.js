@@ -11,6 +11,9 @@
  * Agent : deterministic goal planner (js/query/planner.js) with live activity.
  */
 import { runDeterministicAgent } from '../../agent/runtime.js';
+import { globalCandidateAuthority } from '../../agent/candidate-authority.js';
+import { plannerGoalWithTargetHint } from '../context/planner-target-hint.js';
+import { compactUntrustedTarget } from '../context/broker.js';
 import { streamGemini } from '../../gemini.js';
 import { addrHex } from '../../format.js';
 import { pick } from '../../i18n.js';
@@ -130,6 +133,7 @@ async function runChat({ app, question, mode, style, scope, context, signal, onA
   const payload = {
     question: (compactGuidance(prompt) + '\n\n' + question).slice(0, 6000),
     thinkingLevel: style === 'analyst' ? 'high' : 'medium',
+    untrustedTarget: compactUntrustedTarget(context.untrustedTarget),
     currentFunction: { address, name: activeFn ? activeFn.name : null, assembly, pseudocode: null },
     xrefs: [], callers: [], callees: [], strings: [], globals: [],
   };
@@ -148,17 +152,30 @@ async function runChat({ app, question, mode, style, scope, context, signal, onA
   return { ...base, answer: streamed.trim() || localChatAnswer({ name, address, model, selection: context.selection }) };
 }
 
-function candidateEvidence(plan) {
+function candidateEvidence(plan, globallyAuthoritative = true) {
   const out = [];
   for (const candidate of (plan && plan.candidates) || []) {
     const address = candidate.address == null ? null : addrHex(candidate.address);
-    const verified = !!(candidate.verification && candidate.verification.verified);
+    const locallyVerified = !!(candidate.verification && candidate.verification.verified);
+    // #8673: a positive local verification remains publishable evidence, but
+    // while planner/candidate/semantic coverage is incomplete it is explicitly
+    // scoped to that candidate instead of minting `verified` candidate
+    // authority over the whole candidate universe.
+    const verified = locallyVerified && globallyAuthoritative;
+    const title = verified
+      ? pick('検証済み候補', 'Verified candidate')
+      : locallyVerified
+        ? pick('候補（候補局所では検証済み・カバレッジ未完了）', 'Candidate (locally verified, incomplete coverage)')
+        : pick('候補', 'Ranked candidate');
     out.push({
       id: 'local:candidate:' + address,
       kind: 'candidate',
       status: verified ? 'verified' : 'supported',
-      title: (verified ? pick('検証済み候補', 'Verified candidate') : pick('候補', 'Ranked candidate')) + ': ' + (candidate.name || address),
+      title: title + ': ' + (candidate.name || address),
       summary: pick('決定論的スコア ', 'Deterministic score ') + candidate.score
+        + (locallyVerified && !globallyAuthoritative
+          ? pick(' · 候補局所の検証のみ（候補宇宙は未完了）', ' · local verification only (candidate universe incomplete)')
+          : '')
         + ((candidate.sources || []).length ? ' · ' + candidate.sources.slice(0, 4).join(', ') : ''),
       functionAddress: address,
       functionName: candidate.name || null,
@@ -189,7 +206,8 @@ async function runAgent({ app, localContext, question, mode, style, signal, onAc
   // dominant first-answer cost and could outlive a cancelled Assistant turn.
   onActivity({ label: pick('候補を探索', 'Searching candidates'), state: 'running' });
   const started = Date.now();
-  const result = await runDeterministicAgent(question, localContext || {}, {
+  const plannerGoal = plannerGoalWithTargetHint(question, context?.untrustedTarget);
+  const result = await runDeterministicAgent(plannerGoal, localContext || {}, {
     maxFunctions: 24, maxDisassembly: 40000, timeoutMs: 20000,
     signal,
     isCancelled: () => !!(signal && signal.aborted),
@@ -210,10 +228,19 @@ async function runAgent({ app, localContext, question, mode, style, signal, onAc
   }
 
   const address = best && best.address != null ? addrHex(best.address) : null;
+  // #8673: the deterministic planner reports its own candidate/semantic/search
+  // coverage. Only a plan whose coverage spans the candidate universe may be
+  // projected as the goal-level "strongest candidate" conclusion.
+  const authority = globalCandidateAuthority(plan);
+  const locallyVerifiedBest = !!(best && best.verification && best.verification.verified);
   const answer = best
-    ? pick(
-      `いちばん有力なのは ${best.name || address}（${address}）です。Hex の決定論的な探索が候補を順位付けし、${best.verification && best.verification.verified ? '値の更新経路まで確認できました。' : 'この候補はまだ更新経路を確認できていません。'}`,
-      `The strongest candidate is ${best.name || address} (${address}). Hex ranked the candidates deterministically and ${best.verification && best.verification.verified ? 'confirmed the update path.' : 'has not yet confirmed the update path.'}`)
+    ? (authority.authoritative
+      ? pick(
+        `いちばん有力なのは ${best.name || address}（${address}）です。Hex の決定論的な探索が候補を順位付けし、${locallyVerifiedBest ? '値の更新経路まで確認できました。' : 'この候補はまだ更新経路を確認できていません。'}`,
+        `The strongest candidate is ${best.name || address} (${address}). Hex ranked the candidates deterministically and ${locallyVerifiedBest ? 'confirmed the update path.' : 'has not yet confirmed the update path.'}`)
+      : pick(
+        `現時点で最も有力なのは ${best.name || address}（${address}）です。Hex の決定論的な探索が候補を順位付けし、${locallyVerifiedBest ? 'この候補の値の更新経路を局所的に確認しました' : 'この候補はまだ更新経路を確認できていません'}が、候補探索または意味解析が未完了のため、全局的な結論は保留しています。`,
+        `The best candidate so far is ${best.name || address} (${address}). Hex ranked the candidates deterministically and ${locallyVerifiedBest ? 'verified the update path for this candidate locally' : 'has not yet confirmed the update path'}, but candidate/semantic coverage is incomplete so no global conclusion is claimed.`))
     : pick('この目的に合う関数を、確かな根拠つきでは特定できませんでした。', 'No candidate function could be identified with dependable evidence.');
 
   const missing = (result.missingEvidence || []).slice(0, 4);
@@ -222,8 +249,8 @@ async function runAgent({ app, localContext, question, mode, style, signal, onAc
   // candidate evidence is the deterministic verification authority here; if
   // it is absent from the published evidence, the hypothesis stays
   // 'supported' instead of claiming verification without support.
-  const verifiedBest = !!(best && best.verification && best.verification.verified);
-  const evidenceList = candidateEvidence(plan);
+  const verifiedBest = locallyVerifiedBest && authority.authoritative;
+  const evidenceList = candidateEvidence(plan, authority.authoritative);
   const supportEvidenceIds = verifiedBest && evidenceList.some((item) => item.id === 'local:candidate:' + address && item.status === 'verified')
     ? ['local:candidate:' + address]
     : [];
