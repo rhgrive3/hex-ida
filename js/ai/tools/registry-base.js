@@ -266,11 +266,14 @@ export function createHexToolRegistry(context = {}, options = {}) {
   });
 
   if (context.runtimePlatform || context.runtime) {
+    // #8681: the observation reader is a read path. It must not hold the
+    // deterministic verifier capability just because some producers label
+    // their own rows verified; only `verify_runtime_hypothesis` may.
     register('get_runtime_observations', 'Read bounded observations from the active runtime session.', runtimeObservationSchema(), async ({ functionAddress, limit = 100, cursor }) => {
       const params = { functionAddress: functionAddress || null };
       const offset = pageOffset('get_runtime_observations', params, cursor);
       return runtimeObservations(context, { functionAddress, limit, offset, cursorFor: (next) => pageCursor('get_runtime_observations', params, next) });
-    }, { verifier: true, cost: 'medium', scopeSupport: ['auto', 'runtime'], category: 'runtime', resultKind: 'runtime-observations', modelProjection: projectRuntime, deterministic: false });
+    }, { verifier: false, cost: 'medium', scopeSupport: ['auto', 'runtime'], category: 'runtime', resultKind: 'runtime-observations', modelProjection: projectRuntime, deterministic: false });
     register('verify_runtime_hypothesis', 'Run the configured deterministic runtime verifier for a hypothesis.', runtimeVerifySchema(), async ({ hypothesis, options: runtimeOptions }, callOptions = {}) => runtimeVerify(context, hypothesis, { ...(runtimeOptions || {}), signal: callOptions.signal || null }), {
       verifier: true, cost: 'expensive', scopeSupport: ['auto', 'runtime'], category: 'verification', resultKind: 'runtime-verification', modelProjection: projectVerification, deterministic: false });
   }
@@ -786,6 +789,40 @@ function projectSearchLocal(project, query, limit, offset = 0, cursorFor = null)
   const next = offset + results.length < matches.length ? offset + results.length : null;
   return pageResult({ query, results }, matches.length, offset, results.length, next != null && cursorFor ? cursorFor(next) : null);
 }
+/*
+ * #8681: `get_runtime_observations` is a reader. A producer-supplied
+ * `status:'verified'`, `verified:true`, or `verification.verified:true` is
+ * source data, not a deterministic verification verdict — only
+ * `verify_runtime_hypothesis` runs a verifier contract and may mint canonical
+ * verified evidence. Every observation branch normalizes to the same
+ * non-authoritative canonical row and keeps the producer's own claim under an
+ * explicit untrusted label so provenance is never silently erased.
+ */
+const PRODUCER_VERDICT_CLAIM = 'producerVerdictClaims';
+
+function observationVerdictClaims(row) {
+  const claims = [];
+  if (row.status === 'verified') claims.push('status:verified');
+  if (row.verified === true) claims.push('verified:true');
+  if (row.verification && typeof row.verification === 'object' && row.verification.verified === true) {
+    claims.push('verification.verified:true');
+  }
+  return claims;
+}
+
+function normalizeObservationRow(row) {
+  if (!row || typeof row !== 'object') return row;
+  const claims = observationVerdictClaims(row);
+  const reported = typeof row.status === 'string' && row.status ? row.status : 'supported';
+  const next = { ...row, verified: false, status: reported === 'verified' ? 'supported' : reported };
+  if (!claims.length) return next;
+  if (next.verification && typeof next.verification === 'object' && !Array.isArray(next.verification)) {
+    next.verification = { ...next.verification, verified: false, authority: 'producer-asserted-non-authoritative' };
+  }
+  next[PRODUCER_VERDICT_CLAIM] = claims;
+  return next;
+}
+
 async function runtimeObservations(context, { functionAddress, limit = 100, offset = 0, cursorFor }) {
   const platform = context.runtimePlatform || context.runtime;
   if (typeof platform.getObservations === 'function') {
@@ -797,22 +834,14 @@ async function runtimeObservations(context, { functionAddress, limit = 100, offs
       localOffset = offset;
     }
     const sourceRows = Array.isArray(value) ? value : (Array.isArray(value?.observations) ? value.observations : (Array.isArray(value?.results) ? value.results : []));
-    const normalized = sourceRows.map((row) => {
-      if (!row || typeof row !== 'object') return row;
-      const explicitlyVerified = row.status === 'verified' || row.verified === true || row.verification?.verified === true;
-      return { ...row, verified: explicitlyVerified, status: explicitlyVerified ? 'verified' : (row.status || 'supported') };
-    });
+    const normalized = sourceRows.map(normalizeObservationRow);
     return externalArrayPage(value, normalized, { offset, limit, localOffset, cursorFor });
   }
   const session = typeof platform.currentSession === 'function' ? platform.currentSession(false) : context.runtimeSession;
   const all = session?.evidence || session?.observations || [];
   const filtered = functionAddress ? all.filter((row) => addressText(row?.functionAddress ?? row?.function ?? row?.address) === addressText(functionAddress)) : all;
   const source = filtered.slice(offset, offset + limit);
-  const rows = source.map((row) => {
-    if (!row || typeof row !== 'object') return row;
-    const explicitlyVerified = row.status === 'verified' || row.verified === true || row.verification?.verified === true;
-    return { ...row, verified: explicitlyVerified, status: explicitlyVerified ? 'verified' : (row.status || 'supported') };
-  });
+  const rows = source.map(normalizeObservationRow);
   const next = offset + rows.length < filtered.length ? offset + rows.length : null;
   return pageResult({ results: rows }, filtered.length, offset, rows.length, next == null ? null : cursorFor(next));
 }

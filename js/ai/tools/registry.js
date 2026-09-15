@@ -107,11 +107,63 @@ function installVerificationBoundary(registry) {
     });
   });
 
+  // The model-visible patch verifier has no canonical original/patched IR
+  // resolver in its current contract. Letting caller objects fall through here
+  // would make either the Expr fast path or a forged Semantic-IR instruction
+  // proof authority. Until the tool can bind both sides to a trusted producer,
+  // it must fail closed rather than mint PROVED/REFUTED authority (#4132).
+  replace(registry, 'verify_patch_equivalence', async ({ originalTarget, patchedTarget }) => {
+    rejectUntrustedExpr(originalTarget, 'originalTarget');
+    rejectUntrustedExpr(patchedTarget, 'patchedTarget');
+    throw new AIError(
+      'invalid_tool_call',
+      'verify_patch_equivalence requires canonical original and patched Semantic IR binding; the current model-visible tool contract cannot establish that authority.',
+    );
+  });
+
   return registry;
 }
 
+function isCanonicalRuntimeConfirmation(result) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return false;
+  if (Object.hasOwn(result, 'verified')) return false;
+  if (result.verification && typeof result.verification === 'object' && !Array.isArray(result.verification)
+      && Object.hasOwn(result.verification, 'verified')) return false;
+  const verdict = result.verdict;
+  const coverage = result.coverage;
+  const cases = result.cases;
+  if (!verdict || typeof verdict !== 'object' || Array.isArray(verdict) || verdict.status !== 'confirmed') return false;
+  if (!coverage || typeof coverage !== 'object' || Array.isArray(coverage)) return false;
+  if (coverage.complete !== true || coverage.truncated !== false || coverage.cancelled !== false || coverage.unsupported !== 0) return false;
+  if (!Number.isSafeInteger(coverage.planned) || coverage.planned < 3) return false;
+  if (!Number.isSafeInteger(coverage.executed) || coverage.executed !== coverage.planned) return false;
+  if (!Array.isArray(cases) || cases.length !== coverage.planned) return false;
+  if (!cases.every((entry) => entry && typeof entry === 'object' && entry.comparison?.status === 'supported')) return false;
+  return verdict.supported === coverage.planned && verdict.contradicted === 0 && verdict.total === coverage.planned;
+}
+
+function bridgeRuntimeVerifierAuthority(registry) {
+  const current = registry.get('verify_runtime_hypothesis');
+  if (!current) return;
+  replace(registry, 'verify_runtime_hypothesis', async (args, callOptions = {}) => {
+    const result = await current.execute(args, callOptions);
+    if (result?.verified === true || result?.verification?.verified === true) return result;
+    if (!isCanonicalRuntimeConfirmation(result)) return result;
+    const verification = result.verification && typeof result.verification === 'object' && !Array.isArray(result.verification)
+      ? result.verification
+      : {};
+    return {
+      ...result,
+      verified: true,
+      verification: { ...verification, verified: true, authority: 'runtime-confirmed-verdict' },
+    };
+  });
+}
+
 export function createHexToolRegistry(context = {}, options = {}) {
-  const registry = installVerificationBoundary(createBaseHexToolRegistry(context, options));
+  const registry = createBaseHexToolRegistry(context, options);
+  bridgeRuntimeVerifierAuthority(registry);
+  installVerificationBoundary(registry);
   if (context?.analysisAuthority !== 'AnalysisQueryAPI') return registry;
 
   if (typeof context.getDecompile === 'function') {

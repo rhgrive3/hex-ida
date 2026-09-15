@@ -159,6 +159,23 @@ assert.throws(
     'validator must reject executable category authority',
   );
   assert.equal(categoryReads, 0, 'validator must not invoke a category getter');
+
+  let pluralCategoryReads = 0;
+  const categories = [];
+  Object.defineProperty(categories, '0', {
+    enumerable: true,
+    get() {
+      pluralCategoryReads += 1;
+      return 'memory';
+    },
+  });
+  const pluralForged = { ...canonical, unknownEffects: [{ categories, reason: 'stateful-plural-category' }] };
+  assert.throws(
+    () => validateVMEffectBundle(pluralForged),
+    /vm-effect-invalid-unknown-category/,
+    'validator must reject executable plural-category authority',
+  );
+  assert.equal(pluralCategoryReads, 0, 'validator must not invoke a plural-category getter');
 }
 
 // 13. The validator must not execute an accessor-backed unknownEffects field.

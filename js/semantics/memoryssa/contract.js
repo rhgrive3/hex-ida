@@ -1,4 +1,4 @@
-import { canonicalAddress, deepFreeze, jsonSafe, stableStringify } from '../../core/identity/index.js';
+import { canonicalAddress, deepFreeze, jsonSafe, normalizeIdentity, stableStringify } from '../../core/identity/index.js';
 import { createOriginSet } from '../../core/identity/origin.js';
 import { analyzeSemanticDominance } from '../cfg/index.js';
 
@@ -162,7 +162,10 @@ export function createMemoryRegionRef(input) {
     if (input.addressSpace != null) out.addressSpace = nonEmpty(input.addressSpace, 'memory-ssa-region-address-space-required');
   } else if (kind === 'tls' || kind === 'io' || kind === 'physical-space') {
     out.addressSpace = nonEmpty(input.addressSpace, 'memory-ssa-region-address-space-required');
-    if (input.rootIdentity != null) out.rootIdentity = jsonSafe(input.rootIdentity);
+    if (input.rootIdentity != null) {
+      try { out.rootIdentity = normalizeIdentity(input.rootIdentity, 'memory-ssa-invalid-region-root-identity'); }
+      catch { fail('memory-ssa-invalid-region-root-identity'); }
+    }
   } else if (kind === 'unknown') {
     if (input.uncertaintyIdentity == null
       || (typeof input.uncertaintyIdentity === 'string' && !input.uncertaintyIdentity.trim())) {

@@ -349,7 +349,11 @@ const WORKER_POSTLUDE = String.raw`
 `;
 
 function workerProgram(source, mode, index, expectedDefinition) {
-  const user = JSON.stringify(String(source || ''));
+  if (typeof source !== 'string') throw new TypeError('sandbox source must be a primitive string');
+  if (mode !== 'script' && mode !== 'discover' && mode !== 'plugin') {
+    throw new TypeError('sandbox mode must be script, discover, or plugin');
+  }
+  const user = JSON.stringify(source);
   const safeIndex = typeof index === 'number' && Number.isSafeInteger(index) && index >= 0 ? index : -1;
   const expected = expectedDefinition === undefined ? 'null' : JSON.stringify(expectedDefinition);
   let body;
@@ -673,6 +677,12 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
   if (!isAbortSignalLike(signal)) {
     return Promise.resolve({ error: 'キャンセルシグナルが無効です。' });
   }
+  if (typeof source !== 'string') {
+    return Promise.resolve({ error: '実行ソースが無効です。' });
+  }
+  if (mode !== 'script' && mode !== 'discover' && mode !== 'plugin') {
+    return Promise.resolve({ error: '実行モードが無効です。' });
+  }
   const safeIndex = normalizeSandboxIndex(mode, index);
   if (safeIndex == null) {
     return Promise.resolve({ error: 'プラグイン定義番号が無効です。' });
@@ -779,7 +789,7 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
         return;
       }
       if (m.t === 'ready') {
-        const start = { t: 'start', source: String(source || ''), mode, index: safeIndex };
+        const start = { t: 'start', source, mode, index: safeIndex };
         if (safeExpectedDefinition !== undefined) start.expectedDefinition = safeExpectedDefinition;
         channel.port1.postMessage(start);
       } else if (m.t === 'print') {

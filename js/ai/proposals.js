@@ -22,6 +22,18 @@ const DATA_VIEW_BUFFER_GETTER = Object.getOwnPropertyDescriptor(DataView.prototy
 const DATA_VIEW_BYTE_OFFSET_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteOffset')?.get;
 const DATA_VIEW_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteLength')?.get;
 const ARRAY_BUFFER_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')?.get;
+const MAP_ENTRIES = Map.prototype.entries;
+const SET_VALUES = Set.prototype.values;
+const SUPPORTED_PROPOSAL_STATE_PROTOTYPES = new Set([
+  Array.prototype, Date.prototype, Map.prototype, Set.prototype, RegExp.prototype,
+  ArrayBuffer.prototype, DataView.prototype,
+  ...[
+    Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array,
+    Int32Array, Uint32Array, Float32Array, Float64Array,
+    ...(typeof BigInt64Array === 'function' ? [BigInt64Array] : []),
+    ...(typeof BigUint64Array === 'function' ? [BigUint64Array] : []),
+  ].map((typedArrayConstructor) => typedArrayConstructor.prototype),
+]);
 let proposalSequence = 1;
 
 export class ProposalStore {
@@ -54,7 +66,16 @@ export class ProposalStore {
          rejected before any approval is possible. */
       throw new AIError('invalid_tool_call', 'A project-annotation proposal requires a non-empty string target id.');
     }
-    const evidenceIds = Array.from(new Set((input.evidenceIds || []).filter((id) => typeof id === 'string' && this.evidenceStore?.has(id))));
+    // The product EvidenceStore's has() is existence-only, while verified
+    // status is protected by deterministic-verifier authority. When the store
+    // exposes records, require that authority-bearing status and retain only
+    // verified IDs. Minimal injected authority adapters that intentionally
+    // expose only has() keep their existing predicate contract.
+    const evidenceIds = Array.from(new Set((input.evidenceIds || []).filter((id) => {
+      if (typeof id !== 'string') return false;
+      if (typeof this.evidenceStore?.get === 'function') return this.evidenceStore.get(id)?.status === 'verified';
+      return this.evidenceStore?.has?.(id) === true;
+    })));
     if (!evidenceIds.length) throw new AIError('invalid_tool_call', 'A proposal requires deterministic evidence.');
     let id;
     if (Object.prototype.hasOwnProperty.call(input, 'id')) {
@@ -88,12 +109,16 @@ export class ProposalStore {
     // Structured cloning also rejects symbol-keyed state before this point, so
     // the owned payload is the complete fail-closed identity view.
     const revision = fingerprint(executionPayload.before);
+    const targetRevision = persistedValueRevision(executionPayload.target);
+    const afterRevision = persistedValueRevision(executionPayload.after);
     const bindingRevision = fingerprint(binding);
     const authority = Object.freeze({
       id,
       kind,
       capability: PROPOSAL_CAPABILITIES[kind],
       revision,
+      targetRevision,
+      afterRevision,
       bindingRevision,
     });
     const record = {
@@ -116,6 +141,21 @@ export class ProposalStore {
     this.records.set(id, record);
     this.audit.push({ type: 'proposal-created', proposalId: id, timestamp: record.createdAt });
     return proposalSnapshot(record);
+  }
+
+  restorePersistedPending(initial = []) {
+    if (!Array.isArray(initial)) return this;
+    for (const persisted of initial) {
+      const record = restoredPendingRecord(this, persisted);
+      if (record) this.records.set(record.id, record);
+    }
+    return this;
+  }
+
+  persistedActions() {
+    return Array.from(this.records.values(), (proposal) => proposal.status === 'pending'
+      ? proposalPersistenceSnapshot(proposal)
+      : proposalSnapshot(proposal));
   }
 
   approve(id) {
@@ -214,7 +254,7 @@ export class ProposalStore {
     const value = this.records.get(id);
     return value ? proposalSnapshot(value) : null;
   }
-  all() { return Array.from(this.records.values(), (proposal) => proposalSnapshot(proposal)); }
+  all() { return Array.from(this.records.values(), (proposal) => proposalPortableSnapshot(proposal)); }
   executionView(id) { return proposalExecutionView(requireProposalRecord(this, id)); }
 }
 
@@ -306,6 +346,109 @@ function requireProposalRecord(store, id) {
   const value = store.records.get(id);
   if (!value) throw new AIError('invalid_tool_call', 'Unknown proposal.');
   return value;
+}
+
+function restoredPendingRecord(store, persisted) {
+  if (!persisted || typeof persisted !== 'object' || Array.isArray(persisted)) return null;
+  if (persisted.status !== 'pending') return null;
+  const id = persisted.id;
+  if (typeof id !== 'string' || !id || store.records.has(id)) return null;
+  const kind = persisted.kind;
+  const capability = PROPOSAL_CAPABILITIES[kind];
+  if (!PROPOSAL_KINDS.has(kind) || !capability) return null;
+  if (persisted.capability != null && persisted.capability !== capability) return null;
+  if (typeof persisted.createdAt !== 'string' || !persisted.createdAt) return null;
+  if (typeof persisted.revision !== 'string' || !persisted.revision) return null;
+  if (typeof persisted.targetRevision !== 'string' || !persisted.targetRevision) return null;
+  if (typeof persisted.afterRevision !== 'string' || !persisted.afterRevision) return null;
+  if (persisted.executionPayload != null && (typeof persisted.executionPayload !== 'string' || !persisted.executionPayload)) return null;
+  if (typeof persisted.bindingRevision !== 'string' || !persisted.bindingRevision) return null;
+  const evidenceIds = Array.from(new Set(Array.isArray(persisted.evidenceIds)
+    ? persisted.evidenceIds.filter((value) => typeof value === 'string' && value)
+    : []));
+  if (!evidenceIds.length || !evidenceIds.every((value) => store.evidenceStore?.has(value))) return null;
+  let binding;
+  let payload;
+  try {
+    binding = store.binding?.() || null;
+    if (fingerprint(binding) !== persisted.bindingRevision) return null;
+    if (typeof persisted.executionPayload === 'string' && persisted.executionPayload) {
+      payload = decodePersistedExecutionPayload(persisted.executionPayload);
+      // The persisted representation itself must be canonical. This prevents an
+      // alternate decoder spelling from becoming a second authority for the same
+      // target/after values on reload.
+      if (encodePersistedExecutionPayload(payload) !== persisted.executionPayload) return null;
+    } else {
+      // `all()` remains a bounded public/display API. It may only serve as a
+      // backward/simple persistence carrier when creation proved that all three
+      // displayed mutation fields are byte-for-byte authority-equivalent.
+      if (persisted.executionDisplayExact !== true) return null;
+      rejectUnstableProposalState(persisted);
+      payload = snapshotProposalPayload(persisted);
+    }
+    if (fingerprint(payload.before) !== persisted.revision) return null;
+    if (persistedValueRevision(payload.target) !== persisted.targetRevision) return null;
+    if (persistedValueRevision(payload.after) !== persisted.afterRevision) return null;
+  } catch {
+    return null;
+  }
+  const record = {
+    id,
+    kind,
+    target: jsonSafe(payload.target),
+    before: jsonSafe(payload.before),
+    after: jsonSafe(payload.after),
+    reason: String(persisted.reason || '').slice(0, 2000),
+    evidenceIds,
+    createdAt: persisted.createdAt,
+    status: 'pending',
+    revision: persisted.revision,
+    binding: jsonSafe(binding),
+    bindingRevision: persisted.bindingRevision,
+  };
+  EXECUTION_PAYLOADS.set(record, payload);
+  PROPOSAL_AUTHORITIES.set(record, Object.freeze({
+    id,
+    kind,
+    capability,
+    revision: persisted.revision,
+    targetRevision: persisted.targetRevision,
+    afterRevision: persisted.afterRevision,
+    bindingRevision: persisted.bindingRevision,
+  }));
+  return record;
+}
+
+function proposalPortableSnapshot(proposal) {
+  const snapshot = proposalSnapshot(proposal);
+  const authority = proposalAuthority(proposal);
+  const displayExact = fingerprint(snapshot.before) === authority.revision
+    && persistedValueRevision(snapshot.target) === authority.targetRevision
+    && persistedValueRevision(snapshot.after) === authority.afterRevision;
+  return {
+    ...snapshot,
+    targetRevision: authority.targetRevision,
+    afterRevision: authority.afterRevision,
+    executionDisplayExact: displayExact,
+  };
+}
+
+function proposalPersistenceSnapshot(proposal) {
+  const authority = proposalAuthority(proposal);
+  const payload = EXECUTION_PAYLOADS.get(proposal);
+  if (!payload) throw new AIError('tool_failed', 'Proposal execution payload is unavailable.');
+  const executionPayload = encodePersistedExecutionPayload(payload);
+  if (persistedValueRevision(payload.target) !== authority.targetRevision
+    || persistedValueRevision(payload.after) !== authority.afterRevision
+    || fingerprint(payload.before) !== authority.revision) {
+    throw new AIError('tool_failed', 'Proposal execution authority changed before persistence.');
+  }
+  return {
+    ...proposalSnapshot(proposal),
+    executionPayload,
+    targetRevision: authority.targetRevision,
+    afterRevision: authority.afterRevision,
+  };
 }
 
 function proposalAuthority(proposal) {
@@ -427,6 +570,10 @@ function rejectUnstableProposalState(value, seen = new Set()) {
   if (seen.has(value)) return;
   seen.add(value);
   try {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null && !SUPPORTED_PROPOSAL_STATE_PROTOTYPES.has(prototype)) {
+      throw new AIError('tool_failed', 'Proposal state contains an unsupported non-plain object and cannot be snapshotted safely.');
+    }
     const keys = Reflect.ownKeys(value);
     if (keys.some((key) => typeof key === 'symbol')) {
       throw new AIError('tool_failed', 'Proposal state contains symbol-keyed own properties and cannot be fingerprinted safely.');
@@ -437,6 +584,14 @@ function rejectUnstableProposalState(value, seen = new Set()) {
         throw new AIError('tool_failed', 'Proposal state contains accessor-backed state and cannot be snapshotted safely.');
       }
       rejectUnstableProposalState(descriptor.value, seen);
+    }
+    if (prototype === Map.prototype) {
+      for (const [key, item] of MAP_ENTRIES.call(value)) {
+        rejectUnstableProposalState(key, seen);
+        rejectUnstableProposalState(item, seen);
+      }
+    } else if (prototype === Set.prototype) {
+      for (const item of SET_VALUES.call(value)) rejectUnstableProposalState(item, seen);
     }
   } catch (error) {
     if (error instanceof AIError) throw error;
@@ -646,6 +801,202 @@ function canonicalIdentity(value, stack = new Set()) {
   } finally {
     stack.delete(value);
   }
+}
+
+function persistedValueRevision(value) {
+  return stableDigest(JSON.stringify(encodePersistedValue(value)));
+}
+
+function encodePersistedExecutionPayload(payload) {
+  return JSON.stringify({
+    version: 1,
+    target: encodePersistedValue(payload.target),
+    before: encodePersistedValue(payload.before),
+    after: encodePersistedValue(payload.after),
+  });
+}
+
+function decodePersistedExecutionPayload(text) {
+  let envelope;
+  try { envelope = JSON.parse(text); } catch {
+    throw new AIError('tool_failed', 'Persisted proposal execution payload is invalid.');
+  }
+  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope) || envelope.version !== 1
+    || !Object.hasOwn(envelope, 'target') || !Object.hasOwn(envelope, 'before') || !Object.hasOwn(envelope, 'after')) {
+    throw new AIError('tool_failed', 'Persisted proposal execution payload is invalid.');
+  }
+  return {
+    target: decodePersistedValue(envelope.target),
+    before: decodePersistedValue(envelope.before),
+    after: decodePersistedValue(envelope.after),
+  };
+}
+
+function encodePersistedValue(root) {
+  const seen = new Map();
+  const encode = (value) => {
+    if (value === null) return ['null'];
+    if (value === undefined) return ['undefined'];
+    const type = typeof value;
+    if (type === 'boolean') return ['boolean', value];
+    if (type === 'string') return ['string', value];
+    if (type === 'bigint') return ['bigint', value.toString(10)];
+    if (type === 'number') {
+      if (Number.isNaN(value)) return ['number', 'NaN'];
+      if (value === Infinity) return ['number', 'Infinity'];
+      if (value === -Infinity) return ['number', '-Infinity'];
+      if (Object.is(value, -0)) return ['number', '-0'];
+      return ['number', value];
+    }
+    if (type === 'symbol' || type === 'function' || type !== 'object') {
+      throw new AIError('tool_failed', 'Proposal execution payload cannot be persisted losslessly.');
+    }
+    if (seen.has(value)) return ['ref', seen.get(value)];
+    const id = seen.size;
+    seen.set(value, id);
+
+    if (value instanceof Date) return ['date', id, Number.isNaN(value.getTime()) ? null : value.toISOString()];
+    const binary = intrinsicBinaryContainer(value);
+    if (binary) {
+      if (binary.kind === 'ArrayBuffer') {
+        const bytes = Array.from(new Uint8Array(binary.buffer, 0, binary.byteLength));
+        return ['buffer', id, bytes];
+      }
+      return ['view', id, binary.kind, binary.byteOffset, binary.byteLength, encode(binary.buffer)];
+    }
+    if (value instanceof RegExp) return ['regexp', id, value.source, value.flags, value.lastIndex];
+    if (value instanceof Map) return ['map', id, Array.from(value.entries(), ([key, item]) => [encode(key), encode(item)])];
+    if (value instanceof Set) return ['set', id, Array.from(value.values(), encode)];
+    if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype) {
+        throw new AIError('tool_failed', 'Proposal execution payload cannot be persisted losslessly.');
+      }
+      const entries = Object.keys(value).map((key) => [key, encode(value[key])]);
+      return ['array', id, value.length, entries];
+    }
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) {
+      throw new AIError('tool_failed', 'Proposal execution payload cannot be persisted losslessly.');
+    }
+    return ['object', id, proto === null ? 0 : 1, Object.keys(value).map((key) => [key, encode(value[key])])];
+  };
+  return encode(root);
+}
+
+function decodePersistedValue(root) {
+  const refs = new Map();
+  const decode = (node) => {
+    if (!Array.isArray(node) || typeof node[0] !== 'string') throw new AIError('tool_failed', 'Persisted proposal execution value is invalid.');
+    const tag = node[0];
+    if (tag === 'null' && node.length === 1) return null;
+    if (tag === 'undefined' && node.length === 1) return undefined;
+    if (tag === 'boolean' && node.length === 2 && typeof node[1] === 'boolean') return node[1];
+    if (tag === 'string' && node.length === 2 && typeof node[1] === 'string') return node[1];
+    if (tag === 'bigint' && node.length === 2 && typeof node[1] === 'string' && /^-?\d+$/.test(node[1])) return BigInt(node[1]);
+    if (tag === 'number' && node.length === 2) {
+      if (node[1] === 'NaN') return NaN;
+      if (node[1] === 'Infinity') return Infinity;
+      if (node[1] === '-Infinity') return -Infinity;
+      if (node[1] === '-0') return -0;
+      if (typeof node[1] === 'number' && Number.isFinite(node[1])) return node[1];
+      throw new AIError('tool_failed', 'Persisted proposal execution number is invalid.');
+    }
+    if (tag === 'ref' && node.length === 2 && Number.isSafeInteger(node[1]) && node[1] >= 0 && refs.has(node[1])) return refs.get(node[1]);
+
+    const id = node[1];
+    if (!Number.isSafeInteger(id) || id < 0 || refs.has(id)) throw new AIError('tool_failed', 'Persisted proposal execution reference is invalid.');
+    if (tag === 'date' && node.length === 3 && (node[2] === null || typeof node[2] === 'string')) {
+      const value = node[2] === null ? new Date(NaN) : new Date(node[2]);
+      refs.set(id, value);
+      return value;
+    }
+    if (tag === 'buffer' && node.length === 3) {
+      const bytes = decodePersistedBytes(node[2]);
+      const value = Uint8Array.from(bytes).buffer;
+      refs.set(id, value);
+      return value;
+    }
+    if (tag === 'view' && node.length === 6 && typeof node[2] === 'string'
+      && Number.isSafeInteger(node[3]) && node[3] >= 0 && Number.isSafeInteger(node[4]) && node[4] >= 0) {
+      const buffer = decode(node[5]);
+      if (!(buffer instanceof ArrayBuffer) || node[3] + node[4] > buffer.byteLength) {
+        throw new AIError('tool_failed', 'Persisted proposal execution view is invalid.');
+      }
+      const value = persistedView(node[2], buffer, node[3], node[4]);
+      refs.set(id, value);
+      return value;
+    }
+    if (tag === 'regexp' && node.length === 5 && typeof node[2] === 'string' && typeof node[3] === 'string'
+      && Number.isSafeInteger(node[4]) && node[4] >= 0) {
+      const value = new RegExp(node[2], node[3]);
+      value.lastIndex = node[4];
+      refs.set(id, value);
+      return value;
+    }
+    if (tag === 'map' && node.length === 3 && Array.isArray(node[2])) {
+      const value = new Map();
+      refs.set(id, value);
+      for (const entry of node[2]) {
+        if (!Array.isArray(entry) || entry.length !== 2) throw new AIError('tool_failed', 'Persisted proposal execution map is invalid.');
+        value.set(decode(entry[0]), decode(entry[1]));
+      }
+      return value;
+    }
+    if (tag === 'set' && node.length === 3 && Array.isArray(node[2])) {
+      const value = new Set();
+      refs.set(id, value);
+      for (const item of node[2]) value.add(decode(item));
+      return value;
+    }
+    if (tag === 'array' && node.length === 4 && Number.isSafeInteger(node[2]) && node[2] >= 0 && Array.isArray(node[3])) {
+      const value = new Array(node[2]);
+      refs.set(id, value);
+      decodePersistedEntries(value, node[3], decode, { arrayLength: node[2] });
+      return value;
+    }
+    if (tag === 'object' && node.length === 4 && (node[2] === 0 || node[2] === 1) && Array.isArray(node[3])) {
+      const value = node[2] === 0 ? Object.create(null) : {};
+      refs.set(id, value);
+      decodePersistedEntries(value, node[3], decode);
+      return value;
+    }
+    throw new AIError('tool_failed', 'Persisted proposal execution value is invalid.');
+  };
+  return decode(root);
+}
+
+function decodePersistedEntries(target, entries, decode, { arrayLength = null } = {}) {
+  const keys = new Set();
+  for (const entry of entries) {
+    if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string' || keys.has(entry[0])) {
+      throw new AIError('tool_failed', 'Persisted proposal execution object is invalid.');
+    }
+    const key = entry[0];
+    if (arrayLength != null && /^(?:0|[1-9]\d*)$/.test(key)) {
+      const index = Number(key);
+      const isArrayIndex = Number.isInteger(index) && index >= 0 && index < 0xffffffff && String(index) === key;
+      if (isArrayIndex && index >= arrayLength) throw new AIError('tool_failed', 'Persisted proposal execution array is invalid.');
+    }
+    keys.add(key);
+    Object.defineProperty(target, key, { value: decode(entry[1]), writable: true, enumerable: true, configurable: true });
+  }
+}
+
+function decodePersistedBytes(value) {
+  if (!Array.isArray(value)) throw new AIError('tool_failed', 'Persisted proposal execution bytes are invalid.');
+  for (const byte of value) {
+    if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new AIError('tool_failed', 'Persisted proposal execution bytes are invalid.');
+  }
+  return value;
+}
+
+function persistedView(kind, buffer, byteOffset, byteLength) {
+  if (kind === 'DataView') return new DataView(buffer, byteOffset, byteLength);
+  const Ctor = globalThis[kind];
+  if (typeof Ctor !== 'function' || !Ctor.BYTES_PER_ELEMENT || byteLength % Ctor.BYTES_PER_ELEMENT !== 0) {
+    throw new AIError('tool_failed', 'Persisted proposal execution view kind is invalid.');
+  }
+  return new Ctor(buffer, byteOffset, byteLength / Ctor.BYTES_PER_ELEMENT);
 }
 
 function randomToken() {

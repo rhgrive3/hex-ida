@@ -2,7 +2,8 @@
  * HEX-C3-03 — Go Runtime Metadata Provider.
  *
  * Implements toolchain-aware Go runtime metadata extraction from `.gopclntab`,
- * `.gosymtab`, `.go.buildinfo`, and moduledata structures.
+ * build-version discovery, and bounded type-descriptor decoding. Runtime type
+ * enumeration through moduledata/typelinks is not implemented yet.
  *
  * Supported Go pclntab formats:
  * - Go 1.2  (magic: 0xfffffffb)
@@ -27,6 +28,13 @@ import {
 
 export const GO_PROVIDER_ID = 'metadata.go';
 export const GO_PROVIDER_VERSION = '1.0.0';
+
+// Go function metadata is variable-width output. Keep the common byte
+// budget authoritative and add bounded retained-output/object accounting so
+// a record cap cannot turn into an unbounded resident-memory allocation.
+const DEFAULT_GO_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
+const DEFAULT_GO_MAX_ESTIMATED_HEAP_BYTES = 16 * 1024 * 1024;
+const DEFAULT_GO_ESTIMATED_RECORD_BYTES = 1024;
 
 export const GO_PCLNTAB_MAGICS = Object.freeze({
   0xfffffffb: { version: '1.2', name: 'go1.2' },
@@ -102,20 +110,27 @@ function readPtr(buf, off, ptrSize, little = true) {
   return ptrSize === 4 ? BigInt(u32(buf, off, little) ?? 0) : (u64(buf, off, little) ?? 0n);
 }
 
-function readCString(buf, off, maxLen = 1024) {
-  if (off < 0 || off >= buf.length) return null;
-  let end = off;
-  const limit = Math.min(buf.length, off + maxLen);
-  while (end < limit && buf[end] !== 0) {
-    if (buf[end] < 0x20 || buf[end] === 0x7f) return null; // control chars
-    end++;
-  }
-  if (end >= limit || end === off) return null;
+function decodeCString(buf, off, end) {
+  if (off < 0 || end <= off || end > buf.length) return null;
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(buf.subarray(off, end));
   } catch {
     return null;
   }
+}
+
+function goBudgetOption(options, names, fallback, code) {
+  let value = fallback;
+  for (const name of names) {
+    if (options[name] != null) {
+      value = options[name];
+      break;
+    }
+  }
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(code);
+  }
+  return value;
 }
 
 /**
@@ -261,10 +276,38 @@ export function parsePclntabHeader(buf) {
  * Parses Go pclntab function entries with bounds checking.
  */
 export function parseGoFunctions(buf, header, options = {}) {
-  const maxRecords = options.maxRecords ?? 50000;
+  // Keep the historical 50,000 default while honoring the common provider
+  // maximum when it is tightened centrally.
+  const maxRecords = options.maxRecords ?? Math.min(50000, METADATA_DEFAULT_BUDGET.maxRecords);
   if (typeof maxRecords !== 'number' || !Number.isSafeInteger(maxRecords) || maxRecords < 0) {
     throw new TypeError('go-metadata-invalid-max-records');
   }
+
+  const maxBytesScanned = goBudgetOption(
+    options,
+    ['maxBytesScanned', 'maxScanBytes'],
+    METADATA_DEFAULT_BUDGET.maxBytesScanned,
+    'go-metadata-invalid-max-bytes-scanned',
+  );
+  const maxOutputBytes = goBudgetOption(
+    options,
+    ['maxOutputBytes', 'maxDecodedNameBytes', 'maxRetainedStringBytes'],
+    DEFAULT_GO_MAX_OUTPUT_BYTES,
+    'go-metadata-invalid-max-output-bytes',
+  );
+  const maxEstimatedHeapBytes = goBudgetOption(
+    options,
+    ['maxEstimatedHeapBytes', 'maxHeapBytes', 'maxRetainedBytes'],
+    DEFAULT_GO_MAX_ESTIMATED_HEAP_BYTES,
+    'go-metadata-invalid-max-estimated-heap-bytes',
+  );
+  const estimatedRecordBytes = goBudgetOption(
+    options,
+    ['estimatedRecordBytes', 'recordOverheadBytes'],
+    DEFAULT_GO_ESTIMATED_RECORD_BYTES,
+    'go-metadata-invalid-record-overhead-bytes',
+  );
+
   const maxFuncs = Math.min(header.nfunc, maxRecords);
   const functions = [];
   let unreadableEntries = 0;
@@ -274,10 +317,108 @@ export function parseGoFunctions(buf, header, options = {}) {
   const funcDataBase = header.version === '1.2' ? 0 : header.pclnOff;
   const is118Plus = header.version === '1.18' || header.version === '1.20+';
   const entrySize = is118Plus ? 8 : header.ptrSize * 2;
+  const descriptorBytes = is118Plus
+    ? 12
+    : header.version === '1.16'
+      ? header.ptrSize + 8
+      : header.ptrSize + 12;
+
+  const budget = {
+    maxRecords,
+    maxBytesScanned,
+    maxOutputBytes,
+    maxEstimatedHeapBytes,
+    estimatedRecordBytes,
+    bytesScanned: 0,
+    outputBytes: 0,
+    estimatedHeapBytes: 0,
+    uniqueNames: 0,
+    nameCacheEntries: 0,
+    nameCacheHits: 0,
+    nameDecodes: 0,
+    invalidNameCacheEntries: 0,
+    exhausted: false,
+    exhaustedReason: null,
+  };
+
+  const exhaust = (reason) => {
+    if (!budget.exhausted) {
+      budget.exhausted = true;
+      budget.exhaustedReason = reason;
+    }
+    return false;
+  };
+  const takeBytes = (count) => {
+    if (count === 0) return true;
+    if (!Number.isSafeInteger(count) || count < 0
+        || count > budget.maxBytesScanned - budget.bytesScanned) {
+      budget.bytesScanned = budget.maxBytesScanned;
+      return exhaust('go-metadata-byte-budget-exhausted');
+    }
+    budget.bytesScanned += count;
+    return true;
+  };
 
   // Number of declared entries whose slot was actually examined. Iterations
   // after an early break were never attempted and must not be counted (#5861).
   let scanned = 0;
+  const nameCache = new Map();
+
+  const resolveName = (namePos) => {
+    if (nameCache.has(namePos)) {
+      budget.nameCacheHits++;
+      return nameCache.get(namePos);
+    }
+    if (!Number.isSafeInteger(namePos) || namePos < 0 || namePos >= buf.length) {
+      const invalid = { name: null, payloadBytes: 0, retained: false };
+      nameCache.set(namePos, invalid);
+      budget.nameCacheEntries++;
+      budget.invalidNameCacheEntries++;
+      return invalid;
+    }
+
+    const limit = Math.min(buf.length, namePos + 1024);
+    let end = namePos;
+    while (end < limit) {
+      if (!takeBytes(1)) return { budgetExhausted: true };
+      const byte = buf[end];
+      if (byte === 0) {
+        if (end === namePos) {
+          const invalid = { name: null, payloadBytes: 0, retained: false };
+          nameCache.set(namePos, invalid);
+          budget.nameCacheEntries++;
+          budget.invalidNameCacheEntries++;
+          return invalid;
+        }
+        const name = decodeCString(buf, namePos, end);
+        if (!name) {
+          const invalid = { name: null, payloadBytes: end - namePos, retained: false };
+          nameCache.set(namePos, invalid);
+          budget.nameCacheEntries++;
+          budget.invalidNameCacheEntries++;
+          return invalid;
+        }
+        const resolved = { name, payloadBytes: end - namePos, retained: false };
+        nameCache.set(namePos, resolved);
+        budget.nameCacheEntries++;
+        budget.nameDecodes++;
+        return resolved;
+      }
+      if (byte < 0x20 || byte === 0x7f) {
+        const invalid = { name: null, payloadBytes: end - namePos + 1, retained: false };
+        nameCache.set(namePos, invalid);
+        budget.nameCacheEntries++;
+        budget.invalidNameCacheEntries++;
+        return invalid;
+      }
+      end++;
+    }
+    const invalid = { name: null, payloadBytes: end - namePos, retained: false };
+    nameCache.set(namePos, invalid);
+    budget.nameCacheEntries++;
+    budget.invalidNameCacheEntries++;
+    return invalid;
+  };
 
   for (let i = 0; i < maxFuncs; i++) {
     scanned++;
@@ -286,6 +427,7 @@ export function parseGoFunctions(buf, header, options = {}) {
       unreadableEntries++;
       break;
     }
+    if (!takeBytes(entrySize)) break;
 
     let entryPC = 0n;
     let funcOff = 0;
@@ -305,31 +447,60 @@ export function parseGoFunctions(buf, header, options = {}) {
       invalidEntries++;
       continue;
     }
+    const readableDescriptorBytes = Math.min(descriptorBytes, buf.length - funcPos);
+    if (!takeBytes(readableDescriptorBytes)) break;
+    if (readableDescriptorBytes < descriptorBytes) {
+      invalidEntries++;
+      continue;
+    }
 
-    // Read function descriptor _func
+    // Read function descriptor _func.
     let name = null;
     let frameSize = null;
     let argsSize = null;
+    let namePosition = null;
 
     if (is118Plus) {
       const nameOff = i32(buf, funcPos + 4, header.little);
       argsSize = i32(buf, funcPos + 8, header.little);
-      if (nameOff != null && header.funcnametabOff + nameOff < buf.length) {
-        name = readCString(buf, header.funcnametabOff + nameOff);
-      }
+      if (nameOff != null) namePosition = header.funcnametabOff + nameOff;
     } else if (header.version === '1.16') {
       const nameOff = i32(buf, funcPos + header.ptrSize, header.little);
       argsSize = i32(buf, funcPos + header.ptrSize + 4, header.little);
-      if (nameOff != null && header.funcnametabOff + nameOff < buf.length) {
-        name = readCString(buf, header.funcnametabOff + nameOff);
-      }
+      if (nameOff != null) namePosition = header.funcnametabOff + nameOff;
     } else {
       // 1.2
       const nameOff = i32(buf, funcPos + header.ptrSize, header.little);
       argsSize = i32(buf, funcPos + header.ptrSize + 4, header.little);
       frameSize = i32(buf, funcPos + header.ptrSize + 8, header.little);
-      if (nameOff != null && nameOff < buf.length) {
-        name = readCString(buf, nameOff);
+      if (nameOff != null) namePosition = nameOff;
+    }
+
+    if (namePosition != null) {
+      const resolved = resolveName(namePosition);
+      if (resolved.budgetExhausted) break;
+      name = resolved.name;
+      if (name) {
+        // Charge the decoded string once per validated offset and charge
+        // every retained function record, including cache hits.
+        const uniqueStringBytes = resolved.retained
+          ? 0
+          : resolved.payloadBytes + name.length * 2 + 16;
+        if (uniqueStringBytes > budget.maxOutputBytes - budget.outputBytes) {
+          exhaust('go-metadata-output-budget-exhausted');
+          break;
+        }
+        const nextHeapBytes = budget.estimatedHeapBytes + estimatedRecordBytes + uniqueStringBytes;
+        if (nextHeapBytes > budget.maxEstimatedHeapBytes) {
+          exhaust('go-metadata-estimated-heap-budget-exhausted');
+          break;
+        }
+        if (!resolved.retained) {
+          resolved.retained = true;
+          budget.uniqueNames++;
+          budget.outputBytes += uniqueStringBytes;
+        }
+        budget.estimatedHeapBytes = nextHeapBytes;
       }
     }
 
@@ -349,11 +520,35 @@ export function parseGoFunctions(buf, header, options = {}) {
     });
   }
 
-  const capped = header.nfunc > maxFuncs;
+  const capped = header.nfunc > maxFuncs || budget.exhausted;
   const complete = !capped && unreadableEntries === 0 && invalidEntries === 0 && functions.length === header.nfunc;
+  // Keep the public completeness contract stable across the byte, output, and
+  // heap sub-budgets. The detailed sub-budget remains available for callers
+  // that need diagnostics without making the reason string part of the
+  // provider's allocation strategy.
+  const reasons = budget.exhausted ? ['go-metadata-budget-exhausted'] : [];
 
   return {
     functions,
+    budget: {
+      ...budget,
+      nameCacheEntries: nameCache.size,
+    },
+    resourceAccounting: {
+      maxBytesScanned: budget.maxBytesScanned,
+      maxOutputBytes: budget.maxOutputBytes,
+      maxEstimatedHeapBytes: budget.maxEstimatedHeapBytes,
+      bytesScanned: budget.bytesScanned,
+      outputBytes: budget.outputBytes,
+      estimatedHeapBytes: budget.estimatedHeapBytes,
+      nameCacheMisses: nameCache.size,
+      nameCacheHits: budget.nameCacheHits,
+      nameDecodes: budget.nameDecodes,
+      uniqueNames: budget.uniqueNames,
+      invalidNameCacheEntries: budget.invalidNameCacheEntries,
+      exhausted: budget.exhausted,
+      exhaustedReason: budget.exhaustedReason,
+    },
     completeness: {
       present: true,
       declared: header.nfunc,
@@ -363,8 +558,34 @@ export function parseGoFunctions(buf, header, options = {}) {
       unreadableEntries,
       invalidEntries,
       complete,
+      reasons,
+      bytesScanned: budget.bytesScanned,
+      uniqueNames: budget.uniqueNames,
+      nameCacheEntries: nameCache.size,
     },
   };
+}
+const GO_TYPE_LAYOUT_CURRENT = Object.freeze({
+  strNameOffset: (ptrSize) => ptrSize * 4 + 8,
+  headerBytes: (ptrSize) => ptrSize * 4 + 16,
+});
+
+// `internal/abi.Type` is not a format that can be selected from pointer width
+// alone. Bind the decoder to the concrete Go toolchain range that this layout
+// has been validated against. Pclntab generations such as "1.20+" are not
+// sufficient authority because they intentionally span future toolchains.
+const GO_TYPE_LAYOUT_MIN_MINOR = 16;
+const GO_TYPE_LAYOUT_MAX_MINOR = 23;
+
+function resolveGoTypeLayout(version) {
+  if (typeof version !== 'string') return null;
+  const match = /^1\.(\d+)(?:\.(\d+))?$/.exec(version);
+  if (!match) return null;
+  const minor = Number(match[1]);
+  const patch = match[2] == null ? 0 : Number(match[2]);
+  if (!Number.isSafeInteger(minor) || !Number.isSafeInteger(patch)) return null;
+  if (minor < GO_TYPE_LAYOUT_MIN_MINOR || minor > GO_TYPE_LAYOUT_MAX_MINOR) return null;
+  return GO_TYPE_LAYOUT_CURRENT;
 }
 
 /**
@@ -373,8 +594,10 @@ export function parseGoFunctions(buf, header, options = {}) {
 export function parseGoTypeDescriptor(buf, typeOff, options = {}) {
   const ptrSize = options.ptrSize ?? 8;
   const little = options.little ?? true;
+  const layout = resolveGoTypeLayout(options.version);
 
-  if (typeOff < 0 || typeOff + ptrSize * 4 + 8 > buf.length) return null;
+  if (!layout || (ptrSize !== 4 && ptrSize !== 8)) return null;
+  if (!Number.isSafeInteger(typeOff) || typeOff < 0 || typeOff > buf.length - layout.headerBytes(ptrSize)) return null;
 
   const size = Number(readPtr(buf, typeOff, ptrSize, little));
   const ptrdata = Number(readPtr(buf, typeOff + ptrSize, ptrSize, little));
@@ -388,12 +611,11 @@ export function parseGoTypeDescriptor(buf, typeOff, options = {}) {
   const kindId = rawKind & 0x1f;
   const kind = GO_TYPE_KINDS[kindId] || 'unknown';
 
-  // In Go 1.7+, str is a name offset (int32 or ptr)
-  const nameOff = i32(buf, typeOff + ptrSize * 2 + 8, little);
+  const nameOff = i32(buf, typeOff + layout.strNameOffset(ptrSize), little);
   let name = null;
-  if (options.typesBase != null && nameOff != null) {
+  if (Number.isSafeInteger(options.typesBase) && nameOff != null) {
     const strPos = options.typesBase + nameOff;
-    if (strPos >= 0 && strPos + 2 < buf.length) {
+    if (Number.isSafeInteger(strPos) && strPos >= 0 && strPos <= buf.length - 2) {
       // Go name structure has 1 byte header flag followed by length varint
       const lenInfo = readUvarint(buf, strPos + 1);
       if (lenInfo && strPos + 1 + lenInfo.bytesRead + lenInfo.value <= buf.length) {
@@ -542,8 +764,20 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
     const funcResult = parseGoFunctions(this.pclntabBuffer, header, this.options);
     this.cachedFunctions = funcResult;
 
+    // pclntab proves only the function-symbol domain. Runtime type metadata
+    // (moduledata/typelinks) is not enumerated by this provider yet, so a
+    // complete function-table scan cannot establish whole-provider completeness.
+    const completeness = {
+      ...funcResult.completeness,
+      complete: false,
+      reasons: [
+        ...(funcResult.completeness.reasons ?? []),
+        'go-runtime-types-unscanned',
+      ],
+    };
+    const hasIdentityBinding = this.binaryIdentity != null;
     const identity = createLanguageMetadataIdentity({
-      verdict: funcResult.completeness.complete ? 'matched-authoritative' : 'matched-partial',
+      verdict: hasIdentityBinding ? 'matched-partial' : 'identity-unavailable',
       providerId: this.id,
       providerVersion: this.version,
       ecosystem: 'go',
@@ -554,14 +788,17 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
       architecture: this.architecture,
       platform: this.platform,
       method: 'pclntab-magic',
-      detail: `Go ${header.versionName} (${funcResult.functions.length} functions)`,
-      coverage: funcResult.completeness.complete ? null : {
-        recordKinds: ['symbol', 'type'],
+      detail: hasIdentityBinding
+        ? `Go ${header.versionName} (${funcResult.functions.length} functions)`
+        : `Go ${header.versionName} without binary identity binding (${funcResult.functions.length} functions)`,
+      coverage: {
+        recordKinds: ['symbol'],
         addresses: funcResult.functions.map((f) => f.address),
       },
     });
 
     return createLanguageMetadataResult({
+
       providerId: this.id,
       providerVersion: this.version,
       ecosystem: 'go',
@@ -570,7 +807,7 @@ export class GoMetadataProvider extends LanguageMetadataProvider {
       counts: {
         symbols: funcResult.functions.length,
       },
-      completeness: funcResult.completeness,
+      completeness,
     });
   }
 

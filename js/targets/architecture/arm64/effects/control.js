@@ -24,7 +24,7 @@ export function isArm64ControlEffectMnemonic(mnemonic) {
 }
 
 function addressRef(address) {
-  return { kind: 'absolute-address', value: BigInt(address).toString(), widthBits: 64 };
+  return { kind: 'absolute-address', value: BigInt.asUintN(64, BigInt(address)).toString(), widthBits: 64 };
 }
 
 function instructionAddress(instruction) {

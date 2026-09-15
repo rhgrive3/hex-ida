@@ -1,4 +1,5 @@
 import { PROPOSAL_DRAFT_SCHEMA } from '../schema.js';
+import { compactUntrustedTarget } from '../context/broker.js';
 import { boundedText, byteLength, HttpError, MAX_CONTEXT_CHARS } from './worker-transport.js';
 
 const MAX_QUESTION_CHARS = 6000;
@@ -99,10 +100,10 @@ export function normalizeAIInteraction(value, allowedTools) {
   if (Array.isArray(value?.steps)) steps.push(...value.steps);
   if (Array.isArray(value?.output)) steps.push(...value.output);
   if (Array.isArray(value?.response?.steps)) steps.push(...value.response.steps);
-  const callSteps = steps.filter((step) => step && (step.type === 'function_call' || step.type === 'tool_call'));
-  if (callSteps.length === 0) throw new Error('The model did not return a complete function call.');
-  if (callSteps.length > 1) throw new Error('The model returned multiple tool calls in one turn; the Hex turn protocol requires exactly one.');
-  const call = callSteps[0];
+  const calls = steps.filter((step) => step && (step.type === 'function_call' || step.type === 'tool_call'));
+  if (calls.length === 0) throw new Error('The model did not return a complete function call.');
+  if (calls.length !== 1) throw new Error('The model must return exactly one function call.');
+  const [call] = calls;
   // A tool/function name is a string identity in the tool schema the Worker
   // publishes. `String()` coercion let a 1-element array (`['submit_hex_result']`)
   // launder into that exact name and claim final-result or tool authority
@@ -130,6 +131,8 @@ export function normalizeRequest(value) {
   const thinkingLevel = value.thinkingLevel == null ? 'high' : value.thinkingLevel; if (typeof thinkingLevel !== 'string' || !THINKING_LEVELS.has(thinkingLevel)) throw new HttpError(422, 'invalid_thinking_level', 'thinkingLevel must be minimal, low, medium, or high.');
   const currentFunction = normalizeCurrentFunction(value.currentFunction);
   const context = { question, currentFunction, xrefs: normalizeList(value.xrefs, 60), callers: normalizeList(value.callers, 60), callees: normalizeList(value.callees, 60), strings: normalizeList(value.strings, 60), globals: normalizeList(value.globals, 60) };
+  const untrustedTarget = compactUntrustedTarget(value.untrustedTarget);
+  if (untrustedTarget) context.untrustedTarget = untrustedTarget;
   if (JSON.stringify(context).length > MAX_CONTEXT_CHARS) throw new HttpError(413, 'request_too_large', 'The selected analysis context is too large.');
   return { thinkingLevel, context };
 }

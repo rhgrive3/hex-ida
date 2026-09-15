@@ -166,9 +166,25 @@ function vectorDescriptor(parameter) {
   }
   if (parsedNf != null && (parsedNf < 1 || parsedNf > 8 || parsedLmul * parsedNf > 8)) conflict = true;
   const fixedLength = parameter?.fixedLengthVector === true || /fixed[-_ ]?length/.test(abiClass);
-  return conflict
-    ? { mask, lmul, tupleCount, fixedLength, conflict:true }
-    : { mask, lmul, tupleCount, fixedLength };
+  if (mask && fixedLength) conflict = true;
+  const descriptor = { mask, lmul, tupleCount, fixedLength };
+  // The fixed-length variant derives its register group from the type size and
+  // ABI_VLEN, so an explicit LMUL is only *comparison* evidence against that
+  // derived group and is published for this variant alone. Other variants keep
+  // their pinned descriptor shape (#5616).
+  if (fixedLength) descriptor.explicitLmul = explicitLmulValid ? explicitLmul : null;
+  if (conflict) descriptor.conflict = true;
+  return descriptor;
+}
+
+function fixedVectorRegisterGroup(bits, abiVlen) {
+  if (!Number.isSafeInteger(bits) || bits <= 0 || !Number.isSafeInteger(abiVlen) || abiVlen <= 0) return null;
+  const regs = Math.ceil(bits / abiVlen);
+  if (regs <= 1) return 1;
+  if (regs <= 2) return 2;
+  if (regs <= 4) return 4;
+  if (regs <= 8) return 8;
+  return null;
 }
 
 function aggregateMembers(parameter) {
@@ -262,14 +278,15 @@ function parameterClass(parameter) {
   const bitsDeclared = !widthConflict && declaredBits != null
     && Number.isSafeInteger(Number(declaredBits)) && Number(declaredBits) > 0;
   const aggregateLayout = aggregate ? canonicalAggregateLayout(parameter) : null;
-  const aggregateLayoutProven = !aggregate || aggregateLayout != null;
-  const declaredBitsNumber = Number(aggregateLayout?.bits ?? declaredBits);
+  const aggregateExtent = aggregateLayout ?? (aggregate ? aggregateUnionExtent(parameter) : null);
+  const aggregateLayoutProven = !aggregate || aggregateExtent != null;
+  const declaredBitsNumber = Number(aggregateExtent?.bits ?? declaredBits);
   const rawBits = aggregate
     ? aggregateLayoutProven ? declaredBitsNumber : 0
     : Number(declaredBits ?? (pointer ? XLEN : riscvTypeBits(type, XLEN)));
   const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? Math.min(1_000_000, rawBits) : 0;
   const bytes = aggregate
-    ? aggregateLayout?.bytes ?? (bits > 0 ? Math.ceil(bits / 8) : 0)
+    ? aggregateExtent?.bytes ?? (bits > 0 ? Math.ceil(bits / 8) : 0)
     : bits > 0 ? Math.ceil(bits / 8) : 0;
   // C++ call-triviality evidence: positive proof only. Absence cannot prove
   // triviality, while any explicit nontrivial evidence selects the sound
@@ -278,11 +295,217 @@ function parameterClass(parameter) {
   return { type, abiClass, pointer, aggregate, aggregateLayoutProven, aggregateLayout, floating, vector, bits, bytes, nonTrivialForCalls, bitsDeclared, widthConflict };
 }
 
+function aggregateIsUnion(parameter) {
+  const type = String(parameter?.returnType || parameter?.type || parameter?.name || '').trim().toLowerCase();
+  const abiClass = String(parameter?.abiClass || parameter?.class || parameter?.kind || '').trim().toLowerCase();
+  return /\bunion\b/.test(`${type} ${abiClass}`);
+}
+
+function aggregateUnionExtent(parameter) {
+  if (!aggregateIsUnion(parameter) || parameter == null || typeof parameter !== 'object' || Array.isArray(parameter)) return null;
+  if (Object.hasOwn(parameter, 'layout')
+    && (parameter.layout == null || typeof parameter.layout !== 'object' || Array.isArray(parameter.layout))) return null;
+  if (Object.hasOwn(parameter, 'returnAggregate') && parameter.returnAggregate != null
+    && typeof parameter.returnAggregate !== 'boolean'
+    && (typeof parameter.returnAggregate !== 'object' || Array.isArray(parameter.returnAggregate))) return null;
+
+  const owners = [parameter];
+  const addOwner = (owner) => {
+    if (owner == null || typeof owner !== 'object' || Array.isArray(owner) || owners.includes(owner)) return;
+    owners.push(owner);
+  };
+  addOwner(parameter.layout);
+  if (parameter.returnAggregate && typeof parameter.returnAggregate === 'object') {
+    addOwner(parameter.returnAggregate);
+    addOwner(parameter.returnAggregate.layout);
+  }
+
+  const exactPositiveAlias = (aliases) => {
+    let value = null;
+    let present = false;
+    for (const owner of owners) {
+      for (const alias of aliases) {
+        if (!Object.hasOwn(owner, alias)) continue;
+        present = true;
+        const candidate = owner[alias];
+        if (typeof candidate !== 'number' || !Number.isSafeInteger(candidate) || candidate <= 0) return null;
+        if (value != null && candidate !== value) return null;
+        value = candidate;
+      }
+    }
+    return present ? value : null;
+  };
+
+  const bits = exactPositiveAlias(['bits', 'sizeBits', 'returnBits']);
+  const bytes = exactPositiveAlias(['bytes', 'sizeBytes']);
+  if (bits == null || bytes == null || Math.ceil(bits / 8) > bytes) return null;
+
+  const memberSpan = (member) => {
+    if (member == null || typeof member !== 'object' || Array.isArray(member)) return null;
+    if (Object.hasOwn(member, 'layout')
+      && (member.layout == null || typeof member.layout !== 'object' || Array.isArray(member.layout))) return null;
+    const memberOwners = [member];
+    if (member.layout && typeof member.layout === 'object') memberOwners.push(member.layout);
+    const exactAlias = (aliases, { positive = true } = {}) => {
+      let value = null;
+      let present = false;
+      for (const owner of memberOwners) {
+        for (const alias of aliases) {
+          if (!Object.hasOwn(owner, alias)) continue;
+          present = true;
+          const candidate = owner[alias];
+          if (typeof candidate !== 'number' || !Number.isSafeInteger(candidate)
+            || (positive ? candidate <= 0 : candidate < 0)) return { valid:false, present:true, value:null };
+          if (value != null && candidate !== value) return { valid:false, present:true, value:null };
+          value = candidate;
+        }
+      }
+      return { valid:true, present, value };
+    };
+    const offset = exactAlias(['byteOffset', 'offsetBytes', 'offset'], { positive:false });
+    const memberBits = exactAlias(['bits', 'sizeBits']);
+    const memberBytes = exactAlias(['bytes', 'sizeBytes', 'length']);
+    if (!offset.valid || !offset.present || !memberBits.valid || !memberBytes.valid
+      || (!memberBits.present && !memberBytes.present)) return null;
+    const spanBytes = memberBytes.present ? memberBytes.value : Math.ceil(memberBits.value / 8);
+    if (memberBits.present && Math.ceil(memberBits.value / 8) > spanBytes) return null;
+    return { offset:offset.value, bytes:spanBytes };
+  };
+
+  for (const owner of owners) {
+    for (const alias of ['members', 'fields', 'elements']) {
+      if (!Object.hasOwn(owner, alias)) continue;
+      const descriptors = owner[alias];
+      if (typeof descriptors === 'number' && Number.isSafeInteger(descriptors) && descriptors >= 0) continue;
+      if (!Array.isArray(descriptors) || descriptors.length === 0) return null;
+      for (const member of descriptors) {
+        const span = memberSpan(member);
+        if (!span || span.bytes > bytes || span.offset > bytes - span.bytes) return null;
+      }
+    }
+  }
+  return { bits, bytes };
+}
+
+/*
+ * psABI hardware floating-point flattening recurses through the full
+ * struct/array hierarchy. Keep this decision shared by argument and return
+ * classification so a proven non-eligible aggregate falls back to the
+ * integer convention on both sides, while incomplete nested evidence remains
+ * unknown. Unions are explicitly never flattened by the psABI (#6039).
+ */
+function collectFlattenLeaves(member, offset, abiFlen) {
+  const classifiedMember = parameterClass(member);
+  if (classifiedMember.vector || (!classifiedMember.floating && classifiedMember.bits > XLEN)) {
+    return { state:'ineligible' };
+  }
+  if (!classifiedMember.aggregate) {
+    return {
+      state:'known',
+      leaves:[{ member:classifiedMember, byteOffset:offset, bytes:Math.ceil(classifiedMember.bits / 8) }],
+    };
+  }
+  if (aggregateIsUnion(member)) {
+    return aggregateUnionExtent(member) ? { state:'ineligible' } : { state:'unknown' };
+  }
+  const nestedCanonical = canonicalAggregateLayout(member);
+  if (!nestedCanonical) return { state:'unknown' };
+  const leaves = [];
+  for (const nested of nestedCanonical.members) {
+    const nestedResult = collectFlattenLeaves(nested, offset + nested.byteOffset, abiFlen);
+    if (nestedResult.state !== 'known') return nestedResult;
+    leaves.push(...nestedResult.leaves);
+  }
+  return { state:'known', leaves };
+}
+
+function flattenAggregate(parameter, abiFlen) {
+  if (aggregateIsUnion(parameter)) {
+    return aggregateUnionExtent(parameter) ? { eligible:false, known:true } : null;
+  }
+  const canonical = canonicalAggregateLayout(parameter);
+  const members = canonical?.members ?? aggregateMembers(parameter);
+  if (!members) return null;
+  const classifiedMembers = members.map((member) => parameterClass(member));
+  const layout = canonical
+    ? { bytes:canonical.bytes, members:canonical.members }
+    : aggregateMemberLayout(members, classifiedMembers);
+  if (!layout) return null;
+  if (members.length < 1 || members.length > 2) return { eligible:false, known:true };
+
+  const leaves = [];
+  for (const [memberIndex, member] of members.entries()) {
+    if (!classifiedMembers[memberIndex].aggregate) {
+      const classifiedMember = classifiedMembers[memberIndex];
+      if (classifiedMember.vector || classifiedMember.bits > XLEN) return { eligible:false, known:true };
+      leaves.push({
+        member:classifiedMember,
+        byteOffset:layout.members?.[memberIndex]?.byteOffset ?? 0,
+        bytes:layout.members?.[memberIndex]?.bytes ?? Math.ceil(classifiedMember.bits / 8),
+      });
+      continue;
+    }
+    const nestedResult = collectFlattenLeaves(member, layout.members?.[memberIndex]?.byteOffset ?? 0, abiFlen);
+    if (nestedResult.state === 'unknown') return null;
+    if (nestedResult.state === 'ineligible') return { eligible:false, known:true };
+    leaves.push(...nestedResult.leaves);
+  }
+  if (!leaves.length || leaves.length > 2) return { eligible:false, known:true };
+  const flattenMembers = leaves.map((leaf) => leaf.member);
+  const floatMembers = flattenMembers.filter((member) => member.floating && member.bits <= abiFlen);
+  if (!floatMembers.length || flattenMembers.some((member) => member.floating && member.bits > abiFlen)) {
+    return { eligible:false, known:true };
+  }
+  if (flattenMembers.some((member) => !member.floating && member.bits > XLEN)) return { eligible:false, known:true };
+  return {
+    eligible:true,
+    known:true,
+    members:flattenMembers,
+    layout:{
+      bytes:canonical?.bytes ?? layout.bytes,
+      members:leaves.map((leaf) => ({ byteOffset:leaf.byteOffset, bytes:leaf.bytes })),
+    },
+  };
+}
+
 function registerSource(reg, bits = XLEN, extra = {}) {
   return { t:'reg', reg, bits, abiName:ABI_ALIAS[reg] ?? null, ...extra };
 }
 
 function align(value, alignment) { return Math.ceil(value / alignment) * alignment; }
+
+function stackSlotAlignment(parameter, classified) {
+  const rawAlign = parameter?.alignment ?? parameter?.align
+    ?? parameter?.layout?.alignment ?? parameter?.layout?.align;
+  if (rawAlign != null) {
+    const n = Number(rawAlign);
+    if (!Number.isSafeInteger(n) || n <= 0 || (n & (n - 1)) !== 0) return null;
+    return Math.min(16, Math.max(8, n));
+  }
+  if (classified?.aggregate) {
+    const members = aggregateMembers(parameter);
+    if (members && members.length) {
+      let maxAlign = 8;
+      for (const m of members) {
+        const mAlign = m?.alignment ?? m?.align ?? m?.layout?.alignment ?? m?.layout?.align;
+        if (mAlign != null) {
+          const n = Number(mAlign);
+          if (!Number.isSafeInteger(n) || n <= 0 || (n & (n - 1)) !== 0) return null;
+          if (n > maxAlign) maxAlign = n;
+        } else if (m.bits != null) {
+          const b = Number(m.bits);
+          if (b >= 128) maxAlign = Math.max(maxAlign, 16);
+        }
+      }
+      return Math.min(16, maxAlign);
+    }
+    return 8;
+  }
+  if (classified?.bits != null) {
+    return Number(classified.bits) > 64 ? 16 : 8;
+  }
+  return 8;
+}
 
 /*
  * Aggregate locations are canonical evidence, not a convenience list of
@@ -384,86 +607,45 @@ function createClassifier(profile) {
       arguments_.push({ index, location:'unknown', abiClass:reason, bits:classified.bits,
         partial:true, possible:true, mustUse:false, exact:false, certainty:'unknown', ...extra });
     }
-    function allocateVectorGroup(descriptor) {
+    /* The fixed-length variant derives its register group from the type size
+     * and ABI_VLEN, never from an RVV LMUL spelling (#5616). ABI_VLEN is
+     * provider evidence: it may arrive as classifier options or on the
+     * classification request itself (the guarded ABI entry point passes the
+     * request as the instruction and keeps options separate). */
+    function abiVlenEvidence() {
+      return Number(options?.abiVlen ?? instruction?.abiVlen ?? prototype?.abiVlen);
+    }
+    function allocateVectorGroup(descriptor, bits) {
       if (descriptor.mask && !maskAllocated) { maskAllocated = true; usedVectorRegisters.add('v0'); return ['v0']; }
-      if (descriptor.fixedLength && !(Number(options?.abiVlen) > 0)) return null;
-      const group = descriptor.lmul * descriptor.tupleCount;
+      let group;
+      if (descriptor.fixedLength) {
+        const abiVlen = abiVlenEvidence();
+        if (!(abiVlen > 0)) return null;
+        const vectorBits = Number(bits ?? descriptor.bits);
+        group = fixedVectorRegisterGroup(vectorBits, abiVlen);
+        if (group == null) return null;
+        if (descriptor.explicitLmul != null && descriptor.explicitLmul !== group) {
+          descriptor.conflict = true;
+          return null;
+        }
+      } else {
+        group = descriptor.lmul * descriptor.tupleCount;
+      }
+      // Alignment is the register-group multiplier: for a tuple that is the
+      // LMUL (not LMUL x NFIELDS), for a fixed-length vector it is the derived
+      // group. The span is the full group in both cases.
+      const alignment = descriptor.fixedLength ? group : descriptor.lmul;
       // Re-scan from v8 for every argument: the psABI allocator explicitly
       // allows a later, smaller argument to take a register BELOW the previous
       // argument's allocation when alignment left a hole (#5615).
       let start = 8;
-      while (start <= 23 && ((start % descriptor.lmul) !== 0
+      while (start <= 23 && ((start % alignment) !== 0
         || Array.from({ length:group }, (_unused, index) => start + index).some((reg) => usedVectorRegisters.has(`v${reg}`)))) start += 1;
       if (start + group - 1 > 23) return null;
       for (let reg = start; reg < start + group; reg++) usedVectorRegisters.add(`v${reg}`);
       vectorCursor = Math.max(vectorCursor, start + group);
       return Array.from({ length:group }, (_unused, index) => `v${start + index}`);
     }
-    /*
-     * psABI hardware floating-point flattening recurses through the full
-     * struct/array hierarchy: `struct { struct { float f[1]; } a[2]; }` is
-     * classified exactly like `struct { float f0; float f1; }`. Leaves carry
-     * their proven absolute byte span so register placement can be validated
-     * against the physical layout. A nested aggregate without a proven layout,
-     * or a leaf that is neither a FP real nor an integer, keeps the previous
-     * fail-closed ineligibility (integer convention, still exact) (#5619).
-     */
-    function collectFlattenLeaves(member, offset) {
-      const classifiedMember = parameterClass(member);
-      if (classifiedMember.vector || (!classifiedMember.floating && classifiedMember.bits > XLEN)) return null;
-      if (!classifiedMember.aggregate) {
-        return [{ member:classifiedMember, byteOffset:offset, bytes:Math.ceil(classifiedMember.bits / 8) }];
-      }
-      const nestedCanonical = canonicalAggregateLayout(member);
-      if (!nestedCanonical) return null;
-      const leaves = [];
-      for (const nested of nestedCanonical.members) {
-        const nestedLeaves = collectFlattenLeaves(nested, offset + nested.byteOffset);
-        if (!nestedLeaves) return null;
-        leaves.push(...nestedLeaves);
-      }
-      return leaves;
-    }
-
-    function flattenAggregate(parameter) {
-      const canonical = canonicalAggregateLayout(parameter);
-      const members = canonical?.members ?? aggregateMembers(parameter);
-      if (!members) return null;
-      if (members.length < 1 || members.length > 2) return { eligible:false, known:true };
-      const classifiedMembers = members.map((member) => parameterClass(member));
-      const layout = canonical
-        ? { bytes:canonical.bytes, members:canonical.members }
-        : aggregateMemberLayout(members, classifiedMembers);
-      if (!layout) return null;
-      const leaves = [];
-      for (const [memberIndex, member] of members.entries()) {
-        if (!classifiedMembers[memberIndex].aggregate) {
-          const classifiedMember = classifiedMembers[memberIndex];
-          if (classifiedMember.vector || classifiedMember.bits > XLEN) return { eligible:false, known:true };
-          leaves.push({ member:classifiedMember,
-            byteOffset:layout.members?.[memberIndex]?.byteOffset ?? 0,
-            bytes:layout.members?.[memberIndex]?.bytes ?? Math.ceil(classifiedMember.bits / 8) });
-          continue;
-        }
-        const nestedLeaves = collectFlattenLeaves(member, layout.members?.[memberIndex]?.byteOffset ?? 0);
-        // An unproven nested layout leaves FP-eligibility undecidable: fail
-        // closed to unknown instead of minting an exact integer slot (#5619).
-        if (!nestedLeaves) return null;
-        leaves.push(...nestedLeaves);
-      }
-      if (!leaves.length || leaves.length > 2) return { eligible:false, known:true };
-      const flattenMembers = leaves.map((leaf) => leaf.member);
-      const floatMembers = flattenMembers.filter((member) => member.floating && member.bits <= abiFlen);
-      if (!floatMembers.length || flattenMembers.some((member) => member.floating && member.bits > abiFlen)) return { eligible:false, known:true };
-      if (flattenMembers.some((member) => !member.floating && member.bits > XLEN)) return { eligible:false, known:true };
-      return {
-        eligible:true,
-        known:true,
-        members:flattenMembers,
-        layout:{ bytes:canonical?.bytes ?? layout.bytes, members:leaves.map((leaf) => ({ byteOffset:leaf.byteOffset, bytes:leaf.bytes })) },
-      };
-    }
-
     /*
      * psABI: a return value larger than 2*XLEN is returned in memory, and the
      * caller passes the destination pointer as an implicit first integer
@@ -556,9 +738,21 @@ function createClassifier(profile) {
           unknownArgument(index, classified, 'vector-descriptor-conflict', { vector:classified.vector });
           return;
         }
-        const regs = allocateVectorGroup(classified.vector);
+        if (variadicArgument) {
+          const reg = variadicStackOnly ? undefined : INTEGER_ARGUMENT_REGISTERS[integerIndex];
+          if (reg !== undefined) {
+            integerIndex += 1;
+            useInteger(reg, { purpose:'variadic-vector-by-reference' });
+            arguments_.push({ index, location:'register', reg, abiName:ABI_ALIAS[reg], abiClass:'vector-by-reference', pointer:true, bits:XLEN, bytes:8, pointeeBits:classified.bits, hiddenIndirection:true, variadic:true });
+          } else {
+            const entry = { index, location:'stack', offset:stackOffset, offsetBase:'incoming-stack-arguments', bytes:8, abiClass:'vector-by-reference', pointer:true, bits:XLEN, pointeeBits:classified.bits, hiddenIndirection:true, variadic:true };
+            arguments_.push(entry); stackArguments.push(entry); stackOffset += 8; stackArgsMayContainPointers = true;
+          }
+          return;
+        }
+        const regs = allocateVectorGroup(classified.vector, classified.bits);
         if (!regs) {
-          unknownArgument(index, classified, 'vector-register-allocation-unproven', { vector:classified.vector });
+          unknownArgument(index, classified, classified.vector.conflict ? 'vector-descriptor-conflict' : 'vector-register-allocation-unproven', { vector:classified.vector });
           return;
         }
         regs.forEach((reg) => useVector(reg, { purpose:classified.vector.mask ? 'vector-mask-argument' : 'vector-argument' }));
@@ -610,7 +804,7 @@ function createClassifier(profile) {
          * A fixed-length vector routed through the integer convention is not
          * an FP-flattening candidate at all (#5713). */
         const needed = bytes > XLEN / 8 ? 2 : 1;
-        const flattening = hardFloat && !classified.fixedVectorAggregate ? flattenAggregate(parameter) : null;
+        const flattening = hardFloat && !classified.fixedVectorAggregate ? flattenAggregate(parameter, abiFlen) : null;
         if (hardFloat && flattening == null && !classified.fixedVectorAggregate) {
           aggregatePartial = true;
           unknownArgument(index, classified, 'aggregate-hard-float-layout-unproven', { candidates:['fp-flattening','integer-convention'] });
@@ -727,8 +921,13 @@ function createClassifier(profile) {
           });
           return;
         }
+        const slotAlignment = stackSlotAlignment(parameter, classified);
+        if (slotAlignment == null) {
+          unknownArgument(index, classified, 'aggregate-alignment-invalid');
+          return;
+        }
         const slot = align(bytes, 8);
-        stackOffset = align(stackOffset, needed === 2 ? 16 : 8);
+        stackOffset = align(stackOffset, slotAlignment);
         const pieces = Array.from({ length:needed }, (_unused, piece) => aggregatePiece({
           pieceIndex:piece,
           stackOffset:stackOffset + piece * 8,
@@ -768,7 +967,11 @@ function createClassifier(profile) {
       /* Scalars wider than XLEN and at most 2*XLEN use an argument-register pair. */
       const needed = classified.bits > XLEN ? 2 : 1;
       if (variadicArgument && variadicStackOnly) {
-        const slotAlignment = needed === 2 ? 16 : 8;
+        const slotAlignment = stackSlotAlignment(parameter, classified);
+        if (slotAlignment == null) {
+          unknownArgument(index, classified, 'variadic-alignment-invalid');
+          return;
+        }
         const bytes = align(Math.max(8, Math.ceil(classified.bits / 8)), slotAlignment);
         stackOffset = align(stackOffset, slotAlignment);
         const entry = {
@@ -824,7 +1027,11 @@ function createClassifier(profile) {
         return;
       }
 
-      const slotAlignment = needed === 2 ? 16 : 8;
+      const slotAlignment = stackSlotAlignment(parameter, classified);
+      if (slotAlignment == null) {
+        unknownArgument(index, classified, 'scalar-alignment-invalid');
+        return;
+      }
       const bytes = align(Math.max(8, Math.ceil(classified.bits / 8)), slotAlignment);
       stackOffset = align(stackOffset, slotAlignment);
       const entry = {
@@ -939,8 +1146,9 @@ function createClassifier(profile) {
     const aggregateLayout = aggregate
       ? canonicalAggregateLayout(aggregateLayoutParameter)
       : null;
-    const aggregateLayoutProven = !aggregate || aggregateLayout != null;
-    const canonicalDeclaredBits = aggregateLayout?.bits ?? declaredBitsNumber;
+    const aggregateExtent = aggregateLayout ?? (aggregate ? aggregateUnionExtent(aggregateLayoutParameter) : null);
+    const aggregateLayoutProven = !aggregate || aggregateExtent != null;
+    const canonicalDeclaredBits = aggregateExtent?.bits ?? declaredBitsNumber;
     if ((prototype.indirectResult === true || abiClass === 'indirect') && aggregate && !aggregateLayoutProven) {
       return { reg:null, bits:null, bytes:null, aggregate:true, partial:true, location:'unknown',
         reason:`${profile.id}-aggregate-return-size-layout-unproven` };
@@ -959,9 +1167,9 @@ function createClassifier(profile) {
       return { reg:null, bits:null, bytes:null, aggregate:true, partial:true, location:'unknown',
         reason:`${profile.id}-aggregate-return-size-layout-unproven` };
     }
-    if (aggregate && aggregateLayout?.bytes > Math.ceil(bits / 8)) {
-      if (aggregateLayout.bytes > 2 * XLEN / 8) return indirectResult();
-      return { reg:null, bits, bytes:aggregateLayout.bytes, aggregate:true, partial:true, location:'unknown',
+    if (aggregate && aggregateExtent?.bytes > Math.ceil(bits / 8)) {
+      if (aggregateExtent.bytes > 2 * XLEN / 8) return indirectResult();
+      return { reg:null, bits, bytes:aggregateExtent.bytes, aggregate:true, partial:true, location:'unknown',
         reason:`${profile.id}-padded-aggregate-return-layout-not-represented` };
     }
     const returnVector = vectorDescriptor({ type, abiClass, ...(prototype.returnVector || {}), vector:prototype.vectorReturn === true || prototype.returnVector?.vector === true, mask:prototype.returnVector?.mask, lmul:prototype.returnVector?.lmul, tupleCount:prototype.returnVector?.tupleCount, fixedLengthVector:prototype.returnVector?.fixedLengthVector });
@@ -1013,52 +1221,52 @@ function createClassifier(profile) {
         };
       }
       if (returnVector.conflict) return { reg:null, partial:true, location:'unknown', reason:'vector-return-descriptor-conflict', vector:returnVector };
-      if (returnVector.fixedLength && !(Number(options?.abiVlen) > 0)) return { reg:null, partial:true, location:'unknown', reason:'fixed-vector-return-abi-vlen-required' };
-      const count = returnVector.mask ? 1 : returnVector.lmul * returnVector.tupleCount;
+      let count;
+      if (returnVector.fixedLength) {
+        // classifyFunctionReturn passes the whole request as options, so the
+        // request-level ABI_VLEN evidence is already carried here.
+        const abiVlen = Number(options?.abiVlen ?? prototype?.abiVlen);
+        if (!(abiVlen > 0)) return { reg:null, partial:true, location:'unknown', reason:'fixed-vector-return-abi-vlen-required' };
+        count = fixedVectorRegisterGroup(bits, abiVlen);
+        if (count == null) return { reg:null, partial:true, location:'unknown', reason:'vector-return-group-too-large' };
+        if (returnVector.explicitLmul != null && returnVector.explicitLmul !== count) {
+          return { reg:null, partial:true, location:'unknown', reason:'vector-return-descriptor-conflict', vector:returnVector };
+        }
+      } else {
+        count = returnVector.mask ? 1 : returnVector.lmul * returnVector.tupleCount;
+      }
       if (!returnVector.mask && count > VECTOR_ARGUMENT_REGISTERS.length) return { reg:null, partial:true, location:'unknown', reason:'vector-return-group-too-large' };
       const regs = returnVector.mask ? ['v0'] : Array.from({ length:count }, (_unused, index) => `v${8 + index}`);
       return { reg:regs[0], regs, bits, vector:true, mask:returnVector.mask, callingConvention:'riscv-vector-variant' };
     }
     if (aggregate) {
       if (bits > 2 * XLEN) return indirectResult();
-      const members = aggregateLayout?.members
-        ?? aggregateMembers(prototype.returnAggregate || prototype);
-      if (hardFloat && members) {
-        const classifiedMembers = members.map((member) => parameterClass(member));
-        const memberLayout = aggregateLayout
-          ? { bytes:aggregateLayout.bytes, members:aggregateLayout.members }
-          : aggregateMemberLayout(members, classifiedMembers);
-        if (!memberLayout) {
-          return { reg:null, partial:true, location:'unknown', reason:`${profile.id}-small-aggregate-return-member-layout-unproven` };
-        }
-        const eligible = classifiedMembers.length >= 1 && classifiedMembers.length <= 2
-          && classifiedMembers.some((member) => member.floating && member.bits <= abiFlen)
-          && classifiedMembers.every((member) => !member.aggregate && !member.vector && member.bits <= XLEN && (!member.floating || member.bits <= abiFlen));
-        if (eligible) {
-          const memberBits = classifiedMembers.reduce((sum, member) => sum + member.bits, 0);
-          const memberBytes = memberLayout.members.reduce((sum, member) => sum + member.bytes, 0);
-          if (memberBits !== bits || memberBytes !== Math.ceil(bits / 8)
-            || memberLayout.bytes !== Math.ceil(bits / 8)) {
-            return { reg:null, partial:true, location:'unknown', reason:`${profile.id}-small-aggregate-return-layout-incomplete` };
-          }
-          let fp=0, integer=0;
-          const parts=classifiedMembers.map((member, memberIndex) => {
-            const bytes = memberLayout.members[memberIndex].bytes;
-            const part = aggregatePiece({
-              memberIndex,
-              pieceIndex:memberIndex,
-              reg:member.floating ? FLOAT_ARGUMENT_REGISTERS[fp++] : INTEGER_RETURN_REGISTERS[integer++],
-              bits:member.bits,
-              bytes,
-              byteOffset:memberLayout.members[memberIndex].byteOffset,
-              abiClass:member.floating ? 'float' : 'integer',
-            });
-            return part;
-          });
-          return { reg:parts[0].reg, regs:parts.map((part)=>part.reg), parts, pieces:parts, bits, bytes:memberLayout.bytes, aggregate:true, abiClass:'aggregate-hard-float-flattened' };
-        }
+      const flattening = hardFloat ? flattenAggregate(aggregateLayoutParameter, abiFlen) : null;
+      if (hardFloat && flattening == null) {
+        return { reg:null, partial:true, location:'unknown', reason:`${profile.id}-small-aggregate-return-flattening-not-proven` };
       }
-      if (hardFloat) return { reg:null, partial:true, location:'unknown', reason:`${profile.id}-small-aggregate-return-flattening-not-proven` };
+      if (flattening?.eligible) {
+        const memberBits = flattening.members.reduce((sum, member) => sum + member.bits, 0);
+        const memberBytes = flattening.layout.members.reduce((sum, member) => sum + member.bytes, 0);
+        if (memberBits !== bits || memberBytes !== Math.ceil(bits / 8)
+          || flattening.layout.bytes !== Math.ceil(bits / 8)) {
+          return { reg:null, partial:true, location:'unknown', reason:`${profile.id}-small-aggregate-return-layout-incomplete` };
+        }
+        let fp=0, integer=0;
+        const parts=flattening.members.map((member, memberIndex) => {
+          const bytes = flattening.layout.members[memberIndex].bytes;
+          return aggregatePiece({
+            memberIndex,
+            pieceIndex:memberIndex,
+            reg:member.floating ? FLOAT_ARGUMENT_REGISTERS[fp++] : INTEGER_RETURN_REGISTERS[integer++],
+            bits:member.bits,
+            bytes,
+            byteOffset:flattening.layout.members[memberIndex].byteOffset,
+            abiClass:member.floating ? 'float' : 'integer',
+          });
+        });
+        return { reg:parts[0].reg, regs:parts.map((part)=>part.reg), parts, pieces:parts, bits, bytes:flattening.layout.bytes, aggregate:true, abiClass:'aggregate-hard-float-flattened' };
+      }
       const regs = bits > XLEN ? INTEGER_RETURN_REGISTERS.slice(0, 2) : INTEGER_RETURN_REGISTERS.slice(0, 1);
       const pieces = regs.map((reg, pieceIndex) => aggregatePiece({
         pieceIndex,

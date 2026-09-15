@@ -36,19 +36,25 @@ export class WorkerAIProvider extends AIProvider {
     this.capabilitiesPrepared = false;
     this.capabilitiesPromise = null;
     this.capabilitiesController = null;
+    this.capabilitiesFlight = null;
     this.capabilitiesWaiters = 0;
   }
 
   async prepareCapabilities(options = {}) {
     if (this.capabilitiesPrepared) return this.getCapabilities();
     if (options.signal?.aborted) throw interruptionError(options.signal);
-    if (!this.capabilitiesPromise) {
+    if (!this.capabilitiesPromise || this.capabilitiesFlight?.retired) {
       const controller = new AbortController();
+      const flight = { controller, retired: false };
+      this.capabilitiesFlight = flight;
       this.capabilitiesController = controller;
       const promise = this.#loadCapabilities({ timeoutMs: options.timeoutMs, signal: controller.signal })
         .finally(() => {
-          if (this.capabilitiesPromise === promise) this.capabilitiesPromise = null;
-          if (this.capabilitiesController === controller) this.capabilitiesController = null;
+          if (this.capabilitiesFlight === flight) {
+            this.capabilitiesPromise = null;
+            this.capabilitiesController = null;
+            this.capabilitiesFlight = null;
+          }
         });
       this.capabilitiesPromise = promise;
     }
@@ -73,6 +79,7 @@ export class WorkerAIProvider extends AIProvider {
       released = true;
       this.capabilitiesWaiters = Math.max(0, this.capabilitiesWaiters - 1);
       if (cancelled && this.capabilitiesWaiters === 0 && this.capabilitiesPromise === promise) {
+        if (this.capabilitiesFlight) this.capabilitiesFlight.retired = true;
         this.capabilitiesController?.abort(signal?.reason ?? 'cancelled');
       }
     };

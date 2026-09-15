@@ -1,12 +1,12 @@
 import { createManagedValidationReport } from '../shared/validation.js';
+import { cilStackValueWidth } from './stack-width.js';
 
 function safeInteger(value) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 function stackValue(value) {
-  const bits = value?.bits;
-  return Object.freeze({ bits: safeInteger(bits) && bits > 0 ? bits : null });
+  return Object.freeze({ bits: cilStackValueWidth(value) });
 }
 
 function cloneStack(stack) {

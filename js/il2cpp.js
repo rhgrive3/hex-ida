@@ -78,6 +78,9 @@ function cooperativeYield() { return new Promise((resolve)=>setTimeout(resolve,0
 
 function utf8(bytes) { try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { return null; } }
 function layoutCandidates(version) {
+  if (version === 27) return [{type:88,method:32,tokenAt:20,label:'27'}];
+  if (version === 29) return [{type:88,method:32,tokenAt:20,label:'29'}];
+  if (version === 31) return [{type:88,method:36,tokenAt:24,label:'31'}];
   if (version >= 29) return [{type:92,method:40,label:'29+'}];
   if (version >= 27) return [{type:92,method:40,label:'27+'},{type:96,method:40,label:'27-alt'}];
   if (version >= 25) return [{type:96,method:52,label:'25+'},{type:100,method:52,label:'25-alt'}];
@@ -111,15 +114,23 @@ function headerContext(buffer) {
   return{u8,dv,version,pair:(name)=>pairs.get(name),pairs};
 }
 
-function makeStringAt(ctx){
+const STRING_SCAN_CHUNK_BYTES = 512;
+function makeStringAt(ctx, budget){
   const table=ctx.pair('string');
   return(index)=>{
     if(!Number.isInteger(index)||index<0||index>=table.size)return null;
-    const base=table.offset+index,maxEnd=Math.min(table.end,base+512);
-    let end=base;while(end<maxEnd&&ctx.u8[end]!==0)end++;
-    if(end>=maxEnd||ctx.u8[end]!==0)return null;
-    if(end===base)return '';
-    return utf8(ctx.u8.subarray(base,end));
+    const base=table.offset+index;
+    let cursor=base,limit=Math.min(table.end,base+STRING_SCAN_CHUNK_BYTES);
+    for(;;){
+      while(cursor<limit&&ctx.u8[cursor]!==0)cursor++;
+      if(cursor<limit)break;
+      if(limit>=table.end)return null;
+      const from=limit;
+      limit=Math.min(table.end,limit+STRING_SCAN_CHUNK_BYTES);
+      budget.check(1,0,limit-from);
+    }
+    if(cursor===base)return '';
+    return utf8(ctx.u8.subarray(base,cursor));
   };
 }
 
@@ -136,7 +147,7 @@ function scoreLayout(ctx, layout, budget) {
   const typeDefs=ctx.pair('typeDefinitions'), methodDefs=ctx.pair('methods');
   const typeCount=recordCount(typeDefs,layout.type), methodCount=recordCount(methodDefs,layout.method);
   if(typeCount==null||methodCount==null||typeCount>200000||methodCount>500000)return null;
-  const stringAt=makeStringAt(ctx), tokenAt=ctx.version>=27?24:40;
+  const stringAt=makeStringAt(ctx,budget), tokenAt=layout.tokenAt ?? (ctx.version>=27?24:40);
   let validTypeNames=0, validOwners=0, validMethodNames=0, validTokens=0;
   const ti=sampleIndices(typeCount), mi=sampleIndices(methodCount);
   for(const i of ti){ budget.check(1); const o=typeDefs.offset+i*layout.type; if(o+8>typeDefs.end)return null; if(stringAt(ctx.dv.getInt32(o,true)))validTypeNames++; }
@@ -151,7 +162,7 @@ function scoreLayout(ctx, layout, budget) {
   return { layout, score, typeCount, methodCount };
 }
 function parseLayout(ctx,layout,budget){
-  const {dv,version}=ctx,stringAt=makeStringAt(ctx),warnings=[];
+  const {dv,version}=ctx,stringAt=makeStringAt(ctx,budget),warnings=[];
   const typeDefs=ctx.pair('typeDefinitions'),methodDefs=ctx.pair('methods');
   const typeCount=recordCount(typeDefs,layout.type),methodCount=recordCount(methodDefs,layout.method);
   if(typeCount==null||methodCount==null||typeCount>200000||methodCount>500000)return null;
@@ -168,7 +179,7 @@ function parseLayout(ctx,layout,budget){
     classes.push({index:i,name,namespace:ns||'',full:ns?ns+'.'+name:name});
   }
   const methods=[];let validOwners=0,validTokens=0,validMethodNames=0;
-  const tokenAt=version>=27?24:40;
+  const tokenAt=layout.tokenAt ?? (version>=27?24:40);
   for(let i=0;i<methodCount;i++){
     if((i&1023)===0)budget.check(1024);
     const o=methodDefs.offset+i*layout.method;if(o<methodDefs.offset||o+8>methodDefs.end)return null;
@@ -236,7 +247,7 @@ function chooseLayout(ctx,candidates,budget){
 }
 
 async function parseLayoutAsync(ctx,layout,budget,options={}){
-  const {dv,version}=ctx,stringAt=makeStringAt(ctx),warnings=[];
+  const {dv,version}=ctx,stringAt=makeStringAt(ctx,budget),warnings=[];
   const typeDefs=ctx.pair('typeDefinitions'),methodDefs=ctx.pair('methods');
   const typeCount=recordCount(typeDefs,layout.type),methodCount=recordCount(methodDefs,layout.method);
   if(typeCount==null||methodCount==null||typeCount>200000||methodCount>500000)return null;
@@ -253,7 +264,7 @@ async function parseLayoutAsync(ctx,layout,budget,options={}){
     classes.push({index:i,name,namespace:ns||'',full:ns?ns+'.'+name:name});
   }
   const methods=[];let validOwners=0,validTokens=0,validMethodNames=0;
-  const tokenAt=version>=27?24:40;
+  const tokenAt=layout.tokenAt ?? (version>=27?24:40);
   for(let i=0;i<methodCount;i++){
     if((i&1023)===0){budget.check(1024);if(options.yield!==false)await cooperativeYield();}
     const o=methodDefs.offset+i*layout.method;if(o<methodDefs.offset||o+8>methodDefs.end)return null;

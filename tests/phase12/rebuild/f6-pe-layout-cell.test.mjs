@@ -16,6 +16,7 @@ import {
   evaluateF6RebuildDenominator,
   materializeRebuildTransaction,
   publishRebuildTransaction,
+  registerCanonicalAtomicPublicationProvider,
   validateRebuildTransaction,
 } from '../../../js/rebuild/transaction-v2.js';
 import {
@@ -124,7 +125,7 @@ for (const profile of ['pe:pe32', 'pe:pe32+']) {
     }, `${profile}:${validator}: exact section-layout evidence`);
   }
   const publication = await publishRebuildTransaction(materialized, validation, {
-    atomicPromote: async (_candidate, identity) => ({
+    atomicPromote: registerCanonicalAtomicPublicationProvider(async (_candidate, identity) => ({
       atomic: true,
       committed: true,
       protocol: 'temp-then-atomic-rename',
@@ -132,7 +133,7 @@ for (const profile of ['pe:pe32', 'pe:pe32+']) {
       transactionId: identity.materialized.transactionId,
       outputHash: identity.materialized.outputHash,
       outputIdentity: identity.materialized.outputIdentity,
-    }),
+    })),
   });
   assert.equal(publication.status, 'published');
   const status = proofFor(transaction, validation, publication, fixture);

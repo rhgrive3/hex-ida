@@ -34,7 +34,9 @@ export function describeMachOPointerSite(image, rawValue, addressValue) {
     return Object.freeze({ ...base, status: 'recorded-site', pointerFormat: site.pointerFormat,
       decoded: decoded ? Object.freeze({ bind: decoded.bind === true, ordinal: decoded.ordinal ?? null,
         addend: decoded.addend ?? null, target: decoded.target ?? null, next: decoded.next ?? null,
-        stride: decoded.stride ?? null, authenticated: decoded.authenticated ?? null,
+        stride: decoded.stride ?? null,
+        ...(decoded.coOpted === true ? { coOpted: true, coOptedValue: decoded.coOptedValue ?? null } : {}),
+        authenticated: decoded.authenticated ?? null,
         authenticationKey: decoded.authenticationKey ?? null, discriminator: decoded.discriminator ?? null,
         addressDiversity: decoded.addressDiversity ?? null }) : null });
   }
@@ -351,7 +353,7 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
             fail(`segment ${segIndex} page ${page} chain address is not backed by its owning segment`); break;
           }
           const raw = width === 4 ? BigInt(r.u32(Number(expectedOff))) : r.u64(Number(expectedOff));
-          const d = decodeChainedPointer(raw, pointerFormat, image.imageBase);
+          const d = decodeChainedPointer(raw, pointerFormat, image.imageBase, maxValidPointer);
           if (!d) { markUnsupportedChainedFormat(image, pointerFormat); fail(`segment ${segIndex} pointer format ${pointerFormat} could not be decoded`); break; }
           if (d.invalidReason) { fail(`segment ${segIndex} pointer format ${pointerFormat} has ${d.invalidReason}`); break; }
           rememberChainedPointerSite(image, address, raw, pointerFormat, d);
@@ -377,7 +379,6 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
       }
       if (failureEpoch === pageFailureEpoch) markChainedPointerCoverageComplete(image, coverageKey);
     }
-    void maxValidPointer; // value classification for 32-bit pointers, never an address-ownership bound
   }
   status.bindingSites = decoded;
   return status;
@@ -395,14 +396,26 @@ function markUnsupportedChainedFormat(image, format) {
   const list = image.metadata.chainedFixups.unsupportedPointerFormats ||= [];
   if (!list.includes(format)) { list.push(format); image.warnings.push(`chained pointer format ${format} is not supported; binding sites are partial`); }
 }
-function decodeChainedPointer(raw, format, imageBase = null) {
+function decodeChainedPointer(raw, format, imageBase = null, maxValidPointer = null) {
   const base = imageBase == null ? null : BigInt(imageBase);
   const invalidReason = chainedPointerReservedBitsReason(raw, format);
   if (invalidReason) return { invalidReason };
   if (format === 3) {
     const bind = !!((raw >> 31n) & 1n);
     const next = Number((raw >> 26n) & 0x1fn);
-    if (!bind) return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, target: null };
+    if (!bind) {
+      // Apple fixup-chains.h dyld_chained_ptr_32_rebase: target is a 26-bit
+      // vmaddr. An entry above the starts record's max_valid_pointer is not a
+      // pointer at all but a value co-opted into the chain; dyld restores it
+      // by subtracting the bias (64MB + max_valid_pointer) / 2 (#4120).
+      const target = raw & 0x3ffffffn;
+      if (maxValidPointer != null && target > BigInt(maxValidPointer)) {
+        const bias = (0x4000000n + BigInt(maxValidPointer)) / 2n;
+        return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, target: null,
+          coOpted: true, coOptedValue: (target - bias) & 0xffffffffn };
+      }
+      return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, target };
+    }
     const ordinal = Number(raw & 0xfffffn);
     const addend = Number((raw >> 20n) & 0x3fn);
     return { bind: true, ordinal, addend: BigInt(addend), next, stride: 4, target: null };
@@ -455,6 +468,13 @@ function decodeChainedPointer(raw, format, imageBase = null) {
   return null;
 }
 
+function classicBindPointerSize(image) {
+  // ARM64_32 uses the 64-bit Mach-O container format but a 32-bit native
+  // pointer ABI. Keep image.bits as file-class authority and derive the
+  // classic dyld bind slot width from the target ABI instead.
+  return image?.arch === 'arm64_32' ? 4n : image?.bits === 64 ? 8n : 4n;
+}
+
 export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=null){
   const budget=ensureMachOMetadataBudget(image,sharedBudget);
   image.metadata.dyldBindings ||= { complete:true, streams:{} };
@@ -465,7 +485,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     image.warnings.push(`${source}: binding stream is truncated`);return invalid;
   }
   const BIND_OPCODE_MASK = 0xf0, BIND_IMMEDIATE_MASK = 0x0f, BIND_SYMBOL_FLAGS_KNOWN_MASK = 0x09;
-  const ptrSize = image.bits === 64 ? 8n : 4n;
+  const ptrSize = classicBindPointerSize(image);
   let p = dc.offset;
   const end = dc.offset + dc.size;
   // Classic bind state mirrors dyld's BindOpcodes state machine: only
@@ -492,10 +512,10 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     return true;
   };
   const snapshotImport = () => ({ name: symbol, library: dylibForOrdinal(image, libOrdinal), ordinal: libOrdinal, weak: !!(symbolFlags & 1), symbolFlags, nonWeakDefinition: !!(symbolFlags & 8), addend, type, source, sites: [] });
-  const validLocation = () => {
+  const validLocation = (width = ptrSize) => {
     if (!locationSet) return false;
     const seg = segments[segIndex];
-    return !!seg && segOffset >= 0n && segOffset <= seg.size && ptrSize <= seg.size - segOffset;
+    return !!seg && segOffset >= 0n && segOffset <= seg.size && width <= seg.size - segOffset;
   };
   const bind = () => {
     if (!symbol) { fail('bind encountered before a symbol was set'); return; }
@@ -553,7 +573,10 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
   };
   const applyThreaded = () => {
     if (!threadedTable) { fail('threaded APPLY encountered before ordinal table'); return; }
-    if (!validLocation()) { fail('threaded APPLY starts outside its segment'); return; }
+    // BIND_OPCODE_THREADED encodes 64-bit chain words even when a target's
+    // ordinary native pointer ABI differs. Do not let ARM64_32's 4-byte
+    // classic-bind slot width weaken this separate chain-word bounds proof.
+    if (!validLocation(8n)) { fail('threaded APPLY starts outside its segment'); return; }
     const seg = segments[segIndex];
     let address = seg.address + segOffset;
     for (let guard = 0; guard < 100000; guard++) {
@@ -574,7 +597,7 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
       }
       if (!delta) { status.threadedApplies++; return; }
       address += BigInt(delta * 8);
-      if (address < seg.address || address + ptrSize > seg.address + seg.size) { fail('threaded binding delta leaves segment'); return; }
+      if (address < seg.address || address + 8n > seg.address + seg.size) { fail('threaded binding delta leaves segment'); return; }
     }
     fail('threaded binding chain exceeded the 100000-entry budget');
   };

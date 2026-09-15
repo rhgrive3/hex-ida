@@ -1,3 +1,5 @@
+import { sectionHasMappedAddress } from './model.js';
+
 export function safeELFNumber(value) {
   if (typeof value !== 'number' && typeof value !== 'bigint' && typeof value !== 'string') return null;
   if (typeof value === 'string' && value.trim() === '') return null;
@@ -122,6 +124,16 @@ export function mappedELFFileSpanForVa(image, va, size) {
 /** Architecture-specific alignment gate for exact ELF instruction starts. */
 export function elfInstructionStartAlignmentRejection(image, address) {
   if (image?.arch === 'arm64' && address % 4n !== 0n) return 'does not satisfy arm64 4-byte alignment';
+  const isRiscv = image?.arch === 'riscv64' || image?.arch === 'riscv32' || image?.arch === 'riscv' || Number(image?.metadata?.machine) === 243;
+  if (isRiscv) {
+    if (address % 2n !== 0n) return 'does not satisfy riscv minimum 2-byte alignment';
+    const align = image?.metadata?.riscvIsa?.file?.instructionAlignment ?? image?.metadata?.riscvFileIsa?.instructionAlignment;
+    if (align === 4 && address % 4n !== 0n) return 'does not satisfy riscv 4-byte instruction alignment';
+  }
+  const isArm32 = image?.arch === 'arm' || Number(image?.metadata?.machine) === 40;
+  if (isArm32) {
+    if (address % 2n !== 0n) return 'does not satisfy arm 2-byte instruction alignment';
+  }
   return null;
 }
 
@@ -134,6 +146,10 @@ export function elfInstructionStartAlignmentRejection(image, address) {
  * allocated (the section model exposes SHF_ALLOC as `perms.read`) and the full
  * address extent must live inside an executable PT_LOAD. ET_REL retains its
  * section-relative synthetic contract and does not require a program header.
+ * A section that already lost canonical virtual mapping authority (an
+ * 'unmapped-section', e.g. one whose sh_offset/sh_size crosses EOF) cannot
+ * authorize an executable extent either, or its phantom tail would seed bytes
+ * that do not exist in the file (#4223).
  */
 export function executableELFRange(image, address, size = 0n, sectionIndex = null) {
   const start = strictELFInteger(address, 'address');
@@ -148,6 +164,7 @@ export function executableELFRange(image, address, size = 0n, sectionIndex = nul
   const executableSegment = (segment) => !!segment?.perms?.execute && contains(segment);
   const executableSection = (section) => {
     if (!section?.perms?.execute || !contains(section)) return false;
+    if (!sectionHasMappedAddress(section)) return false;
     if (relocatable) return true;
     if (!section?.perms?.read) return false;
     return (image.segments || []).some(executableSegment);

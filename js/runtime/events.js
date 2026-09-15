@@ -376,7 +376,7 @@ export function createRuntimeEvent(input = {}, options = {}) {
     interventionIds,
   });
 }
-export function normalizeLegacyRuntimeEvent(input, context = {}, options = {}) {
+function normalizeLegacyRuntimeEventWithAuthority(input, context = {}, options = {}) {
   const protocolEnvelope = input && input.type === 'event' && typeof input.event === 'string';
   const source = protocolEnvelope
     ? (input.data && typeof input.data === 'object' && !Array.isArray(input.data) ? input.data : {})
@@ -393,12 +393,17 @@ export function normalizeLegacyRuntimeEvent(input, context = {}, options = {}) {
   };
   const kind = RUNTIME_EVENT_KINDS.includes(legacyType) ? legacyType : (kindMap[legacyType] || 'trace-marker');
   const truncated = input?.truncated === true || source.truncated === true || legacyType === 'stream-truncated';
-  const envelopeValue = (key) => protocolEnvelope && input[key] != null ? input[key] : source[key];
-  return createRuntimeEvent({
+  const envelopeValue = (key) => {
+    if (!protocolEnvelope) return source[key];
+    const envelope = input[key];
+    return envelope != null ? envelope : source[key];
+  };
+  const sourceEpoch = envelopeValue('epoch');
+  const event = createRuntimeEvent({
     runtimeSessionId: context.runtimeSessionId,
     providerId: context.providerId,
     providerVersion: context.providerVersion,
-    sessionEpoch: envelopeValue('epoch') ?? context.sessionEpoch ?? 1,
+    sessionEpoch: sourceEpoch ?? context.sessionEpoch ?? 1,
     streamId: envelopeValue('streamId') ?? context.streamId,
     sequence: envelopeValue('sequence'),
     providerEventId: envelopeValue('providerEventId') ?? envelopeValue('id'),
@@ -414,6 +419,11 @@ export function normalizeLegacyRuntimeEvent(input, context = {}, options = {}) {
     predecessorIds: envelopeValue('predecessorIds'),
     interventionIds: envelopeValue('interventionIds'),
   }, options);
+  return { event, explicitEpoch: sourceEpoch != null };
+}
+
+export function normalizeLegacyRuntimeEvent(input, context = {}, options = {}) {
+  return normalizeLegacyRuntimeEventWithAuthority(input, context, options).event;
 }
 
 export function createRuntimeEventBatch(input = {}) {
@@ -461,6 +471,7 @@ export class RuntimeEventNormalizer {
   #seen = new Set();
   #dropped = 0;
   #occurrence = 0;
+  #requiresExplicitLegacyEpoch = false;
 
   #nextOccurrence() {
     if (this.#occurrence >= Number.MAX_SAFE_INTEGER) {
@@ -477,16 +488,34 @@ export class RuntimeEventNormalizer {
     this.queuedBytes = 0;
   }
 
-  push(input) {
+  push(input, options = {}) {
     const hasDirectIdentity = input && typeof input === 'object'
       && ['runtimeSessionId', 'providerId', 'sessionEpoch'].some((key) => Object.hasOwn(input, key));
     const remainingBytes = Math.max(0, this.maxBytes - this.queuedBytes);
     const occurrenceIdentity = this.#nextOccurrence();
     let event;
     try {
-      event = hasDirectIdentity
-        ? createRuntimeEvent(input, { maxBytes:remainingBytes, occurrenceIdentity })
-        : normalizeLegacyRuntimeEvent(input, this.context, { maxBytes:remainingBytes, occurrenceIdentity });
+      if (hasDirectIdentity) {
+        event = createRuntimeEvent(input, { maxBytes:remainingBytes, occurrenceIdentity });
+      } else {
+        const normalized = normalizeLegacyRuntimeEventWithAuthority(
+          input,
+          this.context,
+          { maxBytes:remainingBytes, occurrenceIdentity },
+        );
+        if (this.#requiresExplicitLegacyEpoch && !normalized.explicitEpoch) {
+          const legacySessionEpochValue = options?.legacySessionEpoch;
+          const legacySessionEpoch = legacySessionEpochValue == null
+            ? null
+            : safeInteger(legacySessionEpochValue, null, 'legacySessionEpoch', { min: 1 });
+          const contextEpoch = safeInteger(this.context.sessionEpoch, normalized.event.sessionEpoch, 'sessionEpoch', { min: 1 });
+          if (legacySessionEpoch !== contextEpoch) {
+            this.#dropped++;
+            return null;
+          }
+        }
+        event = normalized.event;
+      }
     } catch (error) {
       if (error?.code !== 'runtime-event-resource-limit') throw error;
       this.#dropped++;
@@ -568,6 +597,7 @@ export class RuntimeEventNormalizer {
 
   resetEpoch(epoch) {
     this.context.sessionEpoch = safeInteger(epoch, null, 'sessionEpoch', { min: 1 });
+    this.#requiresExplicitLegacyEpoch = true;
     this.#queue = [];
     this.queuedBytes = 0;
     this.#dropped = 0;

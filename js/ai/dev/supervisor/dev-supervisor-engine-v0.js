@@ -403,7 +403,10 @@ export class DevSupervisorEngineV0 {
               workerClaimed = true;
               workerClaimAttempted = false;
             }
-            if (decision.tool === DEV_WORKER_TOOL.RELEASE) workerClaimed = false;
+            if (decision.tool === DEV_WORKER_TOOL.RELEASE) {
+              workerClaimed = false;
+              workerClaimAttempted = false;
+            }
             this.#persistRun(run);
             history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(executed.result) });
             continue;

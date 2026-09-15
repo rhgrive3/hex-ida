@@ -1,6 +1,6 @@
 import { Backend } from './backend.js';
 import { SymbolIndex } from './symbols.js';
-import { createHexProject, exportHexProject, importHexProject, serializeHexProject, parseHexProject, normalizeNavigation } from './project/index.js';
+import { createHexProject, exportHexProject, importHexProject, serializeHexProject, parseHexProject, normalizeNavigation, projectAnnotationCommitList } from './project/index.js';
 import { runDiffInWorker } from './diff/runtime.js';
 import { createCompactFunctionSet, demoteLowInformationAbsenceClaims } from './diff/compact-function-set.js';
 import { stripSecrets } from './ai/session-core/index.js';
@@ -112,6 +112,9 @@ function safeEvidence(app){
   const report=app?.autoReport?.report||null;
   return (report?.deep||[]).slice(0,MAX_PROJECT_FINDINGS);
 }
+function safeProjectAnnotations(app){
+  return (Array.isArray(app?.projectAnnotations)?app.projectAnnotations:[]).slice(0,MAX_PROJECT_FINDINGS);
+}
 function aiTurns(){
   const session=globalThis.window?.__hexAi?.session||globalThis.window?.__hexUi?.assistant?.session||null;
   return Array.isArray(session?.turns)?session.turns.slice(-MAX_PROJECT_AI_TURNS).map((t)=>({
@@ -154,6 +157,7 @@ export function snapshotWorkspace(app, identity){
     bookmarks:bookmarks.slice(-500),
     patches:patchEntries(app.patches),
     confirmedFindings:safeFindings(app),
+    projectAnnotations:safeProjectAnnotations(app),
     evidence:safeEvidence(app),
     investigationSessions:safeSessions,
     agentAnswers:safeTurns.filter((t)=>t.role==='assistant'&&t.status==='done'),
@@ -191,12 +195,19 @@ export function applyWorkspaceProject(app, project){
     staging.add(BigInt(p.offset),p.before||[],p.after||[],meta);
     stagedPatches.push([BigInt(p.offset),p.before||[],p.after||[],meta]);
   }
+  const stagedNames=projectAnnotationCommitList(project.user?.names,'user.names');
+  const stagedComments=projectAnnotationCommitList(project.user?.comments,'user.comments');
+  const stagedTypes=[];
+  for(const entry of project.user.types||[])if(entry?.key)stagedTypes.push([String(entry.key),String(entry.value||'')]);
+  const stagedVars=[];
+  if(replaceVars)for(const entry of (project.user.vars||project.user.varNames||[]))if(entry?.key)stagedVars.push([String(entry.key),String(entry.value||'')]);
+  const stagedStructs=Array.isArray(project.user.structs)?project.user.structs.slice():[];
   notes.names.clear();notes.comments.clear();notes.types.clear();if(replaceVars)notes.vars.clear();
-  for(const entry of project.user.names||[])if(entry?.address!=null&&entry.value)notes.names.set(BigInt(entry.address).toString(),String(entry.value));
-  for(const entry of project.user.comments||[])if(entry?.address!=null&&entry.value)notes.comments.set(BigInt(entry.address).toString(),String(entry.value));
-  for(const entry of project.user.types||[])if(entry?.key)notes.types.set(String(entry.key),String(entry.value||''));
-  if(replaceVars)for(const entry of (project.user.vars||project.user.varNames||[]))if(entry?.key)notes.vars.set(String(entry.key),String(entry.value||''));
-  notes.structs=Array.isArray(project.user.structs)?project.user.structs.slice():[];
+  for(const [address,value] of stagedNames)notes.names.set(address,value);
+  for(const [address,value] of stagedComments)notes.comments.set(address,value);
+  for(const [key,value] of stagedTypes)notes.types.set(key,value);
+  if(replaceVars)for(const [key,value] of stagedVars)notes.vars.set(key,value);
+  notes.structs=stagedStructs;
   notes.dirty=true;
   if(!notes.save())throw new Error(notes.lastSaveError?.code||'notes-save-failed');
   app.patches.clear();
@@ -214,6 +225,7 @@ export function applyWorkspaceProject(app, project){
       key:app.codeRegion?.()?.id||null,gen:app.symbols?.gen||0,restored:true,
     }:null;
   }
+  app.projectAnnotations=Array.isArray(project.projectAnnotations)?project.projectAnnotations.slice():[];
   if(Array.isArray(project.findings?.investigationSessions)){
     const currentHash = app?.backend?.contentHash || app?.store?.get?.('fileInfo')?.hash || null;
     for(const session of project.findings.investigationSessions){

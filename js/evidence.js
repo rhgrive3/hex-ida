@@ -125,14 +125,29 @@ export function groupOf(item) {
  * 証拠から数え直す。それも無理なら 0 を返す ＝ 確定を名乗らせない。
  * 分からないときに緩いほうへ倒さない。
  */
+const CANONICAL_GROUPS = new Set(Object.values(GROUP));
+
 export function independentGroupCount(fusion) {
   if (!fusion) return 0;
-  if (Number.isFinite(fusion.independentGroups)) return fusion.independentGroups;
-  if (Array.isArray(fusion.groups)) return fusion.groups.length;
   if (Array.isArray(fusion.items)) {
     const seen = new Set();
     for (const it of fusion.items) if (it && it.applied > 0) seen.add(groupOf(it));
     return seen.size;
+  }
+  if (Array.isArray(fusion.groups)) {
+    const distinct = new Set();
+    for (const g of fusion.groups) {
+      if (typeof g !== 'string' || !CANONICAL_GROUPS.has(g)) return 0;
+      distinct.add(g);
+    }
+    if (fusion.independentGroups !== undefined) {
+      if (!Number.isSafeInteger(fusion.independentGroups) || fusion.independentGroups < 0) return 0;
+      if (fusion.independentGroups !== distinct.size) return 0;
+    }
+    return distinct.size;
+  }
+  if (Number.isSafeInteger(fusion.independentGroups) && fusion.independentGroups >= 0) {
+    return fusion.independentGroups;
   }
   return 0;
 }
@@ -481,6 +496,10 @@ function finitePositiveLr(value, fallback = 1) {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return fallback;
   return value;
 }
+function countAuthority(value, fallback) {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+  return fallback;
+}
 
 /**
  * 証拠 1 件。
@@ -646,8 +665,9 @@ export function fuse(items, opts) {
    * 「5 個のうちどれか」を前提にすると、ろくな根拠がなくても 20% から始まってしまう。
    * 実際には「この目的の値は、このバイナリには無い」ことの方が多い。
    */
-  const absent = o.absent != null ? o.absent : 40;
-  const n = Math.max(2, (o.candidates != null ? o.candidates : 200) + absent);
+  const absent = countAuthority(o.absent, 40);
+  const candidates = countAuthority(o.candidates, 200);
+  const n = Math.max(2, candidates + absent);
   const prior = o.prior != null
     ? Math.max(1e-9, Math.min(0.5, o.prior))
     : 1 / n;
@@ -866,6 +886,36 @@ const VERDICT_ORDER = { none: 0, ambiguous: 1, likely: 2, confirmed: 3 };
 /** 決着の強さを比べる。UI と auto.js の並び替えはこれ 1 本に寄せる。 */
 export function verdictRank(v) { return VERDICT_ORDER[v] || 0; }
 
+function finiteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function unitInterval(value) {
+  const n = finiteNumber(value);
+  return n !== null && n >= 0 && n <= 1 ? n : null;
+}
+
+function nonNegativeNumber(value) {
+  const n = finiteNumber(value);
+  return n !== null && n >= 0 ? n : null;
+}
+
+function verificationAuthority(value) {
+  if (value === true) return true;
+  const n = finiteNumber(value);
+  return n !== null && n > 0;
+}
+
+function fusionAuthority(fusion) {
+  const f = fusion || {};
+  return {
+    logOdds: finiteNumber(f.logOdds),
+    probability: unitInterval(f.probability),
+    verified: verificationAuthority(f.verified),
+    identifying: nonNegativeNumber(f.identifying),
+  };
+}
+
 /**
  * 並べた候補から結論を出す。
  *
@@ -882,8 +932,13 @@ export function decide(ranked, opts) {
 
   const top = list[0];
   const runnerUp = list[1] || null;
-  const margin = runnerUp ? top.fusion.logOdds - runnerUp.fusion.logOdds : Infinity;
-  const marginRatio = Number.isFinite(margin) ? Math.exp(margin) : Infinity;
+  const authority = fusionAuthority(top.fusion);
+  const rivalAuthority = runnerUp ? fusionAuthority(runnerUp.fusion) : null;
+  const margin = !runnerUp ? Infinity
+    : (authority.logOdds !== null && rivalAuthority.logOdds !== null
+      ? authority.logOdds - rivalAuthority.logOdds : -Infinity);
+  const marginRatio = margin === Infinity ? Infinity : Math.exp(margin);
+  const probability = authority.probability === null ? 0 : authority.probability;
 
   const missing = [];
   /*
@@ -891,22 +946,22 @@ export function decide(ranked, opts) {
    * これが無いまま確定を名乗ると「防御力を探したら HP が確定で出る」ことになる。
    * 命令で確かめたかどうかとは、まったく別の話。
    */
-  if (!(top.fusion.identifying > 0)) missing.push('need-name-evidence');
-  if (!top.fusion.verified) missing.push('need-verification');
+  if (!(authority.identifying > 0)) missing.push('need-name-evidence');
+  if (!authority.verified) missing.push('need-verification');
   /*
    * 独立性は出どころ (group) で数える。系統 (family) では数えない。
    * families は説明用に残してあるが、確定の条件には一切使わない。
    */
   const independent = independentGroupCount(top.fusion);
   if (independent < CONFIRM.groups) missing.push('need-independent-evidence');
-  if (top.fusion.probability < CONFIRM.p) missing.push('need-more-evidence');
+  if (probability < CONFIRM.p) missing.push('need-more-evidence');
   if (margin < CONFIRM.margin) missing.push('need-separation');
 
   let verdict = VERDICT.NONE;
   if (!missing.length) verdict = VERDICT.CONFIRMED;
-  else if (top.fusion.probability >= LIKELY.p && margin >= LIKELY.margin) verdict = VERDICT.LIKELY;
-  else if (top.fusion.probability >= 0.35 ||
-    (runnerUp && margin < LIKELY.margin && top.fusion.probability >= AMBIGUOUS_FLOOR)) {
+  else if (probability >= LIKELY.p && margin >= LIKELY.margin) verdict = VERDICT.LIKELY;
+  else if (probability >= 0.35 ||
+    (runnerUp && margin < LIKELY.margin && probability >= AMBIGUOUS_FLOOR)) {
     /*
      * 「上位が拮抗している」だけで割れていると言ってはいけない。
      * 確からしさが 0 のものどうしも拮抗する。それは割れているのではなく、
@@ -922,7 +977,7 @@ export function decide(ranked, opts) {
    * 「バトルのクラスにある、読み書きされている 4 バイトの整数」は、
    * 防御力の答えではなく、ただのゲームの数値でしかない。
    */
-  if (!(top.fusion.identifying > 0) && verdictRank(verdict) > verdictRank(VERDICT.AMBIGUOUS)) {
+  if (!(authority.identifying > 0) && verdictRank(verdict) > verdictRank(VERDICT.AMBIGUOUS)) {
     verdict = VERDICT.AMBIGUOUS;
   }
 
