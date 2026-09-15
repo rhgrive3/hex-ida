@@ -124,6 +124,22 @@
     }
   }
 
+  /*
+   * Architecture identity used to reject duplicate fat slices. It mirrors the
+   * canonical loader's `canonicalArchitectureSubtype()` in js/binary/macho-fat.js
+   * exactly (dyld canonicalizes only the pre-versioned fat-header arm64e value
+   * 2 to the ABI-v0 identity; every other subtype keeps its lower 24 bits) so
+   * the classic path cannot invent a second architecture-duplication policy.
+   */
+  function canonicalFatArchKey(cputype, cpusubtype) {
+    const cpu = cputype >>> 0;
+    const sub = cpusubtype >>> 0;
+    const id = cpu === CPU_TYPE_ARM64
+      ? (sub === 2 ? 0x80000002 : sub)
+      : (sub & 0x00ffffff);
+    return cpu + ':' + id;
+  }
+
   function cstr(u8, off, max) {
     let end = off;
     const lim = Math.min(off + max, u8.length);
@@ -169,7 +185,17 @@
   /**
    * Parse a fat header. `buf` must cover at least 8 + 32*nfat bytes.
    * Returns [{offset, size, cputype, cpusubtype, name}] or null when the
-   * CAFEBABE turns out to be something else (e.g. a Java class file).
+   * CAFEBABE turns out to be something else (e.g. a Java class file) or when
+   * the fat container violates physical slice ownership.
+   *
+   * The canonical loader (`js/binary/macho-core.js` via `js/binary/macho-fat.js`,
+   * #6314/#6316) rejects a container whose slice file ranges overlap or whose
+   * architecture identities are duplicated before any slice is opened, because a
+   * single physical byte range must not be published as regions of two different
+   * architectures / virtual-address spaces. The classic path previously checked
+   * only each entry against `fileSize`, so a crafted universal binary could map
+   * the same bytes under two owners; that source-identity divergence is closed
+   * here at the same authority point.
    */
   function parseFat(buf, fileSize) {
     const dv = new DataView(buf);
@@ -179,16 +205,40 @@
     if (n === 0 || n > 32) return null;               // sanity: not a real fat binary
     const entry = is64 ? 32 : 20;
     if (8 + n * entry > buf.byteLength) return null;
-    const out = [];
+    // Stage every declared entry as a descriptor first; publish nothing until
+    // the whole container's ownership is proven (#8840 expected-fix 1/7).
+    const staged = [];
     for (let i = 0; i < n; i++) {
       const o = 8 + i * entry;
       const cputype = dv.getInt32(o, false);
       const cpusubtype = dv.getInt32(o + 4, false);
       const offset = is64 ? dv.getBigUint64(o + 8, false) : BigInt(dv.getUint32(o + 8, false));
       const size = is64 ? dv.getBigUint64(o + 16, false) : BigInt(dv.getUint32(o + 12, false));
+      if (size <= 0n) return null;                    // empty slice: not a real fat binary
       if (offset + size > fileSize) return null;      // not a fat binary after all
-      const cn = cpuName(cputype, cpusubtype);
-      out.push({ offset, size, cputype, cpusubtype, name: cn.cpu + (cn.sub && cn.sub !== 'all' ? ' (' + cn.sub + ')' : '') });
+      staged.push({ cputype, cpusubtype, offset, size });
+    }
+    // Duplicate architecture identity (canonical subtype normalization).
+    const seen = new Set();
+    for (const e of staged) {
+      const key = canonicalFatArchKey(e.cputype, e.cpusubtype);
+      if (seen.has(key)) return null;                 // #8840: reject duplicate arch
+      seen.add(key);
+    }
+    // Pairwise physical slice-range overlap must be rejected before any slice is
+    // read/registered, so no file byte can gain a second architecture/VM owner.
+    for (let i = 0; i < staged.length; i++) {
+      const a = staged[i];
+      for (let j = i + 1; j < staged.length; j++) {
+        const b = staged[j];
+        if (a.offset < b.offset + b.size && b.offset < a.offset + a.size) return null;
+      }
+    }
+    const out = [];
+    for (const e of staged) {
+      const cn = cpuName(e.cputype, e.cpusubtype);
+      out.push({ offset: e.offset, size: e.size, cputype: e.cputype, cpusubtype: e.cpusubtype,
+        name: cn.cpu + (cn.sub && cn.sub !== 'all' ? ' (' + cn.sub + ')' : '') });
     }
     return out;
   }
@@ -414,6 +464,11 @@
     }
 
     info.textVM=textVM; info.textFileOff=textFileOff;
+    // #8828: reject ambiguous segment byte-ownership before any consumer picks a
+    // winner by load-command order. The canonical loader fails closed on the same
+    // layout (#7064); the classic path demotes both conflicting segments to a
+    // non-authoritative mapping so `execSegments`/`regionsFrom` publish neither.
+    rejectAmbiguousSegmentOwnership(info);
     const align=instructionAlignment(architecture);
     const execSegments=info.segments.filter((seg)=>seg.validMapping && !!(seg.initprot&4) && seg.vmsize>0n);
     const validPc=(pc)=>pc!=null && pc%align===0n && execSegments.some((seg)=>inRange(pc,seg.vmaddr,seg.vmsize));
@@ -436,12 +491,66 @@
     return info;
   }
 
+  /*
+   * #8828 — classic Mach-O segment byte-ownership authority.
+   *
+   * Two individually valid LC_SEGMENT[_64] commands can claim the same VM range
+   * while mapping it to different file offsets. `regionsFrom()` would then
+   * publish both mappings in load-command order and classic consumers
+   * (`mappedFileOffset()` / `vmToFile()`) resolve the shared address to whichever
+   * segment came first — attacker-controlled byte provenance. The canonical
+   * loader rejects this outright (#7064). Here we mirror its exact per-sub-interval
+   * rule: a file-backed segment owns canonical bytes for [vmaddr, vmaddr+filesize);
+   * two file-backed segments whose full VM ownership extents intersect must agree
+   * on the file offset for every sub-interval, and a file-backed extent may not
+   * ambiguously overlap a zero-fill tail. On conflict both segments are demoted to
+   * `validMapping=false` + `mappingConflict=true` so no region is published for the
+   * ambiguous bytes (fail closed to "unknown", never to an order-picked owner).
+   */
+  function classicOwnershipAmbiguous(a, b) {
+    const aVmEnd = a.vmaddr + a.vmsize;
+    const bVmEnd = b.vmaddr + b.vmsize;
+    const overlapStart = a.vmaddr > b.vmaddr ? a.vmaddr : b.vmaddr;
+    const overlapEnd = aVmEnd < bVmEnd ? aVmEnd : bVmEnd;
+    if (overlapStart >= overlapEnd) return false;
+    const aFileEnd = a.vmaddr + a.filesize;
+    const bFileEnd = b.vmaddr + b.filesize;
+    const boundaries = [...new Set([overlapStart, overlapEnd, aFileEnd, bFileEnd]
+      .filter((p) => p > overlapStart && p < overlapEnd))].sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
+    const points = [overlapStart, ...boundaries, overlapEnd];
+    for (let i = 0; i + 1 < points.length; i++) {
+      const point = points[i];
+      const aBacked = point >= a.vmaddr && point < aFileEnd;
+      const bBacked = point >= b.vmaddr && point < bFileEnd;
+      if (!aBacked && !bBacked) continue;
+      if (aBacked !== bBacked) return true;                 // ambiguous file/zero ownership
+      const aOff = a.fileoff + (point - a.vmaddr);
+      const bOff = b.fileoff + (point - b.vmaddr);
+      if (aOff !== bOff) return true;                       // same VM -> different bytes
+    }
+    return false;
+  }
+
+  function rejectAmbiguousSegmentOwnership(info) {
+    const backed = (info.segments || []).filter((s) => s.validMapping && s.filesize > 0n);
+    for (let i = 0; i < backed.length; i++) {
+      for (let j = i + 1; j < backed.length; j++) {
+        const a = backed[i], b = backed[j];
+        if (!classicOwnershipAmbiguous(a, b)) continue;
+        a.validMapping = false; b.validMapping = false;
+        a.mappingConflict = true; b.mappingConflict = true;
+        info.segmentOwnershipConflict = true;
+        info.diagnostics.push(`${b.name}: VM range overlaps segment ${a.name} with a conflicting file mapping (ambiguous ownership)`);
+      }
+    }
+  }
+
   function regionsFrom(info, sliceOff, sliceSize, fileSize) {
     const regions=[]; let id=0;
     const sliceEnd=sliceOff+sliceSize;
     if (sliceEnd<sliceOff || sliceEnd>fileSize) return regions;
     for(const seg of info.segments||[]){
-      if(!seg.validMapping) continue;
+      if(!seg.validMapping || seg.mappingConflict) continue;
       for(const sec of seg.sections||[]){
         if(!sec.validMapping) continue;
         const fileOffset=sliceOff+sec.offset;
@@ -840,6 +949,28 @@
    * extent are not guesses.  Malformed/unsupported CIEs are skipped locally so
    * one vendor-specific record cannot poison the rest of the section.
    */
+  /*
+   * #8832 — executable-mapping containment for `.eh_frame` FDE extents.
+   *
+   * `options.execRanges` is a caller-provided list of {start,end} executable,
+   * file-backed mapping intervals (contiguous/overlapping entries are merged into
+   * a single continuous code domain). When supplied, an FDE counts as exact
+   * function-start + extent authority only if its entire [start,end) is contained
+   * in ONE such range. When omitted (e.g. a bare structural decode), the check is
+   * skipped and prior behavior is preserved, so only authoritative callers opt in.
+   * `options.align` additionally requires the FDE start to be ISA-aligned.
+   */
+  function fdeInExecutableMapping(start, end, options) {
+    const align = options && options.align;
+    if (align && align > 1n && (start % align) !== 0n) return false;
+    const ranges = options && options.execRanges;
+    if (!Array.isArray(ranges)) return true;                 // authority not provided
+    for (const r of ranges) {
+      if (r.start <= start && end <= r.end) return true;
+    }
+    return false;
+  }
+
   function parseEhFrameRanges(buf, sectionVM, options = {}) {
     const out = [];
     if (!buf || buf.length < 8 || sectionVM == null) return out;
@@ -930,7 +1061,18 @@
           const rangeX = ehEncodedValue(dv, u8, startX.next, recordEnd, rangeEncoding, vm, options);
           if (!rangeX || rangeX.raw <= 0n) { p = recordEnd; continue; }
           const start = startX.value, end = start + rangeX.raw;
-          if (start >= 0n && end > start) out.push({ start, end });
+          // #8832: an FDE is only promoted to exact start + closed function-extent
+          // authority when its full [start,end) lies inside one deterministic
+          // executable/file-backed mapping. A structurally decodable but out-of-
+          // mapping extent (the ELF side already proves this via
+          // `sameExecutableRange`) must fail closed here — clipping would turn
+          // malformed metadata into an invented exact extent that the worker uses
+          // to suppress otherwise valid function starts. Malformed FDEs are isolated
+          // so one bad record cannot discard unrelated valid ranges.
+          if (start >= 0n && end > start) {
+            if (!fdeInExecutableMapping(start, end, options)) { p = recordEnd; continue; }
+            out.push({ start, end });
+          }
         } catch { /* malformed FDE: fail closed */ }
       }
       p = recordEnd;
