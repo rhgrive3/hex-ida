@@ -58,7 +58,9 @@ async function loadRuntime() {
   if (!/^[0-9a-f]{24}$/.test(EXPECTED_BUILD)
       || !isCanonicalSha256(EXPECTED_CONTENT_HASH)
       || !EXPECTED_CONTENT_HASH.startsWith(EXPECTED_BUILD)
-      || !/^2\.0\.\d{1,10}$/.test(EXPECTED_RUNTIME_VERSION)
+      || typeof EXPECTED_RUNTIME_VERSION !== 'string'
+      || EXPECTED_RUNTIME_VERSION.length < 1
+      || EXPECTED_RUNTIME_VERSION.length > 64
       || !Number.isSafeInteger(expectedRuntimeBytes)
       || expectedRuntimeBytes <= 0
       || expectedRuntimeBytes > RUNTIME_MAX_CIPHERTEXT_BYTES
