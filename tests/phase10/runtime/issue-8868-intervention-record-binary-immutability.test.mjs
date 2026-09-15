@@ -73,6 +73,16 @@ test('#8868 persisted canonical replay with the same explicit id stays idempoten
   assert.equal(ledger.all().length, 1, 'idempotent replay does not duplicate the record');
 });
 
+test('#8868 explicit-id cyclic values fail closed instead of retaining mutable binary aliases', () => {
+  const requestedChange = { bytes: new Uint8Array([1, 2, 3]) };
+  requestedChange.self = requestedChange;
+  assert.throws(
+    () => createInterventionRecord(baseRecord({ interventionId: 'cyclic-id', requestedChange })),
+    (error) => error.code === 'runtime-invalid-intervention-value',
+    'a cyclic explicit-id record must not bypass binary canonicalization through a back-reference',
+  );
+});
+
 test('#8868 genuinely different content under the same explicit id still collides', () => {
   const ledger = new InterventionLedger();
   const first = ledger.add(baseRecord({ requestedChange: { bytes: [1, 2, 3] }, interventionId: 'fixed-id' }));
