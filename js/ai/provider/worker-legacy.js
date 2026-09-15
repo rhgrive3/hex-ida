@@ -1,3 +1,4 @@
+import { authorizedAITurnContext } from '../turn-authorization.js';
 import { normalizeRequest } from './worker-protocol.js';
 import {
   acquireDistributedQuota, HttpError, isJsonRequest, isRetryableUpstreamFailure, jsonError,
@@ -27,7 +28,11 @@ export async function handleGemini(request, env) {
   try { payload = normalizeRequest(incoming); }
   catch (error) { return error instanceof HttpError ? jsonError(error.status, error.code, error.message) : jsonError(400, 'invalid_request', 'The analysis request is invalid.'); }
 
-  const quota = await acquireDistributedQuota(request, env, request.headers.get('x-hex-session'));
+  // On the deployed ingress, quota authority follows the verified capability's
+  // signed session identity. The legacy X-Hex-Session fallback is retained only
+  // for direct worker tests/callers that intentionally bypass worker-entry.js.
+  const authorizedSessionId = authorizedAITurnContext(request)?.sid;
+  const quota = await acquireDistributedQuota(request, env, authorizedSessionId || request.headers.get('x-hex-session'));
   if (quota.response) return quota.response;
   let quotaReleased = false;
   const releaseQuota = async () => { if (quotaReleased) return; quotaReleased = true; await releaseDistributedQuota(quota.lease); };
@@ -60,7 +65,7 @@ export async function handleGemini(request, env) {
     if (!retryable || attempt === MAX_UPSTREAM_ATTEMPTS) { await cleanup(); return upstreamError(upstream.status, failure.code, upstream.headers.get('retry-after')); }
     if (!await waitForRetry(attempt, upstream.headers.get('retry-after'), upstreamAbort.signal)) { await cleanup(); return jsonError(504, 'upstream_timeout', 'The analysis service did not respond in time.'); }
   }
-  if (!upstream?.ok) { await cleanup(); return jsonError(502, 'upstream_error', 'The analysis service returned an unexpected error after retrying.'); }
+  if (!upstream?.ok) { await cleanup(); return jsonError(502, 'upstream_error', 'The analysis service returned an unexpected error.'); }
   if (!upstream.body) { await cleanup(); return jsonError(502, 'invalid_upstream_response', 'The analysis service returned an empty response.'); }
   const upstreamReader = upstream.body.getReader();
   const readable = new ReadableStream({
