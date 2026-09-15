@@ -54,11 +54,20 @@ test('#8868 the caller byte array is detached, not frozen in place', () => {
   assert.deepEqual(Array.from(record.requestedChange.bytes), [4, 5, 6], 'post-write caller mutation cannot rewrite provenance');
 });
 
-test('#8868 generated identity is byte-for-byte stable across binary representations and replay stays idempotent', () => {
+test('#8868 immutable canonical bytes preserve current #8794 type-domain identity', () => {
+  const fromView = createInterventionRecord(baseRecord({ requestedChange: { bytes: new Uint8Array([1, 2, 3]) } }));
+  const fromArray = createInterventionRecord(baseRecord({ requestedChange: { bytes: [1, 2, 3] } }));
+  assert.deepEqual(fromView.requestedChange.bytes, [1, 2, 3]);
+  assert.deepEqual(fromArray.requestedChange.bytes, [1, 2, 3]);
+  assert.notEqual(fromView.interventionId, fromArray.interventionId,
+    'pre-canonical type provenance remains part of generated identity even when stored bytes have the same immutable representation');
+});
+
+test('#8868 persisted canonical replay with the same explicit id stays idempotent', () => {
   const ledger = new InterventionLedger();
   const fromView = ledger.add(baseRecord({ requestedChange: { bytes: new Uint8Array([1, 2, 3]) } }));
-  // Same committed bytes expressed as a plain array must derive the SAME stable id
-  // (jsonSafe already collapsed both to an array of byte values) and replay idempotently.
+  // Persistence reads the canonical frozen numeric array. Re-ingesting that exact
+  // stored content under its explicit persisted id must still be idempotent.
   const replay = ledger.add(baseRecord({ requestedChange: { bytes: [1, 2, 3] }, interventionId: fromView.interventionId }));
   assert.equal(replay.interventionId, fromView.interventionId);
   assert.equal(ledger.all().length, 1, 'idempotent replay does not duplicate the record');
