@@ -1,5 +1,5 @@
 import { createEvidenceEdge, createEvidenceNode, EvidenceGraph, EVIDENCE_COMPLETENESS } from '../core/evidence/index.js';
-import { createEvidenceId, deepFreeze, stableDigest, stableStringify } from '../core/identity/index.js';
+import { createEvidenceId, deepFreeze, lossyTypeWitness, stableDigest, stableStringify } from '../core/identity/index.js';
 import { createOriginSet } from '../core/identity/origin.js';
 import { DebugAdapterError } from '../debug/adapter.js';
 import { createRuntimeEvent } from './events.js';
@@ -65,12 +65,10 @@ function ownedClone(value) {
 // place under an unchanged interventionId, falsify downstream evidence
 // ancestry, and make an exact persisted replay collide against the mutated
 // record. Canonicalize every binary leaf to an owned, frozen byte array BEFORE
-// identity derivation and insertion so the stored content is the exact bytes the
-// generated identity commits to. This mirrors the consumer-side #6214
-// authority-record approach and deliberately does not change global deepFreeze().
-// jsonSafe()/stableDigest already collapse typed views to an array of byte
-// values, so a frozen byte array of the same values keeps the generated
-// interventionId byte-for-byte identical to the previous representation.
+// insertion so the stored content cannot change. The generated identity keeps
+// live-main #8794's pre-canonical type witness, so type-distinct provenance
+// (for example typed bytes vs a plain numeric array) does not alias merely
+// because both store the same immutable byte-array representation.
 function sharedArrayBuffer(value) {
   return typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer;
 }
@@ -155,9 +153,22 @@ export function createInterventionRecord(input = {}) {
   const kind = required(input.kind, 'runtime-intervention-kind-required', 'intervention kind is required');
   const sequence = optionalSequence(input.sequence);
   const parentInterventionIds = stringArray(input.parentInterventionIds, 'parentInterventionIds');
-  const target = canonicalizeInterventionValue(ownedClone(input.target ?? null));
-  const requestedChange = canonicalizeInterventionValue(ownedClone(input.requestedChange ?? null));
-  const acknowledgedResult = canonicalizeInterventionValue(ownedClone(input.acknowledgedResult ?? null));
+  const sourceTarget = ownedClone(input.target ?? null);
+  const sourceRequestedChange = ownedClone(input.requestedChange ?? null);
+  const sourceAcknowledgedResult = ownedClone(input.acknowledgedResult ?? null);
+  const sourceIdentity = {
+    runtimeSessionId,
+    providerId,
+    kind,
+    target: sourceTarget,
+    requestedChange: sourceRequestedChange,
+    sequence,
+    parentInterventionIds,
+  };
+  const identityTypes = lossyTypeWitness(sourceIdentity);
+  const target = canonicalizeInterventionValue(sourceTarget);
+  const requestedChange = canonicalizeInterventionValue(sourceRequestedChange);
+  const acknowledgedResult = canonicalizeInterventionValue(sourceAcknowledgedResult);
   const identity = {
     runtimeSessionId,
     providerId,
@@ -168,7 +179,7 @@ export function createInterventionRecord(input = {}) {
     parentInterventionIds,
   };
   const interventionId = input.interventionId == null
-    ? `intervention_${stableDigest(identity)}`
+    ? `intervention_${stableDigest({ identity, typed: identityTypes })}`
     : required(input.interventionId, 'runtime-intervention-id-invalid', 'intervention id must be a non-empty string');
   return deepFreeze({
     interventionId,
