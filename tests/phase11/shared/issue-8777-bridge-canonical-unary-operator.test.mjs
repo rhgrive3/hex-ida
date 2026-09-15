@@ -1,7 +1,8 @@
 /**
  * Regression for #8777 — the canonical VMEffects -> Semantic IR boundary must
- * publish proven unary operators (clz/ctz/popcnt/neg/not) and fail closed to
- * partial on unrecognized unary spellings instead of complete operator:null.
+ * publish proven unary operators (clz/ctz/popcnt/neg/not/trunc/zext/sext) and
+ * fail closed to partial on unrecognized unary spellings instead of complete
+ * operator:null.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -16,7 +17,7 @@ import {
 import { projectSemanticIrV2ToLegacyV1 } from '../../../js/semantics/compat/index.js';
 import { evalUnary } from '../../../js/decompiler/truth/integer.js';
 
-function unaryFunction(frontendId, mnemonic, bits = 32, constant = 8) {
+function unaryFunction(frontendId, mnemonic, bits = 32, constant = 8, inputBits = bits) {
   const methodId = createManagedMethodId(`issue-8777-${frontendId}-${mnemonic}`, 'unary');
   const bundle = (offset, input) => createVMEffectBundle({
     frontendId,
@@ -30,8 +31,8 @@ function unaryFunction(frontendId, mnemonic, bits = 32, constant = 8) {
     frontendId,
     methodId,
     bundles: [
-      bundle(0, { mnemonic: `${frontendId}.const`, producedValues: [{ bits, constant }] }),
-      bundle(1, { mnemonic, consumedValues: [{ id: 'arg', bits }], producedValues: [{ bits }] }),
+      bundle(0, { mnemonic: `${frontendId}.const`, producedValues: [{ bits: inputBits, constant }] }),
+      bundle(1, { mnemonic, consumedValues: [{ id: 'arg', bits: inputBits }], producedValues: [{ bits }] }),
       bundle(2, { mnemonic: 'return', consumedValues: [{ id: 'result', bits }], controlEffects: [{ kind: 'return' }] }),
     ],
     aggregateCompleteness: 'exact',
@@ -59,6 +60,34 @@ test('#8777 WASM clz/ctz/popcnt publish canonical operators', () => {
     assert.equal(node.completeness, 'complete', `${mnemonic} proven semantics stay complete`);
     assert.equal(result.semanticIr.completeness, 'complete', `${mnemonic} keeps function authority`);
   }
+});
+
+test('#8777 exact WASM integer width conversions publish canonical operators', () => {
+  for (const [mnemonic, inputBits, outputBits, operator] of [
+    ['i32.wrap_i64', 64, 32, 'trunc'],
+    ['i64.extend_i32_s', 32, 64, 'sext'],
+    ['i64.extend_i32_u', 32, 64, 'zext'],
+  ]) {
+    const result = lowerVMEffectsToSemanticIr(unaryFunction('wasm', mnemonic, outputBits, 8, inputBits));
+    const node = unaryNodeOf(result, mnemonic);
+    const input = result.semanticIr.values.find((entry) => entry.id === node.inputs[0]);
+    const output = result.semanticIr.values.find((entry) => entry.id === node.outputs[0]);
+    assert.equal(node.kind, 'unary');
+    assert.equal(node.operator, operator, `${mnemonic} canonical operator`);
+    assert.equal(input?.machineType?.widthBits, inputBits, `${mnemonic} input width`);
+    assert.equal(output?.machineType?.widthBits, outputBits, `${mnemonic} output width`);
+    assert.equal(node.completeness, 'complete', `${mnemonic} proven conversion stays complete`);
+    assert.equal(result.semanticIr.completeness, 'complete', `${mnemonic} keeps function authority`);
+  }
+});
+
+test('#8777 malformed WASM conversion widths fail closed instead of inventing authority', () => {
+  const result = lowerVMEffectsToSemanticIr(unaryFunction('wasm', 'i32.wrap_i64', 32, 8, 32));
+  const node = unaryNodeOf(result, 'i32.wrap_i64');
+  assert.equal(node.operator, null, 'wrong-width wrap must not publish trunc');
+  assert.equal(node.completeness, 'partial');
+  assert.equal(node.unknown?.reason, 'managed-unary-operator-unresolved');
+  assert.equal(result.semanticIr.completeness, 'partial');
 });
 
 test('#8777 neg/not spellings map to canonical operators per frontend', () => {
