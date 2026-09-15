@@ -56,10 +56,8 @@ function ownedClone(value) {
 
 // #8868: intervention records are public identity-bearing provenance. Core
 // deepFreeze intentionally skips binary backing stores, so detach binary input
-// and publish only frozen byte arrays. Type identity is still derived from the
-// owned pre-canonical snapshot below, preserving the current-main #8794
-// distinction between typed binary and a plain numeric array. Cyclic explicit-id
-// records fail closed instead of retaining a mutable back-reference.
+// and publish only frozen byte arrays. Cyclic explicit-id records fail closed
+// instead of retaining a mutable back-reference into an otherwise frozen record.
 function sharedArrayBuffer(value) {
   return typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer;
 }
@@ -162,8 +160,14 @@ export function createInterventionRecord(input = {}) {
     sequence,
     parentInterventionIds,
   };
-  // Preserve live-main #8794 exactly: auto ids commit to type-domain provenance
-  // before binary storage is converted into an immutable representation.
+  // The auto-derived id must distinguish type-distinct provenance. `1n` and
+  // `'1'` (or a `Uint8Array` and a plain numeric `Array`) share a
+  // `stableStringify`/`stableDigest` representation, so `intervention_${stableDigest(identity)}`
+  // aliased them to the same id and the ledger silently treated the second
+  // mutation as a replay (#8794). Decorate the digest input with the same
+  // `lossyTypeWitness` the ai/apple scoped-identity modules already use so the
+  // type-only difference participates in identity. Caller-supplied ids stay
+  // authoritative and unchanged.
   const interventionId = input.interventionId == null
     ? `intervention_${stableDigest({ identity, typed: lossyTypeWitness(identity) })}`
     : required(input.interventionId, 'runtime-intervention-id-invalid', 'intervention id must be a non-empty string');
