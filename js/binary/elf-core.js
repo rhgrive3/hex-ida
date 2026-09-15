@@ -460,7 +460,7 @@ function parseProgramHeaders(r, h, image, bits, budget) {
   }
   let parsed = 0;
   for (let i = 0; i < count; i++) {
-    if (!budget.take({ inputBytes: h.phentsize, records: 1, objects: 1, operations: 4, estimatedHeapBytes: 288 }, 'program-header')) break;
+    if (!budget.take({ inputBytes: h.phentsize, objects: 1, operations: 4, estimatedHeapBytes: 288 }, 'program-header')) break;
     parsed++;
     const p = off + i * h.phentsize;
     let ph;

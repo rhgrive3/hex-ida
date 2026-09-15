@@ -63,7 +63,7 @@ test('#8714: a PN_XNUM count beyond the file is clamped to the readable prefix',
   assert.equal(metadata.complete, false);
   assert.ok(metadata.reasons.includes('program-headers:truncated'), JSON.stringify(metadata.reasons));
   assert.equal(expanded, capacity);
-  assert.equal(metadata.used.records, capacity + 1);
+  assert.equal(metadata.used.records, 1, 'program-header decoding must not consume the shared records budget (keeps the PT_DYNAMIC fallback reachable)');
   assert.equal(metadata.used.objects, capacity + 1);
   assert.equal(metadata.used.inputBytes, capacity * PHENTSIZE + SHENTSIZE);
   assert.equal(segments, 0);   // every readable entry is PT_NULL
@@ -72,11 +72,11 @@ test('#8714: a PN_XNUM count beyond the file is clamped to the readable prefix',
 test('#8714: program-header decoding is admitted through the metadata budget', () => {
   // 20,000 valid PT_NULL rows all fit the file, so only the budget may stop them.
   const { bytes } = buildELF({ size: PHOFF + 20000 * PHENTSIZE + SHENTSIZE, phnum: PN_XNUM, extendedPhnum: 20000 });
-  const { metadata, expanded } = summarize(bytes, { metadataLimits: { records: 500 } });
+  const { metadata, expanded } = summarize(bytes, { metadataLimits: { objects: 500 } });
   assert.equal(metadata.complete, false);
-  assert.ok(metadata.reasons.includes('budget:program-header:records'), JSON.stringify(metadata.reasons));
+  assert.ok(metadata.reasons.includes('budget:program-header:objects'), JSON.stringify(metadata.reasons));
   assert.equal(expanded, 500);
-  assert.equal(metadata.used.records, 500);
+  assert.equal(metadata.used.objects, 500);
   assert.equal(metadata.used.inputBytes, 500 * PHENTSIZE);
 });
 
@@ -86,7 +86,7 @@ test('#8714: a truncated non-extended table is partial metadata, not silence', (
   const { metadata, expanded } = summarize(bytes);
   assert.equal(metadata.complete, false);
   assert.ok(metadata.reasons.includes('program-headers:truncated'));
-  assert.equal(metadata.used.records, capacity + 1);
+  assert.equal(metadata.used.objects, capacity + 1);
   assert.equal(expanded, null);   // no PN_XNUM expansion happened, so nothing to publish
 });
 
@@ -123,7 +123,7 @@ test('#8714: PT_LOAD mapping authority survives the budget admission', () => {
   view.setBigUint64(PHOFF + 48, 0x1000n, true);   // p_align
   const { metadata, segments } = summarize(bytes);
   assert.equal(segments, 1);
-  assert.equal(metadata.used.records, 3 + 1);
+  assert.equal(metadata.used.objects, 3 + 1);
   assert.equal(metadata.used.inputBytes, 3 * PHENTSIZE + SHENTSIZE);
   assert.equal(metadata.complete, true);
   assert.deepEqual(metadata.reasons, []);
