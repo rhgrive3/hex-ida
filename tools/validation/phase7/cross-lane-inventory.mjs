@@ -15,12 +15,21 @@ const INTEGRATION_BATCH_LANE = 'dev-agent-hardening/integration/issue-batch-2026
 const MAIN_GATE_BATCH_LANE = 'fix/main-gate-recovery-20260913';
 const ANALYSIS_QUERY_BATCH_LANE = 'fix/batch-4075-owner12';
 const ACTIONS_GROUP_LANE = 'dependabot/github_actions/github-actions-436ea2ae3a';
+const LANE13_BATCH02_LANE = 'codex/issue-campaign-20260914-lane-13-batch-02';
 
-// This is an exact, short-lived integration route for #6975. The PR carries a
-// Phase 7 production-path regression alongside the ABI/Phase 6 owner slice.
-// Foreign paths are enumerated so adding an unrelated file cannot silently
-// turn this into a general Phase 7 ownership exemption.
+// Exact foreign inventories for intentionally cross-owner Phase 7 integrations.
+// Each route fails closed on any undeclared foreign path before projecting the
+// Phase 7-owned subset into the canonical ownership validator.
 export const CROSS_LANE_ROUTES = Object.freeze({
+  [LANE13_BATCH02_LANE]: Object.freeze([
+    '.circleci/config.yml',
+    'js/phase12/package-envelope.js',
+    'js/query/causal.js',
+    'js/recognition/bounded-matching.js',
+    'js/recognition/match-budget.js',
+    'tests/phase10/recognition/issue-8914-matcher-candidate-admission.test.mjs',
+    'tests/phase12/provider/issue-8760-provider-output-admission-order.test.mjs',
+  ]),
   "codex/consolidate-arm64-repairs-20260913": Object.freeze([
     ".circleci/config.yml",
     ".github/workflows/_phase-release-validation.yml",
