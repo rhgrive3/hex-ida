@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { bvSort, BV_UNARY_OP, BV_COMPARE_OP } from '../js/symbolic/expr/kinds.js';
-import { createBv, createCompare, createFreshSymbol, createUnary } from '../js/symbolic/expr/factory.js';
+import { bvSort, BV_UNARY_OP, BV_COMPARE_OP, BOOL_CONNECTIVE_OP } from '../js/symbolic/expr/kinds.js';
+import { createBool, createBv, createCompare, createConnective, createFreshSymbol, createUnary } from '../js/symbolic/expr/factory.js';
 import {
   CLAIM_KIND,
   VERIFICATION_QUERY_KIND,
@@ -12,7 +12,7 @@ import { ExhaustiveBvBackend } from '../js/symbolic/solver/exhaustive-backend.js
 import { SOLVER_STATUS } from '../js/symbolic/solver/result.js';
 
 // #5163 — maxExprNodes must be an admission bound enforced *during* expression-graph
-// traversal, not a post-hoc check after a full (recursive) walk.
+// traversal, not a post-hoc check after a full walk or a wide-fanout enqueue.
 
 const BUDGET_REASON = 'expression-node-budget-exceeded';
 
@@ -34,6 +34,19 @@ function smallQuery() {
     claimKind: CLAIM_KIND.EDGE_INFEASIBLE,
     targetEntity: 'q5163small',
     assertion: createCompare(BV_COMPARE_OP.EQ, x, createBv(1, 0n)),
+  });
+}
+
+function wideFanoutQuery(width) {
+  const args = Array.from(
+    { length: width },
+    (_, index) => index === 0 ? createBool(true) : createFreshSymbol({ kind: 'bool' }, `wide5163_${index}`),
+  );
+  return createVerificationQuery({
+    kind: VERIFICATION_QUERY_KIND.CONDITIONAL_EDGE_FEASIBILITY,
+    claimKind: CLAIM_KIND.EDGE_INFEASIBLE,
+    targetEntity: 'q5163wide',
+    assertion: createConnective(BOOL_CONNECTIVE_OP.AND, args),
   });
 }
 
@@ -68,4 +81,13 @@ test('#5163 exactly-at-budget traversal does not spuriously short-circuit the ad
   // Same graph with a generous budget is admitted and decided.
   const ok = await session.check(deepChainQuery(10), { maxExprNodes: 100000, maxAssignments: 4096 });
   assert.notEqual(ok.reason, BUDGET_REASON);
+});
+
+test('#5163 a wide connective hits the node budget without materializing full-fanout pending work', async () => {
+  const backend = new ExhaustiveBvBackend({ maxBvWidth: 8 });
+  const session = backend.createSession();
+  const query = wideFanoutQuery(20000); // valid and below the verification-query metadata node cap
+  const result = await session.check(query, { maxExprNodes: 10 });
+  assert.equal(result.status, SOLVER_STATUS.RESOURCE_LIMIT);
+  assert.equal(result.reason, BUDGET_REASON);
 });
