@@ -1,0 +1,317 @@
+diff --git a/js/adapters/index.js b/js/adapters/index.js
+--- a/js/adapters/index.js
++++ b/js/adapters/index.js
+@@ -1,3 +1,7 @@
+       traceState.runMemoryEvents = run.memoryEvents;
+       this.cancelled = run.cancelled;
+-      if (sandbox.emulator.stopped === 'paused' || sandbox.emulator.stopped === 'cancelled') sandbox.emulator.stopped = null;
++      const stopped = sandbox.emulator.stopped;
++      const budgetStopped = typeof stopped === 'string'
++        && stopped.endsWith(' 命令ぶん進んだので、いったん止めました。');
++      if (stopped === 'paused' || stopped === 'cancelled' || budgetStopped) sandbox.emulator.stopped = null;
+       onAbort = () => {
+diff --git a/js/managed/shared/identity.js b/js/managed/shared/identity.js
+--- a/js/managed/shared/identity.js
++++ b/js/managed/shared/identity.js
+@@ -1,8 +1,12 @@
+ import { deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
+ 
+ function fail(code) { throw new TypeError(code); }
++function encodeComponent(text) {
++  return text.replace(/[%:]/g, (character) => (character === '%' ? '%25' : '%3A'));
++}
+ function nonEmpty(value, code) {
+   if (typeof value !== 'string') fail(code);
+   const text = value.trim();
+   if (!text) fail(code);
+-  return text;
++  return encodeComponent(text);
+ }
+diff --git a/js/rebuild/format-safe.js b/js/rebuild/format-safe.js
+--- a/js/rebuild/format-safe.js
++++ b/js/rebuild/format-safe.js
+@@ -1,7 +1,11 @@
+ const MACHO_X86_64_CPU = 0x01000007;
+ const MACHO_ARM64_CPU = 0x0100000c;
+ const MACHO_LC_SEGMENT_64 = 0x19;
++const MACHO_SECTION_TYPE_MASK = 0xff;
++const MACHO_S_ZEROFILL = 0x1;
++const MACHO_S_GB_ZEROFILL = 0xc;
++const MACHO_S_THREAD_LOCAL_ZEROFILL = 0x12;
+ const MACHO64_HEADER_SIZE = 32;
+ const LC_VERSION_MIN_MACOSX = 0x24;
+ const LC_CODE_SIGNATURE = 0x1d;
+@@ -1,8 +1,13 @@
+         const flags = u32(bytes, sectionOffset + 64);
+         const reserved1 = u32(bytes, sectionOffset + 68);
+         const reserved2 = u32(bytes, sectionOffset + 72);
+         const reserved3 = u32(bytes, sectionOffset + 76);
+-        if (sectionSize > 0) ensureRange(bytes, dataOffset, sectionSize, 'format-safe-macho-section-range-invalid');
++        const sectionType = flags & MACHO_SECTION_TYPE_MASK;
++        const isZeroFill = sectionType === MACHO_S_ZEROFILL
++          || sectionType === MACHO_S_GB_ZEROFILL
++          || sectionType === MACHO_S_THREAD_LOCAL_ZEROFILL;
++        if (sectionSize > 0 && !isZeroFill) ensureRange(bytes, dataOffset, sectionSize, 'format-safe-macho-section-range-invalid');
+         sections.push({
+           index: sections.length,
+           commandIndex: index,
+@@ -1,4 +1,4 @@
+           reserved1,
+           reserved2,
+           reserved3,
+-          data: bytes.slice(dataOffset, dataOffset + sectionSize),
++          data: isZeroFill ? new Uint8Array() : bytes.slice(dataOffset, dataOffset + sectionSize),
+           headerOffset: sectionOffset,
+         });
+diff --git a/js/binary/model.js b/js/binary/model.js
+--- a/js/binary/model.js
++++ b/js/binary/model.js
+@@ -1,3 +1,55 @@
+ function minBigInt(a, b) { return a < b ? a : b; }
+ 
++function identityKeyPart(value) {
++  if (value == null) return '';
++  if (typeof value === 'string') return value;
++  if (typeof value === 'bigint') return value.toString();
++  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
++  if (typeof value === 'boolean') return String(value);
++  return null;
++}
++
++function identityTextKeyPart(value) {
++  if (value == null) return '';
++  return typeof value === 'string' ? value : null;
++}
++
++function identityFlagKeyPart(value) {
++  if (value == null) return '0';
++  return typeof value === 'boolean' ? (value ? '1' : '0') : null;
++}
++
++function importIdentityKey(i) {
++  if (i == null || typeof i !== 'object' || Array.isArray(i)) return null;
++  const parts = [
++    identityTextKeyPart(i.library),
++    identityTextKeyPart(i.name),
++    identityKeyPart(i.ordinal),
++    identityFlagKeyPart(i.weak),
++    identityKeyPart(i.addend ?? 0n),
++    identityKeyPart(i.pointerFormat),
++    identityKeyPart(i.type),
++    identityKeyPart(i.version),
++    identityTextKeyPart(i.versionLibrary),
++  ];
++  return parts.includes(null) ? null : parts.join('\0');
++}
++
++function siteIdentityKey(s) {
++  if (s == null || typeof s !== 'object' || Array.isArray(s)) return null;
++  const parts = [
++    identityKeyPart(s.address),
++    identityKeyPart(s.offset),
++    identityTextKeyPart(s.kind),
++    identityKeyPart(s.type),
++    identityKeyPart(s.addend),
++    identityKeyPart(s.pointerFormat),
++    identityFlagKeyPart(s.weak),
++    identityKeyPart(s.recordFileOffset),
++    identityKeyPart(s.recordIndex),
++    identityTextKeyPart(s.recordEncoding),
++  ];
++  return parts.includes(null) ? null : parts.join(':');
++}
++
+ function buildVirtualMappingLookup(sections, segments) {
+@@ -1,31 +1,34 @@
+ function dedupeImports(input) {
+-  const m = new Map();
++  const byKey = new Map();
++  const out = [];
+   for (const i of input || []) {
+-    const scalar = (value) => typeof value === 'bigint' ? value.toString() : value == null ? '' : String(value);
+-    const key = [i.library || '', i.name || '', scalar(i.ordinal), i.weak ? '1' : '0', scalar(i.addend ?? 0n), scalar(i.pointerFormat), scalar(i.type), scalar(i.version), i.versionLibrary || ''].join('\0');
+-    const prev = m.get(key);
+-    if (!prev) {
+-      m.set(key, { ...i, sites: i.sites ? [...i.sites] : [] });
++    const key = importIdentityKey(i);
++    const prev = key === null ? undefined : byKey.get(key);
++    if (prev) {
++      if (prev.address == null && i.address != null) prev.address = i.address;
++      if (!prev.source && i.source) prev.source = i.source;
++      if (i.sites) prev.sites.push(...i.sites);
+       continue;
+     }
+-    if (prev.address == null && i.address != null) prev.address = i.address;
+-    if (!prev.source && i.source) prev.source = i.source;
+-    if (i.sites) prev.sites.push(...i.sites);
++    const record = { ...i, sites: i.sites ? [...i.sites] : [] };
++    out.push(record);
++    if (key !== null) byKey.set(key, record);
+   }
+-  for (const i of m.values()) {
++  for (const i of out) {
+     if (i.sites) {
+       const seen = new Set();
+       i.sites = i.sites.filter((s) => {
+-        const scalar = (value) => typeof value === 'bigint' ? value.toString() : value == null ? '' : String(value);
+-        const key = [
+-          scalar(s.address), scalar(s.offset), s.kind || '', scalar(s.type), scalar(s.addend),
+-          scalar(s.pointerFormat), s.weak ? '1' : '0', scalar(s.recordFileOffset), scalar(s.recordIndex),
+-          scalar(s.recordEncoding),
+-        ].join(':');
++        const key = siteIdentityKey(s);
++        if (key === null) return true;
+         if (seen.has(key)) return false;
+         seen.add(key); return true;
+       });
+     }
+   }
+-  return [...m.values()];
++  return out;
+ }
+diff --git a/js/managed/cil/lifter-core.js b/js/managed/cil/lifter-core.js
+--- a/js/managed/cil/lifter-core.js
++++ b/js/managed/cil/lifter-core.js
+@@ -1,4 +1,8 @@
+   let pushWidthRun = [];
+   let pushIntegerRun = [];
+   const bundles = [];
++  // ECMA-335 §II.25.1.2: modifier prefixes bind to the following instruction.
++  // Keep them pending so their operands cannot become fabricated bundles.
++  const pendingModifiers = [];
+   let stoppedOnUnsupported = false;
+ 
+@@ -1,46 +1,44 @@
+-        case 0x12: // unaligned. <alignment:u1>
++        case 0x12: // unaligned. <alignment 1|2|4>
+           {
+             need(1);
+             const alignment = bytecode[pc++];
+-            mnemonic = 'unaligned.';
+-            completeness = 'partial';
+             if (alignment !== 1 && alignment !== 2 && alignment !== 4) {
+-              unknownEffects.push({ category: 'memory', reason: `cil-unaligned-prefix-alignment-${alignment}` });
+-            } else {
+-              unknownEffects.push({ category: 'memory', reason: 'cil-unaligned-prefix-unattached' });
++              fail('cil-invalid-unaligned-alignment');
+             }
++            pendingModifiers.push({ kind:'unaligned', opcode:0xfe12, mnemonic:'unaligned.', bytecodeOffset:opOffset, alignment });
+           }
+-          break;
++          continue;
+ 
+         case 0x13: // volatile.
+-          mnemonic = 'volatile.';
+-          completeness = 'partial';
+-          unknownEffects.push({ category: 'memory', reason: 'cil-volatile-prefix-unattached' });
+-          break;
++          pendingModifiers.push({ kind:'volatile', opcode:0xfe13, mnemonic:'volatile.', bytecodeOffset:opOffset });
++          continue;
+ 
+         case 0x14: // tail.
+-          mnemonic = 'tail.';
+-          completeness = 'partial';
+-          unknownEffects.push({ category: 'control', reason: 'cil-tail-prefix-unattached' });
+-          break;
++          pendingModifiers.push({ kind:'tail', opcode:0xfe14, mnemonic:'tail.', bytecodeOffset:opOffset });
++          continue;
+ 
+         case 0x16: // constrained. <token:u4>
+-          need(4);
+-          pc += 4;
+-          mnemonic = 'constrained.';
+-          completeness = 'partial';
+-          unknownEffects.push({ category: 'types', reason: 'cil-constrained-prefix-unattached' });
+-          break;
++          {
++            need(4);
++            const typeToken = view.getUint32(pc, true);
++            pc += 4;
++            pendingModifiers.push({ kind:'constrained', opcode:0xfe16, mnemonic:'constrained.', bytecodeOffset:opOffset, typeToken });
++          }
++          continue;
+ 
+         case 0x1e: // readonly.
+-          mnemonic = 'readonly.';
+-          completeness = 'partial';
+-          unknownEffects.push({ category: 'memory', reason: 'cil-readonly-prefix-unattached' });
+-          break;
++          pendingModifiers.push({ kind:'readonly', opcode:0xfe1e, mnemonic:'readonly.', bytecodeOffset:opOffset });
++          continue;
+ 
+         default: {
+           const boundary = decodeCilInstructionBoundary(bytecode, opOffset);
+@@ -1,6 +1,57 @@
+       }
+     }
+ 
++    const modifiers = pendingModifiers.splice(0, pendingModifiers.length);
++    const metadata = {};
++    let bundleStart = opOffset;
++    if (modifiers.length > 0) {
++      bundleStart = modifiers[0].bytecodeOffset;
++      completeness = 'partial';
++      for (let index = 0; index < modifiers.length; index++) {
++        const modifier = modifiers[index];
++        const end = index + 1 < modifiers.length ? modifiers[index + 1].bytecodeOffset : opOffset;
++        metadata[modifier.kind] = {
++          opcode: modifier.opcode,
++          mnemonic: modifier.mnemonic,
++          bytecodeOffset: modifier.bytecodeOffset,
++          provenance: { start: modifier.bytecodeOffset, end },
++          ...(modifier.typeToken == null ? {} : { typeToken: modifier.typeToken }),
++          ...(modifier.alignment == null ? {} : { alignment: modifier.alignment }),
++        };
++        unknownEffects.push({
++          category:'other',
++          reason:`cil-prefix-modifier-unmodeled:${modifier.kind}`,
++          bytecodeOffset:modifier.bytecodeOffset,
++        });
++      }
++      const constrained = [...modifiers].reverse().find((modifier) => modifier.kind === 'constrained');
++      const hasTail = modifiers.some((modifier) => modifier.kind === 'tail');
++      if (constrained || hasTail) {
++        callEffects = callEffects.map((effect, index) => index !== 0 ? effect : ({
++          ...effect,
++          ...(hasTail ? { tailCall:true } : {}),
++          ...(constrained ? { constrainedTypeToken:constrained.typeToken } : {}),
++        }));
++      }
++      const lastOf = (kind) => [...modifiers].reverse().find((modifier) => modifier.kind === kind);
++      const volatileModifier = lastOf('volatile');
++      const readonlyModifier = lastOf('readonly');
++      const unalignedModifier = lastOf('unaligned');
++      if (volatileModifier || readonlyModifier || unalignedModifier) {
++        memoryEffects = memoryEffects.map((effect, index) => index !== 0 ? effect : ({
++          ...effect,
++          ...(volatileModifier ? { volatile:true } : {}),
++          ...(readonlyModifier ? { readonly:true } : {}),
++          ...(unalignedModifier ? { alignment:unalignedModifier.alignment } : {}),
++        }));
++      }
++    }
++
+     if (stackEffectUnmodeled || callEffects.length > 0 || controlEffects.length > 0
+       || consumedValues.length > pushWidthRun.length) {
+@@ -1,6 +1,6 @@
+ 
+     const origin = createOriginSet({
+       operationIds: [opId],
+-      byteRanges: [{ start: codeBase + opOffset, end: codeBase + pc }],
++      byteRanges: [{ start: codeBase + bundleStart, end: codeBase + pc }],
+     });
+ 
+     bundles.push(createVMEffectBundle({
+@@ -1,6 +1,7 @@
+       origin,
+       completeness,
+       unknownEffects,
++      metadata,
+       compare,
+     }, options));
+     if (stoppedOnUnsupported) break;
+   }
+ 
++  if (pendingModifiers.length > 0) fail('cil-prefix-without-instruction');
++
+   return createVMEffectFunction({
