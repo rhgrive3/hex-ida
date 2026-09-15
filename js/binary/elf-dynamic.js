@@ -38,6 +38,17 @@ const DT_JMPREL = 23n;
 const DT_GNU_HASH = 0x6ffffef5n;
 
 export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
+  // parseELF's public cancellation contract must reach the PT_DYNAMIC path:
+  // an aborted caller must not start (or keep funding) large dynamic decode
+  // work (#5584). The check runs before the header lookup because program-header
+  // decoding is itself budget-admitted and may legitimately yield no decoded
+  // table at all once the caller has cancelled (#8714).
+  const signal = opts.signal || null;
+  const cancelled = () => signal?.aborted === true;
+  if (cancelled()) {
+    markDynamicPartial(image, 'PT_DYNAMIC parse was cancelled before it started');
+    return { parsed: false };
+  }
   const dyn = (programHeaders || []).find((p) => p.type === PT_DYNAMIC);
   if (!dyn || dyn.filesz <= 0n) return { parsed: false };
   const start = toSafeNumber(dyn.offset);
@@ -48,15 +59,6 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   }
 
   const entSize = bits === 64 ? 16 : 8;
-  // parseELF's public cancellation contract must reach the PT_DYNAMIC path:
-  // an aborted caller must not start (or keep funding) large dynamic decode
-  // work (#5584).
-  const signal = opts.signal || null;
-  const cancelled = () => signal?.aborted === true;
-  if (cancelled()) {
-    markDynamicPartial(image, 'PT_DYNAMIC parse was cancelled before it started');
-    return { parsed: false };
-  }
   const tags = new Map();
   const ordered = [];
   const entrySpanRemainder = size % entSize;
@@ -106,22 +108,58 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   if (strtab != null && strSize > 0 && !strSpan) markDynamicPartial(image, 'DT_STRTAB/DT_STRSZ crosses a file-backed PT_LOAD boundary');
   const strOff = strSpan?.start ?? null;
 
+  // String-table offsets are references, not ownership: a conforming ELF may
+  // point every `st_name`, DT_NEEDED, and version field at one entry. Resolve
+  // each distinct offset once — caching the invalid/unterminated results too —
+  // and charge the decoded text against the caller's dynamic budget *before* the
+  // string is retained, so repeated aliases cannot multiply heap (#8821).
+  const dynamicStrings = new Map();
   const stringAt = (offset, options = {}) => {
     if (strOff == null || strSize == null || !strSpan) return '';
+    const budget = options.budget || null;
     const n = Number(offset);
+    const cached = dynamicStrings.get(n);
+    if (cached !== undefined) {
+      if (budget && !cached.charged) {
+        if (!budget.claimString(cached.chars, `dynamic string at offset ${n}`)) return '';
+        cached.charged = true;
+      }
+      return cached.value;
+    }
     const inRange = Number.isSafeInteger(n) && n >= 0 && n < strSize && strOff + n < strSpan.spanEnd;
     if (!inRange) {
       if (n === 0 && options.allowZeroOffset) return '';
       markDynamicPartial(image, 'dynamic string table reference is out of range');
+      dynamicStrings.set(n, { value: null, chars: 0, charged: true });
       return null;
     }
-    const maxLength = Math.min(strSize - n, strSpan.spanEnd - strOff - n, 1 << 20);
-    const bytes = r.slice(strOff + n, maxLength);
-    if (bytes.indexOf(0) < 0) {
+    if (budget?.stopped) return '';
+    const fileWindow = Math.min(strSize - n, strSpan.spanEnd - strOff - n, 1 << 20);
+    const window = budget ? Math.min(fileWindow, budget.remainingStringChars) : fileWindow;
+    const nul = r.slice(strOff + n, window).indexOf(0);
+    if (nul < 0) {
+      // Either the entry has no terminator inside DT_STRSZ, or the remaining
+      // aggregate string budget is smaller than the name. Both must yield no
+      // name at all; only the first may be reported as a termination defect,
+      // and the budget path never publishes a truncated name (#8821, #2167).
+      if (window !== fileWindow) {
+        dynamicStrings.set(n, { value: '', chars: window + 1, charged: true });
+        budget.claimString(window + 1, `dynamic string at offset ${n}`);
+        return '';
+      }
       markDynamicPartial(image, `dynamic string at offset ${n} is not NUL-terminated within DT_STRSZ`);
+      dynamicStrings.set(n, { value: '', chars: window, charged: !budget });
+      if (budget) budget.claimString(window, `dynamic string at offset ${n}`);
       return '';
     }
-    return r.cstring(strOff + n, maxLength);
+    const chars = nul + 1;
+    if (budget && !budget.claimString(chars, `dynamic string at offset ${n}`)) {
+      dynamicStrings.set(n, { value: '', chars, charged: true });
+      return '';
+    }
+    const value = r.cstring(strOff + n, window);
+    dynamicStrings.set(n, { value, chars, charged: !!budget });
+    return value;
   };
 
   for (const needed of tags.get(DT_NEEDED) || []) {
@@ -213,10 +251,11 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
     markDynamicPartial(image, `dynamic symbol count ${declaredSymbolCount} exceeds symbol record limit ${symbolBudget.limits.maxSymbolRecords}; clamped`);
   }
 
-  const versions = parseDynamicSymbolVersions(r, tags, image, symbolCount, stringAt, { budget: symbolBudget });
+  const budgetedStringAt = (offset, options = {}) => stringAt(offset, { ...options, budget: symbolBudget });
+  const versions = parseDynamicSymbolVersions(r, tags, image, symbolCount, budgetedStringAt, { budget: symbolBudget });
   let symbols = [];
   if (!symbolBudget.stopped && opts.symbols !== false && symtab != null && symbolCount > 0) {
-    symbols = parseDynamicSymbols(r, image, bits, symtab, syment, symbolCount, stringAt, tags, versions, symbolBudget);
+    symbols = parseDynamicSymbols(r, image, bits, symtab, syment, symbolCount, budgetedStringAt, tags, versions, symbolBudget);
   } else if (symtab != null && symbolCount > 0) {
     symbols = dynamicSymbolsFromImage(image, symbolCount);
   }
@@ -338,9 +377,6 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
           functionStartEvidence: type === STT_GNU_IFUNC
             ? 'ELF PT_DYNAMIC STT_GNU_IFUNC resolver in validated executable mapping and extent'
             : 'ELF PT_DYNAMIC STT_FUNC in validated executable mapping and extent',
-          // #6061: the section-backed symbol parser propagates the RISC-V
-          // variant-cc calling-convention evidence into function seeds; the
-          // PT_DYNAMIC path must mint identical evidence for the same byte.
           callingConvention: aarch64VariantPcs ? 'aarch64-variant-pcs' : riscvVariantCc ? 'riscv-vector-variant' : null,
           abiMetadata: aarch64VariantPcs ? { aarch64VariantPcs: true, stOther: other } : riscvVariantCc ? { riscvVariantCc: true, stOther: other } : null,
         }));
@@ -400,9 +436,6 @@ export function applyVersionMetadata(image, versions, budget = null) {
 
 function collectDynamicRelocations(r, tags, image, bits, budget) {
   const out = [];
-  // Dynamic tags can alias the exact same physical relocation table.
-  // Deduplicate only physical record identity; equal contents at distinct
-  // records must survive because ELF relocation composition is ordered.
   const seenPhysicalRecords = new Set();
   const one = (tag) => tags.get(tag)?.[0] ?? null;
   const addTable = (va, size, ent, rela, source) => {
@@ -416,9 +449,7 @@ function collectDynamicRelocations(r, tags, image, bits, budget) {
     if (!span || e == null || e <= 0) { markDynamicPartial(image, `${source} table crosses a file-backed PT_LOAD boundary`); return; }
     const off = span.start;
     if (!budget.claimInput(n, source)) return;
-    if (n % e !== 0) {
-      markDynamicPartial(image, `${source} size ${n} is not a multiple of entry size ${e}`);
-    }
+    if (n % e !== 0) markDynamicPartial(image, `${source} size ${n} is not a multiple of entry size ${e}`);
     const count = Math.floor(n / e);
     for (let i = 0; i < count && !budget.stopped; i++) {
       if (!budget.step()) break;
@@ -434,15 +465,9 @@ function collectDynamicRelocations(r, tags, image, bits, budget) {
       const physicalKey = `${q}:${e}:${rela ? 'rela' : 'rel'}`;
       if (seenPhysicalRecords.has(physicalKey)) continue;
       seenPhysicalRecords.add(physicalKey);
-      if (!budget.push(out, {
-        address, symIndex, type, addend, source,
-        recordIndex: i,
-        recordFileOffset: BigInt(q),
-        recordEncoding: rela ? 'RELA' : 'REL',
-      }, source)) break;
+      if (!budget.push(out, { address, symIndex, type, addend, source, recordIndex: i, recordFileOffset: BigInt(q), recordEncoding: rela ? 'RELA' : 'REL' }, source)) break;
     }
   };
-
   addTable(one(DT_RELA), one(DT_RELASZ), one(DT_RELAENT), true, 'PT_DYNAMIC-RELA');
   addTable(one(DT_REL), one(DT_RELSZ), one(DT_RELENT), false, 'PT_DYNAMIC-REL');
   const jmprel = one(DT_JMPREL), pltsz = one(DT_PLTRELSZ), pltrel = one(DT_PLTREL);
@@ -466,21 +491,17 @@ function checkRiscvVariantCcTag(image, tags, relocs, symbols) {
     return;
   }
   const byIndex = new Map((symbols || []).map((s) => [s.index, s]));
-  const missing = (relocs || []).some((rel) =>
-    Number(rel?.type) === R_RISCV_JUMP_SLOT && byIndex.get(rel.symIndex)?.riscvVariantCcFlag === true);
+  const missing = (relocs || []).some((rel) => Number(rel?.type) === R_RISCV_JUMP_SLOT && byIndex.get(rel.symIndex)?.riscvVariantCcFlag === true);
   if (missing) markDynamicPartial(image, 'RISC-V variant-cc JUMP_SLOT requires DT_RISCV_VARIANT_CC');
 }
 
-function attachDynamicRelocations(image, relocs, symbols) {  const byIndex = new Map((symbols || []).map((s) => [s.index, s]));
+function attachDynamicRelocations(image, relocs, symbols) {
+  const byIndex = new Map((symbols || []).map((s) => [s.index, s]));
   const importKey = (name, version, library) => [name || '', version || '', library || ''].join('\0');
   const importByName = new Map(image.imports.filter((x) => x.name).map((x) => [importKey(x.name, x.version, x.versionLibrary), x]));
   for (const rel of relocs) {
     const owner = image.segmentAt(rel.address);
     if (!owner) { markDynamicPartial(image, `${rel.source} relocation target is outside every loaded PT_LOAD memory span`); continue; }
-    // RELR carries no machine relocation type; its implicit relative relocation
-    // remains governed by the RELR decoder/mapping checks rather than this
-    // type-width table. Explicit REL/RELA-style records must have known width
-    // on recognized machines.
     const width = rel.type == null ? undefined : relocationFieldWidth(Number(image.metadata.machine), rel.type, image.bits);
     if (width === null) { markDynamicPartial(image, `${rel.source} relocation type ${rel.type} has no supported target-field width for machine ${image.metadata.machine}`); continue; }
     if (typeof width === 'bigint' && width > 0n && rel.address + width > owner.address + owner.size) { markDynamicPartial(image, `${rel.source} relocation target field crosses the end of its loaded PT_LOAD memory span`); continue; }
@@ -507,17 +528,7 @@ function attachDynamicRelocations(image, relocs, symbols) {  const byIndex = new
         imp = { name: sym.name, library: null, ordinal: null, weak: sym.binding === 'weak', version: sym.version ?? null, versionLibrary: sym.versionLibrary ?? null, versionIndex: sym.versionIndex ?? null, symbolIndex: sym.index, source: 'PT_DYNAMIC', sites: [] };
         image.imports.push(imp); importByName.set(key, imp);
       }
-      imp.sites.push({
-        address: rel.address,
-        offset: item.fileOffset,
-        kind: 'relocation',
-        type: rel.type,
-        addend: rel.addend,
-        source: rel.source,
-        recordIndex: rel.recordIndex ?? null,
-        recordFileOffset: rel.recordFileOffset ?? null,
-        recordEncoding: rel.recordEncoding ?? null,
-      });
+      imp.sites.push({ address: rel.address, offset: item.fileOffset, kind: 'relocation', type: rel.type, addend: rel.addend, source: rel.source, recordIndex: rel.recordIndex ?? null, recordFileOffset: rel.recordFileOffset ?? null, recordEncoding: rel.recordEncoding ?? null });
     }
   }
 }
@@ -587,16 +598,9 @@ export function resolveDynamicSectionIndex(r, image, tags, symbolIndex, rawIndex
   const byteOffset = symbolIndex * 4;
   if (!range || !Number.isSafeInteger(byteOffset) || byteOffset < 0 || range.start + byteOffset + 4 > range.end || range.start + byteOffset + 4 > r.length) return { known:false, index:null, source:'DT_SYMTAB_SHNDX', reason:'truncated-companion' };
   const candidate = r.u32(range.start + byteOffset);
-  // SHN_XINDEX stores the *actual* 32-bit section index. Unlike the direct
-  // 16-bit st_shndx field, an actual index may legitimately be >=
-  // SHN_LORESERVE when the ELF has an extended section table (#4197).
   if (candidate === SHN_UNDEF) return { known:true, index:candidate, source:'DT_SYMTAB_SHNDX' };
-  if ((candidate === SHN_ABS || candidate === SHN_COMMON) && dynamicSectionTableIsGenuinelySectionless(image)) {
-    return { known:true, index:candidate, source:'DT_SYMTAB_SHNDX' };
-  }
-  if (candidate > 0 && dynamicSectionTableAdmits(image, candidate, { requireActualSection: true })) {
-    return { known:true, index:candidate, source:'DT_SYMTAB_SHNDX' };
-  }
+  if ((candidate === SHN_ABS || candidate === SHN_COMMON) && dynamicSectionTableIsGenuinelySectionless(image)) return { known:true, index:candidate, source:'DT_SYMTAB_SHNDX' };
+  if (candidate > 0 && dynamicSectionTableAdmits(image, candidate, { requireActualSection: true })) return { known:true, index:candidate, source:'DT_SYMTAB_SHNDX' };
   return { known:false, index:null, source:'DT_SYMTAB_SHNDX', reason:`out-of-range-section-index-${candidate}` };
 }
 
@@ -604,15 +608,8 @@ function dynamicSectionTableAdmits(image, index, { requireActualSection = false 
   const sections = image?.sections;
   const table = image?.metadata?.elfSectionTableAuthority;
   if (table?.declared === true && table?.valid !== true) return false;
-  if (Array.isArray(sections) && sections.length > 0) {
-    return sections.some((section) => section?.index === index);
-  }
-  if (requireActualSection) {
-    // Legacy sectionless PT_DYNAMIC policy permits normal-range section
-    // identities even without section headers; extended/reserved identities
-    // require an actual section entry.
-    return dynamicSectionTableIsGenuinelySectionless(image) && index < SHN_LORESERVE;
-  }
+  if (Array.isArray(sections) && sections.length > 0) return sections.some((section) => section?.index === index);
+  if (requireActualSection) return dynamicSectionTableIsGenuinelySectionless(image) && index < SHN_LORESERVE;
   return dynamicSectionTableIsGenuinelySectionless(image);
 }
 
