@@ -15,6 +15,7 @@ const expectedForeign = [
   'js/recognition/match-budget.js',
   'tests/phase10/recognition/issue-8914-matcher-candidate-admission.test.mjs',
   'tests/phase12/provider/issue-8760-provider-output-admission-order.test.mjs',
+  'tools/validation/phase12/denominator-inventory.json',
 ];
 const owned = [
   '.github/workflows/phase7-ownership.yml',
@@ -26,7 +27,7 @@ const owned = [
 assert.deepEqual(
   [...CROSS_LANE_ROUTES[branch]],
   expectedForeign,
-  'the #8958 foreign allowlist must remain the exact seven-file contract',
+  'the #8958 foreign allowlist must remain the exact eight-file contract',
 );
 
 const inventory = [...owned, ...expectedForeign];

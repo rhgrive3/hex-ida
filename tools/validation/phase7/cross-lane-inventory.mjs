@@ -29,6 +29,7 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     'js/recognition/match-budget.js',
     'tests/phase10/recognition/issue-8914-matcher-candidate-admission.test.mjs',
     'tests/phase12/provider/issue-8760-provider-output-admission-order.test.mjs',
+    'tools/validation/phase12/denominator-inventory.json',
   ]),
   "codex/consolidate-arm64-repairs-20260913": Object.freeze([
     ".circleci/config.yml",
