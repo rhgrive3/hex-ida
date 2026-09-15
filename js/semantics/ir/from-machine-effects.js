@@ -509,7 +509,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       addValue({
         id: valueId,
         kind: 'definition',
-        machineType: { kind: 'address', widthBits, addressSpace: String(addressSpace) },
+        machineType: { kind: 'bitvector', widthBits },
         definitionNodeId: nodeId,
         sourceEntityId: effect.sourceEffectId,
         origin,
@@ -1063,10 +1063,14 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
         emitUnknownEffects(effect, 'conditional-branch-not-fully-representable', ['control'], { control });
         return;
       }
-      const targets = rawTargets.map((target, index) => ensureControlTargetBlock(
-        target,
-        index === rawTargets.length - 1 ? 'fallthrough' : `branch-${index}`,
-      ));
+      const rawTargetsAreSame = stableStringify(rawTargets[0]) === stableStringify(rawTargets[1]);
+      const sameRawSuccessor = rawTargetsAreSame ? ensureControlTargetBlock(rawTargets[0], 'branch-0') : null;
+      const targets = rawTargetsAreSame
+        ? [sameRawSuccessor, sameRawSuccessor]
+        : rawTargets.map((target, index) => ensureControlTargetBlock(
+          target,
+          index === rawTargets.length - 1 ? 'fallthrough' : `branch-${index}`,
+        ));
       if (targets.length !== 2) {
         emitUnknownEffects(effect, 'conditional-branch-target-cardinality', ['control'], { control, targets });
         return;
