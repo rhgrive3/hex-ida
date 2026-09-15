@@ -1,6 +1,5 @@
 import { EvidenceStore } from '../../../js/ai/evidence.js';
 import { ProposalStore, proposalArguments } from '../../../js/ai/proposals.js';
-import { InvestigationSessionStore } from '../../../js/ai/session-core/index.js';
 
 const kinds = {
   'annotation.rename': 'rename',
@@ -16,13 +15,8 @@ const kinds = {
 export async function executeApprovedCapability(executor, capability, args) {
   const kind = kinds[capability];
   if (!kind) throw new Error(`No proposal kind for ${capability}`);
-  // #4999/#4995: verified proposal evidence must come from the trusted
-  // persisted-confirmed loader, not a self-declared raw ingest.
-  const session = new InvestigationSessionStore().register({
-    id: 'fixture-session-approved-capability',
-    confirmedFindings: [{ id: 'fixture-evidence', kind: 'read', status: 'verified', sourceTool: 'fixture' }],
-  });
-  const evidenceStore = new EvidenceStore().restorePersistedConfirmed(session.confirmedFindings);
+  const evidenceStore = new EvidenceStore();
+  evidenceStore.ingest('fixture', { id: 'fixture-evidence', kind: 'read', status: 'verified' }, { verifier: true });
   const store = new ProposalStore({ evidenceStore });
   const target = { ...args };
   const before = kind === 'patch' ? args.before : null;

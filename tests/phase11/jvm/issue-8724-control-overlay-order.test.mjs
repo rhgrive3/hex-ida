@@ -133,7 +133,7 @@ function buildJvmBranchClass(pairCount) {
   bytes.set([0xca, 0xfe, 0xba, 0xbe]);
   view.setUint16(4, 0, false);
   view.setUint16(6, 61, false);
-  view.setUint16(8, 8, false);
+  view.setUint16(8, 6, false);
   let offset = 10;
   const addUtf8 = (text) => {
     const encoded = new TextEncoder().encode(text);
@@ -150,17 +150,9 @@ function buildJvmBranchClass(pairCount) {
   addUtf8('testMethod');
   addUtf8('()V');
   addUtf8('Code');
-  // #8759 sync: `super_class = 0` is reserved for java/lang/Object itself; the
-  // current JVM parser fails closed with jvm-invalid-zero-super-class. Give the
-  // fixture a real superclass entry so the control-overlay ordering contract
-  // under test is actually exercised.
-  addUtf8('java/lang/Object');   // cp #6
-  bytes[offset++] = 7;           // cp #7: Class -> #6
-  view.setUint16(offset, 6, false);
-  offset += 2;
   view.setUint16(offset, 1, false); offset += 2;
   view.setUint16(offset, 2, false); offset += 2;
-  view.setUint16(offset, 7, false); offset += 2;
+  view.setUint16(offset, 0, false); offset += 2;
   view.setUint16(offset, 0, false); offset += 2;
   view.setUint16(offset, 0, false); offset += 2;
   view.setUint16(offset, 1, false); offset += 2;
@@ -169,11 +161,7 @@ function buildJvmBranchClass(pairCount) {
   view.setUint16(offset, 4, false); offset += 2;
   view.setUint16(offset, 1, false); offset += 2;
   const code = Uint8Array.from([
-    // #8759 sync: each `ifge` must branch to a distinct reachable instruction
-    // start (a taken target equal to the fall-through is rejected as
-    // semantic-ir-control-target-cardinality). Each five-byte pair loads,
-    // branches forward to the next pair's `iload_0`, and falls through a nop.
-    ...Array.from({ length: pairCount }, () => [0x03, 0x99, 0x00, 0x04, 0x00]).flat(),
+    ...Array.from({ length: pairCount }, () => [0x03, 0x99, 0x00, 0x03]).flat(),
     0xb1,
   ]);
   view.setUint16(offset, 5, false); offset += 2;
