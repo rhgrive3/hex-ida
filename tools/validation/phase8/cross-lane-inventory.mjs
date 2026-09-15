@@ -375,6 +375,32 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     'tools/validation/phase7/cross-lane-inventory.mjs',
     'tools/validation/stage2/profile-denominators.lock.json',
   ]),
+  // #8936 is a cross-lane batch of ten issue repairs. Phase 8 validates only
+  // the decompiler/ABI-evidence subset it owns; every foreign path is
+  // enumerated so this route cannot become a general ownership exemption.
+  "fix/batch-10-issues-20260915": Object.freeze([
+    ".circleci/config.yml",
+    ".github/workflows/phase7-ownership.yml",
+    "js/ai/runtime.js",
+    "js/analysis/semantic-function-base.js",
+    "js/binary/reader.js",
+    "js/collaboration/remote-transport.js",
+    "js/managed/shared/bridge-jvm-control-overlay-v2.js",
+    "js/managed/shared/bridge-lowering-v2.js",
+    "js/semantics/compat/index.js",
+    "tests/issue-3913-framebytes-max-stack-depth.mjs",
+    "tests/issue-4097-il2cpp-long-unicode-name-budget.mjs",
+    "tests/issue-8870-cstring-sparse-forward.test.mjs",
+    "tests/issue-8910-callersaved-fail-closed.test.mjs",
+    "tests/issue-8917-managed-binary-branch-predicate.test.mjs",
+    "tests/issue-8921-bit-extract-width.test.mjs",
+    "tests/issue-8922-conditional-missing-fallthrough.test.mjs",
+    "tests/issue-8923-proposal-binding-identity.test.mjs",
+    "tests/issue-8925-delivery-deadline.test.mjs",
+    "tests/phase6/effects/issue-6065-direct-target-alignment.test.mjs",
+    "tests/phase7/ownership/cross-lane-routing.test.mjs",
+    "tools/validation/phase7/cross-lane-inventory.mjs",
+  ]),
 });
 
 function phase8Owned(file, patterns) {

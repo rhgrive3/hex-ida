@@ -196,15 +196,18 @@ function filterUnresolvedConditionalFallthrough(fragment, bundle, controlTargets
     const targets = node.targets.slice(0, -1);
     if (!targets.length) return node;
     changed = true;
-    // A missing fallthrough must not leave a 1-target conditional-branch:
-    // that shape is explicitly rejected by the #4585 cardinality guard.
-    // Preserve the known taken edge as a partial branch without fabricating
-    // a false edge to another block; the SSA validator already treats a
-    // branch carrying conditional CFG edges as a normalized conditional
-    // with one unresolved successor (#8922).
+    // A missing fallthrough must not leave a 1-target conditional-branch
+    // (#4585 rejects that cardinality). It must not be laundered into an
+    // ordinary `branch` either: `semanticEdgeKind()` would then publish the
+    // taken target as exact, unconditional control, erasing the unresolved
+    // condition from CFG edge authority. Publish a partial
+    // `unknown-control-effect` projection that keeps the known taken target,
+    // the condition, and the missing-fallthrough evidence, so downstream
+    // reachability/dominance observe unresolved control rather than
+    // fabricated certainty (#8922).
     return {
       ...node,
-      kind: 'branch',
+      kind: 'unknown-control-effect',
       inputs: [],
       targets,
       completeness: 'partial',

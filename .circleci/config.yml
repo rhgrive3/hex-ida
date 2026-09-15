@@ -335,6 +335,16 @@ jobs:
                   --head-sha "$OWNERSHIP_HEAD_SHA")"
                 node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
                 ;;
+              fix/batch-10-issues-20260915)
+                # PR #8936 is a ten-issue cross-lane batch. Enumerate every
+                # foreign path through the exact route before validating the
+                # Phase 7-owned subset so the gate stays fail-closed.
+                FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+                  --branch "$CIRCLE_BRANCH" \
+                  --base-sha "$OWNERSHIP_BASE_SHA" \
+                  --head-sha "$OWNERSHIP_HEAD_SHA")"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
               *)
                 node tools/validation/phase7-ownership.mjs --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA"
                 ;;
@@ -397,6 +407,13 @@ jobs:
                 --head-sha "$OWNERSHIP_HEAD_SHA")"
               node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"
             elif [ "${CIRCLE_BRANCH:-}" = 'codex/consolidate-arm64-repairs-20260913' ]; then
+              FILES_JSON="$(node tools/validation/phase8/cross-lane-inventory.mjs \
+                --branch "$CIRCLE_BRANCH" \
+                --base-sha "$OWNERSHIP_BASE_SHA" \
+                --head-sha "$OWNERSHIP_HEAD_SHA")"
+              node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"
+            elif [ "${CIRCLE_BRANCH:-}" = 'fix/batch-10-issues-20260915' ]; then
+              # PR #8936 exact cross-lane projection; every foreign path is enumerated.
               FILES_JSON="$(node tools/validation/phase8/cross-lane-inventory.mjs \
                 --branch "$CIRCLE_BRANCH" \
                 --base-sha "$OWNERSHIP_BASE_SHA" \

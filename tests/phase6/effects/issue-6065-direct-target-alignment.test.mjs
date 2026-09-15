@@ -133,12 +133,12 @@ function analyzeAlignmentCase(immediate, binaryId) {
 
 test('6065: MachineEffects-to-Semantic-IR preserves real alignment faults only', () => {
   // Single-instruction slices are truncated by construction (no fallthrough
-  // block), so the control node is a partial branch carrying the taken edge
-  // plus missing-fallthrough evidence instead of a 2-target
+  // block), so the control node is a partial control projection carrying the
+  // taken edge plus missing-fallthrough evidence instead of a 2-target
   // conditional-branch (#8922). Fault evidence must survive that shape.
   const controlNode = (pipeline) => pipeline.semanticIr.nodes.find((node) =>
     node.kind === 'conditional-branch'
-    || (node.kind === 'branch' && node.unknown?.reason === 'semantic-cfg-missing-fallthrough'));
+    || (node.kind === 'unknown-control-effect' && node.unknown?.reason === 'semantic-cfg-missing-fallthrough'));
   const aligned = analyzeAlignmentCase(8, 'issue-6065-aligned');
   const alignedMachine = aligned.pipeline.machineEffects[0];
   const alignedBranch = controlNode(aligned.pipeline);
