@@ -325,6 +325,35 @@ jobs:
                   --head-sha "$OWNERSHIP_HEAD_SHA")"
                 node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
                 ;;
+              codex/issue-campaign-20260914-lane-02-batch-03)
+                # PR #8995: the reviewed batch spans Phase 7 evidence plus independently
+                # owned artifact, debug/runtime transport, Phase 4, and Phase 10 paths.
+                # Require the exact complete inventory before projecting the sole Phase 7 file.
+                FILES_JSON="$(git diff --name-only --diff-filter=ACMR "$OWNERSHIP_BASE_SHA...$OWNERSHIP_HEAD_SHA" | node -e '
+                  const fs = require("node:fs");
+                  const actual = fs.readFileSync(0, "utf8").split(/\r?\n/).filter(Boolean).sort();
+                  const expected = [
+                    ".circleci/config.yml",
+                    "js/ai/evidence.js",
+                    "js/core/artifacts/contracts.js",
+                    "js/core/artifacts/storage/integrity.js",
+                    "js/debug/remote-protocol.js",
+                    "js/runtime/provider-protocol.js",
+                    "tests/phase10/debug/issue-8654-low-rss-child.mjs",
+                    "tests/phase10/debug/issue-8654-remote-packet-pre-admission-budget.test.mjs",
+                    "tests/phase10/debug/issue-8654-review-wire-byte-equivalence.test.mjs",
+                    "tests/phase4/store/issue-8808-upstream-envelope-identity.test.mjs",
+                    "tests/phase7/analysis/issue-8788-evidence-source-binding-structured-identity.test.mjs",
+                  ].sort();
+                  if (actual.length !== expected.length || actual.some((file, i) => file !== expected[i])) {
+                    console.error("PR #8995 Phase 7 route inventory mismatch");
+                    console.error(JSON.stringify({ actual, expected }));
+                    process.exit(1);
+                  }
+                  process.stdout.write(JSON.stringify(["tests/phase7/analysis/issue-8788-evidence-source-binding-structured-identity.test.mjs"]));
+                ')"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
               codex/consolidate-arm64-repairs-20260913)
                 # The consolidated repair batch spans multiple ownership lanes.
                 # Enumerate every foreign path before validating the Phase 7
