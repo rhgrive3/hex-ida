@@ -9,7 +9,7 @@ const EXPECTED_BUILD = '__HEX_BUILD_ID__';
 const EXPECTED_CONTENT_HASH = '__HEX_CONTENT_HASH__';
 const EXPECTED_RUNTIME_VERSION = '__HEX_RUNTIME_VERSION__';
 const EXPECTED_RUNTIME_BYTE_LENGTH_TEXT = '__HEX_RUNTIME_BYTE_LENGTH__';
-const EXPECTED_RUNTIME_ASSET_PATH = '__HEX_RUNTIME_ASSET_PATH__';
+const EXPECTED_RUNTIME_LOCATOR = '__HEX_RUNTIME_LOCATOR__';
 const EXPECTED_RELEASE_MANIFEST_HASH = '__HEX_RELEASE_MANIFEST_HASH__';
 const RETRIES = 2;
 const BOOTSTRAP_MAX_JSON_BYTES = 64 * 1024;
@@ -64,7 +64,7 @@ async function loadRuntime() {
       || !Number.isSafeInteger(expectedRuntimeBytes)
       || expectedRuntimeBytes <= 0
       || expectedRuntimeBytes > RUNTIME_MAX_CIPHERTEXT_BYTES
-      || EXPECTED_RUNTIME_ASSET_PATH !== `/.runtime/runtime.${EXPECTED_BUILD}.bin`
+      || EXPECTED_RUNTIME_LOCATOR !== `/_runtime/${EXPECTED_BUILD}`
       || !isCanonicalSha256(EXPECTED_RELEASE_MANIFEST_HASH)) {
     throw new Error('The installed loader release identity is invalid.');
   }
@@ -81,7 +81,7 @@ async function loadRuntime() {
   if (!manifest || manifest.buildId !== EXPECTED_BUILD) throw new Error('The protected runtime manifest build identity does not match the pinned loader build.');
   if (manifest.runtimeVersion !== EXPECTED_RUNTIME_VERSION) throw new Error('The protected runtime manifest version does not match the pinned runtime version.');
   if (manifest.compression !== 'gzip') throw new Error('The protected runtime compression format does not match the pinned release identity.');
-  if (bootstrap.runtimeLocator !== EXPECTED_RUNTIME_ASSET_PATH) throw new Error('The protected runtime locator does not match the pinned release identity.');
+  if (bootstrap.runtimeLocator !== EXPECTED_RUNTIME_LOCATOR) throw new Error('The protected runtime locator does not match the pinned release identity.');
   if (typeof manifest.aad !== 'string' || manifest.aad !== `hex-runtime:${EXPECTED_BUILD}:${EXPECTED_RUNTIME_VERSION}`) throw new Error('The protected runtime manifest AAD is not canonical for the pinned loader build and runtime version.');
   if (!isCanonicalSha256(manifest.contentHash) || !constantTimeEqual(manifest.contentHash, EXPECTED_CONTENT_HASH)) throw new Error('The protected runtime manifest content hash does not match the full local runtime pin.');
   if (!Number.isSafeInteger(manifest.byteLength) || manifest.byteLength !== expectedRuntimeBytes) throw new Error('The protected runtime manifest byte length does not match the pinned release identity.');
@@ -93,7 +93,7 @@ async function loadRuntime() {
     runtimeVersion: manifest.runtimeVersion,
     contentHash: manifest.contentHash,
     compression: manifest.compression,
-    assetPath: bootstrap.runtimeLocator,
+    runtimeLocator: bootstrap.runtimeLocator,
     byteLength: manifest.byteLength,
   })));
   if (!constantTimeEqual(releaseManifestHash, EXPECTED_RELEASE_MANIFEST_HASH)) throw new Error('The protected runtime release manifest does not match the installed loader pin.');
