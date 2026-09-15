@@ -58,7 +58,7 @@ function buildMachO({ bits = 64, entries, includeSection = true }) {
     view.setUint8(p + 16, 0x5f, true); view.setUint8(p + 17, 0x54, true); view.setUint8(p + 18, 0x45, true); view.setUint8(p + 19, 0x58, true); view.setUint8(p + 20, 0x54, true);
     writeAt(p + 32, base);
     writeAt(p + (bits === 64 ? 40 : 36), 0x100);
-    view.setUint32(p + (bits === 64 ? 48 : 40), 0x20, true);
+    view.setUint32(p + (bits === 64 ? 48 : 40), 0x0, true);
     view.setUint32(p + (bits === 64 ? 64 : 56), 0x80000400, true); // S_REGULAR | S_ATTR_PURE_INSTRUCTIONS
     p += sectionRecordSize;
   }
