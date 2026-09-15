@@ -70,21 +70,49 @@ function subtractCoverage(range,coverage){
   if(cursor<range.end) out.push({start:cursor,end:range.end});
   return out;
 }
+// #8736: one range per eligible mapping made N sections aliasing the same bytes traverse
+// those bytes N times (`seen` only suppressed duplicate results after the work was done,
+// so the result cap could never be reached either). The eligible domain is therefore a
+// union now: each byte is claimed by the first mapping that covers it in the previous
+// emission order (start, then size, then enumeration rank), which keeps attribution
+// deterministic and traverses every eligible byte at most once.
+function unionizeScanRanges(candidates){
+  candidates.sort((a,b)=>a.start-b.start||(a.end-a.start)-(b.end-b.start)||a.rank-b.rank);
+  const out=[], claimed=[];
+  let cursor=0;
+  for(const range of candidates){
+    let pos=range.start;
+    while(cursor<claimed.length&&claimed[cursor].end<=pos) cursor++;
+    for(let i=cursor;i<claimed.length&&claimed[i].start<range.end;i++){
+      const covered=claimed[i];
+      if(covered.start>pos) out.push({start:pos,end:covered.start,section:range.section});
+      if(covered.end>pos) pos=covered.end;
+    }
+    if(pos<range.end) out.push({start:pos,end:range.end,section:range.section});
+    const last=claimed[claimed.length-1];
+    if(last&&range.start<=last.end){ if(range.end>last.end) last.end=range.end; }
+    else claimed.push({start:range.start,end:range.end});
+  }
+  return out;
+}
 function mappedScanRanges(image,byteLength,includeExecutable){
   const sections=Array.isArray(image.sections)?image.sections:[], segments=Array.isArray(image.segments)?image.segments:[];
   if(!sections.length&&!segments.length) return [{start:0,size:byteLength,section:null}];
   const sectionRanges=sections.map((item)=>({item,range:fileRange(item,byteLength)})).filter((x)=>x.range);
   const coverage=mergeCoverage(sectionRanges.map((x)=>x.range));
-  const ranges=[];
+  const candidates=[];
+  let rank=0;
   for(const {item,range} of sectionRanges){
     if(!includeExecutable&&item.perms?.execute) continue;
-    ranges.push({start:range.start,size:range.end-range.start,section:item.name||null});
+    candidates.push({start:range.start,end:range.end,section:item.name||null,rank:rank++});
   }
   for(const item of segments){
     if(!includeExecutable&&item.perms?.execute) continue;
     const range=fileRange(item,byteLength); if(!range) continue;
-    for(const gap of subtractCoverage(range,coverage)) ranges.push({start:gap.start,size:gap.end-gap.start,section:null});
+    // #3766: a segment only contributes the file bytes no section already covers.
+    for(const gap of subtractCoverage(range,coverage)) candidates.push({start:gap.start,end:gap.end,section:null,rank:rank++});
   }
+  const ranges=unionizeScanRanges(candidates).map((range)=>({start:range.start,size:range.end-range.start,section:range.section}));
   ranges.sort((a,b)=>a.start-b.start||a.size-b.size);
   return ranges;
 }
