@@ -8,6 +8,92 @@ const TERMINATIONS = Object.freeze(['return', 'halted', 'paused', 'fault', 'unsu
 const ABORTED_EXECUTION = Symbol('aborted-execution');
 const REPLAY_SOURCE_SCHEMA = 'hex-emulator-replay-source/v1';
 
+// #8850 — an engine-controlled result is transformed into runtime events and a
+// replay recording AFTER timeoutMs/maxSteps have already stopped bounding the
+// engine, so the post-processing itself needs its own resource authority. These
+// ceilings bound engine event cardinality, the aggregate admitted event bytes,
+// and the retained raw output snapshot; exceeding them truncates (bounded
+// partial result + dropped/truncated completeness) instead of running unbounded
+// synchronous work or a native stack overflow. Defaults are generous for real
+// emulator output and caller-overridable via provider `events` options.
+const DEFAULT_MAX_EMULATOR_EVENTS = 4096;
+const DEFAULT_MAX_EMULATOR_EVENT_BYTES = 4 * 1024 * 1024;
+const DEFAULT_MAX_EMULATOR_OUTPUT_BYTES = 8 * 1024 * 1024;
+const MAX_OUTPUT_ADMISSION_DEPTH = 64;
+const MAX_OUTPUT_ADMISSION_NODES = 2_000_000;
+const UTF8_OUTPUT_ENCODER = new TextEncoder();
+
+function positiveEmulatorInteger(value, fallback) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) return fallback;
+  return value;
+}
+
+function resolveEmulatorEventAuthority(providerOptions = {}, runOptions = {}) {
+  const events = runOptions?.events ?? providerOptions?.events ?? {};
+  return {
+    maxEvents: positiveEmulatorInteger(events.maxEvents, DEFAULT_MAX_EMULATOR_EVENTS),
+    maxEventBytes: positiveEmulatorInteger(events.maxEventBytes, DEFAULT_MAX_EMULATOR_EVENT_BYTES),
+    maxOutputBytes: positiveEmulatorInteger(events.maxOutputBytes, DEFAULT_MAX_EMULATOR_OUTPUT_BYTES),
+  };
+}
+
+function emulatorOutputTruncatedPayload(reason) {
+  return Object.freeze({ truncated: true, reason, engineResultOmitted: true });
+}
+
+// Iterative, early-exit byte/depth estimate over engine-owned data. It never
+// recurses (so a deep linked graph cannot overflow the JS stack) and stops the
+// moment the estimate cannot fit, so it never performs work proportional to a
+// hostile oversized result. Returns true when `value` is safe to clone/store.
+function emulatorOutputWithinBudget(value, maxBytes) {
+  const stack = [[value, 0]];
+  const seen = new WeakSet();
+  let charged = 0;
+  let visited = 0;
+  const add = (amount) => {
+    if (!Number.isSafeInteger(amount) || amount < 0 || charged > maxBytes - amount) return false;
+    charged += amount;
+    return true;
+  };
+  while (stack.length) {
+    const [current, depth] = stack.pop();
+    if (depth > MAX_OUTPUT_ADMISSION_DEPTH) return false;
+    if (++visited > MAX_OUTPUT_ADMISSION_NODES) return false;
+    if (current === null || current === undefined) { if (!add(4)) return false; continue; }
+    const type = typeof current;
+    if (type === 'string') {
+      if (!add(2)) return false;
+      if (current.length > maxBytes - charged) return false; // UTF-8 bytes >= UTF-16 code units
+      if (!add(UTF8_OUTPUT_ENCODER.encode(current).byteLength)) return false;
+      continue;
+    }
+    if (type === 'number') { if (!add(1)) return false; continue; }
+    if (type === 'bigint') { if (!add(current.toString().length + 1)) return false; continue; }
+    if (type === 'boolean') { if (!add(5)) return false; continue; }
+    if (type !== 'object') return false;
+    if (seen.has(current)) return false;
+    seen.add(current);
+    if (current instanceof Date) { if (!add(24)) return false; continue; }
+    if (current instanceof ArrayBuffer) { if (!add(current.byteLength + 16)) return false; continue; }
+    if (ArrayBuffer.isView(current)) { if (!add(current.byteLength + 16)) return false; continue; }
+    if (Array.isArray(current)) {
+      if (!add(2)) return false;
+      if (current.length > maxBytes - charged) return false;
+      for (let index = current.length - 1; index >= 0; index -= 1) stack.push([current[index], depth + 1]);
+      continue;
+    }
+    const proto = Object.getPrototypeOf(current);
+    if (proto !== Object.prototype && proto !== null) return false;
+    if (!add(2)) return false;
+    for (const key in current) {
+      if (!Object.hasOwn(current, key)) continue;
+      if (!add(key.length + 3)) return false;
+      stack.push([current[key], depth + 1]);
+    }
+  }
+  return true;
+}
+
 function terminationAlias(raw) {
   switch (raw) {
     case 'limit': return 'timeout';
@@ -480,7 +566,18 @@ export class EmulatorProvider {
       if (!waitForEngine) {
         session.setState(termination === 'paused' ? 'paused' : termination === 'exception' ? 'degraded' : 'ready');
       }
-      const events = sourceEvents.map((source, index) => {
+      const eventAuthority = resolveEmulatorEventAuthority(this.options, runOptions);
+      const events = [];
+      let engineEventDropped = 0;
+      let eventBudgetExhausted = false;
+      let remainingEventBytes = eventAuthority.maxEventBytes;
+      for (let index = 0; index < sourceEvents.length; index += 1) {
+        if (events.length >= eventAuthority.maxEvents) {
+          engineEventDropped = sourceEvents.length - index;
+          eventBudgetExhausted = true;
+          break;
+        }
+        const source = sourceEvents[index];
         const identity = eventIdentity(source, index, runOccurrence);
         const kind = source.kind ?? source.type ?? 'emulator-checkpoint';
         const sourceCompleteness = source.completeness;
@@ -489,38 +586,96 @@ export class EmulatorProvider {
           sourceCompleteness,
           kind === 'gap' || kind === 'dropped-events' ? 'truncated' : null,
         );
-        return createRuntimeEvent({
-          runtimeSessionId: session.runtimeSessionId,
-          providerId: session.providerId,
-          providerVersion: session.providerVersion,
-          sessionEpoch: session.epoch,
-          streamId: identity.streamId,
-          sequence: identity.sequence,
-          providerEventId: identity.providerEventId,
-          timestamp: source.timestamp,
-          processKey: session.target.processKey,
-          moduleBindingKey: source.moduleBindingKey,
-          moduleGeneration: source.moduleGeneration,
-          kind,
-          payload: source.payload ?? source,
-          observationMode: 'synthetic',
-          completeness: eventCompleteness,
-          interventionIds: source.interventionIds,
-        });
-      });
+        let event;
+        try {
+          event = createRuntimeEvent({
+            runtimeSessionId: session.runtimeSessionId,
+            providerId: session.providerId,
+            providerVersion: session.providerVersion,
+            sessionEpoch: session.epoch,
+            streamId: identity.streamId,
+            sequence: identity.sequence,
+            providerEventId: identity.providerEventId,
+            timestamp: source.timestamp,
+            processKey: session.target.processKey,
+            moduleBindingKey: source.moduleBindingKey,
+            moduleGeneration: source.moduleGeneration,
+            kind,
+            payload: source.payload ?? source,
+            observationMode: 'synthetic',
+            completeness: eventCompleteness,
+            interventionIds: source.interventionIds,
+          }, { maxBytes: remainingEventBytes });
+        } catch (error) {
+          if (error?.code !== 'runtime-event-resource-limit') throw error;
+          // The remaining aggregate budget cannot admit this engine event, so
+          // stop before mapping the rest: this event and every later one are
+          // reported as dropped/truncated instead of crashing the host.
+          engineEventDropped = sourceEvents.length - index;
+          eventBudgetExhausted = true;
+          break;
+        }
+        events.push(event);
+        remainingEventBytes -= UTF8_OUTPUT_ENCODER.encode(stableStringify(event)).byteLength;
+        if (remainingEventBytes <= 0) {
+          const rest = sourceEvents.length - (index + 1);
+          if (rest > 0) { engineEventDropped = rest; eventBudgetExhausted = true; }
+          break;
+        }
+      }
       if (!events.length) {
+        // Bound the fallback checkpoint too: an oversized or deeply nested raw
+        // engine result embedded here must not bypass the event admission.
+        const rawWithinFallbackBudget = emulatorOutputWithinBudget({ termination, result: raw ?? null, engine: this.engineDescriptor }, eventAuthority.maxEventBytes);
+        let fallbackPayload = rawWithinFallbackBudget
+          ? { termination, result: raw ?? null, engine: this.engineDescriptor }
+          : { termination, ...emulatorOutputTruncatedPayload('emulator-event-output-budget'), engine: { id: this.engineDescriptor.id, version: this.engineDescriptor.version } };
+        try {
+          events.push(createRuntimeEvent({
+            runtimeSessionId: session.runtimeSessionId,
+            providerId: session.providerId,
+            providerVersion: session.providerVersion,
+            sessionEpoch: session.epoch,
+            streamId: fallbackStreamId(runOccurrence),
+            sequence: 0,
+            processKey: session.target.processKey,
+            kind: 'emulator-checkpoint',
+            payload: fallbackPayload,
+            observationMode: 'synthetic',
+            completeness: rawWithinFallbackBudget ? completeness : conservativeCompleteness(completeness, 'truncated'),
+          }, { maxBytes: eventAuthority.maxEventBytes }));
+        } catch (error) {
+          if (error?.code !== 'runtime-event-resource-limit') throw error;
+          events.push(createRuntimeEvent({
+            runtimeSessionId: session.runtimeSessionId,
+            providerId: session.providerId,
+            providerVersion: session.providerVersion,
+            sessionEpoch: session.epoch,
+            streamId: fallbackStreamId(runOccurrence),
+            sequence: 0,
+            processKey: session.target.processKey,
+            kind: 'emulator-checkpoint',
+            payload: { termination, ...emulatorOutputTruncatedPayload('emulator-event-output-budget'), engine: { id: this.engineDescriptor.id, version: this.engineDescriptor.version } },
+            observationMode: 'synthetic',
+            completeness: 'truncated',
+          }, { maxBytes: eventAuthority.maxEventBytes }));
+        }
+      }
+      if (eventBudgetExhausted) {
+        // Represent the drop as a first-class truncated event so completeness can
+        // never claim stronger than the weakest admitted observation.
         events.push(createRuntimeEvent({
           runtimeSessionId: session.runtimeSessionId,
           providerId: session.providerId,
           providerVersion: session.providerVersion,
           sessionEpoch: session.epoch,
           streamId: fallbackStreamId(runOccurrence),
-          sequence: 0,
+          sequence: events.length,
           processKey: session.target.processKey,
-          kind: 'emulator-checkpoint',
-          payload: { termination, result: raw ?? null, engine: this.engineDescriptor },
+          kind: 'dropped-events',
+          payload: { dropped: engineEventDropped, reason: 'emulator-event-output-budget' },
           observationMode: 'synthetic',
-          completeness,
+          completeness: 'truncated',
         }));
       }
       for (const event of events) completeness = conservativeCompleteness(completeness, event.completeness);
@@ -530,11 +685,14 @@ export class EmulatorProvider {
         sessionEpoch: session.epoch,
         events,
         completeness,
-        dropped: 0,
+        dropped: engineEventDropped,
       });
       const resolution = runOptions.resolution ?? null;
       const evidenceNodes = events.map((event) => evidence.eventToEvidence(event, resolution, { binaryId: request.binaryId ?? request.binaryHash ?? null, semanticKind: 'emulator-observation' }));
-      const ownedRaw = ownedClone(raw ?? null);
+      // #8850 — bound the retained raw output snapshot before cloning/freezing it,
+      // so a huge non-event field cannot bypass the event budget through recording.raw.
+      const outputWithinBudget = emulatorOutputWithinBudget(raw ?? null, eventAuthority.maxOutputBytes);
+      const ownedRaw = outputWithinBudget ? ownedClone(raw ?? null) : emulatorOutputTruncatedPayload('emulator-output-budget');
       lastRun = deepFreeze({ sourceIdentity, input: ownedClone(input), options: recordedOptions, termination, completeness, raw: ownedRaw, eventIds: events.map((event) => event.eventId) });
       return deepFreeze({ termination, completeness, raw: ownedClone(ownedRaw), batch, evidence: evidenceNodes, recording: lastRun });
       } finally {

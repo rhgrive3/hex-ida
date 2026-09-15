@@ -12,14 +12,33 @@ const ACC_VOLATILE = 0x40;
 // execute arbitrary code and fail before an sget*/sput* completes. Exactness
 // is retained only when that initializer chain is locally proven code-free,
 // or when execution is already inside the declaring class's own <clinit>.
+// A parsed image is immutable for the duration of method decoding, so the
+// class-initialization chain and per-field declaration authority it implies are
+// stable facts. Recomputing them by scanning `image.methods` / `image.classes`
+// for every sget*/sput* made an admitted method hide O(module metadata) work
+// (#8829). Cache them per image keyed by the stable lookup key; throws are not
+// cached so ambiguous/malformed images still fail closed on every access.
+const classInitCache = new WeakMap();
+const fieldDeclCache = new WeakMap();
+
 function resolveClassInitializationAuthority(image, declaringClass, method) {
   if (!Array.isArray(image.methods)) fail('dex-method-definitions-unavailable');
+  const selfInitializing = method?.classType === declaringClass && method?.name === '<clinit>';
+  const key = `${declaringClass}\u0000${selfInitializing ? '1' : '0'}`;
+  let byImage = classInitCache.get(image);
+  if (!byImage) { byImage = new Map(); classInitCache.set(image, byImage); }
+  if (byImage.has(key)) return { ...byImage.get(key) };
+  const result = computeClassInitializationAuthority(image, declaringClass, selfInitializing);
+  byImage.set(key, result);
+  return { ...result };
+}
+
+function computeClassInitializationAuthority(image, declaringClass, selfInitializing) {
   const initializersFor = (classType) => {
     const initializers = image.methods.filter((entry) => entry?.classType === classType && entry?.name === '<clinit>');
     if (initializers.length > 1) fail('dex-class-initialization-ambiguous');
     return initializers.length === 1;
   };
-  const selfInitializing = method?.classType === declaringClass && method?.name === '<clinit>';
   const clinitPresent = initializersFor(declaringClass);
   if (selfInitializing) {
     return {
@@ -91,6 +110,16 @@ function resolveClassInitializationAuthority(image, declaringClass, method) {
 }
 
 function resolveFieldDeclaration(image, field, fieldIndex, isStatic) {
+  const key = `${fieldIndex}\u0000${isStatic ? '1' : '0'}`;
+  let byImage = fieldDeclCache.get(image);
+  if (!byImage) { byImage = new Map(); fieldDeclCache.set(image, byImage); }
+  if (byImage.has(key)) return byImage.get(key);
+  const result = computeFieldDeclaration(image, field, fieldIndex, isStatic);
+  byImage.set(key, result);
+  return result;
+}
+
+function computeFieldDeclaration(image, field, fieldIndex, isStatic) {
   const owners = (image.classes ?? []).filter((cls) => cls?.classType === field.classType);
   if (owners.length === 0) return null;
   if (owners.length !== 1) fail('dex-field-declaration-ambiguous');

@@ -89,6 +89,7 @@
   const UNWIND_STARTS_MAX = 200_000;   // #8789 decoded compact-unwind function starts
   const UNWIND_LSDA_MAX   = 200_000;   // #8816 deduplicated LSDA (functionStart, lsda) pairs
   const STUB_SYMBOLS_MAX  = 200_000;   // #8800 indirect stub/GOT symbol mappings
+  const OBJC_METHOD_STARTS_MAX = 200_000;  // #8811 validated ObjC method entries / unique starts
 
   // Attach the truncation signal as a NON-enumerable property so the returned
   // value stays a plain array for deep-equality callers/tests (#5371 asserts
@@ -952,6 +953,48 @@
     return low;
   }
 
+  /*
+   * Immutable per-authority-category interval indexes for
+   * parseObjcMethodStarts() (#8798). Method validation checked selector/type/
+   * IMP membership with a linear `some()` over every section for every field,
+   * making exact Objective-C metadata recovery O(methods x regions) (a
+   * structurally valid 16k-method / 48k-region shape stalled ~8.5s). Sorting
+   * and merging each category into disjoint [lo,hi) intervals preserves the
+   * exact union membership semantics (overlapping or touching regions merge;
+   * membership never depends on enumeration order) while allowing binary
+   * search. Built once per regions array and reused through a WeakMap so many
+   * __objc_methlist sections inside one slice share one immutable index.
+   */
+  const OBJC_REGION_INDEX_CACHE = new WeakMap();
+
+  function objcRegionIndex(regions) {
+    if (!Array.isArray(regions)) regions = [];
+    const cached = OBJC_REGION_INDEX_CACHE.get(regions);
+    if (cached) return cached;
+    const build = (pred) => {
+      const spans = [];
+      for (const r of regions) {
+        if (r && r.size > 0n && pred(r)) spans.push([BigInt(r.vmAddr), BigInt(r.vmAddr) + BigInt(r.size)]);
+      }
+      spans.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
+      const merged = [];
+      for (const span of spans) {
+        const last = merged[merged.length - 1];
+        if (last && span[0] <= last[1]) { if (span[1] > last[1]) last[1] = span[1]; continue; }
+        merged.push(span);
+      }
+      return merged;
+    };
+    const index = {
+      exec: build((r) => !!r.exec),
+      selrefs: build((r) => r.section === '__objc_selrefs'),
+      selectorText: build((r) => r.section === '__objc_methname' || r.section === '__cstring'),
+      typeText: build((r) => r.section === '__objc_methtype' || r.section === '__cstring'),
+    };
+    if (regions.length) OBJC_REGION_INDEX_CACHE.set(regions, index);
+    return index;
+  }
+
   /**
    * Parse `__TEXT,__objc_methlist` and return implementation addresses.
    *
@@ -961,62 +1004,97 @@
    * every IMP lands in executable code.  This makes the result authoritative
    * metadata evidence rather than a heuristic code pointer.
    */
-  function parseObjcMethodStarts(buf, sectionVM, options = {}) {
-    const out = new Set();
-    if (!buf || buf.length < 20 || sectionVM == null) return [];
+   function parseObjcMethodStarts(buf, sectionVM, options = {}) {
+     const out = new Set();
+     if (!buf || buf.length < 20 || sectionVM == null) return attachTruncatedFlag([]);
+     const resultLimit = boundedExpansionBudget(options.maxResults, OBJC_METHOD_STARTS_MAX, OBJC_METHOD_STARTS_MAX);
+     const workLimit = boundedExpansionBudget(options.maxWork, OBJC_METHOD_STARTS_MAX, OBJC_METHOD_STARTS_MAX);
+     const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;
+     const finish = (truncationReason) => {
+       const list = Array.from(out).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+       const arr = attachTruncatedFlag(list);
+       if (truncationReason) markTruncated(arr, truncationReason);
+       return arr;
+     };
+     let work = 0;
     const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     const regions = Array.isArray(options.regions) ? options.regions : [];
+    const index = objcRegionIndex(options.regionIndex || regions);
     const imageBase = options.imageBase == null ? null : BigInt(options.imageBase);
     const align = instructionAlignment(options.architecture || 'arm64');
-    const ranges = (pred) => regions.filter((r) => r && r.size > 0n && pred(r))
-      .map((r) => [BigInt(r.vmAddr), BigInt(r.vmAddr) + BigInt(r.size)]);
-    const exec = ranges((r) => !!r.exec);
-    const selrefs = ranges((r) => r.section === '__objc_selrefs');
-    const selectorText = ranges((r) => r.section === '__objc_methname' || r.section === '__cstring');
-    const typeText = ranges((r) => r.section === '__objc_methtype' || r.section === '__cstring');
-    const inside = (addr, rs) => addr != null && rs.some(([lo, hi]) => addr >= lo && addr < hi);
-    const i32 = (p) => BigInt(dv.getInt32(p, true));
-    const u64 = (p) => dv.getBigUint64(p, true);
-    const vm = BigInt(sectionVM);
-
-    for (let p = 0; p + 8 <= buf.length; p += 4) {
-      const raw = dv.getUint32(p, true);
-      const count = dv.getUint32(p + 4, true);
-      if (!count || count > 20000) continue;
-      const relative = !!(raw & 0x80000000);
-      const directSelector = !!(raw & 0x40000000);
-      const stride = raw & 0xfffc;
-      if (relative ? (stride < 12 || stride > 256) : (stride < 24 || stride > 256)) continue;
-      const bytes = 8 + count * stride;
-      if (!Number.isSafeInteger(bytes) || p + bytes > buf.length) continue;
-
-      const imps = [];
-      let valid = true;
-      for (let i = 0; i < count; i++) {
-        const q = p + 8 + i * stride;
-        const entry = vm + BigInt(q);
-        let nameAddr, typeAddr, imp;
-        if (relative) {
-          nameAddr = entry + i32(q);
-          typeAddr = entry + 4n + i32(q + 4);
-          imp = entry + 8n + i32(q + 8);
-          const nameRanges = directSelector ? selectorText : selrefs;
-          if (!inside(nameAddr, nameRanges)) { valid = false; break; }
-        } else {
-          nameAddr = objcMethodPointer(u64(q), imageBase);
-          typeAddr = objcMethodPointer(u64(q + 8), imageBase);
-          imp = objcMethodPointer(u64(q + 16), imageBase);
-          if (!inside(nameAddr, selectorText)) { valid = false; break; }
-        }
-        if (!inside(typeAddr, typeText) || !inside(imp, exec) || (imp % align) !== 0n) {
-          valid = false; break;
-        }
-        imps.push(imp);
+    const inside = (addr, rs) => {
+      /* #8798: the authority sets are sorted disjoint interval lists, so an
+       * address membership check is a binary search instead of a linear
+       * `some()` over every section. Validation is O(methods x log regions)
+       * rather than O(methods x regions). */
+      if (addr == null || rs.length === 0) return false;
+      let lo = 0, hi = rs.length - 1, found = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (rs[mid][0] <= addr) { found = mid; lo = mid + 1; } else hi = mid - 1;
       }
-      if (valid) for (const imp of imps) out.add(imp);
-    }
-    return Array.from(out).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  }
+      return found >= 0 && addr < rs[found][1];
+    };
+     const i32 = (p) => BigInt(dv.getInt32(p, true));
+     const u64 = (p) => dv.getBigUint64(p, true);
+     const vm = BigInt(sectionVM);
+
+     for (let p = 0; p + 8 <= buf.length; p += 4) {
+       if (shouldCancel && shouldCancel()) return finish('cancelled');
+       if (++work > workLimit) return finish('work-limit');
+       const raw = dv.getUint32(p, true);
+       const count = dv.getUint32(p + 4, true);
+       if (!count || count > 20000) continue;
+       const relative = !!(raw & 0x80000000);
+       const directSelector = !!(raw & 0x40000000);
+       const stride = raw & 0xfffc;
+       if (relative ? (stride < 12 || stride > 256) : (stride < 24 || stride > 256)) continue;
+       const bytes = 8 + count * stride;
+       if (!Number.isSafeInteger(bytes) || p + bytes > buf.length) continue;
+
+       const imps = [];
+       let valid = true;
+       for (let i = 0; i < count; i++) {
+         work++;
+         if (work > workLimit || (shouldCancel && shouldCancel())) {
+           return finish(work > workLimit ? 'work-limit' : 'cancelled');
+         }
+         const q = p + 8 + i * stride;
+         const entry = vm + BigInt(q);
+         let nameAddr, typeAddr, imp;
+         if (relative) {
+           nameAddr = entry + i32(q);
+           typeAddr = entry + 4n + i32(q + 4);
+           imp = entry + 8n + i32(q + 8);
+           const nameRanges = directSelector ? index.selectorText : index.selrefs;
+           if (!inside(nameAddr, nameRanges)) { valid = false; break; }
+         } else {
+           nameAddr = objcMethodPointer(u64(q), imageBase);
+           typeAddr = objcMethodPointer(u64(q + 8), imageBase);
+           imp = objcMethodPointer(u64(q + 16), imageBase);
+           if (!inside(nameAddr, index.selectorText)) { valid = false; break; }
+         }
+         if (!inside(typeAddr, index.typeText) || !inside(imp, index.exec) || (imp % align) !== 0n) {
+           valid = false; break;
+         }
+         imps.push(imp);
+       }
+       if (valid) {
+         for (const imp of imps) {
+           if (out.size >= resultLimit) return finish('result-limit');
+           out.add(imp);
+         }
+         /* Dedicated method lists are packed consecutively/aligned. Skip past the
+          * body we just validated so entry payload cannot be reinterpreted as
+          * fresh overlapping list headers — the same invariant
+          * worker-legacy.js::objcMethodImplementationStarts() enforces (#8811).
+          * Without the skip a periodic byte pattern forged thousands of extra
+          * exact IMPs and made the walk quadratic in the accepted payload. */
+         p += bytes - 4;
+       }
+     }
+     return finish(null);
+   }
 
   /* ── 間接シンボル（__stubs / __got の名前） ───────────── */
 
