@@ -54,21 +54,12 @@ function ownedClone(value) {
   return out;
 }
 
-// #8868: a canonical intervention record is immutable identity-bearing
-// provenance, but the shared core deepFreeze() helper intentionally returns
-// without freezing any ArrayBuffer/ArrayBufferView/SharedArrayBuffer (freezing
-// a typed-array view does not stop element writes through its backing store).
-// That generic policy is correct for ordinary consumers yet is not a complete
-// immutability boundary here: after publication a caller holding the returned
-// record — or InterventionLedger.get()/all()/ancestry(), which hand back the
-// same stored object — could rewrite committed requested/acknowledged bytes in
-// place under an unchanged interventionId, falsify downstream evidence
-// ancestry, and make an exact persisted replay collide against the mutated
-// record. Canonicalize every binary leaf to an owned, frozen byte array BEFORE
-// insertion so the stored content cannot change. The generated identity keeps
-// live-main #8794's pre-canonical type witness, so type-distinct provenance
-// (for example typed bytes vs a plain numeric array) does not alias merely
-// because both store the same immutable byte-array representation.
+// #8868: intervention records are public identity-bearing provenance. Core
+// deepFreeze intentionally skips binary backing stores, so detach binary input
+// and publish only frozen byte arrays. Type identity is still derived from the
+// owned pre-canonical snapshot below, preserving the current-main #8794
+// distinction between typed binary and a plain numeric array. Cyclic explicit-id
+// records fail closed instead of retaining a mutable back-reference.
 function sharedArrayBuffer(value) {
   return typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer;
 }
@@ -84,35 +75,41 @@ function canonicalizeInterventionValue(value, seen = new WeakSet()) {
   if (value == null || typeof value !== 'object') return value;
   const binary = canonicalizeBinaryLeaf(value);
   if (binary !== null) return binary;
-  if (seen.has(value)) return value;
+  if (seen.has(value)) {
+    throw new DebugAdapterError('runtime-invalid-intervention-value', 'intervention values must be acyclic');
+  }
   seen.add(value);
-  if (Array.isArray(value)) {
-    const out = new Array(value.length);
-    for (let index = 0; index < value.length; index += 1) out[index] = canonicalizeInterventionValue(value[index], seen);
+  try {
+    if (Array.isArray(value)) {
+      const out = new Array(value.length);
+      for (let index = 0; index < value.length; index += 1) out[index] = canonicalizeInterventionValue(value[index], seen);
+      return out;
+    }
+    if (value instanceof Map) {
+      const out = new Map();
+      for (const [key, item] of value) out.set(canonicalizeInterventionValue(key, seen), canonicalizeInterventionValue(item, seen));
+      return out;
+    }
+    if (value instanceof Set) {
+      const out = new Set();
+      for (const item of value) out.add(canonicalizeInterventionValue(item, seen));
+      return out;
+    }
+    if (value instanceof Date || value instanceof RegExp) return value;
+    const out = {};
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== 'string') continue;
+      Object.defineProperty(out, key, {
+        value: canonicalizeInterventionValue(value[key], seen),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
     return out;
+  } finally {
+    seen.delete(value);
   }
-  if (value instanceof Map) {
-    const out = new Map();
-    for (const [key, item] of value) out.set(canonicalizeInterventionValue(key, seen), canonicalizeInterventionValue(item, seen));
-    return out;
-  }
-  if (value instanceof Set) {
-    const out = new Set();
-    for (const item of value) out.add(canonicalizeInterventionValue(item, seen));
-    return out;
-  }
-  if (value instanceof Date || value instanceof RegExp) return value;
-  const out = {};
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key !== 'string') continue;
-    Object.defineProperty(out, key, {
-      value: canonicalizeInterventionValue(value[key], seen),
-      enumerable: true,
-      configurable: true,
-      writable: true,
-    });
-  }
-  return out;
 }
 
 function completeness(value, fallback = 'partial') {
@@ -153,22 +150,9 @@ export function createInterventionRecord(input = {}) {
   const kind = required(input.kind, 'runtime-intervention-kind-required', 'intervention kind is required');
   const sequence = optionalSequence(input.sequence);
   const parentInterventionIds = stringArray(input.parentInterventionIds, 'parentInterventionIds');
-  const sourceTarget = ownedClone(input.target ?? null);
-  const sourceRequestedChange = ownedClone(input.requestedChange ?? null);
-  const sourceAcknowledgedResult = ownedClone(input.acknowledgedResult ?? null);
-  const sourceIdentity = {
-    runtimeSessionId,
-    providerId,
-    kind,
-    target: sourceTarget,
-    requestedChange: sourceRequestedChange,
-    sequence,
-    parentInterventionIds,
-  };
-  const identityTypes = lossyTypeWitness(sourceIdentity);
-  const target = canonicalizeInterventionValue(sourceTarget);
-  const requestedChange = canonicalizeInterventionValue(sourceRequestedChange);
-  const acknowledgedResult = canonicalizeInterventionValue(sourceAcknowledgedResult);
+  const target = ownedClone(input.target ?? null);
+  const requestedChange = ownedClone(input.requestedChange ?? null);
+  const acknowledgedResult = ownedClone(input.acknowledgedResult ?? null);
   const identity = {
     runtimeSessionId,
     providerId,
@@ -178,17 +162,22 @@ export function createInterventionRecord(input = {}) {
     sequence,
     parentInterventionIds,
   };
+  // Preserve live-main #8794 exactly: auto ids commit to type-domain provenance
+  // before binary storage is converted into an immutable representation.
   const interventionId = input.interventionId == null
-    ? `intervention_${stableDigest({ identity, typed: identityTypes })}`
+    ? `intervention_${stableDigest({ identity, typed: lossyTypeWitness(identity) })}`
     : required(input.interventionId, 'runtime-intervention-id-invalid', 'intervention id must be a non-empty string');
+  const storedTarget = canonicalizeInterventionValue(target);
+  const storedRequestedChange = canonicalizeInterventionValue(requestedChange);
+  const storedAcknowledgedResult = canonicalizeInterventionValue(acknowledgedResult);
   return deepFreeze({
     interventionId,
     runtimeSessionId,
     providerId,
     kind,
-    target,
-    requestedChange,
-    acknowledgedResult,
+    target: storedTarget,
+    requestedChange: storedRequestedChange,
+    acknowledgedResult: storedAcknowledgedResult,
     sequence,
     parentInterventionIds,
     evidenceIds: stringArray(input.evidenceIds, 'evidenceIds'),
@@ -226,7 +215,7 @@ export class InterventionLedger {
       // returning the existing record for a different execution (a different
       // acknowledged backend result) loses the later occurrence and its
       // provenance. Identical re-ingestion (persisted replay) stays allowed.
-      if (stableStringify(existing) !== stableStringify(record)) {
+      if (stableStringify([existing, lossyTypeWitness(existing)]) !== stableStringify([record, lossyTypeWitness(record)])) {
         throw new DebugAdapterError(
           'runtime-intervention-id-collision',
           `intervention id is already bound to a different record: ${record.interventionId}`,
