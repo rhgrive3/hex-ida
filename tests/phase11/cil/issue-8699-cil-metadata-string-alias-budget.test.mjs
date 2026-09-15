@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict';
 import { buildCil } from '../fixtures/medium-cil.mjs';
 import { parseCil } from '../../../js/managed/cil/parser.js';
-import { parseCil as parseCilBase } from '../../../js/managed/cil/parser-base.js';
-import { overlayCilMetadata } from '../../../js/managed/cil/parser-overlay.js';
+import { readCilMetadataContext } from '../../../js/managed/cil/metadata-context.js';
+import { readCilGenericMetadata } from '../../../js/managed/cil/metadata-generics.js';
+import { createCilMetadataAdmission } from '../../../js/managed/cil/metadata-budget.js';
 
-console.log('[phase11] running issue #8699 CIL metadata #Strings alias / GenericParam budget tests...');
+console.log('[phase11] running issue #8699 CIL metadata #Strings alias interning tests...');
 
-// The public parseCil probe facade collapses every internal fail-closed code to
-// cil-unsupported-binary; the raw overlay path surfaces the specific budgets.
-const rawParse = (bytes, options = {}) => overlayCilMetadata(bytes, parseCilBase(bytes, options), options);
+// `parseCil` collapses internal metadata codes to `cil-unsupported-binary`, so the
+// exact budget/interning authority is observed on the validated metadata context
+// the public pipeline itself builds.
+const rawParse = (bytes, options = {}) => readCilMetadataContext(bytes, options);
 
 // Table 0x04 (Field) row = flags(2) + name(s2) + signature(b2) = 6 bytes.
 // #8699's amplification needs MANY references to ONE shared #Strings entry. A
@@ -36,29 +38,8 @@ function fieldAliasFixture(n, nameLen = 4095) {
   }).bytes;
 }
 
-function genericParamAliasFixture(n, nameLen = 2048) {
-  const name = 'g'.repeat(nameLen);
-  const pre = buildCil({ leadingStrings: [name] });
-  const nameOff = pre.layout.leadingStringIndex[name];
-  const rows = new Uint8Array(n * 8);
-  const v = new DataView(rows.buffer);
-  for (let i = 0; i < n; i++) {
-    const p = i * 8;
-    v.setUint16(p, i, true);                 // Number = i (contiguous 0..n-1, unique)
-    v.setUint16(p + 2, 0, true);             // Flags
-    v.setUint16(p + 4, (1 << 1) | 0, true);  // Owner = TypeDef rid 1 (tag 0)
-    v.setUint16(p + 6, nameOff, true);       // Name -> one shared #Strings entry
-  }
-  const imageSize = 0x400 + 0x100 + name.length + n * 8 + 0x1400;
-  return buildCil({
-    types: [{ name: 'T', namespace: 'N', fieldList: 1, methodList: 1 }],
-    leadingStrings: [name],
-    extraRows: new Map([[0x2a, { count: n, bytes: rows }]]),
-    imageSize, metadataSize: imageSize - 0x300,
-  }).bytes;
-}
-
-
+// One shared #Strings entry referenced by the definitions reader (TypeDef.Name)
+// and by the GenericParam reader (4 rows) in the same parse.
 function crossReaderAliasFixture(n = 4, nameLen = 2048) {
   const shared = 'x'.repeat(nameLen);
   const pre = buildCil({
@@ -82,14 +63,44 @@ function crossReaderAliasFixture(n = 4, nameLen = 2048) {
     leadingStrings: [shared],
     extraRows: new Map([[0x2a, { count: n, bytes: rows }]]),
   });
-  // Point TypeDef.Name at the same exact first leading #Strings offset used by
-  // every GenericParam. The unreferenced placeholder remains in the heap so the
-  // test checks reference accounting, not whole-heap content.
+  // Point TypeDef.Name at the exact same leading #Strings offset used by every
+  // GenericParam. The referenced entry is decoded once across both readers.
   const tablesStream = built.layout.streams.find(stream => stream.name === '#~' || stream.name === '#-');
   const typeDefPos = tablesStream.offset + built.layout.tables.offsets.get(0x02);
   new DataView(built.bytes.buffer, built.bytes.byteOffset, built.bytes.byteLength)
     .setUint16(typeDefPos + 4, nameOff, true);
   return built.bytes;
+}
+
+function countSharedDecodes(run, sharedLen) {
+  const originalDecode = TextDecoder.prototype.decode;
+  let sharedDecodes = 0;
+  TextDecoder.prototype.decode = function (...args) {
+    const view = args[0];
+    if (view && typeof view.byteLength === 'number' && view.byteLength === sharedLen) sharedDecodes += 1;
+    return originalDecode.apply(this, args);
+  };
+  try { return { result: run(), sharedDecodes }; }
+  finally { TextDecoder.prototype.decode = originalDecode; }
+}
+
+// Count chargeStringBytes calls carrying exactly `lengthBytes` through a wrapped
+// admission, so the interning authority must neither re-charge an aliased offset
+// nor launder a charge the per-reference path would have made.
+function countingAdmission(lengthBytes) {
+  const base = createCilMetadataAdmission({});
+  let charges = 0;
+  const counting = {
+    version: base.version,
+    limits: base.limits,
+    chargeStringBytes: (count) => { if (count === lengthBytes) charges += 1; return base.chargeStringBytes(count); },
+    chargeRows: (...args) => base.chargeRows(...args),
+    chargeObjects: (count) => base.chargeObjects(count),
+    chargeOperations: (count) => base.chargeOperations(count),
+    usage: () => base.usage(),
+    snapshot: () => base.snapshot(),
+  };
+  return { admission: counting, charges: () => charges };
 }
 
 // Correctness: distinct field names must still decode losslessly and stay distinct.
@@ -112,28 +123,32 @@ function crossReaderAliasFixture(n = 4, nameLen = 2048) {
   assert.equal(image.fields[1].name, nameB);
 }
 
-// Interning (red: pre-fix re-decodes the shared entry once per reference). Each
-// reference to the long shared name must be decoded at most once per parse pass.
+// Interning: 2 000 references to one shared #Strings entry decode it exactly
+// once in the context the public pipeline validates (red pre-fix: one decode
+// per reference).
 {
-  const originalDecode = TextDecoder.prototype.decode;
-  let sharedDecodes = 0;
-  TextDecoder.prototype.decode = function (...args) {
-    const view = args[0];
-    const len = view && typeof view.byteLength === 'number' ? view.byteLength : -1;
-    if (len === 4095) sharedDecodes += 1;
-    return originalDecode.apply(this, args);
-  };
-  let image;
-  try { image = parseCil(fieldAliasFixture(2000), { binaryId: 'intern' }); }
-  finally { TextDecoder.prototype.decode = originalDecode; }
-  assert.equal(image.fields.length, 2000);
-  assert.equal(image.fields[0].name.length, 4095);
-  assert.ok(sharedDecodes <= 16,
+  const bytes = fieldAliasFixture(2000);
+  const { result, sharedDecodes } = countSharedDecodes(
+    () => rawParse(bytes, { binaryId: 'intern' }), 4095,
+  );
+  assert.equal(result.defs.fields.length, 2000);
+  assert.equal(result.defs.fields[0].name.length, 4095);
+  assert.equal(sharedDecodes, 1,
     `2000 references to one shared #Strings entry must intern it (sharedDecodes=${sharedDecodes})`);
 }
 
-// Availability: the default (generous) budget must still ADMIT a large repeated-
-// offset alias table and intern it correctly (a tiny budget above rejected it).
+// Admission: the same 2 000 aliases must be charged against #String bytes once,
+// not once per reference (red pre-fix: 2 000 charges).
+{
+  const { admission, charges } = countingAdmission(4095);
+  rawParse(fieldAliasFixture(2000), { binaryId: 'charge-once', metadataAdmission: admission });
+  assert.equal(charges(), 1, 'aliased #Strings offsets must be admitted exactly once');
+}
+
+// Availability (the reported failure shape): the default budget must still ADMIT
+// a large repeated-offset alias table through the public parse (red pre-fix: the
+// per-reference charge walks `maxStringBytes` past its 8 MiB default ceiling and
+// the valid image is refused).
 {
   const image = parseCil(fieldAliasFixture(5000), { binaryId: 'default' });
   assert.equal(image.fields.length, 5000);
@@ -141,66 +156,68 @@ function crossReaderAliasFixture(n = 4, nameLen = 2048) {
   assert.equal(image.fields[4999].name, image.fields[0].name);
 }
 
-// Admission: an injected tiny string budget must fail closed with a deterministic
-// code before the oversized shared string is materialized (red: no budget, parses).
-assert.throws(
-  () => rawParse(fieldAliasFixture(2000), { binaryId: 'budget', resourceBudget: { maxStringBytes: 64 } }),
-  /cil-metadata-resource-limit-strings/,
-  'string-byte budget must reject a large #Strings entry before materialization',
-);
-
-// GenericParam: shared names interned and a contiguous, unique number series under
-// one owner stays valid after the O(n^2) includes() -> Set rewrite.
+// Cross-reader interning: TypeDef.Name and every GenericParam.Name share ONE
+// heap offset; the entry is decoded exactly once and charged exactly once for
+// the whole parse (red pre-fix: definitions decodes it once, the GenericParam
+// reader re-decodes it once per row because both readers index the same
+// #Strings stream object that the pipeline hands to each).
 {
-  const image = parseCil(genericParamAliasFixture(40, 2048), { binaryId: 'gparam' });
-  assert.equal(image.genericParams.length, 40);
-  assert.equal(image.genericParams[0].name.length, 2048);
+  const bytes = crossReaderAliasFixture(4, 2048);
+  const { admission, charges } = countingAdmission(2048);
+  const { result, sharedDecodes } = countSharedDecodes(() => {
+    const context = rawParse(bytes, { binaryId: 'cross-reader', metadataAdmission: admission });
+    const generic = readCilGenericMetadata(context.bytes, context.view, context.layout, context.stringsStream, context.defs);
+    return { context, generic };
+  }, 2048);
+  assert.equal(result.context.defs.types.length, 1);
+  assert.equal(result.context.defs.types[0].name.length, 2048);
+  assert.equal(result.generic.genericParams.length, 4);
+  assert.equal(sharedDecodes, 1,
+    `definitions + 4 GenericParam references must share one decode (sharedDecodes=${sharedDecodes})`);
+  assert.equal(charges(), 1);
 }
 
-
-// #8699: the aggregate parse budget owns exact #Strings interning across
-// definitions and GenericParam readers. The one 2 KiB referenced heap entry is
-// admitted once, not once per reader.
+// Admission is never laundered: a tiny #String byte budget must still reject a
+// large referenced entry deterministically.
 {
-  const image = parseCil(crossReaderAliasFixture(), {
-    binaryId: 'parser-wide-string-cache',
-    resourceBudget: { maxStrings: 1, maxStringBytes: 2048 },
-  });
-  assert.equal(image.types[0].name.length, 2048);
-  assert.equal(image.genericParams.length, 4);
-  assert.ok(image.genericParams.every(row => row.name === image.types[0].name));
+  assert.throws(
+    () => rawParse(fieldAliasFixture(2000), { binaryId: 'budget', metadataBudget: { maxStringBytes: 64 } }),
+    /cil-metadata-resource-limit-string-bytes/,
+    'string-byte budget must reject a large #Strings entry before materialization',
+  );
 }
 
-// The public metadata + manifest pipeline must likewise charge each canonical
-// retained definition row once. One TypeDef + four GenericParam rows is exactly
-// five rows; reconstructing TypeDef for manifest/security would exceed this.
-{
-  const image = parseCil(crossReaderAliasFixture(), {
-    binaryId: 'parser-wide-row-reuse',
-    resourceBudget: { maxRows: 5 },
-  });
-  assert.equal(image.types.length, 1);
-  assert.equal(image.genericParams.length, 4);
-}
-
-// GenericParam duplicate-number detection must remain exact with the Set.
+// Existing GenericParam authorities must survive the rewiring: a contiguous,
+// unique number series under one owner stays valid, and a duplicate Number
+// still fails closed.
 {
   const name = 'g'.repeat(64);
   const pre = buildCil({ leadingStrings: [name] });
   const nameOff = pre.layout.leadingStringIndex[name];
-  const rows = new Uint8Array(3 * 8); const v = new DataView(rows.buffer);
-  const write = (i, number) => { const p = i * 8;
-    v.setUint16(p, number, true); v.setUint16(p + 2, 0, true);
-    v.setUint16(p + 4, (1 << 1) | 0, true); v.setUint16(p + 6, nameOff, true); };
-  write(0, 0); write(1, 1); write(2, 1); // duplicate Number 1
-  const imageSize = 0x400 + 0x100 + name.length + rows.length + 0x1400;
-  const bytes = buildCil({
+  const writeRows = (numbers) => {
+    const rows = new Uint8Array(numbers.length * 8); const v = new DataView(rows.buffer);
+    numbers.forEach((number, i) => {
+      const p = i * 8;
+      v.setUint16(p, number, true); v.setUint16(p + 2, 0, true);
+      v.setUint16(p + 4, (1 << 1) | 0, true); v.setUint16(p + 6, nameOff, true);
+    });
+    return rows;
+  };
+  const bytesFor = (rows) => buildCil({
     types: [{ name: 'T', namespace: 'N', fieldList: 1, methodList: 1 }],
-    leadingStrings: [name], extraRows: new Map([[0x2a, { count: 3, bytes: rows }]]),
-    imageSize, metadataSize: imageSize - 0x300,
+    leadingStrings: [name], extraRows: new Map([[0x2a, { count: rows.length / 8, bytes: rows }]]),
+    imageSize: 0x400 + 0x100 + name.length + rows.length + 0x1400, metadataSize: 0x1400,
   }).bytes;
-  assert.throws(() => rawParse(bytes, { binaryId: 'dup' }), /cil-generic-param-number-duplicate/,
-    'duplicate GenericParam.Number must still fail closed');
+  const genericOf = (bytes) => {
+    const context = rawParse(bytes, { binaryId: 'ok' });
+    return readCilGenericMetadata(context.bytes, context.view, context.layout, context.stringsStream, context.defs);
+  };
+  assert.equal(genericOf(bytesFor(writeRows([0, 1, 2]))).genericParams.length, 3);
+  assert.throws(
+    () => genericOf(bytesFor(writeRows([0, 1, 1]))),
+    /cil-generic-param-number-duplicate/,
+    'duplicate GenericParam.Number must still fail closed',
+  );
 }
 
-console.log('[phase11] issue #8699 CIL metadata #Strings alias / GenericParam budget tests passed');
+console.log('[phase11] issue #8699 CIL metadata #Strings alias interning tests passed');

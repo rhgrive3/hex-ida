@@ -47,7 +47,10 @@ function discoveryHarness() {
     return handle.promise;
   };
   installDemandDrivenAnalysis(app);
-  return { app, requests, producers: discoveryProducersByApp.get(app), key: '1:text-a' };
+  // #8809 sync: #4243 widened the producer cache key to
+  // `${epoch}:${artifactIdentity}:${regionSetKey}`; this harness has no
+  // binary id and slice -1, so the artifact segment is `|slice:-1`.
+  return { app, requests, producers: discoveryProducersByApp.get(app), key: '1:|slice:-1:text-a' };
 }
 
 test('#4217 a late-abandoned producer must not evict the entry that replaced it', async () => {

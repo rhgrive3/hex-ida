@@ -672,6 +672,12 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
             valueKind: field.valueKind,
             valueBits: field.bits,
             valueCategory: field.category,
+            // Field *storage* width, proven by the resolved descriptor. Without
+            // it the shared bridge defaults a missing width to four bytes and
+            // publishes every `J`/`D`/`B`/`Z`/`C`/`S`/reference access as a
+            // complete 32-bit memory access (#8799).
+            byteWidth: field.storageByteWidth,
+            storageBits: field.storageBits,
             isWrite,
             // Canonical field location identity: downstream semantic memory
             // reasoning needs same-field write→read and distinct-field
@@ -690,6 +696,12 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
             // the access cannot be published as an exact plain access.
             completeness = 'partial';
             unknownEffects.push({ category: 'memory', reason: 'jvm-field-volatility-unresolvable' });
+          }
+          if (!Number.isSafeInteger(field.storageByteWidth) || field.storageByteWidth <= 0) {
+            // A field whose storage width the descriptor cannot prove must not
+            // be promoted to a canonical access of an invented width either.
+            completeness = 'partial';
+            unknownEffects.push({ category: 'memory', reason: 'jvm-field-storage-width-unresolved' });
           }
         }
         break;

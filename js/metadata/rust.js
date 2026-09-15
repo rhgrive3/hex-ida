@@ -48,6 +48,136 @@ const RUST_V0_BASIC_TYPES = Object.freeze({
   z: '!',
 });
 
+/** Rust v0 demangling resource ceilings (#8766, #8655). */
+const RUST_V0_DEFAULT_MAX_OUTPUT_CHARS = 1_000_000;
+const RUST_V0_DEFAULT_MAX_OPS = 2_000_000;
+const RUST_V0_DEFAULT_MAX_SCALARS = 8_192;
+const RUST_V0_DEFAULT_MAX_ENCODED_BYTES = 65_536;
+const RUST_V0_DEFAULT_MAX_SPLICE_WORK = 2_000_000;
+
+function positiveBudget(value, fallback) {
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function createDemangleBudget(overrides = {}, ceilings = null) {
+  const o = overrides && typeof overrides === 'object' ? overrides : {};
+  const configured = {
+    maxOutputChars: positiveBudget(o.maxOutputChars, RUST_V0_DEFAULT_MAX_OUTPUT_CHARS),
+    maxOps: positiveBudget(o.maxOps, RUST_V0_DEFAULT_MAX_OPS),
+    maxScalars: positiveBudget(o.maxScalars, RUST_V0_DEFAULT_MAX_SCALARS),
+    maxEncodedBytes: positiveBudget(o.maxEncodedBytes, RUST_V0_DEFAULT_MAX_ENCODED_BYTES),
+    maxSpliceWork: positiveBudget(o.maxSpliceWork, RUST_V0_DEFAULT_MAX_SPLICE_WORK),
+  };
+  const cap = (key) => {
+    const ceiling = ceilings?.[key];
+    return Number.isSafeInteger(ceiling) && ceiling >= 0
+      ? Math.min(configured[key], ceiling)
+      : configured[key];
+  };
+  return {
+    ops: 0,
+    outputChars: 0,
+    scalars: 0,
+    encodedBytes: 0,
+    spliceWork: 0,
+    maxOutputChars: cap('maxOutputChars'),
+    maxOps: cap('maxOps'),
+    maxScalars: cap('maxScalars'),
+    maxEncodedBytes: cap('maxEncodedBytes'),
+    maxSpliceWork: cap('maxSpliceWork'),
+    exceeded: false,
+  };
+}
+
+function v0ChargeOutput(state, length) {
+  const b = state.budget;
+  if (!Number.isSafeInteger(length) || length < 0 || length > b.maxOutputChars - b.outputChars) {
+    b.exceeded = true;
+    return false;
+  }
+  b.outputChars += length;
+  return true;
+}
+
+function v0ChargeOp(state) {
+  const b = state.budget;
+  if (b.ops >= b.maxOps) {
+    b.exceeded = true;
+    return false;
+  }
+  b.ops += 1;
+  return true;
+}
+
+function v0ChargePunycode(state, { encodedBytes = 0, scalars = 0, spliceWork = 0 } = {}) {
+  if (!state || !state.budget) return true;
+  const b = state.budget;
+  if (![encodedBytes, scalars, spliceWork].every((value) => Number.isSafeInteger(value) && value >= 0)
+      || encodedBytes > b.maxEncodedBytes - b.encodedBytes
+      || scalars > b.maxScalars - b.scalars
+      || spliceWork > b.maxSpliceWork - b.spliceWork) {
+    b.exceeded = true;
+    return false;
+  }
+  b.encodedBytes += encodedBytes;
+  b.scalars += scalars;
+  b.spliceWork += spliceWork;
+  return true;
+}
+
+function v0ResolveBackref(str, state, kind, offset, depth) {
+  const key = `${kind}:${offset}`;
+  const hit = state.memo.get(key);
+  if (hit && depth + 1 + hit.span <= state.maxDepth) {
+    return v0ChargeOutput(state, hit.text.length) ? hit.text : null;
+  }
+  const childDepth = depth + 1;
+  const refState = {
+    pos: offset,
+    maxDepth: state.maxDepth,
+    depthExceeded: false,
+    budget: state.budget,
+    memo: state.memo,
+    maxSeenDepth: childDepth,
+  };
+  const text = kind === 'type'
+    ? parseV0Type(str, refState, childDepth)
+    : kind === 'const'
+      ? parseV0Const(str, refState, childDepth)
+      : parseV0Path(str, refState, childDepth);
+  if (refState.depthExceeded) state.depthExceeded = true;
+  return text;
+}
+
+function v0MemoizeRender(state, kind, entryPos, depth, text) {
+  if (!state.depthExceeded && !state.budget.exceeded) {
+    state.memo.set(`${kind}:${entryPos}`, { text, span: Math.max(0, state.maxSeenDepth - depth) });
+  }
+  return text;
+}
+
+/** Charge an already materialized leaf render. */
+function v0CacheRender(state, kind, entryPos, depth, text) {
+  if (typeof text !== 'string') return text;
+  if (!v0ChargeOutput(state, text.length)) return null;
+  return v0MemoizeRender(state, kind, entryPos, depth, text);
+}
+
+/**
+ * Reserve the exact output charge before allocating a composed render. This is
+ * the hard pre-allocation gate for joins/templates: if the composition cannot
+ * fit, its builder is never invoked (#8766 review blocker).
+ */
+function v0CacheComposedRender(state, kind, entryPos, depth, length, build) {
+  if (!v0ChargeOutput(state, length)) return null;
+  const text = build();
+  if (typeof text !== 'string' || text.length !== length) {
+    state.budget.exceeded = true;
+    return null;
+  }
+  return v0MemoizeRender(state, kind, entryPos, depth, text);
+}
+
 /**
  * Parses a Rust v0 base-62 integer.
  */
@@ -74,7 +204,7 @@ function parseV0Base62(str, pos) {
  * Decodes a Punycode string (RFC 3492) as used in Rust v0 mangling.
  * In Rust v0, the delimiter is '_' instead of '-'.
  */
-function decodePunycode(input) {
+function decodePunycode(input, state) {
   const base = 36;
   const tmin = 1;
   const tmax = 26;
@@ -82,6 +212,8 @@ function decodePunycode(input) {
   const damp = 700;
   const initialBias = 72;
   const initialN = 128;
+
+  if (!v0ChargePunycode(state, { encodedBytes: input.length })) return null;
 
   function adapt(delta, numpoints, firsttime) {
     let d = firsttime ? Math.floor(delta / damp) : Math.floor(delta / 2);
@@ -108,6 +240,7 @@ function decodePunycode(input) {
       output.push(String.fromCharCode(code));
     }
     pos = delimIndex + 1;
+    if (!v0ChargePunycode(state, { scalars: output.length })) return null;
   }
 
   while (pos < input.length) {
@@ -134,6 +267,7 @@ function decodePunycode(input) {
     n += Math.floor(i / outLen);
     if (n > 0x10ffff) return null;
     i = i % outLen;
+    if (!v0ChargePunycode(state, { scalars: 1, spliceWork: outLen })) return null;
     output.splice(i, 0, String.fromCodePoint(n));
     i++;
   }
@@ -143,7 +277,7 @@ function decodePunycode(input) {
 /**
  * Parses a Rust v0 identifier (length-prefixed string, possibly with disambiguator).
  */
-function parseV0Identifier(str, pos) {
+function parseV0Identifier(str, pos, state) {
   let isDisambiguated = false;
   let p = pos;
   if (p < str.length && str[p] === 's') {
@@ -185,7 +319,7 @@ function parseV0Identifier(str, pos) {
   let identifier = rawIdent;
   if (isUnicode) {
     try {
-      const decoded = decodePunycode(rawIdent);
+      const decoded = decodePunycode(rawIdent, state);
       if (decoded === null) return null;
       identifier = decoded;
     } catch {
@@ -206,6 +340,8 @@ function parseV0Identifier(str, pos) {
  */
 function parseV0Const(str, state, depth = 0) {
   if (state.pos >= str.length || depth > 32) return null;
+  if (depth > state.maxSeenDepth) state.maxSeenDepth = depth;
+  if (!v0ChargeOp(state)) return null;
   if (str[state.pos] === 'p') {
     state.pos++;
     return '_';
@@ -216,8 +352,7 @@ function parseV0Const(str, state, depth = 0) {
     if (!br) return null;
     if (br.value < 0 || br.value >= state.pos - 1) return null;
     state.pos = br.nextPos;
-    const refState = { pos: br.value };
-    return parseV0Const(str, refState, depth + 1);
+    return v0ResolveBackref(str, state, 'const', br.value, depth);
   }
   const constType = parseV0Type(str, state, depth + 1);
   if (!constType) return null;
@@ -230,13 +365,9 @@ function parseV0Const(str, state, depth = 0) {
   while (state.pos < str.length && /[0-9a-fA-F]/.test(str[state.pos])) {
     hexStr += str[state.pos++];
   }
-  if (state.pos >= str.length || str[state.pos] !== '_') {
-    return null;
-  }
-  state.pos++; // consume '_'
-  if (hexStr === '') {
-    return '0';
-  }
+  if (state.pos >= str.length || str[state.pos] !== '_') return null;
+  state.pos++;
+  if (hexStr === '') return '0';
   try {
     const val = BigInt('0x' + hexStr);
     return isNegative ? `-${val.toString()}` : val.toString();
@@ -251,6 +382,9 @@ function parseV0Type(str, state, depth = 0) {
     state.depthExceeded = true;
     return null;
   }
+  if (depth > state.maxSeenDepth) state.maxSeenDepth = depth;
+  if (!v0ChargeOp(state)) return null;
+  const entryPos = state.pos;
   const c = str[state.pos];
   if (RUST_V0_BASIC_TYPES[c]) {
     state.pos++;
@@ -266,13 +400,15 @@ function parseV0Type(str, state, depth = 0) {
     }
     const inner = parseV0Type(str, state, depth + 1);
     if (!inner) return null;
-    return c === 'R' ? `&${inner}` : `&mut ${inner}`;
+    const prefix = c === 'R' ? '&' : '&mut ';
+    return v0CacheComposedRender(state, 'type', entryPos, depth, prefix.length + inner.length, () => `${prefix}${inner}`);
   }
   if (c === 'P' || c === 'O') {
     state.pos++;
     const inner = parseV0Type(str, state, depth + 1);
     if (!inner) return null;
-    return c === 'P' ? `*const ${inner}` : `*mut ${inner}`;
+    const prefix = c === 'P' ? '*const ' : '*mut ';
+    return v0CacheComposedRender(state, 'type', entryPos, depth, prefix.length + inner.length, () => `${prefix}${inner}`);
   }
   if (c === 'A') {
     state.pos++;
@@ -280,7 +416,8 @@ function parseV0Type(str, state, depth = 0) {
     if (!elemType) return null;
     const len = parseV0Const(str, state, depth + 1);
     if (len === null) return null;
-    return `[${elemType}; ${len}]`;
+    const renderLength = 1 + elemType.length + 2 + len.length + 1;
+    return v0CacheComposedRender(state, 'type', entryPos, depth, renderLength, () => `[${elemType}; ${len}]`);
   }
   if (c === 'B') {
     state.pos++;
@@ -288,8 +425,7 @@ function parseV0Type(str, state, depth = 0) {
     if (!br) return null;
     if (br.value < 0 || br.value >= state.pos - 1) return null;
     state.pos = br.nextPos;
-    const refState = { pos: br.value };
-    return parseV0Type(str, refState, depth + 1);
+    return v0ResolveBackref(str, state, 'type', br.value, depth);
   }
   return parseV0Path(str, state, depth + 1);
 }
@@ -311,22 +447,24 @@ function parseV0Path(str, state, depth = 0) {
     state.depthExceeded = true;
     return null;
   }
+  if (depth > state.maxSeenDepth) state.maxSeenDepth = depth;
+  if (!v0ChargeOp(state)) return null;
+  const entryPos = state.pos;
   const tag = str[state.pos++];
 
   if (tag === 'C') {
-    const ident = parseV0Identifier(str, state.pos);
+    const ident = parseV0Identifier(str, state.pos, state);
     if (!ident) return null;
     state.pos = ident.nextPos;
-    return ident.identifier;
+    return v0CacheRender(state, 'path', entryPos, depth, ident.identifier);
   }
 
   if (tag === 'N') {
     if (state.pos >= str.length) return null;
-    const ns = str[state.pos++]; // namespace character
+    const ns = str[state.pos++];
     const parent = parseV0Path(str, state, depth + 1);
     if (!parent) return null;
-    // A nested path always includes an identifier, even when its length is 0.
-    const ident = parseV0Identifier(str, state.pos);
+    const ident = parseV0Identifier(str, state.pos, state);
     if (!ident) return null;
     state.pos = ident.nextPos;
     let name = ident.identifier;
@@ -335,26 +473,27 @@ function parseV0Path(str, state, depth = 0) {
       else if (ns === 'S') name = '{shim}';
       else name = `{${ns}}`;
     }
-    return `${parent}::${name}`;
+    const renderLength = parent.length + 2 + name.length;
+    return v0CacheComposedRender(state, 'path', entryPos, depth, renderLength, () => `${parent}::${name}`);
   }
 
   if (tag === 'M') {
     const implPath = parseV0ImplPath(str, state, depth + 1);
     const typeName = parseV0Type(str, state, depth + 1);
-    if (implPath && typeName) return `<${implPath}::${typeName}>`;
-    return null;
+    if (!implPath || !typeName) return null;
+    const renderLength = 1 + implPath.length + 2 + typeName.length + 1;
+    return v0CacheComposedRender(state, 'path', entryPos, depth, renderLength, () => `<${implPath}::${typeName}>`);
   }
 
   if (tag === 'X') {
-    // All three components of `X` impl-path type trait-path are mandatory;
-    // `<type as trait>` placeholders would admit truncated symbols (#5866).
     const implPath = parseV0ImplPath(str, state, depth + 1);
     if (!implPath) return null;
     const typeName = parseV0Type(str, state, depth + 1);
     if (!typeName) return null;
     const traitPath = parseV0Path(str, state, depth + 1);
     if (!traitPath) return null;
-    return `<${typeName} as ${traitPath}>`;
+    const renderLength = 1 + typeName.length + 4 + traitPath.length + 1;
+    return v0CacheComposedRender(state, 'path', entryPos, depth, renderLength, () => `<${typeName} as ${traitPath}>`);
   }
 
   if (tag === 'I') {
@@ -363,6 +502,7 @@ function parseV0Path(str, state, depth = 0) {
     const args = [];
     let gCount = 0;
     while (state.pos < str.length && str[state.pos] !== 'E' && gCount++ < 32) {
+      if (state.budget.exceeded) return null;
       if (str[state.pos] === 'L') {
         state.pos++;
         const lt = parseV0Base62(str, state.pos);
@@ -381,7 +521,11 @@ function parseV0Path(str, state, depth = 0) {
     }
     if (state.pos >= str.length || str[state.pos] !== 'E') return null;
     state.pos++;
-    return args.length > 0 ? `${base}<${args.join(', ')}>` : base;
+    if (args.length === 0) return v0CacheRender(state, 'path', entryPos, depth, base);
+    let argsLength = (args.length - 1) * 2;
+    for (const arg of args) argsLength += arg.length;
+    const renderLength = base.length + 1 + argsLength + 1;
+    return v0CacheComposedRender(state, 'path', entryPos, depth, renderLength, () => `${base}<${args.join(', ')}>`);
   }
 
   if (tag === 'B') {
@@ -389,14 +533,13 @@ function parseV0Path(str, state, depth = 0) {
     if (!br) return null;
     if (br.value < 0 || br.value >= state.pos - 1) return null;
     state.pos = br.nextPos;
-    const refState = { pos: br.value };
-    return parseV0Path(str, refState, depth + 1);
+    return v0ResolveBackref(str, state, 'path', br.value, depth);
   }
 
-  const ident = parseV0Identifier(str, state.pos - 1);
+  const ident = parseV0Identifier(str, state.pos - 1, state);
   if (ident) {
     state.pos = ident.nextPos;
-    return ident.identifier;
+    return v0CacheRender(state, 'path', entryPos, depth, ident.identifier);
   }
 
   return null;
@@ -410,7 +553,7 @@ function parseV0Path(str, state, depth = 0) {
  * optional vendor-specific suffix starting with `.` or `$`. Unrecognized
  * trailing bytes leave the symbol unparsed instead of silently succeeding.
  */
-export function demangleRustV0(symbol, maxDepth = 32) {
+export function demangleRustV0(symbol, maxDepth = 32, budgetOverrides, budgetCeilings = null) {
   if (typeof symbol !== 'string') {
     return { original: symbol, demangled: '', parsed: false, reason: 'not-primitive-string' };
   }
@@ -420,25 +563,47 @@ export function demangleRustV0(symbol, maxDepth = 32) {
   }
 
   const depthLimit = Number.isSafeInteger(maxDepth) && maxDepth >= 0 ? maxDepth : 32;
-  const state = { pos: 0, maxDepth: depthLimit, depthExceeded: false };
+  const state = {
+    pos: 0,
+    maxDepth: depthLimit,
+    depthExceeded: false,
+    budget: createDemangleBudget(budgetOverrides, budgetCeilings),
+    memo: new Map(),
+    maxSeenDepth: 0,
+  };
+  const stats = () => ({
+    ops: state.budget.ops,
+    outputChars: state.budget.outputChars,
+    scalars: state.budget.scalars,
+    encodedBytes: state.budget.encodedBytes,
+    spliceWork: state.budget.spliceWork,
+  });
   let demangled = null;
 
   try {
     demangled = parseV0Path(s, state, 0);
   } catch {
-    return { original: symbol, demangled: symbol, parsed: false, reason: 'demangle-error' };
+    return { original: symbol, demangled: symbol, parsed: false, reason: 'demangle-error', stats: stats() };
   }
 
+  if (state.budget.exceeded) {
+    return { original: symbol, demangled: symbol, parsed: false, reason: 'v0-resource-budget-exceeded', resourceLimited: true, stats: stats() };
+  }
   if (state.depthExceeded) {
-    return { original: symbol, demangled: symbol, parsed: false, reason: 'v0-depth-limit-exceeded' };
+    return { original: symbol, demangled: symbol, parsed: false, reason: 'v0-depth-limit-exceeded', stats: stats() };
   }
-
   if (!demangled) {
-    return { original: symbol, demangled: symbol, parsed: false, reason: 'unrecognized-v0-structure' };
+    return { original: symbol, demangled: symbol, parsed: false, reason: 'unrecognized-v0-structure', stats: stats() };
   }
-
-  if (state.pos < s.length && !v0SuffixParses(s, state.pos, depthLimit)) {
-    return { original: symbol, demangled: symbol, parsed: false, reason: 'unconsumed-v0-trailing-bytes' };
+  if (state.pos < s.length && !v0SuffixParses(s, state.pos, depthLimit, state.budget, state.memo)) {
+    return {
+      original: symbol,
+      demangled: symbol,
+      parsed: false,
+      reason: state.budget.exceeded ? 'v0-resource-budget-exceeded' : 'unconsumed-v0-trailing-bytes',
+      resourceLimited: state.budget.exceeded || undefined,
+      stats: stats(),
+    };
   }
 
   const components = demangled.split('::');
@@ -449,21 +614,18 @@ export function demangleRustV0(symbol, maxDepth = 32) {
     components,
     crate: components[0] || null,
     generation: 'v0',
+    stats: stats(),
   };
 }
 
-/**
- * Checks the unconsumed remainder of a v0 symbol against the grammar suffix
- * productions: an optional instantiating crate path followed by an optional
- * vendor-specific suffix (`.` or `$...`). Anything else is not v0.
- */
-function v0SuffixParses(s, pos, maxDepth) {
+/** Checks an optional v0 instantiating-crate/vendor suffix. */
+function v0SuffixParses(s, pos, maxDepth, budget, memo) {
   if (pos >= s.length) return true;
   if (s[pos] === '.' || s[pos] === '$') return true;
-  const state = { pos, maxDepth, depthExceeded: false };
+  const state = { pos, maxDepth, depthExceeded: false, budget, memo, maxSeenDepth: 0 };
   try {
     const crate = parseV0Path(s, state, 0);
-    if (!crate || state.depthExceeded) return false;
+    if (!crate || state.depthExceeded || budget.exceeded) return false;
     if (state.pos >= s.length) return true;
     return s[state.pos] === '.' || s[state.pos] === '$';
   } catch {
@@ -559,13 +721,13 @@ export function demangleRustLegacy(symbol) {
 /**
  * Demangles any Rust symbol (v0 or legacy).
  */
-export function demangleRustSymbol(symbol) {
+export function demangleRustSymbol(symbol, budgetOverrides, budgetCeilings = null) {
   if (typeof symbol !== 'string') {
     return { original: symbol, demangled: '', parsed: false, reason: 'not-primitive-string' };
   }
   const text = symbol;
   if (text.startsWith('_R') || text.startsWith('__R')) {
-    return demangleRustV0(text);
+    return demangleRustV0(text, 32, budgetOverrides, budgetCeilings);
   }
   if (stripLegacyRustPrefix(text) != null) {
     const leg = demangleRustLegacy(text);
@@ -658,6 +820,23 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     this.platform = platform;
     this.options = options;
     this.cachedParsed = null;
+    const dm = options && typeof options === 'object' && options.rustDemangle && typeof options.rustDemangle === 'object'
+      ? options.rustDemangle
+      : {};
+    this.demangleBudget = {
+      maxOutputChars: positiveBudget(dm.maxOutputChars, RUST_V0_DEFAULT_MAX_OUTPUT_CHARS),
+      maxOps: positiveBudget(dm.maxOps, RUST_V0_DEFAULT_MAX_OPS),
+      maxScalars: positiveBudget(dm.maxScalars, RUST_V0_DEFAULT_MAX_SCALARS),
+      maxEncodedBytes: positiveBudget(dm.maxEncodedBytes, RUST_V0_DEFAULT_MAX_ENCODED_BYTES),
+      maxSpliceWork: positiveBudget(dm.maxSpliceWork, RUST_V0_DEFAULT_MAX_SPLICE_WORK),
+    };
+    this.aggregateMax = {
+      ops: positiveBudget(dm.aggregateMaxOps, RUST_V0_DEFAULT_MAX_OPS * 10),
+      scalars: positiveBudget(dm.aggregateMaxScalars, RUST_V0_DEFAULT_MAX_SCALARS * 20),
+      encodedBytes: positiveBudget(dm.aggregateMaxEncodedBytes, RUST_V0_DEFAULT_MAX_ENCODED_BYTES * 20),
+      spliceWork: positiveBudget(dm.aggregateMaxSpliceWork, RUST_V0_DEFAULT_MAX_SPLICE_WORK * 10),
+      outputChars: positiveBudget(dm.aggregateMaxOutputChars, RUST_V0_DEFAULT_MAX_OUTPUT_CHARS * 10),
+    };
   }
 
   probe() {
@@ -667,8 +846,20 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
     const vtables = [];
     let unreadable = 0;
     let invalidEntries = 0;
+    let resourceLimited = 0;
 
     const isRustCandidateName = isRustCandidateSymbol;
+    const demangleCache = new Map();
+    const perSymbol = this.demangleBudget;
+    const aggMax = this.aggregateMax;
+    const aggregate = { ops: 0, scalars: 0, encodedBytes: 0, spliceWork: 0, outputChars: 0 };
+    const remainingAggregate = () => ({
+      maxOps: Math.max(0, aggMax.ops - aggregate.ops),
+      maxScalars: Math.max(0, aggMax.scalars - aggregate.scalars),
+      maxEncodedBytes: Math.max(0, aggMax.encodedBytes - aggregate.encodedBytes),
+      maxSpliceWork: Math.max(0, aggMax.spliceWork - aggregate.spliceWork),
+      maxOutputChars: Math.max(0, aggMax.outputChars - aggregate.outputChars),
+    });
 
     for (const sym of rawSymbols) {
       const name = typeof sym?.name === 'string' ? sym.name
@@ -680,7 +871,19 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
         invalidEntries++;
         continue;
       }
-      const dem = demangleRustSymbol(name);
+      let dem = demangleCache.get(name);
+      if (dem === undefined) {
+        dem = demangleRustSymbol(name, perSymbol, remainingAggregate());
+        if (dem && dem.stats) {
+          aggregate.ops += dem.stats.ops;
+          aggregate.scalars += dem.stats.scalars;
+          aggregate.encodedBytes += dem.stats.encodedBytes;
+          aggregate.spliceWork += dem.stats.spliceWork;
+          aggregate.outputChars += dem.stats.outputChars;
+        }
+        demangleCache.set(name, dem);
+      }
+      if (dem.resourceLimited && !dem.parsed && isRustCandidateName(name)) resourceLimited++;
       if (dem.parsed) {
         let address;
         try {
@@ -734,7 +937,7 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
 
     this.cachedParsed = { rustSymbols, vtables };
 
-    const complete = unreadable === 0 && invalidEntries === 0 && rustSymbols.length > 0;
+    const complete = unreadable === 0 && invalidEntries === 0 && resourceLimited === 0 && rustSymbols.length > 0;
     const hasIdentityBinding = this.binaryIdentity != null;
     const identity = createLanguageMetadataIdentity({
       verdict: complete
@@ -776,6 +979,7 @@ export class RustMetadataProvider extends LanguageMetadataProvider {
         parsed: rustSymbols.length,
         complete,
         unreadableEntries: unreadable,
+        capped: resourceLimited > 0,
         invalidEntries,
       },
     });

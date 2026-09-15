@@ -27,13 +27,23 @@ function tokenBytes(token) {
   return [token & 0xff, (token >>> 8) & 0xff, (token >>> 16) & 0xff, token >>> 24];
 }
 
+const MEMBER_REF_PARENT_CODES = {
+  // MemberRefParent = TypeDef RID 1, tag 0 => (1 << 3) | 0.
+  TypeDef: 8,
+  // MemberRefParent = MethodDef RID 1, tag 3 => (1 << 3) | 3.
+  MethodDef: 11,
+};
+
 function buildCallPe({
   callerBytecode,
   staticSignature = Uint8Array.from([0x00, 0x01, 0x08, 0x08]), // static int32(int32)
   genericSignature = Uint8Array.from([0x10, 0x01, 0x01, 0x1e, 0x00, 0x1e, 0x00]), // static !!0(!!0)
   staticMethodFlags = 0x0010,
   genericMethodFlags = 0x0010,
+  memberRefParentTable = 'TypeDef',
 } = {}) {
+  const memberRefParent = MEMBER_REF_PARENT_CODES[memberRefParentTable];
+  assert.ok(Number.isSafeInteger(memberRefParent), 'fixture memberRefParentTable must be a MemberRefParent owner');
   const buf = new Uint8Array(0xc00);
   const view = new DataView(buf.buffer);
 
@@ -140,8 +150,10 @@ function buildCallPe({
   addMethodDef(0, nonConstructorNameIndex, constructorSignatureIndex, 0);
 
   const addMemberRef = (nameIndex) => {
-    // MemberRefParent = MethodDef RID 1, tag 3 => (1 << 3) | 3.
-    view.setUint16(tablePos, 11, true);
+    // #7601 restricts `newobj` constructed-type authority to a TypeDef / resolved
+    // TypeRef / TypeSpec MemberRefParent, so the canonical constructor fixture owns
+    // its MemberRefs through TypeDef RID 1 (the one row declared above).
+    view.setUint16(tablePos, memberRefParent, true);
     view.setUint16(tablePos + 2, nameIndex, true);
     view.setUint16(tablePos + 4, constructorSignatureIndex, true);
     tablePos += 6;
@@ -195,10 +207,40 @@ test('#1141 instance/constructor calls apply receiver, 64-bit, and value-type st
   assert.equal(newobj.producedValues.length, 1);
   assert.equal(newobj.producedValues[0].stackType, 'object-ref');
   assert.equal(newobj.callEffects[0].signatureProvenance.methodName, '.ctor');
+  assert.equal(newobj.callEffects[0].callTargetResolved, true,
+    'a TypeDef-owned constructor is type authority (#7601)');
+  assert.equal(newobj.producedValues[0].constructedType?.table, 'TypeDef');
+  assert.equal(newobj.producedValues[0].constructedType?.rid, 1);
+  assert.equal(newobj.producedValues[0].constructedType?.name, 'FixtureType');
 
   const methodDefCtor = lift([0x73, ...tokenBytes(0x06000004), 0x2a]).bundles[0];
   assert.equal(methodDefCtor.completeness, 'exact');
   assert.equal(methodDefCtor.callEffects[0].signatureProvenance.methodName, '.ctor');
+});
+
+test('#7601 newobj requires a type-authority MemberRefParent', () => {
+  const options = { memberRefParentTable:'MethodDef' };
+
+  // A MethodDef row is not a constructed type, so `newobj` must not mint a
+  // constructed-object authority from it even though the signature resolves.
+  const newobj = lift([0x73, ...tokenBytes(0x0a000001), 0x2a], options).bundles[0];
+  assert.equal(newobj.completeness, 'partial');
+  assert.equal(newobj.callEffects[0].signatureResolved, true);
+  assert.equal(newobj.callEffects[0].callTargetResolved, false);
+  assert.equal(newobj.callEffects[0].callTargetReason, 'cil-newobj-owner-not-type-authority');
+  assert.equal(newobj.producedValues.length, 1);
+  assert.equal(newobj.producedValues[0].stackType, 'object-ref');
+  assert.equal(newobj.producedValues[0].constructedType, undefined,
+    'a MethodDef owner must not be laundered into constructed-type identity');
+  assert.ok(newobj.unknownEffects.some((effect) => effect.category === 'calls'
+    && effect.reason === 'cil-newobj-owner-not-type-authority'));
+
+  // #7601 restricts constructed-type authority only: an ordinary instance call
+  // through the same MethodDef-parented MemberRef keeps its exact contract.
+  const callvirt = lift([0x6f, ...tokenBytes(0x0a000001), 0x2a], options).bundles[0];
+  assert.equal(callvirt.completeness, 'exact');
+  assert.equal(callvirt.callEffects[0].callTargetResolved, true);
+  assert.equal(callvirt.consumedValues.length, 3);
 });
 
 test('#1141 newobj rejects non-constructor MemberRef and MethodDef targets', () => {

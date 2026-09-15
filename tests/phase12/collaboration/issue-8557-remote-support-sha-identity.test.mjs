@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   RemoteCollaborationGate,
   createRemoteCollaborationEnvelope,
+  createRemoteTransportVerifier,
   remoteCollaborationSupport,
 } from '../../../js/collaboration/remote-authority.js';
 import { validatedCapabilityProofFixture } from '../../stage2/helpers/profile-proof-fixture.mjs';
@@ -10,14 +11,21 @@ import { validatedCapabilityProofFixture } from '../../stage2/helpers/profile-pr
 const COMMIT_SHA = 'a'.repeat(40);
 const TREE_SHA = 'b'.repeat(40);
 
+// The exact security profile is minted only by the canonical verifier factory
+// (#4955); a raw callback plus self-declared identity string must not promote
+// support. The fixture therefore obtains its gate through the same authority
+// boundary production uses, while every SHA fail-closed case below stays.
 function activeGate() {
+  const verifier = createRemoteTransportVerifier({
+    oracleIdentity: 'oracle:S2-P12-COLLAB-REMOTE:independent',
+    verifyTransportProof: (proof) => proof?.proofIdentity === 'tls:issue-8557',
+  });
   const gate = new RemoteCollaborationGate({
     projectIdentity: 'project:issue-8557',
     binaryIdentity: 'binary:issue-8557',
     sessionIdentity: 'session:issue-8557',
     allowedActors: { alice: ['*'] },
-    verifyTransportProof: (proof) => proof?.proofIdentity === 'tls:issue-8557',
-    transportVerifierIdentity: 'oracle:S2-P12-COLLAB-REMOTE:independent',
+    ...verifier,
   });
   const envelope = createRemoteCollaborationEnvelope({
     projectIdentity: 'project:issue-8557',
@@ -43,6 +51,23 @@ function activeGate() {
 const { proofs } = validatedCapabilityProofFixture();
 const profileProof = proofs['S2-P12-COLLAB-REMOTE'];
 const gate = activeGate();
+
+// Keeping the #4955 boundary visible: the same callback/oracle strings minted
+// raw (no factory brand) must never promote the exact security profile.
+const unbranded = new RemoteCollaborationGate({
+  projectIdentity: 'project:issue-8557',
+  binaryIdentity: 'binary:issue-8557',
+  sessionIdentity: 'session:issue-8557',
+  allowedActors: { alice: ['*'] },
+  verifyTransportProof: (proof) => proof?.proofIdentity === 'tls:issue-8557',
+  transportVerifierIdentity: 'oracle:S2-P12-COLLAB-REMOTE:independent',
+});
+assert.equal(remoteCollaborationSupport({
+  gate: unbranded,
+  profileProof,
+  expectedCommitSha: COMMIT_SHA,
+  expectedTreeSha: TREE_SHA,
+}).status, 'unsupported', 'a self-declared verifier identity must not mint support');
 
 assert.equal(remoteCollaborationSupport({
   gate,

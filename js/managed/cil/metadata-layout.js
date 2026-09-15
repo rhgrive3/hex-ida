@@ -82,74 +82,10 @@ export function cilMetadataToken(table, rid) {
   return `0x${(table * 0x1000000 + rid).toString(16).padStart(8, '0')}`;
 }
 
-// #8699/#8797: one aggregate admission budget for the CIL metadata readers. A
-// single accounting surface covers unique decoded #Strings bytes, materialized
-// definition rows, and bounded resolution/scan work so that aliased or repeated
-// metadata references cannot expand a sub-MiB image into an unbounded
-// synchronous CPU / retained-heap blow-up. Admission is charged BEFORE the
-// decode/materialization it authorizes, so a rejected image never allocates the
-// oversized value first. Limits are injectable via `options.resourceBudget`
-// (parser/CI seam) with generous production defaults.
-export const CIL_METADATA_BUDGET_DEFAULTS = Object.freeze({
-  maxStrings: 4_000_000,
-  maxStringBytes: 512 * 1024 * 1024,
-  maxRows: 5_000_000,
-  maxWork: 200_000_000,
-  maxEstimatedHeapBytes: 384 * 1024 * 1024,
-  deadlineMs: 30000,
-});
-
-export function createCilMetadataBudget(options = {}) {
-  const limits = { ...CIL_METADATA_BUDGET_DEFAULTS, ...(options.resourceBudget || {}) };
-  const signal = options.signal || null;
-  const startedAt = Date.now();
-  let strings = 0, stringBytes = 0, rows = 0, work = 0, heapBytes = 0;
-  function checkpoint() {
-    work++;
-    if (work > limits.maxWork) fail('cil-metadata-resource-limit-work');
-    if ((work & 0x3fff) === 0) {
-      if (signal && signal.aborted) fail('cil-metadata-resource-limit-cancelled');
-      if (Date.now() - startedAt > limits.deadlineMs) fail('cil-metadata-resource-limit-deadline');
-    }
-  }
-  return {
-    // Must be called only on a cache miss, immediately before decoding a #Strings entry.
-    chargeString(byteLength) {
-      strings++;
-      if (strings > limits.maxStrings) fail('cil-metadata-resource-limit-strings');
-      stringBytes += byteLength;
-      if (stringBytes > limits.maxStringBytes) fail('cil-metadata-resource-limit-strings');
-      heapBytes += byteLength * 2;
-      if (heapBytes > limits.maxEstimatedHeapBytes) fail('cil-metadata-resource-limit-heap');
-      checkpoint();
-    },
-    preflightRows(count, encodedByteLength = 0) {
-      if (!Number.isSafeInteger(count) || count < 0
-          || !Number.isSafeInteger(encodedByteLength) || encodedByteLength < 0)
-        fail('cil-metadata-resource-limit-row-size');
-      const nextRows = rows + count;
-      if (!Number.isSafeInteger(nextRows) || nextRows > limits.maxRows)
-        fail('cil-metadata-resource-limit-rows');
-      const retainedBytes = 256 + encodedByteLength * 4;
-      const addedHeapBytes = retainedBytes * count;
-      if (!Number.isSafeInteger(retainedBytes) || !Number.isSafeInteger(addedHeapBytes)
-          || heapBytes + addedHeapBytes > limits.maxEstimatedHeapBytes)
-        fail('cil-metadata-resource-limit-heap');
-    },
-    chargeRow(encodedByteLength = 0) {
-      if (!Number.isSafeInteger(encodedByteLength) || encodedByteLength < 0)
-        fail('cil-metadata-resource-limit-row-size');
-      rows++;
-      if (rows > limits.maxRows) fail('cil-metadata-resource-limit-rows');
-      // A decoded row is retained as a JS object. Charge a conservative
-      // object/property floor plus encoded width before materialization.
-      const retainedBytes = 256 + encodedByteLength * 4;
-      if (!Number.isSafeInteger(retainedBytes)) fail('cil-metadata-resource-limit-row-size');
-      heapBytes += retainedBytes;
-      if (heapBytes > limits.maxEstimatedHeapBytes) fail('cil-metadata-resource-limit-heap');
-      checkpoint();
-    },
-    chargeWork() { checkpoint(); },
-    checkpoint,
-  };
+// One canonical metadata token text: a numeric or '0x…' token string becomes the
+// same lowercase 8-digit form, and an identity that cannot be read returns null
+// instead of a guessed token.
+export function cilTokenText(token) {
+  const numeric = typeof token === 'number' ? token >>> 0 : Number.parseInt(String(token), 16);
+  return Number.isSafeInteger(numeric) ? `0x${(numeric >>> 0).toString(16).padStart(8, '0')}` : null;
 }
