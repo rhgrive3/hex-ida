@@ -47,12 +47,16 @@ export function readCilGenericMetadata(bytes, view, layout, stringsStream, defs)
     };
   });
 
+  // Duplicate detection must stay O(1) per row: a valid owner carries a
+  // contiguous 0..N-1 numbering, so a linear `includes()` scan over the owners
+  // already seen turns an ordinary well-formed GenericParam table into
+  // quadratic work (#8956).
   const numbersByOwner = new Map();
   for (const row of genericParams) {
-    const numbers = numbersByOwner.get(row.ownerToken) ?? [];
-    if (numbers.includes(row.number)) fail('cil-generic-param-number-duplicate');
-    numbers.push(row.number);
-    numbersByOwner.set(row.ownerToken, numbers);
+    let numbers = numbersByOwner.get(row.ownerToken);
+    if (numbers == null) numbersByOwner.set(row.ownerToken, numbers = new Set());
+    if (numbers.has(row.number)) fail('cil-generic-param-number-duplicate');
+    numbers.add(row.number);
   }
   for (const numbers of numbersByOwner.values()) {
     const ordered = [...numbers].sort((a, b) => a - b);
