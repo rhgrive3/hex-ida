@@ -23,7 +23,9 @@ function buildMonitorFixture(code) {
   utf8('f');                     // 3
   utf8('(Ljava/lang/Object;)V'); // 4
   utf8('Code');                  // 5
-  const cpCount = 6;
+  utf8('java/lang/Object');      // 6
+  u1(7); u2b(6);                 // 7: Class -> 6 (super_class; #8759: `super_class = 0` is reserved for java/lang/Object itself and the parser now fails closed)
+  const cpCount = 8;
   const classBytes = [];
   const u2 = (v) => { classBytes.push((v >> 8) & 0xff, v & 0xff); };
   const u4 = (v) => { classBytes.push((v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff); };
@@ -31,7 +33,7 @@ function buildMonitorFixture(code) {
   u4(0xcafebabe); u2(0); u2(61);
   u2(cpCount);
   for (const b of cp) classBytes.push(b);
-  u2(0x0021); u2(2); u2(0); u2(0);
+  u2(0x0021); u2(2); u2(7); u2(0);
   u2(0); // fields
   u2(1); // methods_count
   u2(0x0009); u2(3); u2(4); // public static f(Ljava/lang/Object;)V
