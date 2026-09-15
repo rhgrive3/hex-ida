@@ -66,3 +66,30 @@ test('#3989 integration regression: invalid st_name remains diagnostic while the
   assert.equal(outOfRange.length, 1, 'only the invalid non-zero st_name should be diagnosed');
   assert.equal(image.symbols.length, 0);
 });
+
+test('#8821 review regression: repeated out-of-range st_name aliases are resolved and diagnosed once', () => {
+  const fixture = buildAliasedDynsymElf({ records: 64, nameLength: 8 });
+  const view = new DataView(fixture.bytes.buffer);
+  const invalidOffset = fixture.strtabLength + 7;
+  for (let i = 1; i < 64; i++) {
+    view.setUint32(fixture.symtabFileOff + i * 24, invalidOffset, true);
+  }
+
+  const image = blankImage(fixture.bytes);
+  parseProgramDynamic(
+    new ByteView(fixture.bytes, { littleEndian: true }),
+    [{ type: 2, offset: BigInt(DYNAMIC_FILE_OFF), filesz: BigInt(fixture.dynamicLength) }],
+    image,
+    64,
+    {},
+  );
+
+  const message = 'dynamic string table reference is out of range';
+  const diagnostics = (image.metadata.programDynamicDiagnostics || [])
+    .filter((line) => line.includes(message));
+  const warnings = image.warnings.filter((line) => line.includes(message));
+  assert.equal(diagnostics.length, 1, 'one canonical diagnostic is retained for the aliased invalid offset');
+  assert.equal(warnings.length, 1, 'the aliased invalid offset must not emit one warning per symbol');
+  assert.equal(image.symbols.length, 0, 'invalid names must not be published');
+  assert.equal(image.imports.length, 0);
+});
