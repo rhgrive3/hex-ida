@@ -697,6 +697,15 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
   const status = { complete: true, nodes: 0, edges: 0, cycleDetected: false, budgetExceeded: false };
   image.metadata.exportTrie = status;
   const markPartial = (message, field) => { status.complete = false; if (field) status[field] = true; image.warnings.push(`exports trie: ${message}`); };
+  // #8802: Mach-O canonical export VAs must stay inside the target width domain.
+  const maxExportAddress = image.bits === 32 ? 0xffffffffn : 0xffffffffffffffffn;
+  const trieImageBase = image.imageBase ?? 0n;
+  const closedTrieVa = (value, absolute) => {
+    if (typeof value !== 'bigint' || value < 0n) return null;
+    if (absolute) return value <= maxExportAddress ? value : null;
+    if (trieImageBase < 0n || trieImageBase > maxExportAddress) return null;
+    return value <= maxExportAddress - trieImageBase ? trieImageBase + value : null;
+  };
   const walk = (nodeOff, path, depth) => {
     if (depth > 256) { markPartial('depth budget exceeded', 'budgetExceeded'); return; }
     if (!Number.isSafeInteger(nodeOff) || nodeOff < 0 || base + nodeOff >= end) { markPartial('child node offset is outside trie'); return; }
@@ -771,17 +780,31 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
                 }
               }
             } else {
-            const addrX = r.uleb(p, 10, terminalEnd); p = addrX.next;
-            // REGULAR and THREAD_LOCAL terminal values are implementation
-            // offsets relative to the image; only ABSOLUTE is already a raw
-            // address (dyld ExportsTrie semantics, #4366).
-            const address = exportKind === 2 ? addrX.value : image.imageBase + addrX.value;
-            const kind = exportKind === 1 ? 'thread-local' : exportKind === 2 ? 'absolute' : 'export';
-            const prefix = materializeExportTriePath(path, budget);
-            if (prefix == null) { markPartial('shared metadata path string budget exceeded', 'budgetExceeded'); return; }
-            const ex = { name: prefix, address, kind, flags, source: 'exports-trie' };
-            if (flags & 0x10) { const resolverX = r.uleb(p, 10, terminalEnd); p = resolverX.next; ex.resolver = image.imageBase + resolverX.value; }
-            if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'export-trie-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;} image.exports.push(ex);
+             const addrX = r.uleb(p, 10, terminalEnd); p = addrX.next;
+             // REGULAR and THREAD_LOCAL terminal values are implementation
+             // offsets relative to the image; only ABSOLUTE is already a raw
+             // address (dyld ExportsTrie semantics, #4366).
+             const absoluteTerminal = exportKind === 2;
+             // #8802: an exports-trie terminal only becomes canonical export
+             // metadata when its resolved VA closes inside the Mach-O target
+             // address domain. REGULAR/THREAD_LOCAL and the resolver are
+             // image-base-relative; ABSOLUTE is a raw address. Withholding the
+             // impossible address and keeping the trie explicitly partial mirrors
+             // the width closure parseFunctionStarts already enforces.
+             const address = closedTrieVa(addrX.value, absoluteTerminal);
+             const kind = exportKind === 1 ? 'thread-local' : absoluteTerminal ? 'absolute' : 'export';
+             const prefix = materializeExportTriePath(path, budget);
+             if (prefix == null) { markPartial('shared metadata path string budget exceeded', 'budgetExceeded'); return; }
+             let resolver = null; let resolverRequested = false;
+             if (flags & 0x10) { resolverRequested = true; const resolverX = r.uleb(p, 10, terminalEnd); p = resolverX.next; resolver = closedTrieVa(resolverX.value, false); }
+             if (address == null || (resolverRequested && resolver == null)) {
+               status.partialReason ||= 'export-address-overflow';
+               markPartial(`${prefix} ${resolverRequested && address != null ? 'resolver ' : ''}address is outside the target address domain`);
+               return;
+             }
+             const ex = { name: prefix, address, kind, flags, source: 'exports-trie' };
+             if (resolverRequested) ex.resolver = resolver;
+             if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'export-trie-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;} image.exports.push(ex);
             if (exportKind === 0) {
               const sec = image.sectionAt(address);
               if (sec && sec.perms.execute && image.addressToOffset(address) != null) {
