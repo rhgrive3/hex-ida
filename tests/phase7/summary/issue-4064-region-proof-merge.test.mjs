@@ -57,6 +57,9 @@ function solveDuplicate(label, localEffect, modelEffect) {
     snapshotId: complete.snapshotId,
     roots: [callerId],
     localSummaries: new Map([[callerId, caller]]),
+    // #8809 sync: #6074 requires the canonical proven library-model envelope;
+    // a bare effects object is now rejected into the broad fallback before
+    // the duplicate-proof merge path is ever reached.
     libraryModels: new Map([[modelId, {
       modelSchema: LIBRARY_MODEL_SCHEMA, modelVersion: LIBRARY_MODEL_VERSION,
       targetEntityId: modelId, snapshotId: complete.snapshotId,

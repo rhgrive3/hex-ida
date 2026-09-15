@@ -192,6 +192,7 @@
       "tests/phase8/abi/c3-combined-acceptance.test.mjs",
       "tests/phase8/abi/hex-c3-02-boundaries.test.mjs",
       "tests/phase8/abi/hex-c3-02-required-profile-matrix.mjs",
+      "tests/phase8/c4-local/normal-completion-scope.test.mjs",
       "js/decompiler/phase8/analysis-identity.js"
     ],
     "symbolic": [
@@ -340,6 +341,7 @@
       "js/ir-base.js",
       "js/decompiler/semantic.js",
       "js/decompiler/semantic-views.js",
+      "js/semantics/compat/effect-obligations.js",
       "js/semantics/compat/index.js",
       "js/semantics/compat/legacy-value-ranges.js",
       "js/semantics/compat/semantic-ir-v2-to-v1.js",

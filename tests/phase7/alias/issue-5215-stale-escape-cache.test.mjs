@@ -276,9 +276,12 @@ test('#5215 a rejected refinement cannot mint a stale non-escaping NoAlias at th
   const refinedAlias = solver.alias(QUERY.leftRegion, QUERY.rightRegion, {
     leftAccess: QUERY.leftAccess, rightAccess: QUERY.rightAccess,
   });
-  assert.equal(refinedAlias.relation, 'no',
-    'precondition: the escape authority actively mints the NoAlias under the refinement');
-  assert.ok(refinedAlias.reasonCodes.includes('distinct-non-escaping-allocation'));
+  // #8809 sync: #4977's AND contract — one-sided non-escape (only the frame
+  // root is proven; the fp root stays externally supplied) must NOT mint the
+  // NoAlias anymore. The consumer's stale-proof discipline is still asserted
+  // below: the rejected refinement must not add any escape authority either.
+  assert.equal(refinedAlias.relation, 'may');
+  assert.ok(!refinedAlias.reasonCodes.includes('distinct-non-escaping-allocation'));
 
   // A non-publishable refinement restores the baseline map.
   solver.refineMemorySsa(built.memorySsa, consumerRefinement(built, 'partial'));

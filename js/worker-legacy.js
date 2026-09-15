@@ -746,14 +746,27 @@ async function initializerFunctionStarts(slice, lo, hi, imageBase, requestId) {
  * optional initialization/vtable records). Unknown/future layouts are skipped
  * rather than guessed.
  */
+/* #8764: aggregate walk budget for the Swift reflection helper. Aliased
+ * __swift5_types entries resolve to the SAME physical descriptor; without a
+ * cache every alias re-read and re-walked a full (up to 4096-entry) VTable,
+ * so ~65 KiB of metadata cost ~8.7s while the final Set deduplicated the
+ * identical results afterwards. One shared budget is charged before each
+ * distinct-descriptor parse and before each VTable walk (never after output
+ * insertion), and exhaustion is reported as truncated/incomplete evidence. */
+const SWIFT_REFLECTION_WORK_MAX = 200_000;
+
 async function swiftReflectionFunctionStarts(slice, lo, hi, requestId) {
   const out = new Set();
   if (!slice) return out;
+  let truncationReason = null;
+  const markTruncated = (reason) => { if (!truncationReason) truncationReason = reason; };
+  const descriptorTargets = new Map();   // desc address -> resolved targets (negative cache included)
+  let work = 0;
   const typeSections = (slice.regions || []).filter((r) => r.section === '__swift5_types' && r.size > 0n);
   const addRelative = (field, raw) => {
-    if (!raw) return;
+    if (!raw) return null;
     const target = field + BigInt(raw);
-    if (target >= lo && target < hi && !(target & 3n)) out.add(target);
+    return (target >= lo && target < hi && !(target & 3n)) ? target : null;
   };
   for (const sec of typeSections) {
     if (sec.size > 16n * 1024n * 1024n) continue;
@@ -765,64 +778,89 @@ async function swiftReflectionFunctionStarts(slice, lo, hi, requestId) {
       if (!rel) continue;
       const field = sec.vmAddr + BigInt(p);
       const desc = field + BigInt(rel);
-      const head = await readMappedVM(slice, desc, 20);
-      if (!head) continue;
-      const hv = new DataView(head.buffer, head.byteOffset, head.byteLength);
-      const flags = hv.getUint32(0, true);
-      const kind = flags & 0x1f; // class=16, struct=17, enum=18
-      if (kind !== 16 && kind !== 17 && kind !== 18) continue;
+      let targets = descriptorTargets.get(desc);
+      if (targets === undefined) {
+        if (++work > SWIFT_REFLECTION_WORK_MAX) { markTruncated('work-limit'); return finish(); }
+        targets = [];
+        const head = await readMappedVM(slice, desc, 20);
+        if (head) {
+          const hv = new DataView(head.buffer, head.byteOffset, head.byteLength);
+          const flags = hv.getUint32(0, true);
+          const kind = flags & 0x1f; // class=16, struct=17, enum=18
+          if (kind === 16 || kind === 17 || kind === 18) {
+            // TargetTypeContextDescriptor::AccessFunction (metadata accessor).
+            const accessor = addRelative(desc + 12n, hv.getInt32(12, true));
+            if (accessor != null) targets.push(accessor);
 
-      // TargetTypeContextDescriptor::AccessFunction (metadata accessor).
-      addRelative(desc + 12n, hv.getInt32(12, true));
+            const generic = !!(flags & 0x80);
+            const specific = (flags >>> 16) & 0xffff;
+            const metadataInit = specific & 0x3;
+            const resilientSuperclass = kind === 16 && !!(specific & (1 << 13));
+            const fixedSize = kind === 16 ? 44 : 28;
 
-      const generic = !!(flags & 0x80);
-      const specific = (flags >>> 16) & 0xffff;
-      const metadataInit = specific & 0x3;
-      const resilientSuperclass = kind === 16 && !!(specific & (1 << 13));
-      const fixedSize = kind === 16 ? 44 : 28;
+            // For non-generic/non-resilient descriptors the initialization record is
+            // the first trailing object. Singleton init is 3 relative int32 fields;
+            // foreign init is one compact relative completion-function pointer.
+            if (!generic && !resilientSuperclass && metadataInit === 1) {
+              const init = await readMappedVM(slice, desc + BigInt(fixedSize), 12);
+              if (init) {
+                const iv = new DataView(init.buffer, init.byteOffset, init.byteLength);
+                const t = addRelative(desc + BigInt(fixedSize + 8), iv.getInt32(8, true));
+                if (t != null) targets.push(t);
+              }
+            } else if (!generic && !resilientSuperclass && metadataInit === 2) {
+              const init = await readMappedVM(slice, desc + BigInt(fixedSize), 4);
+              if (init) {
+                const iv = new DataView(init.buffer, init.byteOffset, init.byteLength);
+                const t = addRelative(desc + BigInt(fixedSize), iv.getInt32(0, true));
+                if (t != null) targets.push(t);
+              }
+            }
 
-      // For non-generic/non-resilient descriptors the initialization record is
-      // the first trailing object. Singleton init is 3 relative int32 fields;
-      // foreign init is one compact relative completion-function pointer.
-      if (!generic && !resilientSuperclass && metadataInit === 1) {
-        const init = await readMappedVM(slice, desc + BigInt(fixedSize), 12);
-        if (init) {
-          const iv = new DataView(init.buffer, init.byteOffset, init.byteLength);
-          addRelative(desc + BigInt(fixedSize + 8), iv.getInt32(8, true));
-        }
-      } else if (!generic && !resilientSuperclass && metadataInit === 2) {
-        const init = await readMappedVM(slice, desc + BigInt(fixedSize), 4);
-        if (init) {
-          const iv = new DataView(init.buffer, init.byteOffset, init.byteLength);
-          addRelative(desc + BigInt(fixedSize), iv.getInt32(0, true));
-        }
-      }
-
-      // Simple class descriptors place VTableDescriptorHeader immediately
-      // after the 44-byte fixed record: uint32 offset, uint32 count, then
-      // {flags, relative-impl} method descriptors.
-      const hasVTable = kind === 16 && !!(specific & (1 << 15));
-      if (hasVTable && !generic && !resilientSuperclass && metadataInit === 0) {
-        const vh = await readMappedVM(slice, desc + 44n, 8);
-        if (vh) {
-          const vv = new DataView(vh.buffer, vh.byteOffset, vh.byteLength);
-          const count = vv.getUint32(4, true);
-          if (count <= 4096) {
-            const methods = await readMappedVM(slice, desc + 52n, count * 8);
-            if (methods) {
-              const mv = new DataView(methods.buffer, methods.byteOffset, methods.byteLength);
-              for (let i = 0; i < count; i++) {
-                const fieldAddr = desc + 52n + BigInt(i * 8 + 4);
-                addRelative(fieldAddr, mv.getInt32(i * 8 + 4, true));
+            // Simple class descriptors place VTableDescriptorHeader immediately
+            // after the 44-byte fixed record: uint32 offset, uint32 count, then
+            // {flags, relative-impl} method descriptors.
+            const hasVTable = kind === 16 && !!(specific & (1 << 15));
+            if (hasVTable && !generic && !resilientSuperclass && metadataInit === 0) {
+              const vh = await readMappedVM(slice, desc + 44n, 8);
+              if (vh) {
+                const vv = new DataView(vh.buffer, vh.byteOffset, vh.byteLength);
+                const count = vv.getUint32(4, true);
+                if (count <= 4096) {
+                  if (work + count > SWIFT_REFLECTION_WORK_MAX) {
+                    markTruncated('vtable-work-limit');
+                    descriptorTargets.set(desc, targets);
+                    for (const t of targets) out.add(t);
+                    return finish();
+                  }
+                  work += count;
+                  const methods = await readMappedVM(slice, desc + 52n, count * 8);
+                  if (methods) {
+                    const mv = new DataView(methods.buffer, methods.byteOffset, methods.byteLength);
+                    for (let i = 0; i < count; i++) {
+                      const fieldAddr = desc + 52n + BigInt(i * 8 + 4);
+                      const t = addRelative(fieldAddr, mv.getInt32(i * 8 + 4, true));
+                      if (t != null) targets.push(t);
+                    }
+                  }
+                }
               }
             }
           }
         }
+        descriptorTargets.set(desc, targets);   // negatives cached too: repeated bad aliases stay bounded
+        /* Results of a re-aliased descriptor are already in the Set; only the
+         * first parse of a physical descriptor merges into the output. */
+        for (const t of targets) out.add(t);
       }
-      if (cancelled(requestId)) return out;
+      if (cancelled(requestId)) return finish();
     }
   }
-  return out;
+  function finish() {
+    if (truncationReason) { out.truncated = true; out.truncationReason = truncationReason; }
+    return out;
+  }
+  return finish();
 }
 
 /* ── 名前がないファイルで、関数の切れ目を推測する ───────────── */
@@ -871,6 +909,8 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   const unwind = slice ? (slice.regions || []).find((r) => r.section === '__unwind_info' && r.size > 0n) : null;
   let unwindMetadataTruncated = false;
   let unwindMetadataReason = null;
+  let swiftMetadataTruncated = false;
+  let swiftMetadataReason = null;
   if (unwind && imageBase != null && unwind.size < BigInt(16 * 1024 * 1024)) {
     try {
       const buf = await readRange(unwind.fileOffset, Number(unwind.size));
@@ -898,9 +938,14 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
     if (found.size >= cap) break;
     found.add(a);
   }
-  for (const a of await swiftReflectionFunctionStarts(slice, lo, hi, requestId)) {
+  const swiftStarts = await swiftReflectionFunctionStarts(slice, lo, hi, requestId);
+  for (const a of swiftStarts) {
     if (found.size >= cap) break;
     found.add(a);
+  }
+  if (swiftStarts.truncated) {
+    swiftMetadataTruncated = true;
+    swiftMetadataReason = 'swift-reflection-' + (swiftStarts.truncationReason || 'truncated');
   }
 
   /*
@@ -1311,8 +1356,8 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   const starts = new BigUint64Array(list.length);
   for (let i = 0; i < list.length; i++) starts[i] = list[i];
   const startCapHit = found.size >= cap;
-  const capped = startCapHit || candidateBudgetHit || unwindMetadataTruncated;
-  const truncationReason = candidateBudgetHit ? 'candidate-memory-budget' : startCapHit ? 'function-start-cap-reached' : unwindMetadataReason;
+  const capped = startCapHit || candidateBudgetHit || unwindMetadataTruncated || swiftMetadataTruncated;
+  const truncationReason = candidateBudgetHit ? 'candidate-memory-budget' : startCapHit ? 'function-start-cap-reached' : unwindMetadataReason || swiftMetadataReason;
   return {
     starts, cancelled: false, capped, truncated: capped, complete: !capped, cap, truncationReason,
     completeness: {

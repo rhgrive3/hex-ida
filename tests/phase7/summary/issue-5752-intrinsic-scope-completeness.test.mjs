@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { deriveMemoryRegion } from '../../../js/analysis/alias/regions-v2.js';
 import { createFunctionSummary } from '../../../js/analysis/summary/contract.js';
 import { buildLocalFunctionSummary } from '../../../js/analysis/summary/local.js';
-import { deriveMemoryRegion } from '../../../js/analysis/alias/regions-v2.js';
 
 // #5752: the intrinsic branch of the local summary builder discarded
 // applyScope()'s verdict, so an intrinsic whose memory scope was unknown or
@@ -66,9 +66,15 @@ test('known all-scope and fully resolved accesses remain complete (#5752)', () =
   assert.equal(all.summary.memoryReadRegions[0].broad, true);
   assert.equal(all.summary.memoryWriteRegions[0].broad, true);
 
+  // #8809 sync: a resolved region returned to the summary builder must be a
+  // canonical proof (deriveMemoryRegion output), not a hand-made `{id,kind}`
+  // object; `function-summary-invalid-region-proof` now rejects the latter.
   const region = deriveMemoryRegion({
-    binaryId:'binary:test', widthBits:64, origin:{ instructionIds:['insn:0'] },
-    regionEvidence:{ kind:'global-absolute', address:0x1000n },
+    functionId: 'function_5752_intrinsic',
+    binaryId: 'binary_5752',
+    widthBits: 64,
+    origin: { instructionIds: ['instruction_resolved_region'] },
+    regionEvidence: { kind: 'global-absolute', address: 0x2000n },
   });
   const accesses = buildLocalFunctionSummary(
     intrinsicIr({ scope:'accesses', accesses:[{ regionId:region.id, addressSpace:'memory' }] }, { scope:'none' }),

@@ -9,6 +9,7 @@ import {
 import { createOriginSet, mergeOriginSets } from '../../core/identity/origin.js';
 import { createMemoryRegionRef } from '../../semantics/memoryssa/contract.js';
 import { isCanonicalMemorySsaProducerArtifact } from '../../semantics/memoryssa/build.js';
+import { canonicalSemanticSsaProducerMatches } from '../../semantics/ssa/build.js';
 import { normalizeAddressProofIr } from './address-ir-normalize-v2.js';
 import { FLAT_MEMORY_SPACE, canonicalAddressSpace } from './address-space.js';
 import {
@@ -250,9 +251,27 @@ function genuineRenamedDefinitionRow(ir, definition, stateUse, addressRead, load
 function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
   const memorySsa = options.canonicalMemorySsa;
   const ssa = options.ssa;
+  const semanticIrDigest = stableDigest(ir);
+  const identity = memorySsa?.identity;
+  const scalarSsaDigest = typeof identity?.scalarSsaDigest === 'string' && identity.scalarSsaDigest.trim()
+    ? identity.scalarSsaDigest.trim() : null;
+  const snapshotId = typeof memorySsa?.snapshotId === 'string' && memorySsa.snapshotId.trim()
+    ? memorySsa.snapshotId.trim() : null;
+  const identitySnapshotId = typeof identity?.snapshotId === 'string' && identity.snapshotId.trim()
+    ? identity.snapshotId.trim() : null;
   if (!isCanonicalMemorySsaProducerArtifact(memorySsa)
       || String(memorySsa.functionId ?? '') !== String(ir?.functionId ?? '')
-      || String(memorySsa.identity?.semanticIrDigest ?? '') !== stableDigest(ir)
+      || String(identity?.functionId ?? '') !== String(ir?.functionId ?? '')
+      || String(identity?.semanticIrDigest ?? '') !== semanticIrDigest
+      || scalarSsaDigest == null
+      || snapshotId == null
+      || identitySnapshotId == null
+      || snapshotId !== identitySnapshotId
+      || !canonicalSemanticSsaProducerMatches(ssa, {
+        functionId: ir?.functionId,
+        semanticIrDigest,
+        scalarSsaDigest,
+      })
       || !Array.isArray(memorySsa.uses)
       || !Array.isArray(memorySsa.definitions)
       || !Array.isArray(memorySsa.accessMetadata)

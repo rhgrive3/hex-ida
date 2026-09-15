@@ -903,7 +903,14 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     for (const nodeId of block.nodeIds) {
       const node = nodeById.get(nodeId);
       if (!node?.targets?.length) continue;
-      node.targets.forEach((to, index) => addSuccessor(block.id, { to, kind: semanticEdgeKind(node, index) }));
+      for (let index = 0; index < node.targets.length; index += 1) {
+        const to = node.targets[index];
+        // A conditional branch whose taken and fallthrough arms resolve to the
+        // same block keeps its conditional identity in the IR node; the CFG
+        // successor set must not list that block twice.
+        if (node.kind === 'conditional-branch' && index > 0 && node.targets[index - 1] === to) continue;
+        addSuccessor(block.id, { to, kind: semanticEdgeKind(node, index) });
+      }
     }
   }
   const cfg = createSemanticCfg({

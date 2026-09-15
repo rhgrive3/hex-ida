@@ -1,6 +1,7 @@
 import { deepFreeze } from '../../core/identity/index.js';
 import {
   SEMANTIC_SETS,
+  array,
   assertAllowedKeys,
   enumValue,
   fail,
@@ -92,6 +93,15 @@ function normalizeUnknown(input, kind) {
   return deepFreeze(out);
 }
 
+function conditionalArmTargets(values, code) {
+  const arms = array(values ?? [], code).map((value) => nonEmpty(value, code));
+  // A syntactic conditional terminator keeps both arms even when taken and
+  // fallthrough resolve to the same successor (#865); only the CFG layer
+  // deduplicates the successor set.
+  if (arms.length === 2 && arms[0] === arms[1]) return arms;
+  return uniqueStrings(arms, code, false);
+}
+
 export function createSemanticNode(input) {
   input = object(input, 'semantic-ir-invalid-node');
   assertAllowedKeys(input, new Set([
@@ -110,7 +120,9 @@ export function createSemanticNode(input) {
     memory: input.memory == null ? null : createSemanticMemoryAccess(input.memory),
     call: input.call == null ? null : createSemanticCallSummary(input.call),
     intrinsic: input.intrinsic == null ? null : createSemanticIntrinsicSummary(input.intrinsic),
-    targets: uniqueStrings(input.targets ?? [], 'semantic-ir-invalid-node-targets', false),
+    targets: kind === 'conditional-branch'
+      ? conditionalArmTargets(input.targets ?? [], 'semantic-ir-invalid-node-targets')
+      : uniqueStrings(input.targets ?? [], 'semantic-ir-invalid-node-targets', false),
     attributes: input.attributes == null ? {} : serializable(input.attributes, 'semantic-ir-invalid-node-attributes'),
     unknown: normalizeUnknown(input.unknown, kind),
     completeness: enumValue(input.completeness ?? (SEMANTIC_SETS.unknownOperations.has(kind) ? 'unknown' : 'complete'), SEMANTIC_SETS.completeness, 'semantic-ir-invalid-node-completeness'),

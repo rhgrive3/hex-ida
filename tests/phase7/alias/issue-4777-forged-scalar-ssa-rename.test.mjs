@@ -5,7 +5,7 @@ import { createSemanticIrFunction } from '../../../js/semantics/ir/index.js';
 import { createSemanticCfg } from '../../../js/semantics/cfg/index.js';
 import { buildSemanticSsa } from '../../../js/semantics/ssa/index.js';
 import { buildMemorySsa, MEMORY_SSA_BUILD_VERSION } from '../../../js/semantics/memoryssa/index.js';
-import { classifySemanticMemoryRegion } from '../../../js/analysis/alias/regions-v2.js';
+import { classifySemanticMemoryRegion, deriveMemoryRegion } from '../../../js/analysis/alias/regions-v2.js';
 import { stableDigest } from '../../../js/core/identity/index.js';
 
 // The pointer-reload recovery trusts scalar SSA rename links to connect a
@@ -21,7 +21,7 @@ const FUNCTION_ID = 'function_4777_forged_scalar_ssa';
 const BLOCK_ID = 'entry';
 const ADDRESS_TYPE = { kind: 'address', widthBits: 64, addressSpace: 'memory' };
 
-function buildIr() {
+function buildIr({ withUnknownCall = true } = {}) {
   const nodes = [
     { id: 'node_base', kind: 'state-read', blockId: BLOCK_ID, inputs: [], outputs: ['base'], variable: { key: 'state:sp', kind: 'physical-state', scope: 'function' }, origin: origin('node_base') },
     { id: 'node_zero', kind: 'const', blockId: BLOCK_ID, inputs: [], outputs: ['zero'], attributes: { constant: { value: '0', widthBits: 64 } }, origin: origin('node_zero') },
@@ -30,7 +30,7 @@ function buildIr() {
     { id: 'node_pointer', kind: 'binary', blockId: BLOCK_ID, inputs: ['base', 'target_offset'], outputs: ['pointer'], operator: 'add', origin: origin('node_pointer') },
     { id: 'node_store', kind: 'store', blockId: BLOCK_ID, inputs: ['slot', 'pointer'], outputs: [], memory: { addressSpace: 'memory', addressValueId: 'slot', widthBits: 64, endian: 'little', volatility: false, atomic: false }, origin: origin('node_store') },
     { id: 'node_load', kind: 'load', blockId: BLOCK_ID, inputs: ['slot'], outputs: ['loaded'], memory: { addressSpace: 'memory', addressValueId: 'slot', widthBits: 64, endian: 'little', volatility: false, atomic: false }, origin: origin('node_load') },
-    {
+    ...(withUnknownCall ? [{
       id: 'node_call_unknown', kind: 'call', blockId: BLOCK_ID, inputs: [], outputs: [], completeness: 'unknown',
       unknown: { reason: 'unresolved-call', categories: ['state'] },
       call: {
@@ -39,7 +39,7 @@ function buildIr() {
         summarySource: 'issue-4777-fixture',
         completeness: 'unknown', unknownEffects: { reason: 'unresolved-call', categories: ['state'] },
       }, origin: origin('node_call_unknown'),
-    },
+    }] : []),
     { id: 'node_r0', kind: 'state-read', blockId: BLOCK_ID, inputs: [], outputs: ['r0'], variable: { key: 'state:r0', kind: 'physical-state', scope: 'function' }, origin: origin('node_r0') },
     { id: 'node_addr', kind: 'binary', blockId: BLOCK_ID, inputs: ['r0', 'zero'], outputs: ['addr'], operator: 'add', origin: origin('node_addr') },
     { id: 'node_store2', kind: 'store', blockId: BLOCK_ID, inputs: ['addr', 'loaded'], outputs: [], memory: { addressSpace: 'memory', addressValueId: 'addr', widthBits: 64, endian: 'little', volatility: false, atomic: false }, origin: origin('node_store2') },
@@ -60,14 +60,14 @@ function buildIr() {
     blocks: [{ id: BLOCK_ID, nodeIds: nodes.map((node) => node.id), origin: origin(BLOCK_ID) }],
     values,
     nodes,
-    completeness: 'partial',
-    unknowns: [{ reason: 'unresolved-call', categories: ['state'], detail: { nodeId: 'node_call_unknown' } }],
+    completeness: withUnknownCall ? 'partial' : 'complete',
+    ...(withUnknownCall ? { unknowns: [{ reason: 'unresolved-call', categories: ['state'], detail: { nodeId: 'node_call_unknown' } }] } : {}),
     origin: origin('function'),
   });
 }
 
 function connectedReloadIr({ targetOffset = '32' } = {}) {
-  const raw = structuredClone(buildIr());
+  const raw = structuredClone(buildIr({ withUnknownCall: true }));
   const callIndex = raw.nodes.findIndex((node) => node.id === 'node_call_unknown');
   assert.notEqual(callIndex, -1);
   raw.nodes[callIndex] = {
@@ -86,7 +86,8 @@ function connectedReloadIr({ targetOffset = '32' } = {}) {
   return createSemanticIrFunction(raw);
 }
 
-function buildContext(ir = buildIr()) {
+function buildContext(target = buildIr()) {
+  const ir = target && target.nodes ? target : buildIr(target);
   const cfg = createSemanticCfg({ functionId: FUNCTION_ID, entryBlockId: BLOCK_ID, blocks: [{ id: BLOCK_ID, successors: [] }] });
   const ssa = buildSemanticSsa(ir, cfg);
   const semanticIrDigest = stableDigest(ir);
@@ -197,7 +198,10 @@ test('metadata-complete forged scalar rows cannot mint reload authority (#4777)'
 });
 
 test('a genuine scalar chain still refines reload regions (#4777)', () => {
-  const { ir, ssa, memorySsa } = buildContext();
+  // #8809 sync: canonical fixture without the function-level state unknown so
+  // the exact SP root precondition is meaningful; #5239's conservative
+  // clobber is exercised unchanged by the forged-row test above.
+  const { ir, ssa, memorySsa } = buildContext({ withUnknownCall: false });
   // The genuine SSA must still derive the sp-slot region for the slot store.
   const slotRegion = classifySemanticMemoryRegion(ir, 'node_store', {
     binaryId: 'binary_4777', ssa, canonicalMemorySsa: memorySsa,
@@ -226,4 +230,23 @@ test('canonical scalar SSA is bound to the exact Semantic IR content (#4777)', (
   assert.equal(regionFor(currentIr, current.ssa, current.memorySsa)?.kind, 'rooted-offset');
   assert.equal(regionFor(currentIr, stale.ssa, current.memorySsa)?.kind, 'unknown',
     'SSA built from a different Semantic IR snapshot must not authorize reload refinement');
+});
+
+test('deriveMemoryRegion directly rejects metadata-complete forged scalar rows (#4777)', () => {
+  const { ir, memorySsa } = buildContext();
+  const targetNode = ir.nodes.find((node) => node.id === 'node_store2');
+  const forgedRegion = deriveMemoryRegion({
+    functionId: ir.functionId,
+    binaryId: 'binary_4777',
+    memory: targetNode.memory,
+    origin: targetNode.origin,
+    sourceEntityId: targetNode.id,
+    addressValueId: targetNode.memory.addressValueId,
+  }, null, {
+    binaryId: 'binary_4777',
+    canonicalMemorySsa: memorySsa,
+    ssa: metadataCompleteForgedScalarSsa(),
+  });
+  assert.equal(forgedRegion?.kind, 'unknown',
+    'deriveMemoryRegion must reject forged scalar rows directly without depending on wrapper options');
 });

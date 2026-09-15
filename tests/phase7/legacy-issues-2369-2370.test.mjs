@@ -55,6 +55,8 @@ test("Issue #2369: call node recovers return pointer provenance from complete ca
         call: {
           targetEntityIds: ["fn_identity"],
           arguments: ["base"],
+          // #8809 sync: a call node's outputs must be declared exactly by
+          // `call.returns` (semantic-ir-call-output-mismatch).
           returns: ["call_ret"],
           completeness: "complete",
           memoryRead: { scope: "none" },
@@ -90,8 +92,7 @@ test("Issue #2369: call node recovers return pointer provenance from complete ca
 
 // Issue #2370: Mach-O compact unwind entries generate canonical unwindEntries and function starts
 test("Issue #2370: Mach-O compact unwind entries generate canonical unwindEntries and function starts", () => {
-  // The recovered [0x400,0x500) function must be file-backed, not zero-fill (#5571).
-  const buf = new Uint8Array(2048);
+  const buf = new Uint8Array(0x1000); // #8809 sync: the function range must stay inside file-backed bytes (executable zero-fill tail is rejected)
   const dv = new DataView(buf.buffer);
   dv.setUint32(0, 0xfeedfacf, true); // MH_MAGIC_64
   dv.setUint32(4, 0x0100000c, true); // ARM64
@@ -108,7 +109,7 @@ test("Issue #2370: Mach-O compact unwind entries generate canonical unwindEntrie
   dv.setBigUint64(56, 0x100000000n, true);
   dv.setBigUint64(64, 0x1000n, true);
   dv.setBigUint64(72, 0n, true);
-  dv.setBigUint64(80, BigInt(buf.length), true);
+  dv.setBigUint64(80, 0x1000n, true);
   dv.setUint32(88, 5, true);
   dv.setUint32(92, 5, true);
   dv.setUint32(96, 1, true);

@@ -290,15 +290,20 @@ test('#4062 pin cache releases prior snapshots while preserving entries within t
   });
 
   const goal = { id:'cache-lifetime', text:'cache lifetime', expects:{} };
-  await service.investigate(goal);
+  const first = await service.investigate(goal);
   assert.equal(service.pinCache.size, 1);
 
   const activeKey = 'snapshot-A:cache-lifetime:cache lifetime';
-  const sentinel = { top:{ id:'sentinel' }, verdict:'ambiguous' };
-  service.pinCache.set(activeKey, sentinel);
+  // #8809 sync: #5284 requires the pinRequestIdentityCache request/evidence
+  // identity to match for a cache hit; a manually inserted pinCache entry
+  // (the old fixture shape) is now correctly not reused — doing so would
+  // reintroduce the stale-cache bug. Reuse must go through the public
+  // request path so both identity side-caches are established together.
   const reused = await service.investigate(goal);
-  assert.strictEqual(reused.pin, sentinel,
+  assert.strictEqual(reused.pin, first.pin,
     'same snapshot/goal must preserve and reuse the current pin cache entry');
+  assert.strictEqual(service.pinCache.get(activeKey), first.pin,
+    'the identity-bound public reuse must keep the original pin instance');
 
   snapshotId = 'snapshot-B';
   await service.investigate(goal);
