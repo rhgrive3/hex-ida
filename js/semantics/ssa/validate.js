@@ -49,6 +49,9 @@ function blockSetEqual(ir, cfg) {
 }
 const CONTROL_PROJECTION_KINDS = new Set(['branch', 'conditional-branch', 'switch', 'return', 'trap', 'unknown-control-effect', 'incomplete']);
 const UNKNOWN_CONTROL_EDGE_KINDS = new Set(['indirect-candidate', 'unknown']);
+// Block-level conditional labels that may legitimately accompany a partial
+// control projection only when they resolve to a target the node still names.
+const CONDITIONAL_EDGE_KINDS = new Set(['conditional-true', 'conditional-false', 'fallthrough']);
 
 function isControlProjectionNode(node) {
   return CONTROL_PROJECTION_KINDS.has(node?.kind)
@@ -90,8 +93,21 @@ function validateControlProjection(ir, cfg) {
     if (!node) continue;
     const cfgBlock = cfgById.get(irBlock.id);
     const successors = cfgBlock.successors;
-    if ((node.kind === 'unknown-control-effect' || node.kind === 'incomplete') && node.targets.length === 0) {
-      if (successors.some((edge) => !UNKNOWN_CONTROL_EDGE_KINDS.has(edge.kind))) fail('semantic-ssa-control-flow-mismatch');
+    if (node.kind === 'unknown-control-effect' || node.kind === 'incomplete') {
+      // A partial control projection publishes `unknown`/`indirect-candidate`
+      // edges for every target it can still name. Block-level conditional
+      // labels may accompany them only when they resolve to one of those
+      // declared targets; any other exact edge is unexplained and fails
+      // closed (#8922).
+      const declared = new Set(node.targets);
+      const expected = sortedProjectionEdges(projectedControlEdges(node));
+      const actual = sortedProjectionEdges(successors);
+      const unexplained = successors.some((edge) => (
+        !UNKNOWN_CONTROL_EDGE_KINDS.has(edge.kind)
+        && !(CONDITIONAL_EDGE_KINDS.has(edge.kind) && declared.has(edge.to))
+      ));
+      const unpublished = expected.some((key) => !actual.includes(key));
+      if (unexplained || unpublished) fail('semantic-ssa-control-flow-mismatch');
       continue;
     }
     if (node.kind === 'switch') {
@@ -101,6 +117,15 @@ function validateControlProjection(ir, cfg) {
         || successors.some((edge) => !['switch-case', 'switch-default'].includes(edge.kind))) {
         fail('semantic-ssa-control-flow-mismatch');
       }
+      continue;
+    }
+    if (node.kind === 'branch' && node.targets.length === 1
+      && successors.length > 0
+      && successors.every((edge) => edge.to === node.targets[0]
+        && ['branch', 'conditional-true', 'conditional-false', 'fallthrough'].includes(edge.kind))) {
+      // A conditional whose taken and fallthrough destinations are identical
+      // is normalized to an unconditional branch; its CFG may still retain the
+      // two source edge labels while preserving the same sole successor.
       continue;
     }
     if (node.kind === 'conditional-branch' && node.targets.length === 1) {

@@ -1,15 +1,18 @@
 import {
   buildCilCallMetadataIndex,
+  FIELD_DEF_TABLE,
   MEMBER_REF_TABLE,
   METHOD_DEF_TABLE,
   METHOD_SPEC_TABLE,
   STANDALONE_SIG_TABLE,
+  TYPE_DEF_TABLE,
   readCilMetadataBlob,
   readCilMetadataString,
 } from './call-signature-metadata.js';
 import {
   parseCilMethodSignature,
   parseCilLocalVarSignature,
+  parseCilFieldSignature,
   parseCilMethodSpecInstantiation,
   substituteCilMethodGeneric,
 } from './call-signature-types.js';
@@ -279,14 +282,153 @@ function buildResolverIndex(cilImage) {
   }
 }
 
-export function createCilCallSignatureResolver(cilImage) {
+// One immutable whole-image metadata index per parsed image (#8791). The
+// method-signature, call-signature and local-type resolvers all read this
+// object, so decoding N methods builds the index once instead of once (or
+// several times) per method. The parsed image is deep-frozen, and the cached
+// entry additionally pins the exact `rawBytes` identity it was built from, so a
+// stale index can never be served for different bytes.
+const metadataIndexCache = new WeakMap();
+const metadataIndexBuilds = new WeakMap();
+
+function resolverIndex(cilImage) {
+  const cacheable = cilImage !== null && typeof cilImage === 'object';
+  const rawBytes = cilImage?.rawBytes;
+  if (cacheable && rawBytes instanceof Uint8Array) {
+    const cached = metadataIndexCache.get(cilImage);
+    if (cached !== undefined && cached.rawBytes === rawBytes) return cached;
+  }
+  if (cacheable) metadataIndexBuilds.set(cilImage, (metadataIndexBuilds.get(cilImage) ?? 0) + 1);
   const { index, reason } = buildResolverIndex(cilImage);
+  const entry = {
+    rawBytes: rawBytes instanceof Uint8Array ? rawBytes : null,
+    index,
+    reason,
+  };
+  if (cacheable) metadataIndexCache.set(cilImage, entry);
+  return entry;
+}
+
+// Observability for the #8791 lifetime contract: how many times the whole-image
+// metadata index was built for this exact image. A decode loop must keep this
+// at one. It is tracked per image instead of globally so concurrent test
+// fixtures cannot inflate each other's counts.
+export function cilCallMetadataIndexBuilds(cilImage) {
+  return metadataIndexBuilds.get(cilImage) ?? 0;
+}
+
+export function createCilCallSignatureResolver(cilImage) {
+  const { index, reason } = resolverIndex(cilImage);
   if (!index) return () => Object.freeze({ complete:false, reason });
   return (token) => resolveIndexed(index, token);
 }
 
+function readOptionalString(heap, index, code) {
+  return Number.isSafeInteger(index) && index >= 1 ? readCilMetadataString(heap, index, code) : '';
+}
+
+function resolveFieldOwner(index, rid) {
+  const fieldCount = index.fieldDefs.length;
+  if (index.typeDefs.length === 0) fail('cil-fielddef-owner-missing');
+  let owner = null;
+  for (let position = 0; position < index.typeDefs.length; position++) {
+    const row = index.typeDefs[position];
+    const begin = row.fieldList;
+    if (!Number.isSafeInteger(begin) || begin < 1 || begin > fieldCount + 1) fail('cil-typedef-fieldlist-invalid');
+    const next = position + 1 < index.typeDefs.length ? index.typeDefs[position + 1].fieldList : fieldCount + 1;
+    if (rid >= begin && rid < next) { owner = row; break; }
+    if (next < begin || next > fieldCount + 1) fail('cil-typedef-fieldlist-invalid');
+  }
+  if (!owner) fail('cil-fielddef-owner-missing');
+  const name = readOptionalString(index.stringsHeap, owner.nameIndex, 'cil-field-owner-name-invalid');
+  if (!name) fail('cil-field-owner-name-invalid');
+  const namespace = readOptionalString(index.stringsHeap, owner.namespaceIndex, 'cil-field-owner-namespace-invalid');
+  return {
+    declaringTypeToken: tokenFor(TYPE_DEF_TABLE, index.typeDefs.indexOf(owner) + 1),
+    declaringType: `${namespace ? `${namespace}.` : ''}${name}`,
+  };
+}
+
+function resolveFieldIndexed(index, token) {
+  if (!Number.isSafeInteger(token) || token < 0 || token > 0xffffffff) {
+    return Object.freeze({ complete:false, reason:'cil-field-signature-token-invalid' });
+  }
+  const table = token >>> 24;
+  const rid = token & 0x00ffffff;
+  if (rid < 1 || ![FIELD_DEF_TABLE, MEMBER_REF_TABLE].includes(table)) {
+    return Object.freeze({ complete:false, reason:'cil-field-signature-token-kind-invalid' });
+  }
+
+  try {
+    const row = table === FIELD_DEF_TABLE ? index.fieldDefs[rid - 1] : index.memberRefs[rid - 1];
+    if (!row || !Number.isSafeInteger(row.signatureBlobIndex) || row.signatureBlobIndex < 1) {
+      fail('cil-field-signature-row-missing');
+    }
+    const fieldName = readOptionalString(index.stringsHeap, row.nameIndex, 'cil-field-name-invalid');
+    if (!fieldName) fail('cil-field-name-invalid');
+    const fieldType = parseCilFieldSignature(readCilMetadataBlob(index.blobHeap, row.signatureBlobIndex,
+      'cil-field-signature-blob-invalid'), index.typeDefOrRefRowCounts);
+    let owner = null;
+    if (table === FIELD_DEF_TABLE) {
+      owner = resolveFieldOwner(index, rid);
+    } else {
+      const parentTag = row.parent & 0x7;
+      const parentRid = row.parent >>> 3;
+      if (parentTag > 2 || parentRid < 1) fail('cil-memberref-parent-invalid');
+      if (parentTag === 0) {
+        if (parentRid > index.typeDefs.length) fail('cil-memberref-parent-out-of-range');
+        const typeRow = index.typeDefs[parentRid - 1];
+        const name = readOptionalString(index.stringsHeap, typeRow.nameIndex, 'cil-field-owner-name-invalid');
+        const namespace = readOptionalString(index.stringsHeap, typeRow.namespaceIndex,
+          'cil-field-owner-namespace-invalid');
+        owner = {
+          declaringTypeToken: tokenFor(TYPE_DEF_TABLE, parentRid),
+          declaringType: `${namespace ? `${namespace}.` : ''}${name}`,
+        };
+      }
+    }
+    return Object.freeze({
+      complete:true,
+      fieldType,
+      fieldName,
+      declaringType:owner?.declaringType ?? null,
+      provenance:Object.freeze({
+        token,
+        table:table === FIELD_DEF_TABLE ? 'FieldDef' : 'MemberRef',
+        rid,
+        signatureBlobIndex:row.signatureBlobIndex,
+        nameStringIndex:row.nameIndex,
+        fieldName,
+        ...(owner?.declaringTypeToken != null ? { declaringTypeToken:owner.declaringTypeToken } : {}),
+      }),
+    });
+  } catch (error) {
+    return Object.freeze({
+      complete:false,
+      reason:error instanceof Error ? error.message : 'cil-field-signature-invalid',
+    });
+  }
+}
+
+// Field-token typing for the lifter (#3971): `ldfld/stfld/ldsfld/stsfld`
+// resolve token → FieldSig through this checked metadata-layer resolver so a
+// field load never publishes a fabricated 32-bit (or reference) width, and an
+// unresolvable token stays inexact instead of laundering into an exact
+// memory effect. The whole-image index is taken from the shared per-image cache
+// (#8791) so decoding N methods still builds it once, while per-token FieldSig
+// resolution keeps its own token cache.
+export function createCilFieldSignatureResolver(cilImage) {
+  const { index, reason } = resolverIndex(cilImage);
+  if (!index) return () => Object.freeze({ complete:false, reason });
+  const cache = new Map();
+  return (token) => {
+    if (!cache.has(token)) cache.set(token, Object.freeze(resolveFieldIndexed(index, token)));
+    return cache.get(token);
+  };
+}
+
 export function createCilMethodSignatureResolver(cilImage) {
-  const { index, reason } = buildResolverIndex(cilImage);
+  const { index, reason } = resolverIndex(cilImage);
   if (!index) return () => Object.freeze({ complete:false, reason });
 
   return (methodBody) => {
@@ -295,20 +437,14 @@ export function createCilMethodSignatureResolver(cilImage) {
       return Object.freeze({ complete:false, reason:'cil-return-method-body-identity-unavailable' });
     }
 
-    const matches = [];
-    for (let row = 0; row < index.methodDefs.length; row++) {
-      if (index.methodDefs[row]?.bodyOffset === bodyOffset) matches.push(row + 1);
+    if (!index.methodBodyOffsets.has(bodyOffset)) {
+      return Object.freeze({ complete:false, reason:'cil-return-methoddef-unresolved' });
     }
-    if (matches.length !== 1) {
-      return Object.freeze({
-        complete:false,
-        reason:matches.length === 0
-          ? 'cil-return-methoddef-unresolved'
-          : 'cil-return-methoddef-ambiguous',
-      });
+    const rid = index.methodBodyOffsets.get(bodyOffset);
+    if (rid === null) {
+      return Object.freeze({ complete:false, reason:'cil-return-methoddef-ambiguous' });
     }
 
-    const rid = matches[0];
     const methodToken = tokenFor(METHOD_DEF_TABLE, rid);
     const resolved = resolveIndexed(index, methodToken);
     return Object.freeze({
@@ -324,7 +460,7 @@ export function createCilMethodSignatureResolver(cilImage) {
 // fabricating a 32-bit exact fact. Arguments ride on the MethodDef signature
 // authority already resolved for the enclosing method.
 export function createCilLocalTypeResolver(cilImage) {
-  const { index, reason } = buildResolverIndex(cilImage);
+  const { index, reason } = resolverIndex(cilImage);
   if (!index) {
     return () => Object.freeze({ complete:false, reason, locals:null });
   }

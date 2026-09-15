@@ -106,6 +106,20 @@ const tmp = (id, bits) => createTemporaryValue(id, bv(bits));
 }
 
 {
+  const target = { kind:'bitvector', widthBits:64, value:'28672' };
+  const condition = createFlagValue('same-successor-condition', 1);
+  const bundle = fixture({
+    operations: [],
+    controlEffect: { kind:'conditional-branch', condition, target, fallthrough:{ ...target } },
+  });
+  const ir = lowerMachineEffectBundleToSemanticIr(bundle, context('same-successor-conditional'));
+  const control = ir.nodes.find((node) => node.kind === 'branch' || node.kind === 'conditional-branch');
+  assert.equal(control?.kind, 'branch', 'equal taken and fallthrough successors normalize to an unconditional branch');
+  assert.equal(control.targets.length, 1);
+  assert.deepEqual(control.inputs, []);
+}
+
+{
   const bundle = fixture({ controlEffect: { kind: 'call', target: { kind: 'bitvector', widthBits: 64, value: '32768' } } });
   const ir = lowerMachineEffectBundleToSemanticIr(bundle, context('call'));
   const call = ir.nodes.find((node) => node.kind === 'call');

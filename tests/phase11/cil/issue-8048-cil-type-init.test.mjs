@@ -134,6 +134,7 @@ for (const [name, mnemonic] of [['Read', 'ldsfld'], ['Write', 'stsfld']]) {
   const bundle = decoded.bundles.find((b) => b.mnemonic === 'ldsfld');
   assert.equal(bundle.completeness, 'partial');
   assert.deepEqual(bundle.unknownEffects, [
+    { category: 'types', reason: 'cil-field-signature-row-missing' },
     { category: 'calls', reason: 'cil-static-field-owner-external' },
   ]);
   assert.deepEqual(bundle.memoryEffects[0].typeInitialization, { declaringTypeResolved: false });
@@ -146,6 +147,7 @@ for (const [name, mnemonic] of [['Read', 'ldsfld'], ['Write', 'stsfld']]) {
   const bundle = decoded.bundles.find((b) => b.mnemonic === 'ldsfld');
   assert.equal(bundle.completeness, 'partial');
   assert.deepEqual(bundle.unknownEffects, [
+    { category: 'types', reason: 'cil-field-signature-token-kind-invalid' },
     { category: 'calls', reason: 'cil-static-field-token-unresolved' },
   ]);
 }

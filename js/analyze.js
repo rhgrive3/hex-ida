@@ -8,7 +8,7 @@
  */
 import { CHUNK_ROWS } from './backend.js';
 import { stableDigest, jsonSafe } from './core/identity/index.js';
-import { parseOperands, isCall, isReturn, categoryOf, referenceTarget } from './arm64.js';
+import { parseOperands, isCall, isReturn, categoryOf, referenceTarget, arm64ReadsDestination } from './arm64.js';
 import { arm64EncodingWord } from './targets/architecture/arm64/encoding-word.js';
 import { analysisAbortSignalMethods } from './analysis/producer-wait.js';
 import { pick } from './i18n.js';
@@ -25,15 +25,40 @@ const ARM64_SEMANTIC_POINTER_WIDTH_BYTES = new Map([['arm64', 8], ['arm64e', 8],
 export function supportsArm64SemanticAnalysis(architecture) {
   return typeof architecture === 'string' && ARM64_SEMANTIC_ARCHES.has(architecture.toLowerCase());
 }
-function modelPointerWidth(opts = {}) {
-  const width = opts?.pointerWidth;
-  if (width === 4 || width === 8) return width;
-  const architecture = opts?.architecture;
-  if (typeof architecture === 'string' && architecture) {
-    const mapped = ARM64_SEMANTIC_POINTER_WIDTH_BYTES.get(architecture.toLowerCase());
-    return mapped === undefined ? null : mapped;
-  }
-  return 8;
+export function resolvePointerBytes(context = {}) {
+  let opts = context;
+  if (typeof context === 'string') opts = { architecture: context };
+  else if (typeof context === 'number') opts = { pointerBytes: context };
+  if (!opts || typeof opts !== 'object') return null;
+
+  const rawWidth = opts.pointerWidth;
+  const rawBytes = opts.pointerBytes ?? opts.pointerSize;
+  const rawBits = opts.pointerBits;
+  const width = rawWidth === 4 || rawWidth === 8 ? rawWidth : null;
+  const bytes = rawBytes === 4 || rawBytes === 8 ? rawBytes : null;
+  const bits = rawBits === 32 ? 4 : rawBits === 64 ? 8 : null;
+  if ((rawWidth != null && width == null)
+      || (rawBytes != null && bytes == null)
+      || (rawBits != null && bits == null)) return null;
+
+const rawArchitecture = opts.architecture ?? opts.arch ?? opts.cpu ?? null;
+let architectureWidth = null;
+if (rawArchitecture != null) {
+  if (typeof rawArchitecture !== 'string') return null;
+  const architecture = rawArchitecture.trim().toLowerCase();
+  const mapped = ARM64_SEMANTIC_POINTER_WIDTH_BYTES.get(architecture);
+  if (mapped === undefined) return null;
+  architectureWidth = mapped;
+}
+
+const explicit = [width, bytes, bits].filter((value) => value != null);
+if (explicit.length) {
+  if (explicit.some((value) => value !== explicit[0])) return null;
+  if (architectureWidth != null && explicit[0] !== architectureWidth) return null;
+  return explicit[0];
+}
+
+return architectureWidth;
 }
 function rowBudget(opts = {}) {
   const raw = opts?.maxRows;
@@ -101,7 +126,7 @@ async function awaitAbortable(operation, signal) {
 const ATOMIC_SOURCE_RESULT_RE = /^(?:swp|ld(?:add|set|clr|eor|smax|smin|umax|umin))(?:al|a|l)?(?:b|h)?$/;
 // Without-return aliases (`LD<op> <Ws>, WZR, [<Xn>]`) have no GPR result, so the
 // lone register operand is a source read rather than a destination (#3702).
-const ATOMIC_STORE_ONLY_RE = /^st(?:add|clr|eor|set|smax|smin|umax|umin)l?(?:b|h)?$/;
+const ATOMIC_WITHOUT_RETURN_RE = /^st(?:add|clr|eor|set|smax|smin|umax|umin)(?:al|a|l)?(?:b|h)?$/;
 // Mnemonics without a writable destination register. Matched as whole words so
 // that e.g. `bic` is not swallowed by `b` (#2188).
 const NO_DEST_MNEMONICS = new Set([
@@ -139,7 +164,7 @@ function destIndex(mn) {
   if (ATOMIC_SOURCE_RESULT_RE.test(b)) return 1;
   // Without-return LSE aliases discard the loaded value, so operand 0 is a
   // source read and there is no destination register (#3702).
-  if (ATOMIC_STORE_ONLY_RE.test(b)) return -1;
+  if (ATOMIC_WITHOUT_RETURN_RE.test(b)) return -1;
   if (/^(str|stp|stur|strb|strh|sturb|sturh|stnp|sttr|st1|st2|st3|st4|stlr)/.test(b)) return -1;
   // Full-mnemonic matching only: a bare `b` alternative here also prefix-matched
   // every `b*` mnemonic with a destination register (bic/bfi/bfm/...), so their
@@ -154,7 +179,7 @@ function destinationIsRead(mn, index) {
   const b = mn.toLowerCase();
   if (ATOMIC_READ_WRITE_DEST_RE.test(b)) return index === 0;
   if (ATOMIC_PAIR_READ_WRITE_DEST_RE.test(b)) return index === 0 || index === 1;
-  return false;
+  return index === 0 && arm64ReadsDestination(mn);
 }
 
 function readRegs(op, into) {
@@ -202,6 +227,9 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   const argsRead = new Set();
   const calleeSaved = new Set();
   const x0WriteRows = [];
+  const spRows = [];
+  const spEffects = new Map();
+  const spEdges = new Map();
   const flowEdges = new Map();
   let flowIsClosed = true;
   const absoluteRowOf = (addr) => {
@@ -219,6 +247,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   const first = Math.floor(startRow / CHUNK_ROWS);
   const last = Math.floor(end / CHUNK_ROWS);
   const pageOf = new Map();
+  const stringRefCandidates = [];
 
   for (let c = first; c <= last; c++) {
     throwIfAborted(signal);
@@ -249,6 +278,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       else modelRowsDropped = true;
       if (b.charCodeAt(0) === 46) { res.dataRows++; continue; }
       res.instructions++;
+      spRows.push(row);
 
       const ops = parseOperands(opsStr);
       const catg = categoryOf(b);
@@ -262,7 +292,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
 
       const di = destIndex(mn);
       const destReg = di >= 0 && ops[di]?.k === 'reg' && ops[di]?.cls === 'gp' ? ops[di].num : null;
-      const pairDestReg = (/^(ldp|ldpsw|ldnp)$/.test(b) || ATOMIC_PAIR_READ_WRITE_DEST_RE.test(b)) && ops[1]?.k === 'reg' && ops[1]?.cls === 'gp'
+      const pairDestReg = (/^(ldp|ldpsw|ldnp|ldxp|ldaxp)$/.test(b) || ATOMIC_PAIR_READ_WRITE_DEST_RE.test(b)) && ops[1]?.k === 'reg' && ops[1]?.cls === 'gp'
         ? ops[1].num
         : null;
       const reads = new Set();
@@ -281,19 +311,32 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         if (pairDestReg === 0) x0WriteRows.push(row);
       }
 
-      if (b === 'sub' && ops[0] && ops[0].cls === 'sp' && ops[1] && ops[1].cls === 'sp' && ops[2] && ops[2].k === 'imm' && ops[2].value != null) {
-        const amount = arm64AddSubImmediateValue(ops[2]);
-        if (amount != null) res.frameBytes += Number(amount);
-      }
+      const spMem = (catg === 'load' || catg === 'store') ? ops.find((x) => x.k === 'mem') : null;
+      const spWritebackMem = !!(spMem && spMem.base && spMem.base.cls === 'sp' &&
+        (spMem.mode === 'pre' || spMem.mode === 'post'));
       if (catg === 'load' || catg === 'store') {
-        const mem = ops.find((x) => x.k === 'mem');
-        if (mem && mem.base && mem.base.cls === 'sp') {
-          res.stackAccess++;
-          if (catg === 'store' && mem.mode === 'pre' && mem.disp && mem.disp.value != null && mem.disp.value < 0n) {
-            res.frameBytes += Number(-mem.disp.value);
-          }
+        const mem = spMem;
+        if (mem && mem.base && mem.base.cls === 'sp') res.stackAccess++;
+      }
+      let spEffect = null;
+      if (spWritebackMem) {
+        const wb = spMem.writebackDisp && spMem.writebackDisp.value != null ? spMem.writebackDisp.value : null;
+        spEffect = wb != null
+          ? { known: true, delta: Number(-wb) }
+          : { known: false, delta: 0 };
+      } else if (ops[0] && ops[0].cls === 'sp') {
+        const srcIsSp = !!(ops[1] && ops[1].cls === 'sp');
+        const immOp = ops[2] && ops[2].k === 'imm' ? ops[2] : null;
+        if ((b === 'sub' || b === 'add') && srcIsSp && immOp) {
+          const amount = arm64AddSubImmediateValue(immOp);
+          spEffect = amount != null
+            ? { known: true, delta: b === 'sub' ? Number(amount) : -Number(amount) }
+            : { known: false, delta: 0 };
+        } else {
+          spEffect = { known: false, delta: 0 };
         }
       }
+      if (spEffect) spEffects.set(row, spEffect);
       const saveStart = EXCLUSIVE_STORE_RE.test(b) ? 1 : 0;
       for (let i = saveStart; i < ops.length; i++) {
         const op = ops[i];
@@ -310,25 +353,29 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         } else res.indirectCalls++;
         // AAPCS64 calls may clobber x0-x18; BL/BLR also overwrite LR/x30.
         // Keep x19-x29 provenance because those registers are callee-saved.
-        for (let r = 0; r <= 18; r++) pageOf.delete(r);
+        for (let r = 0; r <= 18; r++) { pageOf.delete(r); written.add(r); }
         pageOf.delete(30);
       } else if (isReturn(b)) {
         res.returns++;
+        spEdges.set(row, { target: null, targetKnown: true, fall: false });
         flowEdges.set(row, { target: null, fall: false });
       } else if (/^b\./.test(b) || b === 'cbz' || b === 'cbnz' || b === 'tbz' || b === 'tbnz') {
         res.condBranches++;
         const t = referenceTarget(b, opsStr);
         if (t != null && t <= addr) res.loops.push({ from: addr, to: t });
         const tr = absoluteRowOf(t);
+        spEdges.set(row, { target: tr, targetKnown: t != null && tr != null, fall: true });
         if (tr == null) flowIsClosed = false;
         else flowEdges.set(row, { target: tr >= startRow && tr <= end ? tr : null, fall: true });
       } else if (b === 'b') {
         const t = referenceTarget(b, opsStr);
         if (t != null && t <= addr) res.loops.push({ from: addr, to: t });
         const tr = absoluteRowOf(t);
+        spEdges.set(row, { target: tr, targetKnown: t != null && tr != null, fall: false });
         if (tr == null) flowIsClosed = false;
         else flowEdges.set(row, { target: tr >= startRow && tr <= end ? tr : null, fall: false });
       } else if (OPAQUE_JUMP_RE.test(b)) {
+        spEdges.set(row, { target: null, targetKnown: false, fall: false });
         flowIsClosed = false;
       } else if (b === 'brk' || b === 'udf') {
         flowEdges.set(row, { target: null, fall: false });
@@ -346,13 +393,13 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         const offset = arm64AddSubImmediateValue(imm);
         if (src?.k === 'reg' && offset != null) {
           const p = pageOf.get(src.num);
-          if (p && row - p.row <= 8) res.stringRefs.push({ row, addr: p.value + offset });
+          if (p && row - p.row <= 8) stringRefCandidates.push({ row, defRow: p.row, addr: p.value + offset });
         }
       } else if (b === 'ldr') {
         const mem = ops.find((x) => x.k === 'mem');
         if (mem?.base && mem.disp?.value != null) {
           const p = pageOf.get(mem.base.num);
-          if (p && row - p.row <= 8) res.stringRefs.push({ row, addr: p.value + mem.disp.value, load: true });
+          if (p && row - p.row <= 8) stringRefCandidates.push({ row, defRow: p.row, addr: p.value + mem.disp.value, load: true });
         }
       }
       if (destReg != null) pageOf.delete(destReg);
@@ -362,7 +409,75 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   }
 
   throwIfAborted(signal);
+  const spRowSet = new Set(spRows);
+  const nextSpRow = new Map();
+  for (let i = 0; i + 1 < spRows.length; i++) nextSpRow.set(spRows[i], spRows[i + 1]);
+  let spPeak = 0;
+  let spExact = true;
+  if (spRows.length) {
+    const states = new Map();
+    const queue = [spRows[0]];
+    states.set(spRows[0], { depth: 0, peak: 0 });
+    const mergeState = (row, incoming) => {
+      const previous = states.get(row);
+      if (!previous) {
+        states.set(row, incoming);
+        queue.push(row);
+        return;
+      }
+      const depth = previous.depth == null || incoming.depth == null
+        ? null
+        : (previous.depth === incoming.depth ? previous.depth : null);
+      const merged = {
+        depth,
+        peak: Math.max(previous.peak, incoming.peak),
+      };
+      if (merged.depth !== previous.depth || merged.peak !== previous.peak) {
+        states.set(row, merged);
+        queue.push(row);
+      }
+    };
+    while (queue.length) {
+      const row = queue.shift();
+      const state = states.get(row);
+      if (state.depth == null) spExact = false;
+      else spPeak = Math.max(spPeak, state.peak);
+      const effect = spEffects.get(row);
+      let out = state;
+      if (effect) {
+        if (state.depth == null || !effect.known) {
+          spExact = false;
+          out = { depth: null, peak: state.peak };
+        } else {
+          const depth = state.depth + effect.delta;
+          if (depth < 0) {
+            spExact = false;
+            out = { depth: null, peak: state.peak };
+          } else {
+            out = { depth, peak: Math.max(state.peak, depth) };
+            spPeak = Math.max(spPeak, depth);
+          }
+        }
+      }
+      const edge = spEdges.get(row);
+      const fall = nextSpRow.get(row);
+      const successors = [];
+      if (!edge) {
+        if (fall != null) successors.push(fall);
+      } else {
+        if (!edge.targetKnown) {
+          spExact = false;
+        } else if (edge.target != null && edge.target >= startRow && edge.target <= end) {
+          if (spRowSet.has(edge.target)) successors.push(edge.target);
+          else spExact = false;
+        }
+        if (edge.fall && fall != null) successors.push(fall);
+      }
+      for (const successor of new Set(successors)) mergeState(successor, out);
+    }
+  }
   res.argRegs = Array.from(argsRead).sort((a, b) => a - b);
+  res.frameBytes = spExact ? spPeak : 0;
   res.savesCallee = Array.from(calleeSaved).sort((a, b) => a - b);
   if (x0WriteRows.length && flowIsClosed) {
     const live = reachableRowSet(startRow, end, flowEdges);
@@ -388,6 +503,25 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       return Number(rel / 4n);
     },
   });
+  const joinRows = new Set();
+  for (const bb of res.model?.basicBlocks || []) if (bb.isJoin) joinRows.add(bb.startRow);
+  const crossesJoin = (from, to) => {
+    for (let r = from + 1; r <= to; r++) if (joinRows.has(r)) return true;
+    return false;
+  };
+  res.stringRefs = stringRefCandidates
+    .filter((c) => !crossesJoin(c.defRow, c.row))
+    .map((c) => (c.load ? { row: c.row, addr: c.addr, load: true } : { row: c.row, addr: c.addr }));
+  const loopSeen = new Set();
+  res.loops = [];
+  for (const e of res.model?.backEdges || []) {
+    const from = region.vmAddr + BigInt(e.from) * 4n;
+    const to = region.vmAddr + BigInt(e.to) * 4n;
+    const key = from + ':' + to;
+    if (loopSeen.has(key)) continue;
+    loopSeen.add(key);
+    res.loops.push({ from, to });
+  }
   if ((truncated || modelRowsDropped) && res.model) res.model.truncated = true;
   res.truncated = truncated || !!res.model?.truncated;
   res.requestedRows = requestedRows;
@@ -574,8 +708,10 @@ async function ensureTextsForKey(key, backend, res, signal, opts = {}) {
     entry = makeShared(textInflight, key, async (producerSignal) => {
       await resolveModelTexts(backend, res.model, MODEL_TEXTS, {
         signal: producerSignal,
-        architecture: opts?.architecture,
+        architecture: opts?.architecture ?? opts?.arch,
         pointerWidth: opts?.pointerWidth,
+        pointerBytes: opts?.pointerBytes ?? opts?.pointerSize,
+        pointerBits: opts?.pointerBits,
       });
       // Only a complete resolution is final. An incomplete one leaves the entry
       // unresolved so a later request retries instead of retrying never (#5360).
@@ -647,7 +783,13 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
     if (model) modelTextsComplete.set(model, true);
     return model;
   }
-  const pointerWidth = modelPointerWidth(opts);
+  const pointerContext = {
+    architecture: opts?.architecture ?? opts?.arch ?? model?.architecture ?? model?.arch ?? backend?.architecture ?? backend?.arch ?? null,
+    pointerWidth: opts?.pointerWidth ?? model?.pointerWidth ?? backend?.pointerWidth ?? null,
+    pointerBytes: opts?.pointerBytes ?? model?.pointerBytes ?? backend?.pointerBytes ?? null,
+    pointerBits: opts?.pointerBits ?? model?.pointerBits ?? backend?.pointerBits ?? null,
+  };
+  const pointerWidth = resolvePointerBytes(pointerContext);
   const wanted = [];
   const seen = new Set();
   for (const r of model.addressRefs) {
@@ -680,7 +822,7 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
     if (pointerWidth != null && g && g.found && g.bytes && g.bytes.length >= pointerWidth) deref.push({ i, bytes: g.bytes });
   });
   if (deref.length) {
-    const ptrs = deref.map((d) => pointerAt(d.bytes, pointerWidth));
+    const ptrs = deref.map((d) => pointerAt(d.bytes, pointerContext));
     const got2 = await mapBounded(
       ptrs,
       MODEL_TEXT_READ_CONCURRENCY,
@@ -708,14 +850,26 @@ function looksLikeText(g) {
   return /[\p{L}\p{N}]/u.test(g.text);
 }
 
-function pointerAt(bytes, width) {
-  if (width !== 4 && width !== 8) return null;
+export function pointerAt(bytes, opts = {}) {
+  if (!bytes || bytes.length < 4) return null;
+  let context = opts;
+  if (typeof opts === 'string') context = { architecture: opts };
+  else if (typeof opts === 'number') context = { pointerBytes: opts };
+
+  const pointerWidth = resolvePointerBytes(context);
+  if (pointerWidth == null || bytes.length < pointerWidth) return null;
+
   let v = 0n;
-  for (let i = width - 1; i >= 0; i--) v = (v << 8n) | BigInt(bytes[i]);
+  for (let i = pointerWidth - 1; i >= 0; i--) v = (v << 8n) | BigInt(bytes[i]);
   if (v === 0n) return null;
-  if (width === 4) return v;
-  if (v < 0x0001000000000000n) return v;
-  return v & 0x0000ffffffffffffn;
+  if (pointerWidth === 4 || v < 0x0001000000000000n) return v;
+
+  const rawArchitecture = context?.architecture ?? context?.arch ?? context?.cpu ?? null;
+  if (typeof rawArchitecture !== 'string') return null;
+  const architecture = rawArchitecture.trim().toLowerCase();
+  if (architecture !== 'arm64' && architecture !== 'arm64e') return null;
+  const canonical = v & 0x0000ffffffffffffn;
+  return canonical === 0n ? null : canonical;
 }
 
 const HINTS = [
