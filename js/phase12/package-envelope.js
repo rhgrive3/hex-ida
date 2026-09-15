@@ -83,7 +83,8 @@ function utf8ByteLength(text) {
 // so a stricter byte limit rejects before any canonicalization work. Token
 // counts have no object analogue and stay byte-budget covered. Returns the
 // admitted snapshot.
-function scanObjectBudget(value, limits, maxBytes) {
+function scanObjectBudget(value, limits, maxBytes, options = {}) {
+  const preserveSemanticValues = options.preserveSemanticValues === true;
   const { maxDepth, maxStrings, maxStringBytes, maxEntries } = limits;
   let strings = 0;
   let stringBytes = 0;
@@ -194,10 +195,21 @@ function scanObjectBudget(value, limits, maxBytes) {
       }
       const key = frame.keys[frame.index++];
       item = frame.container[key];
+      if (preserveSemanticValues && frame === rootFrame && (key === 'items' || key === 'results')) {
+        if (!Array.isArray(item)) {
+          throw new PackageValidationError('provider-output-schema-invalid', `${key} must be an array when supplied`);
+        }
+        if (options.rootCollectionMaxEntries != null && item.length > options.rootCollectionMaxEntries) {
+          throw new PackageValidationError('provider-output-entry-budget-exceeded');
+        }
+      }
       // jsonSafe omits plain-object entries whose canonical value is null
       // (unless the raw value itself is null): they contribute no canonical
       // bytes and no entry.
-      if (jsonSafeNull(item) && item !== null) continue;
+      if (jsonSafeNull(item) && item !== null) {
+        if (preserveSemanticValues) defineKey(frame.snap, key, item);
+        continue;
+      }
       chargeEntry();
       countString(key);
       slot = { objectFrame: frame, objectKey: key };
@@ -220,21 +232,29 @@ function scanObjectBudget(value, limits, maxBytes) {
       return;
     }
     if (item instanceof Date) {
-      // jsonSafe canonicalizes a Date to its ISO string; admit that string
-      // once so no downstream pass can observe a different value (#5219).
-      if (!Number.isFinite(item.getTime())) {
+      // Canonical package admission stores the ISO text. Provider-output
+      // admission keeps a detached Date so #7127 type semantics survive while
+      // canonicalization still consumes only the once-read snapshot.
+      const time = Date.prototype.getTime.call(item);
+      if (!Number.isFinite(time)) {
         throw new PackageValidationError('package-input-structure-invalid', 'package input contains an invalid date');
       }
-      const iso = item.toISOString();
+      const admittedDate = preserveSemanticValues ? new Date(time) : new Date(time).toISOString();
+      const iso = preserveSemanticValues ? admittedDate.toISOString() : admittedDate;
       countString(iso);
-      if (slot) assignSlot(slot, iso);
+      if (slot) assignSlot(slot, admittedDate);
       return;
     }
     if (ArrayBuffer.isView(item) || item instanceof ArrayBuffer) {
       entries += item.byteLength;
       if (entries > maxEntries) throw new PackageValidationError('package-entry-budget-exceeded');
       chargeCanonicalBytes(2 * item.byteLength);
-      if (slot) assignSlot(slot, item);
+      // Copy only after the byte/entry admission succeeds. This prevents a
+      // later getter in the same provider graph from mutating bytes that the
+      // admitted snapshot will canonicalize, while keeping package-input
+      // behavior unchanged.
+      const admittedBinary = preserveSemanticValues ? structuredClone(item) : item;
+      if (slot) assignSlot(slot, admittedBinary);
       return;
     }
     const frame = enter(item, parentDepth + 1);
@@ -479,16 +499,8 @@ export function createPackageArtifactDescriptor(envelope, input = {}) {
 const ALLOWED_OUTPUT_FIELDS = new Set(['schemaVersion', 'provenance', 'completeness', 'targetIdentity', 'items', 'results', 'unique']);
 const ALLOWED_ITEM_FIELDS = new Set(['id', 'targetIdentity', 'value', 'confidence', 'metadata', 'evidence', 'provenance']);
 
-// #8760: provider-output preflight resource guard. Reuses the #5219 iterative
-// single-admission scanner to bound depth, entry count, string budget, byte
-// budget and cycles BEFORE stableStringify/deepFreeze touch the same graph.
-// The scan result is intentionally discarded — validation and the detached
-// #7127 return keep operating on the caller's live graph so Date/Map/Set/
-// TypedArray/function payload type semantics (and structuredClone's unclonable
-// fail-closed contract in the provider boundary) are unchanged. Package-input
-// resource codes are remapped to provider-output-* typed codes so an untrusted
-// provider cannot distinguish host internals through error identity, and a raw
-// RangeError from stableStringify/deepFreeze never escapes the boundary.
+// #8760: provider-output resource failures are reported in the provider
+// namespace even though the bounded scanner is shared with package input.
 function providerOutputResourceCode(packageCode) {
   switch (packageCode) {
     case 'package-input-too-large': return 'provider-output-too-large';
@@ -499,11 +511,20 @@ function providerOutputResourceCode(packageCode) {
     default: return 'provider-output-resource-exhausted';
   }
 }
-function admitProviderOutputShape(value, limits, maxBytes) {
+
+function admitProviderOutputShape(value, limits, maxBytes, maxEntries) {
   try {
-    scanObjectBudget(value, limits, maxBytes);
+    // Unlike the package-input canonical snapshot, provider output must retain
+    // Date/Map/Set/binary/function value semantics for the #7127 detach step.
+    // Every caller-owned property is nevertheless read only once; all
+    // validation, canonicalization and freezing below consume this snapshot.
+    return scanObjectBudget(value, limits, maxBytes, {
+      preserveSemanticValues: true,
+      rootCollectionMaxEntries: maxEntries,
+    });
   } catch (error) {
     if (error instanceof PackageValidationError) {
+      if (typeof error.code === 'string' && error.code.startsWith('provider-output-')) throw error;
       throw new PackageValidationError(providerOutputResourceCode(error.code), error.message, error.detail);
     }
     throw error;
@@ -515,52 +536,33 @@ export function validateProviderOutput(value, options = {}) {
     const maxEntries = positiveLimit(options.maxEntries, 100_000, 'maxEntries', 'provider-output-resource-limit-invalid');
     const maxBytes = positiveLimit(options.maxBytes, 8 * 1024 * 1024, 'maxBytes', 'provider-output-resource-limit-invalid');
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new PackageValidationError('provider-output-schema-invalid');
-    for (const key of Object.keys(value)) {
-      if (!ALLOWED_OUTPUT_FIELDS.has(key)) throw new PackageValidationError('provider-output-unknown-field', `unknown field: ${key}`);
-    }
-    // Shallow collection shape checks run on the caller's own object so an
-    // explicitly-present-but-invalid `items`/`results` (including `undefined`,
-    // false, null, a string or a number) still fails closed; the #5219 scanner
-    // applies jsonSafe key-omission parity and would otherwise drop an
-    // `items: undefined` property before it could be observed. The array
-    // length bound is applied here too, on the live array's `length` (O(1)),
-    // so an over-budget collection is rejected before its elements are walked.
-    const hasItems = Object.hasOwn(value, 'items');
-    const hasResults = Object.hasOwn(value, 'results');
-    if (hasItems && !Array.isArray(value.items)) throw new PackageValidationError('provider-output-schema-invalid', 'items must be an array when supplied');
-    if (hasResults && !Array.isArray(value.results)) throw new PackageValidationError('provider-output-schema-invalid', 'results must be an array when supplied');
-    if (hasItems && hasResults) throw new PackageValidationError('provider-output-entry-collection-ambiguous');
-    if (hasItems && value.items.length > maxEntries) throw new PackageValidationError('provider-output-entry-budget-exceeded');
-    if (hasResults && value.results.length > maxEntries) throw new PackageValidationError('provider-output-entry-budget-exceeded');
-    // #8760: provider output is untrusted, so its configured resource limits
-    // must act as an ADMISSION boundary, not a post-hoc assertion. The
-    // iterative, cycle-rejecting #5219 scanner runs first as a bounded
-    // preflight, so a hostile deep / wide / cyclic / getter-bearing graph can
-    // no longer reach stableStringify()'s or deepFreeze()'s recursion (and the
-    // raw RangeError / proportional heap cost) before the depth/string/byte
-    // budgets are consulted. The preflight snapshot is deliberately discarded:
-    // validation and the detached #7127 return keep operating on the caller's
-    // own graph so Date/Map/Set/TypedArray/function payload type semantics
-    // (and structuredClone's uncloneable fail-closed contract in the provider
-    // boundary) are unchanged. The scanner's node budget is a *graph*-structure
-    // bound (every key and element), distinct from the caller's collection-item
-    // `maxEntries`, sized above any valid in-budget payload and paired with the
-    // canonical-byte lower bound so a hostile deep/wide graph is stopped.
+
     const admissionLimits = {
       maxDepth: positiveLimit(options.maxDepth, DEFAULT_PACKAGE_LIMITS.maxDepth, 'maxDepth', 'provider-output-resource-limit-invalid'),
       maxStrings: positiveLimit(options.maxStrings, DEFAULT_PACKAGE_LIMITS.maxStrings, 'maxStrings', 'provider-output-resource-limit-invalid'),
       maxStringBytes: positiveLimit(options.maxStringBytes, DEFAULT_PACKAGE_LIMITS.maxStringBytes, 'maxStringBytes', 'provider-output-resource-limit-invalid'),
       maxEntries: DEFAULT_PACKAGE_LIMITS.maxEntries,
     };
-    admitProviderOutputShape(value, admissionLimits, maxBytes);
-    const encoded = stableStringify(value);
+    const admitted = admitProviderOutputShape(value, admissionLimits, maxBytes, maxEntries);
+
+    for (const key of Object.keys(admitted)) {
+      if (!ALLOWED_OUTPUT_FIELDS.has(key)) throw new PackageValidationError('provider-output-unknown-field', `unknown field: ${key}`);
+    }
+    const hasItems = Object.hasOwn(admitted, 'items');
+    const hasResults = Object.hasOwn(admitted, 'results');
+    if (hasItems && !Array.isArray(admitted.items)) throw new PackageValidationError('provider-output-schema-invalid', 'items must be an array when supplied');
+    if (hasResults && !Array.isArray(admitted.results)) throw new PackageValidationError('provider-output-schema-invalid', 'results must be an array when supplied');
+    if (hasItems && hasResults) throw new PackageValidationError('provider-output-entry-collection-ambiguous');
+    const entries = hasItems ? admitted.items : hasResults ? admitted.results : [];
+    if (entries.length > maxEntries) throw new PackageValidationError('provider-output-entry-budget-exceeded');
+
+    const encoded = stableStringify(admitted);
     if (new TextEncoder().encode(encoded).byteLength > maxBytes) throw new PackageValidationError('provider-output-too-large');
-    const entries = hasItems ? value.items : hasResults ? value.results : [];
-    if (value.schemaVersion !== PHASE12_PROVIDER_OUTPUT_SCHEMA) throw new PackageValidationError('provider-output-schema-unsupported');
-    if (!value.provenance || typeof value.provenance !== 'object' || Array.isArray(value.provenance)) throw new PackageValidationError('provider-output-provenance-required');
-    if (!['complete', 'partial', 'truncated'].includes(value.completeness)) throw new PackageValidationError('provider-output-completeness-invalid');
-    if (value.completeness !== 'complete' && value.unique === true) throw new PackageValidationError('provider-output-incomplete-unique-invalid');
-    if (value.targetIdentity != null) required(value.targetIdentity, 'provider-output-target-identity-invalid');
+    if (admitted.schemaVersion !== PHASE12_PROVIDER_OUTPUT_SCHEMA) throw new PackageValidationError('provider-output-schema-unsupported');
+    if (!admitted.provenance || typeof admitted.provenance !== 'object' || Array.isArray(admitted.provenance)) throw new PackageValidationError('provider-output-provenance-required');
+    if (!['complete', 'partial', 'truncated'].includes(admitted.completeness)) throw new PackageValidationError('provider-output-completeness-invalid');
+    if (admitted.completeness !== 'complete' && admitted.unique === true) throw new PackageValidationError('provider-output-incomplete-unique-invalid');
+    if (admitted.targetIdentity != null) required(admitted.targetIdentity, 'provider-output-target-identity-invalid');
     for (const item of entries) {
       if (!item || typeof item !== 'object') throw new PackageValidationError('provider-output-item-invalid');
       for (const key of Object.keys(item)) {
@@ -568,11 +570,11 @@ export function validateProviderOutput(value, options = {}) {
       }
       if (typeof item.id !== 'string' || item.id.trim() === '' || item.targetIdentity == null) throw new PackageValidationError('provider-output-item-identity-required');
       required(item.targetIdentity, 'provider-output-item-target-identity-invalid');
-      if (value.targetIdentity != null && item.targetIdentity !== value.targetIdentity) throw new PackageValidationError('provider-output-item-target-mismatch');
+      if (admitted.targetIdentity != null && item.targetIdentity !== admitted.targetIdentity) throw new PackageValidationError('provider-output-item-target-mismatch');
     }
     if (options.targetIdentity != null) required(options.targetIdentity, 'provider-output-target-identity-invalid');
-    if (options.targetIdentity != null && value.targetIdentity !== options.targetIdentity) throw new PackageValidationError('provider-output-target-mismatch');
-    return { ok: true, value: deepFreeze(value) };
+    if (options.targetIdentity != null && admitted.targetIdentity !== options.targetIdentity) throw new PackageValidationError('provider-output-target-mismatch');
+    return { ok: true, value: deepFreeze(admitted) };
   } catch (error) { return { ok: false, error: error.message, code: error.code }; }
 }
 
