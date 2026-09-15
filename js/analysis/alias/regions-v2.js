@@ -10,6 +10,7 @@ import { createOriginSet, mergeOriginSets } from '../../core/identity/origin.js'
 import { createMemoryRegionRef } from '../../semantics/memoryssa/contract.js';
 import { isCanonicalMemorySsaProducerArtifact } from '../../semantics/memoryssa/build.js';
 import { normalizeAddressProofIr } from './address-ir-normalize-v2.js';
+import { FLAT_MEMORY_SPACE, canonicalAddressSpace } from './address-space.js';
 import {
   canonicalAddressProofToRegionEvidence,
   deriveCanonicalAddressProof,
@@ -44,6 +45,18 @@ function strictNonEmptyString(value) {
 function optionalIdentityString(value, label) {
   if (value == null) return null;
   const text = strictNonEmptyString(value);
+  if (!text) throw new TypeError(`alias-region-invalid-${label}`);
+  return text;
+}
+
+// Address space is proof-bearing: it can mint a strong `NoAlias` and it feeds
+// canonical region identity. A region therefore stores the *canonical* token,
+// never the spelling it happened to receive, so case/whitespace drift cannot add
+// a physical-space dimension to one region's identity or separate two regions
+// that name the same domain (#8879). Shape errors keep the strict failure.
+function canonicalAddressSpaceField(value, label) {
+  if (value == null) return null;
+  const text = canonicalAddressSpace(value);
   if (!text) throw new TypeError(`alias-region-invalid-${label}`);
   return text;
 }
@@ -343,13 +356,16 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
         metadata: { canonicalAddressIncludesOperationDisplacement: true },
       });
     } else if (rootProof.rootEntityId != null) {
+      const rootProofSpace = canonicalAddressSpace(rootProof.addressSpace);
       candidates.push({
         kind: 'rooted-offset',
         rootEntityId: String(rootProof.rootEntityId),
         offset: offset.toString(),
-        // Keep the proof's non-memory storage domain (#5901).
-        ...(typeof rootProof.addressSpace === 'string' && rootProof.addressSpace && rootProof.addressSpace !== 'memory'
-          ? { addressSpace: rootProof.addressSpace } : {}),
+        // Keep the proof's non-memory storage domain (#5901), compared on the
+        // canonical token so a case drift of flat memory cannot masquerade as a
+        // genuine non-memory domain (#8879).
+        ...(rootProofSpace && rootProofSpace !== FLAT_MEMORY_SPACE
+          ? { addressSpace: rootProofSpace } : {}),
         metadata: {
           canonicalAddressIncludesOperationDisplacement: true,
           ...(rootProof.rootIdentity?.storageClass == null ? {} : {
@@ -382,7 +398,7 @@ function unknownRegion({ functionId, binaryId, widthBits, origin, sourceEntityId
   const uncertaintyIdentity = {
     sourceEntityId: optionalIdentityString(sourceEntityId, 'source-entity-id'),
     addressValueId: optionalIdentityString(addressValueId, 'address-value-id'),
-    addressSpace: optionalIdentityString(addressSpace, 'address-space'),
+    addressSpace: canonicalAddressSpaceField(addressSpace, 'address-space'),
     ...(normalizedWidth == null ? {} : { widthBits: normalizedWidth }),
     reason: nonEmpty(reason) ?? 'unproven-memory-region',
   };
@@ -435,11 +451,11 @@ function preciseRegion({ descriptor, functionId, binaryId, widthBits, origin, ad
     // A rooted-offset region must keep the storage domain its canonical proof
     // proved (#5901): a tls/io-rooted region is not flat memory and must not
     // share an identity with a same-root memory region.
-    const rootedSpace = optionalIdentityString(descriptor.addressSpace, 'address-space');
+    const rootedSpace = canonicalAddressSpaceField(descriptor.addressSpace, 'address-space');
     canonicalRegionIdentity = { rootEntityId, offset, widthBits: normalizedWidth, ...(rootedSpace ? { addressSpace: rootedSpace } : {}) };
     specific = { ...(scope.functionId ? { functionId: scope.functionId } : {}), ...(scope.binaryId ? { binaryId: scope.binaryId } : {}), rootEntityId, offset, ...(rootedSpace ? { addressSpace: rootedSpace } : {}) };
   } else {
-    const explicitSpace = optionalIdentityString(descriptor.addressSpace ?? addressSpace, 'address-space');
+    const explicitSpace = canonicalAddressSpaceField(descriptor.addressSpace ?? addressSpace, 'address-space');
     if (!explicitSpace || (!scope.functionId && !scope.binaryId)) return null;
     const rootIdentity = descriptor.rootIdentity ?? (addressValueId ? { addressValueId } : null);
     if (rootIdentity == null) return null;
@@ -478,7 +494,7 @@ function deriveMemoryRegionWithCandidates(input = {}, rawEvidenceCandidates = nu
     && rawWidthBits > 0
     ? rawWidthBits
     : null;
-  const addressSpace = optionalIdentityString(memory.addressSpace ?? input.addressSpace, 'address-space');
+  const addressSpace = canonicalAddressSpaceField(memory.addressSpace ?? input.addressSpace, 'address-space');
   const addressValueId = optionalIdentityString(memory.addressExpr?.valueId ?? input.addressValueId, 'address-value-id');
   const evidenceCandidates = Array.isArray(rawEvidenceCandidates)
     ? rawEvidenceCandidates.map(normalizeDescriptor).filter(Boolean)
@@ -501,7 +517,7 @@ function deriveMemoryRegionWithCandidates(input = {}, rawEvidenceCandidates = nu
       for (const candidate of preciseKindCandidates) {
         if (candidate.kind !== 'rooted-offset' || candidate.addressSpace == null) continue;
         try {
-          const candidateSpace = optionalIdentityString(candidate.addressSpace, 'address-space');
+          const candidateSpace = canonicalAddressSpaceField(candidate.addressSpace, 'address-space');
           if (candidateSpace) spaces.add(candidateSpace);
         } catch {
           // Malformed auxiliary metadata is not proof-grade authority.

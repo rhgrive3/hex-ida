@@ -349,7 +349,12 @@ export class ChangeLog {
     record.values.sort((a, b) => compareOperationId(a.operationId, b.operationId));
     record.stateFingerprint = factStateFingerprint(record);
     this.state.facts[key] = record;
-    if (MEANINGFUL_FACTS.has(operation.factKind) && record.values.length > 1) this.state.conflicts.push({ type: 'meaningful-conflict', key, factKind: operation.factKind, operationIds: record.values.map((item) => item.operationId) });
+    if (MEANINGFUL_FACTS.has(operation.factKind) && record.values.length > 1) {
+      const operationIds = record.values.map((item) => item.operationId);
+      const existingConflict = this.state.conflicts.find((entry) => entry.type === 'meaningful-conflict' && entry.key === key);
+      if (existingConflict) { existingConflict.operationIds = operationIds; existingConflict.factKind = operation.factKind; }
+      else this.state.conflicts.push({ type: 'meaningful-conflict', key, factKind: operation.factKind, operationIds });
+    }
     this.operations.set(operation.operationId, operation);
     return { status: record.values.length > 1 && MEANINGFUL_FACTS.has(operation.factKind) ? 'conflict' : 'applied', operationId: operation.operationId, effect: record.values.length > 1 ? 'preserved-competing-value' : 'fact' };
   }

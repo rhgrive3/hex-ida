@@ -165,10 +165,19 @@ export class SolverSession {
           }
         );
       } else {
-        result = createSolverResult({
-          ...result,
-          lifecycle: { ...(result.lifecycle || {}), publishable: result.lifecycle?.publishable !== false },
-        });
+        // Normalization must never orphan the check promise: `record.settled` is
+        // already true and the host timer is cleared by this point, so a throw
+        // from createSolverResult (e.g. a non-string identity #4685 or an
+        // oversized model) would otherwise leave this promise unsettled. Fail
+        // closed to a canonical PROVIDER_FAILURE instead.
+        try {
+          result = createSolverResult({
+            ...result,
+            lifecycle: { ...(result.lifecycle || {}), publishable: result.lifecycle?.publishable !== false },
+          });
+        } catch {
+          result = this._result(SOLVER_STATUS.PROVIDER_FAILURE, 'provider-returned-invalid-result');
+        }
       }
       record.resolve(result);
     };
