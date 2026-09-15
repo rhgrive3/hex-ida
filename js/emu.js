@@ -68,6 +68,7 @@ async function awaitAbortable(operation, signal) {
 const STACK_SIZE = 1 << 20;
 const HEAP_BASE = 0x0000600000000000n;
 const HEAP_SIZE = 0x100000n;
+const MAX_SYNTHETIC_HEAP_SIZE = 16n * 1024n * 1024n;
 
 export class EmulatorFault extends Error {
   constructor(code, message, details = null) {
@@ -79,9 +80,43 @@ export class EmulatorFault extends Error {
 }
 
 function normalizeMemorySize(size) {
-  const n = Number(size);
-  if (!Number.isSafeInteger(n) || n < 1 || n > 1024 * 1024) throw new EmulatorFault('invalid-memory-size', 'memory size must be an integer in 1..1048576', { size });
-  return n;
+  if (typeof size === 'bigint') {
+    if (size < 1n || size > 1048576n) throw new EmulatorFault('invalid-memory-size', 'memory size must be an integer in 1..1048576', { size });
+    return Number(size);
+  }
+  if (typeof size !== 'number' || !Number.isSafeInteger(size) || size < 1 || size > 1024 * 1024) throw new EmulatorFault('invalid-memory-size', 'memory size must be an integer in 1..1048576', { size });
+  return size;
+}
+
+const REGISTER_EXTEND_WIDTH = {
+  sxtb: 8, sxth: 16, sxtw: 32, sxtx: 64,
+  uxtb: 8, uxth: 16, uxtw: 32, uxtx: 64,
+};
+
+function applyRegisterModifier(v, op) {
+  const name = String(op.shift.op).toLowerCase();
+  const amount = op.shift.amount == null ? null : Number(op.shift.amount);
+  const extendWidth = Object.prototype.hasOwnProperty.call(REGISTER_EXTEND_WIDTH, name)
+    ? REGISTER_EXTEND_WIDTH[name] : null;
+  if (extendWidth != null) {
+    const shift = amount == null ? 0 : amount;
+    if (!Number.isSafeInteger(shift) || shift < 0 || shift > 4) {
+      throw new EmulatorFault('illegal-shift-amount', `${name} requires an immediate shift in 0..4`, { operand: op, amount: op.shift.amount });
+    }
+    const masked = BigInt.asUintN(extendWidth, v);
+    const extended = name[0] === 's' ? BigInt.asIntN(extendWidth, masked) : masked;
+    return extended << BigInt(shift);
+  }
+  if (amount == null) return v;
+  if (!Number.isSafeInteger(amount) || amount < 0) {
+    throw new EmulatorFault('illegal-shift-amount', `register modifier ${name} needs a non-negative immediate shift`, { operand: op, amount: op.shift.amount });
+  }
+  const s = BigInt(amount);
+  const width = op.bits === 32 ? 32 : 64;
+  if (name === 'lsl') return v << s;
+  if (name === 'lsr') return v >> s;
+  if (name === 'asr') return BigInt.asIntN(width, v) >> s;
+  throw new EmulatorFault('unsupported-shift', `unsupported register modifier: ${name}`, { operand: op });
 }
 
 function isConditionalBranchMnemonic(mn) { return /^(b\.\w+|cbz|cbnz|tbz|tbnz)$/i.test(mn || ''); }
@@ -115,6 +150,8 @@ export class Emulator {
     this.traceTruncated = false;
     this.traceDropped = 0;
     this.heapBase = this.io.heapBase != null ? BigInt(this.io.heapBase) : HEAP_BASE;
+    this.heapSize = this._heapConfig ? this._heapConfig.size : HEAP_SIZE;
+    if (this._heapConfig) this.heapBase = this._heapConfig.base;
     this.heap = this.heapBase;
     this.heapAllocations = 0;
     this.log = [];
@@ -134,6 +171,7 @@ export class Emulator {
   get(reg) {
     const name = this._normalizeReg(reg);
     if (name === 'sp') return this.sp;
+    if (name === 'wsp') return this.sp & MASK32;
     if (name === 'pc') return this.pc;
     if (/^[xw]zr$/.test(name)) return 0n;
     const m = /^([xw])(\d+)$/.exec(name);
@@ -148,6 +186,7 @@ export class Emulator {
     const name = this._normalizeReg(reg);
     const v = BigInt.asUintN(64, BigInt(value));
     if (name === 'sp') { this.sp = v; return; }
+    if (name === 'wsp') { this.sp = BigInt.asUintN(32, v); return; }
     if (name === 'pc') { this.pc = v; return; }
     if (/^[xw]zr$/.test(name)) return;
     const m = /^([xw])(\d+)$/.exec(name);
@@ -155,6 +194,29 @@ export class Emulator {
     const n = Number(m[2]);
     if (!Number.isInteger(n) || n < 0 || n > 30) throw new EmulatorFault('invalid-register', `unknown register: ${reg}`, { register: reg });
     this.x[n] = m[1] === 'w' ? (v & MASK32) : v;
+  }
+
+  configureHeap(range = {}) {
+    const reject = (reason) => {
+      throw new EmulatorFault('invalid-heap-range', `synthetic heap range rejected: ${reason}`, { base: range?.base, size: range?.size });
+    };
+    if (!range || typeof range !== 'object' || Array.isArray(range)) reject('an object with base and size is required');
+    const toWord = (value, name) => {
+      if (typeof value === 'bigint') { if (value < 0n) reject(`${name} must be non-negative`); return value; }
+      if (Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+      reject(`${name} must be a non-negative bigint or safe integer`);
+      return null;
+    };
+    const base = toWord(range.base, 'base');
+    const size = toWord(range.size, 'size');
+    if (size < 1n || size > MAX_SYNTHETIC_HEAP_SIZE) reject(`size must be within 1..${MAX_SYNTHETIC_HEAP_SIZE} bytes`);
+    if (base + size > (1n << 64n)) reject('heap range must stay inside 64-bit address space');
+    if (this.heapAllocations > 0) reject('allocations were already made from the synthetic heap');
+    this._heapConfig = { base, size };
+    this.heapBase = base;
+    this.heap = base;
+    this.heapSize = size;
+    return { base, size };
   }
 
   _syncHeapBase() {
@@ -193,26 +255,27 @@ export class Emulator {
     return { start: base, size: len, kind };
   }
 
-  async ensure(addr) {
+  async ensure(addr, faultAddress = addr) {
     const address = BigInt(addr);
+    const fault = BigInt(faultAddress);
     const page = (address / BigInt(PAGE)) * BigInt(PAGE);
     const key = page.toString();
     if (this.mem.has(key) || this.loaded.has(key)) return;
-    if (page >= STACK_TOP - BigInt(STACK_SIZE) && page < STACK_TOP + BigInt(PAGE)) {
+    if (page >= STACK_TOP - BigInt(STACK_SIZE) && page < STACK_TOP) {
       this.loaded.set(key, new Uint8Array(PAGE));
       this.loadedValid.set(key, PAGE);
       this.syntheticPages.add(key);
       return;
     }
     this._syncHeapBase();
-    if (page >= this.heapBase && page < this.heapBase + HEAP_SIZE) {
+    if (page >= this.heapBase && page < this.heapBase + this.heapSize) {
       this.loaded.set(key, new Uint8Array(PAGE));
       this.loadedValid.set(key, PAGE);
       this.syntheticPages.add(key);
       return;
     }
     if (typeof this.io.read !== 'function') {
-      throw new EmulatorFault('unmapped-memory', `no backing memory for 0x${address.toString(16)}`, { address, page });
+      throw new EmulatorFault('unmapped-memory', `no backing memory for 0x${fault.toString(16)}`, { address: fault, page });
     }
     let bytes;
     const runSignal = this._runSignal;
@@ -225,14 +288,24 @@ export class Emulator {
       bytes = runSignal ? await awaitAbortable(operation, runSignal) : await operation;
     } catch (error) {
       if (runSignal?.aborted) throw abortError(runSignal);
-      throw new EmulatorFault('memory-read-failed', `backing read failed at 0x${page.toString(16)}`, { address, page, cause:String(error && error.message || error) });
+      throw new EmulatorFault('memory-read-failed', `backing read failed at 0x${page.toString(16)}`, { address: fault, page, cause:String(error && error.message || error) });
     }
     if (!(bytes instanceof Uint8Array) || bytes.length === 0) {
-      throw new EmulatorFault('unmapped-memory', `backing memory is unavailable at 0x${page.toString(16)}`, { address, page });
+      throw new EmulatorFault('unmapped-memory', `backing memory is unavailable at 0x${page.toString(16)}`, { address: fault, page });
     }
     const valid = Math.min(PAGE, bytes.length);
     this.loaded.set(key, padTo(bytes, PAGE));
     this.loadedValid.set(key, valid);
+  }
+
+  async _ensurePageRange(start, end) {
+    await this.ensure(start);
+    const startPage = (start / BigInt(PAGE)) * BigInt(PAGE);
+    const endPage = (end / BigInt(PAGE)) * BigInt(PAGE);
+    for (let page = startPage + BigInt(PAGE); page < endPage; page += BigInt(PAGE)) {
+      await this.ensure(page);
+    }
+    if (endPage !== startPage) await this.ensure(end);
   }
 
   byteAt(addr) {
@@ -300,9 +373,8 @@ export class Emulator {
   async load(addr, size) {
     const n = normalizeMemorySize(size);
     const start = BigInt(addr);
-    await this.ensure(start);
     const end = start + BigInt(n - 1);
-    if (end / BigInt(PAGE) !== start / BigInt(PAGE)) await this.ensure(end);
+    await this._ensurePageRange(start, end)
     let v = 0n;
     for (let i = n - 1; i >= 0; i--) v = (v << 8n) | BigInt(this.byteAt(start + BigInt(i)));
     return v;
@@ -320,9 +392,7 @@ export class Emulator {
        below would fail open and writeByte() would mint undeclared mem
        backing. An interior page without backing fails closed here. */
     const end = start + BigInt(n - 1);
-    for (let p = (start / BigInt(PAGE)) * BigInt(PAGE); p <= end; p += BigInt(PAGE)) {
-      await this.ensure(p);
-    }
+    await this._ensurePageRange(start, end)
     /* #7968: admit every byte of the store before committing any of it — a
        range that straddles the write-authority boundary fails closed without
        partially writing the bytes inside the prefix. */
@@ -345,8 +415,7 @@ export class Emulator {
     const start = BigInt(addr);
     const out = new Uint8Array(n);
     if (!n) return out;
-    for (let i = 0; i < n; i += PAGE) await this.ensure(start + BigInt(i));
-    await this.ensure(start + BigInt(n - 1));
+    await this._ensurePageRange(start, start + BigInt(n - 1));
     for (let i = 0; i < n; i++) out[i] = this.byteAt(start + BigInt(i));
     return out;
   }
@@ -406,7 +475,6 @@ export class Emulator {
       this._branchTraceEvent = null;
     }
     this.pc = next;
-    if (this.pc === 0n) this.stopped = '最初の呼び出し元まで戻ってきました（実行おわり）。';
     return { ok: !this.stopped, text, reason: this.stopped };
   }
 
@@ -446,7 +514,19 @@ export class Emulator {
     const ops = parseOperands(opsStr);
     const R = (op) => this.valueOf(op);
 
-    if (/^(nop|hint|bti|paciasp|pacibsp|autiasp|autibsp|xpaclri|dmb|dsb|isb|prfm|pacia|autia|pacibz)$/.test(mn)) return null;
+    // Pointer-authentication aliases occupy part of the HINT encoding space.
+    // Treating those immediates as no-ops would fabricate an unsupported
+    // authenticated state transition (#4099).
+    if (mn === 'hint') {
+      const hint = ops.length === 1 && ops[0]?.k === 'imm' ? ops[0].value : null;
+      if (hint != null && new Set([7n, 8n, 10n, 12n, 14n, 24n, 25n, 26n, 27n, 28n, 29n, 30n, 31n]).has(hint)) {
+        throw new EmulatorFault('pointer-authentication-unsupported', `pointer authentication HINTはまだ実行できません: #${hint}`, { instruction: mn, hint });
+      }
+    }
+    if (/^(nop|hint|bti|dmb|dsb|isb|prfm)$/.test(mn)) return null;
+    if (/^(pac|aut)(ia|ib)(z|sp)?$/.test(mn) || mn === 'xpaclri' || mn === 'retaa' || mn === 'retab') {
+      throw new EmulatorFault('pointer-authentication-unsupported', `pointer authentication命令はまだ実行できません: ${mn}`, { instruction: mn });
+    }
 
     if (mn === 'b') return this.branchTarget(ops);
     if (/^b\.(\w+)$/.test(mn)) {
@@ -494,9 +574,12 @@ export class Emulator {
       }
       return target;
     }
-    if (/^(ret|retaa|retab)$/.test(mn)) {
+    if (mn === 'ret') {
       const target = ops.length ? R(ops[0]) : this.x[30];
+      const frame = this.callStack[this.callStack.length - 1];
+      const returnedToTopLevel = this.callStack.length === 1 && frame != null && frame.ret === target;
       this.callStack.pop();
+      if (returnedToTopLevel) this.stopped = '最初の呼び出し元まで戻ってきました（実行おわり）。';
       return target;
     }
 
@@ -702,27 +785,9 @@ export class Emulator {
       return BigInt.asUintN(64, v);
     }
     if (op.k === 'reg') {
-      let v = this.get(op.text);
-      if (op.shift && op.shift.amount != null) {
-        const s = BigInt(op.shift.amount);
-        const o = op.shift.op;
-        if (o === 'lsl') v = v << s;
-        else if (o === 'lsr') v = v >> s;
-        else if (o === 'asr') v = BigInt.asIntN(op.bits === 32 ? 32 : 64, v) >> s;
-        else if (o === 'sxtw') v = BigInt.asUintN(64, BigInt.asIntN(32, v) << s);
-        else if (o === 'uxtw') v = (v & MASK32) << s;
-        else if (o === 'sxtb') v = BigInt.asUintN(64, BigInt.asIntN(8, v) << s);
-        else if (o === 'uxtb') v = (v & 0xffn) << s;
-      } else if (op.shift && op.shift.op) {
-        const o = op.shift.op;
-        if (o === 'sxtw') v = BigInt.asUintN(64, BigInt.asIntN(32, v));
-        else if (o === 'uxtw') v = v & MASK32;
-        else if (o === 'sxtb') v = BigInt.asUintN(64, BigInt.asIntN(8, v));
-        else if (o === 'uxtb') v = v & 0xffn;
-        else if (o === 'sxth') v = BigInt.asUintN(64, BigInt.asIntN(16, v));
-        else if (o === 'uxth') v = v & 0xffffn;
-      }
-      return BigInt.asUintN(64, v);
+      const v = this.get(op.text);
+      if (!op.shift || !op.shift.op) return BigInt.asUintN(64, v);
+      return BigInt.asUintN(64, applyRegisterModifier(v, op));
     }
     throw new EmulatorFault('unsupported-operand', `unsupported operand kind: ${op.k || 'unknown'}`, { operand:op });
   }
@@ -763,15 +828,22 @@ export class Emulator {
     const signed = /^ldrs|^ldurs/.test(mn);
 
     if (pair) {
-      const each = signedWordPair ? 4 : (isWide(ops[0]) ? 8 : 4);
-      let a = await this.load(addr, each);
-      let b = await this.load(addr + BigInt(each), each);
       if (signedWordPair) {
+        let a = await this.load(addr, 4);
+        let b = await this.load(addr + 4n, 4);
         a = BigInt.asUintN(64, BigInt.asIntN(32, a));
         b = BigInt.asUintN(64, BigInt.asIntN(32, b));
+        this.set(ops[0].text, a);
+        this.set(ops[1].text, b);
+      } else {
+        const eachA = pairElementSize(ops[0]);
+        const eachB = pairElementSize(ops[1]);
+        if (eachA == null || eachB == null) throw pairUnsupportedFault(mn, ops[0], ops[1]);
+        const a = await this.load(addr, eachA);
+        const b = await this.load(addr + BigInt(eachA), eachB);
+        if (isFloatReg(ops[0])) this.setFpBits(ops[0], a); else this.set(ops[0].text, a);
+        if (isFloatReg(ops[1])) this.setFpBits(ops[1], b); else this.set(ops[1].text, b);
       }
-      this.set(ops[0].text, a);
-      this.set(ops[1].text, b);
     } else {
       let v = await this.load(addr, size);
       if (signed) v = BigInt.asUintN(64, BigInt.asIntN(size * 8, v));
@@ -804,9 +876,11 @@ export class Emulator {
       return null;
     }
     if (pair) {
-      const each = isWide(ops[0]) ? 8 : 4;
-      await this.store(addr,each,this.get(ops[0].text));
-      await this.store(addr + BigInt(each),each,this.get(ops[1].text));
+      const eachA = pairElementSize(ops[0]);
+      const eachB = pairElementSize(ops[1]);
+      if (eachA == null || eachB == null) throw pairUnsupportedFault(mn, ops[0], ops[1]);
+      await this.store(addr, eachA, elementBits(this, ops[0]));
+      await this.store(addr + BigInt(eachA), eachB, elementBits(this, ops[1]));
     } else if (isFloatReg(ops[first])) await this.store(addr,size,this.fpBits(ops[first]));
     else await this.store(addr,size,this.get(ops[first].text));
     this.effectiveAddress(mem,true);
@@ -814,7 +888,20 @@ export class Emulator {
   }
 
   fpSize(op) {
+    if (op?.bits === 128 || /^q\d+$/i.test(op?.text || '')) return 16;
     return op?.bits === 32 || /^s\d+$/i.test(op?.text || '') ? 4 : 8;
+  }
+
+  // The physical FP/SIMD register file holds 128 raw bits per register. Every
+  // narrower view is a truncation or reinterpretation of that single state.
+  // vRawNumber records which numeric produced the stored bits, so a caller that
+  // replaces the numeric without replacing the bits is still honoured.
+  fpRaw(op) {
+    if (!op || op.k !== 'reg' || !isFloatReg(op)) return 0n;
+    const current = this.v[op.num] === undefined ? 0 : Number(this.v[op.num]);
+    const raw = this.vRaw[op.num];
+    if (raw != null && Object.is(this.vRawNumber[op.num], current)) return BigInt.asUintN(128, raw);
+    return BigInt.asUintN(128, floatToBits(current, 8));
   }
 
   fpBits(op) {
@@ -836,14 +923,27 @@ export class Emulator {
     this.vRawNumber[op.num] = value;
   }
 
+  // A vector result writes the whole 128-bit register; the bits above the named
+  // elements are zero because the caller built them that way.
+  setFpVectorBits(op, bits) {
+    if (!op || op.k !== 'reg' || !isFloatReg(op)) return;
+    const raw = BigInt.asUintN(128, BigInt(bits));
+    const value = bitsToFloat(BigInt.asUintN(64, raw), 8);
+    this.v[op.num] = value;
+    this.vRaw[op.num] = raw;
+    this.vRawNumber[op.num] = value;
+  }
+
   fget(op) {
     if (!op || op.k !== 'reg') return 0;
     if (op.cls === 'gp' || op.cls === 'sp') {
       const bits = op.bits === 32 ? 32 : 64;
       return Number(BigInt.asIntN(bits,this.get(op.text)));
     }
-    const value=this.v[op.num];
-    return value === undefined ? 0 : value;
+    // The physical register's raw bits are the single truth; every read must
+    // reinterpret them at the operand's own width, otherwise a value written
+    // through one view (D) leaks into another (S) as the previous numeric.
+    return bitsToFloat(this.fpBits(op), this.fpSize(op));
   }
 
   fset(op,value) {
@@ -866,6 +966,14 @@ export class Emulator {
       else this.nzcv={n:false,z:false,c:true,v:false};
       return null;
     }
+    // The mnemonic alone cannot separate the scalar form from the AdvSIMD
+    // vector form; the operand shape does (#8732).
+    if (FLOAT_ARITHMETIC[mn] !== undefined) {
+      if (isFloatReg(ops[0]) && (ops[0].arr != null || ops[0].bits === 128)) return this.vectorFloatInsn(mn, ops);
+      if (!isFloatReg(ops[0])) {
+        throw new EmulatorFault('unsupported-instruction', `${mn} has a destination this emulator cannot interpret`, { mnemonic: mn, operands: ops.map((o) => (o && o.text) || null) });
+      }
+    }
     const a=this.fget(ops[1]), b=ops[2] ? this.fget(ops[2]) : 0;
     if (mn === 'fmov') {
       if (ops[1]?.k === 'imm') this.fset(ops[0], ops[1].float != null ? ops[1].float : Number(ops[1].value || 0n));
@@ -875,13 +983,8 @@ export class Emulator {
       else throw new EmulatorFault('invalid-fmov-form', 'unsupported FMOV operand form');
       return null;
     }
-    if (mn === 'fadd') { this.fset(ops[0],a+b); return null; }
-    if (mn === 'fsub') { this.fset(ops[0],a-b); return null; }
-    if (mn === 'fmul') { this.fset(ops[0],a*b); return null; }
-    if (mn === 'fdiv') { this.fset(ops[0],a/b); return null; }
-    if (mn === 'fneg') { this.fset(ops[0],-a); return null; }
-    if (mn === 'fabs') { this.fset(ops[0],Math.abs(a)); return null; }
-    if (mn === 'fsqrt') { this.fset(ops[0],Math.sqrt(a)); return null; }
+    const arithmetic = FLOAT_ARITHMETIC[mn];
+    if (arithmetic) { this.fset(ops[0], arithmetic(a, b)); return null; }
     if (mn === 'fmadd' || mn === 'fmsub' || mn === 'fnmadd' || mn === 'fnmsub') {
       const size = this.fpSize(ops[0]);
       const negateProduct = mn === 'fmsub' || mn === 'fnmsub';
@@ -895,28 +998,59 @@ export class Emulator {
     if (/^(scvtf|ucvtf)$/.test(mn)) {
       const bits=ops[1]?.bits === 32 ? 32 : 64, raw=this.get(ops[1].text);
       const value=mn === 'scvtf' ? BigInt.asIntN(bits,raw) : BigInt.asUintN(bits,raw);
+      const fractionBits = fixedPointFractionBits(mn, ops[2], bits);
       // The destination format must round once, directly from the integer.
       // Going through binary64 first would round twice and flip boundary
-      // cases by one ULP (#5235).
-      if (this.fpSize(ops[0]) === 4) { this.setFpBits(ops[0],encodeExactFp(value,0,4)); return null; }
-      this.fset(ops[0],Number(value)); return null;
+      // cases by one ULP (#5235). The fixed-point form only shifts that
+      // single rounding's exponent; it is not a second conversion (#8731).
+      this.setFpBits(ops[0], encodeExactFp(value, -fractionBits, this.fpSize(ops[0])));
+      return null;
     }
     if (/^fcvtz[su]$/.test(mn)) {
       const bits=ops[0]?.bits === 32 || /^w/.test(ops[0]?.text || '') ? 32 : 64, unsigned=mn === 'fcvtzu'; let result=0n;
-      if (!Number.isNaN(a)) {
-        const t=Math.trunc(a);
+      const fractionBits = fixedPointFractionBits(mn, ops[2], bits);
+      // Scaling by a power of two is exact in binary, so the truncated product
+      // is the correctly rounded integer of value × 2^fbits; only the
+      // saturating bounds are inexact and they are handled below.
+      const source = fractionBits === 0 ? a : a * 2 ** fractionBits;
+      if (!Number.isNaN(source)) {
+        const t=Math.trunc(source);
         if (unsigned) { const max=(1n<<BigInt(bits))-1n; if (t<=0) result=0n; else if (!Number.isFinite(t)) result=max; else { const n=BigInt(t); result=n>max?max:n; } }
         else { const min=-(1n<<BigInt(bits-1)), max=(1n<<BigInt(bits-1))-1n; if (!Number.isFinite(t)) result=t<0?min:max; else { const n=BigInt(t); result=n<min?min:n>max?max:n; } }
       }
       this.set(ops[0].text,result); return null;
     }
-    if (/^(fmin|fmax|fminnm|fmaxnm)$/.test(mn)) {
-      let value;
-      if (/nm$/.test(mn)) { if (Number.isNaN(a) && !Number.isNaN(b)) value=b; else if (!Number.isNaN(a) && Number.isNaN(b)) value=a; else value=/min/.test(mn)?Math.min(a,b):Math.max(a,b); }
-      else value=/min/.test(mn)?Math.min(a,b):Math.max(a,b);
-      this.fset(ops[0],value); return null;
-    }
     throw new Error('この小数命令はまだ実行できません: ' + mn);
+  }
+
+  // AdvSIMD element-wise floating-point arithmetic. The arrangement names the
+  // elements that participate, each element is computed independently, and a
+  // destination write leaves the bits above the named elements zero (#8732).
+  vectorFloatInsn(mn, ops) {
+    const shape = vectorElementShape(mn, ops[0]);
+    const unary = mn === 'fneg' || mn === 'fabs' || mn === 'fsqrt';
+    const operandCount = unary ? 2 : 3;
+    if (ops.length < operandCount) {
+      throw new EmulatorFault('unsupported-instruction', `${mn} needs ${operandCount} vector operands`, { mnemonic: mn, operands: ops.map((o) => (o && o.text) || null) });
+    }
+    for (const op of ops.slice(0, operandCount)) {
+      if (!isFloatReg(op) || op.arr !== ops[0].arr) {
+        throw new EmulatorFault('unsupported-arrangement', `${mn} requires every operand to use the ${ops[0].arr} arrangement`, { mnemonic: mn, operand: op });
+      }
+    }
+    const lhs = this.fpRaw(ops[1]);
+    const rhs = unary ? 0n : this.fpRaw(ops[2]);
+    const elementMask = (1n << BigInt(shape.elementBytes * 8)) - 1n;
+    const arithmetic = FLOAT_ARITHMETIC[mn];
+    let result = 0n;
+    for (let index = 0; index < shape.count; index++) {
+      const shift = BigInt(index * shape.elementBytes * 8);
+      const a = bitsToFloat((lhs >> shift) & elementMask, shape.elementBytes);
+      const b = unary ? 0 : bitsToFloat((rhs >> shift) & elementMask, shape.elementBytes);
+      result |= floatToBits(arithmetic(a, b), shape.elementBytes) << shift;
+    }
+    this.setFpVectorBits(ops[0], result);
+    return null;
   }
 
   conditionalSelect(mn, ops) {
@@ -987,9 +1121,9 @@ export class Emulator {
     const MAX_HOOK_BYTES=65536n;
     const allocate=async(size,zero=false)=>{
       this._syncHeapBase();
-      if (size < 0n || size > HEAP_SIZE) throw new EmulatorFault('heap-exhausted','synthetic allocation exceeds 1 MiB',{size});
+      if (size < 0n || size > this.heapSize) throw new EmulatorFault('heap-exhausted','synthetic allocation exceeds heap size',{size});
       const addr=this.heap, next=addr+((size+15n)&~15n);
-      if (next > this.heapBase + HEAP_SIZE) throw new EmulatorFault('heap-exhausted','synthetic heap exceeded 1 MiB',{heapBase:this.heapBase,heap:next});
+      if (next > this.heapBase + this.heapSize) throw new EmulatorFault('heap-exhausted','synthetic heap exceeded heap size',{heapBase:this.heapBase,heap:next});
       this.heap=next; this.heapAllocations++;
       if (zero) for (let i=0n;i<size;i++) { await this.ensure(addr+i); this.writeByte(addr+i,0); }
       return addr;
@@ -1043,20 +1177,105 @@ function isWide(op) {
   return op.bits !== 32;
 }
 
+const REGISTER_ACCESS_BYTES = new Set([1, 2, 4, 8, 16]);
+
+function registerAccessSize(op) {
+  if (!op || op.k !== 'reg') return 8;
+  const bytes = op.bits / 8;
+  if (REGISTER_ACCESS_BYTES.has(bytes)) return bytes;
+  throw new EmulatorFault('unsupported-access-width', `unsupported register access width: ${op.bits} bits`, { operand: op });
+}
+
 function loadSize(mn, dst) {
   if (/^(ldrb|ldrsb|ldurb|ldursb|ldxrb|ldaxrb|ldarb)$/.test(mn)) return 1;
   if (/^(ldrh|ldrsh|ldurh|ldursh|ldxrh|ldaxrh|ldarh)$/.test(mn)) return 2;
   if (/^(ldrsw|ldursw)$/.test(mn)) return 4;
-  return isWide(dst) ? 8 : 4;
+  return registerAccessSize(dst);
 }
 
 function storeSize(mn, src) {
   if (/^(strb|sturb|stxrb|stlxrb|stlrb)$/.test(mn)) return 1;
   if (/^(strh|sturh|stxrh|stlxrh|stlrh)$/.test(mn)) return 2;
-  return isWide(src) ? 8 : 4;
+  return registerAccessSize(src);
 }
 
 function isFloatReg(op) { return !!op && op.k === 'reg' && (op.cls === 'fp' || op.cls === 'vec'); }
+
+// Fixed-point SCVTF/UCVTF/FCVTZS/FCVTZU carry a third #fbits operand naming the
+// number of fraction bits of the integer format. Absent it, the plain integer
+// form applies. Anything else is an encoding this emulator must refuse to
+// execute silently, and it is refused before any register state is touched.
+function fixedPointFractionBits(mn, op, max) {
+  if (op === undefined || op === null) return 0;
+  const raw = op.k === 'imm' ? op.value : null;
+  if (typeof raw !== 'bigint' || raw < 1n || raw > BigInt(max)) {
+    throw new EmulatorFault('invalid-fp-immediate', `${mn} fixed-point #fbits must be in 1..${max}`, { operand: op });
+  }
+  return Number(raw);
+}
+
+// One semantic definition of each floating-point arithmetic operation, shared by
+// the scalar form and by every element of the AdvSIMD vector form. A null
+// prototype keeps a mnemonic from matching an inherited Object property.
+const FLOAT_ARITHMETIC = Object.assign(Object.create(null), {
+  fadd: (a, b) => a + b,
+  fsub: (a, b) => a - b,
+  fmul: (a, b) => a * b,
+  fdiv: (a, b) => a / b,
+  fneg: (a) => -a,
+  fabs: (a) => Math.abs(a),
+  fsqrt: (a) => Math.sqrt(a),
+  fmin: (a, b) => Math.min(a, b),
+  fmax: (a, b) => Math.max(a, b),
+  fminnm: (a, b) => (Number.isNaN(a) !== Number.isNaN(b) ? (Number.isNaN(a) ? b : a) : Math.min(a, b)),
+  fmaxnm: (a, b) => (Number.isNaN(a) !== Number.isNaN(b) ? (Number.isNaN(a) ? b : a) : Math.max(a, b)),
+});
+
+// The element-wise floating-point arrangements, exactly: 2S/4S/2D. .1D is a
+// generally valid register arrangement spelling but is RESERVED for these
+// AdvSIMD floating-point arithmetic encodings, and binary16/byte element
+// formats need a 16-bit or byte element model this emulator does not have, so
+// they are refused instead of being silently widened to a supported format.
+const FLOAT_VECTOR_ARRANGEMENTS = new Map([
+  ['2s', { elementBytes: 4, count: 2 }],
+  ['4s', { elementBytes: 4, count: 4 }],
+  ['2d', { elementBytes: 8, count: 2 }],
+]);
+
+// AdvSIMD element-wise floating-point arithmetic names the elements it operates
+// on with an arrangement such as .2s. Scalar and vector forms are separated by
+// that shape, and an arrangement outside the modelled set fails closed.
+function vectorElementShape(mn, op) {
+  const shape = typeof op?.arr === 'string' ? FLOAT_VECTOR_ARRANGEMENTS.get(op.arr) : undefined;
+  if (!shape) {
+    throw new EmulatorFault('unsupported-arrangement', `${mn} ${op?.arr ? op.arr + ': ' : ''}only 2S/4S/2D floating-point arrangements are modelled`, { operand: op });
+  }
+  return shape;
+}
+
+function pairElementSize(op) {
+  if (!op || op.k !== 'reg') return null;
+  if (op.cls === 'fp' || op.cls === 'vec') {
+    if (op.bits === 128 || /^q\d+$/i.test(op.text || '')) return null;
+    if (op.bits === 32 || /^s\d+$/i.test(op.text || '')) return 4;
+    return 8;
+  }
+  if (op.bits === 32) return 4;
+  return 8;
+}
+
+function elementBits(emu, op) {
+  if (isFloatReg(op)) return emu.fpBits(op);
+  return emu.get(op.text);
+}
+
+function pairUnsupportedFault(mn, a, b) {
+  return new EmulatorFault(
+    'unsupported-instruction',
+    `${mn} pair access of ${a?.text || '?'}${b ? ', ' + b.text : ''} needs 16-byte vector register state this emulator does not model`,
+    { mnemonic: mn, registers: [a?.text, b?.text] },
+  );
+}
 
 function bitsToFloat(bits, size) {
   const buf = new ArrayBuffer(8);

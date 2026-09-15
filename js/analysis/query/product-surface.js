@@ -451,8 +451,7 @@ export function createProductSurfaceQueries(app) {
       const address = functionAddress(functionId);
       let base = findRecognitionRecord(app, address);
       if (!base && typeof app.ensureRecognition === 'function') {
-        const producer = Promise.resolve(app.ensureRecognition({ maxFunctions:350000 }));
-        await waitForShared({ promise:producer, waiters:0, cancel:null }, options.signal);
+        await app.ensureRecognition({ signal:options.signal, maxFunctions:350000 });
         base = findRecognitionRecord(app, address);
       }
       abortIfNeeded(options.signal);

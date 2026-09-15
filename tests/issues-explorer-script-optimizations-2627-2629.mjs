@@ -22,19 +22,19 @@ import { classItems, externalItems } from '../js/ui/product.js';
 
   // Common match with small limit should break early
   accessed = 0;
-  const res1 = hex.findStrings('needle', 10);
+  const res1 = await hex.findStrings('needle', 10);
   assert.equal(res1.length, 10);
   assert.equal(accessed, 10, `expected 10 string accesses with early break, got ${accessed}`);
 
   // Empty query with limit
   accessed = 0;
-  const res2 = hex.findStrings('', 5);
+  const res2 = await hex.findStrings('', 5);
   assert.equal(res2.length, 5);
   assert.equal(accessed, 5, `expected 5 string accesses with early break, got ${accessed}`);
 
   // Case insensitive match
   accessed = 0;
-  const res3 = hex.findStrings('STR_0_NEEDLE', 1);
+  const res3 = await hex.findStrings('STR_0_NEEDLE', 1);
   assert.equal(res3.length, 1);
   assert.equal(res3[0].addr, 0x1000n);
 }

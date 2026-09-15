@@ -330,8 +330,8 @@ export class RuntimeAnalysisPlatform {
           () => { fence(); return session.adapter[method](...args); });
         fence(); return value;
       };
-      const verifier = new HypothesisVerifier(guarded, ({experiment:testExperiment,testCase,observation,comparison}) => evidenceFromExperiment({
-        experiment:testExperiment,testCase,observation,comparison,backend:binding.backend,binaryHash:binding.binaryHash,
+      const verifier = new HypothesisVerifier(guarded, ({experiment:testExperiment,testCase,observation,comparison,launchCanonicalInput}) => evidenceFromExperiment({
+        experiment:testExperiment,testCase,observation,comparison,launchCanonicalInput,backend:binding.backend,binaryHash:binding.binaryHash,
         sliceIdentity:this.options.sliceIdentity || null,sessionId:binding.sessionId,
         replayable:isReplayable(session.adapter,observation,observation?.trace || null)
       }));
@@ -370,7 +370,7 @@ export class RuntimeAnalysisPlatform {
     const operation = operationController(session,options.signal);
     const traceEpoch = session.epoch;
     const timeoutBudget = runtimeTimeout(options.timeoutMs);
-    let observation = { stop:null, returnValue:null, branches:[] }, trace;
+    let observation = { stop:null, returnValue:null, branches:[] }, trace, canonicalInput = null;
     const started = Date.now();
     const deadline = timeoutBudget == null ? null : started + timeoutBudget;
     let deadlineTimer = null;
@@ -380,7 +380,8 @@ export class RuntimeAnalysisPlatform {
     try {
       if (adapter.capabilities.launch) {
         const timeoutMs = remainingTraceTimeout(deadline, timeoutBudget, operation, 'launch');
-        await boundedRuntimeTracePhase(operation, 'launch', deadline, timeoutBudget, () => adapter.launch(launchSpec,{ signal:operation.signal, timeoutMs }));
+        const launched = await boundedRuntimeTracePhase(operation, 'launch', deadline, timeoutBudget, () => adapter.launch(launchSpec,{ signal:operation.signal, timeoutMs }));
+        canonicalInput = launched?.canonicalInput || null;
       } else if (adapter.capabilities.attach && options.attach) {
         const timeoutMs = remainingTraceTimeout(deadline, timeoutBudget, operation, 'attach');
         await boundedRuntimeTracePhase(operation, 'attach', deadline, timeoutBudget, () => adapter.attach(options.attach,{ signal:operation.signal, timeoutMs }));
@@ -422,7 +423,7 @@ export class RuntimeAnalysisPlatform {
     const replayable=isReplayable(adapter,observation,trace);
     const evidence = createRuntimeEvidenceRecord({ backend:session.backend,binaryHash:session.binaryHash,sliceIdentity:this.options.sliceIdentity || null,sessionId:session.id,
       experimentId:`trace:${requestedAddress.toString(16)}`,caseId:'trace',function:requestedAddress,
-      input:launchSpec,observedState:{stop:observation.stop,returnValue:observation.returnValue,factsComplete:factExtraction.complete,factExtraction:{truncated:factExtraction.truncated,processedEvents:factExtraction.processedEvents,totalEvents:factExtraction.totalEvents,reasons:factExtraction.reasons}},branchPath:observation.branches || [],
+      input:canonicalInput || launchSpec,observedState:{stop:observation.stop,returnValue:observation.returnValue,factsComplete:factExtraction.complete,factExtraction:{truncated:factExtraction.truncated,processedEvents:factExtraction.processedEvents,totalEvents:factExtraction.totalEvents,reasons:factExtraction.reasons}},branchPath:observation.branches || [],
       verdict:'inconclusive',confidence:factExtraction.complete ? 0.5 : 0.35,kind:'trace',reproducibility:{replayable,runs:1,consistent:null} });
     this._recordEvidence(evidence);
     return { functionAddress:requestedAddress, observation, trace, facts, factExtraction, evidence:[evidence] };

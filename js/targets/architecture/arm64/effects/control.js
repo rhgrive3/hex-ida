@@ -31,14 +31,9 @@ function instructionAddress(instruction) {
   return instruction?.address == null ? null : strictTargetInteger(instruction.address);
 }
 
-function nextInstructionAddress(instruction) {
-  const address = instructionAddress(instruction);
-  return address == null ? null : BigInt.asUintN(64, address + ARM64_INSTRUCTION_BYTES);
-}
-
 function fallthroughRef(instruction) {
-  const nextAddress = nextInstructionAddress(instruction);
-  return nextAddress == null ? null : addressRef(nextAddress);
+  const address = instructionAddress(instruction);
+  return address == null ? null : addressRef(address + ARM64_INSTRUCTION_BYTES);
 }
 
 function sameAbsoluteTarget(target, reference) {
@@ -289,8 +284,7 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
     const encoding = directBranchEncodingStatus(instruction, target, mnemonic);
     if (!encoding.valid) return ctx.partial(encoding.reason, ['control','registers'], undefined, { kind:'unknown', reason:encoding.reason });
     const fallthrough = fallthroughRef(instruction);
-    const nextPc = nextInstructionAddress(instruction);
-    ctx.writeRegister(gpRegister(30), ctx.constant(64, nextPc));
+    ctx.writeRegister(gpRegister(30), ctx.constant(64, address + ARM64_INSTRUCTION_BYTES));
     return ctx.finish({
       controlEffect: { kind: 'call', target: addressRef(target), ...(fallthrough ? { fallthrough } : {}) },
       metadata: { family: 'control', operation: 'bl', direct: true, abiSemantics: false },
@@ -309,8 +303,7 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
     if (address == null) {
       return ctx.partial('arm64-blr-link-address-unavailable', ['registers'], undefined, { kind: 'call', target });
     }
-    const nextPc = nextInstructionAddress(instruction);
-    ctx.writeRegister(gpRegister(30), ctx.constant(64, nextPc));
+    ctx.writeRegister(gpRegister(30), ctx.constant(64, address + ARM64_INSTRUCTION_BYTES));
     return ctx.finish({
       controlEffect: { kind: 'call', target, ...(fallthroughRef(instruction) ? { fallthrough: fallthroughRef(instruction) } : {}) },
       possibleFaults: indirectTargetFaults(ops[0]),

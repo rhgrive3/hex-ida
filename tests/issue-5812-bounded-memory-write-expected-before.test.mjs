@@ -1,172 +1,180 @@
 import assert from 'node:assert/strict';
 import { CapabilityExecutor } from '../js/ai/capabilities/executor.js';
 import { createCapabilityCatalog } from '../js/ai/capabilities/catalog.js';
+import { LocalFunctionSandboxAdapter, RemoteDebugAdapter } from '../js/adapters/index.js';
 
 const catalog = createCapabilityCatalog();
-const connectEntry = catalog.get('runtime.memory-write');
+const memoryWriteEntry = catalog.get('runtime.memory-write');
 
-// Test 1: expected [0x10], target changes to [0x20] before write -> write must not occur and must fail
-{
-  let targetMemory = new Uint8Array([0x10]);
-  let writeCalled = false;
-
-  const adapter = {
-    connected: true,
-    readMemory: async () => new Uint8Array(targetMemory),
-    writeMemory: async (_addr, bytes) => {
-      writeCalled = true;
-      targetMemory = Uint8Array.from(bytes);
-      return { written: bytes.length };
-    },
-    compareAndWriteMemory: async (addr, expected, bytes) => {
-      // Simulate target memory changing right before write:
-      targetMemory = new Uint8Array([0x20]);
-      if (targetMemory[0] !== expected[0]) {
-        const err = new Error('Runtime memory target is stale: expected-before does not match.');
-        err.code = 'stale-target';
-        throw err;
-      }
-      writeCalled = true;
-      targetMemory = Uint8Array.from(bytes);
-      return { written: bytes.length };
-    },
+function executorFor(adapter, sessionOverrides = {}) {
+  let session = {
+    id: 'sess-1',
+    binaryHash: 'bin-1',
+    generation: 1,
+    adapter,
+    ...sessionOverrides,
   };
-
   const runtimePlatform = {
-    currentSession: () => ({
-      id: 'sess-1',
-      binaryHash: 'bin-1',
-      generation: 1,
-      adapter,
-    }),
+    currentSession: () => session,
+    replaceSession(next) { session = next; },
   };
-
   const executor = new CapabilityExecutor({
-    catalog: { get: (id) => (id === 'runtime.memory-write' ? { ...connectEntry, requiresApproval: false } : catalog.get(id)) },
+    catalog: {
+      get: (id) => id === 'runtime.memory-write'
+        ? { ...memoryWriteEntry, requiresApproval: false }
+        : catalog.get(id),
+    },
     binaryId: 'bin-1',
     runtimePlatform,
   });
-
-  await assert.rejects(
-    () => executor.execute('runtime.memory-write', {
-      runtimeSessionId: 'sess-1',
-      binaryId: 'bin-1',
-      address: '0x1000',
-      expectedBefore: [0x10],
-      bytes: [0x30],
-    }),
-    (err) => /stale/i.test(err.message),
-    'must fail as stale when target changes before write',
-  );
-
-  assert.equal(writeCalled, false, 'write must not proceed when expectedBefore does not match');
-  assert.deepEqual(Array.from(targetMemory), [0x20], 'target memory must retain the concurrent mutation');
+  return { executor, runtimePlatform, session: () => session };
 }
 
-// Test 2 & 3: Target stays expected -> write succeeds with postcondition verification
-{
-  let targetMemory = new Uint8Array([0x10]);
-  const adapter = {
-    connected: true,
-    readMemory: async () => new Uint8Array(targetMemory),
-    compareAndWriteMemory: async (addr, expected, bytes) => {
-      if (targetMemory[0] !== expected[0]) {
-        const err = new Error('stale');
-        err.code = 'stale-target';
-        throw err;
-      }
-      targetMemory = Uint8Array.from(bytes);
-      return { written: bytes.length };
-    },
-    writeMemory: async (_addr, bytes) => {
-      targetMemory = Uint8Array.from(bytes);
-      return { written: bytes.length };
-    },
-  };
-
-  const runtimePlatform = {
-    currentSession: () => ({
-      id: 'sess-1',
-      binaryHash: 'bin-1',
-      generation: 1,
-      adapter,
-    }),
-  };
-
-  const executor = new CapabilityExecutor({
-    catalog: { get: (id) => (id === 'runtime.memory-write' ? { ...connectEntry, requiresApproval: false } : catalog.get(id)) },
-    binaryId: 'bin-1',
-    runtimePlatform,
-  });
-
-  const res = await executor.execute('runtime.memory-write', {
+function writeArgs(overrides = {}) {
+  return {
     runtimeSessionId: 'sess-1',
     binaryId: 'bin-1',
     address: '0x1000',
     expectedBefore: [0x10],
     bytes: [0x30],
-  });
-
-  assert.equal(res.written, 1);
-  assert.deepEqual(Array.from(targetMemory), [0x30]);
+    ...overrides,
+  };
 }
 
-// Test 4: Session generation changes during write -> rejected as stale
+// #5812 regression A: the old read -> compare -> write fallback is forbidden.
+// A split adapter cannot turn a snapshot into mutation authority, even when its
+// ordinary read/write methods are otherwise functional.
 {
-  let targetMemory = new Uint8Array([0x10]);
-  let sessionGen = 1;
-
+  let target = new Uint8Array([0x10]);
+  let reads = 0;
+  let writes = 0;
   const adapter = {
     connected: true,
-    readMemory: async () => new Uint8Array(targetMemory),
-    compareAndWriteMemory: async (addr, expected, bytes, options) => {
-      // Simulate session generation bump
-      sessionGen = 2;
-      targetMemory = Uint8Array.from(bytes);
-      return { written: bytes.length };
-    },
-    writeMemory: async (_addr, bytes) => {
-      sessionGen = 2;
-      targetMemory = Uint8Array.from(bytes);
-      return { written: bytes.length };
-    },
+    async readMemory() { reads++; const snapshot = Uint8Array.from(target); target = new Uint8Array([0x20]); return snapshot; },
+    async writeMemory(_address, bytes) { writes++; target = Uint8Array.from(bytes); return { written: bytes.length }; },
   };
-
-  const runtimePlatform = {
-    currentSession: () => ({
-      id: 'sess-1',
-      binaryHash: 'bin-1',
-      get generation() { return sessionGen; },
-      adapter,
-    }),
-  };
-
-  const executor = new CapabilityExecutor({
-    catalog: { get: (id) => (id === 'runtime.memory-write' ? { ...connectEntry, requiresApproval: false } : catalog.get(id)) },
-    binaryId: 'bin-1',
-    runtimePlatform,
-  });
+  const { executor } = executorFor(adapter);
 
   await assert.rejects(
-    () => executor.execute('runtime.memory-write', {
-      runtimeSessionId: 'sess-1',
-      binaryId: 'bin-1',
-      address: '0x1000',
-      expectedBefore: [0x10],
-      bytes: [0x30],
-    }),
-    (err) => /stale/i.test(err.message),
-    'session generation change during memory write must be rejected as stale',
+    () => executor.execute('runtime.memory-write', writeArgs()),
+    (error) => error?.type === 'tool_failed' && /atomic compare-and-write/i.test(error.message),
+    'split read/write adapters must fail closed before a stale snapshot can authorize a write',
   );
+  assert.equal(reads, 0, 'unsafe read-before-write fallback must not run');
+  assert.equal(writes, 0, 'unsafe split write must not run');
+  assert.deepEqual(Array.from(target), [0x10], 'target must remain untouched');
 }
 
-// Test 5: LocalFunctionSandboxAdapter.compareAndWriteMemory
+// A lookalike method is not trusted unless the adapter explicitly declares the
+// atomic contract. This rejects the previous PR implementation, whose
+// compareAndWriteMemory still performed two independent operations.
 {
-  const { LocalFunctionSandboxAdapter } = await import('../js/adapters/index.js');
-  let mem = new Uint8Array([0xaa, 0xbb]);
+  let called = false;
+  const adapter = {
+    connected: true,
+    async readMemory() { return new Uint8Array([0x10]); },
+    async compareAndWriteMemory() { called = true; return { written: 1 }; },
+  };
+  const { executor } = executorFor(adapter);
+  await assert.rejects(
+    () => executor.execute('runtime.memory-write', writeArgs()),
+    (error) => error?.type === 'tool_failed' && /atomic compare-and-write/i.test(error.message),
+  );
+  assert.equal(called, false, 'unmarked compareAndWriteMemory must not receive mutation authority');
+}
+
+// #5812 regression B: a trusted atomic primitive observes a concurrent target
+// mutation at its linearization point and rejects without overwriting it.
+{
+  let target = new Uint8Array([0x10]);
+  let wrote = false;
+  const adapter = {
+    connected: true,
+    compareAndWriteMemoryAtomic: true,
+    async compareAndWriteMemory(_address, expected, bytes) {
+      target = new Uint8Array([0x20]); // concurrent mutation before CAS compare
+      if (target.length !== expected.length || target.some((value, i) => value !== expected[i])) {
+        const error = new Error('expected-before no longer matches at atomic write point');
+        error.code = 'stale-target';
+        throw error;
+      }
+      wrote = true;
+      target = Uint8Array.from(bytes);
+      return { written: bytes.length };
+    },
+    async readMemory() { return Uint8Array.from(target); },
+  };
+  const { executor } = executorFor(adapter);
+  await assert.rejects(
+    () => executor.execute('runtime.memory-write', writeArgs()),
+    (error) => error?.type === 'tool_failed' && /stale/i.test(error.message),
+  );
+  assert.equal(wrote, false, 'CAS mismatch must not write');
+  assert.deepEqual(Array.from(target), [0x20], 'concurrent mutation must be preserved');
+}
+
+// #5812 regression C: matching expected-before through an explicitly atomic
+// primitive succeeds and is read back only as a postcondition.
+{
+  let target = new Uint8Array([0x10]);
+  const adapter = {
+    connected: true,
+    compareAndWriteMemoryAtomic: true,
+    async compareAndWriteMemory(_address, expected, bytes) {
+      if (target.length !== expected.length || target.some((value, i) => value !== expected[i])) {
+        const error = new Error('stale target');
+        error.code = 'stale-target';
+        throw error;
+      }
+      target = Uint8Array.from(bytes);
+      return { written: bytes.length };
+    },
+    async readMemory() { return Uint8Array.from(target); },
+  };
+  const { executor } = executorFor(adapter);
+  const result = await executor.execute('runtime.memory-write', writeArgs());
+  assert.equal(result.written, 1);
+  assert.deepEqual(result.before, [0x10]);
+  assert.deepEqual(result.after, [0x30]);
+  assert.deepEqual(Array.from(target), [0x30]);
+}
+
+// #5812 regression D: session generation is part of the authority snapshot.
+// A primitive must be able to reject the supplied expected generation, and the
+// executor also checks the active session again before publishing success.
+{
+  let target = new Uint8Array([0x10]);
+  let generation = 1;
+  const adapter = {
+    connected: true,
+    compareAndWriteMemoryAtomic: true,
+    async compareAndWriteMemory(_address, expected, bytes, options) {
+      generation = 2;
+      if (options.expectedGeneration !== generation) {
+        const error = new Error('session generation changed before atomic write');
+        error.code = 'stale-request';
+        throw error;
+      }
+      target = Uint8Array.from(bytes);
+      return { written: bytes.length };
+    },
+    async readMemory() { return Uint8Array.from(target); },
+  };
+  const session = { id: 'sess-1', binaryHash: 'bin-1', get generation() { return generation; }, adapter };
+  const { executor } = executorFor(adapter, session);
+  await assert.rejects(
+    () => executor.execute('runtime.memory-write', writeArgs()),
+    (error) => error?.type === 'tool_failed' && /stale/i.test(error.message),
+  );
+  assert.deepEqual(Array.from(target), [0x10], 'generation mismatch must reject before mutation');
+}
+
+// Production LocalFunctionSandboxAdapter currently has no atomic CAS primitive.
+// It therefore fails closed instead of reintroducing read/compare/write TOCTOU.
+{
   const io = {
     fetch: async () => ({ mn: 'ret', ops: '' }),
-    read: async () => new Uint8Array(mem),
+    read: async () => null,
     isExecutable: () => true,
     symbolFor: () => null,
   };
@@ -177,45 +185,34 @@ const connectEntry = catalog.get('runtime.memory-write');
     objectAsArg0: false,
     memoryMappings: [{ start: 0x1000n, size: 0x1000, kind: 'mapped', permissions: 'rw' }],
   });
-
-  // Matching expectedBefore succeeds
-  await adapter.compareAndWriteMemory(0x1000n, [0xaa, 0xbb], [0xcc, 0xdd]);
-  const after = await adapter.readMemory(0x1000n, 2);
-  assert.deepEqual(Array.from(after), [0xcc, 0xdd]);
-
-  // Mismatched expectedBefore rejects with stale-target
+  await adapter.writeMemory(0x1000n, [0x10]);
+  const { executor } = executorFor(adapter);
   await assert.rejects(
-    () => adapter.compareAndWriteMemory(0x1000n, [0xaa, 0xbb], [0xee, 0xff]),
-    (err) => err?.code === 'stale-target',
-    'LocalFunctionSandboxAdapter must reject with stale-target on mismatch',
+    () => executor.execute('runtime.memory-write', writeArgs()),
+    (error) => error?.type === 'tool_failed' && /atomic compare-and-write/i.test(error.message),
   );
-
-  // Epoch mismatch rejects with stale-request
-  await assert.rejects(
-    () => adapter.compareAndWriteMemory(0x1000n, [0xcc, 0xdd], [0x11, 0x22], { expectedEpoch: 999 }),
-    (err) => err?.code === 'stale-request',
-    'LocalFunctionSandboxAdapter must reject with stale-request on epoch mismatch',
-  );
-
+  assert.deepEqual(Array.from(await adapter.readMemory(0x1000n, 1)), [0x10]);
   await adapter.disconnect();
 }
 
-// Test 6: RemoteDebugAdapter.compareAndWriteMemory
+// Production RemoteDebugAdapter also fails closed unless a future backend adds
+// an actual single-operation atomic primitive. No readMemory/writeMemory RPC is
+// sent by the capability path, so there is no interleaving window to exploit.
 {
-  const { RemoteDebugAdapter } = await import('../js/adapters/index.js');
-  let mem = new Uint8Array([0x10, 0x20]);
   let receiver = null;
+  const methods = [];
   const transport = {
     send: async (packet) => {
       if (packet.type !== 'request') return;
+      methods.push(packet.method);
       if (packet.method === 'connect') {
-        queueMicrotask(() => receiver?.({ version: 1, type: 'response', id: packet.id, epoch: packet.epoch, result: { capabilities: { readMemory: true, writeMemory: true } } }));
-      } else if (packet.method === 'readMemory') {
-        queueMicrotask(() => receiver?.({ version: 1, type: 'response', id: packet.id, epoch: packet.epoch, result: { bytes: Array.from(mem.slice(0, packet.params.size)) } }));
-      } else if (packet.method === 'writeMemory') {
-        const raw = packet.params.bytes;
-        mem = raw?.value ? Buffer.from(raw.value, 'base64') : Uint8Array.from(raw);
-        queueMicrotask(() => receiver?.({ version: 1, type: 'response', id: packet.id, epoch: packet.epoch, result: { written: raw?.length ?? raw?.byteLength ?? 2 } }));
+        queueMicrotask(() => receiver?.({
+          version: 1,
+          type: 'response',
+          id: packet.id,
+          epoch: packet.epoch,
+          result: { capabilities: { readMemory: true, writeMemory: true } },
+        }));
       }
     },
     onMessage: (fn) => { receiver = fn; return () => {}; },
@@ -223,20 +220,13 @@ const connectEntry = catalog.get('runtime.memory-write');
   };
   const adapter = new RemoteDebugAdapter(transport, { capabilities: { readMemory: true, writeMemory: true } });
   await adapter.connect();
-
-  // Matching succeeds
-  await adapter.compareAndWriteMemory(0x1000n, [0x10, 0x20], [0x30, 0x40]);
-  assert.deepEqual(Array.from(mem), [0x30, 0x40]);
-
-  // Mismatch rejects with stale-target
+  const { executor } = executorFor(adapter);
   await assert.rejects(
-    () => adapter.compareAndWriteMemory(0x1000n, [0x10, 0x20], [0x50, 0x60]),
-    (err) => err?.code === 'stale-target',
-    'RemoteDebugAdapter must reject with stale-target on mismatch',
+    () => executor.execute('runtime.memory-write', writeArgs()),
+    (error) => error?.type === 'tool_failed' && /atomic compare-and-write/i.test(error.message),
   );
-
+  assert.deepEqual(methods, ['connect'], 'unsafe split memory RPCs must not be emitted');
   await adapter.disconnect();
 }
 
 console.log('issue-5812-bounded-memory-write-expected-before: PASS');
-

@@ -139,7 +139,7 @@ export function createRuntimeEvidenceRecord(input = {}) {
     id:runtimeEvidenceId(input.id, generatedId),
     source:'runtime', backend:String(input.backend || 'unknown').slice(0,128), binaryHash:input.binaryHash || null, sliceIdentity:input.sliceIdentity || null,
     function:input.function == null ? null : input.function, address:input.address == null ? null : input.address,
-    input:input.input || null, initialState:input.initialState || null, observedState:input.observedState || null,
+    input:input.input ?? null, initialState:input.initialState ?? null, observedState:input.observedState ?? null,
     branchPath:Array.isArray(input.branchPath) ? input.branchPath.slice(0,4096) : [], timestamp:resolvedTimestamp, sessionId,
     reproducibility:input.reproducibility || { replayable:false, runs:1, consistent:null },
     confidence:safeConfidence(input.confidence), verdict:input.verdict || 'inconclusive', kind:input.kind || 'observation',
@@ -148,10 +148,10 @@ export function createRuntimeEvidenceRecord(input = {}) {
   };
 }
 
-export function evidenceFromExperiment({ experiment, testCase, observation, comparison, backend = 'unknown', binaryHash = null, sliceIdentity = null, sessionId = null, replayable = false }) {
+export function evidenceFromExperiment({ experiment, testCase, observation, comparison, launchCanonicalInput = null, backend = 'unknown', binaryHash = null, sliceIdentity = null, sessionId = null, replayable = false }) {
   const group = `runtime:${provenancePart(sessionId, 'session', 'sessionId')}:${provenancePart(experiment.id, null, 'experimentId')}:${provenancePart(testCase.id, null, 'caseId')}`;
   return createRuntimeEvidenceRecord({
-    backend, binaryHash:binaryHash || experiment.binaryHash, sliceIdentity, function:experiment.functionAddress, input:testCase.input,
+    backend, binaryHash:binaryHash || experiment.binaryHash, sliceIdentity, function:experiment.functionAddress, input:launchCanonicalInput || testCase.input,
     initialState:testCase.initialState, observedState:{ returnValue:observation.returnValue, registerDelta:observation.registerDelta, memoryDelta:observation.memoryDelta, memoryAfter:observation.memoryAfter, stop:observation.stop },
     branchPath:observation.branches || [], sessionId, experimentId:experiment.id, caseId:testCase.id, verdict:comparison.status,
     confidence:comparison.status === 'supported' ? 0.8 : comparison.status === 'contradicted' ? 0.9 : 0.35,

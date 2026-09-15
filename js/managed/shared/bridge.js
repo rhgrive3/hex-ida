@@ -110,6 +110,64 @@ function managedDivisionRemainderOperatorForNode(node, frontendId, mnemonic) {
   return node.operator;
 }
 
+const MANAGED_COMPARE_OPERATORS = new Map([
+  ['eq', { op: 'eq', signed: null, arity: 2 }],
+  ['ne', { op: 'ne', signed: null, arity: 2 }],
+  ['is-zero', { op: 'eq', signed: null, arity: 1 }],
+  ['is-nonzero', { op: 'ne', signed: null, arity: 1 }],
+  ['slt', { op: 'lt', signed: true, arity: 2 }],
+  ['ult', { op: 'lt', signed: false, arity: 2 }],
+  ['sle', { op: 'le', signed: true, arity: 2 }],
+  ['ule', { op: 'le', signed: false, arity: 2 }],
+  ['sgt', { op: 'gt', signed: true, arity: 2 }],
+  ['ugt', { op: 'gt', signed: false, arity: 2 }],
+  ['sge', { op: 'ge', signed: true, arity: 2 }],
+  ['uge', { op: 'ge', signed: false, arity: 2 }],
+]);
+
+function managedWasmComparison(mnemonic) {
+  const text = typeof mnemonic === 'string' ? mnemonic.trim().toLowerCase() : '';
+  const match = /^i(?:32|64)\.(eqz|eq|ne|(?:lt|le|gt|ge)_[su])$/.exec(text);
+  if (!match) return null;
+  const operation = match[1];
+  if (operation === 'eqz') return { op: 'eq', signed: null, arity: 1 };
+  if (operation === 'eq' || operation === 'ne') return { op: operation, signed: null, arity: 2 };
+  const relation = operation.slice(0, 2);
+  return { op: relation, signed: operation.endsWith('_s'), arity: 2 };
+}
+
+function sameManagedComparison(a, b) {
+  return a && b && a.op === b.op && a.signed === b.signed && a.arity === b.arity;
+}
+
+function legacyManagedComparison(mnemonic) {
+  const text = typeof mnemonic === 'string' ? mnemonic.trim().toLowerCase() : '';
+  const op = text.includes('eq') ? 'eq'
+    : text.includes('ne') ? 'ne'
+    : text.includes('le') ? 'le'
+    : text.includes('ge') ? 'ge'
+    : text.includes('lt') ? 'lt'
+    : text.includes('gt') ? 'gt'
+    : null;
+  return op ? { op, signed: null, arity: 2 } : null;
+}
+
+function managedComparisonForNode(node, frontendId, mnemonic) {
+  const hasCanonicalOperator = node?.operator != null;
+  const canonical = typeof node?.operator === 'string'
+    ? MANAGED_COMPARE_OPERATORS.get(node.operator) || null
+    : null;
+  const frontend = typeof frontendId === 'string' ? frontendId.trim().toLowerCase() : '';
+  const wasm = frontend === 'wasm' ? managedWasmComparison(mnemonic) : null;
+
+  if (hasCanonicalOperator) {
+    if (!canonical || (wasm && !sameManagedComparison(canonical, wasm))) return null;
+    return canonical;
+  }
+  if (frontend === 'wasm') return wasm;
+  return legacyManagedComparison(mnemonic);
+}
+
 function safeIdent(s, fallback = 'value') {
   const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_$]/g, '_').replace(/^([0-9])/, '_$1');
   return x || fallback;
@@ -800,18 +858,18 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
       }
     } else if (node.kind === 'load') {
       memoryReads.push(createMemoryEffect({
-        regionKind: 'heap',
-        broad: false,
-        addressSpaces: ['memory'],
-        source: 'instruction',
+        regionKind: 'unknown',
+        broad: true,
+        addressSpaces: [node.memory?.addressSpace || 'memory'],
+        source: 'proven-summary',
         evidenceIds: [node.id],
       }));
     } else if (node.kind === 'store') {
       memoryWrites.push(createMemoryEffect({
-        regionKind: 'heap',
-        broad: false,
-        addressSpaces: ['memory'],
-        source: 'instruction',
+        regionKind: 'unknown',
+        broad: true,
+        addressSpaces: [node.memory?.addressSpace || 'memory'],
+        source: 'proven-summary',
         evidenceIds: [node.id],
       }));
     } else if (node.kind === 'trap') {
@@ -1028,9 +1086,11 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
     } else if (n.kind === 'compare') {
       const left = n.inputs[0] ? buildValueExpr(n.inputs[0]) : expr.constant(0n, bits);
       const right = n.inputs[1] ? buildValueExpr(n.inputs[1]) : expr.constant(0n, bits);
-      const mn = (n.metadata?.mnemonic || '').toLowerCase();
-      const op = mn.includes('eq') ? 'eq' : mn.includes('ne') ? 'ne' : mn.includes('le') ? 'le' : mn.includes('ge') ? 'ge' : mn.includes('lt') ? 'lt' : mn.includes('gt') ? 'gt' : 'eq';
-      res = expr.compare(op, left, right);
+      const mnemonic = typeof n.metadata?.mnemonic === 'string' ? n.metadata.mnemonic : '';
+      const comparison = managedComparisonForNode(n, frontendId, mnemonic);
+      res = comparison
+        ? expr.compare(comparison.op, left, right, comparison.signed)
+        : expr.intrinsic(safeIdent(mnemonic || 'managed_compare'), [left, right], bits);
     } else if (n.kind === 'unary') {
       const arg = n.inputs[0] ? buildValueExpr(n.inputs[0]) : expr.constant(0n, bits);
       const mnemonic = typeof n.metadata?.mnemonic === 'string' ? n.metadata.mnemonic : '';
@@ -1071,10 +1131,22 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
   }
 
   const body = [];
+  const cfgBlockById = new Map((cfg.blocks || []).map((block) => [block.id, block]));
   const renderedControlTargets = new Set();
   for (const n of semanticIr.nodes) {
-    if (n.kind !== 'branch') continue;
-    for (const target of n.targets || []) renderedControlTargets.add(target);
+    if (n.kind !== 'branch' && n.kind !== 'switch') continue;
+    for (const target of n.targets || []) {
+      if (typeof target === 'string' && target.length > 0) renderedControlTargets.add(target);
+    }
+    if (n.kind === 'switch') {
+      const cfgBlock = cfgBlockById.get(n.blockId);
+      for (const successor of cfgBlock?.successors || []) {
+        if ((successor.kind === 'switch-case' || successor.kind === 'switch-default')
+            && typeof successor.to === 'string' && successor.to.length > 0) {
+          renderedControlTargets.add(successor.to);
+        }
+      }
+    }
   }
 
   const loopHeaders = new Set();
@@ -1169,6 +1241,61 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
           body.push({ kind: 'goto', indent: isLoop ? 3 : 2, text: `goto ${n.targets[0]};` });
         }
         body.push({ kind: 'if_close', indent: isLoop ? 2 : 1, text: '}' });
+      } else if (n.kind === 'switch') {
+        const selector = n.inputs?.[0] ? printExpression(buildValueExpr(n.inputs[0])) : 'selector';
+        const cfgBlock = cfgBlockById.get(n.blockId);
+        const caseEdges = [];
+        const defaultEdges = [];
+        for (const successor of cfgBlock?.successors || []) {
+          if (typeof successor?.to !== 'string' || successor.to.length === 0) continue;
+          if (successor.kind === 'switch-case') caseEdges.push(successor.to);
+          else if (successor.kind === 'switch-default') defaultEdges.push(successor.to);
+        }
+
+        const dispatchParts = [];
+        const roleTargets = new Set();
+        for (let index = 0; index < caseEdges.length; index++) {
+          const target = caseEdges[index];
+          roleTargets.add(target);
+          // The CFG proves that this is a case edge, but it does not publish
+          // the source-language case value. Preserve the ordinal edge without
+          // inventing a value such as `case 0:` (#4028).
+          dispatchParts.push(`case_edge(${index}, ${target})`);
+        }
+        for (const target of defaultEdges) {
+          roleTargets.add(target);
+          dispatchParts.push(`default_edge(${target})`);
+        }
+
+        // Some callers can provide a valid Semantic IR switch with targets but
+        // without CFG edge-role metadata. Keep every target (including
+        // duplicates) as an explicitly unknown-role edge rather than silently
+        // converting the switch to layout fallthrough.
+        if (caseEdges.length === 0 && defaultEdges.length === 0) {
+          for (let index = 0; index < (n.targets || []).length; index++) {
+            const target = n.targets[index];
+            if (typeof target !== 'string' || target.length === 0) continue;
+            dispatchParts.push(`target_edge(${index}, ${target})`);
+          }
+        } else {
+          for (const target of n.targets || []) {
+            if (typeof target !== 'string' || target.length === 0 || roleTargets.has(target)) continue;
+            dispatchParts.push(`target_edge(${dispatchParts.length}, ${target})`);
+          }
+        }
+
+        const controlIncomplete = n.completeness !== 'complete'
+          || (Array.isArray(n.unknown?.categories) && n.unknown.categories.includes('control'));
+        body.push({
+          kind: 'switch',
+          indent: isLoop ? 2 : 1,
+          text: dispatchParts.length === 0
+            ? `switch_unknown(${selector});`
+            : controlIncomplete
+              ? `switch_partial(${selector}, ${dispatchParts.join(', ')});`
+              : `switch_dispatch(${selector}, ${dispatchParts.join(', ')});`,
+          source: n.origin,
+        });
       } else if (n.kind === 'trap') {
         // A language-level throw renders the actual thrown operand (#7311);
         // only a genuine runtime trap keeps the fabricated exception form.

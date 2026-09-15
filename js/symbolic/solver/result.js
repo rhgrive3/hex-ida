@@ -6,6 +6,8 @@
  * conflated with UNSAT or proved results.
  */
 
+import { isVerificationQuery } from '../verify/query.js';
+
 export const SOLVER_STATUS = Object.freeze({
   SAT: 'sat',
   UNSAT: 'unsat',
@@ -37,6 +39,61 @@ export function isSolverFailure(result) {
   return status !== SOLVER_STATUS.SAT && status !== SOLVER_STATUS.UNSAT;
 }
 
+const MODEL_IMMUTABLE = 'SolverResult model is an immutable published snapshot';
+
+class ImmutableSolverModelMap extends Map {
+  set() { throw new TypeError(MODEL_IMMUTABLE); }
+  delete() { throw new TypeError(MODEL_IMMUTABLE); }
+  clear() { throw new TypeError(MODEL_IMMUTABLE); }
+}
+
+function isPlainModelObject(value) {
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function immutableModelValue(value) {
+  if (value === null || typeof value !== 'object') return value;
+  if (value instanceof Map) {
+    const copy = new ImmutableSolverModelMap();
+    for (const [key, entryValue] of value) Map.prototype.set.call(copy, key, immutableModelValue(entryValue));
+    return Object.freeze(copy);
+  }
+  if (Array.isArray(value)) return Object.freeze(value.map(immutableModelValue));
+  if (isPlainModelObject(value)) {
+    const copy = {};
+    for (const key of Object.keys(value)) {
+      Object.defineProperty(copy, key, {
+        value: immutableModelValue(value[key]),
+        enumerable: true,
+        writable: false,
+        configurable: false,
+      });
+    }
+    return Object.freeze(copy);
+  }
+  return Object.freeze(value);
+}
+
+function requireIdentityString(value, field) {
+  // Exact typed identity (#4685): a solver result's backend/backendVersion must be
+  // primitive strings. Storing String(structuredValue) laundered ['exact-solver']
+  // into 'exact-solver', so a malformed provider result could satisfy exact
+  // backend identity. Reject instead of coercing.
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new TypeError(`createSolverResult: ${field} must be a non-empty primitive string`);
+  }
+  return value;
+}
+
+function requireQueryHash(value) {
+  if (value == null || value === '') return null;
+  if (typeof value !== 'string') {
+    throw new TypeError('createSolverResult: queryHash must be null or a primitive string');
+  }
+  return value;
+}
+
 export function createSolverResult({
   status,
   model = null,
@@ -51,14 +108,14 @@ export function createSolverResult({
     throw new TypeError(`createSolverResult: invalid solver status '${status}'`);
   }
 
-  // Model is only permitted when status is SAT
+  const normalizedBackend = requireIdentityString(backend, 'backend');
+  const normalizedBackendVersion = requireIdentityString(backendVersion, 'backendVersion');
+  const normalizedQueryHash = requireQueryHash(queryHash);
+
+  // Model is only permitted when status is SAT; publish an owned immutable snapshot (#3986)
   let normalizedModel = null;
-  if (status === SOLVER_STATUS.SAT && model) {
-    if (model instanceof Map) {
-      normalizedModel = new Map(model);
-    } else if (typeof model === 'object') {
-      normalizedModel = { ...model };
-    }
+  if (status === SOLVER_STATUS.SAT && model && typeof model === 'object') {
+    normalizedModel = immutableModelValue(model);
   }
 
   const normalizedLifecycle = Object.freeze({
@@ -86,9 +143,9 @@ export function createSolverResult({
       nodesEvaluated: Number(stats.nodesEvaluated) || 0,
       memoryBytesDelta: Number(stats.memoryBytesDelta) || 0,
     }),
-    backend: String(backend),
-    backendVersion: String(backendVersion),
-    queryHash: queryHash ? String(queryHash) : null,
+    backend: normalizedBackend,
+    backendVersion: normalizedBackendVersion,
+    queryHash: normalizedQueryHash,
     lifecycle: normalizedLifecycle,
   });
 }
@@ -96,9 +153,17 @@ export function createSolverResult({
 export function isValidSolverResult(result, { query = null, backend = null } = {}) {
   if (!result || typeof result !== 'object' || !Object.values(SOLVER_STATUS).includes(result.status)) return false;
   if (backend) {
-    if (result.backend !== String(backend.id) || result.backendVersion !== String(backend.version)) return false;
+    // Compare exact typed identity; never String()-coerce either side (#4685).
+    if (typeof result.backend !== 'string' || typeof result.backendVersion !== 'string') return false;
+    if (result.backend !== backend.id || result.backendVersion !== backend.version) return false;
   }
-  if (query?.queryHash && result.queryHash !== String(query.queryHash)) return false;
+  if (query?.queryHash) {
+    // Query identity is verified against recomputed canonical content, not an
+    // echoed caller string, so copying one forged hash into query and result
+    // cannot validate (#3963). Identity is compared as a primitive string only (#4685).
+    if (!isVerificationQuery(query)) return false;
+    if (typeof query.queryHash !== 'string' || result.queryHash !== query.queryHash) return false;
+  }
   if (result.lifecycle?.publishable === false && (result.status === SOLVER_STATUS.SAT || result.status === SOLVER_STATUS.UNSAT)) return false;
   if (result.status !== SOLVER_STATUS.SAT && result.model != null) return false;
   return true;

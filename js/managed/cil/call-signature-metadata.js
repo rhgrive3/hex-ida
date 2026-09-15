@@ -1,13 +1,16 @@
-import { codedIndexSize, metadataRowSize, validateMetadataTableValidMask } from './metadata-layout.js';
+import { codedIndexSize, metadataRowSize, tableIndexSize, validateMetadataTableValidMask } from './metadata-layout.js';
 import { readCilMetadataStreams } from './metadata-streams.js';
 import { CLI_HEADER_SIZE, validateCliHeaderSize } from './cli-header.js';
 const TYPE_REF_TABLE = 0x01;
-const TYPE_DEF_TABLE = 0x02;
+export const TYPE_DEF_TABLE = 0x02;
+export const FIELD_DEF_TABLE = 0x04;
 const TYPE_SPEC_TABLE = 0x1b;
+const MODULE_REF_TABLE = 0x1a;
 export const METHOD_DEF_TABLE = 0x06;
 export const MEMBER_REF_TABLE = 0x0a;
 export const STANDALONE_SIG_TABLE = 0x11;
 export const METHOD_SPEC_TABLE = 0x2b;
+const ASSEMBLY_REF_TABLE = 0x23;
 
 const CLI_DIRECTORY_INDEX = 14;
 
@@ -134,9 +137,20 @@ export function buildCilCallMetadataIndex(bytes) {
   }
 
   const methodDefs = [];
+  // MethodDef body-offset -> unique RID, or `null` when several rows claim one
+  // offset. Building it during the single MethodDef scan keeps per-method
+  // signature resolution indexed instead of rescanning the whole table (#8791);
+  // the ambiguity itself stays explicit so it keeps failing closed.
+  const methodBodyOffsets = new Map();
   const memberRefs = [];
   const methodSpecs = [];
   const standAloneSigs = [];
+  const typeDefs = [];
+  const typeRefs = [];
+  const typeSpecs = [];
+  const moduleRefs = [];
+  const assemblyRefs = [];
+  const fieldDefs = [];
   const stringIndexSize = (heapSizes & 0x01) !== 0 ? 4 : 2;
   const blobIndexSize = (heapSizes & 0x04) !== 0 ? 4 : 2;
   for (let table = 0; table < 64; table++) {
@@ -151,20 +165,61 @@ export function buildCilCallMetadataIndex(bytes) {
       for (let row = 0; row < rows; row++) {
         const rowPos = pos + row * rowSize;
         const rva = readU32(view, rowPos, 'cil-call-signature-methoddef-truncated');
-        methodDefs.push(Object.freeze({
+        const methodRow = Object.freeze({
           rva,
           bodyOffset:rva === 0 ? null : metadata.mapRva(rva, 1, 'cil-call-signature-method-body-unmapped'),
           accessFlags:readU16(view, rowPos + 6, 'cil-call-signature-methoddef-truncated'),
           nameIndex:readIndex(view, rowPos + 8, stringIndexSize, 'cil-call-signature-methoddef-truncated'),
           signatureBlobIndex:readIndex(view, rowPos + signatureOffset, blobIndexSize,
             'cil-call-signature-methoddef-truncated'),
+        });
+        methodDefs.push(methodRow);
+        if (methodRow.bodyOffset != null) {
+          const claimed = methodBodyOffsets.get(methodRow.bodyOffset);
+          methodBodyOffsets.set(methodRow.bodyOffset, claimed === undefined ? row + 1 : null);
+        }
+      }
+    } else if (table === TYPE_DEF_TABLE) {
+      // TypeDef rows carry the owner identity for FieldDef resolution: the
+      // FieldList pointer range binds each field to exactly one type (#3971).
+      const extendsSize = codedIndexSize(rowCounts, [TYPE_DEF_TABLE, TYPE_REF_TABLE, TYPE_SPEC_TABLE], 2);
+      for (let row = 0; row < rows; row++) {
+        const rowPos = pos + row * rowSize;
+        typeDefs.push(Object.freeze({
+          nameIndex: readIndex(view, rowPos + 4, stringIndexSize, 'cil-call-signature-typedef-truncated'),
+          namespaceIndex: readIndex(view, rowPos + 4 + stringIndexSize, stringIndexSize,
+            'cil-call-signature-typedef-truncated'),
+          fieldList: readIndex(view, rowPos + 6 + 2 * stringIndexSize + extendsSize,
+            tableIndexSize(rowCounts, FIELD_DEF_TABLE),
+            'cil-call-signature-typedef-truncated'),
+        }));
+      }
+    } else if (table === FIELD_DEF_TABLE) {
+      for (let row = 0; row < rows; row++) {
+        const rowPos = pos + row * rowSize;
+        fieldDefs.push(Object.freeze({
+          accessFlags: readU16(view, rowPos, 'cil-call-signature-fielddef-truncated'),
+          nameIndex: readIndex(view, rowPos + 2, stringIndexSize, 'cil-call-signature-fielddef-truncated'),
+          signatureBlobIndex: readIndex(view, rowPos + 2 + stringIndexSize, blobIndexSize,
+            'cil-call-signature-fielddef-truncated'),
         }));
       }
     } else if (table === MEMBER_REF_TABLE) {
       const parentSize = codedIndexSize(rowCounts, [0x02, 0x01, 0x1a, 0x06, 0x1b], 3);
+      const parentTables = [0x02, 0x01, 0x1a, 0x06, 0x1b];
       for (let row = 0; row < rows; row++) {
         const rowPos = pos + row * rowSize;
+        const parentEncoded = readIndex(view, rowPos, parentSize, 'cil-call-signature-memberref-truncated');
+        const parentTag = parentEncoded & 0x07;
+        const parentRid = parentEncoded >>> 3;
+        // Keep raw parent identity lazy: an unrelated malformed MemberRef must
+        // not poison MethodDef-only resolution. Kind/RID validity is enforced
+        // when that MemberRef token is actually resolved (#7601 + main #7706).
         memberRefs.push(Object.freeze({
+          parentEncoded,
+          parent:parentEncoded,
+          parentTable:parentTag < parentTables.length ? parentTables[parentTag] : null,
+          parentRid,
           nameIndex:readIndex(view, rowPos + parentSize, stringIndexSize, 'cil-call-signature-memberref-truncated'),
           signatureBlobIndex:readIndex(view, rowPos + parentSize + stringIndexSize, blobIndexSize,
             'cil-call-signature-memberref-truncated'),
@@ -187,19 +242,69 @@ export function buildCilCallMetadataIndex(bytes) {
           instantiation:readIndex(view, rowPos + methodSize, blobIndexSize, 'cil-call-signature-methodspec-truncated'),
         });
       }
+    } else if (table === TYPE_REF_TABLE) {
+      const scopeSize = codedIndexSize(rowCounts, [0x00, MODULE_REF_TABLE, ASSEMBLY_REF_TABLE, TYPE_REF_TABLE], 2);
+      for (let row = 0; row < rows; row++) {
+        const rowPos = pos + row * rowSize;
+        typeRefs.push(Object.freeze({
+          scopeEncoded:readIndex(view, rowPos, scopeSize, 'cil-call-signature-typeref-truncated'),
+          nameIndex:readIndex(view, rowPos + scopeSize, stringIndexSize, 'cil-call-signature-typeref-truncated'),
+          namespaceIndex:readIndex(view, rowPos + scopeSize + stringIndexSize, stringIndexSize,
+            'cil-call-signature-typeref-truncated'),
+        }));
+      }
+    } else if (table === TYPE_SPEC_TABLE) {
+      for (let row = 0; row < rows; row++) {
+        const rowPos = pos + row * rowSize;
+        typeSpecs.push(Object.freeze({
+          signatureBlobIndex:readIndex(view, rowPos, blobIndexSize, 'cil-call-signature-typespec-truncated'),
+        }));
+      }
+    } else if (table === MODULE_REF_TABLE) {
+      for (let row = 0; row < rows; row++) {
+        const rowPos = pos + row * rowSize;
+        moduleRefs.push(Object.freeze({
+          nameIndex:readIndex(view, rowPos, stringIndexSize, 'cil-call-signature-moduleref-truncated'),
+        }));
+      }
+    } else if (table === ASSEMBLY_REF_TABLE) {
+      for (let row = 0; row < rows; row++) {
+        const rowPos = pos + row * rowSize;
+        assemblyRefs.push(Object.freeze({
+          majorVersion:readU16(view, rowPos, 'cil-call-signature-assemblyref-truncated'),
+          minorVersion:readU16(view, rowPos + 2, 'cil-call-signature-assemblyref-truncated'),
+          buildNumber:readU16(view, rowPos + 4, 'cil-call-signature-assemblyref-truncated'),
+          revisionNumber:readU16(view, rowPos + 6, 'cil-call-signature-assemblyref-truncated'),
+          flags:readU32(view, rowPos + 8, 'cil-call-signature-assemblyref-truncated'),
+          publicKeyBlobIndex:readIndex(view, rowPos + 12, blobIndexSize, 'cil-call-signature-assemblyref-truncated'),
+          nameIndex:readIndex(view, rowPos + 12 + blobIndexSize, stringIndexSize, 'cil-call-signature-assemblyref-truncated'),
+          cultureIndex:readIndex(view, rowPos + 12 + blobIndexSize + stringIndexSize, stringIndexSize,
+            'cil-call-signature-assemblyref-truncated'),
+          hashValueBlobIndex:readIndex(view, rowPos + 12 + blobIndexSize + 2 * stringIndexSize, blobIndexSize,
+            'cil-call-signature-assemblyref-truncated'),
+        }));
+      }
     }
     pos += rows * rowSize;
   }
   return Object.freeze({
     methodDefs:Object.freeze(methodDefs),
+    methodBodyOffsets,
     memberRefs:Object.freeze(memberRefs),
     methodSpecs:Object.freeze(methodSpecs),
     standAloneSigs:Object.freeze(standAloneSigs),
+    typeDefs:Object.freeze(typeDefs),
+    typeRefs:Object.freeze(typeRefs),
+    typeSpecs:Object.freeze(typeSpecs),
+    moduleRefs:Object.freeze(moduleRefs),
+    assemblyRefs:Object.freeze(assemblyRefs),
+    fieldDefs:Object.freeze(fieldDefs),
     typeDefOrRefRowCounts:Object.freeze([
       rowCounts[TYPE_DEF_TABLE],
       rowCounts[TYPE_REF_TABLE],
       rowCounts[TYPE_SPEC_TABLE],
     ]),
+    tableRowCounts:Object.freeze([...rowCounts]),
     blobHeap:bytes.subarray(streams.blob.offset, streams.blob.offset + streams.blob.size),
     stringsHeap:bytes.subarray(streams.strings.offset, streams.strings.offset + streams.strings.size),
   });

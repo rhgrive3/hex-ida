@@ -52,6 +52,7 @@ const UINT8_ARRAY_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(
   'byteLength',
 )?.get;
 
+
 function isUint8ArrayView(value) {
   if (value instanceof Uint8Array) return true;
   if (!ArrayBuffer.isView(value)) return false;

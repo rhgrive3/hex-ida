@@ -21,11 +21,37 @@ function storeValue(app, key) {
   try { return typeof app?.store?.get === 'function' ? app.store.get(key) : app?.store?.[key]; }
   catch { return null; }
 }
+function architectureOf(app) {
+  const value = storeValue(app, 'architecture')
+    || app?.currentSlice?.()?.capability?.architecture
+    || 'unknown';
+  if (typeof value !== 'string') return 'unknown';
+  const architecture = value.trim().toLowerCase();
+  return architecture || 'unknown';
+}
 function abortError(signal, message = 'Analysis query aborted') {
   if (signal?.reason instanceof Error) return signal.reason;
   const error = new Error(message); error.name = 'AbortError'; return error;
 }
 function abortIfNeeded(signal) { if (signal?.aborted) throw abortError(signal); }
+
+async function settleMetadataWithinCancellation(promises, signal) {
+  const settled = Promise.allSettled(promises);
+  if (!signal || typeof signal.addEventListener !== 'function') return settled;
+  abortIfNeeded(signal);
+  let onAbort;
+  try {
+    return await Promise.race([
+      settled,
+      new Promise((_resolve, reject) => {
+        onAbort = () => reject(abortError(signal));
+        signal.addEventListener('abort', onAbort, { once:true });
+      }),
+    ]);
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  }
+}
 function waitForSearchRequest(request, signal) {
   const task = Promise.resolve(request);
   if (signal?.aborted) {
@@ -78,6 +104,10 @@ function recognitionSliceIndex(app) {
     throw new TypeError('demand-slice-index-invalid');
   }
   return value;
+}
+function demandArtifactIdentity(app) {
+  const binaryId = typeof app?.backend?.binaryId === 'string' ? app.backend.binaryId : '';
+  return `${binaryId}|slice:${recognitionSliceIndex(app)}`;
 }
 function addressOf(value) {
   // Same canonical address-domain contract as the query adapter: an address
@@ -244,7 +274,7 @@ function mergeShapeMaps(maps, reasons = []) {
   return out;
 }
 function recognitionInputKey(app) {
-  return [demandAnalysisEpoch(app), demandSymbolGeneration(app), demandKnowledgeRevision(app), objectId(app?.fields), objectId(app?.objcModel), objectId(app?.objcRuntime), objectId(app?.swiftModel), objectId(app?.swiftRuntime)].join(':');
+  return [demandAnalysisEpoch(app), demandArtifactIdentity(app), demandSymbolGeneration(app), demandKnowledgeRevision(app), objectId(app?.fields), objectId(app?.objcModel), objectId(app?.objcRuntime), objectId(app?.swiftModel), objectId(app?.swiftRuntime)].join(':');
 }
 
 
@@ -346,9 +376,10 @@ function installDemandRecognition(app) {
     abortIfNeeded(options.signal);
     const metadata = [];
     const sliceIndex = recognitionSliceIndex(app);
-    if (originalObjc && sliceIndex >= 0) metadata.push(app.ensureObjc(sliceIndex));
-    if (originalSwift) metadata.push(app.ensureSwift());
-    if (metadata.length) await Promise.allSettled(metadata);
+    const producerOptions = { signal: options.signal ?? null, priority: options.priority, budget: options.budget ?? null };
+    if (originalObjc && sliceIndex >= 0) metadata.push(app.ensureObjc(sliceIndex, producerOptions));
+    if (originalSwift) metadata.push(app.ensureSwift(producerOptions));
+    if (metadata.length) await settleMetadataWithinCancellation(metadata, options.signal);
     abortIfNeeded(options.signal);
     const key = recognitionInputKey(app);
     if (app.recognition && acceptedKey === key) return app.recognition;
@@ -389,19 +420,20 @@ function installMultiRegionShapes(app) {
     abortIfNeeded(signal);
     const epoch = demandAnalysisEpoch(app); const regions = executableRegions(app);
     if (!regions.length) return null;
-    const key = `${epoch}:${regions.map((r) => r.id).join('|')}`;
+    const artifact = demandArtifactIdentity(app);
+    const key = `${epoch}:${artifact}:${regions.map((r) => r.id).join('|')}`;
     if (app.shapes && combinedKey === key) return app.shapes;
-    if (app.shapesBusy && app.shapesBusyEpoch === epoch && !app.shapesBusy.cancelled) return waitForShared(app.shapesBusy, signal);
+    if (app.shapesBusy && app.shapesBusyEpoch === epoch && app.shapesBusy.demandKey === key && !app.shapesBusy.cancelled) return waitForShared(app.shapesBusy, signal);
     app.shapesBusyEpoch = epoch;
     const producerController = new AbortController();
     const entry = {
       request:{ cancel:() => { if (!producerController.signal.aborted) producerController.abort('shapes-no-consumers'); } },
-      promise:null, settled:false, cancelled:false, waiters:0,
+      promise:null, settled:false, cancelled:false, waiters:0, demandKey:key,
     };
     entry.promise = (async () => {
       const folded = []; const reasons = [];
       for (let index = 0; index < regions.length; index++) {
-        abortIfNeeded(producerController.signal); const region = regions[index]; const cacheKey = `${epoch}:${region.id}`; let value = regionCache.get(cacheKey);
+        abortIfNeeded(producerController.signal); const region = regions[index]; const cacheKey = `${epoch}:${artifact}:${region.id}`; let value = regionCache.get(cacheKey);
         if (!value) {
           const request = app.backend.valueShapes(region.id, (progress) => onProgress?.({ phase:'shapes', region:region.id, done:index + (progress?.all ? Math.min(1, progress.done / progress.all) : 0), all:regions.length }));
           const onAbort = () => request.cancel?.();
@@ -449,14 +481,29 @@ function installCancellableFunctionDiscovery(app) {
       }
       abortIfNeeded(options.signal);
       const epoch = demandAnalysisEpoch(app);
+      const artifact = demandArtifactIdentity(app);
       const symbols = app.symbols;
-      if (!symbols || symbols.functionStartsComplete === true || symbols.functionDiscovery?.complete === true) return symbols;
+      if (!symbols) return symbols;
       const targets = executableRegions(app);
       if (region?.exec === true && canonicalRegionId(region) != null && !targets.some((item) => item.id === region.id)) targets.push(region);
       const unique = dedupeRegions(targets);
       if (!unique.length) return symbols;
-      const key = `${epoch}:${unique.map((item) => item.id).join('|')}`;
-      if (symbols.functionDiscovery?.attempted === true && symbols.functionDiscovery?.regionSetKey === unique.map((item) => item.id).join('|')) return symbols;
+      const regionSetKey = unique.map((item) => item.id).join('|');
+      const discoveryKey = `${epoch}:${artifact}:${regionSetKey}`;
+      const key = discoveryKey;
+      // A completed symbol set is reusable only when it was produced for this
+      // exact binary/slice/region identity. Slice switches can keep the same
+      // epoch and region ids, so checking completion before this key would
+      // publish the previous slice's starts (#4243).
+      if ((symbols.functionStartsComplete === true || symbols.functionDiscovery?.complete === true)
+        && symbols.functionDiscovery?.discoveryKey === discoveryKey) return symbols;
+      if (symbols.functionStartsComplete === true || symbols.functionDiscovery?.complete === true) {
+        symbols.functionStartsComplete = false;
+        if (symbols.functionDiscovery) {
+          symbols.functionDiscovery = { ...symbols.functionDiscovery, complete:false, attempted:false };
+        }
+      }
+      if (symbols.functionDiscovery?.attempted === true && symbols.functionDiscovery?.discoveryKey === discoveryKey) return symbols;
       let entry = producers.get(key);
       if (entry?.cancelled) entry = null;
       if (!entry) {
@@ -484,7 +531,7 @@ function installCancellableFunctionDiscovery(app) {
           };
           for (let index = 0; index < unique.length; index++) {
             abortIfNeeded(producerController.signal);
-            if (epoch !== demandAnalysisEpoch(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
+            if (epoch !== demandAnalysisEpoch(app) || artifact !== demandArtifactIdentity(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
             const item = unique[index], size = BigInt(item.size);
             const share = remaining > 0 && remainingBytes > 0n
               ? Math.max(1, Math.min(remaining, Number((BigInt(remaining) * size + remainingBytes - 1n) / remainingBytes)))
@@ -500,7 +547,7 @@ function installCancellableFunctionDiscovery(app) {
             producerController.signal.addEventListener('abort', onAbort, { once:true });
             try {
               const result = await request;
-              if (epoch !== demandAnalysisEpoch(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
+              if (epoch !== demandAnalysisEpoch(app) || artifact !== demandArtifactIdentity(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
               if (result?.starts?.length) {
                 symbols.addFunctions(result.starts, { source:'heuristic', confidence:0.55, confirmed:false });
                 symbols.guessed = true;
@@ -515,11 +562,10 @@ function installCancellableFunctionDiscovery(app) {
             remainingBytes -= size;
           }
           abortIfNeeded(producerController.signal);
-          if (epoch !== demandAnalysisEpoch(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
+          if (epoch !== demandAnalysisEpoch(app) || artifact !== demandArtifactIdentity(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
           const complete = results.length === unique.length && results.every((item) => item.complete === true);
-          const regionSetKey = unique.map((item) => item.id).join('|');
           symbols.functionDiscovery = {
-            complete, attempted:true, regionSetKey, regions:results,
+            complete, attempted:true, regionSetKey, discoveryKey, regions:results,
             reasons:[...new Set(reasons)], capped:results.some((item) => item.capped),
           };
           symbols.functionStartsComplete = complete;
@@ -536,7 +582,7 @@ function installCancellableFunctionDiscovery(app) {
           pruneSettledCache(producers);
           return value;
         }).catch((error) => {
-          producers.delete(key);
+          if (producers.get(key) === entry) producers.delete(key);
           throw error;
         });
         producers.set(key, entry);
@@ -566,11 +612,16 @@ function installDemandQueryAPI(app, recognitionVersion) {
     const epoch = demandAnalysisEpoch(app);
     const limits = regionScanLimits(localCount);
     const profile = `${limits.callLimit}:${limits.refLimit}:${limits.kindLimit}`;
-    const key = `${epoch}:${region.id}:${profile}`;
+    const architecture = architectureOf(app);
+    const key = JSON.stringify([epoch, demandArtifactIdentity(app), region.id, architecture, profile]);
     let entry = regionScans.get(key);
     if (entry?.cancelled) entry = null;
     if (!entry) {
-      const request = app.backend.scanProgram(region.id, options.onProgress, { ...limits, analysisPriority:options.priority || 'interactive' });
+      const request = app.backend.scanProgram(region.id, options.onProgress, {
+        ...limits,
+        architecture,
+        analysisPriority:options.priority || 'interactive',
+      });
       entry = { request, promise:null, settled:false, waiters:0 };
       entry.promise = Promise.resolve(request)
         .then((scan) => {

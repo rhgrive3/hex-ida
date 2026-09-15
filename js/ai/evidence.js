@@ -312,6 +312,12 @@ export class EvidenceStore {
       title: String(input.title || input.kind || 'Tool evidence').slice(0, 300),
       sourceTool: String(input.sourceTool || 'unknown'),
     };
+    // A record's declared source identity is part of its provenance, and it is
+    // the only key a producer plan can name. Keeping it on the canonical record
+    // is what makes the raw-source -> canonical-record mapping explicit instead
+    // of guessed (#8864).
+    const sourceId = canonicalIdentityRef(input.sourceId);
+    if (sourceId) record.sourceId = sourceId;
     if (sourceBinding) record.sourceBinding = sourceBinding;
     if (sourceRef) record.sourceRef = sourceRef;
     if (typeof input.effectiveScope === 'string' && input.effectiveScope) record.effectiveScope = input.effectiveScope;
@@ -454,6 +460,46 @@ export class EvidenceStore {
       }
     }
     return uniqueById(out.filter(Boolean));
+  }
+
+  /**
+   * Canonical records bound to one planner result.
+   *
+   * `plan.evidence` names raw planner/source identities while canonical record
+   * IDs are generated, so the two domains may only be joined through the
+   * provenance a record actually carries: its own `id`, the `sourceId` it was
+   * ingested under, or the exact canonical set the turn bound when it ingested
+   * this plan. Matching every `sourceTool === 'deterministic-goal-planner'`
+   * record instead would re-bind an earlier turn's planner evidence to a later
+   * answer, and accepting `supported` records would present unverified ranking
+   * as confirmed evidence (#8864).
+   */
+  planEvidence(plan, { verifiedOnly = true } = {}) {
+    const canonicalIds = new Set();
+    const rawIds = new Set();
+    const collect = (target, values) => {
+      for (const value of Array.isArray(values) ? values : []) {
+        const id = canonicalIdentityRef(value);
+        if (id) target.add(id);
+      }
+    };
+    collect(canonicalIds, plan?.evidenceRecordIds);
+    collect(rawIds, plan?.evidence);
+    if (!canonicalIds.size && !rawIds.size) return [];
+    const out = [];
+    const seen = new Set();
+    for (const record of this.records.values()) {
+      const bound = canonicalIds.has(record.id)
+        || rawIds.has(record.id)
+        || (record.sourceTool === 'deterministic-goal-planner'
+          && typeof record.sourceId === 'string' && rawIds.has(record.sourceId));
+      if (!bound) continue;
+      if (verifiedOnly && record.status !== 'verified') continue;
+      if (seen.has(record.id)) continue;
+      seen.add(record.id);
+      out.push(immutableSnapshot(record));
+    }
+    return out;
   }
 
   _indexStatus(id, previousStatus, nextStatus) {

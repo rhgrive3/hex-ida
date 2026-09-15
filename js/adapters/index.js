@@ -16,7 +16,8 @@ const TRACE_CAPABILITY_EVENT_TYPES = Object.freeze({
   traceBranch: 'branch',
   traceMemoryWrite: 'memory-write',
 });
-const REMOTE_CALL_METHODS = new Set(['attach','launch','pause','resume','stepInto','stepOver','stepOut','removeBreakpoint','listBreakpoints','readRegisters','writeRegister','readMemory','writeMemory','compareAndWriteMemory','getThreads','getModules','getBacktrace','evaluate','trace','watchMemory']);
+const REMOTE_TRACE_MULTIPLEX_CAPABILITIES = Object.freeze(new Set(['traceFunction','traceCall','traceReturn','traceBranch','traceMemoryWrite','traceMemoryRead']));
+const REMOTE_CALL_METHODS = new Set(['attach','launch','pause','resume','stepInto','stepOver','stepOut','removeBreakpoint','listBreakpoints','readRegisters','writeRegister','readMemory','writeMemory','getThreads','getModules','getBacktrace','evaluate','trace','watchMemory']);
 
 // Listener isolation must cover async failures too: a listener returning a
 // promise that later rejects would otherwise leak an unhandledRejection
@@ -104,12 +105,17 @@ function cancelledRunResult(emulator) {
   };
 }
 function callsFromTrace(trace) {
-  const typedSites = new Set();
+  // The emulator records both a generic instruction event and a typed call
+  // event for each BL/BLR. Pair those representations by instruction site so
+  // resume() does not report one executed call twice, while preserving
+  // legacy-only and repeated same-site calls.
+  const typedBySite = new Map();
   for (const e of trace || []) {
-    if (e?.type === 'call') {
-      const addr = e.addr ?? e.address;
-      if (addr != null) typedSites.add(typeof addr === 'bigint' ? addr : BigInt(addr));
-    }
+    if (e?.type !== 'call') continue;
+    const site = e.addr ?? e.address;
+    if (site == null) continue;
+    const key = typeof site === 'bigint' ? site.toString() : String(site);
+    typedBySite.set(key, (typedBySite.get(key) || 0) + 1);
   }
   const out = [];
   for (const e of trace || []) {
@@ -118,12 +124,19 @@ function callsFromTrace(trace) {
       continue;
     }
     if (!/^(bl|blr)\b/i.test(e?.text || '')) continue;
-    const addr = e.addr ?? e.address;
-    const canonicalAddr = addr != null ? (typeof addr === 'bigint' ? addr : BigInt(addr)) : null;
-    if (canonicalAddr != null && typedSites.has(canonicalAddr)) continue;
+    const site = e.addr ?? e.address;
+    if (site != null) {
+      const key = typeof site === 'bigint' ? site.toString() : String(site);
+      const remaining = typedBySite.get(key) || 0;
+      if (remaining > 0) {
+        if (remaining === 1) typedBySite.delete(key);
+        else typedBySite.set(key, remaining - 1);
+        continue;
+      }
+    }
     const match = /^bl\s+#?(0x[0-9a-f]+|[0-9]+)/i.exec(e.text || '');
     let target = null; try { if (match) target = BigInt(match[1]); } catch { target = null; }
-    out.push({ type:'call', address:addr, target, indirect:/^blr\b/i.test(e.text || ''), text:e.text });
+    out.push({ type:'call', address:e.addr ?? e.address, target, indirect:/^blr\b/i.test(e.text || ''), text:e.text });
   }
   return out;
 }
@@ -282,7 +295,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const traceBuffer = new TraceRingBuffer(this.options.trace || {});
     const traceState = { suppressMemory:false, runMemoryEvents:null };
     const emu = sandbox.emulator;
-    emu.heap = heapBase;
+    emu.configureHeap({ base: heapBase, size: heapSize });
     let initializing = true;
     const rawLoad = emu.load.bind(emu), rawStore = emu.store.bind(emu);
     emu.load = async (addr,size) => {
@@ -320,13 +333,27 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       }
       throw error;
     }
+    const canonicalHeap = [];
     for (const item of spec.heap || []) {
       if (signal?.aborted) throw new DebugAdapterError('cancelled', 'local sandbox launch was cancelled during setup', { kind: 'cancelled' });
-      await emu.store(asAddress(item.address), initialMemorySize(item.size), initialMemoryValue(item.value));
+      const heapAddress = asAddress(item.address);
+      const heapSize = initialMemorySize(item.size);
+      const heapValue = BigInt.asUintN(heapSize * 8, initialMemoryValue(item.value));
+      await emu.store(heapAddress, heapSize, heapValue);
+      canonicalHeap.push({ address:heapAddress.toString(), size:heapSize, value:heapValue.toString() });
     }
+    const canonicalGlobals = [];
     for (const item of spec.globalValues || []) {
       if (signal?.aborted) throw new DebugAdapterError('cancelled', 'local sandbox launch was cancelled during setup', { kind: 'cancelled' });
-      await emu.store(asAddress(item.address), initialMemorySize(item.size), initialMemoryValue(item.value));
+      const globalAddress = asAddress(item.address);
+      const globalSize = initialMemorySize(item.size);
+      const globalValue = BigInt.asUintN(globalSize * 8, initialMemoryValue(item.value));
+      await emu.store(globalAddress, globalSize, globalValue);
+      canonicalGlobals.push({ address:globalAddress.toString(), size:globalSize, value:globalValue.toString() });
+    }
+    if (canonicalHeap.length || canonicalGlobals.length) {
+      sandbox.canonicalInput.heap = canonicalHeap;
+      sandbox.canonicalInput.globalValues = canonicalGlobals;
     }
     const initialRegisters = cloneRegisters(emu);
     initializing = false;
@@ -450,6 +477,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     this.activeRun = run;
     this.running = true;
     try {
+      if (sandbox.emulator.stopped === 'paused') sandbox.emulator.stopped = null;
       const before = cloneRegisters(sandbox.emulator); const raw = await sandbox.step();
       if (this.activeRun !== run || sandbox !== this.sandbox || run.epoch !== this.epoch) {
         throw new DebugAdapterError('stale-run', 'local sandbox step was invalidated by a newer launch or session change', { runEpoch:run.epoch, currentEpoch:this.epoch });
@@ -573,28 +601,6 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     } finally { traceState.suppressMemory = Math.max(0, Number(traceState.suppressMemory || 0) - 1); }
     return { written:data.length };
   }
-  async compareAndWriteMemory(address, expected, bytes, options = {}) {
-    this.require('writeMemory');
-    const start = asAddress(address);
-    const expData = Array.isArray(expected) || expected instanceof Uint8Array ? Uint8Array.from(expected) : null;
-    const writeData = Array.isArray(bytes) || bytes instanceof Uint8Array ? Uint8Array.from(bytes) : null;
-    if (!expData || !writeData || expData.length !== writeData.length) {
-      throw new DebugAdapterError('invalid-argument', 'compareAndWriteMemory requires expected and replacement byte arrays of equal length');
-    }
-    const sandbox = this.ensureSandbox();
-    const epoch = this.epoch;
-    if (options?.expectedEpoch != null && options.expectedEpoch !== epoch) {
-      throw new DebugAdapterError('stale-request', 'session generation changed before memory write');
-    }
-    const current = await this.readMemory(start, expData.length);
-    if (!current || current.length !== expData.length || !Array.from(current).every((v, i) => v === expData[i])) {
-      throw new DebugAdapterError('stale-target', 'Runtime memory target is stale: expected-before does not match.', { expected: Array.from(expData), actual: Array.from(current || []) });
-    }
-    if (options?.expectedEpoch != null && options.expectedEpoch !== this.epoch) {
-      throw new DebugAdapterError('stale-request', 'session generation changed during memory write');
-    }
-    return this.writeMemory(start, writeData);
-  }
   async getThreads() { return [{ id:'sandbox:0', name:'sandbox', state:this.running ? 'running':'stopped' }]; }
   async getModules() { return [{ id:'sandbox', name:'local function sandbox', base:null, synthetic:true }]; }
   async getBacktrace() { return (this.ensureSandbox().emulator.callStack || []).slice(-256).reverse().map((f,i) => ({ index:i, address:f.addr, returnAddress:f.ret })); }
@@ -688,7 +694,9 @@ export class RemoteDebugAdapter extends DebugAdapter {
     });
   }
   async connect(options = {}) {
-    const hello = await this.protocol.request('connect', { client:'hex', requestedVersion:1, options }, { epoch:this.epoch });
+    const epoch = this.epoch;
+    const hello = await this.protocol.request('connect', { client:'hex', requestedVersion:1, options }, { epoch });
+    if (epoch !== this.epoch) throw new DebugAdapterError('stale-request', 'connect was invalidated before it completed');
     const advertised = normalizeCapabilities(hello && hello.capabilities || {});
     const negotiated = {};
     for (const [key, allowed] of Object.entries(this.allowedCapabilities)) negotiated[key] = key === 'connect' || key === 'disconnect' ? !!allowed : !!allowed && !!advertised[key];
@@ -699,7 +707,7 @@ export class RemoteDebugAdapter extends DebugAdapter {
     if (wasConnected) { try { await this.protocol.request('disconnect',{}, { epoch:this.epoch, timeoutMs:1000 }); } catch {} }
     this.connected = false;
     this.eventListeners.clear();
-    if (wasConnected) this.nextEpoch();
+    this.nextEpoch();
     return { disconnected:true };
   }
   setEpoch(epoch) {
@@ -740,25 +748,11 @@ export class RemoteDebugAdapter extends DebugAdapter {
   async writeMemory(address,bytes,requestOptions={}){this.require('writeMemory'); const LIMIT=64*1024; let data; if(bytes instanceof Uint8Array)data=bytes; else { const it=bytes?.[Symbol.iterator]; if(typeof it==='function'&&typeof bytes!=='string'){ // bounded consumption (#5750): never enumerate past the limit
     data=new Uint8Array(LIMIT+1); let n=0; for(const b of bytes){ if(n>=LIMIT) throw new DebugAdapterError('too-large','remote memory write exceeds 64 KiB'); if(!Number.isInteger(b)||b<0||b>255)throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value'); data[n++]=b; } data=data.subarray(0,n); } else { data=Array.from(bytes||[]); for(const b of data)if(!Number.isInteger(b)||b<0||b>255)throw new DebugAdapterError('invalid-byte','memory write contains a non-byte value'); } }
     if(data.length>LIMIT) throw new DebugAdapterError('too-large','remote memory write exceeds 64 KiB'); const result=await this.call('writeMemory',{address:String(asAddress(address)),bytes:data},{ signal:requestOptions?.signal }); if(result&&result.written!=null){const written=result.written;if(typeof written!=='number'||!Number.isSafeInteger(written)||written<0)throw new DebugAdapterError('malformed-remote','remote writeMemory returned a malformed written count');if(written!==data.length)throw new DebugAdapterError('short-write',`remote memory write wrote ${written} of ${data.length} bytes`);} return result||{written:data.length}}
-  async compareAndWriteMemory(address, expected, bytes, requestOptions = {}) {
-    this.require('writeMemory');
-    const start = asAddress(address);
-    const expData = Array.isArray(expected) || expected instanceof Uint8Array ? Uint8Array.from(expected) : null;
-    const writeData = Array.isArray(bytes) || bytes instanceof Uint8Array ? Uint8Array.from(bytes) : null;
-    if (!expData || !writeData || expData.length !== writeData.length) {
-      throw new DebugAdapterError('invalid-argument', 'compareAndWriteMemory requires expected and replacement byte arrays of equal length');
-    }
-    const current = await this.readMemory(start, expData.length);
-    if (!current || current.length !== expData.length || !Array.from(current).every((v, i) => v === expData[i])) {
-      throw new DebugAdapterError('stale-target', 'Runtime memory target is stale: expected-before does not match.', { expected: Array.from(expData), actual: Array.from(current || []) });
-    }
-    return this.writeMemory(start, writeData, requestOptions);
-  }
   async getThreads(){return remoteArray(await this.call('getThreads'),'threads',REMOTE_ARRAY_LIMITS.threads,'threads')}
   async getModules(){return remoteArray(await this.call('getModules'),'modules',REMOTE_ARRAY_LIMITS.modules,'modules')}
   async getBacktrace(threadId){return remoteArray(await this.call('getBacktrace',{threadId}),'frames',REMOTE_ARRAY_LIMITS.backtrace,'backtrace')}
   async evaluate(expression,context){const text=evaluateExpressionText(expression); if(text.length>4096)throw new DebugAdapterError('too-large','remote evaluate expression exceeds 4096 characters'); return this.call('evaluate',{expression:text,context})}
-  async trace(options={}){const {signal,...params}=options||{};return remoteTrace(await this.call('trace',params,{signal}))}
+  async trace(options={}){const {signal,...params}=options||{};const capability=params&&REMOTE_TRACE_MULTIPLEX_CAPABILITIES.has(params.capability)?params.capability:'traceFunction';if(!REMOTE_CALL_METHODS.has('trace'))throw new DebugAdapterError('unsupported-method','remote debug method is not exposed: trace');this.requireConnected();this.require(capability);return remoteTrace(await this.protocol.request('trace',params,{ signal,epoch:this.epoch }))}
   watchMemory(spec){return this.call('watchMemory',normalizeBreakpoint({...spec,kind:'memory'}))}
   getObjCRuntimeInfo(request={}){this.requireConnected(); this.require('objcRuntime'); return this.protocol.request('objcRuntime',request,{epoch:this.epoch})}
   getSwiftRuntimeInfo(request={}){this.requireConnected(); this.require('swiftRuntime'); return this.protocol.request('swiftRuntime',request,{epoch:this.epoch})}

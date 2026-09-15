@@ -110,6 +110,10 @@ export class InvestigationSessionStore {
     // A queued delete ends this identity generation. Later creates may reserve
     // a new generation, but still wait for this durable deletion in saveQueues.
     this.creating.delete(key);
+    if (typeof this.persistence?.delete !== 'function' && !this.saveQueues.has(key)) {
+      this.sessions.delete(key);
+      return true;
+    }
     return this.enqueueSessionWrite(key, async () => {
       // Delete follows earlier saves in the same queue. Preserve the visible
       // record until durable deletion succeeds, including a failed delete
@@ -193,19 +197,22 @@ export class InvestigationSessionStore {
   async update(id, patch = {}) {
     if (!isValidSessionId(id)) return null;
     const key = id;
-    return this.enqueueSessionWrite(key, () => this.applyUpdate(key, patch));
+    // Own the submitted values before yielding to earlier writes in the queue.
+    const ownedPatch = cloneOwned(patch);
+    return this.enqueueSessionWrite(key, () => this.applyUpdate(key, ownedPatch));
   }
 
   async updateMemory(id, patch = {}) {
     if (!isValidSessionId(id)) return null;
     const key = id;
+    const ownedPatch = cloneOwned(patch);
     return this.enqueueSessionWrite(key, async () => {
       const current = await this.get(key);
       if (!current) return null;
       const next = { ...current.investigationMemory };
       for (const memoryKey of MEMORY_KEYS) {
-        if (!Object.prototype.hasOwnProperty.call(patch, memoryKey)) continue;
-        next[memoryKey] = ['goal','anchor'].includes(memoryKey) ? patch[memoryKey] : mergeUnique(next[memoryKey], patch[memoryKey]);
+        if (!Object.prototype.hasOwnProperty.call(ownedPatch, memoryKey)) continue;
+        next[memoryKey] = ['goal','anchor'].includes(memoryKey) ? ownedPatch[memoryKey] : mergeUnique(next[memoryKey], ownedPatch[memoryKey]);
       }
       return this.applyUpdate(key, { investigationMemory: next });
     });
@@ -214,6 +221,11 @@ export class InvestigationSessionStore {
   async appendMessage(id, message) {
     if (!isValidSessionId(id)) return null;
     const key = id;
+    const ownedMessage = {
+      role: message.role === 'assistant' ? 'assistant' : 'user',
+      content: String(message.content || '').slice(0, 20000),
+      timestamp: cloneOwned(message.timestamp || new Date().toISOString()),
+    };
     return this.enqueueSessionWrite(key, async () => {
       const current = await this.get(key);
       if (!current) return null;
@@ -222,11 +234,7 @@ export class InvestigationSessionStore {
       // canonical in-memory state (#5434).
       const messages = [
         ...(Array.isArray(current.messages) ? current.messages : []),
-        {
-          role: message.role === 'assistant' ? 'assistant' : 'user',
-          content: String(message.content || '').slice(0, 20000),
-          timestamp: message.timestamp || new Date().toISOString(),
-        },
+        ownedMessage,
       ].slice(-100);
       return this.applyUpdate(key, { messages });
     });

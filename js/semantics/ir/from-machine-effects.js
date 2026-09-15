@@ -1059,11 +1059,31 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       const rawTargets = control.targets?.length ? [...control.targets] : control.target == null ? [] : [control.target];
       if (control.fallthrough != null) rawTargets.push(control.fallthrough);
       else rawTargets.push({ kind: 'fallthrough-continuation', instructionId: bundle.instructionId });
-      if (!conditionId || rawTargets.length < 2) {
+      if (!conditionId || rawTargets.length !== 2) {
         emitUnknownEffects(effect, 'conditional-branch-not-fully-representable', ['control'], { control });
         return;
       }
-      const targets = unique(rawTargets.map((target, index) => ensureControlTargetBlock(target, index === rawTargets.length - 1 ? 'fallthrough' : `branch-${index}`)));
+      const rawTargetsAreSame = stableStringify(rawTargets[0]) === stableStringify(rawTargets[1]);
+      const targets = rawTargetsAreSame
+        ? [ensureControlTargetBlock(rawTargets[0], 'branch-0')]
+        : unique(rawTargets.map((target, index) => ensureControlTargetBlock(target, index === rawTargets.length - 1 ? 'fallthrough' : `branch-${index}`)));
+      if (targets.length === 1) {
+        const nodeId = nodeIdFor(effect, 'conditional-branch-same-successor-control');
+        addNode({
+          id: nodeId,
+          kind: 'branch',
+          blockId,
+          targets,
+          attributes: machineAttributes(effect, { machineControlEffect: control }),
+          sourceEffectIds: [effect.sourceEffectId],
+          origin: effectOrigin(effect, 'conditional-branch-same-successor-normalized-to-branch', [nodeId]),
+        });
+        return;
+      }
+      if (targets.length !== 2) {
+        emitUnknownEffects(effect, 'conditional-branch-target-cardinality', ['control'], { control, targets });
+        return;
+      }
       const nodeId = nodeIdFor(effect, 'conditional-branch-control');
       addNode({
         id: nodeId,
@@ -1085,6 +1105,9 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       }
       const nodeId = nodeIdFor(effect, 'call-control');
       const categories = ['state', 'memory', 'control'];
+      // The function issue below explicitly identifies this call node. Sharing
+      // a reason alone cannot locate an otherwise unrepresented state effect.
+      const reason = 'call-context-effects-not-enriched';
       const origin = effectOrigin(effect, 'abi-neutral-call-projection', [nodeId]);
       addNode({
         id: nodeId,
@@ -1107,13 +1130,13 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
           summarySource: 'machine-effects-abi-neutral-call',
           completeness: 'unknown',
           unknownEffects: {
-            reason: 'ABI and callee effects are outside MachineEffects-to-SemanticIR lowering',
+            reason,
             categories,
           },
         },
         completeness: 'partial',
         unknown: {
-          reason: 'ABI and callee effects are outside MachineEffects-to-SemanticIR lowering',
+          reason,
           categories,
           knownParts: { machineControlEffect: control },
         },
@@ -1121,7 +1144,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
         sourceEffectIds: [effect.sourceEffectId],
         origin,
       });
-      addIssue('call-context-effects-not-enriched', categories, { control });
+      addIssue(reason, categories, { nodeId, control });
       return;
     }
     if (control.kind === 'return') {

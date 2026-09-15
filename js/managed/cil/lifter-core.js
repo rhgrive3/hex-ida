@@ -1,7 +1,11 @@
 import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedExceptionRegionId, createManagedMethodId, createVMOperationId } from '../shared/identity.js';
 import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
-import { createCilLocalTypeResolver } from './call-signatures.js';
+import { createCilFieldSignatureResolver, createCilLocalTypeResolver } from './call-signatures.js';
+import { cilTokenText } from './metadata-layout.js';
+import { cilImageLookups } from './image-lookup.js';
+import { cilStackValueWidth } from './stack-width.js';
+import { decodeCilInstructionBoundary } from './instruction-boundary.js';
 
 function fail(code) { throw new TypeError(code); }
 
@@ -13,6 +17,69 @@ function slotBitsForType(slotType) {
   if (slotType.stackType === 'int32') return 32;
   if (slotType.stackType === 'int64') return 64;
   return null;
+}
+
+// ECMA-335 §III.3: polymorphic integer opcodes take their operand and result
+// width from the evaluation stack, not from the opcode. Only a run of
+// stack pushes with no intervening pop, call, or control transfer proves the
+// shape of the stack top, so width claims are restricted to that run; anything
+// else stays unresolved instead of laundering into a fabricated 32-bit exact
+// effect (#4043).
+function operandWidths(run, count) {
+  if (run.length < count) return null;
+  const top = run.slice(run.length - count);
+  return top.every((bits) => bits != null) ? top : null;
+}
+
+// ECMA-335 §III.3:1.5: plain `ceq`/`cgt`/`clt` compare the values currently on
+// the stack, and `cgt`/`clt` are SIGNED unless the instruction is spelled `.un`.
+// A managed reference (`ldnull`, `newobj`, a pointer field) and a floating value
+// have different ordering semantics, so integral operand authority may only come
+// from a push that states it: the int32/int64 evaluation-stack categories, or an
+// integer literal. Anything else stays unresolved instead of minting a signed
+// comparison the image never proved (#8785).
+function cilStackValueIsIntegral(value) {
+  if (cilStackValueWidth(value) == null) return false;
+  if (value.isNull === true || value.stringToken != null || value.stringRef != null) return false;
+  if (value.pointee != null || value.typeToken != null || value.valueType != null || value.referenceKind != null) return false;
+  if (value.floating === true || value.type?.kind === 'float') return false;
+  if (value.stackType != null) return value.stackType === 'int32' || value.stackType === 'int64';
+  return value.constant != null && Number.isSafeInteger(Number(value.constant));
+}
+
+// Both the width and the integral category of the stack top must be proven for
+// the same run of pushes, so a compare cannot borrow an integer shape from an
+// unrelated reference push of the same size.
+function integerOperandWidths(widthRun, integerRun, count) {
+  if (widthRun.length < count || integerRun.length < count) return null;
+  const widths = widthRun.slice(widthRun.length - count);
+  const integers = integerRun.slice(integerRun.length - count);
+  return widths.every((bits, i) => bits != null && integers[i] === true) ? widths : null;
+}
+
+// Field load/store value shape (#3971): the FieldSig decides the
+// evaluation-stack value. int32/int64 widths come from the canonical type
+// grammar; the float family pins r4/r8; reference and native-size values stay
+// unstated until the image's pointer-width authority (#7775) attaches them —
+// a resolved field never borrows a fabricated 32-bit integer identity.
+const FLOAT_STACK_BITS = Object.freeze({ r4:32, r8:64 });
+function fieldStackValue(fieldType) {
+  const value = { ...fieldType };
+  if (value.bits == null && value.stackType === 'float') {
+    const bits = FLOAT_STACK_BITS[value.primitive];
+    if (bits != null) value.bits = bits;
+  }
+  return value;
+}
+
+function fieldEffectKeys(resolution) {
+  if (!resolution.complete) return { fieldResolved:false };
+  return {
+    fieldName:resolution.fieldName,
+    ...(resolution.declaringType ? { declaringType:resolution.declaringType } : {}),
+    fieldType:resolution.fieldType,
+    fieldProvenance:resolution.provenance,
+  };
 }
 
 function typedLocationAccess(kind, index, slotType, unknownEffects) {
@@ -67,20 +134,17 @@ function resolveCilStaticFieldInitialization(cilImage, token, currentMethod) {
   if (table !== CIL_FIELD_DEF_TABLE) {
     return { resolved:false, reason:'cil-static-field-token-unresolved' };
   }
-  if (!Array.isArray(cilImage.methods)) {
+  // Row identity lookups are indexed once per parsed image instead of being
+  // rescanned per method instruction (#8791).
+  const lookups = cilImageLookups(cilImage);
+  if (!lookups.hasMethodRows) {
     return { resolved:false, reason:'cil-method-definitions-unavailable' };
   }
-  const field = (cilImage.fields ?? []).find(
-    (row) => row?.token === `0x${token.toString(16).padStart(8, '0')}`,
-  );
+  const field = lookups.fieldByToken.get(`0x${token.toString(16).padStart(8, '0')}`);
   if (!field) return { resolved:false, reason:'cil-static-field-row-missing' };
-  const ownerType = (cilImage.types ?? []).find(
-    (row) => row?.token === field.declaringTypeToken,
-  );
+  const ownerType = lookups.typeByToken.get(field.declaringTypeToken);
   if (!ownerType) return { resolved:false, reason:'cil-static-field-owner-type-missing' };
-  const initializers = cilImage.methods.filter(
-    (row) => row?.declaringTypeToken === ownerType.token && row?.name === '.cctor',
-  );
+  const initializers = ownerType.token == null ? [] : lookups.initializersByOwner.get(ownerType.token) ?? [];
   if (initializers.length > 1) {
     return { resolved:false, reason:'cil-type-initializer-ambiguous' };
   }
@@ -101,16 +165,11 @@ function resolveCilStaticFieldInitialization(cilImage, token, currentMethod) {
   };
 }
 
-function cilTokenText(token) {
-  const numeric = typeof token === 'number' ? token >>> 0 : Number.parseInt(String(token), 16);
-  return Number.isSafeInteger(numeric) ? `0x${(numeric >>> 0).toString(16).padStart(8, '0')}` : null;
-}
-
 function resolveCilCalleeIdentity(cilImage, token) {
   const tokenText = cilTokenText(token);
   if (!tokenText) return null;
-  const rows = Array.isArray(cilImage.methods) ? cilImage.methods : [];
-  if (!rows.some((row) => cilTokenText(row?.token) === tokenText)) return null;
+  const lookups = cilImageLookups(cilImage);
+  if (!lookups.hasMethodRows || !lookups.methodTokens.has(tokenText)) return null;
   return { tokenText, methodId: createManagedMethodId(cilImage.moduleId, tokenText) };
 }
 
@@ -131,9 +190,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
   const methodId = createManagedMethodId(cilImage.moduleId, methodTokenText(bodyIndex, methodAuthority));
   // Enclosing MethodDef identity for initializer self-access discharge (#8048).
   const currentMethodToken = methodTokenText(bodyIndex, methodAuthority);
-  const currentMethod = (cilImage.methods ?? []).find(
-    (row) => row?.token === currentMethodToken,
-  ) ?? null;
+  const currentMethod = cilImageLookups(cilImage).methodByToken.get(currentMethodToken) ?? null;
   const returnSignature = methodAuthority?.complete ? methodAuthority?.signature : null;
   const returnStackSlots = returnSignature ? (returnSignature.returnValue === null ? 0 : 1) : null;
   const bytecode = methodBody.bytecode;
@@ -153,12 +210,16 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
   let pc = 0;
   let opSeq = 0;
   let currentStackHeight = 0;
+  let pushWidthRun = [];
+  let pushIntegerRun = [];
   const bundles = [];
+  let stoppedOnUnsupported = false;
 
   // Slot-typing authorities (#5353): arguments come from the enclosing
   // MethodDef signature (resolved by the caller into methodAuthority), locals
   // from the fat header's LocalVarSigTok → StandAloneSig chain.
   const resolveLocal = createCilLocalTypeResolver(cilImage);
+  const resolveField = createCilFieldSignatureResolver(cilImage);
   const localSlots = resolveLocal(methodBody);
   const localSlotType = (index) => {
     if (!localSlots.complete) {
@@ -205,6 +266,15 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
         : {}),
   }));
 
+  // Handler/filter entries are reached by exception dispatch, never by the
+  // linear walk, so the stack shape carried into them is unproven (#4043).
+  const dispatchedEntryOffsets = new Set();
+  for (const region of exceptionRegions) {
+    for (const offset of [region.handlerOffset, region.filterOffset]) {
+      if (Number.isSafeInteger(offset)) dispatchedEntryOffsets.add(offset);
+    }
+  }
+
   while (pc < bytecode.length) {
     const opOffset = pc;
     let opcode = bytecode[pc++];
@@ -230,6 +300,8 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
     let producedValues = [];
     let consumedValues = [];
     let unknownEffects = [];
+    let compare = null;
+    let stackEffectUnmodeled = false;
 
     if (!isPrefixFE) {
       switch (opcode) {
@@ -531,8 +603,22 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
               0x5f: 'and', 0x60: 'or', 0x61: 'xor', 0x62: 'shl', 0x63: 'shr',
             };
             mnemonic = names[opcode] || 'binop';
-            consumedValues.push({ id: 'rhs', bits: 32 }, { id: 'lhs', bits: 32 });
-            producedValues.push({ bits: 32 });
+            const widths = operandWidths(pushWidthRun, 2);
+            const lhsBits = widths ? widths[0] : null;
+            const rhsBits = widths ? widths[1] : null;
+            const isShift = opcode === 0x62 || opcode === 0x63;
+            const resultBits = widths
+              ? (isShift ? (rhsBits === 32 ? lhsBits : null) : (lhsBits === rhsBits ? lhsBits : null))
+              : null;
+            if (resultBits == null) {
+              consumedValues.push({ id: 'rhs' }, { id: 'lhs' });
+              producedValues.push({});
+              completeness = 'partial';
+              unknownEffects.push({ category: 'stack', reason: 'cil-arithmetic-operand-width-unresolved' });
+            } else {
+              consumedValues.push({ id: 'rhs', bits: rhsBits }, { id: 'lhs', bits: lhsBits });
+              producedValues.push({ bits: resultBits });
+            }
             currentStackHeight--;
             // ECMA-335 Partition III: integral `div` throws
             // System.DivideByZeroException (divisor == 0) and
@@ -552,9 +638,19 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
 
         // unops: neg (0x65), not (0x66)
         case 0x65: case 0x66:
-          mnemonic = opcode === 0x65 ? 'neg' : 'not';
-          consumedValues.push({ id: 'val', bits: 32 });
-          producedValues.push({ bits: 32 });
+          {
+            mnemonic = opcode === 0x65 ? 'neg' : 'not';
+            const widths = operandWidths(pushWidthRun, 1);
+            if (widths == null) {
+              consumedValues.push({ id: 'val' });
+              producedValues.push({});
+              completeness = 'partial';
+              unknownEffects.push({ category: 'stack', reason: 'cil-arithmetic-operand-width-unresolved' });
+            } else {
+              consumedValues.push({ id: 'val', bits: widths[0] });
+              producedValues.push({ bits: widths[0] });
+            }
+          }
           break;
 
         case 0x72: // ldstr
@@ -599,18 +695,29 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
             pc += 4;
             const isWrite = opcode === 0x7d;
             mnemonic = isWrite ? 'stfld' : 'ldfld';
+            // Field value identity comes from the resolved FieldSig, never a
+            // fabricated 32-bit claim; unresolved tokens stay inexact (#3971).
+            const field = resolveField(token);
             if (isWrite) {
-              consumedValues.push({ id: 'val' }, { id: 'obj' });
+              consumedValues.push({
+                id:'val',
+                ...(field.complete ? fieldStackValue(field.fieldType) : {}),
+              }, { id: 'obj' });
               currentStackHeight -= 2;
             } else {
               consumedValues.push({ id: 'obj' });
-              producedValues.push({ bits: 32 });
+              producedValues.push(field.complete ? fieldStackValue(field.fieldType) : {});
             }
             memoryEffects.push({
               space: 'field',
               token,
               isWrite,
+              ...fieldEffectKeys(field),
             });
+            if (!field.complete) {
+              completeness = 'partial';
+              unknownEffects.push({ category: 'types', reason: field.reason });
+            }
             possibleExceptions.push({ kind: 'null-reference', condition: 'obj==null' });
           }
           break;
@@ -623,11 +730,17 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
             pc += 4;
             const isWrite = opcode === 0x80;
             mnemonic = isWrite ? 'stsfld' : 'ldsfld';
+            // Static field values are typed by the resolved FieldSig too; an
+            // unresolved token can never publish an exact load/store (#3971).
+            const field = resolveField(token);
             if (isWrite) {
-              consumedValues.push({ id: 'val' });
+              consumedValues.push({
+                id:'val',
+                ...(field.complete ? fieldStackValue(field.fieldType) : {}),
+              });
               currentStackHeight--;
             } else {
-              producedValues.push({ bits: 32 });
+              producedValues.push(field.complete ? fieldStackValue(field.fieldType) : {});
               currentStackHeight++;
             }
             // Type-initializer authority rides on the static-field effect
@@ -655,7 +768,12 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
               token,
               isWrite,
               typeInitialization,
+              ...fieldEffectKeys(field),
             });
+            if (!field.complete) {
+              completeness = 'partial';
+              unknownEffects.push({ category: 'types', reason: field.reason });
+            }
             if (!initialization.resolved) {
               completeness = 'partial';
               unknownEffects.push({ category: 'calls', reason: initialization.reason });
@@ -693,11 +811,18 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
           }
           break;
 
-        default:
+        default: {
+          const boundary = decodeCilInstructionBoundary(bytecode, opOffset);
+          pc = boundary.end;
           mnemonic = `cil_op_0x${opcode.toString(16)}`;
           completeness = 'partial';
+          stackEffectUnmodeled = true;
           unknownEffects.push({ category: 'other', reason: `unsupported-cil-opcode-0x${opcode.toString(16)}` });
+          if (!boundary.complete) unknownEffects.push({ category:'other', reason:'unsupported-instruction-boundary-unresolved' });
+          unknownEffects.push({ category:'other', reason:'semantic-lifting-stopped-after-unsupported-instruction' });
+          stoppedOnUnsupported = true;
           break;
+        }
       }
     } else {
       // 0xFE prefix opcodes
@@ -707,8 +832,28 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
         case 0x02: // cgt
         case 0x04: // clt
           mnemonic = subOp === 0x01 ? 'ceq' : subOp === 0x02 ? 'cgt' : 'clt';
+          {
+            // The comparison predicate and its signedness are only liftable when
+            // the stack top proves two integral operands of one width; without
+            // that authority the bundle fails closed to partial instead of
+            // publishing a complete compare that carries no canonical operator
+            // (#8785). `.un` and float/unordered spellings are not decoded here,
+            // so no unsigned authority is ever claimed from these mnemonics.
+            const widths = integerOperandWidths(pushWidthRun, pushIntegerRun, 2);
+            const operandBits = widths != null && widths[0] === widths[1] ? widths[0] : null;
+            if (operandBits != null) {
+              compare = subOp === 0x01
+                ? { predicate: 'eq', operandBits, arity: 2 }
+                : { predicate: subOp === 0x02 ? 'gt' : 'lt', signedness: 'signed', operandBits, arity: 2 };
+            } else {
+              completeness = 'partial';
+              unknownEffects.push({ category: 'types', reason: 'cil-compare-operand-authority-unresolved' });
+            }
+          }
           consumedValues.push({ id: 'rhs', bits: 32 }, { id: 'lhs', bits: 32 });
-          producedValues.push({ bits: 32 });
+          // III.1.5: the result is an int32 0/1 flag, which is itself integral
+          // authority for a chained comparison.
+          producedValues.push({ bits: 32, stackType: 'int32' });
           currentStackHeight--;
           break;
 
@@ -774,18 +919,71 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
           controlEffects.push({ kind: 'rethrow' });
           break;
 
-        case 0x16: // volatile.
-        case 0x14: // tail.
-        case 0x12: // unaligned.
-        case 0x1e: // readonly.
-          mnemonic = `prefix_${subOp.toString(16)}`;
+        case 0x12: // unaligned. <alignment:u1>
+          {
+            need(1);
+            const alignment = bytecode[pc++];
+            mnemonic = 'unaligned.';
+            completeness = 'partial';
+            if (alignment !== 1 && alignment !== 2 && alignment !== 4) {
+              unknownEffects.push({ category: 'memory', reason: `cil-unaligned-prefix-alignment-${alignment}` });
+            } else {
+              unknownEffects.push({ category: 'memory', reason: 'cil-unaligned-prefix-unattached' });
+            }
+          }
           break;
 
-        default:
+        case 0x13: // volatile.
+          mnemonic = 'volatile.';
+          completeness = 'partial';
+          unknownEffects.push({ category: 'memory', reason: 'cil-volatile-prefix-unattached' });
+          break;
+
+        case 0x14: // tail.
+          mnemonic = 'tail.';
+          completeness = 'partial';
+          unknownEffects.push({ category: 'control', reason: 'cil-tail-prefix-unattached' });
+          break;
+
+        case 0x16: // constrained. <token:u4>
+          need(4);
+          pc += 4;
+          mnemonic = 'constrained.';
+          completeness = 'partial';
+          unknownEffects.push({ category: 'types', reason: 'cil-constrained-prefix-unattached' });
+          break;
+
+        case 0x1e: // readonly.
+          mnemonic = 'readonly.';
+          completeness = 'partial';
+          unknownEffects.push({ category: 'memory', reason: 'cil-readonly-prefix-unattached' });
+          break;
+
+        default: {
+          const boundary = decodeCilInstructionBoundary(bytecode, opOffset);
+          pc = boundary.end;
           mnemonic = `cil_fe_0x${subOp.toString(16)}`;
           completeness = 'partial';
+          stackEffectUnmodeled = true;
           unknownEffects.push({ category: 'other', reason: `unsupported-cil-fe-opcode-0x${subOp.toString(16)}` });
+          if (!boundary.complete) unknownEffects.push({ category:'other', reason:'unsupported-instruction-boundary-unresolved' });
+          unknownEffects.push({ category:'other', reason:'semantic-lifting-stopped-after-unsupported-instruction' });
+          stoppedOnUnsupported = true;
           break;
+        }
+      }
+    }
+
+    if (stackEffectUnmodeled || callEffects.length > 0 || controlEffects.length > 0
+      || consumedValues.length > pushWidthRun.length) {
+      pushWidthRun = [];
+      pushIntegerRun = [];
+    } else {
+      pushWidthRun.length -= consumedValues.length;
+      pushIntegerRun.length -= consumedValues.length;
+      for (const value of producedValues) {
+        pushWidthRun.push(cilStackValueWidth(value));
+        pushIntegerRun.push(cilStackValueIsIntegral(value));
       }
     }
 
@@ -816,7 +1014,9 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
       origin,
       completeness,
       unknownEffects,
+      compare,
     }, options));
+    if (stoppedOnUnsupported) break;
   }
 
   return createVMEffectFunction({

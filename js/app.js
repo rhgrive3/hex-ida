@@ -161,18 +161,23 @@ export async function ensureRecognitionState(app, options = {}) {
   const knowledgeRev = Number(app.knowledge?.revision ?? 0);
   const knowledgeIsCurrent = () => Number(app.knowledge?.revision ?? 0) === knowledgeRev;
   if (app.recognition && app.recognition.gen === sym.gen && app.recognitionKnowledgeRev === knowledgeRev) return app.recognition;
-  if (app.recognitionBusy && app.recognitionBusyKnowledgeRev === knowledgeRev) return app.recognitionBusy;
+  const busy = app.recognitionBusy;
+  if (busy && busy.controller && app.recognitionBusyKnowledgeRev === knowledgeRev && !busy.controller.signal.aborted) {
+    return waitForAppProducer(busy, options.signal ?? null);
+  }
   const epoch = app.backend.gen;
   const max = Math.min(500000, Math.max(1000, coverageBudgetNumber(options.maxFunctions, 350000)));
   const knowledgeLimit = Math.min(2048, Math.max(0, coverageBudgetNumber(options.knowledgeLimit, 512)));
+  const producerController = new AbortController();
+  const producerState = { controller: producerController, waiters: 0, settled: false, promise: null };
   const pending = (async () => {
     try { await app.ensureSwift(); } catch { /* Swift metadata is optional */ }
-    if (epoch !== app.backend.gen || sym !== app.symbols || !knowledgeIsCurrent()) return null;
+    if (producerController.signal.aborted || epoch !== app.backend.gen || sym !== app.symbols || !knowledgeIsCurrent()) return null;
     // Symbol metadata can change while the async state build yields. Pin the
     // generation after optional metadata producers finish and reject any
     // snapshot that crosses a symbol-index or knowledge mutation.
     const symbolGen = sym.gen;
-    const isCurrent = () => epoch === app.backend.gen && sym === app.symbols && sym.gen === symbolGen && knowledgeIsCurrent();
+    const isCurrent = () => !producerController.signal.aborted && epoch === app.backend.gen && sym === app.symbols && sym.gen === symbolGen && knowledgeIsCurrent();
     const state = await buildRecognitionState({
       sym, maxFunctions:max, knowledgeLimit, fields:app.fields, knowledge:app.knowledge,
       binaryHash:app.backend.contentHash || null,
@@ -183,15 +188,16 @@ export async function ensureRecognitionState(app, options = {}) {
     app.recognitionKnowledgeRev = knowledgeRev;
     return state;
   })();
-  app.recognitionBusy = pending;
-  app.recognitionBusyKnowledgeRev = knowledgeRev;
-  try { return await pending; }
-  finally {
-    if (app.recognitionBusy === pending) {
+  producerState.promise = pending.finally(() => {
+    if (app.recognitionBusy === producerState) {
       app.recognitionBusy = null;
       app.recognitionBusyKnowledgeRev = null;
     }
-  }
+    producerState.settled = true;
+  });
+  app.recognitionBusy = producerState;
+  app.recognitionBusyKnowledgeRev = knowledgeRev;
+  return waitForAppProducer(producerState, options.signal ?? null);
 }
 
 
@@ -580,7 +586,7 @@ export class App {
     this.dom.addrCur.textContent = addrHex(addr);
     const total = this.viewer.totalRows;
     this.dom.stRight.textContent = total
-      ? t('status.rowOf', { cur: (row + 1).toLocaleString(), total: total.toLocaleString() })
+      ? t('status.rowOf', { cur: (typeof row === 'bigint' ? row + 1n : row + 1).toLocaleString(), total: total.toLocaleString() })
       : '';
     this.store.set({ currentAddress: addr });
   }
@@ -598,7 +604,8 @@ export class App {
     if (row == null) {
       const sel = this.viewer.selectedRow;
       const top = this.viewer.topRow();
-      const visible = sel >= top && sel < top + this.viewer.visibleRows();
+      const bottom = typeof top === 'bigint' ? top + BigInt(this.viewer.visibleRows()) : top + this.viewer.visibleRows();
+      const visible = sel >= top && sel < bottom;
       row = visible ? sel : top;
     }
     this.viewer.beginRange(row);
@@ -1046,10 +1053,27 @@ export class App {
       const res=await analyzeFunctionCached(this.backend,region,startRow,endRow,sym);
       if(this.store.get('sliceIndex')<0 || this.executableRegionFor(range.start)!==region)return null;
       res.completeness={complete:range.complete!==false,reason:range.reason||null,provenance:range.provenance,regionId:region.id};
-      this.semantic={regionId:region.id,model:res.model,result:res};
-      if(this.store.get('currentRegion')===region)this.viewer.setBlockOverlay(region.id,buildOverlay(res.model));
+      if(this._presentationMatchesFunction(range.start)){
+        this.semantic={regionId:region.id,model:res.model,result:res};
+        if(this.store.get('currentRegion')===region)this.viewer.setBlockOverlay(region.id,buildOverlay(res.model));
+      }
       return res;
     } catch { return null; }
+  }
+
+  _presentationMatchesFunction(start) {
+    const sym=this.symbols;
+    if(typeof sym?.functionAt!=='function')return true;
+    const row=this.store.get('selectedRow');
+    if(typeof row!=='number'||!Number.isSafeInteger(row)||row<0)return true;
+    if(typeof this.viewer?.rowAddress!=='function')return true;
+    let selected;
+    try{selected=BigInt(this.viewer.rowAddress(row));}catch{return true;}
+    let selectedFunction;
+    let targetFunction;
+    try{selectedFunction=sym.functionAt(selected);targetFunction=sym.functionAt(BigInt(start));}catch{return true;}
+    if(selectedFunction?.start==null||targetFunction?.start==null)return true;
+    try{return BigInt(selectedFunction.start)===BigInt(targetFunction.start);}catch{return true;}
   }
 
   /* ── ファイルを開く ───────────────────────────────────────── */

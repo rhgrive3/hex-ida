@@ -37,6 +37,19 @@ function compareCanonicalText(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+
+// Only ordinary records have semantics fully represented by Object.keys().
+// Structured types above are handled explicitly; every other prototype must
+// fail closed rather than silently inherit plain-object identity semantics.
+function isCanonicalPlainObject(value) {
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function rejectUnsupportedCanonicalObject(value) {
+  if (!isCanonicalPlainObject(value)) fail('identity-unsupported-object');
+}
+
 export function jsonSafe(value, seen = new WeakSet()) {
   if (typeof value === 'bigint') return value.toString();
   if (value == null || typeof value === 'string' || typeof value === 'boolean') return value;
@@ -64,6 +77,7 @@ export function jsonSafe(value, seen = new WeakSet()) {
     out = { $set: canonicalSetEntries(value, seen).map(({ value: entryValue }) => jsonSafe(entryValue, seen)) };
   } else if (Array.isArray(value)) out = value.map((item) => jsonSafe(item, seen));
   else {
+    rejectUnsupportedCanonicalObject(value);
     out = {};
     for (const key of Object.keys(value).sort()) {
       const raw = value[key];
@@ -107,6 +121,10 @@ function canonicalWitnessParts(value, seen = new WeakSet()) {
 function compareCanonicalWitnessParts(left, right) {
   return compareCanonicalText(stableStringify(left.normalized), stableStringify(right.normalized))
     || compareCanonicalText(stableStringify(left.witness), stableStringify(right.witness));
+}
+
+export function sameCanonicalIdentityValue(left, right) {
+  return compareCanonicalWitnessParts(canonicalWitnessParts(left), canonicalWitnessParts(right)) === 0;
 }
 
 function canonicalMapEntries(value, seen = new WeakSet()) {
@@ -252,7 +270,10 @@ export function lossyTypeWitness(value, path = '', seen = new WeakSet(), out = [
         else lossyTypeWitness(value[index], itemPath, seen, out);
       }
     }
-    else for (const key of Object.keys(value).sort()) lossyTypeWitness(value[key], `${path}.${key}`, seen, out);
+    else {
+      rejectUnsupportedCanonicalObject(value);
+      for (const key of Object.keys(value).sort()) lossyTypeWitness(value[key], `${path}.${key}`, seen, out);
+    }
     seen.delete(value);
   }
   return path === '' ? (out.length ? out : null) : out;
@@ -389,12 +410,13 @@ export function validateCanonicalIdentityNumbers(value, seen = new WeakSet()) {
   } else if (Array.isArray(value)) {
     for (const item of value) validateCanonicalIdentityNumbers(item, seen);
   } else {
+    rejectUnsupportedCanonicalObject(value);
     for (const key of Object.keys(value)) validateCanonicalIdentityNumbers(value[key], seen);
   }
   seen.delete(value);
 }
 
-function normalizeIdentity(value, code) {
+export function normalizeIdentity(value, code) {
   if (value == null) fail(code);
   validateCanonicalIdentityNumbers(value);
   if (typeof value === 'bigint' || typeof value === 'number') return String(value);

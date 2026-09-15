@@ -8,6 +8,51 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+test('issue #5556 - queued mutations detach caller patches before waiting for earlier writes', async () => {
+  let persisted = null;
+  const entered = deferred();
+  const release = deferred();
+  const persistence = {
+    async save(session) {
+      if (session.goal === 'blocked') { entered.resolve(); await release.promise; }
+      persisted = structuredClone(session);
+    },
+    async load() { return persisted; },
+  };
+  const store = new InvestigationSessionStore({ persistence });
+  await store.create({ id: 'detached', goal: 'initial' });
+  const blocked = store.update('detached', { goal: 'blocked' });
+  await entered.promise;
+
+  const patch = { goal: 'submitted', hypotheses: [{ id: 'hypothesis', summary: 'original' }] };
+  const memory = { goal: 'memory goal', anchor: { address: '0x1000' } };
+  const message = { role: 'assistant', content: 'original message', timestamp: '2026-09-13T00:00:00Z' };
+  const update = store.update('detached', patch);
+  const updateMemory = store.updateMemory('detached', memory);
+  const append = store.appendMessage('detached', message);
+  patch.goal = 'mutated';
+  patch.hypotheses[0].summary = 'mutated';
+  patch.hypotheses.push({ id: 'extra' });
+  memory.goal = 'mutated';
+  memory.anchor.address = '0x2000';
+  message.role = 'user';
+  message.content = 'mutated';
+  message.timestamp = 'mutated';
+  release.resolve();
+  const [, updated, remembered, appended] = await Promise.all([blocked, update, updateMemory, append]);
+
+  assert.equal(updated.goal, 'submitted');
+  assert.deepEqual(updated.hypotheses, [{ id: 'hypothesis', summary: 'original' }]);
+  assert.equal(remembered.investigationMemory.goal, 'memory goal');
+  assert.deepEqual(remembered.investigationMemory.anchor, { address: '0x1000' });
+  assert.deepEqual(appended.messages, [{ role: 'assistant', content: 'original message', timestamp: '2026-09-13T00:00:00Z' }]);
+  const reloaded = await new InvestigationSessionStore({ persistence }).get('detached');
+  assert.equal(reloaded.goal, 'submitted');
+  assert.deepEqual(reloaded.hypotheses, updated.hypotheses);
+  assert.deepEqual(reloaded.investigationMemory, remembered.investigationMemory);
+  assert.deepEqual(reloaded.messages, appended.messages);
+});
+
 test('issue #5556 - a slow older save can never roll persistence back to a stale snapshot', async () => {
   const events = [];
   let persisted = null;

@@ -1,5 +1,5 @@
 import { createEvidenceEdge, createEvidenceNode, EvidenceGraph, EVIDENCE_COMPLETENESS } from '../core/evidence/index.js';
-import { createEvidenceId, deepFreeze, stableDigest, stableStringify } from '../core/identity/index.js';
+import { createEvidenceId, deepFreeze, lossyTypeWitness, stableDigest, stableStringify } from '../core/identity/index.js';
 import { createOriginSet } from '../core/identity/origin.js';
 import { DebugAdapterError } from '../debug/adapter.js';
 import { createRuntimeEvent } from './events.js';
@@ -104,8 +104,16 @@ export function createInterventionRecord(input = {}) {
     sequence,
     parentInterventionIds,
   };
+  // The auto-derived id must distinguish type-distinct provenance. `1n` and
+  // `'1'` (or a `Uint8Array` and a plain numeric `Array`) share a
+  // `stableStringify`/`stableDigest` representation, so `intervention_${stableDigest(identity)}`
+  // aliased them to the same id and the ledger silently treated the second
+  // mutation as a replay (#8794). Decorate the digest input with the same
+  // `lossyTypeWitness` the ai/apple scoped-identity modules already use so the
+  // type-only difference participates in identity. Caller-supplied ids stay
+  // authoritative and unchanged.
   const interventionId = input.interventionId == null
-    ? `intervention_${stableDigest(identity)}`
+    ? `intervention_${stableDigest({ identity, typed: lossyTypeWitness(identity) })}`
     : required(input.interventionId, 'runtime-intervention-id-invalid', 'intervention id must be a non-empty string');
   return deepFreeze({
     interventionId,
@@ -152,7 +160,7 @@ export class InterventionLedger {
       // returning the existing record for a different execution (a different
       // acknowledged backend result) loses the later occurrence and its
       // provenance. Identical re-ingestion (persisted replay) stays allowed.
-      if (stableStringify(existing) !== stableStringify(record)) {
+      if (stableStringify([existing, lossyTypeWitness(existing)]) !== stableStringify([record, lossyTypeWitness(record)])) {
         throw new DebugAdapterError(
           'runtime-intervention-id-collision',
           `intervention id is already bound to a different record: ${record.interventionId}`,

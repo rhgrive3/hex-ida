@@ -12,6 +12,9 @@ function u64(b, o = 0) { let v = 0n; for (let i = 7; i >= 0; i--) v = (v << 8n) 
 function rel(fieldAddress, raw) { return raw ? BigInt(fieldAddress) + BigInt(raw) : null; }
 
 async function exact(read, addr, len) { if (addr == null || len <= 0) return null; const b = await read(BigInt(addr), len); return b && b.length >= len ? b.subarray(0, len) : null; }
+function isCancellationError(error) {
+  return error?.name === 'AbortError' || error?.code === 'ABORT_ERR';
+}
 async function cstring(read, addr, max = MAX_NAME) {
   if (addr == null) return null;
   const b = await read(BigInt(addr), max, true); if (!b || !b.length) return null;
@@ -100,10 +103,11 @@ export async function readSwiftMangledName(read, address, options = {}) {
       }
       const payload = bytes.subarray(i + 1, i + 1 + payloadBytes);
       const referenceAddress = base + BigInt(i);
+      const relativeFieldAddress = base + BigInt(i + 1);
       let candidateTarget = null, rawTarget = null;
       if (byte <= 0x17) {
         relativeReferenceSeen = true;
-        candidateTarget = referenceAddress + BigInt(i32(payload, 0));
+        candidateTarget = relativeFieldAddress + BigInt(i32(payload, 0));
       } else {
         rawTarget = payloadBytes === 8 ? u64(payload, 0) : BigInt(u32(payload, 0));
       }
@@ -113,14 +117,14 @@ export async function readSwiftMangledName(read, address, options = {}) {
         try {
           const resolved = await resolver({ kind:byte, address:referenceAddress, candidateTarget, rawTarget, payloadBytes:Array.from(payload) });
           if (resolved != null) resolvedTarget = BigInt(resolved);
-        } catch { resolvedTarget = null; }
+        } catch (error) { if (isCancellationError(error)) throw error; resolvedTarget = null; }
       } else if (byte >= 0x18) {
         const pointerResolver = options.resolvePointer || options.binaryImage?.resolvePointer || options.binaryImage?.decodePointer;
         if (typeof pointerResolver === 'function') {
           try {
             const resolved = await pointerResolver(rawTarget, { address:referenceAddress, swiftSymbolicReferenceKind:byte });
             if (resolved != null) resolvedTarget = BigInt(resolved);
-          } catch { resolvedTarget = null; }
+          } catch (error) { if (isCancellationError(error)) throw error; resolvedTarget = null; }
         }
       }
       refs.push({ kind:byte, address:referenceAddress, relative:byte <= 0x17, payloadBytes:Array.from(payload), candidateTarget, rawTarget, resolvedTarget, resolved:resolvedTarget != null });
@@ -348,7 +352,7 @@ async function resolveAbsolutePointer(read,address,options={}) {
   const pointerBytes=swiftPointerBytesFor(options); if(pointerBytes==null)return null;
   const b=await exact(read,address,pointerBytes); if(!b)return null; const raw=pointerBytes===4?BigInt(u32(b,0)):u64(b);
   const resolver=options.resolvePointer||options.binaryImage?.resolvePointer||options.binaryImage?.decodePointer;
-  if(typeof resolver==='function'){try{const v=await resolver(raw,{address:BigInt(address)});return v==null?null:BigInt(v);}catch{return null;}}
+  if(typeof resolver==='function'){try{const v=await resolver(raw,{address:BigInt(address)});return v==null?null:BigInt(v);}catch(error){if(isCancellationError(error))throw error;return null;}}
   return options.allowRawPointers===true ? (raw||null) : null;
 }
 
@@ -362,14 +366,15 @@ async function resolveRelativeIndirectablePointer(read,fieldAddress,raw,options=
 
 export async function parseSwiftConformanceDescriptor(read,address,options={}){
   const addr=BigInt(address),b=await exact(read,addr,16);if(!b)return null;
-  const protocol=await resolveRelativeIndirectablePointer(read,addr,i32(b,0),options), rawTypeRef=rel(addr+4n,i32(b,4)), witnessTable=rel(addr+8n,i32(b,8)), flags=u32(b,12), typeReferenceKind=(flags>>>3)&7;
+  const rawWitness=i32(b,8),witnessTableKind=rawWitness&3,witnessTableBase=rel(addr+8n,rawWitness&~3);
+  const protocol=await resolveRelativeIndirectablePointer(read,addr,i32(b,0),options), rawTypeRef=rel(addr+4n,i32(b,4)), witnessTable=witnessTableKind===0?witnessTableBase:null, flags=u32(b,12), typeReferenceKind=(flags>>>3)&7;
   if(protocol==null||rawTypeRef==null)return null;
   let typeRef=null, objcClassName=null, objcClassReference=null;
   if(typeReferenceKind===0) typeRef=rawTypeRef;
   else if(typeReferenceKind===1) typeRef=await resolveAbsolutePointer(read,rawTypeRef,options);
   else if(typeReferenceKind===2) objcClassName=await cstring(read,rawTypeRef);
   else if(typeReferenceKind===3) objcClassReference=rawTypeRef;
-  return{runtime:'swift',kind:'conformance',address:addr,protocol,typeRef,rawTypeRef,objcClassName,objcClassReference,witnessTable,flags,typeReferenceKind,conditionalRequirements:(flags>>>8)&0xff,resilientWitnesses:!!(flags&(1<<16))};
+  return{runtime:'swift',kind:'conformance',address:addr,protocol,typeRef,rawTypeRef,objcClassName,objcClassReference,witnessTable,witnessTableKind,witnessTableAccessor:witnessTableKind===3?null:witnessTableBase,flags,typeReferenceKind,conditionalRequirements:(flags>>>8)&0xff,resilientWitnesses:!!(flags&(1<<16)),genericWitnessTable:!!(flags&(1<<17))};
 }
 
 const SWIFT_CLASS_HAS_VTABLE = 1 << 15;
@@ -401,7 +406,7 @@ export async function parseSwiftWitnessTable(read,address,count,budget=4096,opti
   const stride=BigInt(pointerBytes);
   const resolver=options.resolvePointer||options.binaryImage?.resolvePointer||options.binaryImage?.decodePointer;
   for(let i=0;i<n;i++,at+=stride){const b=await exact(read,at,pointerBytes);if(!b)break;const raw=pointerBytes===4?BigInt(u32(b,0)):u64(b);let target=null;
-    if(raw){if(typeof resolver==='function'){try{const v=await resolver(raw,{address:at});target=v==null?null:BigInt(v);}catch{target=null;}}else if(options.allowRawPointers===true)target=raw;}
+    if(raw){if(typeof resolver==='function'){try{const v=await resolver(raw,{address:at});target=v==null?null:BigInt(v);}catch(error){if(isCancellationError(error))throw error;target=null;}}else if(options.allowRawPointers===true)target=raw;}
     out.push({index:i,target,rawTarget:raw||null,resolved:target!=null});
   }return out;
 }
@@ -418,7 +423,7 @@ async function relativePointerSection(read,range,budget,parser,options={}){
     if(signal?.aborted)return{items,completeness:{present:true,declared,scanned,parsed:items.length,capped:true,unreadableEntries,invalidEntries,misalignedBytes,complete:false}};
     const field=range.addr+BigInt(i*4),b=await exact(read,field,4);if(!b){unreadableEntries++;break;}
     scanned++;const target=rel(field,i32(b,0));if(target==null){invalidEntries++;continue;}
-    try{const value=await parser(read,target);if(value)items.push(value);else invalidEntries++;}catch{invalidEntries++;}
+    try{const value=await parser(read,target);if(value)items.push(value);else invalidEntries++;}catch(error){if(isCancellationError(error))throw error;invalidEntries++;}
   }
   const capped=declared>budget,complete=misalignedBytes===0&&!capped&&unreadableEntries===0&&invalidEntries===0&&scanned===declared&&items.length===declared;
   return{items,completeness:{present:true,declared,scanned,parsed:items.length,capped,unreadableEntries,invalidEntries,misalignedBytes,complete}};
@@ -426,6 +431,19 @@ async function relativePointerSection(read,range,budget,parser,options={}){
 
 const SWIFT_WITNESS_TABLE_FIRST_REQUIREMENT_OFFSET=1n;
 
+// #8737 helpers: canonical-address identity index + fail-closed lookup. The
+// descriptor `address` is a BigInt; `String()` of it is the single canonical key,
+// computed once per record at index time rather than inside an inner-loop scan.
+// A second distinct record at the same canonical address is marked ambiguous so
+// it can never be promoted to a unique authoritative identity.
+function indexByCanonicalAddress(items,map,ambiguous){
+  for(const item of items){const key=item?.address==null?null:String(item.address);if(key==null)continue;
+    if(map.has(key)){if(map.get(key)!==item)ambiguous.add(key);}else map.set(key,item);}
+}
+function resolveCanonicalAddress(map,ambiguous,raw){
+  if(raw==null)return null;const key=String(raw);if(ambiguous.has(key))return null;
+  const found=map.get(key);return found===undefined?null:found;
+}
 export async function buildSwiftMetadataModel(read,sections,opts={}){
   const signal=opts.signal??null;
   if(signal?.aborted)return null;
@@ -439,6 +457,17 @@ export async function buildSwiftMetadataModel(read,sections,opts={}){
   if(signal?.aborted)return null;
   const types=typeScan.items,protocols=protoScan.items,conformances=confScan.items;
   const warnings=[];
+  // #8737: resolve cross-record type/protocol identity through O(1) address
+  // indexes built once, instead of a fresh linear .find() scan per conformance
+  // and per auto-vtable owner. Duplicate canonical addresses that carry distinct
+  // parsed descriptors are ambiguous and fail closed rather than promoting a
+  // silent last-write-wins identity.
+  const typesByAddress=new Map(), protocolsByAddress=new Map();
+  const ambiguousTypeAddrs=new Set(), ambiguousProtoAddrs=new Set();
+  indexByCanonicalAddress(types,typesByAddress,ambiguousTypeAddrs);
+  indexByCanonicalAddress(protocols,protocolsByAddress,ambiguousProtoAddrs);
+  let joinWork=0;
+  const joinBudget=10_000_000;
   const genericContexts=[];
   let genericContextsComplete=true,genericRemaining=Math.min(budget,4096);
   for(const type of types){
@@ -474,16 +503,18 @@ export async function buildSwiftMetadataModel(read,sections,opts={}){
   const vtableSeedMap=new Map();for(const v of autoVtables.seeds)vtableSeedMap.set(`${String(v.typeAddress)}:${String(v.address)}`,v);for(const v of opts.vtables||[])vtableSeedMap.set(`${String(v.typeAddress)}:${String(v.address)}`,v);
   const vtables=[];let vtablesComplete=autoVtables.complete;for(const v of vtableSeedMap.values()){
     if(signal?.aborted)return null;
-    const methods=await parseSwiftVTable(get,v.address,v.count,budget),expected=Math.min(normalizeBudget(v.count,0,100000),budget),x={...v,methods};if(methods.length!==expected||Number(v.count)>budget)vtablesComplete=false;vtables.push(x);const owner=types.find((t)=>t.address.toString()===String(v.typeAddress));if(owner){owner.vtable=methods;owner.methods=methods;}
+    const methods=await parseSwiftVTable(get,v.address,v.count,budget),expected=Math.min(normalizeBudget(v.count,0,100000),budget),x={...v,methods};if(methods.length!==expected||Number(v.count)>budget)vtablesComplete=false;vtables.push(x);joinWork++;const owner=joinWork>joinBudget?null:resolveCanonicalAddress(typesByAddress,ambiguousTypeAddrs,v.typeAddress);if(owner){owner.vtable=methods;owner.methods=methods;}else if(joinWork>joinBudget){vtablesComplete=false;warnings.push(`Swift vtable ${v.address}: type identity-resolution join budget exhausted, so auto-vtable projection is not proof-safe.`);}else if(v.typeAddress!=null&&ambiguousTypeAddrs.has(String(v.typeAddress))){vtablesComplete=false;warnings.push(`Swift vtable ${v.address}: type address ${v.typeAddress} is ambiguous across duplicate descriptors, so owner association is not proof-safe.`);}
   }
   const witnessTables=[];let witnessTablesComplete=true;
   const witnessSeeds=[...(opts.witnessTables||[])],seedAddresses=new Set(witnessSeeds.map((w)=>String(w.address)));
   for(const c of conformances){
     if(signal?.aborted)return null;
+    if((c.witnessTableKind??0)!==0){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: witness table representation is not a concrete table, so automatic projection is not proof-safe.`);continue;}
     if(c.witnessTable==null||seedAddresses.has(c.witnessTable.toString()))continue;
-    const protocol=protocols.find((p)=>p.address.toString()===c.protocol?.toString()),type=c.typeReferenceKind<=1&&c.typeRef!=null?types.find((t)=>t.address.toString()===c.typeRef.toString()):null;
+    joinWork+=2;if(joinWork>joinBudget){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: type/protocol identity-resolution join budget exhausted, so automatic projection is not proof-safe.`);continue;}
+    const protocol=resolveCanonicalAddress(protocolsByAddress,ambiguousProtoAddrs,c.protocol),type=c.typeReferenceKind<=1&&c.typeRef!=null?resolveCanonicalAddress(typesByAddress,ambiguousTypeAddrs,c.typeRef):null;
     if(pointerBytes==null){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: native pointer ABI is unknown, so witness table layout is not proof-safe for automatic projection.`);continue;}
-    if(!protocol||!type||c.conditionalRequirements!==0||c.resilientWitnesses===true||protocol.requirementsComplete!==true){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: witness table layout is not proof-safe for automatic projection.`);continue;}
+    if(!protocol||!type||c.conditionalRequirements!==0||c.resilientWitnesses===true||c.genericWitnessTable===true||protocol.requirementsComplete!==true){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: witness table layout is not proof-safe for automatic projection.`);continue;}
     const requirements=protocol.requirements||[];
     if(requirements.length!==Number(protocol.numRequirements)||requirements.some((r)=>r.witnessCallable!==true)){witnessTablesComplete=false;warnings.push(`Swift conformance ${c.address}: non-callable protocol requirements prevent exact witness projection.`);continue;}
     if(!requirements.length)continue;

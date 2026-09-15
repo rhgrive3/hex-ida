@@ -6,6 +6,7 @@
  * later LLM refinement and deterministic verification.
  */
 import { compileGoal } from '../goalc.js';
+import { matchField } from '../goals.js';
 import { FACT } from '../semantic.js';
 import { createAgentTools } from '../agent/tools.js';
 
@@ -821,14 +822,60 @@ async function analyzeCandidates(query, pools, tools, b) {
   }
   return analyzed.sort((a, b2) => b2.score - a.score);
 }
+function updateVerificationTarget(fact) {
+  const location = fact && fact.location;
+  if (!location) return null;
+  if (typeof location.key === 'string' && location.key) {
+    return { identity:`key:${location.key}`, selector:location.key, label:location.key };
+  }
+  if (location.key) return { identity:null, selector:location.key, label:null };
+  const disp = location.disp;
+  if (typeof disp === 'bigint') return { identity:`offset:${disp}`, selector:{ offset:disp }, label:null };
+  if (typeof disp === 'number' && Number.isSafeInteger(disp)) {
+    return { identity:`offset:${disp}`, selector:{ offset:disp }, label:null };
+  }
+  return null;
+}
+
+function fieldUpdateFactForQuery(query, facts) {
+  const actionKind = query.action === 'increase' ? FACT.INCREMENT
+    : query.action === 'decrease' ? FACT.DECREMENT
+      : null;
+  if (!actionKind) return null;
+
+  const targets = new Map();
+  let opaqueTarget = null;
+  for (const fact of facts || []) {
+    if (fact.kind !== FACT.RMW && fact.kind !== actionKind) continue;
+    const target = updateVerificationTarget(fact);
+    if (!target) continue;
+    if (target.identity == null) {
+      if (opaqueTarget && opaqueTarget.selector !== target.selector) return null;
+      opaqueTarget = { fact, ...target };
+      continue;
+    }
+    const prior = targets.get(target.identity);
+    if (!prior || (fact.kind === actionKind && prior.fact.kind !== actionKind)) {
+      targets.set(target.identity, { fact, ...target });
+    }
+  }
+
+  const candidates = [...targets.values()];
+  if (opaqueTarget) candidates.push(opaqueTarget);
+  if (candidates.length === 1) return candidates[0];
+  if (!query.goal || !candidates.length) return null;
+
+  const matching = candidates.filter((candidate) =>
+    candidate.label && matchField(query.goal, candidate.label));
+  return matching.length === 1 ? matching[0] : null;
+}
+
 async function verifyBest(query, ranked, tools, b) {
   for (const c of ranked.slice(0, 8)) {
     if (expired(b)) break;
-    const rmw = (c.semantic || []).find((f) => f.kind === FACT.RMW ||
-      (query.action === 'increase' && f.kind === FACT.INCREMENT) ||
-      (query.action === 'decrease' && f.kind === FACT.DECREMENT));
-    if (rmw && rmw.location) {
-      const verified = await invokeTool(tools, 'verify_field_update', b, c.address, rmw.location.key || { offset: rmw.location.disp }, { pathLimit: 8 });
+    const rmw = fieldUpdateFactForQuery(query, c.semantic || []);
+    if (rmw) {
+      const verified = await invokeTool(tools, 'verify_field_update', b, c.address, rmw.selector, { pathLimit: 8 });
       if (expired(b)) break;
       c.verification = verified;
       if (verified.verified) { c.score += 45; c.scoreComponents.evidenceScore += 45; return c; }

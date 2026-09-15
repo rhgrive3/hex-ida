@@ -60,6 +60,16 @@ export function sliceArchName(slice) {
   return cpuArchName(slice.cpu, slice.subtype);
 }
 
+const DEFAULT_FAT_ARCH_PRIORITY = Object.freeze(['arm64e', 'arm64', 'arm64_32', 'x86_64']);
+
+export function selectDefaultFatSlice(slices) {
+  for (const arch of DEFAULT_FAT_ARCH_PRIORITY) {
+    const match = slices.find((slice) => sliceArchName(slice) === arch);
+    if (match) return match;
+  }
+  return slices[0] || null;
+}
+
 export function parseInnerMachOHeader(bytes) {
   if (!bytes || bytes.length < 28) return null;
   const r0 = new ByteView(bytes);

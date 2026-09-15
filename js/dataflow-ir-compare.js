@@ -57,9 +57,21 @@ function provenConstant(value, memo, active = new Set()) {
     const src = provenConstant(def.args[0].value, memo, active);
     const lsb = def.extra && Number.isInteger(def.extra.lsb) ? def.extra.lsb : null;
     const width = def.extra && Number.isInteger(def.extra.width) ? def.extra.width : null;
-    if (src != null && lsb != null && width != null && width > 0 && width <= 64) {
-      const low = (src >> BigInt(lsb)) & ((1n << BigInt(width)) - 1n);
-      result = mask(low, value.bits || 64);
+    const bits = value.bits || 64;
+    const toward = def.extra && def.extra.toward != null ? String(def.extra.toward) : 'right';
+    const signed = def.extra && def.extra.signed === true;
+    if (src != null && lsb != null && width != null && lsb >= 0 && width > 0 && width <= 64
+        && lsb + width <= bits && (toward === 'left' || toward === 'right')) {
+      const lowMask = (1n << BigInt(width)) - 1n;
+      if (toward === 'left') {
+        let field = src & lowMask;
+        if (signed) field = BigInt.asIntN(width, field);
+        result = mask(field << BigInt(lsb), bits);
+      } else {
+        let field = (src >> BigInt(lsb)) & lowMask;
+        if (signed) field = BigInt.asIntN(width, field);
+        result = mask(field, bits);
+      }
     }
   }
 

@@ -34,6 +34,20 @@ function parameterList(prototype) {
 }
 
 function normalizedType(type) { return String(type || '').trim().toLowerCase().replace(/\s+/g, ' '); }
+function normalizedReturnClass(prototype, options = {}) {
+  const candidates = [options.returnClass, prototype?.returnClass, prototype?.abiClass, prototype?.resultClass];
+  const raw = candidates.find((value) => Boolean(value));
+  if (raw == null) return { valid:true, value:'' };
+  if (typeof raw !== 'string') return { valid:false, value:'' };
+  return { valid:true, value:normalizedType(raw) };
+}
+function normalizedReturnType(prototype, options = {}) {
+  const candidates = [options.returnType, prototype?.returnType, prototype?.ret, prototype?.result];
+  const raw = candidates.find((value) => value != null && value !== '');
+  if (raw == null) return { valid:true, value:'' };
+  if (typeof raw !== 'string') return { valid:false, value:'' };
+  return { valid:true, value:normalizedType(raw) };
+}
 function isComplexLongDouble(type, abiClass = '') {
   const text = `${normalizedType(type)} ${normalizedType(abiClass)}`;
   return /(?:^|\s)(?:_complex\s+)?long double complex(?:\s|$)/.test(text)
@@ -110,9 +124,10 @@ function explicitEightbyteClasses(parameter) {
   }
   if (!candidates.length || candidates.some((raw) => !Array.isArray(raw)
     || raw.length < 1 || raw.length > 2)) return null;
+  if (candidates.some((candidate) => candidate.some((value) => typeof value !== 'string'))) return null;
   const raw = candidates[0];
   if (candidates.slice(1).some((candidate) => JSON.stringify(candidate) !== JSON.stringify(raw))) return null;
-  const classes = raw.map((value) => String(value || '').trim().toUpperCase());
+  const classes = raw.map((value) => value.trim().toUpperCase());
   if (classes.some((value) => !['INTEGER','SSE','SSEUP','MEMORY','NO_CLASS'].includes(value))) return null;
   if (classes.includes('MEMORY')) return ['MEMORY'];
   // NO_CLASS is padding/absence evidence, not a physical lane that this
@@ -150,7 +165,7 @@ function vectorRegisterView(index, bits, options = {}) {
   return vectorRegisterName(index, bits);
 }
 
-function conservativeUnknownArguments() {
+function conservativeUnknownArguments(extra = {}) {
   const srcs = [
     ...INTEGER_ARGUMENT_REGISTERS.map((reg) => ({ t:'reg', reg, bits:64,
       possible:true, mustUse:false, exact:false, certainty:'unknown' })),
@@ -180,6 +195,7 @@ function conservativeUnknownArguments() {
     partial:true,
     scope:SYSV_AMD64_SCOPE,
     evidence:'conservative-sysv-amd64',
+    ...extra,
   };
 }
 
@@ -200,7 +216,15 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
   let aggregateProven = false;
   let vectorPartial = false;
   let stackArgsMayContainPointers = false;
-  const indirectResult = prototype?.indirectResult === true || prototype?.returnClass === 'indirect';
+  const returnDecision = returnHiddenResultState(prototype, options);
+  if (returnDecision.kind === 'unknown' && returnDecision.hiddenResultPossible) {
+    return conservativeUnknownArguments({
+      reason:returnDecision.reason,
+      hiddenResultPossible:true,
+      returnClassification:'partial-hidden-result-possible',
+    });
+  }
+  const indirectResult = returnDecision.kind === 'indirect';
   if (indirectResult) {
     appendRegisterSource(srcs, seenSources, INTEGER_ARGUMENT_REGISTERS[0], 64, { purpose:'indirect-result' });
     arguments_.push({ index:-1, role:'indirect-result', location:'register', reg:INTEGER_ARGUMENT_REGISTERS[0], abiClass:'pointer', pointer:true, bits:64, hidden:true });
@@ -543,22 +567,78 @@ function aggregateReturnDescriptor(prototype, options = {}, returnBits = null) {
   return { present, layout, malformed:present && layout == null, bits:layout?.bits ?? returnBits };
 }
 
+function returnHiddenResultState(prototype, options = {}) {
+  if (!prototype || typeof prototype !== 'object') return { kind:'direct' };
+  const returnType = normalizedReturnType(prototype, options);
+  const type = returnType.value;
+  const returnClass = normalizedReturnClass(prototype, options);
+  const abiClass = returnClass.value;
+  if (options.returnsValue === false || prototype.returnsValue === false || prototype.void === true
+    || (returnType.valid && type === 'void') || (returnClass.valid && abiClass === 'void')) return { kind:'direct' };
+
+  const explicitIndirectResult = prototype.indirectResult === true;
+  if (!explicitIndirectResult && (!returnType.valid || !returnClass.valid)) return {
+    kind:'unknown', hiddenResultPossible:true,
+    reason:!returnType.valid ? 'sysv-amd64-return-type-not-proven' : 'sysv-amd64-return-class-not-proven',
+  };
+  const explicitlyIndirect = explicitIndirectResult || abiClass === 'indirect';
+  const explicitReturnBits = options.returnBits ?? prototype.returnBits ?? null;
+  const returnBitsNumber = explicitReturnBits == null ? null : Number(explicitReturnBits);
+  const validReturnBits = Number.isSafeInteger(returnBitsNumber) && returnBitsNumber > 0 ? returnBitsNumber : null;
+  if (explicitlyIndirect && aggregateLayoutDescriptorPresent(prototype)) {
+    const descriptor = aggregateReturnDescriptor(prototype, options, validReturnBits);
+    if (descriptor.malformed) return { kind:'unknown', aggregate:true, hiddenResultPossible:true, reason:'sysv-amd64-aggregate-return-layout-not-proven' };
+  }
+  if (explicitlyIndirect) return { kind:'indirect', reason:'explicit-indirect-result' };
+
+  const isPointerType = /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(`${type} ${abiClass}`);
+  const structuralAggregate = prototype.aggregate === true || prototype.isAggregate === true
+    || aggregateLayoutDescriptorPresent(prototype)
+    || (prototype.returnAggregate && typeof prototype.returnAggregate === 'object')
+    || (Object.hasOwn(prototype, 'returnAggregate') && prototype.returnAggregate != null && typeof prototype.returnAggregate !== 'boolean');
+  if (isPointerType && structuralAggregate) return { kind:'unknown', aggregate:true, hiddenResultPossible:true, reason:'sysv-amd64-return-type-aggregate-conflict' };
+  const aggregate = !isPointerType && (structuralAggregate || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
+  if (!aggregate) return { kind:'direct' };
+
+  const descriptor = aggregateReturnDescriptor(prototype, options, validReturnBits);
+  if (descriptor.malformed) return { kind:'unknown', aggregate:true, hiddenResultPossible:true, reason:'sysv-amd64-aggregate-return-layout-not-proven' };
+  const classPrototype = { ...prototype };
+  const requestedClasses = options.returnEightbyteClasses ?? prototype.returnEightbyteClasses ?? prototype.eightbyteClasses;
+  if (requestedClasses != null) classPrototype.eightbyteClasses = requestedClasses;
+  const classes = explicitEightbyteClasses(classPrototype);
+  if (!classes) return { kind:'unknown', aggregate:true, hiddenResultPossible:true, reason:'sysv-amd64-aggregate-return-classification-not-proven' };
+  if (classes[0] === 'MEMORY') return { kind:'indirect', aggregate:true, pointeeBits:descriptor.bits ?? validReturnBits, reason:'memory-class-aggregate-result' };
+  const canonicalBits = descriptor.bits ?? validReturnBits;
+  const returnBits = Number(canonicalBits ?? classes.length * 64);
+  const physicalBytes = descriptor.layout?.bytes ?? classes.length * 8;
+  if (!Number.isSafeInteger(returnBits) || returnBits <= 0 || returnBits > 128
+    || returnBits <= (classes.length - 1) * 64
+    || !Number.isSafeInteger(physicalBytes) || physicalBytes <= 0 || Math.ceil(physicalBytes / 8) !== classes.length
+    || physicalBytes < Math.ceil(returnBits / 8)) {
+    return { kind:'unknown', aggregate:true, hiddenResultPossible:true, reason:'sysv-amd64-aggregate-return-width-layout-not-proven' };
+  }
+  return { kind:'direct', aggregate:true };
+}
+
 function classifyReturn(prototype, options = {}) {
   if (!prototype) return null;
-  const type = normalizedType(options.returnType || prototype.returnType || prototype.ret || prototype.result || '');
-  const abiClass = normalizedType(options.returnClass || prototype.returnClass || prototype.abiClass || prototype.resultClass || '');
-  if (options.returnsValue === false || prototype.returnsValue === false || prototype.void === true || type === 'void' || abiClass === 'void') return null;
-  const explicitlyIndirect = prototype.indirectResult === true || abiClass === 'indirect';
-  if (explicitlyIndirect && aggregateLayoutDescriptorPresent(prototype)) {
-    const descriptor = aggregateReturnDescriptor(prototype, options,
-      Number.isSafeInteger(Number(options.returnBits ?? prototype.returnBits))
-        && Number(options.returnBits ?? prototype.returnBits) > 0
-        ? Number(options.returnBits ?? prototype.returnBits) : null);
-    if (descriptor.malformed) return { reg:null, partial:true, aggregate:true,
-      reason:'sysv-amd64-aggregate-return-layout-not-proven' };
+  const returnType = normalizedReturnType(prototype, options);
+  const type = returnType.value;
+  const returnClass = normalizedReturnClass(prototype, options);
+  const abiClass = returnClass.value;
+  if (options.returnsValue === false || prototype.returnsValue === false || prototype.void === true
+    || (returnType.valid && type === 'void') || (returnClass.valid && abiClass === 'void')) return null;
+  const hiddenResult = returnHiddenResultState(prototype, options);
+  if (hiddenResult.kind === 'unknown' && hiddenResult.hiddenResultPossible) {
+    return { reg:null, partial:true, aggregate:hiddenResult.aggregate === true, hiddenResultPossible:true, reason:hiddenResult.reason };
   }
-  if (explicitlyIndirect) {
-    return { reg:'rax', bits:64, indirect:true, hiddenResultPointer:{ input:'rdi', returned:'rax' } };
+  if (hiddenResult.kind === 'indirect') {
+    return {
+      reg:'rax', bits:64, indirect:true,
+      ...(hiddenResult.aggregate === true ? { aggregate:true } : {}),
+      ...(Number.isSafeInteger(hiddenResult.pointeeBits) && hiddenResult.pointeeBits > 0 ? { pointeeBits:hiddenResult.pointeeBits } : {}),
+      hiddenResultPointer:{ input:'rdi', returned:'rax' },
+    };
   }
   if (isComplexLongDouble(type, abiClass) || isLongDouble(type, abiClass)) {
     return { reg:null, partial:true, unsupported:true, reason:'sysv-amd64-x87-return-outside-claimed-scope' };
@@ -592,7 +672,7 @@ function classifyReturn(prototype, options = {}) {
     // canonical aggregate and lets a malformed return look exact.
     if (!Number.isSafeInteger(returnBits) || returnBits <= 0 || returnBits > 128
       || returnBits <= (classes.length - 1) * 64
-      || !Number.isSafeInteger(physicalBytes) || physicalBytes <= 0 || physicalBytes !== classes.length * 8
+      || !Number.isSafeInteger(physicalBytes) || physicalBytes <= 0 || Math.ceil(physicalBytes / 8) !== classes.length
       || physicalBytes < Math.ceil(returnBits / 8)) {
       return { reg:null, partial:true, aggregate:true, reason:'sysv-amd64-aggregate-return-width-layout-not-proven' };
     }

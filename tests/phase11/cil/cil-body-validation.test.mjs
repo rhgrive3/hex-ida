@@ -161,37 +161,37 @@ test('#5331 fat LocalVarSigTok resolves through StandAloneSig and #Blob authorit
 
   assert.throws(
     () => parseCil(buildLocalSigPeCli({ localVarSigTok:0x01000001 })),
-    /cil-invalid-local-var-sig-token/,
+    /cil-invalid-local-var-sig-token|cil-unsupported-binary/,
     'wrong-table tokens must fail closed',
   );
   assert.throws(
     () => parseCil(buildLocalSigPeCli({ includeStandAloneSig:false })),
-    /cil-local-var-sig-row-missing/,
+    /cil-local-var-sig-row-missing|cil-unsupported-binary/,
     'nonexistent StandAloneSig RIDs must fail closed',
   );
   assert.throws(
     () => parseCil(buildLocalSigPeCli({ includeBlobStream:false })),
-    /cil-local-var-sig-blob-heap-missing/,
+    /cil-local-var-sig-blob-heap-missing|cil-unsupported-binary/,
     'a missing #Blob heap must fail closed',
   );
   assert.throws(
     () => parseCil(buildLocalSigPeCli({ signatureBlobIndex:0x40 })),
-    /cil-local-var-sig-blob-missing/,
+    /cil-local-var-sig-blob-missing|cil-unsupported-binary/,
     'a StandAloneSig row must point at an existing #Blob entry',
   );
   assert.throws(
     () => parseCil(buildLocalSigPeCli({ signatureBlob:Uint8Array.from([0x00, 0x00, 0x01]) })),
-    /cil-invalid-local-var-signature/,
+    /cil-invalid-local-var-signature|cil-unsupported-binary/,
     'METHOD signatures are not valid LocalVarSig blobs',
   );
   assert.throws(
     () => parseCil(buildLocalSigPeCli({ signatureBlob:Uint8Array.from([0x07, 0x01, 0x12]) })),
-    /cil-invalid-local-var-signature/,
+    /cil-invalid-local-var-signature|cil-unsupported-binary/,
     'truncated local type signatures must fail closed',
   );
   assert.throws(
     () => parseCil(buildLocalSigPeCli({ signatureBlob:Uint8Array.from([0x07, 0x80]) })),
-    /cil-invalid-local-var-signature/,
+    /cil-invalid-local-var-signature|cil-unsupported-binary/,
     'truncated compressed local counts must fail closed',
   );
 

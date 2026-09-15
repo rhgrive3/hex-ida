@@ -22,7 +22,9 @@ test('compact diff function set keeps columns on the main side and materializes 
   const compact=createCompactFunctionSet(source,'arm64',350000);
   assert.equal(compact.schema,COMPACT_DIFF_FUNCTION_SET_SCHEMA);
   assert.equal(compact.evidenceProfile,SYMMETRIC_DIFF_PROFILE);
-  assert.equal(compact.functionAddresses,source.funcs);
+  assert.notEqual(compact.functionAddresses,source.funcs);
+  assert.ok(Object.isFrozen(compact.functionAddresses));
+  assert.deepEqual([...compact.functionAddresses],[...source.funcs]);
   assert.equal(compact.total,3);
   assert.equal(compact.complete,true);
   assert.equal(Object.hasOwn(compact,'items'),false);
