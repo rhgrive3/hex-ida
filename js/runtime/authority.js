@@ -22,6 +22,20 @@ const PROVIDER_PROFILE_PATTERNS = Object.freeze([
 ]);
 const MANAGED_TARGET_PROFILE = /^managed:(?:wasm|dex|cil|jvm):m6$/;
 const VALID_RUNTIME_PROFILE_SUPPORT = new WeakSet();
+// Runtime support is a live-provider authority, so the branding transition may
+// not be driven by caller-supplied booleans.  A receipt is only minted by a
+// tracker that actually accepted the runtime traffic it now attests to, and it
+// is only honoured when every bound identity still matches the authority record
+// being promoted (#8851).
+const RUNTIME_VALIDATION_RECEIPT_SCHEMA = 'hex-runtime-validation-receipt/v1';
+const VALID_RUNTIME_VALIDATION_RECEIPTS = new WeakSet();
+const LIVE_RUNTIME_TRACKERS = new WeakSet();
+const RECEIPT_BINDING_FIELDS = Object.freeze([
+  'bindingId', 'providerIdentity', 'providerProfileId', 'runtimeInstanceIdentity',
+  'targetIdentity', 'targetProfileId', 'binaryIdentity', 'buildIdentity',
+  'moduleIdentity', 'loadMappingIdentity', 'sessionIdentity', 'commitSha',
+  'treeSha', 'epoch',
+]);
 const BINDING_FIELDS = Object.freeze([
   'schemaVersion', 'providerIdentity', 'providerProfileId', 'providerVersion',
   'runtimeInstanceIdentity', 'targetIdentity', 'targetProfileId',
@@ -255,6 +269,14 @@ function hasOwnTrueCapability(source, capability) {
     && !Array.isArray(source)
     && Object.prototype.hasOwnProperty.call(source, capability)
     && source[capability] === true;
+}
+
+function identityList(value, code) {
+  if (!Array.isArray(value) || value.length === 0) throw new TypeError(code);
+  const normalized = value.map((item) => required(item, code));
+  const out = [...new Set(normalized)].sort();
+  if (out.length === 0) throw new TypeError(code);
+  return out;
 }
 
 function bindingPayload(input = {}) {
@@ -501,6 +523,8 @@ function freezeObservationValue(value, seen = new WeakSet()) {
 
 export class RuntimeAuthorityTracker {
   #observations;
+  #acceptedObservationIds;
+  #mutationAuthorityIds;
 
   constructor(bindingInput, options = {}) {
     this.binding = canonicalBinding(bindingInput || {});
@@ -508,6 +532,17 @@ export class RuntimeAuthorityTracker {
     this.closed = false;
     this.maxObservations = boundedCount(options.maxObservations, 1024, 4096, 'runtime-max-observations-invalid');
     this.#observations = [];
+    this.#acceptedObservationIds = new Set();
+    this.#mutationAuthorityIds = new Set();
+    // Only the runtime wiring that actually owns a tracker may mint support
+    // receipts; a receipt handed to `runtimeProfileSupport()` must be traceable
+    // back to a live tracker instance, never reconstructed from plain data.
+    LIVE_RUNTIME_TRACKERS.add(this);
+  }
+
+  #recordBounded(set, id) {
+    set.add(id);
+    while (set.size > this.maxObservations) set.delete(set.values().next().value);
   }
 
   get observations() {
@@ -530,6 +565,7 @@ export class RuntimeAuthorityTracker {
     this.lastSequence = observation.sequence;
     this.#observations.push(observation);
     if (this.#observations.length > this.maxObservations) this.#observations.shift();
+    this.#recordBounded(this.#acceptedObservationIds, observation.observationId);
     return Object.freeze({ status: 'accepted', observationId: observation.observationId, sequence: observation.sequence });
   }
 
@@ -554,7 +590,50 @@ export class RuntimeAuthorityTracker {
       issuedAt: required(input.issuedAt, 'runtime-mutation-issued-at-required'),
       authority: 'explicit-local-runtime-mutation',
     };
-    return Object.freeze({ status: 'authorized', token: deepFreeze({ ...token, tokenId: `runtime-mutation:${stableDigest(token)}` }) });
+    const tokenId = `runtime-mutation:${stableDigest(token)}`;
+    this.#recordBounded(this.#mutationAuthorityIds, tokenId);
+    return Object.freeze({ status: 'authorized', token: deepFreeze({ ...token, tokenId }) });
+  }
+
+  mintProfileSupportReceipt(input = {}) {
+    if (!LIVE_RUNTIME_TRACKERS.has(this)) throw new TypeError('runtime-receipt-mint-untrusted');
+    if (this.closed) throw new TypeError('runtime-receipt-tracker-closed');
+    const observationIdentities = identityList(input.observationIdentities, 'runtime-receipt-observation-identities-required');
+    const mutationAuthorityIdentities = identityList(input.mutationAuthorityIdentities, 'runtime-receipt-mutation-identities-required');
+    const testItemIdentities = identityList(input.testItemIdentities, 'runtime-receipt-test-identities-required');
+    // The minting tracker is the only record of what this provider instance
+    // actually did.  An identity it never accepted or issued is not runtime
+    // evidence, however well-formed the caller's claim looks.
+    for (const observationId of observationIdentities) {
+      if (!this.#acceptedObservationIds.has(observationId)) throw new TypeError(`runtime-receipt-observation-unbound:${observationId}`);
+    }
+    for (const mutationId of mutationAuthorityIdentities) {
+      if (!this.#mutationAuthorityIds.has(mutationId)) throw new TypeError(`runtime-receipt-mutation-authority-unbound:${mutationId}`);
+    }
+    const receipt = {
+      schemaVersion: RUNTIME_VALIDATION_RECEIPT_SCHEMA,
+      bindingId: this.binding.bindingId,
+      providerIdentity: this.binding.providerIdentity,
+      providerProfileId: this.binding.providerProfileId,
+      runtimeInstanceIdentity: this.binding.runtimeInstanceIdentity,
+      targetIdentity: this.binding.targetIdentity,
+      targetProfileId: this.binding.targetProfileId,
+      binaryIdentity: this.binding.binaryIdentity,
+      buildIdentity: this.binding.buildIdentity,
+      moduleIdentity: this.binding.moduleIdentity,
+      loadMappingIdentity: this.binding.loadMappingIdentity,
+      sessionIdentity: this.binding.sessionIdentity,
+      commitSha: this.binding.commitSha,
+      treeSha: this.binding.treeSha,
+      epoch: this.binding.epoch,
+      lastSequence: this.lastSequence,
+      observationIdentities: Object.freeze(observationIdentities),
+      mutationAuthorityIdentities: Object.freeze(mutationAuthorityIdentities),
+      testItemIdentities: Object.freeze(testItemIdentities),
+    };
+    const branded = deepFreeze({ ...receipt, receiptId: `runtime-receipt:${stableDigest(receipt)}` });
+    VALID_RUNTIME_VALIDATION_RECEIPTS.add(branded);
+    return branded;
   }
 
   nextEpoch(bindingOverrides = {}) {
@@ -568,6 +647,25 @@ export class RuntimeAuthorityTracker {
   }
 }
 
+function runtimeReceiptReason(receipt, canonical, providerProfileId, targetProfileId) {
+  // Plain data cannot become a receipt: the brand lives only on objects handed
+  // out by a live tracker's mint, so spreading/serializing/rebuilding one is a
+  // rejection rather than a promotion.
+  if (!receipt || typeof receipt !== 'object' || !VALID_RUNTIME_VALIDATION_RECEIPTS.has(receipt)) return 'runtime-validation-receipt-required';
+  if (receipt.schemaVersion !== RUNTIME_VALIDATION_RECEIPT_SCHEMA) return 'runtime-validation-receipt-schema-invalid';
+  for (const field of RECEIPT_BINDING_FIELDS) {
+    if (receipt[field] !== canonical[field]) return `runtime-validation-receipt-identity-mismatch:${field}`;
+  }
+  // The support claim is about a provider/target profile pair, which must be the
+  // exact pair the minting tracker is bound to.
+  if (receipt.providerProfileId !== providerProfileId) return 'runtime-validation-receipt-provider-profile-mismatch';
+  if (receipt.targetProfileId !== targetProfileId) return 'runtime-validation-receipt-target-profile-mismatch';
+  for (const field of ['observationIdentities', 'mutationAuthorityIdentities', 'testItemIdentities']) {
+    if (!Array.isArray(receipt[field]) || receipt[field].length === 0) return `runtime-validation-receipt-evidence-missing:${field}`;
+  }
+  return null;
+}
+
 export function runtimeProfileSupport({
   binding,
   providerProfileId = null,
@@ -579,6 +677,7 @@ export function runtimeProfileSupport({
   expectedTreeSha = null,
   expectedBuildIdentity = null,
   profileProof = null,
+  runtimeReceipt = null,
 } = {}) {
   const canonical = canonicalBinding(binding || {}, { throwOnError: false });
   const hasBinding = canonical != null;
@@ -626,6 +725,11 @@ export function runtimeProfileSupport({
     else if (expectedHead != null && (canonical.commitSha !== expectedHead || proofHeadSha !== expectedHead)) reason = 'runtime-proof-stale-head';
     else if (expectedTree != null && (canonical.treeSha !== expectedTree || proofTreeSha !== expectedTree)) reason = 'runtime-proof-stale-tree';
   }
+  // Release/profile evidence proves the denominator was met; it never proves a
+  // concrete provider instance was exercised.  That requires the live receipt
+  // minted by the owning tracker, and the boolean report above stays purely
+  // diagnostic when it is missing (#8851).
+  if (!reason && hasBinding) reason = runtimeReceiptReason(runtimeReceipt, canonical, normalizedProviderProfileId, normalizedTargetProfileId);
   const proven = hasBinding
     && declared.length > 0
     && missing.length === 0
@@ -646,6 +750,8 @@ export function runtimeProfileSupport({
     treeSha: hasBinding ? canonical.treeSha : null,
     reason,
     authority: proven ? 'runtime-evidence-bound' : 'none',
+    runtimeReceiptId: proven ? runtimeReceipt.receiptId : null,
+    runtimeReceiptBindingId: proven ? runtimeReceipt.bindingId : null,
   });
   if (proven) VALID_RUNTIME_PROFILE_SUPPORT.add(result);
   return result;
