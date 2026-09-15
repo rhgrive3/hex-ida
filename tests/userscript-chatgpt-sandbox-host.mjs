@@ -119,8 +119,12 @@ const entrySource = await readFile(new URL('../js/userscript/entry.js', import.m
 const protectedEntrySource = await readFile(new URL('../js/userscript/protected-entry.js', import.meta.url), 'utf8');
 const loaderSource = await readFile(new URL('../js/userscript/loader.js', import.meta.url), 'utf8');
 assert.match(entrySource, /createChatGPTSandboxHost/);
-assert.match(loaderSource, /const actualContentHash = await assertHash\(plaintext, manifest\.contentHash\);\s*\n\s*if \(!actualContentHash\.startsWith\(EXPECTED_BUILD\)\)/,
-  'the trusted loader must re-derive the executed runtime digest and bind it to the pinned build before passing it on (#8928)');
+assert.match(loaderSource, /const actualContentHash = await assertHash\(plaintext, EXPECTED_CONTENT_HASH\);\s*\n\s*if \(!constantTimeEqual\(actualContentHash, EXPECTED_CONTENT_HASH\)\)/,
+  'the trusted loader must re-derive the executed runtime digest and verify it against the full local runtime pin before passing it on (#8928)');
+assert.doesNotMatch(loaderSource, /assertHash\(plaintext, manifest\.contentHash\)/,
+  'the remote-supplied manifest digest must never become the executed runtime authority (#8928)');
+assert.match(loaderSource, /buildId:\s*EXPECTED_BUILD,\s*\n\s*sourceCommit,\s*\n\s*runtimeContentHash:\s*actualContentHash/,
+  'the executed runtime digest must stay bound to the pinned build identity it was verified against (#8928)');
 assert.match(loaderSource, /runtimeContentHash:\s*actualContentHash/,
   'the loader must forward the locally proven digest, not the remote-supplied manifest value (#8928)');
 assert.match(protectedEntrySource, /runtimeContentHash:\s*String\(options\.runtimeContentHash/,
