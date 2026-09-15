@@ -35,7 +35,7 @@ assert.equal(await frameBytes([
 // 4. Mutually-exclusive branch arms must not be summed.
 assert.equal(await frameBytes([
   ['cbz', 'x0, #0x100010'],
-  ['sub', 'sp, sp, #16'], ['add', 'sp, sp, #16'], ['b', '#0x100014'],
+  ['sub', 'sp, sp, #16'], ['add', 'sp, sp, #16'], ['b', '#0x100018'],
   ['sub', 'sp, sp, #32'], ['add', 'sp, sp, #32'],
   ['ret'],
 ]), 32, 'exclusive 16/32 arms must report max 32, not 48');
