@@ -27,6 +27,7 @@ for (const mnemonic of ['paciasp', 'pacibsp']) {
   // Guarded page: compatibility is checked against the actual inputs, PAC
   // path stays exact-with-intrinsic, BTYPE reset preserved on the normal path.
   const guarded = decorateArm64BtiGuardedPageEffects(paciasm(mnemonic), base, {
+    featBti: true,
     btiGuardedPage: { mappedPageGuarded: true, source: 'runtime-page-table', evidence: { mappingId: 'map-1' } },
   });
   assert.equal(guarded.completeness, 'exact-with-intrinsic', `${mnemonic}: guarded PAC path stays exact-with-intrinsic`);
@@ -46,6 +47,7 @@ for (const mnemonic of ['paciasp', 'pacibsp']) {
 
   // Unguarded page: implicit check cannot fault, PAC semantics preserved.
   const unguarded = decorateArm64BtiGuardedPageEffects(paciasm(mnemonic), base, {
+    featBti: true,
     btiGuardedPage: { mappedPageGuarded: false, source: 'runtime-page-table' },
   });
   assert.equal(unguarded.completeness, 'exact-with-intrinsic');
@@ -55,7 +57,10 @@ for (const mnemonic of ['paciasp', 'pacibsp']) {
 
   // Unknown guard state: conditional fault with unknown page evidence; the
   // guarded-page input is read, never assumed.
-  const unknown = decorateArm64BtiGuardedPageEffects(paciasm(mnemonic), base, { btiGuardedPage: null });
+  // FEAT_BTI is known-present here; only the guarded-page state is unknown, so
+  // the conditional fault is still stated. A fully *unprovisioned* FEAT_BTI is
+  // covered by tests/phase10/targets/issue-8775-arm64e-feat-bti-unknown-fail-closed.test.mjs.
+  const unknown = decorateArm64BtiGuardedPageEffects(paciasm(mnemonic), base, { featBti: true, btiGuardedPage: null });
   assert.equal(unknown.completeness, 'exact-with-intrinsic', `${mnemonic}: PAC + compatibility inputs stay stated, fault is conditional`);
   const unknownFault = branchTargetExceptions(unknown)[0];
   assert.ok(unknownFault, `${mnemonic}: unknown guard keeps the conditional fault`);

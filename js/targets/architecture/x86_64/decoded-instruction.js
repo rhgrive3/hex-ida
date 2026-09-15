@@ -142,7 +142,42 @@ function addressSizeBitsOf(value, mode) {
 }
 
 function bytesOf(input, length) {
-  const bytes = input instanceof Uint8Array ? input.slice() : Uint8Array.from(input || []);
+  // `rawBytes` are the authoritative machine instruction bytes, so every element
+  // must be a genuine byte. Typed conversion coercion (`Uint8Array.from`) remaps
+  // out-of-domain input into a different canonical encoding (`400`→`144`,
+  // `'144'`→`144`, `144.9`→`144`, `-112`→`144`, `true`→`01`), laundering
+  // malformed provider evidence into exact `rawBytes` (#8786). Mirror the strict
+  // byte-domain rule already applied to prefix bytes (`prefixBytesOf`) and to the
+  // RISC-V canonical rawBytes (#6009): accept only a genuine (cross-realm)
+  // `Uint8Array`, or a plain `Array` whose every own element is an integer
+  // `0..0xff`; `null`/`undefined` stay an empty sequence (length check below).
+  if (input == null) {
+    throw new TypeError('x86-decoded-instruction-byte-length-mismatch');
+  }
+  let isUint8 = input instanceof Uint8Array;
+  if (!isUint8 && ArrayBuffer.isView(input)) {
+    let tag = null;
+    try { tag = TYPED_ARRAY_TAG_GETTER?.call(input) ?? null; } catch { tag = null; }
+    isUint8 = tag === 'Uint8Array';
+  }
+  if (isUint8) {
+    const bytes = new Uint8Array(input.length);
+    bytes.set(input);
+    if (bytes.length !== length) throw new TypeError('x86-decoded-instruction-byte-length-mismatch');
+    return bytes;
+  }
+  if (!Array.isArray(input)) {
+    throw new TypeError('x86-decoded-instruction-invalid-raw-bytes');
+  }
+  const bytes = new Uint8Array(input.length);
+  for (let index = 0; index < input.length; index += 1) {
+    if (!Object.hasOwn(input, index)) throw new TypeError('x86-decoded-instruction-invalid-raw-bytes');
+    const byte = input[index];
+    if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 0xff) {
+      throw new TypeError('x86-decoded-instruction-invalid-raw-bytes');
+    }
+    bytes[index] = byte;
+  }
   if (bytes.length !== length) throw new TypeError('x86-decoded-instruction-byte-length-mismatch');
   return bytes;
 }

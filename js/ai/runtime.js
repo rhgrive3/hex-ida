@@ -9,7 +9,8 @@ import { createAgentJobManager } from './jobs/index.js';
 import { InvestigationSessionStore, isValidSessionId } from './session-core/index.js';
 import { sanitizeActions, addressText, validateSchema } from './validation.js';
 import { executeTurn } from './control/turn-executor.js';
-import { addressExistsAsync, assertLiveBindingsUnchanged, defaultMonotonicNow, deterministicConfidence, fallbackEvidence, presentAnswer } from './control/runtime-support.js';
+import { addressExistsAsync, assertLiveBindingsUnchanged, defaultMonotonicNow, deterministicConfidence, fallbackEvidence, presentAnswer, qualifyingEvidence } from './control/runtime-support.js';
+import { canonicalBindingId } from './control/snapshot.js';
 
 const BUDGET_LIMIT_REASONS = new Set([
   'budget_exhausted',
@@ -110,7 +111,7 @@ export class AIRuntime {
   async runJobSlice(jobOrId, options = {}) { return this.jobs.runSlice(jobOrId, options); }
   async resumeJob(id, options = {}) { return this.jobs.resume(id, options); }
 
-  async finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, monotonicNow = defaultMonotonicNow, limitReason, registry, snapshot, effectiveScope, stores, signal }) {
+  async finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, monotonicNow = defaultMonotonicNow, limitReason, registry, snapshot, effectiveScope, stores, signal, assertFresh = null }) {
     // Store authority comes from the turn's captured namespace, never from the
     // shared fields: a concurrent turn re-points `this.*Store` across awaits
     // and would otherwise swap this turn's evidence/hypothesis/proposal
@@ -123,7 +124,10 @@ export class AIRuntime {
     // without another tool execution. Re-check the turn binding before any
     // live-context validation (notably suggested action addresses) so finalization
     // cannot mix a snapshotted investigation with the newly visible binary.
-    assertLiveBindingsUnchanged(this.localContext, snapshot);
+    const assertFinalFresh = typeof assertFresh === 'function'
+      ? assertFresh
+      : () => assertLiveBindingsUnchanged(this.localContext, snapshot);
+    assertFinalFresh();
     const requestedEvidence = Array.from(new Set((decision.evidenceIds || []).map(String)));
     const hasExplicitEvidenceSelection = requestedEvidence.length > 0;
     const evidence = requestedEvidence.map((id) => evidenceStore.get(id)).filter(Boolean);
@@ -152,15 +156,22 @@ export class AIRuntime {
     const existence = new Map();
     for (const address of candidateAddresses) {
       existence.set(address, await addressExistsAsync(this.localContext, address, signal));
+      assertFinalFresh();
     }
     // Address validation may await a workbench switch. Re-prove the captured
     // turn binding before ProposalStore reads live context to bind new drafts.
-    assertLiveBindingsUnchanged(this.localContext, snapshot);
+    assertFinalFresh();
     const proposals = createProposalRecords(decision.proposals, proposalStore, activity);
     const proposalActions = proposals.map((proposal) => ({ kind: 'review-proposal', target: proposal.id }));
     const actions = sanitizeActions([...suggestedActions, ...proposalActions], { evidenceStore, proposalStore, addressExists: (address) => existence.get(address) ?? false });
     let confidence = Number.isFinite(decision.confidence) ? Math.max(0, Math.min(1, decision.confidence)) : deterministicConfidence(plan);
-    if (!finalEvidence.length) confidence = Math.min(confidence, 0.5);
+    // Evidence exposure and confidence authority are separate contracts. A
+    // current supported record may remain attached for provenance, whether it
+    // came from an explicit citation or planner fallback, but only qualifying
+    // authority may lift the no-authority confidence cap (#8864). #5159's
+    // invalid-explicit-citation no-substitution rule remains unchanged above.
+    const evidenceSatisfiesAuthority = qualifyingEvidence(finalEvidence).length > 0;
+    if (!evidenceSatisfiesAuthority) confidence = Math.min(confidence, 0.5);
     const budgetReason = BUDGET_LIMIT_REASONS.has(limitReason) ? limitReason : null;
     const elapsedNow = typeof monotonicNow === 'function' ? monotonicNow() : defaultMonotonicNow();
     const elapsedMs = Number.isFinite(elapsedNow) && Number.isFinite(started)
@@ -240,8 +251,8 @@ export function createAIRuntime(options) { return new AIRuntime(options); }
 
 function proposalBinding(context) {
   return {
-    binaryId: context?.binaryId == null ? null : String(context.binaryId),
-    projectId: context?.projectId == null ? null : String(context.projectId),
-    runtimeSessionId: context?.runtimeSessionId == null ? null : String(context.runtimeSessionId),
+    binaryId: canonicalBindingId(context?.binaryId),
+    projectId: canonicalBindingId(context?.projectId),
+    runtimeSessionId: canonicalBindingId(context?.runtimeSessionId),
   };
 }

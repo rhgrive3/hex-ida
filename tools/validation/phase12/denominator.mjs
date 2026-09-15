@@ -202,8 +202,15 @@ function checkSourceCollection(check, root, failures, id) {
   let matches;
   try { matches = [...scoped.matchAll(new RegExp(check.regex, 'g'))].map((item) => item[1]); }
   catch { failures.push(`${id}:source-regex-invalid`); return; }
-  const observed = check.unique === false ? matches : [...new Set(matches)];
-  const expected = check.unique === false ? (check.expected || []) : [...new Set(check.expected || [])];
+  const observedRaw = check.unique === false ? matches : [...new Set(matches)];
+  const expectedRaw = check.unique === false ? (check.expected || []) : [...new Set(check.expected || [])];
+  // `ordered: false` compares the collected reasons as a branch-aware set: the
+  // same rejection class may legitimately be enforced at several boundaries
+  // (for example the raw-binary preflight now runs before snapshot), so emission
+  // order is not authoritative. Set membership still is — any removal, rename,
+  // or addition is still reported, so this does not weaken the fail-closed gate.
+  const observed = check.ordered === false ? [...new Set(observedRaw)].sort() : observedRaw;
+  const expected = check.ordered === false ? [...new Set(expectedRaw)].sort() : expectedRaw;
   if (!equal(observed, expected)) failures.push(`${id}:source-collection-drift:${JSON.stringify({ observed, expected })}`);
 }
 

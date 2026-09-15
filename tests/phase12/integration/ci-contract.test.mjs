@@ -12,7 +12,13 @@ assert.match(workflow, /phase12:verify/);
 assert.match(workflow, /--expect-sha/);
 assert.match(workflow, /workflow_dispatch/);
 assert.doesNotMatch(workflow, /git push\s+origin\s+main/);
-assert.match(workflow, /actions\/checkout@v4/);
+// #8751: the security contract is the exact-SHA pinned checkout, not the
+// action major. Sync to the current approved `actions/checkout` major while
+// keeping an explicit assertion that dispatch/PR runs still check out the
+// expected SHA, so an unrelated major bump cannot stale this whole lane.
+assert.match(workflow, /actions\/checkout@v7/);
+assert.match(workflow, /ref:\s*\$\{\{\s*inputs\.expect_sha \|\| github\.sha\s*\}\}/,
+  'checkout must remain pinned to the expected exact SHA');
 assert.match(workflow, /github\.event_name != 'pull_request'/);
 assert.match(workflow, /!startsWith\(github\.head_ref, 'dev-agent-hardening\/'\)/,
   'Phase 12 must not claim Dev Agent hardening PRs through the shared package trigger');
