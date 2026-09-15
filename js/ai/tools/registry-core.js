@@ -96,6 +96,8 @@ export class ToolRegistry {
     const tool = this.get(name);
     if (!tool) throw new AIError("invalid_tool_call", `Unknown tool: ${name}`);
     if (options.signal?.aborted) throw abortError(options.signal);
+    const assertFresh = typeof options.assertFresh === 'function' ? options.assertFresh : null;
+    assertFresh?.();
     const started = Date.now();
     const scope = options.scope || "auto";
     const scopeBoundary = scopeBoundaryFor(scope, args, options, this.context);
@@ -107,6 +109,7 @@ export class ToolRegistry {
       assertSchema(args, tool.inputSchema, "invalid_tool_call");
       this.assertScope(tool, args, scope);
       await this.assertAddresses(tool.name, args, scope, execution.signal);
+      assertFresh?.();
       if (tool.mutability !== "read-only" || tool.needsApproval) throw new AIError("approval_required", `${name} cannot execute from the model tool loop.`);
       this.activity({ type: "tool-start", tool: name, label: `${name} を実行中` });
       let record = null;
@@ -118,6 +121,7 @@ export class ToolRegistry {
       }
       if (!record) {
         raw = await raceAbort(tool.execute(args, { ...options, scopeBoundary, signal: execution.signal, context: this.context }), execution.signal);
+        assertFresh?.();
         if (tool.outputSchema) assertSchema(raw, tool.outputSchema, "tool_failed");
         const lifecycle = raw?.solverResult?.lifecycle || raw?.lifecycle || {};
         const publishable = lifecycle.publishable !== false && lifecycle.late !== true;
@@ -134,6 +138,7 @@ export class ToolRegistry {
           });
         }
       }
+      assertFresh?.();
       const result = jsonSafe(raw);
       // Array results can carry non-enumerable completeness metadata (for
       // example KnowledgeDB's bounded search marker). Preserve it across the

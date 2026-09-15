@@ -31,6 +31,7 @@ import {
 import {
   MEMORY_SSA_BUILD_VERSION,
   buildMemorySsa,
+  canonicalSnapshotId,
   validateMemorySsa,
 } from '../memoryssa/index.js';
 import { projectSemanticIrV2ToLegacyV1 } from './semantic-ir-v2-to-v1.js';
@@ -751,7 +752,13 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
 
   const semanticIrDigest = stableDigest(ir);
   const scalarSsaDigest = stableDigest(ssa);
-  const snapshotId = String(options.memorySsaOptions?.snapshotId ?? options.snapshotId ?? 'snapshot-unbound');
+  // A snapshot id is provenance authority for the MemorySSA artifact and for every
+  // later staleness check, so it is validated as a primitive token instead of being
+  // `String()`-coerced: an Array, a custom `toString()` object, a number or a boolean
+  // must not collapse onto the same snapshot as a real id (#8804).
+  const snapshotId = canonicalSnapshotId(
+    options.memorySsaOptions?.snapshotId ?? options.snapshotId ?? 'snapshot-unbound',
+  );
   const semanticIrId = options.memorySsaOptions?.identity?.semanticIrId
     ?? `semantic-ir-${stableDigest({ functionId, semanticIrDigest })}`;
   const scalarSsaId = options.memorySsaOptions?.identity?.scalarSsaId
