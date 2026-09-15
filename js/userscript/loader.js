@@ -58,7 +58,8 @@ async function loadRuntime() {
   if (!bootstrap || bootstrap.buildId !== EXPECTED_BUILD || Date.parse(bootstrap.expiry) <= Date.now()) throw new Error('Runtime bootstrap identity or expiry could not be verified.');
   const manifest = bootstrap.manifest;
   if (!manifest || manifest.buildId !== EXPECTED_BUILD) throw new Error('The protected runtime manifest build identity does not match the pinned loader build.');
-  if (typeof manifest.aad !== 'string' || !manifest.aad.startsWith(`hex-runtime:${EXPECTED_BUILD}:`)) throw new Error('The protected runtime manifest AAD is not bound to the pinned loader build.');
+  if (manifest.runtimeVersion !== LOADER_VERSION) throw new Error('The protected runtime manifest version does not match the pinned loader version.');
+  if (typeof manifest.aad !== 'string' || manifest.aad !== `hex-runtime:${EXPECTED_BUILD}:${manifest.runtimeVersion}`) throw new Error('The protected runtime manifest AAD is not canonical for the pinned loader build and version.');
   if (!isCanonicalSha256(manifest.contentHash) || !manifest.contentHash.startsWith(EXPECTED_BUILD)) throw new Error('The protected runtime manifest content hash is not bound to the pinned loader build.');
   if (!Number.isSafeInteger(manifest.byteLength) || manifest.byteLength <= 0 || manifest.byteLength > RUNTIME_MAX_CIPHERTEXT_BYTES) throw new Error('The protected runtime manifest does not declare an admissible byte length.');
   const sourceCommit = normalizeCommit(bootstrap.sourceCommit);
