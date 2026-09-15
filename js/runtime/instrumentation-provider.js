@@ -93,69 +93,73 @@ function materializeRuntimeValue(value, state) {
   }
   state.depth += 1;
   if (state.depth > MAX_ENVELOPE_DEPTH) throw new DebugAdapterError('runtime-event-resource-limit', 'runtime event exceeds pre-normalization depth budget');
-  if (state.seen.has(value)) return state.seen.get(value);
-  const overBudget = () => {
-    if (state.bytes > state.maxBytes) {
-      throw new DebugAdapterError('runtime-event-resource-limit', `runtime event exceeds pre-normalization byte budget (${state.maxBytes})`);
+  try {
+    if (state.seen.has(value)) return state.seen.get(value);
+    const overBudget = () => {
+      if (state.bytes > state.maxBytes) {
+        throw new DebugAdapterError('runtime-event-resource-limit', `runtime event exceeds pre-normalization byte budget (${state.maxBytes})`);
+      }
+    };
+    if (value instanceof Date) { state.bytes += 24; overBudget(); return new Date(value.getTime()); }
+    if (value instanceof RegExp) { state.bytes += 24; overBudget(); return new RegExp(value.source, value.flags); }
+    if (value instanceof ArrayBuffer) {
+      state.bytes += value.byteLength + 16; overBudget();
+      return value.slice(0);
     }
-  };
-  if (value instanceof Date) { state.bytes += 24; overBudget(); return new Date(value.getTime()); }
-  if (value instanceof RegExp) { state.bytes += 24; overBudget(); return new RegExp(value.source, value.flags); }
-  if (value instanceof ArrayBuffer) {
-    state.bytes += value.byteLength + 16; overBudget();
-    return value.slice(0);
-  }
-  if (value instanceof DataView) {
-    const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-    state.bytes += value.byteLength + 16; overBudget();
-    const ownedBytes = Uint8Array.from(bytes);
-    return new DataView(ownedBytes.buffer);
-  }
-  if (ArrayBuffer.isView(value)) {
-    state.bytes += value.byteLength + 16; overBudget();
-    return new value.constructor(value);
-  }
+    if (value instanceof DataView) {
+      const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+      state.bytes += value.byteLength + 16; overBudget();
+      const ownedBytes = Uint8Array.from(bytes);
+      return new DataView(ownedBytes.buffer);
+    }
+    if (ArrayBuffer.isView(value)) {
+      state.bytes += value.byteLength + 16; overBudget();
+      return new value.constructor(value);
+    }
 
-  if (value instanceof Map) {
-    state.bytes += value.size * 8 + 16; overBudget();
-    const output = new Map();
+    if (value instanceof Map) {
+      state.bytes += value.size * 8 + 16; overBudget();
+      const output = new Map();
+      state.seen.set(value, output);
+      for (const [key, item] of value) {
+        output.set(materializeRuntimeValue(key, state), materializeRuntimeValue(item, state));
+      }
+      return output;
+    }
+    if (value instanceof Set) {
+      state.bytes += value.size * 8 + 16; overBudget();
+      const output = new Set();
+      state.seen.set(value, output);
+      for (const item of value) output.add(materializeRuntimeValue(item, state));
+      return output;
+    }
+
+    if (Array.isArray(value)) {
+      state.bytes += value.length * 2 + 16; overBudget();
+      const output = new Array(value.length);
+      state.seen.set(value, output);
+      for (let index = 0; index < value.length; index += 1) output[index] = materializeRuntimeValue(value[index], state);
+      return output;
+    }
+
+    const output = {};
     state.seen.set(value, output);
-    for (const [key, item] of value) {
-      output.set(materializeRuntimeValue(key, state), materializeRuntimeValue(item, state));
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== 'string' || key === 'length') continue;
+      state.bytes += key.length + 8; overBudget();
+      const item = materializeRuntimeValue(value[key], state);
+      if (typeof item === 'string') { state.bytes += item.length; overBudget(); }
+      Object.defineProperty(output, key, {
+        value: item,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
     return output;
+  } finally {
+    state.depth -= 1;
   }
-  if (value instanceof Set) {
-    state.bytes += value.size * 8 + 16; overBudget();
-    const output = new Set();
-    state.seen.set(value, output);
-    for (const item of value) output.add(materializeRuntimeValue(item, state));
-    return output;
-  }
-
-  if (Array.isArray(value)) {
-    state.bytes += value.length * 2 + 16; overBudget();
-    const output = new Array(value.length);
-    state.seen.set(value, output);
-    for (let index = 0; index < value.length; index += 1) output[index] = materializeRuntimeValue(value[index], state);
-    return output;
-  }
-
-  const output = {};
-  state.seen.set(value, output);
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key !== 'string' || key === 'length') continue;
-    state.bytes += key.length + 8; overBudget();
-    const item = materializeRuntimeValue(value[key], state);
-    if (typeof item === 'string') { state.bytes += item.length; overBudget(); }
-    Object.defineProperty(output, key, {
-      value: item,
-      enumerable: true,
-      configurable: true,
-      writable: true,
-    });
-  }
-  return output;
 }
 
 function materializeRuntimeEvent(raw, maxBytes) {
