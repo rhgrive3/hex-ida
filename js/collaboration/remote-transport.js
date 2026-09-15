@@ -385,63 +385,85 @@ export class RemoteCanonicalHttpTransport {
     } finally { deadline.cancel(); }
   }
 
-  async send(envelope) {
+  // Delivery uses its own per-phase deadline (separate from the
+  // authorization timer, which may already have expired): both are untrusted
+  // network phases and neither may remain pending forever (#8925).
+  async send(envelope, options = {}) {
+    if (this.#disposed) throw new Error('remote-transport-disposed');
+    if (!options || typeof options !== 'object' || Array.isArray(options)) {
+      throw new TypeError('remote-transport-delivery-options-invalid');
+    }
     if (!this.verifyTransportProof(envelope?.transportProof, envelope)) throw new Error('remote-transport-unverified-envelope');
-    const envelopeId = required(envelope?.envelopeId, 'remote-transport-delivery-envelope-id-required');
-    const proofIdentity = required(envelope?.transportProof?.proofIdentity, 'remote-transport-delivery-proof-identity-required');
-    const bindingDigest = await sha256(textEncoder.encode(canonicalTransportBindingText(envelope)));
-    const requestId = `remote-delivery:${await sha256(textEncoder.encode(stableStringify({
-      schemaVersion:REMOTE_CANONICAL_DELIVERY_SCHEMA,
-      envelopeId,
-      proofIdentity,
-      bindingDigest,
-    })))}`;
-    const deliveryPlaintext = textEncoder.encode(stableStringify(envelope));
-    const deliveryIv = globalThis.crypto.getRandomValues(new Uint8Array(12));
-    const deliveryAad = textEncoder.encode(`${REMOTE_CANONICAL_DELIVERY_SCHEMA}:${this.serverKeyId}`);
-    const deliveryCiphertext = new Uint8Array(await subtle().encrypt(
-      { name:'AES-GCM', iv:deliveryIv, additionalData:deliveryAad, tagLength:128 },
-      this.sessionEncryptionKey,
-      deliveryPlaintext,
-    ));
-    const response = await this.fetchImpl(this.endpoint, {
-      method:'POST',
-      headers:{ 'content-type':'application/json' },
-      body:JSON.stringify({
+    const signal = authorizationSignal(options.signal);
+    const timeoutMs = authorizationTimeout(options.timeoutMs ?? this.authorizationTimeoutMs);
+    const deadline = createAuthorizationDeadline(timeoutMs, signal);
+    try {
+      deadline.assertActive();
+      const envelopeId = required(envelope?.envelopeId, 'remote-transport-delivery-envelope-id-required');
+      const proofIdentity = required(envelope?.transportProof?.proofIdentity, 'remote-transport-delivery-proof-identity-required');
+      const bindingDigest = await deadline.race(sha256(textEncoder.encode(canonicalTransportBindingText(envelope))));
+      deadline.assertActive();
+      const requestId = `remote-delivery:${await deadline.race(sha256(textEncoder.encode(stableStringify({
         schemaVersion:REMOTE_CANONICAL_DELIVERY_SCHEMA,
-        requestId,
         envelopeId,
-        bindingDigest,
         proofIdentity,
-        iv:base64(deliveryIv),
-        ciphertext:base64(deliveryCiphertext),
-      }),
-    });
-    if (!response || response.ok !== true) throw new Error(`remote-transport-delivery-http-rejected:${response?.status ?? 'unavailable'}`);
-    const result = await readBoundedResponseJson(response, this.maxResponseBytes);
-    if (result?.schemaVersion !== REMOTE_CANONICAL_DELIVERY_ACK_SCHEMA) {
-      throw new Error('remote-transport-delivery-ack-schema-invalid');
-    }
-    let signed;
-    try { signed = signedDeliveryAckPayload(result); }
-    catch { throw new Error('remote-transport-delivery-ack-invalid'); }
-    if (signed.requestId !== requestId
-      || signed.envelopeId !== envelopeId
-      || signed.bindingDigest !== bindingDigest
-      || signed.keyId !== this.serverKeyId
-      || signed.status !== 'sent') {
-      throw new Error('remote-transport-delivery-ack-identity-mismatch');
-    }
-    let signature;
-    try { signature = fromBase64(result.signature, 'remote-transport-delivery-ack-signature-invalid'); }
-    catch { throw new Error('remote-transport-delivery-ack-signature-invalid'); }
-    const verified = await subtle().verify(
-      { name:'Ed25519' },
-      this.serverVerificationKey,
-      signature,
-      textEncoder.encode(stableStringify(signed)),
-    );
-    if (!verified) throw new Error('remote-transport-delivery-ack-signature-rejected');
-    return Object.freeze({ status:'sent', envelopeId });
+        bindingDigest,
+      }))))}`;
+      deadline.assertActive();
+      const deliveryPlaintext = textEncoder.encode(stableStringify(envelope));
+      const deliveryIv = globalThis.crypto.getRandomValues(new Uint8Array(12));
+      deadline.assertActive();
+      const deliveryAad = textEncoder.encode(`${REMOTE_CANONICAL_DELIVERY_SCHEMA}:${this.serverKeyId}`);
+      const deliveryCiphertext = new Uint8Array(await deadline.race(subtle().encrypt(
+        { name:'AES-GCM', iv:deliveryIv, additionalData:deliveryAad, tagLength:128 },
+        this.sessionEncryptionKey,
+        deliveryPlaintext,
+      )));
+      deadline.assertActive();
+      const response = await boundedFetch(this, {
+        method:'POST',
+        headers:{ 'content-type':'application/json' },
+        body:JSON.stringify({
+          schemaVersion:REMOTE_CANONICAL_DELIVERY_SCHEMA,
+          requestId,
+          envelopeId,
+          bindingDigest,
+          proofIdentity,
+          iv:base64(deliveryIv),
+          ciphertext:base64(deliveryCiphertext),
+        }),
+      }, deadline);
+      deadline.assertActive();
+      if (!response || response.ok !== true) throw new Error(`remote-transport-delivery-http-rejected:${response?.status ?? 'unavailable'}`);
+      const result = await readBoundedResponseJson(response, this.maxResponseBytes, deadline);
+      deadline.assertActive();
+      if (result?.schemaVersion !== REMOTE_CANONICAL_DELIVERY_ACK_SCHEMA) {
+        throw new Error('remote-transport-delivery-ack-schema-invalid');
+      }
+      let signed;
+      try { signed = signedDeliveryAckPayload(result); }
+      catch { throw new Error('remote-transport-delivery-ack-invalid'); }
+      if (signed.requestId !== requestId
+        || signed.envelopeId !== envelopeId
+        || signed.bindingDigest !== bindingDigest
+        || signed.keyId !== this.serverKeyId
+        || signed.status !== 'sent') {
+        throw new Error('remote-transport-delivery-ack-identity-mismatch');
+      }
+      let signature;
+      try { signature = fromBase64(result.signature, 'remote-transport-delivery-ack-signature-invalid'); }
+      catch { throw new Error('remote-transport-delivery-ack-signature-invalid'); }
+      deadline.assertActive();
+      const verified = await deadline.race(subtle().verify(
+        { name:'Ed25519' },
+        this.serverVerificationKey,
+        signature,
+        textEncoder.encode(stableStringify(signed)),
+      ));
+      deadline.assertActive();
+      if (!verified) throw new Error('remote-transport-delivery-ack-signature-rejected');
+      if (this.#disposed) throw new Error('remote-transport-disposed');
+      return Object.freeze({ status:'sent', envelopeId });
+    } finally { deadline.cancel(); }
   }
 }
