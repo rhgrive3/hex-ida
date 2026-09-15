@@ -13,7 +13,7 @@ export function recoverArm64ClangIdiom(root) {
     const mask = root.right.value;
     if (mask >= 0n && (mask & (mask + 1n)) === 0n && root.left.right?.kind === 'const') {
       let width = 0n; for (let x = mask; x; x >>= 1n) width++;
-      return expr.intrinsic('bit_extract', [root.left.left, root.left.right, expr.constant(width, root.bits)], Number(width || 1n), false, root.source);
+      return expr.intrinsic('bit_extract', [root.left.left, root.left.right, expr.constant(width, root.bits)], root.bits, false, root.source);
     }
   }
   // Clang lowers max(x, 0) for signed integers to:

@@ -55,6 +55,27 @@ function optionalIdentity(value, label) {
   return value;
 }
 
+// Preservation hooks establish register-clobber truth. A throwing hook, a
+// non-array result, or a non-string member is a provider failure and must
+// never become a proven empty clobber set (#8910). A nullish result keeps
+// the historical empty meaning (the registry default is () => []).
+function canonicalPreservationRegs(plugin, hookName, options) {
+  let raw;
+  try {
+    raw = plugin?.[hookName]?.(options);
+  } catch {
+    return { ok: false, regs: null };
+  }
+  if (raw == null) return { ok: true, regs: Object.freeze([]) };
+  if (!Array.isArray(raw)) return { ok: false, regs: null };
+  const regs = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'string' || entry.length === 0) return { ok: false, regs: null };
+    regs.push(entry);
+  }
+  return { ok: true, regs: Object.freeze(regs) };
+}
+
 function abiEvidenceState(options = {}, call = null, adapter = null) {
   const optionState = abiResultInvalidState(options);
   if (optionState) return optionState;
@@ -883,8 +904,16 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
     completeness:supported ? 'canonical' : 'unsupported',
     stackRules:() => stackRules,
     unwindRules:() => unwindRules,
-    callerSaved:() => { try { return Object.freeze([...(plugin?.callerSaved?.(options) ?? [])]); } catch { return Object.freeze([]); } },
-    calleeSaved:() => { try { return Object.freeze([...(plugin?.calleeSaved?.(options) ?? [])]); } catch { return Object.freeze([]); } },
+    callerSaved:() => {
+      const resolved = canonicalPreservationRegs(plugin, 'callerSaved', options);
+      if (!resolved.ok) throw new TypeError('abi-callerSaved-unavailable');
+      return resolved.regs;
+    },
+    calleeSaved:() => {
+      const resolved = canonicalPreservationRegs(plugin, 'calleeSaved', options);
+      if (!resolved.ok) throw new TypeError('abi-calleeSaved-unavailable');
+      return resolved.regs;
+    },
     /**
      * Canonical ABI classification entry points.  These deliberately return
      * the registry classifier's evidence object unchanged: the adapter carries
@@ -1043,8 +1072,11 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
         && returned != null && returned?.partial !== true && returned?.unsupported !== true;
       const candidateReturnLocations = candidateReturnPublish ? canonicalReturnLocations(returned) : [];
       const returnProofMissing = candidateReturnPublish && candidateReturnLocations.length === 0;
+      // Preservation failure is call-boundary authority failure: it forces
+      // partial even when every other classifier is exact (#8910).
+      const preservation = canonicalPreservationRegs(plugin, 'callerSaved', options);
       const partial = !!hardInvalid || unknownCallPrototype || classified?.partial === true || !!returnState
-        || returned?.partial === true || returned?.unsupported === true || returnProofMissing;
+        || returned?.partial === true || returned?.unsupported === true || returnProofMissing || !preservation.ok;
       const markUncertain = (entry) => ({
         ...entry,
         possible:true,
@@ -1081,13 +1113,14 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
         implicitInputs,
         variadicVectorRegisterCount:classified?.variadicVectorRegisterCount ?? null,
         partial,
-        completeness:evidenceState || classifierState || returnState
+        completeness:evidenceState || classifierState || returnState || (!preservation.ok ? 'partial' : null)
           || (returnProofMissing ? 'malformed' : classified == null || classified?.unsupported === true ? 'unknown' : partial ? 'partial' : 'complete'),
         stackArguments:hardInvalid || partial ? null : classified?.stackArguments ?? null,
         stackArgsUnknown:hardInvalid || partial ? true : classified?.stackArgsUnknown ?? true,
         stackArgsMayContainPointers:hardInvalid || partial ? true : classified?.stackArgsMayContainPointers ?? true,
         argumentEvidence:classified?.evidence ?? `abi-${pluginId}`,
-        clobbers:(() => { try { return plugin?.callerSaved?.(options) ?? []; } catch { return []; } })(),
+        clobbers:preservation.ok ? preservation.regs : Object.freeze([]),
+        clobberEvidence:preservation.ok ? `abi-${pluginId}` : 'unavailable',
         returnReg:returnRegister,
         returnBits:publishableReturn ? returned?.bits ?? null : null,
         returnBytes:publishableReturn ? returned?.bytes ?? null : null,
