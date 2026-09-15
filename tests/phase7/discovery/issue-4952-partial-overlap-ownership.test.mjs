@@ -33,13 +33,17 @@ test('overlapping authoritative partial ranges with different ownership fail clo
   }
 });
 
-test('same ownership may overlap without manufacturing a conflict', () => {
+test('same ownership may overlap without manufacturing a conflict (#8809 sync)', () => {
+  // Current contract: partial-only evidence never mints an `exact` extent —
+  // several partials are unioned and remain `unknown` (the body may have
+  // other ranges). Agreement is about ownership, not exactness: no conflict
+  // may be manufactured for same-ownership overlap.
   const candidate = fuse([
     partial('unwind-entry', 'unwind', 0x100n, 0x120n, 'shared'),
     partial('loader-function-start', 'loader', 0x110n, 0x130n, 'shared'),
   ]);
 
-  assert.equal(candidate.extentState, 'exact');
+  assert.equal(candidate.extentState, 'unknown');
   assert.deepEqual(candidate.regions, [
     { start: '256', end: '288', ownership: 'shared' },
     { start: '272', end: '304', ownership: 'shared' },
@@ -47,13 +51,17 @@ test('same ownership may overlap without manufacturing a conflict', () => {
   assert.equal(candidate.conflicts.length, 0);
 });
 
-test('touching or disjoint ranges with different ownership remain compatible', () => {
+test('touching or disjoint ranges with different ownership remain compatible (#8809 sync)', () => {
+  // Ownership disagreement applies to overlapping bytes only; touching or
+  // disjoint ranges stay compatible — still without manufacturing exactness
+  // from partial-only evidence.
   for (const secondStart of [0x120n, 0x130n]) {
     const candidate = fuse([
       partial('unwind-entry', 'unwind', 0x100n, 0x120n, 'exclusive'),
       partial('loader-function-start', 'loader', secondStart, secondStart + 0x10n, 'shared'),
     ]);
-    assert.equal(candidate.extentState, 'exact');
+    assert.equal(candidate.extentState, 'unknown');
+    assert.equal(candidate.regions.length, 2);
     assert.equal(candidate.conflicts.length, 0);
   }
 });
