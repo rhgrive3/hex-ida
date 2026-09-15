@@ -949,6 +949,28 @@
    * extent are not guesses.  Malformed/unsupported CIEs are skipped locally so
    * one vendor-specific record cannot poison the rest of the section.
    */
+  /*
+   * #8832 — executable-mapping containment for `.eh_frame` FDE extents.
+   *
+   * `options.execRanges` is a caller-provided list of {start,end} executable,
+   * file-backed mapping intervals (contiguous/overlapping entries are merged into
+   * a single continuous code domain). When supplied, an FDE counts as exact
+   * function-start + extent authority only if its entire [start,end) is contained
+   * in ONE such range. When omitted (e.g. a bare structural decode), the check is
+   * skipped and prior behavior is preserved, so only authoritative callers opt in.
+   * `options.align` additionally requires the FDE start to be ISA-aligned.
+   */
+  function fdeInExecutableMapping(start, end, options) {
+    const align = options && options.align;
+    if (align && align > 1n && (start % align) !== 0n) return false;
+    const ranges = options && options.execRanges;
+    if (!Array.isArray(ranges)) return true;                 // authority not provided
+    for (const r of ranges) {
+      if (r.start <= start && end <= r.end) return true;
+    }
+    return false;
+  }
+
   function parseEhFrameRanges(buf, sectionVM, options = {}) {
     const out = [];
     if (!buf || buf.length < 8 || sectionVM == null) return out;
@@ -1039,7 +1061,18 @@
           const rangeX = ehEncodedValue(dv, u8, startX.next, recordEnd, rangeEncoding, vm, options);
           if (!rangeX || rangeX.raw <= 0n) { p = recordEnd; continue; }
           const start = startX.value, end = start + rangeX.raw;
-          if (start >= 0n && end > start) out.push({ start, end });
+          // #8832: an FDE is only promoted to exact start + closed function-extent
+          // authority when its full [start,end) lies inside one deterministic
+          // executable/file-backed mapping. A structurally decodable but out-of-
+          // mapping extent (the ELF side already proves this via
+          // `sameExecutableRange`) must fail closed here — clipping would turn
+          // malformed metadata into an invented exact extent that the worker uses
+          // to suppress otherwise valid function starts. Malformed FDEs are isolated
+          // so one bad record cannot discard unrelated valid ranges.
+          if (start >= 0n && end > start) {
+            if (!fdeInExecutableMapping(start, end, options)) { p = recordEnd; continue; }
+            out.push({ start, end });
+          }
         } catch { /* malformed FDE: fail closed */ }
       }
       p = recordEnd;

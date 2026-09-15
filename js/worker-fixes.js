@@ -222,6 +222,37 @@ function __mappedDataAddress(slice, addr, codeRegion) {
   return false;
 }
 
+/*
+ * #8832: the executable/file-backed code domains that grant an `.eh_frame` FDE
+ * its exact start + extent authority. Only non-zero-fill regions the parser
+ * classified as code (`exec`) count; contiguous/overlapping ones are merged
+ * into a single continuous code domain so a legitimate FDE spanning adjacent
+ * `__text` sub-ranges is preserved, while an FDE reaching across an unrelated
+ * mapping or outside every code region stays rejected by the parser.
+ */
+function __executableCodeRanges(slice) {
+  const raw = [];
+  for (const r of (slice && slice.regions) || []) {
+    if (!r.exec || r.zerofill || !(r.size > 0n)) continue;
+    const start = r.vmAddr, end = r.vmAddr + r.size;
+    if (end > start) raw.push({ start, end });
+  }
+  raw.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+  const merged = [];
+  for (const r of raw) {
+    const last = merged[merged.length - 1];
+    if (last && r.start <= last.end) { if (r.end > last.end) last.end = r.end; continue; }
+    merged.push({ start: r.start, end: r.end });
+  }
+  return merged;
+}
+
+function __execInstructionAlign(slice) {
+  const arch = (slice && slice.info && slice.info.architecture) || 'arm64';
+  return arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32' ? 4n
+    : arch === 'arm' ? 2n : 1n;
+}
+
 function __addressBitmap(region) {
   const rows = Math.ceil(Number(region.size) / 4);
   const bits = new Uint8Array(Math.ceil(rows / 8));
@@ -319,6 +350,7 @@ async function __functionEvidence(region, slice, requestId, unwindLimit = 200_00
         const buf = await readRange(ehFrameRegion.fileOffset, Number(ehFrameRegion.size));
         ehFrameRanges = MachO.parseEhFrameRanges(buf, ehFrameRegion.vmAddr, {
           pointerSize: slice.info?.is64 === false ? 4 : 8, textBase: imageBase,
+          execRanges: __executableCodeRanges(slice), align: __execInstructionAlign(slice),
         }).filter((x) => x.end > lo && x.start < hi);
         for (const x of ehFrameRanges) if (x.start >= lo && x.start < hi) unwind.add(x.start);
       } catch { ehFrameRanges = []; /* malformed DWARF is not evidence */ }
