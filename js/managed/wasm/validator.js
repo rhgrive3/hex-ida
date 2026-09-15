@@ -1,6 +1,7 @@
 import { decodeSleb128, decodeSleb128_64, decodeUleb128 } from './parser.js';
 import { createVMEffectBudgetTracker } from '../shared/vm-effects.js';
 import { createWasmMemoryValidationContext, decodeWasmMemarg, validateWasmMemoryInstruction } from './memory-validation.js';
+import { wasmModuleIndex } from './module-index.js';
 
 function fail(code) { throw new TypeError(code); }
 
@@ -41,21 +42,20 @@ function decodeBlockType(bytecode, pos, wasmModule, budget = null) {
   return { params: type.params, results: type.results, nextOffset: result.nextOffset };
 }
 
-function functionTypeForIndex(wasmModule, funcIndex) {
-  const imported = wasmModule.imports.filter((entry) => entry.desc.kind === 0);
-  const typeIndex = funcIndex < imported.length
-    ? imported[funcIndex].desc.typeIndex
-    : wasmModule.functions[funcIndex - imported.length];
+function functionTypeForIndex(wasmModule, funcIndex, moduleIndex = wasmModuleIndex(wasmModule)) {
+  const typeIndex = funcIndex < moduleIndex.importedFunctionCount
+    ? moduleIndex.functionTypeIndices[funcIndex]
+    : wasmModule.functions[funcIndex - moduleIndex.importedFunctionCount];
   const type = wasmModule.types[typeIndex];
   if (!type) fail('wasm-invalid-callee-type-index');
   return type;
 }
 
 export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
-  const imported = wasmModule.imports.filter((entry) => entry.desc.kind === 0);
-  if (funcIndex < imported.length) return Object.freeze({ complete: true });
+  const moduleIndex = wasmModuleIndex(wasmModule);
+  if (funcIndex < moduleIndex.importedFunctionCount) return Object.freeze({ complete: true });
 
-  const internalIndex = funcIndex - imported.length;
+  const internalIndex = funcIndex - moduleIndex.importedFunctionCount;
   if (internalIndex < 0 || internalIndex >= wasmModule.functions.length || internalIndex >= wasmModule.codeBodies.length) {
     fail('wasm-invalid-function-index');
   }
@@ -64,14 +64,8 @@ export function validateWasmFunctionTypes(funcIndex, wasmModule, options = {}) {
   const codeBody = wasmModule.codeBodies[internalIndex];
   const bytecode = codeBody.bytecode;
   const locals = [...funcType.params, ...codeBody.locals];
-  const globals = [
-    ...wasmModule.imports.filter((entry) => entry.desc.kind === 3).map((entry) => entry.desc),
-    ...wasmModule.globals,
-  ];
-  const tables = [
-    ...wasmModule.imports.filter((entry) => entry.desc.kind === 1).map((entry) => entry.desc),
-    ...wasmModule.tables,
-  ];
+  const globals = moduleIndex.globals;
+  const tables = moduleIndex.tables;
   const memoryContext = createWasmMemoryValidationContext(wasmModule);
   // #8946: the validator receives hostile functions before the lifter, so it
   // must enforce the same shared VMEffect resource authority rather than
