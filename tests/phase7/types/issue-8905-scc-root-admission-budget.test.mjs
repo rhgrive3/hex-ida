@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { TypeConstraintGraph } from '../../../js/analysis/types/graph.js';
 import { condenseTypeGraph } from '../../../js/analysis/types/scc.js';
 
 test('#8905 a huge root iterable cannot run past maxNodes before the budget is observed', () => {
@@ -84,7 +85,52 @@ test('#8905 within-budget root sets keep their exact prior condensation and dete
   const b = condenseTypeGraph(['A', 'B', 'root'], deps, { maxNodes: 10, maxEdges: 10, maxComponents: 10 });
   assert.equal(a.truncated, false);
   assert.equal(a.cancelled, false);
-  // roots are still sorted internally, so iteration order of entityIds must not matter
   assert.deepEqual(a.components, b.components);
   assert.deepEqual(a.components, [['A', 'B'], ['root']]);
+});
+
+test('#8905 solveGraph bounds unknown explicit roots before filtering and fails closed', () => {
+  const graph = new TypeConstraintGraph({ snapshotId: 's', limits: { maxNodes: 1, maxEdges: 4, maxComponents: 4 } });
+  let yielded = 0;
+  function* roots() {
+    for (let i = 0; i < 100_000; i += 1) {
+      yielded += 1;
+      yield `unknown_${i}`;
+    }
+  }
+  const result = graph.solveGraph({ roots: roots() });
+  assert.ok(yielded <= 2, `public root discovery must stop at maxNodes+1 pulls, got ${yielded}`);
+  assert.equal(result.results.size, 0);
+  assert.equal(result.status.completeness, 'truncated');
+  assert.equal(result.status.stopReason, 'budget-exhausted');
+});
+
+test('#8905 solveGraph observes an already-aborted signal before pulling explicit roots', () => {
+  const graph = new TypeConstraintGraph({ snapshotId: 's', limits: { maxNodes: 1, maxEdges: 4, maxComponents: 4 } });
+  const controller = new AbortController();
+  controller.abort();
+  let yielded = 0;
+  function* roots() {
+    yielded += 1;
+    yield 'unknown';
+  }
+  const result = graph.solveGraph({ roots: roots(), signal: controller.signal });
+  assert.equal(yielded, 0);
+  assert.equal(result.status.completeness, 'partial');
+  assert.equal(result.status.stopReason, 'cancelled');
+});
+
+test('#8905 solveGraph all-entity path stays lazy and reports truncation past maxNodes', () => {
+  const graph = new TypeConstraintGraph({ snapshotId: 's', limits: { maxNodes: 1, maxEdges: 4, maxComponents: 4 } });
+  const hard = (entityId) => ({
+    kind: 'access-width',
+    origin: 'binary-evidence',
+    claim: { layer: 'machine', entityId, descriptor: { widthBits: 32, class: 'integer' } },
+  });
+  graph.addHardConstraint(hard('A'));
+  graph.addHardConstraint(hard('B'));
+  graph.entityIds = () => { throw new Error('solveGraph must not materialize entityIds() before the node budget'); };
+  const result = graph.solveGraph();
+  assert.equal(result.status.completeness, 'truncated');
+  assert.equal(result.status.stopReason, 'budget-exhausted');
 });
