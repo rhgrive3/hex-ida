@@ -16,6 +16,7 @@ import {
   MEMORY_SSA_ALIAS_RELATIONS,
   MEMORY_SSA_CONTRACT_VERSION,
   MEMORY_SSA_DEFAULT_BUDGET,
+  canonicalSnapshotId,
   createMemoryRegionRef,
   createMemorySsaContract,
 } from './contract.js';
@@ -567,6 +568,31 @@ function nodesByIdForStack(irFunction) {
   return new Map((irFunction.nodes ?? []).map((node) => [String(node.id), node]));
 }
 
+function stackAddressPublishedBeforeCall(node, orderedNodes, stackValues) {
+  const callIndex = orderedNodes.findIndex((candidate) => candidate === node);
+  if (callIndex < 0) return true;
+  const stores = (upstream) => {
+    const list = [
+      ...(upstream.kind === 'store' ? [{ addressValueId: memoryAddressExpr(upstream.memory)?.valueId ?? upstream.inputs?.[0], storedValueId: upstream.inputs?.[1] }] : []),
+      ...(upstream.intrinsic?.memoryWrite?.accesses ?? []).map((access) => ({
+        addressValueId: access.addressExpr?.valueId,
+        storedValueId: access.valueId ?? null,
+      })),
+    ];
+    return list;
+  };
+  for (let index = 0; index < callIndex; index++) {
+    const upstream = orderedNodes[index];
+    if (!upstream) continue;
+    for (const store of stores(upstream)) {
+      const stored = store.storedValueId;
+      if (stored == null || !stackValues.derives(stored)) continue;
+      if (!stackValues.derives(store.addressValueId)) return true;
+    }
+  }
+  return false;
+}
+
 function discoverDescriptors(irFunction, cfg, options, fallbackRegion, orderedNodes = null) {
   const descriptors = [];
   const readsByNode = new Map();
@@ -615,7 +641,8 @@ function discoverDescriptors(irFunction, cfg, options, fallbackRegion, orderedNo
         && (descriptor.sourceKind === 'call'
           || (descriptor.sourceKind === 'unknown-memory-effect' && descriptor.node?.kind === 'call'))
         && !stackValues.nodeHasStackDerivedArgument(descriptor.node)
-        && !callMayExposeStackAddress(descriptor.node, nodes, irFunction, stackValues)) {
+        && !callMayExposeStackAddress(descriptor.node, nodes, irFunction, stackValues)
+        && !stackAddressPublishedBeforeCall(descriptor.node, nodes, stackValues)) {
       descriptor.noEscapeStack = true;
     }
   }
@@ -894,6 +921,13 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   // The serialized identity describes the canonical build, but is not an
   // authority for publication. The exact artifact object is bound privately
   // below; copying or re-signing its fields cannot copy that binding.
+  // Snapshot provenance is validated before it is published or jsonSafe'd: the
+  // identity block survives structured values, and a structured `snapshotId`
+  // there would otherwise be re-coerced by every consumer that compares it
+  // against the artifact (#8804).
+  if (options.identity?.snapshotId != null) {
+    canonicalSnapshotId(options.identity.snapshotId, 'memory-ssa-identity-snapshot-id-invalid');
+  }
   const identity = deepFreeze(jsonSafe(options.identity ?? {
     functionId: irFunction.functionId,
     memorySsaBuildVersion: MEMORY_SSA_BUILD_VERSION,
@@ -1510,7 +1544,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       functionId: irFunction.functionId,
       semanticIrDigest: identity?.semanticIrDigest ?? null,
     }),
-    ...(options.snapshotId == null ? {} : { snapshotId: String(options.snapshotId) }),
+    ...(options.snapshotId == null ? {} : { snapshotId: canonicalSnapshotId(options.snapshotId) }),
     useDefLinks,
     defUseLinks,
     accessMetadata,

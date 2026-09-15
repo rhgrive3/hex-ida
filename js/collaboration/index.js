@@ -113,6 +113,30 @@ function isMutableCollectionView(value) {
 
 function internalClassOf(value) { return Object.prototype.toString.call(value).slice(8, -1); }
 
+// Shared-memory state must never be laundered into an owned canonical record.
+// `immutableBytesRecord` copies bytes out of a buffer, which would let a
+// SharedArrayBuffer-backed payload survive the snapshot boundary that keeps
+// shared state from crossing the remote ingress gate. The boundary detector
+// here matches the one in remote-authority.js so both views agree.
+const SHARED_ARRAY_BUFFER_BYTE_LENGTH = typeof SharedArrayBuffer === 'undefined'
+  ? null
+  : Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength')?.get ?? null;
+
+function isSharedMemoryValue(value) {
+  if (!SHARED_ARRAY_BUFFER_BYTE_LENGTH || value == null || typeof value !== 'object') return false;
+  try {
+    SHARED_ARRAY_BUFFER_BYTE_LENGTH.call(value);
+    return true;
+  } catch { }
+  if (!ArrayBuffer.isView(value)) return false;
+  try {
+    SHARED_ARRAY_BUFFER_BYTE_LENGTH.call(value.buffer);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function immutableBytesRecord(value) {
   const bytes = ArrayBuffer.isView(value)
     ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
@@ -144,6 +168,9 @@ function canonicalImmutableContent(value, path = []) {
   if (path.includes(value)) throw new TypeError('operation-payload-cyclic');
   const classOf = internalClassOf(value);
   if (ArrayBuffer.isView(value) || classOf === 'ArrayBuffer' || classOf === 'SharedArrayBuffer') {
+    // #8751 boundary: shared memory is left intact (never copied into an owned
+    // record) so the remote snapshot scan can still see it and fail closed.
+    if (isSharedMemoryValue(value)) return value;
     return immutableBytesRecord(value);
   }
   if (classOf === 'Date' || value instanceof Date) {
@@ -531,7 +558,12 @@ export class ChangeLog {
     record.values.sort((a, b) => compareOperationId(a.operationId, b.operationId));
     record.stateFingerprint = factStateFingerprint(record);
     this.state.facts[key] = record;
-    if (MEANINGFUL_FACTS.has(operation.factKind) && record.values.length > 1) this.state.conflicts.push({ type: 'meaningful-conflict', key, factKind: operation.factKind, operationIds: record.values.map((item) => item.operationId) });
+    if (MEANINGFUL_FACTS.has(operation.factKind) && record.values.length > 1) {
+      const operationIds = record.values.map((item) => item.operationId);
+      const existingConflict = this.state.conflicts.find((entry) => entry.type === 'meaningful-conflict' && entry.key === key);
+      if (existingConflict) { existingConflict.operationIds = operationIds; existingConflict.factKind = operation.factKind; }
+      else this.state.conflicts.push({ type: 'meaningful-conflict', key, factKind: operation.factKind, operationIds });
+    }
     this.operations.set(operation.operationId, operation);
     return { status: record.values.length > 1 && MEANINGFUL_FACTS.has(operation.factKind) ? 'conflict' : 'applied', operationId: operation.operationId, effect: record.values.length > 1 ? 'preserved-competing-value' : 'fact' };
   }

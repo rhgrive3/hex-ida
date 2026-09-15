@@ -63,7 +63,25 @@ export function condenseTypeGraph(entityIds, dependenciesOf, {
     cancelled: true,
   });
 
-  const roots = [...new Set(entityIds)].sort();
+  // Bounded root admission (#8905): the previous `[...new Set(entityIds)].sort()`
+  // eagerly materialized the entire caller iterable before the Tarjan loop could
+  // observe `maxNodes` or `AbortSignal`, so a generator with 100k roots and
+  // `maxNodes: 1` still allocated every one of them and an already-aborted
+  // signal still drained the stream. Enumeration is now globally bounded by
+  // `maxNodes` (the Tarjan node budget): each pulled item counts as admission
+  // work, cancellation is observed between items, and pulling one item past
+  // `maxNodes` truncates the enumeration without allocating the tail. Within
+  // the budget the sorted root set is identical to the previous eager path.
+  if (signal?.aborted) return cancelledResult();
+  const rootSet = new Set();
+  let rootAdmissions = 0;
+  for (const id of entityIds) {
+    rootAdmissions += 1;
+    if (rootAdmissions > maxNodes) { truncated = true; break; }
+    rootSet.add(id);
+    if (signal?.aborted) return cancelledResult();
+  }
+  const roots = [...rootSet].sort();
 
   for (const root of roots) {
     if (signal?.aborted) return cancelledResult();

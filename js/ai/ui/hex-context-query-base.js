@@ -9,6 +9,7 @@ import {
   analyzeModelAt as analyzeLegacyModelAt,
   createHexAIContext as createLegacyHexAIContext,
 } from './hex-context-legacy.js';
+import { createAnalysisSnapshot } from '../../analysis/query/index.js';
 
 const QUERY_AUTHORITY = 'AnalysisQueryAPI';
 const MAX_QUERY_PAGE = 5_000;
@@ -152,6 +153,31 @@ function currentAddressOf(context) {
   try { return toBigInt(context.currentAddress); } catch { return null; }
 }
 
+function storeValue(app, key) {
+  try { return typeof app?.store?.get === 'function' ? app.store.get(key) : (app?.store?.[key] ?? null); }
+  catch { return null; }
+}
+
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function canonicalAnalysisRevision(app) {
+  const rawEpoch = app?.backend?.gen ?? app?.analysisEpoch ?? null;
+  if (rawEpoch == null) return null;
+  const project = storeValue(app, 'project') ?? app?.workspace?.project ?? app?.project ?? null;
+  const rawVersions = app?.analysisArtifactVersions ?? app?.artifactVersions;
+  const artifactVersions = isPlainObject(rawVersions) ? { ...rawVersions } : {};
+  return createAnalysisSnapshot({
+    binaryId:'ai-cache-analysis-binding',
+    projectRevision:project?.revision ?? app?.projectRevision ?? app?.workspace?.bindingRevision ?? 0,
+    artifactVersions,
+    analysisEpoch:rawEpoch,
+  }).snapshotId;
+}
+
 /**
  * Build the live first-party AI capability object. Product App instances always
  * expose AnalysisQueryAPI; hosts without it are explicit compatibility oracles.
@@ -175,6 +201,17 @@ export function createHexAIContext(app) {
   define(context, 'analysisAuthority', { value:QUERY_AUTHORITY, writable:false });
   define(context, 'binaryId', {
     get() { return app?.backend?.binaryId ?? legacy.binaryId ?? null; },
+  });
+
+  // #8931: use the canonical AnalysisQueryAPI snapshot identity machinery for
+  // the outer deterministic cache too. This keeps epoch/project validation and
+  // artifactVersions normalization identical to QueryAPI, so malformed nested
+  // values cannot alias a prior valid cache key. Binary identity remains an
+  // independent ObservationStore binding dimension, hence the fixed local
+  // binary id used solely to digest the analysis tuple. A host with no live
+  // epoch stays explicit-unknown and retains #5887's per-context nonce.
+  define(context, 'analysisRevision', {
+    get() { return canonicalAnalysisRevision(app); },
   });
 
   // Direct analysis indexes are intentionally not part of the production AI

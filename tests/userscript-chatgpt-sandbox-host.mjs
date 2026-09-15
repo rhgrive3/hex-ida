@@ -132,4 +132,6 @@ assert.doesNotMatch(entrySource, /falling back to legacy|startLegacy\(error\)|st
 assert.match(entrySource, /readEmbedMode\(\) === LEGACY_MODE/,
   'legacy light DOM must remain available only as an explicit rollback mode');
 
+await import('./issue-5085-sandbox-host-status-id-collision.mjs');
+
 console.log('userscript ChatGPT opaque sandbox host: ok');

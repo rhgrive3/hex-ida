@@ -328,7 +328,9 @@ function decorateImplicitBtiLanding(instruction, bundle, context) {
   const guardState = normalizeArm64BtiGuardedPageState(
     context.btiGuardedPage ?? context.guardedPageState ?? context.pageGuardState ?? null,
   );
-  const featBti = context.featBti ?? context.hasBti ?? true;
+  // FEAT_BTI is an optional architecture feature. It is only enforced when it
+  // is positively known; an absent/unresolved feature is `unknown`, not `true`.
+  const featBti = context.featBti ?? context.hasBti ?? null;
   const btype = normalizeBtype(context.incomingBtype ?? context.btype ?? context.pstateBtype);
   const sctlrBt = normalizeSctlrBt(context.sctlrBt ?? context.sctlr_elx_bt ?? context.btPolicy ?? context.sctlrPolicy);
 
@@ -346,6 +348,27 @@ function decorateImplicitBtiLanding(instruction, bundle, context) {
         landingPadKind:'pacixsp',
         implicitBtiLanding:false,
         featBti:false,
+      },
+    });
+  }
+
+  // An unprovisioned FEAT_BTI must not be laundered into "implemented": the
+  // implicit landing-pad `branch-target-exception` cannot be proven present or
+  // absent, so the bundle fails closed to a partial result that preserves the
+  // pointer-authentication operations without fabricating exact BTI semantics.
+  // This mirrors the sibling FEAT_PAuth_LR / PACM unknown→partial handling.
+  if (featBti == null) {
+    return rebuiltBundle(bundle, {
+      operations:bundle.operations,
+      possibleFaults:bundle.possibleFaults,
+      completeness:'partial',
+      unknownEffects:{ categories:['control','faults'], reason:'bti-feature-unknown' },
+      metadata:{
+        btiGuardedPage:guardState,
+        btiCheck:'unknown-feat-bti',
+        landingPadKind:'pacixsp',
+        implicitBtiLanding:false,
+        featBti:'unknown',
       },
     });
   }

@@ -784,3 +784,41 @@ for (const file of ['.circleci/config.yml', '.github/workflows/phase7-ownership.
   assert.match(workflow, /fix\/batch-4075-owner12/);
   assert.match(workflow, /tools\/validation\/phase7\/cross-lane-inventory\.mjs/);
 }
+
+
+const batch8936Branch = 'fix/batch-10-issues-20260915';
+const batch8936OwnedFiles = [
+  '.github/workflows/phase7-ownership.yml',
+  'js/analysis/semantic-function-base.js',
+  'js/semantics/compat/index.js',
+  'tests/phase7/ownership/cross-lane-routing.test.mjs',
+  'tools/validation/phase7/cross-lane-inventory.mjs',
+];
+const batch8936ForeignFiles = CROSS_LANE_ROUTES[batch8936Branch];
+const batch8936Inventory = [...batch8936OwnedFiles, ...batch8936ForeignFiles];
+assert.deepEqual(
+  validateCrossLaneInventory(batch8936Branch, batch8936Inventory),
+  [...batch8936OwnedFiles].sort((left, right) => Buffer.from(left).compare(Buffer.from(right))),
+  'the #8936 route must return only the Phase 7-owned analysis/semantic subset',
+);
+assert.throws(
+  () => validateCrossLaneInventory(batch8936Branch, [...batch8936Inventory, 'js/ui/__undeclared_8936.js']),
+  /unexpected foreign paths/,
+  'the #8936 route must reject an undeclared foreign path instead of waiving ownership',
+);
+assert.throws(
+  () => validateCrossLaneInventory(`${batch8936Branch}-similar`, batch8936Inventory),
+  /no exact Phase 7 cross-lane route/,
+  'a similar batch branch name must not activate the #8936 route',
+);
+assert.throws(
+  () => validateCrossLaneInventory(batch8936Branch, batch8936ForeignFiles),
+  /no Phase 7-owned paths/,
+  'the #8936 route must fail closed without Phase 7 evidence',
+);
+for (const file of ['.circleci/config.yml', '.github/workflows/phase7-ownership.yml']) {
+  const workflow = readFileSync(file, 'utf8');
+  assert.ok(workflow.includes(batch8936Branch), 'the #8936 workflow route must be wired');
+  assert.match(workflow, /tools\/validation\/phase7\/cross-lane-inventory\.mjs/);
+}
+console.log('phase7 #8936 cross-lane ownership routing: PASS');
