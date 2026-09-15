@@ -25,7 +25,7 @@ import { makeSampleFile } from './sample.js';
 import { ProgramIndex, mergeProgramScans, PROGRAM_MERGE_LIMITS } from './program.js';
 import { foldShapes } from './shapes.js';
 import { normalizeSchemaRecoveryLimit, recoverSchemas } from './schema.js';
-import { annotateSchemaResult, dependencyCompleteness, schemaResultSatisfies } from './analysis/schema-recovery-contract.js';
+import { annotateSchemaResult, dependencyCompleteness, schemaDependencyGeneration, schemaResultSatisfies } from './analysis/schema-recovery-contract.js';
 import { NoteStore, noteKeyFromBinaryId, findLegacyV3NoteKey, legacyV2NoteKeyFor, legacyNoteKeyForSlice, EMPTY_NOTES } from './names.js';
 import { PatchSet } from './patch.js';
 import { uiRoot } from './ui-root.js';
@@ -227,6 +227,7 @@ export class App {
     this.schemas = null;        // データファイルの表（schema.js）
     this.schemasBusy = null;
     this.schemasBusyEpoch = -1;
+    this.schemasBusyGeneration = -1;
     this.stringsBusy = null;
     this.stringsBusyEpoch = -1;
     this.lastGoal = null;       // 直近に調べた目的
@@ -726,6 +727,7 @@ export class App {
       this.schemas = null;
       this.schemasBusy = null;
       this.schemasBusyEpoch = -1;
+      this.schemasBusyGeneration = -1;
       this.stringsBusy = null;
       this.stringsBusyEpoch = -1;
       this.objcBusy = null;
@@ -893,16 +895,20 @@ export class App {
   async ensureSchemas(onProgress) {
     const epoch = this.backend.gen;
     const maxSchemas = normalizeSchemaRecoveryLimit();
-    if (schemaResultSatisfies(this.schemas, epoch, maxSchemas)) return this.schemas;
-    if (this.schemasBusy && this.schemasBusyEpoch === epoch) return this.schemasBusy;
+    const generation = schemaDependencyGeneration(this);
+    if (schemaResultSatisfies(this.schemas, epoch, maxSchemas, generation)) return this.schemas;
+    if (this.schemasBusy && this.schemasBusyEpoch === epoch && this.schemasBusyGeneration === generation) return this.schemasBusy;
     this.schemasBusyEpoch = epoch;
+    this.schemasBusyGeneration = generation;
     this.schemasBusy = (async () => {
       try {
         const strings = await this.ensureStrings(onProgress);
         const program = await this.ensureProgram(onProgress);
         if (epoch !== this.backend.gen) return null;
+        const boundGeneration = Number.isSafeInteger(program?.gen) ? program.gen : generation;
+        const isCurrent = epoch === this.backend.gen && boundGeneration === schemaDependencyGeneration(this);
         if (!program) {
-          this.schemas = annotateSchemaResult([], dependencyCompleteness(strings, program), { epoch, maxSchemas });
+          if (isCurrent) this.schemas = annotateSchemaResult([], dependencyCompleteness(strings, program), { epoch, maxSchemas, dependencyGeneration: boundGeneration });
           return this.schemas;
         }
         const read = (addr, len) => this.backend.readAt(addr, len)
@@ -910,17 +916,18 @@ export class App {
         const arch = this.store.get('architecture') || this.currentSlice?.()?.capability?.architecture;
         const schemas = await recoverSchemas({ strings, program, read, onProgress, architecture: arch,
           limit:maxSchemas, isCancelled: () => epoch !== this.backend.gen });
-        if (epoch === this.backend.gen) {
-          this.schemas = annotateSchemaResult(schemas, dependencyCompleteness(strings, program), { epoch, maxSchemas });
+        if (epoch === this.backend.gen && boundGeneration === schemaDependencyGeneration(this)) {
+          this.schemas = annotateSchemaResult(schemas, dependencyCompleteness(strings, program), { epoch, maxSchemas, dependencyGeneration: boundGeneration });
         }
       } catch {
-        if (epoch === this.backend.gen) {
-          this.schemas = annotateSchemaResult([], { complete:false, reasons:['schema-recovery-failed'] }, { epoch, maxSchemas });
+        if (epoch === this.backend.gen && generation === schemaDependencyGeneration(this)) {
+          this.schemas = annotateSchemaResult([], { complete:false, reasons:['schema-recovery-failed'] }, { epoch, maxSchemas, dependencyGeneration: generation });
         }
       } finally {
-        if (this.schemasBusyEpoch === epoch) {
+        if (this.schemasBusyEpoch === epoch && this.schemasBusyGeneration === generation) {
           this.schemasBusy = null;
           this.schemasBusyEpoch = -1;
+          this.schemasBusyGeneration = -1;
         }
       }
       return epoch === this.backend.gen ? this.schemas : null;

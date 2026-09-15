@@ -134,7 +134,7 @@
               "package-dependency-version-required",
               "package-dependency-not-pinned",
               "found.contentHash !== dependency.contentHash",
-              "String(found.packageVersion) !== dependency.packageVersion"
+              "found.packageVersion !== dependency.packageVersion"
             ]
           }
         },
@@ -809,6 +809,7 @@
             "start": "validate(envelope) {",
             "end": "\n  }\n\n  accept(envelope)",
             "regex": "reason: '([^']+)'",
+            "ordered": false,
             "expected": [
               "remote-envelope-shape-invalid",
               "remote-envelope-schema-unsupported",
@@ -902,7 +903,7 @@
                   "AES-GCM",
                   "Ed25519",
                   "remoteCanonicalTransportBinding(envelope)",
-                  "entry.binding !== stableStringify(remoteCanonicalTransportBinding(envelope))",
+                  "entry.binding !== canonicalTransportBindingText(envelope)",
                   "remote-transport-response-signature-rejected"
                 ]
               },

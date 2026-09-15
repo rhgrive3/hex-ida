@@ -415,6 +415,53 @@ function decodeQuadrant2(word) {
   }
 }
 
+// This is an exported architectural decoder, so its byte input domain must be
+// as strict as the canonical `createRiscv64DecodedInstruction` constructor
+// (#6009). Generic `Uint8Array.from()` coercion would silently remap
+// out-of-domain values (`275 -> 19`, `'19' -> 19`, `19.9 -> 19`, `-237 -> 19`,
+// `true -> 1`) into a valid instruction word, laundering malformed byte
+// evidence into `supported:true` architectural fields and collapsing distinct
+// provenance onto one canonical encoding (#8792). Cross-realm decoder bridges
+// run in separate realms, so genuine `Uint8Array` views are recognized via
+// their `toStringTag`, matching the constructor's boundary policy.
+const WORD_UINT8_ARRAY_TAG_GETTER = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype),
+  Symbol.toStringTag,
+)?.get;
+const WORD_UINT8_ARRAY_SET = Uint8Array.prototype.set;
+
+function isUint8ArrayView(value) {
+  if (value instanceof Uint8Array) return true;
+  if (!ArrayBuffer.isView(value)) return false;
+  let tag = null;
+  try { tag = WORD_UINT8_ARRAY_TAG_GETTER?.call(value) ?? null; } catch { tag = null; }
+  return tag === 'Uint8Array';
+}
+
+// Return a defensive byte-domain snapshot. `null`/`undefined` stay empty so a
+// later length check can still classify them as an unsupported (not invalid)
+// encoding; a well-formed byte sequence is validated element-by-element; any
+// other input shape fails closed as schema-invalid raw bytes.
+function normalizeInstructionWordBytes(bytes, code) {
+  if (bytes == null) return new Uint8Array();
+  if (isUint8ArrayView(bytes)) {
+    try { return Uint8Array.prototype.slice.call(bytes); } catch { throw new TypeError(code); }
+  }
+  if (!Array.isArray(bytes)) throw new TypeError(code);
+  const length = bytes.length;
+  const out = new Uint8Array(length);
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(bytes, String(index));
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) throw new TypeError(code);
+    const byte = descriptor.value;
+    if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 0xff) {
+      throw new TypeError(code);
+    }
+    WORD_UINT8_ARRAY_SET.call(out, [byte], index);
+  }
+  return out;
+}
+
 /**
  * Decode one RV64 instruction word into canonical architectural fields.
  *
@@ -424,7 +471,7 @@ function decodeQuadrant2(word) {
  * Immediates are BigInt and already sign-extended per the ISA encoding tables.
  */
 export function decodeRiscv64InstructionWord(bytes) {
-  const input = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes || []);
+  const input = normalizeInstructionWordBytes(bytes, 'riscv64-instruction-word-invalid-raw-bytes');
   if (input.length !== 2 && input.length !== 4) {
     return Object.freeze(unsupported('riscv64-unsupported-instruction-length', { length: input.length }));
   }

@@ -29,7 +29,7 @@ function positiveLimit(value, fallback, minimum = 1) {
 }
 
 function boundedMemoryLimit(value, fallback, maximum) {
-  if (!isPrimitiveFiniteNumber(value)) return fallback;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) return fallback;
   return Math.max(1, Math.min(maximum, value));
 }
 

@@ -264,8 +264,12 @@ export class AgentJobManager {
       let value;
       try {
         value = await this.persistence?.load?.(id);
-      } catch {
-        return null;
+      } catch (error) {
+        // A persistence read failure is not an authoritative "record absent".
+        // Returning null here would let create() treat an unreadable existing
+        // job as free and overwrite its durable checkpoint (fail-open), so
+        // surface the original error and let callers fail closed (#8932).
+        throw error;
       }
       if (validateCheckpoint(value, id)) {
         const live = isLiveRunningCheckpoint(value);

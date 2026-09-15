@@ -5,9 +5,13 @@ import {
   baseFamily, registerName, vectorIndex, isVectorOperand, isMaskOperand, evexInfo, memoryAddress,
   trustedCapstoneInstruction, physicalIds,
 } from './extended-state-helpers.js';
+import { X86_LONG64_EVEX_DENOMINATOR_FAMILY_SET } from './evex-denominator-families.js';
 
 // Finite frozen long-64 EVEX identities proven against trusted structured Capstone detail.
 // Synthetic/untrusted family spellings remain fail-closed via trustedCapstoneInstruction().
+// Membership in the frozen decoder denominator itself is the single authority for owner
+// retention (X86_LONG64_EVEX_DENOMINATOR_FAMILIES below); this narrower set is only the
+// list of families whose generic operand-role semantics have been proven for exact lifts.
 const PROVEN_GENERIC_EVEX_FAMILIES = new Set([
   'v4fmaddps',
   'v4fmaddss',
@@ -130,19 +134,22 @@ export function liftEvex(instruction, context, family, provenanceSource = instru
   const isPrefetch = /gatherpf|scatterpf/.test(family);
   const compare = /^v(?:p?cmp|ptest|fpclass|u?comi)/.test(family);
 
-  // A synthetic/unqualified `v*` spelling is not evidence that this generic
-  // EVEX owner applies. Keep the finite dedicated EVEX families available to
-  // their existing provenance-negative tests, but require the Capstone
-  // identity proof before claiming every broader family (for example
-  // `vpmulld`). Canonical decoder rows carry that proof and remain owned.
+  // A synthetic/unqualified `v*` spelling that is not in the frozen decoder
+  // denominator is not evidence that this generic EVEX owner applies. Keep the
+  // finite dedicated EVEX families available to their existing
+  // provenance-negative tests, but require the Capstone identity proof before
+  // claiming every broader family (for example `vpmulld`). Canonical decoder
+  // rows carry that proof and remain owned.
   const knownDedicatedFamily = FP_EVEX_BASES.has(base) || SIMD_EVEX_BASES.has(base);
   const trusted = trustedCapstoneInstruction(instruction, family, provenanceSource);
-  // Families in the frozen generic denominator still have an explicit
-  // semantic owner even when the row lacks receiver authority. Keep that
-  // owner visible as a fail-closed partial instead of falling through to an
-  // unowned/null result that could hide the provenance divergence.
-  const knownGenericFamily = PROVEN_GENERIC_EVEX_FAMILIES.has(family);
-  if (!trusted && !knownDedicatedFamily && !knownGenericFamily) return null;
+  // Every valid family in the frozen decoder denominator keeps an explicit
+  // canonical semantic owner even when the row lacks receiver authority
+  // (#8874). Keep that owner visible as a fail-closed partial instead of
+  // falling through to an unowned/null result that could hide the provenance
+  // divergence. Denominator membership is derived from the frozen witness
+  // inventory, not a hand-maintained allowlist, and grants no exactness.
+  const denominatorMember = X86_LONG64_EVEX_DENOMINATOR_FAMILY_SET.has(family);
+  if (!trusted && !knownDedicatedFamily && !denominatorMember) return null;
 
   if (!trusted) {
     const ctx = createX86EffectContext(instruction, context);
