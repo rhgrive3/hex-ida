@@ -134,6 +134,20 @@ function assertInterventionParents(records, record) {
   }
 }
 
+// Collision comparison key for the ledger (#8868 + #8794). The stored
+// `identityTypeWitness` is derived from the PRE-canonical source input so the
+// auto-generated id can distinguish a `Uint8Array` from a numeric `Array` that
+// canonicalize to the same bytes; it is therefore not reproducible from a
+// persisted canonical replay and must not participate in the same-id collision
+// check (that would turn a legitimate replay into a false collision). The
+// `lossyTypeWitness` of the canonical content still makes the check reject a
+// caller-supplied id reused for genuinely different, stringify-aliasing values
+// (`1n` vs `'1'`, #8794).
+function canonicalInterventionCollisionKey(record) {
+  const { identityTypeWitness: _witness, ...canonical } = record;
+  return stableStringify([canonical, lossyTypeWitness(canonical)]);
+}
+
 export function createInterventionRecord(input = {}) {
   const runtimeSessionId = required(input.runtimeSessionId, 'runtime-session-id-required', 'intervention requires runtimeSessionId');
   const providerId = required(input.providerId, 'runtime-provider-required', 'intervention requires providerId');
@@ -218,7 +232,12 @@ export class InterventionLedger {
     const record = createInterventionRecord(input);
     const existing = this.#records.get(record.interventionId);
     if (existing) {
-      if (stableStringify([existing, lossyTypeWitness(existing)]) !== stableStringify([record, lossyTypeWitness(record)])) {
+      // Same id is idempotent only for the same canonical record content
+      // (#5327, superseding the #3579 identity-only idempotency): silently
+      // returning the existing record for a different execution (a different
+      // acknowledged backend result) loses the later occurrence and its
+      // provenance. Identical re-ingestion (persisted replay) stays allowed.
+      if (canonicalInterventionCollisionKey(existing) !== canonicalInterventionCollisionKey(record)) {
         throw new DebugAdapterError(
           'runtime-intervention-id-collision',
           `intervention id is already bound to a different record: ${record.interventionId}`,
