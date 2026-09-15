@@ -94,6 +94,48 @@ function buildVirtualMappingLookup(sections, segments) {
   return { items, starts, prefixEnds, runs: buildVirtualMappingRuns(items) };
 }
 
+// Owner selection for overlapping mappings is "smallest size wins, earliest source
+// order breaks ties" and is queried while sweeping interval boundaries in ascending
+// order. One heap implements that comparator for both the virtual-mapping run index and
+// the function-seed region sweep so the two boundaries cannot drift apart.
+function createSizeOrderMinHeap() {
+  const heap = [];
+  const before = (a, b) => a.size < b.size || (a.size === b.size && a.order < b.order);
+
+  const push = (item) => {
+    heap.push(item);
+    let index = heap.length - 1;
+    while (index > 0) {
+      const parent = (index - 1) >>> 1;
+      if (!before(heap[index], heap[parent])) break;
+      [heap[index], heap[parent]] = [heap[parent], heap[index]];
+      index = parent;
+    }
+  };
+
+  const pop = () => {
+    const top = heap[0];
+    const last = heap.pop();
+    if (heap.length > 0) {
+      heap[0] = last;
+      let index = 0;
+      while (true) {
+        const left = index * 2 + 1;
+        const right = left + 1;
+        let smallest = index;
+        if (left < heap.length && before(heap[left], heap[smallest])) smallest = left;
+        if (right < heap.length && before(heap[right], heap[smallest])) smallest = right;
+        if (smallest === index) break;
+        [heap[index], heap[smallest]] = [heap[smallest], heap[index]];
+        index = smallest;
+      }
+    }
+    return top;
+  };
+
+  return { push, pop, clear: () => { heap.length = 0; }, top: () => heap[0], size: () => heap.length };
+}
+
 function buildVirtualMappingRuns(items) {
   const events = [];
   for (const item of items) {
@@ -103,16 +145,19 @@ function buildVirtualMappingRuns(items) {
   events.sort((a, b) => a.point < b.point ? -1 : a.point > b.point ? 1 : a.kind - b.kind);
   const starts = [];
   const owners = [];
-  const active = new Set();
+  // The owner of an interval is the smallest live mapping, so the minimum is carried
+  // across boundaries in a lazy-deletion heap. Rescanning the whole live set at every
+  // boundary made index construction Θ(N^2) on nested mappings, which let a small file
+  // spend far beyond the parser's advertised deadline in the first mapping query (#8880).
+  const live = new Set();
+  const heap = createSizeOrderMinHeap();
+  const bestActive = () => {
+    while (heap.size() > 0 && !live.has(heap.top())) heap.pop();
+    const best = heap.top();
+    return best ? best.mapping : null;
+  };
   let previous = null;
   let cursor = 0;
-  const bestActive = () => {
-    let best = null;
-    for (const item of active) {
-      if (!best || item.size < best.size || (item.size === best.size && item.order < best.order)) best = item;
-    }
-    return best?.mapping || null;
-  };
   while (cursor < events.length) {
     const point = events[cursor].point;
     if (previous !== null && previous < point) {
@@ -122,10 +167,10 @@ function buildVirtualMappingRuns(items) {
     const groupEnd = cursor;
     while (cursor < events.length && events[cursor].point === point) cursor++;
     for (let i = groupEnd; i < cursor; i++) {
-      if (events[i].kind < 0) active.delete(events[i].item);
+      if (events[i].kind < 0) live.delete(events[i].item);
     }
     for (let i = groupEnd; i < cursor; i++) {
-      if (events[i].kind > 0) active.add(events[i].item);
+      if (events[i].kind > 0) { live.add(events[i].item); heap.push(events[i].item); }
     }
     previous = point;
   }
@@ -158,6 +203,91 @@ function lookupVirtualMapping(lookup, address) {
   return best?.mapping || null;
 }
 
+// #8772: file-offset resolution is a mapping query, not a display scan. Sections and
+// segments are indexed by their file range so a lookup costs O(log N + the ranges that
+// actually contain the offset) instead of O(sections + segments) per call, and the
+// containing window is answered from its first resolution-order candidate instead of a
+// per-call sort. The candidate order is preserved exactly: ascending virtual size, ties
+// broken by the original enumeration order (sections first, then segments).
+function buildFileOffsetLookup(sections, segments) {
+  const items = [];
+  let rank = 0;
+  for (const mapping of sections) {
+    if (!sectionHasMappedAddress(mapping) || mapping.address == null) continue;
+    // Validate the raw range the same way the per-query scan did, so malformed
+    // provider output still fails closed at the identical boundary.
+    inRange(0n, mapping.fileOffset, mapping.fileSize);
+    const start = BigInt(mapping.fileOffset);
+    const end = start + BigInt(mapping.fileSize);
+    if (end > start) items.push({ mapping, rank, start, end, size: mapping.size });
+    rank++;
+  }
+  for (const mapping of segments) {
+    inRange(0n, mapping.fileOffset, mapping.fileSize);
+    const start = BigInt(mapping.fileOffset);
+    const end = start + BigInt(mapping.fileSize);
+    if (end > start) items.push({ mapping, rank, start, end, size: mapping.size });
+    rank++;
+  }
+  items.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.rank - b.rank));
+  const starts = new Array(items.length);
+  const prefixEnds = new Array(items.length);
+  let maxEnd = null;
+  for (let i = 0; i < items.length; i++) {
+    starts[i] = items[i].start;
+    if (maxEnd === null || items[i].end > maxEnd) maxEnd = items[i].end;
+    prefixEnds[i] = maxEnd;
+  }
+  return { items, starts, prefixEnds };
+}
+
+function fileOffsetCandidateWindow(lookup, offset) {
+  const { items, starts, prefixEnds } = lookup;
+  let lo = 0;
+  let hi = items.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (starts[mid] <= offset) lo = mid + 1;
+    else hi = mid;
+  }
+  const upper = lo;
+  if (upper === 0) return null;
+  lo = 0;
+  hi = upper;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (prefixEnds[mid] > offset) hi = mid;
+    else lo = mid + 1;
+  }
+  return { lo, hi: upper };
+}
+
+const beforeCandidate = (a, b) => (a.size < b.size ? true : a.size > b.size ? false : a.rank < b.rank);
+
+// The first candidate in resolution order, without materializing or sorting the window.
+// Alias-heavy images (every section mapping the same bytes) have windows as wide as the
+// section count, so a per-call sort made each resolution Θ(N log N) even though the
+// earliest smallest mapping answers it; this keeps the common answer at one probe.
+function firstFileOffsetCandidate(lookup, window, offset) {
+  const { items } = lookup;
+  let best = null;
+  for (let i = window.lo; i < window.hi; i++) {
+    const item = items[i];
+    if (item.end <= offset) continue;
+    if (best === null || beforeCandidate(item, best)) best = item;
+  }
+  return best;
+}
+
+function orderedFileOffsetCandidates(lookup, window, offset) {
+  const { items } = lookup;
+  const candidates = [];
+  for (let i = window.lo; i < window.hi; i++) {
+    if (items[i].end > offset) candidates.push(items[i]);
+  }
+  candidates.sort((a, b) => (a.size < b.size ? -1 : a.size > b.size ? 1 : a.rank - b.rank));
+  return candidates;
+}
 
 function isAddressSorted(items) {
   for (let i = 1; i < items.length; i++) {
@@ -357,7 +487,7 @@ export class BinaryImage {
     this.warnings = [];
     this.metadata = meta.metadata || {};
     this._finalized = false;
-    this._mappingLookups = { sections: null, segments: null, virtual: null };
+    this._mappingLookups = { sections: null, segments: null, virtual: null, offsets: null };
     this._mappingSorted = { sections: null, segments: null };
     this._dataInCodeLookup = null;
     this._dataInCodeSorted = null;
@@ -385,6 +515,7 @@ export class BinaryImage {
     this._finalized = false;
     this._mappingLookups.segments = null;
     this._mappingLookups.virtual = null;
+    this._mappingLookups.offsets = null;
     this._mappingSorted.segments = null;
     return seg;
   }
@@ -414,6 +545,7 @@ export class BinaryImage {
     this._finalized = false;
     this._mappingLookups.sections = null;
     this._mappingLookups.virtual = null;
+    this._mappingLookups.offsets = null;
     this._mappingSorted.sections = null;
     return sec;
   }
@@ -434,26 +566,27 @@ export class BinaryImage {
   offsetToAddress(offset) {
     const o = strictBigIntOrNull(offset);
     if (o === null || o < 0n) return null;
-    const candidates = [];
-    for (const s of this.sections) {
-      if (!sectionHasMappedAddress(s) || s.address == null || !inRange(o, s.fileOffset, s.fileSize)) continue;
-      candidates.push(s);
-    }
-    for (const s of this.segments) {
-      if (!inRange(o, s.fileOffset, s.fileSize)) continue;
-      candidates.push(s);
-    }
-    candidates.sort((a, b) => (a.size < b.size ? -1 : a.size > b.size ? 1 : 0));
-    for (const s of candidates) {
+    if (!this._mappingLookups.offsets) this._mappingLookups.offsets = buildFileOffsetLookup(this.sections, this.segments);
+    const lookup = this._mappingLookups.offsets;
+    const window = fileOffsetCandidateWindow(lookup, o);
+    if (window === null) return null;
+    const resolve = (candidate) => {
+      const s = candidate.mapping;
       const a = s.address + (o - s.fileOffset);
       const owner = this._virtualMappingAt(a);
-      if (owner) {
-        const delta = a - owner.address;
-        const fileSize = owner.fileSize ?? 0n;
-        if (delta < fileSize && (owner.fileOffset + delta) === o) {
-          return a;
-        }
-      }
+      if (!owner) return null;
+      const delta = a - owner.address;
+      const fileSize = owner.fileSize ?? 0n;
+      return delta < fileSize && (owner.fileOffset + delta) === o ? a : null;
+    };
+    const first = firstFileOffsetCandidate(lookup, window, o);
+    if (first !== null) {
+      const resolved = resolve(first);
+      if (resolved !== null) return resolved;
+    }
+    for (const candidate of orderedFileOffsetCandidates(lookup, window, o)) {
+      const resolved = resolve(candidate);
+      if (resolved !== null) return resolved;
     }
     return null;
   }
@@ -804,6 +937,7 @@ export class BinaryImage {
     this._mappingLookups.segments = null;
     this._mappingLookups.sections = null;
     this._mappingLookups.virtual = null;
+    this._mappingLookups.offsets = null;
     this._mappingSorted.segments = true;
     this._mappingSorted.sections = true;
     this.symbols.sort(byAddr);
@@ -905,46 +1039,13 @@ function createMonotonicRegionLookup(regions) {
     end: BigInt(region.address) + BigInt(region.size),
   })).sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : a.order - b.order);
 
-  const heap = [];
+  const heap = createSizeOrderMinHeap();
   let cursor = 0;
   let lastAddress = null;
 
-  const before = (a, b) => a.size < b.size || (a.size === b.size && a.order < b.order);
-
-  const push = (item) => {
-    heap.push(item);
-    let index = heap.length - 1;
-    while (index > 0) {
-      const parent = (index - 1) >>> 1;
-      if (!before(heap[index], heap[parent])) break;
-      [heap[index], heap[parent]] = [heap[parent], heap[index]];
-      index = parent;
-    }
-  };
-
-  const pop = () => {
-    const top = heap[0];
-    const last = heap.pop();
-    if (heap.length > 0) {
-      heap[0] = last;
-      let index = 0;
-      while (true) {
-        const left = index * 2 + 1;
-        const right = left + 1;
-        let smallest = index;
-        if (left < heap.length && before(heap[left], heap[smallest])) smallest = left;
-        if (right < heap.length && before(heap[right], heap[smallest])) smallest = right;
-        if (smallest === index) break;
-        [heap[index], heap[smallest]] = [heap[smallest], heap[index]];
-        index = smallest;
-      }
-    }
-    return top;
-  };
-
   const reset = () => {
     cursor = 0;
-    heap.length = 0;
+    heap.clear();
     lastAddress = null;
   };
 
@@ -952,9 +1053,10 @@ function createMonotonicRegionLookup(regions) {
     const value = BigInt(address);
     if (lastAddress !== null && value < lastAddress) reset();
     lastAddress = value;
-    while (cursor < ordered.length && ordered[cursor].start <= value) push(ordered[cursor++]);
-    while (heap.length > 0 && heap[0].end <= value) pop();
-    return heap[0]?.region || null;
+    while (cursor < ordered.length && ordered[cursor].start <= value) heap.push(ordered[cursor++]);
+    while (heap.size() > 0 && heap.top().end <= value) heap.pop();
+    const best = heap.top();
+    return best ? best.region : null;
   };
 }
 
