@@ -106,6 +106,12 @@ export async function buildObjcRuntimeModel(read, classList, runtimeSections = {
     if (!seen.has(key)) { seen.add(key); names.push(entry); }
   }
   const legacyClasses = base.completeness?.classes || { present: !!classList, complete: false };
+  if (!classList) {
+    // Extended records remain useful, but no class table means the unified
+    // runtime model cannot certify class coverage from category references.
+    legacyClasses.complete = false;
+    legacyClasses.reasons = [...(legacyClasses.reasons || []), 'objc-classlist-missing'];
+  }
   const extended = extra.completeness || {};
   const runtimeCompleteness = {
     classes: legacyClasses,

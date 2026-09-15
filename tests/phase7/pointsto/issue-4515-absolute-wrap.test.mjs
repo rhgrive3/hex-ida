@@ -83,3 +83,24 @@ test('an access whose end crosses the pointer boundary is not separated (#4515)'
 });
 
 console.log('issue #4515 absolute pointer-wrap alias regressions: PASS');
+
+
+test('pointer-width uncertainty never borrows the accessed value width (#4515)', () => {
+  for (const pointerWidth of [null, undefined, 0, -1, 1.5, 513, NaN, Infinity, 'invalid']) {
+    // Explicit undefined is also an unknown target width, not the fixture's
+    // default. The raw target retains the canonical root/address/offset proof.
+    const left = { ...target('A', '0x1000'), widthBits:pointerWidth };
+    const right = target('B', '0x2000');
+    for (const accessWidth of [8, 32, 64, 128]) {
+      for (const [a, b] of [[left, right], [right, left]]) {
+        const result = alias(a, b, accessWidth, accessWidth);
+        assert.equal(result.relation, 'may', `${String(pointerWidth)} pointer / ${accessWidth} access`);
+        assert.ok(result.reasonCodes.includes('provenance-lost'));
+        assert.ok(!result.reasonCodes.includes('disjoint-global-interval'));
+      }
+    }
+  }
+  for (const accessWidth of [8, 32, 64, 128]) {
+    assert.equal(alias(target('A', '0x1000'), target('B', '0x2000'), accessWidth, accessWidth).relation, 'no');
+  }
+});

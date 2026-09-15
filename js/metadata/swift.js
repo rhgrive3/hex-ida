@@ -19,7 +19,7 @@ import {
 } from '../swift.js';
 
 export const SWIFT_PROVIDER_ID = 'metadata.swift';
-export const SWIFT_PROVIDER_VERSION = '1.0.0';
+export const SWIFT_PROVIDER_VERSION = '1.0.1';
 
 function swiftPartialCoverage(model) {
   const complete = (kind) => model.completeness?.[kind]?.complete === true;

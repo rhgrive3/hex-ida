@@ -65,7 +65,8 @@ test('6069 canonical indices and BigInt-compatible offsets accepted; non-canonic
   assert.equal(s.returnProvenance[0].returnIndex, 4);
   assert.equal(s.returnProvenance[0].offset, '32');
 
-  s = sw({ kind: 'arg', argIndex: 2, returnIndex: 5, offset: '0b1000' });
+  s = sw({ kind: 'arg', argIndex: 0, returnIndex: 5, offset: '0b1000' });
+  assert.equal(s.returnProvenance[0].argIndex, 0);
   assert.equal(s.returnProvenance[0].returnIndex, 5);
   assert.equal(s.returnProvenance[0].offset, '8');
 

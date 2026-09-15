@@ -1,18 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-
-import { resolveABIPlugin } from '../../../js/targets/abi/index.js';
 import { loadCorpus } from '../../../tools/validation/phase8/build-corpus.mjs';
 import { decompileEntry, observeCorpus } from '../../../tools/validation/phase8/decompile-corpus.mjs';
-import {
-  aggregateCertainty,
-  providerEvidence,
-  structuringAccounting,
-} from '../../../tools/validation/phase8/metrics.mjs';
+import { structuringAccounting, aggregateCertainty, providerEvidence } from '../../../tools/validation/phase8/metrics.mjs';
+import { resolveABIPlugin } from '../../../js/targets/abi/index.js';
 
 const corpus = loadCorpus();
-const entry = corpus.functions
-  .filter((row) => row.architectureId === 'riscv64')
+const entry = corpus.functions.filter(row => row.architectureId === 'riscv64')
   .sort((left, right) => left.bytes.length - right.bytes.length)[0];
 assert.ok(entry, 'the frozen corpus must retain its real RISC-V lane');
 
@@ -34,7 +28,7 @@ test('frozen RISC-V compiler ABI reaches the production decompiler without resto
 });
 
 test('missing, conflicting, mismatched and unsupported compiler ABI evidence remains blocking', () => {
-  const target = corpus.toolchain.targets.find((row) => row.architectureId === 'riscv64');
+  const target = corpus.toolchain.targets.find(row => row.architectureId === 'riscv64');
   for (const targets of [
     [],
     [{ ...target, compilerArgs: ['-march=rv64im'] }],
@@ -50,4 +44,18 @@ test('missing, conflicting, mismatched and unsupported compiler ABI evidence rem
   }
 });
 
-console.log('Phase 8 explicit compiler ABI contract: PASS');
+
+test('native corpus presentation requests provenance without silently opting into optimizer stages', () => {
+  for (const architecture of ['x86_64', 'riscv64']) {
+    const selected = corpus.functions.filter(row => row.architectureId === architecture)
+      .sort((left, right) => left.bytes.length - right.bytes.length)[0];
+    assert.ok(selected);
+    const outcome = decompileEntry(selected, { toolchain:corpus.toolchain, phase8Optimize:false });
+    assert.equal(outcome.failure, undefined, outcome.failure);
+    assert.equal(outcome.result.semantic, true);
+    assert.deepEqual(outcome.result.phase8.enabledStages, ['canonical-facts']);
+    assert.equal(outcome.result.phase8.transformCount, 0);
+    assert.equal(outcome.result.renderProvenance?.completeness, 'complete', architecture);
+    assert.deepEqual(outcome.result.renderProvenance.reasons, []);
+  }
+});

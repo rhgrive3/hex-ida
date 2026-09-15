@@ -171,6 +171,8 @@ const ATOMIC_CATEGORY_RE = /^(?:cas|swp|ld(?:add|set|clr|eor|smax|smin|umax|umin
 // (#4495; operand read/write ownership is a separate #3702 contract).
 const STORE_ONLY_ATOMIC_CATEGORY_RE = /^st(?:add|clr|eor|set|smax|smin|umax|umin)l?(?:b|h)?$/;
 
+// #3606: shared by the instruction-model consumers. Keep this producer with
+// the read/write consumer when reconciling call-boundary analysis.
 const ATOMIC_READ_WRITE_DEST_RE = /^cas(?:al|a|l)?(?:b|h)?$/;
 const RMW_DEST_MNEMONICS = new Set([
   'movk',

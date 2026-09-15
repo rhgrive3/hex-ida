@@ -896,9 +896,9 @@ test('C3-02 forced-stack homogeneous aggregates use canonical physical element s
     hfa32,
     { type:'int64', bits:64 },
   ];
-  const instructions = [0, 4, 8].map((disp, index) => ({
+  const instructions = [[0, 32], [4, 32], [8, 64]].map(([disp, bits], index) => ({
     op:'load', loc:{ kind:'stack', baseReg:'sp', frameEpoch:99, disp:BigInt(disp), key:`c3-02:hfa:${index}` },
-    memUse:{ kind:'entry' }, dst:{ id:300 + index, bits:32 },
+    memUse:{ kind:'entry' }, dst:{ id:300 + index, bits },
   }));
   const registers = ['sp', ...Array.from({ length:8 }, (_unused, index) => `x${index}`),
     ...Array.from({ length:8 }, (_unused, index) => `v${index}`)];
@@ -1268,19 +1268,14 @@ test('C3-02 aggregate proof matrix rejects sibling malformed descriptors and pre
       returnType:nested.type, aggregate:true, returnsValue:true,
       layout:{ ...nested.layout, members:returnMembers },
     } });
-    if (abi === RISCV_LP64F_ABI) {
-      // LP64F FLEN=32 cannot hold double members in FP regs; psABI requires
-      // fallback to the base integer convention (x10/x11).
-      assert.equal(returnLocations.length, 2, 'lp64f must fall back to integer lanes for double aggregates beyond FLEN32');
-      assert.deepEqual(returnLocations.map(({ reg }) => reg), ['x10', 'x11']);
-      assert.deepEqual(returnLocations.map(({ bits, bytes, byteOffset }) => ({ bits, bytes, byteOffset })), [
-        { bits:64, bytes:8, byteOffset:0 }, { bits:64, bytes:8, byteOffset:8 },
-      ]);
-    } else {
-      assert.equal(returnLocations.length, 2, `${abi.id} nested return lanes`);
-      assert.deepEqual(returnLocations.map(({ bits, bytes, byteOffset }) => ({ bits, bytes, byteOffset })), [
-        { bits:64, bytes:8, byteOffset:0 }, { bits:64, bytes:8, byteOffset:8 },
-      ]);
+    assert.equal(returnLocations.length, 2, `${abi.id} nested return lanes`);
+    assert.deepEqual(returnLocations.map(({ bits, bytes, byteOffset }) => ({ bits, bytes, byteOffset })), [
+      { bits:64, bytes:8, byteOffset:0 }, { bits:64, bytes:8, byteOffset:8 },
+    ]);
+    if (abi === RISCV_LP64F_ABI || abi === RISCV_LP64D_ABI) {
+      assert.deepEqual(returnLocations.map(location => location.reg),
+        abi === RISCV_LP64F_ABI ? ['x10','x11'] : ['f10','f11'],
+        'double pair uses integer fallback at FLEN32, FP registers at FLEN64');
     }
   }
 });

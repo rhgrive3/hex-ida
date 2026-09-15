@@ -31,8 +31,16 @@ function callerWith({ directCalls = [], indirectCallSets = [] } = {}) {
   return { ...localSummary('fn_A', 'region_of_A'), directCalls, indirectCallSets };
 }
 test('#6208 a mis-keyed reachable direct callee becomes unknown-call partial, not a solver throw', () => {
+  const directCaller = callerWith({ directCalls: [{ callSiteId: 'call_direct', targetEntityIds: ['fn_B'] }] });
+  directCaller.unknownCallEffects = [{ callSiteId: 'call_direct', reason: 'summary-missing', targetEntityIds: ['fn_B'] }];
+  directCaller.memoryWriteRegions = [...directCaller.memoryWriteRegions, {
+    regionKind: 'unknown', broad: true, addressSpaces: ['memory'], source: 'unknown-call-fallback',
+  }];
+  directCaller.noreturn = 'unknown';
+  directCaller.mayThrow = 'unknown';
+  directCaller.status = { ...STATUS, completeness: 'partial', stopReason: 'evidence-missing' };
   const locals = new Map([
-    ['fn_A', callerWith({ directCalls: [{ callSiteId: 'call_direct', targetEntityIds: ['fn_B'] }] })],
+    ['fn_A', directCaller],
     ['fn_B', localSummary('fn_WRONG', 'region_of_wrong')],
   ]);
   const { summaries, status } = solveInterproceduralSummaries({ roots: ['fn_A'], localSummaries: locals });

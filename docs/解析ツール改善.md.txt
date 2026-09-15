@@ -1,5 +1,10 @@
 # HEX_REVERSE_ENGINEERING_DEEP_RESEARCH_MASTER.md
 
+> **2026-09-13 ローカル引き継ぎの現況**: [解析実装・受入の現況](解析ツール改善.md) と
+> [23 finding / 21 FR の照合](analysis-local-acceptance-audit.json) を参照。
+> この文書は元の研究成果であり、`RESEARCH_SATURATED_READY_FOR_IMPLEMENTATION` は実装完了を意味しない。
+> 元の要求・分母・過去引用は保持した。全実装/検証/統合は **CHECKPOINT-LOCKED**、100%完了ではない。
+
 **Research date:** 2026-08-22, Asia/Tokyo  
 **Repository:** `rhgrive3/ida-245`  
 **Mode:** RESEARCH ONLY  

@@ -10,52 +10,41 @@ function validTimeBudgetMs(value, fallback) {
     : fallback;
 }
 
-function forkValue(value, seen) {
-  if (value === null || typeof value !== 'object') return value;
-  if (typeof value === 'function') return value;
-  const cached = seen.get(value);
-  if (cached !== undefined) return cached;
-  if (value instanceof Date) {
-    const forked = new Date(value.getTime());
-    seen.set(value, forked);
-    return forked;
+function capturePassState(state) {
+  const pending = [state], seen = new Set(), records = [];
+  while (pending.length) {
+    const value = pending.pop();
+    if (value === null || typeof value !== 'object' || seen.has(value)) continue;
+    seen.add(value);
+    const proto = Object.getPrototypeOf(value);
+    const map = value instanceof Map, set = value instanceof Set, date = value instanceof Date;
+    // Live adapters/class instances are not pass-owned plain data. Do not
+    // traverse them or invoke accessors while capturing the rollback state.
+    if (!map && !set && !date && !(value instanceof RegExp) && !Array.isArray(value)
+        && proto !== Object.prototype && proto !== null) continue;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const entries = map ? [...value.entries()] : set ? [...value.values()] : null;
+    records.push({ value, proto, descriptors, entries, map, set, time:date ? value.getTime() : null });
+    for (const key of Reflect.ownKeys(descriptors)) {
+      if ('value' in descriptors[key]) pending.push(descriptors[key].value);
+    }
+    if (map) for (const [key, entry] of entries) pending.push(key, entry);
+    if (set) for (const entry of entries) pending.push(entry);
   }
-  if (value instanceof RegExp) {
-    const forked = new RegExp(value.source, value.flags);
-    seen.set(value, forked);
-    return forked;
-  }
-  if (value instanceof Map) {
-    const forked = new Map();
-    seen.set(value, forked);
-    for (const [key, entry] of value) forked.set(forkValue(key, seen), forkValue(entry, seen));
-    return forked;
-  }
-  if (value instanceof Set) {
-    const forked = new Set();
-    seen.set(value, forked);
-    for (const entry of value) forked.add(forkValue(entry, seen));
-    return forked;
-  }
-  if (Array.isArray(value)) {
-    const forked = new Array(value.length);
-    seen.set(value, forked);
-    for (let index = 0; index < value.length; index += 1) forked[index] = forkValue(value[index], seen);
-    return forked;
-  }
-  const proto = Object.getPrototypeOf(value);
-  if (proto !== Object.prototype && proto !== null) return value;
-  const forked = {};
-  seen.set(value, forked);
-  for (const key of Object.keys(value)) forked[key] = forkValue(value[key], seen);
-  return forked;
-}
-
-function commitFork(state, forked) {
-  for (const key of Object.keys(state)) {
-    if (!Object.prototype.hasOwnProperty.call(forked, key)) delete state[key];
-  }
-  Object.assign(state, forked);
+  return () => {
+    for (const { value, proto, descriptors, entries, map, set, time } of records) {
+      if (Object.getPrototypeOf(value) !== proto) Object.setPrototypeOf(value, proto);
+      for (const key of Reflect.ownKeys(value)) {
+        if (!Object.hasOwn(descriptors, key) && !Reflect.deleteProperty(value, key)) {
+          throw new Error('pass-rollback-nonconfigurable-property');
+        }
+      }
+      Object.defineProperties(value, descriptors);
+      if (map) { Map.prototype.clear.call(value); for (const [key, entry] of entries) Map.prototype.set.call(value, key, entry); }
+      if (set) { Set.prototype.clear.call(value); for (const entry of entries) Set.prototype.add.call(value, entry); }
+      if (time !== null) Date.prototype.setTime.call(value, time);
+    }
+  };
 }
 
 export class PassManager {
@@ -84,6 +73,7 @@ export class PassManager {
     let budgetWarned = false;
 
     for (const pass of this.passes) {
+      let rollbackFailed = false;
       const start = clock();
       const remainingMs = Math.max(0, deadline - start);
       if (remainingMs <= 0 && !pass.required) {
@@ -140,21 +130,25 @@ export class PassManager {
           continue;
         }
 
-        // #5113: optional passes run on a pass-local fork of the state and commit
-        // atomically on success. Plain data (objects/arrays/Map/Set/Date/RegExp)
-        // is deep-forked with cycles preserved; functions and class instances
-        // keep their identity (live opts/adapters must stay shared). A failed
-        // optional pass contributes nothing: the fork is discarded, the failure
-        // is recorded, and the pipeline continues on the last valid state.
-        const forked = forkValue(state, new Map());
+        // #5113 rollback must not replace canonical IR/expression identities on
+        // success: provenance producers use private identity-bound observations.
+        // Run synchronously on the real graph; retain descriptors and collection
+        // entries so a failure restores pass-owned data in place (including
+        // aliases/cycles). This does not roll back external adapter side effects.
+        const restore = capturePassState(state);
         try {
-          const result = pass.run(forked, passBudget);
-          if (result && result !== forked) Object.assign(forked, result);
-          commitFork(state, forked);
+          const result = pass.run(state, passBudget);
+          if (result && result !== state) Object.assign(state, result);
           const elapsedMs = clock() - start;
           if (clock() >= passDeadline) state.degraded = true;
           state.passMetrics.push({ name: pass.name, elapsedMs, ok: true, degraded: !!state.degraded });
         } catch (error) {
+          try { restore(); } catch (rollbackError) {
+            // Irreversible descriptor changes cannot be called a recovered
+            // optional failure. Stop before any finalizer consumes corrupt data.
+            rollbackFailed = true;
+            throw new Error('optional-pass-rollback-failed', { cause:rollbackError });
+          }
           state.warnings.push(`${pass.name}: ${error?.message || String(error)}`);
           state.passMetrics.push({ name: pass.name, elapsedMs: clock() - start, ok: false, degraded: true });
           state.degraded = true;
@@ -162,7 +156,7 @@ export class PassManager {
       } catch (error) {
         state.warnings.push(`${pass.name}: ${error?.message || String(error)}`);
         state.passMetrics.push({ name: pass.name, elapsedMs: clock() - start, ok: false, degraded: true });
-        if (pass.required) throw error;
+        if (pass.required || rollbackFailed) throw error;
         state.degraded = true;
       }
     }

@@ -23,6 +23,7 @@ on:
       - 'js/semantics/cfg/**'
       - 'js/semantics/ssa/**'
       - 'js/semantics/memoryssa/**'
+      - 'js/semantics/memory-access-provider.js'
       - 'js/analysis/**'
       - 'js/targets/abi/**'
       # Other production dependencies reached by compiler-truth/decompile.

@@ -131,5 +131,4 @@ if (defaultRun && Object.keys(report.targets).length !== Object.keys(manifest.fi
   throw new Error('default benchmark did not run every pinned real fixture');
 }
 
-
 console.log(JSON.stringify(report, null, 2));

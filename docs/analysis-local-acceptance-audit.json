@@ -1,0 +1,2254 @@
+{
+  "schemaVersion": "hex-analysis-local-acceptance/v1",
+  "assessmentDate": "2026-09-13",
+  "overallStatus": "CHECKPOINT-LOCKED",
+  "transformAuthorization": false,
+  "fullRoadmapComplete": false,
+  "originalFindingCount": 23,
+  "originalTaskCount": 21,
+  "originalSource": "docs/解析ツール改善.md.txt",
+  "researchSourceSha256BeforeLocalNotice": "c70baf865f0d7d8cc79b53855b30cf1ed420dc1ef9914be6bc84ad32618b0156",
+  "acceptanceRule": "Local finite test success is not completion of an original finding or its release/independent/device gates.",
+  "findings": [
+    {
+      "id": "HEX-C0-01",
+      "localStatus": "existing-gate",
+      "assessment": "同一artifactのdebug/stripped authorityは入力に存在。現headの全corpus/生成物ゲートは未合格。",
+      "source": "tools/validation/competitive",
+      "verificationSuite": "check",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-ME-01",
+      "localStatus": "partial",
+      "assessment": "既存Isla/herd/Sail/QEMU資料とmask/order transportを再利用。独立定義・物理hardware・PAC・RV64 relaxed-memoryの完全な受入が残る。",
+      "source": "specs/003-oracle-mask-matrix",
+      "verificationSuite": "effects-test",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-C1-01",
+      "localStatus": "existing-reused",
+      "assessment": "canonical MemorySSAのbyte proofを使うload recoveryは既存実装。新しいreaching-store解析は作成していない。",
+      "source": "js/analysis/pointsto",
+      "verificationSuite": "phase7-test",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-C1-02",
+      "localStatus": "existing-reused",
+      "assessment": "最新checkpointのrecursive return-equation/SCC接続を再利用。過去台帳の非再帰のみの記述を現況へ読み替えない。",
+      "source": "docs/analysis-c1-acceptance.md",
+      "verificationSuite": "phase7-test",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-C1-03",
+      "localStatus": "existing-gate",
+      "assessment": "root provenance/aliasの正本を維持。名前から新たなexact authorityを発行しない。",
+      "source": "js/analysis/alias",
+      "verificationSuite": "phase7-test",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-C2-01",
+      "localStatus": "local-regression-repaired",
+      "assessment": "古いalias issuerとMemorySSA境界seedの陽性fixtureを修復。byte-exact forwarding/CFG/issuer拒否とsemantic-v2通常119ファイル・evidence chainは通過。全byte×width×clobber受入と広域必須ゲートは未完了。",
+      "source": "js/semantics/memoryssa",
+      "verificationSuite": "resume-semantic-v2-and-access-boundary",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-C2-02",
+      "localStatus": "existing-reused",
+      "assessment": "known bits/congruence/range/SCCPと54-cell holdoutは最新checkpointに存在。新規domainは作成していない。全Phase8は未合格。",
+      "source": "docs/analysis-roadmap-v8-integration-checkpoint.md",
+      "verificationSuite": "focused-structuring",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-C3-01",
+      "localStatus": "existing-reused",
+      "assessment": "recursive structural typeの既存graphと48-case combined acceptanceを維持。全native発見率の証明とは別。",
+      "source": "tests/phase7/types/c3-combined-acceptance.test.mjs",
+      "verificationSuite": "phase7-test",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-C3-02",
+      "localStatus": "existing-reused",
+      "assessment": "既存ABI/classifierと45 return-row/140-testの引き継ぎを再利用。MEなど依存する全受入は残る。",
+      "source": "docs/analysis-c3-acceptance.md",
+      "verificationSuite": "phase7-test",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-C3-03",
+      "localStatus": "local-runtime-repair",
+      "assessment": "既存versioned providerを維持しObjC class/category/protocolの公開入口、address、cache世代境界を修正。OS/runtime版横断は未完了。",
+      "source": "js/metadata/objc.js",
+      "verificationSuite": "metadata-test",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-C4-01",
+      "localStatus": "existing-gate",
+      "assessment": "transaction/invalidation基盤は再利用。Phase8 timeoutや公開projectionの既存失敗を完了根拠にしない。",
+      "source": "docs/ENGINEERING_PROCESS_GUARDRAILS.md",
+      "verificationSuite": "focused-structuring",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-C4-02",
+      "localStatus": "partial",
+      "assessment": "既存executorの全経路完走を条件に有限ループ後の入口到達性を追加。反転条件を保持し、親内で閉じてheader文を移動しない入れ子ループを既存emitterで表示。領域全体/PHI/CFG削除、任意回数、exception/unwindの意味保存受入は残る。",
+      "source": "js/decompiler/phase8",
+      "verificationSuite": "c4-continuation-scoped-regressions",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-C4-03",
+      "localStatus": "partial",
+      "assessment": "来歴の同一読取内共有と最終再確認、不変データ認証の引継ぎを実装。実283 consumerを保持しdescriptor読取を1,017,774から160,997へ削減。aggregate認証予算と旧representation件数の3回帰を修復。標準120ms、全recovery/deletion受入は未達。",
+      "source": "js/decompiler/pipeline-core.js",
+      "verificationSuite": "c4-continuation-scoped-regressions",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-C4-04",
+      "localStatus": "partial",
+      "assessment": "generic normal-return PCをbyte equivalenceの独立observableに追加。native全state/fault/exceptionの変換authorityは依然未許可。",
+      "source": "js/symbolic/query/memory-equivalence.js",
+      "verificationSuite": "focused-memory",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-C4-05",
+      "localStatus": "partial",
+      "assessment": "既存rule registryとfamily/width/order分母を維持。deadlineを許容結果に加えず、全式族/幅/順序の受入は未完了。",
+      "source": "tests/phase9",
+      "verificationSuite": "phase9-test",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-SYM-01",
+      "localStatus": "existing-reused",
+      "assessment": "提出済みsolver/tierを再実装しない。物理iPad/WebKitとruntime activationの証拠は本環境では取得していない。",
+      "source": "js/symbolic",
+      "verificationSuite": "phase9-test",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-SYM-02",
+      "localStatus": "existing-with-local-extension",
+      "assessment": "既存byte memory/solverを再利用しPC observableだけ追加。byte-memory全171件は同一runtimeで再検証。",
+      "source": "tests/phase9/memory",
+      "verificationSuite": "focused-memory",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-SYM-03",
+      "localStatus": "existing-reused",
+      "assessment": "既存taint/deobfuscationを再利用。Phase10開始時PASSは新runtimeでの全gate通過と同一視しない。",
+      "source": "tests/phase10",
+      "verificationSuite": "baseline-phase10-test",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-X-01",
+      "localStatus": "existing-with-failed-gate",
+      "assessment": "既存format-safe transaction/independent oracleを維持。LLVM18.1.3不足およびPhase12の失敗が残る。",
+      "source": "tools/validation/rebuild-independent-oracle.mjs",
+      "verificationSuite": "phase12-test",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-X-02",
+      "localStatus": "partial-local-matrix",
+      "assessment": "元120行と既存59機能case+2manifestを保持。現在の有限120行は114 pass/0 product-gap/4 evidence-gap/2 environment-excluded。X-02全体・実機・独立reparseは未完了。",
+      "source": "docs/analysis-x02-acceptance.md",
+      "verificationSuite": "scpa-test",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-X-03",
+      "localStatus": "existing-reused",
+      "assessment": "提出済みambiguity-preserving discovery/rebuild成果を再利用。独立reparseと全format/architecture再受入は未完了。",
+      "source": "docs/analysis-roadmap-v8-integration-checkpoint.md",
+      "verificationSuite": "phase12-test",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-S2-01",
+      "localStatus": "existing-with-failed-gate",
+      "assessment": "既存provider/session/module/binary/generation identityを維持。Phase11のmodule identity既存失敗を除外しない。",
+      "source": "tests/phase11",
+      "verificationSuite": "phase11-test",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "HEX-S2-02",
+      "localStatus": "existing-gate",
+      "assessment": "candidate alternatives/truncationを維持。曖昧候補をexactにしない。全recognition回帰の受入は別ゲート。",
+      "source": "tests/phase11",
+      "verificationSuite": "phase11-test",
+      "originalRequirementAcceptedHere": false
+    }
+  ],
+  "tasks": [
+    {
+      "id": "FR-C0-01A",
+      "priority": "P0",
+      "dependencies": "none",
+      "productionScope": "`tools/validation/competitive/**`, Phase 7/8 corpus manifests",
+      "requiredProof": "strip-only twin identity positive/negative, toolchain drift rejection, deterministic manifest",
+      "denominator": "frozen source/toolchain/artifact matrix",
+      "completionCondition": "every scored binary has one source and same-artifact debug/stripped identity",
+      "parallelizableWith": "FR-ME-01A research tooling",
+      "mustWaitFor": "none",
+      "complexity": "M",
+      "findingId": "HEX-C0-01",
+      "localStatus": "existing-gate",
+      "currentAssessment": "同一artifactのdebug/stripped authorityは入力に存在。現headの全corpus/生成物ゲートは未合格。",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "FR-ME-01A",
+      "priority": "P0",
+      "dependencies": "FR-C0-01A",
+      "productionScope": "`tools/validation/machine-effects/**`, fixture manifests",
+      "requiredProof": "Sail/Isla footprint differential, model identity, undefined mask, mismatch minimization",
+      "denominator": "ARM64/arm64e and RV64 locked instruction families",
+      "completionCondition": "zero unexplained defined-state mismatch; unsupported rows explicit",
+      "parallelizableWith": "FR-C1-03A after interface freeze",
+      "mustWaitFor": "C0 manifest contract",
+      "complexity": "L",
+      "findingId": "HEX-ME-01",
+      "localStatus": "partial",
+      "currentAssessment": "既存Isla/herd/Sail/QEMU資料とmask/order transportを再利用。独立定義・物理hardware・PAC・RV64 relaxed-memoryの完全な受入が残る。",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "FR-ME-01B",
+      "priority": "P0",
+      "dependencies": "FR-ME-01A",
+      "productionScope": "litmus corpus/validation tooling",
+      "requiredProof": "acquire/release/barrier/atomic outcome sets, hardware/QEMU triangulation",
+      "denominator": "locked relaxed-memory litmus families",
+      "completionCondition": "Hex effects admit all and only modeled outcomes within declared scope",
+      "parallelizableWith": "FR-C3-02A",
+      "mustWaitFor": "ME oracle schema",
+      "complexity": "XL",
+      "findingId": "HEX-ME-01",
+      "localStatus": "partial",
+      "currentAssessment": "既存Isla/herd/Sail/QEMU資料とmask/order transportを再利用。独立定義・物理hardware・PAC・RV64 relaxed-memoryの完全な受入が残る。",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "FR-C1-03A",
+      "priority": "P0",
+      "dependencies": "FR-C0-01A, FR-ME-01A",
+      "productionScope": "`js/analysis/alias/**`, `js/analysis/pointsto/**`",
+      "requiredProof": "remove name-based exactness, closest alias negatives, rename metamorphism, false No/MustAlias gates",
+      "denominator": "Phase 7 exact alias corpus plus heap/global/TLS adversarial rows",
+      "completionCondition": "no exact result depends on spelling; false exactness zero",
+      "parallelizableWith": "FR-C3-02A",
+      "mustWaitFor": "root evidence schema",
+      "complexity": "M",
+      "findingId": "HEX-C1-03",
+      "localStatus": "existing-gate",
+      "currentAssessment": "root provenance/aliasの正本を維持。名前から新たなexact authorityを発行しない。",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "FR-C1-01A",
+      "priority": "P0",
+      "dependencies": "FR-C1-03A",
+      "productionScope": "points-to local analysis, MemorySSA query/compat orchestration",
+      "requiredProof": "exact store/load positive; may/unknown/partial/atomic negatives; snapshot mismatch; convergence",
+      "denominator": "pointer load boundary matrix by width/endian/effect",
+      "completionCondition": "exact pointer recovered only from one complete reaching-store proof",
+      "parallelizableWith": "FR-C1-02A",
+      "mustWaitFor": "C1-03",
+      "complexity": "L",
+      "findingId": "HEX-C1-01",
+      "localStatus": "existing-reused",
+      "currentAssessment": "canonical MemorySSAのbyte proofを使うload recoveryは既存実装。新しいreaching-store解析は作成していない。",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "FR-C1-02A",
+      "priority": "P0",
+      "dependencies": "FR-C1-03A",
+      "productionScope": "`js/analysis/summary/**`, points-to call consumer",
+      "requiredProof": "direct/wrapper/recursive returns, exhaustive/incomplete indirect sets, schema/digest mutation",
+      "denominator": "return-root kind x recursion x target-completeness matrix",
+      "completionCondition": "caller precision improves; incomplete summary always joins unknown",
+      "parallelizableWith": "FR-C1-01A",
+      "mustWaitFor": "C1-03",
+      "complexity": "L",
+      "findingId": "HEX-C1-02",
+      "localStatus": "existing-reused",
+      "currentAssessment": "最新checkpointのrecursive return-equation/SCC接続を再利用。過去台帳の非再帰のみの記述を現況へ読み替えない。",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "FR-C2-01A",
+      "priority": "P0",
+      "dependencies": "FR-C1-01A, FR-C1-03A",
+      "productionScope": "MemorySSA queries, Phase 8 value-number/forwarding consumer",
+      "requiredProof": "full and partial coverage, endian, overlap, unknown call/store, volatile/atomic",
+      "denominator": "byte coverage x width x clobber matrix",
+      "completionCondition": "proof object authorizes every forwarded byte; semantic mismatch zero",
+      "parallelizableWith": "none",
+      "mustWaitFor": "C1 boundary facts",
+      "complexity": "L",
+      "findingId": "HEX-C2-01",
+      "localStatus": "local-regression-repaired",
+      "currentAssessment": "古いalias issuerとMemorySSA境界seedの陽性fixtureを修復。byte-exact forwarding/CFG/issuer拒否とsemantic-v2通常119ファイル・evidence chainは通過。全byte×width×clobber受入と広域必須ゲートは未完了。",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "FR-C2-02A",
+      "priority": "P1",
+      "dependencies": "FR-C2-01A",
+      "productionScope": "Phase 8 range/SCCP facts",
+      "requiredProof": "known-bit/congruence lattice laws, wrapped operations, branch-edge facts, widening termination",
+      "denominator": "width/operator/branch/loop matrix",
+      "completionCondition": "monotone over-approximation and strict held-out precision gain",
+      "parallelizableWith": "FR-C3-03A",
+      "mustWaitFor": "C2-01",
+      "complexity": "L",
+      "findingId": "HEX-C2-02",
+      "localStatus": "existing-reused",
+      "currentAssessment": "known bits/congruence/range/SCCPと54-cell holdoutは最新checkpointに存在。新規domainは作成していない。全Phase8は未合格。",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "FR-C3-02A",
+      "priority": "P0",
+      "dependencies": "FR-ME-01A, FR-C1-02A",
+      "productionScope": "`js/targets/abi/**`, call prototype consumers",
+      "requiredProof": "AAPCS64/Darwin/SysV/Win matrices, HFA/HVA, sret, varargs, thunks, conflicting calls",
+      "denominator": "locked ABI aggregate/prototype matrix",
+      "completionCondition": "no false exact prototype and all matrix cells terminal",
+      "parallelizableWith": "FR-C1-01A",
+      "mustWaitFor": "ME and return summaries",
+      "complexity": "XL",
+      "findingId": "HEX-C3-02",
+      "localStatus": "existing-reused",
+      "currentAssessment": "既存ABI/classifierと45 return-row/140-testの引き継ぎを再利用。MEなど依存する全受入は残る。",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "FR-C3-01A",
+      "priority": "P1",
+      "dependencies": "FR-C2-01A, FR-C3-02A",
+      "productionScope": "`js/analysis/types/**`",
+      "requiredProof": "recursive list, pointer/int conflict, union overlap, array stride, budget/cancel",
+      "denominator": "structural type corpus by recursive construct",
+      "completionCondition": "ambiguity retained; exact precision unchanged; recall improves",
+      "parallelizableWith": "FR-C3-03A",
+      "mustWaitFor": "C2/C3 ABI facts",
+      "complexity": "XL",
+      "findingId": "HEX-C3-01",
+      "localStatus": "existing-reused",
+      "currentAssessment": "recursive structural typeの既存graphと48-case combined acceptanceを維持。全native発見率の証明とは別。",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "FR-C3-03A",
+      "priority": "P1",
+      "dependencies": "FR-C3-02A",
+      "productionScope": "debug/language/Apple metadata providers",
+      "requiredProof": "version drift, unknown kind, truncated/cyclic metadata, provider identity mismatch",
+      "denominator": "ecosystem x compiler/runtime version matrix",
+      "completionCondition": "every provider is versioned and incomplete data cannot promote exactness",
+      "parallelizableWith": "FR-C2-02A",
+      "mustWaitFor": "ABI contract",
+      "complexity": "XL",
+      "findingId": "HEX-C3-03",
+      "localStatus": "local-runtime-repair",
+      "currentAssessment": "既存versioned providerを維持しObjC class/category/protocolの公開入口、address、cache世代境界を修正。OS/runtime版横断は未完了。",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "FR-C4-03A",
+      "priority": "P1",
+      "dependencies": "C4-01 proven gate, FR-C2-01A",
+      "productionScope": "Phase 8 projection, provenance, query/UI mapping",
+      "requiredProof": "CSE/DCE/phi/switch/struct field many-to-one mappings, stale snapshot",
+      "denominator": "every rendered entity and removed transform class",
+      "completionCondition": "provenance loss zero and reverse navigation complete",
+      "parallelizableWith": "FR-SYM-01A",
+      "mustWaitFor": "C2 facts",
+      "complexity": "L",
+      "findingId": "HEX-C4-03",
+      "localStatus": "partial",
+      "currentAssessment": "来歴の同一読取内共有と最終再確認、不変データ認証の引継ぎを実装。実283 consumerを保持しdescriptor読取を1,017,774から160,997へ削減。aggregate認証予算と旧representation件数の3回帰を修復。標準120ms、全recovery/deletion受入は未達。",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "FR-SYM-01A",
+      "priority": "P0",
+      "dependencies": "FR-ME-01A",
+      "productionScope": "symbolic solver adapters/registry/session",
+      "requiredProof": "32/64-bit BV, SAT model validation, UNSAT differential, timeout/cancel/late result, physical iPad",
+      "denominator": "solver capability x width x runtime tier",
+      "completionCondition": "exact floor retained; optional tier meets identity and resource gates",
+      "parallelizableWith": "FR-C4-03A",
+      "mustWaitFor": "ME semantics",
+      "complexity": "XL",
+      "findingId": "HEX-SYM-01",
+      "localStatus": "existing-reused",
+      "currentAssessment": "提出済みsolver/tierを再実装しない。物理iPad/WebKitとruntime activationの証拠は本環境では取得していない。",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "FR-SYM-02A",
+      "priority": "P1",
+      "dependencies": "FR-SYM-01A, FR-C2-01A",
+      "productionScope": "symbolic Expr sorts, translator, memory state",
+      "requiredProof": "concrete parity, array index, partial writes, symbolic alias, endian, cancellation",
+      "denominator": "memory mode x width x alias class",
+      "completionCondition": "exact escalation or explicit unknown, with bounded resources",
+      "parallelizableWith": "FR-X-03A",
+      "mustWaitFor": "solver and memory semantics",
+      "complexity": "XL",
+      "findingId": "HEX-SYM-02",
+      "localStatus": "existing-with-local-extension",
+      "currentAssessment": "既存byte memory/solverを再利用しPC observableだけ追加。byte-memory全171件は同一runtimeで再検証。",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "FR-C4-04A",
+      "priority": "P1",
+      "dependencies": "C4-01 proven gate, FR-C4-03A, FR-SYM-01A",
+      "productionScope": "Phase 8 transaction and symbolic verify integration",
+      "requiredProof": "pure BV equivalent/refuted/unknown, stale proof, model corruption",
+      "denominator": "risky scalar rewrite registry",
+      "completionCondition": "no candidate commits without eligible proof",
+      "parallelizableWith": "FR-X-03A",
+      "mustWaitFor": "C4 provenance and solver",
+      "complexity": "L",
+      "findingId": "HEX-C4-04",
+      "localStatus": "partial",
+      "currentAssessment": "generic normal-return PCをbyte equivalenceの独立observableに追加。native全state/fault/exceptionの変換authorityは依然未許可。",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "FR-C4-04B",
+      "priority": "P1",
+      "dependencies": "FR-C4-04A, FR-SYM-02A",
+      "productionScope": "symbolic memory/effects translation",
+      "requiredProof": "memory, CFG, exception and bounded-loop cases",
+      "denominator": "memory/CFG rewrite registry",
+      "completionCondition": "declared observables complete and semantic mismatch zero",
+      "parallelizableWith": "none",
+      "mustWaitFor": "scalar validator and symbolic memory",
+      "complexity": "XL",
+      "findingId": "HEX-C4-04",
+      "localStatus": "partial",
+      "currentAssessment": "generic normal-return PCをbyte equivalenceの独立observableに追加。native全state/fault/exceptionの変換authorityは依然未許可。",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "FR-C4-02A",
+      "priority": "P1",
+      "dependencies": "FR-C4-04A",
+      "productionScope": "Phase 8 structuring",
+      "requiredProof": "irreducible, exception/unwind, switch fallthrough, flattened dispatcher",
+      "denominator": "CFG region/edge-kind matrix",
+      "completionCondition": "transformed regions validate; others retain residual jumps",
+      "parallelizableWith": "FR-C4-05A",
+      "mustWaitFor": "validator",
+      "complexity": "L",
+      "findingId": "HEX-C4-02",
+      "localStatus": "partial",
+      "currentAssessment": "既存executorの全経路完走を条件に有限ループ後の入口到達性を追加。反転条件を保持し、親内で閉じてheader文を移動しない入れ子ループを既存emitterで表示。領域全体/PHI/CFG削除、任意回数、exception/unwindの意味保存受入は残る。",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "FR-C4-05A",
+      "priority": "P1",
+      "dependencies": "FR-C2-02A, FR-C4-04A",
+      "productionScope": "new bounded Phase 8 candidate module",
+      "requiredProof": "rule-order metamorphism, MBA positive/negative, caps, deterministic extraction",
+      "denominator": "pure expression family x width",
+      "completionCondition": "every adopted term has independent proof; budgets always terminate",
+      "parallelizableWith": "FR-C4-02A",
+      "mustWaitFor": "value domain and validator",
+      "complexity": "XL",
+      "findingId": "HEX-C4-05",
+      "localStatus": "partial",
+      "currentAssessment": "既存rule registryとfamily/width/order分母を維持。deadlineを許容結果に加えず、全式族/幅/順序の受入は未完了。",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "FR-SYM-03A",
+      "priority": "P1",
+      "dependencies": "FR-SYM-02A, FR-C4-04A",
+      "productionScope": "symbolic taint/deobf and EvidenceGraph projection",
+      "requiredProof": "explicit/implicit dependency, source/sink/sanitizer versions, opaque predicate, timeout",
+      "denominator": "taint/deobf source-sink and MBA corpus",
+      "completionCondition": "heuristic facts remain suggestions; proved rewrites alone commit",
+      "parallelizableWith": "FR-X-02A",
+      "mustWaitFor": "symbolic memory and validator",
+      "complexity": "XL",
+      "findingId": "HEX-SYM-03",
+      "localStatus": "existing-reused",
+      "currentAssessment": "既存taint/deobfuscationを再利用。Phase10開始時PASSは新runtimeでの全gate通過と同一視しない。",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "FR-X-03A",
+      "priority": "P1",
+      "dependencies": "FR-C0-01A, FR-ME-01A, X-01 proven gate",
+      "productionScope": "binary/function discovery, evidence artifacts, rebuild planning",
+      "requiredProof": "code/data/overlap/jump-table/relocation rows, determinism, independent reparse",
+      "denominator": "format x architecture discovery matrix",
+      "completionCondition": "alternatives retained; false exact selection zero",
+      "parallelizableWith": "FR-C4-04A",
+      "mustWaitFor": "C0/ME contracts",
+      "complexity": "XL",
+      "findingId": "HEX-X-03",
+      "localStatus": "existing-reused",
+      "currentAssessment": "提出済みambiguity-preserving discovery/rebuild成果を再利用。独立reparseと全format/architecture再受入は未完了。",
+      "originalRequirementAcceptedHere": false
+    },
+    {
+      "id": "FR-X-02A",
+      "priority": "P1",
+      "dependencies": "FR-C3-03A, FR-X-03A, X-01 proven gate",
+      "productionScope": "Mach-O/dyld/fixup/Apple metadata/rebuild providers",
+      "requiredProof": "OS/toolchain versions, chained fixups, arm64e PAC/auth, signing consequence",
+      "denominator": "Apple format x metadata x architecture matrix",
+      "completionCondition": "unknown versions stay partial; rebuilt output independently validated",
+      "parallelizableWith": "FR-SYM-03A",
+      "mustWaitFor": "metadata and discovery artifacts",
+      "complexity": "XL",
+      "findingId": "HEX-X-02",
+      "localStatus": "partial-local-matrix",
+      "currentAssessment": "元120行をcanonical統合し製品不足6行を修正。未知版partial、宣言metadata、classless ObjC、有限cacheを検証。実機・独立reparseと全Apple版受入は未完了。",
+      "originalRequirementAcceptedHere": false
+    }
+  ],
+  "externalHandoverArtifact": {
+    "branchAsRecorded": "feat/x02-apple-matrix-reviewed-20260913",
+    "commitAsRecorded": "684f1f0bb9c4809cd9bbaba01f01a4849151cc0b",
+    "historicalAuditRows": 120,
+    "historicalUnclosedRequirementRows": {
+      "product-gap": 6,
+      "evidence-gap": 4,
+      "environment-excluded": 2
+    },
+    "bytesIncludedInInput": false,
+    "fetchedThisRun": false,
+    "remoteIdentityVerified": false,
+    "replacementByLocal59CasesAuthorized": false
+  },
+  "localIntegrationLimitations": [
+    "C4 standard 120ms remains unaccepted",
+    "C4 full flags/region/PHI/CFG/memory/exception/loop proof missing",
+    "C4 provenance historical failures not repaired by numeric DAG fix",
+    "ME missing independent and physical inputs",
+    "remote X02 reviewed matrix not locally available",
+    "dependency installation failed; no successful generated output rebuild",
+    "full gates not green",
+    "no independent reviewer or target device invoked"
+  ],
+  "verificationResults": "evidence/verified-results.json",
+  "pathPolicy": {
+    "sourcePaths": "relative to repository root (delivery source/)",
+    "verificationResults": "relative to delivery root"
+  },
+  "integrationFollowup": {
+    "date": "2026-09-14",
+    "inputHead": "bce2a7582b890af00686e91f462f381630b813bc",
+    "mainHead": "2b9c1218e0c5bb394aab5b219adc7c253a764451",
+    "status": "CHECKPOINT-LOCKED",
+    "fullRoadmapComplete": false,
+    "transformAuthorization": false,
+    "x02Prior120RowsIntegrated": true,
+    "x02HistoricalClassification": {
+      "pass": 108,
+      "product-gap": 6,
+      "evidence-gap": 4,
+      "environment-excluded": 2
+    },
+    "x02CurrentFiniteClassification": {
+      "pass": 114,
+      "product-gap": 0,
+      "evidence-gap": 4,
+      "environment-excluded": 2
+    },
+    "x02ChangedRows": [
+      "X02-A-07",
+      "X02-B-01",
+      "X02-B-02",
+      "X02-D-13",
+      "X02-E-11",
+      "X02-G-03"
+    ],
+    "x02FrozenMatrixSha256": "c95ea2ba89d072fe9110565072462d5efca496b72a66ff365d8b8d15a95274ad",
+    "runtimeSourceSha256": {
+      "js/binary/macho-core.js": "34e495abec4f5a7aae588910247416c74e19e6655adc377c7464038065e5f263",
+      "js/metadata/objc.js": "0331bd74410a38e02014f06e9e46e31daed62383404c49dc33cbdb17beea7c5b",
+      "js/metadata/swift.js": "98ff133e8a454c1bb203af26eea7b4ba5c93b069761e86098dbde32ba88cb431",
+      "js/objc.js": "a7b1c7f399b47057c7625dd6b68ce77379a24350a3a15d2b15cb370017007433",
+      "js/swift.js": "622464c024e46fc00dada51889524a8cc77600583a1118f73b7bbbc2e39a7d7b",
+      "js/targets/architecture/arm64/effects/control.js": "6f0dd26d416f3edb189fc257a31ceac08841c224ad1b0860c4fd9aaca6be0f94"
+    },
+    "generatedSha256": {
+      "userscript/hex.user.template.js": "371750a5127762dd8e0e8f3b8db9397b8b7af47c1885b653fe5fb75b3c5cb65c",
+      "userscript/release-version.json": "2a44bc368226ec6c789c38ba4ebc1bf48e9c8da803fd43506f5e5f82e55dc1b6"
+    },
+    "verificationReceipts": [
+      {
+        "name": "core",
+        "command": "node scripts/run-quiet-command.mjs --label pr7036-core-final -- npm run core:test",
+        "exitCode": 0,
+        "result": "PASS; 41.0s",
+        "logSha256": "f60bf020206b3dbfeeb4dfc918d4f8ac52ff8e2da53ac30e4b9b51bb0540dc10",
+        "logBytes": 32
+      },
+      {
+        "name": "x02-focused",
+        "command": "node --test --test-reporter=tap tests/scpa/x02-declared-metadata-boundaries.test.mjs tests/phase7/ownership/roadmap-v8-integration.test.mjs tests/metadata-apple.test.mjs tests/scpa/x02-prior120-apple-version-matrix.test.mjs",
+        "exitCode": 0,
+        "result": "152 pass / 0 fail",
+        "logSha256": "ddd26121e8cd08d246e53b7010da2691f8a44415537c16962e6e60a6a4846dbd",
+        "logBytes": 190597
+      },
+      {
+        "name": "macho-regressions",
+        "command": "node --test --test-reporter=tap tests/phase4/binary/*macho*.mjs",
+        "exitCode": 0,
+        "result": "36 files / 138 pass",
+        "logSha256": "b92df86a0a29a66c47517395ef331e699784f99677c735c3f11cf235e8c71a72",
+        "logBytes": 30882
+      },
+      {
+        "name": "phase4-binary",
+        "command": "node tests/phase4/run.mjs --group binary",
+        "exitCode": 0,
+        "result": "153 files + 18 existing independent verification cases pass",
+        "logSha256": "c7d9539ec5b9720e0e59b65f753850b5c6fe3fa18dac0787ab4bd71bdd118dba",
+        "logBytes": 6283
+      },
+      {
+        "name": "lint",
+        "command": "npm run lint",
+        "exitCode": 0,
+        "result": "PASS",
+        "logSha256": "a3c672ef332c78d50bc0b1d3121563829077111b1926d2e7a252d74a41260b7c",
+        "logBytes": 158
+      },
+      {
+        "name": "module-boundaries",
+        "command": "npm run module-boundaries:test",
+        "exitCode": 0,
+        "result": "PASS",
+        "logSha256": "a7dd19fe35f5103c96dc162ed63aa349d7ad61b630f892287a80315335091ebb",
+        "logBytes": 346
+      },
+      {
+        "name": "build-first",
+        "command": "npm run userscript:build",
+        "exitCode": 0,
+        "result": "PASS",
+        "logSha256": "032c651ddbb28c3fb5b4c2c23968974278d926faeb5801a21a8e506c63458497",
+        "logBytes": 3325
+      },
+      {
+        "name": "build-second",
+        "command": "npm run userscript:build",
+        "exitCode": 0,
+        "result": "PASS; tracked generated file hashes identical",
+        "logSha256": "7de76c9323254d41098e9e12fd6116c9323f76160f68b0b719883033157cac8b",
+        "logBytes": 3306
+      }
+    ],
+    "remainingGates": [
+      "C4 full region/PHI/CFG/flags/exception/bounded-loop acceptance",
+      "independent review: CodeRabbit download proxy CONNECT timeout",
+      "Ubuntu LLVM 18.1.3 oracle unavailable",
+      "Playwright 1.63.0 browser binaries unavailable; installation timed out",
+      "physical Apple arm64e/iPad runtime/signature/activation/release evidence absent",
+      "complete current-source check; old pinned baseline Git objects unavailable in source mirror"
+    ],
+    "checkpoint": "docs/analysis-roadmap-v8-integration-checkpoint.md",
+    "node22Followup": {
+      "inputHead": "e68f0af46b1b45c3380dd6a36fd9831dd6f98b2d",
+      "runtime": "v22.23.2",
+      "CI": true,
+      "coreResult": "PASS (44.1s)",
+      "coreLogSha256": "7f14456749b15679464b1c971378534f5f38b44954deaee40dee57dcc3743453",
+      "admissionResult": "CI development-mode and both existing final-head admission modules PASS",
+      "admissionLogSha256": "d51ff9550e4967064037b16c9567928311eaa265195895f93ab5521127414188",
+      "remoteObservedRun": 34797450294,
+      "remoteObservedResult": "core step failed; syntax/module-boundaries/evidence-writers succeeded",
+      "remoteLogsDownloaded": false,
+      "llvmEnvironmentContract": "X02-H-02 requires actual reparse and executable digest/version/format/architecture match if the pinned tool is present; unavailable or wrong version remains environment-excluded.",
+      "localFiniteClassification": {
+        "pass": 114,
+        "product-gap": 0,
+        "evidence-gap": 4,
+        "environment-excluded": 2
+      },
+      "conditionalCiClassification": "115/0/4/1 only if pinned LLVM is available and the real independent oracle succeeds; not asserted as observed here",
+      "fullRoadmapComplete": false
+    },
+    "lateDyldRepair": {
+      "inputHead": "a3077124a18b48304fc9960b1f13185e8a64cfb6",
+      "inputTree": "b566e18e412e0bd6e6e9ca3cd4e1635f1220d221",
+      "previousVerifiedHead": "fb2127d274f5b30b1bd035d58bb9925df15fea1d",
+      "previousVerifiedCiRun": 34798058659,
+      "previousCiResult": "PR fast gate and userscript host success; does not qualify later heads",
+      "repair": "Preserve legacy slide-info rejection and new public-input negatives. Repair 4 malformed quote tokens, 5 diagnostic prefix typos and 1 undefined slid reference.",
+      "dyldSourceSha256": "cc49367b60f198842eb43ab417ea7f8902764e1be8718f3ff222b6360eb71dc9",
+      "localCore": "Node 22.23.2 + CI=true canonical core PASS (42.8s)",
+      "localFocused": "121 pass / 0 fail; public cache and frozen prior120",
+      "generatedSha256": {
+        "userscript/hex.user.template.js": "481da6cdd00ef84c8a28896d24aa9fab500fb40b9cc1f6c34af98bcd0e02ad19",
+        "userscript/release-version.json": "f7a52d405a068ef0717efb85387d42767ef7369ee3f0b09dda633677ae64bdec"
+      },
+      "secondBuildIdentical": true,
+      "logHashes": {
+        "core-latest-dyld-node22.log": "17456cc5f05391b2d8a9b877f37d1a0a0e864ed6fcc611e19de7e719ca44b387",
+        "dyld-latest-focused.log": "9bd248b879c7b6e04dc8c73ec99f5a308f9287e45be738526875b6dab00dae67",
+        "lint-latest-dyld.log": "a3c672ef332c78d50bc0b1d3121563829077111b1926d2e7a252d74a41260b7c",
+        "build-latest-dyld-first.log": "24adc7a0bc399fc913775c596380bf9004f5b221b10b23d8fb72bae61f6c8605",
+        "build-latest-dyld-second.log": "5f6843dca1af5d1f77b8440a7b4d28ee14963237cf084d7fca401c2b781e79d9"
+      },
+      "fullRoadmapComplete": false,
+      "merged": false
+    },
+    "splitDyldReconciliation": {
+      "inputHead": "098b51277308ae40659690b7ab38cbfa9ca5f6d9",
+      "inputTree": "0cf7c63c1f286ebd73d2c8a057ec72c2d668655b",
+      "adoptedRemoteSplit": true,
+      "coreBlob": "67b70ff354bafd68daca5189299bcd4c36ed722b",
+      "coreReusesVerifiedPreviousParser": true,
+      "ownership": "New core path explicitly declared in manifest/policy and positive/removal/foreign-path tests",
+      "localCore": "Node 22.23.2 + CI=true canonical core PASS (41.6s)",
+      "localFocused": "142 pass / 0 fail: public cache, frozen prior120 and exact ownership",
+      "sourceSha256": {
+        "js/binary/dyld-shared-cache.js": "e7c58b322bf44999d6373291825aed519a8f2fb2ba5f906051c673fed7cd422f",
+        "js/binary/dyld-shared-cache-core.js": "80f8ddab78c2efe8c743ca7185d95094df6dad3976a87b5e6a30be4d2cf798d8"
+      },
+      "generatedSha256": {
+        "userscript/hex.user.template.js": "d9909cb7c9a3c45320c96b80eb3cf49198d00612f4404e22f0483454b4a6078a",
+        "userscript/release-version.json": "ea30838ca1d91a55eb42c01b7ca6c289a3274f206cea1404ab26591f520dff15"
+      },
+      "secondBuildIdentical": true,
+      "logHashes": {
+        "core-final-split-node22.log": "e556e177450ab3fad02e8c2a658dd24090de8c87fba5f345c6c9af1911b790d7",
+        "split-dyld-final-focused.log": "0b94d95315d6e71e3bcd50ee02055279b3dc9b646cf4943fc829d8d896a2c48c",
+        "lint-final-split.log": "ddfead6ef4e868487d29d0d379dae2ef9d00f3f452ab27d6cd552f7783758c55",
+        "boundaries-final-split.log": "a7dd19fe35f5103c96dc162ed63aa349d7ad61b630f892287a80315335091ebb",
+        "build-final-split-first.log": "fd39057c7501a462b82a819bcbd872f3c8c8febdd31e6e9dbb36e09bf10844ef",
+        "build-final-split-second.log": "8c7e3e0e7c9ea421621625f8e605c81efbebd8eeec1fef0d9928e25176c15b34"
+      },
+      "fullRoadmapComplete": false,
+      "merged": false
+    },
+    "c4Continuation": {
+      "date": "2026-09-14",
+      "status": "CHECKPOINT-LOCKED",
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false,
+      "merged": false,
+      "initialHead": "87548c7f7e2e89b39b12b3c6117e892436c71dc0",
+      "adoptedHeads": [
+        "13320afa1eb0a96991b24911e42101e474482784",
+        "962678eee50d23d225d37948d4803fbbbf575aee"
+      ],
+      "parentHead": "962678eee50d23d225d37948d4803fbbbf575aee",
+      "parentTree": "e4fab47ed453a23d7fac037a4d5f53c6a3fba1f0",
+      "mainHead": "2b9c1218e0c5bb394aab5b219adc7c253a764451",
+      "runtime": {
+        "node": "v22.23.2",
+        "CI": true
+      },
+      "sourceSha256": {
+        "js/binary/macho-indirect-symbols.js": "f90eaa2072f361fe1b2a27d34018958349e4b5ef4a273cbb6fccfd4be04effaf",
+        "js/binary/model.js": "e169188464e4c83a857cb84e7a2802bf047f0e94138f5c80f7a919d4f065cc51",
+        "js/binary/reader.js": "92e7df6a49d2200a7103bf3003644b15684fea2df4afc749cdb686b7e3ff7d70",
+        "js/binary/source-reader.js": "e87a0094c35414847e4a9f4ac226cbc3083c19efb341311bb4e9e5b588e24b91",
+        "js/decompiler/phase8/conditional-region-reachability.js": "afc4fcc33d96204f96ac8601a11d7ef7bffe8a26481e08cc5d1c8e3615c8ef5e",
+        "js/decompiler/phase8/pass-validation.js": "9e96bdfb74b1ff020b5c50fff7b53eecaa1af69213ec567780a18da366ce18c5",
+        "js/decompiler/phase8/projection.js": "9e38932ed672c665016b4520631d7a0b3a95a843a4c1aba7a778ec4210b218f9",
+        "js/decompiler/pipeline-core.js": "ec5532ef84f2ee0fc4e19fc1a9d3f26707a8d1c6d63bd80bdadd20348bc154b1",
+        "js/decompiler/semantic-core.js": "14ba0607af1289cebf89bd36254a1c0bee17ebc654e1aa0d7ca9b163bf1c5048",
+        "tests/phase7/ownership/roadmap-v8-integration.test.mjs": "3dda53d512f1ea9c3acfa1136df6a435caf07917c64ac5567649dfaa650dc4e9",
+        "tests/phase8/helpers/conditional-region-fixture.mjs": "4012ab8b930d805ab44a08282a517115c958c60249ef1b48436fee5d2e41a04e",
+        "tests/phase8/integration/proof-optimizer.test.mjs": "b554a3bcdb8cf9b09d6ac52ee72132b1a15ff36e4f06260556e6ac29718600ba",
+        "tests/phase8/performance/pass-identity-transaction.test.mjs": "619f06db5e5724ac8bb7abbe36029e0cabee35b4f1506e9a832656b659fef38b",
+        "tests/phase8/provenance/control-render-history.test.mjs": "ac9caff3513dff5a441deff893668271481c6f8292551e8e4298e1aec37fc073",
+        "tests/phase8/provenance/native-binding-budget.test.mjs": "98b8ab85c3d4401ca6dda79195ddf6fea9ae1e941f6585a0cc6890e15c133c7b",
+        "tests/phase8/structuring/conditional-region-condition.test.mjs": "423c8e88115a63f57d6dafa2b997b29a48f920b34c21d6ba8813da47dcad185e",
+        "tests/phase8/structuring/conditional-region-reachability.test.mjs": "52509286804dcfe9f4d9938ca28f605dd1b478e9cb99351b62def08d70be778b",
+        "tests/phase8/substrate/proof-projection-origin.test.mjs": "11378f28c6fb6e9d5bfa270b9244d96ad2e42d404f22e54a2a99f956d2d84483",
+        "tests/phase8/substrate/proof-target-decisions.test.mjs": "ea703375d2e68f4e01086cbe891f54aced4e3432d08e11332b47e034ba03200a",
+        "tests/phase8/substrate/representation-candidates.test.mjs": "11ede52ae65a3e0a92f96cfde45ff34469e1e187fd8fe480aeac567d3b127603",
+        "tests/universal-binary-benchmark.mjs": "a43811d0fa47ca6fcbd77c4535155e81205ac86b65370c362d5ddaf1cae379bb",
+        "tests/universal-binary-source.mjs": "145452c764671c88d6aa9bd8728f35e8c86eea27de9f037768942f8148060c7d",
+        "tools/validation/analysis-roadmap/ownership.json": "9c5c44a31b8bc0a3f1117a36e9592613e8f368abe68787df3263ba9fd905ea9a",
+        "tools/validation/analysis-roadmap/ownership.mjs": "64627211054ff189b7a0a959590b9b2b3f63eabc105b64b11f4106577f6060af"
+      },
+      "postSnapshotTestOnlyChanges": {
+        "tests/phase8/substrate/proof-projection-origin.test.mjs": {
+          "before": "e200e1e9c8f39c44cbc55d334cdc2006f226fc46ca050c4fc4add3f7d1c288df",
+          "after": "11378f28c6fb6e9d5bfa270b9244d96ad2e42d404f22e54a2a99f956d2d84483"
+        }
+      },
+      "scope": "These source/test hashes identify the tested content; candidate commit/tree is verified at publication. Earlier heads and mixed-source diagnostic runs do not attest the publication head.",
+      "finiteLoopReachability": {
+        "executor": "existing canonical executor",
+        "maxBlockVisits": 3,
+        "positiveCounts": [
+          0,
+          1,
+          2
+        ],
+        "limitsRaised": false,
+        "incompletePath": "atomic refusal",
+        "selectedBranchRevisit": "refusal",
+        "inductionProved": false,
+        "authority": "entry path feasibility only; no arm/PHI/CFG deletion or extra memory/fault/exception authority"
+      },
+      "controlRendering": "Observed emitter polarity survives canonical condition spelling. Nested natural loops use existing emitter only when strictly contained, exits remain in parent, and CALL/STORE/UNKNOWN/CLOBBER header statements are absent. No new CFG-equivalence proof.",
+      "producerHistory": {
+        "sharingScope": "one read, with final shared-input recheck",
+        "matchesCachedAcrossReads": false,
+        "immutableDataCertification": "actual producer observer only; mutable consumers and inputs remain live",
+        "fixture": "quality.loop_decrement_step.O1",
+        "retainedConsumerRecords": 283,
+        "baselineDescriptorReads": 1017774,
+        "candidateDescriptorReads": 160997,
+        "standard120msAccepted": false
+      },
+      "nativeRegressionRepair": "Preserve frozen functions and caps; count complete real source/record inventories rather than stale historical representation literals. Keep typed ledger addresses. Aligned canonical RET enables scalar positives; unknown/misaligned RET and non-total UDIV remain negative.",
+      "concurrentBinaryWork": {
+        "adoptedExactPaths": [
+          "js/binary/macho-indirect-symbols.js",
+          "js/binary/model.js",
+          "js/binary/reader.js",
+          "js/binary/source-reader.js",
+          "tests/universal-binary-benchmark.mjs",
+          "tests/universal-binary-source.mjs"
+        ],
+        "repair": "Restore missing ULEB128 diagnostic quote and indentation in supplied reader; declare exact ownership with removal/foreign-path negatives.",
+        "benchmarkInputsThresholdsAndSamplesChanged": false,
+        "benchmarkMetricFailureDiagnosed": false,
+        "lastObservedBenchmarkFailureHead": "13320afa1eb0a96991b24911e42101e474482784",
+        "lastObservedBenchmarkFailureJob": 68562,
+        "reportRetrieved": false,
+        "limits": "Real pinned fixture bytes and small CircleCI report unavailable locally. Main green status may represent skipped benchmark steps; it is not a measured baseline pass."
+      },
+      "gitEvidence": {
+        "stage2Baseline": "3f3778e5f2bef638456da19609d616d71a3daedc",
+        "stage2Tree": "d2e2a7e346504c4623508cfb9fcb49e25990e041",
+        "restored": "Authentic signed commits, trees and needed blobs verified by Git object SHA; origin/main ancestry restored.",
+        "independentExecution": "No independent hardware evidence created by metadata restoration."
+      },
+      "earlierCorpusDiagnostic": {
+        "scope": "Before final control-render changes; diagnostic, not publication-head acceptance.",
+        "frozenFunctions": 135,
+        "before": {
+          "functions": 135,
+          "failures": 0,
+          "semanticCoverage": 0.9259259259259259,
+          "semanticFunctions": 125,
+          "rawAssemblyFallbacks": 1050,
+          "gotos": 146,
+          "temporaries": 1097,
+          "redundantCasts": 1407,
+          "structuredFunctions": 102,
+          "sourceMappedNodes": 2114,
+          "aggregateLayouts": 85,
+          "highVariableGroups": 9950
+        },
+        "after": {
+          "functions": 135,
+          "failures": 0,
+          "semanticCoverage": 1,
+          "semanticFunctions": 135,
+          "rawAssemblyFallbacks": 672,
+          "gotos": 148,
+          "temporaries": 698,
+          "redundantCasts": 1158,
+          "structuredFunctions": 112,
+          "sourceMappedNodes": 1911,
+          "aggregateLayouts": 164,
+          "highVariableGroups": 12547
+        },
+        "safety": {
+          "semanticMismatchCount": 0,
+          "provenanceLossCount": 0,
+          "unknownSafetyRegressionCount": 0,
+          "renderProvenanceLossCount": 0,
+          "renderProvenanceUnboundCount": 0,
+          "details": []
+        },
+        "result": "All five direct safety counters zero; goto quality 146 -> 148 failed before later nested-loop repair."
+      },
+      "generatedSha256": {
+        "userscript/hex.user.template.js": "9a0840d8ee8335fe19394eeee0da23c758b53eab512ed723451b3b37aadc42b7",
+        "userscript/release-version.json": "d208ded4f1e66b45a4c7ce1e181f159f80cc992f65c6e2826d6a27641e936e51"
+      },
+      "secondBuildIdentical": true,
+      "verificationReceipts": [
+        {
+          "label": "core",
+          "command": [
+            "npm",
+            "run",
+            "core:test"
+          ],
+          "exitCode": 0,
+          "logSha256": "d7fac7b9b30a68f1ded5696204427b88ad774a042cea354afd68a7ff150e5188",
+          "result": [
+            "c4-publish-core: PASS (41.2s)"
+          ]
+        },
+        {
+          "label": "provenance",
+          "command": [
+            "/workspace/scratch/6decb715e99a/ci-node22/node_modules/node/bin/node",
+            "tests/phase8/run.mjs",
+            "--group",
+            "provenance"
+          ],
+          "exitCode": 0,
+          "logSha256": "d186c94c996715617397b093188a491a32700b5f4953a4335e55f7f096b23913",
+          "result": [
+            "c4-publish-provenance: PASS (187.6s)"
+          ]
+        },
+        {
+          "label": "structuring",
+          "command": [
+            "/workspace/scratch/6decb715e99a/ci-node22/node_modules/node/bin/node",
+            "tests/phase8/run.mjs",
+            "--group",
+            "structuring"
+          ],
+          "exitCode": 0,
+          "logSha256": "781bf7f9417df47a1aa560cfa6d6aad18751495a98233b84d8066634b35837a1",
+          "result": [
+            "c4-publish-structuring: PASS (4.7s)"
+          ]
+        },
+        {
+          "label": "performance",
+          "command": [
+            "/workspace/scratch/6decb715e99a/ci-node22/node_modules/node/bin/node",
+            "tests/phase8/run.mjs",
+            "--group",
+            "performance"
+          ],
+          "exitCode": 0,
+          "logSha256": "52b1dd37f9af5114280a31baa9e07d8355b34c74e793eaba797c2335ee79c366",
+          "result": [
+            "c4-publish-performance: PASS (26.3s)"
+          ]
+        },
+        {
+          "label": "phase4-binary",
+          "command": [
+            "/workspace/scratch/6decb715e99a/ci-node22/node_modules/node/bin/node",
+            "tests/phase4/run.mjs",
+            "--group",
+            "binary"
+          ],
+          "exitCode": 0,
+          "logSha256": "3d4369f9bff87d3f7cd08629eaae5d69dce9c0e0bc4878b2c3859565497c67ef",
+          "result": [
+            "c4-publish-phase4-binary: PASS (13.4s)"
+          ]
+        },
+        {
+          "label": "control-polarity-and-ownership",
+          "exitCode": 0,
+          "result": "Node22 --test control-render-history, conditional-region-condition, phase7 ownership; PASS 6.7s",
+          "logSha256": "4bd7b52100d10f08316fbb662c4df33fbf4cfbcb5ede2881c46925ffa5dc42db",
+          "logBytes": 204
+        },
+        {
+          "label": "binary-source",
+          "exitCode": 0,
+          "result": "canonical sparse public source entry; PASS 0.3s",
+          "logSha256": "c16d5f59228777969b7765d4a1178abf2fc8ef3814bcbb6eeeb5ca84b8fb4e75",
+          "logBytes": 215
+        },
+        {
+          "label": "binary",
+          "exitCode": 0,
+          "result": "npm run binary:test; PASS 2.4s",
+          "logSha256": "631a1824fc275f1de96815b4a36496da5b65791697177a2034d9908a17819b83",
+          "logBytes": 213
+        },
+        {
+          "label": "independent-report-contract",
+          "exitCode": 0,
+          "result": "report contract after authentic Git-object restoration; PASS; no new external oracle execution",
+          "logSha256": "9f338f7e44d5939ae27227d634b7ee18ca204e96c4e12043305019940f5a2892",
+          "logBytes": 213
+        },
+        {
+          "label": "baseline-comparison",
+          "exitCode": 1,
+          "result": "pre-existing three provenance failures reproduced on 87548c7f before repair",
+          "logSha256": "71c1e33a17be1c22b45d52109e44cc3328046e17bfd5ae891f15132ed6c81805",
+          "logBytes": 3902
+        },
+        {
+          "label": "work-reduction-baseline",
+          "exitCode": 1,
+          "result": "new real-function work-count regression rejects old 1,017,774 descriptor reads; not a changed acceptance threshold",
+          "logSha256": "57c41ba21497a0de5d80c0e67cca00964398f222fee7ae54ba2be4c1c9ad4721",
+          "logBytes": 1307
+        },
+        {
+          "label": "work-reduction-candidate",
+          "exitCode": 0,
+          "result": "283 real consumers, 160,997 descriptor reads; copies/late mutation/replaced root denied",
+          "logSha256": "bbecff22610d077e979bdaec3acc7af7d8079b144e668d958bdcaf7eddc797c1",
+          "logBytes": 210
+        },
+        {
+          "label": "whole-check-diagnostic",
+          "exitCode": 1,
+          "result": "canonical npm run check failed; LLVM/browser executables absent and then-missing Git baseline metadata. Metadata restored later; whole check not accepted.",
+          "logSha256": "5dd182a198fe778dfeefae6b905d5b6dcb0ab403349d5de1fb57d40cabb7a013",
+          "logBytes": 65935
+        },
+        {
+          "label": "generated-first",
+          "exitCode": 0,
+          "result": "canonical userscript build PASS",
+          "logSha256": "bf6e4a0ff64ddc78b892d108880475622ce72a40aac9b0ebcd62c503e8fa096c",
+          "logBytes": 206
+        },
+        {
+          "label": "generated-second",
+          "exitCode": 0,
+          "result": "canonical userscript build PASS; tracked outputs identical",
+          "logSha256": "f092cfd9b8238391ed96085845142d5bdb4122dc48272012e69d052818d2a15d",
+          "logBytes": 207
+        },
+        {
+          "label": "projection-origin-final",
+          "exitCode": 0,
+          "result": "Final test-only correction compares equally warmed observer calls; entire file PASS 1.5s. Actual last-callback cancellation still refuses publication.",
+          "logSha256": "c4947184d572cce5f87d2b2906be9cc2b1c898eef11a0b977945ccddd66447b7",
+          "logBytes": 216
+        },
+        {
+          "label": "cast-family-isolated",
+          "exitCode": 0,
+          "result": "Existing frozen 184 width/operator cases and three strategies PASS 10.8s in isolation. Earlier whole-run optimizer-withheld refusal not accepted as resolved.",
+          "logSha256": "8da4335ff0b9ca104707cd3d83151c20b4e5b881947c6ae58ec76d2c70438fb7",
+          "logBytes": 209
+        },
+        {
+          "label": "phase8-whole-diagnostic",
+          "exitCode": 1,
+          "result": "Mixed-source Node22 diagnostic 1811.7s: two failures (last-observer cancellation and unary/cast family refusal). Cancellation repaired afterward; not final-head whole-suite acceptance.",
+          "logSha256": "0302c045cbcf40f5ce880db0147c87a90f331d68c8fd3a7cf4ff42dada1fd076",
+          "logBytes": 20288
+        },
+        {
+          "label": "lint",
+          "command": [
+            "npm",
+            "run",
+            "lint"
+          ],
+          "exitCode": 0,
+          "result": "(node:6) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.\n(Use `node --trace-warnings ...` to show where the warning was created)\nc4-publish-lint: PASS (1.2s)\n",
+          "logSha256": "19e8a865fc06629bc51687e6088cd82a43f850486063912edc9e790ea1d4c11c"
+        },
+        {
+          "label": "module-boundaries",
+          "command": [
+            "npm",
+            "run",
+            "module-boundaries:test"
+          ],
+          "exitCode": 0,
+          "result": "(node:47) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.\n(Use `node --trace-warnings ...` to show where the warning was created)\nc4-publish-module-boundaries: PASS (0.3s)\n",
+          "logSha256": "1cc8d917e91767df224b839e2402dd3856a7c6482c1bb6132818b5c25513427a"
+        },
+        {
+          "label": "evidence-writers",
+          "command": [
+            "npm",
+            "run",
+            "evidence-writers:test"
+          ],
+          "exitCode": 0,
+          "result": "(node:88) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.\n(Use `node --trace-warnings ...` to show where the warning was created)\nc4-publish-evidence-writers: PASS (1.2s)\n",
+          "logSha256": "7eeb651f604991ead401a045344fc2767a628dad20fb16a6685fb2b747032cf3"
+        },
+        {
+          "label": "ownership-inventory",
+          "command": [
+            "/workspace/scratch/6decb715e99a/ci-node22/node_modules/node/bin/node",
+            "--input-type=module",
+            "-e",
+            "import fs from 'node:fs';import {BRANCH,validateRoadmapInventory} from './tools/validation/analysis-roadmap/ownership.mjs';const files=JSON.parse(fs.readFileSync('/workspace/scratch/6decb715e99a/c4-publish-changed-files.json'));console.log(JSON.stringify({paths:files.length,phases:Object.fromEntries(['phase7','phase8'].map(phase=>[phase,validateRoadmapInventory(BRANCH,phase,files).length]))}));"
+          ],
+          "exitCode": 0,
+          "result": "(node:129) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.\n(Use `node --trace-warnings ...` to show where the warning was created)\nc4-publish-ownership-inventory: PASS (0.1s)\n",
+          "logSha256": "764a49fa126e6030171318be925d80ddff6831672fd0e04b57766796ef0cd01d"
+        },
+        {
+          "label": "whole-check-after-metadata-restoration",
+          "command": "npm run check",
+          "exitCode": 1,
+          "result": "FAIL 70.0s at machine-effects-contract: 18 files requiring unavailable pinned LLVM/browser execution. Authentic Git baseline/denominator/report metadata failures removed. Full canonical check remains unaccepted.",
+          "logSha256": "0e740664466db3da6de80f31ac98f05cb5a278ceb02977c7d6ba3abcfb3c1b11"
+        },
+        {
+          "label": "frozen-corpus-final",
+          "command": "node --test tests/phase8/corpus/no-op-equivalence.test.mjs",
+          "exitCode": 0,
+          "result": "PASS (653.7s): all original 135 functions, fixed baseline identity, direct safety/provenance and strict readability comparisons; no goto regression.",
+          "logSha256": "b091949d771318b5c9688ad2bec5bc1804c78b17edb6bf983709c7e8c129666b",
+          "logBytes": 207
+        }
+      ],
+      "remainingGates": [
+        "Complete canonical whole check and exact-head Phase8/full roadmap acceptance; mixed-source runs are diagnostics only.",
+        "Actual fixed-three-fixture universal benchmark report and all required CI on the published head.",
+        "C4 full region/PHI/CFG/flags/fault/exception/loop proof and standard 120ms acceptance.",
+        "Independent normal and architecture review; draft CodeRabbit success means review skipped.",
+        "Pinned LLVM 18.1.3 and Playwright 1.63.0 Chromium/WebKit executables unavailable here.",
+        "Physical Apple arm64e/iPad, hardware/ordering oracle, signing, active runtime and release evidence."
+      ]
+    },
+    "movingMainReconciliation": {
+      "date": "2026-09-14",
+      "status": "CHECKPOINT-LOCKED",
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false,
+      "inputHead": "bdb22111d040d8c7549b159211405e32e64bdd56",
+      "oldBase": "2b9c1218e0c5bb394aab5b219adc7c253a764451",
+      "mainHead": "5676d9ccaf5ba957e87b56b0504b2e3c72c167fa",
+      "baseResolution": "Direct refs/heads/main read; PR-info base SHA remained the old merge base.",
+      "adoptedMainCommits": [
+        "85387f5d905ed5c28c71461c5651b76645698d44",
+        "c7d22942bdeab08b40a69fe537022ecb883afca0",
+        "f687baa08893f4ab29116ccad3dc9c154e57d3f3",
+        "5676d9ccaf5ba957e87b56b0504b2e3c72c167fa"
+      ],
+      "adoptedPaths": [
+        {
+          "path": "js/managed/dex/parser.js",
+          "importedMainBlob": "5e002fdcca432c73fb3e0018fd4ee3c46c0c3da8",
+          "finalSha256": "1dd45da03d1306a8356a48c668ac7265ab2c242a6993cfa33e489ba3c582fd39"
+        },
+        {
+          "path": "js/managed/shared/bridge-jvm-control-overlay-v2.js",
+          "importedMainBlob": "6e91c1ddf4a7e760abf13aa723cfe45d73482401",
+          "finalSha256": "297407d424272ec52e8a757136c5a047889bf0be3fc36e8099f0742839ae2a0b"
+        },
+        {
+          "path": "js/metadata/go.js",
+          "importedMainBlob": "af6eb262888c57bdb33b88e0e266dc3de62f5e67",
+          "finalSha256": "22e431ab2db8cc97ced69f83a7be444b27ad682ec87f4fd20f15d0ac739b9168"
+        },
+        {
+          "path": "js/runtime/app-runtime.js",
+          "importedMainBlob": "13420e0e1d96cbbfc5cebbbc5049a0f0a3a398f1",
+          "finalSha256": "dd073061a978ecb5e93cfd74819292e3c0ab1a2795230ec6442636f3339d271e"
+        },
+        {
+          "path": "tests/issue-8722-go-metadata-resource-budget.test.mjs",
+          "importedMainBlob": "cae0a7452add371b9e08bbbd1ec1198894b709a9",
+          "finalSha256": "1f74c497742f3ac223301e0e33ba1ff882f62f15aa9d20d2a632e47cd2f7f055"
+        },
+        {
+          "path": "tests/phase10/runtime/issue-8728-async-content-hash-stale-binary.test.mjs",
+          "importedMainBlob": "b96932315f32ba32fce17ece8601c94bb841e264",
+          "finalSha256": "4ab810fc88c1c71f427b0a5dc90d7f1f8e148b12676e30e5f772301de475337a"
+        },
+        {
+          "path": "tests/phase11/dex/issue-8717-identity-tables.test.mjs",
+          "importedMainBlob": "28fed9e80e70342253114606527bc361330948fa",
+          "finalSha256": "4c733c7eeb28e3d9409a75e4668022c526223c26637fa528e2446f706d5392b5"
+        },
+        {
+          "path": "tests/phase11/jvm/issue-8724-control-overlay-order.test.mjs",
+          "importedMainBlob": "b720280820bc7fbf3651f6c72e5ea721a828856e",
+          "finalSha256": "bbbf8069f203c8dcbb71b9c33a347035d2e53ee9573d269218080bfd20913456"
+        }
+      ],
+      "C4RuntimeSourceHashesUnchanged": true,
+      "mainFixtureRepair": {
+        "path": "tests/phase11/jvm/issue-8724-control-overlay-order.test.mjs",
+        "reason": "The incoming ordinary-class fixture incorrectly had super_class=0. Add a real java/lang/Object constant-pool superclass and retain zero-super rejection. JVM parser and bytecode denominator unchanged.",
+        "exactOwnershipAdded": true
+      },
+      "preRepairMainRegression": {
+        "label": "new-main-regressions",
+        "command": [
+          "/workspace/scratch/6decb715e99a/ci-node22/node_modules/node/bin/node",
+          "--test",
+          "tests/issue-8722-go-metadata-resource-budget.test.mjs",
+          "tests/phase10/runtime/issue-8728-async-content-hash-stale-binary.test.mjs",
+          "tests/phase11/dex/issue-8717-identity-tables.test.mjs",
+          "tests/phase11/jvm/issue-8724-control-overlay-order.test.mjs"
+        ],
+        "exitCode": 1,
+        "result": "Rerun with HEX_TEST_OUTPUT=verbose for live full output.",
+        "logSha256": "800ab44553e85f5c8774dc7998cf0e913f0f3e9cdf96f93ace1d478ef6142b9d"
+      },
+      "newMainVerification": [
+        {
+          "label": "build-1",
+          "command": [
+            "npm",
+            "run",
+            "userscript:build"
+          ],
+          "exitCode": 0,
+          "result": "c4-main-build-1: PASS (2.1s)",
+          "logSha256": "9321e691e9dca385d2a879583a1876e6b9d943cd3c43786abc44e84227cd5285"
+        },
+        {
+          "label": "build-2",
+          "command": [
+            "npm",
+            "run",
+            "userscript:build"
+          ],
+          "exitCode": 0,
+          "result": "c4-main-build-2: PASS (2.0s)",
+          "logSha256": "66c65357487135b1a0c4198122686a1445bc488a821b4badce00c6f7629d41ae"
+        },
+        {
+          "label": "new-main-regressions",
+          "command": [
+            "/workspace/scratch/6decb715e99a/ci-node22/node_modules/node/bin/node",
+            "--test",
+            "tests/issue-8722-go-metadata-resource-budget.test.mjs",
+            "tests/phase10/runtime/issue-8728-async-content-hash-stale-binary.test.mjs",
+            "tests/phase11/dex/issue-8717-identity-tables.test.mjs",
+            "tests/phase11/jvm/issue-8724-control-overlay-order.test.mjs",
+            "tests/phase7/ownership/roadmap-v8-integration.test.mjs"
+          ],
+          "exitCode": 0,
+          "result": "c4-main-new-main-regressions: PASS (5.8s)",
+          "logSha256": "889d32a66a7c856318d63f255dbb58cfb1d51700624a6bd1500c5934586c3ee8"
+        },
+        {
+          "label": "core",
+          "command": [
+            "npm",
+            "run",
+            "core:test"
+          ],
+          "exitCode": 0,
+          "result": "c4-main-core: PASS (43.3s)",
+          "logSha256": "c5791472d5d997c6a4177e2708b593e91a8b946702a4c134e9ec55c2838d9eb9"
+        },
+        {
+          "label": "binary",
+          "command": [
+            "npm",
+            "run",
+            "binary:test"
+          ],
+          "exitCode": 0,
+          "result": "c4-main-binary: PASS (2.1s)",
+          "logSha256": "57e97506b1d1f35ce20a48c8e26e06f77135ef55e4468cde372988d6ba5221b7"
+        }
+      ],
+      "generatedSha256": {
+        "userscript/hex.user.template.js": "071065f30c5681ee0e19fb049e4f4986c8c38765cd0acf4691ddbfa0a1f8b743",
+        "userscript/release-version.json": "f9a472edc6d500cf5551683c5c5c9a5333c303b57e5b2a42db792d8eeedd0cfe"
+      },
+      "secondBuildIdentical": true,
+      "previousHeadCi": {
+        "head": "bdb22111d040d8c7549b159211405e32e64bdd56",
+        "fastGateRun": 34807325683,
+        "fastGate": "all steps success",
+        "userscriptRun": 34807325628,
+        "userscript": "success",
+        "circleCiOtherContexts": "7 success",
+        "benchmarkJob": 68814,
+        "benchmark": "failure",
+        "finalAdmissionRun": 34807515179,
+        "finalAdmission": "failure",
+        "smallBenchmarkReportRetrieved": false
+      },
+      "previousHeadAdditionalRegression": {
+        "head": "bdb22111d040d8c7549b159211405e32e64bdd56",
+        "suite": "tests/phase8/substrate/proof-target-decisions.test.mjs",
+        "result": "complete file PASS (42.8s)",
+        "logSha256": "30ec9cf216a1a2638bf51b6c25db43a584456e7d6d3222dfad0897d227e89698",
+        "scope": "Earlier whole-Phase8 refusal did not reproduce in the full file. This is not acceptance of an unrun complete final-head Phase8 gate."
+      },
+      "remaining": "Actual benchmark report/fix and final-head admission, complete whole/Phase8 acceptance, C4 full proof/120ms and independent device/runtime/release evidence remain required."
+    },
+    "completionResume": {
+      "recordedAt": "2026-09-14T07:32:49.352871+00:00",
+      "status": "CHECKPOINT-LOCKED",
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false,
+      "merged": false,
+      "inputHead": "b4fec5df31e8dbb9d803aa3ba5ffc20d49280d44",
+      "mainHead": "71900d5847a3136ebcbd965d63c17b0abfd4c8d7",
+      "mainSnapshots": [
+        "b8577228780c1d9c4e01cd87d7f6f07108759ada",
+        "71900d5847a3136ebcbd965d63c17b0abfd4c8d7"
+      ],
+      "mainAheadCommits": 77,
+      "mainReconciliation": "Authenticated commit/tree/blob objects and three-way reconciliation; four initial conflicts resolved, later 17 paths merged without conflicts. Existing shallow history boundaries retained.",
+      "progress": {
+        "scope": "X-02 original finite 120-row matrix only",
+        "passed": 114,
+        "total": 120,
+        "percentage": 95,
+        "evidenceGap": 4,
+        "environmentExcluded": 2,
+        "overallPercentage": null,
+        "overallReason": "23 findings / 21 tasks have heterogeneous unmet implementation, independent evidence, device and release requirements."
+      },
+      "repairs": [
+        "Preserve concurrent cachedSpan cstring repair and adopt bounded page readahead and main zero-fill audit correction; add cross-span string and read-budget regression.",
+        "Resolve x86 test integration against public decoder refusal versus real browser receiver authority. Preserve FP/MXCSR, mask, memory/fault and x87 assertions; no Node impersonation added.",
+        "Move existing ARM64 ordinary-memory qualifier interpretation to its target adapter with a private immutable composition boundary; canonical proof issuance stays private and caller callbacks remain inert. Remove the unused compat callback duplicate.",
+        "Keep exact ARM64/arm64e completeness and qualifier/shape refusals. 1080 before/after input combinations have identical complete proofs and digests.",
+        "Repair stale alias issuer, function-boundary MemorySSA seed, explicit ABI scalar width and complete low-alignment PE header fixtures; preserve corresponding refusal checks.",
+        "Replace stale SETSSBSY/IRET source-string expectations with public terminal behavior checks; move VBLENDMX positive controls to actual Chromium/WebKit receiver transport.",
+        "Declare each added repair path explicitly and retain missing-path, wrong-owner and foreign-path rejection."
+      ],
+      "sourceSha256": {
+        "js/analysis/debug/pdb.js": "47ebdef52d2eb9b401c72e12aa42e990ac604a2784c7b0427b868b38ba0a1743",
+        "js/analysis/debug/provider.js": "fb96c2e5582b7a85caf14ed74a8b5764341ea0ce91cf37ac97afe99223ed08fe",
+        "js/analysis/demand-driven-runtime.js": "a2d130cb399e8104fa9e35d2987ebf3870f7af8dee47093f86eeee3d172a5769",
+        "js/analysis/producer-wait.js": "b8738ddb0a9bcba3d0d7691c9cc744396efec8fe01de3d70ee05ab109d4f4b3b",
+        "js/binary/audit.js": "34b6fcea99c763dc14bb0d462e30bc2fd2223fddd799b10512e47f12011b60ee",
+        "js/binary/elf-dynamic.js": "0d616df5da48b576999052cf2f2b6b61ea0e6ad981f622826b7cf4268b9850d7",
+        "js/binary/elf-gnu-property.js": "1d4cdd2a59638b5970a82f338ddf8d4fb7f70dd1f264bdbcac3c5c997c1d18c2",
+        "js/binary/pe.js": "3ae06fd1fa490491a6c0ed70712830d635a945de26a481ee99f0266a18ad82c2",
+        "js/binary/source-reader.js": "d6e1b976e075f24c8aef1608b4578e63fbbc0def9062f1840e07d8bfb0e196ca",
+        "js/semantics/compat/index.js": "574051e6634a2e773cad75ff6a29333b9a066ae8ab45428e08655f58eb2d90de",
+        "js/semantics/memory-access-provider.js": "c603183e7caecba8f75e6ca7754a86d262f7122f2a4bdabd02111f8c9296ccdd",
+        "js/semantics/memoryssa/proof-core.js": "87544177e25be5c5ed685c649d8c3e7dbd1024f8046623421a0df1ad6f694a59",
+        "js/targets/architecture/arm64/memory-access-qualifiers.js": "b887d578c937f393c9e71f915ae0cbe9efdee07229e0215312d599a0df6f1846",
+        "js/targets/architecture/x86_64/effects/extended-state-evex.js": "72e07ba7bdcaf596b4a17a06418a5cade2d7fd0a1a37579db50c8170c69fe044",
+        "js/targets/architecture/x86_64/effects/extended-state-helpers.js": "b2d36a06a3bca4e94baf78a084c1422e798f823ef241425ccd1dd34e1e8cee89",
+        "js/targets/architecture/x86_64/effects/extended-state-x87.js": "38df8467bc336331e3f3296da47ddfb27ba1376dd030ee95113ab37aaf9e1978",
+        "js/targets/architecture/x86_64/effects/extended-state.js": "cceca4b06eb249578a04f2480c6c4433c86c1b45b44bc4bcb9260e012851f76c",
+        "js/targets/architecture/x86_64/effects/index.js": "ac8271fb3350369913ca2795f7272a021b37b71a4a2c1c1259e1bf3c9f40ffc5",
+        "js/targets/architecture/x86_64/receiver-provenance.js": "75989681ab891557debc0cb0d492f218e52c4f3cae832797f0566803d40b4e03",
+        "js/targets/architecture/x86_64/runtime-provenance.js": "a6c4bd5ee3645703f21bd39d7b15b1bb94abb002c7def5e6969a3d6d2777dd50",
+        "tests/architecture-abi.mjs": "6cdabd354abe585b7e19798083799e324a289a9e5a141cdcd0f5a5dcebb45669",
+        "tests/issue-4135-pe-section-virtual-layout.mjs": "f216ed03e0c843851cabdb571c8257e61751332a40f8b165e80ad033055b8576",
+        "tests/issue-970-virtual-read-span.mjs": "a205da527bd02c00cad173a94a0436b6c97b5f3ded9e1def3e43c9b7ffc0eafb",
+        "tests/machine-effects/issue-5563-iret-trusted-terminal-no-trap.test.mjs": "f8c4ef0fd1145b27018096a2f7a69e375dc0d0c6fb4e2799e46448e5c8fa4ed5",
+        "tests/machine-effects/issue-5566-x86-setssbsy-routing.test.mjs": "b2495c602d42d0b406d203eb0029016b474ef3e58c3f4d066d20364a811ac96d",
+        "tests/machine-effects/issue-6079-vblendmx-blend-category.test.mjs": "7251db7f2bc4b96fe15d19c7979e78cf9cfd660eb60462c4c826d00c0e3f79c1",
+        "tests/machine-effects/x86-long64-extended-state.test.mjs": "86ed806fc88465f195f1da8159e1048a154fba45aa1ee37e3382929ab2397aae",
+        "tests/machine-effects/x86-long64-fp-denominator.test.mjs": "7a88b50dd103e3a31f3a490338db0960e1e1f762ce6249f8461a31fcfe052661",
+        "tests/phase4/binary/issue-4168-gnu-hash-chain-length.test.mjs": "8284d5dbc197f98aa46c517a14f1337dfc39443e8e524f3caa61c3b227680157",
+        "tests/phase4/binary/issue-8727-elf-gnu-property-budget.test.mjs": "2befb9ef679939dd8fd288b1e669ab4da28b3800d020206ad0b048959e48bfd7",
+        "tests/phase6/effects/issue-8825-x86-evex-owner-provenance.test.mjs": "98775c32e9b955e6a886ad181ca227b37c207fbcb14239b4589cba3382e0f742",
+        "tests/phase7/debug/issue-8729-pdb-procedure-dag-budget.test.mjs": "352f9c765eec60a403d4d2b47fbd0f783d9c855bdf59c676de7956da0e58c621",
+        "tests/phase7/issue-3646-shared-producer-malformed-signal.test.mjs": "afcc9a5cb1c91db8da249c4087968bccc920c79d8d9de29e69d06a75172049e1",
+        "tests/phase7/issue-4243-region-cache-slice-identity.test.mjs": "ed0ab8c4b2ab91c38bff3b9744cc7008ded4f55c4d48e7f4869eac9a0312948b",
+        "tests/phase7/issue-4290-producer-wait-abort-reason.test.mjs": "f161d223feca2f77046428ce98c9db86ed0443671acfd1b03994cf9207668184",
+        "tests/phase7/ownership/roadmap-v8-integration.test.mjs": "3726a2d21f9c4bc53263e014856702b31a06f2015516f6c02485b526fa3a4812",
+        "tests/semantic-v2/issue-4513-memoryssa-access-provider-completeness.test.mjs": "2eca0b6e3f651bf33976ba9ea89a04ede91fd20470398e97428fc2147211b368",
+        "tests/semantic-v2/issue-c2-01-byte-exact-forwarding.test.mjs": "73f5280f8e5c269b26c5ff97590519dec5b69996ed8943ce044a622db0e76d8a",
+        "tests/semantic-v2/memoryssa-cfg.test.mjs": "518b74e4e66cc60a5be61e55963b7cfc5b4e2731b4907f4c1d99379db5f6e967",
+        "tests/universal-binary-source.mjs": "9146dfd905f0380a880087a8e621ec94dcff50d661dacca5ade729608dd294a4",
+        "tools/validation/analysis-roadmap/ownership.json": "a6979e0f7fabb5a03689a411659f4b2a9668b946924933b527b1e62aae295b64",
+        "tools/validation/analysis-roadmap/ownership.mjs": "96eafd4e1f9a54bb91e45409bec10c90bfe6ac34a4391326be306e4f18c003c3"
+      },
+      "generatedSha256": {
+        "userscript/hex.user.template.js": "74e4eb9b24c80ee7c6d4de6540392dc719bfc6cbe0433ed4cf04b8f4632ef525",
+        "userscript/release-version.json": "e0bb37e3c5f3b2305686f9266b00c44b54bc8f1609dd6e80631ee00ac39b76f4"
+      },
+      "trackedGeneratedRepeatIdentical": true,
+      "verificationReceipts": [
+        {
+          "label": "main-analysis",
+          "command": [
+            "node",
+            "--test",
+            "tests/phase7/issue-3646-shared-producer-malformed-signal.test.mjs",
+            "tests/phase7/issue-4243-region-cache-slice-identity.test.mjs",
+            "tests/phase7/issue-4290-producer-wait-abort-reason.test.mjs"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 0.386,
+          "logSha256": "1a9de98e3f5e68c661f01a40e49bc3ef01c007efc4cadb5c95bfdf2b41813a91"
+        },
+        {
+          "label": "binary-repaired",
+          "command": [
+            "node",
+            "scripts/run-quiet-command.mjs",
+            "--label",
+            "resume-binary",
+            "--",
+            "npm",
+            "run",
+            "binary:test"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 4.008,
+          "logSha256": "9e03b77dd7fa40bd54114f2afc8440da72ba495d54610cca472436859f7abe04"
+        },
+        {
+          "label": "memoryssa-fixtures-final",
+          "command": [
+            "node",
+            "--test",
+            "tests/semantic-v2/issue-c2-01-byte-exact-forwarding.test.mjs",
+            "tests/semantic-v2/memoryssa-cfg.test.mjs",
+            "tests/semantic-v2/issue-5862-alias-proof-issuer-relation-strict.test.mjs"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 0.635,
+          "logSha256": "4f3ade5529427bcb0765054d066d499b97e0c2cfb3169232158929dfba30035a"
+        },
+        {
+          "label": "platform-final",
+          "command": [
+            "node",
+            "scripts/run-quiet-command.mjs",
+            "--label",
+            "resume-platform",
+            "--",
+            "npm",
+            "run",
+            "platform:test"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 18.231,
+          "logSha256": "817cd65af68c8d9b4a5817502330ab9b097805bd4c21d0d4133591e1cf43e47c"
+        },
+        {
+          "label": "system-refusal",
+          "command": [
+            "node",
+            "tests/machine-effects/issue-5566-x86-setssbsy-routing.test.mjs"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 0.167,
+          "logSha256": "59e6682f145e41ac59d461b4358608bd88b077393c0800fcf0a1ddaaa78786a4"
+        },
+        {
+          "label": "access-boundary",
+          "command": [
+            "node",
+            "--test",
+            "tests/semantic-v2/issue-4513-memoryssa-access-provider-authority.test.mjs",
+            "tests/semantic-v2/issue-4513-memoryssa-access-provider-completeness.test.mjs",
+            "tests/semantic-v2/issue-c2-01-byte-exact-forwarding.test.mjs",
+            "tests/semantic-v2/memoryssa-cfg.test.mjs",
+            "tests/semantic-v2/issue-5862-alias-proof-issuer-relation-strict.test.mjs",
+            "tests/machine-effects/arm64-memory-addressing.test.mjs"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 0.578,
+          "logSha256": "9db7cec9ae2cd040658c0ea6cf6a53fa57f2ac0ea3e390a7b02334abe72d99e3"
+        },
+        {
+          "label": "architecture-neutrality",
+          "command": [
+            "node",
+            "--input-type=module",
+            "-e",
+            "import { scanArchitectureNeutrality } from \"./tools/validation/semantic-v2/architecture-neutrality.mjs\"; import assert from \"node:assert/strict\"; const result=scanArchitectureNeutrality({root:process.cwd()}); console.log(JSON.stringify(result)); assert.equal(result.architectureLeakCount,0);"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 0.164,
+          "logSha256": "a401427fe7292a468ba180718387173b730251ddb3d824fa9bdef5d12c0c12cf"
+        },
+        {
+          "label": "module-boundaries-final",
+          "command": [
+            "npm",
+            "run",
+            "module-boundaries:test"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 0.304,
+          "logSha256": "c4c28b12fb1e30e52acc903c2b03c3d569b451180ff7664532703cafead0f0bb"
+        },
+        {
+          "label": "proof-equivalence",
+          "command": [
+            "node",
+            "/workspace/scratch/6decb715e99a/resume-proof-equivalence.mjs"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 0.091,
+          "logSha256": "1270dce62b8e3b83d454c477f3cd461090a60bd8699b1feb4e4d1c3668f2d6c7"
+        },
+        {
+          "label": "extra-main-regressions-final",
+          "command": [
+            "node",
+            "--test",
+            "tests/issue-4135-pe-section-virtual-layout.mjs",
+            "tests/phase4/binary/issue-4168-gnu-hash-chain-length.test.mjs",
+            "tests/phase4/binary/issue-8727-elf-gnu-property-budget.test.mjs",
+            "tests/phase6/effects/issue-8825-x86-evex-owner-provenance.test.mjs",
+            "tests/phase7/debug/issue-8729-pdb-procedure-dag-budget.test.mjs"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 0.251,
+          "logSha256": "9bb4f185a1a12a899319bbb606f2b9827ec6e6c9c4ec8b8a6d615d7755a13b78"
+        },
+        {
+          "label": "lint-final",
+          "command": [
+            "npm",
+            "run",
+            "lint"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 1.498,
+          "logSha256": "1a3ab17fdad231c92805c99c9bd98846b1fa51cc89d82411e694f1ed60d94c39"
+        },
+        {
+          "label": "semantic-v2-final",
+          "command": [
+            "node",
+            "scripts/run-quiet-command.mjs",
+            "--label",
+            "resume-semantic-v2-final",
+            "--",
+            "npm",
+            "run",
+            "semantic-v2:test"
+          ],
+          "exitCode": 1,
+          "durationSeconds": 174.719,
+          "logSha256": "b00c7fee181f2984ae9cf3fad31f8c2b5f38532414fbf07bec51cd53b4512dcf"
+        },
+        {
+          "label": "remaining-effects-repaired",
+          "command": [
+            "node",
+            "--test",
+            "tests/machine-effects/issue-5563-iret-trusted-terminal-no-trap.test.mjs",
+            "tests/machine-effects/issue-6079-vblendmx-blend-category.test.mjs"
+          ],
+          "exitCode": 1,
+          "durationSeconds": 0.547,
+          "logSha256": "c9993da720ea0499a4d8886b14657e35e442a30a9635704291b3ce1c8350535a"
+        },
+        {
+          "label": "binary-final",
+          "command": [
+            "npm",
+            "run",
+            "binary:test"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 2.406,
+          "logSha256": "fce062d47ab515ce51a13d11759399b201af1f857de9d372890932f9d25a2e91"
+        },
+        {
+          "label": "generated-repeat",
+          "command": [
+            "npm",
+            "run",
+            "userscript:build"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 2.269,
+          "logSha256": "4467dd5edc345059c9597b5626f094efd96c909643746fc04a1cd5ce7741fd9b"
+        },
+        {
+          "label": "ownership-ready",
+          "command": [
+            "node",
+            "--test",
+            "tests/phase7/ownership/roadmap-v8-integration.test.mjs"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 6.168,
+          "logSha256": "63a01ea828950f7d7662bcb7346b7de034721a3bb869bc58a9c29be8e50b2f53"
+        }
+      ],
+      "semanticV2": {
+        "ordinaryFilesPassed": 119,
+        "ordinaryFilesTotal": 119,
+        "evidenceChain": "PASS",
+        "wholeGate": "FAIL",
+        "durationSeconds": 174.719,
+        "failedLanes": [
+          "required-regressions",
+          "userscript-sync"
+        ],
+        "nestedPass": [
+          "core:test",
+          "migration:test",
+          "semantic:test",
+          "platform:test",
+          "runtime:test",
+          "ui:test",
+          "decompiler:test",
+          "compiler-truth",
+          "benchmark:baseline"
+        ],
+        "nestedFail": [
+          "effects:test",
+          "invariants:test"
+        ],
+        "limitations": "Required effects/invariants failed with LLVM/browser absence and two stale x86 regression expectations. IRET was subsequently repaired and passed; VBLENDMX now completes public refusals but is blocked at the required Chromium launch. Userscript routes fail because uv_interface_addresses is denied in this environment. No lane is skipped or relabeled PASS.",
+        "postRunTestOnlyRepairs": [
+          "tests/machine-effects/issue-5563-iret-trusted-terminal-no-trap.test.mjs",
+          "tests/machine-effects/issue-6079-vblendmx-blend-category.test.mjs",
+          "tests/phase7/ownership/roadmap-v8-integration.test.mjs",
+          "tools/validation/analysis-roadmap/ownership.json",
+          "tools/validation/analysis-roadmap/ownership.mjs"
+        ]
+      },
+      "phase8": {
+        "status": "PENDING",
+        "earlierRun": "Concurrent diagnostic cancelled with exit 130 before the memory-access adapter change; not an acceptance result."
+      },
+      "independentReview": {
+        "status": "BLOCKED",
+        "provider": "CodeRabbit",
+        "reason": "CLI absent; official installer download failed: curl (28) Proxy CONNECT aborted due to timeout. No review ran; authenticated CLI and reachable service are required."
+      },
+      "previousHeadCi": {
+        "head": "b4fec5df31e8dbb9d803aa3ba5ffc20d49280d44",
+        "fastGate": "success",
+        "userscript": "success",
+        "otherCircleContexts": "7 success",
+        "benchmarkJob": 69079,
+        "benchmark": "failure",
+        "finalAdmissionRun": 34812506483,
+        "finalAdmission": "failure",
+        "smallBenchmarkReportRetrieved": false
+      },
+      "remainingGates": [
+        "Canonical whole Phase8 and exact published-head whole check, fixed-three-fixture benchmark and final admission.",
+        "C4 full region/PHI/CFG/flags/fault/exception/loop proof and standard 120ms acceptance.",
+        "Pinned LLVM 18.1.3 and Playwright Chromium/WebKit execution; userscript runtime route verification in a supported environment.",
+        "Independent normal and architecture review; a draft review skip is not approval.",
+        "Physical Apple arm64e/iPad, independent hardware/ordering oracle, signing, active runtime and release evidence."
+      ],
+      "ciTriggerFollowup": {
+        "recordedAt": "2026-09-14T07:40:13.187687+00:00",
+        "inputHead": "0bcc18787c9cb03caf46a3c842db173531e0a86a",
+        "firstDivergence": "Ghidra trigger misses reachable dependency js/semantics/memory-access-provider.js. Reproduced by both CI development-mode and CircleCI impact precheck.",
+        "repair": "Add the exact new composition-module path to the Ghidra trigger, with exact integration ownership for that workflow. No trigger exclusions or threshold changes.",
+        "sourceSha256": {
+          ".github/workflows/ghidra-differential.yml": "2ae7c5eb758b451a7d614ddcce5d5d589d5b7bfdaa43afbd14416076b4a38262",
+          "tools/validation/analysis-roadmap/ownership.mjs": "29c2ed2e2769c205bd76c3c6939766adf9016e2a2e472741623eaaf0d7de915c",
+          "tools/validation/analysis-roadmap/ownership.json": "10156fc4d379de705ce2b6513461c24b433bedb6fc505086bb001ea23a7fd93c",
+          "tests/phase7/ownership/roadmap-v8-integration.test.mjs": "2b945160c7e540adb82d5ca7fc7c755755b713263cf5683a4441c753718c6c3d"
+        },
+        "verification": {
+          "label": "ci-routing-fixed",
+          "command": [
+            "node",
+            "--test",
+            "tests/ci-development-mode.mjs",
+            "tests/ci/circleci-checkout.test.mjs",
+            "tests/ci/circleci-impact.test.mjs",
+            "tests/phase7/ownership/roadmap-v8-integration.test.mjs"
+          ],
+          "exitCode": 0,
+          "durationSeconds": 6.657,
+          "logSha256": "e8302cbb688de8e244418d29e791662222a1f0ae12250793a8b634799bd0916d"
+        },
+        "runtimeAndGeneratedUnchanged": true,
+        "phase8Isolation": "Whole Phase8 continues on clean published 0bcc1878 in the original worktree; this CI-only followup was built in a detached worktree.",
+        "inputHeadCi": {
+          "universalPlatformBenchmark": "success",
+          "benchmarkJob": 69517,
+          "benchmarkUrl": "https://circleci.com/gh/rhgrive3/hex-ida/69517",
+          "userscript": "success",
+          "otherCircleContexts": "6 success",
+          "migration": "failure (same missing-trigger precheck reproduced locally)",
+          "fastGate": "failure at CI development-mode contract",
+          "finalAdmission": "failure"
+        },
+        "remaining": "New-head CI, complete Phase8/whole product gate, independent review, C4 full proof/120ms and physical device/runtime/release evidence remain required."
+      },
+      "reviewReadyCheckpoint": {
+        "recordedAt": "2026-09-14T07:50:54.633164+00:00",
+        "head": "fc339fa1870bbfee889f4cbc7dd55880db86e662",
+        "base": "71900d5847a3136ebcbd965d63c17b0abfd4c8d7",
+        "fastGate": {
+          "status": "success",
+          "runId": 34818991384,
+          "allStepsPassed": true
+        },
+        "userscript": {
+          "status": "success",
+          "runId": 34818991386
+        },
+        "circleCi": {
+          "allEightContextsPassed": true,
+          "benchmarkJob": 69604,
+          "benchmarkUrl": "https://circleci.com/gh/rhgrive3/hex-ida/69604"
+        },
+        "readyForReview": true,
+        "autoMergeEnabled": false,
+        "finalAdmission": {
+          "state": "pending",
+          "reason": "missing exact-head AUTO approval",
+          "runId": 34819547716
+        },
+        "codeRabbit": {
+          "state": "success",
+          "description": "Review skipped: draft pull request",
+          "actualReviewAccepted": false,
+          "note": "This status was emitted before the Ready transition. A real review on the published head is still required."
+        },
+        "manualReleaseVerification": {
+          "status": "BLOCKED",
+          "workflow": ".github/workflows/phase8-release-validation.yml",
+          "inputs": {
+            "sha": "fc339fa1870bbfee889f4cbc7dd55880db86e662",
+            "shadow": false,
+            "gates": true
+          },
+          "reason": "No callable workflow-dispatch API is available. The public Actions workflow page was verified in the browser, which is signed out of GitHub."
+        },
+        "phase8": "Still running on the clean frozen published 0bcc1878 worktree; no source/test mutation was made there.",
+        "fullRoadmapComplete": false,
+        "merged": false
+      }
+    },
+    "nonC4Continuation": {
+      "date": "2026-09-14",
+      "branch": "feat/analysis-roadmap-v8-current-main-20260907",
+      "pullRequest": 7036,
+      "recordedAgainstHead": "3ea388914f4a1d002bfb619ec2e619a7ca75f319",
+      "status": "IN PROGRESS",
+      "assignedScopeComplete": false,
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false,
+      "userOwned": [
+        "C4 all areas",
+        "PHI/CFG",
+        "flags/NZCV",
+        "fault/exception/unwind"
+      ],
+      "physicalDeviceAcceptance": {
+        "status": "SKIPPED",
+        "requestedBy": "user",
+        "instruction": "実機はスキップしてください。",
+        "countsAsPass": false,
+        "scope": "physical iPad/Safari/Apple arm64e and physical ordering/signing/runtime acceptance"
+      },
+      "changes": [
+        "restored original ARM64 operand dependency helper omitted by main reconciliation",
+        "moved unchanged query completeness data away from IR lowering and preserved public re-export identity",
+        "aligned simulated clocks in aggregate minimization deadline regression"
+      ],
+      "toolchainReceipt": "evidence/analysis-remaining-20260914/toolchain-restored.json",
+      "llvmVersion": "Ubuntu LLVM version 18.1.3",
+      "gitVersion": "2.49.1",
+      "x02CurrentEnvironmentClassification": {
+        "pass": 115,
+        "productGap": 0,
+        "evidenceGap": 4,
+        "environmentExcluded": 1,
+        "denominator": 120,
+        "changedRow": "X02-H-02",
+        "reason": "actual independent LLVM reparse succeeded; frozen historical row retained"
+      },
+      "verificationReceipts": [
+        {
+          "label": "focused-restored",
+          "sourceHead": "1957bc55b33b0fcf79328bbf88d9e2675f6d0847",
+          "cleanAtStart": null,
+          "command": [
+            "node",
+            "--test",
+            "tests/phase7/integration/analysis-entrypoint-dependencies.test.mjs",
+            "tests/phase4/issue-3911-blocks-base-call-arg-provenance.test.mjs",
+            "tests/phase7/summary/c1-02-recursive-return-discovery.test.mjs",
+            "tests/phase8/abi/c3-combined-acceptance.test.mjs",
+            "tests/phase8/memory/c2-byte-forwarding-matrix.test.mjs",
+            "tests/scpa/x02-apple-version-matrix.test.mjs"
+          ],
+          "testCount": 266,
+          "scope": "entrypoint/C1 recursive returns/C2 bytes/C3 ABI/X02 additional matrix",
+          "exitCode": 0,
+          "logSha256": "d68cafac2da457a0ee7fc3a2cce64db4a2e48478c4cd933da675a75de76ee18a"
+        },
+        {
+          "label": "llvm-restored",
+          "sourceHead": "fd0ad1dfed445e72265ebd78cba8e0aaa5211746",
+          "cleanAtStart": true,
+          "command": [
+            "node",
+            "--test",
+            "--test-concurrency=1",
+            "tests/machine-effects/arm64-a64-integer-denominator.test.mjs",
+            "tests/machine-effects/arm64-a64-memory-denominator.test.mjs",
+            "tests/scpa/x02-prior120-apple-version-matrix.test.mjs"
+          ],
+          "testCount": 122,
+          "scope": "ARM64 integer and memory denominators plus X02 prior120",
+          "exitCode": 0,
+          "logSha256": "504d48f7940ea2e22e9f5be83dc345981113fe1b4900eb0e0cd2876451f02419"
+        },
+        {
+          "label": "worker-contracts-committed",
+          "sourceHead": "c051ab2ede7b2dc211c9ad9ab5540602d4575f37",
+          "cleanAtStart": true,
+          "command": [
+            "node",
+            "--test",
+            "--test-concurrency=1",
+            "tests/phase9/solver/worker-import-boundary.test.mjs",
+            "tests/phase9/solver/worker-lifecycle.test.mjs",
+            "tests/phase9/translate/support-matrix.test.mjs",
+            "tests/phase9/verify/query-data-boundaries-v6.test.mjs",
+            "tests/phase7/ownership/roadmap-v8-integration.test.mjs"
+          ],
+          "testCount": 48,
+          "scope": "Worker dependencies/query/lifecycle/translator/ownership",
+          "exitCode": 0,
+          "logSha256": "4fca9ea43c7ee0b9b7d9bc3e9ee82c48e306cda11018665dceada87bc88d2a24"
+        },
+        {
+          "label": "rebuild-independent-restored",
+          "sourceHead": "c051ab2ede7b2dc211c9ad9ab5540602d4575f37",
+          "cleanAtStart": true,
+          "command": [
+            "node",
+            "--test",
+            "--test-concurrency=1",
+            "tests/phase12/rebuild/f6-real-fixtures.test.mjs",
+            "tests/phase12/rebuild/f6-pe-layout-cell.test.mjs",
+            "tests/phase12/rebuild/f6-macho-layout-cell.test.mjs",
+            "tests/stage2/x03-rebuild-discovery.test.mjs"
+          ],
+          "testCount": 4,
+          "scope": "ELF64/PE32+/PE32/Mach-O64 finite rebuild cells and discovery",
+          "exitCode": 0,
+          "logSha256": "ed2a906f3149cfc30eb5b9e86f7f0261b4fdbbcc378a6c55064cba66f2c6f40e"
+        },
+        {
+          "label": "minimization-clock-aligned",
+          "sourceHead": "c051ab2ede7b2dc211c9ad9ab5540602d4575f37",
+          "cleanAtStart": false,
+          "command": [
+            "node",
+            "--test",
+            "tests/machine-effects/mismatch-minimization.test.mjs",
+            "tests/machine-effects/sequence-mismatch-minimization.test.mjs"
+          ],
+          "testCount": 13,
+          "scope": "single-instruction and sequence mismatch minimization",
+          "exitCode": 0,
+          "logSha256": "0e4d20357ba94d235ec81f105a12f59ca33853f0198392cf7655ad2ac4871fd7"
+        },
+        {
+          "label": "managed-identity-current",
+          "sourceHead": "3ea388914f4a1d002bfb619ec2e619a7ca75f319",
+          "cleanAtStart": true,
+          "command": [
+            "node",
+            "--test",
+            "--test-concurrency=1",
+            "tests/phase11/cil/cil-module-identity-7689.test.mjs",
+            "tests/phase11/shared/issue-5401-5294-5384-identity-batch.test.mjs",
+            "tests/phase11/shared/issue-4794-managed-profile-identity-validation.test.mjs",
+            "tests/phase11/foundation/issue-4391-managed-identity-primitives.test.mjs"
+          ],
+          "testCount": 43,
+          "scope": "selected CIL/shared managed identity tests",
+          "exitCode": 0,
+          "logSha256": "df6003af3d61f606bc80dbd221bfbc0b64ff582160372ab2ca60faaa66d1b411"
+        }
+      ],
+      "generatedReproducedTwice": true,
+      "generatedHashes": {
+        "userscript/hex.user.template.js": "5e57ede0ef9a85e7a9503989c200cf270e847738a6b6f6dde044ecd6c85b1ee6",
+        "userscript/release-version.json": "5e27c4badb1e85c71fdb2b6ce4ceb062e78dd279906c703c81474129c0851095"
+      },
+      "remaining": [
+        "machine-effects x86 closure/decoder regressions and canonical check not green",
+        "Stage2 cross ARM64/arm64e/RISC-V and x86 baseline ran; x86 attach launcher PR_SET_PTRACER returns EINVAL in this environment (Yama interface absent). Canonical Stage2 not green.",
+        "current-head independent review and integration acceptance; old PR R2 issue repaired, CLI review authentication still unavailable",
+        "Canonical Phase7 remains red on prior pre-#4777-fix head; remaining debug diagnostics, shared producer/abort, ownership overlap, #3754 control-target fixture, and verifier coldActiveFunction performance are not closed by the focused #4777 repair."
+      ],
+      "checkpoint": "docs/analysis-remaining-20260914.md",
+      "additionalCanonicalResults": [
+        {
+          "label": "phase12-current",
+          "sourceHead": "ed4027f6a8c84466e8bd9cf020b0cbc0d72d961d",
+          "cleanAtStart": true,
+          "exitCode": 1,
+          "passedFiles": 228,
+          "failedFiles": 5,
+          "totalFiles": 233,
+          "logSha256": "12124ccfa96ef3100aa6e8a2e97eee7f4b1c29c33f92c95da875cfe0a7c15c71",
+          "completeLog": "evidence/analysis-remaining-20260914/phase12-current-full.log"
+        }
+      ],
+      "summaryAndOwnershipRepair": {
+        "reviewedIssue": "PR #8888 R2: analyzeFunction omitted read-write destinations",
+        "commits": [
+          "d665f4225f3b31a754197c09325a7700c1101542",
+          "64b6c3efd4c335dc03d28a7db760dc190a42057f",
+          "e6f694e89e2ff14a6cd7bc1c8921c0c6f8e3b635"
+        ],
+        "receipts": [
+          {
+            "label": "summary-entrypoint-before",
+            "sourceHead": "a767a5043ef52b66120f290aa8127ca96cb00c1a",
+            "dirtyAtStart": [
+              " M tests/phase7/integration/analysis-entrypoint-dependencies.test.mjs"
+            ],
+            "sourceDiffSha256": "471a54533d66e9a010670f9deb1f7eb4d166ccdbc90f4aa70902c3120d5e09aa",
+            "exitCode": 1,
+            "logSha256": "29702467522800e5ab1c2e8cf175e39976624995d4bbde3b6cb8e9a22376b3f4"
+          },
+          {
+            "label": "summary-entrypoint-repaired",
+            "sourceHead": "a767a5043ef52b66120f290aa8127ca96cb00c1a",
+            "dirtyAtStart": [
+              " M js/analyze.js",
+              " M tests/phase7/integration/analysis-entrypoint-dependencies.test.mjs",
+              " M tests/phase7/ownership/roadmap-v8-integration.test.mjs",
+              " M tools/validation/analysis-roadmap/ownership.json",
+              " M tools/validation/analysis-roadmap/ownership.mjs"
+            ],
+            "sourceDiffSha256": "961b12ecc884a3ecf79db96f0055d864c48acff6357ae05ab5a9c640830d21e1",
+            "exitCode": 0,
+            "logSha256": "bbcf7dd14f46584f90c38f6c3ecb54b850236d92dd6da912e2c6c1afb6640add"
+          },
+          {
+            "label": "continuation-route-before",
+            "sourceHead": "d665f4225f3b31a754197c09325a7700c1101542",
+            "dirtyAtStart": [
+              " M tests/phase7/ownership/roadmap-v8-integration.test.mjs"
+            ],
+            "sourceDiffSha256": "f3d662bdc6a52042c214e0698006b0d9ae53ff269b2491c9dde75da1bf669b93",
+            "exitCode": 1,
+            "logSha256": "d091f893573c6ebd3f826d4af3d582de27fe6ca968d8ba435f770a8f3624a796"
+          },
+          {
+            "label": "continuation-route-repaired",
+            "sourceHead": "d665f4225f3b31a754197c09325a7700c1101542",
+            "dirtyAtStart": [
+              " M .circleci/config.yml",
+              " M .github/workflows/phase7-ownership.yml",
+              " M .github/workflows/phase8-ownership.yml",
+              " M tests/phase7/ownership/roadmap-v8-integration.test.mjs",
+              " M tools/validation/analysis-roadmap/ownership.mjs"
+            ],
+            "sourceDiffSha256": "d270131f90e9def96e27d9564c052ed64486835e102f5bfbc61da710eb77f8b2",
+            "exitCode": 0,
+            "logSha256": "65d7b3dac7cc8793ca38053a8965fb0f54024b3e7e29650356d110d92583f2a8"
+          },
+          {
+            "label": "inherited-call-ownership",
+            "sourceHead": "64b6c3efd4c335dc03d28a7db760dc190a42057f",
+            "dirtyAtStart": [
+              " M tests/phase7/ownership/roadmap-v8-integration.test.mjs",
+              " M tools/validation/analysis-roadmap/ownership.json",
+              " M tools/validation/analysis-roadmap/ownership.mjs"
+            ],
+            "sourceDiffSha256": "7e257a19277047e3b3a9d5034fb3dd61e14bc86e57e0dd8cfa2895c780b4313a",
+            "exitCode": 0,
+            "logSha256": "2f0f1da8def2f0db167c4f05273330149b8cbe41f349859643a6eb839cdca5ae"
+          },
+          {
+            "label": "continuation-inventory-committed",
+            "sourceHead": "e6f694e89e2ff14a6cd7bc1c8921c0c6f8e3b635",
+            "dirtyAtStart": [],
+            "sourceDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "exitCode": 0,
+            "logSha256": "be90b22c3d7cc4c9a572ee22b0eaea6ca0dc3b55d1570905dd6a6f95f1220f6f"
+          },
+          {
+            "label": "summary-contracts-committed",
+            "sourceHead": "e6f694e89e2ff14a6cd7bc1c8921c0c6f8e3b635",
+            "dirtyAtStart": [],
+            "sourceDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "exitCode": 0,
+            "logSha256": "dc9c5abb6e216c579e70e588899382041756cead3bb656543aa83abc721ab6d8"
+          },
+          {
+            "label": "stage2-native-restored",
+            "sourceHead": "e6f694e89e2ff14a6cd7bc1c8921c0c6f8e3b635",
+            "dirtyAtStart": [],
+            "sourceDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "exitCode": 1,
+            "logSha256": "0f372c6175d540da84a6384d0bc48e5c8bb2bd418fcc0e23773f5102e8ef59a2"
+          },
+          {
+            "label": "stage2-x86-child-environment",
+            "sourceHead": "e6f694e89e2ff14a6cd7bc1c8921c0c6f8e3b635",
+            "dirtyAtStart": [],
+            "sourceDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "exitCode": 1,
+            "logSha256": "7c611ecd71cb662a4d821fd5485eef44385834aae91eb13dc5b85274ecee936b"
+          }
+        ],
+        "generatedHashes": {
+          "first": {
+            "userscript/hex.user.template.js": "34c21bff9eec050dcb123379fd1c45ac3d2f399576c4c237aac47e4fd188caf7",
+            "userscript/release-version.json": "b7c5ede6a9caf3a83cb7920318f2c95b90a7efd122fbd9847a3ffa097530196c"
+          },
+          "second": {
+            "userscript/hex.user.template.js": "34c21bff9eec050dcb123379fd1c45ac3d2f399576c4c237aac47e4fd188caf7",
+            "userscript/release-version.json": "b7c5ede6a9caf3a83cb7920318f2c95b90a7efd122fbd9847a3ffa097530196c"
+          },
+          "identical": true
+        },
+        "remoteOwnership": {
+          "head": "e6f694e89e2ff14a6cd7bc1c8921c0c6f8e3b635",
+          "phase7": "SUCCESS",
+          "phase8": "SUCCESS",
+          "receipt": "evidence/analysis-remaining-20260914/remote-checks-e6f.json"
+        },
+        "inheritedSourceUnchangedFrom": "d792b212ed85f1d01734cb190caf441ab23f091d",
+        "inheritedPathsRegistered": [
+          "js/blocks-base.js",
+          "tests/phase4/issue-3911-blocks-base-call-arg-provenance.test.mjs"
+        ],
+        "independentReview": "Old R2 issue repaired; current-head independent approval remains pending"
+      },
+      "workerStartupAcceptance": {
+        "status": "PASSED",
+        "sourceHead": "70fe267fd9fcff9cd1117e753c3b3628afe75767",
+        "engines": [
+          "Chromium",
+          "WebKit"
+        ],
+        "timeoutMs": 2000,
+        "requiredWidths": [
+          32,
+          64
+        ],
+        "checks": [
+          "narrow SAT/model",
+          "narrow UNSAT",
+          "wide bitblast SAT",
+          "stale query rejection",
+          "exact edge proof",
+          "dedicated Worker"
+        ],
+        "contractTestsPassed": 51,
+        "receipts": [
+          {
+            "label": "worker-host-contracts-committed",
+            "sourceHead": "70fe267fd9fcff9cd1117e753c3b3628afe75767",
+            "dirtyAtStart": [],
+            "exitCode": 0,
+            "logSha256": "60099f89b6efdc6bd631f8e0ef7a84361b26632a9b5b7a8f6e0dc7a524f3e9d1"
+          },
+          {
+            "label": "worker-host-browser-committed",
+            "sourceHead": "70fe267fd9fcff9cd1117e753c3b3628afe75767",
+            "dirtyAtStart": [],
+            "exitCode": 0,
+            "logSha256": "42be5bf15faf94d25227ae135a3c169489e8769c43f1c7666d2209828c0c819b"
+          }
+        ],
+        "generatedHashes": {
+          "first": {
+            "userscript/hex.user.template.js": "3efda39591bbb396f5de0ce6ecbb1f16298c5917d893f83014c59bcae7fa4a24",
+            "userscript/release-version.json": "ab2629e3778bc53cc6b1f42190ffc5592e15bdefffd91bca4bc47bdfb1d72f41"
+          },
+          "second": {
+            "userscript/hex.user.template.js": "3efda39591bbb396f5de0ce6ecbb1f16298c5917d893f83014c59bcae7fa4a24",
+            "userscript/release-version.json": "ab2629e3778bc53cc6b1f42190ffc5592e15bdefffd91bca4bc47bdfb1d72f41"
+          },
+          "identical": true
+        },
+        "physicalDeviceAcceptance": false
+      },
+      "consolidation": {
+        "canonicalPullRequest": 7036,
+        "supersededPullRequest": 8888,
+        "integrationInput": "10c718296f28622145696d48257b72880ab3d3fa",
+        "implementationInput": "321f67610bff908f261f448d12faca2e0e00b2d5",
+        "mainInput": "f1af93b04a9511703fba61e1b6b14d9fbce4b572",
+        "behindBefore": 108,
+        "method": "non-fast-forward merge; no force-push",
+        "fullAcceptance": false,
+        "validatedIntegrationHead": "972c01bc0cdd6dc4cc81c14738cd2ee8ebcb2918",
+        "focusedTestsPassed": 305,
+        "receipts": [
+          {
+            "label": "integration-7036-tests-committed",
+            "sourceHead": "972c01bc0cdd6dc4cc81c14738cd2ee8ebcb2918",
+            "dirtyAtStart": [],
+            "exitCode": 0,
+            "logSha256": "bc02299e6884a8dd6fdb7a3c7143966953c6a7094d0d6c565d0febb348207b54"
+          },
+          {
+            "label": "integration-7036-inventory-committed",
+            "sourceHead": "972c01bc0cdd6dc4cc81c14738cd2ee8ebcb2918",
+            "dirtyAtStart": [],
+            "exitCode": 0,
+            "logSha256": "e2bd2471fbb7d28ed192f1abd394fc83ea8c065222e04a56702e528c9b69093f"
+          },
+          {
+            "label": "integration-7036-browser-committed",
+            "sourceHead": "972c01bc0cdd6dc4cc81c14738cd2ee8ebcb2918",
+            "dirtyAtStart": [],
+            "exitCode": 1,
+            "logSha256": "42ea79104186f68ce25c86d0162c6750709907dc5da3de4f34fa327e76a1a725"
+          },
+          {
+            "label": "integration-7036-browser-isolated",
+            "sourceHead": "972c01bc0cdd6dc4cc81c14738cd2ee8ebcb2918",
+            "dirtyAtStart": [],
+            "exitCode": 0,
+            "logSha256": "42be5bf15faf94d25227ae135a3c169489e8769c43f1c7666d2209828c0c819b"
+          }
+        ],
+        "browserNote": "Concurrent run failed at proof verdict; isolated unchanged-2000ms rerun passed both engines. Both receipts retained.",
+        "behindAfter": 0,
+        "supersededPullRequestState": "MERGED",
+        "mergedAt": "2026-09-14T16:01:45Z",
+        "publishedIntegrationHead": "972c01bc0cdd6dc4cc81c14738cd2ee8ebcb2918"
+      },
+      "backupBranch": "codex/analysis-remaining-20260914",
+      "c1TruthErratum": {
+        "date": "2026-09-15",
+        "status": "NON_ESCAPE_CORPUS_INCONSISTENCY_REPAIRED",
+        "sourceHead": "6e6fcaf382c9f4ee0a00116cd0fe9d692fa0faae",
+        "commits": [
+          "a6607c29cbdc2754cfdad46fb279ba01047c9d49",
+          "cc1a923c9ddc4f93bd6af70632290c21522ecce8",
+          "6e6fcaf382c9f4ee0a00116cd0fe9d692fa0faae",
+          "176b180e9baf44549667330888db0de7b5574e7a"
+        ],
+        "corpusVersion": 2,
+        "manifestDigest": "896de134032f78f88732e2513677e4b7",
+        "v1TruthGeneratorVersion": "2.0.0",
+        "v2TruthGeneratorVersion": "3.0.0",
+        "originalV2QueryCount": 30,
+        "retainedV2QueryCount": 30,
+        "previousExactConservative": [
+          15,
+          15
+        ],
+        "correctedExactConservative": [
+          12,
+          18
+        ],
+        "renameCells": 240,
+        "correctedQueries": [
+          "q-frame-non-escaping",
+          "v2-frame-non-escaping",
+          "v2-callee-ret",
+          "v2-tls-vs-stack"
+        ],
+        "runtimeProofConditionsChanged": false,
+        "scoringThresholdsChanged": false,
+        "oldEvidenceInvalidated": true,
+        "baselineNote": "Retrospective recalculation of unchanged legacy safety floor on corrected corpus; not a pre-candidate baseline or precision-improvement claim.",
+        "cacheRegression": "#5215 positive control explicitly supplies and observes both allocation roots; rejected refinement still withdraws NoAlias. One-sided #4977 negatives retained.",
+        "testsPassed": 230,
+        "receipts": [
+          {
+            "label": "c1-complete-acceptance",
+            "sourceHead": "6e6fcaf382c9f4ee0a00116cd0fe9d692fa0faae",
+            "dirtyAtStart": [],
+            "exitCode": 0,
+            "logSha256": "7aab33d9e8f628787fc466925abdd827064157387e8689ddf695cdf596737991"
+          },
+          {
+            "label": "c1-complete-inventory",
+            "sourceHead": "6e6fcaf382c9f4ee0a00116cd0fe9d692fa0faae",
+            "dirtyAtStart": [],
+            "exitCode": 0,
+            "logSha256": "3dfbe71a2599fff2a13bf5e8cafc71c6638a6dc01aba645f4cb6cae3707e4bf4"
+          },
+          {
+            "label": "c1-canonical-phase7-final",
+            "sourceHead": "cc1a923c9ddc4f93bd6af70632290c21522ecce8",
+            "dirtyAtStart": [],
+            "exitCode": 1,
+            "logSha256": "fe086ffa44ccbaf66193f448831d5fb6bb1a7068a5ce5ab562cbc02eb3c9d17a"
+          },
+          {
+            "label": "c1-isolated-verifier",
+            "sourceHead": "cc1a923c9ddc4f93bd6af70632290c21522ecce8",
+            "dirtyAtStart": [],
+            "exitCode": 1,
+            "logSha256": "e94d85deedd69f591cf0990c6da43fd0fe86cde3ee9f2826ecef9551ada4d0f6"
+          }
+        ],
+        "canonicalPhase7": {
+          "discoveredFiles": 440,
+          "exitCode": 1,
+          "finalCountsAvailable": false,
+          "fullLogSha256": "efb762e2f06de24d9195c6d7233342a8c10d677748413c93350d422544458827",
+          "note": "#4777 was repaired on a later head; other failures remain and full-suite aggregate was unavailable."
+        },
+        "phase7VerifierVerdict": "BLOCKING",
+        "coldActiveFunctionMs": 368.466,
+        "coldActiveFunctionBudgetMs": 250,
+        "remoteComparison": {
+          "behind": 0,
+          "ahead": 263,
+          "main": "f1af93b04a9511703fba61e1b6b14d9fbce4b572",
+          "head": "6e6fcaf382c9f4ee0a00116cd0fe9d692fa0faae"
+        },
+        "fullRoadmapComplete": false,
+        "physicalDevices": "SKIPPED_BY_USER",
+        "latestAcceptanceHead": "176b180e9baf44549667330888db0de7b5574e7a",
+        "latestAcceptance": {
+          "test": "tests/phase7/alias/issue-4777-forged-scalar-ssa-rename.test.mjs",
+          "passed": 2,
+          "failed": 0,
+          "semantics": "located unknown-call preserves earlier canonical SP proof; forged rename remains unknown",
+          "status": "PASS",
+          "receipts": [
+            {
+              "label": "c1-final-4777",
+              "sourceHead": "176b180e9baf44549667330888db0de7b5574e7a",
+              "exitCode": 0,
+              "logSha256": "5a7a101037181a146787774fe0d3c16c0076b72fd7c6a801a4cac6cc616c3d1f"
+            },
+            {
+              "label": "c1-final-4777-owner",
+              "sourceHead": "176b180e9baf44549667330888db0de7b5574e7a",
+              "exitCode": 0,
+              "logSha256": "8b26b09d4a3dd779731d32abb093239932d9058817603b781921dc23af09bf69"
+            },
+            {
+              "label": "c1-final-inventory-4777",
+              "sourceHead": "176b180e9baf44549667330888db0de7b5574e7a",
+              "exitCode": 0,
+              "logSha256": "c1fc7e428981a03077afcd2ccb7505395031b6bb09e8046a9cc7e3dc6e74b5b2"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "integrationFollowupHistory": [
+    {
+      "date": "2026-09-14",
+      "inputHead": "53b6d2a7ef0695e63111689f7d36598724722f49",
+      "status": "CHECKPOINT-LOCKED",
+      "recordedMeasurementsAreHistorical": true,
+      "checkpoint": "docs/analysis-roadmap-v8-integration-checkpoint.md",
+      "fullRoadmapComplete": false,
+      "x02Prior120RowsIntegrated": false
+    }
+  ]
+}

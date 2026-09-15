@@ -7,6 +7,7 @@ import { asByteSource } from './source.js';
 import { parseSourceRanges } from './source-reader.js';
 import { scanSourceStrings } from '../bytesource/strings.js';
 import { sliceArchName, selectDefaultFatSlice, validateFatSlice, validateFatContainer, probePastEndArm64SliceAsync, parseInnerMachOHeader } from './macho-fat.js';
+import { parseDyldSharedCacheSource } from './dyld-shared-cache.js';
 
 const FAT_KINDS = new Map([
   ['cafebabe', { bits: 32, littleEndian: false }],
@@ -48,6 +49,10 @@ export async function openBinarySource(input, opts = {}) {
   const detected = detectBinary(prefix, { probeLength: BigInt(prefixLength), totalSize: source.size });
   const rangeOptions = withSignal(opts.ranges || {}, opts.signal);
 
+  if (detected.format === 'dyld-shared-cache') {
+    const image = await parseDyldSharedCacheSource(source, opts);
+    return withStrings(image, source, opts);
+  }
   if (detected.format === 'elf') return parseELFSourceWithPrefix(source, opts, prefix, rangeOptions);
   // The source probe is intentionally small; parsePE performs bounded range reads for e_lfanew and PE\0\0.
   if (detected.format === 'pe' || (prefix.byteLength >= 2 && prefix[0] === 0x4d && prefix[1] === 0x5a)) {

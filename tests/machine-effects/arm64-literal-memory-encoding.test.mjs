@@ -55,6 +55,16 @@ for (const mnemonic of ['ldr','ldrsw','prfm']) {
   const effects = liftArm64MachineEffects(addressless);
   assert.equal(effects.completeness, 'partial', `${mnemonic}:addressless must fail closed`);
   assert.equal(effects.unknownEffects?.reason, `arm64-${mnemonic}-literal-address-unavailable-for-encoding`);
+
+
+  for (const [suffix, address] of [
+    ['negative-address', -1n],
+    ['address-over-64-bit', 1n << 64n],
+  ]) {
+    const invalidAddress = liftArm64MachineEffects(decoded(mnemonic, base, suffix, { address }));
+    assert.equal(invalidAddress.completeness, 'partial', `${mnemonic}:${suffix}:must fail closed`);
+    assert.equal(invalidAddress.unknownEffects?.reason, `arm64-${mnemonic}-literal-address-unavailable-for-encoding`);
+  }
 }
 
 console.log('ARM64 literal memory encoding validation: PASS');

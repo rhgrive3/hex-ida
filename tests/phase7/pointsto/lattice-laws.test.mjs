@@ -133,9 +133,21 @@ test('set join is commutative and monotone', () => {
 
 test('bottom is the join identity and top is absorbing', () => {
   const a = set(target('root_a', 0n, 0n));
-  assert.ok(pointsToEqual(joinPointsTo(BOTTOM_POINTS_TO, a), a));
+  assert.equal(joinPointsTo(BOTTOM_POINTS_TO, a), a,
+    'immutable bottom join should reuse the canonical right-hand set');
+  assert.equal(joinPointsTo(a, BOTTOM_POINTS_TO), a,
+    'immutable bottom join should reuse the canonical left-hand set');
   assert.ok(joinPointsTo(a, topPointsTo('unresolved-load')).top);
   assert.ok(joinPointsTo(topPointsTo('unresolved-load'), a).top);
+});
+
+test('stable fixed-point joins reuse an equivalent canonical set', () => {
+  const current = set(target('root_a', 0n, 8n));
+  const transfer = set(target('root_a', 0n, 8n));
+  assert.notEqual(current, transfer, 'control: independently built sets are distinct objects');
+  assert.ok(pointsToEqual(current, transfer), 'control: their fixed-point identity is equal');
+  assert.equal(joinPointsTo(current, transfer), current,
+    'an idempotent join must not rebuild immutable targets on every solver iteration');
 });
 
 test('bottom and top are different things', () => {

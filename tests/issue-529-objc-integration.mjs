@@ -65,6 +65,14 @@ const unrelatedReceiver = resolveObjcDispatch(index, { receiverType: 'UnrelatedD
 assert.equal(unrelatedReceiver.resolved, null);
 assert.equal(unrelatedReceiver.candidates.length, 0);
 
+// A class absent from this image may inherit from a linked runtime class.
+// #6076 preserves inconclusive candidates instead of proving their absence.
+const unknownReceiver = resolveObjcDispatch(index, { receiverType: 'NoSuchClass', selector: 'debugName' });
+assert.equal(unknownReceiver.resolved, null);
+assert.equal(unknownReceiver.partial, true);
+assert.deepEqual(new Set(unknownReceiver.candidates.map((x) => x.imp)), new Set([0x1200n, 0x2100n]));
+assert.match(unknownReceiver.reason, /hierarchy is unavailable or incomplete/);
+
 // Inheritance narrowing remains valid for ordinary class methods.
 const inherited = resolveObjcDispatch(index, { receiverType: 'ChildData', selector: 'baseOnly' });
 assert.equal(inherited.resolved?.imp, 0x1110n);

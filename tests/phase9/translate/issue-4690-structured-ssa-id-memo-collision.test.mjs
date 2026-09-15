@@ -3,9 +3,9 @@
 // id such as ['v1'] aliased onto the canonical string id 'v1'
 // (String(['v1']) === 'v1'). Distinct SSA values were silently merged into
 // one memo entry and the solver expression was built from the wrong operand
-// as an EXACT translation. Contract now: only canonical primitive string ids
-// (the semantic-ssa value-id producer contract) participate in memo/cycle
-// identity; structured or otherwise malformed ids fail closed to an explicit
+// as an EXACT translation. Canonical string IDs and the live producer's safe
+// integer IDs retain distinct typed identities; structured or malformed IDs
+// fail closed to an explicit
 // unknown and never fabricate an exact expression.
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -41,7 +41,7 @@ test('#4690 array id must not alias onto the canonical string id in the memo (1+
 });
 
 test('#4690 malformed structured ids never enter memo or cycle identity', () => {
-  const shapes = [['v1'], { v: 'v1' }, true, 42, 0n, () => 'v1'];
+  const shapes = [['v1'], { v: 'v1' }, true, '', '  ', NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, 0n, () => 'v1'];
   for (const id of shapes) {
     const translated = translateSemanticIR({
       id: 'inst-1',
@@ -70,6 +70,19 @@ test('#4690 malformed structured ids never enter memo or cycle identity', () => 
   assert.equal(cycleLaunder.status, TRANSLATION_STATUS.UNSUPPORTED);
   assert.equal(cycleLaunder.expression.right.kind, EXPR_KIND.UNKNOWN_SEMANTIC,
     'a structured id must not launder into the active/memo identity of a canonical id');
+});
+
+test('#4690 live numeric IDs cannot alias their string spelling', () => {
+  for (const id of [0, 42]) {
+    const translated = translateSemanticIR({
+      id: 'typed-add', op: OP.BIN, subOp: 'add',
+      args: [{ value: { id, const: 1n } }, { value: { id: String(id), const: 2n } }],
+    }, { bitWidth: 8 });
+    assert.equal(translated.status, TRANSLATION_STATUS.EXACT);
+    assert.equal(translated.expression.left.value, 1n);
+    assert.equal(translated.expression.right.value, 2n);
+    assert.notEqual(translated.expression.left, translated.expression.right);
+  }
 });
 
 test('#4690 canonical string id memoization is preserved', () => {

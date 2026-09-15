@@ -101,7 +101,7 @@ const memoryAccess = (addressValueId, widthBits) => ({
   addressSpace: 'memory', addressValueId, widthBits, endian: 'little', volatility: false, atomic: false,
 });
 
-function buildConsumerFixture() {
+function buildConsumerFixture({ observeSecondRoot = false } = {}) {
   const functionId = 'function_loaded_pointer_recovery_5215';
   const blockId = 'entry';
   const nodes = [
@@ -157,6 +157,16 @@ function buildConsumerFixture() {
     { id: 'pointer', kind: 'definition', machineType: ADDRESS_TYPE, definitionNodeId: 'node_pointer', origin: origin('pointer') },
     { id: 'loaded', kind: 'definition', machineType: ADDRESS_TYPE, definitionNodeId: 'node_load', origin: origin('loaded') },
   ];
+  if (observeSecondRoot) {
+    // Observe the second declared allocation without publishing it or changing
+    // the reaching-store chain. Escape analysis observes consumed values.
+    nodes.splice(nodes.length - 1, 0, {
+      id: 'node_fp_observed', kind: 'binary', blockId, inputs: ['fp', 'zero'],
+      outputs: ['fp_observed'], operator: 'add', origin: origin('node_fp_observed'),
+    });
+    values.push({ id: 'fp_observed', kind: 'definition', machineType: ADDRESS_TYPE,
+      definitionNodeId: 'node_fp_observed', origin: origin('fp_observed') });
+  }
   const ir = createSemanticIrFunction({
     functionId,
     entryBlockId: blockId,
@@ -239,15 +249,16 @@ function consumerRefinement(built, completeness = 'complete') {
 }
 
 test('#5215 a rejected refinement cannot mint a stale non-escaping NoAlias at the alias consumer', () => {
-  const built = buildConsumerFixture();
+  const built = buildConsumerFixture({ observeSecondRoot: true });
   assert.ok(reachingConcreteStore(built.memorySsa, built.memorySsa.uses.find((use) => use.sourceEntityId === 'node_load')),
     'fixture precondition: the load has one exact reaching store');
 
-  // Declare the frame root an allocation-site root so escape analysis can
-  // prove it locally created; the fp root stays externally supplied.
-  const rootKey = analyzeLocalPointsTo(built.ir, built.cfg, built.ssa, { snapshotId: CONSUMER_SNAPSHOT })
-    .pointsTo.get('slot').targets[0].rootKey;
-  const options = { snapshotId: CONSUMER_SNAPSHOT, allocationRootKeys: [rootKey] };
+  // This positive control explicitly declares BOTH roots as allocations.
+  // One local root versus an incoming pointer cannot establish NoAlias (#4977).
+  const pointsTo = analyzeLocalPointsTo(built.ir, built.cfg, built.ssa, { snapshotId: CONSUMER_SNAPSHOT }).pointsTo;
+  const allocationRootKeys = ['slot', 'fp'].map(id => pointsTo.get(id).targets[0].rootKey);
+  assert.equal(new Set(allocationRootKeys).size, 2);
+  const options = { snapshotId: CONSUMER_SNAPSHOT, allocationRootKeys };
   const solver = createPhase7AliasSolver({ ir: built.ir, cfg: built.cfg, ssa: built.ssa, options });
 
   // Precondition: refined and baseline escape facts actually disagree.
@@ -259,8 +270,8 @@ test('#5215 a rejected refinement cannot mint a stale non-escaping NoAlias at th
   solver.refineMemorySsa(built.memorySsa, consumerRefinement(built));
   const refinedEscape = solver.escapeRun();
   assert.equal(refinedEscape.status.completeness, 'complete');
-  assert.equal(refinedEscape.nonEscapingRoots.size, 1,
-    'the refined run proves exactly the local root non-escaping');
+  assert.equal(refinedEscape.nonEscapingRoots.size, 2,
+    'the refined run proves both explicitly declared allocation roots non-escaping');
 
   const refinedAlias = solver.alias(QUERY.leftRegion, QUERY.rightRegion, {
     leftAccess: QUERY.leftAccess, rightAccess: QUERY.rightAccess,

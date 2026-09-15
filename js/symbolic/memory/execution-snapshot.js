@@ -1,0 +1,271 @@
+/** Issued terminal-path values. This is a query-local capability, not a static
+ * MemorySSA fact and not a proof of a whole function's memory/effect behavior.
+ * IR remains caller-owned: we compare the execution-relevant object graph both
+ * before publication and on consumption rather than freezing or mutating it.
+ */
+import { concreteMemoryWriteFootprint, symbolicMemoryWriteFootprint } from './byte-memory.js';
+import { queryArray } from './data-input.js';
+import { semanticValueIdentity } from './value-identity.js';
+import { QueryFailure, sameMemoryIdentity } from './query-state.js';
+import { createUnknownSemantic, createBv, bvSort } from '../expr/index.js';
+import { createAssumption, createCompleteness, ASSUMPTION_TRUST } from '../translate/support-matrix.js';
+
+const issued = new WeakMap();
+const executions = new WeakMap();
+// The shapes below are the complete set of execution-relevant fields an issued
+// capability is bound to. Fault/unwind obligations are declared at several
+// layers, so the instruction and `extra` vocabularies both have to be watched:
+// an obligation added after publication is a new exceptional edge the capture
+// never accounted for, and must revoke the capability rather than be inherited
+// by a `complete` normal-completion result.
+const SHAPES = Object.freeze({
+  ir: {entry:null,blocks:'blocks',instructions:'insts',values:'values',functionId:null,semanticIrVersion:null,truncated:null,architecture:null,arch:null,abiId:null,semanticsVersion:null,snapshotId:null,binaryId:null},
+  block: {index:null,insts:'insts',phis:'insts',succ:'scalars'},
+  inst: {id:null,unknownEffects:null,op:null,sub:null,subOp:null,name:null,args:'args',dst:'value',incoming:'incoming',cond:'inst',signed:null,float:null,bits:null,conditionValue:'value',returnTargetValue:'value',possibleFaults:'faults',faults:'faults',mayThrow:null,mayUnwind:null,unwindTarget:null,unwindMetadata:null,cleanupOrder:null,exceptionTargets:null,exceptionalEdges:null,row:null,address:null,addr:'addr',loc:'loc',extra:'extra',volatile:null,atomic:null,value:null},
+  value: {id:null,bits:null,kind:null,const:null,float:null,floatConst:null,constKind:null,reg:null,index:null,def:'inst',semanticValueId:null,semanticSsaValueId:null,machineType:'machineType'},
+  machineType: {kind:null,widthBits:null},
+  argument: {value:'value',bits:null}, incomingItem: {from:null,value:'value'},
+  addr: {base:'value',index:'value',disp:null,size:null,widthBits:null,precise:null,addressSpace:null},
+  loc: {kind:null,key:null,address:null,size:null,disp:null,addressSpace:null,volatile:null,atomic:null},
+  extra: {stateWrite:null,unknownEffects:null,value:null,constKind:null,kind:null,bit:null,target:null,returnControlTargetValueId:null,returnControlTarget:'returnControlTarget',possibleFaults:'faults',faults:'faults',mayThrow:null,mayUnwind:null,unwindTarget:null,unwindMetadata:null,cleanupOrder:null,exceptionTargets:null,exceptionalEdges:null,size:null,widthBits:null,memoryAccess:'descriptor',signed:null,float:null,sourceBits:null,targetBits:null,lsb:null,width:null,toward:null,bitfieldKind:null,volatile:null,atomic:null,addressPrecise:null,addressSemantic:null,completeness:null,attributes:'attributes'},
+  returnControlTarget: {schema:null,state:null,valueId:null,reason:null},
+  attributes: {float:null,unknownEffects:null,machineAddressExpression:'expression',machineEffects:'machineEffects',machineControlEffect:'controlEffect',possibleFaults:'faults',faults:'faults'},
+  machineEffects: {bundleCompleteness:null,unknownEffects:null,architectureId:null,mode:null,possibleFaults:'faults',faults:'faults',operationMetadata:'operationMetadata'},
+  controlEffect: {kind:null,target:'controlTarget'},
+  controlTarget: {kind:null},
+  fault: {kind:null,condition:'faultCondition',detail:'faultDetail'},
+  faultCondition: {kind:null,alignmentBytes:null},
+  faultDetail: {architecture:null,instructionSet:null},
+  operationMetadata: {divisionByZero:null,signedOverflow:null,widthBits:null},
+  expression: {kind:null,widthBits:null,left:'expression',right:'expression',value:'expression',amount:null,fromBits:null,toBits:null,temporaryId:null},
+  descriptor: {faults:'scalars',alignment:null,widthBits:null,addressSpace:null,endian:null,atomic:null,volatility:null,ordering:null,addressExpr:'addressExpr'},
+  addressExpr: {valueId:null},
+});
+const ARRAYS = {blocks:'block',insts:'inst',values:'value',args:'argument',incoming:'incomingItem',scalars:null,faults:'fault'};
+function property(object,key) {
+  const descriptor=Object.getOwnPropertyDescriptor(object,key);
+  if (descriptor && !Object.hasOwn(descriptor,'value')) throw new QueryFailure('ir-accessor');
+  if (!descriptor && key in object) throw new QueryFailure('inherited-ir-property');
+  return {present:!!descriptor,value:descriptor?.value};
+}
+function captureContract(ir,memory) {
+  const pending=[[ir,'ir']],seen=new Map(),records=[];
+  while(pending.length) {
+    memory.chargeExecution();
+    const [object,mode]=pending.pop();
+    if(object==null || typeof object!=='object') continue;
+    if(seen.get(object)?.has(mode)) continue;
+    const arrayMode=Object.hasOwn(ARRAYS,mode);
+    if(arrayMode && !Array.isArray(object)) throw new QueryFailure('invalid-ir-array');
+    const proto=Object.getPrototypeOf(object);
+    if(!arrayMode && proto!==Object.prototype && proto!==null) throw new QueryFailure('non-data-ir-object');
+    const keys=arrayMode ? null : Object.keys(SHAPES[mode]);
+    const size=arrayMode?object.length:keys.length;
+    memory.chargeExecution(size+1,size+1);
+    // PHI operands have a closed use-list contract. Remember additions too,
+    // including non-enumerable and symbol keys, without evaluating accessors.
+    const ownKeys=['argument','args','returnControlTarget','controlEffect','faults','fault','faultCondition','faultDetail'].includes(mode) ? Reflect.ownKeys(object) : null;
+    if(ownKeys) memory.chargeExecution(ownKeys.length,ownKeys.length);
+    if(!seen.has(object)) seen.set(object,new Set());seen.get(object).add(mode);
+    const entries=[];
+    for(let i=0;i<size;i++) {
+      const key=arrayMode?String(i):keys[i];
+      const value=property(object,key);
+      entries.push([key,value]);
+      const childMode=arrayMode?ARRAYS[mode]:SHAPES[mode][key];
+      if(childMode && value.value!=null && typeof value.value==='object') pending.push([value.value,childMode]);
+    }
+    records.push({object,proto,entries,ownKeys,length:arrayMode?size:null});
+  }
+  // The number of comparisons is fixed and was charged before capture. Accesses
+  // cannot become an unbounded traversal when a caller replaces a subtree.
+  const work=records.reduce((sum,record)=>sum+record.entries.length+(record.ownKeys?.length ?? 0)+1,0);
+  return {work,check:() => {
+    for(const record of records) {
+      if(Object.getPrototypeOf(record.object)!==record.proto || record.length!=null && record.object.length!==record.length) throw new QueryFailure('stale-ir');
+      if(record.ownKeys) {
+        const current=Reflect.ownKeys(record.object);
+        if(current.length!==record.ownKeys.length || current.some((key,index)=>key!==record.ownKeys[index])) throw new QueryFailure('stale-ir');
+      }
+      for(const [key,before] of record.entries) {
+        const after=property(record.object,key);
+        if(before.present!==after.present || !Object.is(before.value,after.value)) throw new QueryFailure('stale-ir');
+      }
+    }
+  }};
+}
+export function createExecutionCapture(ir,memory,options={}) {
+  const contract=captureContract(ir,memory);
+  const branchTargets=new Map();
+  const canonicalValues=new Set(),canonicalInstructions=new Set(),canonicalByRawId=new Map();
+  if (options.captureBranchTargets) {
+    const semanticIds=new Map();
+    const values=queryArray(ir.values);memory.chargeExecution(values.length+1,values.length);
+    for (const value of values) {
+      memory.chargeExecution(3,3);
+      const semanticId=semanticValueIdentity(value);
+      if (canonicalValues.has(value) || canonicalByRawId.has(value.id) || semanticIds.has(semanticId)) throw new QueryFailure('ambiguous-branch-value-inventory');
+      canonicalValues.add(value);semanticIds.set(semanticId,value);canonicalByRawId.set(value.id,value);
+    }
+    for (const block of ir.blocks) for (const inst of [...(block.phis??[]),...block.insts]) {
+      memory.chargeExecution(1,1);canonicalInstructions.add(inst);
+    }
+  }
+  const canonicalValue=value=>canonicalValues.has(value)
+    && (!value.def || canonicalInstructions.has(value.def) && value.def.dst===value);
+  const identity=memory.identity;
+  const signal=options.signal ?? options.byteMemory?.signal;
+  const cancelled=options.isCancelled ?? options.byteMemory?.isCancelled;
+  const getCurrentIdentity=options.byteMemory?.getCurrentIdentity;
+  const check=()=>{
+    if(signal?.aborted) throw new QueryFailure('cancelled');
+    const stopped=cancelled?.();if(stopped || signal?.aborted) throw new QueryFailure('cancelled');
+    if(getCurrentIdentity && !sameMemoryIdentity(identity,getCurrentIdentity())) throw new QueryFailure('stale-identity');
+    if(signal?.aborted) throw new QueryFailure('cancelled');
+    const stoppedAfter=cancelled?.();if(stoppedAfter || signal?.aborted) throw new QueryFailure('cancelled');
+    // Observers are allowed to revoke state. Validate data after their final call.
+    contract.check();
+    if(signal?.aborted) throw new QueryFailure('cancelled');
+  };
+  const checkActive=()=>{
+    memory.chargeExecution(contract.work*2);
+    check();
+    memory.chargeExecution(0);
+    // The final budget check also invokes lifecycle callbacks. Nothing may
+    // change execution inputs between their last invocation and publication.
+    contract.check();
+  };
+  return Object.freeze({
+    check:checkActive,
+    publish(result) { checkActive();executions.set(result,{ir,check,branchTargets});return result; },
+    observeBranch(branch,state) {
+      if (!options.captureBranchTargets || branch.op !== 'cbr'
+          || !['cbz','cbnz','tbz','tbnz'].includes(branch.extra?.kind)) return;
+      const target=branch.args?.[0]?.value;
+      if (!canonicalInstructions.has(branch) || !canonicalValue(target)
+          || state.valueIdentities.get(target.id)?.value !== target
+          || !state.values.has(target.id) && !state.scalarCache.has(target.id)) throw new QueryFailure('unexecuted-branch-target');
+      const previous=branchTargets.get(branch);
+      const count=state.values.size+state.scalarCache.size;
+      memory.chargeExecution(count + (previous?.values.size ?? 0) + 2, count + 2);
+      // Identity catalogs are shared across siblings for ambiguity detection.
+      // Only the path-local caches attest evaluation on this particular visit.
+      const values=new Set();
+      for (const cache of [state.values,state.scalarCache]) for (const rawId of cache.keys()) {
+        const value=canonicalByRawId.get(rawId);
+        if (canonicalValue(value) && state.valueIdentities.get(rawId)?.value===value) values.add(value);
+      }
+      if (previous) {
+        if (previous.target !== target) throw new QueryFailure('changed-branch-target');
+        // Membership must hold on every observed visit, never a union assembled
+        // from different paths. No symbolic values or memory escape this set.
+        for (const value of previous.values) if (!values.has(value)) previous.values.delete(value);
+      } else branchTargets.set(branch,{target,values});
+    },
+    capture(state,pathIndex,memoryObservations=Object.freeze([])) {
+      memory.check();checkActive();
+      memory.chargeExecution(state.values.size+state.scalarCache.size,state.values.size+state.scalarCache.size);
+      const values=new Map([...state.scalarCache,...state.values]);
+      const byTarget=new Map(),publicValues=[];
+      for(const [rawId,expression] of values) {
+        const entry=state.valueIdentities.get(rawId);
+        if(!entry) throw new QueryFailure('unregistered-executed-value');
+        memory.validateExpression(expression);
+        byTarget.set(entry.value,expression);
+        if(entry.value.def) byTarget.set(entry.value.def,expression);
+        publicValues.push(Object.freeze({valueId:entry.id,bits:entry.bits,expression}));
+      }
+      const snapshot=Object.freeze({schemaVersion:'hex-execution-snapshot/v1',identity,pathIndex,
+        values:Object.freeze(publicValues),memoryObservations,assumptions:Object.freeze([...(options.memoryAssumptions?.values() ?? [])]),constraints:Object.freeze(state.constraints.slice())});
+      issued.set(snapshot,{ir,byTarget,check,memory:state.byteMemory});
+      return snapshot;
+    },
+  });
+}
+export function isExecutionResult(result,identity,ir=null) {
+  const record=executions.get(result);
+  if(!record)return false;
+  if(identity === undefined) identity = result.identity;
+  if(!sameMemoryIdentity(result.identity,identity) || ir && ir!==record.ir) return false;
+  try { record.check();return true; } catch {return false;}
+}
+/** Exact executed CBR/operand/dependency membership only. This does not expose
+ * terminal snapshots, taint, ABI results or normal-completion authority. */
+export function isExecutionBranchTarget(result,branch,target,identity,ir,dependencies=[]) {
+  const record=executions.get(result), binding=record?.branchTargets.get(branch);
+  if (!binding || !isExecutionResult(result,identity,ir) || binding.target !== target || branch.args?.[0]?.value !== target
+      || !binding.values.has(target) || dependencies.some(value=>!binding.values.has(value))) return false;
+  return true;
+}
+export function isExecutionSnapshot(snapshot,identity,ir=null) {
+  const record=issued.get(snapshot);
+  if(!record)return false;
+  if(identity === undefined) identity = snapshot.identity;
+  if(!sameMemoryIdentity(snapshot.identity,identity) || ir && record.ir!==ir) return false;
+  try { record.check();return true; } catch {return false;}
+}
+/** Called from the existing translateSemanticIR entrypoint. No fallback on an
+ * invalid supplied capability: static translation must not redeem stale state.
+ */
+export function translateExecutedTarget(target,options) {
+  const snapshot=options.executionSnapshot, record=issued.get(snapshot);
+  let reason='stale-or-unissued-execution-snapshot';
+  const expression=record?.byTarget.get(target);
+  if(record && isExecutionSnapshot(snapshot,options.identity,options.ir) && options.ir===record.ir && options.identity) {
+    if(Object.hasOwn(options,'symbolicArgs') || options.fromBlock!=null) reason='execution-options-conflict';
+    else if(!expression) reason='target-not-executed-in-snapshot';
+    else if(options.bitWidth!=null && expression.sort.kind==='bv' && options.bitWidth!==expression.sort.width) reason='execution-width-mismatch';
+    else {
+      const value=target?.dst ?? target;
+      const assumption=createAssumption({id:`execution:${snapshot.pathIndex}:${semanticValueIdentity(value)}`,kind:'bounded-execution-snapshot',
+        statement:'Value of this terminal path only; initial byte function, identity and path constraints are part of the scope.',
+        source:'symbolic-executor',originIds:[semanticValueIdentity(value)],trust:ASSUMPTION_TRUST.QUERY_SCOPE});
+      return Object.freeze({status:'exact_with_assumptions',expression,assumptions:Object.freeze([assumption]),
+        pathConstraints:snapshot.constraints,memoryAssumptions:snapshot.assumptions,identity:snapshot.identity,executionSnapshot:snapshot,
+        semanticUnknowns:0,unsupportedEntities:Object.freeze([]),originMap:Object.freeze({}),
+        completeness:createCompleteness({pathCoverage:'partial',queryScope:'partial'})});
+    }
+  }
+  const width=Number.isSafeInteger(options.bitWidth) && options.bitWidth>0 && options.bitWidth<=64 ? options.bitWidth : 64;
+  return Object.freeze({status:'unsupported',expression:createUnknownSemantic(bvSort(width),reason),reason,
+    semanticUnknowns:1,assumptions:Object.freeze([]),unsupportedEntities:Object.freeze([Object.freeze({reason})]),originMap:Object.freeze({}),
+    completeness:createCompleteness({translation:'unsupported',memoryEffects:'partial',controlFlow:'partial',pathCoverage:'partial',queryScope:'partial'})});
+}
+
+/** Exact target-object membership, not a name/ID-derived proof authority. */
+export function isExecutionSnapshotTarget(snapshot,target,identity=snapshot?.identity,ir=null) {
+  return isExecutionSnapshot(snapshot,identity,ir) && issued.get(snapshot).byTarget.has(target);
+}
+
+/** Internal proof consumer bridge: only a genuine, current terminal snapshot
+ * can expose the complete write footprint or read its private final memory. */
+export function executionWriteFootprint(snapshot, identity, ir) {
+  if(!isExecutionSnapshot(snapshot,identity,ir))throw new QueryFailure('stale-execution');
+  return concreteMemoryWriteFootprint(issued.get(snapshot).memory);
+}
+export function executionSymbolicWriteFootprint(snapshot, identity, ir) {
+  if (!isExecutionSnapshot(snapshot,identity,ir)) throw new QueryFailure('stale-execution');
+  return symbolicMemoryWriteFootprint(issued.get(snapshot).memory);
+}
+export function observeExecutionBytes(snapshot, addresses, identity, ir) {
+  if(!isExecutionSnapshot(snapshot,identity,ir))throw new QueryFailure('stale-execution');
+  const memory=issued.get(snapshot).memory;
+  if(!Array.isArray(addresses)||addresses.length>4096)throw new QueryFailure('observation-budget');
+  memory.chargeExecution(addresses.length,addresses.length * 2);
+  const entries=queryArray(addresses);
+  const output=[];
+  for(const address of entries) {
+    memory.chargeMemoryObservations();
+    const result=memory.load(address,1);
+    if(!result.expression)throw new QueryFailure(result.reason);
+    // The write-cover proof supplies every symbolic address in the issued
+    // trace. Preserve its canonical Expr rather than coercing it into an
+    // integer or confusing a symbolic write with a concrete footprint.
+    const pointer = address && typeof address === 'object'
+      ? memory.validateExpression(address, memory.addressBits) : createBv(memory.addressBits,address);
+    output.push(Object.freeze({id:pointer.kind==='const'?`byte:${pointer.value}`:`symbolic-byte:${output.length}`,
+      address:pointer,expression:result.expression}));
+  }
+  memory.check();
+  return Object.freeze(output);
+}

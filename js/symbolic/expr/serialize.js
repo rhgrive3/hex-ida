@@ -21,7 +21,7 @@ import {
   createUnary,
   createBinary,
   createCompare,
-  createConnective,
+  createConnectiveFromArray,
   createIte,
   createExtract,
   createConcat,
@@ -282,7 +282,7 @@ function plainNodeToExpr(plain, depth = 0, budget = { nodes: 0 }) {
       return createCompare(plain.op, plainNodeToExpr(plain.left, depth + 1, budget), plainNodeToExpr(plain.right, depth + 1, budget));
 
     case EXPR_KIND.CONNECTIVE:
-      return createConnective(plain.op, plain.args.map((arg) => plainNodeToExpr(arg, depth + 1, budget)));
+      return createConnectiveFromArray(plain.op, plain.args.map((arg) => plainNodeToExpr(arg, depth + 1, budget)));
 
     case EXPR_KIND.ITE:
       return createIte(plainNodeToExpr(plain.cond, depth + 1, budget), plainNodeToExpr(plain.thenExpr, depth + 1, budget), plainNodeToExpr(plain.elseExpr, depth + 1, budget));
@@ -306,9 +306,10 @@ export function plainToExpr(plain) {
   // symbol ids, so run them as one allocator transaction: a throw from either
   // pass must roll the counter back and cannot deplete the id space (#5149).
   return withSymbolAllocatorTransaction(() => {
-    // The symbol-reservation pass and materialization pass are two traversals of
-    // the same logical DAG. Keep independent work counters so the public node
-    // budget describes input nodes rather than being consumed twice (#5489).
+    // The symbol-reservation pass and materialization pass are two traversals
+    // of the same logical DAG. Keep independent work counters so the public
+    // node budget describes input nodes rather than being consumed twice
+    // (#5489).
     const reserveBudget = { nodes: 0 };
     reserveCanonicalFreshSymbolIds(plain, new Map(), 0, reserveBudget);
     const materializeBudget = { nodes: 0 };

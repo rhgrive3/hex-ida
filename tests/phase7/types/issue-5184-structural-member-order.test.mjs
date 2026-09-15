@@ -7,7 +7,7 @@ import {
   createHardConstraint,
   createTypeClaim,
 } from '../../../js/analysis/types/constraints.js';
-import { TypeConstraintGraph } from '../../../js/analysis/types/graph.js';
+import { TYPE_GRAPH_ANALYZER_VERSION, TypeConstraintGraph } from '../../../js/analysis/types/graph.js';
 
 const int32 = Object.freeze({ kind:'integer', widthBits:32, signed:true });
 const float32 = Object.freeze({ kind:'float', widthBits:32 });
@@ -100,7 +100,7 @@ test('#5184 graph result is invariant to provider insertion and member traversal
 
   const first = solve([forward, reverse]);
   const second = solve([reverse, forward]);
-  assert.equal(first.status.analyzerVersion, '1.1.1');
+  assert.equal(first.status.analyzerVersion, TYPE_GRAPH_ANALYZER_VERSION);
   assert.equal(first.layers.structural.hardConstraints.length, 1);
   assert.equal(second.layers.structural.hardConstraints.length, 1);
   assert.equal(first.layers.structural.contradictions.length, 0);

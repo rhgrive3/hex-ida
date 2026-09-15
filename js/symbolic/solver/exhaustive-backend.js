@@ -21,14 +21,76 @@ import {
   isBvSort,
 } from '../expr/kinds.js';
 import { evaluateExpr, EVAL_STATUS } from '../expr/evaluate.js';
-import { isVerificationQuery } from '../verify/query.js';
+import { ownDataEntries } from '../expr/data-boundary.js';
+import {
+  QUERY_METADATA_MAX_DEPTH,
+  QUERY_METADATA_MAX_NODES,
+  validateVerificationQuery,
+} from '../verify/query.js';
 import { PROOF_AUTHORITY, SolverBackend } from './backend.js';
+import { effectivePositiveSafeInteger, requirePositiveSafeInteger } from './limits.js';
+import { validateExactModelBindings } from './model-boundary.js';
 import { SOLVER_STATUS, createSolverResult } from './result.js';
 import { SolverSession } from './session.js';
-import { positiveFiniteBudget } from './budget.js';
 
 export const EXHAUSTIVE_BACKEND_ID = 'hex-exhaustive-bv';
 export const EXHAUSTIVE_BACKEND_VERSION = '1.0.0';
+
+function monotonicNow() {
+  return typeof globalThis.performance?.now === 'function' ? globalThis.performance.now() : Date.now();
+}
+
+function scaledSnapshotBudget(value, multiplier, extra) {
+  const ceiling = Number.MAX_SAFE_INTEGER;
+  return value > Math.floor((ceiling - extra) / multiplier)
+    ? ceiling
+    : value * multiplier + extra;
+}
+
+function snapshotCanonicalQuery(query, maxExprNodes) {
+  const maxNodes = scaledSnapshotBudget(maxExprNodes, 8, QUERY_METADATA_MAX_NODES + 64);
+  const maxEdges = scaledSnapshotBudget(maxExprNodes, 16, QUERY_METADATA_MAX_NODES * 4 + 256);
+  const maxDepth = scaledSnapshotBudget(maxExprNodes, 1, QUERY_METADATA_MAX_DEPTH + 16);
+  const cloneContainer = value => Array.isArray(value)
+    ? []
+    : Object.create(Object.getPrototypeOf(value) === null ? null : Object.prototype);
+  const root = cloneContainer(query);
+  const copies = new WeakMap([[query, root]]);
+  const pending = [{ source: query, target: root, depth: 0 }];
+  let nodeCount = 1;
+  let edgeCount = 0;
+
+  while (pending.length) {
+    const frame = pending.pop();
+    if (frame.depth > maxDepth) throw new RangeError('solver-query-snapshot-budget-exceeded');
+    const entries = ownDataEntries(frame.source, Math.max(0, maxEdges - edgeCount));
+    edgeCount += entries.length;
+    if (edgeCount > maxEdges) throw new RangeError('solver-query-snapshot-budget-exceeded');
+
+    for (const [key, value] of entries) {
+      let snapshot = value;
+      if (value && typeof value === 'object') {
+        snapshot = copies.get(value);
+        if (!snapshot) {
+          if (nodeCount >= maxNodes) throw new RangeError('solver-query-snapshot-budget-exceeded');
+          const depth = frame.depth + 1;
+          if (depth > maxDepth) throw new RangeError('solver-query-snapshot-budget-exceeded');
+          snapshot = cloneContainer(value);
+          copies.set(value, snapshot);
+          nodeCount++;
+          pending.push({ source: value, target: snapshot, depth });
+        }
+      }
+      Object.defineProperty(frame.target, key, {
+        value: snapshot,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+  }
+  return root;
+}
 
 function childExpressions(expr) {
   if (!expr || typeof expr !== 'object') return [];
@@ -101,61 +163,86 @@ function validateExprNode(expr) {
   }
 }
 
-function collectSymbols(expressions, maxExprNodes) {
+export function collectSymbols(expressions, { maxExprNodes = 100000, maxExprDepth = 1024 } = {}) {
+  requirePositiveSafeInteger(maxExprNodes, 'maxExprNodes');
+  requirePositiveSafeInteger(maxExprDepth, 'maxExprDepth');
   const symbols = new Map();
-  const visited = new Set();
+  const colors = new WeakMap();
+  const heights = new WeakMap();
   let nodeCount = 0;
+  let maxBvWidth = 0;
   let unsupportedReason = null;
-  let budgetExceeded = false;
-  // Keep only one sequence frame per nesting level. In particular, a wide
-  // CONNECTIVE must not enqueue every argument before the node budget can be
-  // observed (#5163). Each frame advances its child array incrementally.
-  const worklist = [{ expressions, index: 0, requireBoolSort: false }];
-
-  while (worklist.length > 0) {
-    const frame = worklist[worklist.length - 1];
-    if (frame.index >= frame.expressions.length) {
-      worklist.pop();
-      continue;
-    }
-
-    const expr = frame.expressions[frame.index++];
-    if (frame.requireBoolSort && !isBoolSort(expr?.sort)) {
-      unsupportedReason ||= 'invalid-connective-expression';
-    }
-    if (!expr || typeof expr !== 'object') {
-      unsupportedReason ||= 'malformed-expression-node';
-      continue;
-    }
-    if (visited.has(expr)) continue;
-    visited.add(expr);
-    nodeCount++;
-    if (nodeCount > maxExprNodes) {
-      budgetExceeded = true;
-      break;
-    }
-    unsupportedReason ||= validateExprNode(expr);
-    if (expr.kind === EXPR_KIND.FRESH_SYMBOL) {
-      const key = String(expr.symbolId || expr.name || '');
-      if (!key || !expr.name) unsupportedReason ||= 'malformed-symbol';
-      else {
-        const existing = symbols.get(key);
-        if (existing && stableDigest(existing.sort) !== stableDigest(expr.sort)) unsupportedReason ||= 'symbol-sort-conflict';
-        symbols.set(key, { key, name: String(expr.name), symbolId: String(expr.symbolId || key), sort: expr.sort });
+  let limitExceeded = false;
+  let depthExceeded = false;
+  let maxDepth = 0;
+  let traversalCount = 0;
+  for (const root of expressions) {
+    traversalCount++;
+    if (traversalCount > maxExprNodes) { limitExceeded = true; break; }
+    if (limitExceeded || depthExceeded || unsupportedReason) break;
+    if (!root || typeof root !== 'object') { unsupportedReason = 'malformed-expression-node'; break; }
+    if (colors.get(root) === 2) continue;
+    const stack = [{ expr: root, entered: false, children: null, index: 0, childHeight: 0 }];
+    while (stack.length > 0 && !limitExceeded && !depthExceeded && !unsupportedReason) {
+      const frame = stack[stack.length - 1];
+      if (!frame.entered) {
+        if (colors.get(frame.expr) === 1) { unsupportedReason = 'cyclic-expression-dag'; break; }
+        if (colors.get(frame.expr) === 2) { stack.pop(); continue; }
+        if (stack.length > maxExprDepth) { depthExceeded = true; break; }
+        colors.set(frame.expr, 1);
+        nodeCount++;
+        if (nodeCount > maxExprNodes) { limitExceeded = true; break; }
+        if (isBvSort(frame.expr.sort)) maxBvWidth = Math.max(maxBvWidth, frame.expr.sort.width);
+        unsupportedReason = validateExprNode(frame.expr);
+        if (unsupportedReason) break;
+        if (frame.expr.kind === EXPR_KIND.FRESH_SYMBOL) {
+          const key = String(frame.expr.symbolId || frame.expr.name || '');
+          if (!key || !frame.expr.name) unsupportedReason = 'malformed-symbol';
+          else {
+            const existing = symbols.get(key);
+            if (existing && stableDigest(existing.sort) !== stableDigest(frame.expr.sort)) unsupportedReason = 'symbol-sort-conflict';
+            else if (existing && existing.name !== String(frame.expr.name)) unsupportedReason = 'symbol-identity-conflict';
+            symbols.set(key, { key, name: String(frame.expr.name), symbolId: String(frame.expr.symbolId || key), sort: frame.expr.sort });
+          }
+        }
+        frame.children = childExpressions(frame.expr);
+        frame.entered = true;
       }
-    }
-
-    const children = childExpressions(expr);
-    if (children.length > 0) {
-      worklist.push({
-        expressions: children,
-        index: 0,
-        requireBoolSort: expr.kind === EXPR_KIND.CONNECTIVE,
-      });
+      if (frame.index < frame.children.length) {
+        traversalCount++;
+        if (traversalCount > maxExprNodes) { limitExceeded = true; break; }
+        const child = frame.children[frame.index++];
+        if (!child || typeof child !== 'object') { unsupportedReason = 'malformed-expression-node'; break; }
+        if (frame.expr.kind === EXPR_KIND.CONNECTIVE && !isBoolSort(child.sort)) { unsupportedReason = 'invalid-connective-expression'; break; }
+        if (colors.get(child) === 1) { unsupportedReason = 'cyclic-expression-dag'; break; }
+        if (colors.get(child) === 2) {
+          const childHeight = heights.get(child) || 1;
+          const combinedDepth = stack.length + childHeight;
+          maxDepth = Math.max(maxDepth, combinedDepth);
+          if (combinedDepth > maxExprDepth) { depthExceeded = true; break; }
+          frame.childHeight = Math.max(frame.childHeight, childHeight);
+        } else stack.push({ expr: child, entered: false, children: null, index: 0, childHeight: 0 });
+        continue;
+      }
+      const height = frame.childHeight + 1;
+      heights.set(frame.expr, height);
+      maxDepth = Math.max(maxDepth, stack.length - 1 + height);
+      if (stack.length - 1 + height > maxExprDepth) { depthExceeded = true; break; }
+      colors.set(frame.expr, 2);
+      stack.pop();
+      if (stack.length > 0) stack[stack.length - 1].childHeight = Math.max(stack[stack.length - 1].childHeight, height);
     }
   }
-
-  return { symbols: [...symbols.values()].sort((a, b) => a.key.localeCompare(b.key)), nodeCount, unsupportedReason, budgetExceeded };
+  return {
+    symbols: [...symbols.values()].sort((a, b) => a.key.localeCompare(b.key)),
+    nodeCount,
+    maxBvWidth,
+    unsupportedReason,
+    limitExceeded,
+    depthExceeded,
+    maxDepth,
+    traversalCount,
+  };
 }
 
 function symbolConstantPair(left, right) {
@@ -211,155 +298,177 @@ function domainValue(symbol, index) {
   return index;
 }
 
-const hasMonotonicClock = typeof performance !== 'undefined' && typeof performance.now === 'function';
-function monotonicNow() {
-  return hasMonotonicClock ? performance.now() : Date.now();
-}
-
-// Microtask-only yields (await Promise.resolve()) never let host timers, UI
-// callbacks, or same-realm AbortSignal producers run, so a long enumeration can
-// starve its own timeout/cancellation budget (#3959). Yield to a real
-// event-loop turn instead: a MessageChannel port task (browser + worker + Node)
-// with a bounded setTimeout(0) fallback for runtimes without MessageChannel.
-let yieldPort = null;
-let yieldSource = null;
-function yieldToEventLoop() {
-  if (typeof MessageChannel === 'function') {
-    if (!yieldPort) {
-      const channel = new MessageChannel();
-      channel.port1.unref?.();
-      yieldPort = channel.port1;
-      yieldSource = channel.port2;
-    }
-    return new Promise((resolve) => {
-      const port = yieldPort;
-      port.onmessage = () => { port.onmessage = null; resolve(); };
-      yieldSource.postMessage(0);
-    });
-  }
-  return new Promise((resolve) => {
-    const handle = setTimeout(resolve, 0);
-    handle?.unref?.();
-  });
-}
-
 class ExhaustiveSolverSession extends SolverSession {
   async _executeCheck(query, options = {}, token, signal) {
     const startedAt = Date.now();
-    const startedMono = monotonicNow();
-    if (!isVerificationQuery(query)) {
+    const timeoutBudget = Number.isFinite(options.timeoutMs) ? options.timeoutMs
+      : Number.isFinite(this.options.timeoutMs) ? this.options.timeoutMs : 0;
+    const deadline = timeoutBudget > 0 ? monotonicNow() + timeoutBudget : Infinity;
+    const guard = () => signal?.aborted ? 'cancelled' : monotonicNow() >= deadline ? 'timeout' : null;
+    let maxConstraints;
+    let maxExprNodes;
+    let maxExprDepth;
+    let maxBvWidth;
+    let maxAssignments;
+    let yieldEvery;
+    try {
+      maxConstraints = effectivePositiveSafeInteger(options, 'maxConstraints', this.options.maxConstraints, this.backend.maxConstraints);
+      maxExprNodes = effectivePositiveSafeInteger(options, 'maxExprNodes', this.options.maxExprNodes, this.backend.maxExprNodes);
+      maxExprDepth = effectivePositiveSafeInteger(options, 'maxExprDepth', this.options.maxExprDepth, this.backend.maxExprDepth);
+      maxBvWidth = effectivePositiveSafeInteger(options, 'maxBvWidth', this.options.maxBvWidth, this.backend.maxBvWidth);
+      maxAssignments = effectivePositiveSafeInteger(options, 'maxAssignments', this.options.maxAssignments, this.backend.maxAssignments);
+      yieldEvery = effectivePositiveSafeInteger(options, 'yieldEvery', this.options.yieldEvery, this.backend.yieldEvery);
+    } catch (error) {
+      return createSolverResult({ status: SOLVER_STATUS.INVALID_QUERY, reason: `invalid-budget:${error.message}`, backend: this.backend.id, backendVersion: this.backend.version, queryHash: null, lifecycle: { publishable: false } });
+    }
+    const queryValidation = validateVerificationQuery(query, { maxExprNodes });
+    if (!queryValidation.valid) {
       return createSolverResult({
-        status: SOLVER_STATUS.INVALID_QUERY,
-        reason: 'invalid-verification-query',
+        status: queryValidation.limitExceeded ? SOLVER_STATUS.RESOURCE_LIMIT : SOLVER_STATUS.INVALID_QUERY,
+        reason: queryValidation.reason,
         backend: this.backend.id,
         backendVersion: this.backend.version,
-        queryHash: query?.queryHash || null,
+        queryHash: null,
+        lifecycle: { budgetExceeded: queryValidation.limitExceeded === true, publishable: false },
       });
     }
 
-    const constraints = Array.isArray(query.constraints) ? query.constraints : [];
-    const expressions = [...constraints, ...(query.assertion ? [query.assertion] : [])];
-    const maxConstraints = positiveFiniteBudget(options.maxConstraints, this.options.maxConstraints, 4096);
-    const maxExprNodes = positiveFiniteBudget(options.maxExprNodes, this.options.maxExprNodes, 100000);
-    if (constraints.length > maxConstraints) {
-      return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'constraint-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
+    // Enumeration yields to the event loop, so keeping the caller's mutable
+    // object would let its contents change after identity validation. Detach
+    // only after the bounded validator has checked the source, then validate
+    // the clone again before using it as the proof input.
+    let querySnapshot;
+    try {
+      querySnapshot = snapshotCanonicalQuery(query, maxExprNodes);
+    } catch (error) {
+      const limitExceeded = error instanceof RangeError && error.message === 'solver-query-snapshot-budget-exceeded';
+      return createSolverResult({
+        status: limitExceeded ? SOLVER_STATUS.RESOURCE_LIMIT : SOLVER_STATUS.INVALID_QUERY,
+        reason: limitExceeded ? 'solver-query-snapshot-budget-exceeded' : 'solver-query-snapshot-failed',
+        backend: this.backend.id,
+        backendVersion: this.backend.version,
+        queryHash: null,
+        lifecycle: { budgetExceeded: limitExceeded, publishable: false },
+      });
+    }
+    const snapshotValidation = validateVerificationQuery(querySnapshot, { maxExprNodes });
+    if (!snapshotValidation.valid || snapshotValidation.recomputedHash !== queryValidation.recomputedHash) {
+      return createSolverResult({
+        status: snapshotValidation.limitExceeded ? SOLVER_STATUS.RESOURCE_LIMIT : SOLVER_STATUS.INVALID_QUERY,
+        reason: snapshotValidation.valid ? 'solver-query-snapshot-identity-mismatch' : snapshotValidation.reason,
+        backend: this.backend.id,
+        backendVersion: this.backend.version,
+        queryHash: null,
+        lifecycle: { budgetExceeded: snapshotValidation.limitExceeded === true, publishable: false },
+      });
     }
 
-    const collected = collectSymbols(expressions, maxExprNodes);
-    if (collected.budgetExceeded) {
-      return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-node-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
+    const constraints = Array.isArray(querySnapshot.constraints) ? querySnapshot.constraints : [];
+    const expressions = [...constraints, ...(querySnapshot.assertion ? [querySnapshot.assertion] : [])];
+    if (constraints.length > maxConstraints) {
+      return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'constraint-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash });
+    }
+
+    const collected = collectSymbols(expressions, { maxExprNodes, maxExprDepth });
+    if (collected.limitExceeded) {
+      return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-node-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash });
+    }
+    if (collected.depthExceeded) {
+      return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-depth-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash, lifecycle: { budgetExceeded: true, publishable: false } });
     }
     if (collected.unsupportedReason) {
-      return createSolverResult({ status: SOLVER_STATUS.UNSUPPORTED, reason: collected.unsupportedReason, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
+      return createSolverResult({ status: SOLVER_STATUS.UNSUPPORTED, reason: collected.unsupportedReason, backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash });
     }
     if (constraints.some((constraint) => constraint?.sort?.kind !== SORT_KIND.BOOL) ||
-        (query.assertion && query.assertion.sort?.kind !== SORT_KIND.BOOL)) {
-      return createSolverResult({ status: SOLVER_STATUS.UNSUPPORTED, reason: 'non-boolean-query-predicate', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
+        (querySnapshot.assertion && querySnapshot.assertion.sort?.kind !== SORT_KIND.BOOL)) {
+      return createSolverResult({ status: SOLVER_STATUS.UNSUPPORTED, reason: 'non-boolean-query-predicate', backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash });
     }
 
-    const maxBvWidth = positiveFiniteBudget(options.maxBvWidth, this.backend.capabilities().maxBvWidth);
     if (collected.symbols.some((symbol) => symbol.sort.kind === SORT_KIND.BV && symbol.sort.width > maxBvWidth)) {
-      return createSolverResult({ status: SOLVER_STATUS.UNSUPPORTED, reason: `bitvector-width-exceeds-${maxBvWidth}`, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
+      return createSolverResult({ status: SOLVER_STATUS.UNSUPPORTED, reason: `bitvector-width-exceeds-${maxBvWidth}`, backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash });
     }
+
+    const preEnumerationStop = guard();
+    if (preEnumerationStop === 'cancelled') return createSolverResult({ status: SOLVER_STATUS.CANCELLED, reason: 'provider-aborted', backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash, lifecycle: { cancelled: true, publishable: false } });
+    if (preEnumerationStop === 'timeout') return createSolverResult({ status: SOLVER_STATUS.TIMEOUT, reason: 'enumeration-deadline-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash, lifecycle: { timedOut: true, publishable: false } });
 
     const derived = deriveFixedBindings(constraints);
     if (derived.contradiction) {
-      return createSolverResult({ status: SOLVER_STATUS.UNSAT, stats: { solveTimeMs: Date.now() - startedAt, nodesEvaluated: 0 }, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
+      return createSolverResult({ status: SOLVER_STATUS.UNSAT, stats: { solveTimeMs: Date.now() - startedAt, nodesEvaluated: 0 }, backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash });
     }
 
     const assignments = new Map(derived.fixed);
     const freeSymbols = collected.symbols.filter((symbol) => !assignments.has(symbol.key));
-    const maxAssignments = BigInt(positiveFiniteBudget(options.maxAssignments, this.options.maxAssignments, 1 << 20));
+    const maxAssignmentsBigInt = BigInt(maxAssignments);
     let totalAssignments = 1n;
     for (const symbol of freeSymbols) {
       totalAssignments *= domainSize(symbol);
-      if (totalAssignments > maxAssignments) {
-        return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'assignment-budget-exceeded', stats: { solveTimeMs: Date.now() - startedAt, nodesEvaluated: 0 }, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
+      if (totalAssignments > maxAssignmentsBigInt) {
+        return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'assignment-budget-exceeded', stats: { solveTimeMs: Date.now() - startedAt, nodesEvaluated: 0 }, backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash });
       }
     }
 
     let nodesEvaluated = 0;
-    const yieldEvery = positiveFiniteBudget(options.yieldEvery, 4096);
-    const timeoutBudget = Number.isFinite(options.timeoutMs)
-      ? options.timeoutMs
-      : Number.isFinite(this.options.timeoutMs)
-        ? this.options.timeoutMs
-        : 0;
-    const deadlineAt = timeoutBudget > 0 ? startedMono + timeoutBudget : null;
     let found = null;
-    const visit = async (position) => {
-      if (signal?.aborted) return 'cancelled';
-      if (found) return 'found';
-      if (position >= freeSymbols.length) {
-        nodesEvaluated++;
-        const model = assignmentModel(collected.symbols, assignments);
-        if (evaluateAll(query, model)) found = model;
-        if (nodesEvaluated % yieldEvery === 0) {
-          await yieldToEventLoop();
-          if (signal?.aborted) return 'cancelled';
-          if (deadlineAt !== null && monotonicNow() >= deadlineAt) return 'timeout';
+    const positions = freeSymbols.map(() => 0n);
+    const sizes = freeSymbols.map(domainSize);
+    for (const symbol of freeSymbols) assignments.set(symbol.key, domainValue(symbol, 0n));
+    let outcome = 'continue';
+    // Advance a mixed-radix counter in the same order as recursive enumeration.
+    // Only the existing task-queue yield creates a Promise; one Promise per
+    // valuation previously consumed much of the interactive proof deadline.
+    while (true) {
+      const stopped = guard();
+      if (stopped) { outcome = stopped; break; }
+      nodesEvaluated++;
+      // Reuse the private environment. Only a SAT witness is materialized.
+      if (evaluateAll(querySnapshot, assignments)) found = assignmentModel(collected.symbols, assignments);
+      if (nodesEvaluated % yieldEvery === 0) await new Promise((resolve) => setTimeout(resolve, 0));
+      const afterEvaluation = guard();
+      if (afterEvaluation) { outcome = afterEvaluation; break; }
+      if (found) { outcome = 'found'; break; }
+      let position = freeSymbols.length - 1;
+      for (; position >= 0; position--) {
+        const stopAdvance = guard();
+        if (stopAdvance) { outcome = stopAdvance; break; }
+        positions[position]++;
+        if (positions[position] < sizes[position]) {
+          assignments.set(freeSymbols[position].key, domainValue(freeSymbols[position], positions[position]));
+          break;
         }
-        return found ? 'found' : 'continue';
+        positions[position] = 0n;
+        assignments.set(freeSymbols[position].key, domainValue(freeSymbols[position], 0n));
       }
-      const symbol = freeSymbols[position];
-      const size = domainSize(symbol);
-      for (let index = 0n; index < size; index++) {
-        if (signal?.aborted) return 'cancelled';
-        assignments.set(symbol.key, domainValue(symbol, index));
-        const outcome = await visit(position + 1);
-        if (outcome === 'cancelled' || outcome === 'found' || outcome === 'timeout') return outcome;
-      }
-      assignments.delete(symbol.key);
-      return 'continue';
-    };
-
-    const outcome = await visit(0);
+      if (outcome !== 'continue' || position < 0) break;
+    }
     if (outcome === 'cancelled') {
-      return createSolverResult({ status: SOLVER_STATUS.CANCELLED, reason: 'provider-aborted', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { cancelled: true, publishable: false } });
+      return createSolverResult({ status: SOLVER_STATUS.CANCELLED, reason: 'provider-aborted', backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash, lifecycle: { cancelled: true, publishable: false } });
     }
     if (outcome === 'timeout') {
-      return createSolverResult({ status: SOLVER_STATUS.TIMEOUT, reason: 'internal-deadline-exceeded', stats: { solveTimeMs: Date.now() - startedAt, nodesEvaluated }, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { timedOut: true, publishable: false } });
+      return createSolverResult({ status: SOLVER_STATUS.TIMEOUT, reason: 'internal-deadline-exceeded', stats: { solveTimeMs: Date.now() - startedAt, nodesEvaluated }, backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash, lifecycle: { timedOut: true, publishable: false } });
     }
     const stats = { solveTimeMs: Date.now() - startedAt, nodesEvaluated };
-    if (found) return createSolverResult({ status: SOLVER_STATUS.SAT, model: found, stats, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
-    return createSolverResult({ status: SOLVER_STATUS.UNSAT, stats, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
+    if (found) {
+      const bindingValidation = validateExactModelBindings(collected.symbols, found);
+      if (!bindingValidation.valid) return createSolverResult({ status: SOLVER_STATUS.PROVIDER_FAILURE, reason: bindingValidation.reason, stats, backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash, lifecycle: { publishable: false } });
+      return createSolverResult({ status: SOLVER_STATUS.SAT, model: found, stats, backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash });
+    }
+    return createSolverResult({ status: SOLVER_STATUS.UNSAT, stats, backend: this.backend.id, backendVersion: this.backend.version, queryHash: querySnapshot.queryHash });
   }
 }
 
 export class ExhaustiveBvBackend extends SolverBackend {
-  constructor({
-    id = EXHAUSTIVE_BACKEND_ID,
-    version = EXHAUSTIVE_BACKEND_VERSION,
-    maxBvWidth = 8,
-    maxAssignments = 1 << 20,
-    maxConstraints = 4096,
-    maxExprNodes = 100000,
-  } = {}) {
-    super({ id, version, proofAuthority: PROOF_AUTHORITY.EXACT, isRemote: false, isWasm: false });
-    this.maxBvWidth = positiveFiniteBudget(maxBvWidth, 8);
-    this.maxAssignments = positiveFiniteBudget(maxAssignments, 1 << 20);
-    this.maxConstraints = positiveFiniteBudget(maxConstraints, 4096);
-    this.maxExprNodes = positiveFiniteBudget(maxExprNodes, 100000);
+  constructor(options = {}) {
+    const id = options.id ?? EXHAUSTIVE_BACKEND_ID;
+    const version = options.version ?? EXHAUSTIVE_BACKEND_VERSION;
+    super({ id, version, proofAuthority: PROOF_AUTHORITY.EXACT, isRemote: false, isWasm: false, requiresCanonicalQueryIdentity: true });
+    const value = (name, fallback) => Object.prototype.hasOwnProperty.call(options, name) ? options[name] : fallback;
+    this.maxBvWidth = requirePositiveSafeInteger(value('maxBvWidth', 8), 'maxBvWidth');
+    this.maxAssignments = requirePositiveSafeInteger(value('maxAssignments', 1 << 20), 'maxAssignments');
+    this.maxConstraints = requirePositiveSafeInteger(value('maxConstraints', 4096), 'maxConstraints');
+    this.maxExprNodes = requirePositiveSafeInteger(value('maxExprNodes', 100000), 'maxExprNodes');
+    this.maxExprDepth = requirePositiveSafeInteger(value('maxExprDepth', 1024), 'maxExprDepth');
+    this.yieldEvery = requirePositiveSafeInteger(value('yieldEvery', 4096), 'yieldEvery');
   }
 
   baseCapabilities() {
@@ -377,6 +486,8 @@ export class ExhaustiveBvBackend extends SolverBackend {
       maxAssignments: this.maxAssignments,
       maxConstraints: this.maxConstraints,
       maxExprNodes: this.maxExprNodes,
+      maxExprDepth: this.maxExprDepth,
+      yieldEvery: this.yieldEvery,
     };
   }
 
@@ -386,6 +497,8 @@ export class ExhaustiveBvBackend extends SolverBackend {
       maxAssignments: this.maxAssignments,
       maxConstraints: this.maxConstraints,
       maxExprNodes: this.maxExprNodes,
+      maxExprDepth: this.maxExprDepth,
+      yieldEvery: this.yieldEvery,
       ...options,
     });
   }

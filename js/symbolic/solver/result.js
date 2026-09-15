@@ -39,40 +39,83 @@ export function isSolverFailure(result) {
   return status !== SOLVER_STATUS.SAT && status !== SOLVER_STATUS.UNSAT;
 }
 
-const MODEL_IMMUTABLE = 'SolverResult model is an immutable published snapshot';
-
-class ImmutableSolverModelMap extends Map {
-  set() { throw new TypeError(MODEL_IMMUTABLE); }
-  delete() { throw new TypeError(MODEL_IMMUTABLE); }
-  clear() { throw new TypeError(MODEL_IMMUTABLE); }
+function readonlyMap(entries) {
+  const target = new Map(entries);
+  Object.freeze(target);
+  let snapshot;
+  snapshot = new Proxy(target, {
+    get(map, property) {
+      if (property === 'valueOf') return () => snapshot;
+      if (property === 'set' || property === 'delete' || property === 'clear') {
+        return () => { throw new TypeError('SolverResult model is immutable and read-only'); };
+      }
+      if (property === 'forEach') {
+        return (callback, thisArg) => map.forEach((value, key) => callback.call(thisArg, value, key, snapshot));
+      }
+      const value = Reflect.get(map, property, map);
+      return typeof value === 'function' ? value.bind(map) : value;
+    },
+    set() { return false; },
+    defineProperty() { return false; },
+    deleteProperty() { return false; },
+  });
+  return Object.freeze(snapshot);
 }
 
-function isPlainModelObject(value) {
-  const proto = Object.getPrototypeOf(value);
-  return proto === Object.prototype || proto === null;
-}
-
-function immutableModelValue(value) {
-  if (value === null || typeof value !== 'object') return value;
+function immutableSnapshot(value, path = new WeakSet(), depth = 0) {
+  if (value == null || typeof value !== 'object') return value;
+  if (depth > 256) throw new TypeError('createSolverResult: nested content exceeds immutable snapshot depth');
+  if (path.has(value)) throw new TypeError('createSolverResult: cyclic nested content');
+  path.add(value);
+  let snapshot;
   if (value instanceof Map) {
-    const copy = new ImmutableSolverModelMap();
-    for (const [key, entryValue] of value) Map.prototype.set.call(copy, key, immutableModelValue(entryValue));
-    return Object.freeze(copy);
-  }
-  if (Array.isArray(value)) return Object.freeze(value.map(immutableModelValue));
-  if (isPlainModelObject(value)) {
-    const copy = {};
+    snapshot = readonlyMap([...value].map(([key, child]) => [
+      immutableSnapshot(key, path, depth + 1),
+      immutableSnapshot(child, path, depth + 1),
+    ]));
+  } else if (value instanceof Set) {
+    snapshot = Object.freeze([...value].map((child) => immutableSnapshot(child, path, depth + 1)));
+  } else if (ArrayBuffer.isView(value)) {
+    snapshot = Object.freeze(Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)));
+  } else if (value instanceof ArrayBuffer) {
+    snapshot = Object.freeze(Array.from(new Uint8Array(value)));
+  } else if (value instanceof Date) {
+    snapshot = Object.freeze({ iso: value.toISOString() });
+  } else if (Array.isArray(value)) {
+    snapshot = Object.freeze(value.map((child) => immutableSnapshot(child, path, depth + 1)));
+  } else {
+    snapshot = {};
     for (const key of Object.keys(value)) {
-      Object.defineProperty(copy, key, {
-        value: immutableModelValue(value[key]),
+      Object.defineProperty(snapshot, key, {
+        value: immutableSnapshot(value[key], path, depth + 1),
         enumerable: true,
-        writable: false,
         configurable: false,
+        writable: false,
       });
     }
-    return Object.freeze(copy);
+    Object.freeze(snapshot);
   }
-  return Object.freeze(value);
+  path.delete(value);
+  return snapshot;
+}
+
+/** Return a structured-clone-safe mutable envelope for Worker transport. */
+export function solverResultToTransport(result) {
+  const copy = (value, path = new WeakSet()) => {
+    if (value == null || typeof value !== 'object') return value;
+    if (path.has(value)) throw new TypeError('solverResultToTransport: cyclic content');
+    path.add(value);
+    let output;
+    if (value instanceof Map) output = new Map([...value].map(([key, child]) => [copy(key, path), copy(child, path)]));
+    else if (Array.isArray(value)) output = value.map((child) => copy(child, path));
+    else {
+      output = {};
+      for (const key of Object.keys(value)) output[key] = copy(value[key], path);
+    }
+    path.delete(value);
+    return output;
+  };
+  return copy(result);
 }
 
 function requireIdentityString(value, field) {
@@ -112,10 +155,11 @@ export function createSolverResult({
   const normalizedBackendVersion = requireIdentityString(backendVersion, 'backendVersion');
   const normalizedQueryHash = requireQueryHash(queryHash);
 
-  // Model is only permitted when status is SAT; publish an owned immutable snapshot (#3986)
+  // Model is only permitted when status is SAT. Snapshot it deeply so
+  // independent validation cannot be invalidated by post-publication mutation.
   let normalizedModel = null;
-  if (status === SOLVER_STATUS.SAT && model && typeof model === 'object') {
-    normalizedModel = immutableModelValue(model);
+  if (status === SOLVER_STATUS.SAT && model && (model instanceof Map || typeof model === 'object')) {
+    normalizedModel = immutableSnapshot(model);
   }
 
   const normalizedLifecycle = Object.freeze({
@@ -125,7 +169,8 @@ export function createSolverResult({
     disposed: lifecycle?.disposed === true,
     budgetExceeded: lifecycle?.budgetExceeded === true,
     late: lifecycle?.late === true,
-    publishable: lifecycle?.publishable !== false &&
+    publishable: (status === SOLVER_STATUS.SAT || status === SOLVER_STATUS.UNSAT) &&
+      lifecycle?.publishable !== false &&
       lifecycle?.timedOut !== true &&
       lifecycle?.cancelled !== true &&
       lifecycle?.stale !== true &&
@@ -137,7 +182,7 @@ export function createSolverResult({
     status,
     model: normalizedModel,
     reason: reason ? String(reason) : null,
-    stats: Object.freeze({
+    stats: immutableSnapshot({
       ...stats,
       solveTimeMs: Number(stats.solveTimeMs) || 0,
       nodesEvaluated: Number(stats.nodesEvaluated) || 0,

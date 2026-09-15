@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { resolveUserscriptReleaseVersion } from '../scripts/userscript-release-version.mjs';
+await import('./userscript-publication.mjs');
 
 const a = 'a'.repeat(64), b = 'b'.repeat(64);
 const buildA = '1'.repeat(24), buildB = '2'.repeat(24);

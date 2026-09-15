@@ -3,11 +3,11 @@ export * from './semantic-function-base.js';
 import { architecturePluginV2 } from '../targets/architecture/index.js';
 import { resolveABIPlugin } from '../targets/abi/index.js';
 import { buildSemanticV2CompatibilityPipeline } from '../semantics/compat/index.js';
-import { decompileSemantic } from '../decompiler/semantic.js';
-import { enhanceSemanticDecompilation } from '../decompiler/pipeline.js';
 import {
   SEMANTIC_FUNCTION_ROUTE,
   canonicalDecodedInstructions,
+  decompilerSnapshot,
+  decompileSemanticProjection,
   createSemanticCallPrototypeAuthority,
   isSemanticCallPrototypeAuthority,
   normalizeSemanticEndianness,
@@ -233,21 +233,6 @@ function pipelineSnapshot(pipeline) {
   };
 }
 
-function decompilerSnapshot(result) {
-  return {
-    semantic:result.semantic === true,
-    signature:result.signature,
-    summary:result.summary,
-    pseudocode:result.pseudocode,
-    lines:result.lines,
-    evidence:result.evidence,
-    warnings:result.warnings,
-    labels:[...(result.labels || [])],
-    coverage:result.coverage,
-    unknownInstructions:result.ctx?.unknownInstructions ?? 0,
-  };
-}
-
 function addressWidthBitsFor(architecturePlugin) {
   let descriptors = [];
   try { descriptors = architecturePlugin.registerFile() || []; } catch { descriptors = []; }
@@ -328,7 +313,7 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
       // identity is known; do not patch serialized ABI result envelopes.
       const scopedAbiAdapter = semanticAbiAdapter(abiPlugin, { ...input, functionId: pipeline.functionId }, { callPrototypeAuthority });
       const owner = Object.freeze({ pipeline, abiAdapter: scopedAbiAdapter, decodedInstructions: input.instructions, snapshotId: input.snapshotId });
-      SCOPED_DECOMPILER_OWNERS.set(owner, { input, orderedInstructions });
+      SCOPED_DECOMPILER_OWNERS.set(owner, { input, orderedInstructions, signal:options.signal });
       options.captureCanonicalOwner(owner);
       abortIfRequested(options.signal);
     }
@@ -350,7 +335,7 @@ export function analyzeSemanticFunction(input = {}, options = {}) {
       projection: 'canonical-only',
     });
   }
-  const decompiler = decompileCanonicalPipeline(pipeline, orderedInstructions, input, abiAdapter);
+  const decompiler = decompileCanonicalPipeline(pipeline, orderedInstructions, input, abiAdapter, { shouldAbort:() => options.signal?.aborted === true });
   if (!decompiler) throw new Error('semantic-function-shared-decompiler-produced-no-result');
   return Object.freeze({
     route:SEMANTIC_FUNCTION_ROUTE,
@@ -406,7 +391,8 @@ function decompileCanonicalPipeline(pipeline, orderedInstructions, input, abiAda
     }),
     switches:[],
   };
-  const decompiler = decompileSemantic(model, {
+  const decompiler = decompileSemanticProjection(model, {
+    ...projectionOptions,
     ir:pipeline.legacyV1,
     abiAdapter,
     decoderSemanticVersion,
@@ -415,13 +401,10 @@ function decompileCanonicalPipeline(pipeline, orderedInstructions, input, abiAda
     addr:addressOf(orderedInstructions[0]),
     name:model.name,
     functionPrototype:input.functionPrototype ?? null,
-    ...projectionOptions,
   });
   if (!decompiler) throw new Error('semantic-function-shared-decompiler-produced-no-result');
-  return projectionOptions.scopedTransformEvidence === true
-    ? enhanceSemanticDecompilation(decompiler, model, { ...projectionOptions, ir: pipeline.legacyV1, abiAdapter,
-      decoderSemanticVersion, binaryId, sliceId, addr: addressOf(orderedInstructions[0]), name: model.name })
-    : decompiler;
+  // The shared projection already enhances this exact canonical owner once.
+  return decompiler;
 }
 /** Runs the SAME presentation pipeline over an issued canonical owner. No
  * relift, reconstructed SSA/MSSA, or user-supplied ownership flag is accepted.
@@ -430,5 +413,11 @@ function decompileCanonicalPipeline(pipeline, orderedInstructions, input, abiAda
 export function decompileScopedCanonicalOwner(owner, projectionOptions = {}) {
   const context = SCOPED_DECOMPILER_OWNERS.get(owner);
   if (!context) throw new TypeError('scoped-decompiler-issued-owner-required');
-  return decompileCanonicalPipeline(owner.pipeline, context.orderedInstructions, context.input, owner.abiAdapter, projectionOptions);
+  abortIfRequested(context.signal);
+  const result = decompileCanonicalPipeline(owner.pipeline, context.orderedInstructions, context.input, owner.abiAdapter, {
+    ...projectionOptions,
+    shouldAbort:() => context.signal?.aborted === true || projectionOptions.shouldAbort?.() === true,
+  });
+  abortIfRequested(context.signal);
+  return result;
 }

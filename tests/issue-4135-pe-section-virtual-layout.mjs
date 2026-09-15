@@ -129,15 +129,18 @@ const hasReason = (image, fragment) =>
 // 6. A low-alignment image whose sections match its declared SectionAlignment
 // coexists with #4131/#5539 (the alignment check uses the actual granularity).
 {
-  const image = parsePE(buildPE({
-    bits: 32, machine: 0x014c, sectionAlignment: 0x10, fileAlignment: 0x10, sizeOfHeaders: 0x100,
+  const layout = {
+    bits: 32, machine: 0x014c, sectionAlignment: 0x10, fileAlignment: 0x10, sizeOfHeaders: 0x200,
     sections: [
-      { name: '.a', rva: 0x100, vsize: 0x30, rawSize: 0x30, ptr: 0x100 },
-      { name: '.b', rva: 0x140, vsize: 0x30, rawSize: 0x30, ptr: 0x140 },
+      { name: '.a', rva: 0x200, vsize: 0x30, rawSize: 0x30, ptr: 0x200 },
+      { name: '.b', rva: 0x240, vsize: 0x30, rawSize: 0x30, ptr: 0x240 },
     ],
-  }));
+  };
+  assert.throws(() => parsePE(buildPE({ ...layout, sizeOfHeaders:0x100 })), /SizeOfHeaders.*section table/,
+    'low alignment does not waive the complete section-table header bound');
+  const image = parsePE(buildPE(layout));
   assert.equal(image.metadata.peMetadata.complete, true, 'low-alignment aligned/ascending layout stays complete');
-  assert.equal(canonical(image, 0x100).length + canonical(image, 0x140).length, 2);
+  assert.equal(canonical(image, 0x200).length + canonical(image, 0x240).length, 2);
 }
 
 // 7. Exact entrypoint evidence is never promoted from an invalid virtual layout.

@@ -1,0 +1,555 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { conditionalRegionFixture as example, textRowConditionalRegionFixture } from '../helpers/conditional-region-fixture.mjs';
+import { buildIR, readCanonicalRegisterStateBinding, prepareCanonicalRegisterStateBindings, prepareCanonicalReturnFaultBindings } from '../../../js/ir-core.js';
+import { buildSemanticModel } from '../../../js/blocks.js';
+import { buildSemanticV2CompatibilityPipeline, projectedRegisterStateContext, projectedRegisterStateBindingCandidate } from '../../../js/semantics/compat/index.js';
+import { createMachineEffectBundle } from '../../../js/semantics/effects/index.js';
+import { projectSemanticIrV2ToLegacyV1 } from '../../../js/semantics/compat/semantic-ir-v2-to-v1.js';
+import { decompileSemantic, readSemanticConditionalRegions } from '../../../js/decompiler/semantic-core.js';
+import { prepareConditionalRegionStructure } from '../../../js/decompiler/phase8/conditional-region-structure.js';
+import { identity } from '../helpers/proof-fixtures.mjs';
+import { prepareConditionalRegionReachability, readConditionalRegionReachability } from '../../../js/decompiler/phase8/conditional-region-reachability.js';
+import { discoverPhase8Tests } from '../run.mjs';
+import { ARM64_ARCHITECTURE } from '../../../js/targets/architecture/index.js';
+import { parseOperands } from '../../../js/arm64.js';
+
+function nativeReturnRegion(target = 'and x30, x30, #0xfffffffffffffffc') {
+  // Parsed rows through the production model/SSA/facade. No compiler claim.
+  const lines = [target, 'eor w1, w0, w0', 'cbnz w1, #0x1014',
+    'mov w0, #1', 'b #0x1018', 'mov w0, #2', 'ret'];
+  const rows = lines.map((text, row) => {
+    const [mn, ...ops] = text.split(' ');
+    return { mn, ops:ops.join(' '), row, address:0x1000n + BigInt(row * 4) };
+  });
+  const options = { startRow:0, endRow:rows.length - 1, semanticMigrationMode:'semantic-v2-compat',
+    rowOfAddress:address => rows.find(row => row.address === BigInt(address))?.row ?? null,
+    addrOfRow:row => rows[row]?.address ?? null };
+  const ir = buildIR(buildSemanticModel(rows, options), options);
+  const context = { ...identity, ...projectedRegisterStateContext(ir) };
+  const seed = decompileSemantic({ name:'native-return-region', instructions:ir.instructions, calls:[] },
+    { ir, deterministicTransforms:true, phase8PrepareRegionProof:true });
+  const region = readSemanticConditionalRegions(seed)?.regions.find(item => item.selection.header === 0);
+  const structure = prepareConditionalRegionStructure(region?.record, ir, { identity:context, timeoutMs:5000 });
+  return { ir, identity:context, structure, run:extra => prepareConditionalRegionReachability(structure, ir,
+    { identity:context, addressBits:64, timeoutMs:5000, backendTier:'tiered', ...extra }) };
+}
+
+test('native RET fault copies retain canonical bundle and SSA witnesses across actual ABI facade writes', () => {
+  const f = nativeReturnRegion(), bindings = prepareCanonicalReturnFaultBindings(f.ir, f.identity);
+  assert.equal(bindings.status, 'prepared');
+  assert.ok(bindings.isCurrent(), 'new ABI return fields must have an absent-to-own writer history');
+  const copies = f.ir.instructions.filter(inst => inst.extra?.attributes?.machineEffects?.possibleFaults?.length);
+  assert.equal(copies.length, 4);
+  assert.equal(bindings.size, copies.length);
+  const records = copies.map(inst => bindings.get(inst)), bundle = records[0].bundle;
+  assert.ok(records.every(record => record.bundle === bundle));
+  assert.equal(bundle.source.op, 'ret');
+  assert.equal(bundle.source.returnTargetValue, bundle.target);
+  assert.equal(bundle.ssaUse.sourceEntityId, bundle.canonicalReturn.id);
+  assert.equal(bundle.ssaUse.proof.sourceSemanticValueId, bundle.sourceValueId);
+  assert.ok(bundle.ssaUse.proof.roles.includes('return-target'));
+  assert.equal(bundle.machineBundle.controlEffect.kind, 'return');
+  assert.equal(bundle.machineBundle.instructionId, bundle.instructionId);
+  const state = prepareCanonicalRegisterStateBindings(f.ir, f.identity);
+  assert.ok(state.isCurrent());
+  const read = copies.find(inst => inst.extra.stateRead), readBinding = state.get(read);
+  assert.equal(readBinding.ssaAlias.kind, 'resolve-state-alias');
+  assert.equal(readBinding.ssaAlias.before.semanticSsaValueId, readBinding.ssaFact.valueId);
+  assert.equal(readBinding.ssaAlias.after, read.args[0].value);
+  assert.deepEqual(records.map(record => record.canonicalNode.kind).sort(), ['const','return','state-read','state-write']);
+  assert.equal(prepareCanonicalReturnFaultBindings({ ...f.ir }, f.identity), null);
+  assert.equal(bindings.get({ ...bundle.source }), null);
+  assert.equal(prepareCanonicalReturnFaultBindings(f.ir, { ...f.identity, snapshotId:'other' }).status, 'unavailable');
+  bundle.source.extra = { ...bundle.source.extra, attributes:{ ...bundle.source.extra.attributes } };
+  assert.equal(bindings.isCurrent(), false);
+});
+
+test('C4 discharges aligned native RET faults over the original domain before proving either arm', async () => {
+  for (const target of ['and x30, x30, #0xfffffffffffffffc', 'mov x30, #4096']) {
+    const f = nativeReturnRegion(target);
+    assert.equal(f.structure.status, 'complete', f.structure.reason);
+    const result = await f.run();
+    assert.equal(result.status, 'complete', result.reason);
+    assert.equal(result.terminalFaultVerdict, 'proved');
+    assert.equal(typeof result.terminalFaultQueryHash, 'string');
+    assert.deepEqual(result.arms.map(arm => arm.verdict), ['proved', 'refuted']);
+    assert.equal(result.arms[1].counterexampleValidated, true);
+    assert.equal(result.terminalPathCount, 2);
+    assert.deepEqual(result.assumptions, []);
+    assert.equal(result.transformAuthorization, false, 'region deletion still needs its own semantic proof');
+    assert.equal(readConditionalRegionReachability(result, f.ir, f.identity), result);
+    f.ir.instructions.find(inst => inst.op === 'ret').returnTargetValue = { id:'foreign', kind:'const', bits:64, const:4097n };
+    assert.equal(readConditionalRegionReachability(result, f.ir, f.identity), null);
+  }
+});
+
+test('reprojecting canonical RET or copied SSA cannot mint a return-fault binding', () => {
+  const decoded = { address:0x1000n, size:4, length:4, mode:'a64', mnemonic:'ret', operands:'x30',
+    opStr:'x30', ops:parseOperands('x30'), instructionCode:0xd65f03c0, rawBytes:Uint8Array.of(0xc0, 0x03, 0x5f, 0xd6) };
+  const result = buildSemanticV2CompatibilityPipeline({ architecturePlugin:ARM64_ARCHITECTURE,
+    decoderSemanticVersion:'c4-return-fault-word-test', binaryId:'return-fault-binary', sliceId:'return-fault-slice',
+    addressWidthBits:64, entryBlockKey:'entry', blocks:[{ key:'entry', startAddress:0x1000n,
+      instructions:[{ decoded }], successors:[] }] });
+  const context = projectedRegisterStateContext(result.legacyV1);
+  const issued = prepareCanonicalReturnFaultBindings(result.legacyV1, context);
+  assert.equal(issued.size, 4); assert.ok(issued.isCurrent());
+  for (const ssa of [result.ssa, structuredClone(result.ssa)]) {
+    const copy = projectSemanticIrV2ToLegacyV1(result.semanticIr, { cfg:result.cfg, ssa, memorySsa:result.memorySsa });
+    assert.equal(copy.instructions.filter(inst => inst.extra?.attributes?.machineEffects?.possibleFaults?.length).length, 4);
+    assert.equal(prepareCanonicalReturnFaultBindings(copy, context), null);
+    assert.equal(issued.get(copy.instructions.find(inst => inst.op === 'ret')), null);
+  }
+});
+
+test('C4 refuses faulting and unconstrained RETs, incomplete exploration and insufficient query budgets', async () => {
+  for (const target of ['mov x30, #4097', 'mov x30, x0']) {
+    const f = nativeReturnRegion(target), result = await f.run();
+    assert.equal(result.status, 'partial');
+    assert.equal(result.reason, 'unproved-terminal-fault-infeasibility');
+    assert.deepEqual(result.arms, []);
+    assert.equal(readConditionalRegionReachability(result, f.ir, f.identity), null);
+  }
+  for (const extra of [{ maxPaths:1 }, { limits:{ queries:3 } }, { limits:{ queries:0 } }]) {
+    const f = nativeReturnRegion(), result = await f.run(extra);
+    assert.equal(result.status, 'partial');
+    assert.deepEqual(result.arms, []);
+  }
+});
+
+test('hidden or copied native fault descriptions cannot refresh the canonical association', async () => {
+  for (const mutate of [
+    ret => { ret.extra = { ...ret.extra, attributes:{ ...ret.extra.attributes,
+      machineEffects:{ ...ret.extra.attributes.machineEffects, possibleFaults:[] } } }; },
+    ret => { ret.extra = { ...ret.extra, faults:['authentication-fault'] }; },
+    ret => { ret.extra = { ...ret.extra, returnControlTarget:{ ...ret.extra.returnControlTarget } }; },
+  ]) {
+    const f = nativeReturnRegion(), ret = f.ir.instructions.find(inst => inst.op === 'ret');
+    mutate(ret);
+    const bindings = prepareCanonicalReturnFaultBindings(f.ir, f.identity);
+    assert.equal(bindings.isCurrent(), false);
+    const result = await f.run();
+    assert.equal(result.status, 'partial');
+    assert.deepEqual(result.arms, []);
+  }
+  const f = nativeReturnRegion(), ret = f.ir.instructions.find(inst => inst.op === 'ret');
+  const counterfeit = { ...ret, extra:{ ...ret.extra } };
+  f.ir.blocks[ret.block].insts.push(counterfeit);
+  f.ir.instructions.push(counterfeit);
+  assert.equal((await f.run()).status, 'partial', 'an appended duplicate cannot borrow the issued RET bundle');
+});
+
+test('actual production state reads and writes bind the original canonical SSA assignments', () => {
+  const { ir, identity:context } = textRowConditionalRegionFixture();
+  assert.ok(projectedRegisterStateContext(ir));
+  const states = ir.instructions.filter(inst => inst.extra?.stateRead || inst.extra?.stateWrite);
+  assert.equal(states.length, 13);
+  for (const source of states) {
+    const binding = readCanonicalRegisterStateBinding(ir, source, context);
+    assert.ok(binding, `${source.id}: ${source.extra.publicStateIdentity}`);
+    assert.equal(binding.source, source);
+    assert.equal(binding.input, source.args[0].value);
+    assert.equal(binding.output, source.dst);
+    assert.equal(binding.input.bits, binding.output.bits);
+    assert.equal(binding.canonicalNode.kind, binding.kind);
+    assert.equal(binding.state.physicalIdentity.kind, 'register');
+    assert.equal(readCanonicalRegisterStateBinding({ ...ir }, source), null);
+    assert.equal(readCanonicalRegisterStateBinding(ir, { ...source }), null);
+    for (const key of ['binaryId','functionId','snapshotId','architecture','semanticsVersion']) {
+      assert.equal(readCanonicalRegisterStateBinding(ir, source, { ...context, [key]:'foreign' }), null);
+    }
+    assert.equal(readCanonicalRegisterStateBinding(ir, source, null), null);
+  }
+});
+
+test('state assignment authority is revoked by changed operands, upstream values, metadata and accessors', () => {
+  for (const mutate of [
+    source => { source.args[0].value = { ...source.args[0].value }; },
+    source => { source.args[0].value.bits = 32; },
+    source => { source.dst.def = { ...source }; },
+    source => { source.extra.stateRead = { ...source.extra.stateRead }; },
+    source => { source.extra.stateReadProof = { ...source.extra.stateReadProof }; },
+    source => { delete source.extra.stateRead; delete source.extra.publicStateIdentity; },
+    source => { source.extra.stateRead = false; source.extra.publicStateIdentity = false; },
+    source => { source.extra.unknownEffects = true; },
+    source => { Object.defineProperty(source, 'args', { get() { assert.fail('must not invoke accessor'); } }); },
+  ]) {
+    const { ir } = textRowConditionalRegionFixture();
+    const source = ir.instructions.find(inst => inst.extra?.stateRead);
+    assert.ok(readCanonicalRegisterStateBinding(ir, source));
+    mutate(source);
+    assert.equal(readCanonicalRegisterStateBinding(ir, source), null);
+  }
+});
+
+test('batch state currentness observes the shared graph once and retains hidden state obligations', () => {
+  const { ir, identity:context } = textRowConditionalRegionFixture();
+  const batch = prepareCanonicalRegisterStateBindings(ir, context);
+  assert.equal(batch.size, 13);
+  assert.equal(batch.observationCount, 1);
+  assert.ok(Number.isSafeInteger(batch.workItems) && batch.workItems > batch.size);
+  const source = ir.instructions.find(inst => inst.extra?.stateRead);
+  const descriptor = Object.getOwnPropertyDescriptor;
+  const count = check => {
+    let visits = 0;
+    Object.getOwnPropertyDescriptor = (object, key) => {
+      if (object === source) visits++;
+      return descriptor(object, key);
+    };
+    try { assert.ok(check()); return visits; }
+    finally { Object.getOwnPropertyDescriptor = descriptor; }
+  };
+  const singleVisits = count(() => readCanonicalRegisterStateBinding(ir, source, context));
+  assert.ok(singleVisits > 0);
+  assert.equal(count(() => batch.isCurrent()), singleVisits,
+    'all assignments must share one graph observation per lifecycle check');
+  delete source.extra.stateRead;
+  delete source.extra.publicStateIdentity;
+  assert.equal(batch.isCurrent(), false);
+  assert.equal(prepareCanonicalRegisterStateBindings(ir, { ...context, snapshotId:'foreign' }).status, 'unavailable');
+});
+
+test('reachability refuses hidden canonical state markers and unavailable state context', async () => {
+  for (const change of ['delete', 'false', 'proof', 'context']) {
+    const f = textRowConditionalRegionFixture();
+    const source = f.ir.instructions.find(inst => inst.extra?.stateRead);
+    if (change === 'delete') { delete source.extra.stateRead; delete source.extra.publicStateIdentity; }
+    if (change === 'false') { source.extra.stateRead = false; source.extra.publicStateIdentity = false; }
+    if (change === 'proof') delete source.extra.stateReadProof;
+    const context = change === 'context' ? { ...f.identity, snapshotId:'foreign' } : f.identity;
+    const seed = decompileSemantic(f.model, { ...f.options, ir:f.ir,
+      deterministicTransforms:true, phase8PrepareRegionProof:true });
+    const region = readSemanticConditionalRegions(seed)?.regions.find(item => item.selection.header === 0);
+    const structure = prepareConditionalRegionStructure(region?.record, f.ir, { identity:context, timeoutMs:5000 });
+    assert.equal(structure.status, 'complete', `${change}: ${structure.reason}`);
+    const result = await prepareConditionalRegionReachability(structure, f.ir, {
+      identity:context, timeoutMs:5000, backendTier:'tiered',
+    });
+    assert.equal(result.reason, 'unproved-state-effects', change);
+    assert.equal(result.status, 'partial');
+    assert.equal(readConditionalRegionReachability(result, f.ir, context), null);
+  }
+});
+
+test('state bindings retain actual reaching definitions and graph membership after facade writes', () => {
+  for (const mutate of [
+    (ir, write) => { write.args[0].value.def.sub = 'foreign'; },
+    (ir, write) => { write.args[0].value.const = 123n; },
+    (ir, write) => { ir.instructions[ir.instructions.indexOf(write)] = { ...write }; },
+    (ir, write) => { const block = ir.blocks.find(block => block.index === write.block);
+      block.insts[block.insts.indexOf(write)] = { ...write }; },
+    (ir, write) => { write.extra.attributes = { ...write.extra.attributes, machineEffects:{
+      ...write.extra.attributes.machineEffects, possibleFaults:['injected-fault'],
+    } }; },
+  ]) {
+    const { ir, identity:context } = textRowConditionalRegionFixture();
+    const write = ir.instructions.find(inst => inst.extra?.stateWrite && inst.extra.publicStateIdentity === 'x1');
+    const read = ir.instructions.find(inst => inst.extra?.stateRead && inst.extra.publicStateIdentity === 'x1');
+    assert.ok(write && read);
+    const binding = readCanonicalRegisterStateBinding(ir, read, context);
+    assert.ok(binding);
+    assert.equal(binding.input, write.dst, 'canonical reaching definition supplies the real register read');
+    assert.ok(readCanonicalRegisterStateBinding(ir, write, context));
+    // This fixture's facade issues a new observer through its actual write log.
+    assert.notEqual(binding, projectedRegisterStateBindingCandidate(ir, read));
+    mutate(ir, write);
+    assert.equal(readCanonicalRegisterStateBinding(ir, read, context), null);
+    assert.equal(readCanonicalRegisterStateBinding(ir, write, context), null);
+  }
+});
+
+test('unbound canonical flag obligations survive without register bindings or public state markers', () => {
+  // This is the generic canonical plugin boundary, not an ARM64 instruction
+  // fixture. Unsupported state must stay an obligation even with no eligible
+  // register assignment to seed the shared observer.
+  for (const withRegister of [false, true]) {
+    const plugin = { id:'flag-obligation-test', semanticVersion:'1', fixedInstructionSize:4,
+      liftExact(decoded) {
+        const flag = { kind:'flag', flagId:'Z', widthBits:1 };
+        const operations = [
+          { id:`${decoded.instructionId}:flag-write`, kind:'flag-write', flag,
+            value:{ kind:'bitvector', widthBits:1, value:'1' } },
+          { id:`${decoded.instructionId}:flag-read`, kind:'flag-read', flag,
+            value:{ kind:'bitvector', widthBits:1 } },
+        ];
+        if (withRegister) operations.push({ id:`${decoded.instructionId}:register-write`, kind:'register-write',
+          register:{ kind:'register', registerId:'state0', widthBits:32 },
+          value:{ kind:'bitvector', widthBits:32, value:'7' } });
+        return createMachineEffectBundle({ instructionId:decoded.instructionId,
+          architectureId:this.id, mode:decoded.mode, origin:decoded.origin,
+          operations, controlEffect:{ kind:'return' }, possibleFaults:[], completeness:'exact' });
+      } };
+    const result = buildSemanticV2CompatibilityPipeline({ architecturePlugin:plugin,
+      decoderSemanticVersion:'test-1', binaryId:'flag-obligation-binary', sliceId:'flag-obligation-slice',
+      addressWidthBits:64, entryBlockKey:'entry', blocks:[{ key:'entry', startAddress:0x1000n,
+        instructions:[{ decoded:{ address:0x1000n, mode:'test' } }], successors:[] }] });
+    const ir = result.legacyV1, context = { ...identity, binaryId:'flag-obligation-binary',
+      functionId:result.semanticIr.functionId, snapshotId:'snapshot-unbound',
+      architecture:plugin.id, semanticsVersion:plugin.semanticVersion };
+    const flags = ir.instructions.filter(inst =>
+      (inst.extra?.stateRead ?? inst.extra?.stateWrite)?.physicalIdentity?.kind === 'flag');
+    assert.equal(flags.length, 2);
+    for (const inst of flags) assert.equal(readCanonicalRegisterStateBinding(ir, inst, context), null);
+    assert.equal(prepareCanonicalRegisterStateBindings(ir, context)?.status, 'unavailable');
+    for (const inst of flags) for (const key of ['stateRead', 'stateWrite', 'publicStateIdentity', 'stateReadProof', 'stateWriteProof']) {
+      delete inst.extra[key];
+    }
+    assert.equal(prepareCanonicalRegisterStateBindings(ir, context)?.status, 'unavailable',
+      'private canonical state obligations cannot disappear with public markers');
+  }
+});
+
+test('public projection of identical canonical or copied SSA cannot mint state assignment authority', () => {
+  // A synthetic plugin isolates the issuer boundary; the ARM64 fixture above
+  // separately verifies the real producer. Both use the canonical SSA builder.
+  const plugin = { id:'state-binding-test', semanticVersion:'1', fixedInstructionSize:4,
+    liftExact(decoded) {
+      const register = { kind:'register', registerId:'state0', widthBits:32 };
+      return createMachineEffectBundle({ instructionId:decoded.instructionId,
+        architectureId:this.id, mode:decoded.mode, origin:decoded.origin,
+        operations:[
+          { id:`${decoded.instructionId}:write`, kind:'register-write', register,
+            value:{ kind:'bitvector', widthBits:32, value:'7' } },
+          { id:`${decoded.instructionId}:read`, kind:'register-read', register,
+            value:{ kind:'bitvector', widthBits:32 } },
+        ], controlEffect:{ kind:'return' }, possibleFaults:[], completeness:'exact' });
+    } };
+  const result = buildSemanticV2CompatibilityPipeline({ architecturePlugin:plugin,
+    decoderSemanticVersion:'test-1', binaryId:'state-binding-binary', sliceId:'state-binding-slice',
+    addressWidthBits:64, entryBlockKey:'entry', blocks:[{ key:'entry', startAddress:0x1000n,
+      instructions:[{ decoded:{ address:0x1000n, mode:'test' } }], successors:[] }] });
+  const context = projectedRegisterStateContext(result.legacyV1);
+  assert.ok(context);
+  const states = result.legacyV1.instructions.filter(inst => inst.extra?.stateRead || inst.extra?.stateWrite);
+  assert.equal(states.length, 2);
+  for (const inst of states) assert.ok(readCanonicalRegisterStateBinding(result.legacyV1, inst, context));
+  for (const ssa of [result.ssa, structuredClone(result.ssa)]) {
+    const projected = projectSemanticIrV2ToLegacyV1(result.semanticIr, { cfg:result.cfg, ssa, memorySsa:result.memorySsa });
+    const copies = projected.instructions.filter(inst => inst.extra?.stateRead || inst.extra?.stateWrite);
+    assert.equal(copies.length, states.length);
+    assert.equal(projectedRegisterStateContext(projected), null);
+    for (const inst of copies) {
+      const proofKey = inst.extra.stateRead ? 'stateReadProof' : 'stateWriteProof';
+      assert.deepEqual(inst.extra[proofKey], states.find(source => source.semanticNodeId === inst.semanticNodeId).extra[proofKey]);
+      assert.equal(readCanonicalRegisterStateBinding(projected, inst, context), null);
+    }
+  }
+});
+
+
+for (const kind of ['cbz', 'cbnz']) test(`real ${kind} branch proof binds actual emitted arms and independent solver verdicts`, async () => {
+  const f = example({ kind }); assert.equal(f.structure.status, 'complete', f.structure.reason);
+  const result = await f.run(); assert.equal(result.status, 'complete', result.reason);
+  assert.deepEqual(result.arms.map(arm => arm.verdict), kind === 'cbz' ? ['refuted', 'proved'] : ['proved', 'refuted']);
+  assert.ok(result.arms.every(arm => typeof arm.queryHash === 'string'));
+  assert.equal(result.arms.find(arm => arm.verdict === 'refuted').counterexampleValidated, true);
+  assert.equal(result.transformAuthorization, false); assert.equal(result.semanticRegionValidation, 'required');
+  assert.equal(readConditionalRegionReachability(result, f.ir, identity), result);
+  assert.equal(readConditionalRegionReachability({ ...result }, f.ir, identity), null);
+  assert.equal(readConditionalRegionReachability(result, { ...f.ir }, identity), null);
+  assert.equal(readConditionalRegionReachability(result, f.ir, { ...identity, queryId:'other' }), null);
+});
+
+test('both live arms stay feasible and downstream branches cannot hide a reachable arm', async () => {
+  const f = example({ predicate:'input', after:'branch' });
+  assert.equal(f.structure.status, 'complete', f.structure.reason);
+  const result = await f.run(); assert.equal(result.status, 'complete', result.reason);
+  assert.equal(result.terminalPathCount, 4);
+  assert.deepEqual(result.arms.map(arm => arm.verdict), ['refuted', 'refuted']);
+  assert.deepEqual(result.arms.map(arm => arm.terminalPaths.length), [2, 2]);
+});
+
+test('forged input, injected state, or canonical target disagreement cannot issue proof', async () => {
+  const f = example();
+  assert.equal((await prepareConditionalRegionReachability({ ...f.structure }, f.ir, { identity })).status, 'partial');
+  for (const extra of [{ preconditions:[] }, { argumentExpressions:new Map() }, { executionSnapshot:{} }, { backend:{} }, { session:{} }]) {
+    const result = await f.run(extra); assert.equal(result.reason, 'unsupported-reachability-option');
+  }
+  const other = example({ mutate:ir => { ir.blocks[0].insts.at(-1).extra.target = ir.blocks[2].insts[0].address; } });
+  assert.equal(other.structure.status, 'complete', other.structure.reason);
+  assert.equal((await other.run()).reason, 'executor-producer-target-mismatch');
+});
+
+test('unknown calls and exploration limits never publish partial path proofs', async () => {
+  const called = example({ after:'call' });
+  const unknown = await called.run(); assert.equal(unknown.status, 'partial');
+  assert.deepEqual(unknown.arms, []); assert.equal(readConditionalRegionReachability(unknown, called.ir, identity), null);
+  for (const extra of [{ maxPaths:1 }, { maxBranches:0 }, { maxSteps:0 }, { timeoutMs:0 }, { limits:{ queries:0 } }]) {
+    const f = example(), result = await f.run(extra);
+    assert.equal(result.status, 'partial'); assert.equal(readConditionalRegionReachability(result, f.ir, identity), null);
+  }
+});
+
+test('cancelled and stale source results lose authority before and after asynchronous proof', async () => {
+  const controller = new AbortController(), f = example(), result = await f.run({ signal:controller.signal });
+  assert.equal(result.status, 'complete', result.reason); controller.abort();
+  assert.equal(readConditionalRegionReachability(result, f.ir, identity), null);
+  const g = example(), pending = g.run(); g.region.close.text = '// changed';
+  assert.equal((await pending).status, 'partial');
+  const h = example(), proof = await h.run(); assert.equal(proof.status, 'complete', proof.reason);
+  h.ir.blocks[0].insts.at(-1).extra.kind = 'cbnz';
+  assert.equal(readConditionalRegionReachability(proof, h.ir, identity), null);
+});
+
+test('a final execution lifecycle callback cannot return a stale rendered region capability', async () => {
+  const f = example();
+  let armed = false, reads = 0;
+  const result = await f.run({ getCurrentIdentity() {
+    if (armed && ++reads === 2) f.region.close.text = '// changed during final execution check';
+    return identity;
+  } });
+  assert.equal(result.status, 'complete', result.reason);
+  armed = true;
+  assert.equal(readConditionalRegionReachability(result, f.ir, identity), null);
+  assert.equal(reads, 2, 'mutation occurs after the outer lifecycle check');
+});
+
+test('canonical Phase 8 discovery includes the reachability regressions', () => {
+  assert.equal(discoverPhase8Tests().filter(path => path.endsWith('/structuring/conditional-region-reachability.test.mjs')).length, 1);
+});
+
+function memoryPredicate(f) {
+  const loaded = f.load(8, { locKind:'global', locKey:'g', addressSpace:'data', volatility:false, atomic:false, addressPrecise:true });
+  Object.assign(loaded.def.loc, { address:16n, size:1, addressSpace:'data' });
+  loaded.def.extra.completeness = 'complete';
+  loaded.def.extra.memoryAccess.endian = 'little';
+  return f.binary('xor', loaded, loaded, 8);
+}
+
+function divisionPredicate(f, input) {
+  const quotient = f.binary('udiv', input, f.constant(0n, 8), 8);
+  quotient.def.extra = { completeness:'complete', attributes:{ machineEffects:{
+    bundleCompleteness:'exact', possibleFaults:[],
+    operationMetadata:{ divisionByZero:'returns-zero', widthBits:8, signedOverflow:'not-applicable' },
+  } } };
+  return quotient;
+}
+
+test('complete ordinary byte memory and explicit division policy preserve positive proofs', async () => {
+  for (const predicate of [memoryPredicate, divisionPredicate]) {
+    const f = example({ predicate }); assert.equal(f.structure.status, 'complete', f.structure.reason);
+    const result = await f.run(); assert.equal(result.status, 'complete', result.reason);
+    assert.deepEqual(result.arms.map(arm => arm.verdict), ['refuted', 'proved']);
+    assert.equal(readConditionalRegionReachability(result, f.ir, identity), result);
+  }
+});
+
+test('unproved memory qualifiers, faults, and alignment cannot supply an arm proof', async () => {
+  const cases = [
+    extra => { delete extra.memoryAccess; },
+    extra => { delete extra.completeness; },
+    extra => { extra.memoryAccess.faults = ['page-fault']; },
+    extra => { extra.memoryAccess.atomic = true; },
+    extra => { extra.memoryAccess.volatility = 'unknown'; },
+    extra => { extra.memoryAccess.alignment = 4; },
+  ];
+  for (const change of cases) {
+    const f = example({ predicate:memoryPredicate, mutate:ir => change(ir.instructions.find(inst => inst.op === 'load').extra) });
+    assert.equal(f.structure.status, 'complete', f.structure.reason);
+    const result = await f.run(); assert.equal(result.status, 'partial');
+    assert.match(result.reason, /^unproved-memory-/);
+    assert.equal(readConditionalRegionReachability(result, f.ir, identity), null);
+  }
+});
+
+test('division aliases, missing policies, remainder, and hidden state retain unknown', async () => {
+  const cases = [
+    [inst => { delete inst.extra.attributes; }, 'unproved-division-effects'],
+    [inst => { delete inst.extra.attributes; delete inst.sub; inst.name = 'udiv'; }, 'unproved-division-effects'],
+    [inst => { inst.sub = 'urem'; }, 'unproved-remainder-effects'],
+    [inst => { inst.extra.stateWrite = { key:'opaque' }; }, 'unproved-state-effects'],
+    [inst => { inst.extra.attributes.machineEffects.possibleFaults = ['arithmetic']; }, 'unproved-machine-effects'],
+    [inst => { inst.possibleFaults = ['arithmetic']; }, 'unproved-machine-effects'],
+    [inst => { inst.extra.faults = ['arithmetic']; }, 'unproved-machine-effects'],
+    [inst => { inst.extra.attributes.machineEffects.undefinedResult = { reason:'architectural' }; }, 'unproved-undefined-result'],
+  ];
+  for (const [change, reason] of cases) {
+    const f = example({ predicate:divisionPredicate, mutate:ir => change(ir.instructions.find(inst => inst.sub === 'udiv')) });
+    assert.equal(f.structure.status, 'complete', f.structure.reason);
+    const result = await f.run(); assert.equal(result.reason, reason);
+    assert.equal(readConditionalRegionReachability(result, f.ir, identity), null);
+  }
+});
+
+test('whole-function edges and downstream branch endpoints are checked beyond the emitted region', async () => {
+  for (const [mutate, reason] of [
+    [ir => { ir.blocks[4].successorEdges[0].kind = 'exception'; }, 'nonordinary-function-edge'],
+    [ir => { ir.blocks[4].isEntry = true; }, 'multiple-function-entries'],
+    [ir => { ir.blocks[3].insts.at(-1).extra.fallthroughBlock = 4; }, 'inconsistent-branch-endpoints'],
+  ]) {
+    const f = example({ after:'branch', mutate });
+    assert.equal(f.structure.status, 'complete', f.structure.reason);
+    const result = await f.run(); assert.equal(result.reason, reason);
+    assert.equal(readConditionalRegionReachability(result, f.ir, identity), null);
+  }
+});
+
+test('an unresolved downstream loop cannot publish a bounded path proof', async () => {
+  const f = example({ after:'loop' });
+  assert.equal(f.structure.status, 'complete', f.structure.reason);
+  const result = await f.run(); assert.equal(result.reason, 'loop-budget');
+  assert.equal(result.status, 'partial'); assert.deepEqual(result.arms, []);
+  assert.equal(readConditionalRegionReachability(result, f.ir, identity), null);
+});
+
+test('complete finite loop exploration retains PHI updates and proves both arm verdicts', async () => {
+  for (const kind of ['cbz', 'cbnz']) for (const loopCount of [0, 1, 2]) {
+    const f = example({ kind, after:'bounded-loop', loopCount });
+    assert.equal(f.structure.status, 'complete', f.structure.reason);
+    const before = structuredClone(f.ir);
+    const result = await f.run();
+    assert.equal(result.status, 'complete', result.reason);
+    assert.equal(result.scope, 'bounded-canonical-executor-entry-path-feasibility');
+    assert.equal(result.executionCoverage.kind, 'complete-finite-unrolling');
+    assert.equal(result.executionCoverage.blockVisitsPerBlock, loopCount + 1);
+    assert.equal(result.terminalPathCount, 2);
+    assert.deepEqual(result.executionCoverage.branchVisits, [1, 1]);
+    assert.equal(result.executionCoverage.inductionProved, false);
+    assert.deepEqual(result.arms.map(arm => arm.verdict), kind === 'cbz' ? ['refuted', 'proved'] : ['proved', 'refuted']);
+    assert.ok(result.arms.find(arm => arm.verdict === 'refuted').counterexampleValidated);
+    assert.equal(result.transformAuthorization, false);
+    assert.equal(readConditionalRegionReachability(result, f.ir, identity), result);
+    assert.deepEqual(structuredClone(f.ir), before);
+  }
+});
+
+test('loop coverage must include every path and cannot raise the canonical unroll ceiling', async () => {
+  for (const [loopCount, limits] of [[3, {}], [2, { maxBlockVisits:2 }], [2, { maxBlockVisits:4 }],
+    [2, { maxPaths:1 }], [2, { maxSteps:4 }], [2, { maxBranches:2 }]]) {
+    const f = example({ after:'bounded-loop', loopCount });
+    const result = await f.run(limits);
+    assert.equal(result.status, 'partial', JSON.stringify(limits));
+    assert.deepEqual(result.arms, []);
+    assert.equal(readConditionalRegionReachability(result, f.ir, identity), null);
+  }
+});
+
+test('child execution cannot overdraw the shared work or allocation budget', async () => {
+  for (const limits of [{ workItems:0 }, { workItems:4096 }, { allocationUnits:0 }, { allocationUnits:4096 }]) {
+    const f = example(), result = await f.run({ limits });
+    assert.equal(result.status, 'partial');
+    assert.equal(readConditionalRegionReachability(result, f.ir, identity), null);
+  }
+});
+
+test('branch trace identity normalizes Number and BigInt addresses before rejecting duplicates', async () => {
+  const f = example({ after:'branch', mutate:ir => {
+    const first = ir.blocks[0].insts.at(-1), later = ir.blocks[3].insts.at(-1);
+    later.row = first.row; later.address = Number(first.address);
+    // The address is still a distinct block entry, but the trace pair collides.
+    ir.blocks[1].insts.at(-1).extra.target = later.address;
+    ir.blocks[2].insts.at(-1).extra.target = later.address;
+  } });
+  assert.equal(f.structure.status, 'complete', f.structure.reason);
+  assert.equal((await f.run()).reason, 'ambiguous-branch-trace-identity');
+});
+
+test('identity observers revoke issued results and cannot substitute a new query during proof', async () => {
+  let current = identity;
+  const f = example(), result = await f.run({ getCurrentIdentity:() => current });
+  assert.equal(result.status, 'complete', result.reason);
+  current = { ...identity, snapshotId:'new-snapshot' };
+  assert.equal(readConditionalRegionReachability(result, f.ir, identity), null);
+  const g = example(), pending = g.run({ getCurrentIdentity:() => current });
+  assert.equal((await pending).reason, 'stale-identity');
+});
