@@ -73,7 +73,7 @@ function validateExprNode(expr) {
       return Object.values(BV_COMPARE_OP).includes(expr.op) && isBoolSort(expr.sort) && sameBvSort(expr.left, expr.right)
         ? null : 'invalid-compare-expression';
     case EXPR_KIND.CONNECTIVE: {
-      if (!Object.values(BOOL_CONNECTIVE_OP).includes(expr.op) || !isBoolSort(expr.sort) || !Array.isArray(expr.args) || !expr.args.every((arg) => isBoolSort(arg?.sort))) return 'invalid-connective-expression';
+      if (!Object.values(BOOL_CONNECTIVE_OP).includes(expr.op) || !isBoolSort(expr.sort) || !Array.isArray(expr.args)) return 'invalid-connective-expression';
       if (expr.args.length === 0 || (expr.op === BOOL_CONNECTIVE_OP.NOT && expr.args.length !== 1) ||
           ([BOOL_CONNECTIVE_OP.IMPLIES, BOOL_CONNECTIVE_OP.EQ, BOOL_CONNECTIVE_OP.NE].includes(expr.op) && expr.args.length !== 2)) return 'invalid-connective-arity';
       return null;
@@ -107,15 +107,22 @@ function collectSymbols(expressions, maxExprNodes) {
   let nodeCount = 0;
   let unsupportedReason = null;
   let budgetExceeded = false;
-  // Explicit worklist (#5163): a deep expression chain must not consume the JS
-  // call stack while we walk it purely to discover that nodeCount is over budget
-  // afterwards. The node budget is enforced *during* traversal so the walk stops
-  // the moment admission is exceeded.
-  const worklist = [];
-  for (let i = expressions.length - 1; i >= 0; i--) worklist.push(expressions[i]);
+  // Keep only one sequence frame per nesting level. In particular, a wide
+  // CONNECTIVE must not enqueue every argument before the node budget can be
+  // observed (#5163). Each frame advances its child array incrementally.
+  const worklist = [{ expressions, index: 0, requireBoolSort: false }];
 
   while (worklist.length > 0) {
-    const expr = worklist.pop();
+    const frame = worklist[worklist.length - 1];
+    if (frame.index >= frame.expressions.length) {
+      worklist.pop();
+      continue;
+    }
+
+    const expr = frame.expressions[frame.index++];
+    if (frame.requireBoolSort && !isBoolSort(expr?.sort)) {
+      unsupportedReason ||= 'invalid-connective-expression';
+    }
     if (!expr || typeof expr !== 'object') {
       unsupportedReason ||= 'malformed-expression-node';
       continue;
@@ -137,8 +144,15 @@ function collectSymbols(expressions, maxExprNodes) {
         symbols.set(key, { key, name: String(expr.name), symbolId: String(expr.symbolId || key), sort: expr.sort });
       }
     }
+
     const children = childExpressions(expr);
-    for (let i = children.length - 1; i >= 0; i--) worklist.push(children[i]);
+    if (children.length > 0) {
+      worklist.push({
+        expressions: children,
+        index: 0,
+        requireBoolSort: expr.kind === EXPR_KIND.CONNECTIVE,
+      });
+    }
   }
 
   return { symbols: [...symbols.values()].sort((a, b) => a.key.localeCompare(b.key)), nodeCount, unsupportedReason, budgetExceeded };
