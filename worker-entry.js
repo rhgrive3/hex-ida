@@ -131,9 +131,12 @@ async function readBoundedBootstrapText(request, limit) {
       if (!value || value.byteLength === 0) continue;
       size += value.byteLength;
       if (size > limit) {
+        // Once the cap has been crossed, the semantic classification is fixed.
+        // Cancellation is best-effort transport cleanup and must never replace
+        // the deterministic 413 outcome if an underlying source rejects it.
         const error = new Error('bootstrap-request-too-large');
         error.bootstrapRequestTooLarge = true;
-        await reader.cancel();
+        try { await reader.cancel(); } catch { /* preserve the overflow classification */ }
         throw error;
       }
       chunks.push(value);
