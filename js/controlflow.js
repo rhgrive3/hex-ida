@@ -60,9 +60,24 @@ function validNodeIndex(value, length) {
   return Number.isInteger(value) && value >= 0 && value < length;
 }
 
-function normalizedSuccessors(successors) {
+function normalizedSuccessors(successors, maxInputEdges = Number.POSITIVE_INFINITY) {
   const n = successors.length;
-  return successors.map((xs) => Array.from(new Set((xs || []).filter((x) => validNodeIndex(x, n)))));
+  const out = new Array(n);
+  let inputEdges = 0;
+  let edges = 0;
+  for (let i = 0; i < n; i++) {
+    const xs = successors[i] || [];
+    // Count the untrusted row before filtering/deduplicating it.  Otherwise a
+    // huge duplicate/invalid successor vector could burn unbounded normalization
+    // work while the canonical edge count stays tiny.
+    const rowLength = Number.isSafeInteger(xs.length) && xs.length >= 0 ? xs.length : 0;
+    if (rowLength > maxInputEdges - inputEdges) throw new RangeError('controlflow-graph-edge-budget');
+    inputEdges += rowLength;
+    const row = Array.from(new Set(xs.filter((x) => validNodeIndex(x, n))));
+    out[i] = row;
+    edges += row.length;
+  }
+  return { successors: out, edges, inputEdges };
 }
 
 function normalizedTerminatingNodes(terminating, length) {
@@ -314,15 +329,22 @@ function postDominatorsOf(succ, pred, reachable, components, componentOf, termin
  * @param {{budget?: {maxNodes?: number, maxEdges?: number, maxLoopMemberships?: number, maxLoopWalkSteps?: number}}} [options]
  *   resource contract for this analysis. Omitting it uses
  *   `CONTROLFLOW_ANALYSIS_DEFAULT_BUDGET`; every key has a hard ceiling, so a
- *   caller cannot request an unbounded analysis. Loop materialization is the
- *   fenced phase: on exhaustion the returned graph keeps its exact dominator,
- *   post-dominator, SCC and back-edge facts and publishes
+ *   caller cannot request an unbounded analysis. Node/edge admission is checked
+ *   before predecessor/dominator/SCC work and rejects over-budget graphs. Loop
+ *   materialization has its own work/resident fence: on exhaustion the returned
+ *   graph keeps its exact already-admitted graph facts and publishes
  *   `loopAnalysis.complete === false` with no loop claims at all, which is never
  *   a silently partial loop set.
  */
 export function analyzeGraph(successors, entry = 0, terminating = null, options = null) {
   const limits = analysisBudget(options);
-  const succ = normalizedSuccessors(successors || []);
+  const input = successors || [];
+  if (!Array.isArray(input)) throw new TypeError('controlflow-successors-invalid');
+  const nodeCount = input.length;
+  if (nodeCount > limits.maxNodes) throw new RangeError('controlflow-graph-node-budget');
+  const normalized = normalizedSuccessors(input, limits.maxEdges);
+  const succ = normalized.successors;
+  const edgeCount = normalized.edges;
   const terminatingNodes = normalizedTerminatingNodes(terminating, succ.length);
   const canonicalEntry = validNodeIndex(entry, succ.length) ? entry : -1;
   const predecessors = predecessorsOf(succ);
@@ -343,18 +365,13 @@ export function analyzeGraph(successors, entry = 0, terminating = null, options 
     }
   }
 
-  const nodeCount = succ.length;
-  let edgeCount = 0;
-  for (const xs of succ) edgeCount += xs.length;
   let loopStopReason = null;
-  if (nodeCount > limits.maxNodes) loopStopReason = 'graph-node-budget';
-  else if (edgeCount > limits.maxEdges) loopStopReason = 'graph-edge-budget';
 
   let retainedMemberships = 0;
   let walkSteps = 0;
   const loopByHeader = new Map();
 
-  for (const edge of loopStopReason ? [] : backEdges) {
+  for (const edge of backEdges) {
     const header = edge.to, latch = edge.from;
     let loop = loopByHeader.get(header);
     if (!loop) {
