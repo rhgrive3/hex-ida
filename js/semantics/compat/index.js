@@ -197,7 +197,31 @@ function filterUnresolvedConditionalFallthrough(fragment, bundle, controlTargets
     const targets = node.targets.slice(0, -1);
     if (!targets.length) return node;
     changed = true;
-    return { ...node, targets };
+    // A missing fallthrough must not leave a 1-target conditional-branch
+    // (#4585 rejects that cardinality). It must not be laundered into an
+    // ordinary `branch` either: `semanticEdgeKind()` would then publish the
+    // taken target as exact, unconditional control, erasing the unresolved
+    // condition from CFG edge authority. Publish a partial
+    // `unknown-control-effect` projection that keeps the known taken target,
+    // the condition, and the missing-fallthrough evidence, so downstream
+    // reachability/dominance observe unresolved control rather than
+    // fabricated certainty (#8922).
+    return {
+      ...node,
+      kind: 'unknown-control-effect',
+      inputs: [],
+      targets,
+      completeness: 'partial',
+      unknown: {
+        reason: 'semantic-cfg-missing-fallthrough',
+        categories: ['control'],
+        knownParts: {
+          takenTargets: targets,
+          conditionInputs: Array.isArray(node.inputs) ? node.inputs : [],
+          expectedFallthroughAddress: fallthroughAddress == null ? null : String(fallthroughAddress),
+        },
+      },
+    };
   });
   return {
     ...fragment,
