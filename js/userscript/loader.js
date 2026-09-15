@@ -6,6 +6,11 @@ import { captureRuntimeHostLocation } from './runtime-host-location.js';
 const HEX_ORIGIN = '__HEX_ORIGIN__';
 const LOADER_VERSION = '__HEX_LOADER_VERSION__';
 const EXPECTED_BUILD = '__HEX_BUILD_ID__';
+const EXPECTED_CONTENT_HASH = '__HEX_CONTENT_HASH__';
+const EXPECTED_RUNTIME_VERSION = '__HEX_RUNTIME_VERSION__';
+const EXPECTED_RUNTIME_BYTE_LENGTH_TEXT = '__HEX_RUNTIME_BYTE_LENGTH__';
+const EXPECTED_RUNTIME_ASSET_PATH = '__HEX_RUNTIME_ASSET_PATH__';
+const EXPECTED_RELEASE_MANIFEST_HASH = '__HEX_RELEASE_MANIFEST_HASH__';
 const RETRIES = 2;
 const BOOTSTRAP_MAX_JSON_BYTES = 64 * 1024;
 const RUNTIME_MAX_CIPHERTEXT_BYTES = 32 * 1024 * 1024;
@@ -48,6 +53,20 @@ async function loadRuntime() {
   globalThis.__HEX_RUNTIME_HOST_SEARCH__ = RUNTIME_HOST_LOCATION.search;
   globalThis.__HEX_RUNTIME_HOST_LOCATION__ = RUNTIME_HOST_LOCATION;
   globalThis.__HEX_SECURE_LOADER__ = { version: LOADER_VERSION, buildId: EXPECTED_BUILD };
+
+  const expectedRuntimeBytes = Number(EXPECTED_RUNTIME_BYTE_LENGTH_TEXT);
+  if (!/^[0-9a-f]{24}$/.test(EXPECTED_BUILD)
+      || !isCanonicalSha256(EXPECTED_CONTENT_HASH)
+      || !EXPECTED_CONTENT_HASH.startsWith(EXPECTED_BUILD)
+      || !/^2\.0\.\d{1,10}$/.test(EXPECTED_RUNTIME_VERSION)
+      || !Number.isSafeInteger(expectedRuntimeBytes)
+      || expectedRuntimeBytes <= 0
+      || expectedRuntimeBytes > RUNTIME_MAX_CIPHERTEXT_BYTES
+      || EXPECTED_RUNTIME_ASSET_PATH !== `/.runtime/runtime.${EXPECTED_BUILD}.bin`
+      || !isCanonicalSha256(EXPECTED_RELEASE_MANIFEST_HASH)) {
+    throw new Error('The installed loader release identity is invalid.');
+  }
+
   const keyPair = await cryptoStage('ECDH key generation', () => crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']));
   const clientPublicKey = await cryptoStage('ECDH public-key export', () => crypto.subtle.exportKey('jwk', keyPair.publicKey));
   const nonce = randomToken(24), requestId = randomToken(18), sessionIdentity = randomToken(18);
@@ -58,10 +77,25 @@ async function loadRuntime() {
   if (!bootstrap || bootstrap.buildId !== EXPECTED_BUILD || Date.parse(bootstrap.expiry) <= Date.now()) throw new Error('Runtime bootstrap identity or expiry could not be verified.');
   const manifest = bootstrap.manifest;
   if (!manifest || manifest.buildId !== EXPECTED_BUILD) throw new Error('The protected runtime manifest build identity does not match the pinned loader build.');
-  if (manifest.runtimeVersion !== LOADER_VERSION) throw new Error('The protected runtime manifest version does not match the pinned loader version.');
-  if (typeof manifest.aad !== 'string' || manifest.aad !== `hex-runtime:${EXPECTED_BUILD}:${manifest.runtimeVersion}`) throw new Error('The protected runtime manifest AAD is not canonical for the pinned loader build and version.');
-  if (!isCanonicalSha256(manifest.contentHash) || !manifest.contentHash.startsWith(EXPECTED_BUILD)) throw new Error('The protected runtime manifest content hash is not bound to the pinned loader build.');
-  if (!Number.isSafeInteger(manifest.byteLength) || manifest.byteLength <= 0 || manifest.byteLength > RUNTIME_MAX_CIPHERTEXT_BYTES) throw new Error('The protected runtime manifest does not declare an admissible byte length.');
+  if (manifest.runtimeVersion !== EXPECTED_RUNTIME_VERSION) throw new Error('The protected runtime manifest version does not match the pinned runtime version.');
+  if (manifest.compression !== 'gzip') throw new Error('The protected runtime compression format does not match the pinned release identity.');
+  if (bootstrap.runtimeLocator !== EXPECTED_RUNTIME_ASSET_PATH) throw new Error('The protected runtime locator does not match the pinned release identity.');
+  if (typeof manifest.aad !== 'string' || manifest.aad !== `hex-runtime:${EXPECTED_BUILD}:${EXPECTED_RUNTIME_VERSION}`) throw new Error('The protected runtime manifest AAD is not canonical for the pinned loader build and runtime version.');
+  if (!isCanonicalSha256(manifest.contentHash) || !constantTimeEqual(manifest.contentHash, EXPECTED_CONTENT_HASH)) throw new Error('The protected runtime manifest content hash does not match the full local runtime pin.');
+  if (!Number.isSafeInteger(manifest.byteLength) || manifest.byteLength !== expectedRuntimeBytes) throw new Error('The protected runtime manifest byte length does not match the pinned release identity.');
+  if (!isCanonicalSha256(manifest.ciphertextHash)) throw new Error('The protected runtime ciphertext hash is not canonical.');
+  if (typeof manifest.iv !== 'string' || manifest.iv.length < 1) throw new Error('The protected runtime manifest IV is invalid.');
+
+  const releaseManifestHash = await sha256Hex(utf8(JSON.stringify({
+    buildId: manifest.buildId,
+    runtimeVersion: manifest.runtimeVersion,
+    contentHash: manifest.contentHash,
+    compression: manifest.compression,
+    assetPath: bootstrap.runtimeLocator,
+    byteLength: manifest.byteLength,
+  })));
+  if (!constantTimeEqual(releaseManifestHash, EXPECTED_RELEASE_MANIFEST_HASH)) throw new Error('The protected runtime release manifest does not match the installed loader pin.');
+
   const sourceCommit = normalizeCommit(bootstrap.sourceCommit);
   globalThis.__HEX_DEPLOYMENT_COMMIT__ = sourceCommit;
   const serverPublicKey = await cryptoStage('ECDH server-key import', () => crypto.subtle.importKey('jwk', bootstrap.serverPublicKey, { name: 'ECDH', namedCurve: 'P-256' }, false, []));
@@ -87,10 +121,9 @@ async function loadRuntime() {
     additionalData: toExactArrayBuffer(utf8(manifest.aad)),
     tagLength: 128,
   }, contentKey, toExactArrayBuffer(ciphertext))));
-  if (manifest.compression !== 'gzip') throw new Error('The protected runtime compression format is unsupported.');
   const plaintext = await runtimeStage('protected runtime decompress', () => decompressGzipExact(compressed, RUNTIME_MAX_PLAINTEXT_BYTES));
-  const actualContentHash = await assertHash(plaintext, manifest.contentHash);
-  if (!actualContentHash.startsWith(EXPECTED_BUILD)) throw new Error('The protected runtime content digest is not bound to the pinned loader build.');
+  const actualContentHash = await assertHash(plaintext, EXPECTED_CONTENT_HASH);
+  if (!constantTimeEqual(actualContentHash, EXPECTED_CONTENT_HASH)) throw new Error('The protected runtime content digest does not match the full local runtime pin.');
   const blobUrl = await runtimeStage('protected runtime Blob creation', () => URL.createObjectURL(new Blob([toExactArrayBuffer(plaintext)], { type: 'text/javascript' })));
   try {
     const runtimeModule = await runtimeStage('protected runtime import', () => import(blobUrl));
@@ -122,9 +155,12 @@ async function runtimeStage(stage, operation) {
   try { return await operation(); }
   catch (error) { throw new Error(`${stage}: ${String(error?.message || error || 'runtime failed.')}`); }
 }
-async function assertHash(bytes, expected) {
+async function sha256Hex(bytes) {
   const digest = await cryptoStage('SHA-256 integrity digest', () => crypto.subtle.digest('SHA-256', toExactArrayBuffer(bytes)));
-  const actual = toHex(new Uint8Array(digest));
+  return toHex(new Uint8Array(digest));
+}
+async function assertHash(bytes, expected) {
+  const actual = await sha256Hex(bytes);
   if (!constantTimeEqual(actual, String(expected || '').toLowerCase())) throw new Error('Protected runtime integrity verification failed.');
   return actual;
 }
