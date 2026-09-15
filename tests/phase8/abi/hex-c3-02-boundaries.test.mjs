@@ -1269,7 +1269,13 @@ test('C3-02 aggregate proof matrix rejects sibling malformed descriptors and pre
       layout:{ ...nested.layout, members:returnMembers },
     } });
     if (abi === RISCV_LP64F_ABI) {
-      assert.deepEqual(returnLocations, [], 'lp64f must reject double aggregate returns beyond FLEN32');
+      // LP64F FLEN=32 cannot hold double members in FP regs; psABI requires
+      // fallback to the base integer convention (x10/x11).
+      assert.equal(returnLocations.length, 2, 'lp64f must fall back to integer lanes for double aggregates beyond FLEN32');
+      assert.deepEqual(returnLocations.map(({ reg }) => reg), ['x10', 'x11']);
+      assert.deepEqual(returnLocations.map(({ bits, bytes, byteOffset }) => ({ bits, bytes, byteOffset })), [
+        { bits:64, bytes:8, byteOffset:0 }, { bits:64, bytes:8, byteOffset:8 },
+      ]);
     } else {
       assert.equal(returnLocations.length, 2, `${abi.id} nested return lanes`);
       assert.deepEqual(returnLocations.map(({ bits, bytes, byteOffset }) => ({ bits, bytes, byteOffset })), [
@@ -1434,8 +1440,8 @@ test('C3-02 nested return descriptors remain one canonical source across profile
     [MICROSOFT_X64_ABI, { architecture:'x86_64', platform:'windows' }, 'indirect'],
     [MICROSOFT_VECTORCALL_ABI, { architecture:'x86_64', platform:'windows', callingConvention:'vectorcall' }, 'unknown'],
     [RISCV_LP64_ABI, { architecture:'riscv64', platform:'linux' }, 'lanes'],
-    [RISCV_LP64F_ABI, { architecture:'riscv64', platform:'linux' }, 'unknown'],
-    [RISCV_LP64D_ABI, { architecture:'riscv64', platform:'linux' }, 'unknown'],
+    [RISCV_LP64F_ABI, { architecture:'riscv64', platform:'linux' }, 'lanes'],
+    [RISCV_LP64D_ABI, { architecture:'riscv64', platform:'linux' }, 'lanes'],
   ];
   for (const [abi, options, expected] of integerCases) {
     const adapter = semanticAbiAdapter(abi, options);
