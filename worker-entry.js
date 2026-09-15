@@ -52,9 +52,22 @@ export class RuntimeBootstrap extends DurableObject {
       await tx.put(key, { ...state, consumed: true }); return { ok: true };
     });
   }
+  async consumeAIGrant({ grantId, expiry }) {
+    const now = Date.now();
+    if (typeof grantId !== 'string' || grantId.length < 8 || grantId.length > 128 || !Number.isFinite(expiry) || expiry <= now) {
+      return { ok: false, reason: 'invalid-ai-grant' };
+    }
+    const key = `ai-grant:${grantId}`;
+    return this.ctx.storage.transaction(async (tx) => {
+      const previous = await tx.get(key);
+      if (previous && previous.expiry > now) return { ok: false, reason: 'replayed-ai-grant' };
+      await tx.put(key, { expiry });
+      return { ok: true };
+    });
+  }
   async prune() {
     const now = Date.now();
-    for (const prefix of ['nonce:', 'session:']) {
+    for (const prefix of ['nonce:', 'session:', 'ai-grant:']) {
       const values = await this.ctx.storage.list({ prefix, limit: 256 });
       const expired = [...values].filter(([, value]) => !value || value.expiry <= now).map(([key]) => key);
       if (expired.length) await this.ctx.storage.delete(expired);
@@ -71,16 +84,33 @@ export default {
     if (url.pathname === '/runtime/bootstrap') return runtimeBootstrap(request, env, url);
     if (url.pathname.startsWith('/_runtime/')) return protectedRuntime(request, env, url);
     if (isPrivatePath(url.pathname)) return new Response('Not Found', { status: 404, headers: securityHeaders() });
-    // #8750: provider-backed spend requires a server-signed capability grant
-    // BEFORE quota attribution or any provider request. CORS/Origin stays a
-    // browser-isolation control only. Runs ahead of the generic /api/ dispatch
-    // so the preflight + withApiCors transport below remains byte-unchanged.
+    // #8750: provider-backed spend requires a purpose-bound server-signed turn
+    // grant before quota attribution or any provider request. Origin remains a
+    // browser-isolation control only. A grant is single-use: the signed rid is
+    // atomically consumed in the existing RuntimeBootstrap durable authority.
     if (isProviderSpendPath(url.pathname) && request.method !== 'OPTIONS') {
+      const origin = request.headers.get('origin');
       const authority = await verifyAITurnAuthorization(request, {
         signingKeyBytes: decodeBase64URL(RUNTIME_BUILD.signingKey),
         buildId: RUNTIME_BUILD.manifest.buildId,
       });
-      if (!authority.ok) return json({ error: authority.error, reason: authority.reason }, authority.status, request.headers.get('origin'));
+      if (!authority.ok) return json({ error: authority.error, reason: authority.reason }, authority.status, origin);
+      let consumed;
+      try {
+        consumed = await runtimeState(env).consumeAIGrant({
+          grantId: authority.payload.rid,
+          expiry: Number(authority.payload.exp) * 1000,
+        });
+      } catch {
+        return json({ error: 'ai-authorization-unavailable', reason: 'grant replay authority unavailable' }, 503, origin);
+      }
+      if (!consumed?.ok) {
+        const replayed = consumed?.reason === 'replayed-ai-grant';
+        return json({
+          error: replayed ? 'ai-authorization-replayed' : 'ai-authorization-invalid',
+          reason: consumed?.reason || 'grant replay check failed',
+        }, 401, origin);
+      }
     }
     if (url.pathname.startsWith('/api/')) {
       const origin = request.headers.get('origin');
@@ -194,8 +224,8 @@ function runtimeAssetPreflight(origin, workerOrigin) {
   if (!isAllowedRequestOrigin(origin, workerOrigin)) return new Response(null, { status: 403 });
   return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'GET, OPTIONS', 'access-control-allow-headers': 'Authorization', 'access-control-max-age': '600', vary: 'Origin' } });
 }
-function apiPreflight(origin) { if (!CHATGPT_ORIGINS.has(origin)) return new Response(null, { status: 403 }); return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'Content-Type, X-Hex-Session', 'access-control-max-age': '86400', vary: 'Origin' } }); }
-function withApiCors(response, origin) { if (!CHATGPT_ORIGINS.has(origin)) return response; const headers = new Headers(response.headers); headers.set('access-control-allow-origin', origin); headers.set('access-control-allow-methods', 'POST, OPTIONS'); headers.set('access-control-allow-headers', 'Content-Type, X-Hex-Session'); headers.set('vary', appendVary(headers.get('vary'), 'Origin')); return new Response(response.body, { status: response.status, statusText: response.statusText, headers }); }
+function apiPreflight(origin) { if (!CHATGPT_ORIGINS.has(origin)) return new Response(null, { status: 403 }); return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'Content-Type, X-Hex-Session, Authorization', 'access-control-max-age': '86400', vary: 'Origin' } }); }
+function withApiCors(response, origin) { if (!CHATGPT_ORIGINS.has(origin)) return response; const headers = new Headers(response.headers); headers.set('access-control-allow-origin', origin); headers.set('access-control-allow-methods', 'POST, OPTIONS'); headers.set('access-control-allow-headers', 'Content-Type, X-Hex-Session, Authorization'); headers.set('vary', appendVary(headers.get('vary'), 'Origin')); return new Response(response.body, { status: response.status, statusText: response.statusText, headers }); }
 function appendVary(current, value) { const parts = String(current || '').split(',').map((item) => item.trim()).filter(Boolean); if (!parts.some((item) => item.toLowerCase() === value.toLowerCase())) parts.push(value); return parts.join(', '); }
 function json(body, status = 200, origin = null, extra = {}) { const headers = new Headers({ ...securityHeaders(), 'content-type': 'application/json; charset=utf-8', ...extra }); if (origin && CHATGPT_ORIGINS.has(origin)) { headers.set('access-control-allow-origin', origin); headers.set('vary', 'Origin'); } return new Response(JSON.stringify(body), { status, headers }); }
 
