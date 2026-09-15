@@ -15,6 +15,17 @@ const ACTIONS_GROUP_LANE = 'dependabot/github_actions/github-actions-436ea2ae3a'
 // candidate. Phase 8 validates only its own subset; every foreign path is
 // enumerated so this route cannot become a general ownership exemption.
 export const CROSS_LANE_ROUTES = Object.freeze({
+  "codex/issue-campaign-20260914-lane-12-batch-02": Object.freeze([
+    ".circleci/config.yml",
+    "js/analysis/summary/interprocedural.js",
+    "js/apple/objc-runtime.js",
+    "js/controlflow.js",
+    "tests/performance/issue-8872-nested-escape-provenance-budget.test.mjs",
+    "tests/performance/issue-8872-summary-resident-payload-budget.test.mjs",
+    "tests/performance/issue-8887-natural-loop-membership-budget.test.mjs",
+    "tests/performance/issue-8899-objc-category-protocol-merge-linear.test.mjs",
+    "tools/validation/phase7/cross-lane-inventory.mjs",
+  ]),
   "codex/consolidate-arm64-repairs-20260913": Object.freeze([
     ".circleci/config.yml",
     ".github/workflows/_phase-release-validation.yml",
