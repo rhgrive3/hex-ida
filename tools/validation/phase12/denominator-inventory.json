@@ -903,7 +903,7 @@
                   "AES-GCM",
                   "Ed25519",
                   "remoteCanonicalTransportBinding(envelope)",
-                  "entry.binding !== stableStringify(remoteCanonicalTransportBinding(envelope))",
+                  "entry.binding !== canonicalTransportBindingText(envelope)",
                   "remote-transport-response-signature-rejected"
                 ]
               },
