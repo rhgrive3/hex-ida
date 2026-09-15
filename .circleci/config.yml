@@ -329,7 +329,7 @@ jobs:
                 # PR #8939 is an exact, review-driven cross-lane repair batch.
                 # Fail closed unless the complete changed-file inventory remains
                 # exactly this reviewed set, then validate its Phase 7-owned file.
-                FILES_JSON="$(git diff --name-only --diff-filter=ACMR "$OWNERSHIP_BASE_SHA" "$OWNERSHIP_HEAD_SHA" | node -e '
+                FILES_JSON="$(git diff --name-only --diff-filter=ACMR "$OWNERSHIP_BASE_SHA...$OWNERSHIP_HEAD_SHA" | node -e '
                   const fs = require("node:fs");
                   const actual = fs.readFileSync(0, "utf8").split(/\r?\n/).filter(Boolean).sort();
                   const expected = [
