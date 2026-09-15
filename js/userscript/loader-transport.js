@@ -23,6 +23,7 @@ export function parseContentLength(value) {
 
 export async function readBoundedBytes(response, { maxBytes, exactBytes = null, overBudgetMessage, mismatchMessage }) {
   const declared = parseContentLength(response.headers?.get?.('content-length') ?? null);
+  const streamCeiling = exactBytes === null ? maxBytes : Math.min(maxBytes, exactBytes);
   if (declared !== null && (declared > maxBytes || (exactBytes !== null && declared !== exactBytes))) {
     await discardResponseBody(response);
     throw new Error(declared > maxBytes ? overBudgetMessage : mismatchMessage);
@@ -43,10 +44,10 @@ export async function readBoundedBytes(response, { maxBytes, exactBytes = null, 
         : ArrayBuffer.isView(value)
           ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
           : new Uint8Array(value);
-      if (total + bytes.byteLength > maxBytes) {
+      if (total + bytes.byteLength > streamCeiling) {
         bytes.fill(0);
         zeroChunks(chunks);
-        throw new Error(overBudgetMessage);
+        throw new Error(exactBytes !== null && streamCeiling === exactBytes ? mismatchMessage : overBudgetMessage);
       }
       total += bytes.byteLength;
       chunks.push(bytes);
