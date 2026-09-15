@@ -1,3 +1,5 @@
+import { dexMethodDefinitions } from './method-definitions.js';
+
 const ACC_STATIC = 0x0008;
 const ACC_NATIVE = 0x0100;
 const ACC_ABSTRACT = 0x0400;
@@ -28,12 +30,11 @@ function returnKind(type) {
   if (typeof type === 'string' && (type.startsWith('L') || type.startsWith('['))) return 'object';
   return typeof type === 'string' && type ? 'single' : null;
 }
+// Resolve from the shared method-definition authority (built once per frozen image,
+// O(1) lookup) instead of re-scanning every class' direct/virtual method arrays on each
+// method decode; an absent entry is still `null` (definition-missing), preserving #8976 semantics.
 function methodEntry(image, methodIdx) {
-  for (const cls of image?.classes ?? []) {
-    for (const entry of cls?.directMethods ?? []) if (entry?.methodIdx === methodIdx) return entry;
-    for (const entry of cls?.virtualMethods ?? []) if (entry?.methodIdx === methodIdx) return entry;
-  }
-  return null;
+  return dexMethodDefinitions(image).get(methodIdx) ?? null;
 }
 function uleb(bytes, start) {
   let value = 0, shift = 0, pos = start;

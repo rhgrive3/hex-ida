@@ -24,12 +24,22 @@ function widthBytes(widthBits) {
   return BigInt(Math.ceil(bits / 8));
 }
 
-function absoluteInterval(target, accessWidth, fallbackWidthBits = null) {
+/**
+ * The absolute byte interval a target provably occupies.
+ *
+ * The address-space modulus is a *pointer-width* fact and may only come from the
+ * target's own proven `widthBits`. The alias query's `widthBitsLeft/Right` are
+ * memory-access widths: using them to fill in a missing pointer width restores
+ * address-space provenance that was never proven and mints a strong
+ * `disjoint-global-interval` `NoAlias` from it (#8721, and the #4515 regression
+ * this re-broke). An unproven width fails closed to `provenance-lost`.
+ */
+function absoluteInterval(target, accessWidth) {
   const range = target?.offsetRange;
   if (target?.address == null || range?.min == null || range?.max == null) {
     return { interval: null, reason: null };
   }
-  const pointerWidth = target.widthBits ?? (fallbackWidthBits != null ? Number(fallbackWidthBits) : null);
+  const pointerWidth = target.widthBits;
   if (typeof pointerWidth !== 'number'
       || !Number.isSafeInteger(pointerWidth) || pointerWidth <= 0 || pointerWidth > 512) {
     return { interval: null, reason: 'provenance-lost' };
@@ -169,8 +179,8 @@ export function pointsToAlias(left, right, options = {}) {
 
         if (hasCanonicalAddressA && hasCanonicalAddressB) {
           try {
-            const absoluteA = absoluteInterval(a, widthA, options.widthBitsLeft);
-            const absoluteB = absoluteInterval(b, widthB, options.widthBitsRight);
+            const absoluteA = absoluteInterval(a, widthA);
+            const absoluteB = absoluteInterval(b, widthB);
             if (absoluteA.reason) reasonCodes.add(absoluteA.reason);
             if (absoluteB.reason) reasonCodes.add(absoluteB.reason);
             if (absoluteA.interval && absoluteB.interval) {

@@ -479,9 +479,16 @@ function accessSize(base, ops) {
   }
   if (STRUCTURE_MN.test(base)) {
     const list = ops.find((o) => o.k === 'list');
+    const regs = list ? (list.regs || []) : [];
+    if (!regs.length) return null;
     let total = 0;
-    for (const r of list ? (list.regs || []) : []) total += vectorRegisterBytes(r);
-    return total > 0 ? total : 8;
+    for (const r of regs) {
+      const bytes = vectorRegisterBytes(r);
+      // One unproven list member makes the whole structure transfer unproven.
+      if (bytes === null) return null;
+      total += bytes;
+    }
+    return total > 0 ? total : null;
   }
   const reg = ops.find((o) => o.k === 'reg');
   const w = reg && reg.bits ? reg.bits / 8 : 8;
@@ -489,12 +496,17 @@ function accessSize(base, ops) {
   return w;
 }
 
-/** Structure-register-list element width. `v0.8b` moves 8 bytes, not 16. */
+/** Structure-register-list element width. `v0.8b` moves 8 bytes, not 16.
+ * Only an explicit arrangement proves the transfer width: a bare vector
+ * register (`{v0}`) publishes the physical 128-bit V width, not the memory
+ * footprint, and a lane spelling the operand grammar did not structure
+ * (`{v0.h}[3]`) proves nothing, so both fail closed to null (#8713, #8780). */
 function vectorRegisterBytes(reg) {
-  if (!reg || reg.k !== 'reg') return 0;
-  const m = /^(\d+)([bhsd])$/i.exec(reg.arr || '');
-  if (m) return Number(m[1]) * ({ b: 1, h: 2, s: 4, d: 8 }[m[2].toLowerCase()] || 0);
-  return reg.bits ? reg.bits / 8 : 0;
+  if (!reg || reg.k !== 'reg' || !reg.arr) return null;
+  const m = /^(\d+)([bhsd])$/i.exec(reg.arr);
+  if (!m) return null;
+  const bytes = Number(m[1]) * ({ b: 1, h: 2, s: 4, d: 8 }[m[2].toLowerCase()] || 0);
+  return bytes > 0 ? bytes : null;
 }
 
 /**
@@ -640,9 +652,8 @@ function instructionRole(insn, base) {
   if (base === 'adrp' || base === 'adr') return ROLE.ADDRESS_CALCULATION;
   if (insn.memory) {
     if (insn.memory.kind === 'load') return ROLE.MEMORY_READ;
-    // An atomic RMW keeps the established 'quiet' atomic role; its read/write
-    // fact is published on `insn.memory`, not through the block role (#3602).
-    if (insn.memory.kind === 'atomic') return 'quiet';
+    // An atomic read-modify-write is memory-effect-bearing, not quiet: it keeps
+    // the MEMORY_WRITE role and publishes both effect halves on its group (#8781).
     return ROLE.MEMORY_WRITE;
   }
   if (/^(paciasp|pacibsp|bti|nop|hint)$/.test(base)) return 'quiet';
@@ -779,6 +790,10 @@ export function analyzeDataFlow(insns, opts) {
   const joinRows = o.joinRows || new Set();
   const regs = new Map();            // regKey -> value
   const stack = new Map();           // 'sp+off' -> value
+  // Concrete stack bytes proven by a same-frame constant store, keyed by
+  // 'base#absOffset'. A present cell is a known 0..255 byte; clearing a cell
+  // marks it uncertain (#8763).
+  const stackBytes = new Map();
   const stackFrame = new Map();
   const stackFrameLost = new Set();
   const flows = [];                  // データの流れ（テストで検証する対象）
@@ -801,12 +816,56 @@ export function analyzeDataFlow(insns, opts) {
     return f;
   };
 
+  /*
+   * #8763: a stack slot's value can only be forwarded when the *accessed byte
+   * range* is proven. A narrower load, or a later overlapping partial store,
+   * changes which bytes a reload must return, so the concrete bytes are tracked
+   * per byte offset rather than per whole slot. Only an integer GP load/store
+   * with a stable stack offset is modelled; anything else keeps the previous
+   * behavior.
+   */
+  const byteCell = (baseKey, off) => baseKey + '#b#' + off;
+  const SIGNED_NARROW_LOAD = /^(ldrsb|ldrsh|ldursb|ldursh|ldrsw|ldursw|ldtrsb|ldtrsh|ldtrsw)$/;
+  const isGPWrite = (dst) => typeof dst === 'string' && dst.charCodeAt(0) === 120 /* 'x' */;
+  function concreteStoreBytes(v, width) {
+    if (!v || v.kind !== 'imm' || typeof v.value !== 'bigint') return null;
+    if (!Number.isInteger(width) || width < 1 || width > 8) return null;
+    const mod = 1n << BigInt(width * 8);
+    let x = ((v.value % mod) + mod) % mod;
+    const out = new Array(width);
+    for (let i = 0; i < width; i++) { out[i] = Number(x & 0xffn); x >>= 8n; }
+    return out;
+  }
+  function writeStackBytes(baseKey, absOff, width, v) {
+    if (baseKey == null || width == null) return;
+    const bytes = concreteStoreBytes(v, width);
+    for (let i = 0; i < width; i++) {
+      const cell = byteCell(baseKey, absOff + BigInt(i));
+      if (bytes) stackBytes.set(cell, bytes[i]);
+      else stackBytes.delete(cell);
+    }
+  }
+  function readStackBytes(baseKey, absOff, width, signed) {
+    if (baseKey == null || width == null || width < 1 || width > 8) return null;
+    let acc = 0n;
+    for (let i = 0; i < width; i++) {
+      const b = stackBytes.get(byteCell(baseKey, absOff + BigInt(i)));
+      if (b == null) return null;
+      acc |= BigInt(b) << BigInt(8 * i);
+    }
+    if (signed) {
+      const mod = 1n << BigInt(width * 8);
+      if (acc >= mod / 2n) acc -= mod;
+    }
+    return acc;
+  }
+
   for (let i = 0; i < insns.length; i++) {
     const insn = insns[i];
     const base = insn.mnemonic.toLowerCase();
 
     // 分岐で飛んでこられる場所 = 合流点。ここから先は前提を持ち越せない。
-    if (joinRows.has(insn.row)) { regs.clear(); stack.clear(); stackFrame.clear(); stackFrameLost.clear(); }
+    if (joinRows.has(insn.row)) { regs.clear(); stack.clear(); stackBytes.clear(); stackFrame.clear(); stackFrameLost.clear(); }
     if (rowKills && blockStartRows.has(insn.row)) written.clear();
 
     // 引数レジスタの検出は「自分で書く前に読んだか」で判定する
@@ -857,7 +916,13 @@ export function analyzeDataFlow(insns, opts) {
           ? immediate.value << BigInt(shift.amount)
           : null;
       if (dst && prev && prev.kind === 'address' && prev.partial && offset != null) {
-        const addr = prev.addr + offset;
+        let addr = prev.addr + offset;
+        // #8747: `add wD, xN, #imm` writes only the low destination width, so the
+        // completed address must be masked to that width; the upper bits were not
+        // written and cannot be claimed as part of the effective address.
+        const dreg = insn.ops[0];
+        const dstBits = (dreg && dreg.k === 'reg' && Number.isFinite(dreg.bits)) ? dreg.bits : 64;
+        if (dstBits < 64) addr = addr & ((1n << BigInt(dstBits)) - 1n);
         const v = value('address', { addr, page: false, partial: false }, SCORE.confirmed,
           prev.ev.concat([ev('adrp-add', insn.row, { addr })]), insn.row);
         set(dst, v);
@@ -879,11 +944,27 @@ export function analyzeDataFlow(insns, opts) {
       } else if (dst && s && s.k === 'reg') {
         const src = regKey(s);
         const prev = src ? get(src) : null;
-        const v = prev
-          ? Object.assign({}, prev, { def: insn.row, via: src, ev: prev.ev.concat([ev('copy', insn.row, { from: src, to: dst })]) })
-          : unknownValue(ev('untracked', insn.row, { from: src }));
-        set(dst, v);
-        flow('reg->reg', insn.row, src, dst, v);
+        // #8747: an integer MOV into a narrowed (sub-64-bit, e.g. W) destination
+        // zero-extends/truncates, so a full-width source value must not keep its
+        // complete constant or pointer authority. Publish only the low `dstBits`
+        // and drop any inherited full-register alias for the truncated result.
+        const dreg = insn.ops[0];
+        const dstBits = (base === 'mov' && dreg && dreg.k === 'reg' && Number.isFinite(dreg.bits)) ? dreg.bits : 64;
+        const concreteSrc = prev && (prev.kind === 'imm' ? prev.value : prev.kind === 'address' ? prev.addr : null);
+        if (prev && dstBits < 64 && typeof concreteSrc === 'bigint') {
+          const mask = (1n << BigInt(dstBits)) - 1n;
+          const low = concreteSrc & mask;
+          const v = value('imm', { value: low }, SCORE.confirmed,
+            prev.ev.concat([ev('copy-trunc', insn.row, { from: src, to: dst, bits: dstBits })]), insn.row);
+          set(dst, v);
+          flow('reg->reg', insn.row, src, dst, v);
+        } else {
+          const v = prev
+            ? Object.assign({}, prev, { def: insn.row, via: src, ev: prev.ev.concat([ev('copy', insn.row, { from: src, to: dst })]) })
+            : unknownValue(ev('untracked', insn.row, { from: src }));
+          set(dst, v);
+          flow('reg->reg', insn.row, src, dst, v);
+        }
       } else if (dst) {
         set(dst, unknownValue(ev('untracked', insn.row)));
       }
@@ -933,9 +1014,11 @@ export function analyzeDataFlow(insns, opts) {
       const isPair = base === 'ldp' || base === 'ldpsw' || base === 'ldnp' ||
         base === 'stp' || base === 'stnp';
       const stride = isPair && accessDisp != null ? BigInt(Math.floor(m.size / 2)) : 0n;
+      const elemWidth = Number.isInteger(m.size) ? (isPair ? Math.floor(m.size / 2) : m.size) : null;
       const elemSlot = (idx) => (slot && idx > 0
         ? m.base + '+' + (frameDelta + accessDisp + stride * BigInt(idx)).toString()
         : slot);
+      const elemAbs = (idx) => (accessDisp == null ? null : frameDelta + accessDisp + stride * BigInt(idx));
 
       if (m.kind === 'load') {
         let di = 0;
@@ -950,7 +1033,23 @@ export function analyzeDataFlow(insns, opts) {
           const cached = !isPair || base === 'ldp' || base === 'ldnp'
             ? (dSlot ? stack.get(dSlot) : null)
             : null;
-          if (cached) {
+          const absOff = elemAbs(di - 1);
+          // #8763: only forward a concrete stack value when the exact accessed
+          // byte range is still proven by the per-byte cache. A narrower load,
+          // a signed load, or an overlapping partial store must not reuse the
+          // stale whole-slot value; fall back to an uncertain memory load.
+          if (cached && cached.kind === 'imm' && slot && absOff != null && elemWidth != null && isGPWrite(dst)) {
+            const assembled = readStackBytes(m.base, absOff, elemWidth, SIGNED_NARROW_LOAD.test(base));
+            if (assembled == null) {
+              v = value('loaded', { at: { base: m.base, disp: dDisp }, addr: null, size: elemWidth },
+                SCORE.inferred, [ev('stack-bytes-unknown', insn.row, { slot: dSlot, width: elemWidth })], insn.row);
+              flow('mem->reg', insn.row, m.base, dst, v);
+            } else {
+              v = value('imm', { value: assembled }, SCORE.confirmed,
+                cached.ev.concat([ev('stack-bytes', insn.row, { slot: dSlot, width: elemWidth })]), insn.row);
+              flow('stack->reg', insn.row, dSlot, dst, v);
+            }
+          } else if (cached) {
             v = Object.assign({}, cached, { def: insn.row, ev: cached.ev.concat([ev('stack-reload', insn.row, { slot: dSlot })]) });
             flow('stack->reg', insn.row, dSlot, dst, v);
           } else {
@@ -989,6 +1088,8 @@ export function analyzeDataFlow(insns, opts) {
           if (sSlot) {
             if (v) stack.set(sSlot, Object.assign({}, v, { ev: v.ev.concat([ev('stack-save', insn.row, { slot: sSlot })]) }));
             else stack.set(sSlot, unknownValue(ev('untracked', insn.row)));
+            const absOff = elemAbs(idx);
+            if (absOff != null) writeStackBytes(m.base, absOff, elemWidth, v);
           }
         }
       }
@@ -1000,8 +1101,12 @@ export function analyzeDataFlow(insns, opts) {
           stackFrameLost.add(m.base);
           stackFrame.delete(m.base);
           const slotPrefix = m.base + '+';
+          const bytePrefix = m.base + '#b#';
           for (const k of Array.from(stack.keys())) {
             if (k.startsWith(slotPrefix)) stack.delete(k);
+          }
+          for (const k of Array.from(stackBytes.keys())) {
+            if (k.startsWith(bytePrefix)) stackBytes.delete(k);
           }
         }
       }
@@ -1367,7 +1472,15 @@ function finishBlock(g, ctx) {
       }
     }
     if (insn.memory) {
-      g.effects.push(insn.memory.kind === 'load' ? 'read' : 'write');
+      // Project the instruction's own read/write truth. Only atomics carry both
+      // halves; a plain load or store keeps its single effect (#8781).
+      const mem = insn.memory;
+      if (mem.read || mem.write) {
+        if (mem.read) g.effects.push('read');
+        if (mem.write) g.effects.push('write');
+      } else {
+        g.effects.push(mem.kind === 'load' ? 'read' : 'write');
+      }
       if (insn.memory.stack) g.facts.stack = true;
     }
     if (insn.branchTarget != null) {

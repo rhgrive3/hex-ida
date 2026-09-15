@@ -66,6 +66,7 @@ export function createTurnSnapshot(local = {}, request = {}) {
     binaryIdentitySource: binding.source,
     liveBinaryIdentity: binding.live,
     projectIdentity: projectId,
+    analysisRevision: resolveAnalysisRevision(local),
     architecture: copyScalar(first(local.architecture, local.binary?.architecture, local.capability?.architecture)),
     slice: copyScalar(first(local.slice, local.sliceIndex, local.binary?.sliceIndex)),
     currentAddress: cursor == null ? null : addressText(cursor),
@@ -96,6 +97,7 @@ export function createSnapshotContext(local = {}, snapshot, scopeController = nu
   frozen.binaryIdentity = snapshot.binaryIdentity;
   frozen.binaryId = snapshot.binaryId;
   frozen.projectId = snapshot.projectIdentity;
+  frozen.analysisRevision = snapshot.analysisRevision;
   frozen.currentAddress = parseAddress(snapshot.currentAddress ?? snapshot.currentFunction?.address);
   frozen.activeFunction = snapshot.currentFunction ? {
     address: parseAddress(snapshot.currentFunction.address),
@@ -335,6 +337,17 @@ function snapshotNeighborhood(local, current) {
 
 function safeName(local, address) { try { return local.functionName?.(address) || null; } catch { return null; } }
 function copyScalar(value) { return ['string', 'number', 'boolean'].includes(typeof value) ? value : value == null ? null : String(value); }
+// Analysis revision is freshness authority. Accept only scalar identities;
+// never turn structured/untrusted values into authority via generic String().
+export function resolveAnalysisRevision(local = {}) {
+  const value = first(local.analysisRevision, local.binary?.analysisRevision, local.program?.analysisRevision, local.revision);
+  if (value == null || value === '') return null;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'bigint') return value.toString();
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? String(value) : null;
+  if (typeof value === 'boolean') return String(value);
+  return null;
+}
 function first(...values) { return values.find((value) => value !== undefined && value !== null) ?? null; }
 function parseAddress(value) { try { return value == null ? null : BigInt(value); } catch { return value; } }
 function deepFreeze(value) {

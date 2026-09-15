@@ -256,10 +256,24 @@ function validELFSectionAlignment(alignment) {
   return alignment <= 1n || (alignment & (alignment - 1n)) === 0n;
 }
 
+// The ET_REL synthetic analysis namespace is laid out with a fixed base above
+// the 32-bit target range and grows upward in a 64-bit-wide address domain, so
+// every placement (base and base+sh_size) must stay representable as a 64-bit
+// architecture address. A tiny SHT_NOBITS section declares an arbitrarily large
+// sh_size without backing it with file bytes, so an unbounded `cursor += size`
+// could push a later section's base/end past 2^64-1 while still publishing the
+// section as ordinary canonical mapping authority (#8743).
+const ELF_RELOCATABLE_SYNTHETIC_ADDRESS_BITS = 64;
+
 function assignRelocatableSectionAddresses(sections, image) {
   let cursor = 0x100000000n;
   for (const sec of sections) {
-    if (sec.index === 0) { sec.syntheticAddr = 0n; continue; }
+    // Section header 0 is the reserved SHT_NULL sentinel, never a real section.
+    // Extended-count ET_REL files store the section COUNT in its sh_size, so
+    // publishing it at synthetic address 0 with that size fabricates a VA-0
+    // mapped extent (#8741). Keep the sentinel listed for metadata but withhold
+    // mapping authority, the same 'unmapped-section' treatment as other invalid spans.
+    if (sec.index === 0) { sec.syntheticAddr = null; continue; }
     const requested = sec.addralign > 0n ? sec.addralign : 1n;
     if (!validELFSectionAlignment(requested)) {
       sec.syntheticAddr = null;
@@ -267,7 +281,13 @@ function assignRelocatableSectionAddresses(sections, image) {
       continue;
     }
     if (sec.size <= 0n) { sec.syntheticAddr = 0n; continue; }
-    cursor = alignUp(cursor, requested);
+    const aligned = alignUp(cursor, requested);
+    if (!elfAddressRangeFits(ELF_RELOCATABLE_SYNTHETIC_ADDRESS_BITS, aligned, sec.size)) {
+      sec.syntheticAddr = null;
+      markELFMetadataPartial(image, `section-synthetic-address-domain:${sec.index}`, `ELF ET_REL section ${sec.index} synthetic layout ${aligned}+${sec.size} exceeds the 64-bit synthetic address domain; mapping authority was withheld`);
+      continue;
+    }
+    cursor = aligned;
     sec.syntheticAddr = cursor;
     cursor += sec.size > 0n ? sec.size : 1n;
   }
@@ -530,13 +550,21 @@ function nameSections(r, sections, h, image, budget) {
       return;
     }
     shstrndx = link;
-  } else if (shstrndx !== 0 && shstrndx >= sections.length) {
+  }
+  // e_shstrndx == SHN_UNDEF (0) declares the file has NO section-name string
+  // table, and section header 0 is the reserved SHT_NULL sentinel: extended
+  // section-count files store the real section COUNT in its sh_size, so reading
+  // section 0 as a name table decodes the ELF header / start of the section
+  // table as bogus section names (#8741). A name table must be a real, in-range
+  // SHT_STRTAB section, never the index-0 sentinel.
+  if (shstrndx === 0) return;
+  if (shstrndx >= sections.length) {
     markELFMetadataPartial(image, 'section-names:shstrndx-invalid', `ELF e_shstrndx ${shstrndx} is outside the section header table (${sections.length} sections)`);
     return;
   }
   const str = sections[shstrndx];
-  if (!str || (shstrndx !== 0 && str.type !== SHT_STRTAB)) {
-    if (shstrndx !== 0) markELFMetadataPartial(image, 'section-names:shstrndx-not-strtab', `ELF e_shstrndx ${shstrndx} does not name an SHT_STRTAB section`);
+  if (!str || str.type !== SHT_STRTAB) {
+    markELFMetadataPartial(image, 'section-names:shstrndx-not-strtab', `ELF e_shstrndx ${shstrndx} does not name an SHT_STRTAB section`);
     return;
   }
   if (str.offset + str.size > BigInt(r.length)) return;
@@ -807,6 +835,18 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
   const symbols=image.symbols.filter((x)=>x.tableIndex===sec.link);
   if(!budget.take({objects:symbols.length,operations:symbols.length,estimatedHeapBytes:symbols.length*48},'relocation-symbol-index'))return;
   const byIndex=new Map(symbols.map((x)=>[x.index,x]));
+  // Relocation→import-site attachment used to run `image.imports.find(...)` for
+  // every relocation, giving Θ(relocations × imports) hidden work that the
+  // constant per-relocation budget charge never reflected (#8963). Index the
+  // external (library==null) import records once by (tableIndex,symbolIndex) —
+  // the same identity #5682 established — so each site resolves in O(1). The
+  // build is set-if-absent so duplicate keys can never take last-write-wins
+  // semantics, and the per-site name check preserves weak/global and cross-table
+  // distinctions exactly as the previous predicate did.
+  const importBySymbol=new Map();
+  for(const imp of image.imports){
+    if(imp&&imp.library==null){const k=`${imp.tableIndex}:${imp.symbolIndex}`;if(!importBySymbol.has(k))importBySymbol.set(k,imp);}
+  }
   const target=elfType===ET_REL?sections[sec.info]:null;
   if(elfType===ET_REL&&!normalSectionIndex(sec.info,sections)){budget.partial(`relocations:${sec.index}:target-section`,`ELF ET_REL relocation section ${sec.index} has invalid sh_info target section ${sec.info}`);return;}
   for(let i=0;i<count;i++){
@@ -833,7 +873,7 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
     if(symIndex!==0&&symbolEntryCount!=null&&BigInt(symIndex)>=symbolEntryCount){budget.partial(`relocations:${sec.index}:symbol-index-range`,`ELF relocation section ${sec.index} references symbol index ${symIndex} outside its associated table count ${symbolEntryCount}`);continue;}
     const sym=byIndex.get(symIndex)||null;
     image.relocations.push({address,fileOffset,type,symbol:(sym&&sym.name)?sym.name:null,symbolIndex:symIndex,addend,section:sec.name,source:sec.type===SHT_RELA?'RELA':'REL',symbolTableIndex:sec.link,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null,addressDomain});
-    if(sym&&sym.defined===false){const imp=image.imports.find((x)=>x.symbolIndex===symIndex&&x.tableIndex===sec.link&&x.name===sym.name&&x.library==null);if(imp){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:96},'relocation-import-site'))break;imp.sites.push({address,offset:fileOffset,kind:'relocation',type,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null});}}
+    if(sym&&sym.defined===false){const cand=importBySymbol.get(`${sec.link}:${symIndex}`)||null;const imp=cand&&cand.name===sym.name?cand:null;if(imp){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:96},'relocation-import-site'))break;imp.sites.push({address,offset:fileOffset,kind:'relocation',type,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null});}}
   }
 }
 

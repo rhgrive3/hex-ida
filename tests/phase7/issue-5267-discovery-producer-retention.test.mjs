@@ -60,8 +60,12 @@ assert.equal(
 );
 assert.ok([...producers.values()].every((entry) => entry.settled === true),
   'steady-state retained producer entries must all be settled');
-assert.equal(producers.has('1:text'), false, 'oldest settled epoch must be evicted');
-assert.equal(producers.has(`${RUNS}:text`), true, 'newest settled epoch must remain cached');
+// #8809 sync: #4243 widened the producer cache key to
+// `${epoch}:${artifactIdentity}:${regionSetKey}`; this app has no binary id
+// and slice -1, so the artifact segment is `|slice:-1`.
+const keyOf = (epoch) => `${epoch}:|slice:-1:text`;
+assert.equal(producers.has(keyOf(1)), false, 'oldest settled epoch must be evicted');
+assert.equal(producers.has(keyOf(RUNS)), true, 'newest settled epoch must remain cached');
 
 // Completed-symbol fast path must stay ahead of the producer map: same epoch,
 // same symbols, and same region must not re-run discovery after cache pruning.

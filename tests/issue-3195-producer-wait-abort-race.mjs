@@ -3,6 +3,15 @@ import assert from 'node:assert/strict';
 
 import { appProducerAbortError, waitForAppProducer } from '../js/analysis/producer-wait.js';
 
+// #3195 keeps the consumer's `AbortSignal.reason` as identity-bearing cancellation
+// authority: a cancelled wait rejects with that exact value (see the canonical
+// `tests/issues-unlinked-batch-20260901.mjs` #3195 block). A bare
+// `(error === 'x')` expression inside the call is evaluated immediately against an
+// undefined `error`, so it asserted nothing and threw `ReferenceError` instead.
+function rejectedWithReason(reason) {
+  return (error) => error === reason;
+}
+
 function entry(pending = true, { rejectOnAbort = false } = {}) {
   const controller = new AbortController();
   let promise;
@@ -47,7 +56,7 @@ test('#3195 abort between pre-check and subscription detaches the consumer immed
   // listener is installed, so only the post-subscription re-check can collect
   // the race.
   const waiting = waitForAppProducer(producer, signal);
-  await assert.rejects(waiting, (error === 'raced-before-listener'));
+  await assert.rejects(waiting, rejectedWithReason('raced-before-listener'));
   assert.equal(producer.waiters, 0, 'waiter count must drop');
   assert.equal(producer.controller.signal.aborted, true, 'last consumer aborts the producer');
   assert.equal(producer.controller.signal.reason, 'analysis-producer-no-consumers');
@@ -58,7 +67,7 @@ test('#3195 raced consumer does not double-detach when the listener also fires',
   const controller = new AbortController();
   const waiting = waitForAppProducer(producer, controller.signal);
   controller.abort('raced');
-  await assert.rejects(waiting, (error === 'raced'));
+  await assert.rejects(waiting, rejectedWithReason('raced'));
   assert.equal(producer.waiters, 0);
 });
 
@@ -68,7 +77,7 @@ test('#3195 normal cancel after subscription still aborts the producer once', as
   const waiting = waitForAppProducer(producer, controller.signal);
   assert.equal(producer.waiters, 1);
   controller.abort('cancelled');
-  await assert.rejects(waiting, (error === 'cancelled'));
+  await assert.rejects(waiting, rejectedWithReason('cancelled'));
   assert.equal(producer.waiters, 0);
   assert.equal(producer.controller.signal.reason, 'analysis-producer-no-consumers');
 });
@@ -81,11 +90,11 @@ test('#3195 surviving consumers keep the producer alive when one detaches', asyn
   const leave = waitForAppProducer(producer, first.signal);
   assert.equal(producer.waiters, 2);
   first.abort('first left');
-  await assert.rejects(leave, (error === 'first left'));
+  await assert.rejects(leave, rejectedWithReason('first left'));
   assert.equal(producer.waiters, 1);
   assert.equal(producer.controller.signal.aborted, false, 'producer keeps running for the survivor');
   second.abort('second left');
-  await assert.rejects(keep, (error === 'second left'));
+  await assert.rejects(keep, rejectedWithReason('second left'));
   assert.equal(producer.controller.signal.reason, 'analysis-producer-no-consumers');
 });
 
@@ -102,7 +111,7 @@ test('#3195 pre-aborted initial consumer cancels an unobserved producer', async 
   const producer = entry(true, { rejectOnAbort: true });
   const controller = new AbortController();
   controller.abort('already gone');
-  await assert.rejects(waitForAppProducer(producer, controller.signal), (error === 'already gone'));
+  await assert.rejects(waitForAppProducer(producer, controller.signal), rejectedWithReason('already gone'));
   assert.equal(producer.waiters, 0);
   assert.equal(producer.controller.signal.aborted, true);
   assert.equal(producer.controller.signal.reason, 'analysis-producer-no-consumers');
@@ -114,11 +123,11 @@ test('#3195 pre-aborted extra consumer does not cancel a producer with surviving
   const keep = waitForAppProducer(producer, survivor.signal);
   const alreadyGone = new AbortController();
   alreadyGone.abort('already gone');
-  await assert.rejects(waitForAppProducer(producer, alreadyGone.signal), (error === 'already gone'));
+  await assert.rejects(waitForAppProducer(producer, alreadyGone.signal), rejectedWithReason('already gone'));
   assert.equal(producer.waiters, 1);
   assert.equal(producer.controller.signal.aborted, false);
   survivor.abort('done');
-  await assert.rejects(keep, (error === 'done'));
+  await assert.rejects(keep, rejectedWithReason('done'));
 });
 
 test('#3195 abort reason preservation and error shaping', () => {
