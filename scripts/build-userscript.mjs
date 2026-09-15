@@ -47,12 +47,13 @@ const aad = `hex-runtime:${buildId}:${runtimeVersion}`;
 const cipher = createCipheriv('aes-256-gcm', contentKey, iv); cipher.setAAD(Buffer.from(aad));
 const ciphertext = Buffer.concat([cipher.update(compressed), cipher.final(), cipher.getAuthTag()]);
 const assetPath = `/.runtime/runtime.${buildId}.bin`;
+const runtimeLocator = `/_runtime/${buildId}`;
 const releaseManifest = Object.freeze({
   buildId,
   runtimeVersion,
   contentHash,
   compression: 'gzip',
-  assetPath,
+  runtimeLocator,
   byteLength: ciphertext.length,
 });
 const releaseManifestHash = sha256(Buffer.from(JSON.stringify(releaseManifest), 'utf8'));
@@ -67,7 +68,7 @@ const loaderForOrigin = (origin) => loaderBundle.toString('utf8')
   .replaceAll('__HEX_CONTENT_HASH__', contentHash)
   .replaceAll('__HEX_RUNTIME_VERSION__', runtimeVersion)
   .replaceAll('__HEX_RUNTIME_BYTE_LENGTH__', String(ciphertext.length))
-  .replaceAll('__HEX_RUNTIME_ASSET_PATH__', assetPath)
+  .replaceAll('__HEX_RUNTIME_LOCATOR__', runtimeLocator)
   .replaceAll('__HEX_RELEASE_MANIFEST_HASH__', releaseManifestHash);
 const publicLoader = loaderForOrigin('https://ida.rhgrive.workers.dev');
 if (Buffer.byteLength(publicLoader) > MAX_LOADER_BYTES) throw new Error(`Tiny loader exceeds ${MAX_LOADER_BYTES} bytes.`);
