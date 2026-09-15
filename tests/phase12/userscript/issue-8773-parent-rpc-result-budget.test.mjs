@@ -69,6 +69,33 @@ test('#8773 a wide array or object above the entry ceiling fails before the comp
   });
 });
 
+test('#8773 compromised peer cannot bypass sender admission with an oversized valid result envelope', async () => {
+  const channel = new MessageChannel();
+  const client = createRpcClient(channel.port2, { timeoutMs: 4000 });
+  try {
+    channel.port1.onmessage = (event) => {
+      const request = event.data;
+      if (request?.kind !== 'request') return;
+      channel.port1.postMessage({
+        protocol: request.protocol,
+        version: request.version,
+        kind: 'result',
+        id: request.id,
+        method: request.method,
+        result: { text: 'x'.repeat(MAX_WIRE_RESULT_BYTES + 1) },
+      });
+    };
+    channel.port1.start();
+
+    await assert.rejects(client.call('chatgpt.status'),
+      (error) => error.code === 'RPC_UNSAFE_RESULT',
+      'receiver admission must reject a malicious peer even when sender sanitization is bypassed');
+  } finally {
+    try { client.close(); } catch {}
+    try { channel.port1.close(); } catch {}
+  }
+});
+
 test('#8773 normal request / capabilities / status payloads are unchanged and still cross the boundary', async () => {
   await withPair(fakeBridge(), async (p) => {
     assert.deepEqual(await p.client.call('chatgpt.request', { prompt: 'hi', sessionKey: 's1' }),
