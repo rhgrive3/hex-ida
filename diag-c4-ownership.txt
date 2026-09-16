@@ -1,3 +1,11 @@
+[inventory] changed=496 undeclared=7
+"docs/\350\247\243\346\236\220\343\203\204\343\203\274\343\203\253\346\224\271\345\226\204.md"
+"docs/\350\247\243\346\236\220\343\203\204\343\203\274\343\203\253\346\224\271\345\226\204.md.txt"
+tests/ci/final-head-admission-6570.test.mjs
+tests/ci/final-head-admission-auto-reviewer-identity-6570.test.mjs
+tests/phase8/structuring/conditional-region-body-authority.test.mjs
+tests/phase8/structuring/conditional-region-body-projection.test.mjs
+tests/userscript-embed-child.mjs
 [phase7]
 projection rc=1
 roadmap ownership: undeclared roadmap path: "tests/ci/final-head-admission-6570.test.mjs"
