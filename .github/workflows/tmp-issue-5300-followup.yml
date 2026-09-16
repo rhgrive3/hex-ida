@@ -31,20 +31,7 @@ jobs:
       - name: Focused #5300 regression
         run: timeout 90s node --test tests/phase11/dex/issue-5300-dex-switch-control-flow.test.mjs
       - name: Arithmetic regression
-        shell: bash
-        run: |
-          set +e
-          timeout 60s node tests/phase11/dex/issue-1136-dex-arithmetic-produced-value.test.mjs > /tmp/arithmetic.out 2>&1
-          code=$?
-          tail -50 /tmp/arithmetic.out > /tmp/arithmetic-first-failure.txt
-          exit $code
-      - name: Upload arithmetic failure evidence
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: issue-1136-first-failure-under-5300
-          path: /tmp/arithmetic-first-failure.txt
-          retention-days: 1
+        run: timeout 60s node tests/phase11/dex/issue-1136-dex-arithmetic-produced-value-authority.test.mjs
       - name: Nearby DEX regressions
         run: |
           timeout 60s node tests/phase11/dex/issue-7981-receiver-null-npe.test.mjs
