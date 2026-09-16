@@ -1,0 +1,69 @@
+name: diag-7036-merge-t014
+on:
+  push:
+    branches:
+      - diag/7036-merge-8fa
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve known T014 overlap and list remainder
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          STATUS=/tmp/diag-7036-t014.txt
+          : > "$STATUS"
+          HEAD_SHA=8fa082b7d3cbabbf2eac60a87155dc2f4dd08b09
+          timeout 90s git fetch --no-tags origin main "$HEAD_SHA" >/tmp/fetch.log 2>&1
+          rc=$?; if [ "$rc" -ne 0 ]; then echo "fetch rc=$rc" >> "$STATUS"; tail -n 40 /tmp/fetch.log >> "$STATUS"; exit "$rc"; fi
+          git checkout --detach "$HEAD_SHA" >/tmp/co.log 2>&1
+          rc=$?; if [ "$rc" -ne 0 ]; then echo "checkout rc=$rc" >> "$STATUS"; tail -n 40 /tmp/co.log >> "$STATUS"; exit "$rc"; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git merge --no-commit --no-ff refs/remotes/origin/main >/tmp/merge.log 2>&1
+          merge_rc=$?
+          echo "merge_rc=$merge_rc" >> "$STATUS"
+          T014=(
+            js/symbolic/expr/hash.js
+            js/symbolic/expr/serialize.js
+            js/symbolic/solver/backend.js
+            js/symbolic/solver/bitblast-backend.js
+            js/symbolic/solver/registry.js
+            js/symbolic/solver/result.js
+            js/symbolic/solver/session.js
+            js/symbolic/solver/tiered-backend.js
+            js/symbolic/solver/worker-backend.js
+            js/symbolic/solver/worker-entry.js
+            js/symbolic/verify/query.js
+            tests/issue-5498-eligibility-result-status-authority.mjs
+            tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs
+          )
+          resolved=0
+          for f in "${T014[@]}"; do
+            if git diff --name-only --diff-filter=U -- "$f" | grep -q .; then
+              git checkout --theirs -- "$f" >/tmp/resolve.log 2>&1
+              rc=$?; if [ "$rc" -ne 0 ]; then echo "resolve $f rc=$rc" >> "$STATUS"; tail -n 20 /tmp/resolve.log >> "$STATUS"; exit "$rc"; fi
+              git add "$f"
+              resolved=$((resolved+1))
+            fi
+          done
+          echo "resolved_t014=$resolved" >> "$STATUS"
+          conflicts=$(git diff --name-only --diff-filter=U)
+          count=$(printf '%s\n' "$conflicts" | sed '/^$/d' | wc -l)
+          echo "remaining_count=$count" >> "$STATUS"
+          if [ "$count" -gt 0 ]; then printf '%s\n' "$conflicts" >> "$STATUS"; fi
+          exit 0
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-7036-merge-t014
+          path: /tmp/diag-7036-t014.txt
+          retention-days: 1
