@@ -14,7 +14,7 @@ jobs:
         with:
           ref: fix/recover-owner7-5163-5180-20260916
           fetch-depth: 0
-      - name: Port #5180 onto current validator contract
+      - name: Port production #5180
         shell: bash
         run: |
           set -euo pipefail
@@ -22,7 +22,6 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           python3 - <<'PY'
           from pathlib import Path
-
           p = Path('js/rebuild/transaction-v2.js')
           s = p.read_text()
           assert 'function loaderReparseResultFailure' not in s
@@ -49,38 +48,56 @@ jobs:
           assert s.count(hook) == 1, s.count(hook)
           s = s.replace(hook, "    if (name === 'loader-reparse') {\n      const contractFailure = loaderReparseResultFailure(result);\n      if (contractFailure) return validatorResult(name, true, false, contractFailure, result);\n    }\n" + hook, 1)
           p.write_text(s)
-
+          PY
+      - name: Add #5180 regression
+        shell: bash
+        run: git show 215654e62017614271358ca8046c422ca80aeecc:tests/issue-5180-loader-reparse-identity.mjs > tests/issue-5180-loader-reparse-identity.mjs
+      - name: Update #5785 fixture
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
           p = Path('tests/issue-5785-validator-contradiction.test.mjs')
           s = p.read_text()
           old = """  const materialized = await materializeRebuildTransaction(transaction, source, { maxOutputBytes: 1024 });
-            assert.equal(materialized.status, 'materialized');
-            const validation = await validateRebuildTransaction(transaction, materialized, {
-              original: source,
-              loaderReparse: validatorFn,
+          assert.equal(materialized.status, 'materialized');
+          const validation = await validateRebuildTransaction(transaction, materialized, {
+            original: source,
+            loaderReparse: validatorFn,
           """
           new = """  const materialized = await materializeRebuildTransaction(transaction, source, { maxOutputBytes: 1024 });
-            assert.equal(materialized.status, 'materialized');
-            const loaderIdentity = {
-              format: transaction.format,
-              architecture: transaction.architecture,
-              loaderVersion: transaction.loaderVersion,
-              sourceHash: transaction.sourceHash,
-              outputHash: materialized.outputHash,
-            };
-            const validation = await validateRebuildTransaction(transaction, materialized, {
-              original: source,
-              loaderReparse: async (context) => ({ ...loaderIdentity, ...await validatorFn(context) }),
+          assert.equal(materialized.status, 'materialized');
+          const loaderIdentity = {
+            format: transaction.format,
+            architecture: transaction.architecture,
+            loaderVersion: transaction.loaderVersion,
+            sourceHash: transaction.sourceHash,
+            outputHash: materialized.outputHash,
+          };
+          const validation = await validateRebuildTransaction(transaction, materialized, {
+            original: source,
+            loaderReparse: async (context) => ({ ...loaderIdentity, ...await validatorFn(context) }),
           """
           assert s.count(old) == 1, s.count(old)
           p.write_text(s.replace(old, new, 1))
-
+          PY
+      - name: Update rebuild proof fixture
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
           p = Path('tests/stage2/helpers/rebuild-proof-fixture.mjs')
           s = p.read_text()
           old = "    loaderReparse: () => ({ ok: true }),"
           new = "    loaderReparse: () => ({ ok: true, status: 'passed', format: transaction.format, architecture: transaction.architecture, loaderVersion: transaction.loaderVersion, sourceHash: transaction.sourceHash, outputHash: materialized.outputHash }),"
           assert s.count(old) == 1, s.count(old)
           p.write_text(s.replace(old, new, 1))
-
+          PY
+      - name: Update rebuild transaction fixture
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
           p = Path('tests/stage2/rebuild-transaction.test.mjs')
           s = p.read_text()
           replacements = [
@@ -93,8 +110,9 @@ jobs:
             s = s.replace(old, new, 1)
           p.write_text(s)
           PY
-          git show 215654e62017614271358ca8046c422ca80aeecc:tests/issue-5180-loader-reparse-identity.mjs > tests/issue-5180-loader-reparse-identity.mjs
-          git diff --check
+      - name: Diff check
+        shell: bash
+        run: git diff --check
       - name: Focused #5180
         shell: bash
         run: |
