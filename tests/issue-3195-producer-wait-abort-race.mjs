@@ -5,11 +5,15 @@ import { appProducerAbortError, waitForAppProducer } from '../js/analysis/produc
 
 // #3195 keeps the consumer's `AbortSignal.reason` as identity-bearing cancellation
 // authority: a cancelled wait rejects with that exact value (see the canonical
-// `tests/issues-unlinked-batch-20260901.mjs` #3195 block). A bare
-// `(error === 'x')` expression inside the call is evaluated immediately against an
-// undefined `error`, so it asserted nothing and threw `ReferenceError` instead.
+// `tests/issues-unlinked-batch-20260901.mjs` #3195 block, which now asserts the
+// same identity via `Object.is`). A bare `(error === 'x')` expression inside the
+// call is evaluated immediately against an undefined `error`, so it asserted
+// nothing and threw `ReferenceError` instead.
+// Note: `Object.is` (not `===`) keeps this matcher sound for the canonical
+// falsy-but-defined reasons (`0`, `false`, `''`) that `appProducerAbortReason`
+// passes through unchanged.
 function rejectedWithReason(reason) {
-  return (error) => error === reason;
+  return (error) => Object.is(error, reason);
 }
 
 function entry(pending = true, { rejectOnAbort = false } = {}) {
