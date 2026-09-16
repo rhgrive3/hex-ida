@@ -10,74 +10,138 @@ on:
 permissions:
   contents: read
 
+env:
+  CANDIDATE_SHA: 07957e1e74797643c7643595a33bfa4c89c1ead2
+
 jobs:
-  exact-main-validation:
+  generated:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: 5e7a86384a58e351bd65b243c647afc97e6f0f46
-          fetch-depth: 1
+        with: { ref: 07957e1e74797643c7643595a33bfa4c89c1ead2, fetch-depth: 1 }
       - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-      - name: Install dependencies quietly
-        run: npm ci --silent --no-audit --no-fund
-      - name: Canonical userscript build pass 1
+        with: { node-version: '22', cache: npm }
+      - run: npm ci --silent --no-audit --no-fund
+      - name: Build twice with zero tracked drift
         shell: bash
         run: |
           set -euo pipefail
           npm run userscript:build --silent
-          git diff --no-ext-diff --binary > /tmp/stage-a-pass1.diff
-          git diff --name-only > /tmp/stage-a-pass1-files.txt
-          sha256sum /tmp/stage-a-pass1.diff > /tmp/stage-a-pass1.sha256
-      - name: Canonical userscript build pass 2 and zero-diff proof
-        shell: bash
-        run: |
-          set -euo pipefail
+          git diff --exit-code
           npm run userscript:build --silent
-          git diff --no-ext-diff --binary > /tmp/stage-a-pass2.diff
-          cmp /tmp/stage-a-pass1.diff /tmp/stage-a-pass2.diff
-          {
-            echo "candidate=5e7a86384a58e351bd65b243c647afc97e6f0f46"
-            cat /tmp/stage-a-pass1.sha256
-            echo "changed-tracked-files-after-pass1:"
-            cat /tmp/stage-a-pass1-files.txt
-            echo "second-pass-diff-identical=true"
-          } > /tmp/stage-a-generated-summary.txt
-      - name: Userscript tests
-        run: npm run userscript:test --silent
-      - name: Repository check
-        run: npm run check --silent
-      - name: Full test suite
-        run: npm test --silent
-      - name: Semantic gates
-        run: |
-          npm run semantic:test --silent
-          npm run semantic-v2:test --silent
-      - name: Decompiler gate
-        run: npm run decompiler:test --silent
-      - name: Machine effects gate
-        run: npm run effects:test --silent
-      - name: Runtime gate
-        run: npm run runtime:test --silent
-      - name: Recovery phase gates
-        run: |
-          npm run phase4:test --silent
-          npm run phase7:test --silent
-          npm run phase8:test --silent
-          npm run phase9:test --silent
-          npm run phase11:test --silent
-          npm run phase12:test --silent
-      - name: Browser gate
-        run: npm run browser --silent
-      - name: Upload generated summary only
-        if: always()
+          git diff --exit-code
+          npm run userscript:test --silent
+          printf 'candidate=%s\nfirst-pass-clean=true\nsecond-pass-clean=true\nuserscript-test=PASS\n' "$CANDIDATE_SHA" > /tmp/generated.txt
+      - if: always()
         uses: actions/upload-artifact@v4
-        with:
-          name: stage-a-generated-summary
-          path: /tmp/stage-a-generated-summary.txt
-          if-no-files-found: ignore
-          retention-days: 1
+        with: { name: stage-a-generated-v2, path: /tmp/generated.txt, if-no-files-found: ignore, retention-days: 1 }
+
+  repository-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: 07957e1e74797643c7643595a33bfa4c89c1ead2, fetch-depth: 1 }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm }
+      - run: npm ci --silent --no-audit --no-fund
+      - name: Repository check
+        shell: bash
+        run: |
+          set +e
+          npm run check --silent > /tmp/check.out 2>&1
+          rc=$?
+          if [ "$rc" -ne 0 ]; then tail -n 120 /tmp/check.out > /tmp/check-first-failure.txt; fi
+          exit "$rc"
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with: { name: stage-a-check-first-failure, path: /tmp/check-first-failure.txt, if-no-files-found: ignore, retention-days: 1 }
+
+  full-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: 07957e1e74797643c7643595a33bfa4c89c1ead2, fetch-depth: 1 }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm }
+      - run: npm ci --silent --no-audit --no-fund
+      - name: Full test suite
+        shell: bash
+        run: |
+          set +e
+          npm test --silent > /tmp/full.out 2>&1
+          rc=$?
+          if [ "$rc" -ne 0 ]; then tail -n 120 /tmp/full.out > /tmp/full-first-failure.txt; fi
+          exit "$rc"
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with: { name: stage-a-full-first-failure, path: /tmp/full-first-failure.txt, if-no-files-found: ignore, retention-days: 1 }
+
+  recovery-subsystems:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: 07957e1e74797643c7643595a33bfa4c89c1ead2, fetch-depth: 1 }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm }
+      - run: npm ci --silent --no-audit --no-fund
+      - name: Semantic, decompiler, effects, runtime, and phase gates
+        shell: bash
+        run: |
+          set -u
+          rc_all=0
+          first=''
+          run_gate() {
+            name="$1"; shift
+            set +e
+            "$@" > "/tmp/${name}.out" 2>&1
+            rc=$?
+            set -e
+            if [ "$rc" -ne 0 ]; then
+              rc_all=1
+              if [ -z "$first" ]; then
+                first="$name"
+                { echo "first-failure=$name"; tail -n 120 "/tmp/${name}.out"; } > /tmp/subsystem-first-failure.txt
+              fi
+            fi
+          }
+          set -e
+          run_gate semantic npm run semantic:test --silent
+          run_gate semantic_v2 npm run semantic-v2:test --silent
+          run_gate decompiler npm run decompiler:test --silent
+          run_gate effects npm run effects:test --silent
+          run_gate runtime npm run runtime:test --silent
+          run_gate phase4 npm run phase4:test --silent
+          run_gate phase7 npm run phase7:test --silent
+          run_gate phase8 npm run phase8:test --silent
+          run_gate phase9 npm run phase9:test --silent
+          run_gate phase11 npm run phase11:test --silent
+          run_gate phase12 npm run phase12:test --silent
+          exit "$rc_all"
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with: { name: stage-a-subsystem-first-failure, path: /tmp/subsystem-first-failure.txt, if-no-files-found: ignore, retention-days: 1 }
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: 07957e1e74797643c7643595a33bfa4c89c1ead2, fetch-depth: 1 }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm }
+      - run: npm ci --silent --no-audit --no-fund
+      - name: Browser gate
+        shell: bash
+        run: |
+          set +e
+          npm run browser --silent > /tmp/browser.out 2>&1
+          rc=$?
+          if [ "$rc" -ne 0 ]; then tail -n 120 /tmp/browser.out > /tmp/browser-first-failure.txt; fi
+          exit "$rc"
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with: { name: stage-a-browser-first-failure, path: /tmp/browser-first-failure.txt, if-no-files-found: ignore, retention-days: 1 }
