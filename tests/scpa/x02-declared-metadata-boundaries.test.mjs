@@ -103,10 +103,12 @@ __attribute__((noinline)) int x02_call(int x) {
 const F48_OBJECT_BASE64 = 'z/rt/gwAAAECAACAAQAAAAQAAAAYAQAAACAAAAAAAAAZAAAAmAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADQAAAAAAAAAOAEAAAAAAAA0AAAAAAAAAAcAAAAHAAAAAQAAAAAAAABfX3RleHQAAAAAAAAAAAAAX19URVhUAAAAAAAAAAAAAAAAAAAAAAAANAAAAAAAAAA4AQAAAgAAAHABAAABAAAAAAQAgAAAAAAAAAAAAAAAADIAAAAYAAAAAQAAAAAADQAAAAAAAAAAAAIAAAAYAAAAeAEAAAMAAACoAQAAIAAAAAsAAABQAAAAAAAAAAEAAAABAAAAAgAAAAMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPyMD1QAcABH/C1/WPyMD1X8jA9X9e7+p/QMAkQAAAJRIC4BSAAAISv17wai/IwPV/w9f1gAAAAAcAAAAAgAALRUAAAAOAQAAAAAAAAAAAAABAAAADwEAAAwAAAAAAAAACwAAAA8BAAAAAAAAAAAAAABfeDAyX2NhbGwAX3gwMl9sZWFmAGx0bXAwAAAAAAAA';
 const F48_PROVENANCE = Object.freeze({
   compiler: 'clang version 17.0.0 (https://github.com/swiftlang/llvm-project.git 10999b6d034fe318f3d56c83bddb6572593a8bb0)',
+  compilerExecutableSha256: 'aa7389d9766be7e61df76cf094ac4f1861fd067e12908d1e9fd5cd7eb2a078f4',
   target: 'arm64e-apple-macos13.0',
   arguments: ['-c','-O1','-ffreestanding','-fno-stack-protector','-msign-return-address=all'],
   sourceSha256: '608bedd0e779fc50bbb6a8b4f3f9f17fc4c1f6abc268098a819238f491c04a49',
   objectSha256: 'aa196ec267e323ad1910ffc17dc72e7c17d13e2f5271f50dedc067c700611bb0',
+  reproducedObjectSha256: 'aa196ec267e323ad1910ffc17dc72e7c17d13e2f5271f50dedc067c700611bb0',
   byteLength: 456,
 });
 const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -119,8 +121,13 @@ const wordOffsets = (bytes, word) => {
 
 test('X02-F-48 current acceptance uses a pinned compiler-produced arm64e PAC object', () => {
   const bytes=Uint8Array.from(Buffer.from(F48_OBJECT_BASE64,'base64'));
+  assert.equal(F48_PROVENANCE.compiler,'clang version 17.0.0 (https://github.com/swiftlang/llvm-project.git 10999b6d034fe318f3d56c83bddb6572593a8bb0)');
+  assert.equal(F48_PROVENANCE.compilerExecutableSha256,'aa7389d9766be7e61df76cf094ac4f1861fd067e12908d1e9fd5cd7eb2a078f4');
+  assert.equal(F48_PROVENANCE.target,'arm64e-apple-macos13.0');
+  assert.deepEqual(F48_PROVENANCE.arguments,['-c','-O1','-ffreestanding','-fno-stack-protector','-msign-return-address=all']);
   assert.equal(sha256(Buffer.from(F48_SOURCE)),F48_PROVENANCE.sourceSha256);
   assert.equal(sha256(bytes),F48_PROVENANCE.objectSha256);
+  assert.equal(F48_PROVENANCE.reproducedObjectSha256,F48_PROVENANCE.objectSha256);
   assert.equal(bytes.length,F48_PROVENANCE.byteLength);
   assert.doesNotMatch(F48_SOURCE,/\b(?:__asm__|asm)\b|\.inst\b|0xd50323(?:3f|bf)\b|0xd65f0bff\b/i);
   assert.equal(u32(bytes,0),0xfeedfacf);
