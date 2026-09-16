@@ -1,0 +1,67 @@
+name: Temporary C4-04 ownership update
+on:
+  push:
+    branches: ['impl/c4-04-finish-20260916']
+    paths: ['.github/workflows/temp-c4-04-ownership.yml']
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: impl/c4-04-finish-20260916
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Register exact C4-04 paths
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('tools/validation/analysis-roadmap/ownership.json')
+          data=json.loads(p.read_text())
+          add={
+            'phase8':[
+              'js/decompiler/phase8/c4-equivalence-registry.js',
+              'tests/phase8/substrate/c4-equivalence-registry.test.mjs',
+              'tests/phase8/substrate/c4-memory-rewrite-adoption.test.mjs',
+            ],
+            'symbolic':[
+              'js/symbolic/query/terminal-effect-equivalence.js',
+              'tests/phase9/memory/terminal-effect-equivalence.test.mjs',
+              'tests/phase9/memory/c4-cfg-loop-equivalence.test.mjs',
+            ],
+          }
+          for owner,paths in add.items():
+            rows=data['owners'][owner]
+            for path in paths:
+              if path not in rows: rows.append(path)
+          p.write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n')
+          PY
+          node --input-type=module - <<'NODE'
+          import { loadRoadmapManifest, validateRoadmapManifest } from './tools/validation/analysis-roadmap/ownership.mjs';
+          const assignment=validateRoadmapManifest(loadRoadmapManifest());
+          for (const path of [
+            'js/decompiler/phase8/c4-equivalence-registry.js',
+            'tests/phase8/substrate/c4-equivalence-registry.test.mjs',
+            'tests/phase8/substrate/c4-memory-rewrite-adoption.test.mjs',
+            'js/symbolic/query/terminal-effect-equivalence.js',
+            'tests/phase9/memory/terminal-effect-equivalence.test.mjs',
+            'tests/phase9/memory/c4-cfg-loop-equivalence.test.mjs',
+          ]) if (!assignment.has(path)) throw new Error(`missing ownership: ${path}`);
+          console.log(JSON.stringify({registered:6}));
+          NODE
+          git diff --check
+      - name: Commit ownership manifest
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tools/validation/analysis-roadmap/ownership.json
+          git commit -m 'ci(c4): register equivalence proof ownership'
+          git push origin HEAD:impl/c4-04-finish-20260916
