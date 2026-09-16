@@ -8,14 +8,6 @@ import {
   decodeBase64URL, encodeBase64URL, publicRuntimeManifest,
   signRuntimeSession, validateRuntimeBootstrap, verifyRuntimeSession,
 } from './js/userscript/runtime-security.js';
-import {
-  RUNTIME_BOOTSTRAP_ADMISSION,
-  abortRuntimeBootstrapIssuance,
-  beginRuntimeBootstrapIssuance,
-  consumeRuntimeBootstrapSession,
-  finishRuntimeBootstrapIssuance,
-  pruneRuntimeBootstrapState,
-} from './js/userscript/runtime-bootstrap-admission.js';
 
 const QUOTA_STATE_KEY = 'quota';
 const USER_SCRIPT_TEMPLATE = '/userscript/hex.user.template.js';
@@ -41,41 +33,31 @@ export class AIQuota extends DurableObject {
 
 export class RuntimeBootstrap extends DurableObject {
   constructor(ctx, env) { super(ctx, env); this.ctx = ctx; }
-  async beginIssue(input) {
-    const now = Date.now();
-    const result = await beginRuntimeBootstrapIssuance(this.ctx.storage, input, { now });
-    if (!result.ok) return result;
-    try {
-      await scheduleRuntimeBootstrapCleanup(this.ctx.storage, Math.min(input.expiry, result.leaseExpiry));
-      return result;
-    } catch {
-      // Never publish a lease whose eventual cleanup cannot be scheduled. The
-      // rate counter remains charged, but provisional nonce/session/lease rows
-      // are rolled back before the caller can start expensive crypto work.
-      await abortRuntimeBootstrapIssuance(this.ctx.storage, { leaseId: result.leaseId, sessionId: input.sessionId });
-      return { ok: false, reason: 'bootstrap-cleanup-scheduling-failed' };
-    }
-  }
-  async finishIssue(input) {
-    return finishRuntimeBootstrapIssuance(this.ctx.storage, { ...input, now: Date.now() });
-  }
-  async abortIssue(input) {
-    return abortRuntimeBootstrapIssuance(this.ctx.storage, input);
-  }
-  async consume(input) {
-    return consumeRuntimeBootstrapSession(this.ctx.storage, { ...input, now: Date.now() });
-  }
-  async prune(options = {}) {
-    return pruneRuntimeBootstrapState(this.ctx.storage, {
-      now: options.now ?? Date.now(),
-      maxPagesPerPrefix: options.maxPagesPerPrefix ?? RUNTIME_BOOTSTRAP_ADMISSION.requestSweepPages,
+  async issue({ nonce, sessionId, expiry, requestId }) {
+    await this.prune();
+    const key = `nonce:${nonce}`;
+    return this.ctx.storage.transaction(async (tx) => {
+      const previous = await tx.get(key);
+      if (previous && previous.expiry > Date.now()) return { ok: false, reason: 'replayed-nonce' };
+      await tx.put(key, { expiry, requestId }); await tx.put(`session:${sessionId}`, { expiry, requestId, consumed: false });
+      return { ok: true };
     });
   }
-  async alarm() {
+  async consume({ sessionId, requestId }) {
+    return this.ctx.storage.transaction(async (tx) => {
+      const key = `session:${sessionId}`, state = await tx.get(key);
+      if (!state || state.expiry <= Date.now()) return { ok: false, reason: 'expired-session' };
+      if (state.consumed || state.requestId !== requestId) return { ok: false, reason: 'replayed-session' };
+      await tx.put(key, { ...state, consumed: true }); return { ok: true };
+    });
+  }
+  async prune() {
     const now = Date.now();
-    const result = await this.prune({ now, maxPagesPerPrefix: RUNTIME_BOOTSTRAP_ADMISSION.alarmSweepPages });
-    if (result.more) await scheduleRuntimeBootstrapCleanup(this.ctx.storage, now + 1000, true);
-    else if (result.earliestExpiry != null) await scheduleRuntimeBootstrapCleanup(this.ctx.storage, Math.max(now + 1000, result.earliestExpiry), true);
+    for (const prefix of ['nonce:', 'session:']) {
+      const values = await this.ctx.storage.list({ prefix, limit: 256 });
+      const expired = [...values].filter(([, value]) => !value || value.expiry <= now).map(([key]) => key);
+      if (expired.length) await this.ctx.storage.delete(expired);
+    }
   }
 }
 
@@ -117,90 +99,33 @@ async function serveChatGPTEmbed(request, env, url) {
   return new Response(request.method === 'HEAD' ? null : source.body, { status: source.status, statusText: source.statusText, headers });
 }
 
-// #8703: bounded streaming read that enforces the request cap during ingress.
-async function readBoundedBootstrapText(request, limit) {
-  const body = request.body;
-  if (!body) return '';
-  const reader = body.getReader();
-  const chunks = [];
-  let size = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value || value.byteLength === 0) continue;
-      size += value.byteLength;
-      if (size > limit) {
-        // Once the cap has been crossed, the semantic classification is fixed.
-        // Cancellation is best-effort transport cleanup and must never replace
-        // the deterministic 413 outcome if an underlying source rejects it.
-        const error = new Error('bootstrap-request-too-large');
-        error.bootstrapRequestTooLarge = true;
-        try { await reader.cancel(); } catch { /* preserve the overflow classification */ }
-        throw error;
-      }
-      chunks.push(value);
-    }
-  } finally {
-    try { reader.releaseLock(); } catch { /* already released after cancel */ }
-  }
-  const joined = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) { joined.set(chunk, offset); offset += chunk.byteLength; }
-  return new TextDecoder('utf-8', { fatal: true }).decode(joined);
-}
-
 async function runtimeBootstrap(request, env, url) {
   if (request.method === 'OPTIONS') return runtimePreflight(request.headers.get('origin'), url.origin);
   if (request.method !== 'POST') return methodNotAllowed('POST, OPTIONS');
   const origin = request.headers.get('origin');
   if (!isAllowedRequestOrigin(origin, url.origin)) return json({ error: 'origin-not-allowed' }, 403);
-  const declaredLength = Number(request.headers.get('content-length') || 0);
-  if (Number.isFinite(declaredLength) && declaredLength > BOOTSTRAP_MAX_BYTES) return json({ error: 'request-too-large' }, 413);
-  let text;
-  try { text = await readBoundedBootstrapText(request, BOOTSTRAP_MAX_BYTES); }
-  catch (error) {
-    if (error && error.bootstrapRequestTooLarge) return json({ error: 'request-too-large' }, 413);
-    return json({ error: 'invalid-bootstrap-request' }, 400);
-  }
+  const length = Number(request.headers.get('content-length') || 0);
+  if (length > BOOTSTRAP_MAX_BYTES) return json({ error: 'request-too-large' }, 413);
   let input;
-  try { input = JSON.parse(text); } catch { return json({ error: 'invalid-bootstrap-request' }, 400); }
+  try { const text = await request.text(); if (new TextEncoder().encode(text).length > BOOTSTRAP_MAX_BYTES) throw new Error('large'); input = JSON.parse(text); } catch { return json({ error: 'invalid-bootstrap-request' }, 400); }
   const validation = validateRuntimeBootstrap(input, { buildId: RUNTIME_BUILD.manifest.buildId });
   if (validation) return json({ error: validation }, validation === 'wrong-build' ? 409 : 400);
 
   const sessionId = crypto.randomUUID(), expiryMs = Date.now() + SESSION_TTL_MS;
   const replay = runtimeState(env);
-  const bucket = await runtimeBootstrapAuthorityBucket(request, input.sessionIdentity);
-  const issued = await replay.beginIssue({
-    nonce: input.nonce,
-    sessionId,
-    expiry: expiryMs,
-    requestId: input.requestId,
-    bucket,
-  });
-  if (!issued.ok) {
-    const status = issued.reason === 'replayed-nonce' ? 403 : 429;
-    const retry = status === 429 ? { 'retry-after': '1' } : {};
-    return json({ error: issued.reason }, status, origin, retry);
-  }
-  let committed = false;
+  const issued = await replay.issue({ nonce: input.nonce, sessionId, expiry: expiryMs, requestId: input.requestId });
+  if (!issued.ok) return json({ error: issued.reason }, 403);
   try {
     const envelope = await wrapContentKey(input.clientPublicKey, sessionId);
     const payload = { v: 1, sid: sessionId, bid: RUNTIME_BUILD.manifest.buildId, exp: Math.floor(expiryMs / 1000), rid: input.requestId, cid: await shortHash(input.sessionIdentity) };
     const session = await signRuntimeSession(payload, decodeBase64URL(RUNTIME_BUILD.signingKey));
-    const finalized = await replay.finishIssue({ leaseId: issued.leaseId, sessionId });
-    if (!finalized.ok) throw new Error(finalized.reason || 'bootstrap-issuance-finalize-failed');
-    committed = true;
     return json({
       session, sessionId, expiry: new Date(expiryMs).toISOString(), buildId: RUNTIME_BUILD.manifest.buildId,
       sourceCommit: DEPLOYMENT_COMMIT,
       manifest: publicRuntimeManifest(RUNTIME_BUILD.manifest), runtimeLocator: `/_runtime/${RUNTIME_BUILD.manifest.buildId}`,
       serverPublicKey: envelope.serverPublicKey, keyEnvelope: envelope.keyEnvelope,
     }, 200, origin, { 'cache-control': 'no-store, private' });
-  } catch {
-    if (!committed) await replay.abortIssue({ leaseId: issued.leaseId, sessionId });
-    return json({ error: 'key-envelope-failed' }, 400);
-  }
+  } catch { return json({ error: 'key-envelope-failed' }, 400); }
 }
 
 async function protectedRuntime(request, env, url) {
@@ -240,24 +165,6 @@ async function wrapContentKey(clientJwk, sessionId) {
   return { serverPublicKey: await crypto.subtle.exportKey('jwk', serverKeys.publicKey), keyEnvelope: { algorithm: 'ECDH-P256+HKDF-SHA256+A256GCM', salt: encodeBase64URL(salt), iv: encodeBase64URL(iv), ciphertext: encodeBase64URL(new Uint8Array(ciphertext)) } };
 }
 
-async function runtimeBootstrapAuthorityBucket(request, sessionIdentity) {
-  // Cloudflare supplies CF-Connecting-IP at the edge; callers cannot use a
-  // self-declared Origin/session string to escape per-client admission. The
-  // session identity is only the headless/test fallback when the platform IP
-  // authority is unavailable.
-  const connectingIp = request.headers.get('cf-connecting-ip');
-  return shortHash(connectingIp ? `ip:${connectingIp}` : `session:${sessionIdentity}`);
-}
-
-async function scheduleRuntimeBootstrapCleanup(storage, when, replace = false) {
-  if (typeof storage?.setAlarm !== 'function') return;
-  if (!replace && typeof storage.getAlarm === 'function') {
-    const current = await storage.getAlarm();
-    if (current != null && current <= when) return;
-  }
-  await storage.setAlarm(when);
-}
-
 function runtimeState(env) { if (!env.RUNTIME_BOOTSTRAP) throw new Error('RUNTIME_BOOTSTRAP binding is unavailable'); return env.RUNTIME_BOOTSTRAP.get(env.RUNTIME_BOOTSTRAP.idFromName('runtime-v1')); }
 function isPrivatePath(path) { return PRIVATE_FILES.has(path) || PRIVATE_PREFIXES.some((prefix) => path.startsWith(prefix)); }
 async function asset(env, url, path) { if (!env.ASSETS?.fetch) return new Response(null, { status: 503 }); return env.ASSETS.fetch(new Request(new URL(path, url.origin), { method: 'GET' })); }
@@ -280,9 +187,4 @@ function withApiCors(response, origin) { if (!CHATGPT_ORIGINS.has(origin)) retur
 function appendVary(current, value) { const parts = String(current || '').split(',').map((item) => item.trim()).filter(Boolean); if (!parts.some((item) => item.toLowerCase() === value.toLowerCase())) parts.push(value); return parts.join(', '); }
 function json(body, status = 200, origin = null, extra = {}) { const headers = new Headers({ ...securityHeaders(), 'content-type': 'application/json; charset=utf-8', ...extra }); if (origin && CHATGPT_ORIGINS.has(origin)) { headers.set('access-control-allow-origin', origin); headers.set('vary', 'Origin'); } return new Response(JSON.stringify(body), { status, headers }); }
 
-export const __runtimeTest = {
-  isPrivatePath,
-  readBoundedBootstrapText,
-  runtimeBootstrap,
-  runtimeBootstrapAuthorityBucket,
-};
+export const __runtimeTest = { isPrivatePath };
