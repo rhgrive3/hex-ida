@@ -1,5 +1,13 @@
 # C3 ユーザー側ローカル受入 — 2026-09-13 最終追記反映
 
+## 2026-09-16: PR #7036 exact-head 再検証（受入完了）
+
+現行PR HEAD `fc91d16328b98f7d6e2e3d5f030ea8580f39c3fa` を clean checkout で再検証した。Node `v22.22.3` の同一コマンドで、C3 combined（C3-01 + C3-02）は **188/188 PASS**、Phase7 types lane は **239/239 PASS**（30/449 discovered test files）、Phase6+Phase8 ABI は **507/507 PASS**、required profile matrix は **66/66 行 PASS**。C3-02 ownership manifest は `featurePaths=38 / generatedPaths=2 / governancePaths=2 / valid=true`、関連 Phase7 ownership 24/24 と Phase8 routing 5/5 も PASS した。
+
+この再検証により、checkpointで割り当てた有限ユーザー側の C3-01/C3-02 は `accepted-local` とする。C3-01 は5 recursive/layout shapesと8状態、SCC iteration-limit、debug/no-debug、hard pointer/integer conflict、unknown extent、bounded dependency failureを含み、C3-02 は9 profiles×5 shapes、63 invalidation、18 variadic、Darwin indirect-copy、AAPCS64 stack alignment、arm64e envelope、LP64F/LP64D flatteningを含む。固定fixtureを期待値のoracleとし、canonical graph / ABI classifier / prototype consumerの二重実装は作っていない。
+
+これは C3-03 の versioned language metadata provider matrix、ME依存、全native corpus、独立shadow、実機・release、または解析ロードマップ全体の `COMPLETE` ではない。未知・stale・cancel・budget・不完全layoutは従来どおり exact publicationを拒否し、全体の `CHECKPOINT-LOCKED` は維持する。永続実行ログは `/mnt/workspace/.dev-state/agent-work/evidence/pr7036-c3-acceptance-current-fc91/` に保存し、各ログはこのHEADとNode22 identityへ結び付けた。
+
 正本は `analysis-roadmap-v8-integration-checkpoint.md` の2026-09-12担当分担。
 唯一の開始ツリーは `hex-ida-roadmap-v8-user-c1-c3-20260912.zip`。
 C3-01/02の既存canonical graph / ABI / prototypeを組み合わせる。
@@ -34,7 +42,7 @@ canonical owner: `js/analysis/types/{graph,constraints,scc}.js`。
 | incomplete aggregate/member extent | size/member-sizeのnullを0にしない。既存min alignment=1をABI確証と解釈しない | 1件内3形状PASS |
 | bounded successor列挙 / self-edge / 初回provider failure | 1度だけ列挙、cacheされたself-edge、初回失敗はtruncated | 1件内3状態PASS |
 
-合計 **48件PASS**。関連既存typesは **158/158 PASS**。
+合計 **48件PASS**。同じ exact-head の Phase7 types lane は **239/239 PASS**（30/449 discovered test files）。
 これは有限のdeclared hard/soft証拠に対する受入であり、native binary全体からの型発見率や
 全再帰layout問題の完了宣言ではない。
 
@@ -90,10 +98,10 @@ register引数はprototypeまで、stack引数はphysical proofと下記専用sp
 | arm64e shared envelope / simulator / hidden-sret | 新規1件。5 Apple platformの実placement、偽registry/owner/profile/provenance/invalidation/stale/overlap/32-bit hidden pointerを拒否 |
 | LP64F/LP64D shared flattening | 新規2件。nested float/integer、実unionのinteger規約、`struct Union`という名前の正常structを区別。unknown nested layoutは拒否 |
 
-合計 **140件PASS**。今回再実行したPhase6 ABI **211/211**、Phase8 ABI（combinedを含む）**208/208**、
-既存required-profile script **66/66行PASS**。types（combinedを含む）**206/206**、
-aggregate regression **30/30**、Phase8 integration **41/41 PASS**。groupの件数は重複するので合算しない。
-前回scoped ABI25件の記録は歴史として保持し、今回の新しい実測はfinal evidenceを参照する。
+合計 **140件PASS**。同じ exact-head の Phase6+Phase8 ABI **507/507**、
+required-profile script **66/66行PASS**、Phase7 types lane **239/239 PASS**。
+groupの件数は重複するので合算しない。前回scoped ABI25件や旧lane別件数の記録は歴史として保持し、
+今回の新しい実測は Node22 の final evidence を参照する。
 
 ### 前回の局所修正（今回は変更せず保持）
 
@@ -141,7 +149,7 @@ RISC-Vのunion規約をDarwinへ流用していない。
 
 ## 最終statusと統合注意
 
-**C3-01 COMPLETE、C3-02 COMPLETE（checkpointで割り当てた有限ユーザー側受入の範囲）。**
+**C3-01/C3-02 は `accepted-local` 受入完了（checkpointで割り当てた有限ユーザー側受入の範囲）。**
 旧arm64e5行・LP64F/D5行は残件ではない。ロードマップ全体のnative発見率、未提供metadata、全ABI問題、
 typed CALLの再構成や実機・独立shadowを含む全体COMPLETEとは異なる。
 PDB #4630の古いpositive fixtureは、既存#4210のarg-list/count/calling-convention/options契約へ合わせた。

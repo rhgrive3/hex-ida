@@ -1,5 +1,11 @@
 # Analysis roadmap v8 integration checkpoint
 
+## 2026-09-16: C3-01/C3-02 exact-head local acceptance 完了
+
+PR #7036 の候補 `fc91d16328b98f7d6e2e3d5f030ea8580f39c3fa` を clean checkout に固定し、Node `v22.22.3` で担当範囲の有限受入を再検証しました。C3 combined は **188/188 PASS**（C3-01 48/48、C3-02 140/140）、Phase7 types lane は **239/239 PASS**（30/449 discovered test files）、Phase6+Phase8 ABI は **507/507 PASS**、required profile matrix は **66/66 PASS** でした。C3-02 ownership manifest は feature 38 / generated 2 / governance 2 を満たし、Phase7 ownership 24/24、Phase8 routing 5/5 も通過しています。
+
+これにより checkpoint がこのレーンへ割り当てた有限ユーザー側 C3-01/C3-02 を `accepted-local` として受入完了にします。C3-03 の versioned metadata provider matrix、ME依存、全native corpus、独立shadow、実機・release、および解析ロードマップ全体は未完了です。したがって `CHECKPOINT-LOCKED` / `transformAuthorization:false` は維持します。実行ログとSHA-256は `/mnt/workspace/.dev-state/agent-work/evidence/pr7036-c3-acceptance-current-fc91/`、機械可読な分母と状態は `analysis-local-acceptance-audit.json` に固定しています。
+
 ## 2026-09-16: C4-04 local acceptance 完了
 
 HEX-C4-04 / FR-C4-04A / FR-C4-04B は、production scalar denominator、memory/CFG rewrite registry、bounded-loop、terminal return/memory/control/fault observables、stale/refuted/unknown/unsupported と generic memory-region fail-closed を同一 acceptance で再検証し、このローカル要件について `accepted-local` とする。PHI / MemoryPHI を含む render body と非canonical exception/unwind は証明済みと偽らず adoption 不可のまま保持する。C4-02 / C4-05、独立レビュー、実機、release、他 finding は閉じていないため、ロードマップ全体の `CHECKPOINT-LOCKED` / `transformAuthorization:false` は維持する。
@@ -7815,4 +7821,3 @@ return summary propagationを3 return kind × 4 graph topology × 6 target/compl
 8. **Bool項の独立検証**: 14Bool族において BV1 と混同せず純粋Bool項として独立証明され、正しく採用可能であることを検証。
 
 HEX-C4-05 / FR-C4-05A はこのローカル要件について accepted-local。C4-03、独立レビュー、物理実機検証、全release gateは未達のため、`CHECKPOINT-LOCKED` / `fullRoadmapComplete: false` / `transformAuthorization: false` を維持する。
-

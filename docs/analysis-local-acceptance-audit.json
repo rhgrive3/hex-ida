@@ -68,19 +68,19 @@
     },
     {
       "id": "HEX-C3-01",
-      "localStatus": "existing-reused",
-      "assessment": "recursive structural typeの既存graphと48-case combined acceptanceを維持。全native発見率の証明とは別。",
+      "localStatus": "accepted-local",
+      "assessment": "PR #7036 exact-headでC3-01のrecursive struct/union/array、hard contradiction、soft ambiguity、cancel/budget/stale/no-evidence、SCC iteration limit、unknown extentを48/48で再受入。Phase7 types laneも239/239 PASS。全native発見率・metadata統合・全体releaseは別。",
       "source": "tests/phase7/types/c3-combined-acceptance.test.mjs",
-      "verificationSuite": "phase7-test",
-      "originalRequirementAcceptedHere": false
+      "verificationSuite": "c3-01-final-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "HEX-C3-02",
-      "localStatus": "existing-reused",
-      "assessment": "既存ABI/classifierと45 return-row/140-testの引き継ぎを再利用。MEなど依存する全受入は残る。",
-      "source": "docs/analysis-c3-acceptance.md",
-      "verificationSuite": "phase7-test",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "assessment": "PR #7036 exact-headで9 ABI profiles×5 aggregateの45 return rows、publication invalidation 63、variadic 18、physical placement/stack/arm64e/LP64F・LP64D境界をcombined 140/140で再受入。Phase6+Phase8 ABI 507/507、required profile 66/66。ME依存・全native corpus・全体releaseは別。",
+      "source": "tests/phase8/abi/c3-combined-acceptance.test.mjs",
+      "verificationSuite": "c3-02-final-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "HEX-C3-03",
@@ -336,9 +336,9 @@
       "mustWaitFor": "ME and return summaries",
       "complexity": "XL",
       "findingId": "HEX-C3-02",
-      "localStatus": "existing-reused",
-      "currentAssessment": "既存ABI/classifierと45 return-row/140-testの引き継ぎを再利用。MEなど依存する全受入は残る。",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "currentAssessment": "PR #7036 exact-headで45 return rows / combined 140/140、Phase6+Phase8 ABI 507/507、required profile 66/66を再受入。未証明のprofile・layout・stale/cancel/budgetはfail closed。ME依存と全体releaseは残る。",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "FR-C3-01A",
@@ -352,9 +352,9 @@
       "mustWaitFor": "C2/C3 ABI facts",
       "complexity": "XL",
       "findingId": "HEX-C3-01",
-      "localStatus": "existing-reused",
-      "currentAssessment": "recursive structural typeの既存graphと48-case combined acceptanceを維持。全native発見率の証明とは別。",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "currentAssessment": "PR #7036 exact-headでrecursive/layoutの48/48、Phase7 types lane 239/239を再受入。ambiguity保持、unknown extent、hard conflict、cancel/budget/stale/no-evidence、bounded SCC failureはfail closed。native全域・metadata統合は別。",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "FR-C3-03A",
@@ -2494,6 +2494,89 @@
         "budget-exhaustion",
         "cancelled-or-deadline"
       ],
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false
+    },
+    "c3Acceptance20260916": {
+      "status": "ACCEPTED-LOCAL",
+      "findings": [
+        "HEX-C3-01",
+        "HEX-C3-02"
+      ],
+      "tasks": [
+        "FR-C3-01A",
+        "FR-C3-02A"
+      ],
+      "candidateHead": "fc91d16328b98f7d6e2e3d5f030ea8580f39c3fa",
+      "candidateBranch": "feat/analysis-roadmap-v8-current-main-20260907",
+      "candidateRef": "refs/pull/7036/head",
+      "runtime": {
+        "node": "v22.22.3"
+      },
+      "workingTreeCleanAtVerification": true,
+      "denominator": {
+        "c3Combined": {
+          "HEX-C3-01": {
+            "passed": 48,
+            "total": 48
+          },
+          "HEX-C3-02": {
+            "passed": 140,
+            "total": 140
+          },
+          "passed": 188,
+          "total": 188
+        },
+        "phase7Types": {
+          "passed": 239,
+          "total": 239,
+          "discoveredTestFiles": 30,
+          "discoveryDenominator": 449
+        },
+        "phase6And8Abi": {
+          "passed": 507,
+          "total": 507
+        },
+        "requiredProfileMatrix": {
+          "passed": 66,
+          "total": 66
+        },
+        "ownership": {
+          "c3Manifest": {
+            "featurePaths": 38,
+            "generatedPaths": 2,
+            "governancePaths": 2,
+            "valid": true
+          },
+          "phase7Roadmap": {
+            "passed": 24,
+            "total": 24
+          },
+          "phase8Routing": {
+            "passed": 5,
+            "total": 5
+          }
+        }
+      },
+      "evidence": {
+        "sidecarRoot": "/mnt/workspace/.dev-state/agent-work/evidence/pr7036-c3-acceptance-current-fc91/",
+        "c3CombinedNode22Sha256": "eae04c02fe300310412d9f88687c6d6cb55c1a9a4042773f06c28df08749ace8",
+        "phase7TypesNode22Sha256": "f93b78154fdd388e5c6f0844b388e82bf79b362e96b030d030b07a28ccd23fb1",
+        "phase6And8AbiNode22Sha256": "9105c5cc15f87dfd7bf46491fcddb1fa6f375c05dba76133034c6ea9872d3ab5",
+        "requiredProfileNode22Sha256": "661cd59be4b396570db7de32de4b8bbc47dc89dbb3bd8ba96606b1bd12b57764",
+        "c3ManifestNode22Sha256": "8551698bc8bfe5eb06c7450e6acfda3766aaa213a7d28ab77a57b56c43333795",
+        "phase7RoadmapOwnershipNode22Sha256": "794236b4d03414a491edba15f88b347715ba5482fb72c8c86e3d8cb7942f0477",
+        "phase8RoutingOwnershipNode22Sha256": "3eee2a90b4073e39dfea16a97dca16be9442cce96a0db9531864f2250c4bbda7"
+      },
+      "failClosedBoundary": [
+        "hard contradiction",
+        "soft ambiguity",
+        "unknown extent",
+        "stale/cancel/budget",
+        "incomplete ABI layout",
+        "unregistered or mismatched profile"
+      ],
+      "scopeNote": "Checkpoint が割り当てた有限ユーザー側 C3-01/C3-02 の local acceptance 完了。C3-03 の versioned metadata provider、ME依存、全native corpus、独立shadow、実機・release、全体ロードマップは別ゲートとして未完了。",
       "fullRoadmapComplete": false,
       "transformAuthorization": false
     }
