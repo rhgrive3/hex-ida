@@ -1,124 +1,46 @@
-name: PR 8671 candidate verification
+name: PR 8671 latest-main conflict inventory
 
 on:
   push:
     branches: [integration-candidate/benchmark-auth-20260914]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  candidate:
+  conflicts:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Apply candidate query projection fix
-        id: patch
-        shell: bash
-        run: |
-          set -euo pipefail
-          python <<'PY'
-          from pathlib import Path
-          p=Path('js/analysis/query/app-adapter.js')
-          text=p.read_text()
-          old="""function cloneableDecompilerProjection(value) {
-            if (!value || typeof value !== 'object'
-              || !value.ir || typeof value.ir !== 'object'
-              || typeof value.ir.defUse !== 'function') return value;
-            const ir = { ...value.ir };
-            delete ir.defUse;
-            return { ...value, ir };
-          }
-          """
-          new="""function cloneableDecompilerProjection(value) {
-            if (!value || typeof value !== 'object') return value;
-            let changed = false;
-            const projection = { ...value };
-            if (value.ir && typeof value.ir === 'object' && typeof value.ir.defUse === 'function') {
-              const ir = { ...value.ir };
-              delete ir.defUse;
-              projection.ir = ir;
-              changed = true;
-            }
-            if (value.ctx && typeof value.ctx === 'object') {
-              const ctx = { ...value.ctx };
-              let ctxChanged = false;
-              if (value.ctx.values && typeof value.ctx.values === 'object') {
-                const values = { ...value.ctx.values };
-                let valuesChanged = false;
-                for (const key of ['at', 'defAt']) {
-                  if (typeof values[key] === 'function') { delete values[key]; valuesChanged = true; }
-                }
-                if (valuesChanged) { ctx.values = values; ctxChanged = true; }
-              }
-              for (const key of ['rowOfAddress', 'addrOfRow', 'symbolFor', 'rawSymbolFor', 'fieldFor']) {
-                if (typeof ctx[key] === 'function') { delete ctx[key]; ctxChanged = true; }
-              }
-              if (ctxChanged) { projection.ctx = ctx; changed = true; }
-            }
-            return changed ? projection : value;
-          }
-          """
-          if old in text:
-              p.write_text(text.replace(old,new,1))
-              print('changed=true')
-          elif new in text:
-              print('changed=false')
-          else:
-              raise SystemExit('cloneableDecompilerProjection shape changed unexpectedly')
-          PY
-          if git diff --quiet -- js/analysis/query/app-adapter.js; then echo 'changed=false' >> "$GITHUB_OUTPUT"; else echo 'changed=true' >> "$GITHUB_OUTPUT"; fi
-          node --check js/analysis/query/app-adapter.js
-          git diff --check -- js/analysis/query/app-adapter.js
-      - name: Install pinned dependencies
-        shell: bash
-        run: timeout 300s npm ci
-      - name: Verify real ARM64 product CLI
-        shell: bash
-        run: timeout 120s node --test tests/public-benchmark/product-cli.test.mjs
-      - name: Verify public benchmark suite
-        shell: bash
-        run: timeout 180s npm run benchmark:public:test
-      - name: Verify auth suite
-        shell: bash
-        run: timeout 240s npm run auth:test
-      - name: Install Playwright Chromium
-        shell: bash
-        run: timeout 240s npx playwright install chromium
-      - name: Verify AI UI Dev profile
-        shell: bash
-        run: timeout 120s node tests/ai-ui-dev-profile.mjs
-      - name: Verify Phase 7 cross-lane routing
-        shell: bash
-        run: timeout 120s node tests/phase7/ownership/cross-lane-routing.test.mjs
-      - name: Verify canonical auth build
-        shell: bash
-        run: timeout 300s npm run auth:build-test
-      - name: Record generated artifact status
-        shell: bash
-        run: |
-          set -euo pipefail
-          git status --porcelain -- userscript/hex.user.template.js userscript/release-version.json > pr8671-generated-status.txt
-          cat pr8671-generated-status.txt >> "$GITHUB_STEP_SUMMARY"
-      - name: Commit verified candidate
-        if: steps.patch.outputs.changed == 'true'
+      - name: Capture latest-main merge conflict inventory
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add js/analysis/query/app-adapter.js userscript/hex.user.template.js userscript/release-version.json
-          git diff --cached --check
-          git commit -m "fix(query): detach live decompiler callbacks from query values"
-          git push origin HEAD:integration-candidate/benchmark-auth-20260914
-      - name: Upload generated status
+          git config merge.conflictstyle diff3
+          git fetch --no-tags origin main
+          head_sha="$(git rev-parse HEAD)"
+          main_sha="$(git rev-parse origin/main)"
+          set +e
+          git merge --no-commit --no-ff origin/main >/dev/null 2>&1
+          status=$?
+          set -e
+          {
+            printf 'head=%s\n' "$head_sha"
+            printf 'main=%s\n' "$main_sha"
+            printf 'merge_status=%s\n' "$status"
+            printf '%s\n' 'conflicts:'
+            git diff --name-only --diff-filter=U | sort
+          } > pr8671-latest-main-conflicts.txt
+          cat pr8671-latest-main-conflicts.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload conflict inventory
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr8671-candidate-status
-          path: pr8671-generated-status.txt
-          if-no-files-found: ignore
+          name: pr8671-latest-main-conflicts
+          path: pr8671-latest-main-conflicts.txt
           retention-days: 1
