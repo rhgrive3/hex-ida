@@ -165,7 +165,7 @@
     {
       "id": "HEX-X-02",
       "localStatus": "partial-local-matrix",
-      "assessment": "元120行と既存59機能case+2manifestを保持。現在の有限120行は114 pass/0 product-gap/4 evidence-gap/2 environment-excluded。X-02全体・実機・独立reparseは未完了。",
+      "assessment": "元120行と既存59機能case+2manifestを保持。current finite overlayはX02-F-48のcompiler-produced arm64e Mach-O/PAC evidenceをpassとして、pinned LLVM 18.1.3 oracleが利用できない通常環境で115 pass/0 product-gap/3 evidence-gap/2 environment-excluded。X02-H-02のindependent reparseがexecutable digest/version/format/architectureを含めて成功する環境のみ116/0/3/1。残る3 evidence-gapはversioned Apple OS/toolchain/runtime corpus、real dyld shared cache + OS-derived slide/rebase provenance、genuine signed Mach-O + trusted signing validation。X02-F-47の実PAC authenticationはreal Apple arm64e runtime依存。全X-02・実機・release受入は未完了。",
       "source": "docs/analysis-x02-acceptance.md",
       "verificationSuite": "scpa-test",
       "originalRequirementAcceptedHere": false
@@ -529,7 +529,7 @@
       "complexity": "XL",
       "findingId": "HEX-X-02",
       "localStatus": "partial-local-matrix",
-      "currentAssessment": "元120行をcanonical統合し製品不足6行を修正。未知版partial、宣言metadata、classless ObjC、有限cacheを検証。実機・独立reparseと全Apple版受入は未完了。",
+      "currentAssessment": "元120行をcanonical統合し製品不足6行を修正済み。X02-F-48を実compiler生成arm64e/PAC evidenceでcurrent passへ進め、通常current分類は115/0/3/2。exact pinned LLVM 18.1.3でX02-H-02の独立reparseが成功した環境のみ116/0/3/1。unknown versionはpartialのまま保持し、残る実Apple runtime corpus、real dyld cache/slide provenance、genuine signed Mach-O/signing validation、実arm64e PAC runtimeは未完了。",
       "originalRequirementAcceptedHere": false
     }
   ],
@@ -552,7 +552,7 @@
     "C4 standard 120ms remains unaccepted",
     "C4 provenance historical failures not repaired by numeric DAG fix",
     "ME missing independent and physical inputs",
-    "remote X02 reviewed matrix not locally available",
+    "X02 prior120 matrix is integrated; real Apple runtime/cache/signing/device evidence remains absent",
     "dependency installation failed; no successful generated output rebuild",
     "full gates not green",
     "no independent reviewer or target device invoked"
@@ -577,9 +577,9 @@
       "environment-excluded": 2
     },
     "x02CurrentFiniteClassification": {
-      "pass": 114,
+      "pass": 115,
       "product-gap": 0,
-      "evidence-gap": 4,
+      "evidence-gap": 3,
       "environment-excluded": 2
     },
     "x02ChangedRows": [
@@ -2478,8 +2478,21 @@
       "task": "FR-C4-05A",
       "denominator": {
         "scalarFamilies": 34,
-        "widths": [1, 2, 3, 4, 8, 16, 32, 64],
-        "schedules": ["canonical", "reverse", "discovery"],
+        "widths": [
+          1,
+          2,
+          3,
+          4,
+          8,
+          16,
+          32,
+          64
+        ],
+        "schedules": [
+          "canonical",
+          "reverse",
+          "discovery"
+        ],
         "totalScalarCells": 816,
         "boolFamilies": 14
       },
@@ -2704,12 +2717,30 @@
       "workingTreeCleanAtVerification": true,
       "denominator": {
         "c2ByteExactForwarding": {
-          "widths": [8, 16, 32, 64, 128],
-          "endians": ["little", "big"],
+          "widths": [
+            8,
+            16,
+            32,
+            64,
+            128
+          ],
+          "endians": [
+            "little",
+            "big"
+          ],
           "scenarios": [
-            "full", "split", "overwrite", "hole", "unknown-byte",
-            "volatile-load", "atomic-load", "volatile-store", "atomic-store",
-            "unknown-write", "unknown-call", "may-store"
+            "full",
+            "split",
+            "overwrite",
+            "hole",
+            "unknown-byte",
+            "volatile-load",
+            "atomic-load",
+            "volatile-store",
+            "atomic-store",
+            "unknown-write",
+            "unknown-call",
+            "may-store"
           ],
           "totalCells": 120,
           "exactReconstructions": 30,
@@ -2848,6 +2879,43 @@
       },
       "formalEvidenceCheck": "PASS",
       "boundaryMutationDetection": "blocking-mismatch",
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false
+    },
+    "x02AcceptanceReconciliation20260916": {
+      "status": "PARTIAL-LOCAL-MATRIX",
+      "denominator": 120,
+      "frozenMatrixSha256": "c95ea2ba89d072fe9110565072462d5efca496b72a66ff365d8b8d15a95274ad",
+      "historicalClassification": {
+        "pass": 108,
+        "product-gap": 6,
+        "evidence-gap": 4,
+        "environment-excluded": 2
+      },
+      "currentWithoutPinnedLlvmOracle": {
+        "pass": 115,
+        "product-gap": 0,
+        "evidence-gap": 3,
+        "environment-excluded": 2
+      },
+      "conditionalWithPinnedLlvmOracle": {
+        "pass": 116,
+        "product-gap": 0,
+        "evidence-gap": 3,
+        "environment-excluded": 1,
+        "condition": "X02-H-02 exact independent reparse succeeds with pinned LLVM 18.1.3 executable digest/version/format/architecture checks"
+      },
+      "currentPassAdded": "X02-F-48 compiler-produced arm64e Mach-O/PAC evidence",
+      "remainingEvidenceGaps": [
+        "versioned Apple OS/toolchain/runtime corpus with provenance",
+        "real dyld shared cache plus OS-derived slide/rebase provenance",
+        "genuine signed Mach-O plus trusted signing validation"
+      ],
+      "remainingEnvironmentExcluded": [
+        "X02-F-47 real PAC authentication on Apple arm64e runtime",
+        "X02-H-02 exact pinned LLVM oracle when unavailable"
+      ],
+      "sourceOfTruth": "docs/analysis-x02-acceptance.md",
       "fullRoadmapComplete": false,
       "transformAuthorization": false
     }
