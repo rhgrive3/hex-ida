@@ -101,7 +101,8 @@ jobs:
           node --input-type=module <<'NODE'
           import {execFileSync} from 'node:child_process';
           import {BRANCH,validateRoadmapInventory} from './tools/validation/analysis-roadmap/ownership.mjs';
-          const files=execFileSync('git',['diff','--name-only',process.env.BASE_SHA],{encoding:'utf8'}).trim().split('\n').filter(Boolean);
+          const raw=execFileSync('git',['diff','--name-only','-z',process.env.BASE_SHA],{encoding:'utf8'});
+          const files=raw.split('\0').filter(Boolean);
           const selected=validateRoadmapInventory(BRANCH,'phase8',files);
           console.log(JSON.stringify({changedPaths:files.length,phase8:selected.length,ownership:'ok'}));
           NODE
