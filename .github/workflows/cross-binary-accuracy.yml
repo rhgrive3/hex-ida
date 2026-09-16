@@ -2,6 +2,12 @@ name: Cross-binary accuracy
 
 on:
   workflow_dispatch:
+    inputs:
+      pr_exact_head:
+        description: 'Set only by the exact-head PR dispatcher'
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main]
     paths:
@@ -260,7 +266,7 @@ jobs:
       - name: Matcher scaling regression
         run: node tests/issue-500-matcher-budget.mjs
       - name: Core tests for standalone manual validation
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.pr_exact_head != true
         run: npm test
       - name: Download all 18 raw partition artifacts
         uses: actions/download-artifact@v8
