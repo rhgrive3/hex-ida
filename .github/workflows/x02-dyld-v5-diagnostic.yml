@@ -1,0 +1,71 @@
+name: X-02 dyld v5 diagnostic
+
+on:
+  push:
+    branches: [feat/analysis-roadmap-v8-current-main-20260907]
+    paths: [.github/workflows/x02-dyld-v5-diagnostic.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: macos-15
+    timeout-minutes: 8
+    steps:
+      - name: Inspect first v5 chain record
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, struct
+          from pathlib import Path
+
+          roots=[Path('/System/Library/dyld'),Path('/System/Cryptexes/OS/System/Library/dyld'),Path('/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld')]
+          cache=None
+          for root in roots:
+            p=root/'dyld_shared_cache_arm64e'
+            if p.exists(): cache=p; break
+          if cache is None: raise SystemExit('no-arm64e-cache')
+          with cache.open('rb') as f:
+            h=f.read(0x200)
+            mapping_off,mapping_count=struct.unpack_from('<II',h,0x10)
+            shared_start,shared_size,max_slide=struct.unpack_from('<QQQ',h,0xe0)
+            slide_off,slide_count=struct.unpack_from('<II',h,0x138)
+            f.seek(mapping_off)
+            mappings=[]
+            for i in range(mapping_count):
+              b=f.read(32); address,size,file_off,max_prot,init_prot=struct.unpack('<QQQII',b)
+              mappings.append({'index':i,'address':address,'size':size,'fileOffset':file_off})
+            f.seek(slide_off)
+            sm=[]
+            for i in range(slide_count):
+              b=f.read(56); address,size,file_off,si_off,si_size,flags,max_prot,init_prot=struct.unpack('<QQQQQQII',b)
+              sm.append({'index':i,'address':address,'size':size,'fileOffset':file_off,'slideInfoFileOffset':si_off,'slideInfoFileSize':si_size})
+            diag={'cachePath':str(cache),'mappingCount':mapping_count,'slideMappingCount':slide_count,'sharedRegionStart':hex(shared_start),'sharedRegionSize':hex(shared_size),'sharedRegionEnd':hex(shared_start+shared_size),'maxSlide':hex(max_slide),'mappings':[{**m,'address':hex(m['address']),'size':hex(m['size']),'fileOffset':hex(m['fileOffset'])} for m in mappings]}
+            for item in sm:
+              if not item['slideInfoFileSize']: continue
+              f.seek(item['slideInfoFileOffset']); head=f.read(min(item['slideInfoFileSize'],65536))
+              version,page_size,count=struct.unpack_from('<III',head,0)
+              if version!=5: continue
+              value_add=struct.unpack_from('<Q',head,16)[0]
+              starts=struct.unpack_from('<'+'H'*count,head,24) if 24+2*count<=len(head) else ()
+              for page,start in enumerate(starts):
+                if start==0xffff: continue
+                byte_off=page*page_size+start*8
+                f.seek(item['fileOffset']+byte_off); raw=struct.unpack('<Q',f.read(8))[0]
+                runtime_off=raw & 0x3ffffffff
+                target=value_add+runtime_off
+                in_current=any(m['address']<=target<m['address']+m['size'] for m in mappings)
+                in_shared=shared_start<=target<shared_start+shared_size
+                diag['firstV5']={'slideMapping':item['index'],'page':page,'startPointerUnits':start,'byteOffset':byte_off,'raw':hex(raw),'auth':bool((raw>>63)&1),'nextPointerUnits':(raw>>52)&0x7ff,'runtimeOffset':hex(runtime_off),'valueAdd':hex(value_add),'target':hex(target),'targetInCurrentFileMappings':in_current,'targetInSharedRegion':in_shared,'slideMappingAddress':hex(item['address']),'slideMappingSize':hex(item['size']),'slideMappingFileOffset':hex(item['fileOffset'])}
+                break
+              if 'firstV5' in diag: break
+          Path('x02-dyld-v5-diagnostic.json').write_text(json.dumps(diag,indent=2)+'\n')
+          print(json.dumps(diag['firstV5'],indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x02-dyld-v5-diagnostic-${{ github.sha }}
+          path: x02-dyld-v5-diagnostic.json
+          retention-days: 7
