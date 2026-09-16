@@ -62,8 +62,17 @@ export function installDyldRuntimeNavigation(app) {
   host.insertBefore(button, open?.nextSibling || null);
 
   let lastSlide = 0n;
-  const sync = () => { button.hidden = !isDyldCache(app); if (button.hidden) lastSlide = 0n; };
-  document.addEventListener('hex:file-opened', sync);
+  let lastFile = app.store.get('file');
+  const sync = (_state, patch = {}) => {
+    const file = app.store.get('file');
+    if (Object.hasOwn(patch, 'file') && file !== lastFile) {
+      lastFile = file;
+      lastSlide = 0n;
+    }
+    button.hidden = !isDyldCache(app);
+  };
+  const unsubscribe = app.store.subscribe(sync);
+  sync();
 
   button.addEventListener('click', async () => {
     const file = app.store.get('file');
@@ -127,5 +136,5 @@ export function installDyldRuntimeNavigation(app) {
     }
   });
 
-  return Object.freeze({ button, sync });
+  return Object.freeze({ button, sync, dispose:unsubscribe });
 }
