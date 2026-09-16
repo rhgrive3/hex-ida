@@ -48,4 +48,5 @@ jobs:
           fi
           timeout 30s gh api --method POST \
             "repos/${GITHUB_REPOSITORY}/actions/workflows/cross-binary-accuracy.yml/dispatches" \
-            -f ref="$HEAD_REF"
+            -f ref="$HEAD_REF" \
+            -F 'inputs[pr_exact_head]=true'
