@@ -1,0 +1,83 @@
+name: Stage A exact-main final validation
+
+on:
+  push:
+    branches:
+      - validation/stage-a-final-20260917
+    paths:
+      - .github/workflows/stage-a-final-validation.yml
+
+permissions:
+  contents: read
+
+jobs:
+  exact-main-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 5e7a86384a58e351bd65b243c647afc97e6f0f46
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies quietly
+        run: npm ci --silent --no-audit --no-fund
+      - name: Canonical userscript build pass 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run userscript:build --silent
+          git diff --no-ext-diff --binary > /tmp/stage-a-pass1.diff
+          git diff --name-only > /tmp/stage-a-pass1-files.txt
+          sha256sum /tmp/stage-a-pass1.diff > /tmp/stage-a-pass1.sha256
+      - name: Canonical userscript build pass 2 and zero-diff proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run userscript:build --silent
+          git diff --no-ext-diff --binary > /tmp/stage-a-pass2.diff
+          cmp /tmp/stage-a-pass1.diff /tmp/stage-a-pass2.diff
+          {
+            echo "candidate=5e7a86384a58e351bd65b243c647afc97e6f0f46"
+            cat /tmp/stage-a-pass1.sha256
+            echo "changed-tracked-files-after-pass1:"
+            cat /tmp/stage-a-pass1-files.txt
+            echo "second-pass-diff-identical=true"
+          } > /tmp/stage-a-generated-summary.txt
+      - name: Userscript tests
+        run: npm run userscript:test --silent
+      - name: Repository check
+        run: npm run check --silent
+      - name: Full test suite
+        run: npm test --silent
+      - name: Semantic gates
+        run: |
+          npm run semantic:test --silent
+          npm run semantic-v2:test --silent
+      - name: Decompiler gate
+        run: npm run decompiler:test --silent
+      - name: Machine effects gate
+        run: npm run effects:test --silent
+      - name: Runtime gate
+        run: npm run runtime:test --silent
+      - name: Recovery phase gates
+        run: |
+          npm run phase4:test --silent
+          npm run phase7:test --silent
+          npm run phase8:test --silent
+          npm run phase9:test --silent
+          npm run phase11:test --silent
+          npm run phase12:test --silent
+      - name: Browser gate
+        run: npm run browser --silent
+      - name: Upload generated summary only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage-a-generated-summary
+          path: /tmp/stage-a-generated-summary.txt
+          if-no-files-found: ignore
+          retention-days: 1
