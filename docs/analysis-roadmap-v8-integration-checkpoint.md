@@ -7821,3 +7821,11 @@ return summary propagationを3 return kind × 4 graph topology × 6 target/compl
 8. **Bool項の独立検証**: 14Bool族において BV1 と混同せず純粋Bool項として独立証明され、正しく採用可能であることを検証。
 
 HEX-C4-05 / FR-C4-05A はこのローカル要件について accepted-local。C4-03、独立レビュー、物理実機検証、全release gateは未達のため、`CHECKPOINT-LOCKED` / `fullRoadmapComplete: false` / `transformAuthorization: false` を維持する。
+
+## 2026-09-16 S2 local acceptance
+
+`tests/stage2/s2-01-runtime-identity-acceptance.test.mjs` で HEX-S2-01 の frozen denominator を固定した。provider/profile/providerVersion/runtimeInstance/target/targetProfile/architectureProfile/binary/build/runtimeBuild/module/loadMapping/session/capabilityVersion/commit/tree/epoch/bindingId の18 identity field を個別理由で拒否し、observation digest は payload の型と byte content に感応する。tracker は件数と保持 byte の両方で有界、stale sequence・閉塞 tracker・旧 epoch 観測・binding 不一致を拒否する。module reload は same VA/new bytes を新 generation として publish し旧 generation を退役させる（`loaded`/`unloaded`/`reloaded`）。dropped events は `truncated` として明示し、外部 trace module identity は out-of-band の strict boolean verifier なしに exact にならない。runtime profile promotion は current exact head/tree・全 proof flag・locked provider/target profile を要求し、複製 support/proof は権威を失う。
+
+`tests/stage2/s2-02-recognition-collision-acceptance.test.mjs` で HEX-S2-02 の frozen denominator を固定した。identical-thunk / ICF-clone / relocation-stripped / tiny-function-without-bytes の衝突で candidate を保持し、ambiguous match は exact prediction として数えない。maximum-weight assignment は一対一で global optimum を選び、NaN/範囲外 confidence は match にしない。component-budget / solver-budget / wall-clock / candidate-edge-cap / preprocessing の打ち切りは truncated+ambiguous として未解決入力を保持し、削除/追加を断定しない。calibration は `similarity-confidence-v1` の bin 報告（`calibrated:false`）に限定し、未知の fingerprint version / knowledge pack version は fail closed する。
+
+HEX-S2-01 / HEX-S2-02 はこのローカル機構要件について accepted-local。canonical Phase11 集約は既存の DEX/JVM/exception-region 失敗を含むため別ゲートのまま成功扱いにしない。corpus 幅、データライセンス、独立レビュー、物理実機検証、全 roadmap/release gate は未達のため `CHECKPOINT-LOCKED` / `fullRoadmapComplete: false` / `transformAuthorization: false` を維持する。

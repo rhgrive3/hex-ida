@@ -180,19 +180,19 @@
     },
     {
       "id": "HEX-S2-01",
-      "localStatus": "existing-with-failed-gate",
-      "assessment": "既存provider/session/module/binary/generation identityを維持。Phase11のmodule identity既存失敗を除外しない。",
-      "source": "tests/phase11",
-      "verificationSuite": "phase11-test",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "assessment": "S2-01のruntime trace identity分母をprovider/profile/providerVersion/runtimeInstance/target/targetProfile/architectureProfile/binary/build/runtimeBuild/module/loadMapping/session/capabilityVersion/commit/tree/epoch/bindingIdの18 identity fieldとして固定受入。observationは全identity fieldの不一致を個別理由で拒否し、observation digestはpayloadの型とbyte contentに感応する。trackerは件数と保持byteの両方で有界で、stale sequence・閉塞tracker・旧epoch観測・binding不一致を拒否する。module reloadはsame VA新bytesを新generationとして扱い旧generationを退役させ、unresolved/ambiguous/mismatchをexplicitに保つ。dropped eventsはtruncatedとして明示され、外部trace module identityはout-of-band verifierなしにexactへ昇格しない。runtime profile promotionはcurrent exact head/tree・全proof flag・locked profile・own capabilityを要求し、複製record/proofは権威を失う。canonical Phase11全体はDEX/JVM/exception-region等の既存失敗を含むため別ゲートのままであり、この受入はS2-01機構の固定分母に対するもの。",
+      "source": "tests/stage2/s2-01-runtime-identity-acceptance.test.mjs",
+      "verificationSuite": "s2-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "HEX-S2-02",
-      "localStatus": "existing-gate",
-      "assessment": "candidate alternatives/truncationを維持。曖昧候補をexactにしない。全recognition回帰の受入は別ゲート。",
-      "source": "tests/phase11",
-      "verificationSuite": "phase11-test",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "assessment": "S2-02のcollision/alternative/truncation/calibration分母を固定受入。identical-thunk/ICF-clone/relocation-stripped/tiny-function-without-bytesの衝突でcandidateを保持し、ambiguous matchをexact predictionとして数えない。maximum-weight assignmentは片側一対一でglobal optimumを選び、NaN/範囲外confidenceはmatchにしない。component/solver/wall-clock/candidate-edge/preprocessingの打ち切りはtruncated+ambiguityで未解決入力を保持し、削除/追加の断定をしない。calibrationはscoreKind similarity-confidence-v1・calibrated:falseのbin報告のみで、fingerprint/knowledge packの未知versionはfail closed。corpus幅とデータライセンスは別タスクのままで、この受入はcollision-preserving機構に限定。",
+      "source": "tests/stage2/s2-02-recognition-collision-acceptance.test.mjs",
+      "verificationSuite": "s2-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     }
   ],
   "tasks": [
@@ -2577,6 +2577,85 @@
         "unregistered or mismatched profile"
       ],
       "scopeNote": "Checkpoint が割り当てた有限ユーザー側 C3-01/C3-02 の local acceptance 完了。C3-03 の versioned metadata provider、ME依存、全native corpus、独立shadow、実機・release、全体ロードマップは別ゲートとして未完了。",
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false
+    },
+    "s2Acceptance20260916": {
+      "status": "ACCEPTED-LOCAL",
+      "findings": [
+        "HEX-S2-01",
+        "HEX-S2-02"
+      ],
+      "acceptanceTests": [
+        "tests/stage2/s2-01-runtime-identity-acceptance.test.mjs",
+        "tests/stage2/s2-02-recognition-collision-acceptance.test.mjs"
+      ],
+      "runtimeIdentity": {
+        "identityFields": [
+          "bindingId",
+          "providerIdentity",
+          "providerProfileId",
+          "providerVersion",
+          "runtimeInstanceIdentity",
+          "targetIdentity",
+          "targetProfileId",
+          "architectureProfileId",
+          "binaryIdentity",
+          "buildIdentity",
+          "runtimeBuildIdentity",
+          "moduleIdentity",
+          "loadMappingIdentity",
+          "sessionIdentity",
+          "capabilityVersion",
+          "commitSha",
+          "treeSha",
+          "epoch"
+        ],
+        "moduleGenerationLifecycle": [
+          "loaded",
+          "unloaded",
+          "reloaded"
+        ],
+        "resolutionStates": [
+          "exact",
+          "resolved",
+          "ambiguous",
+          "unresolved",
+          "mismatch"
+        ],
+        "boundedStorage": "observation-count-and-retained-payload-bytes",
+        "staleDisposition": [
+          "stale-sequence",
+          "closed-tracker",
+          "old-epoch-observation",
+          "binding-mismatch"
+        ],
+        "externalModuleIdentity": "out-of-band-strict-boolean-verifier-required",
+        "promotionAuthority": "current-exact-head-and-tree-plus-all-proof-flags-plus-locked-profile",
+        "copiedProofAuthority": false
+      },
+      "recognitionCollision": {
+        "collisionClasses": [
+          "identical-thunk",
+          "icf-clone",
+          "relocation-stripped",
+          "tiny-function-without-bytes"
+        ],
+        "truncationAuthorities": [
+          "component-budget",
+          "solver-budget",
+          "wall-clock",
+          "candidate-edge-cap",
+          "preprocessing"
+        ],
+        "retainedAlternativesCap": 4,
+        "ambiguousIsExactPrediction": false,
+        "calibration": "similarity-confidence-v1-bins-with-calibrated-false",
+        "fingerprintVersion": 4,
+        "unknownDataVersionDisposition": "fail-closed"
+      },
+      "canonicalAggregateNote": "canonical Phase11 aggregate remains red on pre-existing DEX/JVM/exception-region paths unrelated to these two mechanisms; the S2 acceptance is scoped to the frozen identity/collision denominators above and does not promote the whole Phase 11 suite.",
+      "physicalDeviceAcceptance": "SKIPPED (user-requested)",
       "fullRoadmapComplete": false,
       "transformAuthorization": false
     }
