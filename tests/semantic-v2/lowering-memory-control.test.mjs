@@ -124,12 +124,20 @@ const tmp = (id, bits) => createTemporaryValue(id, bv(bits));
 {
   const target = { kind: 'absolute-address', widthBits: 64, value: '4104' };
   const condition = createFlagValue('resolved-same-successor-condition', 1);
+  const instructionId = createInstructionId({
+    binaryId: 'bin_lowering_control',
+    sliceId: 'slice_lowering_control',
+    virtualAddress: address,
+    decodeMode: 'opaque-mode',
+    decoderSemanticVersion: '1',
+  });
+  const implicitFallthrough = { kind: 'fallthrough-continuation', instructionId };
   const bundle = fixture({
+    instructionId,
     operations: [],
-    controlEffect: { kind: 'conditional-branch', condition, target },
+    controlEffect: { kind: 'conditional-branch', condition, target, fallthrough: implicitFallthrough },
   });
   const successor = 'block_resolved_same_successor';
-  const implicitFallthrough = { kind: 'fallthrough-continuation', instructionId: bundle.instructionId };
   const ir = lowerMachineEffectBundleToSemanticIr(bundle, {
     ...context('resolved-same-successor-conditional'),
     controlTargets: [

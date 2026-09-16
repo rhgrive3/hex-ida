@@ -114,9 +114,55 @@ for (const mutation of ['memory', 'nondeterminism', 'extra-input']) test(`an int
   assert.ok(!projected.instructions.some(i => i.sourceEntityId === source.id && i.extra?.compatSource === 'exact-add-with-carry-result'));
 });
 
-for (const mnemonic of ['adcs', 'sbcs']) test(`${mnemonic}: dynamic incoming carry remains outside the constant-carry projection`, () => {
+for (const mnemonic of ['adcs', 'sbcs']) test(`${mnemonic}: dynamic incoming carry lowers through exact-dynamic-add-with-carry`, () => {
   const pipeline = pipelineFor(mnemonic, 'w0, w0, w1');
   const source = pipeline.semanticIr.nodes.find(n => n.operator === 'add-with-carry');
   assert.ok(source);
-  assert.equal(pipeline.legacyV1.instructions.find(i => i.sourceEntityId === source.id).op, 'clobber');
+  const inst = pipeline.legacyV1.instructions.find(i => i.sourceEntityId === source.id && i.extra?.compatSource === 'exact-dynamic-add-with-carry-intrinsic');
+  assert.ok(inst, `${mnemonic} must lower through exact-dynamic-add-with-carry-intrinsic, never clobber`);
+  assert.equal(inst.op, 'bin');
+  assert.equal(inst.sub, 'add');
+  const values = source.outputs.map(id => pipeline.legacyV1.values.find(v => v.semanticValueId === id));
+  assert.ok(values.every(Boolean));
+  assert.equal(values[0].def, inst);
+  for (const value of values.slice(1)) {
+    assert.ok(value.def, 'secondary outputs need their own definition');
+    assert.equal(value.def.extra?.compatSource, 'exact-add-with-carry-result');
+  }
+});
+
+test('adds followed by adcs correctly chains dynamic carry without clobber', () => {
+  const pipeline = buildSemanticV2CompatibilityPipeline({
+    architecturePlugin: ARM64_ARCHITECTURE, decoderSemanticVersion: 'local-c4-def-use-chain',
+    binaryId: 'bin_chain', sliceId: 'slice_chain', addressWidthBits: 64,
+    entryBlockKey: 'entry', blocks: [{ key: 'entry', startAddress: 0x1000n, successors: [],
+      instructions: [
+        { decoded: { address: 0x1000n, mnemonic: 'adds', operands: 'x0, x1, x2', ops: parseOperands('x0, x1, x2'), mode: 'a64' } },
+        { decoded: { address: 0x1004n, mnemonic: 'adcs', operands: 'x3, x4, x5', ops: parseOperands('x3, x4, x5'), mode: 'a64' } },
+      ],
+    }],
+  });
+  const addCarryNodes = pipeline.semanticIr.nodes.filter(n => n.operator === 'add-with-carry');
+  assert.equal(addCarryNodes.length, 2);
+  assert.ok(!pipeline.legacyV1.instructions.some(i => i.op === 'clobber'), 'no clobber instructions permitted in exact add-with-carry sequence');
+  const dynamicInst = pipeline.legacyV1.instructions.find(i => i.extra?.compatSource === 'exact-dynamic-add-with-carry-intrinsic');
+  assert.ok(dynamicInst, 'adcs must project through exact-dynamic-add-with-carry-intrinsic');
+});
+
+test('subs followed by sbcs correctly chains dynamic borrow without clobber', () => {
+  const pipeline = buildSemanticV2CompatibilityPipeline({
+    architecturePlugin: ARM64_ARCHITECTURE, decoderSemanticVersion: 'local-c4-def-use-chain-sub',
+    binaryId: 'bin_chain_sub', sliceId: 'slice_chain_sub', addressWidthBits: 64,
+    entryBlockKey: 'entry', blocks: [{ key: 'entry', startAddress: 0x1000n, successors: [],
+      instructions: [
+        { decoded: { address: 0x1000n, mnemonic: 'subs', operands: 'x0, x1, x2', ops: parseOperands('x0, x1, x2'), mode: 'a64' } },
+        { decoded: { address: 0x1004n, mnemonic: 'sbcs', operands: 'x3, x4, x5', ops: parseOperands('x3, x4, x5'), mode: 'a64' } },
+      ],
+    }],
+  });
+  const subCarryNodes = pipeline.semanticIr.nodes.filter(n => n.operator === 'add-with-carry');
+  assert.equal(subCarryNodes.length, 2);
+  assert.ok(!pipeline.legacyV1.instructions.some(i => i.op === 'clobber'), 'no clobber instructions permitted in exact sub-with-carry sequence');
+  const dynamicInst = pipeline.legacyV1.instructions.find(i => i.extra?.compatSource === 'exact-dynamic-add-with-carry-intrinsic');
+  assert.ok(dynamicInst, 'sbcs must project through exact-dynamic-add-with-carry-intrinsic');
 });

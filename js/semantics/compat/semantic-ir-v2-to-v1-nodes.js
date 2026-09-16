@@ -4,6 +4,7 @@ import {
   legacyPublicStateIdentity, addUse, attachArgs, defaultUnknownInstruction, baseInstruction, targetAddress,
 } from './semantic-ir-v2-to-v1-core.js';
 import { projectLegacyAddress } from './semantic-ir-v2-to-v1-address.js';
+import { SEMANTIC_CONTROL_TARGET_COUNTS } from '../ir/nodes.js';
 
 const STRICT_FLOAT_LITERAL = /^[+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)$/;
 
@@ -281,14 +282,13 @@ export function addWithCarryOperands(node, context) {
   const metadata = operationMetadata(node);
   const subtract = metadata.subtract === true;
   const carry = constForValue(node.inputs[2], context);
-  // The v1 compatibility projection only has a sound constant-carry form.
-  // A dynamic incoming NZCV.C value would require carrying the flag-state
-  // dependency through the legacy instruction, which this projection cannot
-  // represent without silently turning an opaque flag input into arithmetic.
-  // Keep such ADC/SBC-family intrinsics conservative until a flag-aware v1
-  // representation exists.
-  if (carry == null || (carry !== 0n && carry !== 1n)) return null;
-  const plainArithmetic = carry === (subtract ? 1n : 0n);
+  // An explicit constant carry of 0/1 uses the plain arithmetic form when
+  // matching the subtraction direction. A dynamic incoming NZCV.C value (or
+  // non-plain constant carry) is projected through the pure zero-extended carry
+  // sequence (exact-dynamic-add-with-carry-intrinsic). Any unmodelled or non-0/1
+  // constant fails closed.
+  if (carry != null && carry !== 0n && carry !== 1n) return null;
+  const plainArithmetic = carry != null && carry === (subtract ? 1n : 0n);
   let rhsId = node.inputs[1];
   if (subtract) {
     const rhsProducer = context.producerByValueId.get(rhsId) ?? null;
@@ -348,14 +348,14 @@ function deterministicIntrinsicProjection(node, context, inst, setBasic, primary
   }
   if (inputValues.length >= 1) {
     const metadata = operationMetadata(node);
-    const alias = String(metadata.alias ?? '').toLowerCase();
+    const alias = typeof metadata.alias === 'string' ? metadata.alias.toLowerCase() : null;
     if (alias === 'ubfx' || alias === 'sbfx') {
-      const lsb = Number(metadata.immr);
-      const imms = Number(metadata.imms);
-      const fieldWidth = Number.isInteger(lsb) && Number.isInteger(imms) && imms >= lsb ? imms - lsb + 1 : null;
-      const outputBits = Number(primaryOutput?.bits ?? 0);
-      if (!Number.isInteger(lsb) || lsb < 0 || !Number.isInteger(fieldWidth) || fieldWidth <= 0
-          || !Number.isInteger(outputBits) || outputBits <= 0 || lsb + fieldWidth > outputBits) return false;
+      const lsb = metadata.immr;
+      const imms = metadata.imms;
+      const fieldWidth = Number.isSafeInteger(lsb) && Number.isSafeInteger(imms) && imms >= lsb ? imms - lsb + 1 : null;
+      const outputBits = primaryOutput?.bits;
+      if (!Number.isSafeInteger(lsb) || lsb < 0 || !Number.isSafeInteger(imms) || !Number.isSafeInteger(fieldWidth) || fieldWidth <= 0
+          || !Number.isSafeInteger(outputBits) || outputBits <= 0 || lsb + fieldWidth > outputBits) return false;
       setBasic(V1_OP.BFX, 'extract');
       inst.extra.lsb = lsb;
       inst.extra.width = fieldWidth;
@@ -799,6 +799,20 @@ export function projectNode(node, context) {
       }
       break;
     case 'branch': {
+      if (node.targets.length !== SEMANTIC_CONTROL_TARGET_COUNTS.branch || node.inputs.length !== 0) {
+        const reason = node.targets.length !== SEMANTIC_CONTROL_TARGET_COUNTS.branch
+          ? 'semantic-ir-v2-control-target-cardinality-not-representable-in-v1'
+          : 'semantic-ir-v2-control-input-cardinality-not-representable-in-v1';
+        const unknown = defaultUnknownInstruction(node, blockIndex, row, options, {
+          reason,
+          unknownCategories: ['control'],
+          surplusTargets: node.targets.slice(),
+          controlInputs: node.inputs.slice(),
+        });
+        Object.assign(inst, unknown, { semanticNodeId: node.id, sourceEntityId: node.id, sourceEffectIds: node.sourceEffectIds.slice(), instructionId: sourceInstructionIds(node.origin)[0] ?? null, sourceInstructionIds: sourceInstructionIds(node.origin), origin: node.origin });
+        attachArgs(inst, inputValues);
+        break;
+      }
       setBasic(V1_OP.BR, null);
       const targetBlockId = node.targets[0] ?? null;
       inst.extra.targetBlockId = targetBlockId;
@@ -808,6 +822,20 @@ export function projectNode(node, context) {
       break;
     }
     case 'conditional-branch': {
+      if (node.targets.length !== SEMANTIC_CONTROL_TARGET_COUNTS['conditional-branch'] || node.inputs.length !== 1) {
+        const reason = node.targets.length !== SEMANTIC_CONTROL_TARGET_COUNTS['conditional-branch']
+          ? 'semantic-ir-v2-control-target-cardinality-not-representable-in-v1'
+          : 'semantic-ir-v2-control-input-cardinality-not-representable-in-v1';
+        const unknown = defaultUnknownInstruction(node, blockIndex, row, options, {
+          reason,
+          unknownCategories: ['control'],
+          surplusTargets: node.targets.slice(),
+          controlInputs: node.inputs.slice(),
+        });
+        Object.assign(inst, unknown, { semanticNodeId: node.id, sourceEntityId: node.id, sourceEffectIds: node.sourceEffectIds.slice(), instructionId: sourceInstructionIds(node.origin)[0] ?? null, sourceInstructionIds: sourceInstructionIds(node.origin), origin: node.origin });
+        attachArgs(inst, inputValues);
+        break;
+      }
       const conditionValueId = node.inputs[0] ?? null;
       const semanticConditionValue = conditionValueId == null ? null : valuesById.get(conditionValueId) ?? null;
       const zero = conditionValueId == null ? null : zeroCondition(conditionValueId, context);

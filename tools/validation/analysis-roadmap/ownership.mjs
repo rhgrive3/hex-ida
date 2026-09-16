@@ -27,6 +27,7 @@ const SPECIAL_PATHS = Object.freeze({
     "docs/analysis-local-handover.md",
     "docs/解析ツール改善.md",
     "tests/semantic-v2/repair-v1-add-with-carry-def-use.test.mjs",
+    "tests/semantic-v2/issue-flags-nzcv-adcs-sbcs.test.mjs",
     'js/semantics/ir/nodes.js',
     'js/semantics/ir/function.js',
     'js/semantics/ir/from-machine-effects.js',
