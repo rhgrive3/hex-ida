@@ -22,6 +22,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git config user.name 'hex-ida diagnostic'
+          git config user.email 'diag@localhost'
           git fetch --no-tags --depth=650 origin ac36cc16b42fb10fbd54b5bd3f1e1a6474ca902b
           set +e
           base=$(git merge-base HEAD^ ac36cc16b42fb10fbd54b5bd3f1e1a6474ca902b 2>/tmp/merge-base.err)
