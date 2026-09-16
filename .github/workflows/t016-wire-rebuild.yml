@@ -1,0 +1,123 @@
+name: T016 wire rebuild preservation
+
+on:
+  push:
+    branches:
+      - recovery/t016-discovery-artifact-20260916
+    paths:
+      - .github/workflows/t016-wire-rebuild.yml
+
+permissions:
+  contents: write
+
+jobs:
+  wire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Wire discovery authority into current rebuild transaction
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace_once(path, old, new, code):
+              p = Path(path)
+              text = p.read_text()
+              if text.count(old) != 1:
+                  raise SystemExit(code)
+              p.write_text(text.replace(old, new))
+
+          artifact = 'js/analysis/discovery/artifact.js'
+          replace_once(artifact,
+            "import { createDiscoveryEvidence, createFunctionCandidate, hasExactStart } from './candidates.js';\nimport { canonicalTypedDigest, canonicalTypedString } from './canonical-value.js';",
+            "import { createDiscoveryEvidence, createFunctionCandidate, hasExactStart } from './candidates.js';\nimport { fuseFunctionCandidates } from './fusion.js';\nimport { canonicalTypedDigest, canonicalTypedString } from './canonical-value.js';",
+            't016-artifact-import-boundary')
+          replace_once(artifact,
+            "  const candidates = canonicalCandidates(rawCandidates);\n  const producerRuns = arrayItems(rawRuns, 'discovery-artifact-producer-runs-invalid')",
+            "  const candidates = canonicalCandidates(rawCandidates);\n  const derivedCandidates = canonicalCandidates(fuseFunctionCandidates(evidence, {\n    architectureId: binding.architectureId ?? 'generic',\n    snapshotId: status.snapshotId,\n  }).candidates);\n  if (candidates.length !== derivedCandidates.length\n      || candidates.some((candidate, index) => candidate.digest !== derivedCandidates[index].digest)) {\n    fail('discovery-artifact-candidate-view-mismatch');\n  }\n  const canonicalCandidateView = derivedCandidates;\n  const producerRuns = arrayItems(rawRuns, 'discovery-artifact-producer-runs-invalid')",
+            't016-artifact-candidate-boundary')
+          replace_once(artifact,
+            "  const collisionSets = candidates.flatMap((candidate) => candidate.conflicts.map((conflict, index) => conflictRecord(candidate, conflict, index)))",
+            "  const collisionSets = canonicalCandidateView.flatMap((candidate) => candidate.conflicts.map((conflict, index) => conflictRecord(candidate, conflict, index)))",
+            't016-artifact-collision-boundary')
+          replace_once(artifact,
+            "  const intervalClaims = candidates.flatMap(candidateIntervals)",
+            "  const intervalClaims = canonicalCandidateView.flatMap(candidateIntervals)",
+            't016-artifact-interval-boundary')
+          replace_once(artifact,
+            "  const functionCandidates = candidates.map((candidate) => deepFreeze({",
+            "  const functionCandidates = canonicalCandidateView.map((candidate) => deepFreeze({",
+            't016-artifact-function-view-boundary')
+          replace_once(artifact,
+            "function rebuildBindingValid(binding) {\n  if (!binding || !ISSUED_REBUILD_BINDINGS.has(binding) || binding.schemaVersion !== DISCOVERY_REBUILD_BINDING_SCHEMA) return false;\n  const payload = { ...binding };\n  delete payload.digest;\n  return binding.digest === stableDigest(payload);\n}",
+            "export function isFactoryIssuedDiscoveryRebuildBinding(binding) {\n  if (!binding || !ISSUED_REBUILD_BINDINGS.has(binding) || binding.schemaVersion !== DISCOVERY_REBUILD_BINDING_SCHEMA) return false;\n  const payload = { ...binding };\n  delete payload.digest;\n  return binding.digest === stableDigest(payload);\n}\n\nfunction rebuildBindingValid(binding) {\n  return isFactoryIssuedDiscoveryRebuildBinding(binding);\n}",
+            't016-artifact-binding-boundary')
+          replace_once(artifact,
+            "  if (sourceBinding.binding.binaryId !== reparsedArtifact.binding.binaryId\n      || sourceBinding.binding.architectureId !== reparsedArtifact.binding.architectureId) {\n    return deepFreeze({ ok: false, reason: 'discovery-reparse-identity-mismatch' });\n  }",
+            "  if (sourceBinding.binding.binaryId !== reparsedArtifact.binding.binaryId\n      || sourceBinding.binding.architectureId !== reparsedArtifact.binding.architectureId) {\n    return deepFreeze({ ok: false, reason: 'discovery-reparse-identity-mismatch' });\n  }\n  if (sourceBinding.binding.snapshotId === reparsedArtifact.binding.snapshotId) {\n    return deepFreeze({ ok: false, reason: 'discovery-reparse-stale-snapshot' });\n  }",
+            't016-artifact-snapshot-boundary')
+
+          index = 'js/analysis/index.js'
+          replace_once(index,
+            "import { createDiscoveryArtifact } from './discovery/artifact.js';",
+            "import { createDiscoveryArtifact } from './discovery/artifact.js';",
+            't016-index-import-presence')
+          replace_once(index,
+            "  languageMetadataFunctionEvidence,\n};",
+            "  languageMetadataFunctionEvidence,\n};\n\nexport {\n  discoveryArtifactForRebuild,\n  isFactoryIssuedDiscoveryArtifact,\n  isFactoryIssuedDiscoveryRebuildBinding,\n  verifyDiscoveryReparse,\n} from './discovery/artifact.js';",
+            't016-index-export-boundary')
+
+          tx = 'js/rebuild/transaction-v2.js'
+          replace_once(tx,
+            "import { isValidatedStage2CapabilityProof } from '../platform/stage2-profile-evidence.js';",
+            "import { isValidatedStage2CapabilityProof } from '../platform/stage2-profile-evidence.js';\nimport {\n  discoveryArtifactForRebuild,\n  isFactoryIssuedDiscoveryRebuildBinding,\n  verifyDiscoveryReparse,\n} from '../analysis/discovery/artifact.js';",
+            't016-tx-import-boundary')
+          replace_once(tx,
+            "const TRUSTED_ATOMIC_PUBLICATION_PROVIDERS = new WeakSet();\nconst TRUSTED_ATOMIC_PUBLICATION_RECEIPTS = new WeakSet();",
+            "const TRUSTED_ATOMIC_PUBLICATION_PROVIDERS = new WeakSet();\nconst TRUSTED_ATOMIC_PUBLICATION_RECEIPTS = new WeakSet();\nconst DISCOVERY_VALIDATOR = 'discovery-preservation';\nconst ISSUED_DISCOVERY_TRANSACTIONS = new WeakMap();",
+            't016-tx-authority-boundary')
+          replace_once(tx,
+            "  const requireIndependentOracle = input.requireIndependentOracle === true;\n  const transaction = {\n    schemaVersion: REBUILD_TRANSACTION_SCHEMA,\n    transactionId: null,\n    binaryId: required(input.binaryId, 'rebuild-v2-binary-id-required'),",
+            "  const requireIndependentOracle = input.requireIndependentOracle === true;\n  const binaryId = required(input.binaryId, 'rebuild-v2-binary-id-required');\n  const additionalValidators = input.additionalValidators == null ? [] : input.additionalValidators;\n  if (!Array.isArray(additionalValidators)) throw new TypeError('rebuild-v2-additional-validators-invalid');\n  const discoveryRequested = input.requireDiscoveryPreservation === true\n    || input.discoveryArtifact != null\n    || input.discoveryBinding != null\n    || expectedOriginalState.discovery != null\n    || additionalValidators.includes(DISCOVERY_VALIDATOR);\n  let discoveryBinding = null;\n  if (discoveryRequested) {\n    const expectedDiscovery = { binaryId, sourceHash, architectureId: architecture };\n    if (input.snapshotId != null) expectedDiscovery.snapshotId = required(input.snapshotId, 'rebuild-v2-discovery-snapshot-id-invalid');\n    if (input.discoveryArtifact != null) {\n      discoveryBinding = discoveryArtifactForRebuild(input.discoveryArtifact, expectedDiscovery);\n    } else {\n      if (!isFactoryIssuedDiscoveryRebuildBinding(input.discoveryBinding)) {\n        throw new TypeError('rebuild-v2-discovery-binding-unissued');\n      }\n      discoveryBinding = input.discoveryBinding;\n      for (const [key, expected] of Object.entries(expectedDiscovery)) {\n        if (discoveryBinding.binding?.[key] !== expected) throw new TypeError(`rebuild-v2-discovery-${key}-mismatch`);\n      }\n    }\n    expectedOriginalState.discovery = clone(discoveryBinding);\n  }\n  const effectiveAdditionalValidators = [...additionalValidators];\n  if (discoveryBinding && !effectiveAdditionalValidators.includes(DISCOVERY_VALIDATOR)) effectiveAdditionalValidators.push(DISCOVERY_VALIDATOR);\n  const transaction = {\n    schemaVersion: REBUILD_TRANSACTION_SCHEMA,\n    transactionId: null,\n    binaryId,",
+            't016-tx-create-boundary')
+          replace_once(tx,
+            "    expectedOriginalState,\n    requiredValidators: requiredValidators(impact, input.additionalValidators || [], requireIndependentOracle),\n    requireIndependentOracle,",
+            "    expectedOriginalState,\n    discovery: discoveryBinding ? {\n      required: true,\n      artifactId: discoveryBinding.artifactId,\n      snapshotId: discoveryBinding.binding.snapshotId,\n      digest: discoveryBinding.digest,\n    } : null,\n    requiredValidators: requiredValidators(impact, effectiveAdditionalValidators, requireIndependentOracle),\n    requireIndependentOracle,",
+            't016-tx-object-boundary')
+          replace_once(tx,
+            "  transaction.transactionId = `rebuild-transaction:${stableDigest(transaction)}`;\n  return deepFreeze(transaction);",
+            "  transaction.transactionId = `rebuild-transaction:${stableDigest(transaction)}`;\n  const issued = deepFreeze(transaction);\n  if (discoveryBinding) ISSUED_DISCOVERY_TRANSACTIONS.set(issued, discoveryBinding);\n  return issued;",
+            't016-tx-issuance-boundary')
+          replace_once(tx,
+            "    if (transaction.expectedOriginalState?.sourceHash !== transaction.sourceHash) return false;\n    const expected = requiredValidators",
+            "    if (transaction.expectedOriginalState?.sourceHash !== transaction.sourceHash) return false;\n    if (transaction.discovery?.required === true) {\n      const binding = ISSUED_DISCOVERY_TRANSACTIONS.get(transaction);\n      if (!isFactoryIssuedDiscoveryRebuildBinding(binding)) return false;\n      if (!transaction.requiredValidators.includes(DISCOVERY_VALIDATOR)) return false;\n      if (binding.binding?.binaryId !== transaction.binaryId\n          || binding.binding?.sourceHash !== transaction.sourceHash\n          || binding.binding?.architectureId !== transaction.architecture\n          || binding.digest !== transaction.discovery.digest\n          || transaction.expectedOriginalState?.discovery?.digest !== binding.digest) return false;\n    } else if (transaction.discovery != null || transaction.requiredValidators.includes(DISCOVERY_VALIDATOR)) return false;\n    const expected = requiredValidators",
+            't016-tx-identity-boundary')
+          replace_once(tx,
+            "  builtins.set('evidence', () => validatorResult('evidence', true, evidenceComplete, 'operation-provenance-missing'));\n\n  for (const name of transaction.requiredValidators) {",
+            "  builtins.set('evidence', () => validatorResult('evidence', true, evidenceComplete, 'operation-provenance-missing'));\n  let discoveryComparison = null;\n  if (transaction.discovery?.required === true) {\n    const sourceBinding = ISSUED_DISCOVERY_TRANSACTIONS.get(transaction);\n    discoveryComparison = verifyDiscoveryReparse(sourceBinding, options.discoveryArtifact, { expectedOutputHash: materialized.outputHash });\n    builtins.set(DISCOVERY_VALIDATOR, () => validatorResult(\n      DISCOVERY_VALIDATOR, true, discoveryComparison.ok === true,\n      discoveryComparison.reason || 'discovery-preservation-failed', discoveryComparison,\n    ));\n  }\n\n  for (const name of transaction.requiredValidators) {",
+            't016-tx-validation-builtin-boundary')
+          replace_once(tx,
+            "    failures,\n    independentDifferential: independent ? (independent.status === 'passed' ? 'executed' : 'failed') : 'unavailable',",
+            "    failures,\n    discovery: transaction.discovery?.required === true ? {\n      required: true,\n      sourceArtifactId: transaction.discovery.artifactId,\n      outputArtifactId: options.discoveryArtifact?.artifactId ?? null,\n      comparison: clone(discoveryComparison),\n    } : null,\n    independentDifferential: independent ? (independent.status === 'passed' ? 'executed' : 'failed') : 'unavailable',",
+            't016-tx-validation-result-boundary')
+          replace_once(tx,
+            "  if (typeof options.atomicPromote !== 'function') return { status: 'not-published', reason: 'rebuild-v2-atomic-promotion-required', outputHash: materialized.outputHash };",
+            "  const discoveryRequired = validation.requiredValidators.includes(DISCOVERY_VALIDATOR);\n  if (discoveryRequired) {\n    if (validation.discovery?.comparison?.ok !== true) return { status: 'rejected', reason: 'rebuild-v2-discovery-validation-not-green' };\n    if (!isCanonicalAtomicPublicationProvider(options.atomicPromote)) {\n      return { status: 'not-published', reason: 'rebuild-v2-canonical-atomic-publication-required', outputHash: materialized.outputHash };\n    }\n  }\n  if (typeof options.atomicPromote !== 'function') return { status: 'not-published', reason: 'rebuild-v2-atomic-promotion-required', outputHash: materialized.outputHash };",
+            't016-tx-publish-boundary')
+      - name: Check syntax
+        run: |
+          node --check js/analysis/discovery/artifact.js
+          node --check js/analysis/index.js
+          node --check js/rebuild/transaction-v2.js
+      - name: Commit rebuild preservation wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/analysis/discovery/artifact.js js/analysis/index.js js/rebuild/transaction-v2.js
+          git commit -m 'feat(t016): require discovery preservation across rebuild publication'
+          git push origin HEAD:recovery/t016-discovery-artifact-20260916
