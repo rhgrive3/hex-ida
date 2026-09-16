@@ -9,6 +9,8 @@ on:
       - tools/validation/x02-a08-provenance.mjs
       - tests/scpa/fixtures/x02-a08-versioned-apple-corpus-20260917.json
       - tests/scpa/x02-prior120-apple-version-matrix.test.mjs
+      - tests/scpa/x02-b06-runtime-dyld-evidence.test.mjs
+      - tests/scpa/fixtures/x02-b06-runtime-dyld-evidence-20260916.json
   workflow_dispatch:
 
 permissions:
@@ -34,6 +36,7 @@ jobs:
           node --test tests/scpa/x02-prior120-apple-version-matrix.test.mjs
           node --test tests/scpa/x02-apple-version-matrix.test.mjs
           node --test tests/scpa/x02-declared-metadata-boundaries.test.mjs
+          node --test tests/scpa/x02-b06-runtime-dyld-evidence.test.mjs
       - name: Collect real Apple evidence
         shell: bash
         run: |
@@ -51,10 +54,22 @@ jobs:
           if (e.appleEnvironment.machine !== 'arm64') throw new Error('machine');
           if (e.appleEnvironment.pointerAuthenticationFeature !== '1') throw new Error('pauth');
           if (!e.signedMachO.codesignStrictVerified || !/Mach-O/i.test(e.signedMachO.file)) throw new Error('signed-macho');
-          if (e.realDyldCache.slideInfoVersion !== 5 || e.realDyldCache.sampledRebaseCount < 1 || !e.realDyldCache.allSampleTargetsInDeclaredSharedRegion) throw new Error('dyld');
+          const d = e.realDyldCache;
+          if (d.slideInfoVersion !== 5 || d.sampledRebaseCount < 1 || !d.allSampleTargetsInDeclaredSharedRegion) throw new Error('dyld');
+          if (!d.runtimeLoadMapObserved || !d.runtimeSlideObserved) throw new Error('dyld-runtime-observation');
+          if (!/^[0-9a-f]{32}$/.test(d.cacheUuid) || d.runtimeCacheUuid !== d.cacheUuid) throw new Error('dyld-runtime-uuid');
+          const sharedRegionStart = BigInt(d.sharedRegionStart);
+          const sharedRegionSize = BigInt(d.sharedRegionSize);
+          const runtimeCacheStart = BigInt(d.runtimeCacheStart);
+          const runtimeCacheSize = BigInt(d.runtimeCacheSize);
+          const runtimeSlide = BigInt(d.runtimeSlide);
+          if (runtimeCacheStart !== sharedRegionStart + runtimeSlide || runtimeCacheSize < sharedRegionSize) throw new Error('dyld-runtime-range');
+          if (d.runtimeImageCount < d.runtimeCacheImageCount || d.runtimeCacheImageCount < 1 || !Array.isArray(d.runtimeSampleImages) || d.runtimeSampleImages.length < 1) throw new Error('dyld-runtime-images');
+          if (!d.runtimeSampleImages.every(image => BigInt(image.slide) === runtimeSlide) || !d.runtimeImagesAllUseObservedSlide) throw new Error('dyld-runtime-image-slide');
+          if (d.runtimeDecodedRebaseCount !== d.sampledRebaseCount || !d.runtimeAddressDerivationVerified || !d.allRuntimeSampleTargetsInRuntimeSharedRegion) throw new Error('dyld-runtime-rebase');
           const p = e.pacRuntime.arm64;
           if (p.compileExit !== 0 || p.runExit !== 0 || !p.pacInstructionObserved || !p.authenticationInstructionObserved) throw new Error('pac-arm64-runtime');
-          console.log(JSON.stringify({dyld:e.realDyldCache.sampledRebaseCount, arm64Pac:p.runExit, arm64e:e.pacRuntime.arm64e.runExit ?? null}));
+          console.log(JSON.stringify({dyld:d.sampledRebaseCount, runtimeSlide:d.runtimeSlide, runtimeCacheImages:d.runtimeCacheImageCount, arm64Pac:p.runExit, arm64e:e.pacRuntime.arm64e.runExit ?? null}));
           NODE
       - uses: actions/upload-artifact@v4
         if: always()
