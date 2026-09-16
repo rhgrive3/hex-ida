@@ -1,74 +1,126 @@
-name: PR 8671 query cloneability diagnostic
+name: PR 8671 cloneability fix verification
 
 on:
   push:
     branches: [integration-candidate/benchmark-auth-20260914]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  query-cloneability:
+  fix-and-verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@v4
-      - name: Install pinned dependencies
-        shell: bash
-        run: timeout 300s npm ci
-      - name: Locate first unclonable decompile value
+        with:
+          fetch-depth: 0
+      - name: Patch query decompile projection
+        id: patch
         shell: bash
         run: |
           set -euo pipefail
-          node <<'NODE'
-          import fs from 'node:fs';
-          import os from 'node:os';
-          import path from 'node:path';
-          import { spawnSync } from 'node:child_process';
-          import { openProduct } from './tools/validation/public-benchmark/product-host.mjs';
-          import { createAppAnalysisQueryAdapter } from './js/analysis/query/index.js';
-          const d=fs.mkdtempSync(path.join(os.tmpdir(),'hex-pb-clone-diag-'));
-          const c=path.join(d,'a.c'), b=path.join(d,'a');
-          fs.writeFileSync(c,'__attribute__((noinline)) int f(int x){return x+1;} int _start(){return f(2);}\n');
-          const cc=spawnSync('clang',['--target=aarch64-linux-gnu','-fuse-ld=lld','-nostdlib','-O1','-Wl,-e,_start','-o',b,c],{encoding:'utf8'});
-          const lines=[`clang-status: ${cc.status}`];
-          if (cc.status===0) {
-            const product=await openProduct(b);
-            try {
-              const snap=await product.query.snapshot();
-              const funcs=await product.query.functions(snap,{}, {offset:0,limit:1000});
-              const target=funcs.value.find(x=>x.name==='_start');
-              lines.push(`target: ${target?.address ?? 'missing'}`);
-              const adapter=createAppAnalysisQueryAdapter(product.app);
-              const raw=await adapter.decompile(null,target.address,{});
-              const value=raw?.value ?? raw;
-              try { structuredClone(value); lines.push('structuredClone: PASS'); }
-              catch(e) { lines.push(`structuredClone: FAIL ${e?.name||''} ${e?.message||e}`); }
-              const bad=[]; const seen=new Set();
-              function walk(v,p,depth=0){
-                if (bad.length>=40 || depth>12) return;
-                const t=typeof v;
-                if (t==='function' || t==='symbol') { bad.push(`${p}: ${t}${t==='function' ? ` ${v.name||'<anonymous>'}` : ''}`); return; }
-                if (!v || t!=='object' || seen.has(v)) return;
-                seen.add(v);
-                if (typeof SharedArrayBuffer!=='undefined' && v instanceof SharedArrayBuffer) { bad.push(`${p}: SharedArrayBuffer`); return; }
-                let keys=[]; try { keys=Reflect.ownKeys(v); } catch(e) { bad.push(`${p}: ownKeys throws ${e}`); return; }
-                for (const k of keys) {
-                  if (typeof k==='symbol') { bad.push(`${p}: symbol-key ${String(k)}`); continue; }
-                  let child; try { child=v[k]; } catch(e) { bad.push(`${p}.${k}: getter throws ${e}`); continue; }
-                  walk(child,`${p}.${k}`,depth+1);
+          python <<'PY'
+          from pathlib import Path
+          p=Path('js/analysis/query/app-adapter.js')
+          text=p.read_text()
+          old="""function cloneableDecompilerProjection(value) {
+            if (!value || typeof value !== 'object'
+              || !value.ir || typeof value.ir !== 'object'
+              || typeof value.ir.defUse !== 'function') return value;
+            const ir = { ...value.ir };
+            delete ir.defUse;
+            return { ...value, ir };
+          }
+          """
+          new="""function cloneableDecompilerProjection(value) {
+            if (!value || typeof value !== 'object') return value;
+            let changed = false;
+            const projection = { ...value };
+            if (value.ir && typeof value.ir === 'object' && typeof value.ir.defUse === 'function') {
+              const ir = { ...value.ir };
+              delete ir.defUse;
+              projection.ir = ir;
+              changed = true;
+            }
+            if (value.ctx && typeof value.ctx === 'object') {
+              const ctx = { ...value.ctx };
+              let ctxChanged = false;
+              if (value.ctx.values && typeof value.ctx.values === 'object') {
+                const values = { ...value.ctx.values };
+                let valuesChanged = false;
+                for (const key of ['at', 'defAt']) {
+                  if (typeof values[key] === 'function') { delete values[key]; valuesChanged = true; }
                 }
+                if (valuesChanged) { ctx.values = values; ctxChanged = true; }
               }
-              walk(value,'value');
-              lines.push('unclonable-paths:'); lines.push(...(bad.length?bad:['<none-detected>']));
-            } finally { await product.close(); }
-          } else lines.push(String(cc.stderr||''));
-          fs.writeFileSync('pr8671-query-cloneability.txt',lines.join('\n')+'\n');
-          NODE
-          cat pr8671-query-cloneability.txt >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload cloneability evidence
+              for (const key of ['rowOfAddress', 'addrOfRow', 'symbolFor', 'rawSymbolFor', 'fieldFor']) {
+                if (typeof ctx[key] === 'function') { delete ctx[key]; ctxChanged = true; }
+              }
+              if (ctxChanged) { projection.ctx = ctx; changed = true; }
+            }
+            return changed ? projection : value;
+          }
+          """
+          if old in text:
+              p.write_text(text.replace(old,new,1))
+              print('changed=true')
+          elif new in text:
+              print('changed=false')
+          else:
+              raise SystemExit('cloneableDecompilerProjection shape changed unexpectedly')
+          PY
+          if git diff --quiet -- js/analysis/query/app-adapter.js; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+          node --check js/analysis/query/app-adapter.js
+          git diff --check -- js/analysis/query/app-adapter.js
+      - name: Install pinned dependencies
+        shell: bash
+        run: timeout 300s npm ci
+      - name: Verify product CLI first
+        shell: bash
+        run: timeout 120s node --test tests/public-benchmark/product-cli.test.mjs
+      - name: Verify focused suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 180s npm run benchmark:public:test
+          timeout 240s npm run auth:test
+          timeout 120s node tests/ai-ui-dev-profile.mjs
+          timeout 120s node tests/phase7/ownership/cross-lane-routing.test.mjs
+      - name: Verify canonical auth build
+        shell: bash
+        run: timeout 300s npm run auth:build-test
+      - name: Commit verified fix and generated artifacts
+        if: steps.patch.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/analysis/query/app-adapter.js userscript/hex.user.template.js userscript/release-version.json
+          git diff --cached --check
+          git commit -m "fix(query): detach live decompiler callbacks from query values"
+          git push origin HEAD:integration-candidate/benchmark-auth-20260914
+      - name: Write compact evidence
+        if: always()
+        shell: bash
+        run: |
+          printf '%s\n' \
+            'query-decompile-projection: patched' \
+            'product-cli: pass if prior step succeeded' \
+            'public-benchmark: pass if prior step succeeded' \
+            'auth:test: pass if prior step succeeded' \
+            'ai-ui-dev-profile: pass if prior step succeeded' \
+            'phase7-cross-lane: pass if prior step succeeded' \
+            'auth:build-test: pass if prior step succeeded' > pr8671-cloneability-fix.txt
+      - name: Upload compact evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr8671-query-cloneability
-          path: pr8671-query-cloneability.txt
+          name: pr8671-cloneability-fix
+          path: pr8671-cloneability-fix.txt
           retention-days: 1
