@@ -196,7 +196,10 @@
       "js/decompiler/phase8/analysis-identity.js",
       "tests/phase8/structuring/conditional-region-body-authority.test.mjs",
       "tests/phase8/structuring/conditional-region-body-projection.test.mjs",
-      "tests/phase8/c4-local/scalar-effect-admission.test.mjs"
+      "tests/phase8/c4-local/scalar-effect-admission.test.mjs",
+      "js/decompiler/phase8/c4-equivalence-registry.js",
+      "tests/phase8/substrate/c4-equivalence-registry.test.mjs",
+      "tests/phase8/substrate/c4-memory-rewrite-adoption.test.mjs"
     ],
     "symbolic": [
       "js/symbolic/egraph/graph.js",
@@ -336,7 +339,10 @@
       "js/symbolic/translate/completeness.js",
       "tests/phase9/solver/worker-import-boundary.test.mjs",
       "tests/phase9/memory/c4-comparison-carrier-binding.test.mjs",
-      "tests/phase9/memory/c4-predicate-select.test.mjs"
+      "tests/phase9/memory/c4-predicate-select.test.mjs",
+      "js/symbolic/query/terminal-effect-equivalence.js",
+      "tests/phase9/memory/terminal-effect-equivalence.test.mjs",
+      "tests/phase9/memory/c4-cfg-loop-equivalence.test.mjs"
     ],
     "semanticCompat": [
       "js/core/identity/live-data.js",
