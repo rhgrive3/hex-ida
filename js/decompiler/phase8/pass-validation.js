@@ -104,7 +104,8 @@ function targetExclusionReason(target, guard) {
   const pending = [target], seen = new Set();
   while (pending.length) {
     guard.take('workItems');
-    const value = queryRecord(pending.pop(), guard);
+    const rawValue = pending.pop();
+    const value = queryRecord(rawValue, guard);
     if (seen.has(value.def ?? value)) continue;
     guard.take('allocationUnits'); seen.add(value.def ?? value);
     if (value.float === true || value.floatConst != null || value.bits < 1 || value.bits > 64) return unsupported;
@@ -126,9 +127,24 @@ function targetExclusionReason(target, guard) {
     if (def.op === OP.SEL) {
       // Admit only the existing explicit Bool + two-data-operand contract.
       // Legacy flags/CS* arm modifiers are not canonical select semantics.
-      if (def.conditionValue == null || args.length !== 2 || def.cond != null
-        || [def.sub,def.subOp,def.name].some(op => op != null && op !== 'sel')
-        || queryRecord(def.conditionValue,guard).bits !== 1) return 'non-canonical-select-target';
+      if (def.conditionValue == null || args.length !== 2) return 'invalid-select-condition';
+      const condition = queryRecord(def.conditionValue,guard);
+      const rawDef = rawValue && typeof rawValue === 'object'
+        ? Object.getOwnPropertyDescriptor(rawValue, 'def')?.value : null;
+      const rawCondition = rawDef && typeof rawDef === 'object'
+        ? Object.getOwnPropertyDescriptor(rawDef, 'conditionValue')?.value : null;
+      // A proof must bind the live producer, not an unissued one-bit argument
+      // or a copied value that merely preserves the old numeric id. This is a
+      // malformed/stale condition boundary, so fail the plan rather than
+      // reporting a clean “unsupported” denominator row.
+      if (condition.bits !== 1 || condition.def == null
+        || rawCondition == null || rawCondition.def == null
+        || Object.getOwnPropertyDescriptor(rawCondition.def, 'dst')?.value !== rawCondition) {
+        return 'invalid-select-condition';
+      }
+      if (def.cond != null || [def.sub,def.subOp,def.name].some(op => op != null && op !== 'sel')) {
+        return 'non-canonical-select-target';
+      }
       guard.take('allocationUnits'); pending.push(def.conditionValue);
     }
     guard.take('allocationUnits',args.length);
@@ -181,6 +197,7 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
     for (const [index, target] of targets.entries()) {
       const reason = targetExclusionReason(target,guard);
       if (reason == null) { selected.push(target); selectedIndices.push(index); }
+      else if (reason === 'invalid-select-condition') return reject(reason);
       else {
         rejected.push(Object.freeze({valueId:semanticValueIdentity(target),reason}));
         decisions[index] = Object.freeze({ ...requested[index], disposition:'unsupported',

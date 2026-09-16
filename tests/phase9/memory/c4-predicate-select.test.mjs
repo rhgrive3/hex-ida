@@ -59,7 +59,7 @@ test('C4 native csel keeps its authenticated display carrier separate from data 
   const ret = ir.instructions.at(-1);
   ret.args = [{value:selected}];
   for (const [x0, x1, expected] of [[1n,2n,3n],[2n,1n,4n],[1n,1n,4n]]) {
-    const result = symbolicExecute(ir, {byteMemory:{identity:{...identity,addressSpace:'memory'},addressBits:64},
+    const result = symbolicExecute(ir, {timeoutMs:5000,byteMemory:{identity:{...identity,addressSpace:'memory'},addressBits:64,timeoutMs:5000},
       symbolicArgs:{x0,x1,x3:3n,x4:4n,x30:4096n}});
     assert.equal(result.status,'complete',`${x0}/${x1}: ${result.reason}`);
     assert.equal(result.paths[0].returnValue.value,expected);
@@ -67,7 +67,7 @@ test('C4 native csel keeps its authenticated display carrier separate from data 
   const select = ir.instructions.find(instruction => instruction.op === OP.SEL);
   assert.equal(select.args.length,3);
   select.args[2] = {value:{id:'forged-carrier',bits:1,const:0n}};
-  const forged = symbolicExecute(ir, {byteMemory:{identity:{...identity,addressSpace:'memory'},addressBits:64},
+  const forged = symbolicExecute(ir, {timeoutMs:5000,byteMemory:{identity:{...identity,addressSpace:'memory'},addressBits:64,timeoutMs:5000},
     symbolicArgs:{x0:1n,x1:2n,x3:3n,x4:4n,x30:4096n}});
   assert.equal(forged.status,'partial');
   assert.deepEqual(forged.paths,[]);
@@ -81,7 +81,7 @@ test('C4 native csel keeps its authenticated display carrier separate from data 
     const source = carrier.extra.semanticNodeId;
     const machineType = carrier.dst.machineType;
     mutate(carrier);
-    const rejected = symbolicExecute(ir, {byteMemory:{identity:{...identity,addressSpace:'memory'},addressBits:64},
+    const rejected = symbolicExecute(ir, {timeoutMs:5000,byteMemory:{identity:{...identity,addressSpace:'memory'},addressBits:64,timeoutMs:5000},
       symbolicArgs:{x0:1n,x1:2n,x3:3n,x4:4n,x30:4096n}});
     assert.equal(rejected.status,'partial');
     carrier.extra.completeness = clean;
