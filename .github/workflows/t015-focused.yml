@@ -1,6 +1,6 @@
 name: T015 focused verification
 
-# rerun after conservative chained coverage fix
+# rerun after omitted chained-page ownership fix
 on:
   push:
     branches:
