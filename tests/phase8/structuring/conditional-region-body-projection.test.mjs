@@ -24,8 +24,20 @@ function storeArm(builder, value) {
   } };
 }
 
+function removeJoinPhi(ir) {
+  const input = ir.values.find(value => value.kind === 'arg' && value.reg === 'x0');
+  const join = ir.blocks[3];
+  assert.ok(input && join);
+  join.phis = [];
+  const ret = join.insts.find(inst => inst.op === 'ret');
+  assert.ok(ret);
+  ret.args = [{ value:input }];
+  ir.instructions = ir.blocks.flatMap(block => [...block.phis, ...block.insts]);
+}
+
 async function committed() {
-  const f = conditionalRegionFixture({ armEffect:storeArm });
+  const f = conditionalRegionFixture({ armEffect:storeArm, mutate:removeJoinPhi });
+  assert.equal(f.structure.phis.length, 0);
   const projection = enhanceSemanticDecompilation(f.seed, { name:'reachability', calls:[] }, {
     phase8PrepareProof:true,
     phase8PrepareRegionProof:true,
