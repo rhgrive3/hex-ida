@@ -67,9 +67,17 @@ test('#5243 instanceof consumes the objectref and produces only the int result',
   assert.equal(instanceofBundle.producedValues.length, 1,
     'instanceof must push exactly the int result');
   assert.equal(instanceofBundle.producedValues[0].bits, 32);
-  assert.equal(instanceofBundle.completeness, 'exact',
-    'the stack/data effect of instanceof is fully modelled');
-  assert.equal(vmFn.aggregateCompleteness, 'exact');
+  // #5243 owns the stack contract; #8848 supersedes the *type-authority*
+  // aspect: this fixture's `instanceof #1` targets a Utf8 slot (not a
+  // `CONSTANT_Class`), so the checked CP resolver correctly fails closed and
+  // the bundle is now `partial`. Even a valid class operand stays `partial`
+  // because the shared bridge cannot yet express a first-class type-test
+  // predicate on the canonical node (see #8848 reqs 2-4).
+  assert.equal(instanceofBundle.completeness, 'partial',
+    'invalid CP class ref must fail closed (see #8848)');
+  assert.ok(instanceofBundle.unknownEffects.some((e) => e.reason === 'jvm-instanceof-cp-class-invalid'),
+    'invalid CP class ref must publish a stable reason');
+  assert.equal(vmFn.aggregateCompleteness, 'partial');
 });
 
 // aload_0 (0x2a), checkcast #1 (0xc0), areturn (0xb0)

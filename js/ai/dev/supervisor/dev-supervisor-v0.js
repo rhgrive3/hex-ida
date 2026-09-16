@@ -4,6 +4,7 @@ import { bindDevRunIdentity, createDevRun, DEV_RUN_STATUS, transitionDevRun } fr
 import { validateDevSupervisorDecision } from '../protocol/hex-dev-supervisor-v1.js';
 import { createDevWorkerToolSurface, DEV_WORKER_TOOL } from '../workers/tool-surface.js';
 import { createDevAdminToolSurface, DEV_ADMIN_TOOL } from '../admin/tool-surface.js';
+import { DenyAllAdminProvider, readAdminIdentity } from '../auth/admin-provider.js';
 
 let fallbackSequence = 0;
 const RUN_SCOPED_ADMIN_TOOLS = new Set([
@@ -15,10 +16,14 @@ const RUN_SCOPED_ADMIN_TOOLS = new Set([
 ]);
 
 export class DevSupervisorV0 {
-  constructor({ availableTools = [], workerTools = null, adminTools = null, workerClient = null, idFactory = defaultIdFactory, now = () => new Date().toISOString() } = {}) {
+  constructor({ availableTools = [], workerTools = null, adminTools = null, workerClient = null, adminAuthProvider = null, idFactory = defaultIdFactory, now = () => new Date().toISOString() } = {}) {
     const client = workerClient || globalThis.__HEX_DEV_WORKER_CLIENT__ || null;
     this.workerTools = workerTools || createDevWorkerToolSurface(client);
     this.adminTools = adminTools || createDevAdminToolSurface(client);
+    // #8854: Admin capability is not Admin consent. The supervisor authoritatively checks an
+    // authenticated admin principal at dispatch time; without an explicit trusted provider it fails
+    // closed, so neither the Dev UI nor a model-driven decision can reach an Admin mutation.
+    this.adminAuthProvider = adminAuthProvider || new DenyAllAdminProvider();
     this.availableTools = Object.freeze([...new Set([
       ...availableTools.map(String),
       ...(this.workerTools?.toolNames || []),
@@ -27,6 +32,8 @@ export class DevSupervisorV0 {
     this.idFactory = idFactory;
     this.now = now;
   }
+
+  adminIdentity() { return readAdminIdentity(this.adminAuthProvider); }
 
   createRun({ goal, decisionPolicy = DEV_DECISION_POLICY.NORMAL, analysisScope, plan = [], ...identity } = {}) {
     const createdAt = this.now();
@@ -74,6 +81,10 @@ export class DevSupervisorV0 {
     const applied = this.applyDecision(run, input);
     if (applied.decision.type !== 'tool') throw new TypeError('executeToolDecision requires a Dev tool decision.');
     if (this.adminTools?.has(applied.decision.tool)) {
+      const identity = this.adminIdentity();
+      if (!(identity.authenticated === true && identity.admin === true)) {
+        throw Object.assign(new Error('an authenticated admin identity is required to dispatch a Dev Admin tool'), { code: 'dev-admin-not-authorized' });
+      }
       const argumentsForTool = runtimeOwnedAdminArguments(applied.run, applied.decision);
       const result = await this.adminTools.execute(applied.decision.tool, argumentsForTool);
       return Object.freeze({ run: applied.run, decision: applied.decision, result });
