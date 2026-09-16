@@ -4,30 +4,24 @@ on:
     branches: ['impl/c4-04-integrate-20260916']
     paths: ['.github/workflows/temp-c4-04-integrate.yml']
 permissions:
-  contents: write
+  contents: read
 jobs:
-  integrate:
+  diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
-    env:
-      BASE_SHA: 4b810a3b3e3bfd1a1b7ed8de9751edece783e2d6
-      TARGET_BRANCH: feat/analysis-roadmap-v8-current-main-20260907
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
         with:
           ref: impl/c4-04-integrate-20260916
           fetch-depth: 0
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: npm
-      - name: Cherry-pick validated C4 implementation only
+      - name: Identify first cherry-pick conflict
         shell: bash
         run: |
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git fetch origin impl/c4-04-finish-20260916
+          : > /tmp/c4-integration-conflict.txt
           for sha in \
             89f2467ea66c80f43d8e70fa6a0cf8742adde89b \
             a4148d277444f694a46057e80926c6bbeb8034e2 \
@@ -43,137 +37,17 @@ jobs:
             f963ee4e316eaf1bcbb2b4a33122c0d00a60b2b2 \
             c1d616710990db7dbb6664a4ea49b8608d556055
           do
-            git cherry-pick "$sha"
+            if ! git cherry-pick "$sha" >/dev/null 2>&1; then
+              echo "FAILED_SHA=$sha" | tee -a /tmp/c4-integration-conflict.txt
+              git diff --name-only --diff-filter=U | sed 's/^/CONFLICT_PATH=/' | tee -a /tmp/c4-integration-conflict.txt
+              git status --short | awk '$1 ~ /U/ || $2 ~ /U/ {print "STATUS=" $0}' | tee -a /tmp/c4-integration-conflict.txt
+              git cherry-pick --abort
+              exit 0
+            fi
           done
-          git rm .github/workflows/temp-c4-04-integrate.yml
-      - name: Register ownership and close only C4-04 audit rows
-        shell: bash
-        run: |
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-
-          p=Path('tools/validation/analysis-roadmap/ownership.json')
-          data=json.loads(p.read_text())
-          additions={
-            'phase8':[
-              'js/decompiler/phase8/c4-equivalence-registry.js',
-              'tests/phase8/substrate/c4-equivalence-registry.test.mjs',
-              'tests/phase8/substrate/c4-memory-rewrite-adoption.test.mjs',
-            ],
-            'symbolic':[
-              'js/symbolic/query/terminal-effect-equivalence.js',
-              'tests/phase9/memory/terminal-effect-equivalence.test.mjs',
-              'tests/phase9/memory/c4-cfg-loop-equivalence.test.mjs',
-            ],
-          }
-          for owner, paths in additions.items():
-            rows=data['owners'][owner]
-            for path in paths:
-              if path not in rows: rows.append(path)
-          p.write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n')
-
-          audit=Path('docs/analysis-local-acceptance-audit.json')
-          a=json.loads(audit.read_text())
-          for row in a['findings']:
-            if row['id']=='HEX-C4-04':
-              row['localStatus']='accepted-local'
-              row['assessment']='C4-04 の元カードをローカル受入。scalar は frozen width/operator/family x 3 strategy の production denominator で adopted/refuted/explicit unknown/unsupported を保持し、private proof authority がない rewrite は commit 不可。memory/CFG は exact four-family registry、finite byte memory、CFG edge change、bounded loop、terminal control/fault predicates を proof-adoption へ接続した。宣言 memory region を未比較の generic proof、非canonical exception/unwind、PHI を含む render body、stale/cancel/timeout/invalid model は fail closed。C4-02/C4-05 と whole-roadmap/release/device gates は別。'
-              row['source']='js/decompiler/phase8/pass-validation-core.js'
-              row['verificationSuite']='c4-04-final-acceptance-20260916'
-              row['originalRequirementAcceptedHere']=True
-          for row in a['tasks']:
-            if row['id']=='FR-C4-04A':
-              row['localStatus']='accepted-local'
-              row['currentAssessment']='pure Bool/BV scalar の binary/compare/unary/cast/select 等を frozen width/operator/family と local-rewrites/representation-rules/equality-saturation の production 分母で再受入。unsupported legacy operand/view、deadline/cancel/budget/stale/refuted/unknown は明示的に denominator に残り、eligible private proof のない candidate は commit しない。'
-              row['originalRequirementAcceptedHere']=True
-            if row['id']=='FR-C4-04B':
-              row['localStatus']='accepted-local'
-              row['currentAssessment']='memory-byte/cfg/bounded-loop/terminal-control-effect の exact four-family registryを固定。terminal return、全 terminal memory byte、control target、canonical ARM64 PC-alignment fault predicate、CFG path、bounded loopを比較し、semantic mismatch は refute。未比較 memoryRegions、非canonical exception/unwind、探索上限、stale authority、join PHI render body は unknown/unsupported/required として採用禁止。no-PHI flat-store render arm のみ既存private body authorityで削除する。'
-              row['originalRequirementAcceptedHere']=True
-          limits=[]
-          for item in a.get('localIntegrationLimitations',[]):
-            if item in ['C4 full flags/region/PHI/CFG/memory/exception/loop proof missing']:
-              continue
-            limits.append(item)
-          marker='C4-04 local acceptance is complete; C4-02/C4-05 and whole-roadmap independent/device/release gates remain separate.'
-          if marker not in limits: limits.insert(0,marker)
-          a['localIntegrationLimitations']=limits
-          a.setdefault('integrationFollowup',{})['c4ProofCompletion20260916']={
-            'date':'2026-09-16',
-            'status':'LOCAL-ACCEPTED',
-            'finding':'HEX-C4-04',
-            'tasks':['FR-C4-04A','FR-C4-04B'],
-            'originalRequirementAcceptedHere':True,
-            'fullRoadmapComplete':False,
-            'transformAuthorization':False,
-            'acceptanceRunId':int(os.environ.get('GITHUB_RUN_ID','0')),
-            'acceptanceTests':108,
-            'scalarDenominator':'frozen production width/operator/family matrices across local-rewrites, representation-rules and equality-saturation; explicit unknown/unsupported retained',
-            'effectDenominator':['memory-byte-rewrite','cfg-rewrite','bounded-loop-rewrite','terminal-control-effect-rewrite'],
-            'observables':['scalar Bool/BV result','terminal return','all terminal memory bytes','terminal control target','terminal normal-completion predicate','canonical terminal fault predicates','CFG path coverage','bounded-loop terminal state'],
-            'failClosed':['declared-but-unencoded memoryRegions','noncanonical exception/unwind annotations','join-PHI render erasure','stale/cancel/timeout/budget','invalid SAT model','unregistered or cross-verifier rewrite'],
-            'conditionalRegionScope':'only independently proved unreachable no-PHI/no-MemoryPHI flat-store render arm; canonical Semantic IR/SSA/CFG unchanged',
-            'wholeRoadmapNote':'C4-04 local acceptance does not close C4-02, C4-05, independent review, device, release, or other roadmap findings.'
-          }
-          audit.write_text(json.dumps(a,ensure_ascii=False,indent=2)+'\n')
-
-          checkpoint=Path('docs/analysis-roadmap-v8-integration-checkpoint.md')
-          text=checkpoint.read_text()
-          start=text.index('## 2026-09-16: C4-04 scoped render adoption と CI ownership 復旧')
-          end=text.index('\n## 2026-09-14:',start)
-          section='''## 2026-09-16: C4-04 local acceptance 完了\n\nHEX-C4-04 / FR-C4-04A / FR-C4-04B の元カードについて、production proof-adoption 境界をローカル受入しました。scalar は frozen width/operator/family と 3 candidate strategy の分母を actual committed/rendered publication まで通し、refuted / unsupported / deadline・cancel・budget / stale は元producerを保持します。memory/CFG 側は `memory-byte-rewrite` / `cfg-rewrite` / `bounded-loop-rewrite` / `terminal-control-effect-rewrite` の exact registry を固定し、private current proof authority 以外から transaction commit できません。\n\n観測は terminal return、全 terminal memory byte、terminal control target、normal-completion predicate、canonical ARM64 PC-alignment fault predicate、CFG path、bounded-loop terminal stateまで含みます。宣言した `memoryRegions` をgeneric verifierが実際には比較していない場合、非canonical exception/unwind annotation、探索上限、invalid SAT model、stale proof、cross-verifier/unregistered rewriteは fail closed です。conditional-region の render削除は引き続き独立証明済み no-PHI/no-MemoryPHI flat-store arm だけで、join PHI がある場合は `live-phi-render-correspondence` を未充足としてauthorityを発行しません。canonical Semantic IR / SSA / CFGは変更しません。\n\nC4-04 のローカル完了はロードマップ全体の完了ではありません。C4-02/C4-05、独立レビュー、実機、release、他findingは残るため、`CHECKPOINT-LOCKED` / `transformAuthorization:false` / `fullRoadmapComplete:false` は維持します。正本の機械可読状態は `analysis-local-acceptance-audit.json` の `integrationFollowup.c4ProofCompletion20260916` です。\n'''
-          checkpoint.write_text(text[:start]+section+text[end:])
-
-          status=Path('docs/解析ツール改善.md')
-          text=status.read_text()
-          start=text.index('## 2026-09-16 C4-04 proof-gated adoption の更新')
-          end=text.index('\n## 2026-09-14 の担当分離と追加検証',start)
-          section='''## 2026-09-16 C4-04 local acceptance 完了\n\nHEX-C4-04 / FR-C4-04A / FR-C4-04B は、元カードのローカル受入条件を満たしました。scalar proof gate は frozen width/operator/family x 3 strategy のproduction分母をactual publicationまで通し、memory/CFG側は `memory-byte-rewrite` / `cfg-rewrite` / `bounded-loop-rewrite` / `terminal-control-effect-rewrite` のexact registryとprivate current proof authorityを必須化しています。eligible proofがないrewriteはcommitできません。\n\nterminal return、全 terminal memory byte、control target、normal-completion、canonical ARM64 PC-alignment fault predicate、CFG path、bounded-loop terminal stateを比較します。declared-but-unencoded `memoryRegions`、非canonical exception/unwind、探索上限、invalid SAT model、stale/cancel/timeout/budget、unregistered/cross-verifier rewriteは明示的 unknown/unsupported/refusalです。conditional-regionは no-PHI/no-MemoryPHI flat-store render armだけを削除し、join PHIありはauthorityを発行しません。canonical Semantic IR / SSA / CFGは不変です。\n\nこれは **C4-04だけのローカル完了**です。C4-02/C4-05や他finding、独立レビュー、実機、releaseは閉じていません。したがって解析ロードマップ全体は引き続き **CHECKPOINT-LOCKED**、`transformAuthorization:false`、`fullRoadmapComplete:false` です。\n'''
-          status.write_text(text[:start]+section+text[end:])
-          PY
-          node -e "JSON.parse(require('fs').readFileSync('docs/analysis-local-acceptance-audit.json','utf8'))"
-          git diff --check
-      - run: npm ci --ignore-scripts
-      - name: C4-04 final acceptance on latest PR base
-        shell: bash
-        run: |
-          set -o pipefail
-          node --test \
-            tests/phase8/substrate/proof-target-decisions.test.mjs \
-            tests/phase8/substrate/pass-validation-owned-snapshot.test.mjs \
-            tests/phase8/substrate/c4-equivalence-registry.test.mjs \
-            tests/phase8/substrate/c4-memory-rewrite-adoption.test.mjs \
-            tests/phase8/structuring/conditional-region-body-authority.test.mjs \
-            tests/phase8/structuring/conditional-region-body-projection.test.mjs \
-            tests/phase9/memory/terminal-control-equivalence.test.mjs \
-            tests/phase9/memory/terminal-effect-equivalence.test.mjs \
-            tests/phase9/memory/c4-cfg-loop-equivalence.test.mjs \
-            tests/phase9/verify/equivalence.test.mjs \
-            tests/phase9/verify/model-validation.test.mjs \
-            tests/phase9/verify/edge-feasibility.test.mjs \
-            tests/issue-6093-bounded-equivalence-memory-regions.mjs \
-            tests/issue-4916-equivalence-memory-regions-fail-closed.mjs
-      - name: Validate roadmap ownership for final tree
-        shell: bash
-        run: |
-          git diff --name-only "$BASE_SHA" > /tmp/c4-files.txt
-          node --input-type=module - <<'NODE'
-          import fs from 'node:fs';
-          import { validateRoadmapInventory } from './tools/validation/analysis-roadmap/ownership.mjs';
-          const files=fs.readFileSync('/tmp/c4-files.txt','utf8').trim().split('\n').filter(Boolean);
-          for (const phase of ['phase7','phase8']) validateRoadmapInventory(process.env.TARGET_BRANCH,phase,files);
-          console.log(JSON.stringify({paths:files.length,phases:['phase7','phase8']}));
-          NODE
-      - name: Rebuild generated userscript
-        shell: bash
-        run: |
-          npm run userscript:build
-          npm run userscript:build
-          git diff --check
-      - name: Commit clean integrated result
-        shell: bash
-        run: |
-          git add -A
-          git commit -m 'feat(c4): complete C4-04 local acceptance'
-          git push origin HEAD:impl/c4-04-integrate-20260916
+          echo 'FAILED_SHA=none' | tee -a /tmp/c4-integration-conflict.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: c4-integration-conflict
+          path: /tmp/c4-integration-conflict.txt
+          retention-days: 1
