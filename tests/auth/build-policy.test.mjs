@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { privilegedIdentity, releaseIdentityFor, assertStandardGraph, assertPrivilegedGraph } from '../../scripts/auth-build-policy.mjs';
-import { validateAuthConfig } from '../../scripts/validate-auth-config.mjs';
+import { parseJsonc, validateAuthConfig } from '../../scripts/validate-auth-config.mjs';
 test('privileged-only edits update release identity without changing runtime content ID; deterministic DAG', () => {
   const runtime = 'a'.repeat(24), first = privilegedIdentity(runtime, 'parent-v1', 'child-v1', 'admin-v1');
   assert.deepEqual(privilegedIdentity(runtime, 'parent-v1', 'child-v1', 'admin-v1'), first);
@@ -28,4 +28,21 @@ test('local D1 configuration is usable but production sentinel is explicitly rej
   const production = structuredClone(config); production.d1_databases[0].database_id = '11111111-2222-3333-4444-555555555555';
   assert.equal(validateAuthConfig(production), true);
   production.assets.run_worker_first = false; assert.throws(() => validateAuthConfig(production), /Worker|worker/);
+});
+
+test('JSONC loader accepts inline comments, trailing commas, and comment-like string data', () => {
+  const config = parseJsonc(`{
+    "d1_databases": [{
+      "binding": "AUTH_DB", // deployment binding
+      "database_name": "hex-auth",
+      "database_id": "11111111-2222-3333-4444-555555555555",
+      "migrations_dir": "migrations/auth",
+    }],
+    "assets": { "run_worker_first": true },
+    "commentLikeValue": "https://example.test/a//b",
+  }`);
+  assert.equal(validateAuthConfig(config), true);
+  assert.equal(config.commentLikeValue, 'https://example.test/a//b');
+  assert.throws(() => parseJsonc('{ "assets": /* unterminated }'), /unterminated block comment/);
+  assert.throws(() => parseJsonc('{ "assets": }'), SyntaxError);
 });
