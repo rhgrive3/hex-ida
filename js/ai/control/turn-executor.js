@@ -210,6 +210,7 @@ export async function executeTurn(input = {}, options = {}) {
     const started = monotonicNow(), activity = [], observations = [];
     let modelCalls = 0, toolCalls = 0, contextBytes = 0, plan = null, decision = null, limitReason = null;
     let providerControlledDecision = false;
+    let deterministicDecisionProvenance = false;
     let wireUsage = { semanticContextBytes: 0, toolSchemaBytes: 0, historyBytes: 0, wireBytes: 0, estimatedInputTokens: 0 };
     const externalSignal = normalizeExternalSignal(options.signal ?? request.signal);
     if (externalSignal?.aborted) throw externalAbortError(externalSignal);
@@ -318,7 +319,10 @@ export async function executeTurn(input = {}, options = {}) {
           if (plan.exhausted) addActivity({ type: 'budget', label: '決定論的 planner の予算上限に到達' });
         } else if (request.mode === 'agent') addActivity({ type: 'plan-skip', label: '現在の質問は局所解析で解決可能なため planner を省略', intent });
 
-        if (!this.provider || typeof this.provider.nextTurn !== 'function') decision = deterministicDecision(plan, request);
+        if (!this.provider || typeof this.provider.nextTurn !== 'function') {
+          decision = deterministicDecision(plan, request);
+          deterministicDecisionProvenance = true;
+        }
         else {
           if (typeof this.provider.prepareCapabilities === 'function') {
             assertTurnFresh();
@@ -396,7 +400,12 @@ export async function executeTurn(input = {}, options = {}) {
               throw normalized;
             }
             addActivity({ type: 'model-result', label: next.type === 'tool' ? `ツール ${next.tool} を選択` : '回答候補を生成' });
-            if (next.type === 'final') { decision = next; providerControlledDecision = true; break; }
+            if (next.type === 'final') {
+              decision = next;
+              providerControlledDecision = true;
+              deterministicDecisionProvenance = false;
+              break;
+            }
             if (registry.accounting.calls >= budget.maxToolCalls) { limitReason = 'tool-call-budget'; break; }
             if (registry.accounting.cost + registry.costWeight(next.tool) > budget.maxCost) { limitReason = 'tool-cost-budget'; break; }
             const signature = `${next.tool}:${stableStringify(next.arguments)}`;
@@ -437,12 +446,17 @@ export async function executeTurn(input = {}, options = {}) {
           ? plannerBudgetReason
           : normalized.type;
         addActivity({ type: 'error', errorType: normalized.type, label: humanError(normalized), ...(providerDiagnostics(normalized) || {}) });
+        const hadDecisionBeforeFallback = decision != null;
         if (!decision) decision = deterministicDecision(plan, request, normalized);
+        if (!hadDecisionBeforeFallback) deterministicDecisionProvenance = true;
       }
 
       assertLiveBindingsUnchanged(this.localContext, snapshot);
       assertAnalysisRevisionUnchanged(this.localContext, snapshot);
-      if (!decision) decision = deterministicDecision(plan, request, new AIError('budget_exhausted', 'The investigation budget was exhausted.'));
+      if (!decision) {
+        decision = deterministicDecision(plan, request, new AIError('budget_exhausted', 'The investigation budget was exhausted.'));
+        deterministicDecisionProvenance = true;
+      }
       // The deadline/cancellation contract holds to the final return: a turn
       // whose budget expired during finalization must not resolve as a normal
       // success (#5606). A cancelled turn rejects (see the catch above); a
@@ -456,7 +470,7 @@ export async function executeTurn(input = {}, options = {}) {
       };
       assertDeadlineHonest();
       toolCalls = registry.accounting.calls;
-      const result = await this.finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, monotonicNow, limitReason, registry, snapshot, effectiveScope: scopeController.effectiveScope, stores: { evidenceStore, hypothesisStore, proposalStore }, signal, assertFresh: assertTurnFresh, providerControlledDecision });
+      const result = await this.finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, monotonicNow, limitReason, registry, snapshot, effectiveScope: scopeController.effectiveScope, stores: { evidenceStore, hypothesisStore, proposalStore }, signal, assertFresh: assertTurnFresh, providerControlledDecision, deterministicDecisionProvenance });
       assertTurnFresh();
       // Every asynchronous persistence boundary gets a pre/post binding check.
       // The payloads below are snapshot-derived; a live workbench switch while
@@ -478,10 +492,7 @@ export async function executeTurn(input = {}, options = {}) {
         claimedAddresses(decision.answer, request.goal),
         {
           providerControlled: providerControlledDecision,
-          allowAddressFreeDeterministicFallback: providerControlledDecision
-            && !((decision.evidenceIds || []).length > 0)
-            && plan != null
-            && typeof plan === 'object',
+          allowAddressFreeDeterministicFallback: deterministicDecisionProvenance === true,
         },
       );
       await persistWithBindingCheck(() => this.sessionStore.updateMemory(session.id, {

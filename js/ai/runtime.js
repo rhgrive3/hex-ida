@@ -120,7 +120,7 @@ export class AIRuntime {
   async runJobSlice(jobOrId, options = {}) { return this.jobs.runSlice(jobOrId, options); }
   async resumeJob(id, options = {}) { return this.jobs.resume(id, options); }
 
-  async finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, monotonicNow = defaultMonotonicNow, limitReason, registry, snapshot, effectiveScope, stores, signal, assertFresh = null, providerControlledDecision = false }) {
+  async finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, monotonicNow = defaultMonotonicNow, limitReason, registry, snapshot, effectiveScope, stores, signal, assertFresh = null, providerControlledDecision = false, deterministicDecisionProvenance = false }) {
     // Store authority comes from the turn's captured namespace, never from the
     // shared fields: a concurrent turn re-points `this.*Store` across awaits
     // and would otherwise swap this turn's evidence/hypothesis/proposal
@@ -189,10 +189,7 @@ export class AIRuntime {
       // A provider that made no explicit citation may still consume the exact
       // verified record set bound to this turn's deterministic plan (#8864).
       // This is Hex-owned fallback authority, not model-selected session state.
-      allowAddressFreeDeterministicFallback: providerControlledDecision
-        && !hasExplicitEvidenceSelection
-        && plan != null
-        && typeof plan === 'object',
+      allowAddressFreeDeterministicFallback: deterministicDecisionProvenance === true,
     });
     if (authorityEvidence.length < finalEvidence.filter((item) => item?.status === 'verified').length) {
       activity.push({ type: 'consistency-check', label: '引用された検証済み記録が最終回答の主張住所を証明していないため、権限を付与せず根拠提示のみとしました', timestamp: new Date().toISOString() });
