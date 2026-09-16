@@ -33,6 +33,18 @@ jobs:
           elif [ ! -s conflicts.txt ]; then
             printf '__MERGE_FAILED_WITHOUT_UNMERGED_PATHS__\n' > conflicts.txt
           fi
+          if [ "$merge_status" -ne 0 ] && [ -s conflicts.txt ]; then
+            mkdir -p conflict-stages/base conflict-stages/ours conflict-stages/theirs conflict-stages/marked
+            while IFS= read -r path; do
+              for stage in base ours theirs; do
+                case "$stage" in base) n=1;; ours) n=2;; theirs) n=3;; esac
+                mkdir -p "conflict-stages/$stage/$(dirname "$path")"
+                git show ":$n:$path" > "conflict-stages/$stage/$path" 2>/dev/null || true
+              done
+              mkdir -p "conflict-stages/marked/$(dirname "$path")"
+              cp -- "$path" "conflict-stages/marked/$path" 2>/dev/null || true
+            done < conflicts.txt
+          fi
           {
             echo '### PR 8671 merge probe'
             echo '```text'
@@ -44,5 +56,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pr8671-conflicts
-          path: conflicts.txt
+          path: |
+            conflicts.txt
+            conflict-stages/
           retention-days: 1
