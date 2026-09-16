@@ -5,7 +5,6 @@ import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
    contract in this same session. Everything here tests that proof, not the
    size win -- a smaller prompt that continues on an unproven contract is worse
    than a large correct one. */
-import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 import assert from 'node:assert/strict';
 import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
 import { DevAgentUiSettings } from '../../js/ai/dev/ui/settings.js';

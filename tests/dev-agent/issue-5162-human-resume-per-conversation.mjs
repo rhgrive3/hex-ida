@@ -1,6 +1,5 @@
 import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 import assert from 'node:assert/strict';
-import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 import { DevSupervisorEngineV0 } from '../../js/ai/dev/supervisor/dev-supervisor-engine-v0.js';
 import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
 import { DevAgentUiSettings } from '../../js/ai/dev/ui/settings.js';

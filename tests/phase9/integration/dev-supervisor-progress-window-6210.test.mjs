@@ -1,6 +1,5 @@
 import { AllowAllAdminProvider } from '../../../js/ai/dev/auth/admin-provider.js';
 import test from 'node:test';
-import { AllowAllAdminProvider } from '../../../js/ai/dev/auth/admin-provider.js';
 import assert from 'node:assert/strict';
 import { DevSupervisorV0 } from '../../../js/ai/dev/supervisor/dev-supervisor-v0.js';
 import { ProgressBudgetDevSupervisorEngineV0 } from '../../../js/ai/dev/supervisor/dev-supervisor-progress-budget.js';
