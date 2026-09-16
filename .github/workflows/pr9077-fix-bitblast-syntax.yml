@@ -1,0 +1,55 @@
+name: pr9077-fix-bitblast-syntax
+on:
+  push:
+    branches:
+      - recovery/t014-mainline-solver-foundation-20260916
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: recovery/t014-mainline-solver-foundation-20260916
+          fetch-depth: 0
+      - name: Repair malformed divide-by-zero mux calls
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('js/symbolic/solver/bitblast-backend.js')
+          s = p.read_text()
+          replacements = {
+            'quotient: this.muxBits0zero, this.constantBits(width, -1n), quotient),': 'quotient: this.muxBits(zero, this.constantBits(width, -1n), quotient),',
+            'remainder: this.muxBits0zero, dividend, rem),': 'remainder: this.muxBits(zero, dividend, rem),',
+          }
+          for old, new in replacements.items():
+            assert s.count(old) == 1, (old, s.count(old))
+            s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+          git diff --check
+      - name: Syntax check bit-blast backend
+        shell: bash
+        run: timeout 60s node --check js/symbolic/solver/bitblast-backend.js
+      - name: Hostile structural-hash regressions
+        shell: bash
+        run: timeout 180s node --test tests/phase9/expr/t014-bounded-structural-hash.test.mjs
+      - name: Focused Phase 9 solver suite
+        shell: bash
+        run: timeout 900s node --test tests/phase9/solver/*.mjs tests/issue-5498-eligibility-result-status-authority.mjs
+      - name: Publish clean fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/pr9077-fix-bitblast-syntax.yml
+          git add js/symbolic/solver/bitblast-backend.js
+          git diff --cached --check
+          git commit -m 'fix(solver): repair bit-blast divide-by-zero mux calls'
+          git push origin HEAD:refs/heads/recovery/t014-mainline-solver-foundation-20260916
