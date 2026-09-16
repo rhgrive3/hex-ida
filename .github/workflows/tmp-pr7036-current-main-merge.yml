@@ -24,15 +24,22 @@ jobs:
           set -euo pipefail
           git fetch --no-tags --depth=650 origin ac36cc16b42fb10fbd54b5bd3f1e1a6474ca902b
           set +e
-          git merge --no-commit --no-ff ac36cc16b42fb10fbd54b5bd3f1e1a6474ca902b >/dev/null 2>&1
+          base=$(git merge-base HEAD^ ac36cc16b42fb10fbd54b5bd3f1e1a6474ca902b 2>/tmp/merge-base.err)
+          base_rc=$?
+          git merge --no-commit --no-ff ac36cc16b42fb10fbd54b5bd3f1e1a6474ca902b >/dev/null 2>/tmp/merge.err
           rc=$?
           set -e
           {
+            echo "merge_base_rc=$base_rc"
+            echo "merge_base=${base:-none}"
+            head -n 5 /tmp/merge-base.err | sed 's/^/merge_base_error=/'
             echo "merge_rc=$rc"
+            head -n 8 /tmp/merge.err | sed 's/^/merge_error=/'
             echo "conflict_count=$(git diff --name-only --diff-filter=U | wc -l | tr -d ' ')"
             git diff --name-only --diff-filter=U | sed 's/^/conflict=/'
           } > pr7036-merge-summary.txt
           git merge --abort >/dev/null 2>&1 || true
+          git reset --hard HEAD >/dev/null 2>&1 || true
       - uses: actions/upload-artifact@v4
         with:
           name: pr7036-merge-summary
