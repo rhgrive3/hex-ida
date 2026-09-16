@@ -17,175 +17,39 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Merge main and resolve exact overlaps
+      - name: Detect and constrain merge conflicts
         shell: bash
         run: |
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git fetch --no-tags origin main
+          BASE="$(git merge-base HEAD origin/main)"
+          git diff --binary "$BASE"..HEAD -- js/macho.js > /tmp/macho.patch
+          git diff --binary "$BASE"..HEAD -- js/worker-fixes.js > /tmp/worker.patch
           set +e
           git merge --no-ff --no-commit origin/main
-          merge_rc=$?
+          rc=$?
           set -e
-          if [ "$merge_rc" -ne 0 ]; then
+          if [ "$rc" -ne 0 ]; then
             mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
-            printf 'conflicts=%s\n' "${conflicts[*]}" >> "$GITHUB_STEP_SUMMARY"
             for f in "${conflicts[@]}"; do
-              case "$f" in
-                js/macho.js|js/worker-fixes.js) ;;
-                *) echo "unexpected conflict: $f" >> "$GITHUB_STEP_SUMMARY"; exit 1 ;;
-              esac
+              case "$f" in js/macho.js|js/worker-fixes.js) ;; *) echo "unexpected conflict: $f"; exit 1 ;; esac
             done
+            git checkout --theirs -- js/macho.js js/worker-fixes.js
+            git add js/macho.js js/worker-fixes.js
           fi
-          git checkout origin/main -- js/macho.js js/worker-fixes.js
-          python - <<'PY'
-          from pathlib import Path
-          p=Path('js/macho.js'); s=p.read_text()
-          anchor="  function cstr(u8, off, max) {\n"
-          insert="""  /* Architecture identity for duplicate fat-slice rejection (#8840). */
-          function canonicalFatArchKey(cputype, cpusubtype) {
-            const cpu = cputype >>> 0;
-            const sub = cpusubtype >>> 0;
-            const id = cpu === CPU_TYPE_ARM64 ? (sub === 2 ? 0x80000002 : sub) : (sub & 0x00ffffff);
-            return cpu + ':' + id;
-          }
-
-          """
-          assert anchor in s; s=s.replace(anchor, insert+anchor, 1)
-          old="""    const out = [];
-            for (let i = 0; i < n; i++) {
-              const o = 8 + i * entry;
-              const cputype = dv.getInt32(o, false);
-              const cpusubtype = dv.getInt32(o + 4, false);
-              const offset = is64 ? dv.getBigUint64(o + 8, false) : BigInt(dv.getUint32(o + 8, false));
-              const size = is64 ? dv.getBigUint64(o + 16, false) : BigInt(dv.getUint32(o + 12, false));
-              if (offset + size > fileSize) return null;      // not a fat binary after all
-              const cn = cpuName(cputype, cpusubtype);
-              out.push({ offset, size, cputype, cpusubtype, name: cn.cpu + (cn.sub && cn.sub !== 'all' ? ' (' + cn.sub + ')' : '') });
-            }
-            return out;
-          """
-          new="""    const staged = [];
-            for (let i = 0; i < n; i++) {
-              const o = 8 + i * entry;
-              const cputype = dv.getInt32(o, false);
-              const cpusubtype = dv.getInt32(o + 4, false);
-              const offset = is64 ? dv.getBigUint64(o + 8, false) : BigInt(dv.getUint32(o + 8, false));
-              const size = is64 ? dv.getBigUint64(o + 16, false) : BigInt(dv.getUint32(o + 12, false));
-              if (size <= 0n || offset + size > fileSize) return null;
-              staged.push({ cputype, cpusubtype, offset, size });
-            }
-            const seen = new Set();
-            for (const e of staged) {
-              const key = canonicalFatArchKey(e.cputype, e.cpusubtype);
-              if (seen.has(key)) return null;
-              seen.add(key);
-            }
-            for (let i = 0; i < staged.length; i++) for (let j = i + 1; j < staged.length; j++) {
-              const a = staged[i], b = staged[j];
-              if (a.offset < b.offset + b.size && b.offset < a.offset + a.size) return null;
-            }
-            const out = [];
-            for (const e of staged) {
-              const cn = cpuName(e.cputype, e.cpusubtype);
-              out.push({ offset:e.offset, size:e.size, cputype:e.cputype, cpusubtype:e.cpusubtype,
-                name: cn.cpu + (cn.sub && cn.sub !== 'all' ? ' (' + cn.sub + ')' : '') });
-            }
-            return out;
-          """
-          assert old in s; s=s.replace(old,new,1)
-          old="    info.textVM=textVM; info.textFileOff=textFileOff;\n    const align=instructionAlignment(architecture);\n"
-          new="    info.textVM=textVM; info.textFileOff=textFileOff;\n    rejectAmbiguousSegmentOwnership(info);\n    const align=instructionAlignment(architecture);\n"
-          assert old in s; s=s.replace(old,new,1)
-          anchor="  function regionsFrom(info, sliceOff, sliceSize, fileSize) {\n"
-          insert="""  function classicOwnershipAmbiguous(a, b) {
-            const aVmEnd=a.vmaddr+a.vmsize, bVmEnd=b.vmaddr+b.vmsize;
-            const start=a.vmaddr>b.vmaddr?a.vmaddr:b.vmaddr, end=aVmEnd<bVmEnd?aVmEnd:bVmEnd;
-            if (start >= end) return false;
-            const aFileEnd=a.vmaddr+a.filesize, bFileEnd=b.vmaddr+b.filesize;
-            const boundaries=[...new Set([start,end,aFileEnd,bFileEnd].filter((p)=>p>start&&p<end))]
-              .sort((x,y)=>(x<y?-1:x>y?1:0));
-            const points=[start,...boundaries,end];
-            for (let i=0;i+1<points.length;i++) {
-              const point=points[i], aBacked=point>=a.vmaddr&&point<aFileEnd, bBacked=point>=b.vmaddr&&point<bFileEnd;
-              if (!aBacked && !bBacked) continue;
-              if (aBacked !== bBacked) return true;
-              if (a.fileoff+(point-a.vmaddr) !== b.fileoff+(point-b.vmaddr)) return true;
-            }
-            return false;
-          }
-
-          function rejectAmbiguousSegmentOwnership(info) {
-            const backed=(info.segments||[]).filter((s)=>s.validMapping&&s.filesize>0n);
-            for (let i=0;i<backed.length;i++) for (let j=i+1;j<backed.length;j++) {
-              const a=backed[i], b=backed[j];
-              if (!classicOwnershipAmbiguous(a,b)) continue;
-              a.validMapping=false; b.validMapping=false; a.mappingConflict=true; b.mappingConflict=true;
-              info.segmentOwnershipConflict=true;
-              info.diagnostics.push(`${b.name}: VM range overlaps segment ${a.name} with a conflicting file mapping (ambiguous ownership)`);
-            }
-          }
-
-          """
-          assert anchor in s; s=s.replace(anchor,insert+anchor,1)
-          old="      if(!seg.validMapping) continue;\n      const sections=seg.sections||[];\n"
-          new="      if(!seg.validMapping || seg.mappingConflict) continue;\n      const sections=seg.sections||[];\n"
-          assert old in s; s=s.replace(old,new,1)
-          anchor="  /**\n   * Parse DWARF `.eh_frame` and return exact FDE [start,end) ranges.\n"
-          insert="""  function fdeInExecutableMapping(start, end, options) {
-            const align=options&&options.align;
-            if (align&&align>1n&&(start%align)!==0n) return false;
-            const ranges=options&&options.execRanges;
-            if (!Array.isArray(ranges)) return true;
-            return ranges.some((r)=>r.start<=start&&end<=r.end);
-          }
-
-          """
-          assert anchor in s; s=s.replace(anchor,insert+anchor,1)
-          old="if (start >= 0n && end > start) out.push({ start, end });"
-          new="if (start >= 0n && end > start) { if (!fdeInExecutableMapping(start, end, options)) { p = recordEnd; continue; } out.push({ start, end }); }"
-          assert old in s; s=s.replace(old,new,1)
-          p.write_text(s)
-
-          p=Path('js/worker-fixes.js'); s=p.read_text()
-          anchor="function __addressBitmap(region) {\n"
-          insert="""function __executableCodeRanges(slice) {
-            const raw=[];
-            for (const r of (slice&&slice.regions)||[]) {
-              if (!r.exec||r.zerofill||!(r.size>0n)) continue;
-              const start=r.vmAddr,end=r.vmAddr+r.size; if (end>start) raw.push({start,end});
-            }
-            raw.sort((a,b)=>(a.start<b.start?-1:a.start>b.start?1:0));
-            const merged=[];
-            for (const r of raw) { const last=merged[merged.length-1]; if (last&&r.start<=last.end) { if (r.end>last.end) last.end=r.end; } else merged.push({start:r.start,end:r.end}); }
-            return merged;
-          }
-          function __execInstructionAlign(slice) {
-            const arch=(slice&&slice.info&&slice.info.architecture)||'arm64';
-            return arch==='arm64'||arch==='arm64e'||arch==='arm64_32'?4n:arch==='arm'?2n:1n;
-          }
-
-          """
-          assert anchor in s; s=s.replace(anchor,insert+anchor,1)
-          old="""        ehFrameRanges = MachO.parseEhFrameRanges(buf, ehFrameRegion.vmAddr, {
-                    pointerSize: slice.info?.is64 === false ? 4 : 8, textBase: imageBase,
-                  }).filter((x) => x.end > lo && x.start < hi);
-          """
-          new="""        ehFrameRanges = MachO.parseEhFrameRanges(buf, ehFrameRegion.vmAddr, {
-                    pointerSize: slice.info?.is64 === false ? 4 : 8, textBase: imageBase,
-                    execRanges: __executableCodeRanges(slice), align: __execInstructionAlign(slice),
-                  }).filter((x) => x.end > lo && x.start < hi);
-          """
-          assert old in s; s=s.replace(old,new,1)
-          p.write_text(s)
-          PY
-          git add js/macho.js js/worker-fixes.js
-          if git diff --name-only --diff-filter=U | grep -q .; then
-            echo 'unresolved merge paths remain' >> "$GITHUB_STEP_SUMMARY"
-            git diff --name-only --diff-filter=U >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+          test -z "$(git diff --name-only --diff-filter=U)"
+      - name: Reapply js macho delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --3way /tmp/macho.patch
+      - name: Reapply worker fixes delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --3way /tmp/worker.patch
       - name: Focused verification
         shell: bash
         run: |
