@@ -7905,3 +7905,28 @@ HEX-C4-01 はこのローカル要件について accepted-local。Phase8 全体
 
 HEX-ME-01 / FR-ME-01A / FR-ME-01B はこのローカル要件について accepted-local。物理ハードウェア実機検証、現代x86形式証拠、RV64 relaxed-memory 全体カバレッジ、全 release gate は未達のため、`CHECKPOINT-LOCKED` / `fullRoadmapComplete: false` / `transformAuthorization: false` を維持する。
 
+## 2026-09-16 X-01 / X-03 local acceptance and X-02 finite status
+
+`tests/stage2/x01-format-safe-rebuild-acceptance.test.mjs` で、HEX-X-01 / FR-X-01A の rebuild transaction v2 および format-safe rebuild をローカル固定受入した（7/7 PASS）。
+1. F6 rebuild units（12 units）、profiles（4 profiles: macho:64, elf:64, pe:pe32, pe:pe32+）、bounded operation cells（4 cells）の完全分母を凍結。
+2. writer identity と independent oracle identity の厳格分離。canonical provider 登録（`registerCanonicalIndependentOracleProvider`）の義務付け、未登録/改ざん provider の呼出前即時拒絶。
+3. independent oracle 欠落または拒否時の確実な fail-closed（`required-validator-unavailable`, `status: invalid`）。非 green 検証時における `publishRebuildTransaction` の厳格拒絶（`rebuild-v2-validation-not-green`）。
+4. publication proof boundary の保護（`isValidatedAtomicPublicationReceipt` による真正レシート検証、コピー/偽造レシートの権威無効化、検証後改ざんの昇格前遮断）。
+5. real binary fixture（ELF, PE, Mach-O）に対する format-safe rebuild。変更箇所以外の完全バイト一致、公開ローダーによる再読込整合性を検証。
+6. host `llvm-readobj` による実 Mach-O / PE layout mutation（`macho-section-size`, `pe-section-virtual-size`）の独立差分再解析とレイアウト証拠の検証。
+7. pinned LLVM 18.1.3 oracle（`Ubuntu LLVM version 18.1.3`）の環境評価。異なるツールチェーン環境では `available: false` / `independent-oracle-tool-version-mismatch` として厳格に fail closed し、未検証バイナリのリリースゲート通過を遮断。
+
+`tests/stage2/x03-rebuild-discovery-acceptance.test.mjs` で、HEX-X-03 / FR-X-03A の ambiguity-preserving discovery および rebuild reparse をローカル固定受入した（7/7 PASS）。
+1. discovery artifact スキーマ（`hex-discovery-ambiguity-artifact/v1`）の凍結。
+2. 曖昧性の保持: code/data overlap の `resolution: 'unresolved'` 保持、function-boundary overlap の `extentState: 'unknown'` 保持、隣接関数の誤衝突回避。
+3. anti-promotion: 高 confidence（1.0）や人工スコア（1e9）による exact/selected 昇格の禁止（heuristic/ambiguous 維持）。外部プロデューサによる exact 捏造禁止。
+4. reference 保持: jump-table target の reference 保持（シンボリック式保持、偽関数開始捏造禁止）、relocation target の保持、不正 reference の fail closed。
+5. rebuild transaction binding: `isFactoryIssuedDiscoveryRebuildBinding` による真正 binding 義務付け、偽造/欠落 binding の拒絶、X-01 independent oracle authority の再利用。
+6. reparse gate: 曖昧性喪失の検出・拒絶（`missingCandidateIds`, `missingCollisionIds`, `missingReferenceIds`）、heuristic 候補のサイレント昇格拒絶（`promotedCandidateIds`）、出力 hash 不一致拒絶。
+7. format-safe rebuild との統合: 実 ELF fixture（`vertical-sysv-amd64.elf`）に対する `createFormatSafeRebuildTransaction`（`elf-comment`）と discovery artifact のバインド、出力生成、`verifyDiscoveryReparse` および independent oracle の完全通過を検証。
+
+HEX-X-02 / FR-X-02A については、元120行の canonical 統合および current overlay（X02-F-48 compiler-produced arm64e PAC Mach-O による pass）を維持し、全 120 行テスト（`x02-prior120-apple-version-matrix.test.mjs` 120/120 PASS）、公開入口テスト（`x02-apple-version-matrix.test.mjs` 61/61 PASS）、宣言境界テスト（`x02-declared-metadata-boundaries.test.mjs` 12/12 PASS）の全件通過を維持。残る 3 evidence-gap（versioned Apple OS/toolchain/runtime corpus、real dyld shared cache と slide/rebase 来歴、genuine signed Mach-O と trusted signing）および 2 environment-excluded（実 Apple arm64e runtime 上の PAC 認証 X02-F-47、pinned LLVM 18.1.3 oracle X02-H-02）は実機・Apple実物なしに昇格させず、厳格に fail closed のまま維持する。
+
+HEX-X-01 / HEX-X-03 はこのローカル要件について accepted-local。物理実機検証、現代 Apple runtime、全 release gate は未達のため、`CHECKPOINT-LOCKED` / `fullRoadmapComplete: false` / `transformAuthorization: false` を維持する。
+
+

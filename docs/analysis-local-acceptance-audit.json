@@ -156,11 +156,11 @@
     },
     {
       "id": "HEX-X-01",
-      "localStatus": "existing-with-failed-gate",
-      "assessment": "既存format-safe transaction/independent oracleを維持。LLVM18.1.3不足およびPhase12の失敗が残る。",
-      "source": "tools/validation/rebuild-independent-oracle.mjs",
-      "verificationSuite": "phase12-test",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "assessment": "F6 rebuild transaction v2の12 units（transaction-identity, layout-and-structure, relocations-and-bindings, branch-ranges, unwind-and-debug, imports-and-exports, signature-consequence, loader-reparse, independent-differential-oracle, atomic-publication, real-fixture, negative-validator-corpus）、4 profiles（macho:64, elf:64, pe:pe32, pe:pe32+）、4 bounded operation cells（terminal-sht-nobits-append, text-virtual-size-within-alignment x2, text-section-size-within-file-gap）の固定分母を検証。writerとindependent oracleのidentity分離、canonical provider登録必須、未登録/改ざんprovider拒否、oracle欠落または拒否時のfail-closed gate、非green検証時のpublication拒絶、publication proof boundaryとgenuine receipt保護（isValidatedAtomicPublicationReceipt）、ELF/PE/Mach-O real fixtureに対するformat-safe rebuild（変更箇所以外の完全一致とdigest検証）、host llvm-readobjによるMach-O/PE layout mutation検証、およびpinned LLVM 18.1.3欠落時の厳格なfail-closed / environment-exclusionを tests/stage2/x01-format-safe-rebuild-acceptance.test.mjs にて機械検証し、このローカル要件について accepted-local とする。独立レビュー、実機、release、他 finding は閉じていないため、CHECKPOINT-LOCKED / transformAuthorization:false を維持。",
+      "source": "tests/stage2/x01-format-safe-rebuild-acceptance.test.mjs",
+      "verificationSuite": "stage2-x-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "HEX-X-02",
@@ -172,11 +172,11 @@
     },
     {
       "id": "HEX-X-03",
-      "localStatus": "existing-reused",
-      "assessment": "提出済みambiguity-preserving discovery/rebuild成果を再利用。独立reparseと全format/architecture再受入は未完了。",
-      "source": "docs/analysis-roadmap-v8-integration-checkpoint.md",
-      "verificationSuite": "phase12-test",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "assessment": "X-03のambiguity-preserving discovery artifact（hex-discovery-ambiguity-artifact/v1）とrebuild reparse gateを固定受入。code/data overlap（unresolved保持）、function overlap（extentState:unknown保持）、jump-table reference（関数開始偽造なし・symbolic expression保持）、relocation reference（relocationId・symbolic expression保持）の曖昧性保持を検証。高confidence/scoreによるexactフラグ偽造拒絶（anti-promotion）、discovery rebuild transaction binding（isFactoryIssuedDiscoveryRebuildBinding検証、欠落/偽造binding拒絶、X-01 independent oracle authority再利用）、reparse gateにおける曖昧性喪失の拒絶（missingCandidateIds, missingCollisionIds, missingReferenceIds）、heuristic候補のサイレント昇格拒絶（promotedCandidateIds）、出力hash不一致拒絶、および実ELF binaryに対するformat-safe rebuild（elf-comment）とverifyDiscoveryReparseを tests/stage2/x03-rebuild-discovery-acceptance.test.mjs および tests/stage2/x03-rebuild-discovery.test.mjs にて機械検証し、このローカル要件について accepted-local とする。全体ロードマップは CHECKPOINT-LOCKED / transformAuthorization:false を維持。",
+      "source": "tests/stage2/x03-rebuild-discovery-acceptance.test.mjs",
+      "verificationSuite": "stage2-x-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "HEX-S2-01",
@@ -512,9 +512,9 @@
       "mustWaitFor": "C0/ME contracts",
       "complexity": "XL",
       "findingId": "HEX-X-03",
-      "localStatus": "existing-reused",
-      "currentAssessment": "提出済みambiguity-preserving discovery/rebuild成果を再利用。独立reparseと全format/architecture再受入は未完了。",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "currentAssessment": "X-03のambiguity-preserving discovery artifact（hex-discovery-ambiguity-artifact/v1）およびrebuild reparse gateを固定受入。code/data overlap、function overlap、jump-table reference、relocation referenceの曖昧性保持、anti-promotion（高confidence/scoreのexact昇格拒絶）、reparse gateにおける曖昧性喪失・サイレント昇格・出力hash不一致の拒絶、format-safe rebuild（elf-comment）とverifyDiscoveryReparseを tests/stage2/x03-rebuild-discovery-acceptance.test.mjs にて機械検証。全体ロードマップは CHECKPOINT-LOCKED / transformAuthorization:false を維持。",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "FR-X-02A",
@@ -3016,6 +3016,81 @@
       ],
       "physicalDeviceAcceptance": "SKIPPED (user-requested)",
       "scopeNote": "SYM-01 (Tiered QF_BV solver, exact floor, SAT/UNSAT, trust contract), SYM-02 (Byte memory state, partial writes, escalation, wrap, barriers), and SYM-03 (Production taint, sanitizers, EvidenceGraph, bounded equivalence) の local acceptance 完了。全native corpus、独立shadow、実機・release、全体ロードマップは別ゲートとして未完了。",
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false
+    },
+    "x01FormatSafeRebuildAcceptance20260916": {
+      "status": "ACCEPTED-LOCAL",
+      "finding": "HEX-X-01",
+      "denominator": {
+        "f6RebuildUnits": 12,
+        "f6RebuildProfiles": 4,
+        "f6BoundedOperationCells": 4,
+        "preservationUnits": 6
+      },
+      "acceptanceTest": "tests/stage2/x01-format-safe-rebuild-acceptance.test.mjs",
+      "receipt": {
+        "command": "node tests/stage2/x01-format-safe-rebuild-acceptance.test.mjs",
+        "result": "7 tests / 7 pass"
+      },
+      "independentOraclePolicy": {
+        "identitySeparation": "loader-vs-oracle-distinct",
+        "registrationRequirement": "registerCanonicalIndependentOracleProvider",
+        "failClosedOnMissing": true,
+        "publicationProofBoundary": "isValidatedAtomicPublicationReceipt",
+        "pinnedVersionPolicy": "fail-closed-when-unmatched"
+      },
+      "formatSafePreservation": [
+        "elf-comment",
+        "pe-timestamp",
+        "macho-min-version"
+      ],
+      "formatSafeLayout": [
+        "elf-add-nobits-section",
+        "pe-section-virtual-size",
+        "macho-section-size"
+      ],
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false
+    },
+    "x03RebuildDiscoveryAcceptance20260916": {
+      "status": "ACCEPTED-LOCAL",
+      "finding": "HEX-X-03",
+      "tasks": [
+        "FR-X-03A"
+      ],
+      "denominator": {
+        "schemaVersion": "hex-discovery-ambiguity-artifact/v1",
+        "collisionKinds": [
+          "code-data",
+          "function-overlap"
+        ],
+        "referenceKinds": [
+          "jump-table",
+          "relocation"
+        ],
+        "candidateStates": [
+          "heuristic",
+          "probable",
+          "exact"
+        ]
+      },
+      "acceptanceTest": "tests/stage2/x03-rebuild-discovery-acceptance.test.mjs",
+      "receipt": {
+        "command": "node tests/stage2/x03-rebuild-discovery-acceptance.test.mjs",
+        "result": "7 tests / 7 pass"
+      },
+      "ambiguityPreservation": {
+        "codeDataOverlap": "unresolved-range-preserved",
+        "functionOverlap": "extent-unknown-preserved",
+        "jumpTableSymbolicExpression": "preserved-no-function-start-minting",
+        "antiPromotion": "high-confidence-score-rank-neutral"
+      },
+      "reparseGate": {
+        "antiLoss": "missingCandidateIds-missingCollisionIds-missingReferenceIds-blocking",
+        "antiSilentPromotion": "promotedCandidateIds-blocking",
+        "outputHashMismatch": "blocking"
+      },
       "fullRoadmapComplete": false,
       "transformAuthorization": false
     }

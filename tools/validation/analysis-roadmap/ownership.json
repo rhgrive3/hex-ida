@@ -482,6 +482,8 @@
       "js/rebuild/format-safe.js",
       "js/rebuild/transaction-v2.js",
       "tests/stage2/x03-rebuild-discovery.test.mjs",
+      "tests/stage2/x01-format-safe-rebuild-acceptance.test.mjs",
+      "tests/stage2/x03-rebuild-discovery-acceptance.test.mjs",
       "tests/stage2/s2-01-runtime-identity-acceptance.test.mjs",
       "tests/stage2/s2-02-recognition-collision-acceptance.test.mjs",
       "tests/machine-effects/me-01-acceptance.test.mjs",
