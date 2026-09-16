@@ -4,7 +4,7 @@ on:
     branches:
       - diag/7036-ownership-latest-20260917
 permissions:
-  contents: read
+  contents: write
 jobs:
   diagnose:
     runs-on: ubuntu-latest
@@ -13,35 +13,66 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Reproduce ownership gates
+      - name: Repair latest #7036 ownership head
         shell: bash
         run: |
           set +e
           set -uo pipefail
           STATUS=/tmp/diag-7036.txt
           : > "$STATUS"
-          LOGICAL_BRANCH=feat/analysis-roadmap-v8-current-main-20260907
-          timeout 90s git fetch --no-tags origin main >/tmp/fetch.log 2>&1
-          rc=$?
-          echo "fetch rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/fetch.log >> "$STATUS"; exit "$rc"; fi
+          TARGET_BRANCH=feat/analysis-roadmap-v8-current-main-20260907
+          LOGICAL_BRANCH=$TARGET_BRANCH
+          timeout 90s git fetch --no-tags origin main "$TARGET_BRANCH" >/tmp/fetch.log 2>&1
+          rc=$?; echo "fetch rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 60 /tmp/fetch.log >> "$STATUS"; exit $rc; }
           BASE_SHA=$(git rev-parse refs/remotes/origin/main)
-          HEAD_SHA=$(git rev-parse HEAD^)
-          git checkout --detach "$HEAD_SHA" >/tmp/checkout.log 2>&1
-          rc=$?
-          echo "checkout rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/checkout.log >> "$STATUS"; exit "$rc"; fi
+          START_SHA=$(git rev-parse "refs/remotes/origin/$TARGET_BRANCH")
           echo "base=$BASE_SHA" >> "$STATUS"
-          echo "head=$HEAD_SHA" >> "$STATUS"
-          fail_tail() { label="$1"; file="$2"; rc="$3"; echo "$label rc=$rc" >> "$STATUS"; echo "--- first failure tail ---" >> "$STATUS"; tail -n 80 "$file" >> "$STATUS"; exit "$rc"; }
-          timeout 120s node tools/validation/phase7-ownership.mjs --check-manifest >/tmp/p7m.log 2>&1; rc=$?; [ "$rc" -eq 0 ] || fail_tail phase7_manifest /tmp/p7m.log "$rc"
-          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase7 --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" >/tmp/p7.json 2>/tmp/p7g.log; rc=$?; [ "$rc" -eq 0 ] || fail_tail phase7_inventory /tmp/p7g.log "$rc"
-          timeout 120s node tools/validation/phase7-ownership.mjs --files-json "$(cat /tmp/p7.json)" >/tmp/p7v.log 2>&1; rc=$?; [ "$rc" -eq 0 ] || fail_tail phase7_validate /tmp/p7v.log "$rc"
-          echo "phase7 rc=0" >> "$STATUS"
-          timeout 120s node tools/validation/phase8-ownership.mjs --check-manifest >/tmp/p8m.log 2>&1; rc=$?; [ "$rc" -eq 0 ] || fail_tail phase8_manifest /tmp/p8m.log "$rc"
-          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase8 --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" >/tmp/p8.json 2>/tmp/p8g.log; rc=$?; [ "$rc" -eq 0 ] || fail_tail phase8_inventory /tmp/p8g.log "$rc"
-          timeout 120s node tools/validation/phase8-ownership.mjs --files-json "$(cat /tmp/p8.json)" >/tmp/p8v.log 2>&1; rc=$?; [ "$rc" -eq 0 ] || fail_tail phase8_validate /tmp/p8v.log "$rc"
-          echo "phase8 rc=0" >> "$STATUS"
+          echo "start_head=$START_SHA" >> "$STATUS"
+          git checkout --detach "$START_SHA" >/tmp/checkout.log 2>&1
+          rc=$?; echo "checkout rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 60 /tmp/checkout.log >> "$STATUS"; exit $rc; }
+          python3 - <<'PY' >/tmp/patch.log 2>&1
+          from pathlib import Path
+          edits = [
+            ('tools/validation/analysis-roadmap/ownership.mjs', "    '.github/workflows/ghidra-differential.yml',\n", "    '.github/workflows/x02-collector-fix.yml',\n"),
+            ('tools/validation/analysis-roadmap/ownership.json', '      ".github/workflows/ghidra-differential.yml",\n', '      ".github/workflows/x02-collector-fix.yml",\n'),
+            ('tools/validation/analysis-roadmap/ownership.mjs', "    'tests/scpa/x02-declared-metadata-boundaries.test.mjs',\n", "    'tests/scpa/fixtures/x02-real-apple-evidence-20260916.json',\n"),
+            ('tools/validation/analysis-roadmap/ownership.json', '      "tests/scpa/x02-declared-metadata-boundaries.test.mjs",\n', '      "tests/scpa/fixtures/x02-real-apple-evidence-20260916.json",\n'),
+          ]
+          for name, target, add in edits:
+              p=Path(name); s=p.read_text()
+              if add not in s:
+                  if target not in s: raise SystemExit(f'anchor missing: {name}: {target.strip()}')
+                  s=s.replace(target,target+add,1); p.write_text(s)
+          PY
+          rc=$?; echo "patch rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 80 /tmp/patch.log >> "$STATUS"; exit $rc; }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tools/validation/analysis-roadmap/ownership.mjs tools/validation/analysis-roadmap/ownership.json
+          git diff --cached --check >/tmp/diffcheck.log 2>&1
+          rc=$?; echo "diffcheck rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 80 /tmp/diffcheck.log >> "$STATUS"; exit $rc; }
+          if git diff --cached --quiet; then
+            CLEAN_HEAD=$START_SHA
+            echo "commit=unchanged" >> "$STATUS"
+          else
+            git commit -m 'fix(analysis): register X-02 evidence ownership' >/tmp/commit.log 2>&1
+            rc=$?; echo "commit rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 80 /tmp/commit.log >> "$STATUS"; exit $rc; }
+            CLEAN_HEAD=$(git rev-parse HEAD)
+          fi
+          echo "clean_head=$CLEAN_HEAD" >> "$STATUS"
+          fail_tail() { label="$1"; file="$2"; rc="$3"; echo "$label rc=$rc" >> "$STATUS"; echo "--- first failure: $label ---" >> "$STATUS"; tail -n 80 "$file" >> "$STATUS"; exit "$rc"; }
+          timeout 120s node tools/validation/phase7-ownership.mjs --check-manifest >/tmp/p7m.log 2>&1; rc=$?; [ $rc -eq 0 ] || fail_tail p7_manifest /tmp/p7m.log "$rc"; echo 'p7_manifest rc=0' >> "$STATUS"
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase7 --base-sha "$BASE_SHA" --head-sha "$CLEAN_HEAD" >/tmp/p7.json 2>/tmp/p7g.log; rc=$?; [ $rc -eq 0 ] || fail_tail p7_inventory /tmp/p7g.log "$rc"; echo 'p7_inventory rc=0' >> "$STATUS"
+          timeout 120s node tools/validation/phase7-ownership.mjs --files-json "$(cat /tmp/p7.json)" >/tmp/p7v.log 2>&1; rc=$?; [ $rc -eq 0 ] || fail_tail p7_validate /tmp/p7v.log "$rc"; echo 'p7_validate rc=0' >> "$STATUS"
+          timeout 120s node tools/validation/phase8-ownership.mjs --check-manifest >/tmp/p8m.log 2>&1; rc=$?; [ $rc -eq 0 ] || fail_tail p8_manifest /tmp/p8m.log "$rc"; echo 'p8_manifest rc=0' >> "$STATUS"
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase8 --base-sha "$BASE_SHA" --head-sha "$CLEAN_HEAD" >/tmp/p8.json 2>/tmp/p8g.log; rc=$?; [ $rc -eq 0 ] || fail_tail p8_inventory /tmp/p8g.log "$rc"; echo 'p8_inventory rc=0' >> "$STATUS"
+          timeout 120s node tools/validation/phase8-ownership.mjs --files-json "$(cat /tmp/p8.json)" >/tmp/p8v.log 2>&1; rc=$?; [ $rc -eq 0 ] || fail_tail p8_validate /tmp/p8v.log "$rc"; echo 'p8_validate rc=0' >> "$STATUS"
+          echo 'all=pass' >> "$STATUS"
+          if [ "$CLEAN_HEAD" != "$START_SHA" ]; then
+            git push --force-with-lease="refs/heads/$TARGET_BRANCH:$START_SHA" origin "$CLEAN_HEAD:refs/heads/$TARGET_BRANCH" >/tmp/push.log 2>&1
+            rc=$?; echo "push rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 80 /tmp/push.log >> "$STATUS"; exit $rc; }
+          else
+            echo 'push=not-needed' >> "$STATUS"
+          fi
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
