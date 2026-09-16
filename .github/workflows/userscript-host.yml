@@ -90,15 +90,20 @@ jobs:
           node tests/userscript-embed-protocol.mjs
           node tests/issue-5020-sanitize-details-shared-refs.mjs
           node tests/userscript-embed-bootstrap.mjs
-      - name: Diagnostic host group B ChatGPT bridge
-        run: |
-          node tests/chatgpt-web-bridge-contract.mjs
-          node tests/chatgpt-send-control-resolution.mjs
-          node tests/chatgpt-disabled-stop-settlement.mjs
-          node tests/userscript-chatgpt-parent-rpc.mjs
-          node tests/userscript-chatgpt-iframe-host.mjs
-          node tests/userscript-chatgpt-sandbox-host.mjs
-          node tests/userscript-embed-child.mjs
+      - name: Diagnostic B1 chatgpt-web-bridge-contract
+        run: node tests/chatgpt-web-bridge-contract.mjs
+      - name: Diagnostic B2 chatgpt-send-control-resolution
+        run: node tests/chatgpt-send-control-resolution.mjs
+      - name: Diagnostic B3 chatgpt-disabled-stop-settlement
+        run: node tests/chatgpt-disabled-stop-settlement.mjs
+      - name: Diagnostic B4 userscript-chatgpt-parent-rpc
+        run: node tests/userscript-chatgpt-parent-rpc.mjs
+      - name: Diagnostic B5 userscript-chatgpt-iframe-host
+        run: node tests/userscript-chatgpt-iframe-host.mjs
+      - name: Diagnostic B6 userscript-chatgpt-sandbox-host
+        run: node tests/userscript-chatgpt-sandbox-host.mjs
+      - name: Diagnostic B7 userscript-embed-child
+        run: node tests/userscript-embed-child.mjs
       - name: Diagnostic host group C runtime
         run: |
           node tests/userscript-dev-worker-runtime.mjs
