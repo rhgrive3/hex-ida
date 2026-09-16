@@ -297,3 +297,16 @@ canonical SCPAも通過しました。再帰的な検査探索が追加moduleを
 gapを観測する検査の成功は、正の機能要求の達成を意味しません。
 独立レビューと元blobとの照合を行い、X-02全体とreleaseは引き続き **CHECKPOINT-LOCKED** です。
 新しいコミットやmain統合後の検査結果は、対応するexact-headの記録で別途確認します。
+
+
+## 2026-09-17 real Apple evidence reconciliation
+
+The frozen 120-row denominator and historical 108/6/4/2 classification remain unchanged. GitHub Actions run `35118158460` on Apple Silicon/macOS 15.7.9 completed the bounded real-Apple acceptance lane successfully. Its artifact `10457155516` is pinned by digest `sha256:7cb65af30cb10a6368a18c875d21a3883006e8164be91199280c4c4ae2cc6468`, with the normalized snapshot in `tests/scpa/fixtures/x02-real-apple-evidence-20260916.json`.
+
+Current finite classification when the exact pinned LLVM 18.1.3 oracle is unavailable is **116 pass / 0 product-gap / 2 evidence-gap / 2 environment-excluded**. If X02-H-02 independently reparses with the exact pinned LLVM executable/version/digest/format/architecture checks, the conditional classification is **117 / 0 / 2 / 1**.
+
+X02-G-09 is now current `pass`: `/usr/bin/true` is SHA-256 pinned as `501c66a6d1850f8cece66b1c33991969b66f29f003ba91675077672acb15ba5f`, is a universal Mach-O containing arm64e, and passed strict trusted `codesign` validation with an Apple trust chain ending in `Apple Root CA`.
+
+X02-B-06 remains an evidence gap. The pinned real `dyld_shared_cache_arm64e` (`c88d3a9885614d4ee8be36f0e9a50ee09e640311ca0ea843bc67613933e00184`) supplied slide-info v5 and 6,077 bounded sampled rebases that the production decoder accepted with all sampled targets inside the declared shared region, but no observed process runtime load-map or OS-derived runtime slide was captured. X02-A-08 also remains an evidence gap because one pinned macOS/Xcode/clang point is not the required cross-version/cross-toolchain corpus. X02-F-47 remains environment-excluded: the arm64 PAC probe executed successfully and contained PAC/authentication instructions, while the explicit arm64e probe compiled but terminated with `SIGSEGV`, so arm64e runtime authentication is not claimed.
+
+Whole-roadmap state remains `CHECKPOINT-LOCKED`, `fullRoadmapComplete:false`, and `transformAuthorization:false`.

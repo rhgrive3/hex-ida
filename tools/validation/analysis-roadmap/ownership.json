@@ -554,18 +554,7 @@
       "tests/issue-4135-pe-section-virtual-layout.mjs",
       "tests/machine-effects/issue-6079-vblendmx-blend-category.test.mjs",
       ".github/workflows/ghidra-differential.yml",
-      ".github/workflows/x02-apple-evidence.yml",
-      ".github/workflows/x02-dyld-v5-diagnostic.yml",
-      ".github/workflows/x02-dyld-v5-diagnostic2.yml",
-      ".github/workflows/x02-evidence-dispatch-once.yml",
-      ".github/workflows/x02-evidence-dispatch-once3.yml",
       ".github/workflows/x02-real-acceptance.yml",
-      ".github/workflows/x02-real-runtime-diagnostic.yml",
-      ".github/workflows/x02-real-runtime-diagnostic2.yml",
-      ".github/workflows/x02-v5-code-patch.yml",
-      ".github/workflows/x02-v5-repair.yml",
-      ".github/workflows/x02-v5-shared-region-patch.yml",
-      ".github/workflows/x02-v5-shared-region-patch2.yml",
       "js/binary/dyld-shared-cache-slide-v5.js",
       "tests/phase4/binary/dyld-shared-cache-slide-v5-page-start.test.mjs",
       "tests/scpa/x02-dyld-slide-info5.test.mjs",
@@ -581,7 +570,8 @@
       "js/core/evidence/index.js",
       "js/expr.js",
       "tests/semantic-v2/lowering-memory-control.test.mjs",
-      "tests/semantic-v2/phase3-hard-timeout.test.mjs"
+      "tests/semantic-v2/phase3-hard-timeout.test.mjs",
+      "tests/scpa/fixtures/x02-real-apple-evidence-20260916.json"
     ]
   }
 }

@@ -36,6 +36,7 @@ const matrix = JSON.parse(matrixBytes);
 const currentDispositions = Object.freeze({
   'X02-A-07':'pass', 'X02-B-01':'pass', 'X02-B-02':'pass',
   'X02-D-13':'pass', 'X02-E-11':'pass', 'X02-G-03':'pass',
+  'X02-G-09':'pass',
 });
 // The frozen donor lacked LLVM. CI may contain the exact required tool, so
 // assess availability before running the row and demand its real reparse.
@@ -50,6 +51,7 @@ assert.deepEqual(matrix.rows.filter(row => Object.hasOwn(currentDispositions, ro
     ['X02-B-01','cache-sync','product-gap'], ['X02-B-02','cache-async','product-gap'],
     ['X02-D-13','swift-version-gap','product-gap'], ['X02-E-11','objc-classless-gap','product-gap'],
     ['X02-G-03','signature-gap','product-gap'],
+    ['X02-G-09','evidence-missing','evidence-gap'],
   ]);
 const dispositions = ['pass', 'product-gap', 'evidence-gap', 'environment-excluded'];
 assert.equal(matrix.rowCount, 120);
@@ -165,6 +167,19 @@ function localCorpus() {
 
 async function observe(t,row,bytes) {
   const e=row.expectedContract;
+  if(row.id==='X02-G-09' && row.check==='evidence-missing') {
+    const evidence=JSON.parse(fs.readFileSync(path.join(ROOT,'tests/scpa/fixtures/x02-real-apple-evidence-20260916.json')));
+    assert.equal(evidence.schema,'hex-x02-real-apple-evidence-snapshot/v1');
+    assert.equal(evidence.source.workflowRunId,35118158460);
+    assert.equal(evidence.source.artifactDigest,'sha256:7cb65af30cb10a6368a18c875d21a3883006e8164be91199280c4c4ae2cc6468');
+    assert.equal(evidence.appleEnvironment.machine,'arm64');
+    assert.equal(evidence.signedMachO.sha256,'501c66a6d1850f8cece66b1c33991969b66f29f003ba91675077672acb15ba5f');
+    assert.equal(evidence.signedMachO.codesignStrictVerified,true);
+    assert.match(evidence.signedMachO.file,/Mach-O.*arm64e/i);
+    assert.ok(evidence.signedMachO.authorityChain.includes('Apple Root CA'));
+    assert.equal(evidence.currentAcceptance['X02-G-09'].classification,'pass');
+    return passed('trusted-signing-validation',{evidencePath:'tests/scpa/fixtures/x02-real-apple-evidence-20260916.json',signedMachOSha256:evidence.signedMachO.sha256,authorityChain:evidence.signedMachO.authorityChain,workflowRunId:evidence.source.workflowRunId,artifactDigest:evidence.source.artifactDigest});
+  }
   if(row.check==='evidence-missing') {
     const found=localCorpus();assert.deepEqual(found.machos,['tests/phase12/integration/fixtures/issue-8280-arm64_32-objc.o',REAL_MACHO_PATH]);
     assert.ok(fs.existsSync(path.join(ROOT,'docs/解析ツール改善.md.txt')),'Original requirement exists; do not fabricate its absence');
