@@ -3,6 +3,7 @@ import { parseDex } from '../../../js/managed/dex/parser.js';
 import { DexFrontend } from '../../../js/managed/dex/frontend.js';
 import { liftDexMethod } from '../../../js/managed/dex/lifter.js';
 import { buildDex } from '../fixtures/medium-dex.mjs';
+import { applyDexIntegrity } from '../fixtures/dex-integrity.mjs';
 
 // #7620 — class_def_item.interfaces_off is the interface-list authority: the
 // referenced type_list must be decoded losslessly and validated fail-closed
@@ -23,7 +24,7 @@ function fixture({ withInterface, patch = {} } = {}) {
   const typeListOff = built.layout.maps.find(([type]) => type === 0x1001)[2];
   if (withInterface) view.setUint32(built.layout.classes + 12, typeListOff, true);
   Object.assign(view, patch);
-  return bytes;
+  return applyDexIntegrity(bytes);
 }
 
 const plain = parseDex(fixture({ withInterface: false }), { binaryId: 'same' });
@@ -57,7 +58,7 @@ function paddedTypeList({ entries, count = entries.length, buildOptions } = {}) 
   view.setUint32(listOff, count, true);
   entries.forEach((typeIdx, i) => view.setUint16(listOff + 4 + i * 2, typeIdx, true));
   view.setUint32(built.layout.classes + 12, listOff, true);
-  return bytes;
+  return applyDexIntegrity(bytes);
 }
 
 // Out-of-range type_idx inside the type_list.
@@ -159,7 +160,7 @@ function consumerFixture({ withInterface }) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const typeListOff = built.layout.maps.find(([type]) => type === 0x1001)[2];
   if (withInterface) view.setUint32(built.layout.classes + 12, typeListOff, true);
-  return bytes;
+  return applyDexIntegrity(bytes);
 }
 const dispatchImage = parseDex(consumerFixture({ withInterface: true }), { binaryId: 'dispatch' });
 const dispatchFn = liftDexMethod(0, dispatchImage);

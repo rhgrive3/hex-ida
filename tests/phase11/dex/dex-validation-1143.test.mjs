@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { DexFrontend } from '../../../js/managed/dex/frontend.js';
 import { buildMinimalDex } from './dex-parser.test.mjs';
+import { applyDexIntegrity } from '../fixtures/dex-integrity.mjs';
 
 console.log('[phase11] running DEX verifier regression #1143...');
 
@@ -8,6 +9,7 @@ async function validate(mutator) {
   const bytes = buildMinimalDex();
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   mutator?.(bytes, view);
+  applyDexIntegrity(bytes);
   const frontend = new DexFrontend();
   const image = await frontend.open(bytes);
   const methods = [];
