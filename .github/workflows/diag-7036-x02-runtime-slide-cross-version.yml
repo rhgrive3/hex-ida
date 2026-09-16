@@ -1,0 +1,108 @@
+name: diag-7036-x02-runtime-slide-cross-version
+on:
+  push:
+    branches:
+      - diag/7036-x02-runtime-slide-cross-version-20260917
+permissions:
+  contents: read
+jobs:
+  apple-environment:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
+    steps:
+      - name: Capture versioned Apple environment and runtime shared-cache map
+        shell: bash
+        run: |
+          set +e
+          cat > /tmp/shared-cache-runtime.c <<'C'
+          #include <mach/mach.h>
+          #include <mach/task_info.h>
+          #include <mach-o/dyld_images.h>
+          #include <stdint.h>
+          #include <stdio.h>
+          int main(void) {
+            task_dyld_info_data_t info = {0};
+            mach_msg_type_number_t count = TASK_DYLD_INFO_COUNT;
+            kern_return_t kr = task_info(mach_task_self(), TASK_DYLD_INFO, (task_info_t)&info, &count);
+            if (kr != KERN_SUCCESS || info.all_image_info_addr == 0) {
+              fprintf(stderr, "task_info=%d\n", kr);
+              return 2;
+            }
+            const struct dyld_all_image_infos *images = (const struct dyld_all_image_infos *)(uintptr_t)info.all_image_info_addr;
+            printf("version=%u\n", images->version);
+            printf("sharedCacheSlide=0x%llx\n", (unsigned long long)images->sharedCacheSlide);
+            printf("sharedCacheBaseAddress=0x%llx\n", (unsigned long long)(uintptr_t)images->sharedCacheBaseAddress);
+            return 0;
+          }
+          C
+          xcrun clang -O2 /tmp/shared-cache-runtime.c -o /tmp/shared-cache-runtime > /tmp/compile.out 2>&1
+          COMPILE_RC=$?
+          if [ "$COMPILE_RC" -eq 0 ]; then
+            /tmp/shared-cache-runtime > runtime-slide.txt 2>runtime-slide.err
+            RUNTIME_RC=$?
+          else
+            : > runtime-slide.txt
+            RUNTIME_RC=127
+          fi
+          python3 - <<'PY'
+          import json, os, platform, struct, subprocess
+          def cmd(*args):
+              try:
+                  return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT, timeout=20).strip()
+              except Exception as exc:
+                  return f"ERROR:{type(exc).__name__}:{exc}"
+          cache_candidates = [
+              '/System/Library/dyld/dyld_shared_cache_arm64e',
+              '/System/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e',
+              '/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e',
+          ]
+          cache = next((p for p in cache_candidates if os.path.isfile(p)), None)
+          preferred = None
+          if cache:
+              with open(cache, 'rb') as f:
+                  h = f.read(0x200)
+              if len(h) >= 0xf0:
+                  preferred = struct.unpack_from('<Q', h, 0xe0)[0]
+          runtime = {}
+          try:
+              for line in open('runtime-slide.txt'):
+                  if '=' in line:
+                      k,v=line.strip().split('=',1); runtime[k]=v
+          except FileNotFoundError:
+              pass
+          slide = int(runtime.get('sharedCacheSlide','0'), 16) if runtime.get('sharedCacheSlide','').startswith('0x') else None
+          base = int(runtime.get('sharedCacheBaseAddress','0'), 16) if runtime.get('sharedCacheBaseAddress','').startswith('0x') else None
+          coherent = preferred is not None and slide is not None and base is not None and base - slide == preferred
+          out = {
+              'runnerLabel': os.environ.get('ImageOS') or os.environ.get('RUNNER_OS'),
+              'machine': platform.machine(),
+              'osProductVersion': cmd('sw_vers','-productVersion'),
+              'osBuildVersion': cmd('sw_vers','-buildVersion'),
+              'xcodeVersion': cmd('xcodebuild','-version'),
+              'clangVersion': cmd('xcrun','clang','--version'),
+              'pointerAuthenticationFeature': cmd('sysctl','-n','hw.optional.arm.FEAT_PAuth'),
+              'cachePath': cache,
+              'cachePreferredSharedRegionStart': None if preferred is None else hex(preferred),
+              'runtime': runtime,
+              'runtimeMappingCoherent': coherent,
+          }
+          with open('apple-environment.json','w') as f: json.dump(out,f,indent=2); f.write('\n')
+          print(json.dumps({k:out[k] for k in ('machine','osProductVersion','osBuildVersion','runtimeMappingCoherent')}))
+          PY
+          printf 'compile_rc=%s\nruntime_rc=%s\n' "$COMPILE_RC" "$RUNTIME_RC" > diagnostic-status.txt
+          sed -n '1,40p' /tmp/compile.out >> diagnostic-status.txt
+          sed -n '1,40p' runtime-slide.err >> diagnostic-status.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x02-apple-env-${{ matrix.os }}
+          path: |
+            apple-environment.json
+            runtime-slide.txt
+            diagnostic-status.txt
+          if-no-files-found: ignore
+          retention-days: 1
