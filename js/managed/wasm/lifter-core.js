@@ -104,6 +104,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
   const codeBody = wasmModule.codeBodies[internalIdx];
   const memoryContext = createWasmMemoryValidationContext(wasmModule);
   const bytecode = codeBody.bytecode;
+  const instructionBase = codeBody.bytecodeOffset ?? codeBody.bodyOffset;
   // #8709: resolve local indices against the canonical params + locals vectors
   // in O(1). Rebuilding `[...params, ...locals]` per local.get/set/tee made
   // lifting O(local-instructions x locals), so a ~1 KiB module with 1,000,000
@@ -404,7 +405,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
 
     if (stoppedOnUnsupported) drafts.length = 0;
     budget.chargeValues(consumedValues.length + producedValues.length - preChargedValues);
-    const origin = createOriginSet({ operationIds: [opId], byteRanges: [{ start: codeBody.bodyOffset + opOffset, end: codeBody.bodyOffset + pos }] });
+    const origin = createOriginSet({ operationIds: [opId], byteRanges: [{ start: instructionBase + opOffset, end: instructionBase + pos }] });
     drafts.push({ frontendId:'wasm', frontendSemanticVersion:'1.0.0', profileId:wasmModule.vmSpecEdition, methodId, operationId:opId, bytecodeOffset:opOffset, opcode, mnemonic, consumedValues, producedValues, locationReads, locationWrites, memoryEffects, callEffects, controlEffects, possibleExceptions, origin, completeness, unknownEffects, compare });
     if (stoppedOnUnsupported) break;
   }
