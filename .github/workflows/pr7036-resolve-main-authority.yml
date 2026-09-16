@@ -1,0 +1,106 @@
+name: PR7036 resolve with current-main authority
+
+on:
+  push:
+    branches:
+      - sync/pr7036-main-20260917
+    paths:
+      - '.github/workflows/pr7036-resolve-main-authority.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Merge, resolve, and run focused acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout --detach "$GITHUB_SHA"
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          ours=$(git rev-parse HEAD)
+          theirs=$(git rev-parse refs/remotes/origin/main)
+          mkdir -p reconcile-result
+          echo "ours=$ours" > reconcile-result/result.txt
+          echo "main=$theirs" >> reconcile-result/result.txt
+
+          set +e
+          git merge --no-commit --no-ff refs/remotes/origin/main >/dev/null 2>reconcile-result/merge-stderr.txt
+          merge_rc=$?
+          set -e
+          git diff --name-only --diff-filter=U | sort -u > reconcile-result/conflicts.txt
+          count=$(wc -l < reconcile-result/conflicts.txt | tr -d ' ')
+          echo "merge_rc=$merge_rc" >> reconcile-result/result.txt
+          echo "conflict_count=$count" >> reconcile-result/result.txt
+          if [ "$count" -gt 0 ]; then
+            while IFS= read -r p; do
+              [ -n "$p" ] || continue
+              git checkout --theirs -- "$p"
+              git add -- "$p"
+            done < reconcile-result/conflicts.txt
+          fi
+          if git diff --name-only --diff-filter=U | grep -q .; then
+            echo 'stage=unresolved-conflicts' >> reconcile-result/result.txt
+            exit 1
+          fi
+
+          # Temporary reconciliation workflows must never enter #7036.
+          rm -f .github/workflows/pr7036-*.yml
+          git add -A
+
+          run_test() {
+            name="$1"; shift
+            out="reconcile-result/${name}.txt"
+            set +e
+            timeout 150s "$@" >"$out" 2>&1
+            rc=$?
+            set -e
+            echo "$name=$rc" >> reconcile-result/result.txt
+            if [ "$rc" -ne 0 ]; then
+              echo "stage=test:$name" >> reconcile-result/result.txt
+              tail -n 160 "$out" > reconcile-result/first-failure.txt
+              return "$rc"
+            fi
+          }
+
+          # Parse all source conflict surfaces before semantic tests.
+          while IFS= read -r p; do
+            case "$p" in
+              *.js) run_test "check-$(echo "$p" | tr '/.' '--')" node --check "$p" || exit 1 ;;
+            esac
+          done < reconcile-result/conflicts.txt
+
+          run_test x03 node --test tests/stage2/x03-rebuild-discovery-acceptance.test.mjs tests/stage2/x03-rebuild-discovery.test.mjs || exit 1
+          run_test solver-authority node --test tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs tests/phase9/solver/tiered-sym01-rescue.test.mjs || exit 1
+          run_test solver-status node --test tests/issue-5498-eligibility-result-status-authority.mjs || exit 1
+          run_test sym-acceptance node --test tests/phase9/verify/sym-acceptance.test.mjs || exit 1
+          run_test x01-rebuild node --test tests/stage2/x01-format-safe-rebuild-acceptance.test.mjs || exit 1
+          run_test elf-xindex node --test tests/phase4/binary/issue-4358-elf-dynamic-xindex-common.test.mjs || exit 1
+          run_test c2-memory node --test tests/phase8/memory/c2-acceptance.test.mjs || exit 1
+          run_test ownership-p7 node --test tests/phase7/ownership/roadmap-v8-integration.test.mjs || exit 1
+          run_test ownership-p8 node --test tests/phase8/ownership/roadmap-v8-integration.test.mjs || exit 1
+
+          git add -A
+          git commit -m 'Merge current main into PR #7036 staging' \
+            -m "Non-force reconciliation. Current-main versions win only at true conflict hunks; #7036 non-conflicting changes are preserved. Focused discovery/solver/rebuild/binary/MemorySSA/ownership acceptance passed. PR #7036 itself remains unmerged."
+          merged=$(git rev-parse HEAD)
+          parents=$(git show -s --format=%P HEAD)
+          echo "merge=$merged" >> reconcile-result/result.txt
+          echo "parents=$parents" >> reconcile-result/result.txt
+          git push origin HEAD:sync/pr7036-main-20260917
+          echo 'stage=success' >> reconcile-result/result.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr7036-main-authority-result
+          path: reconcile-result
+          if-no-files-found: error
+          retention-days: 3
