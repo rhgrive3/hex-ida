@@ -249,6 +249,9 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
   let pushIntegerRun = [];
   let pushFloatRun = [];
   const bundles = [];
+  // ECMA-335 §II.25.1.2: modifier prefixes bind to the following instruction.
+  // Keep them pending so their operands cannot become fabricated bundles (#5096).
+  const pendingModifiers = [];
   let stoppedOnUnsupported = false;
 
   // Slot-typing authorities (#5353): arguments come from the enclosing
@@ -984,45 +987,43 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
           controlEffects.push({ kind: 'rethrow' });
           break;
 
-        case 0x12: // unaligned. <alignment:u1>
+        case 0x12: // unaligned. <alignment 1|2|4>
           {
             need(1);
             const alignment = bytecode[pc++];
-            mnemonic = 'unaligned.';
-            completeness = 'partial';
             if (alignment !== 1 && alignment !== 2 && alignment !== 4) {
-              unknownEffects.push({ category: 'memory', reason: `cil-unaligned-prefix-alignment-${alignment}` });
-            } else {
-              unknownEffects.push({ category: 'memory', reason: 'cil-unaligned-prefix-unattached' });
+              fail('cil-invalid-unaligned-alignment');
             }
+            pendingModifiers.push({
+              kind: 'unaligned', opcode: 0xfe12, mnemonic: 'unaligned.',
+              bytecodeOffset: opOffset, alignment,
+            });
           }
-          break;
+          continue;
 
         case 0x13: // volatile.
-          mnemonic = 'volatile.';
-          completeness = 'partial';
-          unknownEffects.push({ category: 'memory', reason: 'cil-volatile-prefix-unattached' });
-          break;
+          pendingModifiers.push({ kind: 'volatile', opcode: 0xfe13, mnemonic: 'volatile.', bytecodeOffset: opOffset });
+          continue;
 
         case 0x14: // tail.
-          mnemonic = 'tail.';
-          completeness = 'partial';
-          unknownEffects.push({ category: 'control', reason: 'cil-tail-prefix-unattached' });
-          break;
+          pendingModifiers.push({ kind: 'tail', opcode: 0xfe14, mnemonic: 'tail.', bytecodeOffset: opOffset });
+          continue;
 
         case 0x16: // constrained. <token:u4>
-          need(4);
-          pc += 4;
-          mnemonic = 'constrained.';
-          completeness = 'partial';
-          unknownEffects.push({ category: 'types', reason: 'cil-constrained-prefix-unattached' });
-          break;
+          {
+            need(4);
+            const typeToken = view.getUint32(pc, true);
+            pc += 4;
+            pendingModifiers.push({
+              kind: 'constrained', opcode: 0xfe16, mnemonic: 'constrained.',
+              bytecodeOffset: opOffset, typeToken,
+            });
+          }
+          continue;
 
         case 0x1e: // readonly.
-          mnemonic = 'readonly.';
-          completeness = 'partial';
-          unknownEffects.push({ category: 'memory', reason: 'cil-readonly-prefix-unattached' });
-          break;
+          pendingModifiers.push({ kind: 'readonly', opcode: 0xfe1e, mnemonic: 'readonly.', bytecodeOffset: opOffset });
+          continue;
 
         default: {
           const boundary = decodeCilInstructionBoundary(bytecode, opOffset);
@@ -1070,9 +1071,55 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
       }
     }
 
+    const modifiers = pendingModifiers.splice(0, pendingModifiers.length);
+    const metadata = {};
+    let bundleStart = opOffset;
+    if (modifiers.length > 0) {
+      bundleStart = modifiers[0].bytecodeOffset;
+      completeness = 'partial';
+      for (let index = 0; index < modifiers.length; index++) {
+        const modifier = modifiers[index];
+        const end = index + 1 < modifiers.length ? modifiers[index + 1].bytecodeOffset : opOffset;
+        metadata[modifier.kind] = {
+          opcode: modifier.opcode,
+          mnemonic: modifier.mnemonic,
+          bytecodeOffset: modifier.bytecodeOffset,
+          provenance: { start: modifier.bytecodeOffset, end },
+          ...(modifier.typeToken == null ? {} : { typeToken: modifier.typeToken }),
+          ...(modifier.alignment == null ? {} : { alignment: modifier.alignment }),
+        };
+        unknownEffects.push({
+          category: 'other',
+          reason: `cil-prefix-modifier-unmodeled:${modifier.kind}`,
+          bytecodeOffset: modifier.bytecodeOffset,
+        });
+      }
+      const constrained = [...modifiers].reverse().find((modifier) => modifier.kind === 'constrained');
+      const hasTail = modifiers.some((modifier) => modifier.kind === 'tail');
+      if (constrained || hasTail) {
+        callEffects = callEffects.map((effect, index) => index !== 0 ? effect : ({
+          ...effect,
+          ...(hasTail ? { tailCall: true } : {}),
+          ...(constrained ? { constrainedTypeToken: constrained.typeToken } : {}),
+        }));
+      }
+      const lastOf = (kind) => [...modifiers].reverse().find((modifier) => modifier.kind === kind);
+      const volatileModifier = lastOf('volatile');
+      const readonlyModifier = lastOf('readonly');
+      const unalignedModifier = lastOf('unaligned');
+      if (volatileModifier || readonlyModifier || unalignedModifier) {
+        memoryEffects = memoryEffects.map((effect, index) => index !== 0 ? effect : ({
+          ...effect,
+          ...(volatileModifier ? { volatile: true } : {}),
+          ...(readonlyModifier ? { readonly: true } : {}),
+          ...(unalignedModifier ? { alignment: unalignedModifier.alignment } : {}),
+        }));
+      }
+    }
+
     const origin = createOriginSet({
       operationIds: [opId],
-      byteRanges: [{ start: codeBase + opOffset, end: codeBase + pc }],
+      byteRanges: [{ start: codeBase + bundleStart, end: codeBase + pc }],
     });
 
     bundles.push(createVMEffectBundle({
@@ -1097,10 +1144,13 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
       origin,
       completeness,
       unknownEffects,
+      metadata,
       compare,
     }, options));
     if (stoppedOnUnsupported) break;
   }
+
+  if (pendingModifiers.length > 0) fail('cil-prefix-without-instruction');
 
   return createVMEffectFunction({
     methodId,
