@@ -21,6 +21,7 @@ jobs:
         run: |
           set -euo pipefail
           cp .tmp/c4-02-patch.py /tmp/c4-02-patch.py
+          cp .tmp/c4-02-ownership-patch.py /tmp/c4-02-ownership-patch.py
           git checkout --detach "$HEAD_SHA"
       - uses: actions/setup-node@v4
         with:
@@ -34,6 +35,7 @@ jobs:
         run: |
           set -euo pipefail
           python /tmp/c4-02-patch.py
+          python /tmp/c4-02-ownership-patch.py
           git diff --check
       - name: Test edge accounting denominator
         run: node --test tests/phase8/structuring/edge-accounting.test.mjs
@@ -57,7 +59,7 @@ jobs:
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add js/decompiler/phase8/structuring.js tests/phase8/structuring/edge-accounting.test.mjs userscript/hex.user.template.js userscript/release-version.json
+          git add js/decompiler/phase8/structuring.js tests/phase8/structuring/edge-accounting.test.mjs tools/validation/analysis-roadmap/ownership.json userscript/hex.user.template.js userscript/release-version.json
           git commit -m 'fix(phase8): keep dispatcher loops residual'
       - name: Rebuild protected userscript
         run: npm run userscript:build
