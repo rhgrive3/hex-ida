@@ -1,6 +1,6 @@
 import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedExceptionRegionId, createManagedMethodId, createVMOperationId } from '../shared/identity.js';
-import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
+import { createVMEffectBundle, createVMEffectBudgetTracker, createVMEffectFunction } from '../shared/vm-effects.js';
 import { createCilFieldSignatureResolver, createCilLocalTypeResolver } from './call-signatures.js';
 import { cilTokenText } from './metadata-layout.js';
 import { cilImageLookups } from './image-lookup.js';
@@ -311,7 +311,12 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
     }
   }
 
+  // #8725: admit the operation budget during materialization (as the Wasm
+  // lifter does), failing closed before an over-budget bundle graph is built.
+  const budget = createVMEffectBudgetTracker(options);
+
   while (pc < bytecode.length) {
+    budget.chargeOperation();
     const opOffset = pc;
     let opcode = bytecode[pc++];
     opSeq++;
