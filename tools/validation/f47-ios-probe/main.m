@@ -2,6 +2,7 @@
 #import <Foundation/Foundation.h>
 #import <ptrauth.h>
 #import <sys/utsname.h>
+#import <stdint.h>
 
 #ifndef HEX_F47_BUILD_SHA
 #define HEX_F47_BUILD_SHA "unknown"
@@ -13,26 +14,48 @@ static NSString *machineIdentifier(void) {
   return [NSString stringWithUTF8String:u.machine] ?: @"unknown";
 }
 
+static uintptr_t pacdaBits(uintptr_t value, uintptr_t discriminator) {
+#if defined(__arm64e__)
+  __asm__ volatile("pacda %0, %1" : "+r"(value) : "r"(discriminator));
+#endif
+  return value;
+}
+
+static uintptr_t autdaBits(uintptr_t value, uintptr_t discriminator) {
+#if defined(__arm64e__)
+  __asm__ volatile("autda %0, %1" : "+r"(value) : "r"(discriminator));
+#endif
+  return value;
+}
+
+static uintptr_t xpacdBits(uintptr_t value) {
+#if defined(__arm64e__)
+  __asm__ volatile("xpacd %0" : "+r"(value));
+#endif
+  return value;
+}
+
+static NSString *hexBits(uintptr_t value) {
+  return [NSString stringWithFormat:@"0x%016llx", (unsigned long long)value];
+}
+
 static NSDictionary *runPACProbe(void) {
 #if defined(__arm64e__) && __has_feature(ptrauth_calls)
   static uint64_t payload = 0x484558463437ULL;
-  void *raw = &payload;
-  const uintptr_t discriminator = 0x5846323437ULL;
-  void *signedPtr = ptrauth_sign_unauthenticated(raw, ptrauth_key_process_independent_data, discriminator);
-  void *authenticated = ptrauth_auth_data(signedPtr, ptrauth_key_process_independent_data, discriminator);
-  void *stripped = ptrauth_strip(signedPtr, ptrauth_key_process_independent_data);
+  const uintptr_t rawBits = (uintptr_t)&payload;
+  const uintptr_t discriminator = 0x0000000000002437ULL;
 
-  NSUInteger rejected = 0;
-  for (uintptr_t delta = 1; delta <= 8; delta++) {
-    void *wrongAuth = ptrauth_auth_data(signedPtr, ptrauth_key_process_independent_data, discriminator ^ delta);
-    if (wrongAuth != raw) rejected++;
-  }
+  // Use the architectural PAC instructions directly and compare integer register
+  // contents. Pointer equality is not a valid way to observe PAC high bits on
+  // arm64e because the language/ABI may normalize pointer comparisons.
+  const uintptr_t signedBits = pacdaBits(rawBits, discriminator);
+  const uintptr_t strippedBits = xpacdBits(signedBits);
+  const uintptr_t authenticatedBits = autdaBits(signedBits, discriminator);
 
-  const BOOL signedDiffers = signedPtr != raw;
-  const BOOL stripRestores = stripped == raw;
-  const BOOL authRestores = authenticated == raw;
-  const BOOL wrongDiscriminatorsRejected = rejected == 8;
-  const BOOL pass = stripRestores && authRestores && wrongDiscriminatorsRejected;
+  const BOOL signatureMaterialized = signedBits != rawBits;
+  const BOOL stripRestores = strippedBits == rawBits;
+  const BOOL authRestores = authenticatedBits == rawBits;
+  const BOOL pass = signatureMaterialized && stripRestores && authRestores;
 
   NSDateFormatter *formatter = [NSDateFormatter new];
   formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
@@ -40,23 +63,27 @@ static NSDictionary *runPACProbe(void) {
   formatter.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss'Z'";
 
   return @{
-    @"schema": @"hex-x02-f47-pac-runtime/v1",
+    @"schema": @"hex-x02-f47-pac-runtime/v2",
     @"buildCommit": @HEX_F47_BUILD_SHA,
     @"capturedAtUtc": [formatter stringFromDate:[NSDate date]],
     @"architecture": @"arm64e",
     @"deviceMachine": machineIdentifier(),
     @"osVersion": UIDevice.currentDevice.systemVersion ?: @"unknown",
     @"ptrauthCompileSupport": @YES,
-    @"signedPointerChanged": @(signedDiffers),
+    @"measurement": @"direct-pacda-autda-xpacd-register-bits",
+    @"rawPointerBits": hexBits(rawBits),
+    @"signedPointerBits": hexBits(signedBits),
+    @"strippedPointerBits": hexBits(strippedBits),
+    @"authenticatedPointerBits": hexBits(authenticatedBits),
+    @"signatureMaterialized": @(signatureMaterialized),
     @"stripRestoredOriginal": @(stripRestores),
     @"correctAuthenticationRestoredOriginal": @(authRestores),
-    @"wrongDiscriminatorTrials": @8,
-    @"wrongDiscriminatorsRejected": @(rejected),
+    @"wrongAuthenticationTest": @"not-executed; some CPUs trap immediately on failed AUT, so F47 does not require a deliberate crash",
     @"classification": pass ? @"pass" : @"fail"
   };
 #else
   return @{
-    @"schema": @"hex-x02-f47-pac-runtime/v1",
+    @"schema": @"hex-x02-f47-pac-runtime/v2",
     @"buildCommit": @HEX_F47_BUILD_SHA,
     @"architecture": @"not-arm64e",
     @"deviceMachine": machineIdentifier(),
