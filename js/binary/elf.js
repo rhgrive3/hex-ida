@@ -1,5 +1,6 @@
 import { parseELF as parseELFCore } from './elf-core.js';
-import { executableELFRange } from './elf-mapping.js';
+import { elfExactFunctionStartRejection, elfFunctionExtentRejection, executableELFRange } from './elf-mapping.js';
+import { markELFMetadataPartial } from './elf-budget.js';
 import { functionSeed, mergeFunctionSeeds } from './model.js';
 import { ByteView } from './reader.js';
 
@@ -13,16 +14,29 @@ export function repairElfZeroAddressFunctionSeeds(image) {
   for (const symbol of image.symbols) {
     if (symbol?.defined !== true || symbol.address !== 0n || !['function','indirect-function'].includes(symbol.kind)) continue;
     if (!executableOwnerForSymbol(image, symbol)) continue;
+    // The VA-0 repair must not grant a stronger claim than the shared exact
+    // function-start policy: the entrypoint validator already proved this address
+    // is not decodable static code, so zero-fill-only starts stay metadata (#8803).
+    const startRejection = elfExactFunctionStartRejection(image, 0n, { sectionIndex: symbol.sectionIndex ?? null });
+    if (startRejection) {
+      markELFMetadataPartial(image, 'function-authority:va0-repair',
+        `Ignored ELF zero-address ${symbol.kind === 'indirect-function' ? 'STT_GNU_IFUNC resolver' : 'STT_FUNC'} ${symbol.name}: ${startRejection}`);
+      continue;
+    }
+    const extentRejection = elfFunctionExtentRejection(image, 0n, symbol.size);
+    if (extentRejection) markELFMetadataPartial(image, 'function-authority:va0-repair-extent',
+      `ELF zero-address ${symbol.kind === 'indirect-function' ? 'STT_GNU_IFUNC resolver' : 'STT_FUNC'} ${symbol.name}: ${extentRejection}`);
     const ifunc = symbol.kind === 'indirect-function';
     zeroSeeds.push(functionSeed(0n, {
-      size: symbol.size || null,
+      size: extentRejection ? null : (symbol.size || null),
       name: ifunc ? `${symbol.name}$resolver` : symbol.name,
       source: ifunc ? 'ifunc-resolver' : 'symbol',
       confidence: 0.995,
       exactFunctionStart: true,
-      functionStartEvidence: ifunc
+      functionStartEvidence: (ifunc
         ? 'ELF STT_GNU_IFUNC resolver with validated executable extent'
-        : 'ELF STT_FUNC with validated executable extent',
+        : 'ELF STT_FUNC with validated executable extent')
+        + (extentRejection ? '; published st_size is not file-backed and is not retained as extent authority' : ''),
       callingConvention: symbol.callingConvention || null,
       abiMetadata: symbol.riscvVariantCc ? { riscvVariantCc:true, stOther:symbol.stOther } : null,
     }));
