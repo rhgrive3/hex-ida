@@ -4,6 +4,7 @@ import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effec
 import { decodeJvmInstructionBoundary } from './instruction-boundary.js';
 import { liftJvmMethod as liftJvmMethodCore } from './lifter-core.js';
 import { applyJvmObjectIdentitySemantics } from './object-semantics.js';
+import { jvmCanonicalValueTypeForDescriptor } from './value-type.js';
 
 function firstMalformedBoundary(bytecode) {
   let pc = 0;
@@ -55,8 +56,52 @@ function applyBranchPredicateSemantics(lifted, options = {}) {
   return changed ? createVMEffectFunction({ ...lifted, bundles }, options) : lifted;
 }
 
+function canonicalDescriptorForBundle(bundle) {
+  const field = bundle?.memoryEffects?.find((effect) =>
+    (effect?.space === 'field' || effect?.space === 'static-field')
+    && typeof effect.descriptor === 'string');
+  if (field) return field.descriptor;
+  const mnemonic = String(bundle?.mnemonic ?? '');
+  if (mnemonic.startsWith('fload') || mnemonic.startsWith('fstore')) return 'F';
+  if (mnemonic.startsWith('dload') || mnemonic.startsWith('dstore')) return 'D';
+  return null;
+}
+
+function applyCanonicalJvmValueTypes(lifted, options = {}) {
+  let changed = false;
+  const bundles = lifted.bundles.map((bundle) => {
+    const descriptor = canonicalDescriptorForBundle(bundle);
+    const type = jvmCanonicalValueTypeForDescriptor(descriptor);
+    if (type?.kind !== 'float') return bundle;
+    const valueKind = descriptor === 'F' ? 'float' : 'double';
+    const isField = bundle.memoryEffects?.some((effect) => effect?.space === 'field' || effect?.space === 'static-field') === true;
+    let bundleChanged = false;
+    const normalize = (value) => {
+      if (!value || typeof value !== 'object') return value;
+      if (isField && value.descriptor !== descriptor && value.valueKind !== valueKind) return value;
+      if (value.type?.kind === type.kind && value.type?.widthBits === type.widthBits && value.type?.format === type.format) return value;
+      bundleChanged = true;
+      changed = true;
+      return { ...value, type };
+    };
+    const consumedValues = bundle.consumedValues.map(normalize);
+    const producedValues = bundle.producedValues.map(normalize);
+    const locationReads = bundle.locationReads.map(normalize);
+    const locationWrites = bundle.locationWrites.map(normalize);
+    return bundleChanged ? createVMEffectBundle({
+      ...bundle,
+      consumedValues,
+      producedValues,
+      locationReads,
+      locationWrites,
+    }, options) : bundle;
+  });
+  return changed ? createVMEffectFunction({ ...lifted, bundles }, options) : lifted;
+}
+
 function finalizeJvmSemantics(lifted, jvmClass, method, options = {}) {
-  const objectAware = applyJvmObjectIdentitySemantics(lifted, jvmClass, options);
+  const typed = applyCanonicalJvmValueTypes(lifted, options);
+  const objectAware = applyJvmObjectIdentitySemantics(typed, jvmClass, options);
   return applySynchronizedMethodSemantics(applyBranchPredicateSemantics(objectAware, options), method, options);
 }
 
