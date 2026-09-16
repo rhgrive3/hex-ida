@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { openBinary, openBinarySource, MemoryByteSource } from '../../js/binary/index.js';
 import { parseSwiftNominalDescriptor } from '../../js/swift.js';
 import { ObjcMetadataProvider } from '../../js/metadata/objc.js';
+import { inspectLlvmReadobj } from '../../tools/validation/rebuild-independent-oracle.mjs';
 import { appleMetadataBytes } from './fixtures/x02-prior120-apple-version-fixtures.mjs';
 
 // Literal Mach-O declarations, without a signature, compiler or device oracle.
@@ -137,7 +138,7 @@ test('X02-F-48 current acceptance uses a pinned compiler-produced arm64e PAC obj
   assert.equal(Object.hasOwn(F48_PROVENANCE,'runtimeAuthenticationExecuted'),false);
 });
 
-test('X02 current disposition overlay advances F-48 without rewriting the frozen denominator', () => {
+test('X02 current disposition overlay advances F-48 and preserves environment-bound H-02', () => {
   const matrixBytes=fs.readFileSync(new URL('./fixtures/x02-prior120-apple-version-matrix.json',import.meta.url));
   assert.equal(sha256(matrixBytes),'c95ea2ba89d072fe9110565072462d5efca496b72a66ff365d8b8d15a95274ad');
   const matrix=JSON.parse(matrixBytes);
@@ -145,10 +146,27 @@ test('X02 current disposition overlay advances F-48 without rewriting the frozen
     'X02-A-07':'pass','X02-B-01':'pass','X02-B-02':'pass','X02-D-13':'pass',
     'X02-E-11':'pass','X02-F-48':'pass','X02-G-03':'pass',
   });
+  const llvmEnvironment=inspectLlvmReadobj();
+  const environmentOverrides=Object.freeze({
+    'X02-H-02':llvmEnvironment.available?'pass':'environment-excluded',
+  });
   const counts={};
-  for(const row of matrix.rows){const value=overrides[row.id]??row.expectedDisposition;counts[value]=(counts[value]??0)+1;}
-  assert.deepEqual(counts,{pass:115,'evidence-gap':3,'environment-excluded':2});
+  for(const row of matrix.rows){
+    const value=environmentOverrides[row.id]??overrides[row.id]??row.expectedDisposition;
+    counts[value]=(counts[value]??0)+1;
+  }
+  assert.deepEqual(counts,llvmEnvironment.available
+    ?{pass:116,'evidence-gap':3,'environment-excluded':1}
+    :{pass:115,'evidence-gap':3,'environment-excluded':2});
   const f48=matrix.rows.find(row=>row.id==='X02-F-48');
   assert.equal(f48?.check,'evidence-missing');assert.equal(f48?.expectedDisposition,'evidence-gap');
   assert.match(f48?.gap?.needed??'',/Compiler\/OS\/version-pinned real arm64e fixtures/);
+  const h02=matrix.rows.find(row=>row.id==='X02-H-02');
+  assert.equal(h02?.check,'llvm-environment');assert.equal(h02?.expectedDisposition,'environment-excluded');
+  if(llvmEnvironment.available){
+    assert.equal(typeof llvmEnvironment.executableDigest,'string');
+    assert.ok(llvmEnvironment.executableDigest.length>0);
+    assert.equal(typeof llvmEnvironment.version,'string');
+    assert.ok(llvmEnvironment.version.length>0);
+  }
 });
