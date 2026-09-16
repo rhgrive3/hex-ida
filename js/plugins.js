@@ -11,6 +11,7 @@ import { stableDigest } from './core/identity/index.js';
 
 const STORE_KEY = 'hex.plugins';
 export const MAX_PLUGIN_SOURCE_BYTES = 512 * 1024;
+export const PLUGIN_INSTALL_DEADLINE_MS = 15000;
 const sourceBytes = (source) => new TextEncoder().encode(String(source || '')).byteLength;
 
 // A persisted v3 manifest must be provably derived from the source it claims:
@@ -320,18 +321,57 @@ export class PluginHost {
     return { ok: true, added, installationId };
   }
 
-  async installFromUrl(url) {
-    let text;
-    try {
-      const res = await fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer' });
+  async installFromUrl(url, options = {}) {
+    // #8940: the byte cap only advances when the server actually produces bytes,
+    // so a host that never returns headers, or returns headers then stalls the
+    // body stream, left the returned Promise pending forever and pinned the
+    // install workflow. Bound the whole remote exchange with a deadline and honor
+    // a caller-supplied AbortSignal; both abort the fetch and reject the read.
+    const deadlineMs = Number.isFinite(options.timeoutMs) ? Math.max(0, options.timeoutMs) : PLUGIN_INSTALL_DEADLINE_MS;
+    const controller = new AbortController();
+    const callerSignal = options.signal ?? null;
+    let timer = null;
+    let rejectBailout = null;
+    const TIMEOUT = new Error('PLUGIN_TIMEOUT');
+    // A single "bailout" promise rejects the race on EITHER the deadline or a
+    // caller abort, so cancellation is prompt even when a remote fetch ignores
+    // the AbortSignal (never-resolving headers or a stalled body reader).
+    const bailout = new Promise((_, reject) => { rejectBailout = reject; });
+    const onCallerAbort = () => {
+      controller.abort(callerSignal.reason ?? new Error('PLUGIN_ABORT'));
+      rejectBailout(callerSignal.reason ?? new Error('PLUGIN_ABORT'));
+    };
+    if (callerSignal) {
+      if (callerSignal.aborted) return { error: 'キャンセルされました。', aborted: true };
+      callerSignal.addEventListener('abort', onCallerAbort, { once: true });
+    }
+    if (Number.isFinite(deadlineMs)) {
+      timer = setTimeout(() => {
+        controller.abort(TIMEOUT);
+        rejectBailout(TIMEOUT);
+      }, deadlineMs);
+    }
+    const exchange = (async () => {
+      const res = await fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer', signal: controller.signal });
       if (!res.ok) return { error: '取り寄せられませんでした（' + res.status + '）。' };
-      text = await boundedResponseText(res);
+      return { ok: true, source: await boundedResponseText(res), origin: url, needsConfirmation: true };
+    })();
+    // Never leave the losing side of the race as an unhandled rejection: a
+    // deadline/caller abort aborts the fetch, but a stalled reader that ignores
+    // the signal must not crash the process after we have already returned.
+    exchange.catch(() => {});
+    try {
+      return await Promise.race([exchange, bailout]);
     } catch (err) {
       if (err?.message === 'PLUGIN_TOO_LARGE') return { error: 'プラグインが大きすぎます（512 KB まで）。' };
       if (err?.message === 'PLUGIN_UNBOUNDED_RESPONSE') return { error: 'サイズを安全に確認できない応答だったため読み込みませんでした。' };
+      if (callerSignal?.aborted) return { error: 'キャンセルされました。', aborted: true };
+      if (err?.message === 'PLUGIN_TIMEOUT' || err?.name === 'AbortError') return { error: '取り寄せがタイムアウトしました。', timeout: true };
       return { error: '取り寄せに失敗しました: ' + ((err && err.message) || err) };
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (callerSignal) callerSignal.removeEventListener('abort', onCallerAbort);
     }
-    return { ok: true, source: text, origin: url, needsConfirmation: true };
   }
 
   remove(id) {

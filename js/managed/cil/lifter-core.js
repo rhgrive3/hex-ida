@@ -1,6 +1,6 @@
 import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedExceptionRegionId, createManagedMethodId, createVMOperationId } from '../shared/identity.js';
-import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
+import { createVMEffectBundle, createVMEffectBudgetTracker, createVMEffectFunction } from '../shared/vm-effects.js';
 import { createCilFieldSignatureResolver, createCilLocalTypeResolver } from './call-signatures.js';
 import { cilTokenText } from './metadata-layout.js';
 import { cilImageLookups } from './image-lookup.js';
@@ -38,6 +38,41 @@ function operandWidths(run, count) {
 // from a push that states it: the int32/int64 evaluation-stack categories, or an
 // integer literal. Anything else stays unresolved instead of minting a signed
 // comparison the image never proved (#8785).
+// Both the width and the float kind of the stack top must be proven for the
+// same run of pushes so IEEE-754 arithmetic never inherits a fabricated integer
+// identity. Only `r4`/`r8` float authority from a push that states it
+// (`stackType:'float'` with a matching primitive, or an explicit `type.kind:'float'`)
+// is accepted; everything else stays unresolved and keeps the existing
+// width-based fail-closed behavior. (#8924)
+const FLOAT_STACK_PRIMITIVE = Object.freeze({ r4:32, r8:64 });
+function cilFloatStackWidth(value) {
+  if (!value || typeof value !== 'object') return null;
+  const bits = cilStackValueWidth(value);
+  if (value.stackType === 'float') {
+    const primitiveBits = FLOAT_STACK_PRIMITIVE[value.primitive];
+    return primitiveBits != null ? primitiveBits : null;
+  }
+  if (value.type?.kind === 'float') {
+    const typeBits = Number.isSafeInteger(value.type.widthBits) ? value.type.widthBits : null;
+    return typeBits != null && (bits == null || bits === typeBits) ? typeBits : null;
+  }
+  return null;
+}
+function floatOperandWidths(widthRun, floatRun, count) {
+  if (widthRun.length < count || floatRun.length < count) return null;
+  const widths = widthRun.slice(widthRun.length - count);
+  const floats = floatRun.slice(floatRun.length - count);
+  if (!floats.every((w, i) => w != null && widths[i] != null && widths[i] === w)) return null;
+  return new Set(floats).size === 1 ? floats : null;
+}
+function floatMachineType(width) {
+  return {
+    kind: 'float',
+    widthBits: width,
+    format: width === 64 ? 'binary64' : 'binary32',
+  };
+}
+
 function cilStackValueIsIntegral(value) {
   if (cilStackValueWidth(value) == null) return false;
   if (value.isNull === true || value.stringToken != null || value.stringRef != null) return false;
@@ -212,6 +247,7 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
   let currentStackHeight = 0;
   let pushWidthRun = [];
   let pushIntegerRun = [];
+  let pushFloatRun = [];
   const bundles = [];
   let stoppedOnUnsupported = false;
 
@@ -275,7 +311,12 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
     }
   }
 
+  // #8725: admit the operation budget during materialization (as the Wasm
+  // lifter does), failing closed before an over-budget bundle graph is built.
+  const budget = createVMEffectBudgetTracker(options);
+
   while (pc < bytecode.length) {
+    budget.chargeOperation();
     const opOffset = pc;
     let opcode = bytecode[pc++];
     opSeq++;
@@ -626,7 +667,15 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
               unknownEffects.push({ category: 'stack', reason: 'cil-arithmetic-operand-width-unresolved' });
             } else {
               consumedValues.push({ id: 'rhs', bits: rhsBits }, { id: 'lhs', bits: lhsBits });
-              producedValues.push({ bits: resultBits });
+              // ECMA-335 §III.1.5/§III.1.8/§III.1.10/§III.1.2: `add`/`sub`/`mul`/`div`
+              // operate on the evaluation-stack type. When BOTH top-of-stack operands
+              // are proven same-width IEEE-754 floats, the result keeps float
+              // authority instead of collapsing to an integer bitvector (#8924).
+              const produced = { bits: resultBits };
+              const floatCapable = opcode === 0x58 || opcode === 0x59 || opcode === 0x5a || opcode === 0x5b;
+              const floatKind = floatCapable ? floatOperandWidths(pushWidthRun, pushFloatRun, 2) : null;
+              if (floatKind != null && floatKind[0] === resultBits) produced.type = floatMachineType(resultBits);
+              producedValues.push(produced);
             }
             currentStackHeight--;
             // ECMA-335 Partition III: integral `div` throws
@@ -657,7 +706,14 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
               unknownEffects.push({ category: 'stack', reason: 'cil-arithmetic-operand-width-unresolved' });
             } else {
               consumedValues.push({ id: 'val', bits: widths[0] });
-              producedValues.push({ bits: widths[0] });
+              const produced = { bits: widths[0] };
+              // `neg` is defined on the evaluation-stack type; preserve float
+              // authority for an `r4`/`r8` operand (#8924). `not` is integer-only.
+              if (opcode === 0x65) {
+                const floatKind = floatOperandWidths(pushWidthRun, pushFloatRun, 1);
+                if (floatKind != null && floatKind[0] === widths[0]) produced.type = floatMachineType(widths[0]);
+              }
+              producedValues.push(produced);
             }
           }
           break;
@@ -983,16 +1039,34 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
       }
     }
 
+    // A CIL produced value whose source already proves IEEE-754 float authority
+    // (`stackType:'float'`+`primitive`, `floating:true`, or an explicit
+    // `type.kind:'float'`) must carry that authority as the canonical machine
+    // type at the VMEffect→Semantic-IR boundary; otherwise the shared bridge
+    // degrades `r4`/`r8` loads and constants to a bare width bitvector and
+    // publishes float values as complete integer semantics (#8924). This is a
+    // pure projection of the type the frontend already proved — it never
+    // strengthens completeness and never invents a width the source lacks.
+    for (const value of producedValues) {
+      if (value.type == null) {
+        const floatWidth = cilFloatStackWidth(value);
+        if (floatWidth != null) value.type = floatMachineType(floatWidth);
+      }
+    }
+
     if (stackEffectUnmodeled || callEffects.length > 0 || controlEffects.length > 0
       || consumedValues.length > pushWidthRun.length) {
       pushWidthRun = [];
       pushIntegerRun = [];
+      pushFloatRun = [];
     } else {
       pushWidthRun.length -= consumedValues.length;
       pushIntegerRun.length -= consumedValues.length;
+      pushFloatRun.length -= consumedValues.length;
       for (const value of producedValues) {
         pushWidthRun.push(cilStackValueWidth(value));
         pushIntegerRun.push(cilStackValueIsIntegral(value));
+        pushFloatRun.push(cilFloatStackWidth(value));
       }
     }
 

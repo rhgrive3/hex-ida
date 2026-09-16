@@ -55,8 +55,8 @@ for (const [mnemonic, operator, value, bits] of [
   const lowered = lowerVMEffectsToSemanticIr(fn);
   const unaryNode = lowered.semanticIr.nodes.find((node) => node.metadata?.mnemonic === mnemonic);
   assert.equal(unaryNode?.kind, 'unary');
-  assert.equal(unaryNode?.operator, null,
-    `${mnemonic} has no canonical operator claim in the current VM-effect lowering contract`);
+  assert.equal(unaryNode?.operator, operator,
+    `${mnemonic} must carry its proven canonical operator across the lowering boundary (#8777)`);
 
   const decompiled = decompileManagedMethod(fn);
   assert.match(decompiled.pseudocode, new RegExp(`\\b${operator}\\(`),
@@ -132,7 +132,7 @@ assert.equal(popcnt32(0xf0), 4);
   const fn = unaryFunction('not', 7);
   const lowered = lowerVMEffectsToSemanticIr(fn);
   const unaryNode = lowered.semanticIr.nodes.find((node) => node.metadata?.mnemonic === 'not');
-  assert.equal(unaryNode?.operator, null);
+  assert.equal(unaryNode?.operator, 'not', 'proven not semantics are canonical now (#8777)');
   assert.match(decompileManagedMethod(fn).pseudocode, /~7/,
     'existing proven not semantics must remain a concrete unary operation');
 }

@@ -136,6 +136,9 @@ export class ToolRegistry {
             effectiveScope: scope,
             scopeBoundary,
           });
+          // Project/verify from the admitted owned snapshot, never from the
+          // caller's live object again (#8826).
+          if (record && record.snapshotOwned !== false) raw = record.fullResult;
         }
       }
       assertFresh?.();
@@ -153,7 +156,7 @@ export class ToolRegistry {
       let evidence = record?.evidence || null;
       const resultLifecycle = raw?.solverResult?.lifecycle || raw?.lifecycle || {};
       const resultPublishable = resultLifecycle.publishable !== false && resultLifecycle.late !== true;
-      if (resultPublishable && !evidence) {
+      if (resultPublishable && !evidence && (!record || record.snapshotOwned !== false)) {
         // Deterministic verification authority is reserved for tools whose
         // declared contract actually runs a verifier. A read/observation tool
         // must not reach EvidenceStore's privileged ingestion path merely

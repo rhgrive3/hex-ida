@@ -1,6 +1,6 @@
 import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedExceptionRegionId, createManagedMethodId, createVMOperationId } from '../shared/identity.js';
-import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
+import { createVMEffectBundle, createVMEffectBudgetTracker, createVMEffectFunction } from '../shared/vm-effects.js';
 import { decodeDexInstructionBoundary } from './instruction-boundary.js';
 import { dexMethodDefinitions } from './method-definitions.js';
 
@@ -132,8 +132,13 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
   const bundles = [];
   let pc = 0; // code unit offset
   let opSeq = 0;
+  // #8725: admit the operation budget while materializing, as Wasm already
+  // does, so an over-budget method fails closed before building its full bundle
+  // graph instead of only in createVMEffectFunction() afterward.
+  const budget = createVMEffectBudgetTracker(options);
 
   while (pc < insnsSize) {
+    budget.chargeOperation();
     const codeUnitOffset = pc * 2; // byte offset relative to code start
     const opByteOffset = insnsStart + codeUnitOffset;
     const boundary = decodeDexInstructionBoundary(view, insnsStart, pc, insnsSize);

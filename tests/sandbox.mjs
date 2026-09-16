@@ -69,8 +69,32 @@ await e.destroy();`,
     const abortCtrl = new AbortController();
     abortCtrl.abort();
     const abortOutput = await runInSandbox({ source: 'while(true){}', api: {}, out: () => {}, signal: abortCtrl.signal, timeout: 5000 });
+    // #8668/#8694 in the real browser realm: a 1-byte view over an 8 MiB backing
+    // store must cost the backing store on both ingress and public egress.
+    const HUGE = 'const backing = new ArrayBuffer(8 * 1024 * 1024);';
+    window.__hostRpcArgs = 0;
+    const rpcAmplify = await runInSandbox({
+      source: `${HUGE}
+print('before');
+try { await hex.ping(new Uint8Array(backing, 0, 1)); print('accepted'); } catch {}
+try { await hex.ping(new DataView(backing, 0, 1)); print('accepted'); } catch {}
+try { await hex.ping(backing); print('accepted'); } catch {}`,
+      api: { ping: (value) => { window.__hostRpcArgs += (value && value.buffer ? value.buffer.byteLength : value && value.byteLength) || 0; return 1; } },
+      out: () => {}, timeout: 8000,
+    });
+    const printedAmplify = await runInSandbox({
+      source: `${HUGE}print(new Uint8Array(backing, 0, 1));`,
+      api: {}, out: () => {}, timeout: 8000,
+    });
+    const binaryLines = [];
+    const binaryRpc = await runInSandbox({
+      source: 'const backing = new ArrayBuffer(4096); print("echo", await hex.ping(new Uint8Array(backing, 0, 1)));',
+      api: { ping: (value) => value.buffer.byteLength },
+      out: (...args) => binaryLines.push(args.join(' ')), timeout: 8000,
+    });
     return { value, lines, leak: window.__sandboxLeak, discovered, plugin, pluginLines,
-      emulator, emuLines, runaway, runawayMs, normalOutput, normalLines, giantOutput, floodOutput, directOutput, abortOutput };
+      emulator, emuLines, runaway, runawayMs, normalOutput, normalLines, giantOutput, floodOutput, directOutput, abortOutput,
+      rpcAmplify, hostRpcArgs: window.__hostRpcArgs, printedAmplify, binaryLines, binaryRpc };
   });
   const line = result.lines[0] || [];
   const unexpected = errors.filter((e) => !/connect-src 'none'|Refused to connect|violates.*Content Security Policy/i.test(e));
@@ -84,8 +108,12 @@ await e.destroy();`,
       !result.abortOutput.aborted ||
       !result.normalOutput.ok || result.normalLines.length !== 8 ||
       !/安全上限/.test(result.giantOutput.error || '') || !/安全上限/.test(result.floodOutput.error || '') || !/安全上限/.test(result.directOutput.error || '') ||
+      !/RPC引数/.test(result.rpcAmplify.error || '') || result.hostRpcArgs !== 0 ||
+      !/安全上限/.test(result.printedAmplify.error || '') ||
+      !result.binaryRpc.ok || result.binaryLines.join('|') !== 'echo 4096' ||
+
       unexpected.length) {
-    console.error(JSON.stringify({ result, errors, unexpected }, null, 2));
+    console.error(JSON.stringify({ result, errors, unexpected }, (_key, value) => (typeof value === 'bigint' ? String(value) : value), 2));
     process.exitCode = 1;
   } else console.log('sandbox browser test: ok');
 } finally {

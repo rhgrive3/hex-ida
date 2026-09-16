@@ -80,6 +80,57 @@ function sanitizeCacheReferences(project) {
   return [...legacy, ...artifactIndexFromProject(structuredProject).toProjectReferences()];
 }
 
+const isPlainRecord = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
+const isTerminalHypothesisStatus = (status) => status === 'verified' || status === 'rejected';
+
+/* A `.hexproj` document is editable, shareable input, so a verification verdict
+   that travelled in it is an assertion and not a runtime outcome. Portable
+   session records used to reach `createInvestigationSession()` intact, and that
+   normalization seals any `confirmedFindings` array it is handed; `AIRuntime`
+   then reads the seal back as deterministic-verification authority, which let an
+   imported `status:'verified'` row restore as canonical verified evidence and an
+   imported terminal hypothesis keep its verdict (#8687, laundering past #4995).
+   The parse step is the one boundary that knows the bytes came from outside, so
+   the authority is stripped here. The runtime's own session persistence
+   (`createProjectSessionPersistence`) hydrates the live project object and never
+   passes through this function, so legitimate deterministic evidence still
+   survives its trusted save/reload round-trip. */
+function downgradePortableEvidenceAuthority(record) {
+  if (!isPlainRecord(record) || record.status !== 'verified') return record;
+  return { ...record, status: 'supported' };
+}
+
+function downgradePortableHypothesisAuthority(record) {
+  if (!isPlainRecord(record) || !isTerminalHypothesisStatus(record.status)) return record;
+  // Same non-terminal fallback `HypothesisStore.upsert()` applies without
+  // deterministic authority; the confidence a stripped verdict asserted goes too.
+  const hasSupport = Array.isArray(record.supportEvidenceIds) && record.supportEvidenceIds.length > 0;
+  return { ...record, status: hasSupport ? 'supported' : 'open', confidence: 0.5 };
+}
+
+function stripPortableVerificationAuthority(project) {
+  const source = project.findings.investigationSessions;
+  let changed = false;
+  const stripped = source.map((session) => {
+    if (!isPlainRecord(session)) return session;
+    const hasEvidence = Array.isArray(session.confirmedFindings);
+    const hasHypotheses = Array.isArray(session.hypotheses);
+    const confirmedFindings = hasEvidence ? session.confirmedFindings.map(downgradePortableEvidenceAuthority) : null;
+    const hypotheses = hasHypotheses ? session.hypotheses.map(downgradePortableHypothesisAuthority) : null;
+    const evidenceChanged = hasEvidence && confirmedFindings.some((record, index) => record !== session.confirmedFindings[index]);
+    const hypothesesChanged = hasHypotheses && hypotheses.some((record, index) => record !== session.hypotheses[index]);
+    if (!evidenceChanged && !hypothesesChanged) return session;
+    changed = true;
+    return {
+      ...session,
+      ...(evidenceChanged ? { confirmedFindings } : {}),
+      ...(hypothesesChanged ? { hypotheses } : {}),
+    };
+  });
+  if (!changed) return project;
+  return { ...project, findings: { ...project.findings, investigationSessions: stripped } };
+}
+
 export function createHexProject(input = {}) {
   const now = new Date().toISOString();
   const project = {
@@ -339,7 +390,7 @@ export function parseHexProject(input) {
     }
     throw error;
   }
-  return normalizeHexProjectV1(migrated);
+  return stripPortableVerificationAuthority(normalizeHexProjectV1(migrated));
 }
 
 export function tryParseHexProject(input) { try { return { ok: true, project: parseHexProject(input) }; } catch (error) { return { ok: false, error: error?.message || String(error), code: error?.code || 'HEX_PROJECT_INVALID' }; } }
