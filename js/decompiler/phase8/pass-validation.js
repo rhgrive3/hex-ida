@@ -204,6 +204,26 @@ export async function preparePhase8RewritePlan(ir, options = {}) {
           reason, candidateCount:0 });
       }
     }
+    // An entirely unsupported request is a complete, auditable no-op. Do not
+    // spend the symbolic-execution deadline re-walking an IR whose requested
+    // values were already rejected (legacy select modifiers may themselves be
+    // intentionally outside the pure query vocabulary). No proof capability
+    // is issued because the plan has no entries.
+    if (selected.length === 0) {
+      const binding = Object.freeze({ identity:guard.identity, abiId:submitted.abiId,
+        passId:PROOF_REWRITE_PASS.id, passVersion:PROOF_REWRITE_PASS.version,
+        transformKind:'solver-scalar', preconditions:EMPTY,
+        candidateStrategy:submitted.candidateStrategy ?? 'local-rewrites', correspondence:EMPTY,
+        observableScope:'total-pure-bool-bv-value-only', modelIdentity:null,
+        entries:EMPTY, targetDecisions:Object.freeze(decisions),
+        decisionCoverage:Object.freeze({ requested:requested.length, complete:true }) });
+      const plan = Object.freeze({ schemaVersion:'hex-phase8-proof-plan/v1', status:'complete', reason:null,
+        planId:stableDigest({ kind:'empty-proof-plan', ...binding }), ...binding,
+        rejected:Object.freeze(rejected), metrics:guard.metrics(), taintEvidence:null,
+        taintMetrics:null, taintResult:null });
+      plans.set(plan,{ir,analysis:null,internal:[],inputBindings:EMPTY,empty:true});
+      return plan;
+    }
     // The canonical query captures the exact IR, models, execution values and
     // lifecycle before solver work. It also enforces universal input scope.
     const representationRules = submitted.candidateStrategy === 'representation-rules';
@@ -321,6 +341,8 @@ export function isPhase8RewritePlan(plan, context = {}) {
     const scope = contextScope(context);
     if (scope.ir !== record.ir || scope.abiId !== plan.abiId || !sameMemoryIdentity(queryRecord(scope.identity),plan.identity)) return false;
     if (queryArray(scope.preconditions).length || queryArray(queryRecord(scope.correspondence).inputs).length) return false;
+    if (record.empty) return plan.status === 'complete' && plan.entries.length === 0
+      && plan.decisionCoverage?.complete === true && record.internal.length === 0;
     return record.internal.every(({candidate,target,entry,inputBinding}) => target.id === entry.rawValueId
       && record.readSymbolicTargetInputs(record.analysis,target,plan.identity) === inputBinding
       && record.isAdoptableCandidate(candidate.verification,{identity:plan.identity}))
