@@ -310,3 +310,10 @@ export {
   applyLanguageMetadataTypesToGraph,
   languageMetadataFunctionEvidence,
 };
+
+export {
+  discoveryArtifactForRebuild,
+  isFactoryIssuedDiscoveryArtifact,
+  isFactoryIssuedDiscoveryRebuildBinding,
+  verifyDiscoveryReparse,
+} from './discovery/artifact.js';

@@ -10,6 +10,7 @@
 import { deepFreeze, stableDigest } from '../../core/identity/index.js';
 import { createAnalysisStatus } from '../status.js';
 import { createDiscoveryEvidence, createFunctionCandidate, hasExactStart } from './candidates.js';
+import { fuseFunctionCandidates } from './fusion.js';
 import { canonicalTypedDigest, canonicalTypedString } from './canonical-value.js';
 
 export const DISCOVERY_ARTIFACT_SCHEMA = 'hex-discovery-ambiguity-artifact/v2';
@@ -254,17 +255,26 @@ export function createDiscoveryArtifact(input = {}) {
     .map((item) => createDiscoveryEvidence(item))
     .sort((a, b) => canonicalTypedString(a).localeCompare(canonicalTypedString(b)));
   const candidates = canonicalCandidates(rawCandidates);
+  const derivedCandidates = canonicalCandidates(fuseFunctionCandidates(evidence, {
+    architectureId: binding.architectureId ?? 'generic',
+    snapshotId: status.snapshotId,
+  }).candidates);
+  if (candidates.length !== derivedCandidates.length
+      || candidates.some((candidate, index) => candidate.digest !== derivedCandidates[index].digest)) {
+    fail('discovery-artifact-candidate-view-mismatch');
+  }
+  const canonicalCandidateView = derivedCandidates;
   const producerRuns = arrayItems(rawRuns, 'discovery-artifact-producer-runs-invalid')
     .map(normalizeProducerRun).sort((a, b) => a.id.localeCompare(b.id));
 
-  const collisionSets = candidates.flatMap((candidate) => candidate.conflicts.map((conflict, index) => conflictRecord(candidate, conflict, index)))
+  const collisionSets = canonicalCandidateView.flatMap((candidate) => candidate.conflicts.map((conflict, index) => conflictRecord(candidate, conflict, index)))
     .sort((a, b) => a.collisionId.localeCompare(b.collisionId));
   const collisionIdsByStart = new Map();
   for (const collision of collisionSets) {
     if (!collisionIdsByStart.has(collision.candidateStart)) collisionIdsByStart.set(collision.candidateStart, []);
     collisionIdsByStart.get(collision.candidateStart).push(collision.collisionId);
   }
-  const intervalClaims = candidates.flatMap(candidateIntervals)
+  const intervalClaims = canonicalCandidateView.flatMap(candidateIntervals)
     .sort((a, b) => compareAddress(a.start, b.start) || compareAddress(a.end, b.end) || a.intervalId.localeCompare(b.intervalId));
   const references = evidence.filter((item) => REFERENCE_KINDS.has(item.kind) && item.start != null)
     .map(referenceRecord).sort((a, b) => compareAddress(a.address, b.address) || a.memberId.localeCompare(b.memberId));
@@ -272,7 +282,7 @@ export function createDiscoveryArtifact(input = {}) {
     fail('discovery-artifact-budget-exhausted');
   }
 
-  const functionCandidates = candidates.map((candidate) => deepFreeze({
+  const functionCandidates = canonicalCandidateView.map((candidate) => deepFreeze({
     candidateId: `function-candidate:${candidate.architectureId ?? 'generic'}:${candidate.start}`,
     start: candidate.start,
     name: candidate.name,
@@ -327,11 +337,15 @@ export function discoveryArtifactForRebuild(artifact, expected = {}) {
   return rebuild;
 }
 
-function rebuildBindingValid(binding) {
+export function isFactoryIssuedDiscoveryRebuildBinding(binding) {
   if (!binding || !ISSUED_REBUILD_BINDINGS.has(binding) || binding.schemaVersion !== DISCOVERY_REBUILD_BINDING_SCHEMA) return false;
   const payload = { ...binding };
   delete payload.digest;
   return binding.digest === stableDigest(payload);
+}
+
+function rebuildBindingValid(binding) {
+  return isFactoryIssuedDiscoveryRebuildBinding(binding);
 }
 
 function ids(values, key) {
@@ -365,6 +379,9 @@ export function verifyDiscoveryReparse(sourceBinding, reparsedArtifact, options 
   if (sourceBinding.binding.binaryId !== reparsedArtifact.binding.binaryId
       || sourceBinding.binding.architectureId !== reparsedArtifact.binding.architectureId) {
     return deepFreeze({ ok: false, reason: 'discovery-reparse-identity-mismatch' });
+  }
+  if (sourceBinding.binding.snapshotId === reparsedArtifact.binding.snapshotId) {
+    return deepFreeze({ ok: false, reason: 'discovery-reparse-stale-snapshot' });
   }
   const expectedOutputHash = optionalToken(options?.expectedOutputHash, 'discovery-reparse-output-hash-required');
   if (expectedOutputHash == null) return deepFreeze({ ok: false, reason: 'discovery-reparse-output-hash-required' });
