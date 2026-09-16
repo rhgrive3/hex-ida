@@ -436,6 +436,29 @@ jobs:
                 ')"
                 node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
                 ;;
+              codex/issue-campaign-20260914-lane-10-batch-04)
+                # PR #8996 is a reviewed Phase 7/Phase 8 cross-lane batch.
+                # Require the complete reconciled inventory before projecting
+                # only the Phase 7-owned analysis file.
+                FILES_JSON="$(git diff --name-only --diff-filter=ACMR "$OWNERSHIP_BASE_SHA...$OWNERSHIP_HEAD_SHA" | node -e '
+                  const fs = require("node:fs");
+                  const actual = fs.readFileSync(0, "utf8").split(/\r?\n/).filter(Boolean).sort();
+                  const expected = [
+                    ".circleci/config.yml",
+                    "js/analysis/semantic-function-base.js",
+                    "js/decompiler/phase8/identity-pass.js",
+                    "tests/phase8/abi/issue-8817-aapcs64-proven-fixed-prefix-retention.test.mjs",
+                    "tests/phase8/substrate/issue-8653-truncated-source-phase8-completeness.test.mjs",
+                  ].sort();
+                  if (actual.length !== expected.length || actual.some((file, i) => file !== expected[i])) {
+                    console.error("PR #8996 Phase 7 route inventory mismatch");
+                    console.error(JSON.stringify({ actual, expected }));
+                    process.exit(1);
+                  }
+                  process.stdout.write(JSON.stringify(["js/analysis/semantic-function-base.js"]));
+                ')"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
               *)
                 node tools/validation/phase7-ownership.mjs --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA"
                 ;;
@@ -519,6 +542,31 @@ jobs:
                 --branch "$CIRCLE_BRANCH" \
                 --base-sha "$OWNERSHIP_BASE_SHA" \
                 --head-sha "$OWNERSHIP_HEAD_SHA")"
+              node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"
+            elif [ "${CIRCLE_BRANCH:-}" = 'codex/issue-campaign-20260914-lane-10-batch-04' ]; then
+              # PR #8996 exact Phase 8 projection. The Phase 7 analysis file and
+              # this routing edit are accepted only as the declared foreign slice.
+              FILES_JSON="$(git diff --name-only --diff-filter=ACMR "$OWNERSHIP_BASE_SHA...$OWNERSHIP_HEAD_SHA" | node -e '
+                const fs = require("node:fs");
+                const actual = fs.readFileSync(0, "utf8").split(/\r?\n/).filter(Boolean).sort();
+                const expected = [
+                  ".circleci/config.yml",
+                  "js/analysis/semantic-function-base.js",
+                  "js/decompiler/phase8/identity-pass.js",
+                  "tests/phase8/abi/issue-8817-aapcs64-proven-fixed-prefix-retention.test.mjs",
+                  "tests/phase8/substrate/issue-8653-truncated-source-phase8-completeness.test.mjs",
+                ].sort();
+                if (actual.length !== expected.length || actual.some((file, i) => file !== expected[i])) {
+                  console.error("PR #8996 Phase 8 route inventory mismatch");
+                  console.error(JSON.stringify({ actual, expected }));
+                  process.exit(1);
+                }
+                process.stdout.write(JSON.stringify([
+                  "js/decompiler/phase8/identity-pass.js",
+                  "tests/phase8/abi/issue-8817-aapcs64-proven-fixed-prefix-retention.test.mjs",
+                  "tests/phase8/substrate/issue-8653-truncated-source-phase8-completeness.test.mjs",
+                ]));
+              ')"
               node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"
             else
               node tools/validation/phase8-ownership.mjs --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA"
