@@ -96,13 +96,11 @@ export function prepareConditionalRegionErasure(structure, reachability, ir, opt
     // first deletion domain is a flat sequence of stores with a whole-entry
     // infeasibility proof. Nested controls, assignments and PHIs stay intact.
     const copiedArm = condition?.region.arms.find(arm => arm.original === erased);
-    // Join PHIs are retained by this render-only deletion and therefore do not
-    // make an otherwise flat arm unsafe. Only PHIs (including MemoryPHIs) whose
-    // owning block is inside the removed arm keep the body at `required`.
-    const erasedBlocks = new Set(erased.emittedBlocks ?? []);
-    const erasedHasPhi = structure.phis.some(item => erasedBlocks.has(item.block));
-    const erasedHasMemoryPhi = structure.memoryPhis.some(item => erasedBlocks.has(item.block));
-    const flatStores = condition && !erasedHasPhi && !erasedHasMemoryPhi
+    // No PHI correspondence is issued for render-only arm deletion. Even a
+    // join PHI can still be printed as an unresolved local after one arm is
+    // removed, so every PHI/MemoryPHI keeps body authority fail-closed until
+    // an explicit live-PHI render correspondence is proved.
+    const flatStores = condition && !structure.phis.length && !structure.memoryPhis.length
       && removed.size > 0 && removed.size <= 256 && copiedArm?.nodes.length === removed.size
       && copiedArm.nodes.every(node => node.kind === 'stmt' && node.semantic?.op === 'store')
       && erased.nodes.every(node => node.kind === 'stmt');

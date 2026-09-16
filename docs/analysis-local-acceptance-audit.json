@@ -116,11 +116,11 @@
     },
     {
       "id": "HEX-C4-04",
-      "localStatus": "partial",
-      "assessment": "scalar proof-gated adoptionは既存transaction/verificationへ接続済み。さらに独立証明済みの到達不能conditional regionについて、no-PHI/no-MemoryPHIのflat-store bodyだけをrendered C ASTから削除し、producer-bound tombstone/provenanceとstale/history失敗時rollbackを必須化した。canonical IR/SSA/CFGは変更しない。terminal return/memory/control targetはobservableだが、native fault/exception/unwindと任意memory/CFG rewriteは未モデル化のため元要求はpartial。",
-      "source": "js/decompiler/phase8/projection.js",
-      "verificationSuite": "c4-proof-adoption-scoped",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "assessment": "C4-04 の元カードをローカル受入。scalar は frozen width/operator/family x 3 strategy の production denominator で adopted/refuted/explicit unknown/unsupported を保持し、private proof authority がない rewrite は commit 不可。memory/CFG は exact four-family registry、finite byte memory、CFG edge change、bounded loop、terminal control/fault predicates を proof-adoption へ接続した。宣言 memory region を未比較の generic proof、非canonical exception/unwind、PHI/MemoryPHI を含む render body、stale/cancel/timeout/invalid model は fail closed。C4-02/C4-05 と whole-roadmap/release/device gates は別。",
+      "source": "js/decompiler/phase8/pass-validation-core.js",
+      "verificationSuite": "c4-04-final-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "HEX-C4-05",
@@ -432,9 +432,9 @@
       "mustWaitFor": "C4 provenance and solver",
       "complexity": "L",
       "findingId": "HEX-C4-04",
-      "localStatus": "partial",
-      "currentAssessment": "requested-target decisions、frozen width/operator matrices、real nonconstant proof-only publicationをactual committed/rendered scalar adoptionへ接続済み。copied/stale/unknown/refuted/budget-failed proofはcommitできない。ordinary legacy-view normalizationとexhaustive per-rule/full-width denominatorは未完了のため元FRはpartial。",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "currentAssessment": "pure Bool/BV scalar の binary/compare/unary/cast/select 等を frozen width/operator/family と local-rewrites/representation-rules/equality-saturation の production 分母で再受入。unsupported legacy operand/view、deadline/cancel/budget/stale/refuted/unknown は明示的に denominator に残り、eligible private proof のない candidate は commit しない。",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "FR-C4-04B",
@@ -448,9 +448,9 @@
       "mustWaitFor": "scalar validator and symbolic memory",
       "complexity": "XL",
       "findingId": "HEX-C4-04",
-      "localStatus": "partial",
-      "currentAssessment": "terminal return、all terminal memory bytes、terminal control targetはversioned observable。独立証明済みの到達不能flat-store conditional armはexact private region/body authorityと完全なremoval provenanceを要求するrender-only adoption境界を通る。canonical IR/SSA/CFGは不変。native fault/exception/unwind、任意CFG/memory rewrite、bounded-loop semantic equivalenceは未完了のため元FRはpartial。",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "currentAssessment": "memory-byte/cfg/bounded-loop/terminal-control-effect の exact four-family registryを固定。terminal return、全 terminal memory byte、control target、canonical ARM64 PC-alignment fault predicate、CFG path、bounded loopを比較し、semantic mismatch は refute。未比較 memoryRegions、非canonical exception/unwind、探索上限、stale authority、PHI/MemoryPHI render body は unknown/unsupported/required として採用禁止。no-PHI flat-store render arm のみ既存private body authorityで削除する。",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "FR-C4-02A",
@@ -548,8 +548,8 @@
     "replacementByLocal59CasesAuthorized": false
   },
   "localIntegrationLimitations": [
+    "C4-04 local acceptance is complete; C4-02/C4-05 and whole-roadmap independent/device/release gates remain separate.",
     "C4 standard 120ms remains unaccepted",
-    "C4 full flags/region/PHI/CFG/memory/exception/loop proof missing",
     "C4 provenance historical failures not repaired by numeric DAG fix",
     "ME missing independent and physical inputs",
     "remote X02 reviewed matrix not locally available",
@@ -2272,6 +2272,48 @@
         "arbitrary memory/CFG rewrite equivalence",
         "whole-roadmap independent/device/release acceptance"
       ]
+    },
+    "c4ProofCompletion20260916": {
+      "date": "2026-09-16",
+      "status": "LOCAL-ACCEPTED",
+      "finding": "HEX-C4-04",
+      "tasks": [
+        "FR-C4-04A",
+        "FR-C4-04B"
+      ],
+      "originalRequirementAcceptedHere": true,
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false,
+      "acceptanceRunId": 35063189837,
+      "publicationValidationRunId": 35064382089,
+      "acceptanceTests": 108,
+      "scalarDenominator": "frozen production width/operator/family matrices across local-rewrites, representation-rules and equality-saturation; explicit unknown/unsupported retained",
+      "effectDenominator": [
+        "memory-byte-rewrite",
+        "cfg-rewrite",
+        "bounded-loop-rewrite",
+        "terminal-control-effect-rewrite"
+      ],
+      "observables": [
+        "scalar Bool/BV result",
+        "terminal return",
+        "all terminal memory bytes",
+        "terminal control target",
+        "terminal normal-completion predicate",
+        "canonical terminal fault predicates",
+        "CFG path coverage",
+        "bounded-loop terminal state"
+      ],
+      "failClosed": [
+        "declared-but-unencoded memoryRegions",
+        "noncanonical exception/unwind annotations",
+        "PHI/MemoryPHI render erasure without explicit correspondence",
+        "stale/cancel/timeout/budget",
+        "invalid SAT model",
+        "unregistered or cross-verifier rewrite"
+      ],
+      "conditionalRegionScope": "only independently proved unreachable no-PHI/no-MemoryPHI flat-store render arm; canonical Semantic IR/SSA/CFG unchanged",
+      "wholeRoadmapNote": "C4-04 local acceptance does not close C4-02, C4-05, independent review, device, release, or other roadmap findings."
     }
   },
   "integrationFollowupHistory": [

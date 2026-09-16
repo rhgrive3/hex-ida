@@ -1,5 +1,10 @@
 # Analysis roadmap v8 integration checkpoint
 
+## 2026-09-16: C4-04 local acceptance 完了
+
+HEX-C4-04 / FR-C4-04A / FR-C4-04B は、production scalar denominator、memory/CFG rewrite registry、bounded-loop、terminal return/memory/control/fault observables、stale/refuted/unknown/unsupported と generic memory-region fail-closed を同一 acceptance で再検証し、このローカル要件について `accepted-local` とする。PHI / MemoryPHI を含む render body と非canonical exception/unwind は証明済みと偽らず adoption 不可のまま保持する。C4-02 / C4-05、独立レビュー、実機、release、他 finding は閉じていないため、ロードマップ全体の `CHECKPOINT-LOCKED` / `transformAuthorization:false` は維持する。
+
+
 ## 2026-09-16: C4-04 scoped render adoption と CI ownership 復旧
 
 C4-04 の scalar proof-only publicationに加え、既存 conditional-region reachability / erasure plan から exact copied-region capability を private に引き継ぎ、独立証明済み到達不能 arm の **no PHI / no MemoryPHI / flat-store body** だけを rendered C AST から削除する adoption 境界を接続しました。公開 text/ID/plan のコピーでは body authority を再構成できません。region/body の mutation、欠落した authority、provenance/history 不完全、history budget 不足では fail closed し、削除を公開しません。削除された statement は producer-bound tombstone と removal record を持ちます。canonical Semantic IR / SSA / CFG は変更しません。
