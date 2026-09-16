@@ -24,29 +24,36 @@ jobs:
           timeout 90s git fetch --no-tags origin main >/tmp/fetch.log 2>&1
           python3 - <<'PY'
           from pathlib import Path
+          additions = [
+              ("    '.github/workflows/x02-apple-evidence.yml',\n", "    '.github/workflows/x02-collector-fix.yml',\n"),
+              ("    'tests/scpa/fixtures/x02-prior120-apple-version-fixtures.mjs',\n", "    'tests/scpa/fixtures/x02-real-apple-evidence-20260916.json',\n"),
+          ]
           p = Path('tools/validation/analysis-roadmap/ownership.mjs')
           s = p.read_text()
-          target = "    '.github/workflows/ghidra-differential.yml',\n"
-          add = "    '.github/workflows/x02-collector-fix.yml',\n"
-          if add not in s:
-              if target not in s:
-                  raise SystemExit('ownership.mjs anchor missing')
-              s = s.replace(target, target + add, 1)
-              p.write_text(s)
+          for anchor, add in additions:
+              if add not in s:
+                  if anchor not in s:
+                      raise SystemExit(f'ownership.mjs anchor missing: {anchor.strip()}')
+                  s = s.replace(anchor, anchor + add, 1)
+          p.write_text(s)
+
+          additions = [
+              ('      ".github/workflows/x02-apple-evidence.yml",\n', '      ".github/workflows/x02-collector-fix.yml",\n'),
+              ('      "tests/scpa/fixtures/x02-prior120-apple-version-fixtures.mjs",\n', '      "tests/scpa/fixtures/x02-real-apple-evidence-20260916.json",\n'),
+          ]
           p = Path('tools/validation/analysis-roadmap/ownership.json')
           s = p.read_text()
-          target = '      ".github/workflows/ghidra-differential.yml",\n'
-          add = '      ".github/workflows/x02-collector-fix.yml",\n'
-          if add not in s:
-              if target not in s:
-                  raise SystemExit('ownership.json anchor missing')
-              s = s.replace(target, target + add, 1)
-              p.write_text(s)
+          for anchor, add in additions:
+              if add not in s:
+                  if anchor not in s:
+                      raise SystemExit(f'ownership.json anchor missing: {anchor.strip()}')
+                  s = s.replace(anchor, anchor + add, 1)
+          p.write_text(s)
           PY
           git rm .github/workflows/diag-fix-7036-ownership.yml >/dev/null
           git add tools/validation/analysis-roadmap/ownership.mjs tools/validation/analysis-roadmap/ownership.json
           git diff --cached --check
-          git commit -m 'fix(analysis): register X-02 collector ownership' >/tmp/commit.log 2>&1
+          git commit -m 'fix(analysis): register X-02 evidence ownership' >/tmp/commit.log 2>&1
           CLEAN_HEAD=$(git rev-parse HEAD)
           BASE_SHA=$(git rev-parse refs/remotes/origin/main)
           echo "base=$BASE_SHA" >> "$STATUS"
