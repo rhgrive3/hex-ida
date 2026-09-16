@@ -1,46 +1,87 @@
-name: PR7036 live-main conflict snapshot
+name: PR7036 main-authority reconciliation v4
 on:
   push:
     branches: [sync/pr7036-main-20260917-v2]
+permissions:
+  contents: write
 jobs:
-  snapshot:
-    if: contains(github.event.head_commit.message, 'snapshot PR 7036 live-main conflict stages')
+  reconcile:
+    if: contains(github.event.head_commit.message, 'test PR 7036 main-authority reconciliation')
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 700
-      - name: Snapshot conflict stages only
+      - name: Resolve and run focused acceptance
         shell: bash
         run: |
           set -euo pipefail
+          BASE_HEAD="$(git rev-parse HEAD)"
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git fetch --no-tags --depth=700 origin 799bc6c4c0e862e4854a56aac20601caf9e74c4c >/dev/null 2>&1
           set +e
           git merge --no-commit --no-ff FETCH_HEAD >/dev/null 2>&1
-          RC=$?
+          MERGE_RC=$?
           set -e
-          mkdir -p conflict-snapshot/base conflict-snapshot/ours conflict-snapshot/theirs
-          git diff --name-only --diff-filter=U | sed '/^$/d' | sort > conflict-snapshot/conflicts.txt
+          git diff --name-only --diff-filter=U | sed '/^$/d' | sort > /tmp/conflicts.txt
           while IFS= read -r f; do
-            mkdir -p "conflict-snapshot/base/$(dirname "$f")" "conflict-snapshot/ours/$(dirname "$f")" "conflict-snapshot/theirs/$(dirname "$f")"
-            git show ":1:$f" > "conflict-snapshot/base/$f" 2>/dev/null || true
-            git show ":2:$f" > "conflict-snapshot/ours/$f" 2>/dev/null || true
-            git show ":3:$f" > "conflict-snapshot/theirs/$f" 2>/dev/null || true
-          done < conflict-snapshot/conflicts.txt
+            git checkout --theirs -- "$f"
+            git add -- "$f"
+          done < /tmp/conflicts.txt
+          rm -f .github/workflows/pr7036-main-conflict-inventory-v2.yml
+          git add -u .github/workflows/pr7036-main-conflict-inventory-v2.yml
+          set +e
+          node scripts/build-userscript.mjs > /tmp/build-userscript.txt 2>&1
+          BUILD_RC=$?
+          git add -A
+          for f in \
+            tests/phase8/substrate/proof-projection-origin.test.mjs \
+            tests/phase8/integration/proof-optimizer.test.mjs \
+            tests/phase7/discovery/x03-ambiguity-artifact.test.mjs \
+            tests/stage2/x03-rebuild-discovery-acceptance.test.mjs \
+            tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs \
+            tests/issue-5498-eligibility-result-status-authority.mjs \
+            tests/phase4/binary/issue-4358-elf-dynamic-xindex-common.test.mjs \
+            tests/issue-4135-pe-section-virtual-layout.mjs; do
+              node --test "$f" > "/tmp/$(basename "$f").txt" 2>&1
+              rc=$?
+              echo "$rc $f" >> /tmp/test-status.txt
+              if [ "$rc" -ne 0 ]; then break; fi
+          done
+          TEST_RC=0
+          if awk '$1 != 0 { bad=1 } END { exit bad ? 0 : 1 }' /tmp/test-status.txt 2>/dev/null; then TEST_RC=1; fi
+          SYNTAX_RC=0
+          while IFS= read -r f; do
+            case "$f" in *.js|*.mjs) node --check "$f" >/tmp/syntax-one.txt 2>&1 || { SYNTAX_RC=1; echo "$f" > /tmp/syntax-failed.txt; cat /tmp/syntax-one.txt >> /tmp/syntax-failed.txt; break; };; esac
+          done < <(git diff --cached --name-only --diff-filter=ACMR)
+          set -e
           {
-            echo "branch_head=$(git rev-parse HEAD)"
+            echo "base_head=$BASE_HEAD"
             echo "main_head=$(git rev-parse FETCH_HEAD)"
-            echo "merge_base=$(git merge-base HEAD FETCH_HEAD)"
-            echo "merge_rc=$RC"
-            echo "conflict_count=$(wc -l < conflict-snapshot/conflicts.txt | tr -d ' ')"
-          } > conflict-snapshot/summary.txt
-          git merge --abort 2>/dev/null || true
-      - name: Upload snapshot
+            echo "merge_rc=$MERGE_RC"
+            echo "conflict_count=$(wc -l < /tmp/conflicts.txt | tr -d ' ')"
+            echo "build_rc=$BUILD_RC"
+            echo "test_rc=$TEST_RC"
+            echo "syntax_rc=$SYNTAX_RC"
+            cat /tmp/test-status.txt 2>/dev/null || true
+            if [ "$BUILD_RC" -ne 0 ]; then echo '--- build tail ---'; tail -n 80 /tmp/build-userscript.txt; fi
+            if [ "$TEST_RC" -ne 0 ]; then
+              failed="$(awk '$1 != 0 {print $2; exit}' /tmp/test-status.txt)"
+              echo "--- first test failure: $failed ---"
+              tail -n 120 "/tmp/$(basename "$failed").txt"
+            fi
+            if [ "$SYNTAX_RC" -ne 0 ]; then echo '--- syntax failure ---'; cat /tmp/syntax-failed.txt; fi
+          } > pr7036-reconcile-v4-result.txt
+          if [ "$BUILD_RC" -ne 0 ] || [ "$TEST_RC" -ne 0 ] || [ "$SYNTAX_RC" -ne 0 ]; then exit 1; fi
+          git commit -m 'merge: reconcile PR 7036 with main 799bc6c4'
+          git push origin HEAD:sync/pr7036-main-20260917-v2
+      - name: Upload focused result
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr7036-main-conflict-snapshot
-          path: conflict-snapshot
+          name: pr7036-reconcile-v4-result
+          path: pr7036-reconcile-v4-result.txt
+          if-no-files-found: ignore
           retention-days: 2
