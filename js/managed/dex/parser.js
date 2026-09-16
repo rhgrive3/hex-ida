@@ -3,7 +3,7 @@ import { createManagedImageId, createManagedModuleId } from '../shared/identity.
 import { validateDexMap } from './map-validation.js';
 import { checkedRange, fail } from './validation-utils.js';
 import { readDexUleb128 as readUleb128 } from './leb128.js';
-import { dexPrototypeShorty, dexTypeInfo } from './descriptor.js';
+import { dexTypeInfo } from './descriptor.js';
 import { dexDefinitionCodeError, dexMethodDefinitions } from './method-definitions.js';
 
 // #8705 — aggregate pre-materialization bound on DEX metadata admitted by one
@@ -26,6 +26,12 @@ const DEX_ADMISSION_CLASS_DEF_ROW_BYTES = 320;
 const DEX_ADMISSION_STRING_UNIT_BYTES = 4;
 const DEX_ADMISSION_TYPE_LIST_ENTRY_BYTES = 64;
 const DEX_ADMISSION_CLASS_DATA_ENTRY_BYTES = 80;
+
+// Aggregate pre-allocation bound on unique `type_list` materialization inside
+// one parse. Aliased offsets are interned, so the charge is per physical list
+// (#8707); an image that legitimately needs more distinct parameter entries than
+// this is refused before any of those arrays exist.
+export const DEX_TYPE_LIST_ENTRY_BUDGET = 1_000_000;
 
 function requireOptionalDataItemOffset(limit, offset, alignment, minSize, code) {
   if (offset === 0) return;
@@ -301,29 +307,90 @@ export function parseDex(bytes, options = {}) {
     types.push(descriptor);
   }
 
+  // A DEX `type_list` is one physical object no matter how many `proto_id_item`
+  // or `class_def_item` rows alias it, so it is materialized once per exact
+  // offset behind an aggregate entry charge taken *before* allocation, and the
+  // immutable result is shared (#8707).
+  const typeLists = new Map();
+  const maxTypeListEntries = Number.isSafeInteger(options.maxTypeListEntries) && options.maxTypeListEntries >= 0
+    ? options.maxTypeListEntries
+    : DEX_TYPE_LIST_ENTRY_BUDGET;
+  let typeListEntriesCharged = 0;
+  function decodeTypeList(listOff, {
+    headerCode, bodyCode, bodyAlignment = 1, indexCode, sizeBoundCode = null,
+  }) {
+    const cached = typeLists.get(listOff);
+    if (cached !== undefined) return cached;
+    dataRange(listOff, 4, headerCode, 4);
+    const size = view.getUint32(listOff, true);
+    if (sizeBoundCode !== null && size > Math.floor((fileSize - listOff - 4) / 2)) fail(sizeBoundCode);
+    dataRange(listOff + 4, size * 2, bodyCode, bodyAlignment);
+    if (size > maxTypeListEntries - typeListEntriesCharged) fail('dex-type-list-materialization-budget-exceeded');
+    typeListEntriesCharged += size;
+    // #8705 per-item growth accounting stays on the physical list, so aliased
+    // offsets are charged once rather than once per aliasing row.
+    chargeMetadata(size * DEX_ADMISSION_TYPE_LIST_ENTRY_BYTES);
+    const descriptors = [];
+    const typeIndices = [];
+    for (let entry = 0; entry < size; entry++) {
+      const typeIdx = view.getUint16(listOff + 4 + entry * 2, true);
+      const descriptor = requireIndex(types, typeIdx, indexCode);
+      typeIndices.push(typeIdx);
+      descriptors.push(descriptor);
+    }
+    const materialized = {
+      descriptors: Object.freeze(descriptors),
+      typeIndices: Object.freeze(typeIndices),
+      shortySuffix: null,
+    };
+    typeLists.set(listOff, materialized);
+    return materialized;
+  }
+  function typeListShortySuffix(list) {
+    if (list.shortySuffix === null) {
+      list.shortySuffix = list.descriptors.map((type) => dexTypeInfo(type).shorty).join('');
+    }
+    return list.shortySuffix;
+  }
+  const emptyTypeList = { descriptors: Object.freeze([]), typeIndices: Object.freeze([]), shortySuffix: '' };
+  // `class_def_item.interfaces_off` (#7620) checks are functions of the physical
+  // list's contents, so they are proven once per offset and reused by every
+  // class aliasing that list.
+  const validatedInterfaceLists = new Set();
+  function validateInterfaceTypeList(listOff, list) {
+    if (validatedInterfaceLists.has(listOff)) return;
+    const seenInterfaces = new Set();
+    for (const descriptor of list.descriptors) {
+      if (!descriptor.startsWith('L')) fail('dex-invalid-interface-type');
+      if (seenInterfaces.has(descriptor)) fail('dex-duplicate-interface-type');
+      seenInterfaces.add(descriptor);
+    }
+    validatedInterfaceLists.add(listOff);
+  }
+
   const protos=[];
   let previousProtoKey = null;
   for (let i=0;i<protoIdsSize;i++) {
     const off=protoIdsOff+i*12;
     if (off+12>u8.length) fail('dex-truncated-proto-ids');
     const shortyIdx=view.getUint32(off,true), returnTypeIdx=view.getUint32(off+4,true), paramsOff=view.getUint32(off+8,true);
-    const params=[];
-    const parameterTypeIndices=[];
+    let params = emptyTypeList.descriptors;
+    let parameterTypeIndices = emptyTypeList.typeIndices;
+    let paramsShorty = '';
     if (paramsOff>0) {
-      dataRange(paramsOff,4,'dex-invalid-proto-params-range',4);
-      const pSize=view.getUint32(paramsOff,true);
-      if (pSize>Math.floor((fileSize-paramsOff-4)/2)) fail('dex-invalid-proto-params-range');
-      dataRange(paramsOff+4,pSize*2,'dex-invalid-proto-params-range');
-      chargeMetadata(pSize * DEX_ADMISSION_TYPE_LIST_ENTRY_BYTES);
-      for(let p=0;p<pSize;p++) {
-        const typeIdx = view.getUint16(paramsOff+4+p*2,true);
-        parameterTypeIndices.push(typeIdx);
-        params.push(requireIndex(types,typeIdx,'dex-invalid-proto-param-type-index'));
-      }
+      const list = decodeTypeList(paramsOff, {
+        headerCode:'dex-invalid-proto-params-range',
+        bodyCode:'dex-invalid-proto-params-range',
+        indexCode:'dex-invalid-proto-param-type-index',
+        sizeBoundCode:'dex-invalid-proto-params-range',
+      });
+      params = list.descriptors;
+      parameterTypeIndices = list.typeIndices;
+      paramsShorty = typeListShortySuffix(list);
     }
     const shorty = requireIndex(strings,shortyIdx,'dex-invalid-proto-shorty-index');
     const returnType = requireIndex(types,returnTypeIdx,'dex-invalid-proto-return-type-index');
-    if (shorty !== dexPrototypeShorty(returnType, params)) fail('dex-invalid-proto-shorty');
+    if (shorty !== dexTypeInfo(returnType,{allowVoid:true}).shorty + paramsShorty) fail('dex-invalid-proto-shorty');
     const protoKey = { returnTypeIdx, parameterTypeIndices };
     if (previousProtoKey !== null && compareDexProtoKeys(previousProtoKey, protoKey) >= 0) {
       fail('dex-proto-ids-order-invalid');
@@ -429,21 +496,16 @@ export function parseDex(bytes, options = {}) {
     // interfaces: decode the referenced type_list losslessly and fail closed
     // on AOSP contract violations — bounds, alignment, type_idx validity,
     // class (non-array/primitive) entries, and duplicates (#7620).
-    const interfaceTypes=[];
+    let interfaceTypes = emptyTypeList.descriptors;
     if(interfacesOff!==0){
-      dataRange(interfacesOff,4,'dex-invalid-interfaces-offset',4);
-      const interfaceCount=view.getUint32(interfacesOff,true);
-      dataRange(interfacesOff+4,interfaceCount*2,'dex-invalid-interfaces-range',2);
-      chargeMetadata(interfaceCount * DEX_ADMISSION_TYPE_LIST_ENTRY_BYTES);
-      const seenInterfaces=new Set();
-      for(let entry=0;entry<interfaceCount;entry++){
-        const typeIdx=view.getUint16(interfacesOff+4+entry*2,true);
-        const descriptor=requireIndex(types,typeIdx,'dex-invalid-interface-type-index');
-        if(!descriptor.startsWith('L')) fail('dex-invalid-interface-type');
-        if(seenInterfaces.has(descriptor)) fail('dex-duplicate-interface-type');
-        seenInterfaces.add(descriptor);
-        interfaceTypes.push(descriptor);
-      }
+      const list = decodeTypeList(interfacesOff, {
+        headerCode:'dex-invalid-interfaces-offset',
+        bodyCode:'dex-invalid-interfaces-range',
+        bodyAlignment:2,
+        indexCode:'dex-invalid-interface-type-index',
+      });
+      validateInterfaceTypeList(interfacesOff, list);
+      interfaceTypes = list.descriptors;
     }
     classes.push({classType,accessFlags,superType:superclassIdx!==0xffffffff?requireClassType(types,superclassIdx,'dex-invalid-superclass-type'):null,sourceFile:sourceFileIdx!==0xffffffff?requireIndex(strings,sourceFileIdx,'dex-invalid-source-file-index'):null,interfaceTypes,staticFields,instanceFields,directMethods,virtualMethods});
   }

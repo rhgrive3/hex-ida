@@ -4,12 +4,48 @@ function isValidConfidence(value) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
 }
 
-function candidateComponents(candidates) {
+function candidateComponents(candidates, budget) {
   const left = new Map(), right = new Map();
-  for (const c of candidates) {
-    if (!isValidConfidence(c?.confidence)) continue;
+  // #8914: the public matcher accepts arbitrary iterable / generator
+  // containers, so budget + cancellation must gate admission *before* each item
+  // is requested and retained, not only after the whole stream has been
+  // enumerated into the adjacency index.
+  //   * already-materialized array (matchFunctions() `eligible`): bounded with
+  //     integer-only counters (admitEnumerated / checkCandidateRetained) that
+  //     never read AbortSignal or the wall clock, so the solver/post-processing
+  //     stage-independence #4527 pins is preserved exactly;
+  //   * live iterable (generator / Set / …): additionally observe cancellation
+  //     and the wall clock between items, before requesting the next value.
+  // A budget without the new hooks (legacy direct caller) keeps the old for-of.
+  let admissionTruncated = false;
+  const retain = (c) => {
     let a = left.get(c.i); if (!a) left.set(c.i, a = []); a.push(c);
     let b = right.get(c.j); if (!b) right.set(c.j, b = []); b.push(c);
+  };
+  const hooks = budget && typeof budget.admitEnumerated === 'function' && typeof budget.checkCandidateRetained === 'function';
+  if (!hooks) {
+    for (const c of candidates) {
+      if (!isValidConfidence(c?.confidence)) continue;
+      retain(c);
+    }
+  } else if (Array.isArray(candidates)) {
+    for (const c of candidates) {
+      if (!budget.admitEnumerated()) { admissionTruncated = true; break; }
+      if (!isValidConfidence(c?.confidence)) continue;
+      if (!budget.checkCandidateRetained()) { admissionTruncated = true; break; }
+      retain(c);
+    }
+  } else {
+    const iterator = candidates[Symbol.iterator]();
+    for (;;) {
+      if (!budget.admitCandidate()) { admissionTruncated = true; break; }
+      const next = iterator.next();
+      if (next.done) break;
+      const c = next.value;
+      if (!isValidConfidence(c?.confidence)) continue;
+      if (!budget.checkCandidateRetained()) { admissionTruncated = true; break; }
+      retain(c);
+    }
   }
   const seenLeft = new Set(), seenRight = new Set(), components = [];
   for (const start of [...left.keys()].sort((a,b)=>a-b)) {
@@ -25,10 +61,10 @@ function candidateComponents(candidates) {
         if (!seenRight.has(c.j)) { seenRight.add(c.j); queue.push({ side:'right', id:c.j }); }
       }
     }
-    components.push([...edges].sort((a,b)=>a.i-b.i || a.j-b.j));
-  }
-  return components;
-}
+     components.push([...edges].sort((a,b)=>a.i-b.i || a.j-b.j));
+   }
+   return { components, admissionTruncated };
+ }
 
 function componentShape(candidates) {
   const left = new Set(), right = new Set();
@@ -83,7 +119,7 @@ function maximumWeightComponent(candidates, budget) {
 
 export function solveCandidateMatching(candidates = [], budget = createMatchBudget()) {
   const selected = [], ambiguousLeft = new Set(), ambiguousRight = new Set(), truncatedComponents = [];
-  const components = candidateComponents(candidates);
+  const components = candidateComponents(candidates, budget).components;
   for (let index = 0; index < components.length; index++) {
     const component = components[index];
     const shape = componentShape(component);

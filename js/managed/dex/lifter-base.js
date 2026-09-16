@@ -436,6 +436,12 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
           locationReads.push({ kind: 'register', index: vBB, bits: 32 });
           locationReads.push({ kind: 'register', index: vCC, bits: 32 });
           locationWrites.push({ kind: 'register', index: vAA, bits: 32 });
+          // The arithmetic result is the value bound to the destination
+          // register; without an explicit produced value the shared bridge has
+          // no result identity for the locationWrite and falls back to an
+          // operand read value, so `add-int v0,v1,v2` would leave v0 equal to
+          // v2 instead of v1+v2 (#1136).
+          producedValues.push({ bits: 32 });
           // Dalvik: div-int/rem-int throw java/lang/ArithmeticException when
           // the divisor (vCC) is zero — a specified exceptional path the
           // bundle must carry instead of publishing exception-free exact
