@@ -21,12 +21,15 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - name: T014 solver focused suite
-        run: |
-          timeout 300s node --test --test-concurrency=1 \
-            tests/phase9/expr/t014-bounded-structural-hash.test.mjs \
-            tests/phase9/solver/t014-bitblast-differential.test.mjs \
-            tests/phase9/solver/t014-foundation-boundaries.test.mjs \
-            tests/phase9/solver/t014-wide-exact.test.mjs \
-            tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs \
-            tests/issue-5498-eligibility-result-status-authority.mjs
+      - name: T014 structural hash
+        run: timeout 120s node --test --test-concurrency=1 tests/phase9/expr/t014-bounded-structural-hash.test.mjs
+      - name: T014 bitblast differential
+        run: timeout 120s node --test --test-concurrency=1 tests/phase9/solver/t014-bitblast-differential.test.mjs
+      - name: T014 foundation boundaries
+        run: timeout 120s node --test --test-concurrency=1 tests/phase9/solver/t014-foundation-boundaries.test.mjs
+      - name: T014 wide exact
+        run: timeout 120s node --test --test-concurrency=1 tests/phase9/solver/t014-wide-exact.test.mjs
+      - name: T014 registry authority
+        run: timeout 120s node --test --test-concurrency=1 tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs
+      - name: T014 eligibility authority
+        run: timeout 120s node --test --test-concurrency=1 tests/issue-5498-eligibility-result-status-authority.mjs
