@@ -132,27 +132,27 @@
     },
     {
       "id": "HEX-SYM-01",
-      "localStatus": "existing-reused",
-      "assessment": "提出済みsolver/tierを再実装しない。物理iPad/WebKitとruntime activationの証拠は本環境では取得していない。",
-      "source": "js/symbolic",
-      "verificationSuite": "phase9-test",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "assessment": "Branded exact 64-bit TieredBvBackend（<=8-bit exhaustive oracle floor、32/64-bit bitblast routing）、SolverRegistry exact default trust contract、32/64-bit SAT model extraction と独立検証・イミュータブルモデル、UNSAT contradiction・重複領域合意、および改ざん・変異・リソース・タイムアウト・65-bit 等の fail-closed 境界を tests/phase9/verify/sym-acceptance.test.mjs および tests/phase9/solver/tiered-sym01-rescue.test.mjs にて検証。物理iPad/WebKit実機受入はユーザー指示によりスキップ。",
+      "source": "tests/phase9/verify/sym-acceptance.test.mjs",
+      "verificationSuite": "sym-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "HEX-SYM-02",
-      "localStatus": "existing-with-local-extension",
-      "assessment": "既存byte memory/solverを再利用しPC observableだけ追加。byte-memory全171件は同一runtimeで再検証。",
-      "source": "tests/phase9/memory",
-      "verificationSuite": "focused-memory",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "assessment": "Byte memory state（1, 2, 4, 8バイト × little/big-endianのパリティと部分上書き）、concrete-to-symbolic escalation、初期未確定バイトの関数性、同一名シンボルの非MustAlias、64-bit BigIntアドレスとモジュララップ、各種バリア（unknown-clobber, unknown-call, may-alias-clobber, volatile, atomic）、フォーク/結合、リソース上限、および実プロダクションエグゼキュータによる部分バイト上書き観測を tests/phase9/verify/sym-acceptance.test.mjs および tests/phase9/memory/byte-memory.test.mjs にて検証。",
+      "source": "tests/phase9/verify/sym-acceptance.test.mjs",
+      "verificationSuite": "sym-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "HEX-SYM-03",
-      "localStatus": "existing-reused",
-      "assessment": "既存taint/deobfuscationを再利用。Phase10開始時PASSは新runtimeでの全gate通過と同一視しない。",
-      "source": "tests/phase10",
-      "verificationSuite": "baseline-phase10-test",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "assessment": "プロダクションテイントフロー（source -> partial store -> load -> control/data -> phi -> sink -> EvidenceGraph）、安定的モデル/クエリ同定によるリプレイ、値スコープサニタイザと未知フラグのfail-closed、unknown call/欠落値/ループ枯渇のTOP/partial保持、may-aliasストア候補保持、古い同定/複製レコードの権威喪失、および有界等価性検証（UNSAT差分でのproved、SAT反例抽出でのrefuted、不整合前提でのvacuous証明阻止、ソート/幅不整合の即時拒否）を tests/phase9/verify/sym-acceptance.test.mjs、tests/phase9/taint/production.test.mjs、tests/phase9/verify/equivalence.test.mjs にて検証。",
+      "source": "tests/phase9/verify/sym-acceptance.test.mjs",
+      "verificationSuite": "sym-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "HEX-X-01",
@@ -400,9 +400,9 @@
       "mustWaitFor": "ME semantics",
       "complexity": "XL",
       "findingId": "HEX-SYM-01",
-      "localStatus": "existing-reused",
-      "currentAssessment": "提出済みsolver/tierを再実装しない。物理iPad/WebKitとruntime activationの証拠は本環境では取得していない。",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "currentAssessment": "Branded exact 64-bit TieredBvBackend（<=8-bit exhaustive oracle floor、32/64-bit bitblast routing）、SolverRegistry exact default trust contract、32/64-bit SAT model extraction と独立検証・イミュータブルモデル、UNSAT contradiction・重複領域合意、および改ざん・変異・リソース・タイムアウト・65-bit 等の fail-closed 境界を tests/phase9/verify/sym-acceptance.test.mjs および tests/phase9/solver/tiered-sym01-rescue.test.mjs にて検証。物理iPad/WebKit実機受入はユーザー指示によりスキップ。",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "FR-SYM-02A",
@@ -416,9 +416,9 @@
       "mustWaitFor": "solver and memory semantics",
       "complexity": "XL",
       "findingId": "HEX-SYM-02",
-      "localStatus": "existing-with-local-extension",
-      "currentAssessment": "既存byte memory/solverを再利用しPC observableだけ追加。byte-memory全171件は同一runtimeで再検証。",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "currentAssessment": "Byte memory state（1, 2, 4, 8バイト × little/big-endianのパリティと部分上書き）、concrete-to-symbolic escalation、初期未確定バイトの関数性、同一名シンボルの非MustAlias、64-bit BigIntアドレスとモジュララップ、各種バリア（unknown-clobber, unknown-call, may-alias-clobber, volatile, atomic）、フォーク/結合、リソース上限、および実プロダクションエグゼキュータによる部分バイト上書き観測を tests/phase9/verify/sym-acceptance.test.mjs および tests/phase9/memory/byte-memory.test.mjs にて検証。",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "FR-C4-04A",
@@ -496,9 +496,9 @@
       "mustWaitFor": "symbolic memory and validator",
       "complexity": "XL",
       "findingId": "HEX-SYM-03",
-      "localStatus": "existing-reused",
-      "currentAssessment": "既存taint/deobfuscationを再利用。Phase10開始時PASSは新runtimeでの全gate通過と同一視しない。",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "currentAssessment": "プロダクションテイントフロー（source -> partial store -> load -> control/data -> phi -> sink -> EvidenceGraph）、安定的モデル/クエリ同定によるリプレイ、値スコープサニタイザと未知フラグのfail-closed、unknown call/欠落値/ループ枯渇のTOP/partial保持、may-aliasストア候補保持、古い同定/複製レコードの権威喪失、および有界等価性検証（UNSAT差分でのproved、SAT反例抽出でのrefuted、不整合前提でのvacuous証明阻止、ソート/幅不整合の即時拒否）を tests/phase9/verify/sym-acceptance.test.mjs、tests/phase9/taint/production.test.mjs、tests/phase9/verify/equivalence.test.mjs にて検証。",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "FR-X-03A",
@@ -2916,6 +2916,106 @@
         "X02-H-02 exact pinned LLVM oracle when unavailable"
       ],
       "sourceOfTruth": "docs/analysis-x02-acceptance.md",
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false
+    },
+    "symAcceptance20260916": {
+      "status": "ACCEPTED-LOCAL",
+      "findings": [
+        "HEX-SYM-01",
+        "HEX-SYM-02",
+        "HEX-SYM-03"
+      ],
+      "tasks": [
+        "FR-SYM-01A",
+        "FR-SYM-02A",
+        "FR-SYM-03A"
+      ],
+      "candidateBranch": "feat/analysis-roadmap-v8-current-main-20260907",
+      "candidateRef": "refs/pull/7036/head",
+      "runtime": {
+        "node": "v22.22.3"
+      },
+      "workingTreeCleanAtVerification": true,
+      "denominator": {
+        "solverTiers": [
+          "exhaustive-oracle",
+          "bitblast-qfbv"
+        ],
+        "widths": [1, 2, 4, 8, 16, 32, 64],
+        "memoryEndians": ["little", "big"],
+        "memoryWidths": [1, 2, 4, 8],
+        "taintFeatures": [
+          "partial-store-load",
+          "control-data-phi",
+          "evidence-graph",
+          "value-sanitizer",
+          "may-alias-top"
+        ],
+        "verificationFeatures": [
+          "unsat-proved",
+          "sat-refuted-counterexample",
+          "inconsistent-preconditions-vacuous-guard",
+          "sort-width-mismatch-reject"
+        ],
+        "acceptanceSuite": {
+          "passed": 12,
+          "total": 12
+        },
+        "ownership": {
+          "phase9": {
+            "passed": 24,
+            "total": 24,
+            "valid": true
+          }
+        }
+      },
+      "receipts": [
+        {
+          "label": "sym-acceptance-suite",
+          "command": "node --test tests/phase9/verify/sym-acceptance.test.mjs",
+          "result": "12 tests / 12 pass"
+        },
+        {
+          "label": "tiered-sym01-rescue",
+          "command": "node --test tests/phase9/solver/tiered-sym01-rescue.test.mjs",
+          "result": "11 tests / 11 pass"
+        },
+        {
+          "label": "byte-memory",
+          "command": "node --test tests/phase9/memory/byte-memory.test.mjs",
+          "result": "26 tests / 26 pass"
+        },
+        {
+          "label": "taint-production",
+          "command": "node --test tests/phase9/taint/production.test.mjs",
+          "result": "9 tests / 9 pass"
+        },
+        {
+          "label": "verify-equivalence",
+          "command": "node --test tests/phase9/verify/equivalence.test.mjs",
+          "result": "6 tests / 6 pass"
+        },
+        {
+          "label": "sym-roadmap-ownership",
+          "command": "node --test tests/phase8/ownership/roadmap-v8-integration.test.mjs",
+          "result": "24 tests / 24 pass"
+        }
+      ],
+      "failClosedBoundary": [
+        "forged backend without exact trust contract",
+        "tampered query hash content mismatch",
+        "corrupt sat model from provider",
+        "provider identity mutation after registration",
+        "resource ceiling exceeded",
+        "query timeout or cancellation",
+        "65-bit bitvector width",
+        "stale snapshot ID or unvalidated identity",
+        "inconsistent preconditions (vacuous proof guard)",
+        "sort width mismatch in bounded equivalence"
+      ],
+      "physicalDeviceAcceptance": "SKIPPED (user-requested)",
+      "scopeNote": "SYM-01 (Tiered QF_BV solver, exact floor, SAT/UNSAT, trust contract), SYM-02 (Byte memory state, partial writes, escalation, wrap, barriers), and SYM-03 (Production taint, sanitizers, EvidenceGraph, bounded equivalence) の local acceptance 完了。全native corpus、独立shadow、実機・release、全体ロードマップは別ゲートとして未完了。",
       "fullRoadmapComplete": false,
       "transformAuthorization": false
     }

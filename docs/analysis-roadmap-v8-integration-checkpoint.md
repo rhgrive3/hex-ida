@@ -1,5 +1,42 @@
 # Analysis roadmap v8 integration checkpoint
 
+## 2026-09-16: SYM (HEX-SYM-01 / HEX-SYM-02 / HEX-SYM-03) exact-head local acceptance 完了
+
+HEX-SYM-01 (FR-SYM-01A)、HEX-SYM-02 (FR-SYM-02A)、HEX-SYM-03 (FR-SYM-03A) のローカル要件について、統合受入スイート [`tests/phase9/verify/sym-acceptance.test.mjs`](file:///mnt/workspace/hex-ida/tests/phase9/verify/sym-acceptance.test.mjs) を追加し、`accepted-local` として受入完了としました。
+
+- **HEX-SYM-01 (Symbolic Solver Adapters, Registry, Tiers, SAT/UNSAT)**:
+  - プロダクションデフォルトは branded exact 64-bit Tiered QF_BV バックエンド（`TieredBvBackend`）。
+  - Exact floor（<=8-bit exhaustive oracle）および 32/64-bit wide bitblast routing を検証。
+  - SolverRegistry exact default trust contract: 偽装・改ざんバックエンドの exact default 昇格を拒絶（`isExactProofBackend` 必須）。
+  - 32/64-bit SAT モデル抽出、独立モデル検証（`validateSatModel`）、イミュータブル（read-only）モデルを検証。
+  - Wide 矛盾（UNSAT）および小ドメイン重複合意（`all-overlapping-exact-tiers-v1`）。
+  - 陰性・fail-closed 境界: クエリハッシュ不整合（`INVALID_QUERY`）、破損モデル・プロバイダ変異（`PROVIDER_FAILURE`）、リソース上限（`RESOURCE_LIMIT`）、タイムアウト/キャンセル（`TIMEOUT`/`CANCELLED`）、65-bit 超（`UNSUPPORTED`）。
+  - 物理iPad/WebKit 実機検証はユーザー指示によりスキップ（`physicalDeviceAcceptance: SKIPPED`）。
+- **HEX-SYM-02 (Byte Memory State, Parity, Escalation, Aliasing, Barriers)**:
+  - バイトメモリパリティと部分上書き: 幅（1, 2, 4, 8バイト）× エンディアン（little, big）。
+  - Concrete-to-symbolic escalation: 古いバイト・先行リード・書き込み順序の保持。
+  - 初期未確定バイトの関数性（独立シンボル化の拒絶）、同一名シンボルの非MustAlias。
+  - 64-bit BigInt アドレスと明示的モジュララップ。
+  - 幅・ソート・アライメント・アドレス空間および不正 lookalike の fail-closed 拒絶。
+  - メモリバリア（`unknown-clobber`, `unknown-call`, `may-alias-clobber`, `volatile`, `atomic`）。
+  - プロダクションエグゼキュータによる実行パス上の部分バイト上書き観測（`symbolicExecute` with `byteMemory`）。
+- **HEX-SYM-03 (Taint Analysis, Sanitizers, EvidenceGraph, and Bounded Equivalence)**:
+  - プロダクションテイントフロー: source -> partial store -> load -> control/data -> phi -> sink -> EvidenceGraph。
+  - 安定的モデル/クエリ同定によるリプレイ検証。
+  - 宣言サニタイザによる指定ソース除去と、未知サニタイザ/clean フラグの fail-closed（TOP/partial 保持）。
+  - 古い同定/複製レコードの権威喪失。
+  - 有界等価性検証（`verifyBoundedEquivalence`）: UNSAT 差分での証明（`proved`）、SAT 反例抽出での反論（`refuted`）、不整合前提での vacuous 証明阻止（`unknown`）、ソート/幅不整合の即時拒否。
+
+テスト結果:
+- [`tests/phase9/verify/sym-acceptance.test.mjs`](file:///mnt/workspace/hex-ida/tests/phase9/verify/sym-acceptance.test.mjs): 12/12 PASS
+- [`tests/phase9/solver/tiered-sym01-rescue.test.mjs`](file:///mnt/workspace/hex-ida/tests/phase9/solver/tiered-sym01-rescue.test.mjs): 11/11 PASS
+- [`tests/phase9/memory/byte-memory.test.mjs`](file:///mnt/workspace/hex-ida/tests/phase9/memory/byte-memory.test.mjs): 26/26 PASS
+- [`tests/phase9/taint/production.test.mjs`](file:///mnt/workspace/hex-ida/tests/phase9/taint/production.test.mjs): 9/9 PASS
+- [`tests/phase9/verify/equivalence.test.mjs`](file:///mnt/workspace/hex-ida/tests/phase9/verify/equivalence.test.mjs): 6/6 PASS
+- [`tests/phase8/ownership/roadmap-v8-integration.test.mjs`](file:///mnt/workspace/hex-ida/tests/phase8/ownership/roadmap-v8-integration.test.mjs): 24/24 PASS
+
+全native corpus、独立shadow、実機・release、他 finding は継続対象であり、ロードマップ全体の `CHECKPOINT-LOCKED` / `transformAuthorization: false` は維持します。
+
 ## 2026-09-16: C2 (C2-01 / C2-02) exact-head local acceptance 完了
 
 HEX-C2-01 (FR-C2-01A) および HEX-C2-02 (FR-C2-02A) のローカル要件について、統合受入スイート [`tests/phase8/memory/c2-acceptance.test.mjs`](file:///mnt/workspace/hex-ida/tests/phase8/memory/c2-acceptance.test.mjs) を追加し、`accepted-local` として受入完了としました。
