@@ -167,8 +167,6 @@ function seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine) {
     address >= s.address && address < s.address + s.size);
   if (!segment) { reject('RVA is not mapped by a section'); return; }
   if (!segment.perms?.execute) { reject('section is not executable'); return; }
-  const offset = address - segment.address;
-  if (offset < 0n || offset >= segment.fileSize) { reject('entrypoint has no file-backed instruction byte'); return; }
   // RISC-V base ISA is IALIGN=32 (4-byte); the issue only demands rejecting
   // non-instruction-boundary addresses, and 2 is the loosest legal IALIGN, so
   // 2-byte alignment is the fail-closed floor for RISC-V entrypoints (#5545).
@@ -176,6 +174,15 @@ function seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine) {
     : machine === 0x5032 || machine === 0x5064 || machine === 0x01c4 ? 2n
     : 1n;
   if (address % alignment !== 0n) { reject(`address is not ${alignment}-byte aligned`); return; }
+  const offset = address - segment.address;
+  // Proving only the first byte is file-backed lets an aligned ARM64 entrypoint
+  // straddle the raw/zero-fill boundary and still mint a high-confidence seed
+  // whose remaining instruction bytes are synthesized (#8787). Require the whole
+  // minimum instruction span ([alignment] bytes) to be file-backed.
+  if (offset < 0n || offset + alignment > segment.fileSize) {
+    reject('entrypoint instruction span is not fully file-backed');
+    return;
+  }
   image.metadata.entrypointValid = true;
   image.metadata.entrypointDiagnostic = null;
   image.functions.push(functionSeed(address, { source: 'entrypoint', confidence: 0.9 }));
