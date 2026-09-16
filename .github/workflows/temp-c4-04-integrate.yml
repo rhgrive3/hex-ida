@@ -32,49 +32,35 @@ jobs:
       - name: Render join-PHI case only
         shell: bash
         run: |
-          set -euo pipefail
           node --input-type=module <<'NODE' > /tmp/join-phi-projection.json
-          import { conditionalRegionFixture } from './tests/phase8/helpers/conditional-region-fixture.mjs';
-          import { identity } from './tests/phase8/helpers/proof-fixtures.mjs';
-          import { enhanceSemanticDecompilation } from './js/decompiler/pipeline.js';
-          import { prepareConditionalRegionCondition } from './js/decompiler/phase8/conditional-region-condition.js';
-          import { prepareConditionalRegionErasure, readRegionErasureBody } from './js/decompiler/phase8/conditional-region-erasure.js';
-          import { runPhase8Vertical } from './js/decompiler/phase8/index.js';
-          import { applyPhase8Projection, readProjectedConditionalRegions } from './js/decompiler/phase8/projection.js';
-          function storeArm(builder,value){const store=builder.store(value,{locKind:'global',locKey:'g',bits:8});Object.assign(store.loc,{address:16n,addressSpace:'data'});store.extra={completeness:'complete',addressPrecise:true,memoryAccess:{addressSpace:'data',widthBits:8,volatility:false,atomic:false,ordering:'unknown',endian:'little',faults:[]}};}
-          const f=conditionalRegionFixture({armEffect:storeArm});
-          const canonical=structuredClone(f.ir);
-          const projection=enhanceSemanticDecompilation(f.seed,{name:'reachability',calls:[]},{phase8PrepareProof:true,phase8PrepareRegionProof:true,deterministicTransforms:true,renderProvenance:true});
-          const proofOptions={identity,addressBits:8,backendTier:'exhaustive',timeoutMs:5000};
-          const conditionPlan=await prepareConditionalRegionCondition(f.structure,projection,proofOptions);
-          const reachability=await f.run();
-          const plan=prepareConditionalRegionErasure(f.structure,reachability,f.ir,{identity,timeoutMs:5000,projection,conditionPlan});
-          const body=readRegionErasureBody(plan,projection,f.ir,identity);
-          const opts={phase8ProofIdentity:identity,phase8RegionErasurePlan:plan};
-          const stage=runPhase8Vertical({ir:f.ir,opts,enabledStages:['rendering']},{timeBudgetMs:1000});
-          const result=applyPhase8Projection(projection,stage.analysis,opts);
-          const carrier=readProjectedConditionalRegions(result.cAst,f.ir);
-          const projected=carrier?.regions.find(r=>r.original===f.structure.region);
-          const phi=f.structure.phis[0]?.phi;
-          const phiId=phi?.dst?.id ?? phi?.id ?? null;
-          console.log(JSON.stringify({
-            bodyValidation:plan.bodyValidation,
-            bodyIssued:!!body,
-            stagePublished:stage.ledger.published,
-            changed:result!==projection,
-            irUnchanged:JSON.stringify(structuredClone(f.ir))===JSON.stringify(canonical),
-            originalBody:projection.cAst.body.map(n=>n.text),
-            resultBody:result.cAst.body.map(n=>n.text),
-            returnTexts:result.cAst.body.filter(n=>n.semantic?.op==='return'||/^return\b/.test(n.text??'')).map(n=>n.text),
-            phiId,
-            phiMentions:result.cAst.body.filter(n=>phiId&&String(n.text??'').includes(phiId)).map(n=>n.text),
-            removals:result.rewriteProof.filter(r=>r.rule==='erase-proved-unreachable-arm-store').length,
-            removedArmNodes:projected?.arms.find(a=>a.role===plan.removedRole)?.nodes.length??null,
-            liveArmNodes:projected?.arms.find(a=>a.role===plan.liveRole)?.nodes.length??null,
-            provenance:result.renderProvenance?.completeness??null
-          },null,2));
+          try {
+            const { conditionalRegionFixture }=await import('./tests/phase8/helpers/conditional-region-fixture.mjs');
+            const { identity }=await import('./tests/phase8/helpers/proof-fixtures.mjs');
+            const { enhanceSemanticDecompilation }=await import('./js/decompiler/pipeline.js');
+            const { prepareConditionalRegionCondition }=await import('./js/decompiler/phase8/conditional-region-condition.js');
+            const { prepareConditionalRegionErasure,readRegionErasureBody }=await import('./js/decompiler/phase8/conditional-region-erasure.js');
+            const { runPhase8Vertical }=await import('./js/decompiler/phase8/index.js');
+            const { applyPhase8Projection,readProjectedConditionalRegions }=await import('./js/decompiler/phase8/projection.js');
+            const { stableDigest }=await import('./js/core/identity/index.js');
+            function storeArm(builder,value){const store=builder.store(value,{locKind:'global',locKey:'g',bits:8});Object.assign(store.loc,{address:16n,addressSpace:'data'});store.extra={completeness:'complete',addressPrecise:true,memoryAccess:{addressSpace:'data',widthBits:8,volatility:false,atomic:false,ordering:'unknown',endian:'little',faults:[]}};}
+            const f=conditionalRegionFixture({armEffect:storeArm});
+            const canonicalHash=stableDigest(f.ir);
+            const projection=enhanceSemanticDecompilation(f.seed,{name:'reachability',calls:[]},{phase8PrepareProof:true,phase8PrepareRegionProof:true,deterministicTransforms:true,renderProvenance:true});
+            const proofOptions={identity,addressBits:8,backendTier:'exhaustive',timeoutMs:5000};
+            const conditionPlan=await prepareConditionalRegionCondition(f.structure,projection,proofOptions);
+            const reachability=await f.run();
+            const plan=prepareConditionalRegionErasure(f.structure,reachability,f.ir,{identity,timeoutMs:5000,projection,conditionPlan});
+            const body=readRegionErasureBody(plan,projection,f.ir,identity);
+            const opts={phase8ProofIdentity:identity,phase8RegionErasurePlan:plan};
+            const stage=runPhase8Vertical({ir:f.ir,opts,enabledStages:['rendering']},{timeBudgetMs:1000});
+            const result=applyPhase8Projection(projection,stage.analysis,opts);
+            const carrier=readProjectedConditionalRegions(result.cAst,f.ir);
+            const projected=carrier?.regions.find(r=>r.original===f.structure.region);
+            console.log(JSON.stringify({ok:true,bodyValidation:plan.bodyValidation,bodyIssued:!!body,stagePublished:stage.ledger.published,changed:result!==projection,irUnchanged:stableDigest(f.ir)===canonicalHash,originalBody:projection.cAst.body.map(n=>n.text),resultBody:result.cAst.body.map(n=>n.text),returnTexts:result.cAst.body.filter(n=>n.semantic?.op==='return'||/^return\b/.test(n.text??'')).map(n=>n.text),removals:result.rewriteProof.filter(r=>r.rule==='erase-proved-unreachable-arm-store').length,removedArmNodes:projected?.arms.find(a=>a.role===plan.removedRole)?.nodes.length??null,liveArmNodes:projected?.arms.find(a=>a.role===plan.liveRole)?.nodes.length??null,provenance:result.renderProvenance?.completeness??null},null,2));
+          } catch(e) { console.log(JSON.stringify({ok:false,name:e?.name,message:e?.message,stack:String(e?.stack??'').split('\n').slice(0,3)},null,2)); }
           NODE
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: c4-join-phi-projection
           path: /tmp/join-phi-projection.json
