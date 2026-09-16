@@ -13,7 +13,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -59,22 +59,22 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           candidate=$(printf '%s\n' 'reconcile #7036 onto current main; preserve current-main conflict authority' | git commit-tree "$resolved" -p HEAD -p "$PR")
           echo "sha=$candidate" >> "$GITHUB_OUTPUT"
-          echo "$candidate" > candidate-sha.txt
           git checkout --detach "$candidate"
       - name: Syntax preflight
         shell: bash
-        run: |
-          set -euo pipefail
-          timeout 150s node tests/check.mjs
-      - name: Focused solver and semantic boundary preflight
+        run: timeout 150s node tests/check.mjs
+      - name: Test #5498 exact backend authority
         shell: bash
-        run: |
-          set -euo pipefail
-          timeout 180s node --test \
-            tests/issue-5498-eligibility-result-status-authority.mjs \
-            tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs \
-            tests/semantic-v2/issue-4513-memoryssa-access-provider-completeness.test.mjs \
-            tests/phase4/binary/issue-4358-elf-dynamic-xindex-common.test.mjs
+        run: timeout 90s node --test tests/issue-5498-eligibility-result-status-authority.mjs
+      - name: Test #5391 solver registry authority
+        shell: bash
+        run: timeout 90s node --test tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs
+      - name: Test #4513 MemorySSA access provider
+        shell: bash
+        run: timeout 90s node --test tests/semantic-v2/issue-4513-memoryssa-access-provider-completeness.test.mjs
+      - name: Test #4358 ELF dynamic XINDEX
+        shell: bash
+        run: timeout 90s node --test tests/phase4/binary/issue-4358-elf-dynamic-xindex-common.test.mjs
       - name: Publish clean candidate branch
         shell: bash
         run: |
