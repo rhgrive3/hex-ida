@@ -40,6 +40,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          node --check js/managed/shared/bridge-lowering-v2.js
+          node --check tests/phase11/shared/issue-8987-bridge-operand-stack-checkpoint-type.test.mjs
           node --test \
             tests/phase11/shared/issue-8987-bridge-operand-stack-checkpoint-type.test.mjs \
             tests/phase11/shared/issue-8065-managed-state-rendering.test.mjs \
@@ -49,7 +51,6 @@ jobs:
             tests/phase11/shared/issue-8767-bridge-right-shift-signedness.test.mjs \
             tests/phase11/cil/issue-4043-cil-arithmetic-operand-width.test.mjs \
             tests/phase11/dex/issue-1136-dex-arithmetic-produced-value-authority.test.mjs
-          node tests/check.mjs
 
       - name: Commit reviewed production fix
         shell: bash
