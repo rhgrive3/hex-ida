@@ -77,6 +77,88 @@ function runPacProbe(arch) {
   };
 }
 
+function runDyldRuntimeProbe() {
+  const dir = path.join(os.tmpdir(), `hex-x02-dyld-runtime-${process.pid}`);
+  command('/bin/mkdir', ['-p', dir]);
+  const source = path.join(dir, 'runtime-map.c');
+  const binary = path.join(dir, 'runtime-map');
+  const sourceText = String.raw`#include <dlfcn.h>
+#include <mach-o/dyld.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+typedef const void *(*shared_cache_range_fn)(size_t *);
+typedef bool (*shared_cache_uuid_fn)(unsigned char *);
+
+static void print_uuid(const unsigned char uuid[16]) {
+  for (int i = 0; i < 16; i++) printf("%02x", uuid[i]);
+}
+
+int main(void) {
+  shared_cache_range_fn get_range = (shared_cache_range_fn)dlsym(RTLD_DEFAULT, "_dyld_get_shared_cache_range");
+  shared_cache_uuid_fn get_uuid = (shared_cache_uuid_fn)dlsym(RTLD_DEFAULT, "_dyld_get_shared_cache_uuid");
+  if (get_range == NULL) return 20;
+  size_t length = 0;
+  const unsigned char *start = (const unsigned char *)get_range(&length);
+  if (start == NULL || length < 0x100) return 21;
+
+  unsigned char uuid[16] = {0};
+  bool uuid_ok = get_uuid != NULL && get_uuid(uuid);
+  if (!uuid_ok) {
+    if (memcmp(start, "dyld_v1", 7) != 0) return 22;
+    memcpy(uuid, start + 0x58, 16);
+  }
+
+  printf("CACHE\t0x%llx\t0x%llx\t", (unsigned long long)(uintptr_t)start, (unsigned long long)length);
+  print_uuid(uuid);
+  printf("\n");
+
+  uint32_t total = _dyld_image_count();
+  uint32_t cached = 0;
+  for (uint32_t i = 0; i < total; i++) {
+    const struct mach_header *header = _dyld_get_image_header(i);
+    if (header == NULL) continue;
+    uintptr_t address = (uintptr_t)header;
+    uintptr_t begin = (uintptr_t)start;
+    if (address < begin || address >= begin + length) continue;
+    intptr_t slide = _dyld_get_image_vmaddr_slide(i);
+    const char *name = _dyld_get_image_name(i);
+    if (cached < 16) {
+      printf("IMAGE\t0x%llx\t%lld\t%s\n", (unsigned long long)address, (long long)slide, name == NULL ? "" : name);
+    }
+    cached++;
+  }
+  printf("COUNTS\t%u\t%u\n", total, cached);
+  return cached == 0 ? 23 : 0;
+}
+`;
+  execFileSync('/usr/bin/python3', ['-c', 'import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2])', source, sourceText], { timeout: 10_000 });
+  const compile = spawnSync('xcrun', ['clang', '-arch', 'arm64', '-O2', source, '-o', binary], { encoding: 'utf8', timeout: 30_000 });
+  if (compile.status !== 0) throw new Error(`dyld-runtime-probe-compile:${compile.status}:${(compile.stderr || '').slice(0, 2000)}`);
+  const sign = spawnSync('codesign', ['--force', '--sign', '-', binary], { encoding: 'utf8', timeout: 20_000 });
+  if (sign.status !== 0) throw new Error(`dyld-runtime-probe-codesign:${sign.status}:${(sign.stderr || '').slice(0, 1000)}`);
+  const run = spawnSync(binary, [], { encoding: 'utf8', timeout: 10_000 });
+  if (run.status !== 0) throw new Error(`dyld-runtime-probe-run:${run.status}:${run.signal || ''}:${(run.stderr || '').slice(0, 1000)}`);
+
+  let cache = null;
+  let counts = null;
+  const images = [];
+  for (const line of (run.stdout || '').trim().split(/\r?\n/)) {
+    const fields = line.split('\t');
+    if (fields[0] === 'CACHE' && fields.length === 4) {
+      cache = { start: BigInt(fields[1]), size: BigInt(fields[2]), uuid: fields[3].toLowerCase() };
+    } else if (fields[0] === 'IMAGE' && fields.length >= 4) {
+      images.push({ header: BigInt(fields[1]), slide: BigInt(fields[2]), path: fields.slice(3).join('\t') });
+    } else if (fields[0] === 'COUNTS' && fields.length === 3) {
+      counts = { total: Number(fields[1]), cached: Number(fields[2]) };
+    }
+  }
+  if (!cache || !counts || counts.cached < 1 || images.length < 1) throw new Error('dyld-runtime-probe-output-incomplete');
+  return { cache, counts, images };
+}
+
 const cachePath = CACHE_CANDIDATES.find((candidate) => existsSync(candidate));
 if (!cachePath) throw new Error('real-apple-dyld-cache-not-found');
 
@@ -84,6 +166,9 @@ const cacheStat = await stat(cachePath);
 const handle = await open(cachePath, 'r');
 try {
   const headerBytes = await readExactly(handle, 0n, 0x200);
+  const headerBuffer = Buffer.from(headerBytes.buffer, headerBytes.byteOffset, headerBytes.byteLength);
+  if (!headerBuffer.subarray(0, 7).equals(Buffer.from('dyld_v1'))) throw new Error('real-cache-header-magic');
+  const cacheUuid = headerBuffer.subarray(0x58, 0x68).toString('hex');
   const header = new ByteView(headerBytes, { littleEndian: true });
   const slideTableOffset = header.u32(0x138);
   const slideCount = header.u32(0x13c);
@@ -112,6 +197,29 @@ try {
   const rebases = await walkSlideInfo5Source(read64, selected.item, sampledInfo, 0n, [], 32768, targetRange);
   if (!rebases.length || rebases.some((record) => !record.targetInSharedRegion)) throw new Error('real-cache-v5-sample-provenance-invalid');
 
+  const runtime = runDyldRuntimeProbe();
+  if (runtime.cache.uuid !== cacheUuid) throw new Error(`dyld-runtime-cache-uuid-mismatch:${runtime.cache.uuid}:${cacheUuid}`);
+  if (runtime.cache.start < sharedRegionStart) throw new Error('dyld-runtime-cache-start-before-unslid-region');
+  if (runtime.cache.size < sharedRegionSize) throw new Error(`dyld-runtime-cache-range-too-small:${runtime.cache.size}:${sharedRegionSize}`);
+  const runtimeSlide = runtime.cache.start - sharedRegionStart;
+  if (!runtime.images.every((image) => image.slide === runtimeSlide)) throw new Error('dyld-runtime-image-slide-mismatch');
+
+  const runtimeRebases = await walkSlideInfo5Source(read64, selected.item, sampledInfo, runtimeSlide, [], 32768, targetRange);
+  if (runtimeRebases.length !== rebases.length) throw new Error('dyld-runtime-rebase-sample-count-mismatch');
+  const runtimeRangeEnd = runtime.cache.start + runtime.cache.size;
+  const runtimeAddressDerivationVerified = runtimeRebases.every((record, index) => {
+    const base = rebases[index];
+    return record.storageAddress === base.storageAddress
+      && record.targetAddress === base.targetAddress
+      && record.runtimeStorageAddress === base.storageAddress + runtimeSlide
+      && record.runtimeTargetAddress === base.targetAddress + runtimeSlide;
+  });
+  const allRuntimeSampleTargetsInRuntimeSharedRegion = runtimeRebases.every((record) =>
+    record.runtimeTargetAddress >= runtime.cache.start && record.runtimeTargetAddress < runtimeRangeEnd);
+  if (!runtimeAddressDerivationVerified || !allRuntimeSampleTargetsInRuntimeSharedRegion) {
+    throw new Error('dyld-runtime-address-derivation-invalid');
+  }
+
   const signedBinary = '/usr/bin/true';
   const codesignVerify = spawnSync('codesign', ['--verify', '--strict', '--verbose=4', signedBinary], { encoding: 'utf8', timeout: 20_000 });
   if (codesignVerify.status !== 0) throw new Error(`trusted-signing-validation-failed:${codesignVerify.status}`);
@@ -139,6 +247,7 @@ try {
       path: cachePath,
       size: cacheStat.size,
       sha256: await sha256File(cachePath),
+      cacheUuid,
       sharedRegionStart: hex(sharedRegionStart),
       sharedRegionSize: hex(sharedRegionSize),
       slideMappingIndex: selected.index,
@@ -150,6 +259,19 @@ try {
       allSampleTargetsInDeclaredSharedRegion: rebases.every((record) => record.targetInSharedRegion),
       boundedSample: true,
       exhaustiveCacheWalk: false,
+      runtimeLoadMapObserved: true,
+      runtimeSlideObserved: true,
+      runtimeCacheUuid: runtime.cache.uuid,
+      runtimeCacheStart: hex(runtime.cache.start),
+      runtimeCacheSize: hex(runtime.cache.size),
+      runtimeSlide: hex(runtimeSlide),
+      runtimeImageCount: runtime.counts.total,
+      runtimeCacheImageCount: runtime.counts.cached,
+      runtimeSampleImages: runtime.images.map((image) => ({ header: hex(image.header), slide: hex(image.slide), path: image.path })),
+      runtimeImagesAllUseObservedSlide: runtime.images.every((image) => image.slide === runtimeSlide),
+      runtimeDecodedRebaseCount: runtimeRebases.length,
+      runtimeAddressDerivationVerified,
+      allRuntimeSampleTargetsInRuntimeSharedRegion,
     },
     pacRuntime: {
       arm64: runPacProbe('arm64'),
@@ -157,15 +279,7 @@ try {
     },
   };
   await writeFile(OUTPUT, `${JSON.stringify(evidence, null, 2)}\n`);
-  console.log(JSON.stringify({
-    schema: evidence.schema,
-    os: evidence.appleEnvironment.osProductVersion,
-    cacheSha256: evidence.realDyldCache.sha256,
-    sampledRebaseCount: evidence.realDyldCache.sampledRebaseCount,
-    signedMachOVerified: evidence.signedMachO.codesignStrictVerified,
-    arm64PacRun: evidence.pacRuntime.arm64.runExit,
-    arm64ePacRun: evidence.pacRuntime.arm64e.runExit,
-  }));
+  console.log(JSON.stringify(evidence));
 } finally {
   await handle.close();
 }
