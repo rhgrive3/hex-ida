@@ -1,0 +1,40 @@
+name: Diagnostic userscript contract fix
+
+on:
+  push:
+    branches:
+      - 'diag/userscript-split-20260916'
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Patch stale unsafe-result assertion
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tests/userscript-embed-child.mjs')
+          text = path.read_text()
+          old = "  await assert.rejects(pair.proxy.capabilities(), /plain data only/);"
+          new = "  await assert.rejects(pair.proxy.capabilities(), (error) => error?.code === 'RPC_UNSAFE_RESULT');"
+          if text.count(old) != 1:
+              raise SystemExit('expected exactly one stale assertion')
+          path.write_text(text.replace(old, new))
+          PY
+      - name: Focused regression
+        run: timeout 30s node tests/userscript-embed-child.mjs
+      - name: Commit diagnosed fix
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tests/userscript-embed-child.mjs
+          git diff --cached --check
+          git commit -m 'test(userscript): assert canonical unsafe RPC result code'
+          git push origin HEAD:diag/userscript-split-20260916
