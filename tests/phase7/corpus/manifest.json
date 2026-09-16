@@ -347,7 +347,7 @@
       "truth": "may",
       "truthSource": "deterministic-fixture-construction",
       "proofClass": "escape",
-      "category": "non-escaped-object"
+      "category": "one-sided-non-escaped-object"
     },
     {
       "id": "v2-frame-escaped-arg",
@@ -465,7 +465,7 @@
       "left": "node_st_tls_root",
       "right": "node_st_sp_root",
       "truth": "may",
-      "truthSource": "authoritative-spec-relation",
+      "truthSource": "deterministic-fixture-construction",
       "proofClass": "tls",
       "category": "tls-identities-vs-stack"
     }
@@ -964,5 +964,5 @@
     "version": "1.0.0"
   },
   "exclusions": [],
-  "manifestDigest": "896de134032f78f88732e2513677e4b7"
+  "manifestDigest": "b09c8b8ce9039e936f5480a2ef4a57e2"
 }
