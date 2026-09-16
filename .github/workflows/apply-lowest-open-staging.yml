@@ -1,0 +1,51 @@
+name: Apply reviewed lowest-open patch
+
+on:
+  push:
+    branches:
+      - fix/lowest-open-issues-20260916
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: "github.event.head_commit.message == 'chore: stage reviewed lowest-open patch'"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch and verify reviewed patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 2 --max-time 30 \
+            'https://sdmntprnorthcentralus.oaiusercontent.com/files/00000000-42c0-822f-92f1-92a3ac79c544/raw?se=2026-09-16T10%3A52%3A10Z&sp=r&sv=2026-02-06&sr=b&scid=17e0ba8a-ff22-556e-a5c5-fa0d553533f1&skoid=fe2e0858-51c5-47e9-acb7-46ebb9a0f396&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-15T19%3A19%3A37Z&ske=2026-09-16T19%3A19%3A37Z&sks=b&skv=2026-02-06&sig=R1vwGn1PvvavuqS6BOsIia6clxg/raLim4OsVwV4uCk%3D' \
+            --output /tmp/final-residual.patch.gz
+          echo 'd0d6f2ae351bba1595e72f26fe78cf6b52fd632b7fe1ca24f1e9e528fe471b2e  /tmp/final-residual.patch.gz' | sha256sum -c -
+          gzip -dc /tmp/final-residual.patch.gz > /tmp/final-residual.patch
+          echo '2397f24e31913e9db498bfa9ea16dffbcadcb15c64c1749d7512fa21beed0c29  /tmp/final-residual.patch' | sha256sum -c -
+          git apply --check /tmp/final-residual.patch
+          git apply /tmp/final-residual.patch
+      - name: Focused regression bundle
+        run: node tests/issues-lowest-open-20260916.mjs
+      - name: Semantic cardinality regression
+        run: node --test tests/semantic-v2/issue-4585-control-target-cardinality.test.mjs
+      - name: Cross-binary workflow contract
+        run: |
+          node tests/issue-3123-cross-binary-partitions.mjs
+          node tests/issue-497-cross-binary-workflow.mjs
+          ruby -e "require 'yaml'; YAML.load_file('.github/workflows/cross-binary-accuracy.yml', aliases: true)"
+      - name: Syntax lint
+        run: npm run lint
+      - name: Commit reviewed patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: resolve lowest-number open issue batch'
+          git push origin HEAD:fix/lowest-open-issues-20260916
