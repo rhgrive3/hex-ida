@@ -20,23 +20,30 @@ jobs:
       - name: Reproduce exact and base
         shell: bash
         run: |
-          set -u
+          set +e
           OUT=/tmp/pr8480-embed-child.txt
           : > "$OUT"
           for spec in exact:12ff333598b2489bef32b4d47220e2da1fba0bbe base:64bc4e45d4965ad19980b5f54c96dc55f06998c8; do
             label=${spec%%:*}
             sha=${spec#*:}
-            git checkout --detach "$sha" >/dev/null 2>&1 || { echo "$label checkout_rc=$?" >> "$OUT"; continue; }
-            npm ci --ignore-scripts >/dev/null 2>&1 || { echo "$label npm_ci_rc=$?" >> "$OUT"; continue; }
+            git checkout --detach "$sha" >/dev/null 2>&1
+            rc=$?
+            echo "$label checkout_rc=$rc" >> "$OUT"
+            [ "$rc" -eq 0 ] || continue
+            npm ci --ignore-scripts >/dev/null 2>&1
+            rc=$?
+            echo "$label npm_ci_rc=$rc" >> "$OUT"
+            [ "$rc" -eq 0 ] || continue
             timeout 90s node tests/userscript-embed-child.mjs >/tmp/out 2>&1
             rc=$?
-            echo "$label rc=$rc" >> "$OUT"
+            echo "$label test_rc=$rc" >> "$OUT"
             if [ "$rc" -ne 0 ]; then
               sed -n '1,80p' /tmp/out >> "$OUT"
             fi
           done
           exit 0
       - name: Upload minimal evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pr8480-embed-child
