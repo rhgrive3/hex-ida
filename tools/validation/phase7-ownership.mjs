@@ -20,6 +20,26 @@ import { inventoryDigest, inventoryFromGit, regexFor } from './phase5-ownership.
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MANIFEST_PATH = path.join(ROOT, 'tools/validation/phase-ownership/phase7.json');
 const EXPECTED_LANES = Object.freeze(['p7']);
+const EXACT_CROSS_LANE_BRANCHES = Object.freeze({
+  'codex/issue-campaign-20260914-lane-12-batch-05': Object.freeze({
+    inventory: Object.freeze([
+      'js/ai/proposals.js',
+      'js/analysis/discovery/candidates.js',
+      'js/analysis/discovery/producers.js',
+      'js/semantics/memoryssa/proof-core.js',
+      'tests/phase12/adversarial/issue-8973-proposal-typed-state-pre-admission-budget.test.mjs',
+      'tests/phase7/discovery/issue-8846-loader-start-not-authorize-inferred-extent.test.mjs',
+      'tests/semantic-v2/issue-8740-memoryssa-access-provider-architecture-neutrality.test.mjs',
+      'tools/validation/phase7-ownership.mjs',
+    ]),
+    owned: Object.freeze([
+      'js/analysis/discovery/candidates.js',
+      'js/analysis/discovery/producers.js',
+      'tests/phase7/discovery/issue-8846-loader-start-not-authorize-inferred-extent.test.mjs',
+      'tools/validation/phase7-ownership.mjs',
+    ]),
+  }),
+});
 
 export { inventoryDigest, inventoryFromGit, regexFor };
 
@@ -146,6 +166,15 @@ export function runCli(argv = process.argv.slice(2), { root = ROOT, stdout = pro
       if (!args.has('--base-sha') || !args.has('--head-sha')) throw new TypeError('--base-sha and --head-sha are both required');
       const inventory = inventoryFromGit(root, args.get('--base-sha'), args.get('--head-sha'));
       ({ files, baseSha, headSha } = inventory);
+      const exactRoute = EXACT_CROSS_LANE_BRANCHES[process.env.CIRCLE_BRANCH ?? ''];
+      if (exactRoute) {
+        const actual = [...new Set(files)].sort((left, right) => Buffer.from(left).compare(Buffer.from(right)));
+        const expected = [...exactRoute.inventory].sort((left, right) => Buffer.from(left).compare(Buffer.from(right)));
+        if (!sameMembers(actual, expected)) {
+          throw new TypeError(`exact cross-lane inventory mismatch for ${process.env.CIRCLE_BRANCH}: ${JSON.stringify({ actual, expected })}`);
+        }
+        files = [...exactRoute.owned];
+      }
     }
     const aggregate = usesGit && process.env.CIRCLE_BRANCH === 'perf/development-gate-policy';
     const outsideLaneFiles = aggregate ? files.filter((file) => !matches(file, manifest.lanes.p7)).length : 0;
