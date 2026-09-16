@@ -46,9 +46,9 @@ assert.equal(vmFn.bundles[2].consumedValues.length, 2);
 assert.equal(vmFn.bundles[2].producedValues.length, 1);
 assert.equal(vmFn.bundles[3].mnemonic, 'i32.const');
 assert.equal(vmFn.bundles[3].producedValues[0].constant, 5);
-assert.deepEqual(vmFn.bundles[0].origin.byteRanges, [{ start:'34', end:'36' }], 'local.get origin includes its index immediate');
-assert.deepEqual(vmFn.bundles[2].origin.byteRanges, [{ start:'38', end:'39' }], 'single-byte op origin remains one byte');
-assert.deepEqual(vmFn.bundles[3].origin.byteRanges, [{ start:'39', end:'41' }], 'i32.const origin includes its SLEB immediate');
+assert.deepEqual(vmFn.bundles[0].origin.byteRanges, [{ start:'36', end:'38' }], 'local.get origin anchors at its real opcode byte including the index immediate');
+assert.deepEqual(vmFn.bundles[2].origin.byteRanges, [{ start:'40', end:'41' }], 'single-byte op origin remains one byte');
+assert.deepEqual(vmFn.bundles[3].origin.byteRanges, [{ start:'41', end:'43' }], 'i32.const origin includes its SLEB immediate');
 
 const immediateModule = {
   ...parsed,
@@ -59,6 +59,7 @@ const immediateModule = {
   codeBodies:[{
     ...parsed.codeBodies[0],
     bodyOffset:100,
+    bytecodeOffset:100,
     locals:[],
     bytecode:new Uint8Array([
       0x41, 0x80, 0x01,
