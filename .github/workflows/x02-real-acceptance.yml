@@ -1,0 +1,52 @@
+name: X-02 real Apple acceptance
+
+on:
+  push:
+    branches: [feat/analysis-roadmap-v8-current-main-20260907]
+    paths: [.github/workflows/x02-real-acceptance.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  real-apple-evidence:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/analysis-roadmap-v8-current-main-20260907
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify v5 byte-offset regression
+        run: node --test tests/phase4/binary/dyld-shared-cache-slide-v5-page-start.test.mjs
+      - name: Verify finite X-02 lanes
+        run: |
+          node --test tests/scpa/x02-prior120-apple-version-matrix.test.mjs
+          node --test tests/scpa/x02-apple-version-matrix.test.mjs
+          node --test tests/scpa/x02-declared-metadata-boundaries.test.mjs
+      - name: Collect real Apple evidence
+        run: node tools/validation/x02-apple-runtime-evidence.mjs x02-apple-runtime-evidence.json
+      - name: Validate real Apple evidence
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const e = JSON.parse(fs.readFileSync('x02-apple-runtime-evidence.json', 'utf8'));
+          if (e.schema !== 'hex-x02-apple-runtime-evidence/v1') throw new Error('schema');
+          if (e.appleEnvironment.machine !== 'arm64') throw new Error('machine');
+          if (e.appleEnvironment.pointerAuthenticationFeature !== '1') throw new Error('pauth');
+          if (!e.signedMachO.codesignStrictVerified || !/Mach-O/i.test(e.signedMachO.file)) throw new Error('signed-macho');
+          if (e.realDyldCache.slideInfoVersion !== 5 || e.realDyldCache.sampledRebaseCount < 1 || !e.realDyldCache.allSampleTargetsInDeclaredSharedRegion) throw new Error('dyld');
+          const p = e.pacRuntime.arm64;
+          if (p.compileExit !== 0 || p.runExit !== 0 || !p.pacInstructionObserved || !p.authenticationInstructionObserved) throw new Error('pac-arm64-runtime');
+          console.log(JSON.stringify({dyld:e.realDyldCache.sampledRebaseCount, arm64Pac:p.runExit, arm64e:e.pacRuntime.arm64e.runExit ?? null}));
+          NODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x02-real-apple-acceptance-${{ github.sha }}
+          path: x02-apple-runtime-evidence.json
+          retention-days: 14
