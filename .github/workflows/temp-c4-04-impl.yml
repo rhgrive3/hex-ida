@@ -1,0 +1,30 @@
+name: Temporary C4-04 implementation validation
+on:
+  push:
+    branches: ['impl/c4-04-finish-20260916']
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: C4-04 terminal effect tests
+        shell: bash
+        run: |
+          set -o pipefail
+          node --test tests/phase9/memory/terminal-effect-equivalence.test.mjs 2>&1 | tee /tmp/c4-test.log
+      - name: Upload focused evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c4-04-focused-evidence
+          path: /tmp/c4-test.log
+          if-no-files-found: ignore
+          retention-days: 1
