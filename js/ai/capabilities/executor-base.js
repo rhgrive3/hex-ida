@@ -1,7 +1,7 @@
 import { AIError } from '../schema.js';
 import { assertSchema } from '../validation.js';
 import { consumeProposalAuthorization } from '../proposals.js';
-import { validatePatchRange } from '../../patch.js';
+import { validatePatchRange, instructionPatchArchitectureSupported } from '../../patch.js';
 
 export class CapabilityExecutor {
   constructor({ catalog, app = null, ui = null, actionRunner = null, toolRegistry = null, runtimePlatform = null, binaryId = null } = {}) {
@@ -495,6 +495,10 @@ async function createPatch(app, args) {
   return serializePatch(stored);
 }
 async function validatePatchTarget(app, args) {
+  const architecture = String(app?.store?.get?.('architecture') || '').toLowerCase();
+  if (args.instruction !== false && !instructionPatchArchitectureSupported(architecture)) {
+    throw new AIError('invalid_tool_call', `Instruction patching is unsupported for architecture: ${architecture || 'unknown'}.`);
+  }
   const address = BigInt(args.address), before = byteArray(args.before), after = byteArray(args.after);
   if (!before.length || before.length !== after.length) throw new AIError('invalid_tool_call', 'Patch before/after lengths must match and be non-zero.');
   const regions = app?.store?.get?.('regions') || [];
