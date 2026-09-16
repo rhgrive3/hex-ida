@@ -1,0 +1,10 @@
+name: tmp-reconcile-8996
+on:
+  push:
+    branches: [codex/issue-campaign-20260914-lane-10-batch-04]
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: echo staged
