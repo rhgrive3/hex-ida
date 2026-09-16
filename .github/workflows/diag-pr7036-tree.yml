@@ -1,0 +1,50 @@
+name: Diagnose PR7036 effective tree diff
+
+on:
+  push:
+    branches:
+      - diag/pr7036-tree-20260917
+    paths:
+      - '.github/workflows/diag-pr7036-tree.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Compare exact trees and publish small summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=8e044df4a6b0c1b2db973d43d49f5b7c17c13ae8
+          PR=837d0ce34668f65defac5f3517a802f366336158
+          timeout 90s git fetch --no-tags --depth=1 origin "$PR"
+          git diff --name-status "$BASE" "$PR" > /tmp/effective.txt
+          count=$(wc -l < /tmp/effective.txt | tr -d ' ')
+          {
+            echo "base=$BASE"
+            echo "pr=$PR"
+            echo "effective_diff_count=$count"
+            echo "--- effective diff ---"
+            cat /tmp/effective.txt
+          } > diag-pr7036-tree-summary.txt
+          set +e
+          timeout 90s git merge-tree --write-tree --name-only "$BASE" "$PR" > /tmp/merge-tree.txt 2>&1
+          mrc=$?
+          set -e
+          {
+            echo "--- merge-tree ---"
+            echo "merge_tree_rc=$mrc"
+            head -n 120 /tmp/merge-tree.txt
+          } >> diag-pr7036-tree-summary.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add diag-pr7036-tree-summary.txt
+          git commit -m 'diag: publish PR7036 effective tree summary [skip actions]'
+          git push origin HEAD:diag/pr7036-tree-20260917
