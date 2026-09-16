@@ -2,28 +2,6 @@ name: Cross-binary accuracy
 
 on:
   workflow_dispatch:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'js/**'
-      - '!js/ai/**'
-      - '!js/ui/**'
-      - '!js/managed/**'
-      - '!js/userscript/**'
-      - 'tests/accuracy*.mjs'
-      - 'tests/harness.mjs'
-      - 'tests/fixtures/real-binaries.json'
-      - 'tests/oracle.py'
-      - 'tests/oracle-cfg-normalize.py'
-      - 'tests/oracle-requirements.txt'
-      - 'tests/issue-497-cross-binary-workflow.mjs'
-      - 'tests/issue-3123-cross-binary-partitions.mjs'
-      - 'tests/issue-500-matcher-budget.mjs'
-      - 'tools/benchmark/**'
-      - 'scripts/fetch-real-fixtures.mjs'
-      - 'scripts/accuracy-partition-cache-key.mjs'
-      - 'package.json'
-      - '.github/workflows/cross-binary-accuracy.yml'
   push:
     branches: [main]
     paths:
@@ -48,7 +26,7 @@ on:
       - '.github/workflows/cross-binary-accuracy.yml'
 
 concurrency:
-  group: cross-binary-accuracy-${{ github.event.pull_request.number || github.ref }}
+  group: cross-binary-accuracy-${{ github.ref }}
   cancel-in-progress: true
 
 env:
