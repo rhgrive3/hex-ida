@@ -79,7 +79,7 @@ jobs:
           node --check userscript/hex.user.template.js
           node --check worker-entry.js
           node tests/userscript-release-version.mjs
-      - name: Diagnostic userscript host contracts
+      - name: Diagnostic host group A lifecycle
         run: |
           node tests/userscript-importscripts-literals.mjs
           node tests/issue-5034-worker-blob-url-cleanup.mjs
@@ -90,6 +90,8 @@ jobs:
           node tests/userscript-embed-protocol.mjs
           node tests/issue-5020-sanitize-details-shared-refs.mjs
           node tests/userscript-embed-bootstrap.mjs
+      - name: Diagnostic host group B ChatGPT bridge
+        run: |
           node tests/chatgpt-web-bridge-contract.mjs
           node tests/chatgpt-send-control-resolution.mjs
           node tests/chatgpt-disabled-stop-settlement.mjs
@@ -97,12 +99,16 @@ jobs:
           node tests/userscript-chatgpt-iframe-host.mjs
           node tests/userscript-chatgpt-sandbox-host.mjs
           node tests/userscript-embed-child.mjs
+      - name: Diagnostic host group C runtime
+        run: |
           node tests/userscript-dev-worker-runtime.mjs
           node tests/userscript-host.mjs
           node tests/userscript-decompress.mjs
           node tests/issue-5013-gzip-unhandled-rejection.mjs
           node tests/userscript-worker-arraybuffer.mjs
           node tests/userscript-network.mjs
+      - name: Diagnostic host group D routes
+        run: |
           node tests/chatgpt-web-runtime.mjs
           node tests/ai-chatgpt-web-provider.mjs
           node tests/userscript-routes.mjs
