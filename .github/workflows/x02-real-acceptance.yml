@@ -7,6 +7,11 @@ on:
       - .github/workflows/x02-real-acceptance.yml
       - tools/validation/x02-apple-runtime-evidence.mjs
       - tools/validation/x02-a08-provenance.mjs
+      - js/binary/dyld-runtime.js
+      - js/ui/dyld-runtime-navigation.js
+      - js/ui/dyld-runtime-worker.js
+      - js/ux.js
+      - tests/scpa/x02-b06-browser-runtime-navigation.test.mjs
       - tests/scpa/fixtures/x02-a08-versioned-apple-corpus-20260917.json
       - tests/scpa/x02-prior120-apple-version-matrix.test.mjs
       - tests/scpa/x02-b06-runtime-dyld-evidence.test.mjs
@@ -31,12 +36,13 @@ jobs:
           node-version: '22'
       - name: Verify v5 byte-offset regression
         run: node --test tests/phase4/binary/dyld-shared-cache-slide-v5-page-start.test.mjs
-      - name: Verify finite X-02 lanes
+      - name: Verify finite X-02 lanes and browser runtime navigation
         run: |
           node --test tests/scpa/x02-prior120-apple-version-matrix.test.mjs
           node --test tests/scpa/x02-apple-version-matrix.test.mjs
           node --test tests/scpa/x02-declared-metadata-boundaries.test.mjs
           node --test tests/scpa/x02-b06-runtime-dyld-evidence.test.mjs
+          node --test tests/scpa/x02-b06-browser-runtime-navigation.test.mjs
       - name: Collect real Apple evidence
         shell: bash
         run: |
