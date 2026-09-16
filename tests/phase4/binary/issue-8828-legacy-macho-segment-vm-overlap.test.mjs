@@ -110,7 +110,19 @@ for (const order of [[A, B], [B, A]]) {
   assert.ok(regions.some((r) => r.name === '__TEXT,__text'), 'file-backed owner still published');
 }
 
-// 6. Identical file mappings for a shared VM range stay byte-unambiguous.
+// 6. A pure zero-fill segment overlapping file-backed bytes is ambiguous.
+{
+  const zero = { name: '__ZERO', secname: '__bss', vmaddr: 0x1080, vmsize: 0x80, fileoff: 0x0, filesize: 0x0, addr: 0x1080, size: 0x80, offset: 0x0, secflags: 0x1 };
+  const text = { name: '__TEXT', secname: '__text', vmaddr: 0x1000, vmsize: 0x200, fileoff: 0x100, filesize: 0x200, addr: 0x1000, size: 0x200, offset: 0x100 };
+  const bytes = thinMachO64([text, zero]);
+  const info = parseSlice(bytes.buffer, 0, bytes.length);
+  assert.equal(info.segmentOwnershipConflict, true, 'file-backed vs pure zero-fill overlap flagged');
+  assert.equal(info.segments.every((s) => !s.validMapping && s.mappingConflict), true, 'both owners demoted');
+  assert.equal(regionsFrom(info, 0n, BigInt(bytes.length), BigInt(bytes.length)).length, 0, 'ambiguous ownership publishes no region');
+}
+
+// 7. Identical file mappings for a shared VM range stay byte-unambiguous.
+
 {
   const a1 = { ...A, name: '__A', secname: '__s' };
   const a2 = { ...A, name: '__B', secname: '__s' }; // same vmaddr/vmsize/fileoff/filesize
