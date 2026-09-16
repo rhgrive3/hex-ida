@@ -322,6 +322,48 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
     return createLanguageMetadataPage({ records });
   }
 
+  // Protocol declarations are nominal runtime metadata too. Keep them on the
+  // provider's public page surface instead of leaving them reachable only via
+  // the private cached runtime model. A protocol uses the canonical `type`
+  // record kind with an explicit protocol descriptor because the shared
+  // metadata contract intentionally has no second, protocol-only kind.
+  protocols() {
+    const model = this.cachedModel;
+    if (!model || !model.protocols) return createLanguageMetadataPage({ records: [] });
+
+    const records = [];
+    for (const protocol of model.protocols) {
+      const address = protocol.address ?? protocol.addr;
+      const addrStr = address != null ? `0x${address.toString(16)}` : null;
+      records.push(
+        createLanguageMetadataRecord({
+          kind: 'type',
+          entityId: `protocol@${addrStr || protocol.name}`,
+          name: protocol.name,
+          address: addrStr,
+          providerId: this.id,
+          providerVersion: this.version,
+          ecosystem: 'objc',
+          buildIdentity: this.binaryIdentity,
+          descriptor: {
+            layer: 'nominal',
+            kind: 'protocol',
+            name: protocol.name,
+            size: protocol.size ?? null,
+            flags: protocol.flags ?? null,
+            methods: (protocol.methods || []).map((method) => ({
+              selector: method.sel || method.selector,
+              types: method.types || null,
+              classMethod: method.classMethod === true,
+            })),
+          },
+        })
+      );
+    }
+
+    return createLanguageMetadataPage({ records });
+  }
+
   methods() {
     const model = this.cachedModel;
     if (!model || !model.classes) return createLanguageMetadataPage({ records: [] });
