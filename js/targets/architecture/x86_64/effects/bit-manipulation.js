@@ -1,6 +1,7 @@
 import { createMemoryAccess } from '../../../../semantics/effects/index.js';
 import { createX86EffectContext, x86MemoryFaults, x86RegisterOperand } from './common.js';
 import { x86EffectiveAddressExpression } from './addressing.js';
+import { liftX86BitScanEffects } from './bit-scan.js';
 
 const BIT_MANIP_NAMES = new Set([
   'adcx', 'adox', 'bsf', 'bsr', 'bswap', 'bt', 'btc', 'btr', 'bts', 'crc32', 'lzcnt', 'popcnt', 'tzcnt',
@@ -37,6 +38,8 @@ export function liftX86BitManipulationEffects(instruction, context = {}) {
       { metadata:{ family:'bit-manipulation', operation:family, lockPrefix:true, lockIgnored:false } },
     );
   }
+
+  if (family === 'bsf' || family === 'bsr') return liftX86BitScanEffects(ctx);
 
   // Intel memory BT/BTC/BTR/BTS operands are bit strings: an out-of-element
   // bit index selects a different byte/word/dword/qword beyond the encoded
