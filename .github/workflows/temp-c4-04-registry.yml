@@ -1,0 +1,77 @@
+name: Temporary C4-04 registry validation
+on:
+  push:
+    branches: ['impl/c4-04-finish-20260916']
+    paths: ['.github/workflows/temp-c4-04-registry.yml']
+permissions:
+  contents: write
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: impl/c4-04-finish-20260916
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Enforce C4 registry in validators
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('js/decompiler/phase8/pass-validation-core.js')
+          s=p.read_text()
+          old="import { stableDigest } from '../../core/identity/index.js';\n"
+          new=old+"import { c4EquivalenceRewriteRegistryFailure } from './c4-equivalence-registry.js';\n"
+          assert old in s and "c4EquivalenceRewriteRegistryFailure" not in s
+          s=s.replace(old,new,1)
+          old="""  if (!memoryRequest || typeof memoryRequest !== 'object') fail('phase8-memory-rewrite-proof-request-required');
+            const binding = rewriteBinding(rewrite);"""
+          new="""  if (!memoryRequest || typeof memoryRequest !== 'object') fail('phase8-memory-rewrite-proof-request-required');
+            const registryFailure = c4EquivalenceRewriteRegistryFailure(transformKind, MEMORY_REWRITE_VALIDATION_VERIFIER);
+            if (registryFailure) fail(registryFailure);
+            const binding = rewriteBinding(rewrite);"""
+          assert old in s
+          s=s.replace(old,new,1)
+          old="""  if (!effectRequest || typeof effectRequest !== 'object') fail('phase8-terminal-effect-proof-request-required');
+            const binding = rewriteBinding(rewrite);"""
+          new="""  if (!effectRequest || typeof effectRequest !== 'object') fail('phase8-terminal-effect-proof-request-required');
+            const registryFailure = c4EquivalenceRewriteRegistryFailure(transformKind, TERMINAL_EFFECT_REWRITE_VALIDATION_VERIFIER);
+            if (registryFailure) fail(registryFailure);
+            const binding = rewriteBinding(rewrite);"""
+          assert old in s
+          s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+          git diff --check
+      - name: Registry and adoption tests
+        shell: bash
+        run: |
+          set -o pipefail
+          node --test \
+            tests/phase8/substrate/c4-equivalence-registry.test.mjs \
+            tests/phase8/substrate/c4-memory-rewrite-adoption.test.mjs \
+            tests/phase9/memory/terminal-effect-equivalence.test.mjs \
+            tests/phase9/memory/c4-cfg-loop-equivalence.test.mjs 2>&1 | tee /tmp/c4-registry.log
+      - name: Commit validated registry binding
+        if: success()
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/decompiler/phase8/pass-validation-core.js
+          git commit -m 'feat(c4): enforce equivalence rewrite registry'
+          git push origin HEAD:impl/c4-04-finish-20260916
+      - name: Upload focused evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c4-04-registry-evidence
+          path: /tmp/c4-registry.log
+          if-no-files-found: ignore
+          retention-days: 1
