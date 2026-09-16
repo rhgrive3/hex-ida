@@ -313,11 +313,20 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
     const warning = `chained-fixups: ${message}`;
     if (!image.warnings.includes(warning)) image.warnings.push(warning);
   };
+  const markSegmentsIncomplete = (items = segments) => {
+    for (const segment of items) {
+      if (!segment) continue;
+      const start = BigInt(segment.address ?? 0);
+      const size = BigInt(segment.size ?? 0);
+      if (size > 0n) rememberChainedPointerCoverage(image, start, start + size);
+    }
+  };
   if (status.importsComplete === false) {
     fail('chained import table is incomplete; binding-site coverage cannot be complete');
   }
   const startsOffset = r.u32(base + 4);
   if (!startsOffset || base + startsOffset + 4 > payloadEnd) {
+    markSegmentsIncomplete();
     fail('starts-in-image header is missing or truncated');
     status.bindingSites = decoded;
     return status;
@@ -325,6 +334,7 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
   const startsBase = base + startsOffset;
   const segCount = r.u32(startsBase);
   if (segCount > 4096 || startsBase + 4 + segCount * 4 > payloadEnd) {
+    markSegmentsIncomplete();
     fail('segment starts table is truncated or unreasonable');
     status.bindingSites = decoded;
     return status;
@@ -420,7 +430,7 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
     }
     if (!ownershipExhausted && !flushOwnershipRun()) ownershipExhausted = true;
     if (ownershipExhausted) {
-      rememberChainedPointerCoverage(image, segAddress, segAddress + segSize);
+      markSegmentsIncomplete(segments.slice(segIndex));
       fail(`segment ${segIndex} chained page coverage exceeded the shared metadata budget`);
       status.bindingSites = decoded;
       return status;
@@ -429,7 +439,7 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
     if (!width) { fail(`segment ${segIndex} uses unsupported pointer format ${pointerFormat}`); continue; }
 
     for (let page = 0; page < pageCount; page++) {
-      if(!budget.take({inputBytes:2,records:1,operations:1,estimatedHeapBytes:16},'chained-page')){fail('shared metadata budget exhausted while decoding pages');status.bindingSites=decoded;return status;}
+      if(!budget.take({inputBytes:2,records:1,operations:1,estimatedHeapBytes:16},'chained-page')){markSegmentsIncomplete(segments.slice(segIndex));fail('shared metadata budget exhausted while decoding pages');status.bindingSites=decoded;return status;}
       const start = r.u16(p + 22 + page * 2);
       if (start === 0xffff) continue;
       const pageFailureEpoch = failureEpoch;
@@ -463,7 +473,7 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
         let address = pageAddress + BigInt(chainStart);
         let terminated = false;
         for (let guard = 0; guard < 100000; guard++) {
-          if(!budget.take({inputBytes:width,records:1,operations:1,estimatedHeapBytes:16},'chained-pointer')){fail('shared metadata budget exhausted while decoding pointer chain');status.bindingSites=decoded;return status;}
+          if(!budget.take({inputBytes:width,records:1,operations:1,estimatedHeapBytes:16},'chained-pointer')){markSegmentsIncomplete(segments.slice(segIndex));fail('shared metadata budget exhausted while decoding pointer chain');status.bindingSites=decoded;return status;}
           if (address < pageAddress || address + BigInt(width) > pageAddressEnd || address + BigInt(width) > fileBackedAddressEnd) {
             fail(`segment ${segIndex} page ${page} chain leaves its page or file-backed segment range`); break;
           }
@@ -493,7 +503,7 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
             if (!imp) {
               fail(`invalid bind ordinal ${d.ordinal} does not reference a parsed chained import`);
             } else {
-              if(!budget.take({objects:1,operations:1,estimatedHeapBytes:112},'chained-bind-site')){fail('shared metadata budget exhausted while recording bind site');status.bindingSites=decoded;return status;}
+              if(!budget.take({objects:1,operations:1,estimatedHeapBytes:112},'chained-bind-site')){markSegmentsIncomplete(segments.slice(segIndex));fail('shared metadata budget exhausted while recording bind site');status.bindingSites=decoded;return status;}
               imp.sites.push({
                 address,
                 offset: expectedOff,
