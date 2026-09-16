@@ -4,16 +4,16 @@ on:
     branches:
       - fix/7036-main-reconcile-20260917
 permissions:
-  contents: read
+  contents: write
 jobs:
-  diagnose:
+  reconcile:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Capture only unresolved semantic hunks
+      - name: Reconcile and focused validate
         shell: bash
         run: |
           set +e
@@ -22,18 +22,37 @@ jobs:
           : > "$STATUS"
           HEAD_SHA=d7d79ee29ef92e33d1007c62a4304f45b18916c0
           MAIN_SHA=012cacc48ec2cd9bde8a5b8a98b77f4a89f9a736
-          timeout 90s git fetch --no-tags origin main "$HEAD_SHA" >/tmp/fetch.log 2>&1
-          rc=$?; echo "fetch rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/fetch.log >> "$STATUS"; exit "$rc"; fi
-          git checkout --detach "$HEAD_SHA" >/tmp/checkout.log 2>&1
-          rc=$?; echo "checkout rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/checkout.log >> "$STATUS"; exit "$rc"; fi
+          LOGICAL_BRANCH=feat/analysis-roadmap-v8-current-main-20260907
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          fail_tail() {
+            label="$1"; file="$2"; rc="$3"
+            echo "$label rc=$rc" >> "$STATUS"
+            echo '--- first failure ---' >> "$STATUS"
+            tail -n 100 "$file" >> "$STATUS"
+            exit "$rc"
+          }
+          check() {
+            label="$1"; shift
+            log="/tmp/${label}.log"
+            timeout 180s "$@" >"$log" 2>&1
+            rc=$?
+            echo "$label rc=$rc" >> "$STATUS"
+            [ "$rc" -eq 0 ] || fail_tail "$label" "$log" "$rc"
+          }
+
+          timeout 90s git fetch --no-tags origin main "$HEAD_SHA" >/tmp/fetch.log 2>&1
+          rc=$?; echo "fetch rc=$rc" >> "$STATUS"
+          [ "$rc" -eq 0 ] || fail_tail fetch /tmp/fetch.log "$rc"
+          git checkout --detach "$HEAD_SHA" >/tmp/checkout.log 2>&1
+          rc=$?; echo "checkout rc=$rc" >> "$STATUS"
+          [ "$rc" -eq 0 ] || fail_tail checkout /tmp/checkout.log "$rc"
           git merge --no-commit --no-ff "$MAIN_SHA" >/tmp/merge.log 2>&1
           merge_rc=$?
-          echo "merge rc=$merge_rc" >> "$STATUS"
-          if [ "$merge_rc" -eq 0 ]; then echo 'unexpected_clean_merge=true' >> "$STATUS"; exit 1; fi
+          echo "initial_merge rc=$merge_rc" >> "$STATUS"
+          [ "$merge_rc" -ne 0 ] || { echo 'unexpected_clean_merge=true' >> "$STATUS"; exit 1; }
+
           MAIN_WINS=(
             .circleci/config.yml
             js/rebuild/transaction-v2.js
@@ -58,33 +77,168 @@ jobs:
           )
           for f in "${MAIN_WINS[@]}"; do
             if git diff --name-only --diff-filter=U -- "$f" | grep -q .; then
-              git checkout --theirs -- "$f" && git add "$f"
+              git checkout --theirs -- "$f" >/tmp/resolve-main.log 2>&1 && git add "$f"
               rc=$?
-              echo "main_wins $f rc=$rc" >> "$STATUS"
-              [ "$rc" -eq 0 ] || exit "$rc"
+              echo "main_wins:$f rc=$rc" >> "$STATUS"
+              [ "$rc" -eq 0 ] || fail_tail resolve_main /tmp/resolve-main.log "$rc"
             fi
           done
-          git diff --name-only --diff-filter=U | sort -u >/tmp/remain.txt
-          echo "remaining=$(wc -l < /tmp/remain.txt | tr -d ' ')" >> "$STATUS"
-          cat /tmp/remain.txt >> "$STATUS"
-          python3 - <<'PY' >> "$STATUS"
+
+          python3 - <<'PY' >/tmp/resolve-semantic.log 2>&1
           from pathlib import Path
-          files = [x.strip() for x in Path('/tmp/remain.txt').read_text().splitlines() if x.strip()]
-          for name in files:
-              print(f'\n=== HUNKS {name} ===')
-              lines = Path(name).read_text(errors='replace').splitlines()
-              starts = [i for i,l in enumerate(lines) if l.startswith('<<<<<<< ')]
-              for n,start in enumerate(starts,1):
-                  end = start
-                  while end < len(lines) and not lines[end].startswith('>>>>>>> '):
-                      end += 1
-                  end = min(end, len(lines)-1)
-                  lo = max(0, start-8); hi = min(len(lines), end+9)
-                  print(f'--- hunk {n} lines {lo+1}-{hi} ---')
-                  for i in range(lo, hi):
-                      print(f'{i+1:5d}: {lines[i]}')
+          import re
+
+          def resolve(path, choice):
+              p = Path(path)
+              lines = p.read_text().splitlines(keepends=True)
+              out = []
+              i = 0
+              blocks = 0
+              while i < len(lines):
+                  if not lines[i].startswith('<<<<<<< '):
+                      out.append(lines[i]); i += 1; continue
+                  blocks += 1
+                  i += 1; ours = []
+                  while i < len(lines) and not lines[i].startswith('======='):
+                      ours.append(lines[i]); i += 1
+                  if i >= len(lines): raise SystemExit(f'{path}: unterminated ours')
+                  i += 1; theirs = []
+                  while i < len(lines) and not lines[i].startswith('>>>>>>> '):
+                      theirs.append(lines[i]); i += 1
+                  if i >= len(lines): raise SystemExit(f'{path}: unterminated theirs')
+                  i += 1
+                  selected = choice(blocks, ''.join(ours), ''.join(theirs))
+                  out.append(selected)
+              p.write_text(''.join(out))
+              return blocks
+
+          # Canonical producer branding is #7036-owned; keep only its conflict side.
+          assert resolve('js/analysis/discovery/producers.js', lambda n,o,t:o) == 1
+
+          # Keep #7036 cancellation/completeness logic, then detach live decompiler callbacks like current main.
+          assert resolve('js/analysis/query/app-adapter.js', lambda n,o,t:o) == 2
+          p = Path('js/analysis/query/app-adapter.js'); s = p.read_text()
+          s = s.replace('decompilerSnapshot(value)', 'cloneableDecompilerProjection(value)')
+          s = s.replace("import { decompilerSnapshot } from '../semantic-function.js';\n", '')
+          if 'decompilerSnapshot(' in s: raise SystemExit('app-adapter stale decompilerSnapshot use')
+          p.write_text(s)
+
+          # Keep #7036 multi-target/native contextualization, while restoring #4772 broad read+write fallback.
+          assert resolve('js/analysis/summary/local-core.js', lambda n,o,t:o) == 1
+          p = Path('js/analysis/summary/local-core.js'); s = p.read_text()
+          old = """  const ensureBroadWrite = (node) => {\n    if (!memoryWriteRegions.some((effect) => effect.broad)) {\n      memoryWriteRegions.push(broadEffect(node, null, 'unknown-call-fallback'));\n    }\n  };\n"""
+          new = """  const ensureBroadEffects = (node) => {\n    if (!memoryWriteRegions.some((effect) => effect.broad)) {\n      memoryWriteRegions.push(broadEffect(node, null, 'unknown-call-fallback'));\n    }\n    if (!memoryReadRegions.some((effect) => effect.broad)) {\n      memoryReadRegions.push(broadEffect(node, null, 'unknown-call-fallback'));\n    }\n  };\n"""
+          if old not in s: raise SystemExit('local-core helper anchor missing')
+          s = s.replace(old, new, 1).replace('ensureBroadWrite(', 'ensureBroadEffects(')
+          p.write_text(s)
+
+          # Start from main's batch-wide forwarding scope, then restore #7036 constant-transition observer.
+          assert resolve('js/semantics/compat/semantic-ir-v2-to-v1-memory.js', lambda n,o,t:t) == 1
+          p = Path('js/semantics/compat/semantic-ir-v2-to-v1-memory.js'); s = p.read_text()
+          sig = re.search(r'export function attachMemorySsa\(([^\n]*)\) \{', s)
+          if not sig: raise SystemExit('attachMemorySsa signature missing')
+          args = sig.group(1)
+          if 'forwardingScopeOptions = null' not in args: raise SystemExit('forwarding scope argument missing')
+          if 'constantObserver = null' not in args:
+              args = args.replace('forwardingScopeOptions = null', 'constantObserver = null, forwardingScopeOptions = null')
+              s = s[:sig.start(1)] + args + s[sig.end(1):]
+          anchor = '  const batchForwarding = batchForwardingScope(forwardingScopeOptions);\n'
+          if anchor not in s: raise SystemExit('batch forwarding anchor missing')
+          if '  const operandTransitions = [];\n' not in s[s.index(anchor):s.index(anchor)+300]:
+              s = s.replace(anchor, anchor + '  const operandTransitions = [];\n', 1)
+          s = s.replace('propagateScalarConstants(projected);', 'propagateScalarConstants(projected, constantObserver);', 1)
+          p.write_text(s)
+
+          # Keep #7036 state/constant observers, passing main's batch deadline options through.
+          assert resolve('js/semantics/compat/semantic-ir-v2-to-v1.js', lambda n,o,t:o) == 1
+          p = Path('js/semantics/compat/semantic-ir-v2-to-v1.js'); s = p.read_text()
+          needle = 'attachMemorySsa(projected, memorySsa, instructionBySemanticId, ir, constantObserver)'
+          if needle not in s: raise SystemExit('compat attachMemorySsa call anchor missing')
+          s = s.replace(needle, 'attachMemorySsa(projected, memorySsa, instructionBySemanticId, ir, constantObserver, options)', 1)
+          p.write_text(s)
+
+          # Current main #8740 owns the architecture-neutral access provider; retain auto-merged #7036 alias proof changes.
+          assert resolve('js/semantics/memoryssa/proof-core.js', lambda n,o,t:t) == 1
+          p = Path('js/semantics/memoryssa/proof-core.js'); s = p.read_text()
+          s = s.replace("import { canonicalMemoryAccessQualifiers } from '../memory-access-provider.js';\n", '')
+          if 'canonicalMemoryAccessQualifiers(' in s: raise SystemExit('proof-core stale target qualifier provider use')
+          p.write_text(s)
+
+          for path in [
+              'js/analysis/discovery/producers.js',
+              'js/analysis/query/app-adapter.js',
+              'js/analysis/summary/local-core.js',
+              'js/semantics/compat/semantic-ir-v2-to-v1-memory.js',
+              'js/semantics/compat/semantic-ir-v2-to-v1.js',
+              'js/semantics/memoryssa/proof-core.js',
+          ]:
+              text = Path(path).read_text()
+              if '<<<<<<< ' in text or '\n=======' in text or '>>>>>>> ' in text:
+                  raise SystemExit(f'{path}: conflict marker remains')
           PY
-          exit 1
+          rc=$?; echo "semantic_resolution rc=$rc" >> "$STATUS"
+          [ "$rc" -eq 0 ] || fail_tail semantic_resolution /tmp/resolve-semantic.log "$rc"
+          git add js/analysis/discovery/producers.js js/analysis/query/app-adapter.js js/analysis/summary/local-core.js \
+            js/semantics/compat/semantic-ir-v2-to-v1-memory.js js/semantics/compat/semantic-ir-v2-to-v1.js \
+            js/semantics/memoryssa/proof-core.js
+
+          remaining=$(git diff --name-only --diff-filter=U | wc -l | tr -d ' ')
+          echo "remaining_conflicts=$remaining" >> "$STATUS"
+          if [ "$remaining" -ne 0 ]; then git diff --name-only --diff-filter=U >> "$STATUS"; exit 1; fi
+
+          check diff_check git diff --check
+          for f in js/analysis/discovery/producers.js js/analysis/query/app-adapter.js js/analysis/summary/local-core.js \
+            js/semantics/compat/semantic-ir-v2-to-v1-memory.js js/semantics/compat/semantic-ir-v2-to-v1.js \
+            js/semantics/memoryssa/proof-core.js js/rebuild/transaction-v2.js \
+            js/symbolic/expr/serialize.js js/symbolic/solver/result.js js/symbolic/solver/session.js \
+            js/targets/architecture/riscv64/decoded-instruction.js; do
+            check "syntax_$(basename "$f" | tr '.-' '__')" node --check "$f"
+          done
+
+          # Run issue-addressed focused regressions that exist in the reconciled tree.
+          for issue in 4772 4777 4513 8740 8979 8753 8975 5180 5192 8771 5498 5391; do
+            mapfile -t files < <(git ls-files 'tests/**' | grep -E "(^|[-_])${issue}([-_.]|$)" | head -n 12)
+            if [ "${#files[@]}" -eq 0 ]; then
+              echo "issue_${issue}=no-matching-test" >> "$STATUS"
+              continue
+            fi
+            for test_file in "${files[@]}"; do
+              label="issue_${issue}_$(basename "$test_file" | tr '.-' '__')"
+              check "$label" node "$test_file"
+            done
+          done
+          check phase7_target_matrix node tests/phase7/summary/c1-02-target-matrix.test.mjs
+          check phase7_local node tests/phase7/summary/local.test.mjs
+
+          # Validate exact ownership projection against the merged source before generated publication.
+          MERGED_TREE_HEAD=$(git write-tree)
+          check phase7_manifest node tools/validation/phase7-ownership.mjs --check-manifest
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase7 --base-sha "$MAIN_SHA" --head-sha "$HEAD_SHA" >/tmp/p7.json 2>/tmp/p7gen.log
+          rc=$?; echo "phase7_inventory rc=$rc" >> "$STATUS"; [ "$rc" -eq 0 ] || fail_tail phase7_inventory /tmp/p7gen.log "$rc"
+          check phase7_validate node tools/validation/phase7-ownership.mjs --files-json "$(cat /tmp/p7.json)"
+          check phase8_manifest node tools/validation/phase8-ownership.mjs --check-manifest
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase8 --base-sha "$MAIN_SHA" --head-sha "$HEAD_SHA" >/tmp/p8.json 2>/tmp/p8gen.log
+          rc=$?; echo "phase8_inventory rc=$rc" >> "$STATUS"; [ "$rc" -eq 0 ] || fail_tail phase8_inventory /tmp/p8gen.log "$rc"
+          check phase8_validate node tools/validation/phase8-ownership.mjs --files-json "$(cat /tmp/p8.json)"
+
+          check userscript_build node scripts/build-userscript.mjs
+          git add userscript/hex.user.template.js userscript/release-version.json
+          check post_build_diff_check git diff --check
+          if [ -f tests/userscript-release-version.mjs ]; then check userscript_release node tests/userscript-release-version.mjs; fi
+          if [ -f tests/userscript-publication.mjs ]; then check userscript_publication node tests/userscript-publication.mjs; fi
+
+          git commit --no-edit >/tmp/commit.log 2>&1
+          rc=$?; echo "merge_commit rc=$rc" >> "$STATUS"
+          [ "$rc" -eq 0 ] || fail_tail merge_commit /tmp/commit.log "$rc"
+          CLEAN_HEAD=$(git rev-parse HEAD)
+          CLEAN_TREE=$(git rev-parse HEAD^{tree})
+          echo "clean_head=$CLEAN_HEAD" >> "$STATUS"
+          echo "clean_tree=$CLEAN_TREE" >> "$STATUS"
+          echo "parent1=$(git rev-parse HEAD^1)" >> "$STATUS"
+          echo "parent2=$(git rev-parse HEAD^2)" >> "$STATUS"
+          timeout 60s git push --force origin HEAD:refs/heads/validated/7036-main-reconcile-20260917 >/tmp/push.log 2>&1
+          rc=$?; echo "push rc=$rc" >> "$STATUS"
+          [ "$rc" -eq 0 ] || fail_tail push /tmp/push.log "$rc"
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
