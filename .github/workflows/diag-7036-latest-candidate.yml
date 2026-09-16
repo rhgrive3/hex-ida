@@ -1,0 +1,27 @@
+name: diag-7036-latest-candidate
+on:
+  push:
+    branches:
+      - diag/7036-merge-8fa
+permissions:
+  contents: write
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run latest resolver
+        shell: bash
+        run: |
+          cp .github/diag/resolve-7036-latest.sh /tmp/resolve-7036-latest.sh
+          bash /tmp/resolve-7036-latest.sh
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-7036-latest-candidate
+          path: /tmp/diag-7036-latest-candidate.txt
+          retention-days: 1
