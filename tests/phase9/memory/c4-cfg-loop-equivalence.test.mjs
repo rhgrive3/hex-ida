@@ -13,6 +13,14 @@ function ir(blocks) {
 function flatReturn(value=7) {
   return ir([{index:0,phis:[],insts:[ret('flat-ret',c('flat-value',value),0,0)],succ:[]}]);
 }
+function inputBoundFlatReturn(value=7) {
+  const input={id:'flat-input',kind:'arg',reg:'x0',index:0,bits:8};
+  const masked={id:'flat-masked',bits:8};
+  const mask={id:'flat-mask',op:OP.BIN,sub:'and',dst:masked,args:[{value:input},{value:c('flat-zero',0)}],row:0,address:0n};masked.def=mask;
+  const output={id:'flat-output',bits:8};
+  const add={id:'flat-add',op:OP.BIN,sub:'add',dst:output,args:[{value:c('flat-base',value)},{value:masked}],row:1,address:4n};output.def=add;
+  return { input, program:ir([{index:0,phis:[],insts:[mask,add,ret('flat-ret',output,2,8)],succ:[]}]) };
+}
 function diamond({left=7,right=7}={}) {
   const cond={id:'diamond-cond',kind:'arg',reg:'x0',index:0,bits:8};
   const branch={id:'diamond-branch',op:OP.CBR,args:[{value:cond}],extra:{kind:'cbz',target:8n},row:0,address:0n};
@@ -39,8 +47,9 @@ const request=(beforeIr,afterIr,extra={})=>({identity,beforeIr,afterIr,inputs:[]
   memory:{addressBits:8,endian:'little',wrapping:'modular',alignment:'unaligned'},backendTier:'tiered',timeoutMs:5000,...extra});
 
 test('C4-04B proves a CFG diamond rewrite when every terminal observable is equal',async()=>{
-  const before=diamond().program,after=flatReturn();
-  const q=request(before,after),result=await queryMemoryEquivalence(q);
+  const beforeCase=diamond(),afterCase=inputBoundFlatReturn();
+  const q=request(beforeCase.program,afterCase.program,{inputs:[{before:beforeCase.cond,after:afterCase.input}]});
+  const result=await queryMemoryEquivalence(q);
   assert.equal(result.verdict,'proved',result.reason);
   assert.equal(result.eligible,true);
   assert.equal(result.scope.kind,'finite-byte-execution');
@@ -50,7 +59,8 @@ test('C4-04B proves a CFG diamond rewrite when every terminal observable is equa
 });
 
 test('C4-04B refutes a CFG rewrite when one branch changes the return observable',async()=>{
-  const result=await queryMemoryEquivalence(request(diamond({right:8}).program,flatReturn()));
+  const beforeCase=diamond({right:8}),afterCase=inputBoundFlatReturn();
+  const result=await queryMemoryEquivalence(request(beforeCase.program,afterCase.program,{inputs:[{before:beforeCase.cond,after:afterCase.input}]}));
   assert.equal(result.verdict,'refuted',result.reason);
   assert.equal(result.eligible,false);
   assert.ok(result.firstDivergence);
