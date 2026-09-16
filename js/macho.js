@@ -542,10 +542,10 @@
   }
 
   function rejectAmbiguousSegmentOwnership(info) {
-    const backed = (info.segments || []).filter((segment) => segment.validMapping && segment.filesize > 0n);
-    for (let i = 0; i < backed.length; i++) {
-      for (let j = i + 1; j < backed.length; j++) {
-        const a = backed[i], b = backed[j];
+    const owned = (info.segments || []).filter((segment) => segment.validMapping && segment.vmsize > 0n);
+    for (let i = 0; i < owned.length; i++) {
+      for (let j = i + 1; j < owned.length; j++) {
+        const a = owned[i], b = owned[j];
         if (!classicOwnershipAmbiguous(a, b)) continue;
         a.validMapping = false; b.validMapping = false;
         a.mappingConflict = true; b.mappingConflict = true;
