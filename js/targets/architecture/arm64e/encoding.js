@@ -1,4 +1,5 @@
 import { createMachineEffectBundle } from '../../../semantics/effects/index.js';
+import { arm64eEffectInstructionId, arm64eEffectMode, arm64eEffectOrigin } from './identity.js';
 
 const ARITY = Object.freeze(Object.fromEntries([
   ...['pacia','pacib','pacda','pacdb','autia','autib','autda','autdb','braa','brab','blraa','blrab'].map((mnemonic) => [mnemonic, 2]),
@@ -147,14 +148,13 @@ export function arm64ePointerAuthenticationOperandShapeFailure(decoded) {
 export function arm64ePointerAuthenticationOperandShapeFailureBundle(decoded, context = {}) {
   const failure = arm64ePointerAuthenticationOperandShapeFailure(decoded);
   if (!failure) return null;
-  const instructionId = String(context?.instructionId ?? decoded?.instructionId ?? '').trim();
-  if (!instructionId) throw new TypeError('arm64e-instruction-id-required');
-  const origin = context?.origin ?? decoded?.origin ?? { instructionIds:[instructionId] };
+  const instructionId = arm64eEffectInstructionId(decoded, context);
+  const origin = arm64eEffectOrigin(decoded, context, instructionId);
   const categories = failure.control ? ['control','registers'] : ['registers'];
   return createMachineEffectBundle({
     instructionId,
     architectureId:'arm64e',
-    mode:String(context?.mode ?? decoded?.mode ?? 'arm64e').trim() || 'arm64e',
+    mode:arm64eEffectMode(decoded, context),
     operations:[],
     controlEffect:failure.control ? { kind:'unknown', reason:failure.reason } : { kind:'fallthrough' },
     possibleFaults:[],

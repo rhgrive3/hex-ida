@@ -26,9 +26,15 @@ function runtimeOperationSignalAuthority(value) {
 // Compose caller cancellation into a session-owned controller. The returned
 // signal is always owned by the session, so newEpoch()/close() can abort an
 // in-flight backend request even when the caller supplied no signal (#5696).
+// #8692: the helper also carries the single lifecycle/freshness authority for
+// an operation: `startedEpoch` is captured synchronously at creation, and
+// `isStale()`/`throwIfStale()` let every mutation wrapper fail closed before
+// a side-effecting backend invocation (pre-abort, close, or epoch change) in
+// addition to the retained completion-time check.
 export function createRuntimeOperationController(session, externalSignal = null) {
   const authority = runtimeOperationSignalAuthority(externalSignal);
   const controller = session.controller();
+  const startedEpoch = session.epoch;
   let listener = null;
   const detach = () => {
     if (!authority || !listener) return;
@@ -59,6 +65,17 @@ export function createRuntimeOperationController(session, externalSignal = null)
   }
   return {
     signal: controller.signal,
+    startedEpoch,
+    isStale() {
+      return controller.signal.aborted || session.closed || session.epoch !== startedEpoch;
+    },
+    throwIfStale(message = 'runtime operation is no longer current') {
+      if (controller.signal.aborted || session.closed || session.epoch !== startedEpoch) {
+        throw new DebugAdapterError('runtime-session-stale', message, {
+          startedEpoch, currentEpoch: session.epoch,
+        });
+      }
+    },
     release() {
       detach();
       session.releaseController(controller);

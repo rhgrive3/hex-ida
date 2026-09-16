@@ -9,8 +9,51 @@ function stackValue(value) {
   return Object.freeze({ bits: cilStackValueWidth(value) });
 }
 
+// #8715: stack cells are immutable (`stackValue` freezes them and merges only
+// ever rebuild the vector), so a snapshot must share the cell objects and the
+// vector itself instead of re-materializing the whole attacker-shaped stack
+// for every switch/branch target.
 function cloneStack(stack) {
-  return stack.map((value) => ({ ...value }));
+  return [...stack];
+}
+
+// Aggregate verifier-state budget (#8715): retained frame vectors are charged
+// once per distinct array (structurally shared switch-target states cost one
+// snapshot, not one per target), and every merge allocation is charged as
+// work even when it is discarded. Callers may lower the budget, never
+// disable it; exhaustion stops the pass before further fan-out is retained.
+const DEFAULT_VERIFIER_STATE_CELLS = 4_000_000;
+
+class VerifierStateBudget {
+  constructor(configured) {
+    this.limit = Number.isSafeInteger(configured) && configured > 0
+      ? Math.min(configured, DEFAULT_VERIFIER_STATE_CELLS)
+      : DEFAULT_VERIFIER_STATE_CELLS;
+    this.used = 0;
+    this.exceeded = false;
+    this.charged = new WeakSet();
+  }
+
+  chargeRetained(arr) {
+    if (this.charged.has(arr)) return true;
+    if (this.used + arr.length > this.limit) {
+      this.exceeded = true;
+      return false;
+    }
+    this.charged.add(arr);
+    this.used += arr.length;
+    return true;
+  }
+
+  chargeWork(length) {
+    const amount = Number.isSafeInteger(length) && length > 0 ? length : 0;
+    if (this.used + amount > this.limit) {
+      this.exceeded = true;
+      return false;
+    }
+    this.used += amount;
+    return true;
+  }
 }
 
 function mergeStacks(existing, incoming) {
@@ -18,12 +61,13 @@ function mergeStacks(existing, incoming) {
   const merged = [];
   let imprecise = false;
   for (let i = 0; i < existing.length; i++) {
-    const left = existing[i]?.bits ?? null;
+    const leftCell = existing[i];
+    const left = leftCell?.bits ?? null;
     const right = incoming[i]?.bits ?? null;
     if (left != null && right != null && left !== right) return { ok:false, reason:'cil-stack-type-merge-mismatch' };
     const bits = left === right ? left : null;
     if (bits == null && left !== right) imprecise = true;
-    merged.push({ bits });
+    merged.push(left === right && leftCell ? leftCell : { bits });
   }
   return { ok:true, stack:merged, imprecise };
 }
@@ -174,6 +218,8 @@ export function validateCilEffectFunction(decoded, context = {}) {
 
   const states = new Map();
   const queue = [];
+  let queueHead = 0;
+  const stateBudget = new VerifierStateBudget(context?.maxVerifierStateCells);
   const enqueue = (offset, stack, source) => {
     if (!offsets.has(offset)) {
       errors.push({ code:'cil-invalid-branch-target', sourceOffset:source ?? null, targetOffset:offset });
@@ -181,10 +227,16 @@ export function validateCilEffectFunction(decoded, context = {}) {
     }
     const previous = states.get(offset);
     if (!previous) {
-      states.set(offset, cloneStack(stack));
+      // Adopt the caller's vector: sibling switch targets receiving the same
+      // stack share one structural snapshot, and the identity-based charge
+      // bills that shared retention once, not once per target (#8715). The
+      // adopted vector must not be mutated after this point.
+      if (!stateBudget.chargeRetained(stack)) return;
+      states.set(offset, stack);
       queue.push(offset);
       return;
     }
+    if (!stateBudget.chargeWork(previous.length)) return;
     const merged = mergeStacks(previous, stack);
     if (!merged.ok) {
       errors.push({ code:merged.reason, sourceOffset:source ?? null, targetOffset:offset,
@@ -193,7 +245,7 @@ export function validateCilEffectFunction(decoded, context = {}) {
     }
     const changed = merged.stack.some((value, index) => value.bits !== previous[index]?.bits);
     if (merged.imprecise) warnings.push({ code:'cil-stack-type-merge-imprecise', targetOffset:offset });
-    if (changed) {
+    if (changed && stateBudget.chargeRetained(merged.stack)) {
       states.set(offset, merged.stack);
       queue.push(offset);
     }
@@ -201,8 +253,12 @@ export function validateCilEffectFunction(decoded, context = {}) {
 
   if (bundles.length > 0 && safeInteger(bundles[0]?.bytecodeOffset)) enqueue(bundles[0].bytecodeOffset, [], null);
   for (const region of regions) {
-    if (safeInteger(region?.handlerOffset) && offsets.has(region.handlerOffset)) enqueue(region.handlerOffset, handlerEntryStack(region), null);
-    if (safeInteger(region?.filterOffset) && offsets.has(region.filterOffset)) enqueue(region.filterOffset, [{ bits:64 }], null);
+    if (safeInteger(region?.handlerOffset) && offsets.has(region.handlerOffset)) {
+      enqueue(region.handlerOffset, handlerEntryStack(region), null);
+    }
+    if (safeInteger(region?.filterOffset) && offsets.has(region.filterOffset)) {
+      enqueue(region.filterOffset, [{ bits:64 }], null);
+    }
   }
 
   const needsReturnShape = bundles.some((bundle) =>
@@ -219,15 +275,16 @@ export function validateCilEffectFunction(decoded, context = {}) {
 
   const processed = new Set();
   const unanalyzedAfterCall = new Set();
-  while (queue.length) {
-    const offset = queue.shift();
+  while (queueHead < queue.length && !stateBudget.exceeded) {
+    const offset = queue[queueHead++];
     const stateKey = `${offset}:${JSON.stringify(states.get(offset))}`;
     if (processed.has(stateKey)) continue;
     processed.add(stateKey);
     const index = offsets.get(offset);
     const bundle = bundles[index];
     if (!bundle) continue;
-    let stack = cloneStack(states.get(offset) || []);
+    const storedState = states.get(offset) || [];
+    let stack = cloneStack(storedState);
     const consumed = Array.isArray(bundle.consumedValues) ? bundle.consumedValues : [];
     const produced = Array.isArray(bundle.producedValues) ? bundle.producedValues : [];
 
@@ -325,11 +382,13 @@ export function validateCilEffectFunction(decoded, context = {}) {
 
   const semanticPartial = bundles.some((bundle) => bundle?.completeness === 'unknown' || bundle?.completeness === 'partial');
   const resolutionPartial = warnings.some((warning) => warning.code === 'cil-call-stack-effect-unresolved');
-  const authorityPartial = !maxStackKnown || !returnShapeKnown;
+  const authorityPartial = !maxStackKnown || !returnShapeKnown || stateBudget.exceeded;
+  if (stateBudget.exceeded) warnings.push({ code:'cil-verifier-state-budget-exceeded' });
   const status = errors.length > 0 ? 'invalid' : semanticPartial || resolutionPartial || authorityPartial ? 'partial' : 'valid';
   verifierFacts.push({
     code:'cil-stack-dataflow-validated',
     reachedBlocks:states.size,
+    retainedStateCells:stateBudget.used,
     maxStack: maxStackKnown ? maxStack : null,
     returnStackSlots: returnShapeKnown && needsReturnShape ? returnStackSlots : null,
     unanalyzedAfterCall:[...unanalyzedAfterCall].sort((left, right) => left - right),

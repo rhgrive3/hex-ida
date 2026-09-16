@@ -7,6 +7,7 @@ import {
   createTemporaryValue,
 } from '../../../semantics/effects/index.js';
 import { arm64DecodedEncodingWord } from '../arm64/encoding-word.js';
+import { arm64eEffectInstructionId, arm64eEffectMode, arm64eEffectOrigin } from './identity.js';
 
 const POINTER_BITS = 64;
 const PAUTH_STATE_BITS = 64;
@@ -68,20 +69,6 @@ function isArm64ePacmCandidate(decoded) {
   return isArm64ePacmInstruction(decoded) || isPrintedPacmHintAlias(decoded);
 }
 
-function instructionIdOf(decoded, context) {
-  const instructionId = String(context?.instructionId ?? decoded?.instructionId ?? '').trim();
-  if (!instructionId) throw new TypeError('arm64e-instruction-id-required');
-  return instructionId;
-}
-
-function originOf(decoded, context, instructionId) {
-  return context?.origin ?? decoded?.origin ?? { instructionIds:[instructionId] };
-}
-
-function modeOf(decoded, context) {
-  return String(context?.mode ?? decoded?.mode ?? 'arm64e').trim() || 'arm64e';
-}
-
 function reg(id, bits = POINTER_BITS) {
   return createRegisterValue(id, bits);
 }
@@ -94,11 +81,11 @@ function bundle(decoded, context, instructionId, operations, completeness, extra
   return createMachineEffectBundle({
     instructionId,
     architectureId:'arm64e',
-    mode:modeOf(decoded, context),
+    mode:arm64eEffectMode(decoded, context),
     operations,
     controlEffect:{ kind:'fallthrough' },
     possibleFaults:[],
-    origin:originOf(decoded, context, instructionId),
+    origin:arm64eEffectOrigin(decoded, context, instructionId),
     completeness,
     ...(extra.unknownEffects == null ? {} : { unknownEffects:extra.unknownEffects }),
     ...(extra.statePreservation == null ? {} : { statePreservation:extra.statePreservation }),
@@ -275,7 +262,7 @@ function liftPacm(decoded, context, instructionId) {
 
 export function liftArm64ePacmEffects(decoded, context = {}) {
   if (!isArm64ePacmCandidate(decoded)) return null;
-  const instructionId = instructionIdOf(decoded, context);
+  const instructionId = arm64eEffectInstructionId(decoded, context);
   if (!isArm64ePacmInstruction(decoded)) return unresolvedAlias(decoded, context, instructionId);
   return liftPacm(decoded, context, instructionId);
 }

@@ -41,6 +41,71 @@ export function mappedELFFileRangeForVa(image, va) {
  * the section's VA→file relation. SHT_NOBITS has no file bytes and is accepted
  * only when its entire span belongs to one unambiguous PT_LOAD zero-fill tail.
  */
+// #8665 — every runtime SHF_ALLOC section re-proved its file/span authority by
+// scanning the entire PT_LOAD set, so S alloc sections over N loads cost
+// Θ(S·N) before the ELF metadata wall-clock/operation budget was even created.
+// The loads are fixed for the duration of the section pass, so cache a
+// start-sorted index (with a monotone running max-end used as a safe lower
+// bound on overlap) once per array and enumerate only the loads that can
+// actually intersect a queried VA span. Exact overlap semantics and the #7611
+// every-intersecting-owner rule are preserved: the window bounds are
+// conservative, and each candidate still runs the original per-segment test.
+const elfLoadSpanIndexCache = new WeakMap();
+
+function elfLoadSpanFields(segment) {
+  const start = BigInt(segment.address ?? 0);
+  const size = BigInt(segment.size ?? 0);
+  const fileSize = BigInt(segment.fileSize ?? 0);
+  const fileOffset = BigInt(segment.fileOffset ?? 0);
+  return { segment, start, size, fileSize, fileOffset, end: start + size };
+}
+
+function elfLoadSpanBase(state, start) {
+  // First index whose max-end exceeds `start`; every earlier load provably ends
+  // at or below `start`, so it cannot intersect [start, end).
+  let lo = 0;
+  let hi = state.sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (state.maxEnd[mid] > start) hi = mid; else lo = mid + 1;
+  }
+  return lo;
+}
+
+function elfLoadSpanBound(state, end) {
+  // Last index whose start is below `end`; every later load starts at or above
+  // `end`, so it cannot intersect [start, end).
+  let lo = 0;
+  let hi = state.sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (state.sorted[mid].start < end) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
+function elfLoadSpanState(loads) {
+  let state = elfLoadSpanIndexCache.get(loads);
+  if (state && state.built === loads.length) return state;
+  const fields = loads.map(elfLoadSpanFields);
+  const sorted = fields.slice().sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.end < b.end ? -1 : a.end > b.end ? 1 : 0));
+  const maxEnd = [];
+  let run = null;
+  for (const entry of sorted) {
+    run = run === null || entry.end > run ? entry.end : run;
+    maxEnd.push(run);
+  }
+  let malformed = false;
+  let malformedOffset = false;
+  for (const f of fields) {
+    if (f.size <= 0n || f.fileSize < 0n || f.fileSize > f.size) { malformed = true; malformedOffset = true; }
+    else if (f.fileOffset < 0n) malformedOffset = true;
+  }
+  state = { sorted, maxEnd, malformed, malformedOffset, built: loads.length };
+  elfLoadSpanIndexCache.set(loads, state);
+  return state;
+}
+
 export function elfSectionFileSpanConsistentWithLoads(image, address, size, fileOffset, noBits = false) {
   const start = strictELFInteger(address, 'address');
   const length = strictELFInteger(size ?? 0n, 'size');
@@ -49,14 +114,17 @@ export function elfSectionFileSpanConsistentWithLoads(image, address, size, file
   if (length === 0n) return true;
   const end = start + length;
   const loads = image?.segments || [];
+  // Preserve the original "any malformed segment fails closed" behaviour, which
+  // scans the whole set, without revisiting it per overlapping candidate.
+  const state = elfLoadSpanState(loads);
+  if (noBits ? state.malformed : state.malformedOffset) return false;
+  const from = elfLoadSpanBase(state, start);
+  const to = elfLoadSpanBound(state, end);
 
   if (noBits) {
     let owner = null;
-    for (const segment of loads) {
-      const segStart = BigInt(segment.address ?? 0);
-      const segSize = BigInt(segment.size ?? 0);
-      const segFileSize = BigInt(segment.fileSize ?? 0);
-      if (segSize <= 0n || segFileSize < 0n || segFileSize > segSize) return false;
+    for (let i = from; i < to; i++) {
+      const { segment, start: segStart, size: segSize, fileSize: segFileSize } = state.sorted[i];
       const segEnd = segStart + segSize;
       const overlapStart = start > segStart ? start : segStart;
       const overlapEnd = end < segEnd ? end : segEnd;
@@ -74,12 +142,8 @@ export function elfSectionFileSpanConsistentWithLoads(image, address, size, file
   }
 
   const coverage = [];
-  for (const segment of loads) {
-    const segStart = BigInt(segment.address ?? 0);
-    const segSize = BigInt(segment.size ?? 0);
-    const segFileSize = BigInt(segment.fileSize ?? 0);
-    const segOffset = BigInt(segment.fileOffset ?? 0);
-    if (segSize <= 0n || segFileSize < 0n || segFileSize > segSize || segOffset < 0n) return false;
+  for (let i = from; i < to; i++) {
+    const { segment, start: segStart, size: segSize, fileSize: segFileSize, fileOffset: segOffset } = state.sorted[i];
     const segEnd = segStart + segSize;
     const overlapStart = start > segStart ? start : segStart;
     const overlapEnd = end < segEnd ? end : segEnd;
@@ -94,6 +158,7 @@ export function elfSectionFileSpanConsistentWithLoads(image, address, size, file
     const actualOffset = segOffset + (overlapStart - segStart);
     if (actualOffset !== expectedOffset) return false;
     coverage.push({ begin: overlapStart, end: overlapEnd });
+    void segment;
   }
 
   // Validate provenance above against every overlapping PT_LOAD first; only

@@ -1013,18 +1013,52 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
         && classified?.unsupported !== true && functionPrototype == null
         && classifiedState === 'partial';
       if (abiEvidenceState(options, null, plugin)
-        || !classified || (classified.partial === true && functionPrototype != null && !knownVariadicPartial) || classified.unsupported === true
-        || (classifiedState && !unknownPrototypePartial) || !canonicalAbiEvidence(classified)) return Object.freeze([]);
+        || !classified || !canonicalAbiEvidence(classified)) return Object.freeze([]);
+      // A classifier result flagged partial/unsupported is a whole-result
+      // publication veto ONLY for hard terminal states (stale/malformed/
+      // cancelled/deadline/truncated/budget). A soft uncertainty carried by
+      // canonical, identity-bearing evidence may still expose a proof-bearing
+      // fixed prefix; withhold everything from the first unproven argument on
+      // (#8817). Whole-ABI-unsupported results carry no arguments and so
+      // still publish nothing below.
+      const softPrefixPublish = knownVariadicPartial || unknownPrototypePartial
+        || (classified?.partial === true && functionPrototype != null
+          && (classifiedState === 'partial' || classifiedState === 'unsupported'));
+      // The new relaxation this batch introduces (partial-with-prototype whose
+      // state is only 'partial'/'unsupported', neither known-variadic nor
+      // unknown-prototype) still needs to publish *nothing* when there is no
+      // proof-bearing prefix at all: malformed descriptors that surface as
+      // `partial:true` without any exact entry must not gain an unknown
+      // candidate list they did not have before (#8817 acceptance rule 5).
+      const newPrefixCase = !knownVariadicPartial && !unknownPrototypePartial
+        && classified?.partial === true && functionPrototype != null
+        && (classifiedState === 'partial' || classifiedState === 'unsupported');
+      if (classifiedState && !softPrefixPublish) return Object.freeze([]);
       const uncertain = classified.partial === true;
-      const provenEntry = (entry) => !unknownPrototypePartial
+      // Uncertainty frontier: entries before the first unproven argument are
+      // proof-bearing; entries at or after it must never be published as an
+      // exact placement even if they individually look provable, because a
+      // preceding aggregate / hidden-sret / stack spill can shift later
+      // register allocation (#8817).
+      let frontierReached = false;
+      let provenPrefixCount = 0;
+      const provenEntry = (entry) => !unknownPrototypePartial && !frontierReached
         && entry?.partial !== true && entry?.possible !== true
         && entry?.mustUse !== false && entry?.exact !== false
         && entry?.named !== false && entry?.variadic !== true;
       const locations = [];
       const seen = new Set();
       for (const entry of classified?.arguments ?? []) {
-        if (!entry || !['register','registers'].includes(entry.location)) continue;
-        // ABI argument locations are canonical middle-end authority. Structured
+        const isRegisterSlot = !!entry && ['register','registers'].includes(entry.location);
+        const entryProven = !unknownPrototypePartial
+          && entry?.partial !== true && entry?.possible !== true
+          && entry?.mustUse !== false && entry?.exact !== false
+          && entry?.named !== false && entry?.variadic !== true;
+        if (!frontierReached && entryProven) provenPrefixCount += 1;
+        if (!entryProven) frontierReached = true;
+        if (!isRegisterSlot) continue;
+        const publishable = !uncertain || provenEntry(entry);
+        // Physical argument locations are canonical middle-end authority. Structured
         // values must not launder into register identities or indices via
         // String()/Number() coercion; malformed plugin output fails closed.
         const registers = Array.isArray(entry.regs)
@@ -1041,10 +1075,10 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
             reg,
             abiClass:entry.abiClass ?? null,
             aggregate:entry.aggregate === true || Array.isArray(entry.pieces) || registers.length > 1,
-            possible:uncertain && !provenEntry(entry),
-            mustUse:!uncertain || provenEntry(entry),
-            exact:!uncertain || provenEntry(entry),
-            ...(uncertain && !provenEntry(entry) ? { certainty:'unknown' } : {}),
+            possible:!publishable,
+            mustUse:publishable,
+            exact:publishable,
+            ...(!publishable ? { certainty:'unknown' } : {}),
             pieceIndex:Array.isArray(entry.pieces)
               ? (entry.pieces.findIndex((piece) => String(piece?.reg || '') === reg) >= 0
                 ? entry.pieces.findIndex((piece) => String(piece?.reg || '') === reg)
@@ -1054,6 +1088,11 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
           }));
         }
       }
+      // A soft partial-with-prototype result that carries no proof-bearing
+      // prefix at all (e.g. a malformed argument descriptor that surfaces as
+      // `partial:true` with only unknown candidates) must keep publishing
+      // nothing, exactly as before this relaxation (#8817 acceptance rule 5).
+      if (newPrefixCase && provenPrefixCount === 0) return Object.freeze([]);
       return Object.freeze(locations);
     },
     argumentRegisters(options = {}) {
