@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 import { MessageChannel } from 'node:worker_threads';
 import { ParentPageInspector } from '../../js/userscript/dev/admin/page-inspector.js';
 import { createDevWorkerParentRpc, createDevWorkerParentRpcClient } from '../../js/userscript/dev/parent-rpc.js';
@@ -121,7 +122,7 @@ async function testSupervisorAdminDispatch() {
     pageScripts: async () => ({ kind: 'scripts' }),
     pageScriptSource: async (args) => ({ kind: 'source', args }),
   };
-  const supervisor = new DevSupervisorV0({
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
     workerClient,
     idFactory: (kind) => `${kind}-admin-${++sequence}`,
     now: () => '2026-08-18T00:00:00.000Z',
@@ -139,7 +140,7 @@ async function testSupervisorAdminDispatch() {
 }
 
 function testPostBootstrapDogfoodPrompt() {
-  const supervisor = new DevSupervisorV0({
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
     workerClient: {
       enabled: true,
       pageSnapshot: async () => ({}),

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 import { IframeWorkerPool } from '../../js/userscript/dev/frame-mesh/iframe-worker-pool.js';
 import { startParentDevWorkerRuntime } from '../../js/userscript/dev/parent-worker-runtime.js';
 import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
@@ -144,7 +145,7 @@ async function withTimeout(promise, timeoutMs = 500) {
 async function testGraphCompletionResumesWaitingSupervisor() {
   const { runtime, clients } = await runtimeWithSlots(3);
   try {
-    const supervisor = new DevSupervisorV0({ workerClient: supervisorClient(runtime), idFactory: (kind) => `${kind}-graph`, now: () => NOW });
+    const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(), workerClient: supervisorClient(runtime), idFactory: (kind) => `${kind}-graph`, now: () => NOW });
     let run = activeRun(supervisor);
     const started = await startGraph(supervisor, run, 'graph-three', ['a', 'b', 'c']);
     run = started.run;
@@ -170,7 +171,7 @@ async function testGraphCompletionResumesWaitingSupervisor() {
 async function testGraphCompletionSurvivesAutoReleaseAndQueueEviction() {
   const { runtime, pool, clients } = await runtimeWithSlots(1);
   try {
-    const supervisor = new DevSupervisorV0({ workerClient: supervisorClient(runtime), idFactory: (kind) => `${kind}-graph`, now: () => NOW });
+    const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(), workerClient: supervisorClient(runtime), idFactory: (kind) => `${kind}-graph`, now: () => NOW });
     let run = activeRun(supervisor, 'run-retained-graph');
     const started = await startGraph(supervisor, run, 'graph-retained', ['retained']);
     run = started.run;
@@ -200,7 +201,7 @@ async function testGraphCompletionSurvivesAutoReleaseAndQueueEviction() {
 async function testSupervisorOwnsGraphRunIdentity() {
   const { runtime } = await runtimeWithSlots(1);
   try {
-    const supervisor = new DevSupervisorV0({ workerClient: supervisorClient(runtime), idFactory: (kind) => `${kind}-graph`, now: () => NOW });
+    const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(), workerClient: supervisorClient(runtime), idFactory: (kind) => `${kind}-graph`, now: () => NOW });
     const run = activeRun(supervisor, 'run-authoritative');
     await assert.rejects(
       () => supervisor.executeToolDecision(run, {

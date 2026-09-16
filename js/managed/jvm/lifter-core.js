@@ -231,6 +231,22 @@ function collectJvmControlFlowJoins(bytecode, exceptionTable) {
   return { joinOffsets, dynamicJump };
 }
 
+// Shared checked `CONSTANT_Class` resolver for `new` (#8845), `instanceof`
+// (#8848) and `checkcast` (#4810 baseline / #8848 req 7). Enforces range,
+// tag, and nested Utf8 name authority — same posture as the checked `ldc`
+// path hardened in #8004, extended to opcodes that consume a class operand.
+// Returns `null` on any invalid slot; callers must fail closed.
+function resolveJvmClassRefName(jvmClass, cpIndex) {
+  const pool = jvmClass?.constantPool;
+  if (!Array.isArray(pool)) return null;
+  if (!Number.isInteger(cpIndex) || cpIndex <= 0 || cpIndex >= pool.length) return null;
+  const entry = pool[cpIndex];
+  if (!entry || entry.tag !== 7 || !Number.isInteger(entry.nameIndex)) return null;
+  const nameEntry = pool[entry.nameIndex];
+  if (!nameEntry || nameEntry.tag !== 1 || typeof nameEntry.value !== 'string' || nameEntry.value.length === 0) return null;
+  return nameEntry.value;
+}
+
 function jvmProducedValueCategory(value) {
   if (value?.category === 2) return 2;
   if (value?.category === 1) return 1;
@@ -648,11 +664,22 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
             break;
           }
 
+          // #8955: the resolved field descriptor already proves the IEEE-754
+          // domain (`F` → binary32, `D` → binary64). Without a canonical
+          // machine `type` on the produced/consumed value, `bridge-lowering-v2.js::mt()`
+          // defaults the missing `type` to `{kind:'bitvector', widthBits:bits}`,
+          // so the entire Semantic IR publishes a `complete` integer view of a
+          // known floating field. `ldc` float/double constants use the same
+          // canonical `type` contract (see the `floatPrimitive` helper above);
+          // `fload/dload` locals were fixed in #7971. Field results were the
+          // remaining JVM float-domain authority escape.
           const value = {
             bits: field.bits,
             category: field.category,
             valueKind: field.valueKind,
             descriptor: field.descriptor,
+            ...(field.valueKind === 'float' ? { type: { kind: 'float', widthBits: 32, format: 'binary32' } } : {}),
+            ...(field.valueKind === 'double' ? { type: { kind: 'float', widthBits: 64, format: 'binary64' } } : {}),
           };
           if (isWrite) {
             consumedValues.push({ id: 'val', ...value });
@@ -727,7 +754,32 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const classIdx = view.getUint16(pc, false);
           pc += 2;
           mnemonic = 'new';
-          producedValues.push({ bits: 64, cpClassIndex: classIdx });
+          // #8845: apply the same checked `CONSTANT_Class` + nested Utf8
+          // resolver introduced for #8848 (reqs 1, 2, 7). An out-of-range or
+          // wrong-tag operand must not publish an exact allocation.
+          const targetClassName = resolveJvmClassRefName(jvmClass, classIdx);
+          if (targetClassName == null) {
+            completeness = 'partial';
+            unknownEffects.push({ category: 'types', reason: 'jvm-new-cp-class-invalid' });
+            producedValues.push({ bits: 64, cpClassIndex: classIdx });
+          } else {
+            // Preserve the allocated class identity via `valueType` /
+            // `referenceKind`, which the shared bridge folds into canonical
+            // node metadata (req 3 — canonical managed-heap reference type is
+            // #8836's owned scope). Still fail closed: the current bundle
+            // cannot carry an allocation-site / fresh-object-identity /
+            // heap-effect schema, so a valid `new` cannot be published as
+            // `exact` either — DEX `new-instance` uses the same posture
+            // (reqs 5, 8).
+            producedValues.push({
+              bits: 64,
+              cpClassIndex: classIdx,
+              valueType: targetClassName,
+              referenceKind: 'new-allocation',
+            });
+            completeness = 'partial';
+            unknownEffects.push({ category: 'memory', reason: 'jvm-new-allocation-unrepresented' });
+          }
           currentStackHeight++;
         }
         break;
@@ -752,10 +804,42 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           // is real control-affecting behaviour the bundle does not model as
           // control flow, so checkcast fails closed to partial.
           consumedValues.push({ id: 'obj' });
+          // #8848 / #4810 req 7: checked `CONSTANT_Class` + nested Utf8 name
+          // resolution (shared with #8845 `new`). An out-of-range or wrong-tag
+          // CP operand must not publish an exact type-test / refined cast.
+          const targetClassName = resolveJvmClassRefName(jvmClass, classIdx);
+          if (targetClassName == null) {
+            completeness = 'partial';
+            unknownEffects.push({
+              category: 'types',
+              reason: opcode === 0xc0 ? 'jvm-checkcast-cp-class-invalid' : 'jvm-instanceof-cp-class-invalid',
+            });
+          }
           if (opcode === 0xc1) {
-            producedValues.push({ bits: 32, cpClassIndex: classIdx });
+            // #8848: preserve the tested target's canonical identity on the
+            // produced value so the shared bridge keeps it as node metadata
+            // (`valueType`/`referenceKind`), and fail closed to `partial`
+            // because the current canonical IR cannot represent a first-class
+            // type-test predicate with a resolved target operand.
+            producedValues.push({
+              bits: 32,
+              cpClassIndex: classIdx,
+              ...(targetClassName != null ? { valueType: targetClassName, referenceKind: 'type-test-target' } : {}),
+            });
+            if (targetClassName != null) {
+              completeness = 'partial';
+              unknownEffects.push({
+                category: 'types',
+                reason: 'jvm-instanceof-type-test-target-unrepresented-in-canonical-ir',
+              });
+            }
           } else {
-            producedValues.push({ id: 'obj-refined', bits: 64, cpClassIndex: classIdx });
+            producedValues.push({
+              id: 'obj-refined',
+              bits: 64,
+              cpClassIndex: classIdx,
+              ...(targetClassName != null ? { valueType: targetClassName, referenceKind: 'checkcast-target' } : {}),
+            });
             completeness = 'partial';
             unknownEffects.push({ category: 'other', reason: 'jvm-checkcast-exception-unrepresented' });
           }

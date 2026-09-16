@@ -1,5 +1,6 @@
 import { codedIndexSize, tableIndexSize, cilMetadataToken } from './metadata-layout.js';
 import { readCilMetadataBlob } from './call-signature-metadata.js';
+import { readInternedCilHeapString } from './metadata-string-cache.js';
 import { parseCilMethodSignature, parseCilPropertySignature, parseCilTypeSpecSignature, cilMethodSlotElementByte, cilPropertyTypeElementByte } from './call-signature-types.js';
 import { decodeCilCustomAttributeValue } from './custom-attribute-values.js';
 import { stableStringify } from '../../core/identity/index.js';
@@ -114,13 +115,7 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     // Preserve legacy minimal metadata with an absent optional heap and null names.
     if (value === 0) return null;
     if (!stringsStream || value >= stringsStream.size) fail('cil-definition-string-index-invalid');
-    const start = stringsStream.offset + value, end = stringsStream.offset + stringsStream.size;
-    let pos = start;
-    while (pos < end && bytes[pos] !== 0) pos++;
-    if (pos === end) fail('cil-definition-string-unterminated');
-    admission?.chargeStringBytes(pos - start);
-    try { return utf8.decode(bytes.subarray(start, pos)); }
-    catch { fail('cil-invalid-strings-utf8'); }
+    return readInternedCilHeapString(bytes, stringsStream, admission, value, utf8);
   };
   const requiredText = (value, code) => {
     const valueText = text(value);
