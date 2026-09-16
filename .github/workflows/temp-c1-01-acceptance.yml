@@ -1,0 +1,121 @@
+name: Temporary C1-01 local acceptance
+on:
+  push:
+    branches: ['impl/c1-01-acceptance-20260916']
+    paths: ['.github/workflows/temp-c1-01-acceptance.yml']
+permissions:
+  contents: write
+jobs:
+  accept:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      TARGET_HEAD: 55cd809ac7619316a6122b42f44f2ef6d5ff8c93
+      TARGET_BRANCH: feat/analysis-roadmap-v8-current-main-20260907
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TARGET_HEAD }}
+          fetch-depth: 400
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install locked dependencies
+        timeout-minutes: 3
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Add frozen pointer load boundary denominator
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('tests/phase7/pointsto/loaded-pointer-recovery.test.mjs')
+          s=p.read_text()
+          marker="test('loaded-pointer recovery is deterministic across identical replays', () => {"
+          if marker not in s: raise SystemExit('C1-01 insertion marker missing')
+          block="""test('C1-01 frozen width/endian pointer-load matrix requires one complete reaching-store proof', () => {\n  const observed = [];\n  for (const bits of [32, 64]) {\n    for (const endian of ['little', 'big']) {\n      const built = loadedPointerFixture({ bits, endian });\n      const result = runWithMemory(built);\n      const loaded = loadedSet(result);\n      assert.equal(loaded.top, false, `${bits}/${endian}: exact load must recover a finite pointer`);\n      assert.equal(loaded.targets.length, 1, `${bits}/${endian}: exactly one recovered target`);\n      assert.equal(loaded.targets[0].widthBits, bits, `${bits}/${endian}: pointer width preserved`);\n      assert.deepEqual(loaded.targets[0].offsetRange, { min:32n, max:32n, exact:true });\n      assert.equal(result.recovery?.proofs?.loaded?.storeNodeId, 'node_store', `${bits}/${endian}: recovery must name the unique reaching store`);\n      assert.equal(result.status.completeness, 'complete');\n      observed.push(`${bits}-${endian}`);\n    }\n  }\n  assert.deepEqual(observed, ['32-little','32-big','64-little','64-big']);\n});\n\n"""
+          if 'C1-01 frozen width/endian pointer-load matrix' not in s:
+              s=s.replace(marker,block+marker,1)
+          p.write_text(s)
+          PY
+          git diff --check
+      - name: Run C1-01 focused recovery contract
+        run: >-
+          node --test
+          tests/phase7/pointsto/loaded-pointer-recovery.test.mjs
+          tests/phase7/pointsto/c1-combined-acceptance.test.mjs
+          tests/phase7/pointsto/strict-boundaries.test.mjs
+          tests/phase7/pointsto/issue-5022-memoryssa-spill-reload.test.mjs
+          tests/phase7/pointsto/issue-5022-target-metadata-strict.test.mjs
+          tests/phase7/pointsto/issue-4011-iteration-limit-fail-closed.test.mjs
+      - name: Run complete Phase 7 points-to regression directory
+        run: node --test tests/phase7/pointsto/*.test.mjs
+      - name: Record C1-01 acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('docs/analysis-local-acceptance-audit.json')
+          audit=json.loads(p.read_text())
+          finding=next(x for x in audit['findings'] if x['id']=='HEX-C1-01')
+          finding['localStatus']='accepted-local'
+          finding['assessment']='C1-01 の loaded-pointer recovery を frozen 32/64-bit x little/big-endian の陽性4セルと effect/authority陰性分母で再受入。exact pointer は current canonical MemorySSA の単一 complete reaching-store proofからのみ復元し、MayAlias、unknown/call clobber、partial bytes、endian mismatch、volatile/atomic、invalid width/endian、missing provenance、stale snapshot/function/build/source、malformed metadata、cancel/budget/iteration limitでは finite exact targetを発行しない。同一入力 replay は同じ points-to digest/proof/statusへ収束する。C1-02 と whole-roadmap/release/device gates は別。'
+          finding['source']='tests/phase7/pointsto/loaded-pointer-recovery.test.mjs'
+          finding['verificationSuite']='c1-01-final-acceptance-20260916'
+          finding['originalRequirementAcceptedHere']=True
+          task=next(x for x in audit['tasks'] if x['id']=='FR-C1-01A')
+          task['localStatus']='accepted-local'
+          task['currentAssessment']='pointer load boundaryを32/64-bit x little/big-endianで固定し、complete unique reaching storeのみ exact recovery。may/unknown/partial/atomic/volatile/stale/malformed/cancel/budget negativesはunknownのまま、identical replayはdeterministicに収束する。'
+          task['originalRequirementAcceptedHere']=True
+          audit.setdefault('integrationFollowup', {})['c1PointerRecoveryAcceptance20260916']={
+            'status':'ACCEPTED-LOCAL','finding':'HEX-C1-01','task':'FR-C1-01A',
+            'positiveMatrix':{'widthBits':[32,64],'endian':['little','big'],'cells':4},
+            'requiredAuthority':'one-complete-current-reaching-store-proof',
+            'negativeClasses':['may-alias','unknown-clobber','call-clobber','partial-bytes','endian-mismatch','volatile','atomic','invalid-access','missing-provenance','stale-identity','malformed-metadata','cancel-or-budget'],
+            'deterministicReplay':True,'fullRoadmapComplete':False,'transformAuthorization':False,
+          }
+          p.write_text(json.dumps(audit, ensure_ascii=False, indent=2)+'\n')
+
+          p=Path('docs/解析ツール改善.md')
+          text=p.read_text()
+          section='''## 2026-09-16: C1-01 local acceptance 完了\n\nHEX-C1-01 / FR-C1-01A は、loaded-pointer recovery の固定境界を 32/64-bit × little/big-endian の陽性4セルと、MayAlias / unknown clobber / partial bytes / endian mismatch / volatile / atomic / stale identity / malformed metadata / cancel-budget の陰性分母で再検証し、このローカル要件について `accepted-local` とする。exact pointer は current canonical MemorySSA の単一 complete reaching-store proof がある場合だけ復元し、同一入力replayは同じ digest / proof / statusへ収束する。C1-02、独立レビュー、実機、release、他 finding は閉じていないため、ロードマップ全体の `CHECKPOINT-LOCKED` / `transformAuthorization:false` は維持する。\n\n'''
+          if '## 2026-09-16: C1-01 local acceptance 完了' not in text:
+              marker='## 2026-09-16: C0-01 local acceptance 完了\n'
+              if marker not in text: raise SystemExit('analysis md marker missing')
+              text=text.replace(marker, section+marker, 1)
+          p.write_text(text)
+
+          p=Path('docs/analysis-roadmap-v8-integration-checkpoint.md')
+          text=p.read_text()
+          note='''\n\n## 2026-09-16 C1-01 local acceptance\n\nloaded pointer recoveryを32/64-bit × little/big-endian陽性4セルとMemorySSA authority陰性分母で固定した。current canonical MemorySSAの単一complete reaching-store proofのみ exact pointer を発行し、MayAlias/unknown clobber/partial/endian mismatch/volatile/atomic/stale/malformed/cancel-budgetではunknownを維持する。同一replayのpoints-to digest/proof/statusも一致する。HEX-C1-01 / FR-C1-01A はこのローカル要件について accepted-local。C1-02と全roadmap/release/device受入は未完了のまま。\n'''
+          if '## 2026-09-16 C1-01 local acceptance' not in text: text += note
+          p.write_text(text)
+          PY
+          node -e "JSON.parse(require('fs').readFileSync('docs/analysis-local-acceptance-audit.json','utf8'))"
+          git diff --check
+      - name: Commit accepted C1-01 checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tests/phase7/pointsto/loaded-pointer-recovery.test.mjs docs/analysis-local-acceptance-audit.json docs/解析ツール改善.md docs/analysis-roadmap-v8-integration-checkpoint.md
+          git commit -m 'test(phase7): accept C1-01 pointer recovery boundary'
+      - name: Verify ownership on committed candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tools/validation/phase7-ownership.mjs --check-manifest
+          git fetch --no-tags --depth=400 origin main:refs/remotes/origin/main
+          BASE_SHA=$(git rev-parse refs/remotes/origin/main)
+          node tools/validation/analysis-roadmap/ownership.mjs --branch "$TARGET_BRANCH" --phase phase7 --base-sha "$BASE_SHA" --head-sha "$(git rev-parse HEAD)"
+      - name: Publish only if target head is unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          REMOTE=$(git ls-remote origin "refs/heads/$TARGET_BRANCH" | cut -f1)
+          test "$REMOTE" = "$TARGET_HEAD" || { echo "target moved: expected $TARGET_HEAD got $REMOTE"; exit 1; }
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
