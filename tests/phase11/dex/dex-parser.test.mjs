@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { parseDex, probeDex } from '../../../js/managed/dex/parser.js';
 import { validateDexMap } from '../../../js/managed/dex/map-validation.js';
-import { applyDexIntegrity } from '../fixtures/dex-integrity.mjs';
 
 console.log('[phase11] running dex parser tests...');
 
@@ -26,6 +25,17 @@ function writeMap(buf) {
 }
 
 export function buildMinimalDex() {
+  // #8871: valid fixtures must satisfy the #8717 canonical identity-table
+  // ordering contract. string_ids are sorted by UTF-16 unit order —
+  // "LTest;" (0x4c…) < "V" (0x56) < "foo" (0x66…) — and every referencing
+  // table follows the canonical index order:
+  //   string index 0 -> "LTest;", 1 -> "V", 2 -> "foo"
+  //   type  index 0 -> "LTest;", 1 -> "V"
+  //   proto index 0 -> ()V (shorty "V", return V)
+  //   method index 0 -> LTest;.foo()V, canonical (class, name, proto) order
+  // Out-of-order/duplicate identity tables stay covered by the dedicated
+  // #8717 identity-table regressions; production dex-*-order-invalid
+  // validation is never relaxed to make fixtures pass.
   const buf = new Uint8Array(0x200);
   const view = new DataView(buf.buffer);
   buf.set([0x64, 0x65, 0x78, 0x0a, 0x30, 0x33, 0x35, 0x00], 0);
@@ -35,26 +45,44 @@ export function buildMinimalDex() {
   view.setUint32(52, MAP_OFF, true);
   view.setUint32(104, 0x100, true);
   view.setUint32(108, 0x100, true);
-  view.setUint32(56, 3, true); view.setUint32(60, 0x70, true);
-  view.setUint32(64, 2, true); view.setUint32(68, 0x80, true);
-  view.setUint32(72, 1, true); view.setUint32(76, 0x90, true);
-  view.setUint32(88, 1, true); view.setUint32(92, 0xa0, true);
-  view.setUint32(96, 1, true); view.setUint32(100, 0xb0, true);
-  view.setUint32(0x70, 0x100, true); view.setUint32(0x74, 0x104, true); view.setUint32(0x78, 0x110, true);
-  view.setUint32(0x80, 0, true); view.setUint32(0x84, 1, true);
-  view.setUint32(0x90, 0, true); view.setUint32(0x94, 0, true); view.setUint32(0x98, 0, true);
-  view.setUint16(0xa0, 1, true); view.setUint16(0xa2, 0, true); view.setUint32(0xa4, 2, true);
-  view.setUint32(0xb0, 1, true); view.setUint32(0xb4, 1, true); view.setUint32(0xb8, 0xffffffff, true);
-  view.setUint32(0xbc, 0, true); view.setUint32(0xc0, 0xffffffff, true); view.setUint32(0xc4, 0, true); view.setUint32(0xc8, 0x120, true);
-  buf.set([1, 0x56, 0], 0x100);
-  buf.set([6, 0x4c, 0x54, 0x65, 0x73, 0x74, 0x3b, 0], 0x104);
-  buf.set([3, 0x66, 0x6f, 0x6f, 0], 0x110);
+  // Header table sizes/offsets (same layout as the pre-#8717 fixture).
+  view.setUint32(56, 3, true); view.setUint32(60, 0x70, true);  // string_ids
+  view.setUint32(64, 2, true); view.setUint32(68, 0x80, true);  // type_ids
+  view.setUint32(72, 1, true); view.setUint32(76, 0x90, true);  // proto_ids
+  view.setUint32(88, 1, true); view.setUint32(92, 0xa0, true);  // method_ids
+  view.setUint32(96, 1, true); view.setUint32(100, 0xb0, true); // class_defs
+  // string_ids: strictly increasing MUTF-8 data offsets, canonical order.
+  view.setUint32(0x70, 0x100, true); // "LTest;"
+  view.setUint32(0x74, 0x108, true); // "V"
+  view.setUint32(0x78, 0x10b, true); // "foo"
+  // type_ids: descriptor indices strictly increasing.
+  view.setUint32(0x80, 0, true); // LTest;
+  view.setUint32(0x84, 1, true); // V
+  // proto_ids: ()V with shorty "V" (string 1) and return type V (type 1).
+  view.setUint32(0x90, 1, true); view.setUint32(0x94, 1, true); view.setUint32(0x98, 0, true);
+  // method_ids: LTest;.foo()V in canonical (class, name, proto) order.
+  view.setUint16(0xa0, 0, true); view.setUint16(0xa2, 0, true); view.setUint32(0xa4, 2, true);
+  // class_def: LTest; with one direct method foo (class_data at 0x120).
+  view.setUint32(0xb0, 0, true);
+  view.setUint32(0xb4, 1, true);
+  view.setUint32(0xb8, 0xffffffff, true);
+  view.setUint32(0xbc, 0, true);
+  view.setUint32(0xc0, 0xffffffff, true);
+  view.setUint32(0xc4, 0, true);
+  view.setUint32(0xc8, 0x120, true);
+  view.setUint32(0xcc, 0, true);
+  // string_data items (MUTF-8: uleb length, chars, 0 terminator), contiguous.
+  buf.set([6, 0x4c, 0x54, 0x65, 0x73, 0x74, 0x3b, 0], 0x100);
+  buf.set([1, 0x56, 0], 0x108);
+  buf.set([3, 0x66, 0x6f, 0x6f, 0], 0x10b);
+  // class_data: 0 static, 0 instance, 1 direct, 0 virtual; idx 0, flags 1, code 0x140.
   buf.set([0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0xc0, 0x02], 0x120);
+  // code_item for foo()V (instance method: ins=1); const/4 v0,1; return-void.
   view.setUint16(0x140, 2, true); view.setUint16(0x142, 1, true); view.setUint16(0x144, 0, true); view.setUint16(0x146, 0, true);
   view.setUint32(0x148, 0, true); view.setUint32(0x14c, 2, true);
   buf.set([0x12, 0x10, 0x0e, 0x00], 0x150);
   writeMap(buf);
-  return applyDexIntegrity(buf);
+  return buf;
 }
 
 function expectTypeError(bytes, code, parser = parseDex) {
@@ -67,8 +95,11 @@ assert.equal(probe.supported, true);
 assert.equal(probe.formatVersion, 'dex-035');
 const parsed = parseDex(dexBytes);
 assert.equal(parsed.strings.length, 3);
-assert.equal(parsed.strings[1], 'LTest;');
-assert.equal(parsed.types[1], 'LTest;');
+assert.equal(parsed.strings[0], 'LTest;');
+assert.equal(parsed.strings[1], 'V');
+assert.equal(parsed.strings[2], 'foo');
+assert.equal(parsed.types[0], 'LTest;');
+assert.equal(parsed.types[1], 'V');
 assert.equal(parsed.methods[0].name, 'foo');
 assert.equal(parsed.classes[0].classType, 'LTest;');
 assert.equal(parsed.classes[0].directMethods.length, 1);
@@ -93,12 +124,12 @@ assert.equal(parsed.classes[0].directMethods[0].codeOff, 0x140);
   expectTypeError(bytes, 'dex-map-item-outside-data');
 }
 {
-  const bytes = buildMinimalDex(); const view = new DataView(bytes.buffer); const last = MAP_OFF + 4 + 9 * 12;
+  const bytes = buildMinimalDex(); const view = new DataView(bytes.buffer); const last = MAP_OFF + 4 + (MAP_ITEMS.length - 1) * 12;
   view.setUint16(last, 0x2001, true);
   expectTypeError(bytes, 'dex-duplicate-map-item-type');
 }
 {
-  const bytes = buildMinimalDex(); const view = new DataView(bytes.buffer); const last = MAP_OFF + 4 + 9 * 12;
+  const bytes = buildMinimalDex(); const view = new DataView(bytes.buffer); const last = MAP_OFF + 4 + (MAP_ITEMS.length - 1) * 12;
   view.setUint32(last + 8, 0x130, true);
   expectTypeError(bytes, 'dex-map-items-out-of-order');
 }
@@ -163,7 +194,7 @@ function buildVariableMapDex(type, payload, version = '035') {
     view.setUint16(pos, itemType, true); view.setUint16(pos + 2, 0, true);
     view.setUint32(pos + 4, size, true); view.setUint32(pos + 8, offset, true);
   }
-  return applyDexIntegrity(bytes);
+  return bytes;
 }
 
 for (const [type, payload] of [
