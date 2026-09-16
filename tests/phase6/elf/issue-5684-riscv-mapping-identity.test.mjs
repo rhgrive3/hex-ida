@@ -3,7 +3,7 @@ import test from 'node:test';
 import { parseRiscvMappingSymbol, resolveRiscvIsaProfile } from '../../../js/binary/riscv-isa.js';
 
 const fileProfile = Object.freeze({
-  canonical:'rv64i',
+  canonical:'rv64i2p1_m2p0',
   xlen:64,
   compressedInstructions:false,
   instructionAlignment:4,
@@ -41,7 +41,7 @@ test('5684: structured mapping identity fields cannot select an exact profile', 
 });
 
 test('5684: canonical primitive mapping metadata still overrides file ISA', () => {
-  const mapped = parseRiscvMappingSymbol('$xrv64imc');
+  const mapped = parseRiscvMappingSymbol('$xrv64i2p1_m2p0_c2p0');
   const result = resolveRiscvIsaProfile(metadata({
     address:0x1000n,
     sectionIndex:1,
@@ -49,7 +49,7 @@ test('5684: canonical primitive mapping metadata still overrides file ISA', () =
     isa:mapped.isa,
   }), 0x1800n, { allowAssumed:false });
 
-  assert.equal(result?.canonical, 'rv64imc');
+  assert.equal(result?.canonical, 'rv64i2p1_m2p0_c2p0');
   assert.equal(result?.compressedInstructions, true);
   assert.equal(result?.evidence, 'mapping-symbol');
   assert.equal(result?.exact, true);
@@ -81,10 +81,10 @@ test('5684: invalid primitive canonical does not become exact evidence', () => {
 
 test('5684: valid canonical profiles retain their existing identity', () => {
   for (const profile of [
-    { canonical:'rv32i', xlen:32, compressedInstructions:false, instructionAlignment:4 },
-    { canonical:'rv64i', xlen:64, compressedInstructions:false, instructionAlignment:4 },
-    { canonical:'rv64imc', xlen:64, compressedInstructions:true, instructionAlignment:2 },
-    { canonical:'rv64gc', xlen:64, compressedInstructions:true, instructionAlignment:2 },
+    { canonical:'rv32i2p1', xlen:32, compressedInstructions:false, instructionAlignment:4 },
+    { canonical:'rv64i2p1', xlen:64, compressedInstructions:false, instructionAlignment:4 },
+    { canonical:'rv64i2p1_m2p0_c2p0', xlen:64, compressedInstructions:true, instructionAlignment:2 },
+    { canonical:'rv64i2p1_m2p0_a2p1_f2p2_d2p2_c2p0_zicsr2p0_zifencei2p0', xlen:64, compressedInstructions:true, instructionAlignment:2 },
   ]) {
     const result = resolveRiscvIsaProfile({ file:{ ...profile, evidence:'elf-attribute' } }, 0n, { allowAssumed:false });
     assert.equal(result?.canonical, profile.canonical);
@@ -92,5 +92,20 @@ test('5684: valid canonical profiles retain their existing identity', () => {
     assert.equal(result?.compressedInstructions, profile.compressedInstructions);
     assert.equal(result?.instructionAlignment, profile.instructionAlignment);
     assert.equal(result?.exact, true);
+  }
+});
+
+test('5684: version-omitted profiles keep their identity without exactness', () => {
+  for (const profile of [
+    { canonical:'rv32i', xlen:32, compressedInstructions:false, instructionAlignment:4 },
+    { canonical:'rv64i', xlen:64, compressedInstructions:false, instructionAlignment:4 },
+    { canonical:'rv64imc', xlen:64, compressedInstructions:true, instructionAlignment:2 },
+    { canonical:'rv64gc', xlen:64, compressedInstructions:true, instructionAlignment:2 },
+  ]) {
+    const result = resolveRiscvIsaProfile({ file:{ ...profile, evidence:'elf-attribute' } }, 0n, { allowAssumed:false });
+    assert.equal(result?.canonical, profile.canonical);
+    assert.equal(result?.compressedInstructions, profile.compressedInstructions);
+    assert.equal(result?.instructionAlignment, profile.instructionAlignment);
+    assert.equal(result?.exact, false, `${profile.canonical} lacks Tag_RISCV_arch versions`);
   }
 });

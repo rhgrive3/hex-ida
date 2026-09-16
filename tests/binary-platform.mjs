@@ -80,20 +80,20 @@ function peUnwindFragmentRegressions() {
   {
     const {bytes,view,image}=makeImage();
     view.setUint32(0x100,0x1000,true);view.setUint32(0x104,(0x10<<2)|1,true);
-    view.setUint32(0x108,0x2000,true);view.setUint32(0x10c,(0x08<<2)|2,true);
+    view.setUint32(0x108,0x1040,true);view.setUint32(0x10c,(0x08<<2)|2,true);
     view.setUint32(0x110,0x3000,true);view.setUint32(0x114,(0x08<<2)|3,true);
     parseExceptionFunctions(new ByteView(bytes),{rva:0x5000,size:24},image,0xaa64);
     assert.deepEqual(image.functions.map(f=>f.address),[0x10001000n]);
     assert.equal(image.metadata.exceptionDirectory.fragments.length,1);
-    assert.equal(image.metadata.exceptionDirectory.fragments[0].address,0x10002000n);
+    assert.equal(image.metadata.exceptionDirectory.fragments[0].address,0x10001040n);
     assert.ok(image.warnings.some(x=>x.includes('reserved ARM64')));
   }
   {
     const {bytes,view,image}=makeImage();
     view.setUint32(0x100,0x1000,true);view.setUint32(0x104,0x6000,true);
     view.setUint32(0x108,0x2000,true);view.setUint32(0x10c,0x6010,true);
-    view.setUint32(0x200,0x10|(1<<21)|(1<<28),true);view.setUint32(0x204,0,true);
-    view.setUint32(0x210,0x08|(1<<21)|(1<<22)|(1<<28),true);view.setUint32(0x214,0,true);
+    view.setUint32(0x200,0x10|(1<<21)|(1<<28),true);bytes[0x204]=0xe4;
+    view.setUint32(0x210,0x08|(1<<21)|(1<<22)|(1<<28),true);bytes[0x214]=0xe3;bytes[0x215]=0xe4;
     parseExceptionFunctions(new ByteView(bytes),{rva:0x5000,size:16},image,0xaa64);
     // ARM64 .xdata bit 22 is the low bit of Epilog Count, not a fragment flag.
     assert.deepEqual(image.functions.map(f=>f.address),[0x10001000n,0x10002000n]);

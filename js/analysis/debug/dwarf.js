@@ -98,6 +98,46 @@ const DW_FORM = Object.freeze({
 const ADDRX_FORMS = Object.freeze([DW_FORM.addrx, DW_FORM.addrx1, DW_FORM.addrx2, DW_FORM.addrx3, DW_FORM.addrx4]);
 /** Forms whose resolved value is an absolute address (direct or addrx-resolved). */
 const ADDRESS_CLASS_FORMS = Object.freeze([DW_FORM.addr, ...ADDRX_FORMS]);
+// DWARF5 indexed string forms resolve through `.debug_str_offsets` after the
+// attribute list is read, because DW_AT_str_offsets_base may arrive on the unit
+// root that owns them.
+const STRX_FORMS = Object.freeze([DW_FORM.strx, DW_FORM.strx1, DW_FORM.strx2, DW_FORM.strx3, DW_FORM.strx4]);
+/** The largest extent the canonical DebugRecord `sizeBytes` domain can hold. */
+const MAX_EXACT_DEBUG_EXTENT = BigInt(Number.MAX_SAFE_INTEGER);
+
+/**
+ * Reads one parsed DWARF value in the integer domain, or null when the form that
+ * produced it was not numeric at all.
+ *
+ * A hostile abbreviation table may bind an address-valued attribute to a form
+ * whose parsed value is a block or a string. Coercing that with `BigInt()`/
+ * `Number()` throws out of the provider instead of yielding missing evidence.
+ */
+function bigNumeric(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  return null;
+}
+
+/**
+ * Converts one DWARF extent to the canonical `sizeBytes` domain: a non-negative
+ * safe integer, or null when it cannot be represented exactly.
+ */
+function exactDebugExtent(value) {
+  const magnitude = bigNumeric(value);
+  if (magnitude == null || magnitude < 0n || magnitude > MAX_EXACT_DEBUG_EXTENT) return null;
+  return Number(magnitude);
+}
+
+/**
+ * The BigInt distance between two parsed DWARF values, or null when either side
+ * is not numeric. A missing extent is unknown evidence, never a coercion.
+ */
+function debugExtentBetween(low, high) {
+  const base = bigNumeric(low);
+  const end = bigNumeric(high);
+  return base == null || end == null ? null : end - base;
+}
 // References that must never be interpreted as numeric DIE offsets in the
 // current `.debug_info` object. Supplementary references need a separately
 // identity-validated debug object (#4206), while ref_sig8 belongs to the
@@ -127,38 +167,88 @@ const ENCODING_CLASS = Object.freeze({
 // or memory before the first DIE is charged (#3932).
 const DEFAULT_MAX_ABBREV_DECLARATIONS = 65_536;
 const DEFAULT_MAX_ABBREV_ATTRIBUTES = 1_048_576;
+// Abbreviation *application* is a separate resource from abbreviation parsing:
+// one reused declaration multiplies its attribute list across every DIE that
+// cites it, and zero-byte forms such as DW_FORM_flag_present add retained state
+// without consuming a single scanned byte (#8752).
+const DEFAULT_MAX_DIE_ATTRIBUTE_ENTRIES = 500_000;
+// Section-backed string aliases are bounded by retained decoded output, not by
+// scan bytes: a scan budget lets the same physical string be decoded and kept
+// once per aliasing DIE (#8733).
+const DEFAULT_MAX_DECODED_STRING_BYTES = 8 * 1024 * 1024;
+// V8 retains JS strings as UTF-16, so two bytes per decoded code unit is the
+// conservative proxy for one retained decoded string.
+const DECODED_STRING_BYTES_PER_CHAR = 2;
+// One cache entry is itself retained state, so it is charged too.
+const DECODED_STRING_ENTRY_OVERHEAD_BYTES = 64;
+// Preflight decoding uses bounded transient chunks; the full JS string is only
+// materialized after its exact UTF-16 footprint has been admitted (#8739).
+const STRING_DECODE_PREFLIGHT_CHUNK_BYTES = 64 * 1024;
 const BYTE_BUDGET_DIAGNOSTIC = 'byte budget exhausted';
 const BYTE_BUDGET_ERROR_CODE = 'dwarf-byte-budget-exhausted';
+const STRING_BUDGET_DIAGNOSTIC = 'decoded string budget exhausted';
+const STRING_BUDGET_ERROR_CODE = 'dwarf-string-budget-exhausted';
+const ATTRIBUTE_BUDGET_DIAGNOSTIC = 'attribute materialization budget exhausted';
+const ATTRIBUTE_BUDGET_ERROR_CODE = 'dwarf-attribute-budget-exhausted';
 
-function byteBudgetError() {
-  const error = new RangeError(BYTE_BUDGET_ERROR_CODE);
-  error.code = BYTE_BUDGET_ERROR_CODE;
-  return error;
+function resolveDebugEndian(endian) {
+  if (endian == null) return 'little';
+  return endian === 'little' || endian === 'big' ? endian : null;
 }
 
 function isByteBudgetError(error) {
   return error?.code === BYTE_BUDGET_ERROR_CODE;
 }
 
-function createByteBudget(maxBytesScanned) {
-  let bytesScanned = 0;
+function createChargedBudget(maxUnits, errorCode) {
+  let used = 0;
   return {
-    get exhausted() { return bytesScanned >= maxBytesScanned; },
-    get bytesScanned() { return bytesScanned; },
+    get exhausted() { return used >= maxUnits; },
     charge(count) {
       if (!Number.isSafeInteger(count) || count < 0) throw new RangeError('dwarf-invalid-byte-charge');
-      if (count > maxBytesScanned - bytesScanned) throw byteBudgetError();
-      bytesScanned += count;
+      if (count > maxUnits - used) {
+        const error = new RangeError(errorCode);
+        error.code = errorCode;
+        throw error;
+      }
+      used += count;
     },
   };
 }
 
+function createByteBudget(maxBytesScanned) {
+  return createChargedBudget(maxBytesScanned, BYTE_BUDGET_ERROR_CODE);
+}
+
+function createDecodedStringBudget(maxDecodedStringBytes) {
+  return createChargedBudget(maxDecodedStringBytes, STRING_BUDGET_ERROR_CODE);
+}
+
+function createAttributeEntryBudget(maxAttributeEntries) {
+  return createChargedBudget(maxAttributeEntries, ATTRIBUTE_BUDGET_ERROR_CODE);
+}
+
+/** The stable diagnostic for one budget-exhaustion error, or null for anything else. */
+function budgetDiagnostic(error) {
+  if (error?.code === BYTE_BUDGET_ERROR_CODE) return BYTE_BUDGET_DIAGNOSTIC;
+  if (error?.code === STRING_BUDGET_ERROR_CODE) return STRING_BUDGET_DIAGNOSTIC;
+  if (error?.code === ATTRIBUTE_BUDGET_ERROR_CODE) return ATTRIBUTE_BUDGET_DIAGNOSTIC;
+  return null;
+}
+
+function pushBudgetDiagnostic(diagnostics, error) {
+  const diagnostic = budgetDiagnostic(error);
+  if (diagnostic && !diagnostics.includes(diagnostic)) diagnostics.push(diagnostic);
+  return diagnostic != null;
+}
+
 class Cursor {
-  constructor(bytes, offset = 0, byteBudget = null) {
+  constructor(bytes, offset = 0, byteBudget = null, endian = 'little') {
     this.bytes = bytes;
     this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     this.offset = offset;
     this.byteBudget = byteBudget;
+    this.littleEndian = endian === 'little';
     // Reads must not walk past a caller-declared end (a compilation-unit
     // boundary, #1860). `subarray()` silently clamps an out-of-range end, so a
     // short block would otherwise read nothing, advance the offset anyway, and
@@ -181,7 +271,7 @@ class Cursor {
   u16() {
     if (this.offset + 2 > this.limit) throw new RangeError('dwarf-read-past-limit');
     this.charge(2);
-    const value = this.view.getUint16(this.offset, true);
+    const value = this.view.getUint16(this.offset, this.littleEndian);
     this.offset += 2;
     return value;
   }
@@ -189,7 +279,7 @@ class Cursor {
   u32() {
     if (this.offset + 4 > this.limit) throw new RangeError('dwarf-read-past-limit');
     this.charge(4);
-    const value = this.view.getUint32(this.offset, true);
+    const value = this.view.getUint32(this.offset, this.littleEndian);
     this.offset += 4;
     return value;
   }
@@ -197,7 +287,7 @@ class Cursor {
   u64() {
     if (this.offset + 8 > this.limit) throw new RangeError('dwarf-read-past-limit');
     this.charge(8);
-    const value = this.view.getBigUint64(this.offset, true);
+    const value = this.view.getBigUint64(this.offset, this.littleEndian);
     this.offset += 8;
     return value;
   }
@@ -255,7 +345,19 @@ class Cursor {
  * returns `null`, which callers propagate as an unresolved attribute instead of
  * silently decoding an empty or unterminated span.
  */
-function cstring(bytes, offset, byteBudget = null) {
+function decodedUtf16CodeUnits(bytes, start, end) {
+  const decoder = new TextDecoder('utf8');
+  let codeUnits = 0;
+  for (let at = start; at < end; at += STRING_DECODE_PREFLIGHT_CHUNK_BYTES) {
+    const next = Math.min(end, at + STRING_DECODE_PREFLIGHT_CHUNK_BYTES);
+    // Streaming preserves UTF-8 sequences split at a chunk boundary while each
+    // temporary decoded string remains bounded by the fixed chunk size.
+    codeUnits += decoder.decode(bytes.subarray(at, next), { stream: next < end }).length;
+  }
+  return codeUnits;
+}
+
+function decodeSectionString(bytes, offset, byteBudget = null, decodedBudget = null) {
   if (!bytes || offset < 0 || offset >= bytes.length) return null;
   let end = offset;
   while (end < bytes.length) {
@@ -264,7 +366,52 @@ function cstring(bytes, offset, byteBudget = null) {
     end += 1;
   }
   if (end === bytes.length) return null;
+
+  if (decodedBudget) {
+    // Count the exact retained UTF-16 footprint with bounded transient chunks,
+    // reserve it, and only then allow the one full TextDecoder allocation.
+    const codeUnits = decodedUtf16CodeUnits(bytes, offset, end);
+    decodedBudget.charge(codeUnits * DECODED_STRING_BYTES_PER_CHAR);
+  }
   return new TextDecoder('utf8').decode(bytes.subarray(offset, end));
+}
+
+/**
+ * Resolves section-backed string references for one parse run.
+ *
+ * DWARF string forms are table *references*: nothing in the format limits how
+ * many DIEs may alias one physical string, so decoding on every reference turns
+ * a ~70 KiB section into hundreds of retained copies of the same string (#8733).
+ * Every resolution is therefore cached under its own section namespace, and the
+ * retained decoded output — plus the cache entry that holds it — is charged
+ * against an explicit budget. A cached failure stays a failure: an out-of-range
+ * or unterminated reference is never published as a valid string (#1861).
+ */
+function createStringResolver(byteBudget, maxDecodedStringBytes) {
+  const decodedBudget = createDecodedStringBudget(maxDecodedStringBytes);
+  const namespaces = new Map();
+  return {
+    /** Scan cost still belongs to the shared `.debug_info`/section scan budget. */
+    chargeScan(count) { byteBudget?.charge(count); },
+    get decodedExhausted() { return decodedBudget.exhausted; },
+    resolve(namespace, bytes, offset) {
+      if (!bytes || !Number.isSafeInteger(offset) || offset < 0) return null;
+      let cache = namespaces.get(namespace);
+      if (!cache || cache.bytes !== bytes) {
+        cache = { bytes, byOffset: new Map() };
+        namespaces.set(namespace, cache);
+      }
+      if (cache.byOffset.has(offset)) return cache.byOffset.get(offset);
+      // Reserve the retained cache entry before any potentially large decode.
+      // decodeSectionString then reserves the exact UTF-16 payload before the
+      // full TextDecoder allocation. Negative cached results retain only this
+      // fixed entry charge.
+      decodedBudget.charge(DECODED_STRING_ENTRY_OVERHEAD_BYTES);
+      const value = decodeSectionString(bytes, offset, byteBudget, decodedBudget);
+      cache.byOffset.set(offset, value);
+      return value;
+    },
+  };
 }
 
 /** Parses one `.debug_abbrev` table with shared per-parse budgets. */
@@ -321,8 +468,10 @@ function parseAbbrev(bytes, tableOffset, state = null) {
 function readUnsignedWidth(cursor, width) {
   if (!Number.isInteger(width) || width < 1 || width > 8) throw new RangeError('dwarf-address-size-unsupported');
   let value = 0n;
-  for (let index = 0; index < width; index += 1) {
-    value |= BigInt(cursor.u8()) << BigInt(index * 8);
+  if (cursor.littleEndian) {
+    for (let index = 0; index < width; index += 1) value |= BigInt(cursor.u8()) << BigInt(index * 8);
+  } else {
+    for (let index = 0; index < width; index += 1) value = (value << 8n) | BigInt(cursor.u8());
   }
   return value;
 }
@@ -334,7 +483,7 @@ function readUnsignedWidth(cursor, width) {
  * the DIE keeps its other attributes and records that one is unknown, which is
  * how a partially understood record stays honest instead of being dropped.
  */
-function readForm(cursor, form, unit, sections, implicitConst, byteBudget = null) {
+function readForm(cursor, form, unit, sections, implicitConst, strings) {
   switch (form) {
     case DW_FORM.addr: {
       // DW_FORM_addr occupies exactly the CU's address size, which the DWARF
@@ -342,18 +491,14 @@ function readForm(cursor, form, unit, sections, implicitConst, byteBudget = null
       // following attribute (#5305).
       const width = unit.addressSize;
       if (!Number.isSafeInteger(width) || width < 1 || width > 8) return { value: null, unsupported: true, fatal: true };
-      let value = 0n;
-      for (let index = 0; index < width; index++) value |= BigInt(cursor.u8()) << BigInt(8 * index);
-      return { value };
+      return { value: readUnsignedWidth(cursor, width) };
     }
     case DW_FORM.data1: case DW_FORM.ref1: case DW_FORM.strx1: case DW_FORM.addrx1: case DW_FORM.flag:
       return { value: BigInt(cursor.u8()) };
     case DW_FORM.data2: case DW_FORM.ref2: case DW_FORM.strx2: case DW_FORM.addrx2:
       return { value: BigInt(cursor.u16()) };
-    case DW_FORM.strx3: case DW_FORM.addrx3: {
-      const low = cursor.u16();
-      return { value: BigInt(low | (cursor.u8() << 16)) };
-    }
+    case DW_FORM.strx3: case DW_FORM.addrx3:
+      return { value: readUnsignedWidth(cursor, 3) };
     case DW_FORM.data4: case DW_FORM.ref4: case DW_FORM.strx4: case DW_FORM.addrx4:
       return { value: BigInt(cursor.u32()) };
     case DW_FORM.ref_sup4:
@@ -385,12 +530,14 @@ function readForm(cursor, form, unit, sections, implicitConst, byteBudget = null
     }
     case DW_FORM.strp: {
       const offset = unit.offsetSize === 8 ? Number(cursor.u64()) : cursor.u32();
-      const text = sections.debug_str ? cstring(sections.debug_str, offset, byteBudget) : null;
+      const text = sections.debug_str ? strings.resolve('debug_str', sections.debug_str, offset) : null;
       return { value: text, unsupported: !sections.debug_str || text == null };
     }
     case DW_FORM.line_strp: {
       const offset = unit.offsetSize === 8 ? Number(cursor.u64()) : cursor.u32();
-      const text = sections.debug_line_str ? cstring(sections.debug_line_str, offset, byteBudget) : null;
+      const text = sections.debug_line_str
+        ? strings.resolve('debug_line_str', sections.debug_line_str, offset)
+        : null;
       return { value: text, unsupported: !sections.debug_line_str || text == null };
     }
     case DW_FORM.ref_addr:
@@ -413,7 +560,7 @@ function readForm(cursor, form, unit, sections, implicitConst, byteBudget = null
     case DW_FORM.implicit_const: return { value: implicitConst };
     case DW_FORM.indirect: {
       const actual = Number(cursor.uleb());
-      return readForm(cursor, actual, unit, sections, null, byteBudget);
+      return readForm(cursor, actual, unit, sections, null, strings);
     }
     default:
       // An unrecognised form has an unknown length, so the DIE stream cannot be
@@ -423,16 +570,16 @@ function readForm(cursor, form, unit, sections, implicitConst, byteBudget = null
 }
 
 /** Parses one validated DWARF5 `.debug_str_offsets` contribution. */
-function strOffsetsContributionAt(table, start) {
+function strOffsetsContributionAt(table, start, littleEndian = true) {
   if (!table || !Number.isSafeInteger(start) || start < 0 || start + 4 > table.length) return null;
   const view = new DataView(table.buffer, table.byteOffset, table.byteLength);
-  const initialLength = view.getUint32(start, true);
+  const initialLength = view.getUint32(start, littleEndian);
   let length;
   let lengthFieldSize;
   let entrySize;
   if (initialLength === 0xffffffff) {
     if (start + 12 > table.length) return null;
-    const wideLength = view.getBigUint64(start + 4, true);
+    const wideLength = view.getBigUint64(start + 4, littleEndian);
     if (wideLength > BigInt(Number.MAX_SAFE_INTEGER)) return null;
     length = Number(wideLength);
     lengthFieldSize = 12;
@@ -449,13 +596,13 @@ function strOffsetsContributionAt(table, start) {
   const end = bodyStart + length;
   if (!Number.isSafeInteger(end) || end > table.length) return null;
   const entriesStart = bodyStart + 4;
-  if (view.getUint16(bodyStart, true) !== 5 || view.getUint16(bodyStart + 2, true) !== 0) return null;
+  if (view.getUint16(bodyStart, littleEndian) !== 5 || view.getUint16(bodyStart + 2, littleEndian) !== 0) return null;
   if ((end - entriesStart) % entrySize !== 0) return null;
   return { start, entriesStart, end, entrySize };
 }
 
 /** Finds the contribution whose zeroth string-offset entry is `base`. */
-function strOffsetsContributionAtBase(table, base, expectedOffsetSize, state = null) {
+function strOffsetsContributionAtBase(table, base, expectedOffsetSize, state = null, littleEndian = true) {
   if (!table || !Number.isSafeInteger(base) || base < 0 || base > table.length) return null;
   const cacheKey = `${base}:${expectedOffsetSize}`;
   if (state?.cache?.has(cacheKey)) return state.cache.get(cacheKey);
@@ -467,7 +614,7 @@ function strOffsetsContributionAtBase(table, base, expectedOffsetSize, state = n
       break;
     }
     if (state) state.scans += 1;
-    const contribution = strOffsetsContributionAt(table, start);
+    const contribution = strOffsetsContributionAt(table, start, littleEndian);
     if (!contribution) break;
     if (base === contribution.entriesStart) {
       resolved = contribution.entrySize === expectedOffsetSize ? contribution : null;
@@ -484,9 +631,9 @@ function strOffsetsContributionAtBase(table, base, expectedOffsetSize, state = n
 }
 
 /** Resolves the string for a DW_FORM_strx index through `.debug_str_offsets`. */
-function strxString(index, unit, sections, contributionState = null, byteBudget = null) {
+function strxString(index, unit, sections, contributionState = null, strings = null) {
   const table = sections.debug_str_offsets;
-  if (!table || !sections.debug_str) return null;
+  if (!table || !sections.debug_str || !strings) return null;
   const entrySize = unit.offsetSize;
   let contribution;
   let base = unit.strOffsetsBase;
@@ -495,11 +642,11 @@ function strxString(index, unit, sections, contributionState = null, byteBudget 
     // not link-concatenated. Without package-index context, only a single
     // section-wide contribution can be bound safely (#4237).
     if (unit.version !== 5 || (unit.unitType !== DW_UT.split_compile && unit.unitType !== DW_UT.split_type)) return null;
-    contribution = strOffsetsContributionAt(table, 0);
+    contribution = strOffsetsContributionAt(table, 0, unit.littleEndian);
     if (!contribution || contribution.entrySize !== entrySize || contribution.end !== table.length) return null;
     base = contribution.entriesStart;
   } else {
-    contribution = strOffsetsContributionAtBase(table, base, entrySize, contributionState);
+    contribution = strOffsetsContributionAtBase(table, base, entrySize, contributionState, unit.littleEndian);
     if (!contribution) return null;
   }
   const indexNumber = Number(index);
@@ -508,11 +655,11 @@ function strxString(index, unit, sections, contributionState = null, byteBudget 
   if (!Number.isSafeInteger(relative)) return null;
   const at = base + relative;
   if (!Number.isSafeInteger(at) || !Number.isSafeInteger(at + entrySize) || at + entrySize > contribution.end) return null;
-  byteBudget?.charge(entrySize);
+  strings.chargeScan(entrySize);
   const view = new DataView(table.buffer, table.byteOffset, table.byteLength);
-  const rawOffset = entrySize === 8 ? view.getBigUint64(at, true) : BigInt(view.getUint32(at, true));
+  const rawOffset = entrySize === 8 ? view.getBigUint64(at, unit.littleEndian) : BigInt(view.getUint32(at, unit.littleEndian));
   if (rawOffset > BigInt(Number.MAX_SAFE_INTEGER)) return null;
-  return cstring(sections.debug_str, Number(rawOffset), byteBudget);
+  return strings.resolve('debug_str', sections.debug_str, Number(rawOffset));
 }
 
 /**
@@ -523,7 +670,7 @@ function strxString(index, unit, sections, contributionState = null, byteBudget 
  * the base is not a header/interior offset and binds it to the header fields
  * that define the entry layout (#6184).
  */
-function debugAddrContributionAtBase(table, base, state = null) {
+function debugAddrContributionAtBase(table, base, state = null, littleEndian = true) {
   if (!table || !Number.isSafeInteger(base) || base < 0 || base > table.length) return null;
   const view = new DataView(table.buffer, table.byteOffset, table.byteLength);
   let offset = 0;
@@ -538,13 +685,13 @@ function debugAddrContributionAtBase(table, base, state = null) {
     if (state) state.scans += 1;
     if (offset + 4 > table.length) return null;
     state?.byteBudget?.charge(4);
-    const initialLength = view.getUint32(offset, true);
+    const initialLength = view.getUint32(offset, littleEndian);
     let length;
     let lengthFieldSize;
     if (initialLength === 0xffffffff) {
       if (offset + 12 > table.length) return null;
       state?.byteBudget?.charge(8);
-      const wideLength = view.getBigUint64(offset + 4, true);
+      const wideLength = view.getBigUint64(offset + 4, littleEndian);
       if (wideLength > BigInt(Number.MAX_SAFE_INTEGER)) return null;
       length = Number(wideLength);
       lengthFieldSize = 12;
@@ -565,7 +712,7 @@ function debugAddrContributionAtBase(table, base, state = null) {
     const contribution = {
       entriesStart,
       end,
-      version: view.getUint16(bodyStart, true),
+      version: view.getUint16(bodyStart, littleEndian),
       addressSize: view.getUint8(bodyStart + 2),
       segmentSelectorSize: view.getUint8(bodyStart + 3),
     };
@@ -589,7 +736,7 @@ function addrxAddress(index, unit, sections, state = null) {
     // The shared state is charged by contribution header below, not once per
     // lookup: a late base may otherwise make a fresh full-section walk for
     // every distinct CU and exceed the global work budget (#6184).
-    contribution = debugAddrContributionAtBase(table, base, state);
+    contribution = debugAddrContributionAtBase(table, base, state, unit.littleEndian);
     if (state?.cache) state.cache.set(base, contribution);
   }
   if (!contribution
@@ -609,7 +756,8 @@ function addrxAddress(index, unit, sections, state = null) {
   let value = 0n;
   for (let i = 0; i < entrySize; i += 1) {
     state?.byteBudget?.charge(1);
-    value |= BigInt(view.getUint8(at + i)) << BigInt(8 * i);
+    const byte = BigInt(view.getUint8(at + i));
+    value = unit.littleEndian ? (value | (byte << BigInt(8 * i))) : ((value << 8n) | byte);
   }
   return value;
 }
@@ -621,11 +769,14 @@ function addrxAddress(index, unit, sections, state = null) {
  * is what DW_AT_type references need, and it avoids building a deep object
  * graph for a structure that is already addressed by offset.
  */
-export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal = null } = {}) {
+export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal = null, endian = null } = {}) {
   const info = sections.debug_info;
   const diagnostics = [];
   const dies = new Map();
   if (!info) return { dies, units: [], diagnostics: ['missing .debug_info'], complete: false, cancelled: false };
+  const resolvedEndian = resolveDebugEndian(endian);
+  if (resolvedEndian == null) return { dies, units: [], diagnostics: ['debug image byte order unavailable'], complete: false, cancelled: false };
+  const littleEndian = resolvedEndian === 'little';
   // Missing or malformed budgets fall back to explicit defaults, never disable
   // a cap: comparisons against undefined/NaN are always false (#5352, #3932,
   // #5604). maxRecords merges over the shared provider defaults; the abbrev
@@ -637,10 +788,18 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
   const maxAbbrevAttributes = Number.isSafeInteger(budget?.maxAbbrevAttributes) && budget.maxAbbrevAttributes > 0
     ? budget.maxAbbrevAttributes
     : DEFAULT_MAX_ABBREV_ATTRIBUTES;
+  const maxDecodedStringBytes = Number.isSafeInteger(budget?.maxDecodedStringBytes) && budget.maxDecodedStringBytes > 0
+    ? budget.maxDecodedStringBytes
+    : DEFAULT_MAX_DECODED_STRING_BYTES;
+  const maxDieAttributeEntries = Number.isSafeInteger(budget?.maxDieAttributeEntries) && budget.maxDieAttributeEntries > 0
+    ? budget.maxDieAttributeEntries
+    : DEFAULT_MAX_DIE_ATTRIBUTE_ENTRIES;
 
   const units = [];
   const byteBudget = createByteBudget(maxBytesScanned);
-  const cursor = new Cursor(info, 0, byteBudget);
+  const strings = createStringResolver(byteBudget, maxDecodedStringBytes);
+  const attributeBudget = createAttributeEntryBudget(maxDieAttributeEntries);
+  const cursor = new Cursor(info, 0, byteBudget, resolvedEndian);
   const abbrevCache = new Map();
   const requestedAddrContributionScans = Number.isSafeInteger(budget?.maxAddrContributionScans)
     && budget.maxAddrContributionScans > 0
@@ -772,7 +931,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       }
     }
 
-    const unit = { start: unitStart, version, addressSize, offsetSize, abbrevOffset, unitType, strOffsetsBase: null, addrBase: null };
+    const unit = { start: unitStart, version, addressSize, offsetSize, abbrevOffset, unitType, strOffsetsBase: null, addrBase: null, littleEndian };
     let abbrev;
     let duplicateCode = false;
     let invalidChildByte = false;
@@ -930,7 +1089,11 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       let dieComplete = !duplicateCode && tagSupported;
       try {
         for (const spec of declaration.attributes) {
-          const read = readForm(cursor, spec.form, unit, sections, spec.implicitConst, byteBudget);
+          // The declaration parse was bounded once per abbreviation table; this
+          // is the bound on applying it. Zero-byte forms create the same
+          // retained per-DIE state as a wide form, so they are charged too.
+          attributeBudget.charge(1);
+          const read = readForm(cursor, spec.form, unit, sections, spec.implicitConst, strings);
           if (read.unsupported) {
             dieComplete = false;
             diagnostics.push(`unsupported form 0x${spec.form.toString(16)} at 0x${dieOffset.toString(16)}`);
@@ -941,8 +1104,7 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
           attributes.set(spec.attribute, { form: spec.form, value: read.value });
         }
       } catch (error) {
-        if (isByteBudgetError(error)) {
-          diagnostics.push(BYTE_BUDGET_DIAGNOSTIC);
+        if (pushBudgetDiagnostic(diagnostics, error)) {
           complete = false;
           unitComplete = false;
           break;
@@ -970,8 +1132,11 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
       }
       try {
         for (const [attribute, entry] of attributes) {
-          if ([DW_FORM.strx, DW_FORM.strx1, DW_FORM.strx2, DW_FORM.strx3, DW_FORM.strx4].includes(entry.form)) {
-            const resolved = strxString(entry.value, unit, sections, strOffsetsContributionState, byteBudget);
+          // Deferred index resolution is per-DIE work too: charging it keeps a
+          // small-byte form from moving the same amplification sideways (#8752).
+          if (STRX_FORMS.includes(entry.form) || ADDRX_FORMS.includes(entry.form)) attributeBudget.charge(1);
+          if (STRX_FORMS.includes(entry.form)) {
+            const resolved = strxString(entry.value, unit, sections, strOffsetsContributionState, strings);
             attributes.set(attribute, { form: entry.form, value: resolved });
             if (resolved == null) {
               // A string-table index that cannot be bound to a validated
@@ -1008,13 +1173,11 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
           }
         }
       } catch (error) {
-        if (isByteBudgetError(error)) {
-          diagnostics.push(BYTE_BUDGET_DIAGNOSTIC);
-          complete = false;
-          unitComplete = false;
-        } else {
+        if (!pushBudgetDiagnostic(diagnostics, error)) {
           throw error;
         }
+        complete = false;
+        unitComplete = false;
       }
       if (!unitComplete) { complete = false; break; }
       // DW_AT_ranges carries non-contiguous address evidence in
@@ -1032,22 +1195,38 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
         }
       }
 
+      const lowPcEntry = attributes.get(DW_AT.low_pc);
+      const highPcEntry = attributes.get(DW_AT.high_pc);
+      // DW_AT_low_pc is an address. A form that yields a block or a string has
+      // no address meaning at all, and the provider must not publish a DIE whose
+      // address symbols() cannot render (#8814).
+      if (lowPcEntry?.value != null && bigNumeric(lowPcEntry.value) == null) {
+        dieComplete = false;
+        complete = false;
+        diagnostics.push(`DW_AT_low_pc is not an address at 0x${dieOffset.toString(16)}`);
+      }
       // An address-class DW_AT_high_pc is an absolute end address, not an
       // unsigned size. A reversed range is malformed debug evidence: keep the
       // DIE for pagination/diagnostics, but withhold completeness so it cannot
       // become an exact function extent (#4232).
-      const lowPcEntry = attributes.get(DW_AT.low_pc);
-      const highPcEntry = attributes.get(DW_AT.high_pc);
       if (lowPcEntry?.value != null && highPcEntry?.value != null && ADDRESS_CLASS_FORMS.includes(highPcEntry.form)) {
-        const low = BigInt(lowPcEntry.value);
-        const high = BigInt(highPcEntry.value);
-        const extent = high - low;
-        if (extent < 0n || extent > BigInt(Number.MAX_SAFE_INTEGER)) {
+        const extent = debugExtentBetween(lowPcEntry.value, highPcEntry.value);
+        if (extent == null || extent < 0n || extent > MAX_EXACT_DEBUG_EXTENT) {
           dieComplete = false;
           complete = false;
-          diagnostics.push(extent < 0n
+          diagnostics.push(extent != null && extent < 0n
             ? `DW_AT_high_pc precedes DW_AT_low_pc at 0x${dieOffset.toString(16)}`
             : `DW_AT_high_pc range exceeds exact size bounds at 0x${dieOffset.toString(16)}`);
+        }
+      } else if (highPcEntry?.value != null && !ADDRESS_CLASS_FORMS.includes(highPcEntry.form)) {
+        // DWARF4 §3.3.5: a constant-class DW_AT_high_pc *is* the extent — an
+        // offset from low_pc. It still has to be representable in the canonical
+        // DebugRecord sizeBytes domain, or the provider would publish evidence
+        // it cannot convert when a consumer lists symbols (#8814).
+        if (exactDebugExtent(highPcEntry.value) == null) {
+          dieComplete = false;
+          complete = false;
+          diagnostics.push(`DW_AT_high_pc constant extent exceeds exact size bounds at 0x${dieOffset.toString(16)}`);
         }
       }
 
@@ -1083,6 +1262,23 @@ export function parseDebugInfo(sections, budget = DEBUG_DEFAULT_BUDGET, { signal
     if (byteBudget.exhausted) {
       if (cursor.offset < info.length) {
         if (!diagnostics.includes(BYTE_BUDGET_DIAGNOSTIC)) diagnostics.push(BYTE_BUDGET_DIAGNOSTIC);
+        complete = false;
+      }
+      break;
+    }
+    // A decoded-string or attribute-materialization budget hit stops the whole
+    // parse, not just one unit: a reused string alias or a reused wide
+    // abbreviation would otherwise refill the allowance once per unit (#8733,
+    // #8752). Exact-fit input that consumed no further unit stays complete,
+    // like the shared byte budget.
+    if (strings.decodedExhausted || attributeBudget.exhausted) {
+      if (cursor.offset < info.length) {
+        for (const [exhausted, diagnostic] of [
+          [strings.decodedExhausted, STRING_BUDGET_DIAGNOSTIC],
+          [attributeBudget.exhausted, ATTRIBUTE_BUDGET_DIAGNOSTIC],
+        ]) {
+          if (exhausted && !diagnostics.includes(diagnostic)) diagnostics.push(diagnostic);
+        }
         complete = false;
       }
       break;
@@ -1230,7 +1426,7 @@ function describeType(die, dies, depth = 0, seen = new Set()) {
         };
       }
 
-      const targetDie = nonSupplementaryReferenceTarget(effectiveType.entry, effectiveType.owner, dies);
+      const targetDie = currentDebugInfoReferenceTarget(effectiveType.entry, effectiveType.owner, dies);
       const target = describeType(targetDie, dies, depth + 1, seen);
       return {
         name: `${target.name} *`,
@@ -1280,8 +1476,8 @@ function describeType(die, dies, depth = 0, seen = new Set()) {
 }
 
 function toAddress(value) {
-  if (value == null) return null;
-  return `0x${BigInt(value).toString(16)}`;
+  const magnitude = bigNumeric(value);
+  return magnitude == null ? null : `0x${magnitude.toString(16)}`;
 }
 
 /**
@@ -1290,14 +1486,17 @@ function toAddress(value) {
  * Returns null when the note is absent — which becomes `identity-unavailable`,
  * not a match.
  */
-export function readBuildId(noteSection) {
+export function readBuildId(noteSection, { endian = null } = {}) {
   if (!noteSection || noteSection.length < 16) return null;
+  const resolvedEndian = resolveDebugEndian(endian);
+  if (resolvedEndian == null) return null;
+  const littleEndian = resolvedEndian === 'little';
   const view = new DataView(noteSection.buffer, noteSection.byteOffset, noteSection.byteLength);
   let offset = 0;
   while (offset + 12 <= noteSection.length) {
-    const nameSize = view.getUint32(offset, true);
-    const descSize = view.getUint32(offset + 4, true);
-    const type = view.getUint32(offset + 8, true);
+    const nameSize = view.getUint32(offset, littleEndian);
+    const descSize = view.getUint32(offset + 4, littleEndian);
+    const type = view.getUint32(offset + 8, littleEndian);
     const nameStart = offset + 12;
     if (nameSize > noteSection.length - nameStart) return null;
     const paddedNameSize = Math.ceil(nameSize / 4) * 4;
@@ -1334,8 +1533,11 @@ export function gnuDebugLinkCrc32(bytes) {
 }
 
 /** Parses `.gnu_debuglink`: a NUL-terminated name followed by a CRC32. */
-export function readDebugLink(section) {
+export function readDebugLink(section, { endian = null } = {}) {
   if (!section || section.length < 5) return null;
+  const resolvedEndian = resolveDebugEndian(endian);
+  if (resolvedEndian == null) return null;
+  const littleEndian = resolvedEndian === 'little';
   let nulOffset = 0;
   while (nulOffset < section.length && section[nulOffset] !== 0) nulOffset += 1;
   if (nulOffset === section.length) return null;
@@ -1343,7 +1545,7 @@ export function readDebugLink(section) {
   const crcOffset = (nulOffset + 4) & ~3;
   if (crcOffset + 4 > section.length) return null;
   const view = new DataView(section.buffer, section.byteOffset, section.byteLength);
-  return { name, crc32: view.getUint32(crcOffset, true) >>> 0 };
+  return { name, crc32: view.getUint32(crcOffset, littleEndian) >>> 0 };
 }
 
 /**
@@ -1403,9 +1605,21 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
       });
     }
 
+    const endian = resolveDebugEndian(image?.endian);
+    if (endian == null) {
+      const diagnostic = 'debug image byte order unavailable';
+      const parsed = { dies: new Map(), units: [], diagnostics: [diagnostic], complete: false, cancelled: false };
+      const result = createDebugProviderResult({
+        ecosystem: 'dwarf',
+        identity: { verdict: 'identity-unavailable', providerId: this.id, providerVersion: this.version, expected: image?.identity?.buildId ?? null, observed: null, method: 'byte-order-unavailable', detail: diagnostic },
+        sections: [], counts: { dies: 0, units: 0 }, diagnostics: [diagnostic], status: status('partial', 'evidence-missing'),
+      });
+      return Object.freeze({ ...result, parsed });
+    }
+
     const expected = image?.identity?.buildId ?? null;
-    const observed = readBuildId(sections['.note.gnu.build-id'] ?? sections.note_gnu_build_id);
-    const debugLink = readDebugLink(sections['.gnu_debuglink'] ?? sections.gnu_debuglink);
+    const observed = readBuildId(sections['.note.gnu.build-id'] ?? sections.note_gnu_build_id, { endian });
+    const debugLink = readDebugLink(sections['.gnu_debuglink'] ?? sections.gnu_debuglink, { endian });
 
     let verdict = 'identity-unavailable';
     let method = 'unavailable';
@@ -1463,7 +1677,7 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
     }
 
     const normalized = normalizeSections(parseSource);
-    const parsed = parseDebugInfo(normalized, budget, { signal });
+    const parsed = parseDebugInfo(normalized, budget, { signal, endian });
     diagnostics.push(...parsed.diagnostics);
     const budgetExhausted = parsed.diagnostics.some((diagnostic) => diagnostic.includes('budget exhausted'));
 
@@ -1507,16 +1721,16 @@ export class DwarfDebugInfoProvider extends DebugInfoProvider {
       // an addrx form resolved through .debug_addr, #6184).
       const highForm = die.attributes.get(DW_AT.high_pc)?.form;
       const highIsAddress = ADDRESS_CLASS_FORMS.includes(highForm);
-      const absoluteRange = highPc != null && highIsAddress && lowPc != null
-        ? BigInt(highPc) - BigInt(lowPc)
-        : null;
+      // Record construction cannot reject an unrepresentable extent later: the
+      // canonical sizeBytes domain is a safe non-negative integer, so the
+      // conversion is validated here and an out-of-domain extent stays unknown
+      // instead of throwing during pagination (#8814).
+      const absoluteRange = highIsAddress ? debugExtentBetween(lowPc, highPc) : null;
       const sizeBytes = highPc == null
         ? null
         : highIsAddress
-          ? absoluteRange != null && absoluteRange >= 0n && absoluteRange <= BigInt(Number.MAX_SAFE_INTEGER)
-            ? Number(absoluteRange)
-            : null
-          : Number(highPc);
+          ? exactDebugExtent(absoluteRange)
+          : exactDebugExtent(highPc);
       const descriptor = {
         isFunction,
         external: attributeFlag(die, DW_AT.external),

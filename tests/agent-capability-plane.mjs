@@ -15,29 +15,35 @@ const app = fakeApp();
 const catalog = createCapabilityCatalog();
 const executor = createCapabilityExecutor({ catalog, app, binaryId: 'bin-A' });
 const authorization = { kind: 'proposal', token: '0123456789abcdef' };
+const evidenceStore = { has: (id) => id === 'e1' };
+const proposals = new ProposalStore({ evidenceStore });
+const proposalExecutor = createProposalExecutor({ store: proposals, capabilityExecutor: executor, app });
+const applyProposal = async (kind, target, before, after) => {
+  const proposal = proposals.create({ kind, target, before, after, evidenceIds: ['e1'] });
+  return proposalExecutor.approveAndApply(proposal.id);
+};
 
-await executor.execute('annotation.rename', { address: '4096', value: 'renamed' }, { authorization });
+await assert.rejects(executor.execute('annotation.rename', { address: '4096', value: 'forged' }, { authorization }), (error) => error.type === 'approval_required');
+await applyProposal('rename', { address: '4096' }, null, 'renamed');
 assert.equal(app.notes.nameOf(4096n), 'renamed'); assert.equal(app.symbols.nameAt(4096n), 'renamed');
-await executor.execute('annotation.comment', { address: '4096', value: 'comment' }, { authorization });
+await applyProposal('comment', { address: '4096' }, null, 'comment');
 assert.equal(app.notes.comment(4096n), 'comment');
-await executor.execute('annotation.set-type', { address: '4096', key: 'return', value: 'int' }, { authorization });
+await applyProposal('type', { address: '4096', key: 'return' }, null, 'int');
 assert.equal(app.notes.typeOf(4096n, 'return'), 'int');
-await executor.execute('annotation.struct-field', { struct: 'Header', offset: 8, field: 'flags', type: 'uint32_t' }, { authorization });
+await applyProposal('struct-field', { struct: 'Header', offset: 8 }, null, { field: 'flags', type: 'uint32_t' });
 assert.equal(app.notes.structs[0].fields[0].name, 'flags');
 await assert.rejects(executor.execute('annotation.rename', { address: '4096', value: 'no-approval' }), (error) => error.type === 'approval_required');
 
 const preview = await executor.execute('patch.preview', { address: '4096', before: [1, 2, 3, 4], after: [4, 3, 2, 1] });
 assert.equal(preview.fileOffset, 0n);
-const patch = await executor.execute('patch.create', { address: '4096', before: [1, 2, 3, 4], after: [4, 3, 2, 1] }, { authorization });
+await assert.rejects(executor.execute('patch.create', { address: '4096', before: [1, 2, 3, 4], after: [4, 3, 2, 1] }, { authorization }), (error) => error.type === 'approval_required');
+const { execution: patch } = await applyProposal('patch', { address: '4096' }, [1, 2, 3, 4], [4, 3, 2, 1]);
 assert.deepEqual(patch.after, [4, 3, 2, 1]);
-const output = await executor.execute('patch.apply', { file: app.file }, { authorization });
-assert.deepEqual([...new Uint8Array(await output.output.arrayBuffer())], [4, 3, 2, 1, 5, 6, 7, 8]);
-await executor.execute('patch.revert', { fileOffset: '0' }, { authorization }); assert.equal(app.patches.size, 0);
-await assert.rejects(executor.execute('patch.create', { address: '4096', before: [9, 2, 3, 4], after: [4, 3, 2, 1] }, { authorization }), /stale/);
+await assert.rejects(executor.execute('patch.apply', { file: app.file }, { authorization }), (error) => error.type === 'approval_required');
+await assert.rejects(executor.execute('patch.revert', { fileOffset: '0' }, { authorization }), (error) => error.type === 'approval_required');
+assert.equal(app.patches.size, 1);
+await assert.rejects(applyProposal('patch', { address: '4096' }, [9, 2, 3, 4], [4, 3, 2, 1]), (error) => error.type === 'tool_failed' && /changed after it was created/.test(error.message));
 
-const evidenceStore = { has: (id) => id === 'e1' };
-const proposals = new ProposalStore({ evidenceStore });
-const proposalExecutor = createProposalExecutor({ store: proposals, capabilityExecutor: executor, app });
 const rename = proposals.create({ kind: 'rename', target: { address: '4096' }, before: 'renamed', after: 'approved_name', evidenceIds: ['e1'] });
 await proposalExecutor.approveAndApply(rename.id); assert.equal(app.notes.nameOf(4096n), 'approved_name');
 const stale = proposals.create({ kind: 'comment', target: { address: '4096' }, before: 'comment', after: 'new comment', evidenceIds: ['e1'] });
@@ -64,13 +70,12 @@ const adapter = {
 const runtimePlatform = { currentSession: (required = true) => ({ id: 'runtime-A', binaryHash: 'bin-A', backend: 'fake', adapter }), sessions: { close: async () => true }, runExperiment: async () => ({ evidence: [] }) };
 const runtimeExecutor = createCapabilityExecutor({ catalog, runtimePlatform, binaryId: 'bin-A' });
 await assert.rejects(runtimeExecutor.execute('runtime.continue', { runtimeSessionId: 'runtime-B', binaryId: 'bin-A' }, { authorization }), (error) => error.type === 'scope_violation');
-await runtimeExecutor.execute('runtime.continue', { runtimeSessionId: 'runtime-A', binaryId: 'bin-A' }, { authorization });
-assert.deepEqual(runtimeCalls, ['resume']);
+await assert.rejects(runtimeExecutor.execute('runtime.continue', { runtimeSessionId: 'runtime-A', binaryId: 'bin-A' }, { authorization }), (error) => error.type === 'approval_required');
+assert.deepEqual(runtimeCalls, []);
 const memory = await runtimeExecutor.execute('runtime.memory-read', { runtimeSessionId: 'runtime-A', binaryId: 'bin-A', address: '4096', size: 4 });
 assert.deepEqual(memory.bytes, [3, 3, 3, 3]);
-await runtimeExecutor.execute('runtime.memory-write', { runtimeSessionId: 'runtime-A', binaryId: 'bin-A', address: '4096', expectedBefore: [3, 3, 3, 3], bytes: [4, 4, 4, 4] }, { authorization });
-assert.deepEqual([...runtimeBytes], [4, 4, 4, 4]);
-await assert.rejects(runtimeExecutor.execute('runtime.memory-write', { runtimeSessionId: 'runtime-A', binaryId: 'bin-A', address: '4096', expectedBefore: [3, 3, 3, 3], bytes: [5, 5, 5, 5] }, { authorization }), /stale/);
+await assert.rejects(runtimeExecutor.execute('runtime.memory-write', { runtimeSessionId: 'runtime-A', binaryId: 'bin-A', address: '4096', expectedBefore: [3, 3, 3, 3], bytes: [4, 4, 4, 4] }, { authorization }), (error) => error.type === 'approval_required');
+assert.deepEqual([...runtimeBytes], [3, 3, 3, 3]);
 
 const knownTools = new Set(HEX_CAPABILITIES.filter((item) => item.agentTool).map((item) => item.agentTool));
 const available = catalog.agent({ toolRegistry: { has: (name) => knownTools.has(name) } });

@@ -1,6 +1,7 @@
 import { deepFreeze } from '../../core/identity/index.js';
 import {
   SEMANTIC_SETS,
+  array,
   assertAllowedKeys,
   enumValue,
   fail,
@@ -22,6 +23,13 @@ import {
 const MEMORY_NODE_KINDS = new Set(['load', 'store']);
 const VARIABLE_NODE_KINDS = new Set(['state-read', 'state-write']);
 const CONTROL_NODE_KINDS = new Set(['branch', 'conditional-branch', 'switch']);
+
+// Fixed-arity control nodes have exact successor counts; a `switch` keeps its
+// n-ary case list.
+export const SEMANTIC_CONTROL_TARGET_COUNTS = Object.freeze({
+  branch: 1,
+  'conditional-branch': 2,
+});
 
 export const SEMANTIC_NODE_DATA_ARITY = Object.freeze(Object.fromEntries(Object.entries({
   const: { inputs: [0, 0], outputs: [1, 1] },
@@ -107,6 +115,15 @@ function normalizeUnknown(input, kind) {
   return deepFreeze(out);
 }
 
+function conditionalArmTargets(values, code) {
+  const arms = array(values ?? [], code).map((value) => nonEmpty(value, code));
+  // A syntactic conditional terminator keeps both arms even when taken and
+  // fallthrough resolve to the same successor (#865); only the CFG layer
+  // deduplicates the successor set.
+  if (arms.length === 2 && arms[0] === arms[1]) return arms;
+  return uniqueStrings(arms, code, false);
+}
+
 export function createSemanticNode(input) {
   input = object(input, 'semantic-ir-invalid-node');
   assertAllowedKeys(input, new Set([
@@ -125,7 +142,9 @@ export function createSemanticNode(input) {
     memory: input.memory == null ? null : createSemanticMemoryAccess(input.memory),
     call: input.call == null ? null : createSemanticCallSummary(input.call),
     intrinsic: input.intrinsic == null ? null : createSemanticIntrinsicSummary(input.intrinsic),
-    targets: uniqueStrings(input.targets ?? [], 'semantic-ir-invalid-node-targets', false),
+    targets: kind === 'conditional-branch'
+      ? conditionalArmTargets(input.targets ?? [], 'semantic-ir-invalid-node-targets')
+      : uniqueStrings(input.targets ?? [], 'semantic-ir-invalid-node-targets', false),
     attributes: input.attributes == null ? {} : serializable(input.attributes, 'semantic-ir-invalid-node-attributes'),
     unknown: normalizeUnknown(input.unknown, kind),
     completeness: enumValue(input.completeness ?? (SEMANTIC_SETS.unknownOperations.has(kind) ? 'unknown' : 'complete'), SEMANTIC_SETS.completeness, 'semantic-ir-invalid-node-completeness'),
@@ -150,6 +169,11 @@ export function createSemanticNode(input) {
     fail('semantic-ir-intrinsic-unknown-hidden-by-node');
   }
   if (CONTROL_NODE_KINDS.has(kind) && !out.targets.length) fail('semantic-ir-control-target-required');
+  if (kind === 'branch' && out.inputs.length !== 0) fail('semantic-ir-control-input-cardinality');
+  if (kind === 'conditional-branch' && out.inputs.length !== 1) fail('semantic-ir-control-input-cardinality');
+  if (Object.hasOwn(SEMANTIC_CONTROL_TARGET_COUNTS, kind) && out.targets.length !== SEMANTIC_CONTROL_TARGET_COUNTS[kind]) {
+    fail('semantic-ir-control-target-cardinality');
+  }
   const dataContract = dataArityContract(kind, out.operator);
   if (dataContract) {
     const arity = arityViolation(out, dataContract);

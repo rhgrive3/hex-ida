@@ -1,4 +1,4 @@
-import { deepFreeze, lossyTypeWitness, stableDigest } from '../core/identity/index.js';
+import { deepFreeze, lossyTypeWitness, stableDigest, stableStringify } from '../core/identity/index.js';
 import { createOperationIdentity, assertIdentityMatch } from '../phase12/identity.js';
 
 export const CHANGELOG_SCHEMA_VERSION = 'hex-project-operation-v1';
@@ -10,13 +10,82 @@ const OPERATION_ACTIONS = new Set(['set', 'remove', 'resolve', 'resurrect']);
 // Never infer canonical identity validation from an untrusted schema tag.
 const CANONICAL_PROJECT_OPERATIONS = new WeakSet();
 
+// #8856 — unresolved remote ingress is session-lifetime retained state, so a
+// per-envelope budget is not enough. These ceilings bound how much
+// missing-dependency backlog one session (and one actor inside it) may retain.
+export const PENDING_BUDGET_REASON = 'changelog-pending-budget-exceeded';
+export const PENDING_SUMMARY_LIMIT = 256;
+const DEFAULT_MAX_PENDING_OPERATIONS = 512;
+const DEFAULT_MAX_PENDING_OPERATIONS_PER_ACTOR = 128;
+const MAX_PENDING_OPERATIONS_CEILING = 16384;
+const DEFAULT_MAX_PENDING_BYTES = 4 * 1024 * 1024;
+const MAX_PENDING_BYTES_CEILING = 128 * 1024 * 1024;
+const PENDING_CANONICAL_BYTES = new WeakMap();
+
+function pendingLimit(value, fallback, max, code) {
+  const n = value == null ? fallback : value;
+  if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 1 || n > max) throw new TypeError(code);
+  return n;
+}
+
+function canonicalOperationBytes(operation) {
+  if (operation != null && typeof operation === 'object') {
+    const cached = PENDING_CANONICAL_BYTES.get(operation);
+    if (cached !== undefined) return cached;
+  }
+  const text = stableStringify(operation);
+  const bytes = typeof TextEncoder === 'undefined' ? text.length : new TextEncoder().encode(text).length;
+  if (operation != null && typeof operation === 'object') PENDING_CANONICAL_BYTES.set(operation, bytes);
+  return bytes;
+}
+
+// One pass over the retained set. The retained set is itself capped by the
+// configured ceilings, so retained-state accounting can never scan a backlog an
+// actor grew without limit.
+function retainedPendingProjection(pending, actorIdentity = null) {
+  let operations = 0;
+  let bytes = 0;
+  let actorOperations = 0;
+  for (const operation of pending.values()) {
+    operations += 1;
+    bytes += canonicalOperationBytes(operation);
+    if (actorIdentity != null && operation.authorIdentity === actorIdentity) actorOperations += 1;
+  }
+  return { operations, bytes, actorOperations };
+}
+
+function restoredPendingWithinBudget(pending, limits) {
+  if (pending.size > limits.maxPendingOperations) return false;
+  const actors = new Map();
+  let bytes = 0;
+  for (const operation of pending.values()) {
+    bytes += canonicalOperationBytes(operation);
+    if (bytes > limits.maxPendingBytes) return false;
+    const actor = operation.authorIdentity ?? null;
+    const count = (actors.get(actor) ?? 0) + 1;
+    if (count > limits.maxPendingOperationsPerActor) return false;
+    actors.set(actor, count);
+  }
+  return true;
+}
+
+function invalidShapeError(code, structured) {
+  const error = new TypeError(code);
+  // A non-string value supplied for a scalar identity component is a structured
+  // identity-coercion violation (#5990): it must fail loud, never be coerced or
+  // silently rejected. A missing/empty field is an ordinary validation failure.
+  error.identityStructureInvalid = !!structured;
+  return error;
+}
 function required(value, code) {
-  if (typeof value !== 'string') throw new TypeError(code);
+  if (typeof value !== 'string') throw invalidShapeError(code, value != null);
   const text = value.trim();
-  // NUL is reserved as the internal fact-key tuple separator. Keeping it out
-  // of validated identity components makes the existing key format injective
-  // without changing persisted checkpoint/digest identities.
-  if (!text || text.includes('\u0000')) throw new TypeError(code);
+  // NUL is reserved as the internal fact-key tuple separator. An identity that
+  // embeds it is a fact-key injection (#4528) and must fail loud, exactly like a
+  // structured (non-string) identity coercion (#5990). A plain missing/blank
+  // field is an ordinary validation failure that the apply boundary rejects.
+  if (text.includes('\u0000')) throw invalidShapeError(code, true);
+  if (!text) throw invalidShapeError(code, false);
   return text;
 }
 function clone(value) {
@@ -29,10 +98,119 @@ function clone(value) {
 }
 function list(value) {
   if (value == null) return [];
-  if (!Array.isArray(value)) throw new TypeError('operation-causal-parents-invalid');
+  if (!Array.isArray(value)) throw invalidShapeError('operation-causal-parents-invalid', false);
   return [...new Set(value.map((parent) => required(parent, 'operation-causal-parent-invalid')))].sort();
 }
 function factKey(target, kind) { return `${target}\u0000${kind}`; }
+
+// #8869 — a canonical operation ID commits to semantic content, so every stored
+// field must be immutable for the object's lifetime. `deepFreeze()` cannot freeze
+// binary views/buffers, Map/Set-style collections, Dates, or RegExps, so those
+// leaves are re-encoded into owned immutable canonical records *before* the
+// generated ID is computed. JSON-safe payloads keep their existing identity.
+export const IMMUTABLE_BYTES_MARKER = '$immutableBytes';
+const IMMUTABLE_DATE_MARKER = '$immutableDate';
+const IMMUTABLE_REGEXP_MARKER = '$immutableRegExp';
+const IMMUTABLE_COLLECTION_MARKER = '$immutableCollection';
+const MUTABLE_COLLECTION_REASON = 'operation-mutable-collection-forbidden';
+const INVALID_DATE_REASON = 'identity-invalid-date';
+
+function isMutableCollectionView(value) {
+  if (value instanceof WeakMap || value instanceof WeakSet) return true;
+  try { Map.prototype.has.call(value, undefined); return true; } catch { }
+  try { Set.prototype.has.call(value, undefined); return true; } catch { return false; }
+}
+
+function internalClassOf(value) { return Object.prototype.toString.call(value).slice(8, -1); }
+
+// Shared-memory state must never be laundered into an owned canonical record.
+// `immutableBytesRecord` copies bytes out of a buffer, which would let a
+// SharedArrayBuffer-backed payload survive the snapshot boundary that keeps
+// shared state from crossing the remote ingress gate. The boundary detector
+// here matches the one in remote-authority.js so both views agree.
+const SHARED_ARRAY_BUFFER_BYTE_LENGTH = typeof SharedArrayBuffer === 'undefined'
+  ? null
+  : Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength')?.get ?? null;
+
+function isSharedMemoryValue(value) {
+  if (!SHARED_ARRAY_BUFFER_BYTE_LENGTH || value == null || typeof value !== 'object') return false;
+  try {
+    SHARED_ARRAY_BUFFER_BYTE_LENGTH.call(value);
+    return true;
+  } catch { }
+  if (!ArrayBuffer.isView(value)) return false;
+  try {
+    SHARED_ARRAY_BUFFER_BYTE_LENGTH.call(value.buffer);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function immutableBytesRecord(value) {
+  const bytes = ArrayBuffer.isView(value)
+    ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+    : new Uint8Array(value);
+  return { [IMMUTABLE_BYTES_MARKER]: { type: internalClassOf(value), bytes: Array.from(bytes) } };
+}
+
+// Map/Set identity stays order-insensitive exactly like the existing canonical
+// digest entries, but the published record can no longer be mutated in place.
+function immutableCollectionRecord(kind, entries, path) {
+  const canonical = entries.map((entry) => entry.map((item) => canonicalImmutableContent(item, path)));
+  canonical.sort((left, right) => {
+    const a = stableStringify(left);
+    const b = stableStringify(right);
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+  return { [IMMUTABLE_COLLECTION_MARKER]: { kind, entries: canonical } };
+}
+
+function canonicalImmutableContent(value, path = []) {
+  if (value === null) return null;
+  const type = typeof value;
+  if (type !== 'object') {
+    // Functions and symbols cannot be cloned into an owned canonical record and
+    // must not be laundered into a digest-invisible null.
+    if (type === 'function' || type === 'symbol') throw new TypeError('operation-payload-type-unsupported');
+    return value;
+  }
+  if (path.includes(value)) throw new TypeError('operation-payload-cyclic');
+  const classOf = internalClassOf(value);
+  if (ArrayBuffer.isView(value) || classOf === 'ArrayBuffer' || classOf === 'SharedArrayBuffer') {
+    // #8751 boundary: shared memory is left intact (never copied into an owned
+    // record) so the remote snapshot scan can still see it and fail closed.
+    if (isSharedMemoryValue(value)) return value;
+    return immutableBytesRecord(value);
+  }
+  if (classOf === 'Date' || value instanceof Date) {
+    if (!Number.isFinite(value.getTime())) throw new TypeError(INVALID_DATE_REASON);
+    return { [IMMUTABLE_DATE_MARKER]: value.toISOString() };
+  }
+  if (classOf === 'RegExp' || value instanceof RegExp) {
+    return { [IMMUTABLE_REGEXP_MARKER]: { source: String(value.source), flags: String(value.flags) } };
+  }
+  if (value instanceof Map || classOf === 'Map' || isMutableCollectionView(value)) {
+    if (value instanceof WeakMap || value instanceof WeakSet) throw new TypeError(MUTABLE_COLLECTION_REASON);
+    path.push(value);
+    try {
+      if (value instanceof Set || classOf === 'Set') return immutableCollectionRecord('Set', [...value].map((item) => [item]), path);
+      if (!(value instanceof Map || classOf === 'Map')) throw new TypeError(MUTABLE_COLLECTION_REASON);
+      return immutableCollectionRecord('Map', [...value.entries()].map(([key, item]) => [key, item]), path);
+    } finally {
+      path.pop();
+    }
+  }
+  path.push(value);
+  try {
+    if (Array.isArray(value)) return value.map((item) => canonicalImmutableContent(item, path));
+    const out = {};
+    for (const key of Object.keys(value)) out[key] = canonicalImmutableContent(value[key], path);
+    return out;
+  } finally {
+    path.pop();
+  }
+}
 function compareTombstones(a, b) {
   if (a.key < b.key) return -1;
   if (a.key > b.key) return 1;
@@ -86,7 +264,7 @@ export function createProjectOperation(input = {}) {
   if (typeof actionInput !== 'string' || !actionInput.trim()) throw new TypeError('operation-action-required');
   const action = actionInput;
   if (!OPERATION_ACTIONS.has(action)) throw new TypeError('operation-action-unsupported');
-  const payload = clone(input.payload ?? input.value ?? null);
+  const payload = canonicalImmutableContent(input.payload ?? input.value ?? null);
   const beforeFingerprintInput = input.beforeFingerprint;
   const beforeFingerprint = beforeFingerprintInput == null ? null : beforeFingerprintInput;
   if (beforeFingerprint !== null && (typeof beforeFingerprint !== 'string' || !beforeFingerprint.trim())) throw new TypeError('operation-before-fingerprint-invalid');
@@ -117,7 +295,7 @@ export function createProjectOperation(input = {}) {
     action,
     beforeFingerprint,
     payload,
-    provenance: clone(input.provenance || { source: 'local', actorIdentity: input.authorIdentity || null }),
+    provenance: canonicalImmutableContent(input.provenance || { source: 'local', actorIdentity: input.authorIdentity || null }),
   };
   deepFreeze(operation);
   CANONICAL_PROJECT_OPERATIONS.add(operation);
@@ -163,6 +341,11 @@ export function compareOperationId(a, b) {
 }
 
 function compareOperations(a, b) { return compareOperationId(a.operationId, b.operationId); }
+function checkpointPayloadDigest(state, operationIds, pendingOperations, resolutionOperations = []) {
+  return payloadDigest(resolutionOperations.length
+    ? { state, operationIds, pendingOperations, resolutionOperations }
+    : { state, operationIds, pendingOperations });
+}
 
 export function orderOperations(operations = [], existingIds = new Set()) {
   const unique = new Map();
@@ -207,6 +390,10 @@ function validateRestoredStateFactKeys(state, projectIdentity, binaryIdentity) {
     const targetEntityId = required(record?.targetEntityId, 'changelog-state-target-entity-invalid');
     const factKind = required(record?.factKind, 'changelog-state-fact-kind-invalid');
     if (key !== factKey(targetEntityId, factKind) || record?.key !== key) throw new TypeError('changelog-state-fact-key-invalid');
+    if (record?.resolutionOperationId != null) {
+      const resolutionOperationId = required(record.resolutionOperationId, 'changelog-state-resolution-operation-id-invalid');
+      if (resolutionOperationId !== record.resolutionOperationId) throw new TypeError('changelog-state-resolution-operation-id-invalid');
+    }
   }
   const tombstones = state.tombstones ?? [];
   if (!Array.isArray(tombstones)) throw new TypeError('changelog-state-tombstones-invalid');
@@ -216,6 +403,25 @@ function validateRestoredStateFactKeys(state, projectIdentity, binaryIdentity) {
     if (tombstone?.key !== factKey(targetEntityId, factKind)) throw new TypeError('changelog-state-fact-key-invalid');
   }
   return state;
+}
+
+function validateRestoredResolutionAuthority(state, operations, projectIdentity, binaryIdentity) {
+  for (const record of Object.values(state.facts ?? {})) {
+    if (record?.resolutionOperationId == null) continue;
+    const resolutionOperationId = required(record.resolutionOperationId, 'changelog-state-resolution-operation-id-invalid');
+    const resolvedOperationId = required(record.resolvedOperationId, 'changelog-state-resolved-operation-id-invalid');
+    if (resolvedOperationId !== record.resolvedOperationId) throw new TypeError('changelog-state-resolved-operation-id-invalid');
+    const operation = operations.get(resolutionOperationId);
+    if (!operation
+      || operation.action !== 'resolve'
+      || operation.projectIdentity !== projectIdentity
+      || (operation.binaryIdentity ?? null) !== binaryIdentity
+      || operation.targetEntityId !== record.targetEntityId
+      || operation.factKind !== record.factKind
+      || operation.payload?.operationId !== resolvedOperationId) {
+      throw new TypeError('changelog-state-resolution-operation-provenance-invalid');
+    }
+  }
 }
 
 function permanentlyBlockedOp(log, operationId) {
@@ -233,6 +439,7 @@ export class ChangeLog {
     for (const input of options.operations ?? []) {
       rememberRestoredOperation(this.operations, requireCanonicalProjectOperation(input));
     }
+    validateRestoredResolutionAuthority(this.state, this.operations, this.projectIdentity, this.binaryIdentity);
     this.pending = new Map();
     for (const [key, input] of options.pending ?? []) {
       const operation = requireCanonicalProjectOperation(input);
@@ -243,6 +450,39 @@ export class ChangeLog {
     }
     this.allowRemote = options.allowRemote === true;
     this.authorizedAuthors = new Set((options.authorizedAuthors ?? []).map((author) => required(author, 'changelog-author-identity-invalid')));
+    this.maxPendingOperations = pendingLimit(options.maxPendingOperations, DEFAULT_MAX_PENDING_OPERATIONS, MAX_PENDING_OPERATIONS_CEILING, 'changelog-max-pending-operations-invalid');
+    this.maxPendingOperationsPerActor = pendingLimit(options.maxPendingOperationsPerActor, DEFAULT_MAX_PENDING_OPERATIONS_PER_ACTOR, MAX_PENDING_OPERATIONS_CEILING, 'changelog-max-pending-per-actor-invalid');
+    this.maxPendingBytes = pendingLimit(options.maxPendingBytes, DEFAULT_MAX_PENDING_BYTES, MAX_PENDING_BYTES_CEILING, 'changelog-max-pending-bytes-invalid');
+    // A checkpoint must not be able to resurrect a backlog larger than the live
+    // policy, otherwise the retained-state budget is only enforced on ingress.
+    if (!restoredPendingWithinBudget(this.pending, this)) throw new TypeError(PENDING_BUDGET_REASON);
+  }
+
+  // #8856 — a newly unresolved operation is retained session state, so it must
+  // clear the retained-state ceilings before anything is written. Re-admitting
+  // an operation the log already retains never grows the backlog.
+  #canRetainPending(operation) {
+    if (this.pending.has(operation.operationId)) return true;
+    if (this.pending.size + 1 > this.maxPendingOperations) return false;
+    let bytes = canonicalOperationBytes(operation);
+    if (bytes > this.maxPendingBytes) return false;
+    let actorOperations = 0;
+    for (const retained of this.pending.values()) {
+      bytes += canonicalOperationBytes(retained);
+      if (retained.authorIdentity === operation.authorIdentity) actorOperations += 1;
+      if (bytes > this.maxPendingBytes || actorOperations + 1 > this.maxPendingOperationsPerActor) return false;
+    }
+    return bytes <= this.maxPendingBytes && actorOperations + 1 <= this.maxPendingOperationsPerActor;
+  }
+
+  #pendingBudgetRejection(operation) {
+    return Object.freeze({
+      status: 'rejected',
+      reason: PENDING_BUDGET_REASON,
+      operationId: operation.operationId,
+      retainedPending: this.retainedPendingUsage(operation.authorIdentity ?? null),
+      ...this.pendingBudget(),
+    });
   }
 
   #validate(operation) {
@@ -261,7 +501,14 @@ export class ChangeLog {
 
   #applyOne(operation) {
     const validation = this.#validate(operation);
-    if (validation) return validation;
+    if (validation) {
+      // Retained unresolved state is session-lifetime resource debt, so the
+      // retained-state ceilings gate it before anything is written.
+      if (validation.status === 'unresolved' && !this.#canRetainPending(operation)) {
+        return this.#pendingBudgetRejection(operation);
+      }
+      return validation;
+    }
     if (this.operations.has(operation.operationId)) {
       const existing = this.operations.get(operation.operationId);
       if (semanticDigest(existing) !== semanticDigest(operation)) {
@@ -278,6 +525,7 @@ export class ChangeLog {
     const key = factKey(operation.targetEntityId, operation.factKind);
     const current = this.state.facts[key] || null;
     if (operation.action !== 'resolve' && operation.action !== 'remove' && this.state.tombstones.some((item) => item.key === key) && operation.action !== 'resurrect') {
+      if (!this.#canRetainPending(operation)) return this.#pendingBudgetRejection(operation);
       this.state.unresolved.push({ operationId: operation.operationId, reason: 'tombstone-protects-state', key });
       this.pending.set(operation.operationId, operation);
       return { status: 'unresolved', reason: 'tombstone-protects-state' };
@@ -298,8 +546,12 @@ export class ChangeLog {
     }
     if (operation.action === 'resolve') {
       if (!current || !current.values.some((item) => item.operationId === operation.payload?.operationId)) return { status: 'rejected', reason: 'resolution-target-missing' };
-      current.resolvedOperationId = operation.payload.operationId;
-      current.stateFingerprint = factStateFingerprint(current);
+      const previousResolutionOperationId = current.resolutionOperationId ?? null;
+      if (previousResolutionOperationId == null || compareOperationId(operation.operationId, previousResolutionOperationId) > 0) {
+        current.resolvedOperationId = operation.payload.operationId;
+        current.resolutionOperationId = operation.operationId;
+        current.stateFingerprint = factStateFingerprint(current);
+      }
       this.operations.set(operation.operationId, operation);
       return { status: 'applied', operationId: operation.operationId, effect: 'resolution' };
     }
@@ -316,7 +568,12 @@ export class ChangeLog {
     record.values.sort((a, b) => compareOperationId(a.operationId, b.operationId));
     record.stateFingerprint = factStateFingerprint(record);
     this.state.facts[key] = record;
-    if (MEANINGFUL_FACTS.has(operation.factKind) && record.values.length > 1) this.state.conflicts.push({ type: 'meaningful-conflict', key, factKind: operation.factKind, operationIds: record.values.map((item) => item.operationId) });
+    if (MEANINGFUL_FACTS.has(operation.factKind) && record.values.length > 1) {
+      const operationIds = record.values.map((item) => item.operationId);
+      const existingConflict = this.state.conflicts.find((entry) => entry.type === 'meaningful-conflict' && entry.key === key);
+      if (existingConflict) { existingConflict.operationIds = operationIds; existingConflict.factKind = operation.factKind; }
+      else this.state.conflicts.push({ type: 'meaningful-conflict', key, factKind: operation.factKind, operationIds });
+    }
     this.operations.set(operation.operationId, operation);
     return { status: record.values.length > 1 && MEANINGFUL_FACTS.has(operation.factKind) ? 'conflict' : 'applied', operationId: operation.operationId, effect: record.values.length > 1 ? 'preserved-competing-value' : 'fact' };
   }
@@ -349,7 +606,20 @@ export class ChangeLog {
   applyOperation(input) {
     const actionRejection = rawActionRejection(input);
     if (actionRejection) return actionRejection;
-    const operation = requireCanonicalProjectOperation(input);
+    let operation;
+    try {
+      operation = requireCanonicalProjectOperation(input);
+    } catch (error) {
+      if (error instanceof TypeError && !error.identityStructureInvalid) {
+        return Object.freeze({
+          status: 'rejected',
+          reason: error.message,
+          operationId: input?.operationId ?? null,
+          stateDigest: this.digest(),
+        });
+      }
+      throw error;
+    }
     const existingPending = this.pending.get(operation.operationId);
     if (existingPending && semanticDigest(existingPending) !== semanticDigest(operation)) {
       return Object.freeze({
@@ -379,10 +649,27 @@ export class ChangeLog {
       const actionRejection = rawActionRejection(input);
       if (actionRejection) return actionRejection;
     }
-    const operations = inputs.map((input) => requireCanonicalProjectOperation(input));
+    const operations = [];
+    for (const input of inputs) {
+      let operation;
+      try {
+        operation = requireCanonicalProjectOperation(input);
+      } catch (error) {
+        if (error instanceof TypeError && !error.identityStructureInvalid) {
+          return Object.freeze({
+            status: 'rejected',
+            reason: error.message,
+            operationId: input?.operationId ?? null,
+            stateDigest: this.digest(),
+          });
+        }
+        throw error;
+      }
+      operations.push(operation);
+    }
     const ordered = orderOperations(operations, new Set(this.operations.keys()));
     if (ordered.unresolved.length) return Object.freeze({ status: 'unresolved', reason: 'missing-causal-parent', operationIds: ordered.unresolved.map((operation) => operation.operationId), stateDigest: this.digest() });
-    const working = new ChangeLog({ projectIdentity: this.projectIdentity, binaryIdentity: this.binaryIdentity, state: this.state, operations: [...this.operations.values()], pending: [...this.pending.entries()], allowRemote: this.allowRemote, authorizedAuthors: [...this.authorizedAuthors] });
+    const working = new ChangeLog({ projectIdentity: this.projectIdentity, binaryIdentity: this.binaryIdentity, state: this.state, operations: [...this.operations.values()], pending: [...this.pending.entries()], allowRemote: this.allowRemote, authorizedAuthors: [...this.authorizedAuthors], maxPendingOperations: this.maxPendingOperations, maxPendingOperationsPerActor: this.maxPendingOperationsPerActor, maxPendingBytes: this.maxPendingBytes });
     const results = [];
     for (const operation of ordered.ordered) {
       const existingPending = working.pending.get(operation.operationId);
@@ -418,14 +705,25 @@ export class ChangeLog {
 
   checkpoint() {
     const pendingOperations = [...this.pending.values()].sort(compareOperations).map((operation) => clone(operation));
+    const state = cloneState(this.state);
+    const operationIds = [...this.operations.keys()].sort();
+    const resolutionOperations = Object.values(this.state.facts ?? {})
+      .filter((record) => record?.resolutionOperationId != null)
+      .map((record) => {
+        const operation = this.operations.get(record.resolutionOperationId);
+        if (!operation) throw new TypeError('changelog-state-resolution-operation-provenance-invalid');
+        return clone(operation);
+      })
+      .sort(compareOperations);
     return deepFreeze({
       schemaVersion: CHECKPOINT_SCHEMA_VERSION,
       projectIdentity: this.projectIdentity,
       binaryIdentity: this.binaryIdentity,
-      state: cloneState(this.state),
-      operationIds: [...this.operations.keys()].sort(),
+      state,
+      operationIds,
       pendingOperations,
-      digest: this.digest(),
+      resolutionOperations,
+      digest: checkpointPayloadDigest(state, operationIds, pendingOperations, resolutionOperations),
     });
   }
 
@@ -438,6 +736,56 @@ export class ChangeLog {
   }
   snapshot() { return deepFreeze(cloneState(this.state)); }
   appliedOperationIds() { return Object.freeze([...this.operations.keys()].sort()); }
+
+  pendingBudget() {
+    return deepFreeze({
+      maxOperations: this.maxPendingOperations,
+      maxOperationsPerActor: this.maxPendingOperationsPerActor,
+      maxBytes: this.maxPendingBytes,
+    });
+  }
+
+  retainedPendingUsage(actorIdentity = null) {
+    const retained = retainedPendingProjection(this.pending, actorIdentity);
+    return deepFreeze({
+      operations: retained.operations,
+      bytes: retained.bytes,
+      actorOperations: retained.actorOperations,
+    });
+  }
+
+  // Bounded receive summary: the exact retained count is always reported while
+  // the identifier materialization stays capped and deterministically ordered.
+  unresolvedOperationSummary(limit = PENDING_SUMMARY_LIMIT) {
+    const operationIds = [...this.pending.keys()].sort(compareOperationId);
+    return Object.freeze({
+      unresolvedOperationIds: Object.freeze(operationIds.slice(0, limit)),
+      unresolvedCount: operationIds.length,
+      unresolvedOperationIdsTruncated: operationIds.length > limit,
+    });
+  }
+
+  // #8856 — revocation/disconnect must not leave an actor's unresolved retained
+  // debt in the shared session. Pending entries were never applied, so dropping
+  // them is deterministic and cannot fork converged state or rewrite history.
+  purgePendingByAuthor(actorIdentity) {
+    const author = required(actorIdentity, 'changelog-purge-author-invalid');
+    const purged = [];
+    for (const [operationId, operation] of this.pending) {
+      if (operation.authorIdentity !== author) continue;
+      this.pending.delete(operationId);
+      purged.push(operationId);
+    }
+    if (purged.length > 0) {
+      const dropped = new Set(purged);
+      this.state.unresolved = (this.state.unresolved ?? []).filter((item) => !dropped.has(item?.operationId));
+    }
+    return Object.freeze({
+      actorIdentity: author,
+      purgedCount: purged.length,
+      ...this.unresolvedOperationSummary(),
+    });
+  }
 }
 
 function normalizeCheckpointOperationIds(value) {
@@ -481,6 +829,7 @@ function normalizeCheckpoint(checkpoint, { projectIdentity, binaryIdentity = nul
   const state = cloneState(checkpoint.state);
   const operationIds = normalizeCheckpointOperationIds(checkpoint.operationIds);
   const pendingInput = checkpoint.pendingOperations;
+  const resolutionInput = checkpoint.resolutionOperations ?? [];
   const digest = checkpoint.digest;
 
   assertIdentityMatch(checkpointProjectIdentity, projectIdentity, 'checkpoint-project-identity-mismatch');
@@ -498,8 +847,21 @@ function normalizeCheckpoint(checkpoint, { projectIdentity, binaryIdentity = nul
     binaryIdentity: binaryIdentity || null,
     appliedOperationIds: new Set(operationIds),
   });
-  const expectedDigest = payloadDigest({ state, operationIds, pendingOperations });
+  if (!Array.isArray(resolutionInput)) throw new TypeError('checkpoint-resolution-operations-invalid');
+  const resolutionMap = new Map();
+  for (const input of resolutionInput) {
+    const operation = requireCanonicalProjectOperation(input);
+    if (operation.action !== 'resolve' || !operationIds.includes(operation.operationId)) throw new TypeError('checkpoint-resolution-operation-invalid');
+    if (operation.projectIdentity !== projectIdentity) throw new TypeError('checkpoint-resolution-project-identity-mismatch');
+    if ((operation.binaryIdentity ?? null) !== (binaryIdentity || null)) throw new TypeError('checkpoint-resolution-binary-identity-mismatch');
+    rememberRestoredOperation(resolutionMap, operation);
+  }
+  const resolutionOperations = [...resolutionMap.values()].sort(compareOperations);
+  const expectedDigest = checkpointPayloadDigest(state, operationIds, pendingOperations, resolutionOperations);
   if (typeof digest !== 'string' || digest !== expectedDigest) throw new TypeError('checkpoint-digest-mismatch');
+
+  const authorityOperations = new Map(resolutionOperations.map((operation) => [operation.operationId, operation]));
+  validateRestoredResolutionAuthority(state, authorityOperations, projectIdentity, binaryIdentity || null);
 
   return Object.freeze({
     schemaVersion,
@@ -508,12 +870,14 @@ function normalizeCheckpoint(checkpoint, { projectIdentity, binaryIdentity = nul
     state,
     operationIds: Object.freeze(operationIds),
     pendingOperations: Object.freeze(pendingOperations),
+    resolutionOperations: Object.freeze(resolutionOperations),
     digest,
   });
 }
 
 function checkpointOperationPlaceholders(checkpoint) {
-  return checkpoint.operationIds.map((operationId) => ({
+  const resolutions = new Map((checkpoint.resolutionOperations ?? []).map((operation) => [operation.operationId, operation]));
+  return checkpoint.operationIds.map((operationId) => resolutions.get(operationId) ?? ({
     operationId,
     schemaVersion: CHANGELOG_SCHEMA_VERSION,
     projectIdentity: checkpoint.projectIdentity,
@@ -527,7 +891,7 @@ function checkpointOperationPlaceholders(checkpoint) {
   }));
 }
 
-export function replayOperations({ projectIdentity, binaryIdentity = null, operations = [], checkpoint = null, allowRemote = false, authorizedAuthors = [] } = {}) {
+export function replayOperations({ projectIdentity, binaryIdentity = null, operations = [], checkpoint = null, allowRemote = false, authorizedAuthors = [], maxPendingOperations = null, maxPendingOperationsPerActor = null, maxPendingBytes = null } = {}) {
   const normalizedCheckpoint = checkpoint ? normalizeCheckpoint(checkpoint, { projectIdentity, binaryIdentity }) : null;
   const appliedIds = new Set(normalizedCheckpoint?.operationIds ?? []);
   const log = new ChangeLog({
@@ -538,6 +902,9 @@ export function replayOperations({ projectIdentity, binaryIdentity = null, opera
     pending: normalizedCheckpoint?.pendingOperations.map((operation) => [operation.operationId, operation]) ?? [],
     allowRemote,
     authorizedAuthors,
+    maxPendingOperations,
+    maxPendingOperationsPerActor,
+    maxPendingBytes,
   });
   const filtered = normalizedCheckpoint ? operations.filter((operation) => !appliedIds.has(operation.operationId)) : operations;
   const result = log.applyBatch(filtered);
@@ -557,6 +924,9 @@ export function restoreCheckpoint(checkpoint, options = {}) {
     pending: normalizedCheckpoint.pendingOperations.map((operation) => [operation.operationId, operation]),
     allowRemote: options.allowRemote,
     authorizedAuthors: options.authorizedAuthors,
+    maxPendingOperations: options.maxPendingOperations,
+    maxPendingOperationsPerActor: options.maxPendingOperationsPerActor,
+    maxPendingBytes: options.maxPendingBytes,
   });
   const appliedIds = new Set(normalizedCheckpoint.operationIds);
   const restoreResults = [];

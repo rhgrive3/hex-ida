@@ -41,13 +41,14 @@ function makeImage(fileSize) {
   };
 }
 
-function runArm64Xdata({ header, xdataAvailable }) {
+function runArm64Xdata({ header, xdataAvailable, codeBytes = [], codeOffset = 4 }) {
   const fileSize = (XDATA_RVA - SECTION_RVA) + xdataAvailable;
   const bytes = new Uint8Array(FILE_OFFSET + fileSize);
   const at = (rva) => FILE_OFFSET + (rva - SECTION_RVA);
   writeU32(bytes, at(PDATA_RVA), BEGIN_RVA);
   writeU32(bytes, at(PDATA_RVA) + 4, XDATA_RVA);
   writeU32(bytes, at(XDATA_RVA), header);
+  if (codeBytes.length) bytes.set(codeBytes, at(XDATA_RVA) + codeOffset);
   const image = makeImage(fileSize);
   parseExceptionFunctions(new ByteView(bytes), { rva: PDATA_RVA, size: 8 }, image, 0xaa64);
   return image;
@@ -58,8 +59,10 @@ function runArm64Xdata({ header, xdataAvailable }) {
 // the primary function and must not be converted into fragment metadata.
 {
   const image = runArm64Xdata({
-    header: 4 | (1 << 22), // Function Length=4 instructions, Epilog Count=1.
-    xdataAvailable: 8,     // 4-byte header + one 4-byte epilog scope.
+    header: 4 | (1 << 22) | (1 << 27), // Function Length=4, Epilog Count=1, Code Words=1.
+    xdataAvailable: 12,    // 4-byte header + one scope + one unwind-code word.
+    codeBytes: [0xe4],
+    codeOffset: 8,
   });
   assert.equal(image.functions.length, 1);
   assert.equal(image.functions[0].address, IMAGE_BASE + BigInt(BEGIN_RVA));
@@ -86,6 +89,7 @@ function runArm64Xdata({ header, xdataAvailable }) {
   const image = runArm64Xdata({
     header: (4 | 0x80000000) >>> 0,
     xdataAvailable: 4 + 16 * 4,
+    codeBytes: [0xe4],
   });
   assert.equal(image.functions.length, 1);
   assert.equal(image.functions[0].size, 16n);

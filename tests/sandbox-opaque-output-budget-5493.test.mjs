@@ -35,6 +35,7 @@ async function executeWorker(userSource) {
   let context;
   const scope = {
     Blob: FakeBlob,
+    structuredClone,
     URL: {
       createObjectURL(blob) {
         const id = `blob:test-${++blobSeq}`;

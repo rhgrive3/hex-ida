@@ -44,6 +44,7 @@ test('an unresolved call cannot settle control-flow facts', () => {
     functionId: 'fn', status: partial, noreturn: false, mayThrow: false,
     unknownCallEffects: [{ callSiteId: 'cs', reason: 'unresolved-target' }],
     memoryWriteRegions: [{ regionKind: 'unknown', broad: true, source: 'unknown-call-fallback' }],
+    memoryReadRegions: [{ regionKind: 'unknown', broad: true, source: 'unknown-call-fallback' }],
   }), /unknown-call-cannot-settle-control-facts/);
 });
 
@@ -76,6 +77,7 @@ test('an incomplete summary is never treated as pure', () => {
     mayThrow: 'unknown',
     unknownCallEffects: [{ callSiteId: 'cs', reason: 'summary-missing' }],
     memoryWriteRegions: [{ regionKind: 'unknown', broad: true, source: 'unknown-call-fallback' }],
+    memoryReadRegions: [{ regionKind: 'unknown', broad: true, source: 'unknown-call-fallback' }],
   });
   assert.equal(summaryIsPure(incomplete), false);
   assert.equal(summaryMayWriteRegion(incomplete, 'any_region'), true);

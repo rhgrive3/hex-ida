@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
+import { AllowAllAdminProvider } from '../js/ai/dev/auth/admin-provider.js';
 import test from 'node:test';
 
 import {
   parseDevSupervisorDecision,
   validateDevSupervisorDecision,
 } from '../js/ai/dev/protocol/hex-dev-supervisor-v1.js';
-import { DEV_EVENT_TYPES } from '../js/ai/dev/events/dev-events.js';
+import { DEV_EVENT_TYPE, DEV_WORKER_EVENT_TYPES } from '../js/ai/dev/events/dev-events.js';
 import { DevSupervisorEngineV0 } from '../js/ai/dev/supervisor/dev-supervisor-engine-v0.js';
 import { DevSupervisorV0 } from '../js/ai/dev/supervisor/dev-supervisor-v0.js';
 import { DevAgentUiSettings } from '../js/ai/dev/ui/settings.js';
@@ -15,19 +16,20 @@ function waitDecision(events) {
   return { type: 'wait', events, reason: 'wait for worker' };
 }
 
-test('#6200 accepts only the declared Dev event vocabulary', () => {
+test('#6200 accepts only the declared Worker wait event vocabulary', () => {
   assert.deepEqual(validateDevSupervisorDecision(waitDecision(['worker.completed'])).events, ['worker.completed']);
   assert.deepEqual(
     validateDevSupervisorDecision(waitDecision(['worker.failed', 'worker.cancelled'])).events,
     ['worker.failed', 'worker.cancelled'],
   );
-  for (const event of DEV_EVENT_TYPES) {
+  for (const event of DEV_WORKER_EVENT_TYPES) {
     assert.deepEqual(validateDevSupervisorDecision(waitDecision([event])).events, [event]);
   }
 });
 
 test('#6200 rejects unknown, mixed, blank and malformed event values', () => {
   for (const events of [
+    [DEV_EVENT_TYPE.HUMAN_RESPONDED],
     ['worker.teleported'],
     ['worker.completed', 'worker.teleported'],
     [''],
@@ -64,12 +66,12 @@ test('#6200 invalid model wait never reaches WAITING_EVENT or worker wait transp
       throw new Error('invalid wait reached worker transport');
     },
   };
-  const supervisor = new DevSupervisorV0({
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
     workerClient,
     idFactory: (kind) => `issue-6200-${kind}`,
     now: () => '2026-09-05T00:00:00.000Z',
   });
-  const settings = new DevAgentUiSettings({ storage: { getItem: () => null, setItem() {} } });
+  const settings = new DevAgentUiSettings({ authProvider: new AllowAllAdminProvider(), storage: { getItem: () => null, setItem() {} } });
   settings.setAgentProfile(AGENT_PROFILE.DEV);
   const bridge = Object.freeze({
     request: async () => ({ text: JSON.stringify(waitDecision(['worker.teleported'])) }),

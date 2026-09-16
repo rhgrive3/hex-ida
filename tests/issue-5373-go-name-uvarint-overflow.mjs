@@ -31,7 +31,7 @@ function makeTypeWithNameBytes(nameBytes, { payloadBytes = null } = {}) {
 
 function parseName(nameBytes, payloadBytes = null) {
   const { buf, typesBase } = makeTypeWithNameBytes(nameBytes, { payloadBytes });
-  return parseGoTypeDescriptor(buf, 0, { ptrSize:8, little:true, typesBase }).name;
+  return parseGoTypeDescriptor(buf, 0, { ptrSize:8, little:true, typesBase, version:'1.23.2' }).name;
 }
 
 // Positive controls: existing 1/2/3/4-byte uvarint decoding remains exact.

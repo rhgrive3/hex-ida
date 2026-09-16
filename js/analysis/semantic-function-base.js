@@ -55,6 +55,27 @@ function optionalIdentity(value, label) {
   return value;
 }
 
+// Preservation hooks establish register-clobber truth. A throwing hook, a
+// non-array result, or a non-string member is a provider failure and must
+// never become a proven empty clobber set (#8910). A nullish result keeps
+// the historical empty meaning (the registry default is () => []).
+function canonicalPreservationRegs(plugin, hookName, options) {
+  let raw;
+  try {
+    raw = plugin?.[hookName]?.(options);
+  } catch {
+    return { ok: false, regs: null };
+  }
+  if (raw == null) return { ok: true, regs: Object.freeze([]) };
+  if (!Array.isArray(raw)) return { ok: false, regs: null };
+  const regs = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'string' || entry.length === 0) return { ok: false, regs: null };
+    regs.push(entry);
+  }
+  return { ok: true, regs: Object.freeze(regs) };
+}
+
 function abiEvidenceState(options = {}, call = null, adapter = null) {
   const optionState = abiResultInvalidState(options);
   if (optionState) return optionState;
@@ -470,12 +491,42 @@ export function semanticControlUnknowns(blocks, architecturePlugin, options = {}
   const instructions = blocks.flatMap((block) => (block.instructions || []).map((entry) => entry?.decoded).filter(Boolean));
   const callPrototypeAuthority = callPrototypeAuthorityFor(instructions, architecturePlugin, options);
   const blockStarts = new Set(blocks.map((block) => BigInt(block.startAddress).toString()));
+  let spanStart = null;
+  let spanEnd = null;
+  for (const instruction of instructions) {
+    const start = addressOf(instruction);
+    const end = endOf(instruction);
+    if (spanStart === null || start < spanStart) spanStart = start;
+    if (spanEnd === null || end > spanEnd) spanEnd = end;
+  }
   const unknowns = [];
   for (const block of blocks) {
     const instruction = block.instructions?.at(-1)?.decoded;
     if (!instruction) continue;
     const kind = controlKind(architecturePlugin, instruction);
     const callPrototype = kind === 'call' ? callPrototypeAuthority.prototypeForInstruction(instruction) : null;
+    // #9005: a known direct target that is provably inside this function's local
+    // decoded span but absent from the decoded block set is an internal coverage
+    // hole. The partitioner only mints a successor when the target already exists,
+    // so without this check the empty placeholder is laundered into a `complete`
+    // artifact. Fail closed for BOTH unconditional and conditional direct branches,
+    // independently of physical-fallthrough completeness, while a target outside the
+    // local span stays a legitimate external/tail destination.
+    if (kind === 'branch' || kind === 'conditional-branch') {
+      const target = directTarget(architecturePlugin, instruction);
+      if (target != null && !blockStarts.has(target.toString())
+          && spanStart != null && target >= spanStart && target < spanEnd) {
+        unknowns.push({
+          reason: 'semantic-cfg-missing-direct-target',
+          categories: ['control'],
+          detail: {
+            blockKey: block.key,
+            instructionAddress: addressOf(instruction).toString(),
+            missingTarget: target.toString(),
+          },
+        });
+      }
+    }
     if (kind === 'branch' || kind === 'return' || kind === 'unknown'
         || (kind === 'call' && prototypeNoreturnState(callPrototype) === true)) continue;
     const expectedAddress = endOf(instruction);
@@ -883,8 +934,16 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
     completeness:supported ? 'canonical' : 'unsupported',
     stackRules:() => stackRules,
     unwindRules:() => unwindRules,
-    callerSaved:() => { try { return Object.freeze([...(plugin?.callerSaved?.(options) ?? [])]); } catch { return Object.freeze([]); } },
-    calleeSaved:() => { try { return Object.freeze([...(plugin?.calleeSaved?.(options) ?? [])]); } catch { return Object.freeze([]); } },
+    callerSaved:() => {
+      const resolved = canonicalPreservationRegs(plugin, 'callerSaved', options);
+      if (!resolved.ok) throw new TypeError('abi-callerSaved-unavailable');
+      return resolved.regs;
+    },
+    calleeSaved:() => {
+      const resolved = canonicalPreservationRegs(plugin, 'calleeSaved', options);
+      if (!resolved.ok) throw new TypeError('abi-calleeSaved-unavailable');
+      return resolved.regs;
+    },
     /**
      * Canonical ABI classification entry points.  These deliberately return
      * the registry classifier's evidence object unchanged: the adapter carries
@@ -954,18 +1013,52 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
         && classified?.unsupported !== true && functionPrototype == null
         && classifiedState === 'partial';
       if (abiEvidenceState(options, null, plugin)
-        || !classified || (classified.partial === true && functionPrototype != null && !knownVariadicPartial) || classified.unsupported === true
-        || (classifiedState && !unknownPrototypePartial) || !canonicalAbiEvidence(classified)) return Object.freeze([]);
+        || !classified || !canonicalAbiEvidence(classified)) return Object.freeze([]);
+      // A classifier result flagged partial/unsupported is a whole-result
+      // publication veto ONLY for hard terminal states (stale/malformed/
+      // cancelled/deadline/truncated/budget). A soft uncertainty carried by
+      // canonical, identity-bearing evidence may still expose a proof-bearing
+      // fixed prefix; withhold everything from the first unproven argument on
+      // (#8817). Whole-ABI-unsupported results carry no arguments and so
+      // still publish nothing below.
+      const softPrefixPublish = knownVariadicPartial || unknownPrototypePartial
+        || (classified?.partial === true && functionPrototype != null
+          && (classifiedState === 'partial' || classifiedState === 'unsupported'));
+      // The new relaxation this batch introduces (partial-with-prototype whose
+      // state is only 'partial'/'unsupported', neither known-variadic nor
+      // unknown-prototype) still needs to publish *nothing* when there is no
+      // proof-bearing prefix at all: malformed descriptors that surface as
+      // `partial:true` without any exact entry must not gain an unknown
+      // candidate list they did not have before (#8817 acceptance rule 5).
+      const newPrefixCase = !knownVariadicPartial && !unknownPrototypePartial
+        && classified?.partial === true && functionPrototype != null
+        && (classifiedState === 'partial' || classifiedState === 'unsupported');
+      if (classifiedState && !softPrefixPublish) return Object.freeze([]);
       const uncertain = classified.partial === true;
-      const provenEntry = (entry) => !unknownPrototypePartial
+      // Uncertainty frontier: entries before the first unproven argument are
+      // proof-bearing; entries at or after it must never be published as an
+      // exact placement even if they individually look provable, because a
+      // preceding aggregate / hidden-sret / stack spill can shift later
+      // register allocation (#8817).
+      let frontierReached = false;
+      let provenPrefixCount = 0;
+      const provenEntry = (entry) => !unknownPrototypePartial && !frontierReached
         && entry?.partial !== true && entry?.possible !== true
         && entry?.mustUse !== false && entry?.exact !== false
         && entry?.named !== false && entry?.variadic !== true;
       const locations = [];
       const seen = new Set();
       for (const entry of classified?.arguments ?? []) {
-        if (!entry || !['register','registers'].includes(entry.location)) continue;
-        // ABI argument locations are canonical middle-end authority. Structured
+        const isRegisterSlot = !!entry && ['register','registers'].includes(entry.location);
+        const entryProven = !unknownPrototypePartial
+          && entry?.partial !== true && entry?.possible !== true
+          && entry?.mustUse !== false && entry?.exact !== false
+          && entry?.named !== false && entry?.variadic !== true;
+        if (!frontierReached && entryProven) provenPrefixCount += 1;
+        if (!entryProven) frontierReached = true;
+        if (!isRegisterSlot) continue;
+        const publishable = !uncertain || provenEntry(entry);
+        // Physical argument locations are canonical middle-end authority. Structured
         // values must not launder into register identities or indices via
         // String()/Number() coercion; malformed plugin output fails closed.
         const registers = Array.isArray(entry.regs)
@@ -982,10 +1075,10 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
             reg,
             abiClass:entry.abiClass ?? null,
             aggregate:entry.aggregate === true || Array.isArray(entry.pieces) || registers.length > 1,
-            possible:uncertain && !provenEntry(entry),
-            mustUse:!uncertain || provenEntry(entry),
-            exact:!uncertain || provenEntry(entry),
-            ...(uncertain && !provenEntry(entry) ? { certainty:'unknown' } : {}),
+            possible:!publishable,
+            mustUse:publishable,
+            exact:publishable,
+            ...(!publishable ? { certainty:'unknown' } : {}),
             pieceIndex:Array.isArray(entry.pieces)
               ? (entry.pieces.findIndex((piece) => String(piece?.reg || '') === reg) >= 0
                 ? entry.pieces.findIndex((piece) => String(piece?.reg || '') === reg)
@@ -995,6 +1088,11 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
           }));
         }
       }
+      // A soft partial-with-prototype result that carries no proof-bearing
+      // prefix at all (e.g. a malformed argument descriptor that surfaces as
+      // `partial:true` with only unknown candidates) must keep publishing
+      // nothing, exactly as before this relaxation (#8817 acceptance rule 5).
+      if (newPrefixCase && provenPrefixCount === 0) return Object.freeze([]);
       return Object.freeze(locations);
     },
     argumentRegisters(options = {}) {
@@ -1043,8 +1141,11 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
         && returned != null && returned?.partial !== true && returned?.unsupported !== true;
       const candidateReturnLocations = candidateReturnPublish ? canonicalReturnLocations(returned) : [];
       const returnProofMissing = candidateReturnPublish && candidateReturnLocations.length === 0;
+      // Preservation failure is call-boundary authority failure: it forces
+      // partial even when every other classifier is exact (#8910).
+      const preservation = canonicalPreservationRegs(plugin, 'callerSaved', options);
       const partial = !!hardInvalid || unknownCallPrototype || classified?.partial === true || !!returnState
-        || returned?.partial === true || returned?.unsupported === true || returnProofMissing;
+        || returned?.partial === true || returned?.unsupported === true || returnProofMissing || !preservation.ok;
       const markUncertain = (entry) => ({
         ...entry,
         possible:true,
@@ -1081,13 +1182,14 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
         implicitInputs,
         variadicVectorRegisterCount:classified?.variadicVectorRegisterCount ?? null,
         partial,
-        completeness:evidenceState || classifierState || returnState
+        completeness:evidenceState || classifierState || returnState || (!preservation.ok ? 'partial' : null)
           || (returnProofMissing ? 'malformed' : classified == null || classified?.unsupported === true ? 'unknown' : partial ? 'partial' : 'complete'),
         stackArguments:hardInvalid || partial ? null : classified?.stackArguments ?? null,
         stackArgsUnknown:hardInvalid || partial ? true : classified?.stackArgsUnknown ?? true,
         stackArgsMayContainPointers:hardInvalid || partial ? true : classified?.stackArgsMayContainPointers ?? true,
         argumentEvidence:classified?.evidence ?? `abi-${pluginId}`,
-        clobbers:(() => { try { return plugin?.callerSaved?.(options) ?? []; } catch { return []; } })(),
+        clobbers:preservation.ok ? preservation.regs : Object.freeze([]),
+        clobberEvidence:preservation.ok ? `abi-${pluginId}` : 'unavailable',
         returnReg:returnRegister,
         returnBits:publishableReturn ? returned?.bits ?? null : null,
         returnBytes:publishableReturn ? returned?.bytes ?? null : null,

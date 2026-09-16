@@ -47,3 +47,5 @@ assert.equal(applicationCodeScore({}, { ...applicationHints, owningLibrary: vers
 assert.equal(classificationOf('/System/Library/Frameworks/foundation.framework/versions/c/foundation'), 'SYSTEM');
 
 console.log('issue-5438 versioned apple framework paths classified: ok');
+
+await import('./issue-4831-aggregate-match-ambiguity.mjs');

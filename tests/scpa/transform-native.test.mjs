@@ -122,7 +122,7 @@ for (const [name, mutate] of Object.entries({
 test('canonical decompiler does not accept a serialized owner as authority', () => {
   assert.throws(() => decompileScopedCanonicalOwner({ pipeline: {} }, { scopedTransformEvidence: true }), /issued-owner/);
 });
-test('actual native worker route captures and checks a real ARM64 view transformation without upgrading partial cache eligibility', async t => {
+test('actual native worker route captures and checks a real ARM64 view transformation with partial cache reuse', async t => {
   const f = await nativeWorkerFixture(t, { rowsByLocator: { '0x1000': [['uxtb', 'w0, w0', 0x53001c00], ['ret', '', 0xd65f03c0]] } });
   const r = await f.invoke('explainTransformChain', { functionId: '0x1000' });
   assert.equal(r.status, 'completed'); assert.equal(r.verifiedStatementCount, 1); assert.equal(r.exact, false);
@@ -130,7 +130,7 @@ test('actual native worker route captures and checks a real ARM64 view transform
   assert.match(r.statements[0].beforeText, /uint32_t/); assert.doesNotMatch(r.statements[0].afterText, /uint32_t/);
   assert.equal(r.statements[0].chain.minimumCheck, 'derivation-checked');
   const workers = f.counters.workers; const again = await f.invoke('explainTransformChain', { functionId: '0x1000', includePremises: true });
-  assert.equal(again.statements[0].chain.id, r.statements[0].chain.id); assert.equal(f.counters.workers, workers + 1, 'partial artifacts are intentionally recomputed by the canonical scheduler');
+  assert.equal(again.statements[0].chain.id, r.statements[0].chain.id); assert.equal(f.counters.workers, workers, 'compatible partial artifacts are reused by the canonical scheduler');
   await assert.rejects(() => f.invoke('explainTransformChain', { functionId: '0x1000', includePremises: 'yes' }), /premises-option/);
 });
 test('native capture binds artifact/world and honors work stop before publication', async t => {

@@ -120,8 +120,44 @@ function decodeChainedVtablePointer(raw,format,imageBase){
   return{raw,addr:null,binding:null,unresolved:true,reason:'unsupported-chained-pointer-format',pointerFormat:format};
 }
 
-async function resolveVtablePointer(raw,address,opts){
+// C++ vtable/RTTI components are native-pointer words. arm64_32 (watchOS) uses
+// the AArch64 ISA with an ILP32 pointer ABI and Clang emits 4-byte components,
+// so a fixed 8-byte read concatenates adjacent 32-bit slots into fabricated
+// targets (#8406). Carry the selected slice's canonical capability through to
+// this parser instead of maintaining a second architecture-width table here.
+export function rttiPointerContextForSlice(slice, baseContext={}){
+  const info=slice?.info||{},capability=slice?.capability||{};
+  const architecture=capability.architecture??info.architecture??baseContext.architecture??baseContext.arch;
+  const pointerBits=capability.pointerBits??info.pointerBits??baseContext.pointerBits;
+  return{
+    ...baseContext,
+    ...(architecture!=null?{architecture}:{}),
+    ...(pointerBits!=null?{pointerBits}:{}),
+  };
+}
+function rttiPointerBytesFor(opts={}){
+  const rawBytes=opts.pointerBytes??opts.pointerSize;
+  const rawBits=opts.pointerBits;
+  const bytes=rawBytes==null?null:(rawBytes===4||rawBytes===8?rawBytes:null);
+  const bits=rawBits==null?null:(rawBits===32?4:rawBits===64?8:null);
+  if((rawBytes!=null&&bytes==null)||(rawBits!=null&&bits==null)||(bytes!=null&&bits!=null&&bytes!==bits))return null;
+  if(bits!=null)return bits;
+  if(bytes!=null)return bytes;
+  // A declared architecture without its ABI width is insufficient evidence.
+  // Keep the historical LP64 default only for context-free legacy callers.
+  if(opts.architecture!=null||opts.arch!=null)return null;
+  return 8;
+}
+function rttiUnreadablePointerAbi(addr,reason,pointerBytes=null){
+  return{addr,pointerBytes,offsetToTop:null,typeinfo:null,typeinfoRaw:null,typeinfoBinding:null,
+    typeinfoUnresolved:true,typeinfoReason:reason,reason,slots:[]};
+}
+
+async function resolveVtablePointer(raw,address,opts,pointerBytes=8){
   if(raw===0n)return{raw,addr:0n,binding:null,unresolved:false};
+  // dyld chained-pointer formats describe 64-bit pointer encodings; an ILP32
+  // vtable must not be decoded through them.
+  if(pointerBytes===4&&opts.pointerFormat!=null)return{raw,addr:null,binding:null,unresolved:true,reason:'ilp32-chained-pointer-format-unsupported'};
   const pointerFormat=opts.pointerFormat??null;
   if(pointerFormat!=null&&(
     typeof pointerFormat!=='number'||!Number.isSafeInteger(pointerFormat)||!SUPPORTED_CHAINED_POINTER_FORMATS.has(pointerFormat)
@@ -138,7 +174,8 @@ async function resolveVtablePointer(raw,address,opts){
   // Plain relocations are already materialized as canonical user-space VAs.
   // Values with high encoding/tag bits are not safe to reinterpret by masking:
   // without fixup context a bind ordinal and a rebase target are indistinguishable.
-  if(raw<=0x0000ffffffffffffn)return{raw,addr:raw,binding:null,unresolved:false};
+  const ceiling=pointerBytes===4?0xffffffffn:0x0000ffffffffffffn;
+  if(raw<=ceiling)return{raw,addr:raw,binding:null,unresolved:false};
   return{raw,addr:null,binding:null,unresolved:true,reason:'encoded-pointer-without-fixup-context'};
 }
 
@@ -147,18 +184,22 @@ export async function readVtable(read,vtableAddr,symbols,maxSlots=64,opts={}){
   maxSlots=Math.max(1,Math.min(4096,Number(maxSlots)||64));
   const exactSlotCount=Number(opts?.slotCount);
   const slotLimit=Number.isSafeInteger(exactSlotCount)&&exactSlotCount>=0?Math.min(4096,exactSlotCount):maxSlots;
-  const bytes=await read(vtableAddr,(slotLimit+2)*8);
-  if(!bytes||bytes.length<16)return null;
+  const pointerBytes=rttiPointerBytesFor(opts||{});
+  if(pointerBytes==null)return rttiUnreadablePointerAbi(vtableAddr,'unknown-pointer-abi');
+  if(pointerBytes===4&&(opts||{}).pointerFormat!=null)return rttiUnreadablePointerAbi(vtableAddr,'ilp32-chained-pointer-format-unsupported',4);
+  const bytes=await read(vtableAddr,(slotLimit+2)*pointerBytes);
+  if(!bytes||bytes.length<2*pointerBytes)return null;
   const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength),slots=[];
-  const offsetToTop=BigInt.asIntN(64,dv.getBigUint64(0,true));
-  const typeinfoRaw=dv.getBigUint64(8,true);
-  const typeinfoResolved=await resolveVtablePointer(typeinfoRaw,BigInt(vtableAddr)+8n,opts||{});
-  for(let i=2;i<slotLimit+2&&i*8+8<=bytes.length;i++){
-    const raw=dv.getBigUint64(i*8,true);
-    const resolved=await resolveVtablePointer(raw,BigInt(vtableAddr)+BigInt(i*8),opts||{});
+  const wordAt=(offset)=>pointerBytes===4?BigInt(dv.getUint32(offset,true)):dv.getBigUint64(offset,true);
+  const offsetToTop=BigInt.asIntN(pointerBytes*8,wordAt(0));
+  const typeinfoRaw=wordAt(pointerBytes);
+  const typeinfoResolved=await resolveVtablePointer(typeinfoRaw,BigInt(vtableAddr)+BigInt(pointerBytes),opts||{},pointerBytes);
+  for(let i=2;i<slotLimit+2&&(i+1)*pointerBytes<=bytes.length;i++){
+    const raw=wordAt(i*pointerBytes);
+    const resolved=await resolveVtablePointer(raw,BigInt(vtableAddr)+BigInt(i*pointerBytes),opts||{},pointerBytes);
     const addr=resolved.addr;
     const name=addr!=null&&addr!==0n&&symbols?(symbols.nameAt(addr)||symbols.label(addr)):null;
     slots.push({index:i-2,raw,addr,binding:resolved.binding||null,unresolved:!!resolved.unresolved,reason:resolved.reason||null,name:name||null,readable:name?readableName(name):null});
   }
-  return{addr:vtableAddr,offsetToTop,typeinfo:typeinfoResolved.addr,typeinfoRaw,typeinfoBinding:typeinfoResolved.binding||null,typeinfoUnresolved:!!typeinfoResolved.unresolved,slots};
+  return{addr:vtableAddr,pointerBytes,offsetToTop,typeinfo:typeinfoResolved.addr,typeinfoRaw,typeinfoBinding:typeinfoResolved.binding||null,typeinfoUnresolved:!!typeinfoResolved.unresolved,typeinfoReason:typeinfoResolved.reason||null,slots};
 }

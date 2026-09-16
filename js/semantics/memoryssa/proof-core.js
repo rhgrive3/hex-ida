@@ -26,19 +26,23 @@ export const CANONICAL_STORE_VALUE_ISSUER = 'semantic-memoryssa.store-operand';
  *
  * The callback implementation itself is the capability. Callers may pass this
  * exact function to MemorySSA, but cannot register or substitute their own
- * callback. The provider derives every claim from the current descriptor's
- * canonical machine-effects metadata and refuses everything outside the owned
- * ARM64 ordinary-memory family.
+ * callback. The provider derives every claim from producer-independent,
+ * architecture-neutral signals on the current descriptor: the presence of a
+ * canonical memory descriptor, the producer's own `bundleCompleteness === 'exact'`
+ * attestation, and the generic access qualifiers below. It intentionally does
+ * not branch on any architecture, ABI, family, or register/flag name — the
+ * concrete target capability stays with the architecture adapter that produced
+ * the machine-effects bundle, and this generic layer binds it to the exact
+ * module-owned issuer/version/source instead of re-deriving it from target data.
  */
 function canonicalSemanticAccessProvider(descriptor) {
   const memory = descriptor?.memory;
   const machineEffects = descriptor?.node?.attributes?.machineEffects;
+  // Carried through as opaque evidence values only; never used to branch.
   const architectureId = machineEffects?.architectureId;
   const family = machineEffects?.bundleMetadata?.family;
   const bundleCompleteness = machineEffects?.bundleCompleteness;
-  if (!memory || !['arm64', 'arm64e'].includes(architectureId)
-      || family !== 'arm64-memory'
-      || bundleCompleteness !== 'exact') return null;
+  if (!memory || bundleCompleteness !== 'exact') return null;
   if (typeof descriptor?.node?.id !== 'string' || descriptor.node.id.length === 0) return null;
   if (typeof memory.widthBits !== 'number' || !Number.isSafeInteger(memory.widthBits)
       || memory.widthBits <= 0 || memory.widthBits % 8 !== 0) return null;
@@ -124,7 +128,18 @@ export function canonicalMemorySsaPayload(artifact) {
     reachingDefinitionLinks: artifact?.reachingDefinitionLinks ?? null,
     useDefLinks: artifact?.useDefLinks ?? null,
     defUseLinks: artifact?.defUseLinks ?? null,
-    accessMetadata: artifact?.accessMetadata ?? null,
+    accessMetadata: Array.isArray(artifact?.accessMetadata)
+      ? artifact.accessMetadata.map((entry) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+        const canonicalValue = entry.canonicalValue;
+        return {
+          ...entry,
+          ...(canonicalValue && typeof canonicalValue === 'object' && !Array.isArray(canonicalValue)
+            ? { canonicalValue: { ...canonicalValue } }
+            : {}),
+        };
+      })
+      : (artifact?.accessMetadata ?? null),
     canonicalAccessBindings: artifact?.canonicalAccessBindings ?? null,
     byteCoverage: artifact?.byteCoverage ?? null,
     blockStates: artifact?.blockStates ?? null,

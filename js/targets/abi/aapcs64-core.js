@@ -42,7 +42,41 @@ function aggregateBoolean(parameter, key) {
   return { present:true, value:normalized.every((value) => value === normalized[0]) ? normalized[0] : null };
 }
 
-function parameterAbiClass(param) {
+function scalarLayout(parameter, pointerBits = null) {
+  const widths = ['bits', 'sizeBits'].filter((key) => Object.hasOwn(parameter ?? {}, key)).map((key) => parameter[key]);
+  const sizes = ['bytes', 'sizeBytes'].filter((key) => Object.hasOwn(parameter ?? {}, key)).map((key) => parameter[key]);
+  if ([...widths, ...sizes].some((value) => !Number.isSafeInteger(value) || value <= 0)) return null;
+  const bits = pointerBits ?? widths[0];
+  if (!Number.isSafeInteger(bits) || bits <= 0 || (bits > 64 && bits !== 128)
+    || widths.some((width) => width !== bits)
+    || sizes.some((size) => size !== Math.ceil(bits / 8))) return null;
+  // The ABI profile proves pointer storage. Ordinary scalar register spans
+  // require an explicit size; a logical width alone is not owner byte evidence.
+  return { bits, bytes:pointerBits !== null ? bits / 8 : sizes[0] ?? null };
+}
+
+function aggregateAlignmentEvidence(parameter) {
+  // Direct alignment keeps precedence over nested evidence. Absence permits
+  // the ABI default; malformed or conflicting evidence leaves placement unknown.
+  const aliases = ['alignment', 'align', 'alignmentBytes'];
+  const directAlias = aliases.find((alias) => Object.hasOwn(parameter ?? {}, alias));
+  const owners = [];
+  if (directAlias === undefined) {
+    if (nestedRecord(parameter?.layout)) owners.push(parameter.layout);
+    if (nestedRecord(parameter?.returnAggregate)) owners.push(parameter.returnAggregate);
+    if (nestedRecord(parameter?.returnAggregate?.layout)) owners.push(parameter.returnAggregate.layout);
+  }
+  const values = directAlias !== undefined ? [parameter[directAlias]] : owners.flatMap((owner) => aliases
+    .filter((alias) => Object.hasOwn(owner, alias))
+    .map((alias) => owner[alias]));
+  if (!values.length) return undefined;
+  // Natural alignments are powers of two. Check the primitive before doing
+  // arithmetic so caller-owned coercion hooks cannot become layout evidence.
+  if (values.some((value) => typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0
+    || (BigInt(value) & (BigInt(value) - 1n)) !== 0n)) return null;
+  return values.every((value) => value === values[0]) ? values[0] : null;
+}
+function parameterAbiClass(param, options = {}) {
   const type = String(param?.type || param?.name || '').toLowerCase();
   const cls = String(param?.abiClass || param?.class || param?.kind || '').toLowerCase();
   const scalableClass = scalableAAPCS64Class(type, cls);
@@ -100,25 +134,30 @@ function parameterAbiClass(param) {
   // Do not let the scalar fallback below turn an un-sized struct/union into a
   // one-register exact argument.
   const aggregateLayoutProven = !aggregateMetadataInvalid && (!aggregate || !!layoutEvidence);
-  const int128 = !pointer && !aggregate && !fp && /(?:unsigned\s+)?__int128|int128_t|uint128_t/.test(type + ' ' + cls);
+  const pointerBits = Number(options?.pointerBits) || (options?.dataModel === 'ilp32' ? 32 : 64);
+  const scalar = !homogeneous && !aggregate ? scalarLayout(param, pointer ? pointerBits : null) : null;
   const rawBits = homogeneous
     ? homogeneousLayoutProven ? elementBits * members : explicitTotalBitsProven ? explicitBits : 0
     : aggregate
       ? aggregateLayoutProven ? explicitBits : 0
-      : Number.isFinite(explicitBits) && explicitBits > 0 ? explicitBits : int128 ? 128 : 64;
-  const bits = rawBits > 0 ? Math.max(8, Math.min(1 << 20, Math.floor(rawBits))) : 0;
+      : scalar?.bits ?? 0;
+  const bits = rawBits;
   const wideIntegral = !pointer && !aggregate && !fp && bits === 128;
-  const declaredAlignment = Number(param?.alignment ?? param?.align ?? param?.alignmentBytes);
+  const declaredAlignment = homogeneous || aggregate ? aggregateAlignmentEvidence(param)
+    : Number(param?.alignment ?? param?.align ?? param?.alignmentBytes);
+  const alignmentInvalid = (homogeneous || aggregate) && declaredAlignment === null;
   const alignment = Number.isFinite(declaredAlignment) && declaredAlignment > 0
     ? Math.min(16, Math.max(1, Math.floor(declaredAlignment)))
     : wideIntegral ? 16 : 8;
   const mayContainPointers = param?.mayContainPointers === true || param?.containsPointers === true;
   return {
     pointer, hfa, hva, homogeneous, homogeneousLayoutProven, aggregateLayoutProven, vector, aggregate, fp,
-    members, elementBits, elementBytes:homogeneousElementBytes, bits, wideIntegral, alignment,
+    members, elementBits, elementBytes:homogeneousElementBytes, bits, wideIntegral, alignment, alignmentInvalid,
     aggregateLayout:layoutEvidence,
     aggregateBytes:aggregate ? layoutEvidence?.bytes ?? (bits > 0 ? Math.ceil(bits / 8) : null) : null,
     aggregateMetadataInvalid,
+    scalarLayoutProven:homogeneous || aggregate || scalar !== null,
+    scalarBytes:scalar?.bytes ?? null,
     mayContainPointers, scalableClass,
   };
 }
@@ -128,14 +167,42 @@ function possibleRegisterSource(reg, bits, abiClass) {
     certainty:'unknown', purpose:'variadic-tail-candidate', abiClass };
 }
 
+const UNSUPPORTED_AAPCS64_VARIANT_PCS = new Set([
+  'aarch64-variant-pcs',
+  'variant-pcs',
+  'aarch64-ilp32-variant-pcs',
+]);
+function isUnsupportedAAPCS64VariantPCS(convention) {
+  return UNSUPPORTED_AAPCS64_VARIANT_PCS.has(convention);
+}
+
 export function classifyAAPCS64Arguments(insn, opts = {}) {
   const proto = callPrototypeOf(insn, opts);
+  const convention = opts?.callingConvention || insn?.callingConvention || proto?.callingConvention
+    || (opts?.abiMetadata?.aarch64VariantPcs || insn?.abiMetadata?.aarch64VariantPcs ? 'aarch64-variant-pcs' : null);
+  if (isUnsupportedAAPCS64VariantPCS(convention)) {
+    return {
+      srcs: [],
+      arguments: [],
+      stackArguments: [],
+      stackArgsUnknown: true,
+      stackArgsMayContainPointers: true,
+      aggregateClassification: 'unknown',
+      variadicClassification: 'unknown',
+      partial: true,
+      unsupported: true,
+      callingConvention: convention,
+      reason: 'aapcs64-variant-pcs-unsupported',
+      evidence: 'unsupported-aarch64-variant-pcs',
+    };
+  }
   const params = callParameterList(proto);
   const srcs = [];
   const arguments_ = [];
   const stackArguments = [];
   const unsupported = [];
   let gp = 0, fp = 0, stackOffset = 0;
+  let allocationUncertain = false;
   let stackArgsMayContainPointers = false;
   if (!params) {
     for (let i=0;i<8;i++) {
@@ -158,7 +225,15 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
     };
   }
   params.forEach((param,index) => {
-    const c=parameterAbiClass(param);
+    const c=parameterAbiClass(param, opts);
+    if (allocationUncertain || c.alignmentInvalid || (!c.scalableClass && !c.scalarLayoutProven)) {
+      const entry={index,location:'unknown',
+        abiClass:allocationUncertain ? 'argument-layout-unproven' : c.alignmentInvalid ? 'aggregate-alignment-unproven' : 'scalar-layout-unproven',
+        partial:true,possible:true,mustUse:false,exact:false,certainty:'unknown',
+        reason:allocationUncertain ? 'preceding-argument-layout-not-proven' : c.alignmentInvalid ? 'aggregate-alignment-unproven' : 'scalar-width-size-not-proven'};
+      allocationUncertain = true;
+      arguments_.push(entry);unsupported.push(entry);return;
+    }
     if (c.scalableClass) {
       const entry={index,location:'unsupported',abiClass:c.scalableClass,pointer:false,scalable:true,evidence:'unsupported-aapcs64-sve'};
       arguments_.push(entry);unsupported.push(entry);return;
@@ -196,7 +271,8 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
       const homogeneousBytes = c.homogeneous ? c.elementBytes : null;
       arguments_.push({
         index,location:'register',regs,reg:regs[0],abiClass:c.hfa?'hfa':c.hva?'hva':c.vector?'vector':'fp',
-        pointer:c.pointer,bits:c.bits,bytes:c.homogeneous ? homogeneousBytes * c.members : Math.ceil(c.bits / 8),
+        pointer:c.pointer,bits:c.bits,
+        ...(c.homogeneous ? {bytes:homogeneousBytes * c.members} : c.scalarBytes !== null ? {bytes:c.scalarBytes} : {}),
         ...(c.homogeneous ? {
           aggregate:true, members:c.members, memberCount:c.members, elementBits:c.elementBits,
           elementBytes:homogeneousBytes, homogeneousLayoutProven:true,
@@ -211,18 +287,20 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
     }
 
     if (c.aggregate && aggregateRequiresIndirectCopy(c.aggregateBytes)) {
+      const pointerBits = Number(opts?.pointerBits) || (opts?.dataModel === 'ilp32' ? 32 : 64);
+      const pointerBytes = Math.ceil(pointerBits / 8);
       const reg = gp < 8 ? `x${gp++}` : null;
       const entry = reg
-        ? {index,location:'register',reg,abiClass:'aggregate-indirect-copy',pointer:true,bits:64,bytes:8,
+        ? {index,location:'register',reg,abiClass:'aggregate-indirect-copy',pointer:true,bits:pointerBits,bytes:pointerBytes,
           pointeeBits:c.bits,aggregate:true,callerCopy:true,mayContainPointers:c.mayContainPointers,
-          pieces:[{pieceIndex:0,order:0,reg,bits:64,bytes:8,byteOffset:0,abiClass:'aggregate-indirect-copy'}],
+          pieces:[{pieceIndex:0,order:0,reg,bits:pointerBits,bytes:pointerBytes,byteOffset:0,abiClass:'aggregate-indirect-copy'}],
           possible:false,mustUse:true}
-        : {index,location:'stack',offset:stackOffset,bytes:8,abiClass:'aggregate-indirect-copy',pointer:true,bits:64,
+        : {index,location:'stack',offset:stackOffset,bytes:pointerBytes,abiClass:'aggregate-indirect-copy',pointer:true,bits:pointerBits,
           pointeeBits:c.bits,aggregate:true,callerCopy:true,mayContainPointers:c.mayContainPointers,
-          pieces:[{pieceIndex:0,order:0,stackOffset,bits:64,bytes:8,byteOffset:0,abiClass:'aggregate-indirect-copy'}],
+          pieces:[{pieceIndex:0,order:0,stackOffset,bits:pointerBits,bytes:pointerBytes,byteOffset:0,abiClass:'aggregate-indirect-copy'}],
           possible:false,mustUse:true};
       if (reg) srcs.push({t:'reg',reg,bits:64,purpose:'aggregate-indirect-copy',possible:false,mustUse:true});
-      else { stackArguments.push(entry); stackOffset += 8; }
+      else { stackArguments.push(entry); stackOffset += Math.max(8, pointerBytes); }
       arguments_.push(entry);
       stackArgsMayContainPointers = true;
       return;
@@ -233,7 +311,10 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
       if (gp <= 6) {
         const regs=[`x${gp}`,`x${gp+1}`]; gp += 2;
         for (const reg of regs) srcs.push({t:'reg',reg,bits:64,purpose:'wide-integral-piece',possible:false,mustUse:true});
-        arguments_.push({index,location:'registers',regs,reg:regs[0],abiClass:'wide-integer',pointer:false,bits:128,bytes:16,alignment:16,pieces:regs.map((reg,piece)=>({pieceIndex:piece,order:piece,reg,bits:64,bytes:8,byteOffset:piece*8,abiClass:'wide-integer'})),possible:false,mustUse:true});
+        arguments_.push({index,location:'registers',regs,reg:regs[0],abiClass:'wide-integer',pointer:false,bits:128,alignment:16,
+          ...(c.scalarBytes !== null ? {bytes:c.scalarBytes,
+            pieces:regs.map((reg,piece)=>({pieceIndex:piece,order:piece,reg,bits:64,bytes:8,byteOffset:piece*8,abiClass:'wide-integer'}))} : {}),
+          possible:false,mustUse:true});
         return;
       }
       gp = 8;
@@ -311,7 +392,8 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
     if (!c.fp && gp < 8) {
       const reg=`x${gp++}`;
       srcs.push({t:'reg',reg,bits:64,possible:false,mustUse:true});
-      arguments_.push({index,location:'register',reg,abiClass:c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits,possible:false,mustUse:true});
+      arguments_.push({index,location:'register',reg,abiClass:c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits,
+        ...(c.scalarBytes !== null ? {bytes:c.scalarBytes} : {}),possible:false,mustUse:true});
       return;
     }
     const slots=Math.max(1,Math.ceil(c.bits/64));
@@ -334,6 +416,7 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
         pieces:Array.from({length:c.members}, (_unused,piece) => ({
           pieceIndex:piece, order:piece,
           stackOffset:stackOffset + piece * homogeneousElementBytes,
+          stackAlignment:homogeneousElementBytes,
           bits:c.elementBits, bytes:homogeneousElementBytes,
           byteOffset:piece * homogeneousElementBytes, abiClass:c.hfa?'hfa':'hva',
         })),
@@ -361,11 +444,11 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
   }
   return {
     srcs, arguments:arguments_, stackArguments,
-    stackArgsUnknown:variadic,
-    stackArgsMayContainPointers:stackArgsMayContainPointers||variadic,
+    stackArgsUnknown:variadic||allocationUncertain,
+    stackArgsMayContainPointers:stackArgsMayContainPointers||variadic||allocationUncertain,
     possibleRegisterInputs,
     partial:variadic||unsupported.length>0,
-    evidence:unsupported.length?'partial-aapcs64-unsupported-sve':variadic?'prototype-aapcs64-variadic':'prototype-aapcs64',
+    evidence:allocationUncertain?'partial-aapcs64-unproven-layout':unsupported.length?'partial-aapcs64-unsupported-sve':variadic?'prototype-aapcs64-variadic':'prototype-aapcs64',
     unsupported:unsupported.length>0,
     unsupportedArguments:unsupported,
   };
@@ -457,19 +540,31 @@ function homogeneousReturnPieces(info) {
   }));
 }
 
-function indirectReturnResult() {
+function indirectReturnResult(pointerBits = 64) {
   return {
-    reg:null, regs:[], bits:64, aggregate:true, indirect:true,
-    resultLocation:'memory', abiClass:'indirect-result', pointerBits:64,
+    reg:null, regs:[], bits:pointerBits, aggregate:true, indirect:true,
+    resultLocation:'memory', abiClass:'indirect-result', pointerBits,
     hiddenResultPointer:'x8',
   };
 }
 
 export function classifyAAPCS64CallReturn(insn, opts = {}) {
+  const convention = opts?.callingConvention || insn?.callingConvention
+    || (opts?.abiMetadata?.aarch64VariantPcs || insn?.abiMetadata?.aarch64VariantPcs ? 'aarch64-variant-pcs' : null);
+  if (isUnsupportedAAPCS64VariantPCS(convention)) {
+    return { reg: null, regs: [], partial: true, unsupported: true, callingConvention: convention, reason: 'aapcs64-variant-pcs-unsupported' };
+  }
   const proto = callPrototypeOf(insn, opts);
   if (!proto) return null;
+  const protoConvention = proto?.callingConvention;
+  if (isUnsupportedAAPCS64VariantPCS(protoConvention)) {
+    return { reg: null, regs: [], partial: true, unsupported: true, callingConvention: protoConvention, reason: 'aapcs64-variant-pcs-unsupported' };
+  }
+  const pointerBits = Number(opts?.pointerBits) || (opts?.dataModel === 'ilp32' ? 32 : 64);
   const type = String(proto.returnType || proto.ret || proto.result || '').toLowerCase();
   const cls = String(proto.returnClass || proto.abiClass || proto.resultClass || '').toLowerCase();
+  const isPointer = proto.pointer === true || proto.isPointer === true || opts?.pointer === true || opts?.isPointer === true
+    || /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(type + ' ' + cls);
   if (proto.void === true || type === 'void' || cls === 'void') return null;
   const returnAggregate = proto.returnAggregate && typeof proto.returnAggregate === 'object'
     && !Array.isArray(proto.returnAggregate) ? proto.returnAggregate : null;
@@ -490,11 +585,11 @@ export function classifyAAPCS64CallReturn(insn, opts = {}) {
     return { reg:null, regs:[], bits:null, bytes:null, aggregate:true, partial:true,
       reason:'aapcs64-aggregate-return-size-not-proven' };
   }
-  if (proto.indirectResult === true || cls === 'indirect') return indirectReturnResult();
+  if (proto.indirectResult === true || cls === 'indirect') return indirectReturnResult(pointerBits);
   if (scalableReturnClass(proto,type,cls)) return null;
   const returnBits = aggregate
     ? explicitReturnBits ?? aggregateLayout?.bits ?? null
-    : returnBitsOf(proto.returnBits, proto.bits);
+    : returnBitsOf(proto.returnBits, proto.bits, isPointer ? pointerBits : null);
   if (aggregate && returnBits == null) {
     return { reg:null, regs:[], bits:null, bytes:null, aggregate:true, partial:true,
       reason:'aapcs64-aggregate-return-size-not-proven' };
@@ -522,7 +617,7 @@ export function classifyAAPCS64CallReturn(insn, opts = {}) {
     return { reg:'v0', bits:returnBits };
   }
   const wideInteger=!aggregate&&(/(?:unsigned\s+)?__int128|int128_t|uint128_t/.test(type+' '+cls)||returnBits===128);
-  if (aggregate && returnBits>128) return indirectReturnResult();
+  if (aggregate && returnBits>128) return indirectReturnResult(pointerBits);
   if ((aggregate && returnBits>64) || wideInteger) {
     const pieces = aggregateReturnPieces(returnBits);
     if (!pieces) return { reg:null, partial:true, aggregate:true, reason:'aapcs64-aggregate-return-width-not-proven' };
@@ -539,8 +634,16 @@ export function classifyAAPCS64CallReturn(insn, opts = {}) {
 
 export function classifyAAPCS64FunctionReturn(opts = {}) {
   const proto = opts?.functionPrototype || opts?.prototype || null;
+  const convention = opts?.callingConvention || proto?.callingConvention
+    || (opts?.abiMetadata?.aarch64VariantPcs ? 'aarch64-variant-pcs' : null);
+  if (isUnsupportedAAPCS64VariantPCS(convention)) {
+    return { reg: null, regs: [], partial: true, unsupported: true, callingConvention: convention, reason: 'aapcs64-variant-pcs-unsupported' };
+  }
+  const pointerBits = Number(opts?.pointerBits) || (opts?.dataModel === 'ilp32' ? 32 : 64);
   const type = String(opts?.returnType || proto?.returnType || proto?.ret || proto?.result || '').toLowerCase();
   const cls = String(opts?.returnClass || proto?.returnClass || proto?.abiClass || proto?.resultClass || '').toLowerCase();
+  const isPointer = proto?.pointer === true || proto?.isPointer === true || opts?.pointer === true || opts?.isPointer === true
+    || /\*|(?:^|[^a-z0-9_])(?:pointer|ptr|object|class|block|closure)(?![a-z0-9_])/.test(type + ' ' + cls);
   if (opts?.returnsValue === false || proto?.returnsValue === false || proto?.void === true || type === 'void' || cls === 'void') return null;
   const returnAggregate = proto?.returnAggregate && typeof proto.returnAggregate === 'object'
     && !Array.isArray(proto.returnAggregate) ? proto.returnAggregate : null;
@@ -561,11 +664,11 @@ export function classifyAAPCS64FunctionReturn(opts = {}) {
     return { reg:null, regs:[], bits:null, bytes:null, aggregate:true, partial:true,
       reason:'aapcs64-aggregate-return-size-not-proven' };
   }
-  if (proto?.indirectResult === true || cls === 'indirect') return indirectReturnResult();
+  if (proto?.indirectResult === true || cls === 'indirect') return indirectReturnResult(pointerBits);
   if (scalableReturnClass(proto,type,cls)) return null;
   const returnBits = aggregate
     ? explicitReturnBits ?? aggregateLayout?.bits ?? null
-    : returnBitsOf(opts?.returnBits, proto?.returnBits, proto?.bits);
+    : returnBitsOf(opts?.returnBits, proto?.returnBits, proto?.bits, isPointer ? pointerBits : null);
   if (aggregate && returnBits == null) {
     return { reg:null, regs:[], bits:null, bytes:null, aggregate:true, partial:true,
       reason:'aapcs64-aggregate-return-size-not-proven' };
@@ -591,7 +694,7 @@ export function classifyAAPCS64FunctionReturn(opts = {}) {
   }
   if (type || cls || opts?.returnsValue === true || proto?.returnsValue === true) {
     const wideInteger=!aggregate&&(/(?:unsigned\s+)?__int128|int128_t|uint128_t/.test(type+' '+cls)||returnBits===128);
-    if (aggregate && returnBits>128) return indirectReturnResult();
+    if (aggregate && returnBits>128) return indirectReturnResult(pointerBits);
     if ((aggregate && returnBits>64) || wideInteger) {
       const pieces = aggregateReturnPieces(returnBits);
       if (!pieces) return { reg:null, partial:true, aggregate:true, reason:'aapcs64-aggregate-return-width-not-proven' };
@@ -625,7 +728,7 @@ function callerSavedFor(context = {}) {
 export const AAPCS64_ABI = new ABIPlugin({
   id:'aapcs64', semanticVersion:'2', architectureId:'arm64',
   platformPredicate:({ platform }) => !platform || platform === 'linux' || platform === 'android' || platform === 'unknown',
-  callingConventions:()=>Object.freeze(['aapcs64']),
+  callingConventions:()=>Object.freeze(['aapcs64', 'aarch64-variant-pcs']),
   classifyArguments:classifyAAPCS64Arguments,
   classifyCallReturn:classifyAAPCS64CallReturn,
   classifyFunctionReturn:classifyAAPCS64FunctionReturn,
@@ -648,6 +751,22 @@ export const AAPCS64_ABI = new ABIPlugin({
     };
     return { kind:'incoming-register-state', reg:text };
   },
+  callerSaved:(context)=>callerSavedFor(context),
+  calleeSaved:()=>CALLEE_SAVED,
+  stackRules:()=>Object.freeze({ alignment:16, stackGrows:'down', argumentSlotBytes:8, variadicRegisterSaveAreas:true }),
+  redZone:()=>0,
+  unwindRules:()=>Object.freeze({ framePointer:'x29', linkRegister:'x30' }),
+  defaultUnknownCallEffects:(context)=>Object.freeze({ registerClobbers:callerSavedFor(context), memoryEffects:'unknown', mayThrow:true, stackArguments:'unknown', stackArgsMayContainPointers:true }),
+});
+
+export const AAPCS64_ILP32_ABI = new ABIPlugin({
+  id:'aapcs64-ilp32', semanticVersion:'1', architectureId:'arm64',
+  platformPredicate:({ platform }) => !platform || platform === 'linux' || platform === 'android' || platform === 'unknown',
+  callingConventions:()=>Object.freeze(['aapcs64-ilp32', 'ilp32']),
+  classifyArguments:(insn, opts = {}) => classifyAAPCS64Arguments(insn, { ...opts, dataModel:'ilp32', pointerBits:32 }),
+  classifyCallReturn:(insn, opts = {}) => classifyAAPCS64CallReturn(insn, { ...opts, dataModel:'ilp32', pointerBits:32 }),
+  classifyFunctionReturn:(opts = {}) => classifyAAPCS64FunctionReturn({ ...opts, dataModel:'ilp32', pointerBits:32 }),
+  classifyEntryRegister:AAPCS64_ABI.classifyEntryRegister,
   callerSaved:(context)=>callerSavedFor(context),
   calleeSaved:()=>CALLEE_SAVED,
   stackRules:()=>Object.freeze({ alignment:16, stackGrows:'down', argumentSlotBytes:8, variadicRegisterSaveAreas:true }),

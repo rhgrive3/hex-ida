@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { deriveMemoryRegion } from '../../../js/analysis/alias/regions-v2.js';
 import { createFunctionSummary } from '../../../js/analysis/summary/contract.js';
 import { buildLocalFunctionSummary } from '../../../js/analysis/summary/local.js';
 
@@ -65,7 +66,16 @@ test('known all-scope and fully resolved accesses remain complete (#5752)', () =
   assert.equal(all.summary.memoryReadRegions[0].broad, true);
   assert.equal(all.summary.memoryWriteRegions[0].broad, true);
 
-  const region = { id:'region:resolved', kind:'global-absolute' };
+  // #8809 sync: a resolved region returned to the summary builder must be a
+  // canonical proof (deriveMemoryRegion output), not a hand-made `{id,kind}`
+  // object; `function-summary-invalid-region-proof` now rejects the latter.
+  const region = deriveMemoryRegion({
+    functionId: 'function_5752_intrinsic',
+    binaryId: 'binary_5752',
+    widthBits: 64,
+    origin: { instructionIds: ['instruction_resolved_region'] },
+    regionEvidence: { kind: 'global-absolute', address: 0x2000n },
+  });
   const accesses = buildLocalFunctionSummary(
     intrinsicIr({ scope:'accesses', accesses:[{ regionId:region.id, addressSpace:'memory' }] }, { scope:'none' }),
     {}, { definitions:[], uses:[] }, null, {
@@ -118,6 +128,9 @@ test('unknown call memory scope and partial callee composition stay incomplete (
   };
   const partialCallee = createFunctionSummary({
     functionId:'fn:callee',
+    memoryReadRegions:[{
+      regionKind:'unknown', broad:true, addressSpaces:['memory'], source:'unknown-call-fallback',
+    }],
     memoryWriteRegions:[{
       regionKind:'unknown', broad:true, addressSpaces:['memory'], source:'unknown-call-fallback',
     }],

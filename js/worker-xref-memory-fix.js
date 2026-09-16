@@ -173,7 +173,7 @@ findXrefs = async function findXrefsCanonicalMemory({ regionId, target, limit, r
       /* Preserve the pre-existing ADRP+ADD/ordinary unsigned-offset route. */
       const pair = Words.pairedOffset(w);
       let propagated = -1;
-      if (pair && pageOf[pair.rn] != null && index - pageAt[pair.rn] <= 8) {
+      if (pair && pageOf[pair.rn] != null && index - pageAt[pair.rn] <= __XREF_PAIR_WINDOW) {
         const full = pageOf[pair.rn] + pair.imm;
         if (full === want && pushHit(byteOff, pc, pair.load ? 'load' : pair.store ? 'store' : 'address')) break;
         if (!pair.load && !pair.store) {
@@ -194,7 +194,7 @@ findXrefs = async function findXrefsCanonicalMemory({ regionId, target, limit, r
        */
       const mem = Words.memoryAccess(w);
       if (mem && !pair && !mem.indexed && mem.disp != null &&
-          pageOf[mem.base] != null && index - pageAt[mem.base] <= 8) {
+          pageOf[mem.base] != null && index - pageAt[mem.base] <= __XREF_PAIR_WINDOW) {
         const first = mem.mode === 'post' ? pageOf[mem.base] : pageOf[mem.base] + mem.disp;
         const hitKind = mem.rmw ? 'rmw' : mem.load ? 'load' : 'store';
         if (first === want && pushHit(byteOff, pc, hitKind)) break;

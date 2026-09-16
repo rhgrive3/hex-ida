@@ -301,12 +301,30 @@ function legacyPresentationModel(model) {
   return Object.freeze(presentation);
 }
 
+function presentationMatchesSelection(app, start) {
+  if (typeof app?.symbols?.functionAt !== 'function') return true;
+  const row = storeValue(app, 'selectedRow');
+  if (typeof row !== 'number' || !Number.isSafeInteger(row) || row < 0) return true;
+  if (typeof app?.viewer?.rowAddress !== 'function') return true;
+  let selected;
+  try { selected = BigInt(app.viewer.rowAddress(row)); } catch { return true; }
+  let selectedFunction;
+  let targetFunction;
+  try {
+    selectedFunction = app.symbols.functionAt(selected);
+    targetFunction = app.symbols.functionAt(BigInt(start));
+  } catch { return true; }
+  if (selectedFunction?.start == null || targetFunction?.start == null) return true;
+  try { return BigInt(selectedFunction.start) === BigInt(targetFunction.start); } catch { return true; }
+}
+
 function applyLegacyPresentation(app, value) {
   if (!value?.model) return;
   const start = value.startAddr ?? value.startAddress ?? value.model?.startAddress;
   if (start == null) return;
   const region = executableRegion(app, start);
   if (!region) return;
+  if (!presentationMatchesSelection(app, start)) return;
   const model = legacyPresentationModel(value.model);
   app.semantic = { regionId:region.id, model, result:value };
   if (storeValue(app, 'currentRegion') === region) {
@@ -353,7 +371,10 @@ export function createAppAnalysisQueryAdapter(app) {
   let metadataTask = null;
 
   const metadataSummary = () => {
-    const epoch = Number(app?.backend?.gen ?? app?.analysisEpoch ?? 0);
+    const epoch = identityGeneration(
+      app?.backend?.gen ?? app?.analysisEpoch ?? 0,
+      'analysis-query-epoch-invalid',
+    );
     if (metadataEpoch === epoch && metadataTask) return metadataTask;
     metadataEpoch = epoch;
     metadataTask = typeof app?.backend?.binaryMetadata === 'function'
@@ -425,7 +446,7 @@ export function createAppAnalysisQueryAdapter(app) {
       const maxRow = Math.max(0, Number(maxRowExact));
       const endRow = Math.min(Number(endRowExact), maxRow);
       if (startRow < 0 || endRow < startRow) return unsupported(id, 'function-range-empty');
-      const value = await analyzeFunctionCached(app.backend, range.region, startRow, endRow, symbols, options.onProgress, options);
+      const value = await analyzeFunctionCached(app.backend, range.region, startRow, endRow, symbols, options.onProgress, { ...options, architecture });
       const completeness = value?.truncated ? 'truncated' : range.complete === false ? 'partial' : 'complete';
       const queryValue = value?.model ? { ...value, model:cloneableLegacyModel(value.model) } : value;
       const enriched = {
@@ -632,8 +653,14 @@ export function createAppAnalysisQueryAdapter(app) {
         const decoded = await app.backend.disassembleAt(start, { architecture:architectureOf(app), length, signal:options.signal ?? null });
         if (decoded?.supported && decoded?.found) {
           const rows = (decoded.instructions || []).map((insn, i) => ({ id:insn.instructionId ?? `${functionId(insn.address ?? start)}:${i}`, address:insn.address == null ? null : BigInt(insn.address), size:Number(insn.length ?? insn.size ?? 0), mnemonic:String(insn.mnemonic ?? insn.instructionFamily ?? ''), operands:String(insn.opStr ?? insn.operands ?? ''), raw:insn }));
-          const completeness = truncated ? 'truncated' : !rangeComplete ? 'partial' : 'complete';
-          return paged(rows, page, completeness, { reason:truncated ? 'instruction-read-budget' : rangeReason });
+          const shortRead = decoded.readComplete === false;
+          const completeness = truncated ? 'truncated' : shortRead ? 'truncated' : !rangeComplete ? 'partial' : 'complete';
+          return paged(
+            rows,
+            page,
+            completeness,
+            { reason:truncated ? 'instruction-read-budget' : shortRead ? 'instruction-read-short' : rangeReason },
+          );
         }
       }
       const result = await loadFunction(request.functionId ?? start, options);

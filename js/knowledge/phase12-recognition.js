@@ -4,30 +4,49 @@ import { importPhase12Package } from '../phase12/package-envelope.js';
 export const RECOGNITION_ALGORITHM_VERSION = 'hex-recognition-phase12-v1';
 export const MATCH_TIERS = Object.freeze(['exact-content', 'relocation-normalized', 'structural', 'semantic', 'capability']);
 
-function clamp(value) { return Math.max(0, Math.min(1, Number(value) || 0)); }
 function list(value) { return [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))].sort(); }
 function tierRank(value) { const index = MATCH_TIERS.indexOf(value); return index < 0 ? MATCH_TIERS.length : index; }
 
+function authorityText(values, code) {
+  let picked;
+  for (const value of values) {
+    if (value === undefined || value === null || value === '') continue;
+    picked = value;
+    break;
+  }
+  if (typeof picked !== 'string') throw new TypeError(code);
+  const text = picked.trim();
+  if (!text) throw new TypeError(code);
+  return text;
+}
+
+function authorityScore(value, code) {
+  if (value === undefined || value === null) return 0;
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new TypeError(code);
+  return Math.max(0, Math.min(1, value));
+}
+
 export function createMatchResult(input = {}) {
-  const sourceEntityId = String(input.sourceEntityId || input.entityId || '').trim();
-  const packageEntryId = String(input.packageEntryId || input.entryId || '').trim();
-  if (!sourceEntityId || !packageEntryId) throw new TypeError('recognition source and package identities are required');
+  const sourceEntityId = authorityText([input.sourceEntityId, input.entityId], 'recognition source entity identity must be a non-empty string');
+  const packageEntryId = authorityText([input.packageEntryId, input.entryId], 'recognition package entry identity must be a non-empty string');
   if (Array.isArray(input.candidates) && input.candidates.length === 0) throw new TypeError('recognition candidates are required');
   const candidates = (Array.isArray(input.candidates) ? input.candidates : [{ ...input, sourceEntityId, packageEntryId }]).map((candidate) => {
     // One recognition result compares candidates for exactly one source
     // entity (#5332): a candidate may not carry a different source identity,
     // otherwise its package/evidence provenance would attach to a foreign
     // target through the top-candidate adoption below.
-    const candidateSourceEntityId = String(candidate.sourceEntityId || sourceEntityId).trim();
+    const candidateSourceEntityId = candidate.sourceEntityId === undefined || candidate.sourceEntityId === null || candidate.sourceEntityId === ''
+      ? sourceEntityId
+      : authorityText([candidate.sourceEntityId], 'recognition candidate source entity identity must be a non-empty string');
     if (candidateSourceEntityId !== sourceEntityId) {
       throw new TypeError('recognition candidate source identity does not match the match result source entity');
     }
     return {
     sourceEntityId: candidateSourceEntityId,
-    packageEntryId: String(candidate.packageEntryId || candidate.entryId || packageEntryId),
+    packageEntryId: authorityText([candidate.packageEntryId, candidate.entryId, packageEntryId], 'recognition candidate package entry identity must be a non-empty string'),
     tier: MATCH_TIERS.includes(candidate.tier) ? candidate.tier : 'semantic',
-    score: clamp(candidate.score ?? candidate.confidence),
-    confidence: clamp(candidate.confidence ?? candidate.score),
+    score: authorityScore(candidate.score ?? candidate.confidence, 'recognition candidate score must be a finite number'),
+    confidence: authorityScore(candidate.confidence ?? candidate.score, 'recognition candidate confidence must be a finite number'),
     featuresUsed: list(candidate.featuresUsed || candidate.features),
     conflictingFeatures: list(candidate.conflictingFeatures || candidate.conflicts),
     evidenceIds: list(candidate.evidenceIds || candidate.evidence),
@@ -383,6 +402,11 @@ export function createRecognitionApprovalControl(result, { actorId, onApproved }
 export function promoteKnowledgeSuggestion(result, options = {}) {
   if (!result || result.authority !== 'L2-suggestion') throw new TypeError('recognition suggestion required');
   if (result.candidateSearchTruncated || result.status === 'ambiguous') throw new Error('ambiguous or truncated recognition cannot be promoted');
+  authorityText([result.sourceEntityId], 'recognition result target identity must be a non-empty string');
+  authorityText([result.packageEntryId], 'recognition result package identity must be a non-empty string');
+  authorityScore(result.score, 'recognition result score must be a finite number');
+  authorityScore(result.confidence, 'recognition result confidence must be a finite number');
+  if (!recognitionCanClaimUnique(result)) throw new Error('only a unique, complete recognition can be promoted');
   for (const forbidden of ['approvalGrant', 'approvalToken', 'approvalAuthority', 'interaction']) {
     if (forbidden in options) {
       throw new Error('recognition approval evidence is minted by the host approval control and cannot be supplied');

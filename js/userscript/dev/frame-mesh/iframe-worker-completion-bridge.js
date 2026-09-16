@@ -1,3 +1,5 @@
+import { canonicalWorkerIdentity } from './worker-identity.js';
+
 const COMPLETION_SOURCE = 'iframe-worker-pool';
 const GRAPH_COMPLETION_SOURCE = 'dynamic-task-graph';
 const MAX_RETAINED_GRAPH_COMPLETIONS = 2048;
@@ -44,12 +46,12 @@ export class IframeWorkerCompletionBridge {
   async claim(args = {}, options = {}) {
     const runId = args.runId == null ? null : requiredIdentity(args.runId, 'runId');
     const claim = await this.workerPool.claim({ ...args, signal: options.signal });
-    if (runId) this.runByLease.set(String(claim.leaseId), runId);
+    if (runId) this.runByLease.set(requiredIdentity(claim.leaseId, 'leaseId'), runId);
     return claim;
   }
 
   async release(args = {}) {
-    const leaseId = String(args.leaseId || '');
+    const leaseId = requiredIdentity(args.leaseId, 'leaseId');
     this.assertRunOwnership(leaseId, args.runId);
     const result = await this.workerPool.release(args);
     this.runByLease.delete(leaseId);
@@ -61,7 +63,7 @@ export class IframeWorkerCompletionBridge {
 
   async start(args = {}) {
     const slot = this.workerPool.requireLease(args.leaseId);
-    const leaseId = String(slot.leaseId);
+    const leaseId = requiredIdentity(slot.leaseId, 'leaseId');
     const runId = this.assertRunOwnership(leaseId, args.runId);
 
     /* Do not replace the current occurrence until the canonical Pool accepts
@@ -74,7 +76,7 @@ export class IframeWorkerCompletionBridge {
 
   async followup(args = {}) {
     const slot = this.workerPool.requireLease(args.leaseId);
-    const leaseId = String(slot.leaseId);
+    const leaseId = requiredIdentity(slot.leaseId, 'leaseId');
     const runId = this.assertRunOwnership(leaseId, args.runId);
     if (slot.pending) throw poolBusyError();
 
@@ -166,8 +168,8 @@ export class IframeWorkerCompletionBridge {
         graphId,
         taskId,
         attempt: boundedAttempt(data.attempt),
-        workerId: optionalIdentity(data.workerId),
-        leaseId: optionalIdentity(data.leaseId),
+        workerId: optionalIdentity(data.workerId, 'workerId'),
+        leaseId: optionalIdentity(data.leaseId, 'leaseId'),
         slot: Number.isInteger(Number(data.slot)) ? Number(data.slot) : null,
         completionId,
       }),
@@ -198,7 +200,7 @@ export class IframeWorkerCompletionBridge {
       if (isGraphCompletion(event)) {
         const record = this.graphCompletions.get(String(event.data?.completionId || ''));
         if (!record || record.delivered) continue;
-        const requestedRunId = args.runId == null ? null : String(args.runId);
+        const requestedRunId = optionalIdentity(args.runId, 'runId');
         if (requestedRunId != null && record.runId !== requestedRunId) continue;
         record.delivered = true;
         this.graphCompletions.delete(record.completionId);
@@ -214,7 +216,7 @@ export class IframeWorkerCompletionBridge {
 
   takeRetainedCompletion(args = {}) {
     if (!wantsCompletion(args.events)) return null;
-    const runId = args.runId == null ? null : String(args.runId);
+    const runId = optionalIdentity(args.runId, 'runId');
     for (const occurrence of this.currentBySlot.values()) {
       if (!occurrence.runId || (runId != null && occurrence.runId !== runId)) continue;
       if (occurrence.delivered || !this.isCurrentRetainedCompletion(occurrence)) continue;
@@ -261,7 +263,7 @@ export class IframeWorkerCompletionBridge {
   }
 
   assertRunOwnership(leaseId, suppliedRunId) {
-    const ownerRunId = this.runByLease.get(String(leaseId)) || null;
+    const ownerRunId = this.runByLease.get(requiredIdentity(leaseId, 'leaseId')) || null;
     const requestedRunId = suppliedRunId == null ? null : requiredIdentity(suppliedRunId, 'runId');
     if (!ownerRunId) {
       if (requestedRunId) {
@@ -324,15 +326,15 @@ function poolBusyError() {
   return error;
 }
 
+/* Worker ownership and provenance ids are authority, so they keep the
+   canonical primitive-string domain instead of collapsing onto whatever a
+   caller-controlled toString() would produce. */
 function requiredIdentity(value, field) {
-  const text = String(value ?? '').trim();
-  if (!text) throw new TypeError(`Iframe Worker completion ${field} must be non-empty.`);
-  return text;
+  return canonicalWorkerIdentity(value, `Iframe Worker completion ${field}`);
 }
 
-function optionalIdentity(value) {
-  const text = String(value ?? '').trim();
-  return text || null;
+function optionalIdentity(value, field) {
+  return value == null ? null : requiredIdentity(value, field);
 }
 function boundedAttempt(value) {
   const number = Number(value);

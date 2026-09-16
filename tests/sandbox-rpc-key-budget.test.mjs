@@ -1,46 +1,8 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { INPUT_BUDGET, loadSandboxRpcEstimators } from './support/sandbox-rpc-estimators.mjs';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const INPUT_BUDGET = 4 * 1024 * 1024;
-
-function loadEstimators() {
-  const source = fs.readFileSync(path.join(ROOT, 'js/sandbox.js'), 'utf8');
-  const workerMatch = source.match(/  const measure = \(value, seen = new Set\(\), limit = MAX_ARGUMENT_UNITS \+ 1\) => \{[\s\S]*?\n  \};\n\n  const rpc/);
-  const hostMatch = source.match(/function valueSize\(value, seen = new Set\(\), limit = MAX_RPC_OUTPUT_BYTES \+ 1\) \{[\s\S]*?\n\}\n\nfunction sandboxOutputSize/);
-  assert.ok(workerMatch, 'worker RPC estimator must remain extractable');
-  assert.ok(hostMatch, 'host RPC estimator must remain extractable');
-
-  const workerBody = workerMatch[0].replace(/\n\n  const rpc$/, '');
-  const hostBody = hostMatch[0].replace(/\n\nfunction sandboxOutputSize$/, '');
-  const worker = new Function(
-    `const MAX_ARGUMENT_UNITS = ${INPUT_BUDGET};\n`
-      + 'const NativeObjectPrototype = Object.prototype;\n'
-      + 'const NativeSet = Set;\n'
-      + 'const nativeArrayIsArray = Array.isArray.bind(Array);\n'
-      + 'const nativeArrayBufferIsView = ArrayBuffer.isView.bind(ArrayBuffer);\n'
-      + 'const nativeGetPrototypeOf = Object.getPrototypeOf.bind(Object);\n'
-      + 'const nativeKeys = Object.keys.bind(Object);\n'
-      + 'const nativeDescriptor = Object.getOwnPropertyDescriptor.bind(Object);\n'
-      + 'const nativeStructuredClone = globalThis.structuredClone.bind(globalThis);\n'
-      + 'const nativeSetHas = Function.prototype.call.bind(Set.prototype.has);\n'
-      + 'const nativeSetAdd = Function.prototype.call.bind(Set.prototype.add);\n'
-      + 'const nativeSetDelete = Function.prototype.call.bind(Set.prototype.delete);\n'
-      + 'const nativeArrayBufferByteLength = Function.prototype.call.bind(Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get);\n'
-      + 'const nativeTypedArrayBuffer = Function.prototype.call.bind(Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), "buffer").get);\n'
-      + 'const nativeDataViewBuffer = Function.prototype.call.bind(Object.getOwnPropertyDescriptor(DataView.prototype, "buffer").get);\n'
-      + `${workerBody}\nreturn { measure, prepareRpcArgs };`,
-  )();
-  const valueSize = new Function(
-    `const MAX_RPC_OUTPUT_BYTES = ${16 * 1024 * 1024};\n${hostBody}\nreturn valueSize;`,
-  )();
-  return { ...worker, valueSize };
-}
-
-const { measure, prepareRpcArgs, valueSize } = loadEstimators();
+const { measure, prepareRpcArgs, valueSize } = loadSandboxRpcEstimators();
 
 function oversizedKeyObject() {
   return { ['k'.repeat(Math.floor(INPUT_BUDGET / 2) + 64)]: null };
@@ -166,8 +128,8 @@ test('arrays, strings, ArrayBuffer/views, and cyclic termination semantics are p
 
   const buffer = new ArrayBuffer(32);
   const view = new Uint8Array([1, 2, 3]);
-  assert.equal(measure(buffer), 16, 'worker ArrayBuffer estimate remains unchanged');
-  assert.equal(measure(view), 64, 'worker typed-array estimate remains unchanged');
+  assert.equal(measure(buffer), 32, 'worker ArrayBuffer estimate costs the transported store (#8668)');
+  assert.equal(measure(view), 3, 'worker typed-array estimate costs the backing store (#8668)');
   assert.equal(valueSize(buffer, new Set(), INPUT_BUDGET + 1), 32);
   assert.equal(valueSize(view, new Set(), INPUT_BUDGET + 1), 3);
 

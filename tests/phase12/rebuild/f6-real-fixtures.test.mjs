@@ -17,6 +17,7 @@ import {
   f6KnownImplementationGaps,
   materializeRebuildTransaction,
   publishRebuildTransaction,
+  registerCanonicalAtomicPublicationProvider,
   validateRebuildTransaction,
 } from '../../../js/rebuild/transaction-v2.js';
 import {
@@ -157,7 +158,7 @@ for (const fixture of manifest.fixtures) {
   ]);
 
   const publication = await publishRebuildTransaction(materialized, validation, {
-    atomicPromote: async (candidate, identity) => {
+    atomicPromote: registerCanonicalAtomicPublicationProvider(async (candidate, identity) => {
       assert.notDeepEqual([...candidate], [...bytes], `${fixture.id}: publication cannot receive an unchanged copy`);
       return {
         atomic: true,
@@ -168,7 +169,7 @@ for (const fixture of manifest.fixtures) {
         outputHash: identity.materialized.outputHash,
         outputIdentity: identity.materialized.outputIdentity,
       };
-    },
+    }),
   });
   assert.equal(publication.status, 'published', `${fixture.id}: publication`);
   f6EvidenceRows.push({ transaction, validation, publication, fixture });
@@ -217,7 +218,7 @@ for (const validator of ['layout', 'format-invariants', 'independent-differentia
   }, `${validator}: exact ELF layout evidence`);
 }
 const layoutPublication = await publishRebuildTransaction(layoutMaterialized, layoutValidation, {
-  atomicPromote: async (_candidate, identity) => ({
+  atomicPromote: registerCanonicalAtomicPublicationProvider(async (_candidate, identity) => ({
     atomic: true,
     committed: true,
     protocol: 'temp-then-atomic-rename',
@@ -225,7 +226,7 @@ const layoutPublication = await publishRebuildTransaction(layoutMaterialized, la
     transactionId: identity.materialized.transactionId,
     outputHash: identity.materialized.outputHash,
     outputIdentity: identity.materialized.outputIdentity,
-  }),
+  })),
 });
 assert.equal(layoutPublication.status, 'published');
 const layoutStatus = evaluateF6RebuildDenominator({

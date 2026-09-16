@@ -22,6 +22,18 @@ const PROVIDER_PROFILE_PATTERNS = Object.freeze([
 ]);
 const MANAGED_TARGET_PROFILE = /^managed:(?:wasm|dex|cil|jvm):m6$/;
 const VALID_RUNTIME_PROFILE_SUPPORT = new WeakSet();
+// Runtime support is a live-provider authority, so the branding transition may
+// not be driven by caller-supplied booleans. A receipt is only minted by a
+// tracker that actually accepted the runtime traffic it now attests to (#8851).
+const RUNTIME_VALIDATION_RECEIPT_SCHEMA = 'hex-runtime-validation-receipt/v1';
+const VALID_RUNTIME_VALIDATION_RECEIPTS = new WeakSet();
+const LIVE_RUNTIME_TRACKERS = new WeakSet();
+const RECEIPT_BINDING_FIELDS = Object.freeze([
+  'bindingId', 'providerIdentity', 'providerProfileId', 'runtimeInstanceIdentity',
+  'targetIdentity', 'targetProfileId', 'binaryIdentity', 'buildIdentity',
+  'moduleIdentity', 'loadMappingIdentity', 'sessionIdentity', 'commitSha',
+  'treeSha', 'epoch',
+]);
 const BINDING_FIELDS = Object.freeze([
   'schemaVersion', 'providerIdentity', 'providerProfileId', 'providerVersion',
   'runtimeInstanceIdentity', 'targetIdentity', 'targetProfileId',
@@ -85,6 +97,15 @@ function boundedCount(value, fallback, max, code) {
   return n;
 }
 
+// #8971 resource authority for canonical observation payloads. Admission is
+// measured on the caller's own views before any owned copy, boxed byte array or
+// identity material is allocated, so one oversized observation fails closed with
+// a deterministic reason instead of aborting the worker heap.
+const OBSERVATION_MAX_PAYLOAD_BYTES = 2 * 1024 * 1024;
+const OBSERVATION_MAX_PAYLOAD_NODES = 65_536;
+const OBSERVATION_MAX_RETAINED_BYTES = 8 * 1024 * 1024;
+const OBSERVATION_IDENTITY_CHUNK_BYTES = 8_192;
+
 // Canonical authority records must not retain mutable binary backing storage.
 // A frozen byte array is safe to expose, but it is not a sufficient identity:
 // it collapses a TypedArray into an ordinary array and collapses all view
@@ -135,6 +156,70 @@ function canonicalBinary(type, bytes) {
     [CANONICAL_BINARY_TAG]: type,
     [CANONICAL_BINARY_BYTES]: Object.freeze(Array.from(bytes)),
   });
+}
+
+function binaryLeafResource(value) {
+  const taggedType = canonicalBinaryType(value);
+  if (taggedType) return value[CANONICAL_BINARY_BYTES].length;
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || sharedArrayBuffer(value)) {
+    return binaryBytes(value).byteLength;
+  }
+  return null;
+}
+
+// #8971 byte/work admission. The budget is charged against the caller's views
+// before `clone()` allocates the owned copy, and against an already-canonical
+// record before its boxed byte array is walked again.
+function admitPayloadResources(value, budget, seen) {
+  if (value === null || typeof value !== 'object') {
+    budget.nodes += 1;
+  } else {
+    const binaryBytesUsed = binaryLeafResource(value);
+    if (binaryBytesUsed !== null) {
+      budget.bytes += binaryBytesUsed;
+      budget.nodes += 1;
+    } else if (seen.has(value)) {
+      throw new TypeError('runtime-observation-cyclic-payload');
+    } else {
+      seen.add(value);
+      budget.nodes += 1;
+      if (Array.isArray(value)) {
+        for (const item of value) admitPayloadResources(item, budget, seen);
+      } else if (value instanceof Map) {
+        for (const [key, item] of value) {
+          admitPayloadResources(key, budget, seen);
+          admitPayloadResources(item, budget, seen);
+        }
+      } else if (value instanceof Set) {
+        for (const item of value) admitPayloadResources(item, budget, seen);
+      } else if (!(value instanceof Date)) {
+        for (const key of Object.keys(value)) admitPayloadResources(value[key], budget, seen);
+      }
+      seen.delete(value);
+    }
+  }
+  if (budget.bytes > OBSERVATION_MAX_PAYLOAD_BYTES) throw new TypeError('runtime-observation-payload-bytes-exceed-limit');
+  if (budget.nodes > OBSERVATION_MAX_PAYLOAD_NODES) throw new TypeError('runtime-observation-payload-nodes-exceed-limit');
+}
+
+function payloadRetainedBytes(value, seen = new WeakSet()) {
+  if (value === null || typeof value !== 'object') return 0;
+  const leaf = binaryLeafResource(value);
+  if (leaf !== null) return leaf;
+  if (seen.has(value)) return 0;
+  seen.add(value);
+  let total = 0;
+  if (Array.isArray(value)) {
+    for (const item of value) total += payloadRetainedBytes(item, seen);
+  } else if (value instanceof Map) {
+    for (const [key, item] of value) total += payloadRetainedBytes(key, seen) + payloadRetainedBytes(item, seen);
+  } else if (value instanceof Set) {
+    for (const item of value) total += payloadRetainedBytes(item, seen);
+  } else if (!(value instanceof Date)) {
+    for (const key of Object.keys(value)) total += payloadRetainedBytes(value[key], seen);
+  }
+  seen.delete(value);
+  return total;
 }
 
 function canonicalizeBinary(value, seen = new WeakMap()) {
@@ -257,6 +342,14 @@ function hasOwnTrueCapability(source, capability) {
     && source[capability] === true;
 }
 
+function identityList(value, code) {
+  if (!Array.isArray(value) || value.length === 0) throw new TypeError(code);
+  const normalized = value.map((item) => required(item, code));
+  const out = [...new Set(normalized)].sort();
+  if (out.length === 0) throw new TypeError(code);
+  return out;
+}
+
 function bindingPayload(input = {}) {
   const targetProfileId = identityAlias(input, 'targetProfileId', 'architectureProfileId', 'runtime-target-profile-required');
   const buildIdentity = identityAlias(input, 'buildIdentity', 'runtimeBuildIdentity', 'runtime-build-identity-invalid');
@@ -314,6 +407,26 @@ function numberWitness(value) {
   return String(value);
 }
 
+// #8971 byte-native chunked identity material. The previous shape placed the
+// whole byte array in the digest input, so `stableDigest` allocated a second
+// full element array plus its decimal JSON text for every binary observation.
+// Folding fixed-size chunks keeps the temporary work proportional to the chunk,
+// while `type` + `length` + byte content stay identity-sensitive (#7108).
+function identityBytesChunk(bytes, start, end) {
+  if (Array.isArray(bytes)) return bytes.slice(start, end);
+  return Array.from(bytes.subarray(start, end));
+}
+
+function binaryIdentityMaterial(type, bytes) {
+  const length = bytes.length ?? bytes.byteLength ?? 0;
+  let folded = '';
+  for (let offset = 0; offset < length; offset += OBSERVATION_IDENTITY_CHUNK_BYTES) {
+    const end = Math.min(offset + OBSERVATION_IDENTITY_CHUNK_BYTES, length);
+    folded = stableDigest({ type, length, offset, previous: folded, chunk: identityBytesChunk(bytes, offset, end) });
+  }
+  return { $t: 'binary', type, length, digest: stableDigest({ type, length, folded }) };
+}
+
 // Observation identity must be sensitive to TYPES and canonical values, not
 // just core jsonSafe text. This wrapper preserves special-number distinctions
 // and gives Map/Set semantic collections insertion-order-independent material.
@@ -327,15 +440,17 @@ function typeTagged(value, seen = new WeakSet()) {
     case 'undefined': case 'function': case 'symbol': return { $t: typeof value };
   }
   const taggedType = canonicalBinaryType(value);
-  if (taggedType) return { $t: taggedType, v: value[CANONICAL_BINARY_BYTES] };
+  if (taggedType) return binaryIdentityMaterial(taggedType, value[CANONICAL_BINARY_BYTES]);
   if (seen.has(value)) fail('runtime-observation-cyclic-payload');
   seen.add(value);
   const nested = (item) => typeTagged(item, seen);
   let out;
   if (value instanceof Date) out = { $t: 'date', v: value.toISOString() };
-  else if (ArrayBuffer.isView(value)) out = { $t: value.constructor?.name ?? 'view', v: Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) };
-  else if (value instanceof ArrayBuffer || sharedArrayBuffer(value)) out = { $t: binaryTypeName(value), v: Array.from(new Uint8Array(value)) };
-  else if (value instanceof Map) {
+  else if (ArrayBuffer.isView(value)) {
+    out = binaryIdentityMaterial(value.constructor?.name ?? 'view', new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+  } else if (value instanceof ArrayBuffer || sharedArrayBuffer(value)) {
+    out = binaryIdentityMaterial(binaryTypeName(value), new Uint8Array(value));
+  } else if (value instanceof Map) {
     const entries = [...value.entries()].map(([key, item]) => [nested(key), nested(item)]);
     entries.sort((a, b) => compareCanonicalText(stableStringify(a[0]), stableStringify(b[0])) || compareCanonicalText(stableStringify(a[1]), stableStringify(b[1])));
     out = { $t: 'Map', v: entries };
@@ -355,7 +470,9 @@ function typeTagged(value, seen = new WeakSet()) {
 function observationIdentity(observation) {
   const payload = {};
   for (const field of OBSERVATION_FIELDS) payload[field] = typeTagged(observation[field]);
-  return `runtime-observation:${stableDigest(payload)}`;
+  // #8971: the binary identity material changed representation, so the derived
+  // id is explicitly migrated instead of silently reusing the v1 namespace.
+  return `runtime-observation:v2:${stableDigest(payload)}`;
 }
 
 function profileAllowed(value) {
@@ -416,6 +533,9 @@ export function createRuntimeAuthorityBinding(input = {}) {
 
 export function createRuntimeObservation(input = {}) {
   const binding = canonicalBinding(input.binding || input);
+  const payload = input.payload ?? null;
+  // #8971: charge the byte/node budget before any owned copy or identity work.
+  admitPayloadResources(payload, { bytes: 0, nodes: 0 }, new WeakSet());
   const sequence = uint(input.sequence, 'runtime-observation-sequence-invalid');
   const observedAt = required(input.observedAt ?? input.timestamp, 'runtime-observation-timestamp-required');
   const observation = {
@@ -441,7 +561,7 @@ export function createRuntimeObservation(input = {}) {
     sequence,
     observedAt,
     kind: required(input.kind ?? 'observation', 'runtime-observation-kind-required'),
-    payload: freezeObservationValue(clone(input.payload ?? null)),
+    payload: freezeObservationValue(clone(payload)),
     authority: 'runtime-evidence',
   };
   return freezeObservationValue(deepFreeze({ ...observation, observationId: observationIdentity(observation) }));
@@ -501,13 +621,35 @@ function freezeObservationValue(value, seen = new WeakSet()) {
 
 export class RuntimeAuthorityTracker {
   #observations;
+  #retainedBytes;
+  #acceptedObservationIds;
+  #mutationAuthorityIds;
 
   constructor(bindingInput, options = {}) {
     this.binding = canonicalBinding(bindingInput || {});
     this.lastSequence = -1;
     this.closed = false;
     this.maxObservations = boundedCount(options.maxObservations, 1024, 4096, 'runtime-max-observations-invalid');
+    // #8971: count-based eviction alone cannot bound memory, because one accepted
+    // record already owns its canonical payload copy.
+    this.maxRetainedPayloadBytes = boundedCount(
+      options.maxRetainedPayloadBytes, OBSERVATION_MAX_RETAINED_BYTES, OBSERVATION_MAX_PAYLOAD_BYTES * 8,
+      'runtime-max-retained-payload-bytes-invalid',
+    );
     this.#observations = [];
+    this.#retainedBytes = 0;
+    this.#acceptedObservationIds = new Set();
+    this.#mutationAuthorityIds = new Set();
+    LIVE_RUNTIME_TRACKERS.add(this);
+  }
+
+  #recordBounded(set, id) {
+    set.add(id);
+    while (set.size > this.maxObservations) set.delete(set.values().next().value);
+  }
+
+  get retainedPayloadBytes() {
+    return this.#retainedBytes;
   }
 
   get observations() {
@@ -527,9 +669,18 @@ export class RuntimeAuthorityTracker {
 
     const checked = validateRuntimeObservation(this.binding, observation, { minimumSequence: this.lastSequence + 1 });
     if (!checked.ok) return Object.freeze({ status: 'rejected', reason: checked.reason });
+    const retained = payloadRetainedBytes(observation.payload);
+    if (this.#retainedBytes + retained > this.maxRetainedPayloadBytes) {
+      return Object.freeze({ status: 'rejected', reason: 'runtime-tracker-retained-payload-bytes-exceeded' });
+    }
     this.lastSequence = observation.sequence;
     this.#observations.push(observation);
-    if (this.#observations.length > this.maxObservations) this.#observations.shift();
+    this.#retainedBytes += retained;
+    while (this.#observations.length > this.maxObservations) {
+      const evicted = this.#observations.shift();
+      this.#retainedBytes -= payloadRetainedBytes(evicted.payload);
+    }
+    this.#recordBounded(this.#acceptedObservationIds, observation.observationId);
     return Object.freeze({ status: 'accepted', observationId: observation.observationId, sequence: observation.sequence });
   }
 
@@ -554,7 +705,47 @@ export class RuntimeAuthorityTracker {
       issuedAt: required(input.issuedAt, 'runtime-mutation-issued-at-required'),
       authority: 'explicit-local-runtime-mutation',
     };
-    return Object.freeze({ status: 'authorized', token: deepFreeze({ ...token, tokenId: `runtime-mutation:${stableDigest(token)}` }) });
+    const tokenId = `runtime-mutation:${stableDigest(token)}`;
+    this.#recordBounded(this.#mutationAuthorityIds, tokenId);
+    return Object.freeze({ status: 'authorized', token: deepFreeze({ ...token, tokenId }) });
+  }
+
+  mintProfileSupportReceipt(input = {}) {
+    if (!LIVE_RUNTIME_TRACKERS.has(this)) throw new TypeError('runtime-receipt-mint-untrusted');
+    if (this.closed) throw new TypeError('runtime-receipt-tracker-closed');
+    const observationIdentities = identityList(input.observationIdentities, 'runtime-receipt-observation-identities-required');
+    const mutationAuthorityIdentities = identityList(input.mutationAuthorityIdentities, 'runtime-receipt-mutation-identities-required');
+    const testItemIdentities = identityList(input.testItemIdentities, 'runtime-receipt-test-identities-required');
+    for (const observationId of observationIdentities) {
+      if (!this.#acceptedObservationIds.has(observationId)) throw new TypeError(`runtime-receipt-observation-unbound:${observationId}`);
+    }
+    for (const mutationId of mutationAuthorityIdentities) {
+      if (!this.#mutationAuthorityIds.has(mutationId)) throw new TypeError(`runtime-receipt-mutation-authority-unbound:${mutationId}`);
+    }
+    const receipt = {
+      schemaVersion: RUNTIME_VALIDATION_RECEIPT_SCHEMA,
+      bindingId: this.binding.bindingId,
+      providerIdentity: this.binding.providerIdentity,
+      providerProfileId: this.binding.providerProfileId,
+      runtimeInstanceIdentity: this.binding.runtimeInstanceIdentity,
+      targetIdentity: this.binding.targetIdentity,
+      targetProfileId: this.binding.targetProfileId,
+      binaryIdentity: this.binding.binaryIdentity,
+      buildIdentity: this.binding.buildIdentity,
+      moduleIdentity: this.binding.moduleIdentity,
+      loadMappingIdentity: this.binding.loadMappingIdentity,
+      sessionIdentity: this.binding.sessionIdentity,
+      commitSha: this.binding.commitSha,
+      treeSha: this.binding.treeSha,
+      epoch: this.binding.epoch,
+      lastSequence: this.lastSequence,
+      observationIdentities: Object.freeze(observationIdentities),
+      mutationAuthorityIdentities: Object.freeze(mutationAuthorityIdentities),
+      testItemIdentities: Object.freeze(testItemIdentities),
+    };
+    const branded = deepFreeze({ ...receipt, receiptId: `runtime-receipt:${stableDigest(receipt)}` });
+    VALID_RUNTIME_VALIDATION_RECEIPTS.add(branded);
+    return branded;
   }
 
   nextEpoch(bindingOverrides = {}) {
@@ -568,6 +759,20 @@ export class RuntimeAuthorityTracker {
   }
 }
 
+function runtimeReceiptReason(receipt, canonical, providerProfileId, targetProfileId) {
+  if (!receipt || typeof receipt !== 'object' || !VALID_RUNTIME_VALIDATION_RECEIPTS.has(receipt)) return 'runtime-validation-receipt-required';
+  if (receipt.schemaVersion !== RUNTIME_VALIDATION_RECEIPT_SCHEMA) return 'runtime-validation-receipt-schema-invalid';
+  for (const field of RECEIPT_BINDING_FIELDS) {
+    if (receipt[field] !== canonical[field]) return `runtime-validation-receipt-identity-mismatch:${field}`;
+  }
+  if (receipt.providerProfileId !== providerProfileId) return 'runtime-validation-receipt-provider-profile-mismatch';
+  if (receipt.targetProfileId !== targetProfileId) return 'runtime-validation-receipt-target-profile-mismatch';
+  for (const field of ['observationIdentities', 'mutationAuthorityIdentities', 'testItemIdentities']) {
+    if (!Array.isArray(receipt[field]) || receipt[field].length === 0) return `runtime-validation-receipt-evidence-missing:${field}`;
+  }
+  return null;
+}
+
 export function runtimeProfileSupport({
   binding,
   providerProfileId = null,
@@ -579,6 +784,7 @@ export function runtimeProfileSupport({
   expectedTreeSha = null,
   expectedBuildIdentity = null,
   profileProof = null,
+  runtimeReceipt = null,
 } = {}) {
   const canonical = canonicalBinding(binding || {}, { throwOnError: false });
   const hasBinding = canonical != null;
@@ -626,6 +832,7 @@ export function runtimeProfileSupport({
     else if (expectedHead != null && (canonical.commitSha !== expectedHead || proofHeadSha !== expectedHead)) reason = 'runtime-proof-stale-head';
     else if (expectedTree != null && (canonical.treeSha !== expectedTree || proofTreeSha !== expectedTree)) reason = 'runtime-proof-stale-tree';
   }
+  if (!reason && hasBinding) reason = runtimeReceiptReason(runtimeReceipt, canonical, normalizedProviderProfileId, normalizedTargetProfileId);
   const proven = hasBinding
     && declared.length > 0
     && missing.length === 0
@@ -646,6 +853,8 @@ export function runtimeProfileSupport({
     treeSha: hasBinding ? canonical.treeSha : null,
     reason,
     authority: proven ? 'runtime-evidence-bound' : 'none',
+    runtimeReceiptId: proven ? runtimeReceipt.receiptId : null,
+    runtimeReceiptBindingId: proven ? runtimeReceipt.bindingId : null,
   });
   if (proven) VALID_RUNTIME_PROFILE_SUPPORT.add(result);
   return result;

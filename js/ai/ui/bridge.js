@@ -6,6 +6,7 @@ import { createCapabilityCatalog } from '../capabilities/catalog.js';
 import { createCapabilityExecutor } from '../capabilities/executor.js';
 import { createProposalExecutor } from '../interaction/proposal-executor.js';
 import { createProjectSessionPersistence } from '../session-core/index.js';
+import { canonicalConversationId, isCanonicalConversationId } from '../conversation-identity.js';
 import { sessionMatchesSnapshot } from '../control/runtime-support.js';
 import { resolveBinaryIdentity } from '../control/snapshot.js';
 
@@ -79,7 +80,7 @@ export function createAiEngine(app, options = {}) {
     },
     async run(input) {
       const { question, mode, style, scope, signal, onActivity, context } = input;
-      const conversationKey = input.conversationId == null ? null : String(input.conversationId);
+      const conversationKey = canonicalConversationId(input.conversationId);
       let sessionId = conversationKey ? (sessions.get(conversationKey) || null) : defaultSessionId;
       if (!sessionId) sessionId = persistedSessionForConversation(sessionPersistence, conversationKey, localContext);
       const prompt = composePrompt({ mode, style, scope, question, context });
@@ -87,6 +88,7 @@ export function createAiEngine(app, options = {}) {
       if (engine && typeof engine.turn === 'function') {
         const runCore = () => engine.turn({
           goal: question, mode, style, scope, sessionId, task: prompt.task,
+          untrustedTarget: context?.untrustedTarget ?? null,
           conversationId: conversationKey, provider: input.provider || null,
           model: input.model || null, reasoning: input.reasoning || null,
         }, { signal, onActivity: (event) => onActivity && onActivity(event) });
@@ -124,8 +126,8 @@ export function createAiEngine(app, options = {}) {
     cancel() { if (core && typeof core.cancel === 'function') core.cancel(); },
     async createAgentJob(input = {}) {
       const engine = await runtime();
-      const key = input.conversationId == null ? null : String(input.conversationId);
-      return engine.createJob({ ...input, sessionId: input.sessionId || (key ? sessions.get(key) : defaultSessionId) || null });
+      const key = canonicalConversationId(input.conversationId);
+      return engine.createJob({ ...input, conversationId: key, sessionId: input.sessionId || (key ? sessions.get(key) : defaultSessionId) || null });
     },
     async runAgentJobSlice(jobOrId, options = {}) {
       const engine = await runtime(); const checkpoint = await engine.runJobSlice(jobOrId, options);
@@ -137,8 +139,7 @@ export function createAiEngine(app, options = {}) {
     },
     async aiCapabilities(options = {}) {
       const engine = await runtime();
-      const provider = engine?.provider;
-      return typeof provider?.capabilities === 'function' ? provider.capabilities(options) : { providers: [] };
+      return discoverProviderCapabilities(engine?.provider, options);
     },
     async aiStatus() {
       const engine = await runtime();
@@ -153,7 +154,7 @@ export function createAiEngine(app, options = {}) {
     },
     async deleteSession(conversationId, { reason = 'user-delete' } = {}) {
       if (conversationId == null) return false;
-      const key = String(conversationId);
+      const key = canonicalConversationId(conversationId);
       const sessionId = sessions.get(key) || null;
       const removed = sessions.delete(key);
       persistConversationBindings(sessions);
@@ -165,9 +166,32 @@ export function createAiEngine(app, options = {}) {
     },
     forgetAIConversation(conversationId) {
       if (conversationId == null) return false;
-      const removed = sessions.delete(String(conversationId)); persistConversationBindings(sessions); return removed;
+      const removed = sessions.delete(canonicalConversationId(conversationId)); persistConversationBindings(sessions); return removed;
     },
   };
+}
+
+async function discoverProviderCapabilities(provider, options) {
+  if (!provider) return { providers: [] };
+  if (typeof provider.capabilities === 'function') {
+    const discovery = await provider.capabilities(options);
+    if (discovery && typeof discovery === 'object' && Array.isArray(discovery.providers)) return discovery;
+    return adaptProviderCapabilityState(discovery);
+  }
+  if (typeof provider.prepareCapabilities === 'function') return adaptProviderCapabilityState(await provider.prepareCapabilities(options));
+  if (typeof provider.getCapabilities === 'function') return adaptProviderCapabilityState(provider.getCapabilities());
+  return { providers: [] };
+}
+
+function adaptProviderCapabilityState(capabilities) {
+  const id = typeof capabilities?.provider === 'string' ? capabilities.provider.trim() : '';
+  if (!id || id.toLowerCase() === 'unknown') return { providers: [] };
+  const entry = { id, available: true };
+  if (typeof capabilities.displayName === 'string' && capabilities.displayName) entry.displayName = capabilities.displayName;
+  if (capabilities.models != null) entry.models = capabilities.models;
+  if (capabilities.reasoning != null) entry.reasoning = capabilities.reasoning;
+  if (capabilities.defaultModel != null) entry.defaultModel = String(capabilities.defaultModel);
+  return { providers: [entry] };
 }
 
 // The live persistence defers its durable write to a debounced
@@ -338,8 +362,11 @@ function persistedSessionForConversation(persistence, conversationId, context) {
     // An explicit conversation identity is authoritative: reuse only the exact
     // persisted session of THIS conversation. Falling back to "the single
     // compatible session" would let a new chat adopt another conversation's
-    // investigation memory and rewrite its ownership (#6011).
-    const exact = compatible.find((session) => String(session.conversationId || '') === String(conversationId));
+    // investigation memory and rewrite its ownership (#6011). Matching is
+    // strict typed equality: a structured or coerced representation is never
+    // the canonical key of another conversation (#8769).
+    const requested = canonicalConversationId(conversationId);
+    const exact = compatible.find((session) => isCanonicalConversationId(session.conversationId) && session.conversationId === requested);
     return exact ? String(exact.id) : null;
   }
   return compatible.length === 1 ? String(compatible[0].id) : null;
@@ -438,7 +465,7 @@ function isSafetyBoundaryError(error) {
 
 function bindJobSession(checkpoint, sessions, setDefault) {
   if (!checkpoint?.sessionId) return;
-  if (checkpoint.conversationId != null) sessions.set(String(checkpoint.conversationId), checkpoint.sessionId);
+  if (checkpoint.conversationId != null) sessions.set(canonicalConversationId(checkpoint.conversationId), checkpoint.sessionId);
   else setDefault(checkpoint.sessionId);
 }
 

@@ -4,6 +4,7 @@ import { ByteView } from '../js/binary/reader.js';
 import { parsePE } from '../js/binary/pe.js';
 import { parseCompactUnwind } from '../js/binary/macho-core.js';
 import { createMachOMetadataBudget } from '../js/binary/macho-budget.js';
+import { auditBinary } from '../js/binary/audit.js';
 
 const data = new Uint8Array(0x300);
 data.set([0xaa, 0xbb, 0xcc, 0xdd], 0x100);
@@ -41,6 +42,7 @@ const machoSparse = new BinaryImage(data, { format:'macho' });
 machoSparse.addSegment({ address:0x4000n, size:8n, fileOffset:0x100n, fileSize:8n, perms:{read:true}, source:'LC_SEGMENT_64' });
 machoSparse.addSection({ name:'__bss', segment:'__DATA', address:0x4004n, size:4n, fileOffset:0n, fileSize:0n, perms:{read:true,write:true}, source:'LC_SEGMENT_64' });
 assert.deepEqual([...machoSparse.readVirtual(0x4002n, 4)], [0xcc,0xdd,0,0], 'zero-fill child section must override broader segment raw-file continuity');
+assert.equal(auditBinary(machoSparse).errors, 0, 'audit must accept an intentionally shadowed segment tail');
 
 const source = {
   size: BigInt(data.length),

@@ -1,7 +1,9 @@
 import { EVIDENCE_STATUSES } from './schema.js';
 import { addressText, jsonSafe } from './validation.js';
 import { evidenceStoreToCanonicalGraph } from '../core/evidence/compat.js';
-import { stableDigest } from '../core/identity/index.js';
+import { stableDigest, stableStringify, jsonSafe as canonicalJsonSafe } from '../core/identity/index.js';
+import { isPersistedConfirmedEnvelope } from './session-core/persisted-confirmed.js';
+import { globalCandidateAuthority } from '../agent/candidate-authority.js';
 
 const DETERMINISTIC_VERIFICATION = Symbol('deterministic-verification');
 
@@ -180,6 +182,35 @@ function canonicalIdentityRef(value) {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
+/*
+ * #8788: `EvidenceStore.add()` previously collapsed every structured
+ * `sourceBinding` through `String(...)`, so two distinct provenances (for
+ * example `{type:'fn',target:'A'}` and `{type:'fn',target:'B'}`) both became
+ * `"[object Object]"` and hashed to the same auto evidence ID. The canonical
+ * contract is that a record's declared source binding is identity material, so
+ * it must either stay a primitive string (existing binding-key path) or be an
+ * owned, JSON-safe canonical value; the store must not launder a
+ * `toString()`/`Symbol.toStringTag` object into the shared `[object Object]`
+ * spelling. Unsupported shapes (function, symbol, cyclic, class instance,
+ * non-plain prototype, oversized array) fail closed instead of silently
+ * aliasing to another provenance.
+ */
+function canonicalSourceBinding(value) {
+  if (value == null) return '';
+  const type = typeof value;
+  if (type === 'string' || type === 'number' || type === 'boolean' || type === 'bigint') {
+    return String(value);
+  }
+  if (type !== 'object') throw new TypeError('evidence-invalid-sourceBinding');
+  let normalized;
+  try { normalized = canonicalJsonSafe(value); }
+  catch { throw new TypeError('evidence-invalid-sourceBinding'); }
+  if (normalized == null || typeof normalized !== 'object') {
+    throw new TypeError('evidence-invalid-sourceBinding');
+  }
+  return normalized;
+}
+
 // A present-but-unusable sourceRef: neither canonicalizable to a reference
 // nor absent. String refs are always canonical; object refs must carry at
 // least one canonical identity field, and an explicit path must itself be a
@@ -228,8 +259,9 @@ export class EvidenceStore {
   }
 
   restorePersistedConfirmed(initial = []) {
+    const authority = isPersistedConfirmedEnvelope(initial) ? DETERMINISTIC_VERIFICATION : null;
     for (const evidence of Array.isArray(initial) ? initial : []) {
-      this.add(evidence, evidence?.status === 'verified' ? DETERMINISTIC_VERIFICATION : null);
+      this.add(evidence, evidence?.status === 'verified' ? authority : null);
     }
     return this;
   }
@@ -294,14 +326,16 @@ export class EvidenceStore {
         sourceRef = { evidenceSourceId: localId, path: '$' };
       }
     }
-    const sourceBinding = String(input.sourceBinding ?? sourceRef?.bindingKey ?? '');
+    const sourceBinding = canonicalSourceBinding(input.sourceBinding ?? sourceRef?.bindingKey ?? null);
     const sourceCoordinate = canonicalIdentityRef(input.sourceCoordinate);
     const identityParts = [
-      input.sourceTool || 'unknown', input.sourceId || null, sourceBinding || null, input.address ?? null,
+      input.sourceTool || 'unknown', input.sourceId || null,
+      (typeof sourceBinding === 'object' ? sourceBinding : (sourceBinding || null)),
+      input.address ?? null,
       input.functionAddress ?? null, input.kind || 'observation', input.title || '',
     ];
     if (sourceCoordinate) identityParts.push({ sourceCoordinate });
-    const identity = JSON.stringify(jsonSafe(identityParts));
+    const identity = stableStringify(identityParts);
     const id = explicitId || `ev_${stableDigest(identity).slice(0, 32)}`;
     const record = {
       id,
@@ -310,6 +344,12 @@ export class EvidenceStore {
       title: String(input.title || input.kind || 'Tool evidence').slice(0, 300),
       sourceTool: String(input.sourceTool || 'unknown'),
     };
+    // A record's declared source identity is part of its provenance, and it is
+    // the only key a producer plan can name. Keeping it on the canonical record
+    // is what makes the raw-source -> canonical-record mapping explicit instead
+    // of guessed (#8864).
+    const sourceId = canonicalIdentityRef(input.sourceId);
+    if (sourceId) record.sourceId = sourceId;
     if (sourceBinding) record.sourceBinding = sourceBinding;
     if (sourceRef) record.sourceRef = sourceRef;
     if (typeof input.effectiveScope === 'string' && input.effectiveScope) record.effectiveScope = input.effectiveScope;
@@ -409,6 +449,14 @@ export class EvidenceStore {
 
   ingestPlan(plan) {
     const out = [];
+    // The same local-vs-global proof boundary #8673 established for the final
+    // answer must hold here: a plan that declares incomplete/partial coverage
+    // cannot be laundered into terminal `verified` authority through this
+    // consumer, even when its best candidate carries `verification.verified`.
+    // Absent coverage metadata (a non-planner producer) stays authoritative, so
+    // this is a pure tightening of the partial-proof path (#9004).
+    const globalAuthority = globalCandidateAuthority(plan);
+    const planAuthoritative = globalAuthority.authoritative;
     /*
      * 決定的検証 authority の照合に使う identity は、canonical に潰せない値を
      * 受理しない。address は addressText() で正規化できる表現だけ、evidence ID は
@@ -422,9 +470,10 @@ export class EvidenceStore {
     const evidenceIdIdentity = (value) =>
       typeof value === 'string' && value.length > 0 ? `id:${value}` : null;
     for (const candidate of plan && plan.candidates || []) {
-      const isVerifiedBest = !!(candidate.verification?.verified && plan.best
+      const localVerifiedBest = !!(candidate.verification?.verified && plan.best
         && addressIdentity(plan.best.address) !== null
         && addressIdentity(plan.best.address) === addressIdentity(candidate.address));
+      const isVerifiedBest = localVerifiedBest && planAuthoritative;
       const explicitlyVerified = new Set([
         ...(candidate.verification?.evidenceIds || []),
         ...(candidate.verification?.verifiedEvidenceIds || []),
@@ -439,19 +488,62 @@ export class EvidenceStore {
           sourceData: { score: candidate.score, sources: candidate.sources, sourceId }, confidence: verified ? 1 : 0.75,
         }, verified ? DETERMINISTIC_VERIFICATION : null));
       }
-      if (isVerifiedBest) {
+      if (localVerifiedBest) {
+        const terminal = planAuthoritative;
         out.push(this.add({
           sourceTool: 'deterministic-goal-planner',
           sourceId: `candidate:${addressText(candidate.address) || String(candidate.address)}`,
-          kind: 'candidate-verification', status: 'verified',
+          kind: 'candidate-verification', status: terminal ? 'verified' : 'supported',
           functionAddress: candidate.address, functionName: candidate.name,
-          title: `Verified candidate ${candidate.name || addressText(candidate.address)}`,
-          summary: `Deterministic verifier confirmed the candidate; score ${candidate.score}.`,
-          sourceData: { score: candidate.score, sources: candidate.sources, verification: candidate.verification }, confidence: 1,
-        }, DETERMINISTIC_VERIFICATION));
+          title: `${terminal ? 'Verified' : 'Candidate-locally verified'} candidate ${candidate.name || addressText(candidate.address)}`,
+          summary: terminal
+            ? `Deterministic verifier confirmed the candidate; score ${candidate.score}.`
+            : `Deterministic verifier confirmed the candidate locally, but plan coverage is incomplete (${globalAuthority.reasons.join(', ')}); not promoted to terminal authority.`,
+          sourceData: { score: candidate.score, sources: candidate.sources, verification: candidate.verification, globalCandidateAuthority: { authoritative: terminal, reasons: globalAuthority.reasons } }, confidence: terminal ? 1 : 0.9,
+        }, terminal ? DETERMINISTIC_VERIFICATION : null));
       }
     }
     return uniqueById(out.filter(Boolean));
+  }
+
+  /**
+   * Canonical records bound to one planner result.
+   *
+   * `plan.evidence` names raw planner/source identities while canonical record
+   * IDs are generated, so the two domains may only be joined through the
+   * provenance a record actually carries: its own `id`, the `sourceId` it was
+   * ingested under, or the exact canonical set the turn bound when it ingested
+   * this plan. Matching every `sourceTool === 'deterministic-goal-planner'`
+   * record instead would re-bind an earlier turn's planner evidence to a later
+   * answer, and accepting `supported` records would present unverified ranking
+   * as confirmed evidence (#8864).
+   */
+  planEvidence(plan, { verifiedOnly = true } = {}) {
+    const canonicalIds = new Set();
+    const rawIds = new Set();
+    const collect = (target, values) => {
+      for (const value of Array.isArray(values) ? values : []) {
+        const id = canonicalIdentityRef(value);
+        if (id) target.add(id);
+      }
+    };
+    collect(canonicalIds, plan?.evidenceRecordIds);
+    collect(rawIds, plan?.evidence);
+    if (!canonicalIds.size && !rawIds.size) return [];
+    const out = [];
+    const seen = new Set();
+    for (const record of this.records.values()) {
+      const bound = canonicalIds.has(record.id)
+        || rawIds.has(record.id)
+        || (record.sourceTool === 'deterministic-goal-planner'
+          && typeof record.sourceId === 'string' && rawIds.has(record.sourceId));
+      if (!bound) continue;
+      if (verifiedOnly && record.status !== 'verified') continue;
+      if (seen.has(record.id)) continue;
+      seen.add(record.id);
+      out.push(immutableSnapshot(record));
+    }
+    return out;
   }
 
   _indexStatus(id, previousStatus, nextStatus) {

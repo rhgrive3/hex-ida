@@ -41,6 +41,7 @@ const phiInput = {
   uses:[],
 };
 const cfg = {
+  functionId:'f',
   blocks:[
     { id:'p0', predecessors:[] },
     { id:'p1', predecessors:[] },

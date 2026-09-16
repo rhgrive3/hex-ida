@@ -68,6 +68,18 @@ export function translateSemanticIR(target, options = {}) {
     }
   }
 
+  function canonicalConstantValue(value) {
+    if (typeof value === 'bigint') return value;
+    if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+    return null;
+  }
+
+  function nonCanonicalConstant(width, entityId, opLabel, meta) {
+    semanticUnknowns++;
+    unsupportedEntities.push({ id: entityId, op: opLabel, reason: 'non-canonical-constant-value' });
+    return createUnknownSemantic(bvSort(width), 'non-canonical-constant-value', meta);
+  }
+
   function translateValue(val, width = defaultWidth) {
     if (!val) {
       semanticUnknowns++;
@@ -75,9 +87,23 @@ export function translateSemanticIR(target, options = {}) {
       return unk;
     }
 
-    const valId = val.id != null ? String(val.id) : null;
-    const memoKey = `${valId || 'anon'}@${fromBlock}@${width}`;
-    if (memo.has(memoKey)) return memo.get(memoKey);
+    let valId = null;
+    const canonicalValueId = val.semanticSsaValueId ?? val.semanticValueId ?? null;
+    if (typeof canonicalValueId === 'string' && canonicalValueId.trim() !== '') {
+      valId = canonicalValueId.trim();
+    } else if (val.id != null) {
+      // Production Semantic IR keeps a local numeric compatibility id alongside
+      // the canonical semantic/SSA string identity. Prefer the canonical id; a
+      // caller object with only a non-string legacy id remains fail-closed.
+      if (typeof val.id === 'string' && val.id.trim() !== '') valId = val.id.trim();
+      else {
+        semanticUnknowns++;
+        unsupportedEntities.push({ id: null, op: 'value-id', reason: `invalid-ssa-value-id:${typeof val.id}` });
+        return createUnknownSemantic(bvSort(width), 'invalid-ssa-value-id', { valueIdType: typeof val.id });
+      }
+    }
+    const memoKey = valId != null ? `${valId}@${fromBlock}@${width}` : null;
+    if (memoKey != null && memo.has(memoKey)) return memo.get(memoKey);
 
     if (valId && active.has(valId)) {
       semanticUnknowns++;
@@ -99,8 +125,13 @@ export function translateSemanticIR(target, options = {}) {
     let res = null;
 
     if (val.const != null) {
-      res = createBv(width, val.const);
-      recordOrigin(res, val.origin, `const:${val.const}`);
+      const canonical = canonicalConstantValue(val.const);
+      if (canonical === null) {
+        res = nonCanonicalConstant(width, valId, 'const', { valueId: valId });
+      } else {
+        res = createBv(width, canonical);
+        recordOrigin(res, val.origin, `const:${val.const}`);
+      }
     } else if (val.kind === VK.ARG || val.kind === 'arg') {
       const reg = String(val.reg || val.id || 'arg');
       const argIndex = val.index != null ? val.index : (reg.startsWith('x') ? Number(reg.slice(1)) : null);
@@ -151,7 +182,7 @@ export function translateSemanticIR(target, options = {}) {
     }
 
     if (valId) active.delete(valId);
-    memo.set(memoKey, res);
+    if (memoKey != null) memo.set(memoKey, res);
     return res;
   }
 
@@ -179,7 +210,11 @@ export function translateSemanticIR(target, options = {}) {
           unsupportedEntities.push({ id: inst.id, op: inst.op, reason: 'missing-constant-value' });
           return createUnknownSemantic(bvSort(width), 'missing-constant-value', { instructionId: inst.id });
         }
-        return createBv(width, value);
+        const canonical = canonicalConstantValue(value);
+        if (canonical === null) {
+          return nonCanonicalConstant(width, inst.id, inst.op, { instructionId: inst.id });
+        }
+        return createBv(width, canonical);
       }
 
       case OP.MOV:
@@ -190,8 +225,8 @@ export function translateSemanticIR(target, options = {}) {
 
       case OP.BIN: {
         /* #5202: no invented default operator — classifyOpSupport rejects
-           instructions whose subOp/name discriminator is missing. */
-        const subOp = String(inst.subOp ?? inst.name ?? '').toLowerCase();
+           instructions whose sub discriminator is missing. */
+        const subOp = String(inst.sub ?? inst.subOp ?? inst.name ?? '').toLowerCase();
         const leftVal = inst.args?.[0]?.value || inst.args?.[0];
         const rightVal = inst.args?.[1]?.value || inst.args?.[1];
         const leftExpr = translateValue(leftVal, width);
@@ -222,7 +257,7 @@ export function translateSemanticIR(target, options = {}) {
 
       case OP.UN: {
         /* #5202: no invented NOT default. */
-        const subOp = String(inst.subOp ?? inst.name ?? '').toLowerCase();
+        const subOp = String(inst.sub ?? inst.subOp ?? inst.name ?? '').toLowerCase();
         const srcVal = inst.args?.[0]?.value || inst.args?.[0];
         const srcExpr = translateValue(srcVal, width);
         if (subOp === 'not') return createUnary(BV_UNARY_OP.NOT, srcExpr);
@@ -234,8 +269,8 @@ export function translateSemanticIR(target, options = {}) {
 
       case OP.CMP: {
         /* #5202: no invented '==' default. */
-        const condOp = inst.cond || inst.subOp;
-        const isSigned = inst.signed === true;
+        const condOp = inst.extra?.comparison ?? inst.comparison ?? inst.cond ?? inst.subOp;
+        const isSigned = (inst.extra?.signed ?? inst.signed) === true;
         const leftVal = inst.args?.[0]?.value || inst.args?.[0];
         const rightVal = inst.args?.[1]?.value || inst.args?.[1];
         const leftExpr = translateValue(leftVal, width);
@@ -244,6 +279,14 @@ export function translateSemanticIR(target, options = {}) {
         let cmpOp = null;
         if (condOp === '==' || condOp === 'eq') cmpOp = BV_COMPARE_OP.EQ;
         else if (condOp === '!=' || condOp === 'ne') cmpOp = BV_COMPARE_OP.NE;
+        else if (condOp === 'slt') cmpOp = BV_COMPARE_OP.SLT;
+        else if (condOp === 'sle') cmpOp = BV_COMPARE_OP.SLE;
+        else if (condOp === 'sgt') cmpOp = BV_COMPARE_OP.SGT;
+        else if (condOp === 'sge') cmpOp = BV_COMPARE_OP.SGE;
+        else if (condOp === 'ult') cmpOp = BV_COMPARE_OP.ULT;
+        else if (condOp === 'ule') cmpOp = BV_COMPARE_OP.ULE;
+        else if (condOp === 'ugt') cmpOp = BV_COMPARE_OP.UGT;
+        else if (condOp === 'uge') cmpOp = BV_COMPARE_OP.UGE;
         else if (condOp === '<' || condOp === 'lt') cmpOp = isSigned ? BV_COMPARE_OP.SLT : BV_COMPARE_OP.ULT;
         else if (condOp === '<=' || condOp === 'le') cmpOp = isSigned ? BV_COMPARE_OP.SLE : BV_COMPARE_OP.ULE;
         else if (condOp === '>' || condOp === 'gt') cmpOp = isSigned ? BV_COMPARE_OP.SGT : BV_COMPARE_OP.UGT;

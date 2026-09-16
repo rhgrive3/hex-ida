@@ -64,7 +64,7 @@ export function decompileDecodedProductFunction(input, options = {}) {
   const architectureId = String(input.architecture || '').toLowerCase();
   const plugin = architecturePluginV2(architectureId);
   if (!plugin || plugin.id !== architectureId) throw new TypeError(`phase8-measurement-architecture-unavailable:${architectureId}`);
-  const abi = resolveABIPlugin({ architecture:architectureId, platform:input.platform || 'linux' });
+  const abi = resolveABIPlugin({ architecture:architectureId, platform:input.platform || 'linux', callingConvention:input.callingConvention ?? null });
   if (!abi?.supported || abi.architectureId !== architectureId) throw new TypeError(`phase8-measurement-abi-unavailable:${architectureId}`);
   const abiAdapter = semanticAbiAdapter(abi, input);
   const blocks = partitionDecodedFunction(input.instructions, plugin, { callPrototype:input.callPrototype ?? null });

@@ -7,6 +7,7 @@ import {
   createTemporaryValue,
 } from '../../../semantics/effects/index.js';
 import { isArm64eAuthenticatedLoadInstruction, liftArm64eAuthenticatedLoadEffects } from './effects-memory.js';
+import { arm64eEffectInstructionId, arm64eEffectMode, arm64eEffectOrigin } from './identity.js';
 
 export const ARM64E_EFFECTS_SEMANTIC_VERSION = '3';
 
@@ -181,22 +182,6 @@ function authenticatedTargetAlignmentFault() {
   };
 }
 
-function instructionIdOf(decoded, context) {
-  const instructionId = String(context?.instructionId ?? decoded?.instructionId ?? '').trim();
-  if (!instructionId) throw new TypeError('arm64e-instruction-id-required');
-  return instructionId;
-}
-
-function originOf(decoded, context, instructionId) {
-  const origin = context?.origin ?? decoded?.origin;
-  if (origin != null) return origin;
-  return { instructionIds: [instructionId] };
-}
-
-function modeOf(decoded, context) {
-  return String(context?.mode ?? decoded?.mode ?? 'arm64e').trim() || 'arm64e';
-}
-
 function addressOf(decoded, context) {
   const value = context?.address ?? decoded?.address ?? decoded?.virtualAddress;
   if (value == null) return null;
@@ -332,11 +317,11 @@ function baseBundle(decoded, context, instructionId, operations, controlEffect, 
   return createMachineEffectBundle({
     instructionId,
     architectureId: 'arm64e',
-    mode: modeOf(decoded, context),
+    mode: arm64eEffectMode(decoded, context),
     operations,
     controlEffect,
     possibleFaults: extra.possibleFaults ?? [],
-    origin: originOf(decoded, context, instructionId),
+    origin: arm64eEffectOrigin(decoded, context, instructionId),
     completeness,
     ...(extra.unknownEffects == null ? {} : { unknownEffects: extra.unknownEffects }),
     metadata: {
@@ -561,7 +546,7 @@ function authenticateControlTarget(decoded, context, instructionId, descriptor, 
       completeness = 'partial';
       unknownEffects = { categories: ['registers'], reason, detail: { registerId: 'x30' } };
     } else {
-      writeRegister(operations, 'x30', createBitVectorValue(POINTER_BITS, address + 4n), {
+      writeRegister(operations, 'x30', createBitVectorValue(POINTER_BITS, BigInt.asUintN(POINTER_BITS, address + 4n)), {
         stateKind: 'link-register',
         source: 'next-instruction-address',
       });
@@ -668,7 +653,7 @@ export function liftArm64eEffects(decoded, context = {}) {
   const mnemonic = mnemonicOf(decoded);
   if (isArm64eAuthenticatedLoadInstruction(decoded)) return liftArm64eAuthenticatedLoadEffects(decoded, context);
   if (!isArm64ePointerAuthenticationInstruction(decoded)) return null;
-  const instructionId = instructionIdOf(decoded, context);
+  const instructionId = arm64eEffectInstructionId(decoded, context);
 
   if (Object.hasOwn(SIGN, mnemonic)) return transformPointer(decoded, context, instructionId, SIGN[mnemonic], 'sign');
   if (Object.hasOwn(AUTH, mnemonic)) return transformPointer(decoded, context, instructionId, AUTH[mnemonic], 'authenticate');

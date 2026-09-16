@@ -1,10 +1,19 @@
 import { functionSeed } from './model.js';
+import { elfExactFunctionStartRejection } from './elf-mapping.js';
 
 const DW_EH_PE_OMIT = 0xff;
 const MAX_EH_RECORDS = 10_000_000;
 
-function warn(image, message) {
-  if (Array.isArray(image?.warnings)) image.warnings.push(`.eh_frame_hdr: ${message}`);
+function warn(image, message, budget = null) {
+  if (!Array.isArray(image?.warnings)) return;
+  // #8860 — per-row rejection warnings were appended outside the shared
+  // output/heap accounting, so a hostile table could materialize hundreds of
+  // thousands of warning strings while `elfMetadata.complete === true`. Route
+  // every variable-length warning through the same budget; when it stops, it
+  // marks the metadata partial and the warning is dropped rather than growing
+  // the heap unbounded. Fixed-shape single warnings pass budget = null.
+  if (budget && !budget.take({ estimatedHeapBytes: 96 + message.length, stringBytes: message.length + 16 }, 'eh-frame-warning')) return;
+  image.warnings.push(`.eh_frame_hdr: ${message}`);
 }
 
 function sectionName(sec) {
@@ -53,7 +62,11 @@ function sameExecutableRange(image, start, range) {
 function instructionAlignment(image) {
   const arch = String(image?.architecture || image?.arch || '').toLowerCase();
   if (arch === 'arm64' || arch === 'aarch64') return 4n;
-  if (arch.includes('riscv')) return 2n;
+  if (arch.includes('riscv')) {
+    const isaAlignment = image?.metadata?.riscvIsa?.file?.instructionAlignment
+      ?? image?.metadata?.riscvFileIsa?.instructionAlignment;
+    return isaAlignment === 4 ? 4n : 2n;
+  }
   if (arch === 'arm' || arch === 'thumb') return 2n;
   return 1n;
 }
@@ -259,13 +272,28 @@ function parseFde(r, image, domain, fdeAddress, bits) {
   return { initial:initial.value, range:range.value, cieAddress };
 }
 
-function existingNonUnwindFunction(image, address) {
-  const key = BigInt(address);
-  return image.functions.some((f) => BigInt(f?.address ?? -1n) === key && f?.source !== 'unwind');
+// #8860 — recovery used `image.functions.some(...)` per decoded row, turning
+// the incomplete/unsorted/domain-unresolved recovery into Θ(rows × functions).
+// Non-unwind seed membership cannot change during `parseEhFrameHeader` (it only
+// ever appends `'unwind'` seeds), so a single precomputed address set makes the
+// lookup O(1) with identical results.
+function collectNonUnwindAddresses(image) {
+  const keys = new Set();
+  for (const f of image.functions) {
+    if (!f || f.source === 'unwind') continue;
+    if (f.address == null) continue;
+    try { keys.add(BigInt(f.address).toString()); } catch {}
+  }
+  return keys;
 }
 
-function recordUnverifiedKnownUnwind(image, address, reason, seen) {
-  if (address == null || !existingNonUnwindFunction(image, address)) return;
+function existingNonUnwindFunction(nonUnwindAddresses, address) {
+  if (address == null) return false;
+  try { return nonUnwindAddresses.has(BigInt(address).toString()); } catch { return false; }
+}
+
+function recordUnverifiedKnownUnwind(image, address, reason, seen, nonUnwindAddresses) {
+  if (address == null || !existingNonUnwindFunction(nonUnwindAddresses, address)) return;
   const key = BigInt(address).toString();
   if (seen.has(key)) return;
   image.functions.push(functionSeed(address, {
@@ -341,35 +369,47 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
     const domain = resolveEhFrameDomain(r, image, frame.value);
     const candidates = [];
     const unverifiedSeen = new Set();
+    const nonUnwindAddresses = collectNonUnwindAddresses(image);
     let invalidEntries = 0;
 
     if (!tableComplete || !tableSorted) {
       const reason = !tableComplete ? 'eh-frame-table-incomplete' : 'eh-frame-table-not-sorted';
-      for (const row of rows) recordUnverifiedKnownUnwind(image, row.initial, reason, unverifiedSeen);
+      for (const row of rows) {
+        if (budget && !budget.take({ operations:2, estimatedHeapBytes:64 }, 'eh-frame-recovery')) break;
+        recordUnverifiedKnownUnwind(image, row.initial, reason, unverifiedSeen, nonUnwindAddresses);
+      }
       image.metadata.ehFrameHeader = {
         version, ehFrameEnc, countEnc, tableEnc, declaredFunctions:count, recoveredFunctions:0,
         validatedEntries:0, invalidEntries:count - rows.length, tableSorted, tableComplete,
         validation:'partial', ehFrameAddress:frame.value,
       };
-      warn(image, `${reason}; high-confidence header-derived function seeds suppressed`);
+      warn(image, `${reason}; high-confidence header-derived function seeds suppressed`, budget);
       return;
     }
 
     if (!domain) {
-      for (const row of rows) recordUnverifiedKnownUnwind(image, row.initial, 'eh-frame-domain-unresolved', unverifiedSeen);
+      for (const row of rows) {
+        if (budget && !budget.take({ operations:2, estimatedHeapBytes:64 }, 'eh-frame-recovery')) break;
+        recordUnverifiedKnownUnwind(image, row.initial, 'eh-frame-domain-unresolved', unverifiedSeen, nonUnwindAddresses);
+      }
       image.metadata.ehFrameHeader = {
         version, ehFrameEnc, countEnc, tableEnc, declaredFunctions:count, recoveredFunctions:0,
         validatedEntries:0, invalidEntries:count, tableSorted:true, tableComplete:true,
         validation:'invalid', ehFrameAddress:frame.value,
       };
-      warn(image, 'eh_frame_ptr does not resolve to a readable validation domain; new function seeds suppressed');
+      warn(image, 'eh_frame_ptr does not resolve to a readable validation domain; new function seeds suppressed', budget);
       return;
     }
 
     for (const row of rows) {
+      // The table decode above was budgeted, but every row still ran a full
+      // parseFde/parseCie + executable-range validation with no charge, so the
+      // Θ(rows) validation work bypassed the shared resource/wall-clock control
+      // that was supposed to bound it (#8860).
+      if (budget && !budget.take({ operations:8, inputBytes:24, estimatedHeapBytes:96 }, 'eh-frame-validate')) break;
       if (row.initial == null || row.fde == null) {
         invalidEntries++;
-        recordUnverifiedKnownUnwind(image, row.initial, 'missing-fde-evidence', unverifiedSeen);
+        recordUnverifiedKnownUnwind(image, row.initial, 'missing-fde-evidence', unverifiedSeen, nonUnwindAddresses);
         continue;
       }
       try {
@@ -380,11 +420,19 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
         if (!sameExecutableRange(image, decoded.initial, decoded.range)) throw new Error('FDE range is not contained in executable mapping');
         const alignment = instructionAlignment(image);
         if (alignment > 1n && decoded.initial % alignment !== 0n) throw new Error('FDE initial location violates target instruction alignment');
+        // The FDE/CIE bytes themselves are file-validated, but that proves nothing
+        // about the code the FDE points at: an exact function start still has to
+        // satisfy the shared instruction-target policy (#8803). An FDE whose
+        // initial location is loader zero-fill becomes a typed unverified entry
+        // and keeps the header validation partial, never `verified:true` truth.
+        const targetRejection = elfExactFunctionStartRejection(image, decoded.initial);
+        if (targetRejection) throw new Error(`FDE initial location ${targetRejection}`);
         candidates.push({ address:decoded.initial, fdeAddress:row.fde, domainKind:domain.kind });
       } catch (entryError) {
+        if (entryError?.code === 'BINARY_SOURCE_RANGE_MISSING') throw entryError;
         invalidEntries++;
-        recordUnverifiedKnownUnwind(image, row.initial, entryError.message, unverifiedSeen);
-        warn(image, `entry ${row.index} rejected: ${entryError.message}`);
+        recordUnverifiedKnownUnwind(image, row.initial, entryError.message, unverifiedSeen, nonUnwindAddresses);
+        warn(image, `entry ${row.index} rejected: ${entryError.message}`, budget);
       }
     }
 
@@ -468,9 +516,15 @@ function decodeEhValue(r, p0, enc, ctx, end = r.length) {
     throw new Error(`unsupported DW_EH_PE application 0x${application.toString(16)}`);
   }
   if (indirect) {
-    const off = ctx.image.addressToOffset(value);
-    if (off == null || off + BigInt(ptrBytes) > BigInt(r.length)) throw new Error(`DW_EH_PE_indirect target 0x${value.toString(16)} is not readable`);
-    value = ctx.bits === 64 ? r.u64(Number(off)) : BigInt(r.u32(Number(off)));
+    const pointerBytes = ctx.image?.readVirtual?.(value, ptrBytes);
+    if (!(pointerBytes instanceof Uint8Array) || pointerBytes.length !== ptrBytes) {
+      throw new Error(`DW_EH_PE_indirect target 0x${value.toString(16)} is not readable`);
+    }
+    const pointerView = new DataView(pointerBytes.buffer, pointerBytes.byteOffset, pointerBytes.byteLength);
+    const littleEndian = typeof r.littleEndian === 'boolean' ? r.littleEndian : ctx.image?.endian !== 'big';
+    value = ctx.bits === 64
+      ? pointerView.getBigUint64(0, littleEndian)
+      : BigInt(pointerView.getUint32(0, littleEndian));
   }
   return { value, raw, next };
 }

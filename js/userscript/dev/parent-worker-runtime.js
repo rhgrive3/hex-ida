@@ -12,14 +12,21 @@ import { readDevRuntimeIdentityFromGlobals } from '../../ai/dev/bootstrap/self-u
 export async function startParentDevWorkerRuntime(options = {}) {
   const node = createTabNode({ role: TAB_NODE_ROLE.SUPERVISOR, now: options.now });
   const readIdentity = () => parentRuntimeIdentity(options);
+  let coordinator = null;
+  let workerPool = null;
+  let ownsWorkerPool = false;
+  let poolCompletionBridge = null;
+  let taskGraphHost = null;
+  let ownsTaskGraphHost = false;
   try {
     const controller = options.controller || new WorkerChatController({ document: options.document || globalThis.document, adapter: options.adapter, router: options.router, turns: options.turns, now: options.now });
-    const coordinator = new SingleConversationWorkerCoordinator({ controller, tabNodeId: node.tabNodeId, now: options.now });
+    coordinator = new SingleConversationWorkerCoordinator({ controller, tabNodeId: node.tabNodeId, now: options.now });
     const documentRef = options.document || controller.adapter?.document || globalThis.document;
     const locationRef = options.location || controller.adapter?.location || globalThis.location;
     const pageInspector = options.pageInspector || new ParentPageInspector({ document: documentRef, location: locationRef, fetchRef: options.fetchRef || globalThis.fetch?.bind(globalThis) });
     const skillRegistry = options.skillRegistry || new DomSkillRegistry({ document: documentRef, location: locationRef, now: options.now });
-    const workerPool = options.workerPool || new IframeWorkerPool({
+    ownsWorkerPool = !options.workerPool;
+    workerPool = options.workerPool || new IframeWorkerPool({
       createFrame: options.createFrame,
       createWorkerRuntime: options.createWorkerRuntime,
       documentRef,
@@ -28,8 +35,9 @@ export async function startParentDevWorkerRuntime(options = {}) {
       now: options.now,
       sleep: options.sleep,
     });
-    const poolCompletionBridge = new IframeWorkerCompletionBridge({ workerPool, coordinator, now: options.now });
-    const taskGraphHost = options.taskGraphHost || new DynamicTaskGraphHost({
+    poolCompletionBridge = new IframeWorkerCompletionBridge({ workerPool, coordinator, now: options.now });
+    ownsTaskGraphHost = !options.taskGraphHost;
+    taskGraphHost = options.taskGraphHost || new DynamicTaskGraphHost({
       workerPool,
       cryptoRef: options.cryptoRef || globalThis.crypto,
       now: options.now,
@@ -48,7 +56,13 @@ export async function startParentDevWorkerRuntime(options = {}) {
       taskGraphStart:(args)=>taskGraphHost.start(args), taskGraphStatus:(args)=>taskGraphHost.status(args), taskGraphTaskResult:(args)=>taskGraphHost.taskResult(args), taskGraphCancel:(args)=>taskGraphHost.cancel(args),
       close(){poolCompletionBridge.close();taskGraphHost.close();workerPool.close();coordinator.close();},
     });
-  } catch(error) { return disabledRuntime({node,error,readIdentity}); }
+  } catch(error) {
+    if (ownsTaskGraphHost && taskGraphHost) try { taskGraphHost.close(); } catch {}
+    if (poolCompletionBridge) try { poolCompletionBridge.close(); } catch {}
+    if (ownsWorkerPool && workerPool) try { workerPool.close(); } catch {}
+    if (coordinator) try { coordinator.close(); } catch {}
+    return disabledRuntime({node,error,readIdentity});
+  }
 }
 
 async function claimWithCancellationCleanup(coordinator,args,signal) {

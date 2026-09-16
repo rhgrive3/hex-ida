@@ -2,6 +2,10 @@
 export { ToolRegistry } from './registry-query-base.js';
 
 import { createHexToolRegistry as createBaseHexToolRegistry } from './registry-query-base.js';
+import { irFor } from '../../ir.js';
+import { AIError } from '../schema.js';
+import { verifyConditionalEdgeFeasibility, verifyBoundedEquivalence } from '../../symbolic/verify/index.js';
+import { defaultSolverRegistry } from '../../symbolic/solver/registry.js';
 
 function addressText(value) {
   if (value == null) return null;
@@ -13,8 +17,165 @@ function replace(registry, name, execute) {
   registry.tools.set(name, Object.freeze({ ...current, execute }));
 }
 
+async function canonicalVerificationIr(registry, functionAddress) {
+  if (!functionAddress) return null;
+  const model = await registry.legacyTools?.__loader?.get(functionAddress);
+  return model ? irFor(model) : null;
+}
+
+function rejectUntrustedExpr(value, label) {
+  if (value == null) return value;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) rejectUntrustedExpr(value[i], `${label}[${i}]`);
+    return value;
+  }
+  if (!value || typeof value !== 'object') return value;
+  if (typeof value.kind === 'string' && value.sort && typeof value.sort === 'object') {
+    throw new AIError('invalid_tool_call', `${label} must come from canonical Semantic IR; caller-supplied Expr DAG objects are not accepted.`);
+  }
+  for (const [key, nested] of Object.entries(value)) {
+    rejectUntrustedExpr(nested, `${label}.${key}`);
+  }
+  return value;
+}
+
+function bindCanonicalTarget(value, ir, label) {
+  rejectUntrustedExpr(value, label);
+  if (value == null) return value;
+  if (!ir) {
+    throw new AIError('invalid_tool_call', `${label} requires a functionAddress that resolves to canonical Semantic IR.`);
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new AIError('invalid_tool_call', `${label} must identify a canonical Semantic IR instruction.`);
+  }
+  const instructions = Array.isArray(ir.instructions) ? ir.instructions : [];
+  const identityKeys = ['id', 'semanticNodeId', 'sourceEntityId'];
+  const supplied = identityKeys.filter((key) => value[key] != null);
+  if (supplied.length === 0) {
+    throw new AIError('invalid_tool_call', `${label} is not bound to a canonical Semantic IR instruction.`);
+  }
+  const matches = instructions.filter((candidate) => supplied.every((key) => candidate?.[key] === value[key]));
+  if (matches.length !== 1) {
+    throw new AIError('invalid_tool_call', `${label} does not identify exactly one canonical Semantic IR instruction.`);
+  }
+  return matches[0];
+}
+
+function installVerificationBoundary(registry) {
+  const inspect = registry.get('inspect_function_region')?.execute;
+  if (inspect) replace(registry, 'inspect_function_region', async (args, callOptions = {}) => {
+    const result = await inspect(args, callOptions);
+    if (args?.view !== 'semantic-ir' || !Array.isArray(result?.results)) return result;
+    const ir = await canonicalVerificationIr(registry, args.functionAddress);
+    if (!ir) return result;
+    const instructions = Array.isArray(ir.instructions) ? ir.instructions : [];
+    return {
+      ...result,
+      results: result.results.map((row) => {
+        const candidate = instructions.find((inst) => row?.id != null && inst?.id === row.id);
+        if (!candidate) return row;
+        return {
+          ...row,
+          ...(candidate.sub !== undefined ? { sub:candidate.sub } : {}),
+          ...(candidate.comparison !== undefined ? { comparison:candidate.comparison } : {}),
+          ...(candidate.signed !== undefined ? { signed:candidate.signed } : {}),
+        };
+      }),
+    };
+  });
+
+  replace(registry, 'verify_edge_feasibility', async ({ functionAddress, fromBlock, toBlock, edgeCondition, preconditions }, callOptions = {}) => {
+    const ir = await canonicalVerificationIr(registry, functionAddress);
+    if (!ir) {
+      throw new AIError('invalid_tool_call', 'verify_edge_feasibility requires functionAddress to resolve to canonical Semantic IR.');
+    }
+    const backend = defaultSolverRegistry.getDefaultBackend();
+    return verifyConditionalEdgeFeasibility({
+      ir,
+      fromBlock,
+      toBlock,
+      edgeCondition: bindCanonicalTarget(edgeCondition, ir, 'edgeCondition'),
+      preconditions: rejectUntrustedExpr(preconditions, 'preconditions'),
+      backend,
+      options: { signal:callOptions.signal, timeoutMs:callOptions.timeoutMs },
+    });
+  });
+
+  replace(registry, 'verify_bounded_equivalence', async ({ beforeFunctionAddress, afterFunctionAddress, beforeTarget, afterTarget, preconditions }, callOptions = {}) => {
+    const beforeIr = await canonicalVerificationIr(registry, beforeFunctionAddress);
+    const afterIr = await canonicalVerificationIr(registry, afterFunctionAddress);
+    if (!beforeIr || !afterIr) {
+      throw new AIError('invalid_tool_call', 'verify_bounded_equivalence requires both function addresses to resolve to canonical Semantic IR.');
+    }
+    const backend = defaultSolverRegistry.getDefaultBackend();
+    return verifyBoundedEquivalence({
+      beforeIr,
+      afterIr,
+      beforeTarget: bindCanonicalTarget(beforeTarget, beforeIr, 'beforeTarget'),
+      afterTarget: bindCanonicalTarget(afterTarget, afterIr, 'afterTarget'),
+      preconditions: rejectUntrustedExpr(preconditions, 'preconditions'),
+      backend,
+      options: { signal:callOptions.signal, timeoutMs:callOptions.timeoutMs },
+    });
+  });
+
+  // The model-visible patch verifier has no canonical original/patched IR
+  // resolver in its current contract. Letting caller objects fall through here
+  // would make either the Expr fast path or a forged Semantic-IR instruction
+  // proof authority. Until the tool can bind both sides to a trusted producer,
+  // it must fail closed rather than mint PROVED/REFUTED authority (#4132).
+  replace(registry, 'verify_patch_equivalence', async ({ originalTarget, patchedTarget }) => {
+    rejectUntrustedExpr(originalTarget, 'originalTarget');
+    rejectUntrustedExpr(patchedTarget, 'patchedTarget');
+    throw new AIError(
+      'invalid_tool_call',
+      'verify_patch_equivalence requires canonical original and patched Semantic IR binding; the current model-visible tool contract cannot establish that authority.',
+    );
+  });
+
+  return registry;
+}
+
+function isCanonicalRuntimeConfirmation(result) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return false;
+  if (Object.hasOwn(result, 'verified')) return false;
+  if (result.verification && typeof result.verification === 'object' && !Array.isArray(result.verification)
+      && Object.hasOwn(result.verification, 'verified')) return false;
+  const verdict = result.verdict;
+  const coverage = result.coverage;
+  const cases = result.cases;
+  if (!verdict || typeof verdict !== 'object' || Array.isArray(verdict) || verdict.status !== 'confirmed') return false;
+  if (!coverage || typeof coverage !== 'object' || Array.isArray(coverage)) return false;
+  if (coverage.complete !== true || coverage.truncated !== false || coverage.cancelled !== false || coverage.unsupported !== 0) return false;
+  if (!Number.isSafeInteger(coverage.planned) || coverage.planned < 3) return false;
+  if (!Number.isSafeInteger(coverage.executed) || coverage.executed !== coverage.planned) return false;
+  if (!Array.isArray(cases) || cases.length !== coverage.planned) return false;
+  if (!cases.every((entry) => entry && typeof entry === 'object' && entry.comparison?.status === 'supported')) return false;
+  return verdict.supported === coverage.planned && verdict.contradicted === 0 && verdict.total === coverage.planned;
+}
+
+function bridgeRuntimeVerifierAuthority(registry) {
+  const current = registry.get('verify_runtime_hypothesis');
+  if (!current) return;
+  replace(registry, 'verify_runtime_hypothesis', async (args, callOptions = {}) => {
+    const result = await current.execute(args, callOptions);
+    if (result?.verified === true || result?.verification?.verified === true) return result;
+    if (!isCanonicalRuntimeConfirmation(result)) return result;
+    const verification = result.verification && typeof result.verification === 'object' && !Array.isArray(result.verification)
+      ? result.verification
+      : {};
+    return {
+      ...result,
+      verified: true,
+      verification: { ...verification, verified: true, authority: 'runtime-confirmed-verdict' },
+    };
+  });
+}
+
 export function createHexToolRegistry(context = {}, options = {}) {
   const registry = createBaseHexToolRegistry(context, options);
+  bridgeRuntimeVerifierAuthority(registry);
+  installVerificationBoundary(registry);
   if (context?.analysisAuthority !== 'AnalysisQueryAPI') return registry;
 
   if (typeof context.getDecompile === 'function') {

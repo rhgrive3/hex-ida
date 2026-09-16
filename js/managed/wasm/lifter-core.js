@@ -3,10 +3,23 @@ import { createManagedMethodId, createVMOperationId } from '../shared/identity.j
 import { createVMEffectBudgetTracker, createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
 import { decodeSleb128, decodeSleb128_64, decodeUleb128 } from './parser.js';
 import { createWasmMemoryValidationContext, decodeWasmMemarg, validateWasmMemoryInstruction } from './memory-validation.js';
+import { wasmModuleIndex } from './module-index.js';
 
 function fail(code) { throw new TypeError(code); }
 
 const VALUE_TYPES = new Set([0x7f, 0x7e, 0x7d, 0x7c, 0x7b, 0x70, 0x6f]);
+
+const I32_COMPARE_OPS = new Map([
+  [0x45, { mnemonic:'i32.eqz', predicate:'eq', signedness:null, arity:1 }],
+  [0x46, { mnemonic:'i32.eq', predicate:'eq', signedness:null, arity:2 }],
+  [0x47, { mnemonic:'i32.ne', predicate:'ne', signedness:null, arity:2 }],
+  [0x48, { mnemonic:'i32.lt_s', predicate:'lt', signedness:'signed', arity:2 }],
+  [0x49, { mnemonic:'i32.lt_u', predicate:'lt', signedness:'unsigned', arity:2 }],
+  [0x4a, { mnemonic:'i32.gt_s', predicate:'gt', signedness:'signed', arity:2 }],
+  [0x4b, { mnemonic:'i32.gt_u', predicate:'gt', signedness:'unsigned', arity:2 }],
+  [0x4c, { mnemonic:'i32.le_s', predicate:'le', signedness:'signed', arity:2 }],
+  [0x4d, { mnemonic:'i32.le_u', predicate:'le', signedness:'unsigned', arity:2 }],
+]);
 
 function typeBits(type) {
   if (type === 0x7e || type === 0x7c) return 64;
@@ -14,7 +27,11 @@ function typeBits(type) {
   return 32;
 }
 
-function decodeBlockType(bytecode, pos, wasmModule) {
+function sameTypes(a, b) {
+  return a.length === b.length && a.every((type, index) => type === b[index]);
+}
+
+function decodeBlockType(bytecode, pos, wasmModule, budget = null) {
   if (pos >= bytecode.length) fail('wasm-truncated-blocktype');
   const first = bytecode[pos];
   if (first === 0x40) return { params: [], results: [], nextOffset: pos + 1, kind: 'empty' };
@@ -22,15 +39,19 @@ function decodeBlockType(bytecode, pos, wasmModule) {
   const r = decodeSleb128(bytecode, pos);
   if (r.value < 0 || r.value >= wasmModule.types.length) fail('wasm-invalid-block-type-index');
   const t = wasmModule.types[r.value];
+  // #8711: admission must precede materialization. A block type indexes the
+  // shared Type section, so its parameter/result vectors are charged here
+  // before the .slice() copies below can be built.
+  if (budget) budget.chargeValues(t.params.length + t.results.length);
   return { params: t.params.slice(), results: t.results.slice(), nextOffset: r.nextOffset, typeIndex: r.value, kind: 'type-index' };
 }
 
-function functionTypeForIndex(wasmModule, funcIndex) {
-  const imported = wasmModule.imports.filter((i) => i.desc.kind === 0);
+function functionTypeForIndex(wasmModule, funcIndex, moduleIndex = wasmModuleIndex(wasmModule)) {
+  const importedCount = moduleIndex.importedFunctionCount;
   let typeIndex;
-  if (funcIndex < imported.length) typeIndex = imported[funcIndex].desc.typeIndex;
+  if (funcIndex < importedCount) typeIndex = moduleIndex.functionTypeIndices[funcIndex];
   else {
-    const internal = funcIndex - imported.length;
+    const internal = funcIndex - importedCount;
     if (internal < 0 || internal >= wasmModule.functions.length) fail('wasm-invalid-callee-index');
     typeIndex = wasmModule.functions[internal];
   }
@@ -52,7 +73,8 @@ function unsupportedInstructionBoundary(bytecode, operandOffset, opcode) {
 
 export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
   const methodId = createManagedMethodId(wasmModule.moduleId, funcIndex);
-  const importedFuncs = wasmModule.imports.filter((i) => i.desc.kind === 0);
+  const moduleIndex = wasmModuleIndex(wasmModule);
+  const importedFuncs = moduleIndex.importedFunctions;
   const budget = createVMEffectBudgetTracker(options);
 
   if (funcIndex < importedFuncs.length) {
@@ -82,7 +104,17 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
   const codeBody = wasmModule.codeBodies[internalIdx];
   const memoryContext = createWasmMemoryValidationContext(wasmModule);
   const bytecode = codeBody.bytecode;
+  // #8709: resolve local indices against the canonical params + locals vectors
+  // in O(1). Rebuilding `[...params, ...locals]` per local.get/set/tee made
+  // lifting O(local-instructions x locals), so a ~1 KiB module with 1,000,000
+  // compactly-declared locals monopolized ~10s of synchronous CPU.
+  const localParams = funcType.params;
+  const localDecls = codeBody.locals;
+  const localParamCount = localParams.length;
+  const localTotalCount = localParamCount + localDecls.length;
+  const localTypeAt = (index) => (index < localParamCount ? localParams[index] : localDecls[index - localParamCount]);
   const drafts = [];
+  const switchResolutions = [];
   let pos = 0;
   let opSeq = 0;
   let currentStackHeight = 0;
@@ -131,6 +163,8 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
     const producedValues = [];
     const consumedValues = [];
     const possibleExceptions = [];
+    let compare = null;
+    let preChargedValues = 0;
     const unknownEffects = [];
 
     switch (opcode) {
@@ -142,7 +176,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         break;
       case 0x01: mnemonic = 'nop'; break;
       case 0x02: case 0x03: case 0x04: {
-        const bt = decodeBlockType(bytecode, pos, wasmModule); pos = bt.nextOffset;
+        const bt = decodeBlockType(bytecode, pos, wasmModule, budget); pos = bt.nextOffset;
         const kind = opcode === 0x02 ? 'block' : opcode === 0x03 ? 'loop' : 'if';
         mnemonic = kind;
         if (kind === 'if') { consumedValues.push({ id: 'cond', bits: 32 }); consume(1); }
@@ -176,6 +210,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         mnemonic = 'end';
         const frame = controlStack.pop();
         if (!frame) fail('wasm-unmatched-end');
+        if (frame.kind === 'if' && !frame.elseSeen && !sameTypes(frame.params, frame.results)) fail('wasm-invalid-if-without-else-type');
         if (!frame.polymorphic && currentStackHeight !== frame.stackHeight + frame.results.length) fail('wasm-invalid-block-result-stack');
         const continuation = pos;
         frame.endOffset = opOffset;
@@ -185,6 +220,9 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         if (frame.kind === 'function') {
           if (pos !== bytecode.length) fail('wasm-trailing-bytes-after-function-end');
           if (!frame.polymorphic && funcType.results.length) {
+            // #8711: charge the signature width before materializing per-value records.
+            preChargedValues = funcType.results.length;
+            budget.chargeValues(preChargedValues);
             for (let i = funcType.results.length - 1; i >= 0; i--) consumedValues.push({ id: `return_${i}`, bits: typeBits(funcType.results[i]), type: funcType.results[i] });
             currentStackHeight -= funcType.results.length;
           }
@@ -208,23 +246,45 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
       }
       case 0x0e: {
         const cr = decodeUleb128(bytecode, pos); pos = cr.nextOffset;
+        // #8945: switch edge cardinality is attacker-controlled inside one
+        // admitted opcode; it is pre-admitted against the value budget before
+        // any per-target array or effect record materializes, and long walks
+        // keep bounded cancellation latency.
+        budget.chargeValues(cr.value + 1);
         const labelDepths = [];
-        for (let i = 0; i < cr.value; i++) { const r = decodeUleb128(bytecode, pos); pos = r.nextOffset; labelDepths.push(r.value); }
+        for (let i = 0; i < cr.value; i++) { const r = decodeUleb128(bytecode, pos); pos = r.nextOffset; labelDepths.push(r.value); if ((i & 0x3ff) === 0x3ff) budget.checkpoint(); }
         const dr = decodeUleb128(bytecode, pos); pos = dr.nextOffset;
         labelDepths.push(dr.value);
         for (const depth of labelDepths) if (depth >= controlStack.length) fail('wasm-invalid-branch-depth');
         mnemonic = 'br_table';
         consumedValues.push({ id: 'index', bits: 32 }); consume(1);
         const ce = { kind: 'switch', targetOffsets: new Array(labelDepths.length - 1).fill(null), defaultTargetOffset: null, labelDepths: labelDepths.slice(0, -1), defaultLabelDepth: labelDepths.at(-1) };
-        for (let i = 0; i < labelDepths.length - 1; i++) labelTarget(controlStack[controlStack.length - 1 - labelDepths[i]], ce, `__case_${i}`);
+        const caseFrames = [];
+        const caseHolders = [];
+        for (let i = 0; i < labelDepths.length - 1; i++) {
+          const target = controlStack[controlStack.length - 1 - labelDepths[i]];
+          caseFrames.push(target);
+          // #8945: pending case targets use indexed holder records instead of
+          // per-case dynamic `__case_<i>` properties on the shared effect.
+          if (target.kind === 'loop') ce.targetOffsets[i] = target.bodyOffset;
+          else if (target.kind !== 'function') { const holder = { targetOffset: null }; target.pendingBranches.push({ effect: holder, field: 'targetOffset' }); caseHolders.push({ holder, index: i }); }
+        }
         const defFrame = controlStack[controlStack.length - 1 - labelDepths.at(-1)];
-        const defHolder = { kind: 'branch', targetOffset: null }; labelTarget(defFrame, defHolder); ce.__defaultHolder = defHolder;
+        const defHolder = { targetOffset: null };
+        if (defFrame.kind === 'loop') defHolder.targetOffset = defFrame.bodyOffset;
+        else if (defFrame.kind !== 'function') defFrame.pendingBranches.push({ effect: defHolder, field: 'targetOffset' });
+        ce.caseKinds = caseFrames.map((frame) => (frame.kind === 'function' ? 'function-exit' : 'offset'));
+        ce.defaultKind = defFrame.kind === 'function' ? 'function-exit' : 'offset';
+        switchResolutions.push({ effect: ce, cases: caseHolders, defaultHolder: defHolder });
         controlEffects.push(ce);
         markUnreachable();
         break;
       }
       case 0x0f:
         mnemonic = 'return';
+        // #8711: charge the signature width before materializing per-value records.
+        preChargedValues = funcType.results.length;
+        budget.chargeValues(preChargedValues);
         for (let i = funcType.results.length - 1; i >= 0; i--) consumedValues.push({ id: `return_${i}`, bits: typeBits(funcType.results[i]), type: funcType.results[i] });
         consume(funcType.results.length, 'wasm-stack-underflow-return');
         controlEffects.push({ kind: 'return' });
@@ -232,7 +292,13 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         break;
       case 0x10: {
         const r = decodeUleb128(bytecode, pos); pos = r.nextOffset;
-        const calleeType = functionTypeForIndex(wasmModule, r.value);
+        const calleeType = functionTypeForIndex(wasmModule, r.value, moduleIndex);
+        // #8711: value admission is authoritative only if it precedes the
+        // per-argument effect objects; a stack-polymorphic unreachable call to
+        // a multi-million-parameter signature used to materialize the whole
+        // consumedValues graph before any budget check could fail closed.
+        preChargedValues = calleeType.params.length + calleeType.results.length;
+        budget.chargeValues(preChargedValues);
         mnemonic = 'call';
         for (let i = calleeType.params.length - 1; i >= 0; i--) consumedValues.push({ id: `arg_${i}`, bits: typeBits(calleeType.params[i]), type: calleeType.params[i] });
         consume(calleeType.params.length, 'wasm-stack-underflow-call');
@@ -245,8 +311,10 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         const tr = decodeUleb128(bytecode, pos); pos = tr.nextOffset;
         const type = wasmModule.types[tr.value]; if (!type) fail('wasm-invalid-call-indirect-type-index');
         const table = decodeUleb128(bytecode, pos); pos = table.nextOffset;
-        const importedTables = wasmModule.imports.filter((i) => i.desc.kind === 1).length;
-        if (table.value >= importedTables + wasmModule.tables.length) fail('wasm-invalid-call-indirect-table-index');
+        if (table.value >= moduleIndex.tableCount) fail('wasm-invalid-call-indirect-table-index');
+        // #8711: same pre-admission boundary as `call` (plus the selector operand).
+        preChargedValues = 1 + type.params.length + type.results.length;
+        budget.chargeValues(preChargedValues);
         mnemonic = 'call_indirect';
         consumedValues.push({ id: 'func_index', bits: 32 });
         for (let i = type.params.length - 1; i >= 0; i--) consumedValues.push({ id: `arg_${i}`, bits: typeBits(type.params[i]), type: type.params[i] });
@@ -264,22 +332,20 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         mnemonic = 'select'; consumedValues.push({ id: 'cond', bits: 32 }, { id: 'val2' }, { id: 'val1' }); consume(3); producedValues.push({ bits: 32 }); produce(1); break;
       case 0x20: {
         const r = decodeUleb128(bytecode, pos); pos = r.nextOffset;
-        const localTypes = [...funcType.params, ...codeBody.locals];
-        if (r.value >= localTypes.length) fail('wasm-invalid-local-index');
-        const t = localTypes[r.value]; mnemonic = 'local.get'; locationReads.push({ kind: 'local', index: r.value, bits: typeBits(t), type: t }); producedValues.push({ bits: typeBits(t), type: t, fromLocationRead: 0 }); produce(1); break;
+        if (r.value >= localTotalCount) fail('wasm-invalid-local-index');
+        const t = localTypeAt(r.value); mnemonic = 'local.get'; locationReads.push({ kind: 'local', index: r.value, bits: typeBits(t), type: t }); producedValues.push({ bits: typeBits(t), type: t, fromLocationRead: 0 }); produce(1); break;
       }
       case 0x21: case 0x22: {
         const r = decodeUleb128(bytecode, pos); pos = r.nextOffset;
-        const localTypes = [...funcType.params, ...codeBody.locals]; if (r.value >= localTypes.length) fail('wasm-invalid-local-index');
-        const t = localTypes[r.value]; mnemonic = opcode === 0x21 ? 'local.set' : 'local.tee';
+        if (r.value >= localTotalCount) fail('wasm-invalid-local-index');
+        const t = localTypeAt(r.value); mnemonic = opcode === 0x21 ? 'local.set' : 'local.tee';
         consumedValues.push({ id: 'value', bits: typeBits(t), type: t }); consume(1); locationWrites.push({ kind: 'local', index: r.value, bits: typeBits(t), type: t });
         if (opcode === 0x22) { producedValues.push({ bits: typeBits(t), type: t, forwardedConsumedIndex: 0 }); produce(1); }
         break;
       }
       case 0x23: case 0x24: {
         const r = decodeUleb128(bytecode, pos); pos = r.nextOffset;
-        const importedGlobals = wasmModule.imports.filter((i) => i.desc.kind === 3);
-        const globals = [...importedGlobals.map((i) => i.desc), ...wasmModule.globals]; if (r.value >= globals.length) fail('wasm-invalid-global-index');
+        const globals = moduleIndex.globals; if (r.value >= globals.length) fail('wasm-invalid-global-index');
         const t = globals[r.value].valType;
         if (opcode === 0x23) { mnemonic = 'global.get'; locationReads.push({ kind: 'global', index: r.value, bits: typeBits(t), type: t }); producedValues.push({ bits: typeBits(t), type: t, fromLocationRead: 0 }); produce(1); }
         else { mnemonic = 'global.set'; if (!globals[r.value].mutable) fail('wasm-write-immutable-global'); consumedValues.push({ id: 'value', bits: typeBits(t), type: t }); consume(1); locationWrites.push({ kind: 'global', index: r.value, bits: typeBits(t), type: t }); }
@@ -306,12 +372,14 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
       case 0x41: { const r = decodeSleb128(bytecode, pos); pos = r.nextOffset; mnemonic = 'i32.const'; producedValues.push({ bits: 32, constant: r.value }); produce(1); break; }
       case 0x42: { const r = decodeSleb128_64(bytecode, pos); pos = r.nextOffset; mnemonic = 'i64.const'; producedValues.push({ bits: 64, constant: r.value }); produce(1); break; }
       case 0x45: case 0x46: case 0x47: case 0x48: case 0x49: case 0x4a: case 0x4b: case 0x4c: case 0x4d: {
-        mnemonic = opcode === 0x45 ? 'i32.eqz' : 'i32.cmp'; const n = opcode === 0x45 ? 1 : 2; for (let i = 0; i < n; i++) consumedValues.push({ id: `arg_${i}`, bits: 32 }); consume(n); producedValues.push({ bits: 32 }); produce(1); break;
+        const cmp = I32_COMPARE_OPS.get(opcode); if (!cmp) fail('wasm-compare-descriptor-missing');
+        mnemonic = cmp.mnemonic; compare = { predicate:cmp.predicate, signedness:cmp.signedness, operandBits:32, arity:cmp.arity };
+        for (let i=0;i<cmp.arity;i++) consumedValues.push({ id:`arg_${i}`, bits:32 }); consume(cmp.arity); producedValues.push({bits:32}); produce(1); break;
       }
-      case 0x6a: case 0x6b: case 0x6c: case 0x6d: case 0x6e: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75: case 0x76: {
-        const names = { 0x6a:'i32.add',0x6b:'i32.sub',0x6c:'i32.mul',0x6d:'i32.div_s',0x6e:'i32.div_u',0x71:'i32.and',0x72:'i32.or',0x73:'i32.xor',0x74:'i32.shl',0x75:'i32.shr_s',0x76:'i32.shr_u' };
+      case 0x6a: case 0x6b: case 0x6c: case 0x6d: case 0x6e: case 0x6f: case 0x70: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75: case 0x76: {
+        const names = { 0x6a:'i32.add',0x6b:'i32.sub',0x6c:'i32.mul',0x6d:'i32.div_s',0x6e:'i32.div_u',0x6f:'i32.rem_s',0x70:'i32.rem_u',0x71:'i32.and',0x72:'i32.or',0x73:'i32.xor',0x74:'i32.shl',0x75:'i32.shr_s',0x76:'i32.shr_u' };
         mnemonic = names[opcode]; consumedValues.push({ id:'rhs',bits:32 },{ id:'lhs',bits:32 }); consume(2); producedValues.push({bits:32}); produce(1);
-        if (opcode === 0x6d || opcode === 0x6e) possibleExceptions.push({ kind: 'integer-divide-by-zero', condition: 'rhs==0' });
+        if (opcode === 0x6d || opcode === 0x6e || opcode === 0x6f || opcode === 0x70) possibleExceptions.push({ kind: 'integer-divide-by-zero', condition: 'rhs==0' });
         if (opcode === 0x6d) possibleExceptions.push({ kind: 'integer-divide-overflow', condition: 'lhs==INT32_MIN&&rhs==-1' });
         break;
       }
@@ -335,16 +403,16 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
     }
 
     if (stoppedOnUnsupported) drafts.length = 0;
-    budget.chargeValues(consumedValues.length + producedValues.length);
+    budget.chargeValues(consumedValues.length + producedValues.length - preChargedValues);
     const origin = createOriginSet({ operationIds: [opId], byteRanges: [{ start: codeBody.bodyOffset + opOffset, end: codeBody.bodyOffset + pos }] });
-    drafts.push({ frontendId:'wasm', frontendSemanticVersion:'1.0.0', profileId:wasmModule.vmSpecEdition, methodId, operationId:opId, bytecodeOffset:opOffset, opcode, mnemonic, consumedValues, producedValues, locationReads, locationWrites, memoryEffects, callEffects, controlEffects, possibleExceptions, origin, completeness, unknownEffects });
+    drafts.push({ frontendId:'wasm', frontendSemanticVersion:'1.0.0', profileId:wasmModule.vmSpecEdition, methodId, operationId:opId, bytecodeOffset:opOffset, opcode, mnemonic, consumedValues, producedValues, locationReads, locationWrites, memoryEffects, callEffects, controlEffects, possibleExceptions, origin, completeness, unknownEffects, compare });
     if (stoppedOnUnsupported) break;
   }
 
   if (!stoppedOnUnsupported && controlStack.length !== 0) fail('wasm-missing-function-end');
-  for (const d of drafts) for (const c of d.controlEffects) if (c.kind === 'switch') {
-    for (let i = 0; i < c.targetOffsets.length; i++) { const k = `__case_${i}`; if (c[k] != null) c.targetOffsets[i] = c[k]; delete c[k]; }
-    if (c.__defaultHolder) { c.defaultTargetOffset = c.__defaultHolder.targetOffset; delete c.__defaultHolder; }
+  for (const { effect: c, cases, defaultHolder } of switchResolutions) {
+    for (const { holder, index } of cases) c.targetOffsets[index] = holder.targetOffset;
+    c.defaultTargetOffset = defaultHolder.targetOffset;
   }
   const bundles = drafts.map((d) => createVMEffectBundle(d, options));
   const aggregateCompleteness = bundles.some((b) => b.completeness === 'unknown') ? 'unknown' : bundles.some((b) => b.completeness === 'partial') ? 'partial' : bundles.some((b) => b.completeness === 'exact-with-intrinsic') ? 'exact-with-intrinsic' : 'exact';

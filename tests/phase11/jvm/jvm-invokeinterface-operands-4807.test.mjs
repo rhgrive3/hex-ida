@@ -52,6 +52,9 @@ assertMalformed([0xb9, 0x00, 0x01, 0x01, 0xff, 0xb1]);
 
 // A structurally valid encoding keeps the established call semantics. Count
 // is an unsigned u1 here; descriptor/count agreement remains verifier-owned.
+// #1138: with no constant pool to resolve against, the call still decodes as an
+// invoke with the operand-correct cpIndex, but the bundle can no longer claim an
+// exact stack effect it never proved — the descriptor stays withheld.
 for (const count of [1, 0xff]) {
   const bytes = [0xb9, 0x00, 0x01, count, 0x00, 0xb1];
   const boundary = decodeJvmInstructionBoundary(Uint8Array.from(bytes), 0);
@@ -61,8 +64,10 @@ for (const count of [1, 0xff]) {
   assert.equal(fn.bundles.length, 2);
   const invoke = fn.bundles[0];
   assert.equal(invoke.mnemonic, 'invokeinterface');
-  assert.equal(invoke.completeness, 'exact');
-  assert.deepEqual(invoke.callEffects, [{ cpIndex: 1, dispatchKind: 'interface' }]);
+  assert.equal(invoke.completeness, 'partial');
+  assert.deepEqual(invoke.callEffects, [{ cpIndex: 1, dispatchKind: 'interface', descriptorUnresolved: true }]);
+  assert.deepEqual(invoke.consumedValues, []);
+  assert.deepEqual(invoke.producedValues, []);
   assert.equal(Number(invoke.origin.byteRanges[0].end), 0x205);
   assert.equal(fn.bundles[1].mnemonic, 'return');
 }

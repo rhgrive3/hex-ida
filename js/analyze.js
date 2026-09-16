@@ -8,7 +8,7 @@
  */
 import { CHUNK_ROWS } from './backend.js';
 import { stableDigest, jsonSafe } from './core/identity/index.js';
-import { parseOperands, isCall, isReturn, categoryOf, referenceTarget } from './arm64.js';
+import { parseOperands, isCall, isReturn, categoryOf, referenceTarget, arm64ReadsDestination } from './arm64.js';
 import { arm64EncodingWord } from './targets/architecture/arm64/encoding-word.js';
 import { analysisAbortSignalMethods } from './analysis/producer-wait.js';
 import { pick } from './i18n.js';
@@ -20,9 +20,45 @@ const MAX_MODEL_ROWS = 6000;
 const MODEL_TEXTS = 96;
 const MODEL_TEXT_READ_CONCURRENCY = 6;
 const ARM64_SEMANTIC_ARCHES = new Set(['arm64', 'arm64e', 'arm64_32']);
+const ARM64_SEMANTIC_POINTER_WIDTH_BYTES = new Map([['arm64', 8], ['arm64e', 8], ['arm64_32', 4]]);
 
 export function supportsArm64SemanticAnalysis(architecture) {
   return typeof architecture === 'string' && ARM64_SEMANTIC_ARCHES.has(architecture.toLowerCase());
+}
+export function resolvePointerBytes(context = {}) {
+  let opts = context;
+  if (typeof context === 'string') opts = { architecture: context };
+  else if (typeof context === 'number') opts = { pointerBytes: context };
+  if (!opts || typeof opts !== 'object') return null;
+
+  const rawWidth = opts.pointerWidth;
+  const rawBytes = opts.pointerBytes ?? opts.pointerSize;
+  const rawBits = opts.pointerBits;
+  const width = rawWidth === 4 || rawWidth === 8 ? rawWidth : null;
+  const bytes = rawBytes === 4 || rawBytes === 8 ? rawBytes : null;
+  const bits = rawBits === 32 ? 4 : rawBits === 64 ? 8 : null;
+  if ((rawWidth != null && width == null)
+      || (rawBytes != null && bytes == null)
+      || (rawBits != null && bits == null)) return null;
+
+const rawArchitecture = opts.architecture ?? opts.arch ?? opts.cpu ?? null;
+let architectureWidth = null;
+if (rawArchitecture != null) {
+  if (typeof rawArchitecture !== 'string') return null;
+  const architecture = rawArchitecture.trim().toLowerCase();
+  const mapped = ARM64_SEMANTIC_POINTER_WIDTH_BYTES.get(architecture);
+  if (mapped === undefined) return null;
+  architectureWidth = mapped;
+}
+
+const explicit = [width, bytes, bits].filter((value) => value != null);
+if (explicit.length) {
+  if (explicit.some((value) => value !== explicit[0])) return null;
+  if (architectureWidth != null && explicit[0] !== architectureWidth) return null;
+  return explicit[0];
+}
+
+return architectureWidth;
 }
 function rowBudget(opts = {}) {
   const raw = opts?.maxRows;
@@ -84,7 +120,13 @@ async function awaitAbortable(operation, signal) {
   });
 }
 
-const ATOMIC_SOURCE_RESULT_RE = /^(?:swp|ldadd|ldset|ldclr|ldeor)(?:al|a|l)?(?:b|h)?$/;
+// Returning LSE atomics publish the old memory value through operand 1; operand 0
+// is always the source value. The max/min family belongs to the same contract and
+// was missing from the inventory (#3702).
+const ATOMIC_SOURCE_RESULT_RE = /^(?:swp|ld(?:add|set|clr|eor|smax|smin|umax|umin))(?:al|a|l)?(?:b|h)?$/;
+// Without-return aliases (`LD<op> <Ws>, WZR, [<Xn>]`) have no GPR result, so the
+// lone register operand is a source read rather than a destination (#3702).
+const ATOMIC_WITHOUT_RETURN_RE = /^st(?:add|clr|eor|set|smax|smin|umax|umin)(?:al|a|l)?(?:b|h)?$/;
 // Mnemonics without a writable destination register. Matched as whole words so
 // that e.g. `bic` is not swallowed by `b` (#2188).
 const NO_DEST_MNEMONICS = new Set([
@@ -93,12 +135,36 @@ const NO_DEST_MNEMONICS = new Set([
   'ret', 'retaa', 'retab', 'cbz', 'cbnz', 'tbz', 'tbnz',
   'nop', 'svc', 'brk', 'hlt', 'hint', 'bti', 'dmb', 'dsb', 'isb',
   'prfm', 'msr', 'drps', 'eret', 'eretaa', 'eretab',
+  'rmif', 'setf8', 'setf16',
 ]);
 const ATOMIC_READ_WRITE_DEST_RE = /^cas(?:al|a|l)?(?:b|h)?$/;
+const EXCLUSIVE_STORE_RE = /^st(?:l)?x(?:r[bh]?|p)$/;
+const ATOMIC_PAIR_READ_WRITE_DEST_RE = /^casp(?:al|a|l)?$/;
+const OPAQUE_JUMP_RE = /^(?:br|braa|brab|braaz|brabz)$/;
+
+function reachableRowSet(startRow, end, edges) {
+  const live = new Uint8Array(end - startRow + 1);
+  const pending = [startRow];
+  while (pending.length) {
+    let row = pending.pop();
+    while (row >= startRow && row <= end && !live[row - startRow]) {
+      live[row - startRow] = 1;
+      const edge = edges.get(row);
+      if (!edge) { row++; continue; }
+      if (edge.target != null) pending.push(edge.target);
+      if (!edge.fall) break;
+      row++;
+    }
+  }
+  return live;
+}
 
 function destIndex(mn) {
   const b = mn.toLowerCase();
   if (ATOMIC_SOURCE_RESULT_RE.test(b)) return 1;
+  // Without-return LSE aliases discard the loaded value, so operand 0 is a
+  // source read and there is no destination register (#3702).
+  if (ATOMIC_WITHOUT_RETURN_RE.test(b)) return -1;
   if (/^(str|stp|stur|strb|strh|sturb|sturh|stnp|sttr|st1|st2|st3|st4|stlr)/.test(b)) return -1;
   // Full-mnemonic matching only: a bare `b` alternative here also prefix-matched
   // every `b*` mnemonic with a destination register (bic/bfi/bfm/...), so their
@@ -110,7 +176,10 @@ function destIndex(mn) {
 }
 
 function destinationIsRead(mn, index) {
-  return index === 0 && ATOMIC_READ_WRITE_DEST_RE.test(mn.toLowerCase());
+  const b = mn.toLowerCase();
+  if (ATOMIC_READ_WRITE_DEST_RE.test(b)) return index === 0;
+  if (ATOMIC_PAIR_READ_WRITE_DEST_RE.test(b)) return index === 0 || index === 1;
+  return index === 0 && arm64ReadsDestination(mn);
 }
 
 function readRegs(op, into) {
@@ -157,7 +226,18 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   const written = new Set();
   const argsRead = new Set();
   const calleeSaved = new Set();
-  let lastX0Write = -1;
+  const x0WriteRows = [];
+  const spRows = [];
+  const spEffects = new Map();
+  const spEdges = new Map();
+  const flowEdges = new Map();
+  let flowIsClosed = true;
+  const absoluteRowOf = (addr) => {
+    if (addr == null) return null;
+    const rel = addr - region.vmAddr;
+    if (rel < 0n || rel % 4n !== 0n) return null;
+    return Number(rel / 4n);
+  };
   const rawInsns = [];
   // Set when the row cap actually dropped instructions. The old code relied on
   // overshooting the cap by one so `buildSemanticModel` would notice the excess
@@ -167,6 +247,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   const first = Math.floor(startRow / CHUNK_ROWS);
   const last = Math.floor(end / CHUNK_ROWS);
   const pageOf = new Map();
+  const stringRefCandidates = [];
 
   for (let c = first; c <= last; c++) {
     throwIfAborted(signal);
@@ -197,6 +278,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       else modelRowsDropped = true;
       if (b.charCodeAt(0) === 46) { res.dataRows++; continue; }
       res.instructions++;
+      spRows.push(row);
 
       const ops = parseOperands(opsStr);
       const catg = categoryOf(b);
@@ -210,7 +292,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
 
       const di = destIndex(mn);
       const destReg = di >= 0 && ops[di]?.k === 'reg' && ops[di]?.cls === 'gp' ? ops[di].num : null;
-      const pairDestReg = /^(ldp|ldpsw|ldnp)$/.test(b) && ops[1]?.k === 'reg' && ops[1]?.cls === 'gp'
+      const pairDestReg = (/^(ldp|ldpsw|ldnp|ldxp|ldaxp)$/.test(b) || ATOMIC_PAIR_READ_WRITE_DEST_RE.test(b)) && ops[1]?.k === 'reg' && ops[1]?.cls === 'gp'
         ? ops[1].num
         : null;
       const reads = new Set();
@@ -222,27 +304,42 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       for (const r of reads) if (r <= 7 && !written.has(r)) argsRead.add(r);
       if (destReg != null) {
         written.add(destReg);
-        if (destReg === 0) lastX0Write = row;
+        if (destReg === 0) x0WriteRows.push(row);
       }
       if (pairDestReg != null) {
         written.add(pairDestReg);
-        if (pairDestReg === 0) lastX0Write = row;
+        if (pairDestReg === 0) x0WriteRows.push(row);
       }
 
-      if (b === 'sub' && ops[0] && ops[0].cls === 'sp' && ops[1] && ops[1].cls === 'sp' && ops[2] && ops[2].k === 'imm' && ops[2].value != null) {
-        const amount = arm64AddSubImmediateValue(ops[2]);
-        if (amount != null) res.frameBytes += Number(amount);
-      }
+      const spMem = (catg === 'load' || catg === 'store') ? ops.find((x) => x.k === 'mem') : null;
+      const spWritebackMem = !!(spMem && spMem.base && spMem.base.cls === 'sp' &&
+        (spMem.mode === 'pre' || spMem.mode === 'post'));
       if (catg === 'load' || catg === 'store') {
-        const mem = ops.find((x) => x.k === 'mem');
-        if (mem && mem.base && mem.base.cls === 'sp') {
-          res.stackAccess++;
-          if (catg === 'store' && mem.mode === 'pre' && mem.disp && mem.disp.value != null && mem.disp.value < 0n) {
-            res.frameBytes += Number(-mem.disp.value);
-          }
+        const mem = spMem;
+        if (mem && mem.base && mem.base.cls === 'sp') res.stackAccess++;
+      }
+      let spEffect = null;
+      if (spWritebackMem) {
+        const wb = spMem.writebackDisp && spMem.writebackDisp.value != null ? spMem.writebackDisp.value : null;
+        spEffect = wb != null
+          ? { known: true, delta: Number(-wb) }
+          : { known: false, delta: 0 };
+      } else if (ops[0] && ops[0].cls === 'sp') {
+        const srcIsSp = !!(ops[1] && ops[1].cls === 'sp');
+        const immOp = ops[2] && ops[2].k === 'imm' ? ops[2] : null;
+        if ((b === 'sub' || b === 'add') && srcIsSp && immOp) {
+          const amount = arm64AddSubImmediateValue(immOp);
+          spEffect = amount != null
+            ? { known: true, delta: b === 'sub' ? Number(amount) : -Number(amount) }
+            : { known: false, delta: 0 };
+        } else {
+          spEffect = { known: false, delta: 0 };
         }
       }
-      for (const op of ops) {
+      if (spEffect) spEffects.set(row, spEffect);
+      const saveStart = EXCLUSIVE_STORE_RE.test(b) ? 1 : 0;
+      for (let i = saveStart; i < ops.length; i++) {
+        const op = ops[i];
         if (op.k === 'reg' && op.cls === 'gp') {
           if (op.num === 30 && /^st/.test(b)) res.savesLr = true;
           if (op.num >= 19 && op.num <= 28 && /^st/.test(b)) calleeSaved.add(op.num);
@@ -256,17 +353,32 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         } else res.indirectCalls++;
         // AAPCS64 calls may clobber x0-x18; BL/BLR also overwrite LR/x30.
         // Keep x19-x29 provenance because those registers are callee-saved.
-        for (let r = 0; r <= 18; r++) pageOf.delete(r);
+        for (let r = 0; r <= 18; r++) { pageOf.delete(r); written.add(r); }
         pageOf.delete(30);
       } else if (isReturn(b)) {
         res.returns++;
+        spEdges.set(row, { target: null, targetKnown: true, fall: false });
+        flowEdges.set(row, { target: null, fall: false });
       } else if (/^b\./.test(b) || b === 'cbz' || b === 'cbnz' || b === 'tbz' || b === 'tbnz') {
         res.condBranches++;
         const t = referenceTarget(b, opsStr);
         if (t != null && t <= addr) res.loops.push({ from: addr, to: t });
+        const tr = absoluteRowOf(t);
+        spEdges.set(row, { target: tr, targetKnown: t != null && tr != null, fall: true });
+        if (tr == null) flowIsClosed = false;
+        else flowEdges.set(row, { target: tr >= startRow && tr <= end ? tr : null, fall: true });
       } else if (b === 'b') {
         const t = referenceTarget(b, opsStr);
         if (t != null && t <= addr) res.loops.push({ from: addr, to: t });
+        const tr = absoluteRowOf(t);
+        spEdges.set(row, { target: tr, targetKnown: t != null && tr != null, fall: false });
+        if (tr == null) flowIsClosed = false;
+        else flowEdges.set(row, { target: tr >= startRow && tr <= end ? tr : null, fall: false });
+      } else if (OPAQUE_JUMP_RE.test(b)) {
+        spEdges.set(row, { target: null, targetKnown: false, fall: false });
+        flowIsClosed = false;
+      } else if (b === 'brk' || b === 'udf') {
+        flowEdges.set(row, { target: null, fall: false });
       }
 
       // Consume the previous ADRP fact before invalidating a destination. This
@@ -281,13 +393,13 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         const offset = arm64AddSubImmediateValue(imm);
         if (src?.k === 'reg' && offset != null) {
           const p = pageOf.get(src.num);
-          if (p && row - p.row <= 8) res.stringRefs.push({ row, addr: p.value + offset });
+          if (p && row - p.row <= 8) stringRefCandidates.push({ row, defRow: p.row, addr: p.value + offset });
         }
       } else if (b === 'ldr') {
         const mem = ops.find((x) => x.k === 'mem');
         if (mem?.base && mem.disp?.value != null) {
           const p = pageOf.get(mem.base.num);
-          if (p && row - p.row <= 8) res.stringRefs.push({ row, addr: p.value + mem.disp.value, load: true });
+          if (p && row - p.row <= 8) stringRefCandidates.push({ row, defRow: p.row, addr: p.value + mem.disp.value, load: true });
         }
       }
       if (destReg != null) pageOf.delete(destReg);
@@ -297,9 +409,82 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   }
 
   throwIfAborted(signal);
+  const spRowSet = new Set(spRows);
+  const nextSpRow = new Map();
+  for (let i = 0; i + 1 < spRows.length; i++) nextSpRow.set(spRows[i], spRows[i + 1]);
+  let spPeak = 0;
+  let spExact = true;
+  if (spRows.length) {
+    const states = new Map();
+    const queue = [spRows[0]];
+    states.set(spRows[0], { depth: 0, peak: 0 });
+    const mergeState = (row, incoming) => {
+      const previous = states.get(row);
+      if (!previous) {
+        states.set(row, incoming);
+        queue.push(row);
+        return;
+      }
+      const depth = previous.depth == null || incoming.depth == null
+        ? null
+        : (previous.depth === incoming.depth ? previous.depth : null);
+      const merged = {
+        depth,
+        peak: Math.max(previous.peak, incoming.peak),
+      };
+      if (merged.depth !== previous.depth || merged.peak !== previous.peak) {
+        states.set(row, merged);
+        queue.push(row);
+      }
+    };
+    while (queue.length) {
+      const row = queue.shift();
+      const state = states.get(row);
+      if (state.depth == null) spExact = false;
+      else spPeak = Math.max(spPeak, state.peak);
+      const effect = spEffects.get(row);
+      let out = state;
+      if (effect) {
+        if (state.depth == null || !effect.known) {
+          spExact = false;
+          out = { depth: null, peak: state.peak };
+        } else {
+          const depth = state.depth + effect.delta;
+          if (depth < 0) {
+            spExact = false;
+            out = { depth: null, peak: state.peak };
+          } else {
+            out = { depth, peak: Math.max(state.peak, depth) };
+            spPeak = Math.max(spPeak, depth);
+          }
+        }
+      }
+      const edge = spEdges.get(row);
+      const fall = nextSpRow.get(row);
+      const successors = [];
+      if (!edge) {
+        if (fall != null) successors.push(fall);
+      } else {
+        if (!edge.targetKnown) {
+          spExact = false;
+        } else if (edge.target != null && edge.target >= startRow && edge.target <= end) {
+          if (spRowSet.has(edge.target)) successors.push(edge.target);
+          else spExact = false;
+        }
+        if (edge.fall && fall != null) successors.push(fall);
+      }
+      for (const successor of new Set(successors)) mergeState(successor, out);
+    }
+  }
   res.argRegs = Array.from(argsRead).sort((a, b) => a - b);
+  res.frameBytes = spExact ? spPeak : 0;
   res.savesCallee = Array.from(calleeSaved).sort((a, b) => a - b);
-  res.setsReturnValue = lastX0Write >= 0;
+  if (x0WriteRows.length && flowIsClosed) {
+    const live = reachableRowSet(startRow, end, flowEdges);
+    res.setsReturnValue = x0WriteRows.some((r) => live[r - startRow] === 1);
+  } else {
+    res.setsReturnValue = x0WriteRows.length > 0;
+  }
   const seen = new Set();
   res.loops = res.loops.filter((l) => {
     const k = l.from + ':' + l.to;
@@ -318,6 +503,25 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       return Number(rel / 4n);
     },
   });
+  const joinRows = new Set();
+  for (const bb of res.model?.basicBlocks || []) if (bb.isJoin) joinRows.add(bb.startRow);
+  const crossesJoin = (from, to) => {
+    for (let r = from + 1; r <= to; r++) if (joinRows.has(r)) return true;
+    return false;
+  };
+  res.stringRefs = stringRefCandidates
+    .filter((c) => !crossesJoin(c.defRow, c.row))
+    .map((c) => (c.load ? { row: c.row, addr: c.addr, load: true } : { row: c.row, addr: c.addr }));
+  const loopSeen = new Set();
+  res.loops = [];
+  for (const e of res.model?.backEdges || []) {
+    const from = region.vmAddr + BigInt(e.from) * 4n;
+    const to = region.vmAddr + BigInt(e.to) * 4n;
+    const key = from + ':' + to;
+    if (loopSeen.has(key)) continue;
+    loopSeen.add(key);
+    res.loops.push({ from, to });
+  }
   if ((truncated || modelRowsDropped) && res.model) res.model.truncated = true;
   res.truncated = truncated || !!res.model?.truncated;
   res.requestedRows = requestedRows;
@@ -330,7 +534,41 @@ const cache = new LRU(CACHE_MAX);
 const analysisInflight = new Map();
 const textInflight = new Map();
 
-function cacheKey(region, startRow, endRow, symbols, maxRows = MAX_INSTRUCTIONS) {
+// Text resolution completeness is tracked per analyzed model. A transient
+// backend read failure must not be recorded as "texts resolved", otherwise the
+// same cached entry would never retry and the missing strings stay missing
+// forever (#5360).
+const modelTextsComplete = new WeakMap();
+export function modelTextsCompleteFor(model) {
+  return !!model && modelTextsComplete.get(model) === true;
+}
+
+// Cache and single-flight identity must be bound to the analysis producer, not
+// only to region shape: two backends can expose identical region metadata while
+// serving different bytes, and a region-only key would return the first
+// backend's result for the second one (#5357).
+const backendNamespaces = new WeakMap();
+let backendNamespaceSeq = 0;
+function backendIdentityPart(backend) {
+  if (backend == null) return 'none';
+  if (typeof backend !== 'object' && typeof backend !== 'function') return 'primitive:' + String(backend);
+  let namespace = backendNamespaces.get(backend);
+  if (namespace == null) {
+    namespace = ++backendNamespaceSeq;
+    backendNamespaces.set(backend, namespace);
+  }
+  // A backend that also exposes a stable binary id gets that identity folded in,
+  // so reloading a different binary into the same backend object cannot reuse
+  // the previous binary's analysis. Volatile analysis epochs are deliberately
+  // excluded: they change during a session and would defeat caching.
+  const binaryId = backend.binaryId;
+  const stableId = typeof binaryId === 'string' || typeof binaryId === 'number' || typeof binaryId === 'bigint'
+    ? String(binaryId)
+    : null;
+  return stableId == null ? 'ns' + namespace : 'ns' + namespace + ':' + stableId;
+}
+
+function cacheKey(backend, region, startRow, endRow, symbols, maxRows = MAX_INSTRUCTIONS) {
   const symbolGen = symbols && symbols.gen != null ? symbols.gen : 0;
   const regionRevision = region?.revision ?? region?.gen ?? region?.generation ?? 0;
   // Region identity is cache authority (#3311): structured values must not
@@ -341,7 +579,7 @@ function cacheKey(region, startRow, endRow, symbols, maxRows = MAX_INSTRUCTIONS)
     if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') return String(value);
     try { return 'structured:' + stableDigest(jsonSafe(value)); } catch { return 'structured:opaque'; }
   };
-  return [symbolGen, identityPart(region?.id), identityPart(region?.vmAddr), identityPart(region?.size), identityPart(regionRevision), startRow, endRow, 'rows=' + maxRows].join(':');
+  return [backendIdentityPart(backend), symbolGen, identityPart(region?.id), identityPart(region?.vmAddr), identityPart(region?.size), identityPart(regionRevision), startRow, endRow, 'rows=' + maxRows].join(':');
 }
 
 function makeShared(map, key, producer) {
@@ -463,13 +701,21 @@ export function clearAnalysisCache() {
   cancelShared(textInflight, 'analysis-cache-cleared');
 }
 
-async function ensureTextsForKey(key, backend, res, signal) {
+async function ensureTextsForKey(key, backend, res, signal, opts = {}) {
   if (res.textsResolved) return res;
   let entry = textInflight.get(key);
   if (!entry) {
     entry = makeShared(textInflight, key, async (producerSignal) => {
-      await resolveModelTexts(backend, res.model, MODEL_TEXTS, { signal: producerSignal });
-      res.textsResolved = true;
+      await resolveModelTexts(backend, res.model, MODEL_TEXTS, {
+        signal: producerSignal,
+        architecture: opts?.architecture ?? opts?.arch,
+        pointerWidth: opts?.pointerWidth,
+        pointerBytes: opts?.pointerBytes ?? opts?.pointerSize,
+        pointerBits: opts?.pointerBits,
+      });
+      // Only a complete resolution is final. An incomplete one leaves the entry
+      // unresolved so a later request retries instead of retrying never (#5360).
+      res.textsResolved = modelTextsCompleteFor(res.model);
       return res;
     });
   }
@@ -481,7 +727,7 @@ export async function analyzeFunctionCached(backend, region, startRow, endRow, s
   analysisAbortSignalMethods(signal);
   throwIfAborted(signal);
   const budget = rowBudget(opts);
-  const key = cacheKey(region, startRow, endRow, symbols, budget);
+  const key = cacheKey(backend, region, startRow, endRow, symbols, budget);
   const wantTexts = opts.texts !== false;
   let res = cache.get(key);
   if (res) {
@@ -503,7 +749,7 @@ export async function analyzeFunctionCached(backend, region, startRow, endRow, s
   }
   if (wantTexts && !res.textsResolved) {
     try {
-      await ensureTextsForKey(key, backend, res, signal);
+      await ensureTextsForKey(key, backend, res, signal, opts);
     } catch (error) {
       if (isAbort(error, signal)) throw error;
       /* keep analysis */
@@ -533,7 +779,17 @@ async function mapBounded(items, limit, mapper, signal) {
 export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opts = {}) {
   const signal = opts?.signal || null;
   throwIfAborted(signal);
-  if (!model || !backend || !model.addressRefs.length) return model;
+  if (!model || !backend || !model.addressRefs.length) {
+    if (model) modelTextsComplete.set(model, true);
+    return model;
+  }
+  const pointerContext = {
+    architecture: opts?.architecture ?? opts?.arch ?? model?.architecture ?? model?.arch ?? backend?.architecture ?? backend?.arch ?? null,
+    pointerWidth: opts?.pointerWidth ?? model?.pointerWidth ?? backend?.pointerWidth ?? null,
+    pointerBytes: opts?.pointerBytes ?? model?.pointerBytes ?? backend?.pointerBytes ?? null,
+    pointerBits: opts?.pointerBits ?? model?.pointerBits ?? backend?.pointerBits ?? null,
+  };
+  const pointerWidth = resolvePointerBytes(pointerContext);
   const wanted = [];
   const seen = new Set();
   for (const r of model.addressRefs) {
@@ -543,11 +799,16 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
     wanted.push(r.addr);
     if (wanted.length >= limit) break;
   }
+  // Transient backend failures are tolerated per reference, but they make the
+  // resolution incomplete: the caller must be able to tell "no text here" from
+  // "the read failed" so it can retry later (#5360).
+  let readFailures = 0;
   const read = async (addr) => {
     try {
       return await awaitAbortable(backend.readAt(addr, 120, true, { signal }), signal);
     } catch (error) {
       if (isAbort(error, signal)) throw error;
+      readFailures += 1;
       return null;
     }
   };
@@ -558,10 +819,10 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
   const deref = [];
   got.forEach((g, i) => {
     if (looksLikeText(g)) { texts.set(wanted[i].toString(), g.text); return; }
-    if (g && g.found && g.bytes && g.bytes.length >= 8) deref.push({ i, bytes: g.bytes });
+    if (pointerWidth != null && g && g.found && g.bytes && g.bytes.length >= pointerWidth) deref.push({ i, bytes: g.bytes });
   });
   if (deref.length) {
-    const ptrs = deref.map((d) => pointerAt(d.bytes));
+    const ptrs = deref.map((d) => pointerAt(d.bytes, pointerContext));
     const got2 = await mapBounded(
       ptrs,
       MODEL_TEXT_READ_CONCURRENCY,
@@ -577,7 +838,9 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS, opt
     });
   }
   throwIfAborted(signal);
-  return attachTexts(model, texts, indirect);
+  const resolved = attachTexts(model, texts, indirect);
+  modelTextsComplete.set(resolved, readFailures === 0);
+  return resolved;
 }
 
 function looksLikeText(g) {
@@ -587,12 +850,26 @@ function looksLikeText(g) {
   return /[\p{L}\p{N}]/u.test(g.text);
 }
 
-function pointerAt(bytes) {
+export function pointerAt(bytes, opts = {}) {
+  if (!bytes || bytes.length < 4) return null;
+  let context = opts;
+  if (typeof opts === 'string') context = { architecture: opts };
+  else if (typeof opts === 'number') context = { pointerBytes: opts };
+
+  const pointerWidth = resolvePointerBytes(context);
+  if (pointerWidth == null || bytes.length < pointerWidth) return null;
+
   let v = 0n;
-  for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(bytes[i]);
+  for (let i = pointerWidth - 1; i >= 0; i--) v = (v << 8n) | BigInt(bytes[i]);
   if (v === 0n) return null;
-  if (v < 0x0001000000000000n) return v;
-  return v & 0x0000000fffffffffn;
+  if (pointerWidth === 4 || v < 0x0001000000000000n) return v;
+
+  const rawArchitecture = context?.architecture ?? context?.arch ?? context?.cpu ?? null;
+  if (typeof rawArchitecture !== 'string') return null;
+  const architecture = rawArchitecture.trim().toLowerCase();
+  if (architecture !== 'arm64' && architecture !== 'arm64e') return null;
+  const canonical = v & 0x0000ffffffffffffn;
+  return canonical === 0n ? null : canonical;
 }
 
 const HINTS = [

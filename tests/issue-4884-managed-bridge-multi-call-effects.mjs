@@ -123,11 +123,9 @@ test('#4884 an unresolvable second call demotes instead of claiming complete', (
   assert.ok(lowered.semanticIr.unknowns.some((entry) => entry.reason === 'managed-call-effects-unresolved'));
 });
 
-test('#4884 a malformed tail call effect stays an explicit unknown', () => {
-  const lowered = bridged([directCall('callee:A'), null]);
-  const nodes = callNodes(lowered);
-  assert.equal(nodes.length, 2, `tail entry lost without an unknown marker: ${nodes.length}`);
-  assert.equal(nodes[1].completeness, 'partial');
-  assert.ok(nodes[1].unknown, 'tail call node must carry an explicit unknown');
-  assert.equal(lowered.semanticIr.completeness, 'partial');
+test('#4884 a malformed tail call effect is rejected at the VMEffects boundary', () => {
+  assert.throws(
+    () => bridged([directCall('callee:A'), null]),
+    { name: 'TypeError', message: 'vm-effect-invalid-call-effect' },
+  );
 });

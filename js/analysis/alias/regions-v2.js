@@ -4,11 +4,13 @@ import {
   deepFreeze,
   jsonSafe,
   stableDigest,
+  validateCanonicalIdentityNumbers,
 } from '../../core/identity/index.js';
 import { createOriginSet, mergeOriginSets } from '../../core/identity/origin.js';
 import { createMemoryRegionRef } from '../../semantics/memoryssa/contract.js';
 import { isCanonicalMemorySsaProducerArtifact } from '../../semantics/memoryssa/build.js';
 import { normalizeAddressProofIr } from './address-ir-normalize-v2.js';
+import { FLAT_MEMORY_SPACE, canonicalAddressSpace } from './address-space.js';
 import {
   canonicalAddressProofToRegionEvidence,
   deriveCanonicalAddressProof,
@@ -43,6 +45,18 @@ function strictNonEmptyString(value) {
 function optionalIdentityString(value, label) {
   if (value == null) return null;
   const text = strictNonEmptyString(value);
+  if (!text) throw new TypeError(`alias-region-invalid-${label}`);
+  return text;
+}
+
+// Address space is proof-bearing: it can mint a strong `NoAlias` and it feeds
+// canonical region identity. A region therefore stores the *canonical* token,
+// never the spelling it happened to receive, so case/whitespace drift cannot add
+// a physical-space dimension to one region's identity or separate two regions
+// that name the same domain (#8879). Shape errors keep the strict failure.
+function canonicalAddressSpaceField(value, label) {
+  if (value == null) return null;
+  const text = canonicalAddressSpace(value);
   if (!text) throw new TypeError(`alias-region-invalid-${label}`);
   return text;
 }
@@ -234,10 +248,8 @@ function genuineRenamedDefinitionRow(ir, definition, stateUse, addressRead, load
 }
 
 function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
-  const debug = process.env.HEX_DEBUG_C2_POINTER === '1';
   const memorySsa = options.canonicalMemorySsa;
   const ssa = options.ssa;
-  if (debug) process.stderr.write(`pointer-hint inputs ${String(node?.id)} brand=${isCanonicalMemorySsaProducerArtifact(memorySsa)} fn=${String(memorySsa?.functionId)} irfn=${String(ir?.functionId)} md=${String(memorySsa?.identity?.semanticIrDigest)} id=${stableDigest(ir)} uses=${Array.isArray(memorySsa?.uses)} defs=${Array.isArray(memorySsa?.definitions)} meta=${Array.isArray(memorySsa?.accessMetadata)} ssa=${Boolean(ssa)}\n`);
   if (!isCanonicalMemorySsaProducerArtifact(memorySsa)
       || String(memorySsa.functionId ?? '') !== String(ir?.functionId ?? '')
       || String(memorySsa.identity?.semanticIrDigest ?? '') !== stableDigest(ir)
@@ -245,7 +257,6 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
       || !Array.isArray(memorySsa.definitions)
       || !Array.isArray(memorySsa.accessMetadata)
       || !ssa || !Array.isArray(ssa.uses) || !Array.isArray(ssa.definitions)) {
-    if (debug) process.stderr.write(`pointer-hint precondition failed ${String(node?.id)}\n`);
     return null;
   }
   const addressValueId = node?.memory?.addressExpr?.valueId;
@@ -279,7 +290,6 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
     }
   }
   if (!addressRead || addressRead.kind !== 'state-read') {
-    if (debug) process.stderr.write(`pointer-hint address read failed ${String(node?.id)} ${String(addressRead?.kind)}\n`);
     return null;
   }
 
@@ -288,7 +298,6 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
     && String(use.proof?.sourceSemanticValueId ?? addressReadValueId) === String(addressReadValueId)
     && genuineRenamedUseRow(ir, use, addressRead, addressReadValueId, blockIdByNode));
   const candidates = [];
-  if (debug) process.stderr.write(`pointer-hint state uses ${String(node?.id)} ${stateUses.length}\n`);
   for (const stateUse of stateUses) {
     const scalarDefinition = ssa.definitions.find((definition) =>
       String(definition.valueId ?? '') === String(stateUse.valueId ?? '')
@@ -347,13 +356,16 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
         metadata: { canonicalAddressIncludesOperationDisplacement: true },
       });
     } else if (rootProof.rootEntityId != null) {
+      const rootProofSpace = canonicalAddressSpace(rootProof.addressSpace);
       candidates.push({
         kind: 'rooted-offset',
         rootEntityId: String(rootProof.rootEntityId),
         offset: offset.toString(),
-        // Keep the proof's non-memory storage domain (#5901).
-        ...(typeof rootProof.addressSpace === 'string' && rootProof.addressSpace && rootProof.addressSpace !== 'memory'
-          ? { addressSpace: rootProof.addressSpace } : {}),
+        // Keep the proof's non-memory storage domain (#5901), compared on the
+        // canonical token so a case drift of flat memory cannot masquerade as a
+        // genuine non-memory domain (#8879).
+        ...(rootProofSpace && rootProofSpace !== FLAT_MEMORY_SPACE
+          ? { addressSpace: rootProofSpace } : {}),
         metadata: {
           canonicalAddressIncludesOperationDisplacement: true,
           ...(rootProof.rootIdentity?.storageClass == null ? {} : {
@@ -363,7 +375,6 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
       });
     }
   }
-  if (debug) process.stderr.write(`pointer-hint candidates ${String(node?.id)} ${candidates.length}\n`);
   if (candidates.length !== 1) return null;
   return candidates[0];
 }
@@ -387,7 +398,7 @@ function unknownRegion({ functionId, binaryId, widthBits, origin, sourceEntityId
   const uncertaintyIdentity = {
     sourceEntityId: optionalIdentityString(sourceEntityId, 'source-entity-id'),
     addressValueId: optionalIdentityString(addressValueId, 'address-value-id'),
-    addressSpace: optionalIdentityString(addressSpace, 'address-space'),
+    addressSpace: canonicalAddressSpaceField(addressSpace, 'address-space'),
     ...(normalizedWidth == null ? {} : { widthBits: normalizedWidth }),
     reason: nonEmpty(reason) ?? 'unproven-memory-region',
   };
@@ -440,15 +451,16 @@ function preciseRegion({ descriptor, functionId, binaryId, widthBits, origin, ad
     // A rooted-offset region must keep the storage domain its canonical proof
     // proved (#5901): a tls/io-rooted region is not flat memory and must not
     // share an identity with a same-root memory region.
-    const rootedSpace = optionalIdentityString(descriptor.addressSpace, 'address-space');
+    const rootedSpace = canonicalAddressSpaceField(descriptor.addressSpace, 'address-space');
     canonicalRegionIdentity = { rootEntityId, offset, widthBits: normalizedWidth, ...(rootedSpace ? { addressSpace: rootedSpace } : {}) };
     specific = { ...(scope.functionId ? { functionId: scope.functionId } : {}), ...(scope.binaryId ? { binaryId: scope.binaryId } : {}), rootEntityId, offset, ...(rootedSpace ? { addressSpace: rootedSpace } : {}) };
   } else {
-    const explicitSpace = optionalIdentityString(descriptor.addressSpace ?? addressSpace, 'address-space');
+    const explicitSpace = canonicalAddressSpaceField(descriptor.addressSpace ?? addressSpace, 'address-space');
     if (!explicitSpace || (!scope.functionId && !scope.binaryId)) return null;
     const rootIdentity = descriptor.rootIdentity ?? (addressValueId ? { addressValueId } : null);
     if (rootIdentity == null) return null;
-    canonicalRegionIdentity = { addressSpace: explicitSpace, rootIdentity: jsonSafe(rootIdentity), widthBits: normalizedWidth };
+    try { validateCanonicalIdentityNumbers(rootIdentity); } catch { return null; }
+    canonicalRegionIdentity = { addressSpace: explicitSpace, rootIdentity, widthBits: normalizedWidth };
     specific = {
       ...(scope.functionId ? { functionId: scope.functionId } : {}),
       ...(scope.binaryId ? { binaryId: scope.binaryId } : {}),
@@ -471,7 +483,7 @@ function preciseRegion({ descriptor, functionId, binaryId, widthBits, origin, ad
   });
 }
 
-export function deriveMemoryRegion(input = {}) {
+function deriveMemoryRegionWithCandidates(input = {}, rawEvidenceCandidates = null) {
   const memory = object(input.memory) ?? {};
   const origin = normalizedOrigin(input.origin);
   const functionId = optionalIdentityString(input.functionId, 'function-id');
@@ -482,13 +494,85 @@ export function deriveMemoryRegion(input = {}) {
     && rawWidthBits > 0
     ? rawWidthBits
     : null;
-  const addressSpace = optionalIdentityString(memory.addressSpace ?? input.addressSpace, 'address-space');
+  const addressSpace = canonicalAddressSpaceField(memory.addressSpace ?? input.addressSpace, 'address-space');
   const addressValueId = optionalIdentityString(memory.addressExpr?.valueId ?? input.addressValueId, 'address-value-id');
-  const descriptor = normalizeDescriptor(input.regionEvidence ?? input.provenance ?? input.metadata);
+  const evidenceCandidates = Array.isArray(rawEvidenceCandidates)
+    ? rawEvidenceCandidates.map(normalizeDescriptor).filter(Boolean)
+    : null;
+  let descriptor = evidenceCandidates?.[0]
+    ?? normalizeDescriptor(input.regionEvidence ?? input.provenance ?? input.metadata);
+  let comparableCandidates = evidenceCandidates;
+  let descriptorConflict = false;
+
+  if (descriptor && evidenceCandidates?.length > 1 && PRECISE_KINDS.has(descriptor.kind)) {
+    const preciseKindCandidates = evidenceCandidates.filter((candidate) => PRECISE_KINDS.has(candidate.kind));
+    descriptorConflict = preciseKindCandidates.some((candidate) => candidate.kind !== descriptor.kind);
+
+    // rooted-offset addressSpace is optional proof detail. One source may
+    // supply the storage domain while another supplies the same root/offset.
+    // Merge that one-way refinement before comparing canonical identities so
+    // source ordering cannot turn compatible evidence into a false conflict.
+    if (!descriptorConflict && descriptor.kind === 'rooted-offset') {
+      const spaces = new Set();
+      for (const candidate of preciseKindCandidates) {
+        if (candidate.kind !== 'rooted-offset' || candidate.addressSpace == null) continue;
+        try {
+          const candidateSpace = canonicalAddressSpaceField(candidate.addressSpace, 'address-space');
+          if (candidateSpace) spaces.add(candidateSpace);
+        } catch {
+          // Malformed auxiliary metadata is not proof-grade authority.
+        }
+      }
+      if (spaces.size > 1) {
+        descriptorConflict = true;
+      } else if (spaces.size === 1) {
+        const [consensusSpace] = spaces;
+        if (descriptor.addressSpace == null) descriptor = { ...descriptor, addressSpace: consensusSpace };
+        comparableCandidates = evidenceCandidates.map((candidate) =>
+          candidate.kind === 'rooted-offset' && candidate.addressSpace == null
+            ? { ...candidate, addressSpace: consensusSpace }
+            : candidate);
+      }
+    }
+  }
+
+  const conflictingRegion = () => unknownRegion({
+    functionId,
+    binaryId,
+    widthBits,
+    origin,
+    sourceEntityId: input.sourceEntityId,
+    addressValueId,
+    addressSpace,
+    reason: 'conflicting-region-evidence',
+    metadata: {
+      ...(object(input.unknownMetadata) ?? {}),
+      regionEvidenceConflict: true,
+      regionEvidenceCandidateCount: evidenceCandidates?.length ?? 0,
+    },
+  });
+  if (descriptorConflict) return conflictingRegion();
 
   const precise = descriptor && Number.isSafeInteger(widthBits) && widthBits > 0
     ? preciseRegion({ descriptor, functionId, binaryId, widthBits, origin, addressSpace, addressValueId })
     : null;
+  if (precise && comparableCandidates?.length > 1) {
+    const conflicting = comparableCandidates.slice(1).some((candidate) => {
+      let candidateRegion = null;
+      try {
+        candidateRegion = preciseRegion({
+          descriptor: candidate, functionId, binaryId, widthBits, origin, addressSpace, addressValueId,
+        });
+      } catch {
+        // A malformed secondary candidate is not proof-grade authority. The
+        // primary descriptor keeps its historical behavior; only two valid
+        // precise claims can establish a contradiction.
+        return false;
+      }
+      return candidateRegion != null && candidateRegion.id !== precise.id;
+    });
+    if (conflicting) return conflictingRegion();
+  }
   if (precise) return precise;
 
   if (originHasEvidence(origin) && Number.isSafeInteger(widthBits) && widthBits > 0 && (addressSpace === 'tls' || addressSpace === 'io')) {
@@ -515,6 +599,10 @@ export function deriveMemoryRegion(input = {}) {
     reason: descriptor ? 'malformed-or-unproven-region-evidence' : 'missing-region-provenance',
     metadata: object(input.unknownMetadata),
   });
+}
+
+export function deriveMemoryRegion(input = {}) {
+  return deriveMemoryRegionWithCandidates(input);
 }
 
 function irForAddressRootDerivation(ir) {
@@ -571,9 +659,10 @@ export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
   const value = addressValueId ? values.find((item) => item.id === addressValueId) : null;
   const definingNode = value?.definitionNodeId ? nodes.find((item) => item.id === value.definitionNodeId) : null;
   const accessOrigin = normalizedOrigin(node.origin, value?.origin, definingNode?.origin);
-  const explicitDescriptor = descriptorCandidates(node, value, definingNode, options.regionEvidence)
+  const explicitDescriptors = descriptorCandidates(node, value, definingNode, options.regionEvidence)
     .map(normalizeDescriptor)
-    .find(Boolean) ?? null;
+    .filter(Boolean);
+  const explicitDescriptor = explicitDescriptors[0] ?? null;
 
   let proof = null;
   let graphDescriptor = null;
@@ -600,7 +689,7 @@ export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
   // origin; otherwise equal MemoryRegionIds would carry conflicting objects.
   const regionOrigin = graphDescriptor || memoryPointerDescriptor ? normalizedOrigin(ir.origin) : accessOrigin;
 
-  return deriveMemoryRegion({
+  return deriveMemoryRegionWithCandidates({
     functionId: ir.functionId,
     binaryId: options.binaryId ?? ir.binaryId ?? ir.metadata?.binaryId,
     memory: node.memory,
@@ -612,7 +701,7 @@ export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
       ...(object(options.unknownMetadata) ?? {}),
       ...(derivationMetadata ?? {}),
     },
-  });
+  }, explicitDescriptor ? explicitDescriptors : null);
 }
 
 export function isPreciseMemoryRegion(region) {

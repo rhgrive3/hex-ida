@@ -1,4 +1,5 @@
-import { stableStringify } from '../../core/identity/index.js';
+import { sameCanonicalIdentityValue } from '../../core/identity/index.js';
+import { FLAT_MEMORY_SPACE, canonicalAddressSpace } from './address-space.js';
 import { isPreciseMemoryRegion } from './regions-v2.js';
 
 function widthBytes(region) {
@@ -58,9 +59,12 @@ function storageClass(region) {
 }
 
 function addressSpaceString(value) {
-  if (typeof value !== 'string') return null;
-  const text = value.trim();
-  return text || null;
+  // Canonical spelling only. Comparing raw tokens let a case drift ('MEMORY' vs
+  // 'memory') read as a physically different storage domain and mint a strong
+  // separation, and let a memory-wide summary appear to miss a target that
+  // actually is in memory (#8879). Whitespace/shape drift still carries no
+  // space at all, so the callers' existing null-handling stays conservative.
+  return canonicalAddressSpace(value);
 }
 
 function physicalAddressSpace(region) {
@@ -103,8 +107,8 @@ export function aliasMemoryRegions(a, b) {
       // Same root identity, but the two proofs landed in different storage
       // domains: one provably tls/io-rooted, the other flat memory (#5901).
       // Interval overlap across spaces would be unsound.
-      const spaceA = addressSpaceString(a.addressSpace) ?? 'memory';
-      const spaceB = addressSpaceString(b.addressSpace) ?? 'memory';
+      const spaceA = addressSpaceString(a.addressSpace) ?? FLAT_MEMORY_SPACE;
+      const spaceB = addressSpaceString(b.addressSpace) ?? FLAT_MEMORY_SPACE;
       if (spaceA !== spaceB) return 'no';
       return intervalRelation(toBigInt(a.offset), widthBytes(a), toBigInt(b.offset), widthBytes(b));
     }
@@ -114,7 +118,7 @@ export function aliasMemoryRegions(a, b) {
       if (!spaceA || !spaceB) return 'unknown';
       if (spaceA !== spaceB) return 'no';
       if (a.rootIdentity == null || b.rootIdentity == null) return 'unknown';
-      if (stableStringify(a.rootIdentity) !== stableStringify(b.rootIdentity)) return 'unknown';
+      if (!sameCanonicalIdentityValue(a.rootIdentity, b.rootIdentity)) return 'unknown';
       const wa = widthBytes(a), wb = widthBytes(b);
       return wa != null && wb != null && wa === wb ? 'must' : 'may';
     }
@@ -154,7 +158,7 @@ function regionAddressSpace(region) {
   if (region.kind === 'stack-fixed' || region.kind === 'global-absolute') return 'memory';
   // A rooted-offset region keeps the storage domain its canonical proof
   // carried (#5901); only space-less rooted-offsets are flat memory.
-  if (region.kind === 'rooted-offset') return addressSpaceString(region.addressSpace) ?? 'memory';
+  if (region.kind === 'rooted-offset') return addressSpaceString(region.addressSpace) ?? FLAT_MEMORY_SPACE;
   return null;
 }
 

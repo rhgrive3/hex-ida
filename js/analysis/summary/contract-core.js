@@ -446,6 +446,10 @@ export function createFunctionSummary(input = {}) {
     && !memoryWriteRegions.some((effect) => effect.broad)) {
     fail('function-summary-unknown-call-requires-broad-write-effect');
   }
+  if (unknownCallEffects.length > 0
+    && !memoryReadRegions.some((effect) => effect.broad)) {
+    fail('function-summary-unknown-call-requires-broad-read-effect');
+  }
   if (unknownCallEffects.length > 0 && summary.noreturn !== 'unknown' && summary.mayThrow !== 'unknown') {
     // Control-flow facts are as unresolvable as memory facts when the callee is
     // unknown; claiming both are settled contradicts the unresolved call.
@@ -454,6 +458,12 @@ export function createFunctionSummary(input = {}) {
   const nonExhaustiveIndirect = summary.indirectCallSets.some((set) => !set.exhaustive);
   if (nonExhaustiveIndirect && unknownCallEffects.length === 0) {
     fail('function-summary-nonexhaustive-indirect-requires-unknown-effect');
+  }
+  const unknownEffectSites = new Set(unknownCallEffects.map((effect) => effect.callSiteId));
+  for (const call of summary.directCalls) {
+    if (call.effectSource === 'unknown-call-fallback' && !unknownEffectSites.has(call.callSiteId)) {
+      fail('function-summary-fallback-direct-call-requires-unknown-effect');
+    }
   }
 
   return deepFreeze(summary);

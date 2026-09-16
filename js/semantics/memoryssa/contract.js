@@ -1,4 +1,4 @@
-import { canonicalAddress, deepFreeze, jsonSafe, stableStringify } from '../../core/identity/index.js';
+import { canonicalAddress, deepFreeze, jsonSafe, normalizeIdentity, stableStringify } from '../../core/identity/index.js';
 import { createOriginSet } from '../../core/identity/origin.js';
 import { analyzeSemanticDominance } from '../cfg/index.js';
 
@@ -134,6 +134,38 @@ function limit(options, key) {
   return positiveInteger(options.budget[key], `memory-ssa-invalid-budget-${key}`);
 }
 
+/**
+ * Snapshot provenance is an ownership and staleness boundary, not display text:
+ * it decides `memoryssa-stale-snapshot`, cache identity and exact-forwarding
+ * capability binding. It therefore keeps the same primitive token domain as every
+ * other canonical id (#4473 hardened the compat identity fields around it, and
+ * `createAnalysisStatus` already requires a primitive non-empty string).
+ *
+ * `String()` is a conversion API: `String(['S-1'])`, `String({toString(){...}})`,
+ * `String(1)` and `String(true)` all produce a canonical-looking id, so coercing
+ * at the producer and again at each consumer let structured snapshots alias a
+ * real snapshot and executed caller-controlled `toString()` hooks inside
+ * provenance validation (#8804). Anything that is not already a primitive
+ * non-empty string is rejected, and no coercion is ever invoked.
+ */
+export function canonicalSnapshotId(value, code = 'memory-ssa-snapshot-id-invalid') {
+  return nonEmpty(value, code);
+}
+
+/**
+ * Consumer-side view of the same policy. `null` is reserved for a genuinely
+ * absent snapshot; malformed non-null values return `NaN`, which is deliberately
+ * self-unequal. That distinction is important at comparison-only boundaries:
+ * two arrays/objects/blank strings must never authenticate each other merely
+ * because both failed normalization (#8804). No coercion hook is invoked.
+ */
+export function snapshotIdIdentity(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string') return Number.NaN;
+  const text = value.trim();
+  return text || Number.NaN;
+}
+
 export function createMemoryRegionRef(input) {
   input = object(input, 'memory-ssa-invalid-region');
   assertAllowedKeys(input, new Set(['id','kind','functionId','binaryId','offset','address','rootEntityId','addressSpace','rootIdentity','uncertaintyIdentity','widthBits','origin','metadata']), 'memory-ssa-unexpected-region-field');
@@ -162,7 +194,10 @@ export function createMemoryRegionRef(input) {
     if (input.addressSpace != null) out.addressSpace = nonEmpty(input.addressSpace, 'memory-ssa-region-address-space-required');
   } else if (kind === 'tls' || kind === 'io' || kind === 'physical-space') {
     out.addressSpace = nonEmpty(input.addressSpace, 'memory-ssa-region-address-space-required');
-    if (input.rootIdentity != null) out.rootIdentity = jsonSafe(input.rootIdentity);
+    if (input.rootIdentity != null) {
+      try { out.rootIdentity = normalizeIdentity(input.rootIdentity, 'memory-ssa-invalid-region-root-identity'); }
+      catch { fail('memory-ssa-invalid-region-root-identity'); }
+    }
   } else if (kind === 'unknown') {
     if (input.uncertaintyIdentity == null
       || (typeof input.uncertaintyIdentity === 'string' && !input.uncertaintyIdentity.trim())) {
