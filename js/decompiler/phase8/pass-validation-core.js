@@ -1,4 +1,5 @@
 import { stableDigest } from '../../core/identity/index.js';
+import { c4EquivalenceRewriteRegistryFailure } from './c4-equivalence-registry.js';
 
 // Keep the pass-validation schema dependency-free at module evaluation time.
 // The full verifier is loaded only when an adoption request is actually made;
@@ -272,6 +273,8 @@ export async function validateMemoryRewriteAdoption({
   if (!passId || !passVersion || !transformKind) fail('phase8-rewrite-adoption-identity-required');
   if (!Array.isArray(targets) || targets.length === 0) fail('phase8-rewrite-adoption-targets-required');
   if (!memoryRequest || typeof memoryRequest !== 'object') fail('phase8-memory-rewrite-proof-request-required');
+  const registryFailure = c4EquivalenceRewriteRegistryFailure(transformKind, MEMORY_REWRITE_VALIDATION_VERIFIER);
+  if (registryFailure) fail(registryFailure);
   const binding = rewriteBinding(rewrite);
   const { queryMemoryEquivalence, isAdoptableMemoryEquivalence } = await import('../../symbolic/query/memory-equivalence.js');
   const outcome = await queryMemoryEquivalence(memoryRequest);
@@ -286,6 +289,8 @@ export async function validateTerminalEffectRewriteAdoption({
   if (!passId || !passVersion || !transformKind) fail('phase8-rewrite-adoption-identity-required');
   if (!Array.isArray(targets) || targets.length === 0) fail('phase8-rewrite-adoption-targets-required');
   if (!effectRequest || typeof effectRequest !== 'object') fail('phase8-terminal-effect-proof-request-required');
+  const registryFailure = c4EquivalenceRewriteRegistryFailure(transformKind, TERMINAL_EFFECT_REWRITE_VALIDATION_VERIFIER);
+  if (registryFailure) fail(registryFailure);
   const binding = rewriteBinding(rewrite);
   const { queryTerminalEffectEquivalence, isAdoptableTerminalEffectEquivalence } = await import('../../symbolic/query/terminal-effect-equivalence.js');
   const outcome = await queryTerminalEffectEquivalence(effectRequest);
