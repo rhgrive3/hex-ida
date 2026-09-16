@@ -1,0 +1,115 @@
+name: Temporary C1-02 local acceptance
+on:
+  push:
+    branches: ['impl/c1-02-acceptance-20260916']
+    paths: ['.github/workflows/temp-c1-02-acceptance.yml']
+permissions:
+  contents: write
+jobs:
+  accept:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      TARGET_HEAD: 5b1068fb3c961b1eec2e56281e1ae265f3276fe2
+      TARGET_BRANCH: feat/analysis-roadmap-v8-current-main-20260907
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TARGET_HEAD }}
+          fetch-depth: 400
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install locked dependencies
+        timeout-minutes: 3
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Run frozen C1-02 return denominator
+        run: >-
+          node --test
+          tests/phase7/summary/c1-02-exhaustive-return-matrix.test.mjs
+          tests/phase7/summary/c1-02-recursive-return-discovery.test.mjs
+          tests/phase7/summary/c1-02-retrospective-gaps.test.mjs
+          tests/phase7/summary/c1-02-return-identity-hardening.test.mjs
+          tests/phase7/summary/c1-02-target-matrix.test.mjs
+          tests/phase7/summary/c1-combined-acceptance.test.mjs
+      - name: Verify denominator declarations
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const source=fs.readFileSync('tests/phase7/summary/c1-02-exhaustive-return-matrix.test.mjs','utf8');
+          for (const literal of ["const KINDS = ['arg', 'root', 'allocation'];", "const TOPOLOGIES = ['leaf', 'wrapper-chain', 'self-recursive', 'mutual-recursive'];", "const MODES = ['direct', 'exhaustive', 'nonexhaustive', 'missing', 'stale', 'unknown'];", "assert.equal(rows.length + failures.length, 72"]) assert.ok(source.includes(literal), literal);
+          console.log(JSON.stringify({returnKinds:3,topologies:4,modes:6,cells:72}));
+          NODE
+      - name: Run complete Phase 7 summary regression directory
+        run: node --test tests/phase7/summary/*.test.mjs
+      - name: Record C1-02 acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('docs/analysis-local-acceptance-audit.json')
+          audit=json.loads(p.read_text())
+          finding=next(x for x in audit['findings'] if x['id']=='HEX-C1-02')
+          finding['localStatus']='accepted-local'
+          finding['assessment']='C1-02 の return summary propagation を frozen 72-cell matrix（arg/root/allocation × leaf/wrapper-chain/self-recursive/mutual-recursive × direct/exhaustive/nonexhaustive/missing/stale/unknown）と recursive discovery/identity hardening/target matrix で再受入。complete direct/exhaustive candidate union は実callerとwrapperへ有限precisionを伝播し、nonexhaustive/missing/stale/unknown/schema-contract mismatch/absent return は必ず unknown をjoinする。candidate summary digestはcaller dependencyへ入り、semantic change/stale snapshotを無効化し、同一入力 replay は決定的。whole-roadmap/release/device gates は別。'
+          finding['source']='tests/phase7/summary/c1-02-exhaustive-return-matrix.test.mjs'
+          finding['verificationSuite']='c1-02-final-acceptance-20260916'
+          finding['originalRequirementAcceptedHere']=True
+          task=next(x for x in audit['tasks'] if x['id']=='FR-C1-02A')
+          task['localStatus']='accepted-local'
+          task['currentAssessment']='arg/root/allocation × leaf/wrapper/self-recursive/mutual-recursive × direct/exhaustive/nonexhaustive/missing/stale/unknown の72セルを固定。complete candidate setだけ caller precisionを改善し、不完全・stale・schema/digest不整合はunknownへjoin、summary digest mutationはcaller dependencyを更新する。'
+          task['originalRequirementAcceptedHere']=True
+          audit.setdefault('integrationFollowup', {})['c1ReturnSummaryAcceptance20260916']={
+            'status':'ACCEPTED-LOCAL','finding':'HEX-C1-02','task':'FR-C1-02A',
+            'matrix':{'returnKinds':['arg','root','allocation'],'topologies':['leaf','wrapper-chain','self-recursive','mutual-recursive'],'modes':['direct','exhaustive','nonexhaustive','missing','stale','unknown'],'cells':72},
+            'incompleteAlwaysJoinsUnknown':True,'summaryDigestDependencyRequired':True,'deterministicReplay':True,
+            'fullRoadmapComplete':False,'transformAuthorization':False,
+          }
+          p.write_text(json.dumps(audit, ensure_ascii=False, indent=2)+'\n')
+
+          p=Path('docs/解析ツール改善.md')
+          text=p.read_text()
+          section='''## 2026-09-16: C1-02 local acceptance 完了\n\nHEX-C1-02 / FR-C1-02A は、return provenance の固定72セル（arg / root / allocation × leaf / wrapper-chain / self-recursive / mutual-recursive × direct / exhaustive / nonexhaustive / missing / stale / unknown）と recursive discovery / identity hardening / target matrix を同一受入で再検証し、このローカル要件について `accepted-local` とする。complete direct/exhaustive candidate setだけ実caller precisionを改善し、不完全候補・stale snapshot・schema/contract不整合・unknown returnは必ずunknownへjoinする。candidate summary digestはcaller dependencyへ入り、同一replayは決定的である。独立レビュー、実機、release、他 finding は閉じていないため、ロードマップ全体の `CHECKPOINT-LOCKED` / `transformAuthorization:false` は維持する。\n\n'''
+          if '## 2026-09-16: C1-02 local acceptance 完了' not in text:
+              marker='## 2026-09-16: C1-01 local acceptance 完了\n'
+              if marker not in text: raise SystemExit('analysis md marker missing')
+              text=text.replace(marker, section+marker, 1)
+          p.write_text(text)
+
+          p=Path('docs/analysis-roadmap-v8-integration-checkpoint.md')
+          text=p.read_text()
+          note='''\n\n## 2026-09-16 C1-02 local acceptance\n\nreturn summary propagationを3 return kind × 4 graph topology × 6 target/completeness mode = 72セルで固定した。complete direct/exhaustive setは実caller/wrapperへprecisionを伝播し、nonexhaustive/missing/stale/unknown/schema mismatchはunknownへjoinする。summary digestをcaller dependencyに含め、recursive SCC discoveryと同一replay決定性も再検証した。HEX-C1-02 / FR-C1-02A はこのローカル要件について accepted-local。全roadmap/release/device受入は未完了のまま。\n'''
+          if '## 2026-09-16 C1-02 local acceptance' not in text: text += note
+          p.write_text(text)
+          PY
+          node -e "JSON.parse(require('fs').readFileSync('docs/analysis-local-acceptance-audit.json','utf8'))"
+          git diff --check
+      - name: Commit accepted C1-02 checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add docs/analysis-local-acceptance-audit.json docs/解析ツール改善.md docs/analysis-roadmap-v8-integration-checkpoint.md
+          git commit -m 'docs(analysis): accept C1-02 return summaries'
+      - name: Verify ownership on committed candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tools/validation/phase7-ownership.mjs --check-manifest
+          git fetch --no-tags --depth=400 origin main:refs/remotes/origin/main
+          BASE_SHA=$(git rev-parse refs/remotes/origin/main)
+          node tools/validation/analysis-roadmap/ownership.mjs --branch "$TARGET_BRANCH" --phase phase7 --base-sha "$BASE_SHA" --head-sha "$(git rev-parse HEAD)"
+      - name: Publish only if target head is unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          REMOTE=$(git ls-remote origin "refs/heads/$TARGET_BRANCH" | cut -f1)
+          test "$REMOTE" = "$TARGET_HEAD" || { echo "target moved: expected $TARGET_HEAD got $REMOTE"; exit 1; }
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
