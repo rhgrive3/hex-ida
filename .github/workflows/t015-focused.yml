@@ -1,6 +1,6 @@
 name: T015 focused verification
 
-# rerun after omitted chained-page ownership fix
+# rerun after current-main Swift fixture provenance fix
 on:
   push:
     branches:
