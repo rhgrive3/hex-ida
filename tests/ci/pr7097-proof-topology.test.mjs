@@ -24,15 +24,20 @@ assert.match(ui, /needs: \[chromium, webkit\]/);
 assert.match(ui, /CHROMIUM_RESULT: \$\{\{ needs\.chromium\.result \}\}/);
 assert.match(ui, /WEBKIT_RESULT: \$\{\{ needs\.webkit\.result \}\}/);
 
-// check:dev is feedback for the combined PR candidate. The final-closure
-// dispatch retains the complete product check for release evidence, while
-// final admission remains represented by the existing canonical main gates.
+// check:dev stays feedback-only. Every same-repository PR merge candidate also
+// receives the canonical full check automatically; manual release dispatch
+// remains available for explicit release evidence.
 const preflight = read('final-closure-preflight.yml');
-const development = preflight.split('  development:\n')[1].split('\n  batch:')[0];
+const development = preflight.split('  development:\n')[1].split('\n  final:')[0];
+const final = preflight.split('  final:\n')[1].split('\n  batch:')[0];
 const batch = preflight.split('  batch:\n')[1];
 assert.match(development, /github\.event_name == 'pull_request'/);
 assert.match(development, /npm run check:dev -- --base/);
 assert.doesNotMatch(development, /npm run check(?:\s|$)/m);
+assert.match(final, /github\.event_name == 'pull_request'/);
+assert.match(final, /ref: \$\{\{ github\.sha \}\}/);
+assert.match(final, /Run canonical full check on every PR candidate/);
+assert.match(final, /npm run check/);
 assert.match(batch, /if: inputs\.mode == 'release'/);
 assert.match(batch, /npm run check/);
 assert.match(preflight, /Generated, independent verifier and applicable target\/runtime proof remain/);
