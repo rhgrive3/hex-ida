@@ -20,24 +20,24 @@ jobs:
           set -uo pipefail
           STATUS=/tmp/diag-7036-main.txt
           : > "$STATUS"
-          PR_HEAD=$(git rev-parse HEAD^)
-          timeout 90s git fetch --no-tags origin main >/tmp/fetch.log 2>&1
+          PR_HEAD=837d0ce34668f65defac5f3517a802f366336158
+          timeout 90s git fetch --no-tags origin main "$PR_HEAD" >/tmp/fetch.log 2>&1
           rc=$?
           echo "fetch rc=$rc" >> "$STATUS"
           if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/fetch.log >> "$STATUS"; exit "$rc"; fi
           MAIN=$(git rev-parse refs/remotes/origin/main)
           echo "pr_head=$PR_HEAD" >> "$STATUS"
           echo "main=$MAIN" >> "$STATUS"
-          git checkout --detach "$PR_HEAD" >/tmp/checkout.log 2>&1 || { echo 'checkout failed' >> "$STATUS"; exit 1; }
-          git merge --no-commit --no-ff "$MAIN" >/tmp/merge.out 2>&1
+          git merge-tree --write-tree "$PR_HEAD" "$MAIN" >/tmp/merge-tree.out 2>&1
           rc=$?
-          echo "merge rc=$rc" >> "$STATUS"
+          echo "merge_tree rc=$rc" >> "$STATUS"
           if [ "$rc" -ne 0 ]; then
-            echo 'conflicts:' >> "$STATUS"
-            git diff --name-only --diff-filter=U | sed -n '1,80p' >> "$STATUS"
+            echo '--- merge-tree summary ---' >> "$STATUS"
+            tail -n 80 /tmp/merge-tree.out >> "$STATUS"
             exit "$rc"
           fi
-          echo 'merge clean' >> "$STATUS"
+          echo 'merge tree clean' >> "$STATUS"
+          sed -n '1,5p' /tmp/merge-tree.out >> "$STATUS"
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
