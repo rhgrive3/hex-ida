@@ -14,23 +14,23 @@ static NSString *machineIdentifier(void) {
   return [NSString stringWithUTF8String:u.machine] ?: @"unknown";
 }
 
-static uintptr_t pacdaBits(uintptr_t value, uintptr_t discriminator) {
+static uintptr_t paciaBits(uintptr_t value, uintptr_t discriminator) {
 #if defined(__arm64e__)
-  __asm__ volatile("pacda %0, %1" : "+r"(value) : "r"(discriminator));
+  __asm__ volatile("pacia %0, %1" : "+r"(value) : "r"(discriminator));
 #endif
   return value;
 }
 
-static uintptr_t autdaBits(uintptr_t value, uintptr_t discriminator) {
+static uintptr_t autiaBits(uintptr_t value, uintptr_t discriminator) {
 #if defined(__arm64e__)
-  __asm__ volatile("autda %0, %1" : "+r"(value) : "r"(discriminator));
+  __asm__ volatile("autia %0, %1" : "+r"(value) : "r"(discriminator));
 #endif
   return value;
 }
 
-static uintptr_t xpacdBits(uintptr_t value) {
+static uintptr_t xpaciBits(uintptr_t value) {
 #if defined(__arm64e__)
-  __asm__ volatile("xpacd %0" : "+r"(value));
+  __asm__ volatile("xpaci %0" : "+r"(value));
 #endif
   return value;
 }
@@ -45,12 +45,13 @@ static NSDictionary *runPACProbe(void) {
   const uintptr_t rawBits = (uintptr_t)&payload;
   const uintptr_t discriminator = 0x0000000000002437ULL;
 
-  // Use the architectural PAC instructions directly and compare integer register
-  // contents. Pointer equality is not a valid way to observe PAC high bits on
-  // arm64e because the language/ABI may normalize pointer comparisons.
-  const uintptr_t signedBits = pacdaBits(rawBits, discriminator);
-  const uintptr_t strippedBits = xpacdBits(signedBits);
-  const uintptr_t authenticatedBits = autdaBits(signedBits, discriminator);
+  // F47 needs real hardware authentication. The v2 probe used the data-address
+  // key (PACDA/AUTDA); iPad14,1 on iPadOS 27.0 executed that lane as a no-op.
+  // This lane instead uses instruction-address key A, which is the PAC class
+  // used by arm64e code-pointer/control-flow protection.
+  const uintptr_t signedBits = paciaBits(rawBits, discriminator);
+  const uintptr_t strippedBits = xpaciBits(signedBits);
+  const uintptr_t authenticatedBits = autiaBits(signedBits, discriminator);
 
   const BOOL signatureMaterialized = signedBits != rawBits;
   const BOOL stripRestores = strippedBits == rawBits;
@@ -63,14 +64,15 @@ static NSDictionary *runPACProbe(void) {
   formatter.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss'Z'";
 
   return @{
-    @"schema": @"hex-x02-f47-pac-runtime/v2",
+    @"schema": @"hex-x02-f47-pac-runtime/v3",
     @"buildCommit": @HEX_F47_BUILD_SHA,
     @"capturedAtUtc": [formatter stringFromDate:[NSDate date]],
     @"architecture": @"arm64e",
     @"deviceMachine": machineIdentifier(),
     @"osVersion": UIDevice.currentDevice.systemVersion ?: @"unknown",
     @"ptrauthCompileSupport": @YES,
-    @"measurement": @"direct-pacda-autda-xpacd-register-bits",
+    @"measurement": @"direct-pacia-autia-xpaci-register-bits",
+    @"pacKeyClass": @"instruction-address-key-a",
     @"rawPointerBits": hexBits(rawBits),
     @"signedPointerBits": hexBits(signedBits),
     @"strippedPointerBits": hexBits(strippedBits),
@@ -78,12 +80,12 @@ static NSDictionary *runPACProbe(void) {
     @"signatureMaterialized": @(signatureMaterialized),
     @"stripRestoredOriginal": @(stripRestores),
     @"correctAuthenticationRestoredOriginal": @(authRestores),
-    @"wrongAuthenticationTest": @"not-executed; some CPUs trap immediately on failed AUT, so F47 does not require a deliberate crash",
+    @"wrongAuthenticationTest": @"not-executed; a deliberate failed AUT may produce an invalid pointer or trap, and is not required for F47 acceptance",
     @"classification": pass ? @"pass" : @"fail"
   };
 #else
   return @{
-    @"schema": @"hex-x02-f47-pac-runtime/v2",
+    @"schema": @"hex-x02-f47-pac-runtime/v3",
     @"buildCommit": @HEX_F47_BUILD_SHA,
     @"architecture": @"not-arm64e",
     @"deviceMachine": machineIdentifier(),
