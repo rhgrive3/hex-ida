@@ -1,0 +1,48 @@
+name: Temporary syntax first failure
+
+on:
+  push:
+    branches:
+      - diag/syntax-first-failure-20260916
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Capture first lint failure only
+        shell: bash
+        run: |
+          set +e
+          timeout 180s npm run lint > /tmp/lint-full.txt 2>&1
+          code=$?
+          set -e
+          CODE="$code" python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+          lines = Path('/tmp/lint-full.txt').read_text(errors='replace').splitlines()
+          pattern = re.compile(r'(syntaxerror|unexpected|\berror\b|\bfail(?:ed|ure)?\b|err!)', re.I)
+          hit = next((i for i, line in enumerate(lines) if pattern.search(line)), None)
+          if hit is None:
+              chosen = lines[-40:]
+          else:
+              chosen = lines[max(0, hit-4):min(len(lines), hit+12)]
+          out = [f'exit_code={os.environ["CODE"]}'] + chosen
+          Path('syntax-first-failure.txt').write_text('\n'.join(out) + '\n')
+          PY
+          cat syntax-first-failure.txt
+      - name: Upload minimal diagnostic
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: syntax-first-failure
+          path: syntax-first-failure.txt
+          if-no-files-found: error
+          retention-days: 1
