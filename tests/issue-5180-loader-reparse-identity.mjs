@@ -26,8 +26,14 @@ function loaderAnswer(overrides = {}, omit = []) {
   return base;
 }
 async function loaderResult(answer) {
+  const conservativeImpactValidators = Object.fromEntries(
+    ['relocations', 'branch-ranges', 'unwind', 'imports-exports', 'signature-consequence']
+      .map((name) => [name, async () => ({ ok: true, status: 'passed' })]),
+  );
   const validation = await validateRebuildTransaction(transaction, materialized, {
-    original: source, loaderReparse: async () => answer, validators: {},
+    original: source,
+    loaderReparse: async () => answer,
+    validators: conservativeImpactValidators,
   });
   return { validation, loader: validation.validators.find((item) => item.validator === 'loader-reparse') };
 }
