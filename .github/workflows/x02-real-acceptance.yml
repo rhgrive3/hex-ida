@@ -7,6 +7,8 @@ on:
       - .github/workflows/x02-real-acceptance.yml
       - tools/validation/x02-apple-runtime-evidence.mjs
       - tools/validation/x02-a08-provenance.mjs
+      - tests/scpa/fixtures/x02-a08-versioned-apple-corpus-20260917.json
+      - tests/scpa/x02-prior120-apple-version-matrix.test.mjs
   workflow_dispatch:
 
 permissions:
