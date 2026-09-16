@@ -14,7 +14,7 @@ jobs:
         with:
           ref: impl/c4-04-integrate-20260916
           fetch-depth: 0
-      - name: Identify first cherry-pick conflict
+      - name: Verify corrected cherry-pick set
         shell: bash
         run: |
           set -euo pipefail
@@ -27,9 +27,9 @@ jobs:
             a4148d277444f694a46057e80926c6bbeb8034e2 \
             45fe53634ee6cdaf3c3d3a2b7551743416800b7c \
             99db96607313d3435c841ca1f6783491d4bb97bb \
+            b439a53a642d486ab0161ed5f464608cd6f2ce9d \
             6c648bf306b9a8df27523249358d7d4ce1e90d47 \
             bd5ff13372b780e2d45e2d35c01791479b4681d4 \
-            86254222fe1fe3ff1b63f995f6fbb762c64209a3 \
             1a4eddfe46584401dab337d15923f50998de7fc1 \
             a97a9ee7cfa88f014cae7188d4581be4ecf68f33 \
             15f946e8af6d33f3d874cfe2961e0ef551888f60 \
