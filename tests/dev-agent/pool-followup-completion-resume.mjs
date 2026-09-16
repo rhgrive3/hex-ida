@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 import { MessageChannel } from 'node:worker_threads';
 import { IframeWorkerPool } from '../../js/userscript/dev/frame-mesh/iframe-worker-pool.js';
 import { startParentDevWorkerRuntime } from '../../js/userscript/dev/parent-worker-runtime.js';
@@ -123,7 +124,7 @@ async function testSupervisorOwnsFollowupRunId() {
     has(tool) { return this.toolNames.includes(tool); },
     async execute(tool, args) { captured.push({ tool, args }); return args; },
   };
-  const supervisor = new DevSupervisorV0({
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
     adminTools,
     workerTools: { toolNames: [], has() { return false; } },
     idFactory: (kind) => `${kind}-id`,
@@ -159,7 +160,7 @@ async function testWaitRegisteredBeforeFollowupCompletion() {
       /Cannot release a Worker slot while its task is active/,
     );
 
-    const supervisor = new DevSupervisorV0({ workerClient: runtime, now: () => NOW });
+    const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(), workerClient: runtime, now: () => NOW });
     let run = supervisor.activate(supervisor.createRun({ goal: 'resume followup', runId: RUN }));
     const eventHost = new DevRunEventHost({ supervisor });
     const waiting = eventHost.waitForWorkerDecision(run, {
