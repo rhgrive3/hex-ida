@@ -135,6 +135,16 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
        gets a distinct monotonic sequence. */
     let interventionSequence = 0;
     let unsubscribe = null;
+    // #9008: an adapter that emits explicitly next-generation-tagged events as
+    // part of its own `setEpoch(next)` transition must not have them silently
+    // dropped by the still-old-epoch normalizer. Those events are captured in a
+    // bounded handoff buffer during the transition window and committed
+    // atomically with the epoch switch; a failed transition discards the buffer,
+    // and an overflowing one fails the transition closed.
+    let epochHandoffCapture = null;
+    const rawEnvelopeEpoch = (raw) => raw != null && typeof raw === 'object'
+      ? (raw.epoch ?? raw.sessionEpoch)
+      : null;
     // #8686: monotonic module-publication authority, shared by refreshes and
     // accepted module load/unload lifecycle events (mirroring the legacy
     // DebugSession.refreshState() contract established by #3928). A refresh
@@ -144,12 +154,7 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
     // either by a superseding refresh or by an event that replaced the binding.
     let modulePublicationAuthority = 0;
 
-    const ingest = (raw) => {
-      // #8891: revoke ingress for a closing/closed session so a stale facet or a
-      // backend callback racing teardown cannot mutate session.modules / setState.
-      session.assertAdmissible();
-      const event = normalizer.push(raw);
-      if (!event) return null;
+    const applyCanonicalEvent = (event) => {
       const module = moduleFields(event);
       if (event.kind === 'module-load' && (module.runtimeBase ?? module.base) != null && (module.runtimeSize ?? module.size) != null) {
         const bindingKey = module.bindingKey ?? module.moduleKey ?? module.id ?? module.uuid ?? module.name;
@@ -176,6 +181,22 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
       } else if (event.kind === 'provider-error') {
         session.setState('degraded');
       }
+    };
+
+    const ingest = (raw) => {
+      // #8891: revoke ingress for a closing/closed session so a stale facet or a
+      // backend callback racing teardown cannot mutate session.modules / setState.
+      session.assertAdmissible();
+      // #9008: next-generation events observed during the handoff window are
+      // buffered for replay at commit instead of reaching the old-epoch normalizer.
+      if (epochHandoffCapture != null && rawEnvelopeEpoch(raw) === epochHandoffCapture.epoch) {
+        if (epochHandoffCapture.events.length >= normalizer.maxEvents) epochHandoffCapture.overflowed = true;
+        else epochHandoffCapture.events.push(raw);
+        return null;
+      }
+      const event = normalizer.push(raw);
+      if (!event) return null;
+      applyCanonicalEvent(event);
       return event;
     };
 
@@ -325,10 +346,27 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
     session.newProviderEpoch = (reason = 'debugger-provider-epoch-changed') => {
       if (session.closed) throw new DebugAdapterError('runtime-session-closed', 'runtime provider session is closed');
       const next = session.epoch + 1;
-      if (typeof this.adapter.setEpoch === 'function') this.adapter.setEpoch(next);
-      else if (typeof this.adapter.nextEpoch === 'function') this.adapter.nextEpoch();
+      const capture = { epoch: next, events: [], overflowed: false };
+      epochHandoffCapture = capture;
+      try {
+        if (typeof this.adapter.setEpoch === 'function') this.adapter.setEpoch(next);
+        else if (typeof this.adapter.nextEpoch === 'function') this.adapter.nextEpoch();
+      } finally {
+        epochHandoffCapture = null;
+      }
+      if (capture.overflowed) {
+        throw new DebugAdapterError('runtime-epoch-handoff-overflow',
+          'next-generation events exceeded the handoff buffer; the epoch transition fails closed');
+      }
       const committed = session.newEpoch(reason);
       normalizer.resetEpoch(committed);
+      // #9008: commit cleared the queue/epoch context; replay the captured
+      // transition events first so the next epoch's canonical queue starts
+      // with the handoff lifecycle the producer actually emitted.
+      for (const rawEvent of capture.events) {
+        const event = normalizer.push(rawEvent);
+        if (event) applyCanonicalEvent(event);
+      }
       return committed;
     };
     return session;
