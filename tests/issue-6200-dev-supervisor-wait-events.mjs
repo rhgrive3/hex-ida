@@ -1,4 +1,3 @@
-import { AllowAllAdminProvider } from '../js/ai/dev/auth/admin-provider.js';
 import assert from 'node:assert/strict';
 import { AllowAllAdminProvider } from '../js/ai/dev/auth/admin-provider.js';
 import test from 'node:test';

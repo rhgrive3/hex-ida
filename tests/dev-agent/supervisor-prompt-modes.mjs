@@ -1,4 +1,3 @@
-import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 /* CARD G: prompt transport only.
    A CONTINUATION stops resending the fixed contract, so it is only safe when
    this runtime can prove the model already received and accepted exactly that
