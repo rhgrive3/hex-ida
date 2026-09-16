@@ -1,0 +1,43 @@
+{
+  "schema": "x02-arm64e-real-producer/v1",
+  "acceptanceRow": "X02-F-48",
+  "sourcePath": "tests/scpa/fixtures/x02-arm64e-authenticated.c",
+  "binaryPath": "tests/scpa/fixtures/x02-arm64e-authenticated.o",
+  "sourceSha256": "608bedd0e779fc50bbb6a8b4f3f9f17fc4c1f6abc268098a819238f491c04a49",
+  "binarySha256": "aa196ec267e323ad1910ffc17dc72e7c17d13e2f5271f50dedc067c700611bb0",
+  "binaryByteLength": 456,
+  "producer": {
+    "compiler": "clang version 17.0.0 (https://github.com/swiftlang/llvm-project.git 10999b6d034fe318f3d56c83bddb6572593a8bb0)",
+    "target": "arm64e-apple-macos13.0",
+    "arguments": [
+      "-c",
+      "-O1",
+      "-ffreestanding",
+      "-fno-stack-protector",
+      "-msign-return-address=all"
+    ]
+  },
+  "expected": {
+    "format": "macho",
+    "architecture": "arm64e",
+    "machOMagic": "0xfeedfacf",
+    "cpuType": "0x0100000c",
+    "cpuSubtypeBase": 2,
+    "cpuSubtypeCapabilities": "0x80000000",
+    "platform": "macOS",
+    "minimumOS": "13.0.0",
+    "authenticatedInstructionWords": [
+      "0xd503233f",
+      "0xd50323bf",
+      "0xd65f0bff"
+    ]
+  },
+  "claims": {
+    "compilerProduced": true,
+    "handEncoded": false,
+    "runtimeAuthenticationExecuted": false,
+    "osExecutionVerified": false,
+    "cryptographicSigningVerified": false,
+    "independentExternalOracleExecuted": false
+  }
+}
