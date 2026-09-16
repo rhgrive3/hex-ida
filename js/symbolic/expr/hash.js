@@ -119,8 +119,24 @@ function boundedAcyclicValue(value, maxNodes = 4096, maxDepth = 64) {
       if (colors.get(frame.value) === 1 || frame.depth > maxDepth || ++count > maxNodes) return false;
       if (colors.get(frame.value) === 2) { stack.pop(); continue; }
       colors.set(frame.value, 1);
-      if (ArrayBuffer.isView(frame.value) || frame.value instanceof ArrayBuffer || frame.value instanceof Date) frame.children = [];
-      else frame.children = Array.isArray(frame.value) ? frame.value : Object.values(frame.value);
+      if (ArrayBuffer.isView(frame.value) || frame.value instanceof ArrayBuffer || frame.value instanceof Date) {
+        frame.children = [];
+      } else {
+        try {
+          const descriptors = Object.getOwnPropertyDescriptors(frame.value);
+          const keys = Reflect.ownKeys(descriptors);
+          const children = [];
+          for (const key of keys) {
+            if (typeof key === 'symbol') return false;
+            const descriptor = descriptors[key];
+            if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) return false;
+            if (descriptor.enumerable) children.push(descriptor.value);
+          }
+          frame.children = children;
+        } catch {
+          return false;
+        }
+      }
       frame.entered = true;
     }
     if (frame.index < frame.children.length) {
