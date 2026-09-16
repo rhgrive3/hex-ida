@@ -1,5 +1,5 @@
 name: Temporary C4-04 acceptance
-# run: final-c4-04-20260916-1
+# run: final-c4-04-20260916-2
 on:
   push:
     branches: ['impl/c4-04-finish-20260916']
@@ -9,7 +9,7 @@ permissions:
 jobs:
   focused:
     runs-on: ubuntu-latest
-    timeout-minutes: 9
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -32,7 +32,10 @@ jobs:
             tests/phase8/structuring/conditional-region-body-projection.test.mjs \
             tests/phase9/memory/terminal-control-equivalence.test.mjs \
             tests/phase9/memory/terminal-effect-equivalence.test.mjs \
-            tests/phase9/memory/c4-cfg-loop-equivalence.test.mjs 2>&1 | tee /tmp/c4-acceptance.log
+            tests/phase9/memory/c4-cfg-loop-equivalence.test.mjs \
+            tests/phase9/verify/equivalence.test.mjs \
+            tests/phase9/verify/model-validation.test.mjs \
+            tests/phase9/verify/edge-feasibility.test.mjs 2>&1 | tee /tmp/c4-acceptance.log
       - name: Upload acceptance evidence
         if: always()
         uses: actions/upload-artifact@v4
