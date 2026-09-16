@@ -259,6 +259,15 @@ export class InstrumentationProvider {
     // unchanged; only the module-binding-table effect is linearized.
     let bootstrapModuleEffectsStaged = true;
     const stagedBootstrapModuleEffects = [];
+    // #9008: the epoch handoff window (including a supported asynchronous
+    // backend.setEpoch pending) previously admitted no next-generation events:
+    // the local epoch/normalizer authority was only committed after the backend
+    // transition succeeded, so explicitly epoch-N events emitted by the
+    // transition itself were silently dropped while the transition returned
+    // clean. Those events are buffered in a bounded handoff capture during the
+    // window and replayed atomically on commit; a failed transition discards
+    // the buffer, and an overflowing buffer fails the transition closed.
+    let epochHandoffCapture = null;
     const applyModuleLifecycle = (effect) => {
       if (effect.kind === 'module-load') {
         if (!session.modules.get(effect.bindingKey)) {
@@ -293,6 +302,14 @@ export class InstrumentationProvider {
             interventionIds: [...new Set([...(existingInterventionIds ?? []), interventionId])],
           }
         : ownedRaw;
+      const envelopeEpoch = enrichedRaw != null && typeof enrichedRaw === 'object'
+        ? (enrichedRaw.epoch ?? enrichedRaw.sessionEpoch)
+        : null;
+      if (epochHandoffCapture != null && envelopeEpoch === epochHandoffCapture.epoch) {
+        if (epochHandoffCapture.events.length >= normalizer.maxEvents) epochHandoffCapture.overflowed = true;
+        else epochHandoffCapture.events.push(enrichedRaw);
+        return null;
+      }
       const event = normalizer.push(enrichedRaw, normalizerOptions);
       if (!event) return null;
       const module = moduleFields(event);
@@ -535,30 +552,54 @@ export class InstrumentationProvider {
     session.setState('ready');
     this.activeSession = session;
     let epochTransitionPending = false;
-    const commitEpoch = (reason) => {
+    const commitEpoch = (reason, handoffCapture = null) => {
       const committed = session.newEpoch(reason);
       normalizer.resetEpoch(committed);
+      // #9008: the commit cleared the queue/epoch context; replay the buffered
+      // transition events first so the next epoch's canonical queue starts
+      // with the lifecycle the producer actually emitted.
+      if (handoffCapture) {
+        for (const rawEvent of handoffCapture.events) ingest(rawEvent);
+      }
       return committed;
+    };
+    const endHandoffWindow = () => {
+      epochTransitionPending = false;
+      const capture = epochHandoffCapture;
+      epochHandoffCapture = null;
+      if (capture != null && capture.overflowed) {
+        throw new DebugAdapterError('runtime-epoch-handoff-overflow',
+          'next-generation events exceeded the handoff buffer; the epoch transition fails closed');
+      }
+      return capture;
     };
     session.newProviderEpoch = (reason = 'instrumentation-provider-epoch-changed') => {
       if (session.closed) throw new DebugAdapterError('runtime-session-closed', 'runtime provider session is closed');
       if (epochTransitionPending) throw new DebugAdapterError('runtime-epoch-transition-active', 'instrumentation provider epoch transition is already in progress');
       const next = session.epoch + 1;
       if (typeof this.backend.setEpoch !== 'function') return commitEpoch(reason);
+      // #9008: the handoff admission window spans the whole supported
+      // transition, including an asynchronous setEpoch pending.
+      epochHandoffCapture = { epoch: next, events: [], overflowed: false };
       epochTransitionPending = true;
       let backendResult;
       try {
         backendResult = this.backend.setEpoch(next);
       } catch (err) {
+        epochHandoffCapture = null;
         epochTransitionPending = false;
         throw err;
       }
       if (!backendResult || typeof backendResult.then !== 'function') {
-        epochTransitionPending = false;
-        return commitEpoch(reason);
+        return commitEpoch(reason, endHandoffWindow());
       }
       return Promise.resolve(backendResult)
-        .then(() => commitEpoch(reason))
+        .then(() => commitEpoch(reason, endHandoffWindow()))
+        .catch((err) => {
+          epochHandoffCapture = null;
+          epochTransitionPending = false;
+          throw err;
+        })
         .finally(() => { epochTransitionPending = false; });
     };
     return session;
