@@ -1,4 +1,5 @@
 import { functionSeed } from './model.js';
+import { elfExactFunctionStartRejection } from './elf-mapping.js';
 
 const DW_EH_PE_OMIT = 0xff;
 const MAX_EH_RECORDS = 10_000_000;
@@ -419,6 +420,13 @@ export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
         if (!sameExecutableRange(image, decoded.initial, decoded.range)) throw new Error('FDE range is not contained in executable mapping');
         const alignment = instructionAlignment(image);
         if (alignment > 1n && decoded.initial % alignment !== 0n) throw new Error('FDE initial location violates target instruction alignment');
+        // The FDE/CIE bytes themselves are file-validated, but that proves nothing
+        // about the code the FDE points at: an exact function start still has to
+        // satisfy the shared instruction-target policy (#8803). An FDE whose
+        // initial location is loader zero-fill becomes a typed unverified entry
+        // and keeps the header validation partial, never `verified:true` truth.
+        const targetRejection = elfExactFunctionStartRejection(image, decoded.initial);
+        if (targetRejection) throw new Error(`FDE initial location ${targetRejection}`);
         candidates.push({ address:decoded.initial, fdeAddress:row.fde, domainKind:domain.kind });
       } catch (entryError) {
         if (entryError?.code === 'BINARY_SOURCE_RANGE_MISSING') throw entryError;

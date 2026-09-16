@@ -171,6 +171,14 @@
     }
   }
 
+  /* Canonical architecture identity for duplicate fat slices (#8840). */
+  function canonicalFatArchKey(cputype, cpusubtype) {
+    const cpu = cputype >>> 0;
+    const sub = cpusubtype >>> 0;
+    const id = cpu === CPU_TYPE_ARM64 ? (sub === 2 ? 0x80000002 : sub) : (sub & 0x00ffffff);
+    return cpu + ':' + id;
+  }
+
   function cstr(u8, off, max) {
     let end = off;
     const lim = Math.min(off + max, u8.length);
@@ -221,21 +229,37 @@
     const magic = dv.getUint32(0, false);
     const is64 = magic === FAT_MAGIC_64;
     const n = dv.getUint32(4, false);
-    if (n === 0 || n > 32) return null;               // sanity: not a real fat binary
+    if (n === 0 || n > 32) return null;
     const entry = is64 ? 32 : 20;
     if (8 + n * entry > buf.byteLength) return null;
-    const out = [];
+    const staged = [];
     for (let i = 0; i < n; i++) {
       const o = 8 + i * entry;
       const cputype = dv.getInt32(o, false);
       const cpusubtype = dv.getInt32(o + 4, false);
       const offset = is64 ? dv.getBigUint64(o + 8, false) : BigInt(dv.getUint32(o + 8, false));
       const size = is64 ? dv.getBigUint64(o + 16, false) : BigInt(dv.getUint32(o + 12, false));
-      if (offset + size > fileSize) return null;      // not a fat binary after all
-      const cn = cpuName(cputype, cpusubtype);
-      out.push({ offset, size, cputype, cpusubtype, name: cn.cpu + (cn.sub && cn.sub !== 'all' ? ' (' + cn.sub + ')' : '') });
+      if (size <= 0n || offset + size > fileSize) return null;
+      staged.push({ cputype, cpusubtype, offset, size });
     }
-    return out;
+    const seen = new Set();
+    for (const e of staged) {
+      const key = canonicalFatArchKey(e.cputype, e.cpusubtype);
+      if (seen.has(key)) return null;
+      seen.add(key);
+    }
+    for (let i = 0; i < staged.length; i++) {
+      const a = staged[i];
+      for (let j = i + 1; j < staged.length; j++) {
+        const b = staged[j];
+        if (a.offset < b.offset + b.size && b.offset < a.offset + a.size) return null;
+      }
+    }
+    return staged.map((e) => {
+      const cn = cpuName(e.cputype, e.cpusubtype);
+      return { offset:e.offset, size:e.size, cputype:e.cputype, cpusubtype:e.cpusubtype,
+        name:cn.cpu + (cn.sub && cn.sub !== 'all' ? ' (' + cn.sub + ')' : '') };
+    });
   }
 
   /**
@@ -520,6 +544,7 @@
     info.textVM=textVM; info.textFileOff=textFileOff;
     info.loadCommandStringsCapped=lcStrings.capped;
     info.loadCommandStringsReason=lcStrings.reason||null;
+    rejectAmbiguousSegmentOwnership(info);
     const align=instructionAlignment(architecture);
     const execSegments=info.segments.filter((seg)=>seg.validMapping && !!(seg.initprot&4) && seg.vmsize>0n);
     // A PC must be inside the segment's *file-backed* VM span, not merely inside
@@ -546,12 +571,47 @@
     return info;
   }
 
+  function classicOwnershipAmbiguous(a, b) {
+    const aVmEnd = a.vmaddr + a.vmsize, bVmEnd = b.vmaddr + b.vmsize;
+    const overlapStart = a.vmaddr > b.vmaddr ? a.vmaddr : b.vmaddr;
+    const overlapEnd = aVmEnd < bVmEnd ? aVmEnd : bVmEnd;
+    if (overlapStart >= overlapEnd) return false;
+    const aFileEnd = a.vmaddr + a.filesize, bFileEnd = b.vmaddr + b.filesize;
+    const boundaries = [...new Set([overlapStart, overlapEnd, aFileEnd, bFileEnd]
+      .filter((point) => point > overlapStart && point < overlapEnd))]
+      .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+    const points = [overlapStart, ...boundaries, overlapEnd];
+    for (let i = 0; i + 1 < points.length; i++) {
+      const point = points[i];
+      const aBacked = point >= a.vmaddr && point < aFileEnd;
+      const bBacked = point >= b.vmaddr && point < bFileEnd;
+      if (!aBacked && !bBacked) continue;
+      if (aBacked !== bBacked) return true;
+      if (a.fileoff + (point - a.vmaddr) !== b.fileoff + (point - b.vmaddr)) return true;
+    }
+    return false;
+  }
+
+  function rejectAmbiguousSegmentOwnership(info) {
+    const owned = (info.segments || []).filter((segment) => segment.validMapping && segment.vmsize > 0n);
+    for (let i = 0; i < owned.length; i++) {
+      for (let j = i + 1; j < owned.length; j++) {
+        const a = owned[i], b = owned[j];
+        if (!classicOwnershipAmbiguous(a, b)) continue;
+        a.validMapping = false; b.validMapping = false;
+        a.mappingConflict = true; b.mappingConflict = true;
+        info.segmentOwnershipConflict = true;
+        info.diagnostics.push(`${b.name}: VM range overlaps segment ${a.name} with a conflicting file mapping (ambiguous ownership)`);
+      }
+    }
+  }
+
   function regionsFrom(info, sliceOff, sliceSize, fileSize) {
     const regions=[]; let id=0;
     const sliceEnd=sliceOff+sliceSize;
     if (sliceEnd<sliceOff || sliceEnd>fileSize) return regions;
     for(const seg of info.segments||[]){
-      if(!seg.validMapping) continue;
+      if(!seg.validMapping || seg.mappingConflict) continue;
       const sections=seg.sections||[];
       for(const sec of sections){
         if(!sec.validMapping) continue;
@@ -1068,6 +1128,14 @@
     return { value, raw, next };
   }
 
+  function fdeInExecutableMapping(start, end, options) {
+    const align = options && options.align;
+    if (align && align > 1n && (start % align) !== 0n) return false;
+    const ranges = options && options.execRanges;
+    if (!Array.isArray(ranges)) return true;
+    return ranges.some((range) => range.start <= start && end <= range.end);
+  }
+
   /**
    * Parse DWARF `.eh_frame` and return exact FDE [start,end) ranges.
    *
@@ -1165,7 +1233,10 @@
           const rangeX = ehEncodedValue(dv, u8, startX.next, recordEnd, rangeEncoding, vm, options);
           if (!rangeX || rangeX.raw <= 0n) { p = recordEnd; continue; }
           const start = startX.value, end = start + rangeX.raw;
-          if (start >= 0n && end > start) out.push({ start, end });
+          if (start >= 0n && end > start) {
+            if (!fdeInExecutableMapping(start, end, options)) { p = recordEnd; continue; }
+            out.push({ start, end });
+          }
         } catch { /* malformed FDE: fail closed */ }
       }
       p = recordEnd;

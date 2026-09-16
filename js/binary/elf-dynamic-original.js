@@ -2,7 +2,7 @@ import { functionSeed } from './model.js';
 import { createDynamicSymbolBudget } from './dynamic-symbol-budget.js';
 import { createRelocationBudget } from './relocation-budget.js';
 import { collectAndroidPackedRelocations, collectRelrRelocations, parseDynamicSymbolVersions } from './elf-extended.js';
-import { elfInstructionStartAlignmentRejection, elfInstructionTargetRejection, mappedELFFileRangeForVa, mappedELFFileSpanForVa } from './elf-mapping.js';
+import { elfExactFunctionStartRejection, elfFunctionExtentRejection, elfInstructionStartAlignmentRejection, elfInstructionTargetRejection, mappedELFFileRangeForVa, mappedELFFileSpanForVa } from './elf-mapping.js';
 import { relocationFieldWidth } from './elf-relocation-target.js';
 
 const ET_REL = 1;
@@ -431,15 +431,23 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
           markDynamicPartial(image, `ignored PT_DYNAMIC ${type === STT_GNU_IFUNC ? 'STT_GNU_IFUNC resolver' : 'STT_FUNC'} ${name}: ${alignmentRejection}`);
           continue;
         }
+        const startRejection = elfExactFunctionStartRejection(image, effectiveValue);
+        if (startRejection) {
+          markDynamicPartial(image, `ignored PT_DYNAMIC ${type === STT_GNU_IFUNC ? 'STT_GNU_IFUNC resolver' : 'STT_FUNC'} ${name}: ${startRejection}`);
+          continue;
+        }
+        const extentRejection = elfFunctionExtentRejection(image, effectiveValue, size);
+        if (extentRejection) markDynamicPartial(image, `PT_DYNAMIC ${type === STT_GNU_IFUNC ? 'STT_GNU_IFUNC resolver' : 'STT_FUNC'} ${name}: ${extentRejection}`);
         image.functions.push(functionSeed(effectiveValue, {
-          size: size || null,
+          size: extentRejection ? null : (size || null),
           name: type === STT_GNU_IFUNC ? `${name}$resolver` : name,
           source: type === STT_GNU_IFUNC ? 'ifunc-resolver' : 'symbol',
           confidence: 0.995,
           exactFunctionStart: true,
-          functionStartEvidence: type === STT_GNU_IFUNC
+          functionStartEvidence: (type === STT_GNU_IFUNC
             ? 'ELF PT_DYNAMIC STT_GNU_IFUNC resolver in validated executable mapping and extent'
-            : 'ELF PT_DYNAMIC STT_FUNC in validated executable mapping and extent',
+            : 'ELF PT_DYNAMIC STT_FUNC in validated executable mapping and extent')
+            + (extentRejection ? '; published st_size is not file-backed and is not retained as extent authority' : ''),
           // #6061: the section-backed symbol parser propagates the RISC-V
           // variant-cc calling-convention evidence into function seeds; the
           // PT_DYNAMIC path must mint identical evidence for the same byte.

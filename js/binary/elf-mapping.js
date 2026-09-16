@@ -22,7 +22,7 @@ export function mappedELFFileRangeForVa(image, va) {
   const address = strictELFInteger(va, 'va');
   for (const segment of image?.segments || []) {
     const start = BigInt(segment.address ?? 0);
-    const fileSize = BigInt(segment.fileSize ?? 0);
+    const fileSize = BigInt(Object.prototype.hasOwnProperty.call(segment, "fileSize") ? (segment.fileSize ?? 0) : (segment.size ?? 0));
     if (fileSize <= 0n || address < start || address >= start + fileSize) continue;
     const delta = address - start;
     const fileStart = BigInt(segment.fileOffset ?? 0) + delta;
@@ -251,4 +251,75 @@ export function elfInstructionTargetRejection(image, address) {
   if (!executableELFRange(image, address, instructionBytes)) return 'instruction bytes cross the canonical executable extent';
   if (!mappedELFFileSpanForVa(image, address, instructionBytes)) return 'instruction bytes are not fully file-backed';
   return null;
+}
+
+/**
+ * One shared exact-function-start policy for every ELF code-authority producer
+ * (#8803). It adds the two dimensions symbol/dynsym/unwind promotion was missing:
+ * the complete minimum instruction span must stay inside the executable extent,
+ * and those bytes must come from the file rather than loader zero-fill.
+ *
+ * The entrypoint/`DT_INIT` policy above stays byte-authoritative on `PT_LOAD`
+ * (#7611) because that is a runtime-mapping concern. Promotion producers have
+ * already proved their own executable owner, and an `ET_REL` image — or an image
+ * whose code is owned only by a validated executable section — has no RX
+ * `PT_LOAD` to prove against, so this policy accepts a mapping-authoritative
+ * executable section span as the equivalent proof and still rejects a
+ * `SHT_NOBITS` body, whose canonical `fileSize` is 0.
+ */
+export function elfExactFunctionStartRejection(image, address, options = {}) {
+  const sectionIndex = options.sectionIndex ?? null;
+  const instructionBytes = image?.arch === 'arm64' ? 4n : 1n;
+  if (!elfExecutableFunctionExtent(image, address, 0n, sectionIndex)) return 'outside a canonical executable mapping';
+  const alignmentRejection = elfInstructionStartAlignmentRejection(image, address);
+  if (alignmentRejection) return alignmentRejection;
+  if (!elfExecutableFunctionExtent(image, address, instructionBytes, sectionIndex)) return 'instruction bytes cross the canonical executable extent';
+  if (!elfFunctionBytesFileBacked(image, address, instructionBytes)) return 'instruction bytes are not fully file-backed';
+  return null;
+}
+
+function elfExecutableFunctionExtent(image, address, bytes, sectionIndex) {
+  const canonical = executableELFRange(image, address, bytes, sectionIndex);
+  if (canonical) return canonical;
+  const start = strictELFInteger(address, 'address');
+  const extent = strictELFInteger(bytes ?? 0n, 'bytes');
+  if (extent < 0n) return null;
+  for (const section of image?.sections || []) {
+    if (!section?.perms?.execute || !sectionHasMappedAddress(section)) continue;
+    const lo = BigInt(section.address ?? 0n);
+    const hi = lo + BigInt(section.size ?? 0n);
+    if (start < lo || start >= hi) continue;
+    if (extent !== 0n && start + extent > hi) continue;
+    return section;
+  }
+  return null;
+}
+
+/** Prove that `bytes` at `address` are input bytes, not synthesized zero-fill. */
+export function elfFunctionBytesFileBacked(image, address, bytes) {
+  if (mappedELFFileSpanForVa(image, address, bytes)) return true;
+  const length = strictELFInteger(bytes ?? 0n, 'bytes');
+  if (length <= 0n) return true;
+  const start = strictELFInteger(address, 'address');
+  for (const section of image?.sections || []) {
+    if (!section?.perms?.execute || !sectionHasMappedAddress(section)) continue;
+    const fileSize = BigInt(Object.prototype.hasOwnProperty.call(section, "fileSize") ? (section.fileSize ?? 0n) : (section.size ?? 0n));
+    if (fileSize <= 0n) continue;
+    const delta = start - BigInt(section.address ?? 0n);
+    if (delta < 0n || delta + length > fileSize) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Extent authority is separate from instruction-start authority: a published
+ * `st_size` that crosses into loader zero-fill must not be described as a
+ * validated function body, even when its first instruction is file-backed.
+ */
+export function elfFunctionExtentRejection(image, address, size) {
+  const length = strictELFInteger(size ?? 0n, 'size');
+  if (length <= 0n) return null;
+  if (elfFunctionBytesFileBacked(image, address, length)) return null;
+  return 'published function extent is not fully file-backed';
 }
