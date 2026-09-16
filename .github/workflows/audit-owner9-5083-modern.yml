@@ -1,0 +1,87 @@
+name: audit-owner9-5083-modern
+on:
+  push:
+    branches:
+      - audit/owner9-conflict-regressions
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit evolved JVM CP authority contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 180s node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { liftJvmMethod } from './js/managed/jvm/lifter.js';
+          import { liftDexMethod } from './js/managed/dex/lifter.js';
+          import { dexMethod } from './tests/phase11/fixtures/medium-dex.mjs';
+
+          function klass(bytecode, constantPool) {
+            return {
+              moduleId:'managed-mod:test:jvm:5083-modern', vmSpecEdition:'java-se-17', thisClassName:'T', constantPool,
+              methods:[{ accessFlags:0x0008, name:'m', descriptor:'()V', code:{ maxStack:4, maxLocals:1, bytecode:Uint8Array.from(bytecode), exceptionTable:[], offset:0x100 } }],
+            };
+          }
+          const pool=[null,
+            {tag:1,value:'T'}, {tag:1,value:'java/lang/Runnable'}, {tag:1,value:'m'}, {tag:1,value:'()V'}, {tag:1,value:'C'},
+            {tag:7,nameIndex:1}, {tag:12,nameIndex:3,descriptorIndex:4}, {tag:10,classIndex:6,nameAndTypeIndex:7}, {tag:11,classIndex:6,nameAndTypeIndex:7}, {tag:3,value:42},
+          ];
+          const reasons=(b)=>b.unknownEffects.map((u)=>u.reason);
+
+          const ldc2=liftJvmMethod(0,klass([0x14,0x00,0x05,0x58,0xb1],pool)).bundles[0];
+          assert.equal(ldc2.completeness,'partial');
+          assert.equal(ldc2.producedValues.some((v)=>v.constant!==undefined),false);
+
+          for (const [bytecode,idx] of [
+            [[0xb6,0x00,0x05,0xb1],5], [[0xb7,0x00,0x0a,0xb1],10], [[0xb8,0x00,0x63,0xb1],99],
+            [[0xb9,0x00,0x08,0x01,0x00,0xb1],8], [[0xb6,0x00,0x09,0xb1],9],
+          ]) {
+            const b=liftJvmMethod(0,klass(bytecode,pool)).bundles[0];
+            assert.equal(b.completeness,'partial');
+            assert.ok(b.callEffects.length<=1);
+            for (const e of b.callEffects) {
+              assert.equal(e.cpIndex,idx);
+              assert.equal(e.descriptorUnresolved,true);
+              assert.equal(e.owner,undefined); assert.equal(e.name,undefined); assert.equal(e.descriptor,undefined);
+            }
+            assert.ok(reasons(b).some((r)=>r.includes('unresolved')));
+          }
+
+          const badField=liftJvmMethod(0,klass([0x01,0xb4,0x00,0x08,0x57,0xb1],pool)).bundles.find((b)=>b.opcode===0xb4);
+          assert.equal(badField.completeness,'partial');
+          assert.deepEqual(badField.memoryEffects,[]);
+
+          for (const [bytecode,opcode] of [
+            [[0xbb,0x00,0x05,0x57,0xb1],0xbb], [[0xbb,0x00,0x63,0x57,0xb1],0xbb],
+            [[0x01,0xc1,0x00,0x0a,0x57,0xb1],0xc1], [[0x2a,0xc0,0x00,0x08,0xb0],0xc0], [[0x01,0xc1,0x00,0x63,0x57,0xb1],0xc1],
+          ]) {
+            const b=liftJvmMethod(0,klass(bytecode,pool)).bundles.find((x)=>x.opcode===opcode);
+            assert.equal(b.completeness,'partial');
+            for (const v of b.producedValues) {
+              assert.equal(v.valueType,undefined);
+              assert.equal(v.referenceKind,undefined);
+            }
+          }
+
+          const validInvoke=liftJvmMethod(0,klass([0xb6,0x00,0x08,0xb1],pool)).bundles[0];
+          assert.equal(validInvoke.callEffects[0].owner,'T');
+          assert.equal(validInvoke.callEffects[0].name,'m');
+          assert.equal(validInvoke.callEffects[0].descriptor,'()V');
+          const validNew=liftJvmMethod(0,klass([0xbb,0x00,0x06,0x57,0xb1],pool)).bundles[0];
+          assert.equal(validNew.completeness,'partial');
+          assert.equal(validNew.producedValues[0].valueType,'T');
+          assert.equal(validNew.producedValues[0].referenceKind,'new-allocation');
+
+          for (const op of [0x1a,0x22,0x52,0x71]) {
+            const words=[op,1,...(op===0x71?[0]:[]),0x000e];
+            const b=liftDexMethod(0,dexMethod(words)).bundles[0];
+            assert.notEqual(b.completeness,'exact');
+            for (const field of ['producedValues','locationWrites','memoryEffects','callEffects']) assert.deepEqual(b[field],[]);
+          }
+          console.log('#5083 evolved authority contract: PASS');
+          NODE
