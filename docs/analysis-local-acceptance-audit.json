@@ -2654,6 +2654,33 @@
         "fingerprintVersion": 4,
         "unknownDataVersionDisposition": "fail-closed"
       },
+      "validatedHead": "b14020c98b1bc7fbeb8f65dc996621f114fb5b5b",
+      "receipts": [
+        {
+          "label": "s2-acceptance-clean",
+          "command": "node --test --test-reporter=tap tests/stage2/s2-01-runtime-identity-acceptance.test.mjs tests/stage2/s2-02-recognition-collision-acceptance.test.mjs",
+          "result": "20 tests / 20 pass",
+          "logSha256": "a6695fd17dfab305c7c1288174f6b27046b8603fa3219d108939cd4a59beb038"
+        },
+        {
+          "label": "s2-ownership-clean",
+          "command": "node --test --test-reporter=tap tests/phase7/ownership/roadmap-v8-integration.test.mjs",
+          "result": "24 tests / 24 pass",
+          "logSha256": "429be462221aaae0f99c02eed2abded9d0b1e2b7a9dbd82df88a696d073acde2"
+        },
+        {
+          "label": "s2-identity-focused-clean",
+          "command": "node --test --test-concurrency=1 tests/phase10/identity tests/phase10/runtime/runtime-module-* tests/phase10/runtime-provider-identity-strict-boundaries.test.mjs tests/stage2/runtime-authority.test.mjs",
+          "result": "51 tests / 51 pass",
+          "logSha256": "14982075fcfd72bcb472506fb9533186fdcad0befe5809b97b10c70c814d5084"
+        },
+        {
+          "label": "s2-recognition-clean",
+          "command": "node scripts/run-quiet-command.mjs --label s2-recognition -- npm run recognition:test",
+          "result": "PASS (23.6s)"
+        }
+      ],
+      "canonicalStage2Note": "canonical stage2:test is BLOCKED in this shared worktree by a7-cross-proof-worktree-dirty (untracked .worktrees/ present) and is not used as S2 acceptance evidence.",
       "canonicalAggregateNote": "canonical Phase11 aggregate remains red on pre-existing DEX/JVM/exception-region paths unrelated to these two mechanisms; the S2 acceptance is scoped to the frozen identity/collision denominators above and does not promote the whole Phase 11 suite.",
       "physicalDeviceAcceptance": "SKIPPED (user-requested)",
       "fullRoadmapComplete": false,
