@@ -57,8 +57,26 @@ function makeApp() {
           page: { offset: page.offset || 0, returned: 1, total: 1, next: null },
         };
       },
+      async binaryInfo() {
+        return {
+          value: { regions: [{ id: '.text', startAddress: '0x100', endAddress: '0x200' }] },
+          completeness: 'complete',
+        };
+      },
+      async search(_snapshot, criteria, page) {
+        app._stringCalls += 1;
+        return {
+          value: [{
+            address: '0x100',
+            string: `s-r${String(gen)}-${String(criteria.query)}`,
+          }],
+          completeness: 'complete',
+          page: { offset: page.offset || 0, returned: 1, total: 1, next: null },
+        };
+      },
     },
     _functionCalls: 0,
+    _stringCalls: 0,
   };
   return {
     app,
@@ -218,4 +236,50 @@ test('#8931: without a live epoch the context stays explicit-unknown (not a shar
   const binding = analysisBinding(context);
   assert.equal(binding.missing.includes('analysisRevision'), true,
     'unknown analysisRevision stays in the missing set; the per-context ephemeral nonce prevents cross-context sharing (#5887)');
+});
+
+test('#8931: one canonical revision authority invalidates every query-backed tool family', async () => {
+  const { app, bumpEpoch } = makeApp();
+  const context = createHexAIContext(app);
+  const registry = createHexToolRegistry(context);
+
+  await registry.execute('search_functions', { query: 'fn', limit: 10 }, { scope: 'project' });
+  const stringsFirst = await registry.execute('search_strings', { query: 'str', limit: 10 }, { scope: 'project' });
+  assert.equal(app._functionCalls, 1, 'function search ran through AnalysisQueryAPI');
+  assert.equal(app._stringCalls, 1, 'string search ran through AnalysisQueryAPI');
+  assert.match(JSON.stringify(stringsFirst.result), /s-r1-str/, 'epoch 1 string result');
+
+  await registry.execute('search_strings', { query: 'str', limit: 10 }, { scope: 'project' });
+  assert.equal(app._stringCalls, 1, 'unchanged identity keeps the deterministic cache hit for strings too');
+
+  bumpEpoch();
+  await registry.execute('search_strings', { query: 'str', limit: 10 }, { scope: 'project' });
+  assert.equal(app._stringCalls, 2,
+    '#8931: the analysis epoch advance must invalidate the outer cache of every query-backed tool, not only search_functions');
+  const stringsSecond = await registry.execute('search_strings', { query: 'str', limit: 10 }, { scope: 'project' });
+  assert.equal(app._stringCalls, 2, 'the epoch-2 result is then cached again under the fresh binding');
+  assert.match(JSON.stringify(stringsSecond.result), /s-r2-str/, 'epoch 2 string result replaces the stale one');
+
+  await registry.execute('search_functions', { query: 'fn', limit: 10 }, { scope: 'project' });
+  assert.equal(app._functionCalls, 2,
+    'both families share one canonical binding: one epoch advance re-queries each family exactly once');
+});
+
+test('#8931: session bookkeeping churn does not invalidate the analysis cache (#6252)', async () => {
+  const { app } = makeApp();
+  const context = createHexAIContext(app);
+  const registry = createHexToolRegistry(context);
+
+  const before = context.analysisRevision;
+  await registry.execute('search_functions', { query: 'fn', limit: 10 }, { scope: 'project' });
+
+  app.workspace.project.sessionLastOpenedAt = '2026-09-15T18:00:00.000Z';
+  app.workspace.project.updatedAt = '2026-09-15T18:00:01.000Z';
+  app.notes.nameEntries = () => [{ address: '0x1000', name: 'renamed-during-session' }];
+
+  assert.equal(context.analysisRevision, before,
+    '#6252: session timestamps and note bookkeeping are not analysis identity dimensions');
+  await registry.execute('search_functions', { query: 'fn', limit: 10 }, { scope: 'project' });
+  assert.equal(app._functionCalls, 1,
+    '#6252: AI session bookkeeping alone must not force the semantic cache to re-query AnalysisQueryAPI');
 });

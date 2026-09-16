@@ -170,8 +170,8 @@
             "path": "js/phase12/package-envelope.js",
             "markers": [
               "const hasItems = Object.hasOwn(value, 'items');",
-              "if (hasItems && !Array.isArray(value.items)) throw new PackageValidationError('provider-output-schema-invalid', 'items must be an array when supplied');",
-              "const entries = hasItems ? value.items : hasResults ? value.results : [];"
+              "if (hasItems && !Array.isArray(admitted.items)) throw new PackageValidationError('provider-output-schema-invalid', 'items must be an array when supplied');",
+              "const entries = hasItems ? admitted.items : hasResults ? admitted.results : [];"
             ]
           }
         },
@@ -182,7 +182,7 @@
             "type": "source-collection",
             "path": "js/phase12/package-envelope.js",
             "start": "if (![",
-            "end": "].includes(value.completeness))",
+            "end": "].includes(admitted.completeness))",
             "regex": "'([^']+)'",
             "expected": ["complete", "partial", "truncated"]
           }
@@ -197,7 +197,7 @@
               "provider-output-provenance-required",
               "provider-output-item-identity-required",
               "provider-output-item-target-mismatch",
-              "value.unique === true"
+              "admitted.unique === true"
             ]
           }
         },
