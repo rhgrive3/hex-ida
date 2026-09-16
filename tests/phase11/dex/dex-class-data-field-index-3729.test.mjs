@@ -10,11 +10,26 @@ function buildFieldDex(fieldCount, classData) {
 
   view.setUint32(80, fieldCount, true);
   view.setUint32(84, 0xd0, true);
+  // field_ids must stay in canonical (class, name, type) order. When
+  // fieldCount > 1 a 4th string "bar" is added below and the string table is
+  // re-sorted canonically ("bar"=2, "foo"=3), so name tuples strictly
+  // increase across the two fields.
   for (let i = 0; i < fieldCount; i++) {
     const off = 0xd0 + i * 8;
-    view.setUint16(off, 1, true);
-    view.setUint16(off + 2, 1, true);
-    view.setUint32(off + 4, 2, true);
+    view.setUint16(off, 0, true);     // classIdx = 0 -> LTest; (field owner)
+    view.setUint16(off + 2, 1, true); // typeIdx = 1 -> V
+    // Canonical (class, name, type) tuple order needs ascending nameIdx:
+    // field 0 -> "bar" (2), field 1 -> "foo" (3) once the 4th string exists.
+    view.setUint32(off + 4, i === 0 ? 2 : 3, true);
+  }
+  if (fieldCount > 1) {
+    // Append a 4th string "bar" and re-sort the table into canonical UTF-16
+    // content order: "LTest;" < "V" < "bar" (0x62…) < "foo" (0x66…).
+    // "foo" occupies 0x10b..0x10f (5 bytes), so "bar" data starts at 0x110.
+    view.setUint32(56, 4, true);       // strings_size = 4
+    view.setUint32(0x78, 0x110, true); // string_id[2] -> "bar" (canonical slot 2)
+    view.setUint32(0x7c, 0x10b, true); // string_id[3] -> "foo" (canonical slot 3)
+    bytes.set([3, 0x62, 0x61, 0x72, 0], 0x110); // "bar" (MUTF-8)
   }
 
   bytes.fill(0, 0x120, 0x140);
@@ -22,7 +37,7 @@ function buildFieldDex(fieldCount, classData) {
 
   const mapOff = view.getUint32(52, true);
   const mapItems = [
-    [0x0000, 1, 0x000], [0x0001, 3, 0x070], [0x0002, 2, 0x080],
+    [0x0000, 1, 0x000], [0x0001, fieldCount > 1 ? 4 : 3, 0x070], [0x0002, 2, 0x080],
     [0x0003, 1, 0x090], [0x0005, 1, 0x0a0], [0x0006, 1, 0x0b0],
     [0x0004, fieldCount, 0x0d0], [0x2002, 3, 0x100], [0x2000, 1, 0x120],
     [0x2001, 1, 0x140], [0x1000, 1, mapOff],
