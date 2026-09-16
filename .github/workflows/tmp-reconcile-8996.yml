@@ -2,9 +2,70 @@ name: tmp-reconcile-8996
 on:
   push:
     branches: [codex/issue-campaign-20260914-lane-10-batch-04]
+permissions:
+  contents: write
+concurrency:
+  group: tmp-reconcile-8996
+  cancel-in-progress: true
 jobs:
-  noop:
+  reconcile:
+    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 10
     steps:
-      - run: echo staged
+      - uses: actions/checkout@v7
+        with: {fetch-depth: 0}
+      - name: Merge main and keep superseding solver fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git fetch --no-tags origin main
+          BASE="$(git merge-base HEAD origin/main)"
+          keep=(js/analysis/semantic-function-base.js js/decompiler/phase8/identity-pass.js tests/phase8/abi/issue-8817-aapcs64-proven-fixed-prefix-retention.test.mjs tests/phase8/substrate/issue-8653-truncated-source-phase8-completeness.test.mjs)
+          for i in "${!keep[@]}"; do git diff --binary "$BASE"..HEAD -- "${keep[$i]}" > "/tmp/k$i.patch"; done
+          set +e
+          git merge --no-ff --no-commit origin/main
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+            allowed=(js/analysis/semantic-function-base.js js/decompiler/phase8/identity-pass.js js/symbolic/solver/result.js js/symbolic/solver/session.js tests/phase8/abi/issue-8817-aapcs64-proven-fixed-prefix-retention.test.mjs tests/phase8/substrate/issue-8653-truncated-source-phase8-completeness.test.mjs tests/phase9/solver/issue-8975-provider-model-timeout-authority.test.mjs)
+            for f in "${conflicts[@]}"; do
+              ok=0; for x in "${allowed[@]}"; do [ "$f" = "$x" ] && ok=1; done
+              [ "$ok" -eq 1 ] || { echo "unexpected conflict: $f"; exit 1; }
+              git checkout --theirs -- "$f"; git add "$f"
+            done
+          fi
+          test -z "$(git diff --name-only --diff-filter=U)"
+          git checkout origin/main -- js/symbolic/solver/result.js js/symbolic/solver/session.js tests/phase9/solver/issue-8975-provider-model-timeout-authority.test.mjs
+          git add js/symbolic/solver/result.js js/symbolic/solver/session.js tests/phase9/solver/issue-8975-provider-model-timeout-authority.test.mjs
+      - name: Reapply semantic ABI delta
+        run: git apply --3way /tmp/k0.patch
+      - name: Reapply Phase 8 identity delta
+        run: git apply --3way /tmp/k1.patch
+      - name: Reapply retained regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --3way /tmp/k2.patch
+          git apply --3way /tmp/k3.patch
+      - name: Focused verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check js/analysis/semantic-function-base.js
+          node --check js/decompiler/phase8/identity-pass.js
+          node --test \
+            tests/phase8/abi/issue-8817-aapcs64-proven-fixed-prefix-retention.test.mjs \
+            tests/phase8/substrate/issue-8653-truncated-source-phase8-completeness.test.mjs \
+            tests/phase9/solver/issue-8975-provider-model-timeout-authority.test.mjs
+      - name: Finalize merge commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/tmp-reconcile-8996.yml
+          git add -A
+          git commit -m 'fix: reconcile PR #8996 with current main; keep #9061 solver authority'
+          git push origin HEAD:${GITHUB_REF_NAME}
