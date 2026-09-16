@@ -1,0 +1,91 @@
+name: Temporary dev-agent duplicate import repair
+
+on:
+  push:
+    branches:
+      - fix/dev-agent-duplicate-admin-import
+    paths:
+      - '.github/workflows/tmp-dev-agent-import-repair.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/dev-agent-duplicate-admin-import
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Remove only duplicated AllowAllAdminProvider imports
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 30s python3 - <<'PY'
+          from pathlib import Path
+          files = [
+            'tests/dev-agent/issue-5154-human-blocking-true-only.mjs',
+            'tests/dev-agent/issue-5162-human-resume-per-conversation.mjs',
+            'tests/dev-agent/round2-single-tab-supervisor.mjs',
+            'tests/dev-agent/supervisor-conversation-continuity.mjs',
+            'tests/dev-agent/supervisor-progress-budget.mjs',
+            'tests/dev-agent/supervisor-prompt-modes.mjs',
+            'tests/issue-4614-progress-budget-repeated-observation.mjs',
+            'tests/issue-6200-dev-supervisor-wait-events.mjs',
+            'tests/issue-6210-progress-budget-concurrent-runs.mjs',
+            'tests/phase12/adversarial/issue-4599-dev-supervisor-wait-events.test.mjs',
+            'tests/phase9/integration/dev-supervisor-progress-window-6210.test.mjs',
+          ]
+          for name in files:
+              p = Path(name)
+              lines = p.read_text().splitlines(True)
+              hits = [i for i,line in enumerate(lines) if line.startswith('import { AllowAllAdminProvider } from ')]
+              if len(hits) != 2:
+                  raise SystemExit(f'{name}: expected exactly 2 duplicate imports, got {len(hits)}')
+              del lines[hits[0]]
+              p.write_text(''.join(lines))
+          print(f'repaired {len(files)} files')
+          PY
+      - name: Focused regressions and syntax lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in \
+            tests/dev-agent/issue-5154-human-blocking-true-only.mjs \
+            tests/dev-agent/issue-5162-human-resume-per-conversation.mjs \
+            tests/dev-agent/round2-single-tab-supervisor.mjs \
+            tests/dev-agent/supervisor-conversation-continuity.mjs \
+            tests/dev-agent/supervisor-progress-budget.mjs \
+            tests/dev-agent/supervisor-prompt-modes.mjs \
+            tests/issue-4614-progress-budget-repeated-observation.mjs \
+            tests/issue-6200-dev-supervisor-wait-events.mjs \
+            tests/issue-6210-progress-budget-concurrent-runs.mjs \
+            tests/phase12/adversarial/issue-4599-dev-supervisor-wait-events.test.mjs \
+            tests/phase9/integration/dev-supervisor-progress-window-6210.test.mjs; do
+            timeout 30s node "$f"
+          done
+          timeout 120s npm run lint
+      - name: Commit repair and remove staging workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/tmp-dev-agent-import-repair.yml
+          git add tests/dev-agent/issue-5154-human-blocking-true-only.mjs \
+            tests/dev-agent/issue-5162-human-resume-per-conversation.mjs \
+            tests/dev-agent/round2-single-tab-supervisor.mjs \
+            tests/dev-agent/supervisor-conversation-continuity.mjs \
+            tests/dev-agent/supervisor-progress-budget.mjs \
+            tests/dev-agent/supervisor-prompt-modes.mjs \
+            tests/issue-4614-progress-budget-repeated-observation.mjs \
+            tests/issue-6200-dev-supervisor-wait-events.mjs \
+            tests/issue-6210-progress-budget-concurrent-runs.mjs \
+            tests/phase12/adversarial/issue-4599-dev-supervisor-wait-events.test.mjs \
+            tests/phase9/integration/dev-supervisor-progress-window-6210.test.mjs
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'test(dev-agent): remove duplicate admin provider imports'
+          timeout 30s git push origin HEAD:fix/dev-agent-duplicate-admin-import
