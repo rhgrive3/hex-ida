@@ -1,0 +1,71 @@
+{
+  "schema": "hex-x02-cross-version-runtime-map-snapshot/v1",
+  "source": {
+    "workflowRunId": 35120989355,
+    "headSha": "77fc5cec5af594ca4d505a4367f5d7e27feb5463",
+    "artifacts": {
+      "macos14": {
+        "id": 10457310517,
+        "digest": "sha256:63e5a048310061e8a606524166fc931e0beaf59a14957999028353f1b0521010"
+      },
+      "macos15": {
+        "id": 10457440408,
+        "digest": "sha256:e80fc71e2491d50bd020c765b42dd0a28c3fc3dce82ed54bd83104cb1050deb3"
+      }
+    }
+  },
+  "sourceCorpus": {
+    "sourceSha256": "a28c1154d7726bb3ace1673eb5bf5b0f558fb2512052add70dc494b48383f5b3",
+    "compileCommand": "xcrun clang -c -O1 -ffreestanding -fno-stack-protector version-probe.c -o version-probe.o"
+  },
+  "environments": {
+    "macos14": {
+      "runnerLabel": "macos14",
+      "machine": "arm64",
+      "osProductVersion": "14.8.9",
+      "osBuildVersion": "23J631",
+      "xcodeVersion": "Xcode 15.4\nBuild version 15F31d",
+      "clangVersion": "Apple clang version 15.0.0 (clang-1500.3.9.4)",
+      "objectSha256": "5f6943ca3ab9513bd8c66b9032071bf604fe8140dae5451b81f0b0a710a624ed",
+      "objectFile": "Mach-O 64-bit object arm64",
+      "buildVersion": {
+        "minos": "14.0",
+        "sdk": "14.5"
+      },
+      "cacheSha256": "ec8465acebe5aa3366cc4f6d0f5643ce0fa1c8ecaaae9d3d66b3a8c2e0ff95fa",
+      "cachePreferredSharedRegionStart": "0x180000000",
+      "runtimeSharedCacheSlide": "0x15c48000",
+      "runtimeSharedCacheBaseAddress": "0x195c48000",
+      "runtimeMappingCoherent": true
+    },
+    "macos15": {
+      "runnerLabel": "macos15",
+      "machine": "arm64",
+      "osProductVersion": "15.7.9",
+      "osBuildVersion": "24G830",
+      "xcodeVersion": "Xcode 16.4\nBuild version 16F6",
+      "clangVersion": "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+      "objectSha256": "33cb08bc0d1f03b441b47a87178253be3c8d256520f77b989c62b2ca98041131",
+      "objectFile": "Mach-O 64-bit object arm64",
+      "buildVersion": {
+        "minos": "15.0",
+        "sdk": "15.5"
+      },
+      "cacheSha256": "c88d3a9885614d4ee8be36f0e9a50ee09e640311ca0ea843bc67613933e00184",
+      "cachePreferredSharedRegionStart": "0x180000000",
+      "runtimeSharedCacheSlide": "0x1751c000",
+      "runtimeSharedCacheBaseAddress": "0x19751c000",
+      "runtimeMappingCoherent": true
+    }
+  },
+  "currentAcceptance": {
+    "X02-A-08": {
+      "classification": "pass",
+      "reason": "Two independently artifact-pinned Apple Silicon runner points provide distinct macOS, Xcode and Apple clang identities and distinct Mach-O objects built from the same SHA-pinned source."
+    },
+    "X02-B-06": {
+      "classification": "pass",
+      "reason": "The previously pinned real macOS 15 arm64e shared cache is the same SHA-pinned cache whose v5 slide-info produced 6077 bounded accepted rebases, and TASK_DYLD_INFO now independently observes a runtime base/slide coherent with its preferred shared-region start."
+    }
+  }
+}
