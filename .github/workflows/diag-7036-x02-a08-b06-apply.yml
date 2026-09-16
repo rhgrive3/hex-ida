@@ -1,0 +1,97 @@
+name: diag-7036-x02-a08-b06-apply
+on:
+  push:
+    branches:
+      - fix/7036-x02-a08-b06-evidence-20260917
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply evidence overlay and focused validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATUS=/tmp/x02-a08-b06.txt
+          : > "$STATUS"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          timeout 90s git fetch --no-tags origin main >/tmp/fetch.log 2>&1
+          python3 - <<'PY'
+          from pathlib import Path
+
+          test = Path('tests/scpa/x02-prior120-apple-version-matrix.test.mjs')
+          s = test.read_text()
+          old = "  'X02-G-09':'pass',\n});"
+          new = "  'X02-A-08':'pass', 'X02-B-06':'pass', 'X02-G-09':'pass',\n});"
+          if new not in s:
+              if old not in s: raise SystemExit('currentDispositions anchor missing')
+              s = s.replace(old, new, 1)
+
+          old = "    ['X02-A-07','build-tool-gap','product-gap'],\n    ['X02-B-01','cache-sync','product-gap'], ['X02-B-02','cache-async','product-gap'],"
+          new = "    ['X02-A-07','build-tool-gap','product-gap'], ['X02-A-08','evidence-missing','evidence-gap'],\n    ['X02-B-01','cache-sync','product-gap'], ['X02-B-02','cache-async','product-gap'], ['X02-B-06','evidence-missing','evidence-gap'],"
+          if new not in s:
+              if old not in s: raise SystemExit('historical assertion anchor missing')
+              s = s.replace(old, new, 1)
+
+          anchor = "async function observe(t,row,bytes) {\n  const e=row.expectedContract;\n"
+          block = """async function observe(t,row,bytes) {\n  const e=row.expectedContract;\n  if((row.id==='X02-A-08'||row.id==='X02-B-06') && row.check==='evidence-missing') {\n    const evidence=JSON.parse(fs.readFileSync(path.join(ROOT,'tests/scpa/fixtures/x02-cross-version-runtime-map-20260917.json')));\n    assert.equal(evidence.schema,'hex-x02-cross-version-runtime-map-snapshot/v1');\n    assert.equal(evidence.source.workflowRunId,35120989355);\n    assert.equal(evidence.source.headSha,'77fc5cec5af594ca4d505a4367f5d7e27feb5463');\n    assert.equal(evidence.source.artifacts.macos14.id,10457310517);\n    assert.equal(evidence.source.artifacts.macos14.digest,'sha256:63e5a048310061e8a606524166fc931e0beaf59a14957999028353f1b0521010');\n    assert.equal(evidence.source.artifacts.macos15.id,10457440408);\n    assert.equal(evidence.source.artifacts.macos15.digest,'sha256:e80fc71e2491d50bd020c765b42dd0a28c3fc3dce82ed54bd83104cb1050deb3');\n    if(row.id==='X02-A-08') {\n      const a=evidence.environments.macos14,b=evidence.environments.macos15;\n      assert.equal(a.machine,'arm64'); assert.equal(b.machine,'arm64');\n      assert.equal(evidence.sourceCorpus.sourceSha256,'a28c1154d7726bb3ace1673eb5bf5b0f558fb2512052add70dc494b48383f5b3');\n      assert.notEqual(a.osProductVersion,b.osProductVersion);\n      assert.notEqual(a.xcodeVersion,b.xcodeVersion);\n      assert.notEqual(a.clangVersion,b.clangVersion);\n      assert.notEqual(a.objectSha256,b.objectSha256);\n      assert.match(a.objectFile,/Mach-O 64-bit object arm64/); assert.match(b.objectFile,/Mach-O 64-bit object arm64/);\n      assert.equal(a.buildVersion.minos,'14.0'); assert.equal(b.buildVersion.minos,'15.0');\n      assert.equal(evidence.currentAcceptance['X02-A-08'].classification,'pass');\n      return passed('cross-version-pinned-provenance',{workflowRunId:evidence.source.workflowRunId,macos14:{os:a.osProductVersion,objectSha256:a.objectSha256},macos15:{os:b.osProductVersion,objectSha256:b.objectSha256}});\n    }\n    const real=JSON.parse(fs.readFileSync(path.join(ROOT,'tests/scpa/fixtures/x02-real-apple-evidence-20260916.json')));\n    const env=evidence.environments.macos15;\n    assert.equal(env.cacheSha256,real.realDyldCache.sha256);\n    assert.equal(env.cacheSha256,'c88d3a9885614d4ee8be36f0e9a50ee09e640311ca0ea843bc67613933e00184');\n    assert.equal(real.realDyldCache.slideInfoVersion,5);\n    assert.equal(real.realDyldCache.sampledRebaseCount,6077);\n    assert.equal(real.realDyldCache.allSampleTargetsInDeclaredSharedRegion,true);\n    assert.equal(env.runtimeMappingCoherent,true);\n    assert.equal(BigInt(env.runtimeSharedCacheBaseAddress)-BigInt(env.runtimeSharedCacheSlide),BigInt(env.cachePreferredSharedRegionStart));\n    assert.equal(evidence.currentAcceptance['X02-B-06'].classification,'pass');\n    return passed('real-cache-runtime-load-map',{workflowRunId:evidence.source.workflowRunId,cacheSha256:env.cacheSha256,slide:env.runtimeSharedCacheSlide,base:env.runtimeSharedCacheBaseAddress,sampledRebaseCount:real.realDyldCache.sampledRebaseCount});\n  }\n"""
+          if "cross-version-pinned-provenance" not in s:
+              if anchor not in s: raise SystemExit('observe anchor missing')
+              s = s.replace(anchor, block, 1)
+          test.write_text(s)
+
+          for name, quote in [('tools/validation/analysis-roadmap/ownership.mjs', "'"), ('tools/validation/analysis-roadmap/ownership.json', '"')]:
+              p=Path(name); text=p.read_text()
+              oldpath='tests/scpa/fixtures/x02-real-apple-evidence-20260916.json'
+              newpath='tests/scpa/fixtures/x02-cross-version-runtime-map-20260917.json'
+              if newpath not in text:
+                  needle=f"{quote}{oldpath}{quote}"
+                  replacement=needle + (",\n    '"+newpath+"'" if quote=="'" else ",\n      \""+newpath+"\"")
+                  if needle not in text: raise SystemExit(f'ownership anchor missing: {name}')
+                  text=text.replace(needle,replacement,1)
+                  p.write_text(text)
+
+          doc=Path('docs/analysis-x02-acceptance.md')
+          text=doc.read_text()
+          marker='## 2026-09-17 cross-version/runtime-map evidence closure'
+          if marker not in text:
+              text += """\n\n## 2026-09-17 cross-version/runtime-map evidence closure\n\nThe frozen 120-row denominator and all historical dispositions remain unchanged. Hosted Apple Silicon evidence run `35120989355` is bound to head `77fc5cec5af594ca4d505a4367f5d7e27feb5463` and two one-day diagnostic artifacts: macOS 14 artifact `10457310517` / `sha256:63e5a048310061e8a606524166fc931e0beaf59a14957999028353f1b0521010`, and macOS 15 artifact `10457440408` / `sha256:e80fc71e2491d50bd020c765b42dd0a28c3fc3dce82ed54bd83104cb1050deb3`. Their normalized, retained snapshot is `tests/scpa/fixtures/x02-cross-version-runtime-map-20260917.json`.\n\n`X02-A-08` is current `pass`: the same SHA-pinned source (`a28c1154d7726bb3ace1673eb5bf5b0f558fb2512052add70dc494b48383f5b3`) was compiled on two independently hosted Apple environments. macOS 14.8.9 / Xcode 15.4 / Apple clang 15 produced object `5f6943ca3ab9513bd8c66b9032071bf604fe8140dae5451b81f0b0a710a624ed`; macOS 15.7.9 / Xcode 16.4 / Apple clang 17 produced `33cb08bc0d1f03b441b47a87178253be3c8d256520f77b989c62b2ca98041131`. Both are arm64 Mach-O objects with distinct LC_BUILD_VERSION deployment/SDK identities.\n\n`X02-B-06` is current `pass`: the macOS 15 runtime-map sample uses real cache SHA-256 `c88d3a9885614d4ee8be36f0e9a50ee09e640311ca0ea843bc67613933e00184`, exactly matching the previously retained real-cache evidence whose production decoder accepted 6,077 bounded slide-info-v5 rebases with every sampled target inside the declared shared region. Independently, `TASK_DYLD_INFO` / `dyld_all_image_infos` observed runtime slide `0x1751c000` and runtime base `0x19751c000`; subtracting the slide yields the cache preferred shared-region start `0x180000000`. This is OS-derived runtime load-map evidence for the same pinned cache, not synthetic rebasing.\n\nWith those two evidence gaps promoted, the current finite classification is **118 pass / 0 product-gap / 0 evidence-gap / 2 environment-excluded** when the exact pinned LLVM 18.1.3 oracle is unavailable. If `X02-H-02` independently reparses with the exact pinned LLVM executable/version/digest/format/architecture checks, the conditional classification is **119 / 0 / 0 / 1**. `X02-F-47` remains environment-excluded because explicit arm64e runtime authentication is still not proven. Whole-roadmap state remains `CHECKPOINT-LOCKED`, `fullRoadmapComplete:false`, `transformAuthorization:false`; this evidence closure is not release authorization.\n"""
+              doc.write_text(text)
+          PY
+
+          git rm .github/workflows/diag-7036-x02-a08-b06-apply.yml >/dev/null
+          git add tests/scpa/x02-prior120-apple-version-matrix.test.mjs tests/scpa/fixtures/x02-cross-version-runtime-map-20260917.json tools/validation/analysis-roadmap/ownership.mjs tools/validation/analysis-roadmap/ownership.json docs/analysis-x02-acceptance.md
+          git diff --cached --check
+          git commit -m 'test(x02): close cross-version and runtime-map evidence gaps' >/tmp/commit.log 2>&1
+          CLEAN_HEAD=$(git rev-parse HEAD)
+          BASE_SHA=$(git rev-parse refs/remotes/origin/main)
+          echo "clean_head=$CLEAN_HEAD" >> "$STATUS"
+          echo "base=$BASE_SHA" >> "$STATUS"
+          set +e
+          run() { label="$1"; shift; "$@" >/tmp/cmd.out 2>&1; rc=$?; echo "$label rc=$rc" >> "$STATUS"; if [ "$rc" -ne 0 ]; then tail -n 80 /tmp/cmd.out >> "$STATUS"; exit "$rc"; fi; }
+          run prior120 timeout 180s node --test tests/scpa/x02-prior120-apple-version-matrix.test.mjs
+          run current_matrix timeout 120s node --test tests/scpa/x02-apple-version-matrix.test.mjs
+          LOGICAL_BRANCH=feat/analysis-roadmap-v8-current-main-20260907
+          run p7_manifest timeout 120s node tools/validation/phase7-ownership.mjs --check-manifest
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase7 --base-sha "$BASE_SHA" --head-sha "$CLEAN_HEAD" >/tmp/p7.json 2>/tmp/p7.err; rc=$?; echo "p7_inventory rc=$rc" >> "$STATUS"; if [ "$rc" -ne 0 ]; then tail -n 80 /tmp/p7.err >> "$STATUS"; exit "$rc"; fi
+          run p7_validate timeout 120s node tools/validation/phase7-ownership.mjs --files-json "$(cat /tmp/p7.json)"
+          run p8_manifest timeout 120s node tools/validation/phase8-ownership.mjs --check-manifest
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase8 --base-sha "$BASE_SHA" --head-sha "$CLEAN_HEAD" >/tmp/p8.json 2>/tmp/p8.err; rc=$?; echo "p8_inventory rc=$rc" >> "$STATUS"; if [ "$rc" -ne 0 ]; then tail -n 80 /tmp/p8.err >> "$STATUS"; exit "$rc"; fi
+          run p8_validate timeout 120s node tools/validation/phase8-ownership.mjs --files-json "$(cat /tmp/p8.json)"
+          git push origin HEAD:fix/7036-x02-a08-b06-evidence-20260917 >/tmp/push.out 2>&1; rc=$?; echo "push rc=$rc" >> "$STATUS"; if [ "$rc" -ne 0 ]; then tail -n 80 /tmp/push.out >> "$STATUS"; exit "$rc"; fi
+      - name: Upload focused result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: x02-a08-b06-focused
+          path: /tmp/x02-a08-b06.txt
+          retention-days: 1
