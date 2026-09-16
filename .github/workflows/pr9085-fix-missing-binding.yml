@@ -21,6 +21,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           python3 - <<'PY'
           from pathlib import Path
+
           p = Path('js/ai/proposals.js')
           s = p.read_text()
           old = "    if (typeof bound !== 'string' || !bound) return true;"
@@ -40,6 +41,13 @@ jobs:
           regression = """  // A configured resolver also requires provenance on the verified record itself.\n  // Missing sourceBinding is not an implicit revision-invariant authority class.\n  const missing = new ProposalStore({\n    evidenceStore: { get: (id) => (id === 'ev-1' ? { id, status: 'verified' } : null) },\n    currentEvidenceBinding: () => 'current-binding',\n  });\n  assert.throws(() => missing.create(draft(['ev-1'])), (error) => error?.type === 'invalid_tool_call');\n\n"""
           s = s.replace(anchor, regression + anchor, 1)
           p.write_text(s)
+
+          p = Path('tests/issue-8923-proposal-binding-identity.test.mjs')
+          s = p.read_text()
+          old = """function stubEvidence() {\n  return {\n    get(id) { return id === 'ev-1' ? { id, status: 'verified' } : null; },\n    has(id) { return id === 'ev-1'; },\n  };\n}\n"""
+          new = """function stubEvidence() {\n  const sourceBinding = 'test-evidence-binding';\n  return {\n    observationStore: { binding() { return { key: sourceBinding }; } },\n    get(id) { return id === 'ev-1' ? { id, status: 'verified', sourceBinding } : null; },\n    has(id) { return id === 'ev-1'; },\n  };\n}\n"""
+          assert s.count(old) == 1, s.count(old)
+          p.write_text(s.replace(old, new, 1))
           PY
           git diff --check
       - name: Test issue 8929
@@ -58,7 +66,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git rm .github/workflows/pr9085-fix-missing-binding.yml
-          git add js/ai/proposals.js tests/issue-8929-stale-verified-evidence-binding.test.mjs
+          git add js/ai/proposals.js tests/issue-8929-stale-verified-evidence-binding.test.mjs tests/issue-8923-proposal-binding-identity.test.mjs
           git diff --cached --check
           git commit -m 'fix(ai): fail closed on missing evidence binding provenance'
           git push origin HEAD:refs/heads/fix/issue-8929-stale-evidence-binding
