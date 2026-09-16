@@ -1,5 +1,5 @@
 name: Temporary C4-04 acceptance
-# run: final-c4-04-20260916-2
+# run: final-c4-04-20260916-3
 on:
   push:
     branches: ['impl/c4-04-finish-20260916']
@@ -35,7 +35,9 @@ jobs:
             tests/phase9/memory/c4-cfg-loop-equivalence.test.mjs \
             tests/phase9/verify/equivalence.test.mjs \
             tests/phase9/verify/model-validation.test.mjs \
-            tests/phase9/verify/edge-feasibility.test.mjs 2>&1 | tee /tmp/c4-acceptance.log
+            tests/phase9/verify/edge-feasibility.test.mjs \
+            tests/issue-6093-bounded-equivalence-memory-regions.mjs \
+            tests/issue-4916-equivalence-memory-regions-fail-closed.mjs 2>&1 | tee /tmp/c4-acceptance.log
       - name: Upload acceptance evidence
         if: always()
         uses: actions/upload-artifact@v4
