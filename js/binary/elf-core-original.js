@@ -3,7 +3,7 @@ import { BinaryImage, functionSeed, sectionHasMappedAddress } from './model.js';
 import { parseEhFrameHeader } from './elf-unwind.js';
 import { parseProgramDynamic } from './elf-dynamic.js';
 import { createELFMetadataBudget, markELFMetadataPartial } from './elf-budget.js';
-import { elfInstructionStartAlignmentRejection, elfInstructionTargetRejection, elfSectionFileSpanConsistentWithLoads, executableELFRange } from './elf-mapping.js';
+import { elfExactFunctionStartRejection, elfFunctionExtentRejection, elfInstructionStartAlignmentRejection, elfInstructionTargetRejection, elfSectionFileSpanConsistentWithLoads, executableELFRange } from './elf-mapping.js';
 import { relocationFieldWidth } from './elf-relocation-target.js';
 import { isRiscvMappingSymbolRecord, parseRiscvAttributes, parseRiscvMappingSymbol } from './riscv-isa.js';
 
@@ -832,8 +832,12 @@ export function parseSymbols(r, table, sections, image, bits, elfType, budget) {
       if(owner){
         const alignmentRejection=elfInstructionStartAlignmentRejection(image,address);
         if(alignmentRejection){budget.partial(`symbols:${table.index}:function-alignment`,`Ignored ELF ${type===STT_GNU_IFUNC?'STT_GNU_IFUNC resolver':'STT_FUNC'} ${name}: ${alignmentRejection}`);continue;}
+        const startRejection=elfExactFunctionStartRejection(image,address,{sectionIndex:normal?resolvedShndx:null});
+        if(startRejection){budget.partial(`symbols:${table.index}:function-authority`,`Ignored ELF ${type===STT_GNU_IFUNC?'STT_GNU_IFUNC resolver':'STT_FUNC'} ${name}: ${startRejection}`);continue;}
+        const extentRejection=elfFunctionExtentRejection(image,address,size);
+        if(extentRejection)budget.partial(`symbols:${table.index}:function-extent-authority`,`ELF ${type===STT_GNU_IFUNC?'STT_GNU_IFUNC resolver':'STT_FUNC'} ${name}: ${extentRejection}`);
         if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'symbol-function')){authoritative=false;break;}
-        image.functions.push(functionSeed(address,{size:size||null,name:type===STT_GNU_IFUNC?`${name}$resolver`:name,source:type===STT_GNU_IFUNC?'ifunc-resolver':'symbol',confidence:0.995,exactFunctionStart:true,functionStartEvidence:type===STT_GNU_IFUNC?'ELF STT_GNU_IFUNC resolver with validated executable section extent':elfType===ET_REL?'ELF ET_REL STT_FUNC with validated executable section-relative extent':'ELF STT_FUNC with validated executable section extent',callingConvention:aarch64VariantPcs?'aarch64-variant-pcs':riscvVariantCc?'riscv-vector-variant':null,abiMetadata:aarch64VariantPcs?{aarch64VariantPcs:true,stOther:other}:riscvVariantCc?{riscvVariantCc:true,stOther:other}:null}));
+        image.functions.push(functionSeed(address,{size:extentRejection?null:(size||null),name:type===STT_GNU_IFUNC?`${name}$resolver`:name,source:type===STT_GNU_IFUNC?'ifunc-resolver':'symbol',confidence:0.995,exactFunctionStart:true,functionStartEvidence:(type===STT_GNU_IFUNC?'ELF STT_GNU_IFUNC resolver with validated executable section extent':elfType===ET_REL?'ELF ET_REL STT_FUNC with validated executable section-relative extent':'ELF STT_FUNC with validated executable section extent')+(extentRejection?'; published st_size is not file-backed and is not retained as extent authority':''),callingConvention:aarch64VariantPcs?'aarch64-variant-pcs':riscvVariantCc?'riscv-vector-variant':null,abiMetadata:aarch64VariantPcs?{aarch64VariantPcs:true,stOther:other}:riscvVariantCc?{riscvVariantCc:true,stOther:other}:null}));
         if(riscvVariantCc){if(!Array.isArray(image.metadata.riscvVariantCcFunctions))image.metadata.riscvVariantCcFunctions=[];image.metadata.riscvVariantCcFunctions.push({name,address,symbolIndex:i,tableIndex:table.index,stOther:other,callingConvention:'riscv-vector-variant'});}
         if(aarch64VariantPcs){if(!Array.isArray(image.metadata.aarch64VariantPcsFunctions))image.metadata.aarch64VariantPcsFunctions=[];image.metadata.aarch64VariantPcsFunctions.push({name,address,symbolIndex:i,tableIndex:table.index,stOther:other,callingConvention:'aarch64-variant-pcs'});}}
       else image.warnings.push(`Ignored ELF ${type===STT_GNU_IFUNC?'STT_GNU_IFUNC resolver':'STT_FUNC'} ${name} outside its canonical executable extent`);
