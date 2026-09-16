@@ -151,12 +151,15 @@ test('C4-04 rewrite payload without validation refuses', () => {
   assert.match(outcome.stopReason, /^rewrite-unvalidated:/);
 });
 
-test('C4-04 explicit non-BV unvalidated reason remains admissible', () => {
-  const outcome = runPassTransaction(createAnalysisState(FULL_STATE), passFor([{
-    kind:'memory-probe', targets:['value_1'], proof:'memory proof', rewrite:{ memory:true },
+test('C4-04 non-BV rewrite cannot bypass proof admission with an unvalidated reason', () => {
+  const state = createAnalysisState(FULL_STATE), before = state.snapshot();
+  const outcome = runPassTransaction(state, passFor([{
+    kind:'memory-probe', targets:['value_1'], proof:'memory proof', rewrite:{ before:{memory:1}, after:{memory:2} },
     unvalidatedReason:'outside scalar BV validation scope',
   }]), {}, {});
-  assert.equal(outcome.committed, true, outcome.stopReason);
+  assert.equal(outcome.committed, false);
+  assert.match(outcome.stopReason, /^rewrite-unvalidated:/);
+  assert.deepEqual(state.snapshot(), before);
 });
 
 test('C4-04 unknown-only rewrite becomes an unchanged no-op and preserves state', () => {
