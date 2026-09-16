@@ -131,7 +131,10 @@ export async function prepareConditionalRegionCondition(structure, projection, o
       branchId:branch.id, invert:region.selection.invert, queryHash });
     const plan = Object.freeze({ version:1, status:'complete', planId, beforeHash, afterHash, queryHash,
       scope:'conditional-predicate-only', transformAuthorization:false, conditionValidation:'proved', identity:guard.identity });
-    const packet = Object.freeze({ header:copied.header, expression, text, recipe, consumer:proposal.consumer, control,
+    // Carry the exact copied region object that supplied the header/control
+    // binding. Region-body proof may consume only this private packet; a caller
+    // cannot reconstruct the correspondence from public node text or IDs.
+    const packet = Object.freeze({ region:copied, header:copied.header, expression, text, recipe, consumer:proposal.consumer, control,
       plan, isCurrent, sourceCurrent });
     issued.set(plan, { projection, structure, guard, packet, isCurrent });
     return plan;

@@ -182,7 +182,7 @@ async function testPlainDataBoundary() {
   assert.equal(isPlainData(new Uint8Array([1])), false);
   assert.equal(isPlainData(new ArrayBuffer(4)), false);
   const pair = proxyPair({ 'chatgpt.capabilities': () => new Uint8Array([1, 2]) });
-  await assert.rejects(pair.proxy.capabilities(), /(?:plain data only|unsafe or oversized result data)/);
+  await assert.rejects(pair.proxy.capabilities(), (error) => error?.code === 'RPC_UNSAFE_RESULT');
   await assert.rejects(pair.proxy.request(new Uint8Array([1])), /string-normalizable/);
   pair.close();
 }

@@ -1,5 +1,13 @@
 # Analysis roadmap v8 integration checkpoint
 
+## 2026-09-16: C4-04 scoped render adoption と CI ownership 復旧
+
+C4-04 の scalar proof-only publicationに加え、既存 conditional-region reachability / erasure plan から exact copied-region capability を private に引き継ぎ、独立証明済み到達不能 arm の **no PHI / no MemoryPHI / flat-store body** だけを rendered C AST から削除する adoption 境界を接続しました。公開 text/ID/plan のコピーでは body authority を再構成できません。region/body の mutation、欠落した authority、provenance/history 不完全、history budget 不足では fail closed し、削除を公開しません。削除された statement は producer-bound tombstone と removal record を持ちます。canonical Semantic IR / SSA / CFG は変更しません。
+
+この scoped adoption は ordinary legacy-view normalization 全体、PHI/MemoryPHI を含む領域削除、任意 CFG/memory rewrite、native fault/exception/unwind、bounded-loop semantic equivalence の証明ではありません。terminal return / all terminal memory bytes / terminal control target の versioned observables は維持しますが、未モデル化 machine effect は unknown のままです。そのため FR-C4-04A/B と HEX-C4-04 は **partial** を維持し、全体の CHECKPOINT-LOCKED / transformAuthorization:false は解除しません。
+
+追加した conditional-region-body-authority.test.mjs と conditional-region-body-projection.test.mjs は Phase8 owner に、final-head 契約2本と userscript embed-child 契約は integration owner に登録しました。pre-documentation head 6530c214a287fdf849d0d052650242e97b954f1c では PR fast gate と ChatGPT userscript host が success、CircleCI の phase7/phase8 ownership も success へ復旧しています。文書更新後の exact-head gate はこの記録とは分離して再確認します。
+
 ## 2026-09-14: 元のX-02検査120行をcanonical探索へ追加
 
 `684f1f0bb9c4809cd9bbaba01f01a4849151cc0b` の元JSONとfixture helperを同一byteで保持し、

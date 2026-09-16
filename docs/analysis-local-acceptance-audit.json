@@ -1,6 +1,6 @@
 {
   "schemaVersion": "hex-analysis-local-acceptance/v1",
-  "assessmentDate": "2026-09-13",
+  "assessmentDate": "2026-09-16",
   "overallStatus": "CHECKPOINT-LOCKED",
   "transformAuthorization": false,
   "fullRoadmapComplete": false,
@@ -117,9 +117,9 @@
     {
       "id": "HEX-C4-04",
       "localStatus": "partial",
-      "assessment": "generic normal-return PCをbyte equivalenceの独立observableに追加。native全state/fault/exceptionの変換authorityは依然未許可。",
-      "source": "js/symbolic/query/memory-equivalence.js",
-      "verificationSuite": "focused-memory",
+      "assessment": "scalar proof-gated adoptionは既存transaction/verificationへ接続済み。さらに独立証明済みの到達不能conditional regionについて、no-PHI/no-MemoryPHIのflat-store bodyだけをrendered C ASTから削除し、producer-bound tombstone/provenanceとstale/history失敗時rollbackを必須化した。canonical IR/SSA/CFGは変更しない。terminal return/memory/control targetはobservableだが、native fault/exception/unwindと任意memory/CFG rewriteは未モデル化のため元要求はpartial。",
+      "source": "js/decompiler/phase8/projection.js",
+      "verificationSuite": "c4-proof-adoption-scoped",
       "originalRequirementAcceptedHere": false
     },
     {
@@ -433,7 +433,7 @@
       "complexity": "L",
       "findingId": "HEX-C4-04",
       "localStatus": "partial",
-      "currentAssessment": "generic normal-return PCをbyte equivalenceの独立observableに追加。native全state/fault/exceptionの変換authorityは依然未許可。",
+      "currentAssessment": "requested-target decisions、frozen width/operator matrices、real nonconstant proof-only publicationをactual committed/rendered scalar adoptionへ接続済み。copied/stale/unknown/refuted/budget-failed proofはcommitできない。ordinary legacy-view normalizationとexhaustive per-rule/full-width denominatorは未完了のため元FRはpartial。",
       "originalRequirementAcceptedHere": false
     },
     {
@@ -449,7 +449,7 @@
       "complexity": "XL",
       "findingId": "HEX-C4-04",
       "localStatus": "partial",
-      "currentAssessment": "generic normal-return PCをbyte equivalenceの独立observableに追加。native全state/fault/exceptionの変換authorityは依然未許可。",
+      "currentAssessment": "terminal return、all terminal memory bytes、terminal control targetはversioned observable。独立証明済みの到達不能flat-store conditional armはexact private region/body authorityと完全なremoval provenanceを要求するrender-only adoption境界を通る。canonical IR/SSA/CFGは不変。native fault/exception/unwind、任意CFG/memory rewrite、bounded-loop semantic equivalenceは未完了のため元FRはpartial。",
       "originalRequirementAcceptedHere": false
     },
     {
@@ -2238,6 +2238,40 @@
           ]
         }
       }
+    },
+    "c4ProofAdoption20260916": {
+      "date": "2026-09-16",
+      "preDocumentationHead": "6530c214a287fdf849d0d052650242e97b954f1c",
+      "status": "SCOPED-ADOPTION-PROVED",
+      "fullRoadmapComplete": false,
+      "globalTransformAuthorization": false,
+      "scope": "independently proved unreachable conditional-region render arm; no-PHI/no-MemoryPHI flat-store body only",
+      "canonicalIRMutation": false,
+      "failClosed": [
+        "copied public metadata cannot mint body authority",
+        "stale region/body authority refuses adoption",
+        "missing or truncated provenance/history rolls back",
+        "canonical Semantic IR/SSA/CFG remain unchanged"
+      ],
+      "focusedTests": [
+        "tests/phase8/structuring/conditional-region-body-authority.test.mjs",
+        "tests/phase8/structuring/conditional-region-body-projection.test.mjs",
+        "tests/phase8/substrate/proof-target-decisions.test.mjs",
+        "tests/phase9/memory/terminal-control-equivalence.test.mjs"
+      ],
+      "preDocumentationCi": {
+        "prFastGate": "success",
+        "userscriptHost": "success",
+        "phase7Ownership": "success",
+        "phase8Ownership": "success"
+      },
+      "remaining": [
+        "ordinary legacy-view normalization/adoption denominator",
+        "exhaustive per-rule/full-width scalar denominator",
+        "native fault/exception/unwind observables",
+        "arbitrary memory/CFG rewrite equivalence",
+        "whole-roadmap independent/device/release acceptance"
+      ]
     }
   },
   "integrationFollowupHistory": [
