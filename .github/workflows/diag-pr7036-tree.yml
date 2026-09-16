@@ -1,4 +1,4 @@
-name: Diagnose PR7036 merge conflicts
+name: Build PR7036 latest-main candidate
 
 on:
   push:
@@ -8,49 +8,75 @@ on:
       - '.github/workflows/diag-pr7036-tree.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  compare:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ac36cc16b42fb10fbd54b5bd3f1e1a6474ca902b
           fetch-depth: 1
-      - name: Verify current-main snapshot
+      - name: Fetch exact merge inputs
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "ac36cc16b42fb10fbd54b5bd3f1e1a6474ca902b"
-      - name: Fetch PR7036 merge inputs
-        shell: bash
-        run: |
-          set -euo pipefail
           timeout 90s git fetch --no-tags --depth=1 origin 178d386afc63c494d091fb3500c49361ab0a7dc7:refs/remotes/origin/pr7036-base
           timeout 90s git fetch --no-tags origin pull/7036/head:refs/remotes/origin/pr7036
-          test "$(git rev-parse refs/remotes/origin/pr7036-base)" = "178d386afc63c494d091fb3500c49361ab0a7dc7"
           test "$(git rev-parse refs/remotes/origin/pr7036)" = "837d0ce34668f65defac5f3517a802f366336158"
-      - name: Compute three-way conflict summary
+      - name: Build candidate tree, preserving current-main conflicts
+        id: candidate
         shell: bash
         run: |
           set -euo pipefail
+          BASE=refs/remotes/origin/pr7036-base
+          PR=refs/remotes/origin/pr7036
           set +e
-          timeout 120s git -c core.quotePath=false merge-tree --write-tree --name-only --messages --merge-base=refs/remotes/origin/pr7036-base HEAD refs/remotes/origin/pr7036 > /tmp/merge-tree.txt 2>&1
-          rc=$?
+          timeout 120s git -c core.quotePath=false merge-tree --write-tree --name-only --messages --merge-base="$BASE" HEAD "$PR" > /tmp/merge-tree.txt 2>&1
+          mrc=$?
           set -e
-          {
-            echo "current_main=$(git rev-parse HEAD)"
-            echo "pr_base=$(git rev-parse refs/remotes/origin/pr7036-base)"
-            echo "pr_head=$(git rev-parse refs/remotes/origin/pr7036)"
-            echo "merge_tree_rc=$rc"
-            echo "--- merge-tree output ---"
-            cat /tmp/merge-tree.txt
-          } > diag-pr7036-conflicts.txt
-      - name: Upload summary
-        uses: actions/upload-artifact@v4
-        with:
-          name: diag-pr7036-conflicts
-          path: diag-pr7036-conflicts.txt
-          retention-days: 1
+          test "$mrc" = 1
+          tree=$(head -n 1 /tmp/merge-tree.txt)
+          awk 'NR==1{next} NF==0{exit} {print}' /tmp/merge-tree.txt > /tmp/conflicts.txt
+          test "$(wc -l < /tmp/conflicts.txt | tr -d ' ')" = 25
+          rm -f /tmp/candidate.index
+          GIT_INDEX_FILE=/tmp/candidate.index git read-tree "$tree"
+          while IFS= read -r p; do
+            entry=$(git ls-tree HEAD -- "$p")
+            if [ -z "$entry" ]; then
+              GIT_INDEX_FILE=/tmp/candidate.index git update-index --force-remove -- "$p"
+            else
+              mode=$(printf '%s\n' "$entry" | awk '{print $1}')
+              sha=$(printf '%s\n' "$entry" | awk '{print $3}')
+              GIT_INDEX_FILE=/tmp/candidate.index git update-index --add --cacheinfo "$mode,$sha,$p"
+            fi
+          done < /tmp/conflicts.txt
+          resolved=$(GIT_INDEX_FILE=/tmp/candidate.index git write-tree)
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          candidate=$(printf '%s\n' 'reconcile #7036 onto current main; preserve current-main conflict authority' | git commit-tree "$resolved" -p HEAD -p "$PR")
+          echo "sha=$candidate" >> "$GITHUB_OUTPUT"
+          echo "$candidate" > candidate-sha.txt
+          git checkout --detach "$candidate"
+      - name: Syntax preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 150s node tests/check.mjs
+      - name: Focused solver and semantic boundary preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 180s node --test \
+            tests/issue-5498-eligibility-result-status-authority.mjs \
+            tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs \
+            tests/semantic-v2/issue-4513-memoryssa-access-provider-completeness.test.mjs \
+            tests/phase4/binary/issue-4358-elf-dynamic-xindex-common.test.mjs
+      - name: Publish clean candidate branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 60s git push origin "${{ steps.candidate.outputs.sha }}:refs/heads/reconcile/pr7036-current-main-20260917"
