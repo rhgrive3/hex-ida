@@ -408,7 +408,7 @@ function exposeStableIdentityInputs(context, app) {
       legacyId: context.binaryId == null ? null : String(context.binaryId),
     };
   });
-  define('projectId', () => app.project?.id || app.currentProject?.id || app.workspace?.project?.binary?.hash || app.activeProject?.binary?.hash || app.project?.binaryHash || null);
+  define('projectId', () => app.project?.id || app.currentProject?.id || app.workspace?.project?.id || app.activeProject?.id || null);
   define('sliceIndex', () => app.store?.get?.('sliceIndex') ?? null);
   define('architecture', () => app.store?.get?.('architecture') || app.store?.get?.('capability')?.architecture || null);
   define('fileInfo', () => app.store?.get?.('fileInfo') || null);
