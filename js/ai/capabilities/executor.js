@@ -150,7 +150,10 @@ const currentState = APPROVAL_STATE_IDS.has(id)
 ? await this.approvalState(id, executionArgs, runtimePlatform)
 : undefined;
 assertMutationContext(context, this.app, runtimePlatform);
-if (!consumeProposalAuthorization(options.authorization, id, executionArgs, currentState)) {
+if (entry.requiresApproval && !consumeProposalAuthorization(options.authorization, id, executionArgs, currentState)) {
+throw new AIError('approval_required', `Capability ${id} requires an approved proposal authorization.`);
+}
+if (!entry.requiresApproval && !consumeProposalAuthorization(options.authorization, id, executionArgs, currentState)) {
 throw new AIError('approval_required', `Capability ${id} requires an approved proposal authorization.`);
 }
 commitGuard = () => {
