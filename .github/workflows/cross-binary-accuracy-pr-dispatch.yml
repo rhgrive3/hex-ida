@@ -1,0 +1,52 @@
+name: Cross-binary accuracy PR dispatcher
+
+on:
+  pull_request:
+    paths:
+      - 'js/**'
+      - '!js/ai/**'
+      - '!js/ui/**'
+      - '!js/managed/**'
+      - '!js/userscript/**'
+      - 'tests/accuracy*.mjs'
+      - 'tests/harness.mjs'
+      - 'tests/fixtures/real-binaries.json'
+      - 'tests/oracle.py'
+      - 'tests/oracle-cfg-normalize.py'
+      - 'tests/oracle-requirements.txt'
+      - 'tests/issue-497-cross-binary-workflow.mjs'
+      - 'tests/issue-3123-cross-binary-partitions.mjs'
+      - 'tests/issue-500-matcher-budget.mjs'
+      - 'tools/benchmark/**'
+      - 'scripts/fetch-real-fixtures.mjs'
+      - 'scripts/accuracy-partition-cache-key.mjs'
+      - 'package.json'
+      - '.github/workflows/cross-binary-accuracy.yml'
+      - '.github/workflows/cross-binary-accuracy-pr-dispatch.yml'
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch Cross-binary accuracy at exact PR head
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          actual=$(timeout 30s gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${HEAD_REF}" --jq '.object.sha')
+          if [[ "$actual" != "$HEAD_SHA" ]]; then
+            echo "::error::PR head moved before accuracy dispatch (expected=$HEAD_SHA actual=$actual)"
+            exit 1
+          fi
+          timeout 30s gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/cross-binary-accuracy.yml/dispatches" \
+            -f ref="$HEAD_REF" \
+            -F 'inputs[pr_exact_head]=true'

@@ -57,6 +57,19 @@ test('#4310 invalid (non-object) custom input item is handled explicitly', () =>
   ));
 });
 
+
+test('#4310 custom input collection, shape, kind, and ids fail closed', () => {
+  const hypothesis = { id: 'h1', functionAddress: 0x1000n, fieldOffset: 0n, operation: 'set' };
+  assertInvalidInput(() => compileExperiment(hypothesis, { inputs: { id:'x', kind:'scalar', value:1n } }));
+  assertInvalidInput(() => compileExperiment(hypothesis, { inputs: [[]] }));
+  assertInvalidInput(() => compileExperiment(hypothesis, { inputs: [{ id:'x', kind:'pointer', value:1n }] }));
+  assertInvalidInput(() => compileExperiment(hypothesis, { inputs: [{ id:'', kind:'scalar', value:1n }] }));
+  assertInvalidInput(() => compileExperiment(hypothesis, { inputs: [
+    { id:'dup', kind:'scalar', value:1n },
+    { id:'dup', kind:'scalar', value:2n },
+  ] }));
+});
+
 test('#4310 canonical custom scalar / pointer integer inputs are preserved', () => {
   const fromBigInt = compileExperiment(
     { id: 'h1', functionAddress: 0x1000n, fieldOffset: 0n, fieldSize: 8, signed: false, initial: 0n, operation: 'set' },

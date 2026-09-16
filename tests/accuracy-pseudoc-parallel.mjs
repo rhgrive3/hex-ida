@@ -3,7 +3,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { pseudocSamples } from './accuracy-pseudoc-shard-oracle.mjs';
+import { pseudocSamples, pseudocShardSamples } from './accuracy-pseudoc-shard-oracle.mjs';
 import { pseudocResult } from './accuracy-pseudoc-eval.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -15,17 +15,24 @@ const opt = (name, fallback) => {
 
 const target = opt('target', null);
 const oraclePath = opt('oracle', null);
-const workers = Math.max(1, Math.min(4, Number(opt('workers', '4')) || 4));
+const workers = Math.max(1, Math.min(4, Number(opt('workers', '2')) || 2));
+const shardCount = Math.max(1, Number(opt('shard-count', '1')) || 1);
+const shardIndex = Math.max(0, Number(opt('shard-index', '0')) || 0);
+if (!Number.isSafeInteger(shardCount) || !Number.isSafeInteger(shardIndex) || shardIndex >= shardCount) {
+  throw new Error(`invalid pseudoc shard ${shardIndex}/${shardCount}`);
+}
 const json = argv.includes('--json');
 if (!target || !oraclePath) {
-  console.error('usage: node tests/accuracy-pseudoc-parallel.mjs --target=<binary> --oracle=<oracle.json.gz> [--workers=4] [--json]');
+  console.error('usage: node tests/accuracy-pseudoc-parallel.mjs --target=<binary> --oracle=<oracle.json.gz> [--workers=2] [--shard-index=0 --shard-count=1] [--json]');
   process.exit(2);
 }
 
 const oracle = JSON.parse(zlib.gunzipSync(fs.readFileSync(oraclePath)).toString('utf8'));
 if (!Array.isArray(oracle.functionStarts)) throw new Error('oracle.functionStarts is required');
-const samples = pseudocSamples(oracle.functionStarts);
-if (samples.length !== 120) throw new Error(`expected the canonical 120 pseudoc samples, got ${samples.length}`);
+const canonicalSamples = pseudocSamples(oracle.functionStarts);
+if (canonicalSamples.length !== 120) throw new Error(`expected the canonical 120 pseudoc samples, got ${canonicalSamples.length}`);
+const samples = pseudocShardSamples(oracle.functionStarts, shardIndex, shardCount);
+if (!samples.length) throw new Error(`pseudoc shard ${shardIndex}/${shardCount} is empty`);
 
 let next = 0;
 let finished = 0;

@@ -114,17 +114,36 @@ test('#8864: successive non-empty plans attach only their own bound records', as
     'turn B must receive only records bound to plan B');
 });
 
-test('#8864: a genuinely verified current candidate maps raw source IDs to canonical records', async () => {
+test('#8864: a genuinely verified deterministic current candidate maps raw source IDs to canonical records', async () => {
   const best = candidate({ evidence: ['raw-1'], verification: { verified: true, evidenceIds: ['raw-1'] } });
   const plan = planFor({ best, evidence: ['raw-1'], missingEvidence: [] });
-  const { runtime } = harness({ plans: [plan], decisions: [providerDecision({})] });
+  const { runtime } = harness({ plans: [plan], decisions: [], provider: false });
   const result = await agentTurn(runtime, 'find the function that updates the counter');
   assert.ok(result.evidence.length >= 2, 'candidate-source and candidate-verification records both bind');
   assert.equal(result.evidence.every((item) => item.status === 'verified'), true);
-  assert.ok(result.confidence > 0.5, 'verified current-plan evidence may carry the answer');
-  assert.ok(result.answer.includes('Hex が確認できた根拠は'), 'confirmed prose is allowed for verified evidence');
+  assert.ok(result.confidence > 0.5, 'verified deterministic current-plan evidence may carry the answer');
+  assert.ok(result.answer.includes('Hex が確認できた根拠は'), 'confirmed prose is allowed for deterministic verified evidence');
   const ids = new Set(result.evidence.map((item) => item.id));
   assert.ok([...ids].every((id) => /^ev_[0-9a-f]{32}$/.test(id)), 'cited ids are canonical record ids');
+});
+
+test('#9009 review blocker: provider address-free final cannot inherit plan authority by omitting citations', async () => {
+  const best = candidate({ evidence: ['raw-1'], verification: { verified: true, evidenceIds: ['raw-1'] } });
+  const plan = planFor({ best, evidence: ['raw-1'], missingEvidence: [] });
+  const { runtime } = harness({
+    plans: [plan],
+    decisions: [providerDecision({
+      answer: 'candidate_A definitely deletes every user account.',
+      evidenceIds: [],
+    })],
+  });
+  const result = await agentTurn(runtime, 'find the function that updates the counter');
+  assert.ok(result.evidence.length >= 2, 'current-plan evidence may remain attached as provenance');
+  assert.equal(result.evidence.every((item) => item.status === 'verified'), true);
+  assert.ok(result.confidence <= 0.5, `provider prose must not inherit plan authority, got ${result.confidence}`);
+  assert.ok(!result.answer.includes('Hex が確認できた根拠は'), 'provider prose must not be presented as confirmed');
+  const session = await runtime.sessionStore.get(result.sessionId);
+  assert.deepEqual(session.investigationMemory?.confirmedFacts || [], [], 'untrusted provider prose must persist no confirmed facts');
 });
 
 test('#8864: the session-global planner scan is gone from the fallback', () => {

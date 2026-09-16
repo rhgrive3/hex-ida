@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { parseDex, probeDex } from '../../../js/managed/dex/parser.js';
 import { validateDexMap } from '../../../js/managed/dex/map-validation.js';
+import { applyDexIntegrity } from '../fixtures/dex-integrity.mjs';
 
 console.log('[phase11] running dex parser tests...');
 
@@ -53,7 +54,7 @@ export function buildMinimalDex() {
   view.setUint32(0x148, 0, true); view.setUint32(0x14c, 2, true);
   buf.set([0x12, 0x10, 0x0e, 0x00], 0x150);
   writeMap(buf);
-  return buf;
+  return applyDexIntegrity(buf);
 }
 
 function expectTypeError(bytes, code, parser = parseDex) {
@@ -162,7 +163,7 @@ function buildVariableMapDex(type, payload, version = '035') {
     view.setUint16(pos, itemType, true); view.setUint16(pos + 2, 0, true);
     view.setUint32(pos + 4, size, true); view.setUint32(pos + 8, offset, true);
   }
-  return bytes;
+  return applyDexIntegrity(bytes);
 }
 
 for (const [type, payload] of [

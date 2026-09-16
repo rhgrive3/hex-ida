@@ -185,6 +185,7 @@ export class Backend {
     this.contentHash = null;
     this.binaryId = null;
     this._binaryIdPromise = null;
+    this._binaryIdFlight = null;
     this.disposed = false;
     this.analysisRoute = normalizeAnalysisRoute(options.analysisRoute ?? configuredAnalysisRoute());
     this._artifactOrchestrator = options.artifactOrchestrator ?? null;
@@ -508,6 +509,8 @@ export class Backend {
     this.arm64Bridge=nextBridge;
     this.contentHash=null;
     this.binaryId=null;
+    this._binaryIdFlight?.controller.abort(cancelledRequestError('Binary identity superseded by a new file.'));
+    this._binaryIdFlight=null;
     this._binaryIdPromise=null;
     return result;
   }
@@ -786,23 +789,64 @@ export class Backend {
   async ensureBinaryId(options = {}) {
     if (this.binaryId) return this.binaryId;
     if (!this.file) throw new Error('binary-id-file-unavailable');
+    if (options.signal?.aborted) throw cancelledRequestError(String(options.signal.reason || 'Binary identity request cancelled.'));
     const file = this.file;
-    if (!this._binaryIdPromise) {
-      this._binaryIdPromise = sha256BlobHex(file, {
+    let flight = this._binaryIdFlight;
+    if (flight?.controller.signal.aborted && flight.waiters.size === 0) {
+      if (this._binaryIdFlight === flight) this._binaryIdFlight = null;
+      if (this._binaryIdPromise === flight.promise) this._binaryIdPromise = null;
+      flight = null;
+    }
+    if (!flight) {
+      const controller = new AbortController();
+      flight = { file, controller, waiters:new Set(), settled:false, promise:null };
+      flight.promise = sha256BlobHex(file, {
         chunkBytes:options.chunkBytes,
-        signal:options.signal ?? null,
-        onProgress:options.onProgress,
+        signal:controller.signal,
+        onProgress:(progress) => {
+          for (const waiter of flight.waiters) {
+            try { waiter.onProgress?.(progress); } catch { /* progress observers cannot own the producer */ }
+          }
+        },
       }).then((result) => {
         if (this.file !== file) throw new StaleRequestError();
         const binaryId = createBinaryIdFromDigest(result.hex);
         this.binaryId = binaryId;
         return binaryId;
-      }).catch((error) => {
-        this._binaryIdPromise = null;
-        throw error;
+      }).finally(() => {
+        flight.settled = true;
+        if (this._binaryIdFlight === flight) this._binaryIdFlight = null;
+        if (this._binaryIdPromise === flight.promise) this._binaryIdPromise = null;
       });
+      flight.promise.catch(() => {});
+      this._binaryIdFlight = flight;
+      this._binaryIdPromise = flight.promise;
     }
-    return this._binaryIdPromise;
+    const signal = options.signal ?? null;
+    const waiter = { onProgress:typeof options.onProgress === 'function' ? options.onProgress : null };
+    flight.waiters.add(waiter);
+    return new Promise((resolve, reject) => {
+      let done = false;
+      const detach = (consumerCancelled = false) => {
+        if (done) return;
+        done = true;
+        signal?.removeEventListener?.('abort', onAbort);
+        flight.waiters.delete(waiter);
+        if (consumerCancelled && !flight.settled && flight.waiters.size === 0) {
+          flight.controller.abort(cancelledRequestError('Binary identity has no active consumers.'));
+        }
+      };
+      const onAbort = () => {
+        detach(true);
+        reject(cancelledRequestError(String(signal?.reason || 'Binary identity request cancelled.')));
+      };
+      signal?.addEventListener?.('abort', onAbort, { once:true });
+      if (signal?.aborted) return onAbort();
+      flight.promise.then(
+        (value) => { detach(false); resolve(value); },
+        (error) => { detach(false); reject(error); },
+      );
+    });
   }
 
   async _analyzeArtifactPublic(sliceIndex, options = {}) {
@@ -995,7 +1039,8 @@ export class Backend {
     this.disposed = true;
     const failure = new Error('Backend has been disposed.'); failure.code = 'BACKEND_DISPOSED';
     this.analysisEpoch++; this.transportEpoch++;
-    this.binaryId = null; this._binaryIdPromise = null;
+    this._binaryIdFlight?.controller.abort(cancelledRequestError('Backend disposed.'));
+    this.binaryId = null; this._binaryIdPromise = null; this._binaryIdFlight = null;
     this.resetCache();
     this._releaseDisassembly(failure);
     this._archProbeFinish?.({ ok:false, error:failure.message, support:{ arm64:false, x86_64:false } });

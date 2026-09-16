@@ -135,11 +135,21 @@ export function compileExperiment(hypothesis, options = {}) {
   const argIndex = integerInRange(hypothesis.argumentIndex, 1, 0, 31, 'argumentIndex');
   if (fieldOffset != null && argIndex === 0) throw new DebugAdapterError('invalid-hypothesis', 'argumentIndex 0 conflicts with objectBase for field experiments');
   const pointerInput = hypothesis.argumentKind === 'pointer' || hypothesis.pointer === true;
-  const inputs = options.inputs || generateDifferentialInputs({ bits:fieldSize <= 4 ? 32 : 64, signed, boundary:hypothesis.boundary ?? hypothesis.clampMin ?? hypothesis.clampMax, pointer:pointerInput, limit:options.limit ?? 12 });
+  const customInputs = options.inputs != null;
+  if (customInputs && !Array.isArray(options.inputs)) throw new DebugAdapterError('invalid-experiment-input', 'options.inputs must be an array');
+  const inputs = customInputs ? options.inputs : generateDifferentialInputs({ bits:fieldSize <= 4 ? 32 : 64, signed, boundary:hypothesis.boundary ?? hypothesis.clampMin ?? hypothesis.clampMax, pointer:pointerInput, limit:options.limit ?? 12 });
   const cases = [];
-  for (const item of inputs) {
-    if (item == null || typeof item !== 'object') throw new DebugAdapterError('invalid-experiment-input', 'each experiment input must be an object');
-    if (item.kind !== 'scalar' && !(pointerInput && item.kind === 'pointer')) continue;
+  const inputIds = new Set();
+  for (let inputIndex = 0; inputIndex < inputs.length; inputIndex++) {
+    const item = inputs[inputIndex];
+    if (item == null || typeof item !== 'object' || Array.isArray(item)) throw new DebugAdapterError('invalid-experiment-input', `options.inputs[${inputIndex}] must be an object`);
+    if (item.kind !== 'scalar' && !(pointerInput && item.kind === 'pointer')) {
+      if (customInputs) throw new DebugAdapterError('invalid-experiment-input', `options.inputs[${inputIndex}].kind is not valid for this experiment`);
+      continue;
+    }
+    if (typeof item.id !== 'string' || item.id.trim() === '') throw new DebugAdapterError('invalid-experiment-input', `options.inputs[${inputIndex}].id must be a non-empty string`);
+    if (inputIds.has(item.id)) throw new DebugAdapterError('invalid-experiment-input', `duplicate experiment input id: ${item.id}`);
+    inputIds.add(item.id);
     const value = strictMachineInteger(item.value);
     if (value == null) throw new DebugAdapterError('invalid-experiment-input', 'experiment input value must be a machine integer (exact BigInt, safe number, or integer string)');
     const args = Array.from({length:Math.max(argIndex + 1, 2)}, () => 0n); args[0] = objectBase; args[argIndex] = value;

@@ -210,7 +210,7 @@ function foldInstruction(inst) {
       return uint(sint(args[0], sourceBits), bits);
     }
   }
-  if (inst.op === V1_OP.BIN && args.length >= 2 && args[0] != null && args[1] != null) {
+  if (inst.op === V1_OP.BIN && args.length === 2 && args[0] != null && args[1] != null) {
     const [a, b] = args;
     if (inst.sub === 'add') return uint(a + b, bits);
     if (inst.sub === 'sub') return uint(a - b, bits);

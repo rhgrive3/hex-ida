@@ -211,6 +211,26 @@ export function qualifyingEvidence(evidence, claimAddresses = null) {
 }
 
 /**
+ * Claim-authorizing evidence for one final decision.
+ *
+ * Provider/model prose is untrusted authority input. When it asserts no typed
+ * subject that Hex can bind deterministically, merely selecting a real
+ * `verified` record cannot make an arbitrary address-free sentence terminal
+ * (#9009). Deterministic first-party fallbacks retain the historical
+ * address-free contract because their claim is produced by Hex from the plan,
+ * not authored by the provider.
+ */
+export function finalAnswerAuthorityEvidence(
+  evidence,
+  claimAddresses = null,
+  { providerControlled = false, allowAddressFreeDeterministicFallback = false } = {},
+) {
+  const hasTypedClaim = claimAddresses instanceof Set && claimAddresses.size > 0;
+  if (providerControlled && !hasTypedClaim && !allowAddressFreeDeterministicFallback) return [];
+  return qualifyingEvidence(evidence, claimAddresses);
+}
+
+/**
  * Substitute evidence for a decision that made no explicit citation.
  *
  * Only records bound to the *current* plan qualify, and only at the authority
@@ -237,9 +257,11 @@ export function deterministicConfidence(plan) {
   if (plan?.best?.semanticFacts?.length) return 0.78;
   return plan?.best ? 0.45 : 0;
 }
-export function presentAnswer(answer, style, evidence, plan, claimAddresses = null) {
+export function presentAnswer(answer, style, evidence, plan, claimAddresses = null, authorityEvidence = null) {
   if (style === 'analyst') return answer;
-  const verified = qualifyingEvidence(evidence, claimAddresses).length;
+  const verified = Array.isArray(authorityEvidence)
+    ? authorityEvidence.length
+    : qualifyingEvidence(evidence, claimAddresses).length;
   const unverified = Math.max(0, (evidence || []).length - verified);
   // Beginner prose must not call a merely `supported` ranking record a
   // confirmed fact (#8864), and must not call an unrelated verified fact

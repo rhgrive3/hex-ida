@@ -215,6 +215,26 @@ function relocationResultFailure(result) {
   return null;
 }
 
+function loaderReparseResultFailure(result, context) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return 'validator-loader-result-invalid';
+  const image = result.image;
+  const checks = [
+    [validatorIdentityValues(result, image, ['format'], 'format'), 'validator-format-identity-required', 'validator-format-invalid', 'validator-format-mismatch', context.transaction.format, (value) => value.toLowerCase()],
+    [validatorIdentityValues(result, image, ['architecture', 'arch'], 'arch'), 'validator-architecture-identity-required', 'validator-architecture-invalid', 'validator-architecture-mismatch', context.transaction.architecture, (value) => value.toLowerCase()],
+    [validatorIdentityValues(result, image, ['loaderVersion', 'parserVersion'], 'loaderVersion'), 'validator-loader-identity-required', 'validator-loader-identity-invalid', 'validator-loader-identity-mismatch', context.transaction.loaderVersion, (value) => value],
+    [validatorIdentityValues(result, image, ['outputHash', 'bytesHash'], 'outputHash'), 'validator-output-identity-required', 'validator-output-identity-invalid', 'validator-output-identity-mismatch', context.expectedOutputHash, (value) => value.toLowerCase()],
+  ];
+  for (const [values, missingReason, invalidReason, mismatchReason, expected, normalize] of checks) {
+    if (!values.length) return missingReason;
+    if (values.some((value) => typeof value !== 'string' || !value.trim())) return invalidReason;
+    if (values.some((value) => normalize(value) !== normalize(String(expected)))) return mismatchReason;
+  }
+  const sourceHashes = validatorIdentityValues(result, image, ['sourceHash', 'inputHash'], 'sourceHash');
+  if (sourceHashes.some((value) => typeof value !== 'string' || !value.trim())) return 'validator-source-identity-invalid';
+  if (sourceHashes.some((value) => value.toLowerCase() !== context.transaction.sourceHash)) return 'validator-source-identity-mismatch';
+  return null;
+}
+
 function independentOracleResultFailure(result, context) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return 'independent-oracle-result-invalid';
   if (result.schemaVersion !== INDEPENDENT_ORACLE_RESULT_SCHEMA) return 'independent-oracle-contract-invalid';
@@ -944,6 +964,10 @@ async function executeExternal(name, fn, context) {
       return validatorResult(name, true, false, result?.reason || `validator-status-${result.status}`, result);
     }
     if (result.ok !== true && result.status !== 'passed' && result.status !== 'valid') return validatorResult(name, true, false, result?.reason || 'validator-rejected', result || null);
+    if (name === 'loader-reparse') {
+      const contractFailure = loaderReparseResultFailure(result, context);
+      if (contractFailure) return validatorResult(name, true, false, contractFailure, result);
+    }
     const identityFailure = formatIdentityMismatch(result, context.transaction, context.expectedOutputHash);
     if (identityFailure) return validatorResult(name, true, false, identityFailure, result);
     const relocationFailure = name === 'relocations' ? relocationResultFailure(result) : null;

@@ -9,7 +9,7 @@ import { createAgentJobManager } from './jobs/index.js';
 import { InvestigationSessionStore, isValidSessionId } from './session-core/index.js';
 import { sanitizeActions, addressText, validateSchema } from './validation.js';
 import { executeTurn } from './control/turn-executor.js';
-import { addressExistsAsync, assertLiveBindingsUnchanged, claimedAddresses, defaultMonotonicNow, deterministicConfidence, fallbackEvidence, presentAnswer, qualifyingEvidence } from './control/runtime-support.js';
+import { addressExistsAsync, assertLiveBindingsUnchanged, claimedAddresses, defaultMonotonicNow, deterministicConfidence, fallbackEvidence, finalAnswerAuthorityEvidence, presentAnswer, qualifyingEvidence } from './control/runtime-support.js';
 import { canonicalBindingId, resolveAnalysisRevision } from './control/snapshot.js';
 import { analysisBinding } from './tools/storage/observation-store.js';
 
@@ -120,7 +120,7 @@ export class AIRuntime {
   async runJobSlice(jobOrId, options = {}) { return this.jobs.runSlice(jobOrId, options); }
   async resumeJob(id, options = {}) { return this.jobs.resume(id, options); }
 
-  async finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, monotonicNow = defaultMonotonicNow, limitReason, registry, snapshot, effectiveScope, stores, signal, assertFresh = null }) {
+  async finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, monotonicNow = defaultMonotonicNow, limitReason, registry, snapshot, effectiveScope, stores, signal, assertFresh = null, providerControlledDecision = false, deterministicDecisionProvenance = false }) {
     // Store authority comes from the turn's captured namespace, never from the
     // shared fields: a concurrent turn re-points `this.*Store` across awaits
     // and would otherwise swap this turn's evidence/hypothesis/proposal
@@ -184,7 +184,13 @@ export class AIRuntime {
     // about `0xDEAD` (#9009), which is the same trust boundary HypothesisStore
     // already enforces for model-created hypotheses.
     const claimAddresses = claimedAddresses(decision.answer, request.goal);
-    const authorityEvidence = qualifyingEvidence(finalEvidence, claimAddresses);
+    const authorityEvidence = finalAnswerAuthorityEvidence(finalEvidence, claimAddresses, {
+      providerControlled: providerControlledDecision,
+      // A provider that made no explicit citation may still consume the exact
+      // verified record set bound to this turn's deterministic plan (#8864).
+      // This is Hex-owned fallback authority, not model-selected session state.
+      allowAddressFreeDeterministicFallback: deterministicDecisionProvenance === true,
+    });
     if (authorityEvidence.length < finalEvidence.filter((item) => item?.status === 'verified').length) {
       activity.push({ type: 'consistency-check', label: '引用された検証済み記録が最終回答の主張住所を証明していないため、権限を付与せず根拠提示のみとしました', timestamp: new Date().toISOString() });
     }
@@ -197,7 +203,7 @@ export class AIRuntime {
       : 0;
     return {
       mode: request.mode, style: request.style,
-      answer: presentAnswer(String(decision.answer || ''), request.style, finalEvidence, plan, claimAddresses), confidence, evidence: finalEvidence, hypotheses, actions,
+      answer: presentAnswer(String(decision.answer || ''), request.style, finalEvidence, plan, claimAddresses, authorityEvidence), confidence, evidence: finalEvidence, hypotheses, actions,
       proposals,
       followups: (decision.followups || []).map(String).slice(0, 8), activity,
       usage: { modelCalls, toolCalls, elapsedMs, contextBytes, ...wireUsage, candidateCount: plan?.candidates?.length || 0, analyzedFunctions: plan?.stats?.analyzedFunctions || 0, disassembly: Math.max(plan?.stats?.disassembly || 0, registry.analysisStats?.disassembly || 0), toolCost: registry.accounting.cost },
