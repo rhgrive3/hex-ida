@@ -18,11 +18,20 @@ const TYPE_ACCESS = 0x00000001; // Public
 // size class. Nothing here reuses production layout code, so the production
 // readers have to do their own indexing (#8791).
 function buildMethodImage({ methods = 4_000, padTo = 524_288, signature = VOID_SIGNATURE, body = [0x2a] } = {}) {
-  const TYPE_NAME = 1, METHOD_NAME = 3;
+  const TYPE_NAME = 1;
   const blobBytes = new Uint8Array(align4(2 + signature.length));
   blobBytes[1] = signature.length; blobBytes.set(signature, 2); // #Blob index 1
-  const stringBytes = new Uint8Array(align4(utf8('\0T\0M\0').length));
-  stringBytes.set(utf8('\0T\0M\0'));
+  // ECMA-335 II.22.26 forbids two MethodDef rows with one (owner, Name, Signature)
+  // identity, so every synthetic row carries its own name; the #8791 subject is
+  // the metadata-index build count, not name aliasing.
+  const stringHeap = [0, ...utf8('T'), 0];
+  const methodNameOffsets = Array.from({ length: methods }, (_, row) => {
+    const offset = stringHeap.length;
+    stringHeap.push(...utf8(`M${row}`), 0);
+    return offset;
+  });
+  const stringBytes = new Uint8Array(align4(stringHeap.length));
+  stringBytes.set(stringHeap);
 
   const tables = new Uint8Array(align4(24 + 2 * 4 + 14 * (methods + 1)));
   const tv = new DataView(tables.buffer);
@@ -53,7 +62,7 @@ function buildMethodImage({ methods = 4_000, padTo = 524_288, signature = VOID_S
     view.setUint32(methodRows + row * 14, 0x2000 + (bodyOffset - 0x200), true); // RVA
     view.setUint16(methodRows + row * 14 + 4, 0, true); // ImplFlags
     view.setUint16(methodRows + row * 14 + 6, METHOD_ACCESS, true);
-    view.setUint16(methodRows + row * 14 + 8, METHOD_NAME, true);
+    view.setUint16(methodRows + row * 14 + 8, methodNameOffsets[row], true);
     view.setUint16(methodRows + row * 14 + 10, 1, true); // signature -> #Blob index 1
     view.setUint16(methodRows + row * 14 + 12, 1, true); // ParamList
     view.setUint8(bodyOffset, (body.length << 2) | 0x02); // tiny header
