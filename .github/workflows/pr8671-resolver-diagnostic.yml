@@ -2,8 +2,7 @@ name: PR 8671 resolver diagnostic
 
 on:
   push:
-    branches:
-      - integration-candidate/benchmark-auth-20260914
+    branches: [integration-candidate/benchmark-auth-20260914]
 
 permissions:
   contents: read
@@ -20,8 +19,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf pr8671-tree-plan
-          mkdir -p pr8671-tree-plan/new
+          rm -rf pr8671-tree-plan && mkdir -p pr8671-tree-plan/new
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config merge.conflictstyle diff3
           git fetch --no-tags origin main
           export MAIN_SHA="$(git rev-parse origin/main)"
@@ -34,97 +34,87 @@ jobs:
           if [ "$ms" -ne 1 ]; then printf 'merge-status=unexpected-%s\n' "$ms" > pr8671-tree-plan/error.txt; exit 0; fi
           python <<'PY'
           from pathlib import Path
-          import json,re,subprocess,traceback
-          err=Path('pr8671-tree-plan/error.txt')
-          try:
-              def r(path,mode):
-                  p=Path(path); lines=p.read_text().splitlines(True); out=[]; i=0
-                  while i<len(lines):
-                      if not lines[i].startswith('<<<<<<<'): out.append(lines[i]); i+=1; continue
-                      i+=1; a=[]; b=[]; c=[]
-                      while i<len(lines) and not lines[i].startswith('|||||||'): a.append(lines[i]); i+=1
-                      if i>=len(lines): raise RuntimeError('missing diff3 '+path)
-                      i+=1
-                      while i<len(lines) and not lines[i].startswith('======='): b.append(lines[i]); i+=1
-                      if i>=len(lines): raise RuntimeError('missing separator '+path)
-                      i+=1
-                      while i<len(lines) and not lines[i].startswith('>>>>>>>'): c.append(lines[i]); i+=1
-                      if i>=len(lines): raise RuntimeError('missing end '+path)
-                      i+=1; out.extend(a if mode=='ours' else a+c)
-                  p.write_text(''.join(out))
-              for p in ['js/ai/dev/ui/settings.js','js/ai/ui/assistant.js','js/userscript/loader.js']: r(p,'ours')
-              for p in ['tests/phase7/ownership/cross-lane-routing.test.mjs','tools/validation/phase7/cross-lane-inventory.mjs']: r(p,'union')
-              def sj(n,p): return json.loads(subprocess.check_output(['git','show',f':{n}:{p}'],text=True))
-              b,o,t=sj(1,'package.json'),sj(2,'package.json'),sj(3,'package.json'); conflicts=[]
-              def m3(b,o,t,path=''):
-                  if o==t:return o
-                  if o==b:return t
-                  if t==b:return o
-                  if isinstance(b,dict) and isinstance(o,dict) and isinstance(t,dict):
-                      d={}; miss=object()
-                      for k in dict.fromkeys([*b,*o,*t]):
-                          bv,ov,tv=b.get(k,miss),o.get(k,miss),t.get(k,miss)
-                          if bv is miss:
-                              if ov is miss:d[k]=tv
-                              elif tv is miss:d[k]=ov
-                              elif ov==tv:d[k]=ov
-                              else:conflicts.append(path+'/'+k);d[k]=ov
-                          elif ov is miss or tv is miss:
-                              if ov is miss and tv==bv:continue
-                              if tv is miss and ov==bv:continue
-                              conflicts.append(path+'/'+k);d[k]=ov if ov is not miss else tv
-                          else:d[k]=m3(bv,ov,tv,path+'/'+k)
-                      return d
-                  conflicts.append(path);return o
-              pkg=m3(b,o,t)
-              if conflicts!=['/scripts/test']: raise RuntimeError(str(conflicts))
-              prefix='node --test tests/public-benchmark/runner-hardening.test.mjs && npm run auth:test && '
-              pkg['scripts']['test']=t['scripts']['test'] if t['scripts']['test'].startswith(prefix) else prefix+t['scripts']['test']
-              Path('package.json').write_text(json.dumps(pkg,separators=(',',':'))+'\n')
-              p=Path('scripts/build-userscript.mjs'); text=p.read_text()
-              repl="""const runtimeLocator = `/_runtime/${buildId}`;\nconst releaseManifest = Object.freeze({\n  buildId,\n  runtimeVersion,\n  contentHash,\n  compression: 'gzip',\n  runtimeLocator,\n  byteLength: ciphertext.length,\n});\nconst releaseManifestHash = sha256(Buffer.from(JSON.stringify(releaseManifest), 'utf8'));\nconst manifest = Object.freeze({ buildId, privileged, runtimeVersion, ciphertextHash: sha256(ciphertext), contentHash, iv: b64(iv), aad, compression: 'gzip', assetPath, byteLength: ciphertext.length });\n"""
-              text,n=re.subn(r'^<<<<<<< .*?^>>>>>>> .*?\n',repl,text,count=1,flags=re.M|re.S)
-              if n!=1: raise RuntimeError('build conflict count '+str(n))
-              p.write_text(text)
-          except Exception as e:
-              err.write_text('resolve: '+type(e).__name__+': '+str(e)+'\n')
-              raise SystemExit(0)
+          import json,re,subprocess
+          def resolve(path,mode):
+              p=Path(path); lines=p.read_text().splitlines(True); out=[]; i=0
+              while i<len(lines):
+                  if not lines[i].startswith('<<<<<<<'): out.append(lines[i]); i+=1; continue
+                  i+=1; ours=[]; base=[]; theirs=[]
+                  while i<len(lines) and not lines[i].startswith('|||||||'): ours.append(lines[i]); i+=1
+                  if i>=len(lines): raise RuntimeError('missing diff3 '+path)
+                  i+=1
+                  while i<len(lines) and not lines[i].startswith('======='): base.append(lines[i]); i+=1
+                  if i>=len(lines): raise RuntimeError('missing separator '+path)
+                  i+=1
+                  while i<len(lines) and not lines[i].startswith('>>>>>>>'): theirs.append(lines[i]); i+=1
+                  if i>=len(lines): raise RuntimeError('missing end '+path)
+                  i+=1; out.extend(ours if mode=='ours' else ours+theirs)
+              p.write_text(''.join(out))
+          for p in ['js/ai/dev/ui/settings.js','js/ai/ui/assistant.js','js/userscript/loader.js']: resolve(p,'ours')
+          for p in ['tests/phase7/ownership/cross-lane-routing.test.mjs','tools/validation/phase7/cross-lane-inventory.mjs']: resolve(p,'union')
+          def sj(n,p): return json.loads(subprocess.check_output(['git','show',f':{n}:{p}'],text=True))
+          b,o,t=sj(1,'package.json'),sj(2,'package.json'),sj(3,'package.json'); conflicts=[]
+          def m3(b,o,t,path=''):
+              if o==t:return o
+              if o==b:return t
+              if t==b:return o
+              if isinstance(b,dict) and isinstance(o,dict) and isinstance(t,dict):
+                  d={}; miss=object()
+                  for k in dict.fromkeys([*b,*o,*t]):
+                      bv,ov,tv=b.get(k,miss),o.get(k,miss),t.get(k,miss)
+                      if bv is miss:
+                          if ov is miss:d[k]=tv
+                          elif tv is miss:d[k]=ov
+                          elif ov==tv:d[k]=ov
+                          else:conflicts.append(path+'/'+k);d[k]=ov
+                      elif ov is miss or tv is miss:
+                          if ov is miss and tv==bv:continue
+                          if tv is miss and ov==bv:continue
+                          conflicts.append(path+'/'+k);d[k]=ov if ov is not miss else tv
+                      else:d[k]=m3(bv,ov,tv,path+'/'+k)
+                  return d
+              conflicts.append(path);return o
+          pkg=m3(b,o,t)
+          if conflicts!=['/scripts/test']: raise RuntimeError(str(conflicts))
+          prefix='node --test tests/public-benchmark/runner-hardening.test.mjs && npm run auth:test && '
+          pkg['scripts']['test']=t['scripts']['test'] if t['scripts']['test'].startswith(prefix) else prefix+t['scripts']['test']
+          Path('package.json').write_text(json.dumps(pkg,separators=(',',':'))+'\n')
+          p=Path('scripts/build-userscript.mjs'); text=p.read_text()
+          replacement="""const runtimeLocator = `/_runtime/${buildId}`;\nconst releaseManifest = Object.freeze({\n  buildId,\n  runtimeVersion,\n  contentHash,\n  compression: 'gzip',\n  runtimeLocator,\n  byteLength: ciphertext.length,\n});\nconst releaseManifestHash = sha256(Buffer.from(JSON.stringify(releaseManifest), 'utf8'));\nconst manifest = Object.freeze({ buildId, privileged, runtimeVersion, ciphertextHash: sha256(ciphertext), contentHash, iv: b64(iv), aad, compression: 'gzip', assetPath, byteLength: ciphertext.length });\n"""
+          text,n=re.subn(r'^<<<<<<< .*?^>>>>>>> .*?\n',replacement,text,count=1,flags=re.M|re.S)
+          if n!=1: raise RuntimeError('build conflict count '+str(n))
+          p.write_text(text)
           PY
-          if [ -f pr8671-tree-plan/error.txt ]; then exit 0; fi
           git checkout --theirs -- userscript/hex.user.template.js userscript/release-version.json
           git add js/ai/dev/ui/settings.js js/ai/ui/assistant.js js/userscript/loader.js package.json scripts/build-userscript.mjs tests/phase7/ownership/cross-lane-routing.test.mjs tools/validation/phase7/cross-lane-inventory.mjs userscript/hex.user.template.js userscript/release-version.json
           if [ -n "$(git diff --name-only --diff-filter=U)" ]; then git diff --name-only --diff-filter=U | sed 's/^/unmerged: /' > pr8671-tree-plan/error.txt; exit 0; fi
           python <<'PY'
           from pathlib import Path
           import base64,json,os,subprocess
-          out=Path('pr8671-tree-plan'); err=out/'error.txt'
+          out=Path('pr8671-tree-plan')
           try:
               def run(*a): return subprocess.check_output(a,text=True,stderr=subprocess.DEVNULL).strip()
               def obj(ref,path):
                   try:return run('git','rev-parse',f'{ref}:{path}')
                   except subprocess.CalledProcessError:return None
-              raw=subprocess.check_output(['git','diff','--name-only','-z','origin/main','--'])
-              paths=[p.decode() for p in raw.split(b'\0') if p]
+              paths=[p.decode() for p in subprocess.check_output(['git','diff','--name-only','-z','origin/main','--']).split(b'\0') if p]
               entries=[]; newn=0
-              for idx,path in enumerate(paths):
+              for path in paths:
                   p=Path(path)
-                  if not p.exists() and not p.is_symlink():
-                      entries.append({'path':path,'delete':True}); continue
-                  ls=run('git','ls-files','-s','--',path).split()
-                  if len(ls)<2: raise RuntimeError(f'no index mode for {path}')
-                  mode=ls[0]; sha=run('git','hash-object',path)
+                  if not p.exists() and not p.is_symlink(): entries.append({'path':path,'delete':True}); continue
+                  mode=run('git','ls-files','-s','--',path).split()[0]; sha=run('git','hash-object',path)
                   hs=obj('HEAD',path); ms=obj('origin/main',path)
                   if sha==hs or sha==ms:
-                      entries.append({'path':path,'mode':mode,'type':'blob','sha':sha,'source':'existing'})
+                      entries.append({'path':path,'mode':mode,'type':'blob','sha':sha})
                   else:
                       fn=f'{newn:03d}.b64'; newn+=1
                       (out/'new'/fn).write_text(base64.b64encode(p.read_bytes()).decode())
-                      entries.append({'path':path,'mode':mode,'type':'blob','content_file':'new/'+fn,'merged_sha':sha,'source':'new'})
+                      entries.append({'path':path,'mode':mode,'type':'blob','content_file':'new/'+fn,'merged_sha':sha})
               man={'main_sha':os.environ['MAIN_SHA'],'main_tree':os.environ['MAIN_TREE'],'head_sha':os.environ['HEAD_SHA'],'entries':entries,'new_blob_count':newn}
               (out/'manifest.json').write_text(json.dumps(man,indent=2)+'\n')
               (out/'summary.txt').write_text(f"entries={len(entries)}\nnew_blobs={newn}\nmain_sha={man['main_sha']}\nhead_sha={man['head_sha']}\n")
           except Exception as e:
-              err.write_text('plan: '+type(e).__name__+': '+str(e)+'\n')
+              (out/'error.txt').write_text('plan: '+type(e).__name__+': '+str(e)+'\n')
           PY
           cat pr8671-tree-plan/summary.txt 2>/dev/null || cat pr8671-tree-plan/error.txt
       - name: Upload tree plan
