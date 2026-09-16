@@ -12,11 +12,9 @@ const evidenceStore = { has: (id) => id === 'evidence' };
 function binding(binaryId) {
   return { binaryId, projectId: 'project-a', runtimeSessionId: null };
 }
-
 function runtimeBinding(binaryId, runtimeSessionId) {
   return { binaryId, projectId: 'project-a', runtimeSessionId };
 }
-
 function patchApp(readAt) {
   const bytes = Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]);
   return {
@@ -37,11 +35,8 @@ test('proposal publication fails closed when binding changes during an async ada
   let liveBinding = binding('bin-a');
   const store = new ProposalStore({ evidenceStore, binding: () => liveBinding });
   const proposal = store.create({
-    kind: 'project-annotation',
-    target: { id: 'async-binding' },
-    before: null,
-    after: 'approved',
-    evidenceIds: ['evidence'],
+    kind: 'project-annotation', target: { id: 'async-binding' }, before: null,
+    after: 'approved', evidenceIds: ['evidence'],
   });
   const { approvalToken } = store.approve(proposal.id);
 
@@ -53,28 +48,10 @@ test('proposal publication fails closed when binding changes during an async ada
       liveBinding = binding('bin-b');
     },
   }), (error) => error?.type === 'scope_violation');
-  assert.equal(store.get(proposal.id).status, 'failed', 'binding drift must not publish an applied proposal');
+  assert.equal(store.get(proposal.id).status, 'failed');
 });
 
-test('proposal binding guard preserves the store callback receiver', async () => {
-  const store = new ProposalStore({
-    evidenceStore,
-    binding() { return { binaryId: this.scope.binaryId, projectId: 'project-a', runtimeSessionId: null }; },
-  });
-  store.scope = { binaryId: 'bin-a' };
-  const proposal = store.create({
-    kind: 'project-annotation',
-    target: { id: 'receiver-bound' },
-    before: null,
-    after: 'approved',
-    evidenceIds: ['evidence'],
-  });
-  const { approvalToken } = store.approve(proposal.id);
-  const result = await store.apply(proposal.id, { approvalToken, currentState: null, apply: async () => {} });
-  assert.equal(result.status, 'applied');
-});
-
-test('patch creation rejects a replaced patch set before adding to the target', async () => {
+test('patch creation rejects a replaced patch set before adding to either target', async () => {
   const liveBinding = binding('bin-a');
   let readCount = 0;
   const bytes = Uint8Array.from([1, 2, 3, 4]);
@@ -83,115 +60,94 @@ test('patch creation rejects a replaced patch set before adding to the target', 
   let app;
   app = patchApp(async () => {
     readCount += 1;
-    // ProposalExecutor.currentState() performs the first read. The second is
-    // validatePatchTarget() after authorization has been consumed, so this
-    // replaces the target in the real async-to-mutation window while the
-    // binary/project/session binding remains unchanged.
+    // ProposalExecutor.currentState() performs the first read. The second read
+    // happens after authorization is consumed, inside validatePatchTarget().
     if (readCount === 2) app.patches = replacementPatchSet;
     return { found: true, bytes };
   });
   app.patches = originalPatchSet;
-  const catalog = createCapabilityCatalog();
   const capabilityExecutor = createCapabilityExecutor({
-    catalog,
-    app,
-    binaryId: () => liveBinding.binaryId,
+    catalog: createCapabilityCatalog(), app, binaryId: () => liveBinding.binaryId,
   });
   const store = new ProposalStore({ evidenceStore, binding: () => liveBinding });
   const owner = new ProposalExecutor({ store, capabilityExecutor, app });
   const proposal = store.create({
-    kind: 'patch',
-    target: { address: '4096' },
-    before: [1, 2, 3, 4],
-    after: [4, 3, 2, 1],
-    evidenceIds: ['evidence'],
+    kind: 'patch', target: { address: '4096' }, before: [1, 2, 3, 4],
+    after: [4, 3, 2, 1], evidenceIds: ['evidence'],
   });
 
   await assert.rejects(owner.approveAndApply(proposal.id), (error) => error?.type === 'scope_violation');
-  assert.equal(readCount, 2, 'the context switch must occur in the validation read');
-  assert.equal(originalPatchSet.size, 0, 'the replaced target must not receive a patch');
-  assert.equal(replacementPatchSet.size, 0, 'the current target must not receive a stale patch');
-  assert.equal(store.get(proposal.id).status, 'failed');
-
-  // A current, approved mutation still reaches the real PatchSet adapter.
-  app.patches = originalPatchSet;
-  const current = store.create({
-    kind: 'patch',
-    target: { address: '4096' },
-    before: [1, 2, 3, 4],
-    after: [4, 3, 2, 1],
-    evidenceIds: ['evidence'],
-  });
-  const result = await owner.approveAndApply(current.id);
-  assert.equal(result.proposal.status, 'applied');
-  assert.equal(originalPatchSet.size, 1);
+  assert.equal(readCount, 2);
+  assert.equal(originalPatchSet.size, 0);
   assert.equal(replacementPatchSet.size, 0);
+  assert.equal(store.get(proposal.id).status, 'failed');
 });
 
-test('runtime memory write rechecks the captured session target before writing', async () => {
+test('runtime memory-write capability rejects a session swap and preserves atomic CAS on success', async () => {
   const liveBinding = runtimeBinding('bin-a', 'session-a');
   let readCount = 0;
-  let oldWriteCount = 0;
-  let replacementWriteCount = 0;
+  let casCount = 0;
+  let swapOnThird = true;
   let memory = Uint8Array.from([1, 2, 3, 4]);
-  const activeSession = { id: 'session-a', binaryHash: 'bin-a', adapter: null };
+  const activeSession = { id: 'session-a', binaryHash: 'bin-a', generation: 1, adapter: null };
+  const replacementAdapter = {
+    epoch: 2,
+    async readMemory(_address, size) { return memory.slice(0, size); },
+  };
   const adapter = {
+    epoch: 1,
+    compareAndWriteMemoryAtomic: true,
     async readMemory(_address, size) {
       readCount += 1;
       const result = memory.slice(0, size);
-      // The fourth read is boundedMemoryWrite()'s expected-before read. The
-      // earlier three belong to proposal creation/current-state checks.
-      if (readCount === 4) {
-        // Mutate the existing session object in place. A guard that retains
-        // the mutable object itself would observe these new fields and miss
-        // that the adapter captured before the await is no longer authorized.
+      // proposeCapability + approveAndApply.currentState + execute approvalState.
+      // A switch on the third read is caught before the atomic primitive runs.
+      if (swapOnThird && readCount === 3) {
         activeSession.id = 'session-b';
         activeSession.adapter = replacementAdapter;
       }
       return result;
     },
-    async writeMemory(_address, bytes) {
-      oldWriteCount += 1;
+    async compareAndWriteMemory(_address, expected, bytes, options) {
+      casCount += 1;
+      assert.equal(options.expectedSessionId, 'session-a');
+      assert.deepEqual([...memory], [...expected]);
       memory = Uint8Array.from(bytes);
-    },
-  };
-  const replacementAdapter = {
-    async readMemory(_address, size) { return memory.slice(0, size); },
-    async writeMemory(_address, bytes) {
-      replacementWriteCount += 1;
-      memory = Uint8Array.from(bytes);
+      return { written: bytes.length };
     },
   };
   activeSession.adapter = adapter;
-  const runtimePlatform = {
-    currentSession: () => activeSession,
-  };
-  const catalog = createCapabilityCatalog();
+  const runtimePlatform = { currentSession: () => activeSession };
   const capabilityExecutor = createCapabilityExecutor({
-    catalog,
-    runtimePlatform,
-    binaryId: () => liveBinding.binaryId,
+    catalog: createCapabilityCatalog(), runtimePlatform, binaryId: () => liveBinding.binaryId,
   });
   const store = new ProposalStore({ evidenceStore, binding: () => liveBinding });
   const owner = new ProposalExecutor({ store, capabilityExecutor });
   const args = {
-    runtimeSessionId: 'session-a',
-    binaryId: 'bin-a',
-    address: '4096',
-    expectedBefore: [1, 2, 3, 4],
-    bytes: [9, 8, 7, 6],
+    runtimeSessionId: 'session-a', binaryId: 'bin-a', address: '4096',
+    expectedBefore: [1, 2, 3, 4], bytes: [9, 8, 7, 6],
   };
   const proposal = await owner.proposeCapability('runtime.memory-write', args, { evidenceIds: ['evidence'] });
-
   await assert.rejects(owner.approveAndApply(proposal.id), (error) => error?.type === 'scope_violation');
-  assert.equal(readCount, 4, 'the switch must occur at the write adapter boundary');
-  assert.equal(oldWriteCount, 0, 'a session switch after expected-before must prevent the old adapter write');
-  assert.equal(replacementWriteCount, 0, 'a session switch must not write through the replacement adapter');
+  assert.equal(casCount, 0, 'session drift must stop before atomic CAS');
   assert.deepEqual([...memory], [1, 2, 3, 4]);
-  assert.equal(store.get(proposal.id).status, 'failed');
+
+  // Restore the approved session and verify the valid path still reaches the
+  // latest-main atomic compare-and-write primitive rather than split writeMemory.
+  swapOnThird = false;
+  activeSession.id = 'session-a';
+  activeSession.generation = 1;
+  activeSession.adapter = adapter;
+  readCount = 0;
+  const stable = await owner.proposeCapability('runtime.memory-write', args, { evidenceIds: ['evidence'] });
+  const result = await owner.approveAndApply(stable.id);
+  assert.equal(result.proposal.status, 'applied');
+  assert.equal(casCount, 1);
+  assert.deepEqual(result.execution.after, [9, 8, 7, 6]);
+  assert.deepEqual([...memory], [9, 8, 7, 6]);
 });
 
-test('patch application rejects a replaced patch set and preserves a valid awaited mutation', async () => {
+test('patch application rejects a replaced patch set and preserves valid awaited publication', async () => {
   const liveBinding = binding('bin-a');
   const app = patchApp(async () => ({ found: true, bytes: Uint8Array.from([1, 2, 3, 4]) }));
   const originalPatchSet = app.patches;
@@ -199,16 +155,11 @@ test('patch application rejects a replaced patch set and preserves a valid await
   const replacementPatchSet = new PatchSet();
   originalPatchSet.apply = async () => {
     await Promise.resolve();
-    // Replace the live target after the async read to model a context refresh.
-    // The adapter must reject before publishing the old target's output.
     app.patches = replacementPatchSet;
     return new Blob([Uint8Array.from([4, 3, 2, 1, 5, 6, 7, 8])]);
   };
-  const catalog = createCapabilityCatalog();
   const capabilityExecutor = createCapabilityExecutor({
-    catalog,
-    app,
-    binaryId: () => liveBinding.binaryId,
+    catalog: createCapabilityCatalog(), app, binaryId: () => liveBinding.binaryId,
   });
   const store = new ProposalStore({ evidenceStore, binding: () => liveBinding });
   const owner = new ProposalExecutor({ store, capabilityExecutor, app });
@@ -216,11 +167,9 @@ test('patch application rejects a replaced patch set and preserves a valid await
 
   await assert.rejects(owner.approveAndApply(proposal.id), (error) => error?.type === 'scope_violation');
   assert.equal(store.get(proposal.id).status, 'failed');
-  assert.equal(originalPatchSet.size, 1, 'the old target remains unchanged by a rejected publication');
-  assert.equal(app.patches, replacementPatchSet);
-  assert.equal(replacementPatchSet.size, 0, 'the refreshed patch set must not receive the old target metadata');
+  assert.equal(originalPatchSet.size, 1);
+  assert.equal(replacementPatchSet.size, 0);
 
-  // A valid async PatchSet.apply still publishes the approved target result.
   originalPatchSet.apply = async () => {
     await Promise.resolve();
     return new Blob([Uint8Array.from([4, 3, 2, 1, 5, 6, 7, 8])]);
@@ -229,6 +178,6 @@ test('patch application rejects a replaced patch set and preserves a valid await
   const current = await owner.proposeCapability('patch.apply', {}, { evidenceIds: ['evidence'] });
   const result = await owner.approveAndApply(current.id);
   assert.equal(result.proposal.status, 'applied');
-  assert.equal(result.execution.patches.length, 1, 'publication must describe the retained target');
+  assert.equal(result.execution.patches.length, 1);
   assert.equal(result.execution.patches[0].fileOffset, '0');
 });

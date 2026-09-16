@@ -197,6 +197,9 @@ async function boundedMemoryWrite(adapter, args) {
   if (!bytes.length || bytes.length > 64 * 1024 || bytes.length !== expected.length) throw new AIError('invalid_tool_call', 'Runtime write bytes and expected-before must have the same length between 1 and 65536.');
   const observedBefore = await adapter.readMemory(args.address, expected.length);
   if (!equalBytes(observedBefore, expected)) throw new AIError('tool_failed', 'Runtime memory target is stale: expected-before does not match.');
+  // Capture an owned pre-mutation snapshot. Runtime adapters may return a view
+  // backed by live target memory, which is not stable enough to serve as
+  // rollback authority once writeMemory() starts mutating it (#4271).
   const before = Uint8Array.from(observedBefore);
   try {
     await adapter.writeMemory(args.address, bytes);
@@ -208,30 +211,322 @@ async function boundedMemoryWrite(adapter, args) {
       const restored = await adapter.readMemory(args.address, before.length);
       if (!equalBytes(restored, before)) throw new Error('rollback postcondition verification failed');
     } catch (rollbackError) {
-      throw new AIError('tool_failed','Runtime memory write failed and rollback could not be verified; target state may be mutated.',{ cause: String(error?.message || error), rollback: String(rollbackError?.message || rollbackError) });
+      throw new AIError(
+        'tool_failed',
+        'Runtime memory write failed and rollback could not be verified; target state may be mutated.',
+        { cause: String(error?.message || error), rollback: String(rollbackError?.message || rollbackError) },
+      );
     }
     throw error;
   }
   return { address: String(args.address), written: bytes.length, before: Array.from(before), after: Array.from(bytes) };
 }
 
-function noteStatusSnapshot(notes) { return { dirty: notes?.dirty,lastSaveError: notes?.lastSaveError,lastMutationSaved: notes?.lastMutationSaved }; }
-function noteMutationSnapshot(notes, getter, address) { let canRestore=false,value=null; if (typeof notes?.[getter] === 'function') { try { value=notes[getter](address); canRestore=true; } catch {} } return { canRestore, value, ...noteStatusSnapshot(notes) }; }
-function restoreNoteStatus(notes, snapshot) { notes.dirty=snapshot.dirty; notes.lastSaveError=snapshot.lastSaveError; notes.lastMutationSaved=snapshot.lastMutationSaved; }
-function rollbackNoteMutation(notes, method, address, snapshot) { if (!snapshot.canRestore) return true; let result; try { result=notes[method](address, snapshot.value == null ? '' : snapshot.value, { save:false }); } finally { restoreNoteStatus(notes,snapshot); } return result !== false; }
-function setNote(app, kind, args, after=null) { const address=BigInt(args.address), value=String(args.value ?? ''); const method=kind==='name'?'setName':'setComment', getter=kind==='name'?'nameOf':'comment'; if (typeof app?.notes?.[method] !== 'function') throw new AIError('tool_failed',`${kind} annotation adapter is unavailable.`); const snapshot=noteMutationSnapshot(app.notes,getter,address); if (!snapshot.canRestore) throw new AIError('tool_failed',`${kind} annotation adapter cannot provide the snapshot required for atomic persistence.`); if (app.notes[method](address,value)===false) throw new AIError('tool_failed',`${kind} annotation could not be persisted.`); after?.(); return { ok:true,address:address.toString(),value }; }
-function refreshDisplay(app) { const warnings=[]; try { app.viewer?.setSymbols?.(app.symbols); } catch(e){warnings.push(String(e?.message||e));} try { app.updateChrome?.(); } catch(e){warnings.push(String(e?.message||e));} return warnings.length?warnings.join('; '):null; }
-function renameSymbol(app,args){ const address=BigInt(args.address),value=String(args.value??''); return setNote(app,'name',{address,value},()=>app.symbols?.rename?.(address,value)); }
-function setType(app,args){ const address=BigInt(args.address),key=String(args.key||'return'),value=String(args.value??''); if(typeof app?.notes?.setType!=='function') throw new AIError('tool_failed','Type annotation adapter is unavailable.'); if(app.notes.setType(address,key,value)===false) throw new AIError('tool_failed','Type annotation could not be persisted.'); return {ok:true,address:address.toString(),key,value}; }
-function setStructField(app,args){ if(!Array.isArray(app?.notes?.structs)||typeof app.notes.save!=='function') throw new AIError('tool_failed','Structure annotation adapter is unavailable.'); const name=String(args.struct||args.name||'').trim(),offset=Number(args.offset); let struct=app.notes.structs.find(i=>i?.name===name); if(!struct){struct={name,fields:[]};app.notes.structs.push(struct);} const field={offset,name:String(args.field||args.fieldName||''),type:String(args.type||'')}; const index=struct.fields.findIndex(i=>Number(i?.offset)===offset); if(index>=0)struct.fields[index]=field; else struct.fields.push(field); if(app.notes.save()===false) throw new AIError('tool_failed','Structure annotation could not be persisted.'); return {ok:true,struct:name,field}; }
-async function setProjectAnnotation(app,args){ if(!app) throw new AIError('tool_failed','Project annotation adapter is unavailable.'); const record={id:String(args.id||`annotation:${Date.now()}`),kind:String(args.kind||'note'),value:args.value,createdAt:new Date().toISOString()}; app.projectAnnotations ||= []; app.projectAnnotations.push(record); return record; }
-async function previewPatch(app,args){ const validated=await validatePatchTarget(app,args); return {ok:true,...validated,after:byteArray(args.after)}; }
-async function createPatch(app,args){ const validated=await validatePatchTarget(app,args),after=byteArray(args.after); app.patches?.add?.(validated.fileOffset,validated.before,after,{addr:validated.address}); const stored=app.patches?.at?.(validated.fileOffset); if(!stored) throw new AIError('tool_failed','Patch postcondition verification failed.'); return serializePatch(stored); }
-async function validatePatchTarget(app,args){ const address=BigInt(args.address),before=byteArray(args.before),after=byteArray(args.after); const regions=app?.store?.get?.('regions')||[]; const region=regions.find(item=>address>=item.vmAddr&&address<item.vmAddr+item.size); const fileSize=app?.file?.size??app?.store?.get?.('fileInfo')?.size??null; const range=validatePatchRange(region,address,after.length,fileSize,args.instruction!==false); if(!range.ok) throw new AIError('invalid_tool_call',range.error); const result=await app?.backend?.readAt?.(address,before.length); if(!result?.found||!equalBytes(result.bytes,before)) throw new AIError('tool_failed','Patch target is stale: original bytes no longer match expected-before.'); return {address,fileOffset:range.fileOffset,before}; }
-async function applyPatch(app,args){ const source=args.file||app?.file; const output=await app?.patches?.apply?.(source); if(!(output instanceof Blob)) throw new AIError('tool_failed','Patch application did not produce an output Blob.'); return {ok:true,output,size:output.size,patches:app.patches.list().map(serializePatch)}; }
-function serializePatch(item){ return { fileOffset:item.offset.toString(),address:item.addr==null?null:String(item.addr),before:Array.from(item.before),after:Array.from(item.after),label:item.label||null,reason:item.reason||null }; }
-function byteArray(value){ if(!Array.isArray(value)&&!(value instanceof Uint8Array)) throw new AIError('invalid_tool_call','Mutation bytes must be an Array or Uint8Array.'); return Uint8Array.from(value); }
-function equalBytes(a,b){ return a?.length===b?.length&&Array.from(a).every((v,i)=>v===b[i]); }
-function callRequired(target,method,...args){ if(typeof target?.[method]!=='function') throw new AIError('tool_failed',`Project ${method} capability is unavailable.`); return target[method](...args); }
-function unavailable(name){ throw new AIError('tool_failed',`${name} capability is unavailable.`); }
-export function createCapabilityExecutor(options){ return new CapabilityExecutor(options); }
+function noteStatusSnapshot(notes) {
+  return {
+    dirty: notes?.dirty,
+    lastSaveError: notes?.lastSaveError,
+    lastMutationSaved: notes?.lastMutationSaved,
+  };
+}
+
+function noteMutationSnapshot(notes, getter, address) {
+  let canRestore = false, value = null;
+  if (typeof notes?.[getter] === 'function') {
+    try { value = notes[getter](address); canRestore = true; } catch { /* preserve adapter behavior if snapshot lookup is unavailable */ }
+  }
+  return { canRestore, value, ...noteStatusSnapshot(notes) };
+}
+
+function restoreNoteStatus(notes, snapshot) {
+  notes.dirty = snapshot.dirty;
+  notes.lastSaveError = snapshot.lastSaveError;
+  notes.lastMutationSaved = snapshot.lastMutationSaved;
+}
+
+function rollbackNoteMutation(notes, method, address, snapshot) {
+  if (!snapshot.canRestore) return true;
+  let result;
+  try {
+    result = notes[method](address, snapshot.value == null ? '' : snapshot.value, { save: false });
+  } finally {
+    restoreNoteStatus(notes, snapshot);
+  }
+  return result !== false;
+}
+
+function setNote(app, kind, args, after = null) {
+  const address = BigInt(args.address); const value = String(args.value ?? '');
+  const method = kind === 'name' ? 'setName' : 'setComment';
+  const getter = kind === 'name' ? 'nameOf' : 'comment';
+  if (typeof app?.notes?.[method] !== 'function') throw new AIError('tool_failed', `${kind} annotation adapter is unavailable.`);
+  const snapshot = noteMutationSnapshot(app.notes, getter, address);
+  if (!snapshot.canRestore) throw new AIError('tool_failed', `${kind} annotation adapter cannot provide the snapshot required for atomic persistence.`);
+  if (app.notes[method](address, value) === false) {
+    const label = kind === 'name' ? 'Name' : 'Comment';
+    try {
+      if (!rollbackNoteMutation(app.notes, method, address, snapshot)) throw new Error('in-memory rollback failed');
+    } catch (rollbackError) {
+      throw new AIError('tool_failed', `${label} annotation could not be persisted and its in-memory mutation could not be rolled back: ${rollbackError?.message || rollbackError}`);
+    }
+    throw new AIError('tool_failed', `${label} annotation could not be persisted.`);
+  }
+  after?.();
+  const refreshWarning = refreshDisplay(app);
+  return { ok: true, address: address.toString(), value, ...(refreshWarning ? { refreshWarning } : {}) };
+}
+
+/* The display refresh (viewer symbols + chrome) is not part of the canonical
+   mutation: notes/symbols state is already committed and persisted when it
+   runs. A refresh failure must therefore surface as a warning on a successful
+   result instead of failing an applied mutation — otherwise a `failed`
+   proposal would be recorded while the mutation persisted (#5132). In the
+   rollback path it stays best-effort so it can never mask the original
+   failure. */
+function refreshDisplay(app) {
+  const warnings = [];
+  try { app.viewer?.setSymbols?.(app.symbols); } catch (error) { warnings.push(`viewer symbols refresh failed: ${error?.message || error}`); }
+  try { app.updateChrome?.(); } catch (error) { warnings.push(`chrome refresh failed: ${error?.message || error}`); }
+  return warnings.length ? warnings.join('; ') : null;
+}
+
+// annotation.rename commits two coupled mutations (notes.setName +
+// symbols.rename). A failure of the second must not leave the first applied:
+// restore the prior note state and only then surface the original error, so a
+// failed proposal never ends up partially written (#6255).
+function renameSymbol(app, args) {
+  const address = BigInt(args.address); const value = String(args.value ?? '');
+  if (typeof app?.notes?.setName !== 'function') throw new AIError('tool_failed', 'name annotation adapter is unavailable.');
+  const snapshot = noteMutationSnapshot(app.notes, 'nameOf', address);
+  if (!snapshot.canRestore) throw new AIError('tool_failed', 'name annotation adapter cannot provide the snapshot required for atomic persistence.');
+  const previousName = snapshot.value;
+  if (app.notes.setName(address, value) === false) {
+    try {
+      if (!rollbackNoteMutation(app.notes, 'setName', address, snapshot)) throw new Error('in-memory rollback failed');
+    } catch (rollbackError) {
+      throw new AIError('tool_failed', `Name annotation could not be persisted and its in-memory mutation could not be rolled back: ${rollbackError?.message || rollbackError}`);
+    }
+    throw new AIError('tool_failed', 'Name annotation could not be persisted.');
+  }
+  try {
+    app.symbols?.rename?.(address, value);
+  } catch (error) {
+    try {
+      if (app.notes.setName(address, previousName == null ? '' : previousName) === false) {
+        throw new Error('name annotation rollback could not be persisted');
+      }
+    } catch (rollbackError) {
+      throw new AIError('tool_failed', `Rename failed and the note mutation could not be rolled back: ${rollbackError?.message || rollbackError}`, { cause: String(error?.message || error) });
+    }
+    // Best effort only: a rollback-path refresh failure must never mask the
+    // original rename failure.
+    try { app.viewer?.setSymbols?.(app.symbols); } catch { /* ignore */ }
+    try { app.updateChrome?.(); } catch { /* ignore */ }
+    throw error;
+  }
+  const refreshWarning = refreshDisplay(app);
+  return { ok: true, address: address.toString(), value, ...(refreshWarning ? { refreshWarning } : {}) };
+}
+
+function setType(app, args) {
+  const address = BigInt(args.address), key = String(args.key || 'return'), value = String(args.value ?? '');
+  const notes = app?.notes;
+  if (typeof notes?.setType !== 'function') throw new AIError('tool_failed', 'Type annotation adapter is unavailable.');
+  if (typeof notes.typeOf !== 'function') throw new AIError('tool_failed', 'Type annotation adapter cannot provide the snapshot required for atomic persistence.');
+  // NoteStore.setType() mutates the live type map before it attempts durable
+  // persistence, so a `false` persistence result must not leave the rejected
+  // type in memory: the next successful save() would promote it to durable
+  // state even though this proposal failed (#3758/#5132/#6255 for name/comment/
+  // struct-field). Capture the exact prior binding and store status first, then
+  // restore both on failure — the same atomicity contract its siblings enforce.
+  let previous;
+  try { previous = notes.typeOf(address, key); }
+  catch { throw new AIError('tool_failed', 'Type annotation adapter cannot provide the snapshot required for atomic persistence.'); }
+  const status = noteStatusSnapshot(notes);
+  if (notes.setType(address, key, value) === false) {
+    let restored = false;
+    try {
+      restored = notes.setType(address, key, previous == null ? '' : previous, { save: false }) !== false;
+    } catch (rollbackError) {
+      throw new AIError('tool_failed', `Type annotation could not be persisted and its in-memory mutation could not be rolled back: ${rollbackError?.message || rollbackError}`);
+    } finally {
+      restoreNoteStatus(notes, status);
+    }
+    if (!restored) throw new AIError('tool_failed', 'Type annotation could not be persisted and its in-memory mutation could not be rolled back.');
+    throw new AIError('tool_failed', 'Type annotation could not be persisted.');
+  }
+  return { ok: true, address: address.toString(), key, value };
+}
+
+function restoreStructMutation(notes, snapshot) {
+  if (snapshot.created) {
+    const index = notes.structs.indexOf(snapshot.struct);
+    if (index >= 0) notes.structs.splice(index, 1);
+  } else if (snapshot.fieldsWasArray) {
+    snapshot.fieldsRef.splice(0, snapshot.fieldsRef.length, ...snapshot.fields);
+    snapshot.struct.fields = snapshot.fieldsRef;
+  } else if (snapshot.hadFields) {
+    snapshot.struct.fields = snapshot.previousFields;
+  } else {
+    delete snapshot.struct.fields;
+  }
+  restoreNoteStatus(notes, snapshot.noteStatus);
+}
+
+function setStructField(app, args) {
+  if (!Array.isArray(app?.notes?.structs) || typeof app.notes.save !== 'function') throw new AIError('tool_failed', 'Structure annotation adapter is unavailable.');
+  const name = String(args.struct || args.name || '').trim(), offset = Number(args.offset);
+  if (!name || !Number.isSafeInteger(offset) || offset < 0) throw new AIError('invalid_tool_call', 'A structure name and non-negative field offset are required.');
+  let struct = app.notes.structs.find((item) => item?.name === name);
+  const snapshot = {
+    noteStatus: noteStatusSnapshot(app.notes),
+    created: !struct,
+    struct: struct || null,
+    hadFields: struct ? Object.prototype.hasOwnProperty.call(struct, 'fields') : false,
+    previousFields: struct?.fields,
+    fieldsWasArray: Array.isArray(struct?.fields),
+    fieldsRef: Array.isArray(struct?.fields) ? struct.fields : null,
+    fields: Array.isArray(struct?.fields) ? struct.fields.slice() : null,
+  };
+  if (!struct) {
+    struct = { name, fields: [] };
+    app.notes.structs.push(struct);
+    snapshot.struct = struct;
+  }
+  if (!Array.isArray(struct.fields)) struct.fields = [];
+  const field = { offset, name: String(args.field || args.fieldName || ''), type: String(args.type || '') };
+  const index = struct.fields.findIndex((item) => Number(item?.offset) === offset);
+  if (index >= 0) struct.fields[index] = field; else struct.fields.push(field);
+  app.notes.dirty = true;
+  let saved;
+  try {
+    saved = app.notes.save();
+  } catch (error) {
+    restoreStructMutation(app.notes, snapshot);
+    throw new AIError('tool_failed', `Structure annotation could not be persisted: ${error?.message || error}`);
+  }
+  if (saved === false) {
+    restoreStructMutation(app.notes, snapshot);
+    throw new AIError('tool_failed', 'Structure annotation could not be persisted.');
+  }
+  return { ok: true, struct: name, field };
+}
+
+async function setProjectAnnotation(app, args) {
+  if (!app) throw new AIError('tool_failed', 'Project annotation adapter is unavailable.');
+  if (typeof app.workspace?.autosave !== 'function') throw new AIError('tool_failed', 'Project annotation persistence is unavailable.');
+
+  const previousProjectAnnotations = app.projectAnnotations;
+  const projectAnnotationsSnapshot = Array.isArray(previousProjectAnnotations) ? previousProjectAnnotations.slice() : null;
+  if (!Array.isArray(app.projectAnnotations)) app.projectAnnotations = [];
+  const projectAnnotations = app.projectAnnotations;
+
+  const previousAutoReport = app.autoReport;
+  const autoReportWasObject = previousAutoReport !== null && typeof previousAutoReport === 'object' && !Array.isArray(previousAutoReport);
+  if (!autoReportWasObject) app.autoReport = { report: { confirmed: [], deep: [] } };
+  const autoReport = app.autoReport;
+  const previousReport = autoReport.report;
+  const reportWasObject = previousReport !== null && typeof previousReport === 'object' && !Array.isArray(previousReport);
+  if (!reportWasObject) autoReport.report = { confirmed: [], deep: [] };
+  const report = autoReport.report;
+  const previousConfirmed = report.confirmed;
+  const confirmedSnapshot = Array.isArray(previousConfirmed) ? previousConfirmed.slice() : null;
+  if (!Array.isArray(report.confirmed)) report.confirmed = [];
+  const confirmed = report.confirmed;
+
+  // Upsert-by-id (#3782) with fail-closed autosave rollback (#3762). Existing
+  // append-only duplicates are collapsed only after full array snapshots are
+  // captured so failed persistence can restore the exact prior state.
+  const id = String(args.id || `annotation:${Date.now()}`);
+  const existingIndex = projectAnnotations.findIndex((item) => item?.id === id);
+  const previousRecord = existingIndex >= 0 ? projectAnnotations[existingIndex] : undefined;
+  const findingIndex = confirmed.findIndex((item) => item?.source === 'project-annotation' && item?.id === id);
+
+  const rollback = () => {
+    if (Array.isArray(previousProjectAnnotations)) {
+      previousProjectAnnotations.splice(0, previousProjectAnnotations.length, ...projectAnnotationsSnapshot);
+    } else app.projectAnnotations = previousProjectAnnotations;
+    if (!autoReportWasObject) app.autoReport = previousAutoReport;
+    else if (!reportWasObject) autoReport.report = previousReport;
+    else if (Array.isArray(previousConfirmed)) {
+      previousConfirmed.splice(0, previousConfirmed.length, ...confirmedSnapshot);
+    } else report.confirmed = previousConfirmed;
+  };
+
+  const record = { id, kind: String(args.kind || 'note'), value: args.value, createdAt: previousRecord?.createdAt || new Date().toISOString() };
+  if (existingIndex >= 0) {
+    projectAnnotations[existingIndex] = record;
+    for (let index = projectAnnotations.length - 1; index > existingIndex; index--) {
+      if (projectAnnotations[index]?.id === id) projectAnnotations.splice(index, 1);
+    }
+  } else projectAnnotations.push(record);
+
+  const finding = { ...record, confirmed: true, source: 'project-annotation' };
+  if (findingIndex >= 0) {
+    confirmed[findingIndex] = finding;
+    for (let index = confirmed.length - 1; index > findingIndex; index--) {
+      if (confirmed[index]?.source === 'project-annotation' && confirmed[index]?.id === id) confirmed.splice(index, 1);
+    }
+  } else confirmed.push(finding);
+
+  let saved;
+  try {
+    saved = await app.workspace.autosave();
+  } catch (error) {
+    rollback();
+    throw error;
+  }
+  if (saved === false) {
+    rollback();
+    throw new AIError('tool_failed', 'Project annotation could not be persisted.');
+  }
+  return record;
+}
+
+async function previewPatch(app, args) {
+  const validated = await validatePatchTarget(app, args);
+  return { ok: true, ...validated, after: byteArray(args.after) };
+}
+async function createPatch(app, args) {
+  const validated = await validatePatchTarget(app, args), after = byteArray(args.after);
+  app.patches?.add?.(validated.fileOffset, validated.before, after, { addr: validated.address, label: args.label || null, reason: args.reason || null, expectedBefore: validated.before, createdAt: new Date().toISOString() });
+  const stored = app.patches?.at?.(validated.fileOffset);
+  if (!stored || !equalBytes(stored.before, validated.before) || !equalBytes(stored.after, after)) throw new AIError('tool_failed', 'Patch postcondition verification failed.');
+  return serializePatch(stored);
+}
+async function validatePatchTarget(app, args) {
+  const address = BigInt(args.address), before = byteArray(args.before), after = byteArray(args.after);
+  if (!before.length || before.length !== after.length) throw new AIError('invalid_tool_call', 'Patch before/after lengths must match and be non-zero.');
+  const regions = app?.store?.get?.('regions') || [];
+  const region = regions.find((item) => address >= item.vmAddr && address < item.vmAddr + item.size);
+  const fileSize = app?.file?.size ?? app?.store?.get?.('fileInfo')?.size ?? null;
+  const range = validatePatchRange(region, address, after.length, fileSize, args.instruction !== false);
+  if (!range.ok) throw new AIError('invalid_tool_call', range.error);
+  if (app?.patches?.at?.(range.fileOffset)) throw new AIError('tool_failed', 'Patch target already has a patch; revert it before creating a replacement.');
+  const result = await app?.backend?.readAt?.(address, before.length);
+  const actual = result?.found ? result.bytes : null;
+  if (!actual || !equalBytes(actual, before)) throw new AIError('tool_failed', 'Patch target is stale: original bytes no longer match expected-before.');
+  return { address, fileOffset: range.fileOffset, before };
+}
+async function applyPatch(app, args) {
+  const source = args.file || app?.file;
+  const output = await app?.patches?.apply?.(source);
+  if (!(output instanceof Blob)) throw new AIError('tool_failed', 'Patch application did not produce an output Blob.');
+  return { ok: true, output, size: output.size, patches: app.patches.list().map(serializePatch) };
+}
+function serializePatch(item) { return { fileOffset: item.offset.toString(), address: item.addr == null ? null : String(item.addr), before: Array.from(item.before), after: Array.from(item.after), label: item.label || null, reason: item.reason || null }; }
+function byteArray(value) {
+  if (!Array.isArray(value) && !(value instanceof Uint8Array)) throw new AIError('invalid_tool_call', 'Mutation bytes must be an Array or Uint8Array.');
+  const raw = Array.from(value);
+  for (const byte of raw) if (!Number.isInteger(byte) || byte < 0 || byte > 255) throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.');
+  return Uint8Array.from(raw);
+}
+function equalBytes(a, b) { return a?.length === b?.length && Array.from(a).every((value, index) => value === b[index]); }
+
+function callRequired(target, method, ...args) {
+  if (typeof target?.[method] !== 'function') throw new AIError('tool_failed', `Project ${method} capability is unavailable.`);
+  return target[method](...args);
+}
+function unavailable(name) { throw new AIError('tool_failed', `${name} capability is unavailable.`); }
+
+export function createCapabilityExecutor(options) { return new CapabilityExecutor(options); }
