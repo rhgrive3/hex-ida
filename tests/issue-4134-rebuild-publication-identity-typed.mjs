@@ -30,7 +30,14 @@ const materialized = await materializeRebuildTransaction(transaction, source, { 
 assert.equal(materialized.status, 'materialized');
 const validation = await validateRebuildTransaction(transaction, materialized, {
   original: source,
-  loaderReparse: () => ({ ok: true }),
+  loaderReparse: () => ({
+    ok: true,
+    format: transaction.format,
+    architecture: transaction.architecture,
+    loaderVersion: transaction.loaderVersion,
+    sourceHash: transaction.sourceHash,
+    outputHash: materialized.outputHash,
+  }),
   validators: Object.fromEntries(
     ['layout', 'relocations', 'branch-ranges', 'unwind', 'imports-exports', 'signature-consequence']
       .map((name) => [name, () => ({ ok: true })]),
