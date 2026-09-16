@@ -1,0 +1,70 @@
+name: Temporary C4-04 body diagnostic
+on:
+  push:
+    branches: ['impl/c4-04-finish-20260916']
+    paths: ['.github/workflows/temp-c4-body-diagnostic.yml']
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: impl/c4-04-finish-20260916
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Emit first body divergence
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE' | tee /tmp/c4-body-diagnostic.txt
+          import { conditionalRegionFixture } from './tests/phase8/helpers/conditional-region-fixture.mjs';
+          import { identity } from './tests/phase8/helpers/proof-fixtures.mjs';
+          import { enhanceSemanticDecompilation } from './js/decompiler/pipeline.js';
+          import { prepareConditionalRegionCondition, readConditionalRegionCondition } from './js/decompiler/phase8/conditional-region-condition.js';
+          import { prepareConditionalRegionErasure, readRegionErasureBody } from './js/decompiler/phase8/conditional-region-erasure.js';
+          function storeArm(builder, value) {
+            const store = builder.store(value, { locKind:'global', locKey:'g', bits:8 });
+            Object.assign(store.loc, { address:16n, addressSpace:'data' });
+            store.extra = { completeness:'complete', addressPrecise:true, memoryAccess:{ addressSpace:'data', widthBits:8, volatility:false, atomic:false, ordering:'unknown', endian:'little', faults:[] } };
+          }
+          const f = conditionalRegionFixture({ armEffect:storeArm });
+          const projection = enhanceSemanticDecompilation(f.seed, { name:'reachability', calls:[] }, { phase8PrepareProof:true, phase8PrepareRegionProof:true, deterministicTransforms:true, renderProvenance:true });
+          const opts={identity,addressBits:8,backendTier:'exhaustive',timeoutMs:5000};
+          const conditionPlan=await prepareConditionalRegionCondition(f.structure,projection,opts);
+          const condition=readConditionalRegionCondition(conditionPlan,projection,f.structure,identity);
+          const reachability=await f.run();
+          const plan=prepareConditionalRegionErasure(f.structure,reachability,f.ir,{identity,timeoutMs:5000,projection,conditionPlan});
+          const dead=reachability.arms.find(a=>a.verdict==='proved');
+          const erased=f.structure.region.arms.find(a=>a.role===dead?.role);
+          const copiedArm=condition?.region.arms.find(a=>a.original===erased);
+          const record={
+            conditionStatus:conditionPlan.status,
+            reachabilityStatus:reachability.status,
+            semanticRegionValidation:reachability.semanticRegionValidation,
+            deadRole:dead?.role ?? null,
+            structurePhis:f.structure.phis.length,
+            structureMemoryPhis:f.structure.memoryPhis.length,
+            erasedNodes:erased?.nodes.length ?? null,
+            erasedKinds:erased?.nodes.map(n=>n.kind) ?? null,
+            copiedArmFound:!!copiedArm,
+            copiedNodes:copiedArm?.nodes.length ?? null,
+            copiedKinds:copiedArm?.nodes.map(n=>n.kind) ?? null,
+            copiedSemanticOps:copiedArm?.nodes.map(n=>n.semantic?.op ?? null) ?? null,
+            conditionRegionOriginal:condition?.region.original===f.structure.region,
+            bodyValidation:plan.bodyValidation,
+            pendingValidation:plan.pendingValidation,
+            bodyIssued:!!readRegionErasureBody(plan,projection,f.ir,identity),
+          };
+          console.log(JSON.stringify(record,null,2));
+          NODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c4-body-diagnostic
+          path: /tmp/c4-body-diagnostic.txt
+          retention-days: 1
