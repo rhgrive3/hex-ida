@@ -468,7 +468,7 @@ function defaultStore(engine) {
     namespace: () => {
       const context = engine && engine.localContext;
       if (!context) return 'default';
-      try { return context.binaryHash || context.projectId || 'default'; } catch { return 'default'; }
+      try { return context.projectId || context.binaryHash || 'default'; } catch { return 'default'; }
     },
   });
 }

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
 import { DevAgentUiSettings } from '../../js/ai/dev/ui/settings.js';
 import { createAgentProfileEngine } from '../../js/ai/dev/ui/engine-router.js';
@@ -24,7 +25,7 @@ async function testSingleTabWorkerLoopReleasesClaim() {
   const calls = [];
   const workerOps = [];
   const workerClient = createWorkerClient(workerOps);
-  const supervisor = new DevSupervisorV0({ workerClient, idFactory, now: () => '2026-08-17T00:00:00.000Z' });
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(), workerClient, idFactory, now: () => '2026-08-17T00:00:00.000Z' });
   const settings = devSettings();
   const bridge = {
     async request(prompt) {
@@ -88,7 +89,7 @@ async function testConcurrentSingleTabClaimsReserveOwnership() {
 
 async function testUnavailableToolFeedbackAllowsReplan() {
   const ops = [];
-  const supervisor = new DevSupervisorV0({
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
     workerClient: createWorkerClient(ops),
     idFactory: (kind) => ({ run: 'retry-run', worker: 'retry-worker', 'supervisor-session': 'retry-supervisor' }[kind] || `${kind}-id`),
     now: () => '2026-08-17T00:00:00.000Z',
@@ -127,7 +128,7 @@ async function testUnavailableToolFeedbackAllowsReplan() {
 
 async function testRuntimeRejectsWorkerIdentityOverride() {
   const ops = [];
-  const supervisor = new DevSupervisorV0({
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
     workerClient: createWorkerClient(ops),
     idFactory: (kind) => ({ run: 'authoritative-run', worker: 'authoritative-worker', 'supervisor-session': 'authoritative-supervisor' }[kind] || `${kind}-id`),
     now: () => '2026-08-17T00:00:00.000Z',
@@ -155,7 +156,7 @@ async function testAmbiguousClaimFailureCleansUpAndFailsRun() {
     error.code = 'transport-failure';
     throw error;
   };
-  const supervisor = new DevSupervisorV0({
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
     workerClient: client,
     idFactory: (kind) => ({ run: 'ambiguous-run', worker: 'ambiguous-worker', 'supervisor-session': 'ambiguous-supervisor' }[kind] || `${kind}-id`),
     now: () => '2026-08-17T00:00:00.000Z',
@@ -188,7 +189,7 @@ async function testAmbiguousClaimFailureCleansUpAndFailsRun() {
   };
   const strictSettings = devSettings();
   const strictEngine = new DevSupervisorEngineV0({
-    supervisor: new DevSupervisorV0({
+    supervisor: new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
       workerClient: strictClient,
       idFactory: (kind) => ({ run: 'strict-run', worker: 'strict-worker', 'supervisor-session': 'strict-supervisor' }[kind] || `${kind}-id`),
       now: () => '2026-08-17T00:00:00.000Z',
@@ -213,7 +214,7 @@ async function testWaitingHumanResumesSameSupervisorRun() {
     worker: 'human-worker',
   };
   const idFactory = (kind) => fixed[kind] || `${kind}-id`;
-  const supervisor = new DevSupervisorV0({ workerClient: createWorkerClient([]), idFactory, now: () => '2026-08-17T00:00:00.000Z' });
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(), workerClient: createWorkerClient([]), idFactory, now: () => '2026-08-17T00:00:00.000Z' });
   const settings = devSettings();
   const requests = [];
   const bridge = {
@@ -386,7 +387,7 @@ function createWorkerClient(ops) {
 
 function devSettings() {
   const storage = { getItem: () => null, setItem() {} };
-  const settings = new DevAgentUiSettings({ storage });
+  const settings = new DevAgentUiSettings({ authProvider: new AllowAllAdminProvider(), storage });
   settings.setAgentProfile(AGENT_PROFILE.DEV);
   return settings;
 }
