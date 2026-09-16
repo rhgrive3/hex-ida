@@ -1,4 +1,4 @@
-name: PR 8671 latest-main conflict inventory
+name: PR 8671 latest-main merge inputs
 
 on:
   push:
@@ -8,17 +8,18 @@ permissions:
   contents: read
 
 jobs:
-  conflicts:
+  merge-inputs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Capture latest-main merge conflict inventory
+      - name: Capture auto-merged workflow and two conflict inputs
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf pr8671-merge-inputs && mkdir -p pr8671-merge-inputs
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config merge.conflictstyle diff3
@@ -29,18 +30,19 @@ jobs:
           git merge --no-commit --no-ff origin/main >/dev/null 2>&1
           status=$?
           set -e
-          {
-            printf 'head=%s\n' "$head_sha"
-            printf 'main=%s\n' "$main_sha"
-            printf 'merge_status=%s\n' "$status"
-            printf '%s\n' 'conflicts:'
-            git diff --name-only --diff-filter=U | sort
-          } > pr8671-latest-main-conflicts.txt
-          cat pr8671-latest-main-conflicts.txt >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload conflict inventory
+          printf 'head=%s\nmain=%s\nmerge_status=%s\n' "$head_sha" "$main_sha" "$status" > pr8671-merge-inputs/summary.txt
+          git diff --name-only --diff-filter=U | sort >> pr8671-merge-inputs/summary.txt
+          cp .github/workflows/phase7-ownership.yml pr8671-merge-inputs/phase7-ownership.merged.yml
+          cp package.json pr8671-merge-inputs/package.diff3.json
+          cp tools/validation/phase7/cross-lane-inventory.mjs pr8671-merge-inputs/cross-lane-inventory.diff3.mjs
+          for stage in 1 2 3; do
+            git show ":${stage}:package.json" > "pr8671-merge-inputs/package.stage${stage}.json"
+          done
+          cat pr8671-merge-inputs/summary.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload merge inputs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr8671-latest-main-conflicts
-          path: pr8671-latest-main-conflicts.txt
+          name: pr8671-merge-inputs
+          path: pr8671-merge-inputs
           retention-days: 1
