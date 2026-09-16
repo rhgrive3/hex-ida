@@ -14,13 +14,16 @@ jobs:
         with:
           ref: fix/recover-owner7-5163-5180-20260916
           fetch-depth: 0
-      - name: Apply recovery patch
+      - name: Apply patch script
+        shell: bash
+        run: python3 .github/pr5180-fix.py
+      - name: Add regression file
         shell: bash
         run: |
-          set -euo pipefail
-          python3 .github/pr5180-fix.py
           git show 215654e62017614271358ca8046c422ca80aeecc:tests/issue-5180-loader-reparse-identity.mjs > tests/issue-5180-loader-reparse-identity.mjs
-          git diff --check
+      - name: Diff check
+        shell: bash
+        run: git diff --check
       - name: Test loader identity
         shell: bash
         run: timeout 180s node tests/issue-5180-loader-reparse-identity.mjs
