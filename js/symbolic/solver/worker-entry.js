@@ -4,11 +4,12 @@
  * a normalized SolverResult cross the message boundary.
  */
 
-import { ExhaustiveBvBackend } from './exhaustive-backend.js';
+import { TieredBvBackend } from './tiered-backend.js';
 import { WORKER_BACKEND_ID, WORKER_BACKEND_VERSION } from './worker-backend.js';
 import { isCanonicalRequestId } from './worker-protocol.js';
 
-const backend = new ExhaustiveBvBackend({
+const backend = new TieredBvBackend({
+  maxBvWidth: 64,
   id: WORKER_BACKEND_ID,
   version: WORKER_BACKEND_VERSION,
 });

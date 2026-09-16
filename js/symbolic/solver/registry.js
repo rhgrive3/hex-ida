@@ -7,6 +7,7 @@
 import { FakeSolverBackend } from './fake-backend.js';
 import { isExactProofBackend } from './backend.js';
 import { ExhaustiveBvBackend } from './exhaustive-backend.js';
+import { TieredBvBackend } from './tiered-backend.js';
 import { WorkerSolverBackend } from './worker-backend.js';
 
 /* #5391: production mode (allowNonExactDefault:false) must not let a backend
@@ -96,8 +97,8 @@ export function createProductionSolverRegistry({ workerFactory = null, preferWor
   const registry = new SolverRegistry({ allowNonExactDefault: false });
   const canUseWorker = preferWorker && (workerFactory || typeof globalThis.Worker === 'function');
   const backend = canUseWorker
-    ? new WorkerSolverBackend({ workerFactory: workerFactory || undefined })
-    : new ExhaustiveBvBackend();
+    ? new WorkerSolverBackend({ workerFactory: workerFactory || undefined, maxBvWidth: 64 })
+    : new TieredBvBackend();
   registry.registerBackend(backend);
   return registry;
 }
@@ -109,6 +110,6 @@ export function createTestSolverRegistry() {
 }
 
 // Production imports never receive a fake provider. Browser targets select the
-// isolated worker transport; Node/CI uses the same exact finite-domain backend
-// directly because Worker is not a browser primitive there.
+// isolated worker transport; Node/CI uses the same exact tiered backend directly.
+// The <=8-bit exhaustive backend remains the oracle tier inside that router.
 export const defaultSolverRegistry = createProductionSolverRegistry();

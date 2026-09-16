@@ -6,7 +6,7 @@
  */
 
 import { stableDigest } from '../../core/identity/index.js';
-import { computeStructuralHash } from '../expr/hash.js';
+import { computeStructuralHash, computeStructuralHashesBounded } from '../expr/hash.js';
 import { createCompleteness } from '../translate/support-matrix.js';
 
 export const VERIFICATION_QUERY_KIND = Object.freeze({
@@ -128,6 +128,27 @@ export function verifyVerificationQueryIdentity(query) {
   }
   if (canonical !== query.queryHash) return 'query-hash-identity-mismatch';
   return null;
+}
+
+export function validateVerificationQuery(query, options = {}) {
+  const maxExprNodes = Object.prototype.hasOwnProperty.call(options, 'maxExprNodes') ? options.maxExprNodes : 100000;
+  const maxExprDepth = Object.prototype.hasOwnProperty.call(options, 'maxExprDepth') ? options.maxExprDepth : 1024;
+  if (typeof maxExprNodes !== 'number' || !Number.isSafeInteger(maxExprNodes) || maxExprNodes <= 0 ||
+      typeof maxExprDepth !== 'number' || !Number.isSafeInteger(maxExprDepth) || maxExprDepth <= 0) {
+    return Object.freeze({ valid: false, reason: 'invalid-query-validation-budget', invalidBudget: true });
+  }
+  if (!query || typeof query !== 'object' || !Array.isArray(query.constraints)) {
+    return Object.freeze({ valid: false, reason: 'invalid-verification-query-shape' });
+  }
+  const expressions = query.constraints.slice();
+  if (query.assertion) expressions.push(query.assertion);
+  if (expressions.length > maxExprNodes) return Object.freeze({ valid: false, reason: 'expression-node-budget-exceeded', limitExceeded: true });
+  const bounded = computeStructuralHashesBounded(expressions, { maxNodes: maxExprNodes, maxDepth: maxExprDepth });
+  if (!bounded.ok) return Object.freeze({ valid: false, reason: bounded.reason, limitExceeded: bounded.limitExceeded === true });
+  let reason;
+  try { reason = verifyVerificationQueryIdentity(query); } catch { reason = 'unhashable-query-content'; }
+  if (reason) return Object.freeze({ valid: false, reason });
+  return Object.freeze({ valid: true, nodeCount: bounded.nodeCount, maxDepth: bounded.maxDepth });
 }
 
 export function isVerificationQuery(query) {

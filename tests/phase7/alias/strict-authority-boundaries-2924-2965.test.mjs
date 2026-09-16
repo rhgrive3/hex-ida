@@ -18,7 +18,10 @@ const global = (storageClass) => ({
 });
 
 test('#2926 storage-class separation authority is string-only', () => {
-  assert.equal(aliasMemoryRegions(stack('function-local-stack'), external('external-entry-memory')), 'no');
+  // #5130: entry-argument storage classes are not a separation proof — the
+  // argument value can numerically equal a stack address — so neither the
+  // proven string class nor a structured lookalike may mint `no`.
+  assert.equal(aliasMemoryRegions(stack('function-local-stack'), external('external-entry-memory')), 'may');
   assert.equal(aliasMemoryRegions(stack(['function-local-stack']), external(['external-entry-memory'])), 'may');
   assert.equal(aliasMemoryRegions(stack('function-local-stack'), global('image-global')), 'no');
   assert.equal(aliasMemoryRegions(stack(['function-local-stack']), global(['image-global'])), 'may');

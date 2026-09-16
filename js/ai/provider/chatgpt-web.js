@@ -144,12 +144,19 @@ export class UserscriptAIProvider extends AIProvider {
 
   async capabilities(options = {}) {
     const chatgpt = this.bridgeCapabilities(options);
+    const gemini = this.geminiAvailability(options);
     return {
       providers: [
         { id: 'chatgpt-web', displayName: 'ChatGPT Web', available: this.chatgpt.available(), ...(await chatgpt) },
-        { id: 'gemini', displayName: 'Gemini', available: true },
+        { id: 'gemini', displayName: 'Gemini', ...(await gemini) },
       ],
     };
+  }
+
+  async geminiAvailability(options = {}) {
+    await this.gemini.prepareCapabilities(options).catch(() => {});
+    const configured = typeof this.gemini.configured === 'boolean' ? this.gemini.configured : null;
+    return { available: configured === true, configured };
   }
 
   bridgeCapabilities(options = {}) {
@@ -161,7 +168,7 @@ export class UserscriptAIProvider extends AIProvider {
     const bridge = this.chatgpt.bridge;
     const chatgpt = bridge?.status?.() || { ready: false };
     const provider = canonicalProviderId();
-    return { provider, ready: provider === 'gemini' ? true : !!chatgpt.ready, busy: !!chatgpt.busy, selection: chatgpt.selection || null, chatgpt };
+    return { provider, ready: provider === 'gemini' ? this.gemini.configured === true : !!chatgpt.ready, busy: !!chatgpt.busy, selection: chatgpt.selection || null, chatgpt };
   }
 
   getSelection() {

@@ -1,8 +1,7 @@
 import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedExceptionRegionId, createManagedMethodId, createVMOperationId } from '../shared/identity.js';
-import { createVMEffectBundle, createVMEffectBudgetTracker, createVMEffectFunction } from '../shared/vm-effects.js';
-import { decodeDexInstructionBoundary } from './instruction-boundary.js';
-import { dexMethodDefinitions } from './method-definitions.js';
+import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
+import { decodeDexInstructionBoundary, decodeDexSwitchTargets } from './instruction-boundary.js';
 
 function fail(code) { throw new TypeError(code); }
 
@@ -58,13 +57,15 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
 
   const methodId = createManagedMethodId(dexImage.moduleId, methodIdx, methodDef.name);
 
-  // Resolve codeOff/accessFlags from the shared method-definition authority (built
-  // once per frozen image, O(1) lookup) instead of linearly re-scanning every class'
-  // direct/virtual method arrays on each method decode (#8976).
+  // Find class and direct/virtual method entry to check codeOff and accessFlags
   let codeOff = 0;
   let accessFlags = 0;
-  const definitionEntry = dexMethodDefinitions(dexImage).get(methodIdx);
-  if (definitionEntry) { codeOff = definitionEntry.codeOff; accessFlags = definitionEntry.accessFlags; }
+  for (const cls of dexImage.classes) {
+    const dm = cls.directMethods.find((m) => m.methodIdx === methodIdx);
+    if (dm) { codeOff = dm.codeOff; accessFlags = dm.accessFlags; break; }
+    const vm = cls.virtualMethods.find((m) => m.methodIdx === methodIdx);
+    if (vm) { codeOff = vm.codeOff; accessFlags = vm.accessFlags; break; }
+  }
 
   const isNative = (accessFlags & 0x0100) !== 0; // ACC_NATIVE
   if (isNative || codeOff === 0) {
@@ -132,13 +133,8 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
   const bundles = [];
   let pc = 0; // code unit offset
   let opSeq = 0;
-  // #8725: admit the operation budget while materializing, as Wasm already
-  // does, so an over-budget method fails closed before building its full bundle
-  // graph instead of only in createVMEffectFunction() afterward.
-  const budget = createVMEffectBudgetTracker(options);
 
   while (pc < insnsSize) {
-    budget.chargeOperation();
     const codeUnitOffset = pc * 2; // byte offset relative to code start
     const opByteOffset = insnsStart + codeUnitOffset;
     const boundary = decodeDexInstructionBoundary(view, insnsStart, pc, insnsSize);
@@ -324,6 +320,40 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
         }
         break;
 
+      case 0x2a: // goto/32 +AAAAAAAA
+        {
+          insnLen = 3;
+          const offset = view.getInt32(insnsStart + (pc + 1) * 2, true);
+          mnemonic = 'goto/32';
+          controlEffects.push({ kind: 'branch', targetOffset: (pc + offset) * 2 });
+        }
+        break;
+
+      // packed-switch (0x2b) / sparse-switch (0x2c) +AAAAAAAA: the operand
+      // points at the payload pseudo-unit; case targets inside the payload
+      // are switch-opcode-relative (#5300). An unresolvable payload keeps
+      // the default (fallthrough) edge and fails closed to partial instead
+      // of inventing case targets.
+      case 0x2b: case 0x2c:
+        {
+          insnLen = 3;
+          const packed = opcode === 0x2b;
+          mnemonic = packed ? 'packed-switch' : 'sparse-switch';
+          const testRegister = formatByte;
+          locationReads.push({ kind: 'register', index: testRegister, bits: 32 });
+          const displacement = view.getInt32(insnsStart + (pc + 1) * 2, true);
+          const defaultOffset = (pc + 3) * 2;
+          try {
+            const targets = decodeDexSwitchTargets(view, insnsStart, insnsSize, pc, pc + displacement, packed);
+            controlEffects.push({ kind: 'switch', targetOffsets: targets, defaultTargetOffset: defaultOffset });
+          } catch (error) {
+            completeness = 'partial';
+            unknownEffects.push({ category: 'control', reason: error?.message ?? 'dex-switch-payload-unresolved' });
+            controlEffects.push({ kind: 'switch', targetOffsets: [], defaultTargetOffset: defaultOffset });
+          }
+        }
+        break;
+
       // if-test vA, vB, +CCCC: if-eq (0x32), if-ne (0x33), if-lt (0x34), if-ge (0x35), if-gt (0x36), if-le (0x37)
       case 0x32: case 0x33: case 0x34: case 0x35: case 0x36: case 0x37:
         {
@@ -395,7 +425,6 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
 
           const kinds = { 0x6e: 'virtual', 0x6f: 'super', 0x70: 'direct', 0x71: 'static', 0x72: 'interface' };
           const targetMeth = dexImage.methods[methIdx] || { name: `m_${methIdx}` };
-          const targetResolved = Array.isArray(dexImage.methods) && methIdx < dexImage.methods.length;
           mnemonic = `invoke-${kinds[opcode]}`;
 
           for (const reg of argRegs) {
@@ -418,9 +447,6 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
               .flatMap((cls) => Array.isArray(cls.interfaceTypes) ? cls.interfaceTypes : []);
             callEffect.unresolved = true;
           }
-          if (targetResolved && callEffect.unresolved !== true) {
-            callEffect.targetMethodId = createManagedMethodId(dexImage.moduleId, methIdx, targetMeth.name);
-          }
           callEffects.push(callEffect);
         }
         break;
@@ -441,12 +467,6 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
           locationReads.push({ kind: 'register', index: vBB, bits: 32 });
           locationReads.push({ kind: 'register', index: vCC, bits: 32 });
           locationWrites.push({ kind: 'register', index: vAA, bits: 32 });
-          // The arithmetic result is the value bound to the destination
-          // register; without an explicit produced value the shared bridge has
-          // no result identity for the locationWrite and falls back to an
-          // operand read value, so `add-int v0,v1,v2` would leave v0 equal to
-          // v2 instead of v1+v2 (#1136).
-          producedValues.push({ bits: 32 });
           // Dalvik: div-int/rem-int throw java/lang/ArithmeticException when
           // the divisor (vCC) is zero — a specified exceptional path the
           // bundle must carry instead of publishing exception-free exact
