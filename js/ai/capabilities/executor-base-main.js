@@ -1,0 +1,237 @@
+import { AIError } from '../schema.js';
+import { assertSchema } from '../validation.js';
+import { consumeProposalAuthorization } from '../proposals.js';
+import { validatePatchRange } from '../../patch.js';
+
+export class CapabilityExecutor {
+  constructor({ catalog, app = null, ui = null, actionRunner = null, toolRegistry = null, runtimePlatform = null, binaryId = null } = {}) {
+    this.catalog = catalog; this.app = app; this.ui = ui; this.actionRunner = actionRunner;
+    this.toolRegistry = toolRegistry; this.runtimePlatform = runtimePlatform; this.binaryId = binaryId;
+    this.reverts = new Map();
+  }
+
+  currentBinaryId() { return typeof this.binaryId === 'function' ? this.binaryId() : this.binaryId; }
+  context() { return { app: this.app, ui: this.ui, toolRegistry: this.toolRegistry, runtimePlatform: this.runtimePlatform, binaryId: this.currentBinaryId() }; }
+  async resolveRuntimePlatform() { return typeof this.runtimePlatform === 'function' ? this.runtimePlatform() : this.runtimePlatform; }
+
+  async execute(id, args = {}, options = {}) {
+    const entry = this.catalog?.get?.(id);
+    if (!entry || !entry.agentExposed) throw new AIError('invalid_tool_call', `Unknown or human-only capability: ${id}`);
+    const executionArgs = entry.requiresApproval ? snapshotApprovedArguments(args) : args;
+    assertSchema(executionArgs, entry.inputSchema || { type: 'object' }, 'invalid_tool_call');
+    const runtimePlatform = entry.category === 'runtime' ? await this.resolveRuntimePlatform() : null;
+    this.verifyBinding(entry, executionArgs, runtimePlatform);
+    this.verifyScope(entry, options);
+    if (entry.requiresApproval && !consumeProposalAuthorization(options.authorization, id, executionArgs)) throw new AIError('approval_required', `Capability ${id} requires an approved proposal authorization.`);
+    if (entry.agentTool) return this.executeTool(entry, executionArgs, options);
+    if (entry.actionKind) return this.executeAction(entry, executionArgs);
+    return this.executeBuiltIn(entry, executionArgs, options, runtimePlatform);
+  }
+
+  verifyBinding(entry, args, runtimePlatform = null) {
+    const binaryId = optionalBindingId(this.currentBinaryId(), 'Current binary identity', 'tool_failed');
+    const requestedBinaryId = optionalBindingId(args.binaryId, 'Capability binary identity');
+    if (requestedBinaryId != null && binaryId != null && requestedBinaryId !== binaryId) throw new AIError('scope_violation', 'Capability target belongs to a different binary.');
+    if (entry.id === 'runtime.connect' && binaryId == null && requestedBinaryId == null) {
+      throw new AIError('scope_violation', 'runtime.connect requires a current or explicit binary binding.');
+    }
+    if (!entry.runtimeBound) return;
+    const session = runtimePlatform?.currentSession?.(false);
+    if (!session) throw new AIError('tool_failed', 'No runtime session is available.');
+    const requestedSessionId = requiredBindingId(args.runtimeSessionId, 'Runtime session identity');
+    const sessionId = requiredBindingId(session.id, 'Active runtime session identity', 'tool_failed');
+    if (requestedSessionId !== sessionId) throw new AIError('scope_violation', 'Runtime session identity does not match the requested action.');
+    const sessionBinaryId = optionalBindingId(session.binaryHash, 'Runtime session binary identity', 'tool_failed');
+    if (binaryId != null && sessionBinaryId != null && binaryId !== sessionBinaryId) throw new AIError('scope_violation', 'Runtime session is bound to a different binary.');
+    if (requestedBinaryId != null && sessionBinaryId != null && requestedBinaryId !== sessionBinaryId) throw new AIError('scope_violation', 'Runtime action is bound to a different binary.');
+  }
+
+  verifyScope(entry, options = {}) {
+    const scope = options?.scope || 'auto';
+    if (scope === 'auto') return;
+    let allowedScopes;
+    if (entry.agentTool) {
+      const record = this.toolRegistry?.get?.(entry.agentTool);
+      allowedScopes = record?.scopeSupport || entry.scopeSupport || [];
+    } else {
+      allowedScopes = entry.scopeSupport || [];
+    }
+    if (!allowedScopes.includes(scope)) {
+      throw new AIError('scope_violation', `${entry.id} does not support ${scope} scope.`);
+    }
+  }
+
+  executeTool(entry, args, options) {
+    const record = this.toolRegistry?.get?.(entry.agentTool);
+    if (!record) throw new AIError('invalid_tool_call', `Analysis tool is unavailable: ${entry.agentTool}`);
+    const scope = options?.scope || 'auto';
+    if (scope !== 'auto') {
+      const allowedScopes = record.scopeSupport || entry.scopeSupport || [];
+      if (!allowedScopes.includes(scope)) {
+        throw new AIError('scope_violation', `${entry.id} does not support ${scope} scope.`);
+      }
+    }
+    return typeof this.toolRegistry.execute === 'function'
+      ? this.toolRegistry.execute(entry.agentTool, args, options)
+      : record.execute(args, options);
+  }
+
+  async executeAction(entry, args) {
+    if (typeof this.actionRunner !== 'function') throw new AIError('tool_failed', 'Workbench action adapter is unavailable.');
+    await this.actionRunner({ kind: entry.actionKind, ...args });
+    return { ok: true, capability: entry.id };
+  }
+
+  async executeBuiltIn(entry, args, options, runtimePlatform = null) {
+    const app = this.app;
+    switch (entry.id) {
+      case 'annotation.rename': return renameSymbol(app, args);
+      case 'annotation.comment': return setNote(app, 'comment', args);
+      case 'annotation.set-type': return setType(app, args);
+      case 'annotation.struct-field': return setStructField(app, args);
+      case 'annotation.project': return setProjectAnnotation(app, args);
+      case 'patch.preview': return previewPatch(app, args);
+      case 'patch.create': return createPatch(app, args);
+      case 'patch.inspect': return { patches: (app?.patches?.list?.() || []).map(serializePatch) };
+      case 'patch.revert': return this.revertPatch(args);
+      case 'patch.apply': return applyPatch(app, args);
+      case 'runtime.status': return runtimeStatus(runtimePlatform);
+      case 'runtime.connect': return runtimePlatform?.startSession?.({ adapter: args.adapter || null, binaryHash: args.binaryId || this.currentBinaryId(), trace: args.trace || {}, connect: true }) ?? unavailable('runtime connect');
+      case 'runtime.attach': return runtimeAdapter(runtimePlatform).attach(args.target || {}, options);
+      case 'runtime.detach': return runtimePlatform.sessions.close(args.runtimeSessionId);
+      case 'runtime.breakpoint-create': return runtimeAdapter(runtimePlatform).setBreakpoint(args.breakpoint || args);
+      case 'runtime.watchpoint-create': return runtimeAdapter(runtimePlatform).watchMemory(args.watchpoint || args);
+      case 'runtime.breakpoint-remove': case 'runtime.watchpoint-remove': return runtimeAdapter(runtimePlatform).removeBreakpoint(args.id);
+      case 'runtime.continue': return runtimeAdapter(runtimePlatform).resume({ signal: options?.signal });
+      case 'runtime.pause': return runtimeAdapter(runtimePlatform).pause({ signal: options?.signal });
+      case 'runtime.step-in': return runtimeAdapter(runtimePlatform).stepInto(options);
+      case 'runtime.step-over': return runtimeAdapter(runtimePlatform).stepOver(options);
+      case 'runtime.step-out': return runtimeAdapter(runtimePlatform).stepOut(options);
+      case 'runtime.registers': return runtimeAdapter(runtimePlatform).readRegisters(args.threadId);
+      case 'runtime.memory-read': return boundedMemoryRead(runtimeAdapter(runtimePlatform), args);
+      case 'runtime.memory-write': return boundedMemoryWrite(runtimeAdapter(runtimePlatform), args);
+      case 'runtime.experiment': return runtimePlatform.runExperiment(args.experiment, options);
+      case 'project.save': return callRequired(app?.workspace, 'autosave');
+      case 'project.snapshot': return callRequired(app?.workspace, 'snapshot');
+      case 'project.restore-known': return callRequired(app?.workspace, 'importProject', args.project);
+      case 'project.binary-diff': return callRequired(app?.workspace, 'diff', args.options || {});
+      case 'project.export-report': {
+        if (typeof app?.report?.export === 'function') return app.report.export(args);
+        if (app?.autoReport) return app.autoReport;
+        throw new AIError('tool_failed', 'No deterministic report is available to export.');
+      }
+      default: throw new AIError('invalid_tool_call', `No executor is registered for capability ${entry.id}.`);
+    }
+  }
+
+  async revertPatch(args) {
+    const patch = this.app?.patches?.at?.(BigInt(args.fileOffset));
+    if (!patch) throw new AIError('tool_failed', 'Patch is no longer present.');
+    this.app.patches.remove(patch.offset);
+    const metadata = serializePatch(patch);
+    this.reverts.set(String(patch.offset), metadata);
+    return { reverted: true, patch: metadata };
+  }
+}
+
+function requiredBindingId(value, label, errorType = 'scope_violation') {
+  const id = optionalBindingId(value, label, errorType);
+  if (id == null) throw new AIError(errorType, `${label} must be a non-empty canonical string.`);
+  return id;
+}
+
+function optionalBindingId(value, label, errorType = 'scope_violation') {
+  if (value == null) return null;
+  if (typeof value !== 'string' || !value || value !== value.trim()) {
+    throw new AIError(errorType, `${label} must be a non-empty canonical string.`);
+  }
+  return value;
+}
+
+function snapshotApprovedArguments(value) {
+  const clone = globalThis.structuredClone;
+  if (typeof clone !== 'function') throw new AIError('tool_failed', 'Structured cloning is unavailable for approved capability arguments.');
+  let snapshot;
+  try {
+    snapshot = clone(value);
+  } catch {
+    throw new AIError('invalid_tool_call', 'Approved capability arguments must be structured-cloneable.');
+  }
+  if (containsSharedMemory(snapshot)) throw new AIError('invalid_tool_call', 'Approved capability arguments must not contain shared memory.');
+  return snapshot;
+}
+
+function containsSharedMemory(value, seen = new WeakSet()) {
+  if (value === null || typeof value !== 'object') return false;
+  const SharedBuffer = globalThis.SharedArrayBuffer;
+  if (typeof SharedBuffer === 'function' && value instanceof SharedBuffer) return true;
+  if (ArrayBuffer.isView(value)) return typeof SharedBuffer === 'function' && value.buffer instanceof SharedBuffer;
+  if (value instanceof ArrayBuffer || seen.has(value)) return false;
+  seen.add(value);
+  if (value instanceof Map) {
+    for (const [key, item] of value) if (containsSharedMemory(key, seen) || containsSharedMemory(item, seen)) return true;
+    return false;
+  }
+  if (value instanceof Set) {
+    for (const item of value) if (containsSharedMemory(item, seen)) return true;
+    return false;
+  }
+  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+    if ('value' in descriptor && containsSharedMemory(descriptor.value, seen)) return true;
+  }
+  return false;
+}
+
+function validAuthorization(value) { return value?.kind === 'proposal' && typeof value.token === 'string' && value.token.length >= 8; }
+function runtimeAdapter(platform) { const session = platform?.currentSession?.(); if (!session?.adapter) throw new AIError('tool_failed', 'Runtime adapter is unavailable.'); return session.adapter; }
+function runtimeStatus(platform) { const session = platform?.currentSession?.(false); return session ? { connected: !!session.adapter?.connected, sessionId: session.id, binaryId: session.binaryHash || null, backend: session.backend, capabilities: session.adapter?.capabilities || {} } : { connected: false, sessionId: null }; }
+
+async function boundedMemoryRead(adapter, args) {
+  const size = Object.prototype.hasOwnProperty.call(args, 'size') ? args.size : 1;
+  if (typeof size !== 'number' || !Number.isSafeInteger(size) || size < 1 || size > 256 * 1024) throw new AIError('invalid_tool_call', 'Runtime memory read must be between 1 and 262144 bytes.');
+  const bytes = await adapter.readMemory(args.address, size);
+  return { address: String(args.address), bytes: Array.from(bytes || []) };
+}
+async function boundedMemoryWrite(adapter, args) {
+  const bytes = byteArray(args.bytes), expected = byteArray(args.expectedBefore);
+  if (!bytes.length || bytes.length > 64 * 1024 || bytes.length !== expected.length) throw new AIError('invalid_tool_call', 'Runtime write bytes and expected-before must have the same length between 1 and 65536.');
+  const observedBefore = await adapter.readMemory(args.address, expected.length);
+  if (!equalBytes(observedBefore, expected)) throw new AIError('tool_failed', 'Runtime memory target is stale: expected-before does not match.');
+  const before = Uint8Array.from(observedBefore);
+  try {
+    await adapter.writeMemory(args.address, bytes);
+    const after = await adapter.readMemory(args.address, bytes.length);
+    if (!equalBytes(after, bytes)) throw new AIError('tool_failed', 'Runtime memory write postcondition verification failed.');
+  } catch (error) {
+    try {
+      await adapter.writeMemory(args.address, before);
+      const restored = await adapter.readMemory(args.address, before.length);
+      if (!equalBytes(restored, before)) throw new Error('rollback postcondition verification failed');
+    } catch (rollbackError) {
+      throw new AIError('tool_failed','Runtime memory write failed and rollback could not be verified; target state may be mutated.',{ cause: String(error?.message || error), rollback: String(rollbackError?.message || rollbackError) });
+    }
+    throw error;
+  }
+  return { address: String(args.address), written: bytes.length, before: Array.from(before), after: Array.from(bytes) };
+}
+
+function noteStatusSnapshot(notes) { return { dirty: notes?.dirty,lastSaveError: notes?.lastSaveError,lastMutationSaved: notes?.lastMutationSaved }; }
+function noteMutationSnapshot(notes, getter, address) { let canRestore=false,value=null; if (typeof notes?.[getter] === 'function') { try { value=notes[getter](address); canRestore=true; } catch {} } return { canRestore, value, ...noteStatusSnapshot(notes) }; }
+function restoreNoteStatus(notes, snapshot) { notes.dirty=snapshot.dirty; notes.lastSaveError=snapshot.lastSaveError; notes.lastMutationSaved=snapshot.lastMutationSaved; }
+function rollbackNoteMutation(notes, method, address, snapshot) { if (!snapshot.canRestore) return true; let result; try { result=notes[method](address, snapshot.value == null ? '' : snapshot.value, { save:false }); } finally { restoreNoteStatus(notes,snapshot); } return result !== false; }
+function setNote(app, kind, args, after=null) { const address=BigInt(args.address), value=String(args.value ?? ''); const method=kind==='name'?'setName':'setComment', getter=kind==='name'?'nameOf':'comment'; if (typeof app?.notes?.[method] !== 'function') throw new AIError('tool_failed',`${kind} annotation adapter is unavailable.`); const snapshot=noteMutationSnapshot(app.notes,getter,address); if (!snapshot.canRestore) throw new AIError('tool_failed',`${kind} annotation adapter cannot provide the snapshot required for atomic persistence.`); if (app.notes[method](address,value)===false) throw new AIError('tool_failed',`${kind} annotation could not be persisted.`); after?.(); return { ok:true,address:address.toString(),value }; }
+function refreshDisplay(app) { const warnings=[]; try { app.viewer?.setSymbols?.(app.symbols); } catch(e){warnings.push(String(e?.message||e));} try { app.updateChrome?.(); } catch(e){warnings.push(String(e?.message||e));} return warnings.length?warnings.join('; '):null; }
+function renameSymbol(app,args){ const address=BigInt(args.address),value=String(args.value??''); return setNote(app,'name',{address,value},()=>app.symbols?.rename?.(address,value)); }
+function setType(app,args){ const address=BigInt(args.address),key=String(args.key||'return'),value=String(args.value??''); if(typeof app?.notes?.setType!=='function') throw new AIError('tool_failed','Type annotation adapter is unavailable.'); if(app.notes.setType(address,key,value)===false) throw new AIError('tool_failed','Type annotation could not be persisted.'); return {ok:true,address:address.toString(),key,value}; }
+function setStructField(app,args){ if(!Array.isArray(app?.notes?.structs)||typeof app.notes.save!=='function') throw new AIError('tool_failed','Structure annotation adapter is unavailable.'); const name=String(args.struct||args.name||'').trim(),offset=Number(args.offset); let struct=app.notes.structs.find(i=>i?.name===name); if(!struct){struct={name,fields:[]};app.notes.structs.push(struct);} const field={offset,name:String(args.field||args.fieldName||''),type:String(args.type||'')}; const index=struct.fields.findIndex(i=>Number(i?.offset)===offset); if(index>=0)struct.fields[index]=field; else struct.fields.push(field); if(app.notes.save()===false) throw new AIError('tool_failed','Structure annotation could not be persisted.'); return {ok:true,struct:name,field}; }
+async function setProjectAnnotation(app,args){ if(!app) throw new AIError('tool_failed','Project annotation adapter is unavailable.'); const record={id:String(args.id||`annotation:${Date.now()}`),kind:String(args.kind||'note'),value:args.value,createdAt:new Date().toISOString()}; app.projectAnnotations ||= []; app.projectAnnotations.push(record); return record; }
+async function previewPatch(app,args){ const validated=await validatePatchTarget(app,args); return {ok:true,...validated,after:byteArray(args.after)}; }
+async function createPatch(app,args){ const validated=await validatePatchTarget(app,args),after=byteArray(args.after); app.patches?.add?.(validated.fileOffset,validated.before,after,{addr:validated.address}); const stored=app.patches?.at?.(validated.fileOffset); if(!stored) throw new AIError('tool_failed','Patch postcondition verification failed.'); return serializePatch(stored); }
+async function validatePatchTarget(app,args){ const address=BigInt(args.address),before=byteArray(args.before),after=byteArray(args.after); const regions=app?.store?.get?.('regions')||[]; const region=regions.find(item=>address>=item.vmAddr&&address<item.vmAddr+item.size); const fileSize=app?.file?.size??app?.store?.get?.('fileInfo')?.size??null; const range=validatePatchRange(region,address,after.length,fileSize,args.instruction!==false); if(!range.ok) throw new AIError('invalid_tool_call',range.error); const result=await app?.backend?.readAt?.(address,before.length); if(!result?.found||!equalBytes(result.bytes,before)) throw new AIError('tool_failed','Patch target is stale: original bytes no longer match expected-before.'); return {address,fileOffset:range.fileOffset,before}; }
+async function applyPatch(app,args){ const source=args.file||app?.file; const output=await app?.patches?.apply?.(source); if(!(output instanceof Blob)) throw new AIError('tool_failed','Patch application did not produce an output Blob.'); return {ok:true,output,size:output.size,patches:app.patches.list().map(serializePatch)}; }
+function serializePatch(item){ return { fileOffset:item.offset.toString(),address:item.addr==null?null:String(item.addr),before:Array.from(item.before),after:Array.from(item.after),label:item.label||null,reason:item.reason||null }; }
+function byteArray(value){ if(!Array.isArray(value)&&!(value instanceof Uint8Array)) throw new AIError('invalid_tool_call','Mutation bytes must be an Array or Uint8Array.'); return Uint8Array.from(value); }
+function equalBytes(a,b){ return a?.length===b?.length&&Array.from(a).every((v,i)=>v===b[i]); }
+function callRequired(target,method,...args){ if(typeof target?.[method]!=='function') throw new AIError('tool_failed',`Project ${method} capability is unavailable.`); return target[method](...args); }
+function unavailable(name){ throw new AIError('tool_failed',`${name} capability is unavailable.`); }
+export function createCapabilityExecutor(options){ return new CapabilityExecutor(options); }
