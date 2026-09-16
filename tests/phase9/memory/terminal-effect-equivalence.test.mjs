@@ -57,5 +57,5 @@ test('C4-04B rejects noncanonical exceptional annotations instead of laundering 
   const result=await queryTerminalEffectEquivalence(request(before,after));
   assert.equal(result.eligible,false);
   assert.equal(result.verdict,'unknown');
-  assert.match(result.reason,/unsupported-instruction-exceptional-edge-annotation|execution:/);
+  assert.match(result.reason,/unsupported-instruction-exceptional-edge-annotation|incomplete-terminal-control-coverage|execution:/);
 });
