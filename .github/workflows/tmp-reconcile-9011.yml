@@ -2,9 +2,72 @@ name: tmp-reconcile-9011
 on:
   push:
     branches: [codex/issue-campaign-20260914-lane-07-batch-06]
+permissions:
+  contents: write
+concurrency:
+  group: tmp-reconcile-9011
+  cancel-in-progress: true
 jobs:
-  noop:
+  reconcile:
+    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 10
     steps:
-      - run: echo staged
+      - uses: actions/checkout@v7
+        with: {fetch-depth: 0}
+      - name: Merge main and constrain conflicts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git fetch --no-tags origin main
+          BASE="$(git merge-base HEAD origin/main)"
+          files=(js/runtime/app-runtime.js js/runtime/authority.js js/runtime/events.js tests/phase10/events/issue-8989-runtime-event-internal-slot-admission.test.mjs tests/phase10/runtime/issue-8964-runtime-binary-authority.test.mjs tests/stage2/capability-promotion.test.mjs tests/stage2/issue-8851-runtime-support-receipt-authority.test.mjs tests/stage2/managed-runtime.test.mjs tests/stage2/runtime-authority.test.mjs)
+          for i in "${!files[@]}"; do git diff --binary "$BASE"..HEAD -- "${files[$i]}" > "/tmp/p$i.patch"; done
+          set +e
+          git merge --no-ff --no-commit origin/main
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+            for f in "${conflicts[@]}"; do
+              ok=0; for x in "${files[@]}"; do [ "$f" = "$x" ] && ok=1; done
+              [ "$ok" -eq 1 ] || { echo "unexpected conflict: $f"; exit 1; }
+              git checkout --theirs -- "$f"; git add "$f"
+            done
+          fi
+          test -z "$(git diff --name-only --diff-filter=U)"
+      - name: Reapply app-runtime delta
+        run: git apply --3way /tmp/p0.patch
+      - name: Reapply authority delta
+        run: git apply --3way /tmp/p1.patch
+      - name: Reapply events delta
+        run: git apply --3way /tmp/p2.patch
+      - name: Reapply regression deltas
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in 3 4 5 6 7 8; do git apply --3way "/tmp/p$i.patch"; done
+      - name: Focused verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check js/runtime/app-runtime.js
+          node --check js/runtime/authority.js
+          node --check js/runtime/events.js
+          node --test \
+            tests/phase10/events/issue-8989-runtime-event-internal-slot-admission.test.mjs \
+            tests/phase10/runtime/issue-8964-runtime-binary-authority.test.mjs \
+            tests/stage2/issue-8851-runtime-support-receipt-authority.test.mjs \
+            tests/stage2/runtime-authority.test.mjs \
+            tests/stage2/managed-runtime.test.mjs \
+            tests/stage2/capability-promotion.test.mjs
+      - name: Finalize merge commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/tmp-reconcile-9011.yml
+          git add -A
+          git commit -m 'fix: reconcile PR #9011 with current main'
+          git push origin HEAD:${GITHUB_REF_NAME}
