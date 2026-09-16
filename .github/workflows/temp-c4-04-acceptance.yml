@@ -1,4 +1,5 @@
 name: Temporary C4-04 acceptance
+# run: final-c4-04-20260916-1
 on:
   push:
     branches: ['impl/c4-04-finish-20260916']
