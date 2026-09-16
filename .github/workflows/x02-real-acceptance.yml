@@ -3,7 +3,7 @@ name: X-02 real Apple acceptance
 on:
   push:
     branches: [feat/analysis-roadmap-v8-current-main-20260907]
-    paths: [.github/workflows/x02-real-acceptance.yml]
+    paths: [.github/workflows/x02-real-acceptance.yml, tools/validation/x02-apple-runtime-evidence.mjs]
 
 permissions:
   contents: read
