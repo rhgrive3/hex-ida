@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { runInNewContext } from 'node:vm';
 
 import { EvidenceStore } from '../../../js/ai/evidence.js';
+import { InvestigationSessionStore } from '../../../js/ai/session-core/index.js';
 
 const sourceData = {
   verified: false,
@@ -63,20 +64,37 @@ assert.throws(() => { payload.facts[0].labels.push('forged'); }, TypeError);
 assert.deepEqual(store.byStatus('supported').map((record) => record.id), ['ev-4436-supported']);
 assert.deepEqual(store.byStatus('verified').map((record) => record.id), []);
 
+// #8751 sync to the #4995 persisted-confirmed authority contract: verified
+// authority is only restored through the trusted persistence loader, never
+// from an arbitrary raw caller-supplied array.
 store.restorePersistedConfirmed([{
-  id: 'ev-4436-verified',
+  id: 'ev-4436-raw-verified',
   kind: 'observation',
   status: 'verified',
   sourceTool: 'issue-4436',
-  sourceData: { proof: { result: 'canonical' } },
+  sourceData: { proof: { result: 'raw' } },
 }]);
+assert.equal(store.get('ev-4436-raw-verified').status, 'supported', 'raw verified records must downgrade');
+assert.equal(store.verifiedIds().includes('ev-4436-raw-verified'), false);
+
+const persisted = new InvestigationSessionStore().register({
+  id: 'persisted-4436',
+  confirmedFindings: [{
+    id: 'ev-4436-verified',
+    kind: 'observation',
+    status: 'verified',
+    sourceTool: 'issue-4436',
+    sourceData: { proof: { result: 'canonical' } },
+  }],
+});
+store.restorePersistedConfirmed(persisted.confirmedFindings);
 const verified = store.get('ev-4436-verified');
 assert.equal(verified.status, 'verified');
 assert.equal(Object.isFrozen(verified), true);
 assert.throws(() => { verified.status = 'supported'; }, TypeError, 'verified records remain immutable');
 assert.throws(() => { verified.sourceData.proof.result = 'forged'; }, TypeError, 'verified payload remains immutable');
 assert.deepEqual(store.verifiedIds(), ['ev-4436-verified']);
-assert.deepEqual(store.byStatus('supported').map((record) => record.id), ['ev-4436-supported']);
+assert.deepEqual(store.byStatus('supported').map((record) => record.id).sort(), ['ev-4436-raw-verified', 'ev-4436-supported']);
 
 console.log('issue-4436 EvidenceStore record immutability tests passed');
 

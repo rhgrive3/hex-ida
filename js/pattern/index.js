@@ -73,6 +73,11 @@ function snapshotByteSource(byteSource, options) {
 function validateCompiledPattern(value) {
   if (value && typeof value === 'object' && COMPILED_PATTERNS.has(value)) return value;
 
+  // #8841: bounded admission runs before the full clone so an oversized or
+  // over-deep compiled envelope fails with a typed resource error instead of
+  // materializing (or overflowing on) the caller's whole graph first.
+  if (!isPlainRecord(value)) fail('pattern-compiled-invalid');
+  core.admitCompiledGraph(value);
   const pattern = cloneEnvelope(value);
   if (pattern.languageVersion !== core.PATTERN_LANGUAGE_VERSION) {
     fail('pattern-compiled-language-version-unsupported');

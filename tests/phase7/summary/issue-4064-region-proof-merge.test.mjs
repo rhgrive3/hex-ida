@@ -55,9 +55,26 @@ function solveDuplicate(label, localEffect, modelEffect) {
   const solved = solveInterproceduralSummaries({
     roots: [callerId],
     localSummaries: new Map([[callerId, caller]]),
+    // #8809 sync: #6074 requires the canonical proven library-model envelope;
+    // a bare effects object is now rejected into the broad fallback before
+    // the duplicate-proof merge path is ever reached.
     libraryModels: new Map([[modelId, {
+      modelSchema: 'phase7-library-model',
+      modelVersion: '1',
+      targetEntityId: modelId,
+      snapshotId: 'snapshot-unbound',
+      completeness: 'complete',
+      stopReason: null,
+      current: true,
+      provenance: {
+        schema: 'phase7-library-model-provenance',
+        providerId: 'test-library-provider',
+        providerVersion: '1.0.0',
+        evidenceIds: [`model:${modelId}`],
+      },
       memoryReadRegions: [],
-      memoryWriteRegions: [modelEffect],
+      memoryWriteRegions: [{ ...modelEffect, source: 'library-model', evidenceIds: [`effect:${modelId}:write`] }],
+      escapes: [],
       noreturn: false,
       mayThrow: false,
     }]]),

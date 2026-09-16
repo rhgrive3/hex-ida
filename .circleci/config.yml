@@ -241,6 +241,35 @@ jobs:
                   --head-sha "$OWNERSHIP_HEAD_SHA")"
                 node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
                 ;;
+              codex/issue-campaign-20260914-lane-02-batch-03)
+                # PR #8995 spans Phase 7 evidence plus independently owned artifact,
+                # debug/runtime transport, Phase 4, and Phase 10 paths. Keep the
+                # reviewed inventory exact and fail closed on any added path.
+                FILES_JSON="$(git diff --name-only --diff-filter=ACMR "$OWNERSHIP_BASE_SHA...$OWNERSHIP_HEAD_SHA" | node -e '
+                  const fs = require("node:fs");
+                  const actual = fs.readFileSync(0, "utf8").split(/\r?\n/).filter(Boolean).sort();
+                  const expected = [
+                    ".circleci/config.yml",
+                    "js/ai/evidence.js",
+                    "js/core/artifacts/contracts.js",
+                    "js/core/artifacts/storage/integrity.js",
+                    "js/debug/remote-protocol.js",
+                    "js/runtime/provider-protocol.js",
+                    "tests/phase10/debug/issue-8654-low-rss-child.mjs",
+                    "tests/phase10/debug/issue-8654-remote-packet-pre-admission-budget.test.mjs",
+                    "tests/phase10/debug/issue-8654-review-wire-byte-equivalence.test.mjs",
+                    "tests/phase4/store/issue-8808-upstream-envelope-identity.test.mjs",
+                    "tests/phase7/analysis/issue-8788-evidence-source-binding-structured-identity.test.mjs",
+                  ].sort();
+                  if (actual.length !== expected.length || actual.some((file, i) => file !== expected[i])) {
+                    console.error("PR #8995 Phase 7 route inventory mismatch");
+                    console.error(JSON.stringify({ actual, expected }));
+                    process.exit(1);
+                  }
+                  process.stdout.write(JSON.stringify(["tests/phase7/analysis/issue-8788-evidence-source-binding-structured-identity.test.mjs"]));
+                ')"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
               batch-20260912-owner2)
                 # PR #8414: exact cross-lane projection; every foreign path is enumerated.
                 FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
@@ -325,6 +354,34 @@ jobs:
                   --head-sha "$OWNERSHIP_HEAD_SHA")"
                 node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
                 ;;
+              codex/issue-campaign-20260914-lane-12-batch-02)
+                # PR #8939 is an exact, review-driven cross-lane repair batch.
+                # Fail closed unless the complete changed-file inventory remains
+                # exactly this reviewed set, then validate its Phase 7-owned file.
+                FILES_JSON="$(git diff --name-only --diff-filter=ACMR "$OWNERSHIP_BASE_SHA...$OWNERSHIP_HEAD_SHA" | node -e '
+                  const fs = require("node:fs");
+                  const actual = fs.readFileSync(0, "utf8").split(/\r?\n/).filter(Boolean).sort();
+                  const expected = [
+                    ".circleci/config.yml",
+                    "js/analysis/summary/interprocedural.js",
+                    "js/apple/objc-runtime.js",
+                    "js/controlflow.js",
+                    "js/decompiler/semantic-core.js",
+                    "tests/performance/issue-8872-nested-escape-provenance-budget.test.mjs",
+                    "tests/performance/issue-8872-summary-resident-payload-budget.test.mjs",
+                    "tests/performance/issue-8887-natural-loop-membership-budget.test.mjs",
+                    "tests/performance/issue-8899-objc-category-protocol-merge-linear.test.mjs",
+                    "tools/validation/phase8/cross-lane-inventory.mjs",
+                  ].sort();
+                  if (actual.length !== expected.length || actual.some((file, i) => file !== expected[i])) {
+                    console.error("PR #8939 Phase 7 route inventory mismatch");
+                    console.error(JSON.stringify({ actual, expected }));
+                    process.exit(1);
+                  }
+                  process.stdout.write(JSON.stringify(["js/analysis/summary/interprocedural.js"]));
+                ')"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
               codex/consolidate-arm64-repairs-20260913)
                 # The consolidated repair batch spans multiple ownership lanes.
                 # Enumerate every foreign path before validating the Phase 7
@@ -333,6 +390,50 @@ jobs:
                   --branch "$CIRCLE_BRANCH" \
                   --base-sha "$OWNERSHIP_BASE_SHA" \
                   --head-sha "$OWNERSHIP_HEAD_SHA")"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
+              codex/issue-campaign-20260914-lane-13-batch-02)
+                # PR #8958 combines one Phase 7 regression with query,
+                # recognition, and Phase 12 owner slices. Reject any undeclared
+                # foreign path before projecting the Phase 7 subset.
+                FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+                  --branch "$CIRCLE_BRANCH" \
+                  --base-sha "$OWNERSHIP_BASE_SHA" \
+                  --head-sha "$OWNERSHIP_HEAD_SHA")"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
+              fix/batch-10-issues-20260915)
+                # PR #8936 is a ten-issue cross-lane batch. Enumerate every
+                # foreign path through the exact route before validating the
+                # Phase 7-owned subset so the gate stays fail-closed.
+                FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+                  --branch "$CIRCLE_BRANCH" \
+                  --base-sha "$OWNERSHIP_BASE_SHA" \
+                  --head-sha "$OWNERSHIP_HEAD_SHA")"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
+              codex/issue-campaign-20260914-lane-04-b01r)
+                # PR #9014 is a reviewed cross-lane Semantic IR repair. Require
+                # the complete six-file inventory before projecting the single
+                # Phase 7-owned compatibility file into the ownership validator.
+                FILES_JSON="$(git diff --name-only --diff-filter=ACMR "$OWNERSHIP_BASE_SHA...$OWNERSHIP_HEAD_SHA" | node -e '
+                  const fs = require("node:fs");
+                  const actual = fs.readFileSync(0, "utf8").split(/\r?\n/).filter(Boolean).sort();
+                  const expected = [
+                    ".circleci/config.yml",
+                    "js/semantics/compat/index.js",
+                    "js/semantics/ir/from-machine-effects.js",
+                    "js/semantics/ir/nodes.js",
+                    "js/semantics/ssa/validate.js",
+                    "tests/semantic-v2/lowering-memory-control.test.mjs",
+                  ].sort();
+                  if (actual.length !== expected.length || actual.some((file, i) => file !== expected[i])) {
+                    console.error("PR #9014 Phase 7 route inventory mismatch");
+                    console.error(JSON.stringify({ actual, expected }));
+                    process.exit(1);
+                  }
+                  process.stdout.write(JSON.stringify(["js/semantics/compat/index.js"]));
+                ')"
                 node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
                 ;;
               *)
@@ -357,6 +458,10 @@ jobs:
             set -euo pipefail
             if [ "${CIRCLE_BRANCH:-}" = 'feat/scpa-functional-acceptance-20260912' ]; then
               run_it=true
+            elif [ "${CIRCLE_BRANCH:-}" = 'codex/issue-campaign-20260914-lane-04-b01r' ]; then
+              # This PR has no Phase 8-owned files; .circleci/config.yml is only
+              # present to register its exact Phase 7 cross-lane inventory.
+              run_it=false
             else
               run_it="$(bash scripts/ci/circleci-impact.sh pr-only '^(js/decompiler/|tests/phase8/|tools/validation/phase8/|tools/validation/phase8-ownership\.mjs$|tools/validation/phase-ownership/phase8\.json$|reports/phase8/|docs/PHASE8_CHECKPOINT\.md$|docs/PHASE8_HANDOFF\.md$|\.github/workflows/phase8-ownership\.yml$|\.github/workflows/phase8-release-validation\.yml$|tools/validation/phase5-ownership\.mjs$|tools/validation/scpa-integration-ownership\.mjs$|tools/validation/phase-ownership/scpa-integration\.json$|tests/ci/scpa-integration-ownership\.test\.mjs$)')"
             fi
@@ -396,7 +501,20 @@ jobs:
                 --base-sha "$OWNERSHIP_BASE_SHA" \
                 --head-sha "$OWNERSHIP_HEAD_SHA")"
               node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"
+            elif [ "${CIRCLE_BRANCH:-}" = 'codex/issue-campaign-20260914-lane-12-batch-02' ]; then
+              FILES_JSON="$(node tools/validation/phase8/cross-lane-inventory.mjs \
+                --branch "$CIRCLE_BRANCH" \
+                --base-sha "$OWNERSHIP_BASE_SHA" \
+                --head-sha "$OWNERSHIP_HEAD_SHA")"
+              node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"
             elif [ "${CIRCLE_BRANCH:-}" = 'codex/consolidate-arm64-repairs-20260913' ]; then
+              FILES_JSON="$(node tools/validation/phase8/cross-lane-inventory.mjs \
+                --branch "$CIRCLE_BRANCH" \
+                --base-sha "$OWNERSHIP_BASE_SHA" \
+                --head-sha "$OWNERSHIP_HEAD_SHA")"
+              node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"
+            elif [ "${CIRCLE_BRANCH:-}" = 'fix/batch-10-issues-20260915' ]; then
+              # PR #8936 exact cross-lane projection; every foreign path is enumerated.
               FILES_JSON="$(node tools/validation/phase8/cross-lane-inventory.mjs \
                 --branch "$CIRCLE_BRANCH" \
                 --base-sha "$OWNERSHIP_BASE_SHA" \
@@ -424,7 +542,7 @@ jobs:
       - run:
           name: Detect universal-platform impact
           command: |
-            run_it="$(bash scripts/ci/circleci-impact.sh main-and-branch '^(js/(binary/|bytesource/|architecture/|targets/|semantics/|analysis/|decompiler/|ir[^/]*\.js$|dataflow[^/]*\.js$|controlflow\.js$|blocks\.js$|analyze\.js$|backend\.js$)|js/platform/(capability-maturity\.js$|capstone-disasm-worker\.js$)|capstone\.js$|capstone\.wasm$|tests/universal-binary[^/]*\.mjs$|tests/binary-platform\.mjs$|tests/capability-maturity\.mjs$|tests/issue-495-elf-relocation-budget\.mjs$|tests/issue-513-elf-symbol-budget\.mjs$|tools/benchmark/|scripts/fetch-real-fixtures\.mjs$|package\.json$|package-lock\.json$|\.github/workflows/universal-platform\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
+            run_it="$(bash scripts/ci/circleci-impact.sh main-and-branch '^(js/(binary/|bytesource/|architecture/|targets/|semantics/|analysis/|decompiler/|ir[^/]*\.js$|dataflow[^/]*\.js$|controlflow\.js$|blocks\.js$|analyze\.js$|backend\.js$)|js/platform/(capability-maturity\.js$|capstone-disasm-worker\.js$)|capstone\.js$|capstone.wasm$|tests/universal-binary[^/]*\.mjs$|tests/binary-platform\.mjs$|tests/capability-maturity\.mjs$|tests/issue-495-elf-relocation-budget\.mjs$|tests/issue-513-elf-symbol-budget\.mjs$|tools/benchmark/|scripts/fetch-real-fixtures\.mjs$|package\.json$|package-lock\.json$|\.github/workflows/universal-platform\.yml$|\.circleci/config\.yml$|scripts/ci/circleci-impact\.sh$)')"
             echo "export RUN_UNIVERSAL_PLATFORM=$run_it" >> "$BASH_ENV"
       - run:
           name: Install dependencies

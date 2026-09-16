@@ -3,6 +3,7 @@ import { createManagedExceptionRegionId, createManagedMethodId, createVMOperatio
 import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
 import { decodeJvmInstructionBoundary } from './instruction-boundary.js';
 import { liftJvmMethod as liftJvmMethodCore } from './lifter-core.js';
+import { applyJvmObjectIdentitySemantics } from './object-semantics.js';
 
 function firstMalformedBoundary(bytecode) {
   let pc = 0;
@@ -54,8 +55,9 @@ function applyBranchPredicateSemantics(lifted, options = {}) {
   return changed ? createVMEffectFunction({ ...lifted, bundles }, options) : lifted;
 }
 
-function finalizeJvmSemantics(lifted, method, options = {}) {
-  return applySynchronizedMethodSemantics(applyBranchPredicateSemantics(lifted, options), method, options);
+function finalizeJvmSemantics(lifted, jvmClass, method, options = {}) {
+  const objectAware = applyJvmObjectIdentitySemantics(lifted, jvmClass, options);
+  return applySynchronizedMethodSemantics(applyBranchPredicateSemantics(objectAware, options), method, options);
 }
 
 function applySynchronizedMethodSemantics(lifted, method, options = {}) {
@@ -108,13 +110,13 @@ function cloneWithBytecodePrefix(jvmClass, methodIdx, method, bytecode) {
 export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
   const method = jvmClass?.methods?.[methodIdx];
   if (!method?.code) {
-    return finalizeJvmSemantics(liftJvmMethodCore(methodIdx, jvmClass, options), method, options);
+    return finalizeJvmSemantics(liftJvmMethodCore(methodIdx, jvmClass, options), jvmClass, method, options);
   }
 
   const bytecode = method.code.bytecode;
   const malformed = firstMalformedBoundary(bytecode);
   if (!malformed) {
-    return finalizeJvmSemantics(liftJvmMethodCore(methodIdx, jvmClass, options), method, options);
+    return finalizeJvmSemantics(liftJvmMethodCore(methodIdx, jvmClass, options), jvmClass, method, options);
   }
 
   const methodId = createManagedMethodId(jvmClass.moduleId, methodIdx, method.name);
@@ -181,5 +183,5 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
     exceptionRegions,
     aggregateCompleteness: 'partial',
   }, options);
-  return finalizeJvmSemantics(lifted, method, options);
+  return finalizeJvmSemantics(lifted, jvmClass, method, options);
 }

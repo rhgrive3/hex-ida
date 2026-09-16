@@ -137,6 +137,11 @@ export function buildCilCallMetadataIndex(bytes) {
   }
 
   const methodDefs = [];
+  // MethodDef body-offset -> unique RID, or `null` when several rows claim one
+  // offset. Building it during the single MethodDef scan keeps per-method
+  // signature resolution indexed instead of rescanning the whole table (#8791);
+  // the ambiguity itself stays explicit so it keeps failing closed.
+  const methodBodyOffsets = new Map();
   const memberRefs = [];
   const methodSpecs = [];
   const standAloneSigs = [];
@@ -160,14 +165,19 @@ export function buildCilCallMetadataIndex(bytes) {
       for (let row = 0; row < rows; row++) {
         const rowPos = pos + row * rowSize;
         const rva = readU32(view, rowPos, 'cil-call-signature-methoddef-truncated');
-        methodDefs.push(Object.freeze({
+        const methodRow = Object.freeze({
           rva,
           bodyOffset:rva === 0 ? null : metadata.mapRva(rva, 1, 'cil-call-signature-method-body-unmapped'),
           accessFlags:readU16(view, rowPos + 6, 'cil-call-signature-methoddef-truncated'),
           nameIndex:readIndex(view, rowPos + 8, stringIndexSize, 'cil-call-signature-methoddef-truncated'),
           signatureBlobIndex:readIndex(view, rowPos + signatureOffset, blobIndexSize,
             'cil-call-signature-methoddef-truncated'),
-        }));
+        });
+        methodDefs.push(methodRow);
+        if (methodRow.bodyOffset != null) {
+          const claimed = methodBodyOffsets.get(methodRow.bodyOffset);
+          methodBodyOffsets.set(methodRow.bodyOffset, claimed === undefined ? row + 1 : null);
+        }
       }
     } else if (table === TYPE_DEF_TABLE) {
       // TypeDef rows carry the owner identity for FieldDef resolution: the
@@ -279,6 +289,7 @@ export function buildCilCallMetadataIndex(bytes) {
   }
   return Object.freeze({
     methodDefs:Object.freeze(methodDefs),
+    methodBodyOffsets,
     memberRefs:Object.freeze(memberRefs),
     methodSpecs:Object.freeze(methodSpecs),
     standAloneSigs:Object.freeze(standAloneSigs),

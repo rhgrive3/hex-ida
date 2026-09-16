@@ -5,6 +5,17 @@ export const RUNTIME_HEAP_BASE = 0x0000620000000000n;
 export const RUNTIME_HEAP_SIZE = 4 * 1024 * 1024;
 const MAX_REGION_SIZE = 64 * 1024 * 1024;
 const MAX_TRANSFER = 4 * 1024 * 1024;
+// #8983: sandbox `globals` / `memoryMappings` had no cardinality ceiling, and every region
+// insertion re-scanned and re-sorted the whole list, so a caller-supplied iterable monopolized
+// the launch thread (and an infinite iterable never returned). This is the admission bound for
+// the synchronous sandbox memory-map build.
+export const MAX_SANDBOX_REGIONS = 65_536;
+
+function positiveCount(value, fallback, max, name) {
+  const n = value == null ? fallback : Number(value);
+  if (!Number.isSafeInteger(n) || n < 1) throw new MemoryAccessError('invalid-argument', `${name} must be a positive safe integer`, { value });
+  return n > max ? max : n;
+}
 
 function normalizePermissions(value) {
   if (value == null) value = 'rw';
@@ -62,20 +73,58 @@ export class MemoryRegion {
   toJSON() { return { start:this.start, size:this.size, kind:this.kind, name:this.name, permissions:this.permissions, objectId:this.objectId }; }
 }
 
+function startCompare(a, b) { return a.start < b.start ? -1 : a.start > b.start ? 1 : 0; }
+// Index of the first region whose start >= target (regions kept sorted by start).
+function lowerBoundStart(regions, target) {
+  let lo = 0, hi = regions.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (regions[mid].start < target) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+
 export class RuntimeMemoryMap {
   constructor(regions = [], options = {}) {
     this.maxTransfer = strictSize(options.maxTransfer, 1024 * 1024, MAX_TRANSFER, 'maxTransfer');
+    this.maxRegions = positiveCount(options.maxRegions, MAX_SANDBOX_REGIONS, MAX_SANDBOX_REGIONS, 'maxRegions');
     this.regions = [];
     for (const region of regionCollection(regions, 'regions')) this.map(region);
   }
   map(spec) {
-    const region = spec instanceof MemoryRegion ? spec : new MemoryRegion(spec);
-    for (const existing of this.regions) {
-      if (region.start < existing.end && region.end > existing.start) throw new MemoryAccessError('overlap', 'memory regions may not overlap', { region:region.toJSON(), existing:existing.toJSON() });
+    if (this.regions.length >= this.maxRegions) {
+      throw new MemoryAccessError('region-limit', `memory map exceeds the maximum of ${this.maxRegions} regions`, { maxRegions:this.maxRegions });
     }
-    this.regions.push(region);
-    this.regions.sort((a,b) => a.start < b.start ? -1 : a.start > b.start ? 1 : 0);
+    const region = spec instanceof MemoryRegion ? spec : new MemoryRegion(spec);
+    // Regions are kept sorted by start and non-overlapping, so any region overlapping the new
+    // one must be an immediate neighbour at the insertion point; only the predecessor and the
+    // successor need checking. The predecessor is checked first so the reported `existing` matches
+    // the smallest-start overlapping region, exactly like the previous full scan.
+    const at = lowerBoundStart(this.regions, region.start);
+    const prev = at > 0 ? this.regions[at - 1] : null;
+    const next = at < this.regions.length ? this.regions[at] : null;
+    for (const existing of (prev ? [prev, next] : [next])) {
+      if (existing && region.start < existing.end && region.end > existing.start) {
+        throw new MemoryAccessError('overlap', 'memory regions may not overlap', { region:region.toJSON(), existing:existing.toJSON() });
+      }
+    }
+    this.regions.splice(at, 0, region);
     return region;
+  }
+  // Bulk-load already-normalised, individually-valid regions in one sort + one adjacency pass, so
+  // building an N-region map is O(N log N) rather than N separate O(N) insert/scan/sort rounds.
+  loadAll(regions) {
+    const incoming = [...regions];
+    if (this.regions.length + incoming.length > this.maxRegions) {
+      throw new MemoryAccessError('region-limit', `memory map exceeds the maximum of ${this.maxRegions} regions`, { maxRegions:this.maxRegions, attempted:incoming.length });
+    }
+    incoming.sort(startCompare);
+    for (let i = 1; i < incoming.length; i++) {
+      const prev = incoming[i - 1], region = incoming[i];
+      if (region.start < prev.end) {
+        throw new MemoryAccessError('overlap', 'memory regions may not overlap', { region:region.toJSON(), existing:prev.toJSON() });
+      }
+    }
+    if (!this.regions.length) { this.regions = incoming; return this; }
+    for (const region of incoming) this.map(region);
+    return this;
   }
   unmap(start) {
     const key = asAddress(start); const before = this.regions.length;
@@ -84,7 +133,13 @@ export class RuntimeMemoryMap {
   }
   find(address, size = 1) {
     const a = asAddress(address); const n = strictSize(size, 1, this.maxTransfer, 'memory size');
-    return this.regions.find((r) => r.contains(a, n)) || null;
+    // Non-overlapping regions sorted by start: at most one can contain [a, a+n) and it is the
+    // last region with start <= a. Binary search keeps per-access lookup O(log R) (#8983).
+    const at = lowerBoundStart(this.regions, a);
+    const candidate = (at < this.regions.length && this.regions[at].start === a)
+      ? this.regions[at]
+      : (at > 0 ? this.regions[at - 1] : null);
+    return candidate && candidate.contains(a, n) ? candidate : null;
   }
   assert(address, size, access = 'read') {
     if (access !== 'read' && access !== 'write' && access !== 'execute') throw new MemoryAccessError('invalid-access', `unsupported memory access: ${access}`, { access });
@@ -100,13 +155,31 @@ export class RuntimeMemoryMap {
   snapshot() { return this.regions.map((r) => r.toJSON()); }
 }
 
-export function createSandboxMemoryMap({ objectBase = 0x600000001000n, objectSize = 0x10000, stackTop = 0x700000000000n, stackSize = 1 << 20, heapBase = RUNTIME_HEAP_BASE, heapSize = RUNTIME_HEAP_SIZE, globals = [], mappings = [] } = {}) {
+export function createSandboxMemoryMap({ objectBase = 0x600000001000n, objectSize = 0x10000, stackTop = 0x700000000000n, stackSize = 1 << 20, heapBase = RUNTIME_HEAP_BASE, heapSize = RUNTIME_HEAP_SIZE, globals = [], mappings = [], signal = null, maxRegions = MAX_SANDBOX_REGIONS } = {}) {
+  const cap = positiveCount(maxRegions, MAX_SANDBOX_REGIONS, MAX_SANDBOX_REGIONS, 'maxRegions');
   const normalizedStackSize = strictSize(stackSize, 1, MAX_REGION_SIZE, 'stack size');
-  const map = new RuntimeMemoryMap();
-  map.map({ start:asAddress(objectBase,'objectBase'), size:objectSize, kind:'object', permissions:'rw', name:'fake-object' });
-  map.map({ start:asAddress(heapBase,'heapBase'), size:heapSize, kind:'heap', permissions:'rw', name:'fake-heap' });
-  map.map({ start:asAddress(stackTop,'stackTop') - BigInt(normalizedStackSize), size:normalizedStackSize, kind:'stack', permissions:'rw', name:'stack' });
-  for (const g of regionCollection(globals, 'globals')) map.map({ ...g, kind:g.kind == null ? 'global' : g.kind });
-  for (const m of regionCollection(mappings, 'mappings')) map.map(m);
+  const base = [
+    { start:asAddress(objectBase,'objectBase'), size:objectSize, kind:'object', permissions:'rw', name:'fake-object' },
+    { start:asAddress(heapBase,'heapBase'), size:heapSize, kind:'heap', permissions:'rw', name:'fake-heap' },
+    { start:asAddress(stackTop,'stackTop') - BigInt(normalizedStackSize), size:normalizedStackSize, kind:'stack', permissions:'rw', name:'stack' },
+  ];
+  // Consume caller iterables under an explicit cardinality bound and observe the launch signal, so
+  // an arbitrary/infinite `memoryMappings` iterable can never monopolise the synchronous build past
+  // its AbortSignal (#8983). Regions are then normalised once and bulk-loaded (single sort + one
+  // adjacency overlap pass) instead of a full scan + full sort per insertion.
+  const collected = [];
+  let count = 0;
+  const consume = (value, name, normalize) => {
+    for (const item of regionCollection(value, name)) {
+      if (signal && signal.aborted) throw new DebugAdapterError('cancelled', 'sandbox memory map build was cancelled', { kind:'cancelled' });
+      if (count >= cap) throw new MemoryAccessError('region-limit', `sandbox memory map exceeds the maximum of ${cap} ${name}`, { maxRegions:cap, name });
+      count += 1;
+      collected.push(normalize ? normalize(item) : item);
+    }
+  };
+  consume(globals, 'globals', (g) => ({ ...g, kind:g.kind == null ? 'global' : g.kind }));
+  consume(mappings, 'mappings', null);
+  const map = new RuntimeMemoryMap([], { maxRegions:cap });
+  map.loadAll([...base, ...collected].map((spec) => new MemoryRegion(spec)));
   return map;
 }

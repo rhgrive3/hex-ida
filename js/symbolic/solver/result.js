@@ -52,14 +52,6 @@ function isPlainModelObject(value) {
   return proto === Object.prototype || proto === null;
 }
 
-// A provider-controlled SAT model is canonicalized (recursively deep-copied and
-// frozen) before it is published. That canonicalization is itself a work
-// boundary: an attacker-supplied model can be deep enough to overflow the
-// stack or wide enough to exhaust the heap during the copy, before any
-// authoritative boundary rejects it (#8975). Legitimate models from the
-// exhaustive backend are flat symbol→scalar assignments (depth ≤ 2), so these
-// budgets sit far above any real result and far below the reporter's
-// demonstrated crash points.
 const MAX_MODEL_DEPTH = 512;
 const MAX_MODEL_NODES = 200_000;
 
@@ -71,52 +63,77 @@ class SolverModelLimitError extends Error {
   }
 }
 
-function stackOverflowError(err) {
-  return err instanceof RangeError && /maximum call stack|stack size|call stack/i.test(String(err && err.message));
+function stackOverflowError(error) {
+  return error instanceof RangeError && /maximum call stack|stack size|call stack/i.test(String(error?.message));
 }
 
-function immutableModelValue(value, depth, counter) {
+function immutableModelValue(value, depth, counter, ancestors) {
   if (value === null || typeof value !== 'object') return value;
   if (depth > MAX_MODEL_DEPTH) throw new SolverModelLimitError('model-depth-limit');
   counter.nodes += 1;
   if (counter.nodes > MAX_MODEL_NODES) throw new SolverModelLimitError('model-node-limit');
-  if (value instanceof Map) {
-    const copy = new ImmutableSolverModelMap();
-    for (const [key, entryValue] of value) Map.prototype.set.call(copy, key, immutableModelValue(entryValue, depth + 1, counter));
-    return Object.freeze(copy);
-  }
-  if (Array.isArray(value)) return Object.freeze(value.map((element) => immutableModelValue(element, depth + 1, counter)));
-  if (isPlainModelObject(value)) {
-    const copy = {};
-    for (const key of Object.keys(value)) {
-      Object.defineProperty(copy, key, {
-        value: immutableModelValue(value[key], depth + 1, counter),
-        enumerable: true,
-        writable: false,
-        configurable: false,
-      });
+  if (ancestors.has(value)) throw new TypeError('provider-model-cycle');
+  ancestors.add(value);
+  try {
+    if (value instanceof Map) {
+      const copy = new ImmutableSolverModelMap();
+      for (const [key, entryValue] of value) {
+        if (key !== null && typeof key === 'object') throw new TypeError('provider-model-object-map-key');
+        Map.prototype.set.call(copy, key, immutableModelValue(entryValue, depth + 1, counter, ancestors));
+      }
+      return Object.freeze(copy);
     }
-    return Object.freeze(copy);
+    if (Array.isArray(value)) {
+      const copy = [];
+      for (const element of value) copy.push(immutableModelValue(element, depth + 1, counter, ancestors));
+      return Object.freeze(copy);
+    }
+    if (isPlainModelObject(value)) {
+      const copy = {};
+      for (const key of Object.keys(value)) {
+        Object.defineProperty(copy, key, {
+          value: immutableModelValue(value[key], depth + 1, counter, ancestors),
+          enumerable: true,
+          writable: false,
+          configurable: false,
+        });
+      }
+      return Object.freeze(copy);
+    }
+    throw new TypeError('provider-model-unsupported-object');
+  } finally {
+    ancestors.delete(value);
   }
-  return Object.freeze(value);
 }
 
 function normalizeSolverModel(model) {
   try {
-    return { ok: true, value: immutableModelValue(model, 0, { nodes: 0 }) };
-  } catch (err) {
-    // Exceeding an explicit budget, or overflowing the stack during an
-    // un-budgeted copy, is a resource exhaustion at the canonicalization
-    // boundary — never a proved SAT answer. Fail closed to a resource-limit
-    // result instead of throwing out of createSolverResult (#8975).
-    if (err instanceof SolverModelLimitError || stackOverflowError(err)) {
-      return { ok: false, reason: err instanceof SolverModelLimitError ? err.limitCode : 'model-stack-limit' };
+    return { ok: true, value: immutableModelValue(model, 0, { nodes: 0 }, new WeakSet()) };
+  } catch (error) {
+    if (error instanceof SolverModelLimitError || stackOverflowError(error)) {
+      return { ok: false, reason: error instanceof SolverModelLimitError ? error.limitCode : 'model-stack-limit' };
     }
-    // A structurally hostile model (throwing getter, proxy trap) is a provider
-    // failure; let it propagate so the caller can resolve the lifecycle rather
-    // than strand it.
-    throw err;
+    throw error;
   }
+}
+
+function requireIdentityString(value, field) {
+  // Exact typed identity (#4685): a solver result's backend/backendVersion must be
+  // primitive strings. Storing String(structuredValue) laundered ['exact-solver']
+  // into 'exact-solver', so a malformed provider result could satisfy exact
+  // backend identity. Reject instead of coercing.
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new TypeError(`createSolverResult: ${field} must be a non-empty primitive string`);
+  }
+  return value;
+}
+
+function requireQueryHash(value) {
+  if (value == null || value === '') return null;
+  if (typeof value !== 'string') {
+    throw new TypeError('createSolverResult: queryHash must be null or a primitive string');
+  }
+  return value;
 }
 
 export function createSolverResult({
@@ -133,17 +150,19 @@ export function createSolverResult({
     throw new TypeError(`createSolverResult: invalid solver status '${status}'`);
   }
 
+  const normalizedBackend = requireIdentityString(backend, 'backend');
+  const normalizedBackendVersion = requireIdentityString(backendVersion, 'backendVersion');
+  const normalizedQueryHash = requireQueryHash(queryHash);
+
   // Model is only permitted when status is SAT; publish an owned immutable snapshot (#3986).
-  // A provider model whose canonicalization would exceed the depth/node budget is not a
-  // proved answer — demote it to a deterministic RESOURCE_LIMIT result instead of throwing
-  // out of the canonicalization boundary (#8975).
+  // Provider-controlled model canonicalization is itself a bounded authority
+  // boundary (#8975): over-deep/over-wide models are RESOURCE_LIMIT, never SAT.
   let modelLimitReason = null;
   let normalizedModel = null;
   if (status === SOLVER_STATUS.SAT && model && typeof model === 'object') {
     const normalized = normalizeSolverModel(model);
-    if (normalized.ok) {
-      normalizedModel = normalized.value;
-    } else {
+    if (normalized.ok) normalizedModel = normalized.value;
+    else {
       modelLimitReason = normalized.reason;
       status = SOLVER_STATUS.RESOURCE_LIMIT;
     }
@@ -175,9 +194,9 @@ export function createSolverResult({
       nodesEvaluated: Number(stats.nodesEvaluated) || 0,
       memoryBytesDelta: Number(stats.memoryBytesDelta) || 0,
     }),
-    backend: String(backend),
-    backendVersion: String(backendVersion),
-    queryHash: queryHash ? String(queryHash) : null,
+    backend: normalizedBackend,
+    backendVersion: normalizedBackendVersion,
+    queryHash: normalizedQueryHash,
     lifecycle: normalizedLifecycle,
   });
 }
@@ -185,14 +204,16 @@ export function createSolverResult({
 export function isValidSolverResult(result, { query = null, backend = null } = {}) {
   if (!result || typeof result !== 'object' || !Object.values(SOLVER_STATUS).includes(result.status)) return false;
   if (backend) {
-    if (result.backend !== String(backend.id) || result.backendVersion !== String(backend.version)) return false;
+    // Compare exact typed identity; never String()-coerce either side (#4685).
+    if (typeof result.backend !== 'string' || typeof result.backendVersion !== 'string') return false;
+    if (result.backend !== backend.id || result.backendVersion !== backend.version) return false;
   }
   if (query?.queryHash) {
     // Query identity is verified against recomputed canonical content, not an
     // echoed caller string, so copying one forged hash into query and result
-    // cannot validate (#3963).
+    // cannot validate (#3963). Identity is compared as a primitive string only (#4685).
     if (!isVerificationQuery(query)) return false;
-    if (result.queryHash !== String(query.queryHash)) return false;
+    if (typeof query.queryHash !== 'string' || result.queryHash !== query.queryHash) return false;
   }
   if (result.lifecycle?.publishable === false && (result.status === SOLVER_STATUS.SAT || result.status === SOLVER_STATUS.UNSAT)) return false;
   if (result.status !== SOLVER_STATUS.SAT && result.model != null) return false;

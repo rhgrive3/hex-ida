@@ -134,13 +134,11 @@ export class SolverSession {
 
     const settle = (rawResult) => {
       if (record.settled) return;
-      record.settled = true;
-      if (record.timer) clearTimeout(record.timer);
-      if (record.removeExternalAbort) {
-        try { record.removeExternalAbort(); } catch { /* listener cleanup is best effort */ }
-      }
-      this._inFlight.delete(token);
 
+      // #8975: canonicalize while the lifecycle is still live. JavaScript runs
+      // this synchronously, so timeout/cancel cannot interleave; only after a
+      // canonical terminal result exists do we clear the timer and in-flight
+      // authority. A canonicalization failure therefore cannot orphan a query.
       let result = rawResult;
       if (!result || typeof result !== 'object' || !Object.values(SOLVER_STATUS).includes(result.status)) {
         result = this._result(SOLVER_STATUS.PROVIDER_FAILURE, 'provider-returned-invalid-result');
@@ -165,20 +163,22 @@ export class SolverSession {
           }
         );
       } else {
-        // Canonicalization runs AFTER the lifecycle has already been committed
-        // (settled / timer cleared / removed from _inFlight). A provider model
-        // that survives the budget but still throws here must never strand the
-        // promise with no timer and no in-flight record left (#8975); resolve a
-        // deterministic provider-failure instead.
         try {
           result = createSolverResult({
             ...result,
             lifecycle: { ...(result.lifecycle || {}), publishable: result.lifecycle?.publishable !== false },
           });
         } catch {
-          result = this._result(SOLVER_STATUS.PROVIDER_FAILURE, 'solver-result-canonicalization-failed');
+          result = this._result(SOLVER_STATUS.PROVIDER_FAILURE, 'provider-returned-invalid-result');
         }
       }
+
+      record.settled = true;
+      if (record.timer) clearTimeout(record.timer);
+      if (record.removeExternalAbort) {
+        try { record.removeExternalAbort(); } catch { /* listener cleanup is best effort */ }
+      }
+      this._inFlight.delete(token);
       record.resolve(result);
     };
     record.settle = settle;
@@ -234,8 +234,6 @@ export class SolverSession {
 
   async cancel() {
     if (this.state === SESSION_STATE.CANCELLED || this.state === SESSION_STATE.DISPOSED) return;
-    // A terminated session has already performed its hard cleanup. Calling
-    // cancel again must not touch or reuse the dead provider/worker.
     if (this.state === SESSION_STATE.TERMINATED) return;
     this.state = SESSION_STATE.CANCELLED;
     this.currentQueryToken++;
