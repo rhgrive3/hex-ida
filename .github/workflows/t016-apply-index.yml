@@ -1,0 +1,34 @@
+name: T016 apply index wiring
+
+on:
+  push:
+    branches:
+      - recovery/t016-discovery-artifact-20260916
+    paths:
+      - .github/workflows/t016-apply-index.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Apply current-main artifact wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --check .github/t016-index.patch
+          git apply .github/t016-index.patch
+          node --check js/analysis/index.js
+          node --check js/analysis/discovery/artifact.js
+          node --check js/analysis/discovery/canonical-value.js
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/analysis/index.js
+          git commit -m 'feat(t016): publish current-main discovery artifact'
+          git push origin HEAD:recovery/t016-discovery-artifact-20260916
