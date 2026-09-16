@@ -1,5 +1,5 @@
 name: T017 focused verification
-# Rerun after narrowing validation-context fail-closed handling to INT uncertainty.
+# Compare T017 head with the current-main closure-matrix baseline.
 
 on:
   push:
@@ -21,6 +21,35 @@ permissions:
   contents: read
 
 jobs:
+  main-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - name: Current-main closure matrix
+        shell: bash
+        run: |
+          set +e
+          node --test tests/machine-effects/x86-long64-closure-matrix.test.mjs > /tmp/t017-main.out 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            tail -n 120 /tmp/t017-main.out > /tmp/t017-main-first-failure.txt
+            cat /tmp/t017-main-first-failure.txt >> "$GITHUB_STEP_SUMMARY"
+            exit "$status"
+          fi
+          tail -n 40 /tmp/t017-main.out
+      - name: Upload minimal main-baseline evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: t017-main-first-failure
+          path: /tmp/t017-main-first-failure.txt
+          if-no-files-found: error
+          retention-days: 1
+
   focused:
     runs-on: ubuntu-latest
     timeout-minutes: 10
