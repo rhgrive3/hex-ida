@@ -1,19 +1,22 @@
-name: PR 8671 focused isolation after cloneability fix
+name: PR 8671 candidate verification
 
 on:
   push:
     branches: [integration-candidate/benchmark-auth-20260914]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  focused-isolation:
+  candidate:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Apply candidate query projection fix
+        id: patch
         shell: bash
         run: |
           set -euo pipefail
@@ -59,51 +62,63 @@ jobs:
             return changed ? projection : value;
           }
           """
-          if old in text: p.write_text(text.replace(old,new,1))
-          elif new not in text: raise SystemExit('cloneableDecompilerProjection shape changed unexpectedly')
+          if old in text:
+              p.write_text(text.replace(old,new,1))
+              print('changed=true')
+          elif new in text:
+              print('changed=false')
+          else:
+              raise SystemExit('cloneableDecompilerProjection shape changed unexpectedly')
           PY
+          if git diff --quiet -- js/analysis/query/app-adapter.js; then echo 'changed=false' >> "$GITHUB_OUTPUT"; else echo 'changed=true' >> "$GITHUB_OUTPUT"; fi
           node --check js/analysis/query/app-adapter.js
+          git diff --check -- js/analysis/query/app-adapter.js
       - name: Install pinned dependencies
         shell: bash
         run: timeout 300s npm ci
-      - name: Run focused checks independently
+      - name: Verify real ARM64 product CLI
+        shell: bash
+        run: timeout 120s node --test tests/public-benchmark/product-cli.test.mjs
+      - name: Verify public benchmark suite
+        shell: bash
+        run: timeout 180s npm run benchmark:public:test
+      - name: Verify auth suite
+        shell: bash
+        run: timeout 240s npm run auth:test
+      - name: Install Playwright Chromium
+        shell: bash
+        run: timeout 240s npx playwright install chromium
+      - name: Verify AI UI Dev profile
+        shell: bash
+        run: timeout 120s node tests/ai-ui-dev-profile.mjs
+      - name: Verify Phase 7 cross-lane routing
+        shell: bash
+        run: timeout 120s node tests/phase7/ownership/cross-lane-routing.test.mjs
+      - name: Verify canonical auth build
+        shell: bash
+        run: timeout 300s npm run auth:build-test
+      - name: Record generated artifact status
         shell: bash
         run: |
-          set -u
-          : > pr8671-focused-isolation.txt
-          run_check() {
-            name="$1"; limit="$2"; shift 2
-            out="/tmp/${name}.out"
-            set +e
-            timeout "$limit" "$@" >"$out" 2>&1
-            code=$?
-            set -e
-            if [ "$code" -eq 0 ]; then
-              printf '%s: PASS\n' "$name" >> pr8671-focused-isolation.txt
-              return 0
-            fi
-            printf '%s: FAIL exit=%s\n' "$name" "$code" >> pr8671-focused-isolation.txt
-            python - "$out" >> pr8671-focused-isolation.txt <<'PY'
-          import sys
-          from pathlib import Path
-          lines=Path(sys.argv[1]).read_text(errors='replace').splitlines()
-          idx=next((i for i,l in enumerate(lines) if l.startswith('not ok ') or 'AssertionError' in l or 'Error:' in l), None)
-          part=lines[-24:] if idx is None else lines[max(0,idx-4):min(len(lines),idx+24)]
-          print('\n'.join(part))
-          PY
-            return 1
-          }
-          set -e
-          run_check public-benchmark 180s npm run benchmark:public:test || exit 0
-          run_check auth-test 240s npm run auth:test || exit 0
-          run_check ai-ui-dev-profile 120s node tests/ai-ui-dev-profile.mjs || exit 0
-          run_check phase7-cross-lane 120s node tests/phase7/ownership/cross-lane-routing.test.mjs || exit 0
-          printf 'focused-all: PASS\n' >> pr8671-focused-isolation.txt
-          cat pr8671-focused-isolation.txt >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload focused isolation
+          set -euo pipefail
+          git status --porcelain -- userscript/hex.user.template.js userscript/release-version.json > pr8671-generated-status.txt
+          cat pr8671-generated-status.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Commit verified candidate
+        if: steps.patch.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/analysis/query/app-adapter.js userscript/hex.user.template.js userscript/release-version.json
+          git diff --cached --check
+          git commit -m "fix(query): detach live decompiler callbacks from query values"
+          git push origin HEAD:integration-candidate/benchmark-auth-20260914
+      - name: Upload generated status
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr8671-focused-isolation
-          path: pr8671-focused-isolation.txt
+          name: pr8671-candidate-status
+          path: pr8671-generated-status.txt
+          if-no-files-found: ignore
           retention-days: 1
