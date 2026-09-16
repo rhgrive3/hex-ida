@@ -1,6 +1,7 @@
 import { ensureMachOMetadataBudget } from './macho-budget.js';
 import { functionSeed } from './model.js';
 import { chainedPointerReservedBitsReason } from './macho-chained-pointer.js';
+import { authoritativeDyldSharedCacheBase } from '../apple/knowledge.js';
 
 const CHAINED_POINTER_SITES = new WeakMap();
 const CHAINED_POINTER_COVERAGE = new WeakMap();
@@ -23,11 +24,13 @@ export function describeMachOPointerSite(image, rawValue, addressValue) {
   try { raw = BigInt(rawValue); address = BigInt(addressValue); } catch { return null; }
   if (!image || raw < 0n || raw > 0xffffffffffffffffn || address < 0n || address > 0xffffffffffffffffn) return null;
   const revision = machOPointerMetadataRevision(image);
-  const site = CHAINED_POINTER_SITES.get(image)?.get(address) ?? null;
+  const candidates = CHAINED_POINTER_SITES.get(image)?.get(address) ?? null;
+  const site = candidates?.length === 1 ? candidates[0] : null;
   const coverage = chainedPointerCoverageAt(image, address);
   const base = { schema: 'macho-pointer-site-view/v1', version: MACHO_POINTER_SITE_VIEW_VERSION, revision,
     storageAddress: address, rawValue: raw, coverage: coverage ? Object.freeze({ ...coverage }) : null,
     authority: 'loader-metadata-projection', authenticationVerified: false, executionTargetExact: false };
+  if (candidates?.length > 1) return Object.freeze({ ...base, status: 'ambiguous-recorded-site', pointerFormat: null, decoded: null });
   if (site && site.raw !== raw) return Object.freeze({ ...base, status: 'stale-raw-word', decoded: null });
   if (site) {
     const decoded = site.decoded;
@@ -45,11 +48,49 @@ export function describeMachOPointerSite(image, rawValue, addressValue) {
 }
 
 
-function rememberChainedPointerSite(image, address, raw, pointerFormat, decoded) {
+function rememberChainedPointerSite(image, address, fileOffset, raw, pointerFormat, decoded) {
   let sites = CHAINED_POINTER_SITES.get(image);
   if (!sites) { sites = new Map(); CHAINED_POINTER_SITES.set(image, sites); }
   advancePointerMetadata(image);
-  sites.set(BigInt(address), { raw: BigInt(raw), pointerFormat, decoded });
+  const key = BigInt(address);
+  const candidates = sites.get(key) ?? [];
+  candidates.push({
+    address: key,
+    fileOffset: BigInt(image.fileOffset ?? 0) + BigInt(fileOffset),
+    sliceFileOffset: BigInt(fileOffset),
+    raw: BigInt(raw),
+    pointerFormat,
+    decoded: { ...decoded, authentication: decoded.authentication ? { ...decoded.authentication } : null },
+  });
+  sites.set(key, candidates);
+  return candidates.length > 1;
+}
+
+/** Return immutable-value snapshots of parser-issued chained sites. */
+export function chainedPointerSites(image) {
+  const sites = CHAINED_POINTER_SITES.get(image);
+  if (!sites) return [];
+  return [...sites.values()].flatMap((candidates) => candidates.map((site, candidateIndex) => ({ site, candidateIndex, candidateCount: candidates.length })))
+    .sort((a, b) => a.site.address < b.site.address ? -1 : a.site.address > b.site.address ? 1 : a.candidateIndex - b.candidateIndex)
+    .map(({ site, candidateIndex, candidateCount }) => ({
+      address: site.address,
+      fileOffset: site.fileOffset,
+      sliceFileOffset: site.sliceFileOffset,
+      raw: site.raw,
+      pointerFormat: site.pointerFormat,
+      semantics: site.decoded.bind ? 'bind' : 'rebase',
+      ordinal: site.decoded.bind ? site.decoded.ordinal : null,
+      addend: site.decoded.addend,
+      target: site.decoded.bind ? null : site.decoded.target,
+      next: site.decoded.next,
+      stride: site.decoded.stride,
+      storageWidth: site.decoded.storageWidth,
+      authenticated: site.decoded.authenticated === true,
+      authentication: site.decoded.authentication ? { ...site.decoded.authentication } : null,
+      ambiguous: candidateCount > 1,
+      candidateIndex,
+      candidateCount,
+    }));
 }
 
 // Loader-owned chained-fixup coverage is retained as a normalized, sorted,
@@ -153,8 +194,10 @@ export function resolveMachOPointer(image, rawValue, options = {}) {
   if (raw == null || (options.address != null && address == null)) return null;
   if (raw <= 0n || raw > 0xffffffffffffffffn) return null;
 
-  const site = address == null ? null : CHAINED_POINTER_SITES.get(image)?.get(address);
-  if (site) {
+  const siteCandidates = address == null ? null : CHAINED_POINTER_SITES.get(image)?.get(address);
+  if (siteCandidates) {
+    if (siteCandidates.length !== 1) return null;
+    const site = siteCandidates[0];
     if (site.raw !== raw) return null;
     const decoded = site.decoded;
     if (!decoded || decoded.bind || decoded.target == null) return null;
@@ -252,6 +295,7 @@ export function parseChainedImports(r,dc,image,sharedBudget=null){
 }
 
 export function parseChainedBindingSites(r,dc,image,imports,segments=image.segments||[],sharedBudget=null){
+  const internalIdentity = sharedBudget?.__machoResidentIdentity ?? null;
   const budget=ensureMachOMetadataBudget(image,sharedBudget);
   const base = dc.offset;
   const payloadEnd = base + dc.size;
@@ -429,17 +473,39 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
             fail(`segment ${segIndex} page ${page} chain address is not backed by its owning segment`); break;
           }
           const raw = width === 4 ? BigInt(r.u32(Number(expectedOff))) : r.u64(Number(expectedOff));
-          const d = decodeChainedPointer(raw, pointerFormat, image.imageBase, maxValidPointer);
+          const d = decodeChainedPointer(raw, pointerFormat, image.imageBase, {
+            maxValidPointer,
+            dyldCache: image.metadata?.dyldCache ?? null,
+            binaryIdentity: internalIdentity?.dyldCacheBinding?.binaryIdentity ?? null,
+            sliceIdentity: internalIdentity?.dyldCacheBinding?.sliceIdentity ?? null,
+            architecture: internalIdentity?.architecture ?? internalIdentity?.dyldCacheBinding?.architecture ?? null,
+          });
           if (!d) { markUnsupportedChainedFormat(image, pointerFormat); fail(`segment ${segIndex} pointer format ${pointerFormat} could not be decoded`); break; }
           if (d.invalidReason) { fail(`segment ${segIndex} pointer format ${pointerFormat} has ${d.invalidReason}`); break; }
-          rememberChainedPointerSite(image, address, raw, pointerFormat, d);
+          if (rememberChainedPointerSite(image, address, expectedOff, raw, pointerFormat, d)) {
+            fail(`segment ${segIndex} page ${page} has duplicate or conflicting chained site 0x${address.toString(16)}`);
+          }
+          if (!d.bind && d.target == null && d.coOpted !== true) {
+            fail(`segment ${segIndex} pointer format ${pointerFormat} rebase target is unresolved without its authoritative base`);
+          }
           if (d.bind) {
             const imp = d.ordinal >= 0 && d.ordinal < imports.length ? imports[d.ordinal] : null;
             if (!imp) {
               fail(`invalid bind ordinal ${d.ordinal} does not reference a parsed chained import`);
             } else {
               if(!budget.take({objects:1,operations:1,estimatedHeapBytes:112},'chained-bind-site')){fail('shared metadata budget exhausted while recording bind site');status.bindingSites=decoded;return status;}
-              imp.sites.push({ address, offset: expectedOff, kind: 'chained-bind', pointerFormat, addend: d.addend });
+              imp.sites.push({
+                address,
+                offset: expectedOff,
+                sliceOffset: expectedOff,
+                containerOffset: BigInt(image.fileOffset ?? 0) + expectedOff,
+                kind: 'chained-bind',
+                pointerFormat,
+                storageWidth: d.storageWidth,
+                addend: d.addend,
+                authenticated: d.authenticated === true,
+                authentication: d.authentication ? { ...d.authentication } : null,
+              });
               decoded++;
             }
           }
@@ -472,29 +538,68 @@ function markUnsupportedChainedFormat(image, format) {
   const list = image.metadata.chainedFixups.unsupportedPointerFormats ||= [];
   if (!list.includes(format)) { list.push(format); image.warnings.push(`chained pointer format ${format} is not supported; binding sites are partial`); }
 }
-function decodeChainedPointer(raw, format, imageBase = null, maxValidPointer = null) {
-  const base = imageBase == null ? null : BigInt(imageBase);
+export function decodeChainedPointer(raw, format, imageBase = null, options = {}) {
+  if (!Number.isInteger(format)) return null;
+  const width = chainedPointerWidth(format);
+  if (!width) return null;
+  if (typeof raw === 'number') {
+    if (!Number.isSafeInteger(raw)) return null;
+    raw = BigInt(raw);
+  } else if (typeof raw !== 'bigint') return null;
+  if (raw < 0n || raw > (width === 4 ? 0xffffffffn : 0xffffffffffffffffn)) return null;
+  let base = null;
+  if (imageBase != null) {
+    if (typeof imageBase === 'number') {
+      if (!Number.isSafeInteger(imageBase)) return null;
+      base = BigInt(imageBase);
+    } else if (typeof imageBase === 'bigint') base = imageBase;
+    else return null;
+    if (base < 0n || base > 0xffffffffffffffffn) return null;
+  }
   const invalidReason = chainedPointerReservedBitsReason(raw, format);
   if (invalidReason) return { invalidReason };
+  const maxValidPointer = options?.maxValidPointer ?? null;
+  const hasInternalBinding = typeof options?.binaryIdentity === 'string'
+    && typeof options?.sliceIdentity === 'string'
+    && typeof options?.architecture === 'string';
+  const cacheBase = authoritativeDyldSharedCacheBase(
+    options?.dyldCache,
+    hasInternalBinding ? {
+      binaryIdentity: options.binaryIdentity,
+      sliceIdentity: options.sliceIdentity,
+      architecture: options.architecture,
+    } : null,
+  );
+  const offsetTarget = (offset) => {
+    if (base == null) return null;
+    const target = base + offset;
+    return target <= 0xffffffffffffffffn ? target : undefined;
+  };
   if (format === 3) {
     const bind = !!((raw >> 31n) & 1n);
     const next = Number((raw >> 26n) & 0x1fn);
     if (!bind) {
-      // Apple fixup-chains.h dyld_chained_ptr_32_rebase: target is a 26-bit
-      // vmaddr. An entry above the starts record's max_valid_pointer is not a
-      // pointer at all but a value co-opted into the chain; dyld restores it
-      // by subtracting the bias (64MB + max_valid_pointer) / 2 (#4120).
       const target = raw & 0x3ffffffn;
       if (maxValidPointer != null && target > BigInt(maxValidPointer)) {
         const bias = (0x4000000n + BigInt(maxValidPointer)) / 2n;
-        return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, target: null,
-          coOpted: true, coOptedValue: (target - bias) & 0xffffffffn };
+        return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, storageWidth: width, target: null,
+          coOpted: true, coOptedValue: (target - bias) & 0xffffffffn, authenticated: false, authentication: null };
       }
-      return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, target };
+      return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, storageWidth: width, target, authenticated: false, authentication: null };
     }
     const ordinal = Number(raw & 0xfffffn);
     const addend = Number((raw >> 20n) & 0x3fn);
-    return { bind: true, ordinal, addend: BigInt(addend), next, stride: 4, target: null };
+    return { bind: true, ordinal, addend: BigInt(addend), next, stride: 4, storageWidth: width, target: null, authenticated: false, authentication: null };
+  }
+  if (format === 4) {
+    const next = Number((raw >> 30n) & 0x3n);
+    const cacheOffset = raw & 0x3fffffffn;
+    const target = cacheBase == null ? null : cacheBase + cacheOffset;
+    if (target != null && target > 0xffffffffffffffffn) return null;
+    return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, storageWidth: width, target, targetOffset: cacheOffset, authenticated: false, authentication: null };
+  }
+  if (format === 5) {
+    return { bind: false, ordinal: -1, addend: 0n, next: Number((raw >> 26n) & 0x3fn), stride: 4, storageWidth: width, target: raw & 0x3ffffffn, authenticated: false, authentication: null };
   }
   if (format === 2 || format === 6) {
     const bind = !!(raw >> 63n);
@@ -503,12 +608,13 @@ function decodeChainedPointer(raw, format, imageBase = null, maxValidPointer = n
       const target = raw & 0xfffffffffn;
       const high8 = (raw >> 36n) & 0xffn;
       const reconstructed = target | (high8 << 56n);
-      const resolved = format === 6 ? (base == null ? null : base + reconstructed) : reconstructed;
-      return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, target: resolved };
+      const resolved = format === 6 ? offsetTarget(reconstructed) : reconstructed;
+      if (resolved === undefined) return null;
+      return { bind: false, ordinal: -1, addend: 0n, next, stride: 4, storageWidth: width, target: resolved, authenticated: false, authentication: null };
     }
     const ordinal = Number(raw & 0xffffffn);
     const addend = Number((raw >> 24n) & 0xffn);
-    return { bind: true, ordinal, addend: BigInt(addend), next, stride: 4, target: null };
+    return { bind: true, ordinal, addend: BigInt(addend), next, stride: 4, storageWidth: width, target: null, authenticated: false, authentication: null };
   }
   if ([1, 7, 9, 10, 12].includes(format)) {
     const auth = !!((raw >> 63n) & 1n);
@@ -518,28 +624,34 @@ function decodeChainedPointer(raw, format, imageBase = null, maxValidPointer = n
     const ordinalMask = (1n << ordinalBits) - 1n;
     const ordinal = Number(raw & ordinalMask);
     let addend = 0n;
+    const keyIndex = Number((raw >> 49n) & 0x3n);
+    const diversity = Number((raw >> 32n) & 0xffffn);
+    const addressDiversity = !!((raw >> 48n) & 1n);
+    const authentication = auth ? {
+      diversity,
+      addressDiversity,
+      key: ['IA', 'IB', 'DA', 'DB'][keyIndex],
+    } : null;
     if (bind && !auth) {
       let a = Number((raw >> 32n) & 0x7ffffn);
       if (a & 0x40000) a -= 0x80000;
       addend = BigInt(a);
     }
-    // dyld_chained_ptr_arm64e_auth_{rebase,bind,bind24}: retain exactly
-    // diversity[47:32], addrDiv[48], key[50:49]. Other pointer layouts
-    // do NOT reuse these fields. Nothing here authenticates a pointer.
-    const authentication = auth ? { authenticationKey: Number((raw >> 49n) & 3n),
-      discriminator: Number((raw >> 32n) & 0xffffn), addressDiversity: !!((raw >> 48n) & 1n) } : {};
     const stride = format === 7 || format === 10 ? 4 : 8;
-    if (bind) return { bind, ordinal, addend, next, stride, target: null, authenticated: auth, ...authentication };
+    const authCompat = auth ? { authenticationKey: keyIndex, discriminator: diversity, addressDiversity } : {};
+    if (bind) return { bind, ordinal, addend, next, stride, storageWidth: width, target: null, authenticated: auth, authentication, ...authCompat };
     if (auth) {
-      const target = base == null ? null : base + (raw & 0xffffffffn);
-      return { bind, ordinal: -1, addend: 0n, next, stride, target, authenticated: true, ...authentication };
+      const target = offsetTarget(raw & 0xffffffffn);
+      if (target === undefined) return null;
+      return { bind, ordinal: -1, addend: 0n, next, stride, storageWidth: width, target, authenticated: true, authentication, ...authCompat };
     }
     const target = raw & 0x7ffffffffffn;
     const high8 = (raw >> 43n) & 0xffn;
     const reconstructed = target | (high8 << 56n);
     const vmOffset = format === 7 || format === 9 || format === 12;
-    const resolved = vmOffset ? (base == null ? null : base + reconstructed) : reconstructed;
-    return { bind, ordinal: -1, addend: 0n, next, stride, target: resolved, authenticated: false };
+    const resolved = vmOffset ? offsetTarget(reconstructed) : reconstructed;
+    if (resolved === undefined) return null;
+    return { bind, ordinal: -1, addend: 0n, next, stride, storageWidth: width, target: resolved, authenticated: false, authentication: null };
   }
   return null;
 }
