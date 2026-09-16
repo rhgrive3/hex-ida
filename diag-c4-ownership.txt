@@ -1,0 +1,6 @@
+[phase7]
+projection rc=1
+roadmap ownership: undeclared roadmap path: "tests/ci/final-head-admission-6570.test.mjs"
+[phase8]
+projection rc=1
+roadmap ownership: undeclared roadmap path: "tests/ci/final-head-admission-6570.test.mjs"
