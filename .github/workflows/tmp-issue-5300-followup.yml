@@ -16,6 +16,30 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
-      - name: Apply and verify follow-up
+      - name: Prepare follow-up files
         shell: bash
-        run: bash .tmp/issue-5300-followup.sh
+        run: |
+          cp .tmp/issue-5300-followup.sh /tmp/prepare-5300.sh
+          sed -i '/^timeout 90s /,$d' /tmp/prepare-5300.sh
+          bash /tmp/prepare-5300.sh
+      - name: Focused #5300 regression
+        run: timeout 90s node --test tests/phase11/dex/issue-5300-dex-switch-control-flow.test.mjs
+      - name: Arithmetic regression
+        run: timeout 60s node tests/phase11/dex/issue-1136-dex-arithmetic-produced-value.test.mjs
+      - name: Nearby DEX regressions
+        run: |
+          timeout 60s node tests/phase11/dex/issue-7981-receiver-null-npe.test.mjs
+          timeout 60s node tests/phase11/dex/issue-8977-dex-field-memory-overlay-index.test.mjs
+      - name: Module boundaries
+        run: timeout 120s npm run module-boundaries:test
+      - name: Syntax and source contracts
+        run: timeout 180s npm run lint
+      - name: Commit final head
+        shell: bash
+        run: |
+          rm .github/workflows/tmp-issue-5300-followup.yml .tmp/issue-5300-followup.sh
+          git add -A
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix(dex): preserve current contracts in #5300 control flow follow-up'
+          git push origin HEAD:fix/issue-5300-current-contract-followup-20260917
