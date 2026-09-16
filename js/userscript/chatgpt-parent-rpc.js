@@ -6,6 +6,18 @@ const INVALID_PARAMS_CODE = 'RPC_INVALID_PARAMS';
 const UNSAFE_RESULT_CODE = 'RPC_UNSAFE_RESULT';
 const MAX_WIRE_DEPTH = 64;
 const MAX_ARRAY_INDEX = 2 ** 32 - 2;
+/*
+ * #8773 — the parent→sandbox RPC must be an explicit bounded transport, not just
+ * a depth guard. Page-derived bridge data (assistant text, DOM state, adapter
+ * output) crosses into the protected Hex runtime and is structured-cloned through
+ * a MessagePort, so a per-container node budget and an aggregate UTF-8 byte budget
+ * stop oversized results *before* they are copied or cloned. These ceilings are far
+ * above any realistic ChatGPT turn/response/status/capabilities payload; the
+ * 32 MiB page-derived text from the reproduction is rejected at the boundary.
+ */
+const MAX_WIRE_RESULT_BYTES = 8 * 1024 * 1024;
+const MAX_WIRE_RESULT_NODES = 256 * 1024;
+const MAX_WIRE_CHILDREN = 65536;
 const SENSITIVE_ERROR_TEXT = /(?:\bcookie\b|\blocalStorage\b|\bsessionStorage\b|\bindexedDB\b|\bGM\.|querySelector|querySelectorAll|\[data-|#prompt-textarea|\bdocument\.|\bwindow\.)/i;
 const URL_TEXT = /https?:\/\/[^\s]+/gi;
 const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
@@ -65,7 +77,7 @@ export function createChatGPTParentRpc({ port, bridge, onUiClose } = {}) {
 
 async function invokeBridge(method, operation) {
   try {
-    return sanitizeWireValue(await operation());
+    return sanitizeWireValue(await operation(), 0, new WeakSet(), { bytes: 0, nodes: 0 });
   } catch (error) {
     if (error instanceof ChatGPTParentRpcError) throw error;
     throw safeBridgeError(error, method);
@@ -152,30 +164,37 @@ function normalizeNullableString(value, field) {
   return value;
 }
 
-function sanitizeWireValue(value, depth = 0, stack = new WeakSet()) {
-  if (value === null || typeof value === 'boolean' || typeof value === 'string') return value;
-  if (typeof value === 'number') {
+function sanitizeWireValue(value, depth = 0, stack = new WeakSet(), budget = { bytes: 0, nodes: 0 }) {
+  const type = typeof value;
+  if (value === null || type === 'boolean') return value;
+  if (type === 'string') { chargeWireString(budget, value); return value; }
+  if (type === 'number') {
     if (!Number.isFinite(value)) throw unsafeResult();
     return value;
   }
-  if (typeof value !== 'object') throw unsafeResult();
+  if (type !== 'object') throw unsafeResult();
   if (depth >= MAX_WIRE_DEPTH) throw unsafeResult();
   if (stack.has(value)) throw unsafeResult();
 
-  if (Array.isArray(value)) return sanitizeWireArray(value, depth, stack);
+  if (Array.isArray(value)) return sanitizeWireArray(value, depth, stack, budget);
 
   if (!isPlainRecord(value)) throw unsafeResult();
   const descriptors = Object.getOwnPropertyDescriptors(value);
   if (isDomLikeRecord(descriptors)) throw unsafeResult();
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.length > MAX_WIRE_CHILDREN) throw unsafeResult();
+  // #8773 — account the container and every field slot before copying anything.
+  chargeWireNodes(budget, 1 + keys.length);
 
   stack.add(value);
   try {
     const out = Object.create(null);
-    for (const key of Reflect.ownKeys(descriptors)) {
+    for (const key of keys) {
       if (typeof key !== 'string' || DANGEROUS_KEYS.has(key)) throw unsafeResult();
       const descriptor = descriptors[key];
       if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) throw unsafeResult();
-      out[key] = sanitizeWireValue(descriptor.value, depth + 1, stack);
+      chargeWireString(budget, key);
+      out[key] = sanitizeWireValue(descriptor.value, depth + 1, stack, budget);
     }
     return out;
   } finally {
@@ -183,9 +202,14 @@ function sanitizeWireValue(value, depth = 0, stack = new WeakSet()) {
   }
 }
 
-function sanitizeWireArray(value, depth, stack) {
+function sanitizeWireArray(value, depth, stack, budget) {
+  const length = value.length;
+  if (!Number.isSafeInteger(length) || length < 0 || length > MAX_WIRE_CHILDREN) throw unsafeResult();
   const descriptors = Object.getOwnPropertyDescriptors(value);
-  const out = new Array(value.length);
+  // Charge the container plus every element up front, so a wide array cannot
+  // allocate or copy its complete graph before the aggregate budget rejects it.
+  chargeWireNodes(budget, 1 + length);
+  const out = new Array(length);
   stack.add(value);
   try {
     for (const key of Reflect.ownKeys(descriptors)) {
@@ -194,12 +218,36 @@ function sanitizeWireArray(value, depth, stack) {
       if (Number(key) > MAX_ARRAY_INDEX) throw unsafeResult();
       const descriptor = descriptors[key];
       if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) throw unsafeResult();
-      out[Number(key)] = sanitizeWireValue(descriptor.value, depth + 1, stack);
+      out[Number(key)] = sanitizeWireValue(descriptor.value, depth + 1, stack, budget);
     }
     return out;
   } finally {
     stack.delete(value);
   }
+}
+
+function chargeWireString(budget, value) {
+  if (typeof value !== 'string' || value.length === 0) return;
+  const remaining = MAX_WIRE_RESULT_BYTES - budget.bytes;
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length
+      && value.charCodeAt(index + 1) >= 0xdc00 && value.charCodeAt(index + 1) <= 0xdfff) {
+      bytes += 4; index += 1;
+    } else bytes += 3;
+    // Stop scanning as soon as the aggregate UTF-8 budget is exceeded so the
+    // preflight never performs work proportional to the full oversized string.
+    if (bytes > remaining) { budget.bytes = MAX_WIRE_RESULT_BYTES + 1; throw unsafeResult(); }
+  }
+  budget.bytes += bytes;
+}
+
+function chargeWireNodes(budget, count) {
+  budget.nodes += count;
+  if (budget.nodes > MAX_WIRE_RESULT_NODES) throw unsafeResult();
 }
 
 function isDomLikeRecord(descriptors) {

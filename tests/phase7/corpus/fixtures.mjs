@@ -813,13 +813,22 @@ export const ALIAS_QUERIES_V2 = Object.freeze([
   { id: 'v2-cyclic-phi', fixture: 'cyclic-pointer-phi', left: 'node_st_cur', right: 'node_st_far', truth: 'may', truthSource: 'deterministic-fixture-construction', proofClass: 'loop', category: 'loop-carried-pointer' },
 
   // Escape categories
-  { id: 'v2-frame-non-escaping', fixture: 'frame-non-escaping', left: 'node_st_slot', right: 'node_st_arg', truth: 'no', truthSource: 'deterministic-fixture-construction', proofClass: 'escape', category: 'non-escaped-object' },
+  // #8809 sync: #4977 requires BOTH compared roots to be proven non-escaping
+  // (AND, never OR). Here only the frame root is proven and the incoming
+  // parameter's escape state is not, so the current evidence contract answers
+  // `may`. The exact `no` is restored only via a both-roots proof (see
+  // pointsto/issue-4977-nonescaping-both-roots).
+  { id: 'v2-frame-non-escaping', fixture: 'frame-non-escaping', left: 'node_st_slot', right: 'node_st_arg', truth: 'may', truthSource: 'deterministic-fixture-construction', proofClass: 'escape', category: 'one-sided-non-escaped-object' },
   { id: 'v2-frame-escaped-arg', fixture: 'frame-escapes-through-argument', left: 'node_st_slot', right: 'node_st_arg', truth: 'may', truthSource: 'deterministic-fixture-construction', proofClass: 'escape', category: 'escaped-object' },
   { id: 'v2-frame-escaped-ret', fixture: 'frame-escapes-through-argument', left: 'node_st_slot', right: 'node_st_arg', truth: 'may', truthSource: 'deterministic-fixture-construction', proofClass: 'escape', category: 'escaped-object' },
 
   // Interprocedural & Summary categories
   { id: 'v2-load-derived', fixture: 'load-derived-pointer', left: 'node_st_loaded', right: 'node_st_other', truth: 'may', truthSource: 'deterministic-fixture-construction', proofClass: 'interproc', category: 'pointer-stored-then-loaded' },
-  { id: 'v2-callee-ret', fixture: 'callee-returned-pointer', left: 'node_st_callee_slot', right: 'node_st_callee_ret', truth: 'no', truthSource: 'deterministic-fixture-construction', proofClass: 'interproc', category: 'pointer-returned-by-direct-callee' },
+  // #8809 sync: the callee RETURN boundary is an escape boundary (#4977/#5239),
+  // so the frame root behind the returned pointer is not proven non-escaping
+  // and the both-roots AND contract cannot separate it from the caller slot.
+  // The current canonical answer for this shape is `may`.
+  { id: 'v2-callee-ret', fixture: 'callee-returned-pointer', left: 'node_st_callee_slot', right: 'node_st_callee_ret', truth: 'may', truthSource: 'deterministic-fixture-construction', proofClass: 'interproc', category: 'pointer-returned-by-direct-callee' },
   { id: 'v2-rec-ret', fixture: 'recursive-return-pointer', left: 'node_st_rec_sp', right: 'node_st_rec_ret', truth: 'may', truthSource: 'deterministic-fixture-construction', proofClass: 'interproc', category: 'recursive-return-pointer-summary' },
   { id: 'v2-exhaustive-ind', fixture: 'exhaustive-indirect-candidates', left: 'node_st_ind_slot', right: 'node_st_ind_target', truth: 'may', truthSource: 'deterministic-fixture-construction', proofClass: 'indirect', category: 'exhaustive-indirect-candidate-set' },
   { id: 'v2-incomplete-ind', fixture: 'incomplete-indirect-candidates', left: 'node_st_incomp_slot', right: 'node_st_incomp_opaque', truth: 'may', truthSource: 'deterministic-fixture-construction', proofClass: 'indirect', category: 'incomplete-indirect-candidate-set' },
@@ -829,7 +838,13 @@ export const ALIAS_QUERIES_V2 = Object.freeze([
   // TLS categories
   { id: 'v2-tls-identical', fixture: 'tls-identical', left: 'node_st_tls0', right: 'node_ld_tls0', truth: 'must', truthSource: 'authoritative-spec-relation', proofClass: 'tls', category: 'tls-identities-same' },
   { id: 'v2-tls-disjoint', fixture: 'tls-disjoint', left: 'node_st_tls16', right: 'node_st_tls32', truth: 'no', truthSource: 'authoritative-spec-relation', proofClass: 'tls', category: 'tls-identities-distinct' },
-  { id: 'v2-tls-vs-stack', fixture: 'tls-vs-stack', left: 'node_st_tls_root', right: 'node_st_sp_root', truth: 'no', truthSource: 'authoritative-spec-relation', proofClass: 'tls', category: 'tls-identities-vs-stack' },
+  // #8809 sync: the frozen fixture models TLS and SP through the canonical
+  // `memory` address space with distinct separation classes; the solver has no
+  // canonical proof authority for TLS/stack separation yet (that is #6066),
+  // and unproven cross-class roots must answer `may` (#4977 AND contract).
+  // Spec-level disjointness alone must not mint the exact claim (#6066:
+  // plain string metadata is not evidence).
+  { id: 'v2-tls-vs-stack', fixture: 'tls-vs-stack', left: 'node_st_tls_root', right: 'node_st_sp_root', truth: 'may', truthSource: 'deterministic-fixture-construction', proofClass: 'tls', category: 'tls-identities-vs-stack' },
 ]);
 
 
