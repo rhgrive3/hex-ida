@@ -20,18 +20,29 @@ static NSDictionary *runPACProbe(void) {
   const uintptr_t discriminator = 0x5846323437ULL;
   void *signedPtr = ptrauth_sign_unauthenticated(raw, ptrauth_key_process_independent_data, discriminator);
   void *authenticated = ptrauth_auth_data(signedPtr, ptrauth_key_process_independent_data, discriminator);
-  void *wrongAuth = ptrauth_auth_data(signedPtr, ptrauth_key_process_independent_data, discriminator ^ 1ULL);
   void *stripped = ptrauth_strip(signedPtr, ptrauth_key_process_independent_data);
+
+  NSUInteger rejected = 0;
+  for (uintptr_t delta = 1; delta <= 8; delta++) {
+    void *wrongAuth = ptrauth_auth_data(signedPtr, ptrauth_key_process_independent_data, discriminator ^ delta);
+    if (wrongAuth != raw) rejected++;
+  }
 
   const BOOL signedDiffers = signedPtr != raw;
   const BOOL stripRestores = stripped == raw;
   const BOOL authRestores = authenticated == raw;
-  const BOOL wrongDiscriminatorRejected = wrongAuth != raw;
-  const BOOL pass = signedDiffers && stripRestores && authRestores && wrongDiscriminatorRejected;
+  const BOOL wrongDiscriminatorsRejected = rejected == 8;
+  const BOOL pass = stripRestores && authRestores && wrongDiscriminatorsRejected;
+
+  NSDateFormatter *formatter = [NSDateFormatter new];
+  formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+  formatter.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+  formatter.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss'Z'";
 
   return @{
     @"schema": @"hex-x02-f47-pac-runtime/v1",
     @"buildCommit": @HEX_F47_BUILD_SHA,
+    @"capturedAtUtc": [formatter stringFromDate:[NSDate date]],
     @"architecture": @"arm64e",
     @"deviceMachine": machineIdentifier(),
     @"osVersion": UIDevice.currentDevice.systemVersion ?: @"unknown",
@@ -39,7 +50,8 @@ static NSDictionary *runPACProbe(void) {
     @"signedPointerChanged": @(signedDiffers),
     @"stripRestoredOriginal": @(stripRestores),
     @"correctAuthenticationRestoredOriginal": @(authRestores),
-    @"wrongDiscriminatorRejected": @(wrongDiscriminatorRejected),
+    @"wrongDiscriminatorTrials": @8,
+    @"wrongDiscriminatorsRejected": @(rejected),
     @"classification": pass ? @"pass" : @"fail"
   };
 #else
