@@ -39,6 +39,15 @@ function safeReason(value, fallback) {
   return value == null || value === '' ? fallback : String(value);
 }
 
+function isSolverResultValidationError(error) {
+  const message = error && typeof error.message === 'string' ? error.message : '';
+  // Typed identity/status violations are ordinary provider-invalid results.
+  // Snapshot failures (cycles, accessors, depth/resource errors) are a
+  // normalization failure and must reach the outer lifecycle catch so callers
+  // can distinguish them from a provider that simply returned bad metadata.
+  return /^createSolverResult: (?:invalid solver status|backend(?:Version)?|queryHash)/.test(message);
+}
+
 function requireNonNegativeSafeInteger(value, name) {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw new TypeError(`${name} must be a primitive non-negative safe integer`);
@@ -202,7 +211,8 @@ export class SolverSession {
                 ...result,
                 lifecycle: { ...(result.lifecycle || {}), publishable: result.lifecycle?.publishable !== false },
               });
-            } catch {
+            } catch (error) {
+              if (!isSolverResultValidationError(error)) throw error;
               result = this._result(SOLVER_STATUS.PROVIDER_FAILURE, 'provider-returned-invalid-result', {}, record.queryHash);
             }
           }
