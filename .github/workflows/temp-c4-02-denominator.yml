@@ -1,0 +1,56 @@
+name: Temporary C4-02 CFG denominator diagnostic
+on:
+  push:
+    branches: ['impl/c4-04-integrate-20260916']
+    paths: ['.github/workflows/temp-c4-02-denominator.yml']
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      HEAD_SHA: 0610dbd0bec3444625bbdc1ceed71610e9a4a928
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          fetch-depth: 1
+      - name: Inspect switch fallthrough and dispatcher shapes
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE' >/tmp/c4-02-denominator.json
+          import { fixture } from './tests/phase8/helpers/ir-fixtures.mjs';
+          import { PASS_STAGES } from './js/decompiler/phase8/contract.js';
+          import { runPhase8Stage, edgeAccountingFailures } from './js/decompiler/phase8/index.js';
+          function facts(ir) {
+            const {ledger,analysis}=runPhase8Stage({ir},{stages:PASS_STAGES,timeBudgetMs:2000});
+            const value=ledger.published?analysis.get('structuredRegions'):null;
+            return {published:ledger.published,completeness:value?.completeness,edges:value?.edges?.map(e=>({from:e.from,to:e.to,kinds:e.kinds,construct:e.construct})),regions:value?.regions,failures:edgeAccountingFailures(ir,value)};
+          }
+          const sf=fixture('switch-fallthrough');
+          const sel=sf.block(0,{succ:[1,2,3]}).opaque(32);
+          sf.switchBranch(sel,[[0,1],[1,2]],3);
+          sf.block(1,{succ:[2],edges:[{to:2,kind:'fallthrough'}]}).branch(2);
+          sf.block(2,{succ:[4]}).branch(4);
+          sf.block(3,{succ:[4]}).branch(4);
+          sf.block(4).ret();
+          const switchFallthrough=sf.build();
+
+          const fd=fixture('flattened-dispatcher');
+          fd.block(0,{succ:[1]}).branch(1);
+          const state=fd.block(1,{succ:[2,3,4]}).opaque(32);
+          fd.switchBranch(state,[[0,2],[1,3]],4);
+          fd.block(2,{succ:[1]}).branch(1);
+          fd.block(3,{succ:[1]}).branch(1);
+          fd.block(4).ret();
+          const dispatcher=fd.build();
+          console.log(JSON.stringify({switchFallthrough:facts(switchFallthrough),flattenedDispatcher:facts(dispatcher)},null,2));
+          NODE
+          cat /tmp/c4-02-denominator.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: c4-02-denominator-diagnostic
+          path: /tmp/c4-02-denominator.json
+          retention-days: 1
