@@ -94,17 +94,27 @@ test('#4385 close/reopen cannot bypass an unsettled execute quarantine', async (
   );
   assert.equal(calls, 1);
 
+  // #8859 acceptance 13: the stale execute settles by MUTATING toward a real
+  // result after the timeout was already published. Settlement is not proof the
+  // target matches the published cancellation, so a replacement session on the
+  // same engine stays quarantined until authoritative recovery.
   settleExecute({ termination: 'return' });
   await nextTurn();
+  await assert.rejects(
+    provider.openSession({ binaryId, sessionNonce: 'issue-4385-reopen-still-blocked' }, { connect: false }),
+    /quarantin/,
+    'a late mutable completion must not make session replacement an implicit recovery',
+  );
+  await provider.resetEngineAuthority();
   const reopened = await provider.openSession({ binaryId, sessionNonce: 'issue-4385-reopened' }, { connect: false });
   assert.equal(reopened.state, 'ready');
-  const reused = await bounded(reopened.facets.emulator.run({}, { timeoutMs: 100 }), 'post-settlement reopen reuse');
+  const reused = await bounded(reopened.facets.emulator.run({}, { timeoutMs: 100 }), 'post-recovery reopen reuse');
   assert.equal(reused.termination, 'return');
   assert.equal(calls, 2);
   await reopened.close();
 });
 
-test('#4385 external cancellation keeps a signal-ignoring execute session non-ready until settlement', async () => {
+test('#4385 external cancellation holds a signal-ignoring execute session and quarantines its late completion', async () => {
   const external = new AbortController();
   let markStarted;
   let settleExecute;
@@ -120,7 +130,8 @@ test('#4385 external cancellation keeps a signal-ignoring execute session non-re
       return { termination: 'return' };
     },
   };
-  const session = await new EmulatorProvider(engine).openSession({ binaryId, sessionNonce: 'issue-4385-external' }, { connect: false });
+  const provider = new EmulatorProvider(engine);
+  const session = await provider.openSession({ binaryId, sessionNonce: 'issue-4385-external' }, { connect: false });
   const run = session.facets.emulator.run({}, { timeoutMs: 1000, signal: external.signal });
   await started;
   external.abort('caller-cancelled');
@@ -134,8 +145,17 @@ test('#4385 external cancellation keeps a signal-ignoring execute session non-re
 
   settleExecute({ termination: 'return' });
   await nextTurn();
-  assert.equal(session.state, 'ready');
-  const reused = await bounded(session.facets.emulator.run({}, { timeoutMs: 100 }), 'post-cancel settlement reuse');
+  // #8859 acceptance 13: settlement of an externally cancelled, signal-ignoring
+  // execute is not target-safety proof; the session must land quarantined
+  // (degraded), not ready.
+  assert.equal(session.state, 'degraded', 'a late mutable completion after caller cancellation must quarantine the session');
+  await assert.rejects(
+    session.facets.emulator.run({}, { timeoutMs: 100 }),
+    /quarantin/,
+    'reuse must fail closed after a cancelled execute completed late',
+  );
+  await provider.resetEngineAuthority();
+  const reused = await bounded(session.facets.emulator.run({}, { timeoutMs: 100 }), 'post-recovery reuse');
   assert.equal(reused.termination, 'return');
   assert.equal(calls, 2);
   await session.close();
@@ -159,7 +179,7 @@ test('#4385 completion before timeout keeps the normal result and session state'
   await session.close();
 });
 
-test('#4385 timeout keeps signal-ignoring launch/resume non-ready until resume settles', async () => {
+test('#4385 timeout keeps signal-ignoring launch/resume non-ready and quarantines a late mutable resume', async () => {
   let resumeSignal;
   let settleResume;
   let resumeCalls = 0;
@@ -187,8 +207,17 @@ test('#4385 timeout keeps signal-ignoring launch/resume non-ready until resume s
 
   settleResume({ termination: 'return' });
   await nextTurn();
-  assert.equal(session.state, 'ready', 'actual resume settlement must restore the same live session to ready');
-  const reused = await bounded(session.facets.emulator.run({}, { timeoutMs: 100 }), 'post-settlement resume reuse');
+  // #8859 acceptance 13: the timed-out resume completed by mutating the target
+  // after the cancellation was published, so settlement alone must not restore
+  // the session to ready.
+  assert.equal(session.state, 'degraded', 'a late mutable resume completion must quarantine the session');
+  await assert.rejects(
+    session.facets.emulator.run({}, { timeoutMs: 10 }),
+    /quarantin/,
+    'reuse must fail closed after a timed-out resume completed late',
+  );
+  await provider.resetEngineAuthority();
+  const reused = await bounded(session.facets.emulator.run({}, { timeoutMs: 100 }), 'post-recovery resume reuse');
   assert.equal(reused.termination, 'return');
   assert.equal(resumeCalls, 2);
   await session.close();
