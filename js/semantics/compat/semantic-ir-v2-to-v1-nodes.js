@@ -6,6 +6,27 @@ import {
 import { projectLegacyAddress } from './semantic-ir-v2-to-v1-address.js';
 import { SEMANTIC_CONTROL_TARGET_COUNTS, dataArityContract } from '../ir/nodes.js';
 
+const MALFORMED_UNDEFINED_RESULT = Object.freeze({
+  class:'malformed', mask:'unknown-mask', reason:'malformed-descriptor',
+});
+
+function undefinedResultAttribute(attributes) {
+  if (attributes == null || typeof attributes !== 'object') return null;
+  let machineEffectsProperty;
+  try { machineEffectsProperty = Object.getOwnPropertyDescriptor(attributes, 'machineEffects'); }
+  catch { return MALFORMED_UNDEFINED_RESULT; }
+  if (machineEffectsProperty == null) return null;
+  if (!Object.hasOwn(machineEffectsProperty, 'value')) return MALFORMED_UNDEFINED_RESULT;
+  const machineEffects = machineEffectsProperty.value;
+  if (machineEffects == null || typeof machineEffects !== 'object') return null;
+  let descriptor;
+  try { descriptor = Object.getOwnPropertyDescriptor(machineEffects, 'undefinedResult'); }
+  catch { return MALFORMED_UNDEFINED_RESULT; }
+  if (descriptor == null) return null;
+  if (!Object.hasOwn(descriptor, 'value') || descriptor.value == null) return MALFORMED_UNDEFINED_RESULT;
+  return descriptor.value;
+}
+
 const STRICT_FLOAT_LITERAL = /^[+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)$/;
 
 
@@ -371,23 +392,28 @@ export function projectNode(node, context) {
     inst.extra = { semanticNodeId: node.id, widthBits, attributes: attrs, completeness: node.completeness };
   };
 
-  const undefinedResult = attrs.machineEffects?.undefinedResult ?? null;
+  const undefinedResult = undefinedResultAttribute(attrs);
   if (undefinedResult != null && node.kind !== 'intrinsic') {
+    const isMemoryRead = node.kind === 'load';
     const unknown = defaultUnknownInstruction(node, blockIndex, row, options, {
-      reason: `architecturally-undefined-result:${undefinedResult.reason}`,
-      unknownCategories: ['value'],
+      reason:`architecturally-undefined-result:${undefinedResult.reason ?? 'unspecified'}`,
+      unknownCategories:isMemoryRead ? ['memory','value'] : ['value'],
       undefinedResult,
     });
     Object.assign(inst, unknown, {
-      semanticNodeId: node.id,
-      sourceEntityId: node.id,
-      sourceEffectIds: node.sourceEffectIds.slice(),
-      instructionId: sourceInstructionIds(node.origin)[0] ?? null,
-      sourceInstructionIds: sourceInstructionIds(node.origin),
-      origin: node.origin,
+      semanticNodeId:node.id,
+      sourceEntityId:node.id,
+      sourceEffectIds:node.sourceEffectIds.slice(),
+      instructionId:sourceInstructionIds(node.origin)[0] ?? null,
+      sourceInstructionIds:sourceInstructionIds(node.origin),
+      origin:node.origin,
     });
     inst.dst = primaryOutput;
     attachArgs(inst, inputValues);
+    if (isMemoryRead) {
+      inst.memoryAccess = node.memory;
+      inst.memoryBarrier = true;
+    }
     if (primaryOutput && primaryOutput.def == null) primaryOutput.def = inst;
     return [inst];
   }
