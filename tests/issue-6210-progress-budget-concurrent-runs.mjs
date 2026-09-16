@@ -1,5 +1,6 @@
 import { AllowAllAdminProvider } from '../js/ai/dev/auth/admin-provider.js';
 import assert from 'node:assert/strict';
+import { AllowAllAdminProvider } from '../js/ai/dev/auth/admin-provider.js';
 import { DevSupervisorV0 } from '../js/ai/dev/supervisor/dev-supervisor-v0.js';
 import { ProgressBudgetDevSupervisorEngineV0 } from '../js/ai/dev/supervisor/dev-supervisor-progress-budget.js';
 import { DevAgentUiSettings } from '../js/ai/dev/ui/settings.js';
@@ -27,7 +28,7 @@ function workerClient(discover) {
 
 function createEngine({ maxDecisions = 3, onRequest } = {}) {
   const client = workerClient();
-  const supervisor = new DevSupervisorV0({
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
     workerClient: client,
     idFactory: (kind) => `test-${kind}`,
     now: () => '2026-08-18T08:00:00.000Z',

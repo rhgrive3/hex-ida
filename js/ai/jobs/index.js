@@ -1,3 +1,5 @@
+import { canonicalConversationId, isCanonicalConversationId } from '../conversation-identity.js';
+
 const CHECKPOINT_VERSION = 1;
 const MAX_JOB_SLICES = 32;
 const MAX_JOB_ELAPSED_MS = 4 * 60 * 60 * 1000;
@@ -60,7 +62,7 @@ export class AgentJobManager {
         // the job ID as their fallback scope.
         executionScopeId: `agent_job_scope_${randomId()}`,
         status: 'ready', goal, effectiveScope: input.scope || 'auto',
-        conversationId: input.conversationId == null ? null : String(input.conversationId), sessionId: input.sessionId || null,
+        conversationId: canonicalConversationId(input.conversationId), sessionId: input.sessionId || null,
         provider: input.provider || null, model: input.model || null, reasoning: input.reasoning || null,
         evidenceIds: [], hypothesisIds: [], completedTools: [], continuationRefs: [], unresolvedWork: [],
         budgetUsage: { slices: 0, modelCalls: 0, toolCalls: 0, elapsedMs: 0, contextBytes: 0 },
@@ -262,8 +264,12 @@ export class AgentJobManager {
       let value;
       try {
         value = await this.persistence?.load?.(id);
-      } catch {
-        return null;
+      } catch (error) {
+        // A persistence read failure is not an authoritative "record absent".
+        // Returning null here would let create() treat an unreadable existing
+        // job as free and overwrite its durable checkpoint (fail-open), so
+        // surface the original error and let callers fail closed (#8932).
+        throw error;
       }
       if (validateCheckpoint(value, id)) {
         const live = isLiveRunningCheckpoint(value);
@@ -444,6 +450,10 @@ function validateCheckpoint(value, expectedId = null) {
   if (value.executionOutcomeStatus !== undefined
     && (value.status !== 'running' || !RECOVERABLE_OUTCOME_STATUSES.has(value.executionOutcomeStatus) || value.executionRecoveryPending !== true)) return false;
   if (typeof value.goal !== 'string' || !value.goal) return false;
+  // A restored checkpoint can only carry a canonical conversation identity:
+  // structured or coerced-looking values must never re-enter session binding
+  // through the resume path (#8769).
+  if (value.conversationId != null && !isCanonicalConversationId(value.conversationId)) return false;
   const bu = value.budgetUsage;
   if (!bu || typeof bu !== 'object') return false;
   if (!isValidNumber(bu.slices) || !isValidNumber(bu.modelCalls) || !isValidNumber(bu.toolCalls) || !isValidNumber(bu.elapsedMs) || !isValidNumber(bu.contextBytes)) return false;

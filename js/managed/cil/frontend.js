@@ -4,6 +4,7 @@ import { cilMetadataToken } from './metadata-layout.js';
 import { deepFreeze } from '../../core/identity/index.js';
 import { createManagedMethodId, createManagedTypeId } from '../shared/identity.js';
 import { createCilMethodSignatureResolver } from './call-signatures.js';
+import { cilImageLookups } from './image-lookup.js';
 import { liftCilMethod } from './lifter.js';
 import { validateCilEffectFunction } from './validation.js';
 import { parseCil, probeCil } from './parser.js';
@@ -25,7 +26,9 @@ export class CilFrontend {
   }
 
   async probe(bytes, context = {}) {
-    return probeCil(bytes);
+    // Format detection is the availability boundary (#8704): the caller's
+    // admission budget has to reach the probe, not only the parse.
+    return probeCil(bytes, { ...this.options, ...context });
   }
 
   async open(bytes, context = {}) {
@@ -78,7 +81,10 @@ export class CilFrontend {
     const image = context.image;
     if (!image) throw new TypeError('cil-context-image-required');
     const hasDefinitions = Array.isArray(image.methods) && image.methods.length > 0;
-    const definition = hasDefinitions ? image.methods.find(row => row.token === method.token) : null;
+    // MethodDef row identity is indexed once per image rather than rescanned per
+    // decoded method (#8791); the first row carrying the token wins, exactly as
+    // the previous linear `find` did.
+    const definition = hasDefinitions ? cilImageLookups(image).methodByToken.get(method.token) ?? null : null;
     if (hasDefinitions && (!definition || definition.bodyIndex !== method.bodyIndex)) {
       throw new TypeError('cil-method-definition-mismatch');
     }

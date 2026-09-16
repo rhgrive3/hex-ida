@@ -12,14 +12,24 @@
 import assert from 'node:assert/strict';
 import { EvidenceStore } from '../js/ai/evidence.js';
 import { ProposalStore } from '../js/ai/proposals.js';
+import { InvestigationSessionStore } from '../js/ai/session-core/index.js';
+// #4999/#4995: verified authority is minted only by the trusted persisted-confirmed
+// loader; a raw ingest with a self-declared status/verifier flag is not enough.
+function verifiedEvidence(id, title) {
+  const session = new InvestigationSessionStore().register({
+    id: `fixture-session-${id}`,
+    confirmedFindings: [{ id, kind: 'read', status: 'verified', sourceTool: 'fixture', title }],
+  });
+  return new EvidenceStore().restorePersistedConfirmed(session.confirmedFindings);
+}
 
 function storeWith() {
-  const evidence = new EvidenceStore([{ id: 'ev_6250', kind: 'read', status: 'unknown', title: 'fixed' }]);
+  const evidence = verifiedEvidence('ev_6250', 'fixed');
   return new ProposalStore({ evidenceStore: evidence });
 }
 
 function proposalFor(before, binding = null) {
-  const store = new ProposalStore({ evidenceStore: new EvidenceStore([{ id: 'ev_6250', kind: 'read', status: 'unknown', title: 'fixed' }]), binding });
+  const store = new ProposalStore({ evidenceStore: verifiedEvidence('ev_6250', 'fixed'), binding });
   const proposal = store.create({
     kind: 'rename', target: { at: '0x1000' }, before, after: 'renamed',
     reason: 'regression fixture', evidenceIds: ['ev_6250'],
@@ -118,7 +128,7 @@ await assertStale({ pattern: /alpha/g }, { pattern: /beta/i }, 'nested RegExp so
 
 /* 5. bindingRevision shares the same fail-closed policy */
 {
-  const evidence = new EvidenceStore([{ id: 'ev_b6250', kind: 'read', status: 'unknown', title: 'b' }]);
+  const evidence = verifiedEvidence('ev_b6250', 'b');
   let binding = { binaryId: 'bin-A' };
   const store = new ProposalStore({ evidenceStore: evidence, binding: () => binding });
   const proposal = store.create({ kind: 'rename', target: { at: '0x1000' }, before: 'a', after: 'b', reason: 'r', evidenceIds: ['ev_b6250'] });

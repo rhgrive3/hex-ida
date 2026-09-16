@@ -127,6 +127,10 @@ function checkFileRange(image, start, size, label, issues) {
 }
 
 function checkRoundTrip(image, address, offset, label, stats, issues) {
+  // #970: a narrower zero-fill section may intentionally shadow the tail of
+  // a broader file-backed segment. That virtual address has no raw-file
+  // offset by design, so it is not a failed round-trip.
+  if (image.resolveVirtualMapping?.(address)?.kind === 'zero') return;
   const gotOffset = image.addressToOffset(address);
   const gotAddress = image.offsetToAddress(offset);
   stats.roundTrips++;

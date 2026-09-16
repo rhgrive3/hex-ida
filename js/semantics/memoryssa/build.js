@@ -16,6 +16,7 @@ import {
   MEMORY_SSA_ALIAS_RELATIONS,
   MEMORY_SSA_CONTRACT_VERSION,
   MEMORY_SSA_DEFAULT_BUDGET,
+  canonicalSnapshotId,
   createMemoryRegionRef,
   createMemorySsaContract,
 } from './contract.js';
@@ -567,6 +568,31 @@ function nodesByIdForStack(irFunction) {
   return new Map((irFunction.nodes ?? []).map((node) => [String(node.id), node]));
 }
 
+function stackAddressPublishedBeforeCall(node, orderedNodes, stackValues) {
+  const callIndex = orderedNodes.findIndex((candidate) => candidate === node);
+  if (callIndex < 0) return true;
+  const stores = (upstream) => {
+    const list = [
+      ...(upstream.kind === 'store' ? [{ addressValueId: memoryAddressExpr(upstream.memory)?.valueId ?? upstream.inputs?.[0], storedValueId: upstream.inputs?.[1] }] : []),
+      ...(upstream.intrinsic?.memoryWrite?.accesses ?? []).map((access) => ({
+        addressValueId: access.addressExpr?.valueId,
+        storedValueId: access.valueId ?? null,
+      })),
+    ];
+    return list;
+  };
+  for (let index = 0; index < callIndex; index++) {
+    const upstream = orderedNodes[index];
+    if (!upstream) continue;
+    for (const store of stores(upstream)) {
+      const stored = store.storedValueId;
+      if (stored == null || !stackValues.derives(stored)) continue;
+      if (!stackValues.derives(store.addressValueId)) return true;
+    }
+  }
+  return false;
+}
+
 function discoverDescriptors(irFunction, cfg, options, fallbackRegion, orderedNodes = null) {
   const descriptors = [];
   const readsByNode = new Map();
@@ -615,7 +641,8 @@ function discoverDescriptors(irFunction, cfg, options, fallbackRegion, orderedNo
         && (descriptor.sourceKind === 'call'
           || (descriptor.sourceKind === 'unknown-memory-effect' && descriptor.node?.kind === 'call'))
         && !stackValues.nodeHasStackDerivedArgument(descriptor.node)
-        && !callMayExposeStackAddress(descriptor.node, nodes, irFunction, stackValues)) {
+        && !callMayExposeStackAddress(descriptor.node, nodes, irFunction, stackValues)
+        && !stackAddressPublishedBeforeCall(descriptor.node, nodes, stackValues)) {
       descriptor.noEscapeStack = true;
     }
   }
@@ -750,7 +777,30 @@ function canonicalConstantValue(semanticValue) {
  * proof: the compatibility layer must not infer a value from projected
  * instructions or recreate a second data-flow engine.
  */
-function canonicalScalarConstant(valueId, valuesById, nodesById, scalarSsa, active = new Set()) {
+/*
+ * Index scalar-SSA renamed uses by source entity and renamed definitions by
+ * value id once per build so store-proof resolution does not rescan the full
+ * arrays for every store (issue #8982).  The maps keep exactly the same
+ * first-match-in-array-order and proof-kind predicates as the previous linear
+ * `find` scans; they only make them O(1) per lookup.
+ */
+function buildScalarSsaIndex(scalarSsa) {
+  const usesBySource = new Map();
+  for (const use of scalarSsa?.uses ?? []) {
+    if (use?.proof?.kind !== 'renamed-use') continue;
+    const key = String(use.sourceEntityId);
+    if (!usesBySource.has(key)) usesBySource.set(key, use);
+  }
+  const definitionsByValue = new Map();
+  for (const definition of scalarSsa?.definitions ?? []) {
+    if (definition?.kind !== 'definition' || definition?.proof?.kind !== 'renamed-definition') continue;
+    const key = String(definition.valueId);
+    if (!definitionsByValue.has(key)) definitionsByValue.set(key, definition);
+  }
+  return { usesBySource, definitionsByValue };
+}
+
+function canonicalScalarConstant(valueId, valuesById, nodesById, scalarSsa, active = new Set(), scalarIndex = null) {
   const id = String(valueId ?? '');
   if (!id || active.has(id)) return null;
   active.add(id);
@@ -766,16 +816,14 @@ function canonicalScalarConstant(valueId, valuesById, nodesById, scalarSsa, acti
     return null;
   }
   if (definition.kind === 'state-read') {
-    const scalarUse = scalarSsa?.uses?.find((use) => String(use.sourceEntityId) === String(definition.id)
-      && use.proof?.kind === 'renamed-use') ?? null;
-    const scalarDefinition = scalarUse == null ? null : scalarSsa?.definitions?.find((candidate) =>
-      String(candidate.valueId) === String(scalarUse.valueId)
-      && candidate.kind === 'definition'
-      && candidate.proof?.kind === 'renamed-definition') ?? null;
+    const index = scalarIndex ?? buildScalarSsaIndex(scalarSsa);
+    const scalarUse = scalarSsa?.uses == null ? null : index.usesBySource.get(String(definition.id)) ?? null;
+    const scalarDefinition = scalarUse == null || scalarSsa?.definitions == null ? null
+      : index.definitionsByValue.get(String(scalarUse.valueId)) ?? null;
     const sourceSemanticValueId = scalarDefinition?.proof?.sourceSemanticValueId ?? null;
     const source = sourceSemanticValueId == null ? null : valuesById.get(String(sourceSemanticValueId));
     const sourceConstant = source == null ? null
-      : canonicalScalarConstant(source.id, valuesById, nodesById, scalarSsa, active);
+      : canonicalScalarConstant(source.id, valuesById, nodesById, scalarSsa, active, scalarIndex ?? index);
     if (sourceConstant) {
       active.delete(id);
       return {
@@ -794,7 +842,7 @@ function canonicalScalarConstant(valueId, valuesById, nodesById, scalarSsa, acti
     active.delete(id);
     return null;
   }
-  const input = canonicalScalarConstant(definition.inputs[0], valuesById, nodesById, scalarSsa, active);
+  const input = canonicalScalarConstant(definition.inputs[0], valuesById, nodesById, scalarSsa, active, scalarIndex);
   if (!input) {
     active.delete(id);
     return null;
@@ -812,7 +860,7 @@ function canonicalScalarConstant(valueId, valuesById, nodesById, scalarSsa, acti
   return { ...input, value, widthBits: outputWidth };
 }
 
-function canonicalStoreOperand(node, valuesById, identity, functionId, memorySsaEntityId, scalarSsa = null, nodesById = null) {
+function canonicalStoreOperand(node, valuesById, identity, functionId, memorySsaEntityId, scalarSsa = null, nodesById = null, scalarIndex = null) {
   if (node?.kind !== 'store' || !Array.isArray(node.inputs) || node.inputs.length !== 2) return null;
   const addressValueId = memoryAddressExpr(node.memory)?.valueId ?? null;
   if (addressValueId == null || String(node.inputs[0]) !== String(addressValueId)) return null;
@@ -835,7 +883,7 @@ function canonicalStoreOperand(node, valuesById, identity, functionId, memorySsa
   }
   if (semanticValue.machineType?.kind !== 'bitvector'
       || Number(semanticValue.machineType?.widthBits) !== widthBits) return null;
-  const resolved = canonicalScalarConstant(valueId, valuesById, nodesById, scalarSsa);
+  const resolved = canonicalScalarConstant(valueId, valuesById, nodesById, scalarSsa, new Set(), scalarIndex);
   if (!resolved || resolved.widthBits !== widthBits) return null;
   return canonicalStoreValueProof({
     semanticValue,
@@ -878,6 +926,8 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   const { descriptors, readsByNode, writesByNode } = discoverDescriptors(irFunction, cfg, options, fallbackRegion, orderedNodes);
   const nodeOrderById = new Map(orderedNodes.map((node, index) => [node.id, index]));
   const semanticValueById = new Map((irFunction.values ?? []).map((value) => [String(value.id), value]));
+  const irNodeById = new Map((irFunction.nodes ?? []).map((candidate) => [String(candidate.id), candidate]));
+  const scalarSsaIndex = options.ssa == null ? null : buildScalarSsaIndex(options.ssa);
 
   const regionById = new Map();
   for (const region of options.regions ?? []) addRegion(regionById, region);
@@ -894,6 +944,13 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
   // The serialized identity describes the canonical build, but is not an
   // authority for publication. The exact artifact object is bound privately
   // below; copying or re-signing its fields cannot copy that binding.
+  // Snapshot provenance is validated before it is published or jsonSafe'd: the
+  // identity block survives structured values, and a structured `snapshotId`
+  // there would otherwise be re-coerced by every consumer that compares it
+  // against the artifact (#8804).
+  if (options.identity?.snapshotId != null) {
+    canonicalSnapshotId(options.identity.snapshotId, 'memory-ssa-identity-snapshot-id-invalid');
+  }
   const identity = deepFreeze(jsonSafe(options.identity ?? {
     functionId: irFunction.functionId,
     memorySsaBuildVersion: MEMORY_SSA_BUILD_VERSION,
@@ -1332,7 +1389,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
             ...(descriptor.sourceKind === 'load' || descriptor.sourceKind === 'store'
               ? (() => {
                 const canonicalValue = descriptor.role === 'write'
-                  ? canonicalStoreOperand(descriptor.node, semanticValueById, identity, irFunction.functionId, id, options.ssa, new Map(irFunction.nodes.map((candidate) => [String(candidate.id), candidate])))
+                  ? canonicalStoreOperand(descriptor.node, semanticValueById, identity, irFunction.functionId, id, options.ssa, irNodeById, scalarSsaIndex)
                   : null;
                 return canonicalValue == null ? {} : { canonicalValue };
               })()
@@ -1387,7 +1444,8 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
             irFunction.functionId,
             event.id,
             options.ssa,
-            new Map(irFunction.nodes.map((candidate) => [String(candidate.id), candidate])),
+            irNodeById,
+            scalarSsaIndex,
           );
           return canonicalValue == null ? {} : { canonicalValue };
         })()
@@ -1510,7 +1568,7 @@ export function buildMemorySsa(irFunction, cfg, options = {}) {
       functionId: irFunction.functionId,
       semanticIrDigest: identity?.semanticIrDigest ?? null,
     }),
-    ...(options.snapshotId == null ? {} : { snapshotId: String(options.snapshotId) }),
+    ...(options.snapshotId == null ? {} : { snapshotId: canonicalSnapshotId(options.snapshotId) }),
     useDefLinks,
     defUseLinks,
     accessMetadata,

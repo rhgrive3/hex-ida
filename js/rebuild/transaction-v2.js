@@ -1,4 +1,4 @@
-import { deepFreeze, stableDigest } from '../core/identity/index.js';
+import { deepFreeze, stableDigest, stableDigestBytes } from '../core/identity/index.js';
 import { isValidatedStage2CapabilityProof } from '../platform/stage2-profile-evidence.js';
 
 export const REBUILD_TRANSACTION_SCHEMA = 'hex-rebuild-transaction-v2';
@@ -104,7 +104,7 @@ function clone(value) {
 }
 
 function hashBytes(value) {
-  return `bytes:${stableDigest(Array.from(toBytes(value)))}`;
+  return `bytes:${stableDigestBytes(toBytes(value))}`;
 }
 
 function sorted(value) {
@@ -176,18 +176,32 @@ function operationShapeValid(operations) {
   return true;
 }
 
+function validatorIdentityValues(result, image, fields, imageField) {
+  // Presence is distinct from a nullish value. Validate every supplied alias
+  // before choosing the first one, so a fallback cannot hide malformed proof.
+  const values = fields.filter((field) => field in result).map((field) => result[field]);
+  if (image != null && imageField in Object(image)) values.push(image[imageField]);
+  return values;
+}
+
 function formatIdentityMismatch(result, transaction, expectedOutputHash) {
   if (!result || typeof result !== 'object') return null;
-  const format = result.format ?? result.image?.format;
-  if (format != null && String(format).toLowerCase() !== transaction.format) return 'validator-format-mismatch';
-  const architecture = result.architecture ?? result.arch ?? result.image?.arch;
-  if (architecture != null && String(architecture).toLowerCase() !== transaction.architecture) return 'validator-architecture-mismatch';
-  const loaderVersion = result.loaderVersion ?? result.parserVersion ?? result.image?.loaderVersion;
-  if (loaderVersion != null && String(loaderVersion) !== transaction.loaderVersion) return 'validator-loader-identity-mismatch';
-  const sourceHash = result.sourceHash ?? result.inputHash ?? result.image?.sourceHash;
-  if (sourceHash != null && String(sourceHash).toLowerCase() !== transaction.sourceHash) return 'validator-source-identity-mismatch';
-  const outputHash = result.outputHash ?? result.bytesHash ?? result.image?.outputHash;
-  if (outputHash != null && String(outputHash).toLowerCase() !== expectedOutputHash) return 'validator-output-identity-mismatch';
+  const image = result.image;
+  const formats = validatorIdentityValues(result, image, ['format'], 'format');
+  if (formats.some((value) => typeof value !== 'string')) return 'validator-format-invalid';
+  if (formats.length && formats[0].toLowerCase() !== transaction.format) return 'validator-format-mismatch';
+  const architectures = validatorIdentityValues(result, image, ['architecture', 'arch'], 'arch');
+  if (architectures.some((value) => typeof value !== 'string')) return 'validator-architecture-invalid';
+  if (architectures.length && architectures[0].toLowerCase() !== transaction.architecture) return 'validator-architecture-mismatch';
+  const loaderVersions = validatorIdentityValues(result, image, ['loaderVersion', 'parserVersion'], 'loaderVersion');
+  if (loaderVersions.some((value) => typeof value !== 'string')) return 'validator-loader-identity-invalid';
+  if (loaderVersions.length && loaderVersions[0] !== transaction.loaderVersion) return 'validator-loader-identity-mismatch';
+  const sourceHashes = validatorIdentityValues(result, image, ['sourceHash', 'inputHash'], 'sourceHash');
+  if (sourceHashes.some((value) => typeof value !== 'string')) return 'validator-source-identity-invalid';
+  if (sourceHashes.length && sourceHashes[0].toLowerCase() !== transaction.sourceHash) return 'validator-source-identity-mismatch';
+  const outputHashes = validatorIdentityValues(result, image, ['outputHash', 'bytesHash'], 'outputHash');
+  if (outputHashes.some((value) => typeof value !== 'string')) return 'validator-output-identity-invalid';
+  if (outputHashes.length && outputHashes[0].toLowerCase() !== expectedOutputHash) return 'validator-output-identity-mismatch';
   return null;
 }
 
@@ -513,7 +527,11 @@ export function evaluateF6RebuildDenominator({ transaction, validation, publicat
   const loader = validation?.validators?.find((item) => item.validator === 'loader-reparse');
   add('loader-reparse', loader?.status === 'passed' ? 'closed' : 'blocking', loader?.status === 'passed' ? null : 'f6-loader-reparse-unproven', loader?.status === 'passed' ? 'production-loader-reparse' : null);
   const independent = validation?.validators?.find((item) => item.validator === 'independent-differential');
-  add('independent-differential-oracle', independent?.status === 'passed' && validation?.independentDifferential === 'executed' ? 'closed' : 'blocking', independent?.status === 'passed' && validation?.independentDifferential === 'executed' ? null : 'f6-independent-oracle-unproven', independent?.status === 'passed' ? 'independent-oracle-contract' : null);
+  // #8831 — this denominator unit is a release authority: an unregistered caller callback that only
+  // echoes the schema/digests/shape proves no independent implementation ran, so it may not close it.
+  const independentExecuted = independent?.status === 'passed' && validation?.independentDifferential === 'executed';
+  const independentProven = independentExecuted && validation?.independentOracleTrusted === true;
+  add('independent-differential-oracle', independentProven ? 'closed' : 'blocking', independentProven ? null : (independentExecuted ? 'f6-independent-oracle-provider-untrusted' : 'f6-independent-oracle-unproven'), independentProven ? 'trusted-independent-oracle-provider' : null);
 
   add('atomic-publication', publicationComplete ? 'closed' : 'blocking', publicationComplete ? null : 'f6-atomic-publication-unproven', publicationComplete ? 'transaction-v2-publication-identity' : null);
   add('real-fixture', proof.realFixture === true && proof.realFixtureEvidence === true ? 'closed' : 'blocking', proof.realFixture === true && proof.realFixtureEvidence === true ? null : 'f6-real-fixture-evidence-unproven', proof.realFixture === true && proof.realFixtureEvidence === true ? 'compiler-produced-fixture' : null);
@@ -656,6 +674,19 @@ async function sourceBytes(source) {
   return toBytes(source).slice();
 }
 
+// #8796: an admissible length is available from primitive source metadata
+// (typed views, ArrayBuffers, arrays, and a Blob's declared size) before any
+// whole-binary read, so an explicit output budget can be admitted before the
+// source is materialized and hashed.
+function declaredSourceLength(source) {
+  if (typeof Blob !== 'undefined' && source instanceof Blob) {
+    return Number.isSafeInteger(source.size) && source.size >= 0 ? source.size : null;
+  }
+  if (source instanceof Uint8Array || source instanceof ArrayBuffer || ArrayBuffer.isView(source)) return source.byteLength;
+  if (Array.isArray(source)) return source.length;
+  return null;
+}
+
 function transactionIdentityValid(transaction) {
   try {
     if (!transaction || transaction.schemaVersion !== REBUILD_TRANSACTION_SCHEMA) return false;
@@ -782,6 +813,22 @@ export async function materializeRebuildTransaction(transaction, source, options
   if (!transaction || transaction.schemaVersion !== REBUILD_TRANSACTION_SCHEMA) return { status: 'rejected', reason: 'rebuild-v2-transaction-schema-invalid' };
   if (!transactionIdentityValid(transaction)) return { status: 'rejected', reason: 'rebuild-v2-transaction-identity-invalid', transactionId: transaction.transactionId || null };
   if (options.signal?.aborted) return { status: 'cancelled', reason: 'rebuild-v2-cancelled-before-materialization', transactionId: transaction.transactionId };
+  // #8796: a caller-supplied output budget must be admitted before the source
+  // is read, hashed, and copied; otherwise the advertised resource budget
+  // cannot protect materialization admission. The implicit budget is derived
+  // from the source length itself, so only an explicit limit is evaluable here.
+  if (options.maxOutputBytes != null) {
+    let declaredLimit;
+    try { declaredLimit = positiveSafe(options.maxOutputBytes, 2_147_483_647, 2_147_483_647, 'rebuild-v2-max-output-budget-invalid'); }
+    catch { return { status: 'rejected', reason: 'rebuild-v2-max-output-budget-invalid' }; }
+    const declaredLength = declaredSourceLength(source);
+    if (declaredLength != null) {
+      const declaredFinal = declaredLength + transaction.sizeDelta;
+      if (!Number.isSafeInteger(declaredFinal) || declaredFinal < 0 || declaredFinal > declaredLimit) {
+        return { status: 'rejected', reason: 'rebuild-v2-output-budget-exceeded', finalLength: declaredFinal, maxOutputBytes: declaredLimit };
+      }
+    }
+  }
   let original;
   try { original = await sourceBytes(source); }
   catch (error) { return { status: 'rejected', reason: 'rebuild-v2-source-unavailable', detail: String(error?.message || error), transactionId: transaction.transactionId }; }
@@ -968,6 +1015,7 @@ export async function validateRebuildTransaction(transaction, materialized, opti
     status: failures.length === 0 && allExecuted ? 'valid' : 'invalid',
     failures,
     independentDifferential: independent ? (independent.status === 'passed' ? 'executed' : 'failed') : 'unavailable',
+    independentOracleTrusted: transaction.requireIndependentOracle === true ? independentOracleTrusted : false,
   };
   return deepFreeze({ ...validation, validationId: `rebuild-validation:${stableDigest(validation)}` });
 }
@@ -992,19 +1040,22 @@ export async function publishRebuildTransaction(materialized, validation, option
     // able to mutate the validated temporary output after its identity is fixed.
     const result = await options.atomicPromote(materialized.bytes.slice(), { materialized, validation });
     if (!result || result.atomic !== true || result.committed !== true) return { status: 'rejected', reason: 'rebuild-v2-publication-not-atomic' };
-    const protocol = String(result.protocol || '');
-    if (!ATOMIC_PUBLICATION_PROTOCOLS.has(protocol)) return { status: 'rejected', reason: 'rebuild-v2-publication-protocol-invalid' };
-    const publicationIdentity = String(result.publicationIdentity || '').trim();
+    const protocol = result.protocol;
+    if (typeof protocol !== 'string' || !ATOMIC_PUBLICATION_PROTOCOLS.has(protocol)) return { status: 'rejected', reason: 'rebuild-v2-publication-protocol-invalid' };
+    if (result.publicationIdentity != null && typeof result.publicationIdentity !== 'string') return { status: 'rejected', reason: 'rebuild-v2-publication-identity-invalid' };
+    const publicationIdentity = typeof result.publicationIdentity === 'string' ? result.publicationIdentity.trim() : '';
     if (!publicationIdentity) return { status: 'rejected', reason: 'rebuild-v2-publication-identity-required' };
     if (result.transactionId == null || result.outputHash == null || result.outputIdentity == null) return { status: 'rejected', reason: 'rebuild-v2-publication-identity-incomplete' };
-    if (String(result.transactionId) !== materialized.transactionId) return { status: 'rejected', reason: 'rebuild-v2-publication-transaction-mismatch' };
-    if (String(result.outputHash) !== materialized.outputHash) return { status: 'rejected', reason: 'rebuild-v2-publication-output-mismatch' };
+    if (typeof result.transactionId !== 'string' || typeof result.outputHash !== 'string' || typeof result.outputIdentity !== 'string') return { status: 'rejected', reason: 'rebuild-v2-publication-identity-invalid' };
+    if (result.transactionId !== materialized.transactionId) return { status: 'rejected', reason: 'rebuild-v2-publication-transaction-mismatch' };
+    if (result.outputHash !== materialized.outputHash) return { status: 'rejected', reason: 'rebuild-v2-publication-output-mismatch' };
     const outputIdentity = canonicalOutputIdentity(materialized.transactionId, materialized.outputHash);
-    if (String(result.outputIdentity) !== outputIdentity) return { status: 'rejected', reason: 'rebuild-v2-publication-output-identity-mismatch' };
+    if (result.outputIdentity !== outputIdentity) return { status: 'rejected', reason: 'rebuild-v2-publication-output-identity-mismatch' };
     for (const field of ['binaryId', 'format', 'architecture', 'loaderVersion', 'sourceHash']) {
-      if (result[field] != null) {
+      if (field in result) {
+        const observed = result[field];
+        if (typeof observed !== 'string') return { status: 'rejected', reason: 'rebuild-v2-publication-identity-invalid' };
         const expected = materialized[field];
-        const observed = String(result[field]);
         if ((field === 'sourceHash' ? observed.toLowerCase() : observed) !== (field === 'sourceHash' ? String(expected).toLowerCase() : String(expected))) {
           return { status: 'rejected', reason: 'rebuild-v2-publication-identity-mismatch' };
         }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createRuntimeObservation, runtimeProfileSupport } from '../../js/runtime/authority.js';
+import { RuntimeAuthorityTracker, createRuntimeObservation, runtimeProfileSupport } from '../../js/runtime/authority.js';
 import {
   createManagedRuntimeBinding,
   managedRuntimeProfileSupport,
@@ -76,6 +76,17 @@ for (const frontendId of frontends) {
   const tamperedObservation = { ...observation, payload: { moduleIdentity: binding.runtimeModuleIdentity, altered: true } };
   assert.equal(validateManagedRuntimeObservation(binding, tamperedObservation).reason, 'runtime-observation-identity-invalid');
 
+  const managedObservationTracker = new RuntimeAuthorityTracker(binding.runtime);
+  const managedObservationIds = [];
+  for (let sequence = 1; sequence <= 2; sequence += 1) {
+    const accepted = managedObservationTracker.accept(createRuntimeObservation({
+      binding: binding.runtime, sequence, observedAt: `2026-08-22T00:00:0${sequence}Z`, kind: 'managed-frame', payload: { moduleIdentity: binding.runtimeModuleIdentity },
+    }));
+    assert.equal(accepted.status, 'accepted');
+    managedObservationIds.push(accepted.observationId);
+  }
+  const managedMutation = managedObservationTracker.authorizeMutation({ actorIdentity: 'local:user', operation: 'write-memory', issuedAt: '2026-08-22T00:00:07Z', explicitApproval: true });
+  assert.equal(managedMutation.status, 'authorized');
   const runtimeProfileProof = runtimeProfileSupport({
     binding: binding.runtime,
     providerProfileId: `managed:${frontendId}:provider-bound-runtime-v1`,
@@ -84,8 +95,22 @@ for (const frontendId of frontends) {
     requiredCapabilities,
     proof: runtimeProofFlags,
     profileProof: profileProofs[`S2-M6-${frontendId.toUpperCase()}`],
+    runtimeReceipt: managedObservationTracker.mintProfileSupportReceipt({
+      observationIdentities: managedObservationIds,
+      mutationAuthorityIdentities: [managedMutation.token.tokenId],
+      testItemIdentities: ['frontend-provider', 'state-budget', 'profile-denominator'],
+    }),
   });
   assert.equal(runtimeProfileProof.status, 'supported-for-exact-provider-profile');
+  assert.equal(runtimeProfileSupport({
+    binding: binding.runtime,
+    providerProfileId: `managed:${frontendId}:provider-bound-runtime-v1`,
+    targetProfileId: binding.targetProfileId,
+    providerCapabilities,
+    requiredCapabilities,
+    proof: runtimeProofFlags,
+    profileProof: profileProofs[`S2-M6-${frontendId.toUpperCase()}`],
+  }).reason, 'runtime-validation-receipt-required', 'caller-declared managed booleans cannot mint M6 runtime authority (#8851)');
   const support = managedRuntimeProfileSupport({ binding, runtimeProfileProof, proof: managedProof });
   assert.equal(support.frontendId, frontendId);
   assert.equal(support.targetProfileId, binding.targetProfileId);

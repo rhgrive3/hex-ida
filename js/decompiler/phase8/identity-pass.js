@@ -50,15 +50,30 @@ export function runIdentityPass(context = {}) {
   const blocks = Array.isArray(cfg?.blocks) ? cfg.blocks.length : 0;
   // The transaction refuses to run a pass whose declared inputs are absent, so
   // reaching this point means the facts are present. Reporting `complete` here
-  // is therefore a statement about facts that exist, not an assumption.
+  // is therefore a statement about facts that exist, not an assumption — but
+  // "present" is not "exhaustive". When the upstream canonical Semantic IR that
+  // seeded this analysis was itself budget-truncated (or projected from a
+  // partial v2 result), the available facts are only a partial view, and the
+  // identity pass must not mint a `complete` ledger the source never proved
+  // (#8653). Presence of facts is indistinguishable from exhaustive facts only
+  // when the source claimed to be complete.
+  const sourceTruncated = context.ir?.truncated === true;
   return createPassResult({
     descriptor: IDENTITY_PASS,
     status: 'unchanged',
     changed: false,
-    completeness: 'complete',
-    diagnostics: [],
+    completeness: sourceTruncated ? 'partial' : 'complete',
+    diagnostics: sourceTruncated
+      ? [{
+        severity: 'info',
+        code: 'phase8.identity.source-truncated',
+        message: 'Phase 8 identity withheld completeness: the source Semantic IR was truncated.',
+        reason: 'The canonical Semantic IR that seeded this analysis carries truncated:true, so its facts are not exhaustive and a complete ledger cannot be minted from their mere presence (#8653).',
+      }]
+      : [],
     transforms: [],
     invalidated: [],
+    stopReason: sourceTruncated ? 'source-ir-truncated' : null,
     observation: { values, blocks },
   });
 }

@@ -15,11 +15,11 @@ const INTEGRATION_BATCH_LANE = 'dev-agent-hardening/integration/issue-batch-2026
 const MAIN_GATE_BATCH_LANE = 'fix/main-gate-recovery-20260913';
 const ANALYSIS_QUERY_BATCH_LANE = 'fix/batch-4075-owner12';
 const ACTIONS_GROUP_LANE = 'dependabot/github_actions/github-actions-436ea2ae3a';
+const LANE13_BATCH02_LANE = 'codex/issue-campaign-20260914-lane-13-batch-02';
 
-// This is an exact, short-lived integration route for #6975. The PR carries a
-// Phase 7 production-path regression alongside the ABI/Phase 6 owner slice.
-// Foreign paths are enumerated so adding an unrelated file cannot silently
-// turn this into a general Phase 7 ownership exemption.
+// Exact foreign inventories for intentionally cross-owner Phase 7 integrations.
+// Each route fails closed on any undeclared foreign path before projecting the
+// Phase 7-owned subset into the canonical ownership validator.
 export const CROSS_LANE_ROUTES = Object.freeze({
   // PR #8671: reviewed benchmark/auth union plus its ownership routing.
   "integration-candidate/benchmark-auth-20260914": Object.freeze([
@@ -117,6 +117,16 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     "tools/validation/public-benchmark/subject.mjs",
     "worker-entry.js",
     "wrangler.jsonc"
+  ]),
+  [LANE13_BATCH02_LANE]: Object.freeze([
+    '.circleci/config.yml',
+    'js/phase12/package-envelope.js',
+    'js/query/causal.js',
+    'js/recognition/bounded-matching.js',
+    'js/recognition/match-budget.js',
+    'tests/phase10/recognition/issue-8914-matcher-candidate-admission.test.mjs',
+    'tests/phase12/provider/issue-8760-provider-output-admission-order.test.mjs',
+    'tools/validation/phase12/denominator-inventory.json',
   ]),
   "codex/consolidate-arm64-repairs-20260913": Object.freeze([
     ".circleci/config.yml",
@@ -734,6 +744,45 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     'tools/validation/phase8/decompile-corpus.mjs',
     'tools/validation/phase8/metrics.mjs',
     'tools/validation/phase8/verify.mjs',
+  ]),
+  // #8936 is a cross-lane batch of ten issue repairs. Phase 7 validates only
+  // the analysis/semantic-compatibility subset it owns; every foreign path is
+  // enumerated so this route cannot become a general ownership exemption.
+  "fix/batch-10-issues-20260915": Object.freeze([
+    ".circleci/config.yml",
+    ".github/workflows/phase8-ownership.yml",
+    "js/semantics/ssa/validate.js",
+    "js/ai/runtime.js",
+    "js/binary/reader.js",
+    "js/collaboration/remote-transport.js",
+    "js/decompiler/idioms/arm64-clang.js",
+    "js/managed/shared/bridge-jvm-control-overlay-v2.js",
+    "js/managed/shared/bridge-lowering-v2.js",
+    "tests/issue-3913-framebytes-max-stack-depth.mjs",
+    "tests/issue-4097-il2cpp-long-unicode-name-budget.mjs",
+    "tests/issue-8870-cstring-sparse-forward.test.mjs",
+    "tests/issue-8910-callersaved-fail-closed.test.mjs",
+    "tests/issue-8917-managed-binary-branch-predicate.test.mjs",
+    "tests/issue-8921-bit-extract-width.test.mjs",
+    "tests/issue-8922-conditional-missing-fallthrough.test.mjs",
+    "tests/issue-8923-proposal-binding-identity.test.mjs",
+    "tests/issue-8925-delivery-deadline.test.mjs",
+    "tests/phase6/effects/issue-6065-direct-target-alignment.test.mjs",
+    "tests/phase8/abi/hex-c3-02-boundaries.test.mjs",
+    "tests/phase8/ownership/cross-lane-routing.test.mjs",
+    "tools/validation/phase8/cross-lane-inventory.mjs",
+  ]),
+  // PR #9006 (lane-02 batch-04) pairs the Phase 7 discovery producers.js fix
+  // (#8833) with test-only fixture synchronization for Phase 4 (#8813) and
+  // Phase 6 (#8719) owned files. Phase 7 validates only its owned subset;
+  // every foreign path is enumerated so this route cannot become a general
+  // Phase 7 ownership exemption.
+  "codex/issue-campaign-20260914-lane-02-batch-04": Object.freeze([
+    ".circleci/config.yml",
+    "tests/phase4/binary/issue-4358-elf-dynamic-xindex-common.test.mjs",
+    "tests/phase4/issue-3630-elf-dynamic-section-authority.test.mjs",
+    "tests/phase6/generic-core/issues-889-897.test.mjs",
+    "tests/phase6/generic-core/issues-907-909-910-913.test.mjs",
   ]),
 });
 

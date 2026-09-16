@@ -1,5 +1,6 @@
 import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 import assert from 'node:assert/strict';
+import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 import {
   parseDevSupervisorDecision,
   validateDevSupervisorDecision,
@@ -47,7 +48,7 @@ import { DEV_RUN_STATUS } from '../../js/ai/dev/run/dev-run.js';
 //    decision-invalid recovery loop instead of being applied.
 {
   let requestCount = 0;
-  const supervisor = new DevSupervisorV0({ now: () => '2026-09-11T00:00:00.000Z' });
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(), now: () => '2026-09-11T00:00:00.000Z' });
   const bridge = Object.freeze({
     async request() {
       requestCount += 1;
@@ -68,7 +69,7 @@ import { DEV_RUN_STATUS } from '../../js/ai/dev/run/dev-run.js';
 
 // 5. A valid human decision still transitions the run to WAITING_HUMAN.
 {
-  const supervisor = new DevSupervisorV0({ now: () => '2026-09-11T00:00:00.000Z' });
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(), now: () => '2026-09-11T00:00:00.000Z' });
   const run = supervisor.createRun({ goal: 'demo', conversationId: 'c-human' });
   const applied = supervisor.applyDecision(run, validateDevSupervisorDecision({
     type: 'human',

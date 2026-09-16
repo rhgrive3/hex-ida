@@ -8,8 +8,9 @@ import {
 } from '../js/userscript/runtime-security.js';
 
 const root = new URL('../', import.meta.url);
-const [wranglerText, workerEntry, entry, bridge, adapter, selectors, buildScript, loaderSource, template, secretsModule, embedded] = await Promise.all([
+const [wranglerText, workerEntry, bootstrapAdmissionSource, entry, bridge, adapter, selectors, buildScript, loaderSource, template, secretsModule, embedded] = await Promise.all([
   readFile(new URL('wrangler.jsonc', root), 'utf8'), readFile(new URL('worker-entry.js', root), 'utf8'),
+  readFile(new URL('js/userscript/runtime-bootstrap-admission.js', root), 'utf8'),
   readFile(new URL('js/userscript/entry.js', root), 'utf8'), readFile(new URL('js/userscript/chatgpt-bridge.js', root), 'utf8'),
   readFile(new URL('js/userscript/chatgpt-adapter.js', root), 'utf8'), readFile(new URL('js/userscript/chatgpt-selectors.js', root), 'utf8'),
   readFile(new URL('scripts/build-userscript.mjs', root), 'utf8'), readFile(new URL('js/userscript/loader.js', root), 'utf8'),
@@ -25,7 +26,11 @@ assert.ok(wrangler.durable_objects.bindings.some((item) => item.name === 'RUNTIM
 assert.match(workerEntry, /POST|request\.method !== 'POST'/);
 assert.match(workerEntry, /RuntimeBootstrap/);
 assert.match(workerEntry, /replayed-nonce/);
-assert.match(workerEntry, /replayed-session/);
+// #8703 moved the session-replay decision into the bootstrap admission module
+// that worker-entry.js imports and calls, so the authority is that module plus
+// the worker wiring that reaches it.
+assert.match(workerEntry, /consumeRuntimeBootstrapSession/);
+assert.match(bootstrapAdmissionSource, /replayed-session/);
 assert.match(workerEntry, /ECDH/);
 assert.match(workerEntry, /HKDF/);
 assert.match(workerEntry, /AES-GCM/);

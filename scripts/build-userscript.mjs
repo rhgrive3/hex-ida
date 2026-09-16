@@ -66,6 +66,16 @@ const aad = `hex-runtime:${buildId}:${runtimeVersion}`;
 const cipher = createCipheriv('aes-256-gcm', contentKey, iv); cipher.setAAD(Buffer.from(aad));
 const ciphertext = Buffer.concat([cipher.update(compressed), cipher.final(), cipher.getAuthTag()]);
 const assetPath = `/.runtime/runtime.${buildId}.bin`;
+const runtimeLocator = `/_runtime/${buildId}`;
+const releaseManifest = Object.freeze({
+  buildId,
+  runtimeVersion,
+  contentHash,
+  compression: 'gzip',
+  runtimeLocator,
+  byteLength: ciphertext.length,
+});
+const releaseManifestHash = sha256(Buffer.from(JSON.stringify(releaseManifest), 'utf8'));
 const manifest = Object.freeze({ buildId, privileged, runtimeVersion, ciphertextHash: sha256(ciphertext), contentHash, iv: b64(iv), aad, compression: 'gzip', assetPath, byteLength: ciphertext.length });
 await writeFile(resolve(dist, assetPath.slice(1)), ciphertext);
 await writeGeneratedModule('runtime-secrets.js', `export const RUNTIME_BUILD=Object.freeze(${JSON.stringify({ manifest, contentKey: b64(contentKey), signingKey: b64(randomBytes(32)) })});\n`);
@@ -73,7 +83,12 @@ await writeGeneratedModule('runtime-secrets.js', `export const RUNTIME_BUILD=Obj
 const loaderForOrigin = (origin) => loaderBundle.toString('utf8')
   .replaceAll(ORIGIN_TOKEN, origin)
   .replaceAll('__HEX_LOADER_VERSION__', LOADER_VERSION)
-  .replaceAll('__HEX_BUILD_ID__', buildId);
+  .replaceAll('__HEX_BUILD_ID__', buildId)
+  .replaceAll('__HEX_CONTENT_HASH__', contentHash)
+  .replaceAll('__HEX_RUNTIME_VERSION__', runtimeVersion)
+  .replaceAll('__HEX_RUNTIME_BYTE_LENGTH__', String(ciphertext.length))
+  .replaceAll('__HEX_RUNTIME_LOCATOR__', runtimeLocator)
+  .replaceAll('__HEX_RELEASE_MANIFEST_HASH__', releaseManifestHash);
 const publicLoader = loaderForOrigin('https://ida.rhgrive.workers.dev');
 if (Buffer.byteLength(publicLoader) > MAX_LOADER_BYTES) throw new Error(`Tiny loader exceeds ${MAX_LOADER_BYTES} bytes.`);
 const loaderName = `loader.${sha256(publicLoader).slice(0, 12)}.js`;

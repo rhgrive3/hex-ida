@@ -88,7 +88,13 @@ export function translateSemanticIR(target, options = {}) {
     }
 
     let valId = null;
-    if (val.id != null) {
+    const canonicalValueId = val.semanticSsaValueId ?? val.semanticValueId ?? null;
+    if (typeof canonicalValueId === 'string' && canonicalValueId.trim() !== '') {
+      valId = canonicalValueId.trim();
+    } else if (val.id != null) {
+      // Production Semantic IR keeps a local numeric compatibility id alongside
+      // the canonical semantic/SSA string identity. Prefer the canonical id; a
+      // caller object with only a non-string legacy id remains fail-closed.
       if (typeof val.id === 'string' && val.id.trim() !== '') valId = val.id.trim();
       else {
         semanticUnknowns++;
@@ -219,8 +225,8 @@ export function translateSemanticIR(target, options = {}) {
 
       case OP.BIN: {
         /* #5202: no invented default operator — classifyOpSupport rejects
-           instructions whose subOp/name discriminator is missing. */
-        const subOp = String(inst.subOp ?? inst.name ?? '').toLowerCase();
+           instructions whose sub discriminator is missing. */
+        const subOp = String(inst.sub ?? inst.subOp ?? inst.name ?? '').toLowerCase();
         const leftVal = inst.args?.[0]?.value || inst.args?.[0];
         const rightVal = inst.args?.[1]?.value || inst.args?.[1];
         const leftExpr = translateValue(leftVal, width);
@@ -251,7 +257,7 @@ export function translateSemanticIR(target, options = {}) {
 
       case OP.UN: {
         /* #5202: no invented NOT default. */
-        const subOp = String(inst.subOp ?? inst.name ?? '').toLowerCase();
+        const subOp = String(inst.sub ?? inst.subOp ?? inst.name ?? '').toLowerCase();
         const srcVal = inst.args?.[0]?.value || inst.args?.[0];
         const srcExpr = translateValue(srcVal, width);
         if (subOp === 'not') return createUnary(BV_UNARY_OP.NOT, srcExpr);
@@ -263,8 +269,8 @@ export function translateSemanticIR(target, options = {}) {
 
       case OP.CMP: {
         /* #5202: no invented '==' default. */
-        const condOp = inst.cond || inst.subOp;
-        const isSigned = inst.signed === true;
+        const condOp = inst.extra?.comparison ?? inst.comparison ?? inst.cond ?? inst.subOp;
+        const isSigned = (inst.extra?.signed ?? inst.signed) === true;
         const leftVal = inst.args?.[0]?.value || inst.args?.[0];
         const rightVal = inst.args?.[1]?.value || inst.args?.[1];
         const leftExpr = translateValue(leftVal, width);
@@ -273,6 +279,14 @@ export function translateSemanticIR(target, options = {}) {
         let cmpOp = null;
         if (condOp === '==' || condOp === 'eq') cmpOp = BV_COMPARE_OP.EQ;
         else if (condOp === '!=' || condOp === 'ne') cmpOp = BV_COMPARE_OP.NE;
+        else if (condOp === 'slt') cmpOp = BV_COMPARE_OP.SLT;
+        else if (condOp === 'sle') cmpOp = BV_COMPARE_OP.SLE;
+        else if (condOp === 'sgt') cmpOp = BV_COMPARE_OP.SGT;
+        else if (condOp === 'sge') cmpOp = BV_COMPARE_OP.SGE;
+        else if (condOp === 'ult') cmpOp = BV_COMPARE_OP.ULT;
+        else if (condOp === 'ule') cmpOp = BV_COMPARE_OP.ULE;
+        else if (condOp === 'ugt') cmpOp = BV_COMPARE_OP.UGT;
+        else if (condOp === 'uge') cmpOp = BV_COMPARE_OP.UGE;
         else if (condOp === '<' || condOp === 'lt') cmpOp = isSigned ? BV_COMPARE_OP.SLT : BV_COMPARE_OP.ULT;
         else if (condOp === '<=' || condOp === 'le') cmpOp = isSigned ? BV_COMPARE_OP.SLE : BV_COMPARE_OP.ULE;
         else if (condOp === '>' || condOp === 'gt') cmpOp = isSigned ? BV_COMPARE_OP.SGT : BV_COMPARE_OP.UGT;

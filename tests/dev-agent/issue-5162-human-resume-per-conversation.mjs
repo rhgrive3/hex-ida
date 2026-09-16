@@ -1,5 +1,6 @@
 import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 import assert from 'node:assert/strict';
+import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 import { DevSupervisorEngineV0 } from '../../js/ai/dev/supervisor/dev-supervisor-engine-v0.js';
 import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
 import { DevAgentUiSettings } from '../../js/ai/dev/ui/settings.js';
@@ -121,7 +122,7 @@ async function testReconstructedEngineKeepsLastRunFallback() {
 
 function createHarness(decisions) {
   let sequence = 0;
-  const supervisor = new DevSupervisorV0({
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
     idFactory: (kind) => `${kind}-${++sequence}`,
     now: () => '2026-08-18T00:00:00.000Z',
   });

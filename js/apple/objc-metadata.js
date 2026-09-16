@@ -11,6 +11,61 @@ const PROTOCOL_FIXED_SIZE = 72;
 const PROTOCOL_CLASS_PROPERTIES_OFFSET = 88;
 const PROTOCOL_CLASS_PROPERTIES_END = 96;
 
+// #8691 — one aggregate resource ceiling per parseObjcExtendedMetadata() run.
+// The per-list count caps (MAX_METHODS/PROTOCOLS/CATEGORIES) bound each loop
+// independently, so attacker-controlled but structurally valid metadata can
+// amplify repeated selector/type bytes and sharded sub-cap lists into an
+// unbounded retained JS graph. These ceilings account total decoded string
+// bytes, retained records, and an estimated-output bound across the whole
+// parse; exhaustion is sticky and forces complete:false. They are deliberately
+// far above realistic extended-metadata (protocol/category) volumes and are
+// caller-tunable so they do not solve the problem by lowering MAX_METHODS.
+const DEFAULT_MAX_OBJC_EXTENDED_RECORDS = 20000;
+const DEFAULT_MAX_OBJC_EXTENDED_STRING_BYTES = 4 * 1024 * 1024;
+const DEFAULT_MAX_OBJC_EXTENDED_OUTPUT_BYTES = 64 * 1024 * 1024;
+const OBJC_RECORD_OUTPUT_ESTIMATE = 512;
+
+function objcBudgetInteger(value, fallback) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) return fallback;
+  return value;
+}
+
+function createExtendedObjcBudget(opts = {}) {
+  const maxRecords = objcBudgetInteger(opts.maxObjcExtendedRecords, DEFAULT_MAX_OBJC_EXTENDED_RECORDS);
+  const maxStringBytes = objcBudgetInteger(opts.maxObjcExtendedStringBytes, DEFAULT_MAX_OBJC_EXTENDED_STRING_BYTES);
+  const maxOutputBytes = objcBudgetInteger(opts.maxObjcExtendedOutputBytes, DEFAULT_MAX_OBJC_EXTENDED_OUTPUT_BYTES);
+  const budget = {
+    records: 0,
+    stringBytes: 0,
+    outputBytes: 0,
+    exhausted: false,
+    reason: null,
+    _stop(reason) {
+      if (!this.exhausted) {
+        this.exhausted = true;
+        this.reason = reason;
+      }
+    },
+    chargeRecords(amount = 1) {
+      this.records += amount;
+      this.outputBytes += amount * OBJC_RECORD_OUTPUT_ESTIMATE;
+      if (this.records > maxRecords) { this._stop('objc-extended-metadata-record-budget'); return false; }
+      if (this.outputBytes > maxOutputBytes) { this._stop('objc-extended-metadata-output-budget'); return false; }
+      return true;
+    },
+    chargeStringBytes(amount) {
+      this.stringBytes += amount;
+      this.outputBytes += amount;
+      if (this.stringBytes > maxStringBytes) { this._stop('objc-extended-metadata-output-budget'); return false; }
+      if (this.outputBytes > maxOutputBytes) { this._stop('objc-extended-metadata-output-budget'); return false; }
+      return true;
+    },
+  };
+  return { budget, strings: new Map(), names: new Map() };
+}
+
+function extendedObjcContext(get) { return get ? get.__objcExtended || null : null; }
+
 function u32(b, o = 0) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; }
 function i32(b, o = 0) { return u32(b, o) | 0; }
 function u64(b, o = 0) { let v = 0n; for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(b[o + i]); return v; }
@@ -75,8 +130,7 @@ async function decodedPointer(get, raw, storageAddress = null) {
 
 async function ptr(get, addr) { const b = await get(addr, pointerBytesOf(get)); return b ? decodedPointer(get, readWord(get, b, 0), addr) : null; }
 
-async function cstring(get, addr) {
-  if (addr == null) return null;
+async function decodeCString(get, addr) {
   for (let want = NAME_READ_INITIAL; want <= NAME_READ_MAX; want *= 2) {
     const b = await get(addr, Math.min(want, NAME_READ_MAX), true);
     if (!b || !b.length) return null;
@@ -94,12 +148,43 @@ async function cstring(get, addr) {
   return null;
 }
 
+// #8691 — canonical C-string decode memoized by resolved address for the
+// lifetime of one extended parse. Repeated selector/type pointers therefore
+// scan/decode once and share a single interned string, while still charging the
+// decoded bytes against the parse-wide budget on first use.
+async function cstring(get, addr) {
+  if (addr == null) return null;
+  const ctx = extendedObjcContext(get);
+  if (!ctx) return decodeCString(get, addr);
+  const key = typeof addr === 'bigint' ? addr.toString() : String(addr);
+  if (ctx.strings.has(key)) return ctx.strings.get(key);
+  const text = await decodeCString(get, addr);
+  if (typeof text === 'string') ctx.budget.chargeStringBytes(text.length);
+  ctx.strings.set(key, text);
+  return text;
+}
+
+function internObjcName(ctx, raw) {
+  if (!ctx) return raw;
+  let interned = ctx.names.get(raw);
+  if (interned === undefined) {
+    interned = raw;
+    ctx.names.set(raw, raw);
+    ctx.budget.chargeStringBytes(raw.length);
+  }
+  return interned;
+}
+
 function emptyListCompleteness(present = false) {
   return { present, declared: 0, scanned: 0, parsed: 0, capped: false, unreadableEntries: 0, invalidEntries: 0, complete: !present };
 }
 
 async function methodList(get, listAddr, owner, classMethod, source, opts = {}) {
   const items = [];
+  const ctx = extendedObjcContext(get);
+  if (ctx?.budget.exhausted) {
+    return { items, completeness: { present: listAddr != null, declared: 0, scanned: 0, parsed: 0, capped: false, unreadableEntries: 0, invalidEntries: 0, budgetExhausted: true, reason: ctx.budget.reason, complete: false } };
+  }
   if (listAddr == null) return { items, completeness: { ...emptyListCompleteness(false), complete: true } };
   if (opts?.signal?.aborted) return { items, completeness: { ...emptyListCompleteness(true), complete: false } };
   const h = await get(listAddr, 8);
@@ -115,12 +200,14 @@ async function methodList(get, listAddr, owner, classMethod, source, opts = {}) 
   if (stride < entryWidth) {
     return { items, completeness: { present: true, declared, scanned: 0, parsed: 0, capped: false, unreadableEntries: 0, invalidEntries: declared, complete: false } };
   }
-  let scanned = 0, unreadableEntries = 0, invalidEntries = 0;
+  let scanned = 0, unreadableEntries = 0, invalidEntries = 0, budgetExhausted = false;
   for (let i = 0; i < declared; i++) {
     if (opts?.signal?.aborted) break;
+    if (ctx?.budget.exhausted) { budgetExhausted = true; break; }
     if ((i & 63) === 0 && i > 0) {
       await new Promise((r) => setTimeout(r, 0));
       if (opts?.signal?.aborted) break;
+      if (ctx?.budget.exhausted) { budgetExhausted = true; break; }
     }
     const at = listAddr + 8n + BigInt(i * stride);
     const b = await get(at, entryWidth);
@@ -143,9 +230,15 @@ async function methodList(get, listAddr, owner, classMethod, source, opts = {}) 
     }
     const sel = await cstring(get, nameAddr);
     if (!sel) { invalidEntries++; continue; }
+    const types = await cstring(get, typeAddr);
+    // #8691 — reserve retained output before allocating the per-record object so a
+    // sub-cap list cannot amplify the parse-wide ceiling; the derived display name
+    // is interned so shared selector/owner combinations do not re-materialize.
+    if (ctx && !ctx.budget.chargeRecords(1)) { budgetExhausted = true; break; }
+    const displayName = internObjcName(ctx, owner ? `${classMethod ? '+' : '-'}[${owner} ${sel}]` : sel);
     const concrete=source!=='protocol'&&source!=='protocol-optional';let implementationProven=false,implementationValidationReason=null;
     if(concrete){if(imp!=null&&typeof get.validateImplementation==='function'){try{const proof=await get.validateImplementation(imp);implementationProven=proof===true||proof?.ok===true;if(!implementationProven)implementationValidationReason=proof?.reason||'method-imp-not-executable';}catch{implementationValidationReason='method-imp-validation-error';}}else if(imp!=null&&!get.requireImplementationProof)implementationProven=true;if(get.requireImplementationProof&&!implementationProven)invalidEntries++;}
-    items.push({ sel, selector: sel, types: await cstring(get, typeAddr), addr: imp, imp, className: owner || null, classMethod: !!classMethod, source, kind: classMethod ? '+' : '-', name: owner ? `${classMethod ? '+' : '-'}[${owner} ${sel}]` : sel, implementationProven, implementationValidationReason });
+    items.push({ sel, selector: sel, types, addr: imp, imp, className: owner || null, classMethod: !!classMethod, source, kind: classMethod ? '+' : '-', name: displayName, implementationProven, implementationValidationReason });
   }
   return {
     items,
@@ -157,7 +250,8 @@ async function methodList(get, listAddr, owner, classMethod, source, opts = {}) 
       capped: false,
       unreadableEntries,
       invalidEntries,
-      complete: !opts?.signal?.aborted && unreadableEntries === 0 && invalidEntries === 0 && scanned === declared && items.length === declared,
+      ...(budgetExhausted ? { budgetExhausted: true, reason: ctx.budget.reason } : {}),
+      complete: !opts?.signal?.aborted && !budgetExhausted && unreadableEntries === 0 && invalidEntries === 0 && scanned === declared && items.length === declared,
     },
   };
 }
@@ -171,6 +265,10 @@ async function protocolName(get, address) {
 }
 async function protocolRefs(get, listAddr, opts = {}) {
   const items = [];
+  const ctx = extendedObjcContext(get);
+  if (ctx?.budget.exhausted) {
+    return { items, completeness: { present: listAddr != null, declared: 0, scanned: 0, parsed: 0, capped: false, unreadableEntries: 0, invalidEntries: 0, budgetExhausted: true, reason: ctx.budget.reason, complete: false } };
+  }
   if (listAddr == null) return { items, completeness: { ...emptyListCompleteness(false), complete: true } };
   if (opts?.signal?.aborted) return { items, completeness: { ...emptyListCompleteness(true), complete: false } };
   const pointerBytes = pointerBytesOf(get);
@@ -181,12 +279,14 @@ async function protocolRefs(get, listAddr, opts = {}) {
     return { items, completeness: { present: true, declared: count64 <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(count64) : null, scanned: 0, parsed: 0, capped: true, unreadableEntries: 0, invalidEntries: 0, complete: false } };
   }
   const declared = Number(count64);
-  let scanned = 0, unreadableEntries = 0, invalidEntries = 0;
+  let scanned = 0, unreadableEntries = 0, invalidEntries = 0, budgetExhausted = false;
   for (let i = 0; i < declared; i++) {
     if (opts?.signal?.aborted) break;
+    if (ctx?.budget.exhausted) { budgetExhausted = true; break; }
     if ((i & 63) === 0 && i > 0) {
       await new Promise((r) => setTimeout(r, 0));
       if (opts?.signal?.aborted) break;
+      if (ctx?.budget.exhausted) { budgetExhausted = true; break; }
     }
     const slot = listAddr + BigInt(pointerBytes) + BigInt(i * pointerBytes);
     const raw = await get(slot, pointerBytes);
@@ -196,6 +296,7 @@ async function protocolRefs(get, listAddr, opts = {}) {
     if (address == null) { invalidEntries++; continue; }
     const name = await protocolName(get, address);
     if (!name) { invalidEntries++; continue; }
+    if (ctx && !ctx.budget.chargeRecords(1)) { budgetExhausted = true; break; }
     items.push({ name, address });
   }
   return {
@@ -208,7 +309,8 @@ async function protocolRefs(get, listAddr, opts = {}) {
       capped: false,
       unreadableEntries,
       invalidEntries,
-      complete: !opts?.signal?.aborted && unreadableEntries === 0 && invalidEntries === 0 && scanned === declared && items.length === declared,
+      ...(budgetExhausted ? { budgetExhausted: true, reason: ctx.budget.reason } : {}),
+      complete: !opts?.signal?.aborted && !budgetExhausted && unreadableEntries === 0 && invalidEntries === 0 && scanned === declared && items.length === declared,
     },
   };
 }
@@ -400,16 +502,19 @@ async function pointerTable(get, range, budget, parse, opts = {}) {
     return { items, completeness: { present: false, declared: 0, scanned: 0, parsed: 0, capped: false, unreadableSlots: 0, invalidEntries: 0, incompleteItems: 0, misalignedBytes: 0, sizeValid: true, complete: true } };
   }
   const pointerBytes = pointerBytesOf(get);
+  const ctx = extendedObjcContext(get);
   const sizeValid = true;
   const misalignedBytes = sizeValid ? size % pointerBytes : null;
   const declared = sizeValid ? Math.floor(size / pointerBytes) : 0;
   const count = Math.min(declared, budget);
-  let scanned = 0, unreadableSlots = 0, invalidEntries = 0, incompleteItems = 0;
+  let scanned = 0, unreadableSlots = 0, invalidEntries = 0, incompleteItems = 0, budgetExhausted = false;
   for (let i = 0; i < count; i++) {
     if (opts?.signal?.aborted) break;
+    if (ctx?.budget.exhausted) { budgetExhausted = true; break; }
     if ((i & 63) === 0 && i > 0) {
       await new Promise((r) => setTimeout(r, 0));
       if (opts?.signal?.aborted) break;
+      if (ctx?.budget.exhausted) { budgetExhausted = true; break; }
     }
     const slot = base + BigInt(i * pointerBytes);
     const raw = await get(slot, pointerBytes);
@@ -428,9 +533,10 @@ async function pointerTable(get, range, budget, parse, opts = {}) {
       invalidEntries++;
     }
   }
+  if (ctx?.budget.exhausted) budgetExhausted = true;
   const capped = declared > budget;
-  const complete = sizeValid && misalignedBytes === 0 && !capped && unreadableSlots === 0 && invalidEntries === 0 && incompleteItems === 0 && items.length === scanned && scanned === declared && !opts?.signal?.aborted;
-  return { items, completeness: { present: true, declared, scanned, parsed: items.length, capped, unreadableSlots, invalidEntries, incompleteItems, misalignedBytes, sizeValid, complete } };
+  const complete = !budgetExhausted && sizeValid && misalignedBytes === 0 && !capped && unreadableSlots === 0 && invalidEntries === 0 && incompleteItems === 0 && items.length === scanned && scanned === declared && !opts?.signal?.aborted;
+  return { items, completeness: { present: true, declared, scanned, parsed: items.length, capped, unreadableSlots, invalidEntries, incompleteItems, misalignedBytes, sizeValid, ...(budgetExhausted ? { budgetExhausted: true, reason: ctx.budget.reason } : {}), complete } };
 }
 
 export async function parseObjcExtendedMetadata(read, sections = {}, opts = {}) {
@@ -451,6 +557,11 @@ export async function parseObjcExtendedMetadata(read, sections = {}, opts = {}) 
       } };
   }
   const get = pagedReader(read, opts.pageBytes || 65536, opts.maxPages || 96, { signal: opts?.signal });
+  // #8691 — one shared aggregate budget + canonical C-string interning table for
+  // the whole parse, threaded via the reader so every nested list accounts the
+  // same ceiling and repeated selector/type addresses decode only once.
+  const extendedCtx = createExtendedObjcBudget(opts);
+  get.__objcExtended = extendedCtx;
   get.pointerBytes = pointerAbi.bytes;
   get.base = opts.imageBase == null ? null : pointerTableAddress(opts.imageBase);
   get.resolvePointer = opts.resolvePointer || opts.binaryImage?.resolvePointer || opts.binaryImage?.decodePointer || null;
@@ -476,10 +587,12 @@ export async function parseObjcExtendedMetadata(read, sections = {}, opts = {}) 
   );
   const protocolTable = await pointerTable(get, sections.protocolList, MAX_PROTOCOLS, (address) => parseProtocol(get, address, opts), opts);
   const categoryTable = await pointerTable(get, sections.categoryList, MAX_CATEGORIES, (address) => parseCategory(get, address, classByAddress, opts), opts);
+  const budgetExhausted = extendedCtx.budget.exhausted;
   const completeness = {
     protocols: protocolTable.completeness,
     categories: categoryTable.completeness,
-    complete: !opts?.signal?.aborted && protocolTable.completeness.complete && categoryTable.completeness.complete,
+    ...(budgetExhausted ? { budgetExhausted: true, budgetReason: extendedCtx.budget.reason } : {}),
+    complete: !budgetExhausted && !opts?.signal?.aborted && protocolTable.completeness.complete && categoryTable.completeness.complete,
   };
   return { runtime: 'objc', protocols: protocolTable.items, categories: categoryTable.items, pointerBytes: pointerAbi.bytes, completeness };
 }

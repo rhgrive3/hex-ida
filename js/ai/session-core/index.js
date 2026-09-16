@@ -1,4 +1,5 @@
 import { AI_MODES, AI_SCOPES, AI_STYLES } from '../schema.js';
+import { canonicalConversationId } from '../conversation-identity.js';
 import { sealPersistedConfirmedEnvelope } from './persisted-confirmed.js';
 
 let sessionSequence = 1;
@@ -47,7 +48,7 @@ export function createInvestigationSession(input = {}) {
     binaryId: requireBindingId(input.binaryId, 'binaryId'),
     binaryIdentity: input.binaryIdentity && typeof input.binaryIdentity === 'object' ? cloneOwned(input.binaryIdentity) : null,
     projectId: requireBindingId(input.projectId, 'projectId'),
-    conversationId: input.conversationId == null ? null : String(input.conversationId),
+    conversationId: canonicalConversationId(input.conversationId),
     mode: AI_MODES.includes(input.mode) ? input.mode : 'chat',
     style: AI_STYLES.includes(input.style) ? input.style : 'analyst',
     scope: AI_SCOPES.includes(input.scope) ? input.scope : 'auto',

@@ -1,101 +1,13 @@
 import { deepFreeze } from '../../core/identity/index.js';
-import { metadataRowSize, validateMetadataTableValidMask, codedIndexSize, cilMetadataToken } from './metadata-layout.js';
-import { readCilMetadataStreams } from './metadata-streams.js';
-import { readCilDefinitions } from './metadata-definitions.js';
+import { codedIndexSize, cilMetadataToken } from './metadata-layout.js';
+import { readCilMetadataContext } from './metadata-context.js';
 import { readCilMetadataBlob } from './call-signature-metadata.js';
-import { CLI_HEADER_SIZE, validateCliHeaderSize } from './cli-header.js';
+import { readInternedCilHeapString } from './metadata-string-cache.js';
 
-const CLI_DIRECTORY_INDEX = 14;
-
+const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 function fail(code) { throw new TypeError(code); }
-function range(bytes, off, size, code) {
-  if (!Number.isSafeInteger(off) || !Number.isSafeInteger(size) || off < 0 || size < 0 || off > bytes.length - size) fail(code);
-}
-function u16(view, off, code) {
-  if (off < 0 || off + 2 > view.byteLength) fail(code);
-  return view.getUint16(off, true);
-}
-function u32(view, off, code) {
-  if (off < 0 || off + 4 > view.byteLength) fail(code);
-  return view.getUint32(off, true);
-}
 
-function peLayout(bytes, view) {
-  if (bytes.length < 64 || bytes[0] !== 0x4d || bytes[1] !== 0x5a) return null;
-  const pe = u32(view, 0x3c, 'cil-truncated-pe-header');
-  if (pe + 24 > bytes.length || bytes[pe] !== 0x50 || bytes[pe + 1] !== 0x45 || bytes[pe + 2] !== 0 || bytes[pe + 3] !== 0) return null;
-  const count = u16(view, pe + 6, 'cil-truncated-pe-coff-header');
-  const optSize = u16(view, pe + 20, 'cil-truncated-pe-coff-header');
-  const opt = pe + 24;
-  if (optSize < 2 || opt + optSize > bytes.length) return null;
-  const end = opt + optSize, magic = u16(view, opt, 'cil-truncated-pe-optional-header');
-  let nOff, dOff;
-  if (magic === 0x10b) { nOff = opt + 92; dOff = opt + 96; }
-  else if (magic === 0x20b) { nOff = opt + 108; dOff = opt + 112; }
-  else return null;
-  if (nOff + 4 > end) return null;
-  const n = u32(view, nOff);
-  if (n <= CLI_DIRECTORY_INDEX || dOff + (CLI_DIRECTORY_INDEX + 1) * 8 > end) return { cliPresent: false };
-  const sections = [];
-  for (let i = 0; i < count; i += 1) {
-    const p = end + i * 40;
-    range(bytes, p, 40, 'cil-truncated-pe-section-table');
-    const rawSize = u32(view, p + 16), rawOffset = u32(view, p + 20);
-    if (rawSize) range(bytes, rawOffset, rawSize, 'cil-pe-section-out-of-bounds');
-    sections.push({ virtualSize: u32(view, p + 8), virtualAddress: u32(view, p + 12), rawSize, rawOffset });
-  }
-  const mapRva = (rva, size = 1, code = 'cil-rva-unmapped') => {
-    if (!Number.isSafeInteger(rva) || !Number.isSafeInteger(size) || rva < 0 || size < 0) fail(code);
-    for (const section of sections) {
-      const span = Math.max(section.virtualSize, section.rawSize);
-      if (rva < section.virtualAddress || rva >= section.virtualAddress + span) continue;
-      const delta = rva - section.virtualAddress;
-      if (delta > section.rawSize || size > section.rawSize - delta) fail(code);
-      const out = section.rawOffset + delta;
-      range(bytes, out, size, code);
-      return out;
-    }
-    fail(code);
-  };
-  const dir = dOff + CLI_DIRECTORY_INDEX * 8;
-  const rva = u32(view, dir, 'cil-truncated-cli-directory'), size = u32(view, dir + 4, 'cil-truncated-cli-directory');
-  if (!rva || size < CLI_HEADER_SIZE) return { cliPresent: false };
-  const cli = mapRva(rva, CLI_HEADER_SIZE, 'cil-cli-header-unmapped');
-  const cb = validateCliHeaderSize(u32(view, cli, 'cil-truncated-cli-header'), size);
-  mapRva(rva, cb, 'cil-cli-header-unmapped');
-  const metaRva = u32(view, cli + 8, 'cil-truncated-cli-header'), metaSize = u32(view, cli + 12, 'cil-truncated-cli-header');
-  if (!metaRva || metaSize < 20) fail('cil-cli-metadata-directory-invalid');
-  return { cliPresent: true, metadataOffset: mapRva(metaRva, metaSize, 'cil-cli-metadata-unmapped'), metadataSize: metaSize };
-}
-
-function tableLayout(bytes, view, stream) {
-  range(bytes, stream.offset, stream.size, 'cil-metadata-tables-out-of-bounds');
-  if (stream.size < 24) fail('cil-metadata-tables-truncated');
-  const start = stream.offset, end = start + stream.size, heapSizes = bytes[start + 6];
-  const valid = BigInt(u32(view, start + 8, 'cil-metadata-tables-truncated'))
-    | (BigInt(u32(view, start + 12, 'cil-metadata-tables-truncated')) << 32n);
-  validateMetadataTableValidMask(valid);
-  let pos = start + 24;
-  const rowCounts = new Array(64).fill(0), tableOffsets = new Array(64).fill(null), rowSizes = new Array(64).fill(0);
-  for (let table = 0; table < 64; table += 1) {
-    if ((valid & (1n << BigInt(table))) === 0n) continue;
-    if (pos + 4 > end) fail('cil-metadata-row-counts-truncated');
-    rowCounts[table] = u32(view, pos, 'cil-metadata-row-counts-truncated');
-    pos += 4;
-  }
-  for (let table = 0; table < 64; table += 1) {
-    const rows = rowCounts[table];
-    if (!rows) continue;
-    const size = metadataRowSize(table, rowCounts, heapSizes);
-    if (!Number.isSafeInteger(size) || size < 1 || rows > Math.floor((end - pos) / size)) fail('cil-metadata-table-data-truncated');
-    tableOffsets[table] = pos;
-    rowSizes[table] = size;
-    pos += rows * size;
-  }
-  return { rowCounts, tableOffsets, rowSizes, heapSizes, valid };
-}
-
-function readManifestSecurity(bytes, view, layout, stringsStream, blobStream, defs) {
+function readManifestSecurity(bytes, view, layout, stringsStream, blobStream, defs, admission = null) {
   const { rowCounts: counts, tableOffsets: offsets, rowSizes, heapSizes } = layout;
   const s = heapSizes & 1 ? 4 : 2;
   const b = heapSizes & 4 ? 4 : 2;
@@ -103,17 +15,19 @@ function readManifestSecurity(bytes, view, layout, stringsStream, blobStream, de
   const text = value => {
     if (value === 0) return null;
     if (!stringsStream || value >= stringsStream.size) fail('cil-definition-string-index-invalid');
-    const start = stringsStream.offset + value, end = stringsStream.offset + stringsStream.size;
-    let pos = start;
-    while (pos < end && bytes[pos] !== 0) pos += 1;
-    if (pos === end) fail('cil-definition-string-unterminated');
-    try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes.subarray(start, pos)); }
-    catch { fail('cil-invalid-strings-utf8'); }
+    return readInternedCilHeapString(bytes, stringsStream, admission, value, utf8);
   };
-  const readRows = (table, decode) => Array.from({ length: counts[table] || 0 }, (_, i) => {
-    const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
-    return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
-  });
+  const readRows = (table, decode) => {
+    // Manifest/security tables share the definitions admission budget (#8704):
+    // an unbounded File/ExportedType/DeclSecurity table must not materialize
+    // rows the canonical decode already refused to admit.
+    if (counts[table]) admission?.chargeObjects(counts[table]);
+    return Array.from({ length: counts[table] || 0 }, (_, i) => {
+      const rid = i + 1, pos = offsets[table] + i * rowSizes[table];
+      admission?.chargeOperations(1);
+      return { rid, token: cilMetadataToken(table, rid), ...decode(pos) };
+    });
+  };
   const blobHeap = blobStream?.size ? bytes.subarray(blobStream.offset, blobStream.offset + blobStream.size) : null;
 
   const validManifestFileName = name => {
@@ -169,6 +83,7 @@ function readManifestSecurity(bytes, view, layout, stringsStream, blobStream, de
     const seen = new Set([row.rid]);
     let implementation = row.implementation;
     while (implementation.table === 0x27) {
+      admission?.chargeOperations(1);
       if (seen.has(implementation.rid)) fail('cil-exported-type-implementation-cycle');
       seen.add(implementation.rid);
       const target = exportedTypes[implementation.rid - 1];
@@ -200,23 +115,16 @@ function readManifestSecurity(bytes, view, layout, stringsStream, blobStream, de
   return { files, exportedTypes, declSecurity };
 }
 
-export function overlayCilManifestSecurity(bytes, parsed) {
-  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
-  const pe = peLayout(u8, view);
-  if (!pe?.cliPresent) return parsed;
-  const meta = readCilMetadataStreams(u8, pe.metadataOffset, pe.metadataSize);
-  const tablesStream = meta.streams.find(s => s.name === '#~' || s.name === '#-');
-  const stringsStream = meta.streams.find(s => s.name === '#Strings');
-  const blobStream = meta.streams.find(s => s.name === '#Blob');
-  const guidStream = meta.streams.find(s => s.name === '#GUID');
-  if (!tablesStream) fail('cil-metadata-tables-missing');
-  const layout = tableLayout(u8, view, tablesStream);
-  const defs = readCilDefinitions(u8, view, layout, stringsStream, blobStream, guidStream);
-  const extra = readManifestSecurity(u8, view, layout, stringsStream, blobStream, defs);
+// `context` is the shared validated layout/definition graph (#8704). Omitting it
+// (undefined) builds exactly one such graph here; it never decodes a second copy
+// of definitions that the caller already validated.
+export function overlayCilManifestSecurity(bytes, parsed, context, options = {}) {
+  const ctx = context === undefined ? readCilMetadataContext(bytes, options) : context;
+  if (!ctx) return parsed;
+  const extra = readManifestSecurity(ctx.bytes, ctx.view, ctx.layout, ctx.stringsStream, ctx.blobStream, ctx.defs, ctx.admission);
   return deepFreeze({ ...parsed, files: extra.files, exportedTypes: extra.exportedTypes, declSecurity: extra.declSecurity });
 }
 
-export function readCilManifestSecurityDefinitions(bytes, view, layout, stringsStream, blobStream, defs) {
-  return readManifestSecurity(bytes, view, layout, stringsStream, blobStream, defs);
+export function readCilManifestSecurityDefinitions(bytes, view, layout, stringsStream, blobStream, defs, admission = null) {
+  return readManifestSecurity(bytes, view, layout, stringsStream, blobStream, defs, admission);
 }

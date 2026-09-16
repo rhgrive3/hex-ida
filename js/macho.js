@@ -73,6 +73,91 @@
   const N_EXT = 0x01;   // 外へ公開されている名前（エクスポート）の印
   const INDIRECT_SYMBOL_LOCAL = 0x80000000, INDIRECT_SYMBOL_ABS = 0x40000000;
 
+  /*
+   * Aggregate output ceilings for the legacy __unwind_info / indirect-symbol
+   * expansion helpers. These helpers build their full result *inside*
+   * js/macho.js, before worker-legacy.js / worker-fixes.js can apply their own
+   * SYMBOL_MAX / candidate-cap / Set-dedup bounds. A small, structurally-valid
+   * input (first-level index aliases of one page, a wide LSDA interval, or many
+   * pointer/stub sections reusing one indirect table) therefore multiplied into
+   * millions of BigInts/objects and OOM-killed the analysis worker
+   * (#8789, #8816, #8800). Charging this budget before each allocation keeps the
+   * peak heap bounded; on exhaustion the returned array carries an explicit
+   * `truncated` marker so a reduced result is never silently blessed as complete
+   * (same authority discipline as parseFunctionStarts' `complete`/`rejected`).
+   */
+  const UNWIND_STARTS_MAX = 200_000;   // #8789 decoded compact-unwind function starts
+  const UNWIND_LSDA_MAX   = 200_000;   // #8816 deduplicated LSDA (functionStart, lsda) pairs
+  const STUB_SYMBOLS_MAX  = 200_000;   // #8800 indirect stub/GOT symbol mappings
+  const OBJC_METHOD_STARTS_MAX = 200_000;  // #8811 validated ObjC method entries / unique starts
+
+  // Attach the truncation signal as a NON-enumerable property so the returned
+  // value stays a plain array for deep-equality callers/tests (#5371 asserts
+  // deepEqual(result, [...])) while `result.truncated` remains readable.
+  function attachTruncatedFlag(out) {
+    Object.defineProperty(out, 'truncated', { value: false, writable: true, enumerable: false, configurable: true });
+    Object.defineProperty(out, 'truncationReason', { value: null, writable: true, enumerable: false, configurable: true });
+    return out;
+  }
+
+  function markTruncated(out, reason) {
+    out.truncated = true;
+    if (!out.truncationReason) out.truncationReason = reason || 'budget';
+    return out;
+  }
+
+  function boundedExpansionBudget(value, fallback, maximum) {
+    if (value == null) return fallback;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) return 0;
+    return Math.min(value, maximum);
+  }
+
+  // #8745/#8776: bound decoded-name materialization, not only input bytes.
+  const STRING_DECODE_CHUNK = 8192;
+  const SYMBOL_NAMES_MAX_BYTES = 48 * 1024 * 1024;
+  const SYMBOL_NAME_ROW_OVERHEAD = 64;
+
+  function decodeLatin1(u8, start, end) {
+    if (end - start <= STRING_DECODE_CHUNK) {
+      return String.fromCharCode.apply(null, u8.subarray(start, end));
+    }
+    const parts = [];
+    for (let i = start; i < end; i += STRING_DECODE_CHUNK) {
+      parts.push(String.fromCharCode.apply(null, u8.subarray(i, Math.min(i + STRING_DECODE_CHUNK, end))));
+    }
+    return parts.join('');
+  }
+
+  function createStringDecodingBudget(maxBytes) {
+    return { retained: 0, limit: maxBytes, capped: false, reason: null };
+  }
+
+  function budgetedDecodeLatin1(u8, start, end, budget) {
+    const retained = end - start + SYMBOL_NAME_ROW_OVERHEAD;
+    if (budget.retained + retained > budget.limit) {
+      budget.capped = true;
+      if (!budget.reason) budget.reason = 'decoded-name-budget';
+      return null;
+    }
+    budget.retained += retained;
+    return decodeLatin1(u8, start, end);
+  }
+
+  const LC_NAME_MAX = 256 * 1024;
+  const LC_STRINGS_MAX = 1024 * 1024;
+
+  function lcName(u8, off, end, budget) {
+    let p = off;
+    while (p < end && u8[p] !== 0) p++;
+    if (p >= end) return null;
+    if (p - off > LC_NAME_MAX) {
+      budget.capped = true;
+      if (!budget.reason) budget.reason = 'lc-name-budget';
+      return null;
+    }
+    return budgetedDecodeLatin1(u8, off, p, budget);
+  }
+
   function cpuName(type, sub) {
     const s = sub & 0x00ffffff;
     switch (type) {
@@ -84,6 +169,14 @@
       case CPU_TYPE_PPC:      return { cpu: 'PowerPC', sub: 'all', arm64: false };
       default:                return { cpu: '0x' + (type >>> 0).toString(16), sub: String(s), arm64: false };
     }
+  }
+
+  /* Canonical architecture identity for duplicate fat slices (#8840). */
+  function canonicalFatArchKey(cputype, cpusubtype) {
+    const cpu = cputype >>> 0;
+    const sub = cpusubtype >>> 0;
+    const id = cpu === CPU_TYPE_ARM64 ? (sub === 2 ? 0x80000002 : sub) : (sub & 0x00ffffff);
+    return cpu + ':' + id;
   }
 
   function cstr(u8, off, max) {
@@ -100,14 +193,12 @@
   // the first NUL inside the table and fail closed when the entry is not
   // terminated, instead of laundering a fixed-length prefix as a complete name
   // (#3806).
-  function cstrNul(u8, off) {
+  function cstrNul(u8, off, budget) {
     if (off < 0 || off >= u8.length) return null;
     let end = off;
     while (end < u8.length && u8[end] !== 0) end++;
     if (end >= u8.length) return null;
-    let s = '';
-    for (let i = off; i < end; i++) s += String.fromCharCode(u8[i]);
-    return s;
+    return budget ? budgetedDecodeLatin1(u8, off, end, budget) : decodeLatin1(u8, off, end);
   }
 
   function ver32(v) {
@@ -138,21 +229,37 @@
     const magic = dv.getUint32(0, false);
     const is64 = magic === FAT_MAGIC_64;
     const n = dv.getUint32(4, false);
-    if (n === 0 || n > 32) return null;               // sanity: not a real fat binary
+    if (n === 0 || n > 32) return null;
     const entry = is64 ? 32 : 20;
     if (8 + n * entry > buf.byteLength) return null;
-    const out = [];
+    const staged = [];
     for (let i = 0; i < n; i++) {
       const o = 8 + i * entry;
       const cputype = dv.getInt32(o, false);
       const cpusubtype = dv.getInt32(o + 4, false);
       const offset = is64 ? dv.getBigUint64(o + 8, false) : BigInt(dv.getUint32(o + 8, false));
       const size = is64 ? dv.getBigUint64(o + 16, false) : BigInt(dv.getUint32(o + 12, false));
-      if (offset + size > fileSize) return null;      // not a fat binary after all
-      const cn = cpuName(cputype, cpusubtype);
-      out.push({ offset, size, cputype, cpusubtype, name: cn.cpu + (cn.sub && cn.sub !== 'all' ? ' (' + cn.sub + ')' : '') });
+      if (size <= 0n || offset + size > fileSize) return null;
+      staged.push({ cputype, cpusubtype, offset, size });
     }
-    return out;
+    const seen = new Set();
+    for (const e of staged) {
+      const key = canonicalFatArchKey(e.cputype, e.cpusubtype);
+      if (seen.has(key)) return null;
+      seen.add(key);
+    }
+    for (let i = 0; i < staged.length; i++) {
+      const a = staged[i];
+      for (let j = i + 1; j < staged.length; j++) {
+        const b = staged[j];
+        if (a.offset < b.offset + b.size && b.offset < a.offset + a.size) return null;
+      }
+    }
+    return staged.map((e) => {
+      const cn = cpuName(e.cputype, e.cpusubtype);
+      return { offset:e.offset, size:e.size, cputype:e.cputype, cpusubtype:e.cpusubtype,
+        name:cn.cpu + (cn.sub && cn.sub !== 'all' ? ' (' + cn.sub + ')' : '') };
+    });
   }
 
   /**
@@ -226,6 +333,23 @@
     return null;
   }
 
+  /**
+   * Slice-relative load-command ranges name bytes inside the *selected* embedded
+   * Mach-O image, not inside the outer container. Prove a declared
+   * `(offset, length)` fits within the slice with overflow-safe subtraction, so
+   * a wrapped `offset + length` cannot smuggle a range past the bound and read
+   * another slice's bytes as this slice's metadata authority (#8835).
+   */
+  function selectedSliceContainsRange(offset, length, sliceSize) {
+    let size;
+    try { size = BigInt(sliceSize); } catch { return false; }
+    const start = BigInt(offset);
+    const len = BigInt(length);
+    if (start < 0n || len < 0n || size < 0n) return false;
+    if (start > size) return false;
+    return len <= size - start;
+  }
+
   function parseSlice(buf, sliceOff, sliceSize) {
     const det = detect(buf);
     if (det.kind !== 'macho') throw new Error('Not a Mach-O image.');
@@ -260,6 +384,7 @@
     const end = hdrSize + sizeofcmds;
     let textVM = null, textFileOff = null;
     const threadEntries = [];
+    const lcStrings = createStringDecodingBudget(LC_STRINGS_MAX);
 
     for (let i = 0; i < ncmds; i++) {
       if (off + 8 > end) { info.diagnostics.push('truncated load-command header'); break; }
@@ -358,17 +483,58 @@
         case LC.LOAD_WEAK_DYLIB:
         case LC.REEXPORT_DYLIB: {
           info.dylibCount++; const nameOff=dv.getUint32(off+8,true);
-          if(nameOff>=24&&off+nameOff<commandEnd){const value=cstr(u8,off+nameOff,commandEnd-(off+nameOff));if(value)info.dylibs.push(value);} break;
+          if(nameOff>=24&&off+nameOff<commandEnd){
+            const value=lcName(u8,off+nameOff,commandEnd,lcStrings);
+            if(value==null) info.diagnostics.push(lcStrings.capped
+              ? 'dylib install name exceeds the decoded-name budget'
+              : 'unterminated dylib install name');
+            else if(value) info.dylibs.push(value);
+          }
+          break;
         }
-        case LC.SYMTAB: info.symtab={symoff:dv.getUint32(off+8,true),nsyms:dv.getUint32(off+12,true),stroff:dv.getUint32(off+16,true),strsize:dv.getUint32(off+20,true)}; break;
-        case LC.DYSYMTAB: info.dysymtab={indirectsymoff:dv.getUint32(off+56,true),nindirectsyms:dv.getUint32(off+60,true)}; break;
-        case LC.FUNCTION_STARTS: info.functionStarts={dataoff:dv.getUint32(off+8,true),datasize:dv.getUint32(off+12,true)}; break;
-        case LC.DATA_IN_CODE: info.dataInCode={dataoff:dv.getUint32(off+8,true),datasize:dv.getUint32(off+12,true)}; break;
+        case LC.SYMTAB: {
+          const symoff=dv.getUint32(off+8,true),nsyms=dv.getUint32(off+12,true);
+          const stroff=dv.getUint32(off+16,true),strsize=dv.getUint32(off+20,true);
+          // Symbol entries and the string bytes they name are both slice-relative.
+          const symValid=selectedSliceContainsRange(symoff,BigInt(nsyms)*BigInt(is64?16:12),sliceSize);
+          const strValid=selectedSliceContainsRange(stroff,strsize,sliceSize);
+          const valid=symValid&&strValid;
+          info.symtab={symoff,nsyms,stroff,strsize,valid};
+          if(!valid) info.diagnostics.push('LC_SYMTAB tables are outside the selected slice');
+          break;
+        }
+        case LC.DYSYMTAB: {
+          const indirectsymoff=dv.getUint32(off+56,true),nindirectsyms=dv.getUint32(off+60,true);
+          const valid=selectedSliceContainsRange(indirectsymoff,BigInt(nindirectsyms)*4n,sliceSize);
+          info.dysymtab={indirectsymoff,nindirectsyms,valid};
+          if(!valid) info.diagnostics.push('LC_DYSYMTAB indirect symbol table is outside the selected slice');
+          break;
+        }
+        case LC.FUNCTION_STARTS: {
+          const dataoff=dv.getUint32(off+8,true),datasize=dv.getUint32(off+12,true);
+          const valid=selectedSliceContainsRange(dataoff,datasize,sliceSize);
+          info.functionStarts={dataoff,datasize,valid};
+          if(!valid) info.diagnostics.push('LC_FUNCTION_STARTS is outside the selected slice');
+          break;
+        }
+        case LC.DATA_IN_CODE: {
+          const dataoff=dv.getUint32(off+8,true),datasize=dv.getUint32(off+12,true);
+          const valid=selectedSliceContainsRange(dataoff,datasize,sliceSize);
+          info.dataInCode={dataoff,datasize,valid};
+          if(!valid) info.diagnostics.push('LC_DATA_IN_CODE is outside the selected slice');
+          break;
+        }
         case LC.CODE_SIGNATURE: info.hasCodeSignature=true; break;
         case LC.ENCRYPTION_INFO_64:
         case LC.ENCRYPTION_INFO: {
           const cryptoff=dv.getUint32(off+8,true),cryptsize=dv.getUint32(off+12,true),cryptid=dv.getUint32(off+16,true);
-          info.encryption={cryptoff:BigInt(cryptoff),cryptsize:BigInt(cryptsize),cryptid}; info.encrypted=cryptid!==0; break;
+          const valid=selectedSliceContainsRange(cryptoff,cryptsize,sliceSize);
+          info.encryption={cryptoff:BigInt(cryptoff),cryptsize:BigInt(cryptsize),cryptid,valid};
+          // An out-of-slice crypt range must not mint encryption evidence, even
+          // when cryptid is nonzero: the bytes it names are not this slice's (#8835).
+          info.encrypted=cryptid!==0&&valid;
+          if(!valid) info.diagnostics.push('LC_ENCRYPTION_INFO crypt range is outside the selected slice');
+          break;
         }
         default: break;
       }
@@ -376,9 +542,16 @@
     }
 
     info.textVM=textVM; info.textFileOff=textFileOff;
+    info.loadCommandStringsCapped=lcStrings.capped;
+    info.loadCommandStringsReason=lcStrings.reason||null;
+    rejectAmbiguousSegmentOwnership(info);
     const align=instructionAlignment(architecture);
     const execSegments=info.segments.filter((seg)=>seg.validMapping && !!(seg.initprot&4) && seg.vmsize>0n);
-    const validPc=(pc)=>pc!=null && pc%align===0n && execSegments.some((seg)=>inRange(pc,seg.vmaddr,seg.vmsize));
+    // A PC must be inside the segment's *file-backed* VM span, not merely inside
+    // the segment's vmsize: the tail past `filesize` is loader zero-fill and has
+    // no instruction bytes to seed. #5551/#5555 enforced this on the canonical
+    // side (`image.addressToOffset(addr) != null`); the legacy path must agree.
+    const validPc=(pc)=>pc!=null && pc%align===0n && execSegments.some((seg)=>inRange(pc,seg.vmaddr,seg.filesize));
     if (info.entryOff != null) {
       const seg=execSegments.find((candidate)=>inRange(info.entryOff,candidate.fileoff,candidate.filesize));
       if (seg) {
@@ -398,13 +571,49 @@
     return info;
   }
 
+  function classicOwnershipAmbiguous(a, b) {
+    const aVmEnd = a.vmaddr + a.vmsize, bVmEnd = b.vmaddr + b.vmsize;
+    const overlapStart = a.vmaddr > b.vmaddr ? a.vmaddr : b.vmaddr;
+    const overlapEnd = aVmEnd < bVmEnd ? aVmEnd : bVmEnd;
+    if (overlapStart >= overlapEnd) return false;
+    const aFileEnd = a.vmaddr + a.filesize, bFileEnd = b.vmaddr + b.filesize;
+    const boundaries = [...new Set([overlapStart, overlapEnd, aFileEnd, bFileEnd]
+      .filter((point) => point > overlapStart && point < overlapEnd))]
+      .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+    const points = [overlapStart, ...boundaries, overlapEnd];
+    for (let i = 0; i + 1 < points.length; i++) {
+      const point = points[i];
+      const aBacked = point >= a.vmaddr && point < aFileEnd;
+      const bBacked = point >= b.vmaddr && point < bFileEnd;
+      if (!aBacked && !bBacked) continue;
+      if (aBacked !== bBacked) return true;
+      if (a.fileoff + (point - a.vmaddr) !== b.fileoff + (point - b.vmaddr)) return true;
+    }
+    return false;
+  }
+
+  function rejectAmbiguousSegmentOwnership(info) {
+    const owned = (info.segments || []).filter((segment) => segment.validMapping && segment.vmsize > 0n);
+    for (let i = 0; i < owned.length; i++) {
+      for (let j = i + 1; j < owned.length; j++) {
+        const a = owned[i], b = owned[j];
+        if (!classicOwnershipAmbiguous(a, b)) continue;
+        a.validMapping = false; b.validMapping = false;
+        a.mappingConflict = true; b.mappingConflict = true;
+        info.segmentOwnershipConflict = true;
+        info.diagnostics.push(`${b.name}: VM range overlaps segment ${a.name} with a conflicting file mapping (ambiguous ownership)`);
+      }
+    }
+  }
+
   function regionsFrom(info, sliceOff, sliceSize, fileSize) {
     const regions=[]; let id=0;
     const sliceEnd=sliceOff+sliceSize;
     if (sliceEnd<sliceOff || sliceEnd>fileSize) return regions;
     for(const seg of info.segments||[]){
-      if(!seg.validMapping) continue;
-      for(const sec of seg.sections||[]){
+      if(!seg.validMapping || seg.mappingConflict) continue;
+      const sections=seg.sections||[];
+      for(const sec of sections){
         if(!sec.validMapping) continue;
         const fileOffset=sliceOff+sec.offset;
         let avail=0n;
@@ -415,6 +624,20 @@
         }
         regions.push({id:'sec'+(id++),kind:'section',name:sec.segment+','+sec.name,segment:sec.segment,section:sec.name,
           fileOffset,vmAddr:sec.addr,size:avail,declaredSize:sec.size,exec:sec.exec,zerofill:sec.zerofill,cstrings:!!sec.cstrings,truncated:false});
+      }
+      // Some valid legacy Mach-O images intentionally have an executable
+      // segment with nsects=0. In that case section-derived authority is absent,
+      // but the segment's validated *file-backed* bytes are still executable
+      // mapping authority. Expose only filesize (never the zero-fill vmsize tail)
+      // as a segment fallback; if sections exist, keep the stricter section
+      // semantics so data sections inside __TEXT are not promoted to code.
+      if(sections.length===0 && !!(seg.initprot&4) && seg.filesize>0n){
+        const fileOffset=sliceOff+seg.fileoff;
+        const end=fileOffset+seg.filesize;
+        if(end>=fileOffset&&fileOffset>=sliceOff&&end<=sliceEnd&&end<=fileSize){
+          regions.push({id:'seg'+(id++),kind:'segment',name:seg.name,segment:seg.name,section:null,
+            fileOffset,vmAddr:seg.vmaddr,size:seg.filesize,declaredSize:seg.vmsize,exec:true,zerofill:false,cstrings:false,truncated:false});
+        }
       }
     }
     return regions;
@@ -433,7 +656,7 @@
    * @returns {{names: string[], values: BigUint64Array, types: Uint8Array, sects: Uint8Array}}
    *          添字はシンボル番号。間接シンボルの解決にそのまま使える。
    */
-  function parseSymbols(symBuf, strBuf, is64) {
+  function parseSymbols(symBuf, strBuf, is64, options = {}) {
     const entry = is64 ? 16 : 12;
     const n = Math.floor(symBuf.length / entry);
     const dv = new DataView(symBuf.buffer, symBuf.byteOffset, symBuf.byteLength);
@@ -441,16 +664,28 @@
     const values = new BigUint64Array(n);
     const types = new Uint8Array(n);
     const sects = new Uint8Array(n);
+    const budgetLimit = boundedExpansionBudget(
+      options.maxDecodedBytes, SYMBOL_NAMES_MAX_BYTES, SYMBOL_NAMES_MAX_BYTES);
+    const budget = createStringDecodingBudget(budgetLimit);
+    const decoded = new Map();
     for (let i = 0; i < n; i++) {
       const o = i * entry;
       const strx = dv.getUint32(o, true);
       types[i] = symBuf[o + 4];
       sects[i] = symBuf[o + 5];
       values[i] = is64 ? dv.getBigUint64(o + 8, true) : BigInt(dv.getUint32(o + 8, true));
-      const name = strx > 0 && strx < strBuf.length ? cstrNul(strBuf, strx) : null;
+      if (!(strx > 0 && strx < strBuf.length)) { names[i] = ''; continue; }
+      let name = decoded.get(strx);
+      if (name === undefined) {
+        name = cstrNul(strBuf, strx, budget);
+        decoded.set(strx, name);
+      }
       names[i] = name == null ? '' : name;
     }
-    return { names, values, types, sects };
+    const out = { names, values, types, sects };
+    Object.defineProperty(out, 'capped', { value: budget.capped, enumerable: false, writable: true, configurable: true });
+    Object.defineProperty(out, 'truncationReason', { value: budget.reason, enumerable: false, writable: true, configurable: true });
+    return out;
   }
 
   /** セクションに定義されている（＝アドレスを持つ）シンボルだけを取り出す。 */
@@ -464,7 +699,7 @@
       if (v === 0n) continue;
       const name = sym.names[i];
       if (!name) continue;
-      // N_EXT が立っていれば、外のライブラリからも呼べる名前（エクスポート）
+      // N_EXT が立っていれば、外のライブラリからも呼べる名前（エクスポート）の印
       out.push({ addr: v, name, ext: !!(t & N_EXT) });
     }
     out.sort((a, b) => (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0));
@@ -473,26 +708,124 @@
 
   /* ── LC_FUNCTION_STARTS ───────────────────────────────── */
 
+  const FUNCTION_STARTS_MAX = 200_000;
+
   /** ULEB128 の差分列を、絶対アドレスの配列にほどく。 */
   function parseFunctionStarts(buf, base, options = {}) {
-    const out=[]; let addr=base; let i=0; let malformed=false; let rejected=0;
+    const out=attachTruncatedFlag([]); let addr=base; let i=0; let malformed=false; let rejected=0;
+    let terminated=false; let partialReason=null;
     const regions=Array.isArray(options.regions)?options.regions:[];
     const alignment=instructionAlignment(options.architecture||'arm64');
-    const valid=(value)=>value%alignment===0n && (!regions.length || regions.some((r)=>r.exec&&r.size>0n&&value>=r.vmAddr&&value-r.vmAddr<r.size));
+    const resultLimit=boundedExpansionBudget(options.maxStarts, FUNCTION_STARTS_MAX, FUNCTION_STARTS_MAX);
+    const shouldCancel=typeof options.shouldCancel==='function'?options.shouldCancel:null;
+    // #8838: LC_DATA_IN_CODE declares ranges inside __text that are physically
+    // data. Preserve that exclusion while applying the #8805 retention cap.
+    const dataInCode=Array.isArray(options.dataInCode)?options.dataInCode:[];
+    const overlapsDataInCode=(value)=>{
+      const end=value+alignment;
+      return dataInCode.some((range)=>{
+        if(!Array.isArray(range)||range.length<2) return false;
+        const lo=BigInt(range[0]),hi=BigInt(range[1]);
+        return hi>lo && value<hi && end>lo;
+      });
+    };
+    const valid=(value)=>value%alignment===0n
+      && regions.length>0 && regions.some((r)=>r.exec&&r.size>0n&&value>=r.vmAddr&&value-r.vmAddr<r.size)
+      && !overlapsDataInCode(value);
     while(i<buf.length){
       let delta=0n,shift=0n,byte=0;
       do {
-        if(i>=buf.length){malformed=true;break;}
+        if(i>=buf.length){malformed=true;partialReason='truncated-leb';break;}
         byte=buf[i++]; delta|=BigInt(byte&0x7f)<<shift; shift+=7n;
-        if(shift>70n){malformed=true;break;}
+        if(shift>70n){malformed=true;partialReason='truncated-leb';break;}
       } while(byte&0x80);
-      if(malformed||delta===0n) break;
+      if(malformed) break;
+      if(delta===0n){terminated=true;break;}
       const next=addr+delta;
-      if(next<addr){malformed=true;break;}
+      if(next<addr){malformed=true;partialReason='address-overflow';break;}
       addr=next;
-      if(valid(addr)) out.push(addr); else rejected++;
+      if(!valid(addr)){rejected++;continue;}
+      if(out.length>=resultLimit){markTruncated(out,'result-limit');partialReason='result-limit';break;}
+      out.push(addr);
+      if(shouldCancel&&((out.length&63)===0)&&shouldCancel()){markTruncated(out,'cancelled');partialReason='cancelled';break;}
     }
-    out.rejected=rejected; out.complete=!malformed&&rejected===0; out.malformed=malformed;
+    // #8822: only a fully read stream with an explicit zero terminator can be exact.
+    // A result/cancel cap is already explicitly partial and must not be rewritten
+    // into the less precise missing-terminator failure.
+    if(!terminated&&!malformed&&!out.truncated){malformed=true;partialReason='missing-terminator';}
+    if(malformed&&!out.truncated){markTruncated(out,'malformed');}
+    out.rejected=rejected; out.complete=!malformed&&rejected===0&&!out.truncated; out.malformed=malformed;
+    out.partialReason=partialReason;
+    return out;
+  }
+
+  /* ── LC_DATA_IN_CODE (#8838) ──────────────────────────── */
+
+  /**
+   * `data_in_code_entry` (Mach-O): eight bytes per record —
+   *   uint32 offset (file offset within the slice), uint16 length, uint16 kind.
+   * The canonical parser (`js/binary/macho-core.js`) converts each entry's file
+   * offset to a VM address via `image.offsetToAddress()` and refuses any
+   * `LC_FUNCTION_STARTS` delta whose address falls inside a declared range.
+   * The legacy parser must not promote declared data bytes to exact function
+   * starts. This helper accepts the raw `data_in_code_entry[]` payload and the
+   * already-parsed `info` (which carries the executable segments and their
+   * fileoff/filesize mapping), returning a list of `[lo, hi]` VM ranges plus
+   * an explicit `truncated`/`partialReason` when the payload cannot be fully
+   * trusted so the caller can decline to bless function starts as complete.
+   *
+   * @param {Uint8Array} buf  raw data_in_code_entry[] payload
+   * @param {object} info     result of `parseSlice()`
+   * @returns {Array<[BigInt,BigInt,Number]> & { truncated:boolean, partialReason:string|null }}
+   */
+  function parseDataInCode(buf, info) {
+    const out = [];
+    out.truncated = false;
+    out.partialReason = null;
+    if (!buf || buf.length === 0) return out;
+    if (buf.length % 8 !== 0) {
+      out.truncated = true;
+      out.partialReason = 'size-not-multiple-of-entry';
+    }
+    const count = Math.floor(buf.length / 8);
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    const segments = Array.isArray(info && info.segments) ? info.segments : [];
+    for (let i = 0; i < count; i++) {
+      const pos = i * 8;
+      const offset = BigInt(dv.getUint32(pos, true));
+      const length = BigInt(dv.getUint16(pos + 4, true));
+      const kind = dv.getUint16(pos + 6, true);
+      const fileHi = offset + length;
+      let address = null;
+      for (const seg of segments) {
+        if (!seg.validMapping || !(seg.filesize > 0n)) continue;
+        const segFileHi = seg.fileoff + seg.filesize;
+        if (segFileHi < seg.fileoff) continue;
+        // The *entire* DICE source span must belong to one proven file mapping.
+        // Accepting only the first byte lets an entry at the end of one segment
+        // extend into an unmapped gap or a different segment while still being
+        // treated as a complete exclusion range.
+        if (offset >= seg.fileoff && offset < segFileHi && fileHi >= offset && fileHi <= segFileHi) {
+          address = seg.vmaddr + (offset - seg.fileoff);
+          break;
+        }
+      }
+      if (address === null) {
+        // Entry spans outside any one file-mapped segment. The canonical parser
+        // marks the whole table partial; the legacy worker must do the same so
+        // it cannot silently bless the remaining entries as an exact exclusion set.
+        out.truncated = true;
+        if (!out.partialReason) out.partialReason = 'entry-out-of-range';
+        continue;
+      }
+      const hi = address + length;
+      if (hi < address) {
+        out.truncated = true;
+        if (!out.partialReason) out.partialReason = 'address-overflow';
+        continue;
+      }
+      out.push([address, hi, kind]);
+    }
     return out;
   }
 
@@ -510,45 +843,81 @@
    * @param {Uint8Array} buf  __unwind_info の中身
    * @param {BigInt} imageBase  マッハヘッダのアドレス（関数の位置はここからの差）
    */
-  function parseUnwindStarts(buf, imageBase) {
-    const out = [];
+  function parseUnwindStarts(buf, imageBase, options = {}) {
+    const out = attachTruncatedFlag([]);
     if (!buf || buf.length < 28) return out;
     const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     if (dv.getUint32(0, true) !== 1) return out;               // 知らない版は読まない
     const indexOff = dv.getUint32(20, true);
     const indexCount = dv.getUint32(24, true);
     if (!indexCount || indexOff + indexCount * 12 > buf.length) return out;
+    const resultLimit = boundedExpansionBudget(options.maxResults, UNWIND_STARTS_MAX, UNWIND_STARTS_MAX);
+    const workLimit = boundedExpansionBudget(options.maxWork, UNWIND_STARTS_MAX, UNWIND_STARTS_MAX);
+    const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;
+    let work = 0;
+    const chargeWork = () => {
+      if (work >= workLimit) { markTruncated(out, 'work-limit'); return false; }
+      work++;
+      if (shouldCancel && ((work & 63) === 1) && shouldCancel()) { markTruncated(out, 'cancelled'); return false; }
+      return true;
+    };
+    if (resultLimit === 0) return markTruncated(out, 'result-limit');
+    if (workLimit === 0) return markTruncated(out, 'work-limit');
 
-    for (let i = 0; i < indexCount; i++) {
-      const e = indexOff + i * 12;
-      const funcOffset = dv.getUint32(e, true);
-      const pageOff = dv.getUint32(e + 4, true);
-      if (!pageOff || pageOff + 8 > buf.length) continue;      // 最後の番人の行
-      const kind = dv.getUint32(pageOff, true);
-      /* Second-level entries live inside their own 4 KiB page (lld emits
-       * exactly 4096-byte pages). Only bounding against buf.length let a
-       * malformed entryPageOffset/entryCount walk into the next page, the
-       * LSDA index, or any other __unwind_info payload and reinterpret those
-       * bytes as compact-unwind entries (#5371). */
+    /*
+     * A first-level index row may alias a second-level page, and many rows may
+     * share one page, so decoding independently per row multiplied a single
+     * 4 KiB page into 1.5M BigInts and OOMed the worker (#8789). Decode each
+     * physical page once (keyed by its offset) and apply the row's own
+     * funcOffset base when emitting compressed entries. The #5371 per-page
+     * 4 KiB bound stays intact; the shared UNWIND_STARTS_MAX caps aggregate
+     * expansion across distinct pages, and function starts are deduplicated as
+     * they are emitted so aliases do not grow the result.
+     */
+    const pageCache = new Map();
+    const decodePage = (pageOff) => {
+      const cached = pageCache.get(pageOff);
+      if (cached) return cached;
+      const rec = { kind: dv.getUint32(pageOff, true), rel: [] };
+      pageCache.set(pageOff, rec);
       const pageEnd = Math.min(buf.length, pageOff + 0x1000);
-      if (kind === 2) {                                        // そのまま並んでいる形
+      if (rec.kind === 2) {                                    // そのまま並んでいる形
         const entryOff = dv.getUint16(pageOff + 4, true);
         const count = dv.getUint16(pageOff + 6, true);
         for (let k = 0; k < count; k++) {
           const p = pageOff + entryOff + k * 8;
           if (p + 8 > pageEnd) break;
-          out.push(imageBase + BigInt(dv.getUint32(p, true)));
+          rec.rel.push(BigInt(dv.getUint32(p, true)));         // 画像相対、行 base 不要
         }
-      } else if (kind === 3) {                                 // 圧縮された形
+      } else if (rec.kind === 3) {                             // 圧縮された形
         const entryOff = dv.getUint16(pageOff + 4, true);
         const count = dv.getUint16(pageOff + 6, true);
         for (let k = 0; k < count; k++) {
           const p = pageOff + entryOff + k * 4;
           if (p + 4 > pageEnd) break;
-          const v = dv.getUint32(p, true);
-          out.push(imageBase + BigInt(funcOffset + (v & 0x00ffffff)));
+          rec.rel.push(BigInt(dv.getUint32(p, true) & 0x00ffffff)); // 行 funcOffset を後で加算
         }
       }
+      return rec;
+    };
+
+    const seen = new Set();
+    for (let i = 0; i < indexCount; i++) {
+      const e = indexOff + i * 12;
+      const funcOffset = dv.getUint32(e, true);
+      const pageOff = dv.getUint32(e + 4, true);
+      if (!pageOff || pageOff + 8 > buf.length) continue;      // 最後の番人の行
+      const rec = decodePage(pageOff);
+      const base = rec.kind === 3 ? BigInt(funcOffset) : 0n;
+      for (const rel of rec.rel) {
+        if (out.length >= resultLimit) { markTruncated(out, 'result-limit'); break; }
+        if (!chargeWork()) break;
+        const value = imageBase + base + rel;
+        if (seen.has(value)) continue;                         // 関数先頭は一意
+        seen.add(value);
+        out.push(value);
+      }
+      if (out.truncated) break;
     }
     out.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     return out;
@@ -562,8 +931,8 @@
    * Each pair associates an exact function start with one `__gcc_except_tab`
    * record. Values are image-relative 32-bit offsets by Mach-O ABI.
    */
-  function parseUnwindLsdaEntries(buf, imageBase) {
-    const out = [];
+  function parseUnwindLsdaEntries(buf, imageBase, options = {}) {
+    const out = attachTruncatedFlag([]);
     if (!buf || buf.length < 28 || imageBase == null) return out;
     const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     if (dv.getUint32(0, true) !== 1) return out;
@@ -571,7 +940,27 @@
     const indexCount = dv.getUint32(24, true);
     if (indexCount < 2 || indexOff + indexCount * 12 > buf.length) return out;
     const base = BigInt(imageBase);
-    const seen = new Set();
+    const resultLimit = boundedExpansionBudget(options.maxResults, UNWIND_LSDA_MAX, UNWIND_LSDA_MAX);
+    const workLimit = boundedExpansionBudget(options.maxWork, UNWIND_LSDA_MAX, UNWIND_LSDA_MAX);
+    const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;
+    let work = 0;
+    const chargeWork = () => {
+      if (work >= workLimit) { markTruncated(out, 'work-limit'); return false; }
+      work++;
+      if (shouldCancel && ((work & 63) === 1) && shouldCancel()) { markTruncated(out, 'cancelled'); return false; }
+      return true;
+    };
+    if (resultLimit === 0) return markTruncated(out, 'result-limit');
+    if (workLimit === 0) return markTruncated(out, 'work-limit');
+    /*
+     * Eagerly materializing one `fnOff + ':' + tableOff` string key per pair on
+     * top of a BigInt-object output let a ~5.2 MiB __unwind_info retain enough
+     * JS state to OOM a 128 MiB heap (#8816). Drop the string Set entirely:
+     * charge the shared UNWIND_LSDA_MAX budget before each output object, then
+     * sort the bounded set and collapse exact adjacent duplicates. (fnOff,
+     * tableOff) map injectively onto (functionStart, lsda) for a fixed base, so
+     * adjacent-after-sort dedup is equivalent to the old global key Set.
+     */
     for (let i = 0; i + 1 < indexCount; i++) {
       const p = indexOff + i * 12;
       const q = p + 12;
@@ -579,17 +968,25 @@
       const nextLsdaOff = dv.getUint32(q + 8, true);
       if (!lsdaOff || !nextLsdaOff || nextLsdaOff < lsdaOff || nextLsdaOff > buf.length) continue;
       for (let x = lsdaOff; x + 8 <= nextLsdaOff; x += 8) {
+        if (out.length >= resultLimit) { markTruncated(out, 'result-limit'); break; }
+        if (!chargeWork()) break;
         const fnOff = dv.getUint32(x, true);
         const tableOff = dv.getUint32(x + 4, true);
         if (!tableOff) continue;
-        const key = fnOff + ':' + tableOff;
-        if (seen.has(key)) continue;
-        seen.add(key);
         out.push({ functionStart: base + BigInt(fnOff), lsda: base + BigInt(tableOff) });
       }
+      if (out.truncated) break;
     }
     out.sort((a, b) => (a.lsda < b.lsda ? -1 : a.lsda > b.lsda ? 1 : a.functionStart < b.functionStart ? -1 : 1));
-    return out;
+    const uniq = attachTruncatedFlag([]);
+    uniq.truncated = out.truncated;
+    uniq.truncationReason = out.truncationReason;
+    let prev = null;
+    for (const e of out) {
+      if (prev && prev.lsda === e.lsda && prev.functionStart === e.functionStart) continue;
+      uniq.push(e); prev = e;
+    }
+    return uniq;
   }
 
   /**
@@ -731,6 +1128,14 @@
     return { value, raw, next };
   }
 
+  function fdeInExecutableMapping(start, end, options) {
+    const align = options && options.align;
+    if (align && align > 1n && (start % align) !== 0n) return false;
+    const ranges = options && options.execRanges;
+    if (!Array.isArray(ranges)) return true;
+    return ranges.some((range) => range.start <= start && end <= range.end);
+  }
+
   /**
    * Parse DWARF `.eh_frame` and return exact FDE [start,end) ranges.
    *
@@ -828,7 +1233,10 @@
           const rangeX = ehEncodedValue(dv, u8, startX.next, recordEnd, rangeEncoding, vm, options);
           if (!rangeX || rangeX.raw <= 0n) { p = recordEnd; continue; }
           const start = startX.value, end = start + rangeX.raw;
-          if (start >= 0n && end > start) out.push({ start, end });
+          if (start >= 0n && end > start) {
+            if (!fdeInExecutableMapping(start, end, options)) { p = recordEnd; continue; }
+            out.push({ start, end });
+          }
         } catch { /* malformed FDE: fail closed */ }
       }
       p = recordEnd;
@@ -850,6 +1258,48 @@
     return low;
   }
 
+  /*
+   * Immutable per-authority-category interval indexes for
+   * parseObjcMethodStarts() (#8798). Method validation checked selector/type/
+   * IMP membership with a linear `some()` over every section for every field,
+   * making exact Objective-C metadata recovery O(methods x regions) (a
+   * structurally valid 16k-method / 48k-region shape stalled ~8.5s). Sorting
+   * and merging each category into disjoint [lo,hi) intervals preserves the
+   * exact union membership semantics (overlapping or touching regions merge;
+   * membership never depends on enumeration order) while allowing binary
+   * search. Built once per regions array and reused through a WeakMap so many
+   * __objc_methlist sections inside one slice share one immutable index.
+   */
+  const OBJC_REGION_INDEX_CACHE = new WeakMap();
+
+  function objcRegionIndex(regions) {
+    if (!Array.isArray(regions)) regions = [];
+    const cached = OBJC_REGION_INDEX_CACHE.get(regions);
+    if (cached) return cached;
+    const build = (pred) => {
+      const spans = [];
+      for (const r of regions) {
+        if (r && r.size > 0n && pred(r)) spans.push([BigInt(r.vmAddr), BigInt(r.vmAddr) + BigInt(r.size)]);
+      }
+      spans.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
+      const merged = [];
+      for (const span of spans) {
+        const last = merged[merged.length - 1];
+        if (last && span[0] <= last[1]) { if (span[1] > last[1]) last[1] = span[1]; continue; }
+        merged.push(span);
+      }
+      return merged;
+    };
+    const index = {
+      exec: build((r) => !!r.exec),
+      selrefs: build((r) => r.section === '__objc_selrefs'),
+      selectorText: build((r) => r.section === '__objc_methname' || r.section === '__cstring'),
+      typeText: build((r) => r.section === '__objc_methtype' || r.section === '__cstring'),
+    };
+    if (regions.length) OBJC_REGION_INDEX_CACHE.set(regions, index);
+    return index;
+  }
+
   /**
    * Parse `__TEXT,__objc_methlist` and return implementation addresses.
    *
@@ -859,62 +1309,97 @@
    * every IMP lands in executable code.  This makes the result authoritative
    * metadata evidence rather than a heuristic code pointer.
    */
-  function parseObjcMethodStarts(buf, sectionVM, options = {}) {
-    const out = new Set();
-    if (!buf || buf.length < 20 || sectionVM == null) return [];
+   function parseObjcMethodStarts(buf, sectionVM, options = {}) {
+     const out = new Set();
+     if (!buf || buf.length < 20 || sectionVM == null) return attachTruncatedFlag([]);
+     const resultLimit = boundedExpansionBudget(options.maxResults, OBJC_METHOD_STARTS_MAX, OBJC_METHOD_STARTS_MAX);
+     const workLimit = boundedExpansionBudget(options.maxWork, OBJC_METHOD_STARTS_MAX, OBJC_METHOD_STARTS_MAX);
+     const shouldCancel = typeof options.shouldCancel === 'function' ? options.shouldCancel : null;
+     const finish = (truncationReason) => {
+       const list = Array.from(out).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+       const arr = attachTruncatedFlag(list);
+       if (truncationReason) markTruncated(arr, truncationReason);
+       return arr;
+     };
+     let work = 0;
     const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     const regions = Array.isArray(options.regions) ? options.regions : [];
+    const index = objcRegionIndex(options.regionIndex || regions);
     const imageBase = options.imageBase == null ? null : BigInt(options.imageBase);
     const align = instructionAlignment(options.architecture || 'arm64');
-    const ranges = (pred) => regions.filter((r) => r && r.size > 0n && pred(r))
-      .map((r) => [BigInt(r.vmAddr), BigInt(r.vmAddr) + BigInt(r.size)]);
-    const exec = ranges((r) => !!r.exec);
-    const selrefs = ranges((r) => r.section === '__objc_selrefs');
-    const selectorText = ranges((r) => r.section === '__objc_methname' || r.section === '__cstring');
-    const typeText = ranges((r) => r.section === '__objc_methtype' || r.section === '__cstring');
-    const inside = (addr, rs) => addr != null && rs.some(([lo, hi]) => addr >= lo && addr < hi);
-    const i32 = (p) => BigInt(dv.getInt32(p, true));
-    const u64 = (p) => dv.getBigUint64(p, true);
-    const vm = BigInt(sectionVM);
-
-    for (let p = 0; p + 8 <= buf.length; p += 4) {
-      const raw = dv.getUint32(p, true);
-      const count = dv.getUint32(p + 4, true);
-      if (!count || count > 20000) continue;
-      const relative = !!(raw & 0x80000000);
-      const directSelector = !!(raw & 0x40000000);
-      const stride = raw & 0xfffc;
-      if (relative ? (stride < 12 || stride > 256) : (stride < 24 || stride > 256)) continue;
-      const bytes = 8 + count * stride;
-      if (!Number.isSafeInteger(bytes) || p + bytes > buf.length) continue;
-
-      const imps = [];
-      let valid = true;
-      for (let i = 0; i < count; i++) {
-        const q = p + 8 + i * stride;
-        const entry = vm + BigInt(q);
-        let nameAddr, typeAddr, imp;
-        if (relative) {
-          nameAddr = entry + i32(q);
-          typeAddr = entry + 4n + i32(q + 4);
-          imp = entry + 8n + i32(q + 8);
-          const nameRanges = directSelector ? selectorText : selrefs;
-          if (!inside(nameAddr, nameRanges)) { valid = false; break; }
-        } else {
-          nameAddr = objcMethodPointer(u64(q), imageBase);
-          typeAddr = objcMethodPointer(u64(q + 8), imageBase);
-          imp = objcMethodPointer(u64(q + 16), imageBase);
-          if (!inside(nameAddr, selectorText)) { valid = false; break; }
-        }
-        if (!inside(typeAddr, typeText) || !inside(imp, exec) || (imp % align) !== 0n) {
-          valid = false; break;
-        }
-        imps.push(imp);
+    const inside = (addr, rs) => {
+      /* #8798: the authority sets are sorted disjoint interval lists, so an
+       * address membership check is a binary search instead of a linear
+       * `some()` over every section. Validation is O(methods x log regions)
+       * rather than O(methods x regions). */
+      if (addr == null || rs.length === 0) return false;
+      let lo = 0, hi = rs.length - 1, found = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (rs[mid][0] <= addr) { found = mid; lo = mid + 1; } else hi = mid - 1;
       }
-      if (valid) for (const imp of imps) out.add(imp);
-    }
-    return Array.from(out).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  }
+      return found >= 0 && addr < rs[found][1];
+    };
+     const i32 = (p) => BigInt(dv.getInt32(p, true));
+     const u64 = (p) => dv.getBigUint64(p, true);
+     const vm = BigInt(sectionVM);
+
+     for (let p = 0; p + 8 <= buf.length; p += 4) {
+       if (shouldCancel && shouldCancel()) return finish('cancelled');
+       if (++work > workLimit) return finish('work-limit');
+       const raw = dv.getUint32(p, true);
+       const count = dv.getUint32(p + 4, true);
+       if (!count || count > 20000) continue;
+       const relative = !!(raw & 0x80000000);
+       const directSelector = !!(raw & 0x40000000);
+       const stride = raw & 0xfffc;
+       if (relative ? (stride < 12 || stride > 256) : (stride < 24 || stride > 256)) continue;
+       const bytes = 8 + count * stride;
+       if (!Number.isSafeInteger(bytes) || p + bytes > buf.length) continue;
+
+       const imps = [];
+       let valid = true;
+       for (let i = 0; i < count; i++) {
+         work++;
+         if (work > workLimit || (shouldCancel && shouldCancel())) {
+           return finish(work > workLimit ? 'work-limit' : 'cancelled');
+         }
+         const q = p + 8 + i * stride;
+         const entry = vm + BigInt(q);
+         let nameAddr, typeAddr, imp;
+         if (relative) {
+           nameAddr = entry + i32(q);
+           typeAddr = entry + 4n + i32(q + 4);
+           imp = entry + 8n + i32(q + 8);
+           const nameRanges = directSelector ? index.selectorText : index.selrefs;
+           if (!inside(nameAddr, nameRanges)) { valid = false; break; }
+         } else {
+           nameAddr = objcMethodPointer(u64(q), imageBase);
+           typeAddr = objcMethodPointer(u64(q + 8), imageBase);
+           imp = objcMethodPointer(u64(q + 16), imageBase);
+           if (!inside(nameAddr, index.selectorText)) { valid = false; break; }
+         }
+         if (!inside(typeAddr, index.typeText) || !inside(imp, index.exec) || (imp % align) !== 0n) {
+           valid = false; break;
+         }
+         imps.push(imp);
+       }
+       if (valid) {
+         for (const imp of imps) {
+           if (out.size >= resultLimit) return finish('result-limit');
+           out.add(imp);
+         }
+         /* Dedicated method lists are packed consecutively/aligned. Skip past the
+          * body we just validated so entry payload cannot be reinterpreted as
+          * fresh overlapping list headers — the same invariant
+          * worker-legacy.js::objcMethodImplementationStarts() enforces (#8811).
+          * Without the skip a periodic byte pattern forged thousands of extra
+          * exact IMPs and made the walk quadratic in the accepted payload. */
+         p += bytes - 4;
+       }
+     }
+     return finish(null);
+   }
 
   /* ── 間接シンボル（__stubs / __got の名前） ───────────── */
 
@@ -923,17 +1408,28 @@
    * これがあると「_printf を呼んでいる」と読めるようになる。
    */
   function stubSymbols(info, indirectBuf, sym) {
-    const out = [];
+    const out = attachTruncatedFlag([]);
     if (!indirectBuf || !indirectBuf.length || !sym) return out;
     const dv = new DataView(indirectBuf.buffer, indirectBuf.byteOffset, indirectBuf.byteLength);
     const total = Math.floor(indirectBuf.length / 4);
     const pointerSize = info.pointerBits === 32 ? 4 : 8;
+    /*
+     * Several stub/pointer sections may reuse the same reserved1 indirect-symbol
+     * window (or describe overlapping ranges), and each section expanded that
+     * window independently with only a per-section bound, so a small indirect
+     * table multiplied by section count into millions of objects before
+     * analyzeSlice() could sort/dedup them (#8800). Validate each section's
+     * indirect interval against the loaded table and charge one shared
+     * STUB_SYMBOLS_MAX budget across all sections before materializing a
+     * mapping, marking the result truncated rather than over-allocating.
+     */
     for (const seg of info.segments) {
       for (const sec of seg.sections) {
         if (!sec.stubs && !sec.pointers) continue;
         const entSize = sec.stubs ? (sec.reserved2 || 12) : pointerSize;
         if (entSize <= 0) continue;
-        const count = Number(sec.size / BigInt(entSize));
+        if (sec.reserved1 >= total) continue;                  // window starts outside the table
+        const count = Math.min(Number(sec.size / BigInt(entSize)), total - sec.reserved1);
         for (let i = 0; i < count; i++) {
           const idx = sec.reserved1 + i;
           if (idx >= total) break;
@@ -941,6 +1437,7 @@
           if (symIdx & (INDIRECT_SYMBOL_LOCAL | INDIRECT_SYMBOL_ABS)) continue;
           const name = sym.names[symIdx];
           if (!name) continue;
+          if (out.length >= STUB_SYMBOLS_MAX) { out.truncated = true; return out; }
           out.push({ addr: sec.addr + BigInt(i * entSize), name, stub: !!sec.stubs });
         }
       }
@@ -950,7 +1447,7 @@
 
   root.MachO = {
     detect, parseFat, parseSlice, regionsFrom, cpuName,
-    parseSymbols, definedSymbols, parseFunctionStarts, parseUnwindStarts, parseUnwindLsdaEntries, parseLsdaLandingPads, parseEhFrameRanges, parseObjcMethodStarts, stubSymbols,
+    parseSymbols, definedSymbols, parseFunctionStarts, parseDataInCode, parseUnwindStarts, parseUnwindLsdaEntries, parseLsdaLandingPads, parseEhFrameRanges, parseObjcMethodStarts, stubSymbols,
     CPU_TYPE_ARM64, CPU_TYPE_ARM64_32,
   };
 })(typeof self !== 'undefined' ? self : globalThis);

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { assertModuleDependencyBoundary, __moduleDependencyBoundaryForTests } from './helpers/module-dependency-boundary.mjs';
 import './round4-bootstrap-gate.mjs';
-import { AdminAuthProvider, AllowAllAdminProvider, readAdminIdentity } from '../../js/ai/dev/auth/admin-provider.js';
+import { AdminAuthProvider, AllowAllAdminProvider, DenyAllAdminProvider, readAdminIdentity } from '../../js/ai/dev/auth/admin-provider.js';
 import { availableAgentProfiles, canSelectAgentProfile } from '../../js/ai/dev/policy/agent-profile.js';
 import { DEV_DECISION_POLICIES, assertDevDecisionPolicy, devDecisionPolicyContract } from '../../js/ai/dev/policy/decision-policy.js';
 import { createAnalysisScopeRequest, createDevAnalysisScopeRequest, toLegacyAnalysisScope } from '../../js/ai/dev/run/analysis-scope.js';
@@ -103,7 +103,7 @@ await check('dev-run-plan-text-contract', () => {
 
 await check('dev-run-state', () => {
   let n = 0;
-  const supervisor = new DevSupervisorV0({
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
     idFactory: (kind) => `${kind}-${++n}`,
     now: () => `2026-08-17T00:00:0${n % 9}.000Z`,
     availableTools: ['repo.read'],
@@ -134,7 +134,7 @@ await check('dev-profile-engine-isolation', async () => {
     capabilities() { return { providers: [] }; },
   };
   let id = 0;
-  const supervisor = new DevSupervisorV0({ idFactory: (kind) => `${kind}-${++id}`, now: () => `2026-08-17T00:00:0${id}.000Z` });
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(), idFactory: (kind) => `${kind}-${++id}`, now: () => `2026-08-17T00:00:0${id}.000Z` });
   const engine = createAgentProfileEngine({ standardEngine, settings, supervisor });
   assert.equal((await engine.run({ mode: 'chat', question: 'q' })).answer, 'standard:q');
   assert.equal((await engine.run({ mode: 'agent', question: 'q' })).answer, 'standard:q');
@@ -194,6 +194,48 @@ await check('dev-context-packet-dependency-boundary', () => {
       `dynamic import after ${JSON.stringify(separator)} must remain visible`,
     );
   }
+});
+
+await check('#8854 production dev-admin defaults fail closed (no synthetic admin authority)', async () => {
+  // (1) A no-provider DevAgentUiSettings yields an unauthenticated, Standard-only principal.
+  const anon = new DevAgentUiSettings({ storage: null });
+  assert.equal(anon.identity.admin, false);
+  assert.equal(anon.identity.authenticated, false);
+  assert.deepEqual([...anon.profiles()], ['standard']);
+  assert.throws(() => anon.setAgentProfile('dev'), /Admin privileges/);
+  // (2) A valid authenticated admin identity can select Dev normally.
+  const admin = new DevAgentUiSettings({ authProvider: new AllowAllAdminProvider(), storage: null });
+  assert.equal(admin.identity.admin, true);
+  assert.ok([...admin.profiles()].includes('dev'));
+  assert.equal(admin.setAgentProfile('dev'), true);
+  // (3) Persisted dev/yolo reloaded after privilege loss is downgraded to Standard + normal.
+  const mem = new Map();
+  const storage = { getItem: (k) => mem.get(k) || null, setItem: (k, v) => mem.set(k, v) };
+  const setup = new DevAgentUiSettings({ authProvider: new AllowAllAdminProvider(), storage });
+  setup.setAgentProfile('dev'); setup.setDecisionPolicy('yolo');
+  const afterLoss = new DevAgentUiSettings({ authProvider: new DenyAllAdminProvider(), storage });
+  assert.equal(afterLoss.agentProfile, 'standard');
+  assert.equal(afterLoss.decisionPolicy, 'normal');
+  // (4) Supervisor Admin dispatch fails closed WITHOUT an authenticated admin identity and does
+  // NOT run the client method; an authenticated admin session executes normally.
+  const ADMIN_TOOL = 'worker.pool.followup';
+  let calls = 0;
+  const adminTools = { toolNames: [ADMIN_TOOL], has: (t) => t === ADMIN_TOOL, execute: async () => { calls += 1; return { ok: true }; } };
+  const build = (auth) => new DevSupervisorV0({
+    adminTools, workerTools: { toolNames: [], has: () => false }, availableTools: [ADMIN_TOOL],
+    idFactory: (k) => `${k}-8854`, now: () => '2026-01-01T00:00:00.000Z',
+    ...(auth ? { adminAuthProvider: new AllowAllAdminProvider() } : {}),
+  });
+  const denied = build(false);
+  await assert.rejects(
+    () => denied.executeToolDecision(denied.activate(denied.createRun({ goal: 'g', runId: 'r' })), { type: 'tool', tool: ADMIN_TOOL, arguments: { leaseId: 'l', text: 't', runId: 'r' }, purpose: 'p' }),
+    (error) => error.code === 'dev-admin-not-authorized',
+  );
+  assert.equal(calls, 0, 'non-admin dispatch must not reach the client method');
+  const allowed = build(true);
+  const ok = await allowed.executeToolDecision(allowed.activate(allowed.createRun({ goal: 'g', runId: 'r2' })), { type: 'tool', tool: ADMIN_TOOL, arguments: { leaseId: 'l', text: 't', runId: 'r2' }, purpose: 'p' });
+  assert.equal(ok.result.ok, true);
+  assert.equal(calls, 1, 'an authenticated admin session can execute the Admin tool');
 });
 
 console.log(failures ? `\n${failures} dev-agent test(s) failed` : '\ndev-agent round1 foundation: PASS');

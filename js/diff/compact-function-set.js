@@ -46,7 +46,9 @@ function symbolColumns(addresses, names) {
 }
 
 function snapshotColumn(column) {
-  return ArrayBuffer.isView(column) ? column.slice() : Object.freeze(column);
+  if (ArrayBuffer.isView(column) && typeof column.length === 'number') return column.slice();
+  if (Array.isArray(column)) return Object.freeze(column.slice());
+  return Object.freeze([]);
 }
 
 export function createCompactFunctionSet(symbols, architecture, limit = 350000) {

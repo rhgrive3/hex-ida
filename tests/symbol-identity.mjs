@@ -200,5 +200,6 @@ console.log('symbol identity regression: PASS');
   }), /map key projection collision/);
   assert.throws(() => createSymbolicEvidence({
     ...base, origins:new Map([[1,['origin-number']],['1',['origin-string']]]),
+    witnessModel:new Map([['x',1n]]),
   }), /map key projection collision/);
 }

@@ -6,6 +6,9 @@ import { completenessOf, projectBounded } from "./projections/index.js";
 export const COST_WEIGHT = Object.freeze({ cheap: 1, medium: 4, expensive: 12 });
 export const TOOL_TIMEOUT_MS = Object.freeze({ cheap: 20_000, medium: 45_000, expensive: 60_000 });
 export const ADDRESS_KEYS = new Set(["address", "functionAddress", "from", "to", "start", "end", "target"]);
+// Only a tool that declares the verification contract category may hand
+// producer-controlled rows to EvidenceStore's deterministic verification path.
+const VERIFIER_AUTHORITY_CATEGORY = "verification";
 const TOOL_FUNCTION_ADDRESS_ARRAY_KEYS = new Map([
   ["find_constant", new Set(["functions"])],
   ["explain_evidence", new Set(["functions"])],
@@ -93,6 +96,8 @@ export class ToolRegistry {
     const tool = this.get(name);
     if (!tool) throw new AIError("invalid_tool_call", `Unknown tool: ${name}`);
     if (options.signal?.aborted) throw abortError(options.signal);
+    const assertFresh = typeof options.assertFresh === 'function' ? options.assertFresh : null;
+    assertFresh?.();
     const started = Date.now();
     const scope = options.scope || "auto";
     const scopeBoundary = scopeBoundaryFor(scope, args, options, this.context);
@@ -104,6 +109,7 @@ export class ToolRegistry {
       assertSchema(args, tool.inputSchema, "invalid_tool_call");
       this.assertScope(tool, args, scope);
       await this.assertAddresses(tool.name, args, scope, execution.signal);
+      assertFresh?.();
       if (tool.mutability !== "read-only" || tool.needsApproval) throw new AIError("approval_required", `${name} cannot execute from the model tool loop.`);
       this.activity({ type: "tool-start", tool: name, label: `${name} を実行中` });
       let record = null;
@@ -115,6 +121,7 @@ export class ToolRegistry {
       }
       if (!record) {
         raw = await raceAbort(tool.execute(args, { ...options, scopeBoundary, signal: execution.signal, context: this.context }), execution.signal);
+        assertFresh?.();
         if (tool.outputSchema) assertSchema(raw, tool.outputSchema, "tool_failed");
         const lifecycle = raw?.solverResult?.lifecycle || raw?.lifecycle || {};
         const publishable = lifecycle.publishable !== false && lifecycle.late !== true;
@@ -129,8 +136,12 @@ export class ToolRegistry {
             effectiveScope: scope,
             scopeBoundary,
           });
+          // Project/verify from the admitted owned snapshot, never from the
+          // caller's live object again (#8826).
+          if (record && record.snapshotOwned !== false) raw = record.fullResult;
         }
       }
+      assertFresh?.();
       const result = jsonSafe(raw);
       // Array results can carry non-enumerable completeness metadata (for
       // example KnowledgeDB's bounded search marker). Preserve it across the
@@ -145,8 +156,13 @@ export class ToolRegistry {
       let evidence = record?.evidence || null;
       const resultLifecycle = raw?.solverResult?.lifecycle || raw?.lifecycle || {};
       const resultPublishable = resultLifecycle.publishable !== false && resultLifecycle.late !== true;
-      if (resultPublishable && !evidence) {
-        evidence = this.evidenceStore ? this.evidenceStore.ingest(name, result, { verifier: tool.verifier === true, sourceRef, effectiveScope: scope, scopeBoundary }) : [];
+      if (resultPublishable && !evidence && (!record || record.snapshotOwned !== false)) {
+        // Deterministic verification authority is reserved for tools whose
+        // declared contract actually runs a verifier. A read/observation tool
+        // must not reach EvidenceStore's privileged ingestion path merely
+        // because a producer labelled its own rows (#8681).
+        const verifierAuthority = tool.verifier === true && tool.category === VERIFIER_AUTHORITY_CATEGORY;
+        evidence = this.evidenceStore ? this.evidenceStore.ingest(name, result, { verifier: verifierAuthority, sourceRef, effectiveScope: scope, scopeBoundary }) : [];
         if (record) record.evidence = evidence;
       }
       const evidenceList = Array.isArray(evidence) ? evidence : [];

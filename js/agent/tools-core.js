@@ -527,7 +527,15 @@ export function createAgentTools(context, opts) {
     async verify_field_update(functionAddress, field, options) {
       const normalized = normalizeLocationSpec(field);
       const { addr, ir } = await modelAndIr(functionAddress);
-      const facts = ir ? semanticFacts(ir).filter((f) => f.kind === FACT.RMW && matchesLocation(f, normalized)) : [];
+      // #8886: when the caller binds a directional predicate (expectedFactKind),
+      // the same location must actually carry that INCREMENT/DECREMENT fact. A
+      // generic read-modify-write at the field no longer proves "increase" or
+      // "decrease". Without an expected kind the legacy "is this field updated"
+      // contract (generic RMW) is preserved for existing consumers (#3950/#8485).
+      const expectedFactKind = options && (options.expectedFactKind || options.kind) || null;
+      const directional = expectedFactKind === FACT.INCREMENT || expectedFactKind === FACT.DECREMENT;
+      const requiredKind = directional ? expectedFactKind : FACT.RMW;
+      const facts = ir ? semanticFacts(ir).filter((f) => f.kind === requiredKind && matchesLocation(f, normalized)) : [];
       const paths = [];
       const limit = bounded(options && options.limit, 8, 1, 32);
       const pathLimit = bounded(options && options.pathLimit, 8, 2, 32);
@@ -536,7 +544,7 @@ export function createAgentTools(context, opts) {
         paths.push(minimalCausalPath(ir, seed, { function: addr, limit: pathLimit }));
       }
       const page = facts.slice(0, limit);
-      return { tool: 'verify_field_update', address: addr, verified: facts.length > 0, updates: page.map(compactFact), causalPaths: paths, total:facts.length, returned:page.length, complete:page.length >= facts.length, truncated:page.length < facts.length, reason:page.length < facts.length ? 'result-limit' : null, evidence: semanticEvidenceIds(page), engine: 'semantic-ir' };
+      return { tool: 'verify_field_update', address: addr, verified: facts.length > 0, ...(directional ? { expectedFactKind } : {}), updates: page.map(compactFact), causalPaths: paths, total:facts.length, returned:page.length, complete:page.length >= facts.length, truncated:page.length < facts.length, reason:page.length < facts.length ? 'result-limit' : null, evidence: semanticEvidenceIds(page), engine: 'semantic-ir' };
     },
     async explain_evidence(evidenceIds, options) {
       if (typeof ctx.explainEvidence === 'function') return ctx.explainEvidence(evidenceIds, options);

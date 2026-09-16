@@ -1,5 +1,6 @@
 import { AllowAllAdminProvider } from '../../../js/ai/dev/auth/admin-provider.js';
 import assert from 'node:assert/strict';
+import { AllowAllAdminProvider } from '../../../js/ai/dev/auth/admin-provider.js';
 
 import {
   parseDevSupervisorDecision,
@@ -61,7 +62,7 @@ const workerClient = {
     throw new Error('invalid wait reached worker transport');
   },
 };
-const supervisor = new DevSupervisorV0({
+const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
   workerClient,
   idFactory: (kind) => `issue-4599-${kind}`,
   now: () => '2026-09-13T00:00:00.000Z',

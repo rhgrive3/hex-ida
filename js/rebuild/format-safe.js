@@ -1,4 +1,4 @@
-import { stableDigest } from '../core/identity/index.js';
+import { stableDigest, stableDigestBytes } from '../core/identity/index.js';
 import { createRebuildTransaction } from './transaction-v2.js';
 
 /**
@@ -57,7 +57,7 @@ function bytesOf(value, code = 'format-safe-bytes-required') {
 }
 
 function digestBytes(value) {
-  return `bytes:${stableDigest(Array.from(bytesOf(value)))}`;
+  return `bytes:${stableDigestBytes(bytesOf(value))}`;
 }
 
 function sameBytes(left, right) {
@@ -113,8 +113,7 @@ function text(bytes) {
 function bytesDigestMasked(bytes, offset, length) {
   const masked = bytesOf(bytes);
   ensureRange(masked, offset, length);
-  masked.fill(0, offset, offset + length);
-  return stableDigest(Array.from(masked));
+  return stableDigestBytes(masked, 0, masked.length, offset, offset + length);
 }
 
 function elfSections(bytes, header) {

@@ -13,7 +13,9 @@ export {
   MEMORY_SSA_DEFINITION_KINDS,
   MEMORY_SSA_DEFAULT_BUDGET,
   MemorySsaBudgetError,
+  canonicalSnapshotId,
   createMemoryRegionRef,
+  snapshotIdIdentity,
   createMemorySsaContract,
 } from './contract.js';
 export {

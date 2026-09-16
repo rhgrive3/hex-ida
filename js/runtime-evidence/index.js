@@ -4,6 +4,15 @@ import { stableDigest, deepFreeze } from '../core/identity/index.js';
 import { snapshotContractData, recordFields, exactString, exactInteger, stringSet, contractFail } from '../core/identity/structured.js';
 
 function nowIso() { return new Date().toISOString(); }
+// Take a type-preserving deep copy so a published evidence record owns its
+// own content instead of aliasing the producer/backend object it was hashed
+// from (#8662). Primitives pass straight through; cloneable data (plain
+// objects/arrays, Map/Set, Date, BigInt, typed arrays) is deep-copied so later
+// caller mutation cannot desynchronize the stored payload from its fixed ID.
+function ownEvidenceValue(value) {
+  if (value === null || typeof value !== 'object') return value;
+  try { return structuredClone(value); } catch { return value; }
+}
 let RUN_OCCURRENCE_SEQUENCE = 0;
 function safeConfidence(value, fallback = 0.5) { return typeof value === 'number' && Number.isFinite(value) ? Math.max(0,Math.min(1,value)) : fallback; }
 function idPart(value) {
@@ -113,16 +122,28 @@ export function createRuntimeEvidenceRecord(input = {}) {
   const explicitGroup = rawProvenanceGroup == null ? null : provenanceIdentity(rawProvenanceGroup, null, 'provenanceGroup');
   const traceGroup = explicitGroup || `runtime:${idPart(sessionId || 'session')}:${idPart(experimentId || input.function || 'observation')}:${idPart(caseId || 'case')}`;
   const resolvedTimestamp = input.timestamp || nowIso();
-  const hasObservationPayload = input.input != null || input.initialState != null
-    || input.observedState != null || (Array.isArray(input.branchPath) && input.branchPath.length > 0);
+  // The record is content-addressed by the digest below, so it must OWN an
+  // immutable snapshot of exactly the content that is hashed. Returning the
+  // caller/backend-owned references lets a later mutation silently rewrite
+  // published evidence while its generated ID stays fixed, corrupting fusion
+  // and canonicalization that trust the stored payload (#8662). Take a
+  // type-preserving deep copy once and use that same owned copy for both the
+  // digest and the returned fields.
+  const ownedInput = ownEvidenceValue(input.input ?? null);
+  const ownedInitialState = ownEvidenceValue(input.initialState ?? null);
+  const ownedObservedState = ownEvidenceValue(input.observedState ?? null);
+  const ownedBranchPath = (Array.isArray(input.branchPath) ? input.branchPath : [])
+    .slice(0, 4096).map(ownEvidenceValue);
+  const hasObservationPayload = ownedInput != null || ownedInitialState != null
+    || ownedObservedState != null || ownedBranchPath.length > 0;
   const isBare4327Shape = !hasObservationPayload
     && (input.verdict ?? 'inconclusive') === 'inconclusive'
     && input.timestamp == null;
   const observationContent = {
-    input: input.input ?? null,
-    initialState: input.initialState ?? null,
-    observedState: input.observedState ?? null,
-    branchPath: Array.isArray(input.branchPath) ? input.branchPath : [],
+    input: ownedInput,
+    initialState: ownedInitialState,
+    observedState: ownedObservedState,
+    branchPath: ownedBranchPath,
     verdict: input.verdict ?? 'inconclusive',
     runTimestamp: isBare4327Shape ? null : resolvedTimestamp,
     ...(scopedObservation ? { scopedObservation } : {}),
@@ -135,23 +156,23 @@ export function createRuntimeEvidenceRecord(input = {}) {
     occurrence = `:${stableDigest(observationContent)}#${identity}`;
   }
   const generatedId = `${traceGroup}:${idPart(input.kind || 'observation')}${occurrence}`;
-  return {
+  return deepFreeze({
     id:runtimeEvidenceId(input.id, generatedId),
-    source:'runtime', backend:String(input.backend || 'unknown').slice(0,128), binaryHash:input.binaryHash || null, sliceIdentity:input.sliceIdentity || null,
+    source:'runtime', backend:String(input.backend || 'unknown').slice(0,128), binaryHash:ownEvidenceValue(input.binaryHash ?? null), sliceIdentity:ownEvidenceValue(input.sliceIdentity ?? null),
     function:input.function == null ? null : input.function, address:input.address == null ? null : input.address,
-    input:input.input ?? null, initialState:input.initialState ?? null, observedState:input.observedState ?? null,
-    branchPath:Array.isArray(input.branchPath) ? input.branchPath.slice(0,4096) : [], timestamp:resolvedTimestamp, sessionId,
-    reproducibility:input.reproducibility || { replayable:false, runs:1, consistent:null },
+    input:ownedInput, initialState:ownedInitialState, observedState:ownedObservedState,
+    branchPath:ownedBranchPath, timestamp:resolvedTimestamp, sessionId,
+    reproducibility:ownEvidenceValue(input.reproducibility) || { replayable:false, runs:1, consistent:null },
     confidence:safeConfidence(input.confidence), verdict:input.verdict || 'inconclusive', kind:input.kind || 'observation',
     provenance:{ group:GROUP.RUNTIME, observationGroup:traceGroup, independent:false, parent:input.parentEvidenceId || null },
     ...(scopedObservation ? { scopedObservation, verdict: 'inconclusive', confidence: 0.35 } : {}),
-  };
+  });
 }
 
-export function evidenceFromExperiment({ experiment, testCase, observation, comparison, backend = 'unknown', binaryHash = null, sliceIdentity = null, sessionId = null, replayable = false }) {
+export function evidenceFromExperiment({ experiment, testCase, observation, comparison, launchCanonicalInput = null, backend = 'unknown', binaryHash = null, sliceIdentity = null, sessionId = null, replayable = false }) {
   const group = `runtime:${provenancePart(sessionId, 'session', 'sessionId')}:${provenancePart(experiment.id, null, 'experimentId')}:${provenancePart(testCase.id, null, 'caseId')}`;
   return createRuntimeEvidenceRecord({
-    backend, binaryHash:binaryHash || experiment.binaryHash, sliceIdentity, function:experiment.functionAddress, input:testCase.input,
+    backend, binaryHash:binaryHash || experiment.binaryHash, sliceIdentity, function:experiment.functionAddress, input:launchCanonicalInput || testCase.input,
     initialState:testCase.initialState, observedState:{ returnValue:observation.returnValue, registerDelta:observation.registerDelta, memoryDelta:observation.memoryDelta, memoryAfter:observation.memoryAfter, stop:observation.stop },
     branchPath:observation.branches || [], sessionId, experimentId:experiment.id, caseId:testCase.id, verdict:comparison.status,
     confidence:comparison.status === 'supported' ? 0.8 : comparison.status === 'contradicted' ? 0.9 : 0.35,
