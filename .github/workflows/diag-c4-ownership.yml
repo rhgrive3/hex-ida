@@ -1,0 +1,59 @@
+name: Diagnostic C4 ownership
+
+on:
+  push:
+    branches:
+      - 'diag/c4-ownership-20260916'
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Capture exact ownership first divergence
+        shell: bash
+        env:
+          ORIGINAL_HEAD: c28e07ba1424bac27fab318878da06cedf97e293
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          BASE_SHA="$(git rev-parse refs/remotes/origin/main)"
+          OUT=diag-c4-ownership.txt
+          : > "$OUT"
+          for phase in phase7 phase8; do
+            printf '%s\n' "[$phase]" >> "$OUT"
+            set +e
+            FILES_JSON="$(node tools/validation/analysis-roadmap/ownership.mjs --branch feat/analysis-roadmap-v8-current-main-20260907 --phase "$phase" --base-sha "$BASE_SHA" --head-sha "$ORIGINAL_HEAD" 2>&1)"
+            RC=$?
+            set -e
+            if [ "$RC" -ne 0 ]; then
+              printf 'projection rc=%s\n%s\n' "$RC" "$FILES_JSON" >> "$OUT"
+              continue
+            fi
+            printf 'projection ok\n' >> "$OUT"
+            set +e
+            if [ "$phase" = phase7 ]; then
+              VALIDATION="$(node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON" 2>&1)"
+            else
+              VALIDATION="$(node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON" 2>&1)"
+            fi
+            RC=$?
+            set -e
+            printf 'validation rc=%s\n%s\n' "$RC" "$VALIDATION" >> "$OUT"
+          done
+          head -c 12000 "$OUT" > "$OUT.trim"
+          mv "$OUT.trim" "$OUT"
+      - name: Commit diagnostic evidence
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add diag-c4-ownership.txt
+          git commit -m 'ci(diag): capture C4 ownership first divergence'
+          git push origin HEAD:diag/c4-ownership-20260916
