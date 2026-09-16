@@ -492,12 +492,42 @@ export function semanticControlUnknowns(blocks, architecturePlugin, options = {}
   const instructions = blocks.flatMap((block) => (block.instructions || []).map((entry) => entry?.decoded).filter(Boolean));
   const callPrototypeAuthority = callPrototypeAuthorityFor(instructions, architecturePlugin, options);
   const blockStarts = new Set(blocks.map((block) => BigInt(block.startAddress).toString()));
+  let spanStart = null;
+  let spanEnd = null;
+  for (const instruction of instructions) {
+    const start = addressOf(instruction);
+    const end = endOf(instruction);
+    if (spanStart === null || start < spanStart) spanStart = start;
+    if (spanEnd === null || end > spanEnd) spanEnd = end;
+  }
   const unknowns = [];
   for (const block of blocks) {
     const instruction = block.instructions?.at(-1)?.decoded;
     if (!instruction) continue;
     const kind = controlKind(architecturePlugin, instruction);
     const callPrototype = kind === 'call' ? callPrototypeAuthority.prototypeForInstruction(instruction) : null;
+    // #9005: a known direct target that is provably inside this function's local
+    // decoded span but absent from the decoded block set is an internal coverage
+    // hole. The partitioner only mints a successor when the target already exists,
+    // so without this check the empty placeholder is laundered into a `complete`
+    // artifact. Fail closed for BOTH unconditional and conditional direct branches,
+    // independently of physical-fallthrough completeness, while a target outside the
+    // local span stays a legitimate external/tail destination.
+    if (kind === 'branch' || kind === 'conditional-branch') {
+      const target = directTarget(architecturePlugin, instruction);
+      if (target != null && !blockStarts.has(target.toString())
+          && spanStart != null && target >= spanStart && target < spanEnd) {
+        unknowns.push({
+          reason: 'semantic-cfg-missing-direct-target',
+          categories: ['control'],
+          detail: {
+            blockKey: block.key,
+            instructionAddress: addressOf(instruction).toString(),
+            missingTarget: target.toString(),
+          },
+        });
+      }
+    }
     if (kind === 'branch' || kind === 'return' || kind === 'unknown'
         || (kind === 'call' && prototypeNoreturnState(callPrototype) === true)) continue;
     const expectedAddress = endOf(instruction);

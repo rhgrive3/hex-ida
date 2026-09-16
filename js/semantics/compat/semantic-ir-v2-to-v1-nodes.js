@@ -281,7 +281,13 @@ export function addWithCarryOperands(node, context) {
   const metadata = operationMetadata(node);
   const subtract = metadata.subtract === true;
   const carry = constForValue(node.inputs[2], context);
-  if (carry != null && carry !== 0n && carry !== 1n) return null;
+  // The v1 compatibility projection only has a sound constant-carry form.
+  // A dynamic incoming NZCV.C value would require carrying the flag-state
+  // dependency through the legacy instruction, which this projection cannot
+  // represent without silently turning an opaque flag input into arithmetic.
+  // Keep such ADC/SBC-family intrinsics conservative until a flag-aware v1
+  // representation exists.
+  if (carry == null || (carry !== 0n && carry !== 1n)) return null;
   const plainArithmetic = carry === (subtract ? 1n : 0n);
   let rhsId = node.inputs[1];
   if (subtract) {
