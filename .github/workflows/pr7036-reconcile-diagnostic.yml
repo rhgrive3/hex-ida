@@ -1,4 +1,4 @@
-name: PR7036 reconcile diagnostic
+name: PR7036 staging reconciliation
 
 on:
   push:
@@ -9,59 +9,49 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  conflicts:
+  reconcile:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Capture merge conflicts
+      - name: Merge current main into staging
         shell: bash
         run: |
           set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git fetch --no-tags origin main
-          set +e
+          ours=$(git rev-parse HEAD)
+          theirs=$(git rev-parse origin/main)
           git merge --no-commit --no-ff origin/main
-          rc=$?
-          set -e
-          mkdir -p reconcile-artifact/{base,ours,theirs,merge}
-          git diff --name-only --diff-filter=U | sort -u > reconcile-artifact/conflicts.txt
-          count=$(wc -l < reconcile-artifact/conflicts.txt | tr -d ' ')
+          conflicts=$(git diff --name-only --diff-filter=U)
+          if [ -n "$conflicts" ]; then
+            {
+              echo '## PR #7036 staging reconciliation blocked'
+              echo
+              echo '```text'
+              printf '%s\n' "$conflicts"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          rm -f .github/workflows/pr7036-reconcile-diagnostic.yml
+          git add -A
+          git commit -m 'Merge current main into PR #7036 staging' \
+            -m "Non-force reconciliation only. Parent 1: $ours. Parent 2: $theirs. PR #7036 itself remains unmerged."
+          merged=$(git rev-parse HEAD)
+          parents=$(git show -s --format=%P HEAD)
           {
-            echo "## PR #7036 reconciliation"
+            echo '## PR #7036 staging reconciliation complete'
             echo
-            echo "merge_exit=$rc"
-            echo "conflict_count=$count"
-            echo
-            echo '```text'
-            cat reconcile-artifact/conflicts.txt
-            echo '```'
+            echo "ours=$ours"
+            echo "main=$theirs"
+            echo "merge=$merged"
+            echo "parents=$parents"
           } >> "$GITHUB_STEP_SUMMARY"
-          while IFS= read -r p; do
-            [ -n "$p" ] || continue
-            for stage in 1 2 3; do
-              case "$stage" in
-                1) out="reconcile-artifact/base/$p" ;;
-                2) out="reconcile-artifact/ours/$p" ;;
-                3) out="reconcile-artifact/theirs/$p" ;;
-              esac
-              mkdir -p "$(dirname "$out")"
-              if ! git show ":$stage:$p" > "$out" 2>/dev/null; then
-                printf '__MISSING__\n' > "$out"
-              fi
-            done
-            out="reconcile-artifact/merge/$p"
-            mkdir -p "$(dirname "$out")"
-            if [ -f "$p" ]; then cp "$p" "$out"; else printf '__MISSING__\n' > "$out"; fi
-          done < reconcile-artifact/conflicts.txt
-          git merge --abort >/dev/null 2>&1 || true
-      - uses: actions/upload-artifact@v4
-        with:
-          name: pr7036-reconcile-conflicts
-          path: reconcile-artifact
-          if-no-files-found: error
-          retention-days: 3
+          git push origin HEAD:sync/pr7036-main-20260917
