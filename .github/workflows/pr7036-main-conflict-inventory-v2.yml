@@ -1,17 +1,17 @@
-name: PR7036 live-main conflict inventory v3
+name: PR7036 live-main conflict snapshot
 on:
   push:
     branches: [sync/pr7036-main-20260917-v2]
 jobs:
-  inventory:
-    if: contains(github.event.head_commit.message, 'inventory PR 7036 live-main conflicts')
+  snapshot:
+    if: contains(github.event.head_commit.message, 'snapshot PR 7036 live-main conflict stages')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 700
-      - name: Inventory exact conflicts
+      - name: Snapshot conflict stages only
         shell: bash
         run: |
           set -euo pipefail
@@ -19,22 +19,28 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git fetch --no-tags --depth=700 origin 799bc6c4c0e862e4854a56aac20601caf9e74c4c >/dev/null 2>&1
           set +e
-          MERGE_MSG="$(git merge --no-commit --no-ff FETCH_HEAD 2>&1)"
+          git merge --no-commit --no-ff FETCH_HEAD >/dev/null 2>&1
           RC=$?
           set -e
+          mkdir -p conflict-snapshot/base conflict-snapshot/ours conflict-snapshot/theirs
+          git diff --name-only --diff-filter=U | sed '/^$/d' | sort > conflict-snapshot/conflicts.txt
+          while IFS= read -r f; do
+            mkdir -p "conflict-snapshot/base/$(dirname "$f")" "conflict-snapshot/ours/$(dirname "$f")" "conflict-snapshot/theirs/$(dirname "$f")"
+            git show ":1:$f" > "conflict-snapshot/base/$f" 2>/dev/null || true
+            git show ":2:$f" > "conflict-snapshot/ours/$f" 2>/dev/null || true
+            git show ":3:$f" > "conflict-snapshot/theirs/$f" 2>/dev/null || true
+          done < conflict-snapshot/conflicts.txt
           {
             echo "branch_head=$(git rev-parse HEAD)"
             echo "main_head=$(git rev-parse FETCH_HEAD)"
-            echo "merge_base=$(git merge-base HEAD FETCH_HEAD 2>/dev/null || true)"
+            echo "merge_base=$(git merge-base HEAD FETCH_HEAD)"
             echo "merge_rc=$RC"
-            printf '%s\n' "$MERGE_MSG" | tail -n 12
-            git diff --name-only --diff-filter=U | sed '/^$/d' | sort | tee /tmp/conflicts.txt
-            echo "conflict_count=$(wc -l < /tmp/conflicts.txt | tr -d ' ')"
-          } > pr7036-main-conflicts-v3.txt
+            echo "conflict_count=$(wc -l < conflict-snapshot/conflicts.txt | tr -d ' ')"
+          } > conflict-snapshot/summary.txt
           git merge --abort 2>/dev/null || true
-      - name: Upload inventory
+      - name: Upload snapshot
         uses: actions/upload-artifact@v4
         with:
-          name: pr7036-main-conflicts-v3
-          path: pr7036-main-conflicts-v3.txt
+          name: pr7036-main-conflict-snapshot
+          path: conflict-snapshot
           retention-days: 2
