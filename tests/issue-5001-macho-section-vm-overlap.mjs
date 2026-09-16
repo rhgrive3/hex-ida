@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './issue-4648-macho-zerofill-section-range.mjs';
 import { createFormatSafeRebuildTransaction, validateFormatSafeMutation } from '../js/rebuild/format-safe.js';
 
 // Issue #5001: machoSectionSizePlan bounded a __TEXT,__text size extension by
