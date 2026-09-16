@@ -1,0 +1,46 @@
+name: Temporary Stage2 generated drift
+
+on:
+  push:
+    branches:
+      - diag/stage2-generated-drift-20260916
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        shell: bash
+        run: timeout 180s npm ci --no-audit --no-fund
+      - name: Capture generated drift only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mode="$(node tools/validation/generated-output-policy.mjs)"
+          timeout 120s npm run userscript:build >/tmp/userscript-build.txt 2>&1
+          git restore --source=HEAD --worktree -- js/userscript/deployment-identity.generated.js
+          {
+            echo "mode=$mode"
+            echo "status:"
+            git status --porcelain --untracked-files=all
+            echo "diff-stat:"
+            git diff --stat -- userscript/hex.user.template.js userscript/release-version.json
+          } > stage2-generated-drift.txt
+          cat stage2-generated-drift.txt
+      - name: Upload minimal diagnostic
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: stage2-generated-drift
+          path: stage2-generated-drift.txt
+          if-no-files-found: warn
+          retention-days: 1
