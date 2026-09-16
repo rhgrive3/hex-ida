@@ -1,0 +1,121 @@
+name: Temporary C0-01 local acceptance
+on:
+  push:
+    branches: ['impl/c0-01-acceptance-20260916']
+    paths: ['.github/workflows/temp-c0-01-acceptance.yml']
+permissions:
+  contents: write
+jobs:
+  accept:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TARGET_HEAD: 0275f6bacd7466b06a3632bea4275a4bc922ce1a
+      TARGET_BRANCH: feat/analysis-roadmap-v8-current-main-20260907
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TARGET_HEAD }}
+          fetch-depth: 400
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install locked dependencies
+        timeout-minutes: 3
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Run complete competitive ground-truth contract suite
+        run: node tests/competitive/run.mjs
+      - name: Verify C0 denominator contract directly
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import profile from './tools/validation/competitive/profile.json' with { type:'json' };
+          import { verifyCompetitiveProfile } from './tools/validation/competitive/verify.mjs';
+          assert.doesNotThrow(() => verifyCompetitiveProfile(profile));
+          const rows = Object.entries(profile.metrics);
+          assert.ok(rows.length > 0, 'profile denominator must be non-empty');
+          for (const [id, metric] of rows) {
+            const truth = metric.groundTruth;
+            assert.ok(truth && typeof truth === 'object', `${id}: groundTruth required`);
+            if (truth.binaryScored === true && truth.status === 'measured') {
+              assert.equal(truth.authority, 'same-binary-twin', `${id}: measured binary authority`);
+              assert.ok(truth.twinManifest && typeof truth.twinManifest === 'object', `${id}: full twin manifest required`);
+            }
+          }
+          console.log(JSON.stringify({metrics:rows.length, groundTruthContract:profile.groundTruthContract}));
+          NODE
+      - name: Record C0-01 acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('docs/analysis-local-acceptance-audit.json')
+          audit=json.loads(p.read_text())
+          finding=next(x for x in audit['findings'] if x['id']=='HEX-C0-01')
+          finding['localStatus']='accepted-local'
+          finding['assessment']='C0-01 の competitive ground-truth contract をローカル受入。profile denominator は固定かつ非空で、binary scored + measured row は full same-binary twin manifest と replay evidence を必須とする。debug-bearing artifactから認識済み strip-only 操作で生成した twin のみを受理し、same-source rebuild、compiler/optimization/target/source/build drift、one-byte patch、wrong twin、stale/missing manifest、unknown strip tool/operation、denominator shrink、competitor output authority化を拒否する。未測定legacy rowは勝手に exact/proven へ昇格しない。whole-roadmap/release/device gates は別。'
+          finding['source']='tests/competitive/twin-manifest.test.mjs'
+          finding['verificationSuite']='c0-01-final-acceptance-20260916'
+          finding['originalRequirementAcceptedHere']=True
+          task=next(x for x in audit['tasks'] if x['id']=='FR-C0-01A')
+          task['localStatus']='accepted-local'
+          task['currentAssessment']='frozen competitive profile、same-binary twin positive/negative、toolchain/source/build drift、deterministic manifest、denominator shrink、scorecard replay evidenceを受入。測定済みbinary rowはsame-artifact debug/stripped lineage以外でscore authorityを得ない。'
+          task['originalRequirementAcceptedHere']=True
+          audit.setdefault('integrationFollowup', {})['c0GroundTruthAcceptance20260916']={
+            'status':'ACCEPTED-LOCAL',
+            'finding':'HEX-C0-01',
+            'task':'FR-C0-01A',
+            'suite':'tests/competitive/run.mjs',
+            'requiredAuthority':'same-binary-twin',
+            'driftRejection':['compiler','optimization','target','source','build-identity','artifact-byte','stale-manifest','unknown-strip-operation','denominator-shrink'],
+            'legacyUnmeasuredPromotesToExact':False,
+            'fullRoadmapComplete':False,
+            'transformAuthorization':False,
+          }
+          p.write_text(json.dumps(audit, ensure_ascii=False, indent=2)+'\n')
+
+          p=Path('docs/解析ツール改善.md')
+          text=p.read_text()
+          section='''## 2026-09-16: C0-01 local acceptance 完了\n\nHEX-C0-01 / FR-C0-01A は、competitive profile の固定denominator、same-binary debug/stripped twin、deterministic manifest、toolchain / source / build identity drift、artifact patch / wrong twin / stale manifest、unknown strip operation、scorecard denominator shrinkを同一受入で再検証し、このローカル要件について `accepted-local` とする。binary scored + measured row は full same-binary twin と replay evidenceなしにscore authorityを得ない。legacy `UNMEASURED` / `legacy-unproven` は exact/proven へ昇格しない。独立レビュー、実機、release、他 finding は閉じていないため、ロードマップ全体の `CHECKPOINT-LOCKED` / `transformAuthorization:false` は維持する。\n\n'''
+          if '## 2026-09-16: C0-01 local acceptance 完了' not in text:
+              marker='## 2026-09-16: C1-03 local acceptance 完了\n'
+              if marker not in text: raise SystemExit('analysis md marker missing')
+              text=text.replace(marker, section+marker, 1)
+          p.write_text(text)
+
+          p=Path('docs/analysis-roadmap-v8-integration-checkpoint.md')
+          text=p.read_text()
+          note='''\n\n## 2026-09-16 C0-01 local acceptance\n\n`tests/competitive/run.mjs` と same-binary twin contractで、frozen competitive profile、debug/stripped lineage、deterministic manifest、toolchain/source/build drift、wrong/patched/stale twin、denominator shrinkを再受入した。測定済みbinary rowはfull same-binary twin manifestとreplay evidenceを必須とし、legacy unmeasured rowはexact truthへ昇格しない。HEX-C0-01 / FR-C0-01A はこのローカル要件について accepted-local。全roadmap/release/device受入は未完了のまま。\n'''
+          if '## 2026-09-16 C0-01 local acceptance' not in text:
+              text += note
+          p.write_text(text)
+          PY
+          node -e "JSON.parse(require('fs').readFileSync('docs/analysis-local-acceptance-audit.json','utf8'))"
+          git diff --check
+      - name: Commit accepted C0-01 checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add docs/analysis-local-acceptance-audit.json docs/解析ツール改善.md docs/analysis-roadmap-v8-integration-checkpoint.md
+          git commit -m 'docs(analysis): accept C0-01 twin ground truth'
+      - name: Verify roadmap ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=400 origin main:refs/remotes/origin/main
+          BASE_SHA=$(git rev-parse refs/remotes/origin/main)
+          node tools/validation/analysis-roadmap/ownership.mjs --branch "$TARGET_BRANCH" --phase phase7 --base-sha "$BASE_SHA" --head-sha "$(git rev-parse HEAD)"
+      - name: Publish only if target head is unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          REMOTE=$(git ls-remote origin "refs/heads/$TARGET_BRANCH" | cut -f1)
+          test "$REMOTE" = "$TARGET_HEAD" || { echo "target moved: expected $TARGET_HEAD got $REMOTE"; exit 1; }
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
