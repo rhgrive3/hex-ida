@@ -1,0 +1,70 @@
+name: X-02 dyld v5 diagnostic 2
+
+on:
+  push:
+    branches: [feat/analysis-roadmap-v8-current-main-20260907]
+    paths: [.github/workflows/x02-dyld-v5-diagnostic2.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: macos-15
+    timeout-minutes: 8
+    steps:
+      - name: Find first v5 target outside current file mappings
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, struct
+          from pathlib import Path
+          roots=[Path('/System/Library/dyld'),Path('/System/Cryptexes/OS/System/Library/dyld'),Path('/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld')]
+          cache=next((r/'dyld_shared_cache_arm64e' for r in roots if (r/'dyld_shared_cache_arm64e').exists()),None)
+          if cache is None: raise SystemExit('no-cache')
+          found=None; seen=0
+          with cache.open('rb') as f:
+            h=f.read(0x200)
+            mo,mc=struct.unpack_from('<II',h,0x10); ss,sz=struct.unpack_from('<QQ',h,0xe0); so,sc=struct.unpack_from('<II',h,0x138)
+            f.seek(mo); maps=[]
+            for i in range(mc):
+              a,s,fo,mp,ip=struct.unpack('<QQQII',f.read(32)); maps.append((a,s,fo))
+            f.seek(so); slides=[]
+            for i in range(sc):
+              a,s,fo,sio,sis,flags,mp,ip=struct.unpack('<QQQQQQII',f.read(56)); slides.append((i,a,s,fo,sio,sis))
+            for idx,a,size,fo,sio,sis in slides:
+              if not sis: continue
+              f.seek(sio); head=f.read(sis)
+              ver,ps,count=struct.unpack_from('<III',head,0)
+              if ver!=5: continue
+              va=struct.unpack_from('<Q',head,16)[0]
+              starts=struct.unpack_from('<'+'H'*count,head,24)
+              for page,start in enumerate(starts):
+                if start==0xffff: continue
+                within=start*8; guard=0
+                while True:
+                  off=page*ps+within
+                  if within%8 or off+8>min((page+1)*ps,size):
+                    found={'reason':'chain-out-of-page','slideMapping':idx,'page':page,'within':within}; break
+                  f.seek(fo+off); raw=struct.unpack('<Q',f.read(8))[0]
+                  runtime=raw & 0x3ffffffff; target=va+runtime; nxt=(raw>>52)&0x7ff
+                  seen+=1
+                  in_current=any(ma<=target<ma+ms for ma,ms,_ in maps)
+                  if not in_current:
+                    found={'reason':'target-outside-current-file','slideMapping':idx,'page':page,'within':within,'raw':hex(raw),'auth':bool(raw>>63),'runtimeOffset':hex(runtime),'valueAdd':hex(va),'target':hex(target),'targetInSharedRegion':ss<=target<ss+sz,'sharedRegionStart':hex(ss),'sharedRegionEnd':hex(ss+sz),'recordsSeen':seen,'nextPointerUnits':nxt}
+                    break
+                  if nxt==0: break
+                  within+=nxt*8; guard+=1
+                  if guard>ps//8: found={'reason':'cycle','recordsSeen':seen}; break
+                if found: break
+              if found: break
+          out={'cachePath':str(cache),'recordsSeen':seen,'firstDivergence':found}
+          Path('x02-dyld-v5-diagnostic2.json').write_text(json.dumps(out,indent=2)+'\n')
+          print(json.dumps(out,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x02-dyld-v5-diagnostic2-${{ github.sha }}
+          path: x02-dyld-v5-diagnostic2.json
+          retention-days: 7
