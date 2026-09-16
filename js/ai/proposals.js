@@ -70,11 +70,11 @@ export class ProposalStore {
     // status is protected by deterministic-verifier authority. When the store
     // exposes records, require that authority-bearing status and retain only
     // verified IDs. Minimal injected authority adapters that intentionally
-    // expose only has() keep their existing predicate contract.
+    // expose only has() keep their existing predicate contract. Shared with the
+    // persisted-restore path so the two admission boundaries cannot drift.
     const evidenceIds = Array.from(new Set((input.evidenceIds || []).filter((id) => {
       if (typeof id !== 'string') return false;
-      if (typeof this.evidenceStore?.get === 'function') return this.evidenceStore.get(id)?.status === 'verified';
-      return this.evidenceStore?.has?.(id) === true;
+      return hasDeterministicEvidenceAuthority(this.evidenceStore, id);
     })));
     if (!evidenceIds.length) throw new AIError('invalid_tool_call', 'A proposal requires deterministic evidence.');
     let id;
@@ -348,6 +348,18 @@ function requireProposalRecord(store, id) {
   return value;
 }
 
+// The single deterministic-evidence authority predicate, shared by fresh
+// `create()` admission and persisted-restore admission (#8889) so a proposal
+// cannot regain mutation authority through a boundary weaker than the one that
+// originally authorized it. The product EvidenceStore protects `verified`
+// status behind deterministic-verifier authority and exposes `get()`; minimal
+// injected adapters that intentionally expose only `has()` keep their existing
+// existence contract.
+function hasDeterministicEvidenceAuthority(evidenceStore, id) {
+  if (typeof evidenceStore?.get === 'function') return evidenceStore.get(id)?.status === 'verified';
+  return evidenceStore?.has?.(id) === true;
+}
+
 function restoredPendingRecord(store, persisted) {
   if (!persisted || typeof persisted !== 'object' || Array.isArray(persisted)) return null;
   if (persisted.status !== 'pending') return null;
@@ -366,7 +378,12 @@ function restoredPendingRecord(store, persisted) {
   const evidenceIds = Array.from(new Set(Array.isArray(persisted.evidenceIds)
     ? persisted.evidenceIds.filter((value) => typeof value === 'string' && value)
     : []));
-  if (!evidenceIds.length || !evidenceIds.every((value) => store.evidenceStore?.has(value))) return null;
+  // Persisted restore must not be a weaker admission boundary than fresh
+  // creation. Existence is not authority: an untrusted JSON round-trip
+  // downgrades deterministic evidence to `supported`, and the proposal may only
+  // regain live mutation authority if its evidence still resolves to the same
+  // deterministic `verified` predicate `create()` requires (#8889).
+  if (!evidenceIds.length || !evidenceIds.every((value) => hasDeterministicEvidenceAuthority(store.evidenceStore, value))) return null;
   let binding;
   let payload;
   try {
