@@ -1,4 +1,4 @@
-name: Temporary C4-04 latest-head diagnostic
+name: Temporary C4-04 split diagnostic
 on:
   push:
     branches: ['impl/c4-04-integrate-20260916']
@@ -27,76 +27,46 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git fetch --depth=40 origin impl/c4-04-finish-20260916
-          for sha in \
-            89f2467ea66c80f43d8e70fa6a0cf8742adde89b \
-            a4148d277444f694a46057e80926c6bbeb8034e2 \
-            45fe53634ee6cdaf3c3d3a2b7551743416800b7c \
-            99db96607313d3435c841ca1f6783491d4bb97bb \
-            b439a53a642d486ab0161ed5f464608cd6f2ce9d \
-            6c648bf306b9a8df27523249358d7d4ce1e90d47 \
-            bd5ff13372b780e2d45e2d35c01791479b4681d4 \
-            1a4eddfe46584401dab337d15923f50998de7fc1 \
-            a97a9ee7cfa88f014cae7188d4581be4ecf68f33 \
-            15f946e8af6d33f3d874cfe2961e0ef551888f60 \
-            76eac24b69860b4f34e106eee1363f0fb30e788f \
-            f963ee4e316eaf1bcbb2b4a33122c0d00a60b2b2 \
-            c1d616710990db7dbb6664a4ea49b8608d556055
-          do git cherry-pick "$sha" >/dev/null; done
+          for sha in 89f2467ea66c80f43d8e70fa6a0cf8742adde89b a4148d277444f694a46057e80926c6bbeb8034e2 45fe53634ee6cdaf3c3d3a2b7551743416800b7c 99db96607313d3435c841ca1f6783491d4bb97bb b439a53a642d486ab0161ed5f464608cd6f2ce9d 6c648bf306b9a8df27523249358d7d4ce1e90d47 bd5ff13372b780e2d45e2d35c01791479b4681d4 1a4eddfe46584401dab337d15923f50998de7fc1 a97a9ee7cfa88f014cae7188d4581be4ecf68f33 15f946e8af6d33f3d874cfe2961e0ef551888f60 76eac24b69860b4f34e106eee1363f0fb30e788f f963ee4e316eaf1bcbb2b4a33122c0d00a60b2b2 c1d616710990db7dbb6664a4ea49b8608d556055; do git cherry-pick "$sha" >/dev/null; done
       - run: npm ci --ignore-scripts
-      - name: Emit only three first-divergence records
+      - name: Memory-region divergence
         shell: bash
         run: |
-          set -euo pipefail
-          node --input-type=module <<'NODE' > /tmp/c4-first-divergence.json
-          import { createBv } from './js/symbolic/expr/factory.js';
-          import { ExhaustiveBvBackend } from './js/symbolic/solver/exhaustive-backend.js';
-          import { verifyBoundedEquivalence } from './js/symbolic/verify/equivalence.js';
-          import { conditionalRegionFixture } from './tests/phase8/helpers/conditional-region-fixture.mjs';
-          import { identity } from './tests/phase8/helpers/proof-fixtures.mjs';
-          import { enhanceSemanticDecompilation } from './js/decompiler/pipeline.js';
-          import { prepareConditionalRegionCondition } from './js/decompiler/phase8/conditional-region-condition.js';
-          import { prepareConditionalRegionErasure, readRegionErasureBody } from './js/decompiler/phase8/conditional-region-erasure.js';
-
-          const regionResult=await verifyBoundedEquivalence({
-            beforeTarget:createBv(64,0n), afterTarget:createBv(64,0n),
-            memoryRegions:[{id:'heap',start:0x1000n,size:8}], backend:new ExhaustiveBvBackend(),
-          });
-          function storeArm(builder,value){
-            const store=builder.store(value,{locKind:'global',locKey:'g',bits:8});
-            Object.assign(store.loc,{address:16n,addressSpace:'data'});
-            store.extra={completeness:'complete',addressPrecise:true,memoryAccess:{addressSpace:'data',widthBits:8,volatility:false,atomic:false,ordering:'unknown',endian:'little',faults:[]}};
-          }
-          const f=conditionalRegionFixture({armEffect:storeArm});
-          const projection=enhanceSemanticDecompilation(f.seed,{name:'reachability',calls:[]},{phase8PrepareProof:true,phase8PrepareRegionProof:true,deterministicTransforms:true,renderProvenance:true});
-          const opts={identity,addressBits:8,backendTier:'exhaustive',timeoutMs:5000};
-          const conditionPlan=await prepareConditionalRegionCondition(f.structure,projection,opts);
-          const reachability=await f.run();
-          const plan=prepareConditionalRegionErasure(f.structure,reachability,f.ir,{identity,timeoutMs:5000,projection,conditionPlan});
-          const dead=reachability.arms.find(a=>a.verdict==='proved');
-          const erased=f.structure.region.arms.find(a=>a.role===dead?.role);
-          console.log(JSON.stringify({
-            memoryRegion:{
-              verdict:regionResult.verdict, reasonCode:regionResult.reasonCode,
-              proofStatement:regionResult.proofStatement,
-              completeness:regionResult.completeness,
-              queryCompleteness:regionResult.query?.completeness ?? null,
-              proofScopeRegions:regionResult.query?.proofScope?.memoryRegions?.length ?? null,
-              eligibilityReasons:regionResult.eligibility?.reasons ?? null,
-            },
-            joinPhi:{
-              structurePhis:f.structure.phis.length,
-              phiBlocks:f.structure.phis.map(x=>x.block?.index ?? null),
-              removedRole:dead?.role ?? null,
-              erasedBlocks:(erased?.emittedBlocks ?? []).map(x=>x.index),
-              bodyValidation:plan.bodyValidation,
-              pendingValidation:plan.pendingValidation,
-              bodyIssued:!!readRegionErasureBody(plan,projection,f.ir,identity),
-            },
-          },null,2));
+          node --input-type=module <<'NODE' > /tmp/memory-region.json
+          try {
+            const { createBv } = await import('./js/symbolic/expr/factory.js');
+            const { ExhaustiveBvBackend } = await import('./js/symbolic/solver/exhaustive-backend.js');
+            const { verifyBoundedEquivalence } = await import('./js/symbolic/verify/equivalence.js');
+            const r=await verifyBoundedEquivalence({beforeTarget:createBv(64,0n),afterTarget:createBv(64,0n),memoryRegions:[{id:'heap',start:0x1000n,size:8}],backend:new ExhaustiveBvBackend()});
+            console.log(JSON.stringify({ok:true,verdict:r.verdict,reasonCode:r.reasonCode,proofStatement:r.proofStatement,completeness:r.completeness,queryCompleteness:r.query?.completeness??null,proofScopeRegions:r.query?.proofScope?.memoryRegions?.length??null,eligibilityReasons:r.eligibility?.reasons??null},null,2));
+          } catch (e) { console.log(JSON.stringify({ok:false,name:e?.name,message:e?.message,stack:String(e?.stack??'').split('\n').slice(0,3)},null,2)); }
           NODE
-          cat /tmp/c4-first-divergence.json
+      - name: Join-PHI divergence
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE' > /tmp/join-phi.json
+          try {
+            const { conditionalRegionFixture }=await import('./tests/phase8/helpers/conditional-region-fixture.mjs');
+            const { identity }=await import('./tests/phase8/helpers/proof-fixtures.mjs');
+            const { enhanceSemanticDecompilation }=await import('./js/decompiler/pipeline.js');
+            const { prepareConditionalRegionCondition }=await import('./js/decompiler/phase8/conditional-region-condition.js');
+            const { prepareConditionalRegionErasure,readRegionErasureBody }=await import('./js/decompiler/phase8/conditional-region-erasure.js');
+            function storeArm(builder,value){const store=builder.store(value,{locKind:'global',locKey:'g',bits:8});Object.assign(store.loc,{address:16n,addressSpace:'data'});store.extra={completeness:'complete',addressPrecise:true,memoryAccess:{addressSpace:'data',widthBits:8,volatility:false,atomic:false,ordering:'unknown',endian:'little',faults:[]}};}
+            const f=conditionalRegionFixture({armEffect:storeArm});
+            const projection=enhanceSemanticDecompilation(f.seed,{name:'reachability',calls:[]},{phase8PrepareProof:true,phase8PrepareRegionProof:true,deterministicTransforms:true,renderProvenance:true});
+            const opts={identity,addressBits:8,backendTier:'exhaustive',timeoutMs:5000};
+            const conditionPlan=await prepareConditionalRegionCondition(f.structure,projection,opts);
+            const reachability=await f.run();
+            const plan=prepareConditionalRegionErasure(f.structure,reachability,f.ir,{identity,timeoutMs:5000,projection,conditionPlan});
+            const dead=reachability.arms.find(a=>a.verdict==='proved');const erased=f.structure.region.arms.find(a=>a.role===dead?.role);
+            console.log(JSON.stringify({ok:true,structurePhis:f.structure.phis.length,phiBlocks:f.structure.phis.map(x=>x.block?.index??null),removedRole:dead?.role??null,erasedBlocks:(erased?.emittedBlocks??[]).map(x=>x.index),bodyValidation:plan.bodyValidation,pendingValidation:plan.pendingValidation,bodyIssued:!!readRegionErasureBody(plan,projection,f.ir,identity)},null,2));
+          } catch (e) { console.log(JSON.stringify({ok:false,name:e?.name,message:e?.message,stack:String(e?.stack??'').split('\n').slice(0,3)},null,2)); }
+          NODE
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: c4-first-divergence
-          path: /tmp/c4-first-divergence.json
+          name: c4-split-divergence
+          path: |
+            /tmp/memory-region.json
+            /tmp/join-phi.json
           retention-days: 1
