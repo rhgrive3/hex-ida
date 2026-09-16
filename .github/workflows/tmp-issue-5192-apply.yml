@@ -19,12 +19,30 @@ jobs:
       - name: Apply conservative impact patch
         shell: bash
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('js/rebuild/transaction-v2.js')
-          s = p.read_text()
-          marker = "function requiredValidators(impact, additional = [], requireIndependentOracle = false) {"
-          helper = """function hasFormatSafeImpactProof(input, operations, expectedOriginalState) {
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = 'js/rebuild/transaction-v2.js';
+          let s = fs.readFileSync(path, 'utf8');
+          const summary = process.env.GITHUB_STEP_SUMMARY;
+          const fail = (message, facts = {}) => {
+            if (summary) fs.appendFileSync(summary, `# #5192 patch failure\n${message}\n\n${JSON.stringify(facts)}\n`);
+            throw new Error(message);
+          };
+          const validatorMarker = 'function requiredValidators(impact, additional = [], requireIndependentOracle = false) {';
+          const createMarker = 'export function createRebuildTransaction(input = {}) {';
+          const impactMarker = '  const impact = {';
+          const afterImpactMarker = '\n  const requireIndependentOracle = input.requireIndependentOracle === true;';
+          const trustMarker = '  const preservationRequiresTrustedProvider = ';
+          const positions = {
+            validator: s.indexOf(validatorMarker),
+            create: s.indexOf(createMarker),
+            impact: s.indexOf(impactMarker, s.indexOf(createMarker)),
+            afterImpact: s.indexOf(afterImpactMarker, s.indexOf(createMarker)),
+            trust: s.indexOf(trustMarker),
+          };
+          if (s.includes('function hasFormatSafeImpactProof(')) fail('helper already present', positions);
+          if (Object.values(positions).some((value) => value < 0)) fail('required marker missing', positions);
+          const helper = `function hasFormatSafeImpactProof(input, operations, expectedOriginalState) {
             const additional = Array.isArray(input.additionalValidators) ? input.additionalValidators : [];
             const safeState = expectedOriginalState?.formatSafe;
             if (input.requireIndependentOracle !== true
@@ -41,22 +59,14 @@ jobs:
             });
           }
 
-          """
-          if marker not in s or 'function hasFormatSafeImpactProof(' in s:
-              raise SystemExit('unexpected helper insertion state')
-          s = s.replace(marker, helper + marker, 1)
-          old = """  const impact = {
-            layoutMoving: sizeDelta !== 0 || declaredImpact.layoutMoving === true,
-            relocations: declaredImpact.relocations === true || relocationBindings.length > 0,
-            branchRanges: declaredImpact.branchRanges === true,
-            unwind: declaredImpact.unwind === true,
-            importsExports: declaredImpact.importsExports === true,
-            signature: declaredImpact.signature === true,
-            sections: clone(sections),
-            relocationBindings: clone(relocationBindings),
-          };"""
-          new = """  // #5192: arbitrary generic byte patches have no loader-derived range
-          // authority. Caller `false` declarations cannot prove a same-size edit
+          `;
+          s = s.slice(0, positions.validator) + helper + s.slice(positions.validator);
+          const create = s.indexOf(createMarker);
+          const impact = s.indexOf(impactMarker, create);
+          const afterImpact = s.indexOf(afterImpactMarker, create);
+          if (impact < 0 || afterImpact <= impact) fail('impact boundaries invalid', { create, impact, afterImpact });
+          const newImpact = `  // #5192: arbitrary generic byte patches have no loader-derived range
+          // authority. Caller \`false\` declarations cannot prove a same-size edit
           // misses relocation, branch, unwind, import/export, or signature data.
           // Only the format-safe path may retain narrow impact, and only when it
           // carries its invariant validator plus the independent-oracle gate.
@@ -70,17 +80,16 @@ jobs:
             signature: conservativeGenericImpact || declaredImpact.signature === true,
             sections: clone(sections),
             relocationBindings: clone(relocationBindings),
-          };"""
-          if s.count(old) != 1:
-              raise SystemExit('impact block did not match exactly once')
-          s = s.replace(old, new, 1)
-          old_trust = "  const preservationRequiresTrustedProvider = ['elf-comment', 'pe-timestamp', 'macho-min-version'].includes(transaction.expectedOriginalState?.formatSafe?.kind);"
-          new_trust = "  const preservationRequiresTrustedProvider = transaction.expectedOriginalState?.formatSafe?.schema === FORMAT_SAFE_REBUILD_SCHEMA;"
-          if s.count(old_trust) != 1:
-              raise SystemExit('format-safe provider trust line mismatch')
-          s = s.replace(old_trust, new_trust, 1)
-          p.write_text(s)
-          PY
+          };`;
+          s = s.slice(0, impact) + newImpact + s.slice(afterImpact);
+          const trust = s.indexOf(trustMarker);
+          const trustEnd = s.indexOf('\n', trust);
+          if (trust < 0 || trustEnd <= trust) fail('trust boundary invalid', { trust, trustEnd });
+          s = s.slice(0, trust)
+            + "  const preservationRequiresTrustedProvider = transaction.expectedOriginalState?.formatSafe?.schema === FORMAT_SAFE_REBUILD_SCHEMA;"
+            + s.slice(trustEnd);
+          fs.writeFileSync(path, s);
+          NODE
       - name: Focused verification
         shell: bash
         run: |
