@@ -408,10 +408,18 @@ function normalizeEngineDescriptor(engine, options) {
   });
 }
 
+// #8859 — one tagged outcome shape ({kind:'aborted'|'completed'|'failed'}) for
+// every bounded operation. The raw abort sentinel must never leak to callers:
+// `launch.kind === undefined` used to fall through into the resume stage. The
+// register hook receives a record whose `late` flag is set synchronously when
+// the signal aborts, so a signal-ignoring engine that settles `completed` after
+// the provider already published a cancellation result is detectable without
+// racing the settlement handler against the abort event.
 async function boundedEngineOperation(operation, signal, registerSettlement = null) {
+  const record = { settlement: null, late: signal.aborted === true, hold: null };
   let onAbort;
   const aborted = new Promise((resolve) => {
-    onAbort = () => resolve(ABORTED_EXECUTION);
+    onAbort = () => { record.late = true; resolve(ABORTED_EXECUTION); };
     if (signal.aborted) resolve(ABORTED_EXECUTION);
     else signal.addEventListener('abort', onAbort, { once: true });
   });
@@ -425,9 +433,11 @@ async function boundedEngineOperation(operation, signal, registerSettlement = nu
       (value) => value === ABORTED_EXECUTION ? { kind: 'aborted' } : { kind: 'completed', value },
       (error) => ({ kind: 'failed', error }),
     );
-  if (registerSettlement) registerSettlement(execution);
+  record.settlement = execution;
+  if (registerSettlement) registerSettlement(record);
   try {
-    return await Promise.race([execution, aborted]);
+    const outcome = await Promise.race([execution, aborted]);
+    return outcome === ABORTED_EXECUTION ? { kind: 'aborted' } : outcome;
   } finally {
     signal.removeEventListener('abort', onAbort);
   }
@@ -442,8 +452,13 @@ export class EmulatorProvider {
     this.options = options;
     this.engineDescriptor = normalizeEngineDescriptor(engine, options);
     this.activeSession = null;
-    this.pendingEngineOperation = null;
-    this.pendingEngineReady = null;
+    // #8859 — every unsettled engine operation is tracked, so registering a
+    // later stage can never silently drop an older signal-ignoring one. A late
+    // `completed` settlement of an aborted operation taints the engine target
+    // until an authoritative reset.
+    this.pendingEngineOperations = new Set();
+    this.engineTainted = false;
+    this.quarantinedSession = null;
     this._descriptor = createRuntimeProviderDescriptor({
       id: options.id ?? `emulator:${this.engineDescriptor.id}`,
       version: options.version ?? '1',
@@ -459,39 +474,81 @@ export class EmulatorProvider {
 
   descriptor() { return this._descriptor; }
 
-  _registerEngineOperation(settlement) {
-    this.pendingEngineOperation = settlement;
-    this.pendingEngineReady = null;
-    settlement.finally(() => {
-      if (this.pendingEngineOperation !== settlement) return;
-      this.pendingEngineOperation = null;
-      const ready = this.pendingEngineReady;
-      this.pendingEngineReady = null;
-      if (!ready || ready.settlement !== settlement) return;
-      const { session, epoch } = ready;
-      if (
-        this.activeSession === session
-        && !session.closed
-        && session.state === 'running'
-        && session.epoch === epoch
-      ) {
-        session.setState('ready');
-      }
-    });
+  _registerEngineOperation(record) {
+    this.pendingEngineOperations.add(record);
+    const settle = (outcome) => this._settleEngineOperation(record, outcome);
+    record.settlement.then(settle, () => settle({ kind: 'failed' }));
+  }
+
+  _settleEngineOperation(record, outcome) {
+    if (!this.pendingEngineOperations.delete(record)) return;
+    const hold = record.hold;
+    // Taint only applies to an operation whose run already published its
+    // bounded cancellation evidence (#8859). A stale-epoch rejection never
+    // published anything: the epoch change itself is the authoritative
+    // generation boundary (#5878), so no quarantine is warranted there.
+    if (!hold) return;
+    // A cancelled bounded operation that later settles with a real completion
+    // mutated the target after the provider already published its
+    // cancellation evidence. Promise settlement alone is not proof the target
+    // matches that evidence, so the engine authority is tainted (#8859). A
+    // cooperative stop settles 'aborted'/'failed' instead and recovers
+    // normally.
+    if (record.late && outcome && outcome.kind === 'completed') {
+      hold.tainted = true;
+      this.engineTainted = true;
+    }
+    hold.remaining -= 1;
+    if (hold.remaining > 0) return;
+    const { session, epoch } = hold;
+    if (this.activeSession !== session || session.closed || session.state !== 'running' || session.epoch !== epoch) return;
+    if (hold.tainted) {
+      this.quarantinedSession = session;
+      session.setState('degraded');
+    } else {
+      session.setState('ready');
+    }
   }
 
   _holdSessionUntilEngineSettles(session, epoch) {
-    const settlement = this.pendingEngineOperation;
-    if (!settlement) return false;
-    this.pendingEngineReady = { settlement, session, epoch };
+    const outstanding = [...this.pendingEngineOperations].filter((record) => !record.hold);
+    if (!outstanding.length) return false;
+    const hold = { session, epoch, remaining: 0, tainted: false };
+    for (const record of outstanding) {
+      record.hold = hold;
+      hold.remaining += 1;
+    }
     session.setState('running');
     return true;
   }
 
   _assertEngineAvailable() {
-    if (this.pendingEngineOperation) {
+    if (this.pendingEngineOperations.size) {
       throw new DebugAdapterError('emulator-engine-busy', 'emulator engine still has an unsettled operation from a prior run');
     }
+    if (this.engineTainted) {
+      throw new DebugAdapterError('emulator-engine-quarantined', 'emulator target state authority is quarantined after a cancelled operation completed late; resetEngineAuthority() is required before reuse');
+    }
+  }
+
+  // #8859 — authoritative recovery boundary for a tainted engine target. All
+  // engine operations must already be settled. When the engine offers its own
+  // reset/resync hook it is invoked first; otherwise this call is the host's
+  // explicit assertion that target safety was re-established out of band (new
+  // generation, relaunch, or trusted reconciliation), and the stale late
+  // completion is then never trusted as current state again.
+  async resetEngineAuthority() {
+    if (this.pendingEngineOperations.size) {
+      throw new DebugAdapterError('emulator-engine-busy', 'emulator engine still has an unsettled operation from a prior run');
+    }
+    if (typeof this.engine.reset === 'function') await this.engine.reset();
+    this.engineTainted = false;
+    const session = this.quarantinedSession;
+    this.quarantinedSession = null;
+    if (session && this.activeSession === session && !session.closed && session.state === 'degraded') {
+      session.setState('ready');
+    }
+    return true;
   }
 
   async openSession(request = {}, options = {}) {
@@ -590,7 +647,7 @@ export class EmulatorProvider {
           const outcome = await boundedEngineOperation(
             () => this.engine.execute(input, { ...replayOptions, signal: controller.signal }),
             controller.signal,
-            (settlement) => this._registerEngineOperation(settlement),
+            (record) => this._registerEngineOperation(record),
           );
           if (outcome.kind === 'aborted') raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' } };
           else if (outcome.kind === 'failed') throw outcome.error;
@@ -600,7 +657,7 @@ export class EmulatorProvider {
           const launch = await boundedEngineOperation(
             () => this.engine.launch(input, { signal: controller.signal }),
             controller.signal,
-            (settlement) => this._registerEngineOperation(settlement),
+            (record) => this._registerEngineOperation(record),
           );
           if (launch.kind === 'aborted') raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' } };
           else if (launch.kind === 'failed') throw launch.error;
@@ -608,7 +665,7 @@ export class EmulatorProvider {
             const resume = await boundedEngineOperation(
               () => this.engine.resume({ ...replayOptions, signal: controller.signal }),
               controller.signal,
-              (settlement) => this._registerEngineOperation(settlement),
+              (record) => this._registerEngineOperation(record),
             );
             if (resume.kind === 'aborted') raw = { stop: { kind: timeoutTriggered ? 'timeout' : 'cancelled' } };
             else if (resume.kind === 'failed') throw resume.error;

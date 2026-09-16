@@ -281,8 +281,12 @@ async function __functionEvidence(region, slice, requestId, unwindLimit = 200_00
     // Merge exact runtime metadata collectors from the current branch with
     // the hardened boundary evidence below. These helpers parse ABI-defined
     // Objective-C, initializer, and Swift reflection function references.
-    for (const a of await objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId)) exactMetadata.add(a);
-    for (const a of await initializerFunctionStarts(slice, lo, hi, imageBase, requestId)) exactMetadata.add(a);
+    const methodStarts = await objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId);
+    for (const a of methodStarts) exactMetadata.add(a);
+    if (methodStarts.truncated) { metadataIncomplete = true; metadataTruncationReason ||= 'objc-methodlist-' + (methodStarts.truncationReason || 'truncated'); }
+    const initStarts = await initializerFunctionStarts(slice, lo, hi, imageBase, requestId);
+    for (const a of initStarts) exactMetadata.add(a);
+    if (initStarts.truncated) { metadataIncomplete = true; metadataTruncationReason ||= 'legacy-init-' + (initStarts.truncationReason || 'truncated'); }
     const swiftStarts = await swiftReflectionFunctionStarts(slice, lo, hi, requestId);
     for (const a of swiftStarts) exactMetadata.add(a);
     if (swiftStarts.truncated) { metadataIncomplete = true; metadataTruncationReason ||= 'swift-reflection-' + (swiftStarts.truncationReason || 'truncated'); }

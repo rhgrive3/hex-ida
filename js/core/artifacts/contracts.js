@@ -4,6 +4,7 @@ import {
   deepFreeze,
   jsonSafe,
   stableDigest,
+  stableDigestBytes,
   stableStringify,
 } from '../identity/index.js';
 
@@ -182,6 +183,13 @@ export function createArtifactDescriptor(input = {}) {
     inputArtifactIds:upstreamArtifactIds,
   });
   if (upstreamArtifactIds.includes(descriptor.artifactId)) throw new ArtifactError('artifact-self-dependency');
+  // #8808: persist the artifact-key `optionsHash` on the descriptor so a record
+  // created from it can be identity-reauthenticated on a fresh store. Without
+  // this material the storage envelope was the sole "proof" of upstream
+  // identity, and a party able to mutate a row could also recompute its
+  // self-consistent checksum; recomputing the artifactId from durable record
+  // material is the only proof that does not collapse to a rehash.
+  descriptor.optionsHash = optionsHash;
   const frozen = deepFreeze(descriptor);
   CANONICAL_ARTIFACT_DESCRIPTORS.add(frozen);
   return frozen;
@@ -194,7 +202,162 @@ export function assertCanonicalArtifactDescriptor(descriptor) {
   return descriptor;
 }
 
-export function encodeArtifactPayload(payload) { return encoder.encode(stableStringify(payload)); }
+// #8738: `jsonSafe` boxes every ArrayBufferView / ArrayBuffer into a JS number
+// array before canonical JSON text is produced, so a 30 MiB typed result transiently
+// materializes per-byte arrays, decimal copies of the whole list, and a re-boxed
+// checksum input — hundreds of MiB of uncharged memory per payload. The helpers
+// below keep the EXACT canonical text (and therefore artifact identity) byte-for-byte
+// while never materializing the boxed list: large views are replaced by a unique
+// collision-checked marker, the marker-containing normalized text is produced by the
+// unchanged shared `stableStringify` pipeline, and each marker fragment is spliced
+// out and re-emitted as chunk-streamed decimal bytes written straight into a bounded
+// buffer. Anything the conservative scan below rejects (cycles, getters, exotic
+// prototypes, huge plain arrays) keeps falling through to the legacy path unchanged.
+const STREAMED_VIEW_MIN_BYTES = 64 * 1024;
+const VIEW_CHUNK_BYTES = 8 * 1024;
+const VIEW_REF_FIELD = 'hexArtifactViewRef';
+const BYTE_DECIMAL_PREFIXES = Object.freeze(Array.from({ length:256 }, (_, byte) => `${byte},`));
+
+function randomViewToken(index) {
+  if (typeof globalThis.crypto?.getRandomValues !== 'function') return null;
+  const noise = [...globalThis.crypto.getRandomValues(new Uint32Array(2))].map((x) => x.toString(16).padStart(8, '0')).join('');
+  return `${index}-${noise}`;
+}
+
+function payloadViewSlice(value) {
+  if (value instanceof Uint8Array) return value;
+  try { return new Uint8Array(value.buffer, value.byteOffset, value.byteLength); }
+  catch { return null; }
+}
+
+function scanForStreamedViews(value, refs, seen, sorted) {
+  // `sorted` marks a Map key/value or Set member whose normalized text feeds a
+  // content sort: replacing a view there with a random marker token would change
+  // the canonical ordering, so large views in sorted positions abort the splice.
+  if (value === null || typeof value !== 'object') return true;
+  if (value instanceof Date) return true;
+  if (seen.has(value)) return false;
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
+    if (sorted) return false;
+    const bytes = value instanceof ArrayBuffer ? new Uint8Array(value) : payloadViewSlice(value);
+    if (bytes === null || !Number.isSafeInteger(bytes.byteLength) || bytes.byteLength < 0) return false;
+    if (bytes.byteLength >= STREAMED_VIEW_MIN_BYTES) refs.push(bytes);
+    return true;
+  }
+  seen.add(value);
+  if (value instanceof Map) {
+    for (const [key, entry] of value) if (!scanForStreamedViews(key, refs, seen, true) || !scanForStreamedViews(entry, refs, seen, true)) return false;
+    return true;
+  }
+  if (value instanceof Set) {
+    for (const entry of value) if (!scanForStreamedViews(entry, refs, seen, true)) return false;
+    return true;
+  }
+  if (Array.isArray(value)) {
+    if (value.length >= STREAMED_VIEW_MIN_BYTES) return false;
+    for (let index = 0; index < value.length; index += 1) {
+      if (Object.hasOwn(value, index) && !scanForStreamedViews(value[index], refs, seen, sorted)) return false;
+    }
+    return true;
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return false;
+  for (const key of Object.keys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !('value' in descriptor)) return false;
+    if (!scanForStreamedViews(value[key], refs, seen, sorted)) return false;
+  }
+  return true;
+}
+
+function insertViewMarkers(value, tokens, slot) {
+  if (value === null || typeof value !== 'object') return value;
+  if (value instanceof Date) return value;
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
+    const bytes = value instanceof ArrayBuffer ? new Uint8Array(value) : payloadViewSlice(value);
+    if (bytes !== null && bytes.byteLength >= STREAMED_VIEW_MIN_BYTES) {
+      const index = slot.next;
+      slot.next += 1;
+      return { [VIEW_REF_FIELD]: tokens[index] };
+    }
+    return value;
+  }
+  if (value instanceof Map) {
+    return new Map([...value].map(([key, entry]) => [
+      insertViewMarkers(key, tokens, slot),
+      insertViewMarkers(entry, tokens, slot),
+    ]));
+  }
+  if (value instanceof Set) return new Set([...value].map((entry) => insertViewMarkers(entry, tokens, slot)));
+  if (Array.isArray(value)) return value.map((entry) => insertViewMarkers(entry, tokens, slot));
+  const out = {};
+  for (const key of Object.keys(value)) out[key] = insertViewMarkers(value[key], tokens, slot);
+  return out;
+}
+
+function writeViewByteDecimalText(bytes, writeText) {
+  const last = bytes.length - 1;
+  if (last < 0) return;
+  for (let start = 0; start <= last; start += VIEW_CHUNK_BYTES) {
+    const end = Math.min(start + VIEW_CHUNK_BYTES - 1, last);
+    let text = '';
+    for (let index = start; index <= end; index += 1) text += BYTE_DECIMAL_PREFIXES[bytes[index]];
+    if (end === last) text = text.slice(0, -1);
+    writeText(text);
+  }
+}
+
+function splicedArtifactPayloadBytes(payload) {
+  const refs = [];
+  if (!scanForStreamedViews(payload, refs, new WeakSet(), false)) return null;
+  if (refs.length === 0) return null;
+  const tokens = [];
+  for (let index = 0; index < refs.length; index += 1) {
+    const token = randomViewToken(index);
+    if (token === null) return null;
+    tokens.push(token);
+  }
+  let baseText;
+  try { baseText = stableStringify(insertViewMarkers(payload, tokens, { next:0 })); }
+  catch { return null; }
+  let viewTotal = 0;
+  for (const bytes of refs) viewTotal += bytes.byteLength;
+  let buffer;
+  try { buffer = new Uint8Array(baseText.length * 3 + viewTotal * 4 + tokens.join('').length * 4 + refs.length * 32 + 64); }
+  catch { return null; }
+  let offset = 0;
+  let failed = false;
+  let rest = baseText;
+  const writeText = (text) => {
+    if (failed || !text) return;
+    const { read, written } = encoder.encodeInto(text, buffer.subarray(offset));
+    if (read !== text.length) { failed = true; return; }
+    offset += written;
+  };
+  for (let index = 0; index < refs.length; index += 1) {
+    const fragment = `{\"${VIEW_REF_FIELD}\":\"${tokens[index]}\"}`;
+    const position = rest.indexOf(fragment);
+    if (position < 0 || rest.indexOf(fragment, position + fragment.length) >= 0) return null;
+    writeText(rest.slice(0, position));
+    writeText('[');
+    writeViewByteDecimalText(refs[index], writeText);
+    writeText(']');
+    if (failed) return null;
+    rest = rest.slice(position + fragment.length);
+  }
+  writeText(rest);
+  if (failed) return null;
+  // Return an exact-extent VIEW of the staging buffer. Copying would transiently
+  // double the payload's canonical bytes, which is exactly the amplification
+  // #8738 exists to remove; the slack tail is unreachable garbage for holders.
+  return buffer.subarray(0, offset);
+}
+
+export function encodeArtifactPayload(payload) {
+  const spliced = splicedArtifactPayloadBytes(payload);
+  if (spliced !== null) return spliced;
+  return encoder.encode(stableStringify(payload));
+}
 export function decodeArtifactPayload(bytes) {
   const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   try { return JSON.parse(decoder.decode(view)); }
@@ -202,7 +365,7 @@ export function decodeArtifactPayload(bytes) {
 }
 export function artifactPayloadChecksum(bytes) {
   const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  return stableDigest(Array.from(view));
+  return stableDigestBytes(view);
 }
 
 export function normalizeArtifactPayloadBytes(value, { allowMissing = false } = {}) {
@@ -236,6 +399,7 @@ export function createArtifactRecord(descriptor, payloadBytes, metadata = {}) {
     entityId:descriptor.entityId,
     runtimeSnapshotId:descriptor.runtimeSnapshotId,
     originRefs:descriptor.originRefs,
+    optionsHash:descriptor.optionsHash,
     ...(descriptor.dependencyScope ? { dependencyScope:descriptor.dependencyScope } : {}),
     payloadEncoding:ARTIFACT_PAYLOAD_ENCODING,
     payloadEncodingVersion:1,

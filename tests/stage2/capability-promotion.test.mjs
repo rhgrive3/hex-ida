@@ -8,9 +8,28 @@ import {
 import { createStage2CapabilityProofs } from '../../js/platform/stage2-profile-evidence.js';
 import { validatedCapabilityProofFixture } from './helpers/profile-proof-fixture.mjs';
 import { RemoteCollaborationGate, createRemoteCollaborationEnvelope, createRemoteTransportVerifier, remoteCollaborationSupport } from '../../js/collaboration/remote-authority.js';
-import { createRuntimeAuthorityBinding, runtimeProfileSupport } from '../../js/runtime/authority.js';
+import { createRuntimeAuthorityBinding, RuntimeAuthorityTracker, createRuntimeObservation, runtimeProfileSupport } from '../../js/runtime/authority.js';
 import { createManagedRuntimeBinding, managedRuntimeProfileSupport } from '../../js/managed/runtime-binding.js';
 import { validatedRebuildSupportFixture } from './helpers/rebuild-proof-fixture.mjs';
+
+function exercisedRuntimeReceipt(binding, testItemIdentities) {
+  const tracker = new RuntimeAuthorityTracker(binding);
+  const observationIdentities = [];
+  for (let sequence = 1; sequence <= 2; sequence += 1) {
+    const accepted = tracker.accept(createRuntimeObservation({
+      binding, sequence, observedAt: `2026-08-22T00:00:0${sequence}Z`, kind: 'stop', payload: { pc: '0x1000' },
+    }));
+    assert.equal(accepted.status, 'accepted');
+    observationIdentities.push(accepted.observationId);
+  }
+  const mutation = tracker.authorizeMutation({ actorIdentity: 'local:user', operation: 'write-memory', issuedAt: '2026-08-22T00:00:07Z', explicitApproval: true });
+  assert.equal(mutation.status, 'authorized');
+  return tracker.mintProfileSupportReceipt({
+    observationIdentities,
+    mutationAuthorityIdentities: [mutation.token.tokenId],
+    testItemIdentities,
+  });
+}
 
 const { validation, proofs } = validatedCapabilityProofFixture();
 assert.throws(() => createStage2CapabilityProofs({ ...validation }), /validation-authority-required/, 'a copied validation result has no promotion authority');
@@ -36,7 +55,13 @@ const validatedArm64Runtime = runtimeProfileSupport({
   binding: nativeBinding, providerProfileId: nativeBinding.providerProfileId, targetProfileId: nativeBinding.targetProfileId,
   providerCapabilities: Object.fromEntries(nativeCapabilities.map((name) => [name, true])), requiredCapabilities: nativeCapabilities,
   proof: runtimeFlags, profileProof: proofs['S2-A7-NATIVE'],
+  runtimeReceipt: exercisedRuntimeReceipt(nativeBinding, ['lifecycle', 'capability', 'module-mapping', 'stale-event', 'mutation-authority']),
 });
+assert.equal(runtimeProfileSupport({
+  binding: nativeBinding, providerProfileId: nativeBinding.providerProfileId, targetProfileId: nativeBinding.targetProfileId,
+  providerCapabilities: Object.fromEntries(nativeCapabilities.map((name) => [name, true])), requiredCapabilities: nativeCapabilities,
+  proof: runtimeFlags, profileProof: proofs['S2-A7-NATIVE'],
+}).reason, 'runtime-validation-receipt-required', 'caller-declared runtime booleans cannot mint A7 authority (#8851)');
 const arm64 = stage2ArchitectureMaturity('arm64', { stage1Proof: arm64Stage1, runtimeProof: validatedArm64Runtime, profileProof: proofs['S2-A7-NATIVE'] });
 assert.equal(arm64.level, 'A7');
 assert.equal(arm64.status, 'supported');
@@ -59,6 +84,7 @@ const managedRuntimeAuthority = runtimeProfileSupport({
   binding: managedBinding.runtime, providerProfileId: managedBinding.runtime.providerProfileId, targetProfileId: managedBinding.targetProfileId,
   providerCapabilities: Object.fromEntries(managedCapabilities.map((name) => [name, true])), requiredCapabilities: managedCapabilities,
   proof: runtimeFlags, profileProof: proofs['S2-M6-JVM'],
+  runtimeReceipt: exercisedRuntimeReceipt(managedBinding.runtime, ['frontend-provider', 'state-budget', 'profile-denominator']),
 });
 const validatedJvmRuntime = managedRuntimeProfileSupport({ binding: managedBinding, runtimeProfileProof: managedRuntimeAuthority, proof: {
   exactHead: true, identityNegativeTests: true, staleEventTests: true, stateBudgetTests: true,

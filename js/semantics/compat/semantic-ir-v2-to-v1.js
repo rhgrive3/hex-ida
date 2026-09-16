@@ -447,7 +447,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   addScalarSsaPhis(projected, ssa, valuesById, blockIndexById, instructionBySemanticId);
   appendFunctionUnknowns(projected, ir);
 
-  if (memorySsa) attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir);
+  if (memorySsa) attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir, options);
   else attachFallbackMemory(projected);
 
   for (const inst of projected.instructions) {

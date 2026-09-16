@@ -134,13 +134,11 @@ export class SolverSession {
 
     const settle = (rawResult) => {
       if (record.settled) return;
-      record.settled = true;
-      if (record.timer) clearTimeout(record.timer);
-      if (record.removeExternalAbort) {
-        try { record.removeExternalAbort(); } catch { /* listener cleanup is best effort */ }
-      }
-      this._inFlight.delete(token);
 
+      // #8975: canonicalize while the lifecycle is still live. JavaScript runs
+      // this synchronously, so timeout/cancel cannot interleave; only after a
+      // canonical terminal result exists do we clear the timer and in-flight
+      // authority. A canonicalization failure therefore cannot orphan a query.
       let result = rawResult;
       if (!result || typeof result !== 'object' || !Object.values(SOLVER_STATUS).includes(result.status)) {
         result = this._result(SOLVER_STATUS.PROVIDER_FAILURE, 'provider-returned-invalid-result');
@@ -165,11 +163,6 @@ export class SolverSession {
           }
         );
       } else {
-        // Normalization must never orphan the check promise: `record.settled` is
-        // already true and the host timer is cleared by this point, so a throw
-        // from createSolverResult (e.g. a non-string identity #4685 or an
-        // oversized model) would otherwise leave this promise unsettled. Fail
-        // closed to a canonical PROVIDER_FAILURE instead.
         try {
           result = createSolverResult({
             ...result,
@@ -179,6 +172,13 @@ export class SolverSession {
           result = this._result(SOLVER_STATUS.PROVIDER_FAILURE, 'provider-returned-invalid-result');
         }
       }
+
+      record.settled = true;
+      if (record.timer) clearTimeout(record.timer);
+      if (record.removeExternalAbort) {
+        try { record.removeExternalAbort(); } catch { /* listener cleanup is best effort */ }
+      }
+      this._inFlight.delete(token);
       record.resolve(result);
     };
     record.settle = settle;
@@ -234,8 +234,6 @@ export class SolverSession {
 
   async cancel() {
     if (this.state === SESSION_STATE.CANCELLED || this.state === SESSION_STATE.DISPOSED) return;
-    // A terminated session has already performed its hard cleanup. Calling
-    // cancel again must not touch or reuse the dead provider/worker.
     if (this.state === SESSION_STATE.TERMINATED) return;
     this.state = SESSION_STATE.CANCELLED;
     this.currentQueryToken++;

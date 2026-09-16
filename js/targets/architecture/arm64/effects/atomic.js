@@ -19,6 +19,7 @@ import {
   arm64BarrierOptionFromText,
   arm64BarrierScope,
 } from './barrier-options.js';
+import { arm64EffectIdentityContext } from './common.js';
 
 const EXCLUSIVE_LOAD_RE = /^lda?xr([bh])?$/;
 const EXCLUSIVE_STORE_RE = /^stl?xr([bh])?$/;
@@ -50,21 +51,9 @@ export const ARM64_ATOMIC_INSTRUCTION_INVENTORY = Object.freeze({
 });
 
 function mnemonicOf(decoded) { if (typeof decoded?.mnemonic !== 'string') return ''; return decoded.mnemonic.trim().toLowerCase(); }
-function contextOf(decoded, context = {}) {
-  const instructionId = String(context.instructionId || decoded?.instructionId || '').trim();
-  if (!instructionId) throw new TypeError('arm64-machine-effects-instruction-id-required');
-  return {
-    instructionId,
-    architectureId:String(context.architectureId || decoded?.architectureId || 'arm64'),
-    mode:String(context.mode || decoded?.mode || 'a64'),
-    dataEndianness:String(context.dataEndianness || decoded?.dataEndianness || context.endian || decoded?.endian || 'little'),
-    origin:context.origin || decoded?.origin || { instructionIds:[instructionId] },
-    options:context.options || {},
-  };
-}
 
 function bundle(decoded, context, body) {
-  const ctx = contextOf(decoded, context);
+  const ctx = arm64EffectIdentityContext(decoded, context);
   return createMachineEffectBundle({
     instructionId:ctx.instructionId,
     architectureId:ctx.architectureId,
@@ -279,7 +268,7 @@ function writeLoadedGp(reg, value, valueBits, idPrefix) {
 }
 
 function exclusiveLoad(decoded, context, match) {
-  const ctx = contextOf(decoded, context);
+  const ctx = arm64EffectIdentityContext(decoded, context);
   if (!hasOperandShape(decoded, ['reg','mem'])) return partial(decoded, context, 'exclusive load operand shape is invalid');
   const dest = registers(decoded)[0];
   const sizeSuffix = match[1] || '';
@@ -334,7 +323,7 @@ function exclusiveLoad(decoded, context, match) {
 }
 
 function exclusiveStore(decoded, context, match) {
-  const ctx = contextOf(decoded, context);
+  const ctx = arm64EffectIdentityContext(decoded, context);
   if (!hasOperandShape(decoded, ['reg','reg','mem'])) return partial(decoded, context, 'exclusive store operand shape is invalid');
   const regs = registers(decoded);
   const status = regs[0];
@@ -409,7 +398,7 @@ function exclusiveStore(decoded, context, match) {
 }
 
 function atomicRmw(decoded, context, { family, suffix = '', sizeSuffix = '' }) {
-  const ctx = contextOf(decoded, context);
+  const ctx = arm64EffectIdentityContext(decoded, context);
   if (!hasOperandShape(decoded, ['reg','reg','mem'])) return partial(decoded, context, `${family} operand shape is invalid`);
   const regs = registers(decoded);
   const source = regs[0];
@@ -460,7 +449,7 @@ function atomicRmw(decoded, context, { family, suffix = '', sizeSuffix = '' }) {
 }
 
 function compareSwap(decoded, context, match) {
-  const ctx = contextOf(decoded, context);
+  const ctx = arm64EffectIdentityContext(decoded, context);
   if (!hasOperandShape(decoded, ['reg','reg','mem'])) return partial(decoded, context, 'CAS operand shape is invalid');
   const suffix = match[1] || '';
   const sizeSuffix = match[2] || '';

@@ -52,10 +52,33 @@ function symbol({
   });
 }
 
-function collectAndFuse(rows) {
+function codeImage({ base = 0x1000n, size = 0x40n } = {}) {
+  const segment = {
+    address: base,
+    size,
+    fileOffset: 0n,
+    fileSize: size,
+    perms: { read: true, write: false, execute: true },
+  };
+  return {
+    segments: [segment],
+    segmentAt(address) {
+      const value = BigInt(address);
+      return value >= base && value < base + size ? segment : null;
+    },
+    resolveVirtualMapping(address) {
+      const value = BigInt(address);
+      if (value < base || value >= base + size) return null;
+      const delta = value - base;
+      return { kind: 'file', mapping: segment, offset: segment.fileOffset + delta, available: size - delta };
+    },
+  };
+}
+
+function collectAndFuse(rows, input = {}) {
   const registry = new DiscoveryProducerRegistry();
   registry.register(createDebugEvidenceProducer(rows));
-  const collected = registry.collect({}, 'arm64');
+  const collected = registry.collect(input, 'arm64');
   return {
     evidence: collected.evidence,
     fused: fuseFunctionCandidates(collected.evidence, {
@@ -104,7 +127,7 @@ test('#4050 matched-partial authority remains per-record after the discovery ada
   const rows = debugFunctionEvidence(result, page);
   assert.deepEqual(rows.map((row) => row.confidence), ['exact', 'heuristic']);
 
-  const { evidence, fused } = collectAndFuse(rows);
+  const { evidence, fused } = collectAndFuse(rows, { image: codeImage() });
   assert.deepEqual(evidence.map((row) => row.kind), ['debug-symbol', 'debug-symbol-heuristic']);
   assert.deepEqual(evidence.map((row) => row.authority), ['authoritative', 'heuristic']);
   assert.deepEqual(fused.candidates.map((candidate) => candidate.startState), ['exact', 'heuristic']);
@@ -123,7 +146,7 @@ test('#4050 matched-authoritative debug symbols retain exact start and extent au
   const rows = debugFunctionEvidence(result, createDebugPage({ records: [symbol()] }));
   assert.equal(rows[0]?.confidence, 'exact');
 
-  const { evidence, fused } = collectAndFuse(rows);
+  const { evidence, fused } = collectAndFuse(rows, { image: codeImage() });
   assert.equal(evidence[0]?.authority, 'authoritative');
   assert.equal(fused.candidates[0]?.startState, 'exact');
   assert.equal(fused.candidates[0]?.extentState, 'exact');
@@ -145,7 +168,9 @@ test('#4050 only the canonical exact confidence token can select authoritative d
     { address: '0x7000', confidence: 'exact', name: 'exact' },
   ];
 
-  const produced = createDebugEvidenceProducer(rows).produce();
+  const produced = createDebugEvidenceProducer(rows).produce({
+    image: codeImage({ base: 0x7000n, size: 0x40n }),
+  });
   assert.deepEqual(produced.map((row) => row.authority), [
     'heuristic',
     'heuristic',

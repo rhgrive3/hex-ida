@@ -527,7 +527,11 @@ export function evaluateF6RebuildDenominator({ transaction, validation, publicat
   const loader = validation?.validators?.find((item) => item.validator === 'loader-reparse');
   add('loader-reparse', loader?.status === 'passed' ? 'closed' : 'blocking', loader?.status === 'passed' ? null : 'f6-loader-reparse-unproven', loader?.status === 'passed' ? 'production-loader-reparse' : null);
   const independent = validation?.validators?.find((item) => item.validator === 'independent-differential');
-  add('independent-differential-oracle', independent?.status === 'passed' && validation?.independentDifferential === 'executed' ? 'closed' : 'blocking', independent?.status === 'passed' && validation?.independentDifferential === 'executed' ? null : 'f6-independent-oracle-unproven', independent?.status === 'passed' ? 'independent-oracle-contract' : null);
+  // #8831 — this denominator unit is a release authority: an unregistered caller callback that only
+  // echoes the schema/digests/shape proves no independent implementation ran, so it may not close it.
+  const independentExecuted = independent?.status === 'passed' && validation?.independentDifferential === 'executed';
+  const independentProven = independentExecuted && validation?.independentOracleTrusted === true;
+  add('independent-differential-oracle', independentProven ? 'closed' : 'blocking', independentProven ? null : (independentExecuted ? 'f6-independent-oracle-provider-untrusted' : 'f6-independent-oracle-unproven'), independentProven ? 'trusted-independent-oracle-provider' : null);
 
   add('atomic-publication', publicationComplete ? 'closed' : 'blocking', publicationComplete ? null : 'f6-atomic-publication-unproven', publicationComplete ? 'transaction-v2-publication-identity' : null);
   add('real-fixture', proof.realFixture === true && proof.realFixtureEvidence === true ? 'closed' : 'blocking', proof.realFixture === true && proof.realFixtureEvidence === true ? null : 'f6-real-fixture-evidence-unproven', proof.realFixture === true && proof.realFixtureEvidence === true ? 'compiler-produced-fixture' : null);
@@ -670,6 +674,19 @@ async function sourceBytes(source) {
   return toBytes(source).slice();
 }
 
+// #8796: an admissible length is available from primitive source metadata
+// (typed views, ArrayBuffers, arrays, and a Blob's declared size) before any
+// whole-binary read, so an explicit output budget can be admitted before the
+// source is materialized and hashed.
+function declaredSourceLength(source) {
+  if (typeof Blob !== 'undefined' && source instanceof Blob) {
+    return Number.isSafeInteger(source.size) && source.size >= 0 ? source.size : null;
+  }
+  if (source instanceof Uint8Array || source instanceof ArrayBuffer || ArrayBuffer.isView(source)) return source.byteLength;
+  if (Array.isArray(source)) return source.length;
+  return null;
+}
+
 function transactionIdentityValid(transaction) {
   try {
     if (!transaction || transaction.schemaVersion !== REBUILD_TRANSACTION_SCHEMA) return false;
@@ -796,6 +813,22 @@ export async function materializeRebuildTransaction(transaction, source, options
   if (!transaction || transaction.schemaVersion !== REBUILD_TRANSACTION_SCHEMA) return { status: 'rejected', reason: 'rebuild-v2-transaction-schema-invalid' };
   if (!transactionIdentityValid(transaction)) return { status: 'rejected', reason: 'rebuild-v2-transaction-identity-invalid', transactionId: transaction.transactionId || null };
   if (options.signal?.aborted) return { status: 'cancelled', reason: 'rebuild-v2-cancelled-before-materialization', transactionId: transaction.transactionId };
+  // #8796: a caller-supplied output budget must be admitted before the source
+  // is read, hashed, and copied; otherwise the advertised resource budget
+  // cannot protect materialization admission. The implicit budget is derived
+  // from the source length itself, so only an explicit limit is evaluable here.
+  if (options.maxOutputBytes != null) {
+    let declaredLimit;
+    try { declaredLimit = positiveSafe(options.maxOutputBytes, 2_147_483_647, 2_147_483_647, 'rebuild-v2-max-output-budget-invalid'); }
+    catch { return { status: 'rejected', reason: 'rebuild-v2-max-output-budget-invalid' }; }
+    const declaredLength = declaredSourceLength(source);
+    if (declaredLength != null) {
+      const declaredFinal = declaredLength + transaction.sizeDelta;
+      if (!Number.isSafeInteger(declaredFinal) || declaredFinal < 0 || declaredFinal > declaredLimit) {
+        return { status: 'rejected', reason: 'rebuild-v2-output-budget-exceeded', finalLength: declaredFinal, maxOutputBytes: declaredLimit };
+      }
+    }
+  }
   let original;
   try { original = await sourceBytes(source); }
   catch (error) { return { status: 'rejected', reason: 'rebuild-v2-source-unavailable', detail: String(error?.message || error), transactionId: transaction.transactionId }; }
@@ -982,6 +1015,7 @@ export async function validateRebuildTransaction(transaction, materialized, opti
     status: failures.length === 0 && allExecuted ? 'valid' : 'invalid',
     failures,
     independentDifferential: independent ? (independent.status === 'passed' ? 'executed' : 'failed') : 'unavailable',
+    independentOracleTrusted: transaction.requireIndependentOracle === true ? independentOracleTrusted : false,
   };
   return deepFreeze({ ...validation, validationId: `rebuild-validation:${stableDigest(validation)}` });
 }

@@ -80,12 +80,12 @@ function peUnwindFragmentRegressions() {
   {
     const {bytes,view,image}=makeImage();
     view.setUint32(0x100,0x1000,true);view.setUint32(0x104,(0x10<<2)|1,true);
-    view.setUint32(0x108,0x2000,true);view.setUint32(0x10c,(0x08<<2)|2,true);
+    view.setUint32(0x108,0x1040,true);view.setUint32(0x10c,(0x08<<2)|2,true);
     view.setUint32(0x110,0x3000,true);view.setUint32(0x114,(0x08<<2)|3,true);
     parseExceptionFunctions(new ByteView(bytes),{rva:0x5000,size:24},image,0xaa64);
     assert.deepEqual(image.functions.map(f=>f.address),[0x10001000n]);
     assert.equal(image.metadata.exceptionDirectory.fragments.length,1);
-    assert.equal(image.metadata.exceptionDirectory.fragments[0].address,0x10002000n);
+    assert.equal(image.metadata.exceptionDirectory.fragments[0].address,0x10001040n);
     assert.ok(image.warnings.some(x=>x.includes('reserved ARM64')));
   }
   {
