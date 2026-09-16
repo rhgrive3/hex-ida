@@ -1,0 +1,100 @@
+name: Temporary issue 5192 patch
+on:
+  push:
+    branches: [fix/issue-5192-main-20260917]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/issue-5192-main-20260917
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Apply conservative impact patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('js/rebuild/transaction-v2.js')
+          s = p.read_text()
+          marker = "function requiredValidators(impact, additional = [], requireIndependentOracle = false) {"
+          helper = """function hasFormatSafeImpactProof(input, operations, expectedOriginalState) {
+            const additional = Array.isArray(input.additionalValidators) ? input.additionalValidators : [];
+            const safeState = expectedOriginalState?.formatSafe;
+            if (input.requireIndependentOracle !== true
+                || !additional.includes('format-invariants')
+                || !safeState || typeof safeState !== 'object' || Array.isArray(safeState)
+                || safeState.schema !== FORMAT_SAFE_REBUILD_SCHEMA
+                || typeof safeState.kind !== 'string' || !safeState.kind) return false;
+            return operations.length > 0 && operations.every((operation) => {
+              const provenance = operation?.provenance;
+              return provenance && typeof provenance === 'object' && !Array.isArray(provenance)
+                && provenance.source === 'format-safe-rebuild-adapter'
+                && provenance.schema === FORMAT_SAFE_REBUILD_SCHEMA
+                && provenance.mutationKind === safeState.kind;
+            });
+          }
+
+          """
+          if marker not in s or 'function hasFormatSafeImpactProof(' in s:
+              raise SystemExit('unexpected helper insertion state')
+          s = s.replace(marker, helper + marker, 1)
+          old = """  const impact = {
+            layoutMoving: sizeDelta !== 0 || declaredImpact.layoutMoving === true,
+            relocations: declaredImpact.relocations === true || relocationBindings.length > 0,
+            branchRanges: declaredImpact.branchRanges === true,
+            unwind: declaredImpact.unwind === true,
+            importsExports: declaredImpact.importsExports === true,
+            signature: declaredImpact.signature === true,
+            sections: clone(sections),
+            relocationBindings: clone(relocationBindings),
+          };"""
+          new = """  // #5192: arbitrary generic byte patches have no loader-derived range
+          // authority. Caller `false` declarations cannot prove a same-size edit
+          // misses relocation, branch, unwind, import/export, or signature data.
+          // Only the format-safe path may retain narrow impact, and only when it
+          // carries its invariant validator plus the independent-oracle gate.
+          const conservativeGenericImpact = !hasFormatSafeImpactProof(input, operations, expectedOriginalState);
+          const impact = {
+            layoutMoving: sizeDelta !== 0 || declaredImpact.layoutMoving === true,
+            relocations: conservativeGenericImpact || declaredImpact.relocations === true || relocationBindings.length > 0,
+            branchRanges: conservativeGenericImpact || declaredImpact.branchRanges === true,
+            unwind: conservativeGenericImpact || declaredImpact.unwind === true,
+            importsExports: conservativeGenericImpact || declaredImpact.importsExports === true,
+            signature: conservativeGenericImpact || declaredImpact.signature === true,
+            sections: clone(sections),
+            relocationBindings: clone(relocationBindings),
+          };"""
+          if s.count(old) != 1:
+              raise SystemExit('impact block did not match exactly once')
+          s = s.replace(old, new, 1)
+          old_trust = "  const preservationRequiresTrustedProvider = ['elf-comment', 'pe-timestamp', 'macho-min-version'].includes(transaction.expectedOriginalState?.formatSafe?.kind);"
+          new_trust = "  const preservationRequiresTrustedProvider = transaction.expectedOriginalState?.formatSafe?.schema === FORMAT_SAFE_REBUILD_SCHEMA;"
+          if s.count(old_trust) != 1:
+              raise SystemExit('format-safe provider trust line mismatch')
+          s = s.replace(old_trust, new_trust, 1)
+          p.write_text(s)
+          PY
+      - name: Focused verification
+        shell: bash
+        run: |
+          timeout 30s node --test tests/phase12/rebuild/issue-5192-impact-underdeclaration.test.mjs
+          timeout 30s node tests/issue-5180-loader-reparse-identity.mjs
+          timeout 30s node tests/stage2/issue-4970-phase12-rebuild-format-denominator.test.mjs
+          timeout 180s npm run lint
+      - name: Commit verified patch and remove temporary workflow
+        shell: bash
+        run: |
+          rm .github/workflows/tmp-issue-5192-apply.yml
+          git config user.name 'rhgrive3'
+          git config user.email 'rhgrive@gmail.com'
+          git add js/rebuild/transaction-v2.js tests/issue-5180-loader-reparse-identity.mjs tests/phase12/rebuild/issue-5192-impact-underdeclaration.test.mjs .github/workflows/tmp-issue-5192-apply.yml
+          git diff --cached --check
+          git commit -m 'fix(rebuild): fail closed on generic impact underdeclaration (#5192)'
+          git push origin HEAD:fix/issue-5192-main-20260917
