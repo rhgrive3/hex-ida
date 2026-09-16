@@ -143,7 +143,7 @@ test('#8971 identity stays type- and content-sensitive (#7108)', () => {
   const chunkSplit = observe({ bytes: new Uint8Array(100 * 1024 + 5) });
   const chunkSplitTwin = observe({ bytes: new Uint8Array(100 * 1024 + 5) });
   assert.equal(chunkSplit.observationId, chunkSplitTwin.observationId, 'chunked folding stays deterministic');
-  assert.ok(asView.observationId.startsWith('runtime-observation:v2:'), 'representation change is migrated');
+  assert.ok(asView.observationId.startsWith('runtime-observation:v3:'), 'representation change is migrated');
 });
 
 test('#8971 tampering with an admitted payload is still detected', () => {
@@ -206,4 +206,161 @@ test('#8971 an invalid byte budget option fails closed', () => {
     () => new RuntimeAuthorityTracker(binding, { maxRetainedPayloadBytes: 0 }),
     /runtime-max-retained-payload-bytes-invalid/,
   );
+});
+
+
+test('#8971 multi-MiB-class admitted binary storage is packed and snapshot reads do not recreate boxed bytes', () => {
+  const bytes = new Uint8Array(ONE_MiB);
+  bytes[0] = 0x5a;
+  bytes[bytes.length - 1] = 0xa5;
+  const observation = observe({ bytes });
+  const canonical = observation.payload.bytes;
+  assert.equal(canonical.$hexRuntimeBinary, 'Uint8Array');
+  assert.equal(canonical.encoding, 'base64-chunks-v1');
+  assert.equal(canonical.byteLength, ONE_MiB);
+  assert.ok(Array.isArray(canonical.chunks));
+  assert.ok(canonical.chunks.length < 256, `expected bounded chunk references, got ${canonical.chunks.length}`);
+  assert.equal(Object.prototype.hasOwnProperty.call(canonical, 'bytes'), false,
+    'large canonical payloads must not retain one JS Number per byte');
+  bytes.fill(0);
+  assert.equal(validateRuntimeObservation(binding, observation).ok, true,
+    'caller mutation after publication cannot alter packed canonical content');
+
+  const tracker = new RuntimeAuthorityTracker(binding, { maxRetainedPayloadBytes: 2 * ONE_MiB });
+  assert.equal(tracker.accept(observation).status, 'accepted');
+  for (const copy of [tracker.observations[0], tracker.snapshot().observations[0]]) {
+    assert.equal(copy.payload.bytes.encoding, 'base64-chunks-v1');
+    assert.equal(Object.prototype.hasOwnProperty.call(copy.payload.bytes, 'bytes'), false,
+      'public read/snapshot must not widen packed bytes back into boxed arrays');
+    assert.equal(copy.payload.bytes.chunks.length, canonical.chunks.length);
+  }
+});
+
+test('#8971 packed binary tampering remains identity-detectable', () => {
+  const observation = observe({ bytes: new Uint8Array(ONE_MiB) });
+  const forged = structuredClone(observation);
+  forged.payload.bytes.chunks[0] = forged.payload.bytes.chunks[0].replace(/^A/, 'B');
+  const checked = validateRuntimeObservation(binding, forged);
+  assert.equal(checked.ok, false);
+  assert.ok(['runtime-observation-binary-invalid', 'runtime-observation-identity-invalid'].includes(checked.reason), checked.reason);
+});
+
+test('#8971 imported schema observations are payload-admitted before tracker cloning', () => {
+  const honest = structuredClone(observe({ ok: true }, 1));
+  honest.payload = {
+    raw: {
+      $hexRuntimeBinary: 'Uint8Array',
+      // Sparse is deliberate: the byteLength alone must reject before any
+      // element walk/copy of an imported canonical record.
+      bytes: new Array(3 * ONE_MiB),
+    },
+  };
+  const tracker = new RuntimeAuthorityTracker(binding);
+  const result = tracker.accept(honest);
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.reason, 'runtime-observation-payload-bytes-exceed-limit');
+});
+
+test('#8971 cancellation has authority during chunked canonicalization/identity work', () => {
+  let polls = 0;
+  assert.throws(
+    () => createRuntimeObservation({
+      binding,
+      sequence: 2,
+      observedAt: '2026-09-15T00:00:00Z',
+      kind: 'memory-read',
+      payload: { bytes: new Uint8Array(ONE_MiB) },
+    }, { isCancelled: () => ++polls > 8 }),
+    (error) => error instanceof TypeError && error.message === 'runtime-observation-cancelled',
+  );
+  assert.ok(polls > 8, 'long binary work must poll cancellation more than once');
+});
+
+test('#8971 deadline authority stops long identity work deterministically', () => {
+  let tick = 0;
+  assert.throws(
+    () => createRuntimeObservation({
+      binding,
+      sequence: 3,
+      observedAt: '2026-09-15T00:00:00Z',
+      kind: 'memory-read',
+      payload: { bytes: new Uint8Array(ONE_MiB) },
+    }, { deadlineAt: 8, now: () => tick++ }),
+    (error) => error instanceof TypeError && error.message === 'runtime-observation-deadline-exceeded',
+  );
+});
+
+test('#8971 tracker accept exposes the same cancellation authority for fresh and imported observations', () => {
+  const tracker = new RuntimeAuthorityTracker(binding);
+  let freshPolls = 0;
+  const fresh = tracker.accept({
+    sequence: 4,
+    observedAt: '2026-09-15T00:00:00Z',
+    kind: 'memory-read',
+    payload: { bytes: new Uint8Array(ONE_MiB) },
+  }, { isCancelled: () => ++freshPolls > 6 });
+  assert.deepEqual(fresh, { status: 'rejected', reason: 'runtime-observation-cancelled' });
+
+  const imported = observe({ bytes: new Uint8Array(ONE_MiB) }, 5);
+  const cancelled = tracker.accept(imported, { signal: { aborted: true } });
+  assert.deepEqual(cancelled, { status: 'rejected', reason: 'runtime-observation-cancelled' });
+});
+
+
+test('#8971 1/2/4/8 MiB bounded-heap scaling has no boxed-array amplification', () => {
+  const probe = `
+    import(${JSON.stringify(AUTHORITY_MODULE)}).then((m) => {
+      const binding = m.createRuntimeAuthorityBinding({
+        providerIdentity: 'provider:scale', runtimeInstanceIdentity: 'runtime:scale',
+        targetIdentity: 'target:scale', binaryIdentity: 'binary:scale', moduleIdentity: 'module:scale',
+        loadMappingIdentity: 'mapping:scale', sessionIdentity: 'session:scale', capabilityVersion: '1', epoch: 0,
+      });
+      const results = [];
+      for (const mib of [1, 2, 4, 8]) {
+        const before = process.memoryUsage().heapUsed;
+        try {
+          const observation = m.createRuntimeObservation({
+            binding, sequence: mib, observedAt: '2026-09-15T00:00:00Z', kind: 'memory-read',
+            payload: new Uint8Array(mib * 1024 * 1024),
+          });
+          results.push([mib, 'accepted', observation.payload.encoding || 'boxed', process.memoryUsage().heapUsed - before]);
+        } catch (error) {
+          results.push([mib, String(error?.message), null, process.memoryUsage().heapUsed - before]);
+        }
+      }
+      process.stdout.write(JSON.stringify(results));
+    });
+  `;
+  const run = spawnSync(process.execPath, ['--max-old-space-size=128', '--input-type=module', '-e', probe], {
+    encoding: 'utf8', timeout: 15_000,
+  });
+  assert.equal(run.status, 0, `bounded scaling worker died: ${run.stderr?.slice(-400)}`);
+  const results = JSON.parse(run.stdout);
+  assert.deepEqual(results.map((row) => row.slice(0, 3)), [
+    [1, 'accepted', 'base64-chunks-v1'],
+    [2, 'accepted', 'base64-chunks-v1'],
+    [4, 'runtime-observation-payload-bytes-exceed-limit', null],
+    [8, 'runtime-observation-payload-bytes-exceed-limit', null],
+  ]);
+  for (const [mib, status, , heapDelta] of results) {
+    if (status === 'accepted') assert.ok(heapDelta < 20 * ONE_MiB, `${mib} MiB retained ${heapDelta} heap bytes`);
+  }
+});
+
+test('#8971 packed storage preserves binary constructor identity across large view kinds', () => {
+  const source = new ArrayBuffer(ONE_MiB);
+  const variants = [
+    ['ArrayBuffer', source],
+    ['DataView', new DataView(source)],
+    ['Float64Array', new Float64Array(source)],
+    ['Uint8Array', new Uint8Array(source)],
+  ];
+  const observations = variants.map(([type, value], index) => [type, observe({ bytes: value }, 20 + index)]);
+  for (const [type, observation] of observations) {
+    assert.equal(observation.payload.bytes.$hexRuntimeBinary, type);
+    assert.equal(observation.payload.bytes.encoding, 'base64-chunks-v1');
+    assert.equal(observation.payload.bytes.byteLength, ONE_MiB);
+  }
+  assert.equal(new Set(observations.map(([, observation]) => observation.observationId)).size, variants.length,
+    'constructor type remains identity-bearing for packed content');
 });
