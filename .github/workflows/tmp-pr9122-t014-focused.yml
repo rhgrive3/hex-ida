@@ -6,6 +6,7 @@ on:
       - diag-pr9122-t014
     paths:
       - '.github/workflows/tmp-pr9122-t014-focused.yml'
+      - '.github/pr9122-rebuild.py'
 
 permissions:
   contents: read
@@ -13,31 +14,37 @@ permissions:
 jobs:
   focused:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - name: Capture differential first failure
-        id: diff
-        shell: bash
-        run: |
-          set +e
-          timeout 120s node --test --test-concurrency=1 tests/phase9/solver/t014-bitblast-differential.test.mjs >/tmp/diff.out 2>&1
-          rc=$?
-          {
-            echo "exit_code=$rc"
-            tail -n 120 /tmp/diff.out
-          } > t014-differential-first.txt
-          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
-          exit 0
+      - name: Fetch reviewed donor only
+        run: timeout 60s git fetch --depth=1 origin component/final-closure-t014-v3:refs/remotes/origin/component/final-closure-t014-v3
+      - name: Reconstruct current-contract backend
+        run: python .github/pr9122-rebuild.py
+      - name: Syntax
+        run: timeout 120s node tests/check.mjs
+      - name: T014 structural hash
+        run: timeout 120s node --test --test-concurrency=1 tests/phase9/expr/t014-bounded-structural-hash.test.mjs
+      - name: T014 bitblast differential
+        run: timeout 120s node --test --test-concurrency=1 tests/phase9/solver/t014-bitblast-differential.test.mjs
+      - name: T014 foundation boundaries
+        run: timeout 120s node --test --test-concurrency=1 tests/phase9/solver/t014-foundation-boundaries.test.mjs
+      - name: T014 wide exact
+        run: timeout 120s node --test --test-concurrency=1 tests/phase9/solver/t014-wide-exact.test.mjs
+      - name: T014 registry authority
+        run: timeout 120s node --test --test-concurrency=1 tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs
+      - name: T014 eligibility authority
+        run: timeout 120s node --test --test-concurrency=1 tests/issue-5498-eligibility-result-status-authority.mjs
       - uses: actions/upload-artifact@v4
+        if: success()
         with:
-          name: t014-differential-first
-          path: t014-differential-first.txt
+          name: pr9122-reconstructed-backend
+          path: js/symbolic/solver/bitblast-backend.js
           retention-days: 1
-      - name: Preserve failure status
-        run: test '${{ steps.diff.outputs.exit_code }}' = '0'
