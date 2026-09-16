@@ -13,6 +13,7 @@ on:
       - js/targets/architecture/x86_64/effects/bit-scan.js
       - js/targets/architecture/x86_64/effects/index.js
       - tests/machine-effects/t017-undefined-result-boundaries.test.mjs
+      - tests/machine-effects/t017-compat-undefined-result.test.mjs
       - tests/machine-effects/t017-int-delivery-authority.test.mjs
       - tests/machine-effects/x86-bit-scan-undefined-result.test.mjs
 
@@ -39,6 +40,18 @@ jobs:
             exit "$status"
           fi
           tail -n 30 /tmp/t017-boundaries.out
+      - name: Semantic IR compat transport
+        shell: bash
+        run: |
+          set +e
+          node --test tests/machine-effects/t017-compat-undefined-result.test.mjs > /tmp/t017-compat.out 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            tail -n 120 /tmp/t017-compat.out > /tmp/t017-first-failure.txt
+            cat /tmp/t017-first-failure.txt >> "$GITHUB_STEP_SUMMARY"
+            exit "$status"
+          fi
+          tail -n 40 /tmp/t017-compat.out
       - name: X86 bit-scan semantics
         shell: bash
         run: |
