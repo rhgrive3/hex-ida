@@ -13,52 +13,42 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Resolve known superseded overlap and report remainder
+      - name: Summarize conflict-side history
         shell: bash
         run: |
-          set +e
-          set -uo pipefail
+          set -euo pipefail
           STATUS=/tmp/diag-7036-reconcile.txt
           : > "$STATUS"
           HEAD_SHA=d7d79ee29ef92e33d1007c62a4304f45b18916c0
           MAIN_SHA=012cacc48ec2cd9bde8a5b8a98b77f4a89f9a736
           timeout 90s git fetch --no-tags origin main "$HEAD_SHA" >/tmp/fetch.log 2>&1
-          rc=$?; echo "fetch rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/fetch.log >> "$STATUS"; exit "$rc"; fi
-          git checkout --detach "$HEAD_SHA" >/tmp/checkout.log 2>&1
-          rc=$?; echo "checkout rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/checkout.log >> "$STATUS"; exit "$rc"; fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git merge --no-commit --no-ff "$MAIN_SHA" >/tmp/merge.log 2>&1
-          merge_rc=$?
-          echo "initial_merge_rc=$merge_rc" >> "$STATUS"
-          if [ "$merge_rc" -eq 0 ]; then echo 'unexpected_clean_merge=true' >> "$STATUS"; exit 1; fi
-          T014=(
-            js/symbolic/expr/hash.js
-            js/symbolic/solver/backend.js
-            js/symbolic/solver/bitblast-backend.js
-            js/symbolic/solver/registry.js
-            js/symbolic/solver/tiered-backend.js
-            js/symbolic/solver/worker-backend.js
-            js/symbolic/solver/worker-entry.js
-            js/symbolic/verify/query.js
-            tests/issue-5498-eligibility-result-status-authority.mjs
-            tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs
+          FILES=(
+            .circleci/config.yml
+            js/analysis/discovery/producers.js
+            js/analysis/query/app-adapter.js
+            js/analysis/summary/local-core.js
+            js/rebuild/transaction-v2.js
+            js/semantics/compat/semantic-ir-v2-to-v1-memory.js
+            js/semantics/compat/semantic-ir-v2-to-v1.js
+            js/semantics/memoryssa/proof-core.js
+            js/symbolic/expr/serialize.js
+            js/symbolic/solver/result.js
+            js/symbolic/solver/session.js
+            js/targets/architecture/riscv64/decoded-instruction.js
+            scripts/build-userscript.mjs
+            tests/phase4/binary/issue-4358-elf-dynamic-xindex-common.test.mjs
+            userscript/hex.user.template.js
+            userscript/release-version.json
           )
-          for f in "${T014[@]}"; do
-            if git diff --name-only --diff-filter=U -- "$f" | grep -q .; then
-              git checkout --theirs -- "$f" && git add "$f"
-              rc=$?
-              echo "main_wins $f rc=$rc" >> "$STATUS"
-              if [ "$rc" -ne 0 ]; then exit "$rc"; fi
-            fi
+          echo "head=$HEAD_SHA" >> "$STATUS"
+          echo "main=$MAIN_SHA" >> "$STATUS"
+          for f in "${FILES[@]}"; do
+            echo "=== $f ===" >> "$STATUS"
+            echo '-- main-only --' >> "$STATUS"
+            git log --format='%h %s' -n 3 "$HEAD_SHA..$MAIN_SHA" -- "$f" >> "$STATUS" || true
+            echo '-- pr-only --' >> "$STATUS"
+            git log --format='%h %s' -n 3 "$MAIN_SHA..$HEAD_SHA" -- "$f" >> "$STATUS" || true
           done
-          git diff --name-only --diff-filter=U | sort -u >/tmp/remain.txt
-          count=$(wc -l < /tmp/remain.txt | tr -d ' ')
-          echo "remaining=$count" >> "$STATUS"
-          cat /tmp/remain.txt >> "$STATUS"
-          exit 1
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
