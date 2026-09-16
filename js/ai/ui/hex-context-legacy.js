@@ -134,6 +134,7 @@ export async function analyzeModelAt(app, address, end = null, options = {}) {
   try {
     const res = await analyzeFunctionCached(app.backend, region, startRow, endRow, sym, null, {
       maxRows,
+      architecture,
       signal: options?.signal || null,
     });
     abortIfNeeded(options?.signal);
