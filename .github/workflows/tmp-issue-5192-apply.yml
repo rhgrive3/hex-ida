@@ -42,19 +42,21 @@ jobs:
           };
           if (s.includes('function hasFormatSafeImpactProof(')) fail('helper already present', positions);
           if (Object.values(positions).some((value) => value < 0)) fail('required marker missing', positions);
-          const helper = `function hasFormatSafeImpactProof(input, operations, expectedOriginalState) {
+          const helper = `const FORMAT_SAFE_IMPACT_SCHEMA = 'hex-format-safe-rebuild/v1';
+
+          function hasFormatSafeImpactProof(input, operations, expectedOriginalState) {
             const additional = Array.isArray(input.additionalValidators) ? input.additionalValidators : [];
             const safeState = expectedOriginalState?.formatSafe;
             if (input.requireIndependentOracle !== true
                 || !additional.includes('format-invariants')
                 || !safeState || typeof safeState !== 'object' || Array.isArray(safeState)
-                || safeState.schema !== FORMAT_SAFE_REBUILD_SCHEMA
+                || safeState.schema !== FORMAT_SAFE_IMPACT_SCHEMA
                 || typeof safeState.kind !== 'string' || !safeState.kind) return false;
             return operations.length > 0 && operations.every((operation) => {
               const provenance = operation?.provenance;
               return provenance && typeof provenance === 'object' && !Array.isArray(provenance)
                 && provenance.source === 'format-safe-rebuild-adapter'
-                && provenance.schema === FORMAT_SAFE_REBUILD_SCHEMA
+                && provenance.schema === FORMAT_SAFE_IMPACT_SCHEMA
                 && provenance.mutationKind === safeState.kind;
             });
           }
@@ -86,7 +88,7 @@ jobs:
           const trustEnd = s.indexOf('\n', trust);
           if (trust < 0 || trustEnd <= trust) fail('trust boundary invalid', { trust, trustEnd });
           s = s.slice(0, trust)
-            + "  const preservationRequiresTrustedProvider = transaction.expectedOriginalState?.formatSafe?.schema === FORMAT_SAFE_REBUILD_SCHEMA;"
+            + "  const preservationRequiresTrustedProvider = transaction.expectedOriginalState?.formatSafe?.schema === FORMAT_SAFE_IMPACT_SCHEMA;"
             + s.slice(trustEnd);
           fs.writeFileSync(path, s);
           NODE
