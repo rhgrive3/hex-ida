@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import { open, stat, writeFile } from 'node:fs/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
 import os from 'node:os';
@@ -77,9 +77,7 @@ function runPacProbe(arch) {
   };
 }
 
-const cachePath = CACHE_CANDIDATES.find((candidate) => {
-  try { return command('/usr/bin/test', ['-f', candidate]) === ''; } catch { return false; }
-});
+const cachePath = CACHE_CANDIDATES.find((candidate) => existsSync(candidate));
 if (!cachePath) throw new Error('real-apple-dyld-cache-not-found');
 
 const cacheStat = await stat(cachePath);
