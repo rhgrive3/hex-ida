@@ -4,7 +4,7 @@ on:
     branches:
       - diag/7036-ownership-first-failure
 permissions:
-  contents: read
+  contents: write
 jobs:
   diagnose:
     runs-on: ubuntu-latest
@@ -13,42 +13,128 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Enumerate undeclared roadmap paths
+      - name: Validate complete ownership fix
         shell: bash
         run: |
           set +e
           set -uo pipefail
           STATUS=/tmp/diag-7036.txt
           : > "$STATUS"
-          HEAD_SHA=8beac18cf4b9ac8604dd75be093fd0acf7904f27
-          timeout 90s git fetch --no-tags origin main "$HEAD_SHA" >/tmp/fetch.log 2>&1
+          ORIGINAL_HEAD=8beac18cf4b9ac8604dd75be093fd0acf7904f27
+          LOGICAL_BRANCH=feat/analysis-roadmap-v8-current-main-20260907
+          timeout 90s git fetch --no-tags origin main "$ORIGINAL_HEAD" >/tmp/fetch.log 2>&1
           rc=$?
           echo "fetch rc=$rc" >> "$STATUS"
           if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/fetch.log >> "$STATUS"; exit "$rc"; fi
-          git checkout --detach "$HEAD_SHA" >/tmp/checkout.log 2>&1
+          git checkout --detach "$ORIGINAL_HEAD" >/tmp/checkout.log 2>&1
           rc=$?
           echo "checkout rc=$rc" >> "$STATUS"
           if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/checkout.log >> "$STATUS"; exit "$rc"; fi
-          BASE_SHA=$(git rev-parse refs/remotes/origin/main)
-          echo "base=$BASE_SHA" >> "$STATUS"
-          echo "head=$HEAD_SHA" >> "$STATUS"
-          python3 - "$BASE_SHA" "$HEAD_SHA" >> "$STATUS" 2>&1 <<'PY'
-          import json, subprocess, sys
-          base, head = sys.argv[1:]
-          manifest = json.load(open('tools/validation/analysis-roadmap/ownership.json'))
-          declared = {p for paths in manifest['owners'].values() for p in paths}
-          changed = subprocess.check_output(
-              ['git','diff','--name-only','--diff-filter=ACMR',f'{base}...{head}'], text=True
-          ).splitlines()
-          missing = sorted(p for p in changed if p not in declared)
-          print(f'changed_count={len(changed)}')
-          print(f'undeclared_count={len(missing)}')
-          for p in missing:
-              print(f'undeclared={p}')
-          if missing:
-              raise SystemExit(1)
+
+          python3 - <<'PY' >/tmp/edit.log 2>&1
+          from pathlib import Path
+          paths = [
+            '.github/workflows/x02-apple-evidence.yml',
+            '.github/workflows/x02-dyld-v5-diagnostic.yml',
+            '.github/workflows/x02-dyld-v5-diagnostic2.yml',
+            '.github/workflows/x02-evidence-dispatch-once.yml',
+            '.github/workflows/x02-evidence-dispatch-once3.yml',
+            '.github/workflows/x02-real-acceptance.yml',
+            '.github/workflows/x02-real-runtime-diagnostic.yml',
+            '.github/workflows/x02-real-runtime-diagnostic2.yml',
+            '.github/workflows/x02-v5-code-patch.yml',
+            '.github/workflows/x02-v5-repair.yml',
+            '.github/workflows/x02-v5-shared-region-patch.yml',
+            '.github/workflows/x02-v5-shared-region-patch2.yml',
+            'js/binary/dyld-shared-cache-slide-v5.js',
+            'tests/phase4/binary/dyld-shared-cache-slide-v5-page-start.test.mjs',
+            'tests/scpa/x02-dyld-slide-info5.test.mjs',
+            'tools/validation/x02-apple-runtime-evidence.mjs',
+          ]
+          mjs = Path('tools/validation/analysis-roadmap/ownership.mjs')
+          text = mjs.read_text()
+          anchor = "    '.github/workflows/ghidra-differential.yml',"
+          if text.count(anchor) != 1:
+              raise SystemExit(f'mjs anchor count={text.count(anchor)}')
+          present = [p for p in paths if p in text]
+          if present:
+              raise SystemExit(f'mjs paths already present: {present}')
+          block = anchor + ''.join(f"\n    {p!r}," for p in paths)
+          mjs.write_text(text.replace(anchor, block))
+
+          jsn = Path('tools/validation/analysis-roadmap/ownership.json')
+          text = jsn.read_text()
+          anchor = '      ".github/workflows/ghidra-differential.yml",'
+          if text.count(anchor) != 1:
+              raise SystemExit(f'json anchor count={text.count(anchor)}')
+          present = [p for p in paths if p in text]
+          if present:
+              raise SystemExit(f'json paths already present: {present}')
+          block = anchor + ''.join('\n      ' + __import__('json').dumps(p) + ',' for p in paths)
+          jsn.write_text(text.replace(anchor, block))
           PY
-          exit $?
+          rc=$?
+          echo "edit rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 50 /tmp/edit.log >> "$STATUS"; exit "$rc"; fi
+          git diff --check >/tmp/diffcheck.log 2>&1
+          rc=$?
+          echo "diff_check rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 50 /tmp/diffcheck.log >> "$STATUS"; exit "$rc"; fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tools/validation/analysis-roadmap/ownership.mjs tools/validation/analysis-roadmap/ownership.json
+          git commit -m 'fix(analysis): register X-02 ownership paths' >/tmp/commit.log 2>&1
+          rc=$?
+          echo "commit rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 50 /tmp/commit.log >> "$STATUS"; exit "$rc"; fi
+
+          BASE_SHA=$(git rev-parse refs/remotes/origin/main)
+          TEST_HEAD=$(git rev-parse HEAD)
+          echo "base=$BASE_SHA" >> "$STATUS"
+          echo "test_head=$TEST_HEAD" >> "$STATUS"
+          fail_tail() {
+            label="$1"; file="$2"; rc="$3"
+            echo "$label rc=$rc" >> "$STATUS"
+            echo "--- first failure tail ---" >> "$STATUS"
+            tail -n 80 "$file" >> "$STATUS"
+            exit "$rc"
+          }
+          check() {
+            label="$1"; shift
+            timeout 120s "$@" >"/tmp/$label.log" 2>&1
+            rc=$?
+            [ "$rc" -eq 0 ] || fail_tail "$label" "/tmp/$label.log" "$rc"
+            echo "$label rc=0" >> "$STATUS"
+          }
+
+          check phase7_manifest node tools/validation/phase7-ownership.mjs --check-manifest
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs \
+            --branch "$LOGICAL_BRANCH" --phase phase7 --base-sha "$BASE_SHA" --head-sha "$TEST_HEAD" \
+            >/tmp/p7files.json 2>/tmp/p7_inventory.log
+          rc=$?
+          [ "$rc" -eq 0 ] || fail_tail phase7_inventory /tmp/p7_inventory.log "$rc"
+          P7_JSON=$(cat /tmp/p7files.json)
+          echo "phase7_files=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("/tmp/p7files.json","utf8")).length)')" >> "$STATUS"
+          check phase7_validate node tools/validation/phase7-ownership.mjs --files-json "$P7_JSON"
+
+          check phase8_manifest node tools/validation/phase8-ownership.mjs --check-manifest
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs \
+            --branch "$LOGICAL_BRANCH" --phase phase8 --base-sha "$BASE_SHA" --head-sha "$TEST_HEAD" \
+            >/tmp/p8files.json 2>/tmp/p8_inventory.log
+          rc=$?
+          [ "$rc" -eq 0 ] || fail_tail phase8_inventory /tmp/p8_inventory.log "$rc"
+          P8_JSON=$(cat /tmp/p8files.json)
+          echo "phase8_files=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("/tmp/p8files.json","utf8")).length)')" >> "$STATUS"
+          check phase8_validate node tools/validation/phase8-ownership.mjs --files-json "$P8_JSON"
+          check phase7_roadmap_test node tests/phase7/ownership/roadmap-v8-integration.test.mjs
+          check phase8_roadmap_test node tests/phase8/ownership/roadmap-v8-integration.test.mjs
+
+          timeout 60s git push origin "$TEST_HEAD:refs/heads/$LOGICAL_BRANCH" >/tmp/push.log 2>&1
+          rc=$?
+          echo "push rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 50 /tmp/push.log >> "$STATUS"; exit "$rc"; fi
+          echo "ownership fix published" >> "$STATUS"
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
