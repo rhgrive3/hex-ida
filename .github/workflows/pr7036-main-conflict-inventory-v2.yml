@@ -1,4 +1,4 @@
-name: PR7036 reconciliation v6 solver authority
+name: PR7036 reconciliation v7 query identity
 on:
   push:
     branches: [sync/pr7036-main-20260917-v2]
@@ -6,7 +6,7 @@ permissions:
   contents: write
 jobs:
   reconcile:
-    if: contains(github.event.head_commit.message, 'test PR 7036 reconciliation v6')
+    if: contains(github.event.head_commit.message, 'test PR 7036 reconciliation v7')
     runs-on: ubuntu-latest
     timeout-minutes: 18
     steps:
@@ -26,7 +26,7 @@ jobs:
           MERGE_RC=$?
           set -e
           git diff --name-only --diff-filter=U | sed '/^$/d' | sort > /tmp/conflicts.txt
-          OURS_FILES='js/semantics/compat/semantic-ir-v2-to-v1.js js/semantics/compat/semantic-ir-v2-to-v1-memory.js js/symbolic/solver/backend.js js/symbolic/solver/bitblast-backend.js js/symbolic/solver/registry.js js/symbolic/solver/result.js js/symbolic/solver/session.js js/symbolic/solver/tiered-backend.js js/symbolic/solver/worker-backend.js js/symbolic/solver/worker-entry.js js/symbolic/verify/query.js'
+          OURS_FILES='js/semantics/compat/semantic-ir-v2-to-v1.js js/semantics/compat/semantic-ir-v2-to-v1-memory.js js/semantics/memoryssa/proof-core.js js/symbolic/expr/hash.js js/symbolic/expr/serialize.js js/symbolic/solver/backend.js js/symbolic/solver/bitblast-backend.js js/symbolic/solver/registry.js js/symbolic/solver/result.js js/symbolic/solver/session.js js/symbolic/solver/tiered-backend.js js/symbolic/solver/worker-backend.js js/symbolic/solver/worker-entry.js js/symbolic/verify/query.js'
           for f in $OURS_FILES; do git checkout --ours -- "$f"; git add -- "$f"; done
           while IFS= read -r f; do
             keep=0; for o in $OURS_FILES; do [ "$f" = "$o" ] && keep=1; done; [ "$keep" -eq 1 ] && continue
@@ -50,8 +50,8 @@ jobs:
           set -e
           {
             echo "base_head=$BASE_HEAD"; echo "main_head=$(git rev-parse FETCH_HEAD)"; echo "merge_rc=$MERGE_RC"; echo "conflict_count=$(wc -l < /tmp/conflicts.txt | tr -d ' ')"; echo "test_rc=$TEST_RC"; cat /tmp/test-status.txt
-            if [ "$TEST_RC" -ne 0 ]; then failed="$(awk '$1 != 0 {print $2; exit}' /tmp/test-status.txt)"; echo "--- first test failure: $failed ---"; tail -n 160 "/tmp/$(basename "$failed").txt"; fi
-          } > pr7036-reconcile-v6-result.txt
+            if [ "$TEST_RC" -ne 0 ]; then failed="$(awk '$1 != 0 {print $2; exit}' /tmp/test-status.txt)"; echo "--- first test failure: $failed ---"; tail -n 180 "/tmp/$(basename "$failed").txt"; fi
+          } > pr7036-reconcile-v7-result.txt
           if [ "$TEST_RC" -ne 0 ]; then exit 1; fi
           git commit -m 'merge: reconcile PR 7036 with main 799bc6c4'
           git push origin HEAD:sync/pr7036-main-20260917-v2
@@ -59,7 +59,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr7036-reconcile-v6-result
-          path: pr7036-reconcile-v6-result.txt
+          name: pr7036-reconcile-v7-result
+          path: pr7036-reconcile-v7-result.txt
           if-no-files-found: ignore
           retention-days: 2
