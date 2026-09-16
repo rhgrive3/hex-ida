@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: feat/analysis-roadmap-v8-current-main-20260907
+          ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -77,7 +77,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: feat/analysis-roadmap-v8-current-main-20260907
+          ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
       - uses: actions/setup-node@v4
