@@ -1,4 +1,4 @@
-name: Diagnose PR7036 effective tree diff
+name: Diagnose PR7036 residual delta
 
 on:
   push:
@@ -13,39 +13,67 @@ permissions:
 jobs:
   compare:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@v7
         with:
           ref: 8e044df4a6b0c1b2db973d43d49f5b7c17c13ae8
           fetch-depth: 1
-      - name: Verify exact base
+      - name: Verify current-main snapshot
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "8e044df4a6b0c1b2db973d43d49f5b7c17c13ae8"
-      - name: Fetch PR7036 head
+      - name: Fetch PR7036 endpoints
         shell: bash
         run: |
           set -euo pipefail
+          timeout 90s git fetch --no-tags --depth=1 origin 178d386afc63c494d091fb3500c49361ab0a7dc7:refs/remotes/origin/pr7036-base
           timeout 90s git fetch --no-tags origin pull/7036/head:refs/remotes/origin/pr7036
+          test "$(git rev-parse refs/remotes/origin/pr7036-base)" = "178d386afc63c494d091fb3500c49361ab0a7dc7"
           test "$(git rev-parse refs/remotes/origin/pr7036)" = "837d0ce34668f65defac5f3517a802f366336158"
-      - name: Compute exact tree diff
+      - name: Classify intended paths against current main
         shell: bash
         run: |
           set -euo pipefail
-          git diff --name-status HEAD refs/remotes/origin/pr7036 > /tmp/effective.txt
-          count=$(wc -l < /tmp/effective.txt | tr -d ' ')
+          BASE=refs/remotes/origin/pr7036-base
+          PR=refs/remotes/origin/pr7036
+          git -c core.quotePath=false diff --name-only -z "$BASE" "$PR" > /tmp/intended.z
+          : > /tmp/residual.txt
+          : > /tmp/identical.txt
+          intended=0
+          residual=0
+          identical=0
+          while IFS= read -r -d '' p; do
+            intended=$((intended+1))
+            mb=$(git rev-parse "HEAD:$p" 2>/dev/null || printf 'MISSING')
+            pb=$(git rev-parse "$PR:$p" 2>/dev/null || printf 'MISSING')
+            if [ "$mb" = "$pb" ]; then
+              identical=$((identical+1))
+              printf '%s\n' "$p" >> /tmp/identical.txt
+            else
+              residual=$((residual+1))
+              if [ "$mb" = MISSING ]; then state=ADD_TO_MAIN;
+              elif [ "$pb" = MISSING ]; then state=DELETE_FROM_MAIN;
+              else state=DIFFERENT; fi
+              printf '%s\t%s\n' "$state" "$p" >> /tmp/residual.txt
+            fi
+          done < /tmp/intended.z
           {
-            echo "base=$(git rev-parse HEAD)"
-            echo "pr=$(git rev-parse refs/remotes/origin/pr7036)"
-            echo "effective_diff_count=$count"
-            echo "--- effective diff ---"
-            cat /tmp/effective.txt
-          } > diag-pr7036-tree-summary.txt
+            echo "current_main=$(git rev-parse HEAD)"
+            echo "pr_base=$(git rev-parse "$BASE")"
+            echo "pr_head=$(git rev-parse "$PR")"
+            echo "intended_path_count=$intended"
+            echo "already_identical_count=$identical"
+            echo "residual_path_count=$residual"
+            echo "--- residual prefix counts ---"
+            cut -f2 /tmp/residual.txt | awk -F/ '{k=$1; if ($1=="js" || $1=="tests" || $1=="tools") k=$1"/"$2; c[k]++} END {for (k in c) print c[k], k}' | sort -nr
+            echo "--- residual paths ---"
+            cat /tmp/residual.txt
+          } > diag-pr7036-residual-summary.txt
       - name: Upload summary
         uses: actions/upload-artifact@v4
         with:
-          name: diag-pr7036-tree-summary
-          path: diag-pr7036-tree-summary.txt
+          name: diag-pr7036-residual-summary
+          path: diag-pr7036-residual-summary.txt
           retention-days: 1
