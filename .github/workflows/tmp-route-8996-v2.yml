@@ -1,0 +1,51 @@
+name: tmp-route-8996-v2
+on:
+  push:
+    branches:
+      - codex/issue-campaign-20260914-lane-10-batch-04
+permissions:
+  contents: write
+jobs:
+  route:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Converge ownership route to current PR inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p = Path('.circleci/config.yml')
+          s = p.read_text()
+          new_p7 = '''              codex/issue-campaign-20260914-lane-10-batch-04)\n                # PR #8996 has converged to the Phase 7 #8817 repair; #8975 and\n                # #8653 are already superseded by main. Require the complete\n                # three-file inventory before validating the two Phase 7 files.\n                FILES_JSON="$(git diff --name-only --diff-filter=ACMR "$OWNERSHIP_BASE_SHA...$OWNERSHIP_HEAD_SHA" | node -e '\n                  const fs = require("node:fs");\n                  const actual = fs.readFileSync(0, "utf8").split(/\\r?\\n/).filter(Boolean).sort();\n                  const expected = [\n                    ".circleci/config.yml",\n                    "js/analysis/semantic-function-base.js",\n                    "tests/phase7/abi/issue-8817-aapcs64-proven-fixed-prefix-retention.test.mjs",\n                  ].sort();\n                  if (actual.length !== expected.length || actual.some((file, i) => file !== expected[i])) {\n                    console.error("PR #8996 Phase 7 route inventory mismatch");\n                    console.error(JSON.stringify({ actual, expected }));\n                    process.exit(1);\n                  }\n                  process.stdout.write(JSON.stringify([\n                    "js/analysis/semantic-function-base.js",\n                    "tests/phase7/abi/issue-8817-aapcs64-proven-fixed-prefix-retention.test.mjs",\n                  ]));\n                ')"\n                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"\n                ;;'''
+          pat = r"              codex/issue-campaign-20260914-lane-10-batch-04\)\n.*?\n                ;;"
+          s, n = re.subn(pat, new_p7, s, count=1, flags=re.S)
+          if n != 1:
+              raise SystemExit(f'phase7 route replace count={n}')
+          pat8 = r"            elif \[ \"\$\{CIRCLE_BRANCH:-\}\" = 'codex/issue-campaign-20260914-lane-10-batch-04' \]; then\n.*?(?=            else\n              node tools/validation/phase8-ownership\.mjs)"
+          s, n = re.subn(pat8, '', s, count=1, flags=re.S)
+          if n != 1:
+              raise SystemExit(f'phase8 stale route remove count={n}')
+          p.write_text(s)
+          PY
+      - name: Validate converged ownership route
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tools/validation/phase7-ownership.mjs --files-json '["js/analysis/semantic-function-base.js","tests/phase7/abi/issue-8817-aapcs64-proven-fixed-prefix-retention.test.mjs"]'
+          node tests/ci/circleci-impact.test.mjs
+      - name: Commit route and remove temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/tmp-route-8996-v2.yml
+          git config user.name 'rhgrive3'
+          git config user.email 'rhgrive@gmail.com'
+          git add .circleci/config.yml .github/workflows/tmp-route-8996-v2.yml
+          git commit -m 'ci: converge PR 8996 ownership route to current main'
+          git push origin HEAD:codex/issue-campaign-20260914-lane-10-batch-04
