@@ -81,6 +81,8 @@ const SPECIAL_PATHS = Object.freeze({
     'js/targets/architecture/x86_64/semantic-function-contract.js', '.circleci/config.yml', '.github/workflows/phase7-ownership.yml', '.github/workflows/phase8-ownership.yml',
     'scripts/build-userscript.mjs', 'scripts/userscript-publication.mjs',
     'tests/userscript-publication.mjs', 'tests/userscript-release-version.mjs',
+    'tests/userscript-embed-child.mjs',
+    'tests/ci/final-head-admission-6570.test.mjs', 'tests/ci/final-head-admission-auto-reviewer-identity-6570.test.mjs',
     'docs/symbolic-proof-optimizer-v8.md', 'docs/analysis-roadmap-v8-integration-checkpoint.md', 'js/decompile.js', 'js/decompile-base.js', 'js/controlflow.js',
     'js/ui/decompiler-provenance.js', 'js/ui/product-base.js', 'css/components.css',
     'js/ui/decompiler-provenance-sheet.js', 'js/tools-base.js',

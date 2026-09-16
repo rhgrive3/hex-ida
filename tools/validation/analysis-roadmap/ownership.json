@@ -193,7 +193,9 @@
       "tests/phase8/abi/hex-c3-02-boundaries.test.mjs",
       "tests/phase8/abi/hex-c3-02-required-profile-matrix.mjs",
       "tests/phase8/c4-local/normal-completion-scope.test.mjs",
-      "js/decompiler/phase8/analysis-identity.js"
+      "js/decompiler/phase8/analysis-identity.js",
+      "tests/phase8/structuring/conditional-region-body-authority.test.mjs",
+      "tests/phase8/structuring/conditional-region-body-projection.test.mjs"
     ],
     "symbolic": [
       "js/symbolic/egraph/graph.js",
@@ -530,7 +532,10 @@
       "js/analyze.js",
       "js/blocks-base.js",
       "tests/phase4/issue-3911-blocks-base-call-arg-provenance.test.mjs",
-      "docs/analysis-remaining-20260914.md"
+      "docs/analysis-remaining-20260914.md",
+      "tests/ci/final-head-admission-6570.test.mjs",
+      "tests/ci/final-head-admission-auto-reviewer-identity-6570.test.mjs",
+      "tests/userscript-embed-child.mjs"
     ]
   }
 }
