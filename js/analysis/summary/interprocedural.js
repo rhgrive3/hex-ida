@@ -853,6 +853,7 @@ function composeSummary({
         continue;
       }
       writes.push([broadEffect('unknown-call-fallback')]);
+      reads.push([broadEffect('unknown-call-fallback')]);
       addRow(unknowns, createUnknownCallEffect({
         callSiteId: call.callSiteId,
         reason: locals.has(target) ? 'summary-missing' : 'library-model-missing',
@@ -885,6 +886,7 @@ function composeSummary({
         continue;
       }
       writes.push([broadEffect('unknown-call-fallback')]);
+      reads.push([broadEffect('unknown-call-fallback')]);
       addRow(unknowns, createUnknownCallEffect({
         callSiteId: set.callSiteId,
         reason: locals.has(candidate) ? 'summary-missing' : 'library-model-missing',
@@ -895,6 +897,7 @@ function composeSummary({
     }
     if (!set.exhaustive) {
       writes.push([broadEffect('unknown-call-fallback')]);
+      reads.push([broadEffect('unknown-call-fallback')]);
       if (!unknowns.some((unknown) => unknown.callSiteId === set.callSiteId)) {
         addRow(unknowns, createUnknownCallEffect({ callSiteId: set.callSiteId, reason: 'indirect-incomplete-target-set' }));
       }

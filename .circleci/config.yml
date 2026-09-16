@@ -241,6 +241,16 @@ jobs:
                   --head-sha "$OWNERSHIP_HEAD_SHA")"
                 node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
                 ;;
+              consolidated-owner3)
+                # PR #8492 combines Phase 7 summary authority with managed-bridge
+                # and Phase 10 experiment paths. Reject every undeclared foreign
+                # path before projecting the Phase 7-owned subset.
+                FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+                  --branch "$CIRCLE_BRANCH" \
+                  --base-sha "$OWNERSHIP_BASE_SHA" \
+                  --head-sha "$OWNERSHIP_HEAD_SHA")"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
               codex/issue-campaign-20260914-lane-02-batch-03)
                 # PR #8995 spans Phase 7 evidence plus independently owned artifact,
                 # debug/runtime transport, Phase 4, and Phase 10 paths. Keep the
