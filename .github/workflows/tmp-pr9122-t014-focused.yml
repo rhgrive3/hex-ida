@@ -1,0 +1,32 @@
+name: Temporary PR9122 T014 focused verification
+
+on:
+  push:
+    branches:
+      - diag-pr9122-t014
+    paths:
+      - '.github/workflows/tmp-pr9122-t014-focused.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: T014 solver focused suite
+        run: |
+          timeout 300s node --test --test-concurrency=1 \
+            tests/phase9/expr/t014-bounded-structural-hash.test.mjs \
+            tests/phase9/solver/t014-bitblast-differential.test.mjs \
+            tests/phase9/solver/t014-foundation-boundaries.test.mjs \
+            tests/phase9/solver/t014-wide-exact.test.mjs \
+            tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs \
+            tests/issue-5498-eligibility-result-status-authority.mjs
