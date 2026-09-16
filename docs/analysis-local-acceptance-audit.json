@@ -12,11 +12,11 @@
   "findings": [
     {
       "id": "HEX-C0-01",
-      "localStatus": "existing-gate",
-      "assessment": "同一artifactのdebug/stripped authorityは入力に存在。現headの全corpus/生成物ゲートは未合格。",
-      "source": "tools/validation/competitive",
-      "verificationSuite": "check",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "assessment": "C0-01 の competitive ground-truth contract をローカル受入。profile denominator は固定かつ非空で、binary scored + measured row は full same-binary twin manifest と replay evidence を必須とする。debug-bearing artifactから認識済み strip-only 操作で生成した twin のみを受理し、same-source rebuild、compiler/optimization/target/source/build drift、one-byte patch、wrong twin、stale/missing manifest、unknown strip tool/operation、denominator shrink、competitor output authority化を拒否する。未測定legacy rowは勝手に exact/proven へ昇格しない。whole-roadmap/release/device gates は別。",
+      "source": "tests/competitive/twin-manifest.test.mjs",
+      "verificationSuite": "c0-01-final-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "HEX-ME-01",
@@ -208,9 +208,9 @@
       "mustWaitFor": "none",
       "complexity": "M",
       "findingId": "HEX-C0-01",
-      "localStatus": "existing-gate",
-      "currentAssessment": "同一artifactのdebug/stripped authorityは入力に存在。現headの全corpus/生成物ゲートは未合格。",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "currentAssessment": "frozen competitive profile、same-binary twin positive/negative、toolchain/source/build drift、deterministic manifest、denominator shrink、scorecard replay evidenceを受入。測定済みbinary rowはsame-artifact debug/stripped lineage以外でscore authorityを得ない。",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "FR-ME-01A",
@@ -2360,6 +2360,27 @@
         "issue-c1-consolidated-regressions"
       ],
       "falseExactness": "zero-required",
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false
+    },
+    "c0GroundTruthAcceptance20260916": {
+      "status": "ACCEPTED-LOCAL",
+      "finding": "HEX-C0-01",
+      "task": "FR-C0-01A",
+      "suite": "tests/competitive/run.mjs",
+      "requiredAuthority": "same-binary-twin",
+      "driftRejection": [
+        "compiler",
+        "optimization",
+        "target",
+        "source",
+        "build-identity",
+        "artifact-byte",
+        "stale-manifest",
+        "unknown-strip-operation",
+        "denominator-shrink"
+      ],
+      "legacyUnmeasuredPromotesToExact": false,
       "fullRoadmapComplete": false,
       "transformAuthorization": false
     }

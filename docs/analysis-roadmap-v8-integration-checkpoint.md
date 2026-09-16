@@ -7776,3 +7776,8 @@ fullRoadmapComplete:false、transformAuthorization:false、マージ未実施を
 ## 2026-09-16 C1-03 local acceptance
 
 `tests/phase7/alias/c1-root-rename-metamorphism.test.mjs` の frozen 30-query / 240 rename cells と alias authority negative suite で、global/heap/TLSを含むroot evidenceを再受入した。名前・node/value/state-key IDのspelling変更は relation/reason/completeness を変えず、forged rename、stale escape、conflicting root、provider separation の不完全証拠から exact NoAlias/MustAlias を発行しない。HEX-C1-03 / FR-C1-03A はこのローカル要件について accepted-local。C1-01/C1-02 と全roadmap/release/device受入は未完了のまま。
+
+
+## 2026-09-16 C0-01 local acceptance
+
+`tests/competitive/run.mjs` と same-binary twin contractで、frozen competitive profile、debug/stripped lineage、deterministic manifest、toolchain/source/build drift、wrong/patched/stale twin、denominator shrinkを再受入した。測定済みbinary rowはfull same-binary twin manifestとreplay evidenceを必須とし、legacy unmeasured rowはexact truthへ昇格しない。HEX-C0-01 / FR-C0-01A はこのローカル要件について accepted-local。全roadmap/release/device受入は未完了のまま。
