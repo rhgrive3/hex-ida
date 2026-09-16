@@ -1,0 +1,51 @@
+name: diag-7036-e899-ownership
+on:
+  push:
+    branches:
+      - diag/7036-ownership-e899
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reproduce latest ownership first failure
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          STATUS=/tmp/diag-7036-e899.txt
+          : > "$STATUS"
+          HEAD_SHA=e899de712afe30f76616cb6e3d2af5c04fdaa6b9
+          LOGICAL_BRANCH=feat/analysis-roadmap-v8-current-main-20260907
+          timeout 90s git fetch --no-tags origin main "$HEAD_SHA" >/tmp/fetch.log 2>&1
+          rc=$?; if [ "$rc" -ne 0 ]; then echo "fetch rc=$rc" >> "$STATUS"; tail -n 40 /tmp/fetch.log >> "$STATUS"; exit "$rc"; fi
+          git checkout --detach "$HEAD_SHA" >/tmp/co.log 2>&1
+          rc=$?; if [ "$rc" -ne 0 ]; then echo "checkout rc=$rc" >> "$STATUS"; tail -n 40 /tmp/co.log >> "$STATUS"; exit "$rc"; fi
+          BASE_SHA=$(git rev-parse refs/remotes/origin/main)
+          echo "base=$BASE_SHA" >> "$STATUS"
+          echo "head=$HEAD_SHA" >> "$STATUS"
+          fail() { echo "$1 rc=$3" >> "$STATUS"; echo '--- first failure ---' >> "$STATUS"; tail -n 80 "$2" >> "$STATUS"; exit "$3"; }
+          timeout 120s node tools/validation/phase7-ownership.mjs --check-manifest >/tmp/p7m.log 2>&1
+          rc=$?; [ "$rc" -eq 0 ] || fail phase7_manifest /tmp/p7m.log "$rc"; echo 'phase7_manifest=pass' >> "$STATUS"
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase7 --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" >/tmp/p7.json 2>/tmp/p7i.log
+          rc=$?; [ "$rc" -eq 0 ] || fail phase7_inventory /tmp/p7i.log "$rc"
+          timeout 120s node tools/validation/phase7-ownership.mjs --files-json "$(cat /tmp/p7.json)" >/tmp/p7v.log 2>&1
+          rc=$?; [ "$rc" -eq 0 ] || fail phase7_validate /tmp/p7v.log "$rc"; echo 'phase7=pass' >> "$STATUS"
+          timeout 120s node tools/validation/phase8-ownership.mjs --check-manifest >/tmp/p8m.log 2>&1
+          rc=$?; [ "$rc" -eq 0 ] || fail phase8_manifest /tmp/p8m.log "$rc"; echo 'phase8_manifest=pass' >> "$STATUS"
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase8 --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" >/tmp/p8.json 2>/tmp/p8i.log
+          rc=$?; [ "$rc" -eq 0 ] || fail phase8_inventory /tmp/p8i.log "$rc"
+          timeout 120s node tools/validation/phase8-ownership.mjs --files-json "$(cat /tmp/p8.json)" >/tmp/p8v.log 2>&1
+          rc=$?; [ "$rc" -eq 0 ] || fail phase8_validate /tmp/p8v.log "$rc"; echo 'phase8=pass' >> "$STATUS"
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-7036-e899-ownership
+          path: /tmp/diag-7036-e899.txt
+          retention-days: 1
