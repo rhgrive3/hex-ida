@@ -1,4 +1,4 @@
-name: Temporary exact ownership diagnostic
+name: Temporary exact ownership gap inventory
 on:
   push:
     branches: ['impl/c4-04-integrate-20260916']
@@ -11,39 +11,34 @@ jobs:
     timeout-minutes: 5
     env:
       HEAD_SHA: 006a6f0617b2c4f699bf341a6525c5061891fcc1
-      TARGET_BRANCH: feat/analysis-roadmap-v8-current-main-20260907
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ env.HEAD_SHA }}
           fetch-depth: 400
-      - name: Fetch only main history needed for merge-base
+      - name: Fetch exact main history
         shell: bash
         run: |
           set -euo pipefail
           git fetch --no-tags --depth=300 origin main:refs/remotes/origin/main
-          git merge-base refs/remotes/origin/main "$HEAD_SHA" >/tmp/merge-base.txt
           git rev-parse refs/remotes/origin/main >/tmp/main-sha.txt
-      - name: Capture exact ownership first failures
+      - name: Enumerate undeclared roadmap paths only
         shell: bash
         run: |
-          set +e
+          set -euo pipefail
           BASE_SHA=$(cat /tmp/main-sha.txt)
-          : > /tmp/ownership-exact.txt
-          for phase in phase7 phase8; do
-            echo "[$phase manifest]" >> /tmp/ownership-exact.txt
-            node "tools/validation/${phase}-ownership.mjs" --check-manifest >> /tmp/ownership-exact.txt 2>&1
-            echo "manifest_rc=$?" >> /tmp/ownership-exact.txt
-            echo "[$phase roadmap]" >> /tmp/ownership-exact.txt
-            node tools/validation/analysis-roadmap/ownership.mjs --branch "$TARGET_BRANCH" --phase "$phase" --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" >> /tmp/ownership-exact.txt 2>&1
-            echo "roadmap_rc=$?" >> /tmp/ownership-exact.txt
-          done
-          echo "base=$BASE_SHA" >> /tmp/ownership-exact.txt
-          echo "head=$HEAD_SHA" >> /tmp/ownership-exact.txt
-          echo "merge_base=$(cat /tmp/merge-base.txt)" >> /tmp/ownership-exact.txt
-          sed -n '1,80p' /tmp/ownership-exact.txt
+          git diff --no-renames --name-only -z "$BASE_SHA...$HEAD_SHA" >/tmp/files.z
+          node --input-type=module <<'NODE' > /tmp/roadmap-gaps.json
+          import fs from 'node:fs';
+          import {loadRoadmapManifest,validateRoadmapManifest} from './tools/validation/analysis-roadmap/ownership.mjs';
+          const assignment=validateRoadmapManifest(loadRoadmapManifest());
+          const files=fs.readFileSync('/tmp/files.z').toString('utf8').split('\0').filter(Boolean);
+          const missing=files.filter(file=>!assignment.has(file));
+          console.log(JSON.stringify({changed:files.length,missingCount:missing.length,missing},null,2));
+          NODE
+          cat /tmp/roadmap-gaps.json
       - uses: actions/upload-artifact@v4
         with:
-          name: exact-ownership-first-failure
-          path: /tmp/ownership-exact.txt
+          name: exact-roadmap-ownership-gaps
+          path: /tmp/roadmap-gaps.json
           retention-days: 1
