@@ -23,16 +23,24 @@ function sharedImpModel(methodsPerClass, classes = 2, addr = 0x1000n) {
   })) };
 }
 
-test('#8855 shared-IMP owner construction is linear-bounded, not Θ(M²)', () => {
-  // 50 000 distinct selectors sharing ONE executable IMP. The pre-fix scan
-  // needs ~1.25 billion comparisons (~6 s on the audit machine, 9 s at the
-  // issue's 60 000-method scale); the dedupe table makes this a few ms.
-  const model = sharedImpModel(25_000, 2);
+function timedSharedImpConstruction(methodsPerClass, classes = 3) {
   const startedAt = performance.now();
-  const index = new FieldIndex(model);
-  const elapsedMs = performance.now() - startedAt;
-  assert.ok(elapsedMs < 2500,
-    `FieldIndex over 50 000 shared-IMP owners took ${elapsedMs.toFixed(0)} ms (bound 2500 ms)`);
+  const index = new FieldIndex(sharedImpModel(methodsPerClass, classes));
+  return { index, elapsedMs: performance.now() - startedAt };
+}
+
+test('#8855 shared-IMP owner construction scales near-linearly through 60 000 owners', () => {
+  // The issue's supported denominator is 3 × 20 000 = 60 000 distinct owners.
+  // Compare separated sizes so a fast runner cannot hide a materially
+  // super-linear regression behind one host-sensitive wall-clock threshold.
+  const small = timedSharedImpConstruction(6_667, 3); // 20 001 owners
+  const large = timedSharedImpConstruction(20_000, 3); // 60 000 owners
+  const owners = large.index.ownersOf(0x1000n);
+  assert.equal(owners.length, 60_000);
+  assert.ok(large.elapsedMs <= small.elapsedMs * 5 + 1000,
+    `60 000-owner construction ${large.elapsedMs.toFixed(0)} ms exceeds near-linear bound from 20 001-owner construction ${small.elapsedMs.toFixed(0)} ms`);
+  assert.ok(large.elapsedMs < 5000,
+    `FieldIndex over 60 000 shared-IMP owners took ${large.elapsedMs.toFixed(0)} ms (bound 5000 ms)`);
 });
 
 test('#8855 all shared-IMP owners are retained with first-insert order', () => {
