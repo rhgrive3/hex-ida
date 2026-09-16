@@ -55,6 +55,58 @@ function normalizePerms(p) {
 
 function minBigInt(a, b) { return a < b ? a : b; }
 
+function identityKeyPart(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'bigint') return value.toString();
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value === 'boolean') return String(value);
+  return null;
+}
+
+function identityTextKeyPart(value) {
+  if (value == null) return '';
+  return typeof value === 'string' ? value : null;
+}
+
+function identityFlagKeyPart(value) {
+  if (value == null) return '0';
+  return typeof value === 'boolean' ? (value ? '1' : '0') : null;
+}
+
+function importIdentityKey(i) {
+  if (i == null || typeof i !== 'object' || Array.isArray(i)) return null;
+  const parts = [
+    identityTextKeyPart(i.library),
+    identityTextKeyPart(i.name),
+    identityKeyPart(i.ordinal),
+    identityFlagKeyPart(i.weak),
+    identityKeyPart(i.addend ?? 0n),
+    identityKeyPart(i.pointerFormat),
+    identityKeyPart(i.type),
+    identityKeyPart(i.version),
+    identityTextKeyPart(i.versionLibrary),
+  ];
+  return parts.includes(null) ? null : parts.join('\0');
+}
+
+function siteIdentityKey(s) {
+  if (s == null || typeof s !== 'object' || Array.isArray(s)) return null;
+  const parts = [
+    identityKeyPart(s.address),
+    identityKeyPart(s.offset),
+    identityTextKeyPart(s.kind),
+    identityKeyPart(s.type),
+    identityKeyPart(s.addend),
+    identityKeyPart(s.pointerFormat),
+    identityFlagKeyPart(s.weak),
+    identityKeyPart(s.recordFileOffset),
+    identityKeyPart(s.recordIndex),
+    identityTextKeyPart(s.recordEncoding),
+  ];
+  return parts.includes(null) ? null : parts.join(':');
+}
+
 function buildVirtualMappingLookup(sections, segments) {
   const items = [];
   let order = 0;
@@ -1170,33 +1222,31 @@ export function mergeFunctionSeeds(input, context = {}) {
 }
 
 function dedupeImports(input) {
-  const m = new Map();
+  const byKey = new Map();
+  const out = [];
   for (const i of input || []) {
-    const scalar = (value) => typeof value === 'bigint' ? value.toString() : value == null ? '' : String(value);
-    const key = [i.library || '', i.name || '', scalar(i.ordinal), i.weak ? '1' : '0', scalar(i.addend ?? 0n), scalar(i.pointerFormat), scalar(i.type), scalar(i.version), i.versionLibrary || ''].join('\0');
-    const prev = m.get(key);
-    if (!prev) {
-      m.set(key, { ...i, sites: i.sites ? [...i.sites] : [] });
+    const key = importIdentityKey(i);
+    const prev = key === null ? undefined : byKey.get(key);
+    if (prev) {
+      if (prev.address == null && i.address != null) prev.address = i.address;
+      if (!prev.source && i.source) prev.source = i.source;
+      if (i.sites) prev.sites.push(...i.sites);
       continue;
     }
-    if (prev.address == null && i.address != null) prev.address = i.address;
-    if (!prev.source && i.source) prev.source = i.source;
-    if (i.sites) prev.sites.push(...i.sites);
+    const record = { ...i, sites: i.sites ? [...i.sites] : [] };
+    out.push(record);
+    if (key !== null) byKey.set(key, record);
   }
-  for (const i of m.values()) {
+  for (const i of out) {
     if (i.sites) {
       const seen = new Set();
       i.sites = i.sites.filter((s) => {
-        const scalar = (value) => typeof value === 'bigint' ? value.toString() : value == null ? '' : String(value);
-        const key = [
-          scalar(s.address), scalar(s.offset), s.kind || '', scalar(s.type), scalar(s.addend),
-          scalar(s.pointerFormat), s.weak ? '1' : '0', scalar(s.recordFileOffset), scalar(s.recordIndex),
-          scalar(s.recordEncoding),
-        ].join(':');
+        const key = siteIdentityKey(s);
+        if (key === null) return true;
         if (seen.has(key)) return false;
         seen.add(key); return true;
       });
     }
   }
-  return [...m.values()];
+  return out;
 }
