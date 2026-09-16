@@ -1,4 +1,5 @@
 import { codedIndexSize, tableIndexSize, cilMetadataToken } from './metadata-layout.js';
+import { readInternedCilHeapString } from './metadata-string-cache.js';
 
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 function fail(code) { throw new TypeError(code); }
@@ -12,13 +13,7 @@ export function readCilGenericMetadata(bytes, view, layout, stringsStream, defs)
   const index = (pos, width) => width === 2 ? view.getUint16(pos, true) : view.getUint32(pos, true);
   const requiredText = (value) => {
     if (value === 0 || !stringsStream || value >= stringsStream.size) fail('cil-generic-param-name-required');
-    const start = stringsStream.offset + value, end = stringsStream.offset + stringsStream.size;
-    let pos = start;
-    while (pos < end && bytes[pos] !== 0) pos++;
-    if (pos === end) fail('cil-definition-string-unterminated');
-    let valueText;
-    try { valueText = utf8.decode(bytes.subarray(start, pos)); }
-    catch { fail('cil-invalid-strings-utf8'); }
+    const valueText = readInternedCilHeapString(bytes, stringsStream, null, value, utf8);
     if (valueText.length === 0) fail('cil-generic-param-name-required');
     return valueText;
   };

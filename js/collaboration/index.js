@@ -69,13 +69,23 @@ function restoredPendingWithinBudget(pending, limits) {
   return true;
 }
 
+function invalidShapeError(code, structured) {
+  const error = new TypeError(code);
+  // A non-string value supplied for a scalar identity component is a structured
+  // identity-coercion violation (#5990): it must fail loud, never be coerced or
+  // silently rejected. A missing/empty field is an ordinary validation failure.
+  error.identityStructureInvalid = !!structured;
+  return error;
+}
 function required(value, code) {
-  if (typeof value !== 'string') throw new TypeError(code);
+  if (typeof value !== 'string') throw invalidShapeError(code, value != null);
   const text = value.trim();
-  // NUL is reserved as the internal fact-key tuple separator. Keeping it out
-  // of validated identity components makes the existing key format injective
-  // without changing persisted checkpoint/digest identities.
-  if (!text || text.includes('\u0000')) throw new TypeError(code);
+  // NUL is reserved as the internal fact-key tuple separator. An identity that
+  // embeds it is a fact-key injection (#4528) and must fail loud, exactly like a
+  // structured (non-string) identity coercion (#5990). A plain missing/blank
+  // field is an ordinary validation failure that the apply boundary rejects.
+  if (text.includes('\u0000')) throw invalidShapeError(code, true);
+  if (!text) throw invalidShapeError(code, false);
   return text;
 }
 function clone(value) {
@@ -88,7 +98,7 @@ function clone(value) {
 }
 function list(value) {
   if (value == null) return [];
-  if (!Array.isArray(value)) throw new TypeError('operation-causal-parents-invalid');
+  if (!Array.isArray(value)) throw invalidShapeError('operation-causal-parents-invalid', false);
   return [...new Set(value.map((parent) => required(parent, 'operation-causal-parent-invalid')))].sort();
 }
 function factKey(target, kind) { return `${target}\u0000${kind}`; }
@@ -596,7 +606,20 @@ export class ChangeLog {
   applyOperation(input) {
     const actionRejection = rawActionRejection(input);
     if (actionRejection) return actionRejection;
-    const operation = requireCanonicalProjectOperation(input);
+    let operation;
+    try {
+      operation = requireCanonicalProjectOperation(input);
+    } catch (error) {
+      if (error instanceof TypeError && !error.identityStructureInvalid) {
+        return Object.freeze({
+          status: 'rejected',
+          reason: error.message,
+          operationId: input?.operationId ?? null,
+          stateDigest: this.digest(),
+        });
+      }
+      throw error;
+    }
     const existingPending = this.pending.get(operation.operationId);
     if (existingPending && semanticDigest(existingPending) !== semanticDigest(operation)) {
       return Object.freeze({
@@ -626,7 +649,24 @@ export class ChangeLog {
       const actionRejection = rawActionRejection(input);
       if (actionRejection) return actionRejection;
     }
-    const operations = inputs.map((input) => requireCanonicalProjectOperation(input));
+    const operations = [];
+    for (const input of inputs) {
+      let operation;
+      try {
+        operation = requireCanonicalProjectOperation(input);
+      } catch (error) {
+        if (error instanceof TypeError && !error.identityStructureInvalid) {
+          return Object.freeze({
+            status: 'rejected',
+            reason: error.message,
+            operationId: input?.operationId ?? null,
+            stateDigest: this.digest(),
+          });
+        }
+        throw error;
+      }
+      operations.push(operation);
+    }
     const ordered = orderOperations(operations, new Set(this.operations.keys()));
     if (ordered.unresolved.length) return Object.freeze({ status: 'unresolved', reason: 'missing-causal-parent', operationIds: ordered.unresolved.map((operation) => operation.operationId), stateDigest: this.digest() });
     const working = new ChangeLog({ projectIdentity: this.projectIdentity, binaryIdentity: this.binaryIdentity, state: this.state, operations: [...this.operations.values()], pending: [...this.pending.entries()], allowRemote: this.allowRemote, authorizedAuthors: [...this.authorizedAuthors], maxPendingOperations: this.maxPendingOperations, maxPendingOperationsPerActor: this.maxPendingOperationsPerActor, maxPendingBytes: this.maxPendingBytes });

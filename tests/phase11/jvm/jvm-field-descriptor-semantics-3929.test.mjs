@@ -80,7 +80,13 @@ assert.equal(getLong.memoryEffects[0].descriptor, 'J');
 
 const putDouble = fieldBundle('D', 0xb3);
 assert.equal(putDouble.completeness, 'exact');
-assert.deepEqual(putDouble.consumedValues, [{ id: 'val', bits: 64, category: 2, valueKind: 'double', descriptor: 'D' }]);
+// #8955: the produced/consumed value now carries the resolved IEEE-754
+// machine type so the shared bridge cannot launder a `D` field to a plain
+// integer bitvector.
+assert.deepEqual(putDouble.consumedValues, [{
+  id: 'val', bits: 64, category: 2, valueKind: 'double', descriptor: 'D',
+  type: { kind: 'float', widthBits: 64, format: 'binary64' },
+}]);
 assert.equal(putDouble.memoryEffects[0].valueCategory, 2);
 
 const getReference = fieldBundle('Ljava/lang/String;', 0xb4);
