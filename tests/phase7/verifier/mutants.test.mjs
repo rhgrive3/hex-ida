@@ -149,7 +149,11 @@ test('MUTANT: a points-to set that drops a target falsely proves separation', ()
   // false NoAlias built entirely on a missing target.
   const frame = createPointsToTarget({ rootKind: 'stack-like', rootEntityId: 'root_frame', offsetRange: exactRange(0n) });
   const incoming = createPointsToTarget({ rootKind: 'rooted', rootEntityId: 'root_arg', offsetRange: exactRange(0n) });
-  const nonEscapingRoots = new Set([frame.rootKey]);
+  // #8809 sync: under #4977's both-roots AND contract a dropped target only
+  // misleads when BOTH surviving roots carry escape evidence — exactly the
+  // dangerous combination (under-approximation + non-escape proof), so both
+  // roots are declared non-escaping here.
+  const nonEscapingRoots = new Set([frame.rootKey, incoming.rootKey]);
 
   const complete = createPointsToSet({ targets: [frame, incoming] });
   const underApproximated = createPointsToSet({ targets: [incoming] });
