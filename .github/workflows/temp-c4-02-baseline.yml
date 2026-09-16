@@ -1,0 +1,21 @@
+name: Temporary C4-02 baseline condition test
+on:
+  push:
+    branches: ['impl/c4-02-finish-20260916']
+    paths: ['.github/workflows/temp-c4-02-baseline.yml']
+permissions:
+  contents: read
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 0610dbd0bec3444625bbdc1ceed71610e9a4a928
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Test conditional region condition on unmodified exact head
+        run: node --test tests/phase8/structuring/conditional-region-condition.test.mjs
