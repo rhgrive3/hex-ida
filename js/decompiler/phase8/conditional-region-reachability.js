@@ -77,7 +77,17 @@ export async function prepareConditionalRegionReachability(structure, ir, option
     const charge = { chargeExecution(work = 1, allocation = 0) {
       guard.take('workItems', work); guard.take('allocationUnits', allocation);
     } };
-    const addressMap = validateExecutionContract(ir, charge);
+    let addressMap;
+    try {
+      addressMap = validateExecutionContract(ir, charge);
+    } catch (error) {
+      // The execution contract rejects fault annotations outside the
+      // canonical MachineEffects bundle before path exploration. Preserve the
+      // reachability API's domain-specific refusal vocabulary for callers that
+      // ask whether a region is safe to publish.
+      if (error?.reason === 'unbound-instruction-fault-annotation') return reject('unproved-machine-effects');
+      throw error;
+    }
     const branch = structure.region.branch, data = queryRecord(branch, guard, 128);
     const targetAddress = queryRecord(data.extra, guard).target;
     const addressKey = value => typeof value === 'bigint' || typeof value === 'number' && Number.isSafeInteger(value)

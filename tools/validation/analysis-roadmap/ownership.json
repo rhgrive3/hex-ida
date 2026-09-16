@@ -195,7 +195,8 @@
       "tests/phase8/c4-local/normal-completion-scope.test.mjs",
       "js/decompiler/phase8/analysis-identity.js",
       "tests/phase8/structuring/conditional-region-body-authority.test.mjs",
-      "tests/phase8/structuring/conditional-region-body-projection.test.mjs"
+      "tests/phase8/structuring/conditional-region-body-projection.test.mjs",
+      "tests/phase8/c4-local/scalar-effect-admission.test.mjs"
     ],
     "symbolic": [
       "js/symbolic/egraph/graph.js",
@@ -333,7 +334,9 @@
       "tests/phase9/memory/terminal-control.test.mjs",
       "tests/phase9/memory/terminal-control-equivalence.test.mjs",
       "js/symbolic/translate/completeness.js",
-      "tests/phase9/solver/worker-import-boundary.test.mjs"
+      "tests/phase9/solver/worker-import-boundary.test.mjs",
+      "tests/phase9/memory/c4-comparison-carrier-binding.test.mjs",
+      "tests/phase9/memory/c4-predicate-select.test.mjs"
     ],
     "semanticCompat": [
       "js/core/identity/live-data.js",
@@ -535,7 +538,8 @@
       "docs/analysis-remaining-20260914.md",
       "tests/ci/final-head-admission-6570.test.mjs",
       "tests/ci/final-head-admission-auto-reviewer-identity-6570.test.mjs",
-      "tests/userscript-embed-child.mjs"
+      "tests/userscript-embed-child.mjs",
+      "js/core/evidence/index.js"
     ]
   }
 }

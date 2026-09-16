@@ -160,6 +160,7 @@ const SPECIAL_PATHS = Object.freeze({
     'tools/validation/machine-effects/fixtures/random-oracle.c',
     'tools/validation/machine-effects/x86-long64-closure-matrix.mjs',
     'tools/validation/analysis-roadmap/ownership.mjs', 'tools/validation/analysis-roadmap/ownership.json',
+    'js/core/evidence/index.js',
     'userscript/hex.user.template.js', 'userscript/release-version.json'],
 });
 
