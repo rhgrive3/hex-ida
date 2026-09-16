@@ -7781,3 +7781,8 @@ fullRoadmapComplete:false、transformAuthorization:false、マージ未実施を
 ## 2026-09-16 C0-01 local acceptance
 
 `tests/competitive/run.mjs` と same-binary twin contractで、frozen competitive profile、debug/stripped lineage、deterministic manifest、toolchain/source/build drift、wrong/patched/stale twin、denominator shrinkを再受入した。測定済みbinary rowはfull same-binary twin manifestとreplay evidenceを必須とし、legacy unmeasured rowはexact truthへ昇格しない。HEX-C0-01 / FR-C0-01A はこのローカル要件について accepted-local。全roadmap/release/device受入は未完了のまま。
+
+
+## 2026-09-16 C1-01 local acceptance
+
+loaded pointer recoveryを32/64-bit × little/big-endian陽性4セルとMemorySSA authority陰性分母で固定した。current canonical MemorySSAの単一complete reaching-store proofのみ exact pointer を発行し、MayAlias/unknown clobber/partial/endian mismatch/volatile/atomic/stale/malformed/cancel-budgetではunknownを維持する。同一replayのpoints-to digest/proof/statusも一致する。HEX-C1-01 / FR-C1-01A はこのローカル要件について accepted-local。C1-02と全roadmap/release/device受入は未完了のまま。

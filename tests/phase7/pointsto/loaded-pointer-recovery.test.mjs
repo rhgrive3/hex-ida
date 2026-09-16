@@ -370,6 +370,25 @@ test('canonical store-pointer/load-pointer fixture recovers the stored pointer e
   assert.equal(result.recovery?.proofs?.loaded?.storeNodeId, 'node_store');
 });
 
+test('C1-01 frozen width/endian pointer-load matrix requires one complete reaching-store proof', () => {
+  const observed = [];
+  for (const bits of [32, 64]) {
+    for (const endian of ['little', 'big']) {
+      const built = loadedPointerFixture({ bits, endian });
+      const result = runWithMemory(built);
+      const loaded = loadedSet(result);
+      assert.equal(loaded.top, false, `${bits}/${endian}: exact load must recover a finite pointer`);
+      assert.equal(loaded.targets.length, 1, `${bits}/${endian}: exactly one recovered target`);
+      assert.equal(loaded.targets[0].widthBits, bits, `${bits}/${endian}: pointer width preserved`);
+      assert.deepEqual(loaded.targets[0].offsetRange, { min:32n, max:32n, exact:true });
+      assert.equal(result.recovery?.proofs?.loaded?.storeNodeId, 'node_store', `${bits}/${endian}: recovery must name the unique reaching store`);
+      assert.equal(result.status.completeness, 'complete');
+      observed.push(`${bits}-${endian}`);
+    }
+  }
+  assert.deepEqual(observed, ['32-little','32-big','64-little','64-big']);
+});
+
 test('loaded-pointer recovery is deterministic across identical replays', () => {
   const firstFixture = loadedPointerFixture();
   const secondFixture = loadedPointerFixture();

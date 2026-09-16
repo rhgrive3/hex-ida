@@ -28,11 +28,11 @@
     },
     {
       "id": "HEX-C1-01",
-      "localStatus": "existing-reused",
-      "assessment": "canonical MemorySSAのbyte proofを使うload recoveryは既存実装。新しいreaching-store解析は作成していない。",
-      "source": "js/analysis/pointsto",
-      "verificationSuite": "phase7-test",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "assessment": "C1-01 の loaded-pointer recovery を frozen 32/64-bit x little/big-endian の陽性4セルと effect/authority陰性分母で再受入。exact pointer は current canonical MemorySSA の単一 complete reaching-store proofからのみ復元し、MayAlias、unknown/call clobber、partial bytes、endian mismatch、volatile/atomic、invalid width/endian、missing provenance、stale snapshot/function/build/source、malformed metadata、cancel/budget/iteration limitでは finite exact targetを発行しない。同一入力 replay は同じ points-to digest/proof/statusへ収束する。C1-02 と whole-roadmap/release/device gates は別。",
+      "source": "tests/phase7/pointsto/loaded-pointer-recovery.test.mjs",
+      "verificationSuite": "c1-01-final-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "HEX-C1-02",
@@ -272,9 +272,9 @@
       "mustWaitFor": "C1-03",
       "complexity": "L",
       "findingId": "HEX-C1-01",
-      "localStatus": "existing-reused",
-      "currentAssessment": "canonical MemorySSAのbyte proofを使うload recoveryは既存実装。新しいreaching-store解析は作成していない。",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "currentAssessment": "pointer load boundaryを32/64-bit x little/big-endianで固定し、complete unique reaching storeのみ exact recovery。may/unknown/partial/atomic/volatile/stale/malformed/cancel/budget negativesはunknownのまま、identical replayはdeterministicに収束する。",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "FR-C1-02A",
@@ -2381,6 +2381,40 @@
         "denominator-shrink"
       ],
       "legacyUnmeasuredPromotesToExact": false,
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false
+    },
+    "c1PointerRecoveryAcceptance20260916": {
+      "status": "ACCEPTED-LOCAL",
+      "finding": "HEX-C1-01",
+      "task": "FR-C1-01A",
+      "positiveMatrix": {
+        "widthBits": [
+          32,
+          64
+        ],
+        "endian": [
+          "little",
+          "big"
+        ],
+        "cells": 4
+      },
+      "requiredAuthority": "one-complete-current-reaching-store-proof",
+      "negativeClasses": [
+        "may-alias",
+        "unknown-clobber",
+        "call-clobber",
+        "partial-bytes",
+        "endian-mismatch",
+        "volatile",
+        "atomic",
+        "invalid-access",
+        "missing-provenance",
+        "stale-identity",
+        "malformed-metadata",
+        "cancel-or-budget"
+      ],
+      "deterministicReplay": true,
       "fullRoadmapComplete": false,
       "transformAuthorization": false
     }
