@@ -309,6 +309,23 @@
     return null;
   }
 
+  /**
+   * Slice-relative load-command ranges name bytes inside the *selected* embedded
+   * Mach-O image, not inside the outer container. Prove a declared
+   * `(offset, length)` fits within the slice with overflow-safe subtraction, so
+   * a wrapped `offset + length` cannot smuggle a range past the bound and read
+   * another slice's bytes as this slice's metadata authority (#8835).
+   */
+  function selectedSliceContainsRange(offset, length, sliceSize) {
+    let size;
+    try { size = BigInt(sliceSize); } catch { return false; }
+    const start = BigInt(offset);
+    const len = BigInt(length);
+    if (start < 0n || len < 0n || size < 0n) return false;
+    if (start > size) return false;
+    return len <= size - start;
+  }
+
   function parseSlice(buf, sliceOff, sliceSize) {
     const det = detect(buf);
     if (det.kind !== 'macho') throw new Error('Not a Mach-O image.');
@@ -451,15 +468,49 @@
           }
           break;
         }
-        case LC.SYMTAB: info.symtab={symoff:dv.getUint32(off+8,true),nsyms:dv.getUint32(off+12,true),stroff:dv.getUint32(off+16,true),strsize:dv.getUint32(off+20,true)}; break;
-        case LC.DYSYMTAB: info.dysymtab={indirectsymoff:dv.getUint32(off+56,true),nindirectsyms:dv.getUint32(off+60,true)}; break;
-        case LC.FUNCTION_STARTS: info.functionStarts={dataoff:dv.getUint32(off+8,true),datasize:dv.getUint32(off+12,true)}; break;
-        case LC.DATA_IN_CODE: info.dataInCode={dataoff:dv.getUint32(off+8,true),datasize:dv.getUint32(off+12,true)}; break;
+        case LC.SYMTAB: {
+          const symoff=dv.getUint32(off+8,true),nsyms=dv.getUint32(off+12,true);
+          const stroff=dv.getUint32(off+16,true),strsize=dv.getUint32(off+20,true);
+          // Symbol entries and the string bytes they name are both slice-relative.
+          const symValid=selectedSliceContainsRange(symoff,BigInt(nsyms)*BigInt(is64?16:12),sliceSize);
+          const strValid=selectedSliceContainsRange(stroff,strsize,sliceSize);
+          const valid=symValid&&strValid;
+          info.symtab={symoff,nsyms,stroff,strsize,valid};
+          if(!valid) info.diagnostics.push('LC_SYMTAB tables are outside the selected slice');
+          break;
+        }
+        case LC.DYSYMTAB: {
+          const indirectsymoff=dv.getUint32(off+56,true),nindirectsyms=dv.getUint32(off+60,true);
+          const valid=selectedSliceContainsRange(indirectsymoff,BigInt(nindirectsyms)*4n,sliceSize);
+          info.dysymtab={indirectsymoff,nindirectsyms,valid};
+          if(!valid) info.diagnostics.push('LC_DYSYMTAB indirect symbol table is outside the selected slice');
+          break;
+        }
+        case LC.FUNCTION_STARTS: {
+          const dataoff=dv.getUint32(off+8,true),datasize=dv.getUint32(off+12,true);
+          const valid=selectedSliceContainsRange(dataoff,datasize,sliceSize);
+          info.functionStarts={dataoff,datasize,valid};
+          if(!valid) info.diagnostics.push('LC_FUNCTION_STARTS is outside the selected slice');
+          break;
+        }
+        case LC.DATA_IN_CODE: {
+          const dataoff=dv.getUint32(off+8,true),datasize=dv.getUint32(off+12,true);
+          const valid=selectedSliceContainsRange(dataoff,datasize,sliceSize);
+          info.dataInCode={dataoff,datasize,valid};
+          if(!valid) info.diagnostics.push('LC_DATA_IN_CODE is outside the selected slice');
+          break;
+        }
         case LC.CODE_SIGNATURE: info.hasCodeSignature=true; break;
         case LC.ENCRYPTION_INFO_64:
         case LC.ENCRYPTION_INFO: {
           const cryptoff=dv.getUint32(off+8,true),cryptsize=dv.getUint32(off+12,true),cryptid=dv.getUint32(off+16,true);
-          info.encryption={cryptoff:BigInt(cryptoff),cryptsize:BigInt(cryptsize),cryptid}; info.encrypted=cryptid!==0; break;
+          const valid=selectedSliceContainsRange(cryptoff,cryptsize,sliceSize);
+          info.encryption={cryptoff:BigInt(cryptoff),cryptsize:BigInt(cryptsize),cryptid,valid};
+          // An out-of-slice crypt range must not mint encryption evidence, even
+          // when cryptid is nonzero: the bytes it names are not this slice's (#8835).
+          info.encrypted=cryptid!==0&&valid;
+          if(!valid) info.diagnostics.push('LC_ENCRYPTION_INFO crypt range is outside the selected slice');
+          break;
         }
         default: break;
       }
