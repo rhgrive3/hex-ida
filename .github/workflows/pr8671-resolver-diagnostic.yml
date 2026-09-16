@@ -1,4 +1,4 @@
-name: PR 8671 public benchmark failure diagnostic
+name: PR 8671 query cloneability diagnostic
 
 on:
   push:
@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  product-cli:
+  query-cloneability:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -16,7 +16,7 @@ jobs:
       - name: Install pinned dependencies
         shell: bash
         run: timeout 300s npm ci
-      - name: Reproduce product CLI child failure
+      - name: Locate first unclonable decompile value
         shell: bash
         run: |
           set -euo pipefail
@@ -25,28 +25,50 @@ jobs:
           import os from 'node:os';
           import path from 'node:path';
           import { spawnSync } from 'node:child_process';
-          const d=fs.mkdtempSync(path.join(os.tmpdir(),'hex-pb-cli-diag-'));
+          import { openProduct } from './tools/validation/public-benchmark/product-host.mjs';
+          import { createAppAnalysisQueryAdapter } from './js/analysis/query/index.js';
+          const d=fs.mkdtempSync(path.join(os.tmpdir(),'hex-pb-clone-diag-'));
           const c=path.join(d,'a.c'), b=path.join(d,'a');
           fs.writeFileSync(c,'__attribute__((noinline)) int f(int x){return x+1;} int _start(){return f(2);}\n');
           const cc=spawnSync('clang',['--target=aarch64-linux-gnu','-fuse-ld=lld','-nostdlib','-O1','-Wl,-e,_start','-o',b,c],{encoding:'utf8'});
-          const r=cc.status===0 ? spawnSync(process.execPath,['tools/validation/public-benchmark/subject.mjs',b],{encoding:'utf8',timeout:30000}) : null;
-          const lines=[];
-          lines.push(`clang-status: ${cc.status}`);
-          if (cc.status!==0) {
-            lines.push('clang-stderr:'); lines.push(...String(cc.stderr||'').split(/\r?\n/).slice(-20));
-          } else {
-            lines.push(`subject-status: ${r.status}`);
-            lines.push(`subject-signal: ${r.signal||''}`);
-            lines.push(`subject-error: ${r.error ? String(r.error) : ''}`);
-            lines.push('subject-stderr:'); lines.push(...String(r.stderr||'').split(/\r?\n/).slice(-30));
-            lines.push('subject-stdout-tail:'); lines.push(...String(r.stdout||'').split(/\r?\n/).slice(-20));
-          }
-          fs.writeFileSync('pr8671-product-cli-failure.txt',lines.join('\n')+'\n');
+          const lines=[`clang-status: ${cc.status}`];
+          if (cc.status===0) {
+            const product=await openProduct(b);
+            try {
+              const snap=await product.query.snapshot();
+              const funcs=await product.query.functions(snap,{}, {offset:0,limit:1000});
+              const target=funcs.value.find(x=>x.name==='_start');
+              lines.push(`target: ${target?.address ?? 'missing'}`);
+              const adapter=createAppAnalysisQueryAdapter(product.app);
+              const raw=await adapter.decompile(null,target.address,{});
+              const value=raw?.value ?? raw;
+              try { structuredClone(value); lines.push('structuredClone: PASS'); }
+              catch(e) { lines.push(`structuredClone: FAIL ${e?.name||''} ${e?.message||e}`); }
+              const bad=[]; const seen=new Set();
+              function walk(v,p,depth=0){
+                if (bad.length>=40 || depth>12) return;
+                const t=typeof v;
+                if (t==='function' || t==='symbol') { bad.push(`${p}: ${t}${t==='function' ? ` ${v.name||'<anonymous>'}` : ''}`); return; }
+                if (!v || t!=='object' || seen.has(v)) return;
+                seen.add(v);
+                if (typeof SharedArrayBuffer!=='undefined' && v instanceof SharedArrayBuffer) { bad.push(`${p}: SharedArrayBuffer`); return; }
+                let keys=[]; try { keys=Reflect.ownKeys(v); } catch(e) { bad.push(`${p}: ownKeys throws ${e}`); return; }
+                for (const k of keys) {
+                  if (typeof k==='symbol') { bad.push(`${p}: symbol-key ${String(k)}`); continue; }
+                  let child; try { child=v[k]; } catch(e) { bad.push(`${p}.${k}: getter throws ${e}`); continue; }
+                  walk(child,`${p}.${k}`,depth+1);
+                }
+              }
+              walk(value,'value');
+              lines.push('unclonable-paths:'); lines.push(...(bad.length?bad:['<none-detected>']));
+            } finally { await product.close(); }
+          } else lines.push(String(cc.stderr||''));
+          fs.writeFileSync('pr8671-query-cloneability.txt',lines.join('\n')+'\n');
           NODE
-          cat pr8671-product-cli-failure.txt >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload product CLI evidence
+          cat pr8671-query-cloneability.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload cloneability evidence
         uses: actions/upload-artifact@v4
         with:
-          name: pr8671-product-cli-failure
-          path: pr8671-product-cli-failure.txt
+          name: pr8671-query-cloneability
+          path: pr8671-query-cloneability.txt
           retention-days: 1
