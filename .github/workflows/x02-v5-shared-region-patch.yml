@@ -1,0 +1,59 @@
+name: X-02 dyld v5 shared region patch
+
+on:
+  push:
+    branches: [feat/analysis-roadmap-v8-current-main-20260907]
+    paths: [.github/workflows/x02-v5-shared-region-patch.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/analysis-roadmap-v8-current-main-20260907
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Wire shared-region target authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('js/binary/dyld-shared-cache-core.js')
+          s=p.read_text()
+          replacements=[
+            ("function parseSlideInfoSync(allBytes, item, slide, mappings, opts) {", "function parseSlideInfoSync(allBytes, item, slide, mappings, opts, targetRange) {"),
+            ("walkSlideInfo5Sync(mappingBytes, item, info, slide, mappings, maxRecordsOption(opts))", "walkSlideInfo5Sync(mappingBytes, item, info, slide, mappings, maxRecordsOption(opts), targetRange)"),
+            ("async function parseSlideInfoSource(source, item, slide, mappings, opts) {", "async function parseSlideInfoSource(source, item, slide, mappings, opts, targetRange) {"),
+            ("walkSlideInfo5Source(read64, item, info, slide, mappings, maxRecordsOption(opts))", "walkSlideInfo5Source(read64, item, info, slide, mappings, maxRecordsOption(opts), targetRange)"),
+            ("const slideMetadata = slideMappings.map((item) => parseSlideInfoSync(bytes, item, slide, mappings, opts));", "const targetRange = header.sharedRegionSize > 0n ? { start: header.sharedRegionStart, size: header.sharedRegionSize } : null;\n  const slideMetadata = slideMappings.map((item) => parseSlideInfoSync(bytes, item, slide, mappings, opts, targetRange));"),
+            ("for (const item of slideMappings) slideMetadata.push(await parseSlideInfoSource(source, item, slide, mappings, opts));", "const targetRange = header.sharedRegionSize > 0n ? { start: header.sharedRegionStart, size: header.sharedRegionSize } : null;\n  for (const item of slideMappings) slideMetadata.push(await parseSlideInfoSource(source, item, slide, mappings, opts, targetRange));"),
+          ]
+          for old,new in replacements:
+            if old not in s: raise SystemExit('anchor missing: '+old[:80])
+            s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+      - name: Focused tests
+        run: |
+          node --test tests/scpa/x02-dyld-slide-info5.test.mjs
+          node --test tests/scpa/x02-prior120-apple-version-matrix.test.mjs
+      - name: Push core only
+        shell: bash
+        env:
+          BRANCH: feat/analysis-roadmap-v8-current-main-20260907
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$(git ls-remote origin refs/heads/$BRANCH | awk '{print $1}')"
+          git config user.name x02-repair
+          git config user.email x02-repair@users.noreply.github.com
+          git add js/binary/dyld-shared-cache-core.js
+          git commit -m 'fix(x02): allow v5 cross-subcache targets in shared region'
+          git push origin "HEAD:$BRANCH"
