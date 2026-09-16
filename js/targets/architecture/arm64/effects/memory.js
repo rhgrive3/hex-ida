@@ -17,6 +17,7 @@ import {
 } from './addressing.js';
 import { ARM64_ATOMIC_EFFECT_MNEMONICS, isArm64AtomicInstruction, liftArm64AtomicEffects } from './atomic.js';
 import { arm64DecodedEncodingWord } from '../encoding-word.js';
+import { arm64EffectIdentityContext } from './common.js';
 
 export const LEGACY_ARM64_MEMORY_INVENTORY = Object.freeze({
   loads: Object.freeze(['ldr','ldrb','ldrh','ldrsb','ldrsh','ldrsw','ldur','ldurb','ldurh','ldursb','ldursh','ldursw','ldp','ldpsw','ldnp','ldar','ldarb','ldarh','ldxr','ldaxr','ldtr']),
@@ -52,21 +53,9 @@ const WIDTH_OVERRIDE = Object.freeze({
 });
 
 function mnemonicOf(decoded) { if (typeof decoded?.mnemonic !== 'string') return ''; return decoded.mnemonic.trim().toLowerCase(); }
-function contextOf(decoded, context = {}) {
-  const instructionId = String(context.instructionId || decoded?.instructionId || '').trim();
-  if (!instructionId) throw new TypeError('arm64-machine-effects-instruction-id-required');
-  return {
-    instructionId,
-    architectureId: String(context.architectureId || decoded?.architectureId || 'arm64'),
-    mode: String(context.mode || decoded?.mode || 'a64'),
-    dataEndianness: String(context.dataEndianness || decoded?.dataEndianness || context.endian || decoded?.endian || 'little'),
-    origin: context.origin || decoded?.origin || { instructionIds:[instructionId] },
-    options: context.options || {},
-  };
-}
 
 function bundle(decoded, context, body) {
-  const ctx = contextOf(decoded, context);
+  const ctx = arm64EffectIdentityContext(decoded, context);
   return createMachineEffectBundle({
     instructionId:ctx.instructionId,
     architectureId:ctx.architectureId,
@@ -112,6 +101,19 @@ function memoryWidthBits(mnemonic, reg) {
 function accessAlignment(mnemonic, widthBits) {
   if (ACQUIRE_LOADS.has(mnemonic) || RELEASE_STORES.has(mnemonic)) return Math.max(1, widthBits / 8);
   return undefined;
+}
+// A64 gives LDAR/LDARB/LDARH Acquire semantics only when the destination is an
+// architectural register: with Rt == 31 the loaded value is discarded, so the
+// access carries no acquire edge even though the read, its address dependency,
+// and its faults remain (#8607). The suppressed form publishes the same explicit
+// `relaxed` authority that the exclusive/LSE owners already use for their
+// zero-register forms (#8603) rather than omitting the field, and `acquire` stays
+// the single RCsc-strength identity because the machine-effects ordering domain
+// cannot represent an RCpc acquire.
+function memoryOrdering(mnemonic, reg) {
+  if (ACQUIRE_LOADS.has(mnemonic)) return reg.zero ? 'relaxed' : 'acquire';
+  if (RELEASE_STORES.has(mnemonic)) return 'release';
+  return null;
 }
 function faultAlignment(widthBits) {
   return Math.max(1, widthBits / 8);
@@ -379,7 +381,7 @@ function hasOperandShape(decoded, shape) {
 }
 
 function simpleMemory(decoded, context, mnemonic, isLoad) {
-  const ctx = contextOf(decoded, context);
+  const ctx = arm64EffectIdentityContext(decoded, context);
   if (!hasOperandShape(decoded, ['reg','mem'])) return partial(decoded, context, 'memory instruction operand shape is invalid');
   const reg = dataRegisters(decoded)[0];
   if (!reg) return partial(decoded, context, 'memory instruction data register is missing');
@@ -411,7 +413,7 @@ function simpleMemory(decoded, context, mnemonic, isLoad) {
 
   const signed = isLoad && SIGNED_LOADS.has(mnemonic);
   const atomic = BASE_ONLY.has(mnemonic) ? true : null;
-  const ordering = ACQUIRE_LOADS.has(mnemonic) ? 'acquire' : RELEASE_STORES.has(mnemonic) ? 'release' : null;
+  const ordering = memoryOrdering(mnemonic, reg);
   const alignment = accessAlignment(mnemonic, widthBits);
   const access = accessFor({ ctx, addressExpr:addressing.addressExpr, widthBits, atomic, ordering, alignment });
   const operations = [...addressing.readOperations];
@@ -455,7 +457,7 @@ function simpleMemory(decoded, context, mnemonic, isLoad) {
 }
 
 function pairMemory(decoded, context, mnemonic, isLoad) {
-  const ctx = contextOf(decoded, context);
+  const ctx = arm64EffectIdentityContext(decoded, context);
   if (!hasOperandShape(decoded, ['reg','reg','mem'])) return partial(decoded, context, 'pair memory instruction operand shape is invalid');
   const regs = dataRegisters(decoded).slice(0, 2);
   if (regs.length !== 2) return partial(decoded, context, 'pair memory instruction requires two data registers');
@@ -514,7 +516,7 @@ function pairMemory(decoded, context, mnemonic, isLoad) {
 }
 
 function literalLoad(decoded, context, mnemonic) {
-  const ctx = contextOf(decoded, context);
+  const ctx = arm64EffectIdentityContext(decoded, context);
   if (!hasOperandShape(decoded, ['reg','imm'])) return partial(decoded, context, 'literal load operand shape is invalid');
   const reg = dataRegisters(decoded)[0];
   if (!reg) return partial(decoded, context, 'literal load destination register is missing');

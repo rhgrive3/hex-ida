@@ -1,5 +1,13 @@
 import { validateJvmMethodFlags } from './method-flags.js';
 
+// Explicit dataflow budgets (#8716): retention is counted in frame cells
+// (locals entries published or re-published across the pass) and pending
+// worklist entries. Exhaustion fails closed to a resource-limited partial
+// result, never to `valid`, and before the host heap is threatened by
+// attacker-shaped max_locals/Code dimensions.
+const VERIFIER_DATAFLOW_FRAME_CELL_BUDGET = 1_000_000;
+const VERIFIER_DATAFLOW_STEP_BUDGET = 262_144;
+
 function asNonNegativeInteger(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
@@ -62,17 +70,6 @@ function stackSlots(stack) {
   return slots;
 }
 
-function cloneState(state) {
-  return { stack: [...state.stack], locals: [...state.locals] };
-}
-
-function statesEqual(a, b) {
-  if (!a || !b || a.stack.length !== b.stack.length || a.locals.length !== b.locals.length) return false;
-  for (let i = 0; i < a.stack.length; i++) if (a.stack[i] !== b.stack[i]) return false;
-  for (let i = 0; i < a.locals.length; i++) if ((a.locals[i] ?? null) !== (b.locals[i] ?? null)) return false;
-  return true;
-}
-
 function stackCategory(kind) {
   if (kind === 'long' || kind === 'double' || kind === 'unknown2' || kind === 'top2') return 2;
   if (kind == null || kind === 'cat2-tail') return null;
@@ -93,20 +90,31 @@ function mergeStackKind(left, right) {
   return { compatible: false, kind: null };
 }
 
+// Frame locals are stored sparsely: the map holds only slots whose kind is
+// non-null. Dense per-offset arrays let an attacker scale retention as
+// reachable-offsets x max_locals (#8716); absence is exactly a null slot.
+function localsEqual(a, b) {
+  if (a.size !== b.size) return false;
+  for (const [index, kind] of a) if (b.get(index) !== kind) return false;
+  return true;
+}
+
 function normalizeCategory2Locals(locals) {
-  for (let i = 0; i < locals.length; i++) {
-    const kind = locals[i];
+  const indices = [...locals.keys()].sort((left, right) => left - right);
+  for (const i of indices) {
+    const kind = locals.get(i);
+    if (kind === undefined) continue;
     if (kind === 'long' || kind === 'double') {
-      if (locals[i + 1] !== 'cat2-tail') locals[i] = null;
+      if (locals.get(i + 1) !== 'cat2-tail') locals.delete(i);
     } else if (kind === 'cat2-tail') {
-      const head = i > 0 ? locals[i - 1] : null;
-      if (head !== 'long' && head !== 'double') locals[i] = null;
+      const head = i > 0 ? locals.get(i - 1) : null;
+      if (head !== 'long' && head !== 'double') locals.delete(i);
     }
   }
 }
 
 function mergeStates(previous, incoming) {
-  if (!previous || !incoming || previous.stack.length !== incoming.stack.length || previous.locals.length !== incoming.locals.length) {
+  if (!previous || !incoming || previous.stack.length !== incoming.stack.length) {
     return { compatible: false, changed: false, state: previous };
   }
 
@@ -117,10 +125,15 @@ function mergeStates(previous, incoming) {
     stack.push(merged.kind);
   }
 
-  const locals = previous.locals.map((kind, index) => kind === incoming.locals[index] ? kind : null);
+  const locals = new Map();
+  for (const [index, kind] of previous.locals) {
+    if (incoming.locals.get(index) === kind) locals.set(index, kind);
+  }
   normalizeCategory2Locals(locals);
   const state = { stack, locals };
-  return { compatible: true, changed: !statesEqual(previous, state), state };
+  const stackChanged = previous.stack.some((kind, index) => kind !== stack[index]);
+  const localsChanged = !localsEqual(previous.locals, locals);
+  return { compatible: true, changed: stackChanged || localsChanged, state };
 }
 
 function popKind(state, expected, errors, offset) {
@@ -139,16 +152,17 @@ function popKind(state, expected, errors, offset) {
 }
 
 function setLocal(state, index, kind, slots) {
-  if (state.locals[index] === 'cat2-tail' && index > 0) state.locals[index - 1] = null;
-  if (state.locals[index + 1] === 'cat2-tail') state.locals[index + 1] = null;
-  if (slots === 2 && state.locals[index + 1] && state.locals[index + 2] === 'cat2-tail') state.locals[index + 2] = null;
-  state.locals[index] = kind;
-  if (slots === 2) state.locals[index + 1] = 'cat2-tail';
+  const locals = state.locals;
+  if (locals.get(index) === 'cat2-tail' && index > 0) locals.delete(index - 1);
+  if (locals.get(index + 1) === 'cat2-tail') locals.delete(index + 1);
+  if (slots === 2 && locals.get(index + 1) && locals.get(index + 2) === 'cat2-tail') locals.delete(index + 2);
+  locals.set(index, kind);
+  if (slots === 2) locals.set(index + 1, 'cat2-tail');
 }
 
 function readLocal(state, index, kind, slots, errors, offset) {
-  const actual = state.locals[index] ?? null;
-  if (actual !== kind || (slots === 2 && state.locals[index + 1] !== 'cat2-tail')) {
+  const actual = state.locals.get(index) ?? null;
+  if (actual !== kind || (slots === 2 && state.locals.get(index + 1) !== 'cat2-tail')) {
     errors.push({ code: 'jvm-local-type-mismatch', offset, index, expected: kind, actual });
     return false;
   }
@@ -488,16 +502,34 @@ export function verifyJvmMethod(decoded, options = {}) {
   // without reporting a violation.
   let dataflowChecked = false;
   if (descriptor && maxStack != null && maxLocals != null && errors.length === 0) {
-    const initialLocals = Array(maxLocals).fill(null);
-    for (let i = 0; i < descriptor.initialLocals.length && i < maxLocals; i++) initialLocals[i] = descriptor.initialLocals[i] ?? null;
+    const initialLocals = new Map();
+    for (let i = 0; i < descriptor.initialLocals.length && i < maxLocals; i++) {
+      const kind = descriptor.initialLocals[i];
+      if (kind != null) initialLocals.set(i, kind);
+    }
     const states = new Map([[0, { stack: [], locals: initialLocals }]]);
+    // An index-cured queue keeps worklist extraction O(1); Array.shift()
+    // would add a second quadratic cost on high-fanout methods (#8716).
     const queue = [0];
+    let queueHead = 0;
     const bundleByOffset = new Map(bundles.map((bundle, index) => [bundle.bytecodeOffset, { bundle, index }]));
-    while (queue.length && errors.length === 0) {
-      const offset = queue.shift();
+    let retainedLocalCells = 0;
+    let budgetExceeded = false;
+    while (queueHead < queue.length) {
+      if (queue.length - queueHead > VERIFIER_DATAFLOW_STEP_BUDGET) {
+        budgetExceeded = true;
+        break;
+      }
+      const offset = queue[queueHead++];
       const entry = bundleByOffset.get(offset);
       if (!entry) continue;
-      const state = cloneState(states.get(offset));
+      const published = states.get(offset);
+      const state = { stack: [...published.stack], locals: new Map(published.locals) };
+      retainedLocalCells += state.locals.size;
+      if (retainedLocalCells > VERIFIER_DATAFLOW_FRAME_CELL_BUDGET) {
+        budgetExceeded = true;
+        break;
+      }
       const canPropagate = executeBundle(entry.bundle, state, descriptor, errors, unsupported);
       const usedStack = stackSlots(state.stack);
       if (usedStack > maxStack) errors.push({ code: 'jvm-max-stack-exceeded', offset, actual: usedStack, maxStack });
@@ -506,7 +538,9 @@ export function verifyJvmMethod(decoded, options = {}) {
         if (!starts.has(successor)) continue;
         const previous = states.get(successor);
         if (!previous) {
-          states.set(successor, cloneState(state));
+          const copy = new Map(state.locals);
+          retainedLocalCells += copy.size;
+          states.set(successor, { stack: [...state.stack], locals: copy });
           queue.push(successor);
           continue;
         }
@@ -516,12 +550,24 @@ export function verifyJvmMethod(decoded, options = {}) {
           break;
         }
         if (merged.changed) {
+          retainedLocalCells += merged.state.locals.size;
           states.set(successor, merged.state);
           queue.push(successor);
         }
+        if (retainedLocalCells > VERIFIER_DATAFLOW_FRAME_CELL_BUDGET) {
+          budgetExceeded = true;
+          break;
+        }
       }
+      if (budgetExceeded || errors.length) break;
     }
-    dataflowChecked = errors.length === 0;
+    if (budgetExceeded) {
+      // Resource exhaustion is a conservative analysis stop, never a proof:
+      // the method degrades to partial and the dataflow fact stays unchecked.
+      unsupported.add('jvm-verifier-dataflow-resource-budget-exceeded');
+    } else {
+      dataflowChecked = errors.length === 0;
+    }
   }
 
   const status = errors.length > 0 ? 'invalid' : unsupported.size > 0 ? 'partial' : 'valid';

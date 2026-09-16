@@ -52,27 +52,69 @@ function isPlainModelObject(value) {
   return proto === Object.prototype || proto === null;
 }
 
-function immutableModelValue(value) {
+const MAX_MODEL_DEPTH = 512;
+const MAX_MODEL_NODES = 200_000;
+
+class SolverModelLimitError extends Error {
+  constructor(code) {
+    super(`solver model exceeded ${code}`);
+    this.name = 'SolverModelLimitError';
+    this.limitCode = code;
+  }
+}
+
+function stackOverflowError(error) {
+  return error instanceof RangeError && /maximum call stack|stack size|call stack/i.test(String(error?.message));
+}
+
+function immutableModelValue(value, depth, counter, ancestors) {
   if (value === null || typeof value !== 'object') return value;
-  if (value instanceof Map) {
-    const copy = new ImmutableSolverModelMap();
-    for (const [key, entryValue] of value) Map.prototype.set.call(copy, key, immutableModelValue(entryValue));
-    return Object.freeze(copy);
-  }
-  if (Array.isArray(value)) return Object.freeze(value.map(immutableModelValue));
-  if (isPlainModelObject(value)) {
-    const copy = {};
-    for (const key of Object.keys(value)) {
-      Object.defineProperty(copy, key, {
-        value: immutableModelValue(value[key]),
-        enumerable: true,
-        writable: false,
-        configurable: false,
-      });
+  if (depth > MAX_MODEL_DEPTH) throw new SolverModelLimitError('model-depth-limit');
+  counter.nodes += 1;
+  if (counter.nodes > MAX_MODEL_NODES) throw new SolverModelLimitError('model-node-limit');
+  if (ancestors.has(value)) throw new TypeError('provider-model-cycle');
+  ancestors.add(value);
+  try {
+    if (value instanceof Map) {
+      const copy = new ImmutableSolverModelMap();
+      for (const [key, entryValue] of value) {
+        if (key !== null && typeof key === 'object') throw new TypeError('provider-model-object-map-key');
+        Map.prototype.set.call(copy, key, immutableModelValue(entryValue, depth + 1, counter, ancestors));
+      }
+      return Object.freeze(copy);
     }
-    return Object.freeze(copy);
+    if (Array.isArray(value)) {
+      const copy = [];
+      for (const element of value) copy.push(immutableModelValue(element, depth + 1, counter, ancestors));
+      return Object.freeze(copy);
+    }
+    if (isPlainModelObject(value)) {
+      const copy = {};
+      for (const key of Object.keys(value)) {
+        Object.defineProperty(copy, key, {
+          value: immutableModelValue(value[key], depth + 1, counter, ancestors),
+          enumerable: true,
+          writable: false,
+          configurable: false,
+        });
+      }
+      return Object.freeze(copy);
+    }
+    throw new TypeError('provider-model-unsupported-object');
+  } finally {
+    ancestors.delete(value);
   }
-  return Object.freeze(value);
+}
+
+function normalizeSolverModel(model) {
+  try {
+    return { ok: true, value: immutableModelValue(model, 0, { nodes: 0 }, new WeakSet()) };
+  } catch (error) {
+    if (error instanceof SolverModelLimitError || stackOverflowError(error)) {
+      return { ok: false, reason: error instanceof SolverModelLimitError ? error.limitCode : 'model-stack-limit' };
+    }
+    throw error;
+  }
 }
 
 function requireIdentityString(value, field) {
@@ -112,10 +154,18 @@ export function createSolverResult({
   const normalizedBackendVersion = requireIdentityString(backendVersion, 'backendVersion');
   const normalizedQueryHash = requireQueryHash(queryHash);
 
-  // Model is only permitted when status is SAT; publish an owned immutable snapshot (#3986)
+  // Model is only permitted when status is SAT; publish an owned immutable snapshot (#3986).
+  // Provider-controlled model canonicalization is itself a bounded authority
+  // boundary (#8975): over-deep/over-wide models are RESOURCE_LIMIT, never SAT.
+  let modelLimitReason = null;
   let normalizedModel = null;
   if (status === SOLVER_STATUS.SAT && model && typeof model === 'object') {
-    normalizedModel = immutableModelValue(model);
+    const normalized = normalizeSolverModel(model);
+    if (normalized.ok) normalizedModel = normalized.value;
+    else {
+      modelLimitReason = normalized.reason;
+      status = SOLVER_STATUS.RESOURCE_LIMIT;
+    }
   }
 
   const normalizedLifecycle = Object.freeze({
@@ -123,20 +173,21 @@ export function createSolverResult({
     cancelled: lifecycle?.cancelled === true,
     stale: lifecycle?.stale === true,
     disposed: lifecycle?.disposed === true,
-    budgetExceeded: lifecycle?.budgetExceeded === true,
+    budgetExceeded: lifecycle?.budgetExceeded === true || modelLimitReason != null,
     late: lifecycle?.late === true,
     publishable: lifecycle?.publishable !== false &&
       lifecycle?.timedOut !== true &&
       lifecycle?.cancelled !== true &&
       lifecycle?.stale !== true &&
       lifecycle?.disposed !== true &&
-      lifecycle?.budgetExceeded !== true,
+      lifecycle?.budgetExceeded !== true &&
+      modelLimitReason == null,
   });
 
   return Object.freeze({
     status,
     model: normalizedModel,
-    reason: reason ? String(reason) : null,
+    reason: reason ? String(reason) : (modelLimitReason ? `provider-model-${modelLimitReason}` : null),
     stats: Object.freeze({
       ...stats,
       solveTimeMs: Number(stats.solveTimeMs) || 0,

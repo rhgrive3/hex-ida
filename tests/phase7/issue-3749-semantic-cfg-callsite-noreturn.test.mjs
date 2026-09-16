@@ -342,7 +342,12 @@ test('issue 3749 integration: CFG and ABI consume one cached callsite prototype 
   }, { abiAdapter });
 
   assert.equal(resolverCalls, 2, 'ABI projection must consume the exact cached resolver results');
-  assert.deepEqual(abiSeenPrototypes, [returningPrototype, fatalPrototype]);
+  // #8809 sync: the compatibility pipeline now consumes the ABI projection in
+  // two passes (function-level and block-level decompiler modeling). Each pass
+  // still observes the identical cached frozen prototype objects — the
+  // single-cache contract above (`resolverCalls === 2`) is what proves no
+  // re-resolution; the extra observations are consumers, not new work.
+  assert.deepEqual(abiSeenPrototypes, [returningPrototype, fatalPrototype, returningPrototype, fatalPrototype]);
   assert.ok(pipeline.ssa.definitions.length > 0, 'focused route must execute scalar SSA');
   assert.ok(pipeline.memorySsa.definitions.length > 0, 'focused route must execute MemorySSA');
   assert.equal(pipeline.cfg.blocks[0].successors.length, 0, 'noreturn topology must survive canonical CFG construction');

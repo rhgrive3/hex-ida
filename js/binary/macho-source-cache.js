@@ -125,6 +125,12 @@ function cacheKey(options = {}) {
   const strings = cacheableStringsOptions(options.strings);
   return JSON.stringify({
     sliceIndex: normalizeScalar(options.sliceIndex),
+    // The FAT page-alignment policy is part of the result's semantic authority:
+    // a relaxed (`strictPageAlignment === false`) parse runs `validateFatSlice`
+    // under a weaker contract than the strict default (#6316). Cache identity
+    // must therefore discriminate it, or a relaxed-populated slice would be
+    // served to a strict caller (or the strict default) without re-validation.
+    strictPageAlignment: options.strictPageAlignment !== false,
     strings,
     metadataLimits: resolveMachOMetadataLimits(options.metadataLimits || {}),
     source: {

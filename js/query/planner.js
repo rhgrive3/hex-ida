@@ -875,7 +875,15 @@ async function verifyBest(query, ranked, tools, b) {
     if (expired(b)) break;
     const rmw = fieldUpdateFactForQuery(query, c.semantic || []);
     if (rmw) {
-      const verified = await invokeTool(tools, 'verify_field_update', b, c.address, rmw.selector, { pathLimit: 8 });
+      // #8886: bind the verifier to the directional predicate the query asserts
+      // (increase -> INCREMENT, decrease -> DECREMENT). A generic same-field RMW
+      // at the target location no longer satisfies a directional intent; the
+      // verifier proves the direction or fails closed, so +45 authority and the
+      // deterministic 0.98 upgrade are only granted for a proven direction.
+      const expectedFactKind = query.action === 'increase' ? FACT.INCREMENT
+        : query.action === 'decrease' ? FACT.DECREMENT
+          : rmw.fact?.kind || null;
+      const verified = await invokeTool(tools, 'verify_field_update', b, c.address, rmw.selector, { pathLimit: 8, expectedFactKind });
       if (expired(b)) break;
       c.verification = verified;
       if (verified.verified) { c.score += 45; c.scoreComponents.evidenceScore += 45; return c; }

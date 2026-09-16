@@ -46,8 +46,12 @@ if (typeof SharedArrayBuffer !== 'undefined') {
   bytes[0] = 2;
   assert.equal(log.snapshot().facts?.['hex-entity:sab\u0000comment'], undefined);
 
-  const directSab = envelope(sab, 4, 'sab-direct', true);
-  assert.equal(gate().validate(directSab).reason, 'remote-envelope-shape-invalid');
+  // A bare SharedArrayBuffer is not canonical-digestible even with raw egress
+  // declared: the current operation-digest hardening (#8819) fails it closed at
+  // construction (identity-unsupported-object), one layer before the snapshot
+  // shape boundary that still catches SAB-backed views/DataViews below. The
+  // fail-closed property is unchanged: shared-memory state never crosses.
+  assert.throws(() => envelope(sab, 4, 'sab-direct', true), /identity-unsupported-object/);
 
   const dvSab = new SharedArrayBuffer(8);
   const dataView = new DataView(dvSab);

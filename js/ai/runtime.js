@@ -9,7 +9,7 @@ import { createAgentJobManager } from './jobs/index.js';
 import { InvestigationSessionStore, isValidSessionId } from './session-core/index.js';
 import { sanitizeActions, addressText, validateSchema } from './validation.js';
 import { executeTurn } from './control/turn-executor.js';
-import { addressExistsAsync, assertLiveBindingsUnchanged, defaultMonotonicNow, deterministicConfidence, fallbackEvidence, presentAnswer, qualifyingEvidence } from './control/runtime-support.js';
+import { addressExistsAsync, assertLiveBindingsUnchanged, claimedAddresses, defaultMonotonicNow, deterministicConfidence, fallbackEvidence, presentAnswer, qualifyingEvidence } from './control/runtime-support.js';
 import { canonicalBindingId } from './control/snapshot.js';
 
 const BUDGET_LIMIT_REASONS = new Set([
@@ -170,7 +170,16 @@ export class AIRuntime {
     // came from an explicit citation or planner fallback, but only qualifying
     // authority may lift the no-authority confidence cap (#8864). #5159's
     // invalid-explicit-citation no-substitution rule remains unchanged above.
-    const evidenceSatisfiesAuthority = qualifyingEvidence(finalEvidence).length > 0;
+    // A genuinely `verified` record is only authority for the subject it proves:
+    // citing an authentic `0x1000` proof must not terminalise an unrelated claim
+    // about `0xDEAD` (#9009), which is the same trust boundary HypothesisStore
+    // already enforces for model-created hypotheses.
+    const claimAddresses = claimedAddresses(decision.answer, request.goal);
+    const authorityEvidence = qualifyingEvidence(finalEvidence, claimAddresses);
+    if (authorityEvidence.length < finalEvidence.filter((item) => item?.status === 'verified').length) {
+      activity.push({ type: 'consistency-check', label: '引用された検証済み記録が最終回答の主張住所を証明していないため、権限を付与せず根拠提示のみとしました', timestamp: new Date().toISOString() });
+    }
+    const evidenceSatisfiesAuthority = authorityEvidence.length > 0;
     if (!evidenceSatisfiesAuthority) confidence = Math.min(confidence, 0.5);
     const budgetReason = BUDGET_LIMIT_REASONS.has(limitReason) ? limitReason : null;
     const elapsedNow = typeof monotonicNow === 'function' ? monotonicNow() : defaultMonotonicNow();
@@ -179,7 +188,7 @@ export class AIRuntime {
       : 0;
     return {
       mode: request.mode, style: request.style,
-      answer: presentAnswer(String(decision.answer || ''), request.style, finalEvidence, plan), confidence, evidence: finalEvidence, hypotheses, actions,
+      answer: presentAnswer(String(decision.answer || ''), request.style, finalEvidence, plan, claimAddresses), confidence, evidence: finalEvidence, hypotheses, actions,
       proposals,
       followups: (decision.followups || []).map(String).slice(0, 8), activity,
       usage: { modelCalls, toolCalls, elapsedMs, contextBytes, ...wireUsage, candidateCount: plan?.candidates?.length || 0, analyzedFunctions: plan?.stats?.analyzedFunctions || 0, disassembly: Math.max(plan?.stats?.disassembly || 0, registry.analysisStats?.disassembly || 0), toolCost: registry.accounting.cost },

@@ -179,15 +179,15 @@ test('#7601 owner rows are resolved to canonical identity at the resolver bounda
   assert.deepEqual(resolutionB.provenance.owner, { table: 'TypeDef', rid: 2, name: 'B', namespace: 'N' });
 });
 
-test('#7601 a MemberRef whose owner row does not exist fails closed', () => {
+test('#7601 a MemberRef whose owner row does not exist fails closed at the parser boundary (#8759)', () => {
   const bytes = fixture((3 << 3) | 0); // TypeDef #3 — table has only 2 rows
-  const image = parseCil(bytes, { binaryId: 'ghost' });
-  const resolution = createCilCallSignatureResolver(image)(0x0a000001);
-  assert.equal(resolution.complete, false);
-  assert.equal(resolution.reason, 'cil-call-signature-memberref-parent-row-missing');
-  const call = callBundle(bytes, 'newobj');
-  assert.equal(call.callEffects[0].signatureResolved, false);
-  assert.equal(call.callEffects[0].signatureReason, 'cil-call-signature-memberref-parent-row-missing');
+  // #8759 fixture sync: the current parser validates MemberRefParent row
+  // existence while parsing metadata (probe overlay), so a ghost owner is
+  // rejected before any resolver call — stricter than the contract this
+  // fixture originally encoded. The resolver keeps its own fail-closed
+  // reason for shapes the parser cannot ground; here the parser boundary is
+  // the authority under test.
+  assert.throws(() => parseCil(bytes, { binaryId: 'ghost' }), /cil-unsupported-binary/);
 });
 
 test('#7601 a TypeRef owner without a decodable scope authority stays target-unresolved', () => {
@@ -259,22 +259,19 @@ test('#7601 a TypeRef owner scoped to a nested TypeRef chain resolves through th
         flags: 0, publicKeyOrToken: null, culture: null, hashValue: null } });
 });
 
-test('#7601 a TypeRef owner whose scope row is missing fails closed', () => {
-  // Scope claims AssemblyRef #1 but no AssemblyRef table is present.
+test('#7601 a TypeRef owner whose scope row is missing fails closed at the parser boundary (#8759)', () => {
+  // Scope claims AssemblyRef #1 but no AssemblyRef table is present. The
+  // current parser grounds ResolutionScope targets during metadata parsing,
+  // so this never reaches the resolver (#8759 sync).
   const bytes = fixture(0x0009, { typeRefs: typeRefsRow((1 << 2) | 2) });
-  const image = parseCil(bytes, { binaryId: 'missing-scope' });
-  const resolution = createCilCallSignatureResolver(image)(0x0a000001);
-  assert.equal(resolution.complete, false);
-  assert.equal(resolution.reason, 'cil-call-signature-memberref-owner-scope-row-missing');
+  assert.throws(() => parseCil(bytes, { binaryId: 'missing-scope' }), /cil-unsupported-binary/);
 });
 
-test('#7601 a TypeRef owner with a Module-tagged scope fails closed', () => {
-  // ResolutionScope tag 0 = Module; no Module table is present in the image.
+test('#7601 a TypeRef owner with a Module-tagged scope fails closed at the parser boundary (#8759)', () => {
+  // ResolutionScope tag 0 = Module; no Module row exists to ground the scope,
+  // and the current parser rejects it while parsing (#8759 sync).
   const bytes = fixture(0x0009, { typeRefs: typeRefsRow(1 << 2) });
-  const image = parseCil(bytes, { binaryId: 'module-scope' });
-  const resolution = createCilCallSignatureResolver(image)(0x0a000001);
-  assert.equal(resolution.complete, false);
-  assert.equal(resolution.reason, 'cil-call-signature-memberref-owner-scope-row-missing');
+  assert.throws(() => parseCil(bytes, { binaryId: 'module-scope' }), /cil-unsupported-binary/);
 });
 
 test('#7601 same-name TypeRefs in separate assemblies never alias', () => {
@@ -321,15 +318,30 @@ test('#7601 AssemblyRef identity is lossless across PublicKeyOrToken / Culture /
   assert.deepEqual(flagsB.producedValues[0].constructedType.scope.hashValue, [0xbe, 0xef]);
 });
 
-test('#7601 a malformed AssemblyRef public-key reference fails closed', () => {
-  // PublicKeyOrToken points past the end of the blob heap.
+test('#7601 a malformed AssemblyRef public-key reference fails closed at the parser boundary (#8759)', () => {
+  // PublicKeyOrToken points past the end of the blob heap; the current parser
+  // reads the blob while materializing AssemblyRef identity, so the image is
+  // rejected during parsing rather than at the resolver call (#8759 sync).
   const bytes = fixture(0x0009, {
     typeRefs: typeRefsRow((1 << 2) | 2), assemblyRefs: assemblyRefsRow([1, 0, 0, 0], { publicKeyIndex: 999 }),
   });
-  const image = parseCil(bytes, { binaryId: 'bad-key' });
+  assert.throws(() => parseCil(bytes, { binaryId: 'bad-key' }), /cil-unsupported-binary/);
+});
+
+test('#7601 a self-cyclic TypeRef scope fails closed at the resolver boundary (#8759)', () => {
+  // Parser-valid but resolver-undergrounded: the scope encoding decodes fine
+  // (TypeRef #1 scoped to TypeRef #1), so parsing succeeds; only the resolver
+  // walks the enclosing-scope chain and must fail closed instead of minting
+  // exact owner authority from a cycle. This keeps the resolver boundary
+  // covered without confusing it with the parser boundary.
+  const bytes = fixture(0x0009, { typeRefs: typeRefsRow((1 << 2) | 3) });
+  const image = parseCil(bytes, { binaryId: 'cycle' });
   const resolution = createCilCallSignatureResolver(image)(0x0a000001);
   assert.equal(resolution.complete, false);
-  assert.equal(resolution.reason, 'cil-call-signature-memberref-owner-scope-public-key-invalid');
+  assert.equal(resolution.reason, 'cil-call-signature-memberref-owner-scope-invalid');
+  const call = callBundle(bytes, 'newobj');
+  assert.equal(call.callEffects[0].signatureResolved, false);
+  assert.equal(call.callEffects[0].signatureReason, 'cil-call-signature-memberref-owner-scope-invalid');
 });
 
 test('#7601 a locally-owned MemberRef (TypeDef) keeps callTargetResolved true', () => {
