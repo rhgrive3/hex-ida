@@ -1,5 +1,29 @@
 # Analysis roadmap v8 integration checkpoint
 
+## 2026-09-16: C2 (C2-01 / C2-02) exact-head local acceptance 完了
+
+HEX-C2-01 (FR-C2-01A) および HEX-C2-02 (FR-C2-02A) のローカル要件について、統合受入スイート [`tests/phase8/memory/c2-acceptance.test.mjs`](file:///mnt/workspace/hex-ida/tests/phase8/memory/c2-acceptance.test.mjs) を追加し、`accepted-local` として受入完了としました。
+
+- **C2-01 (Byte-Exact MemorySSA Forwarding)**:
+  - 5 widths (8, 16, 32, 64, 128) × 2 endians (little, big) × 12 clobber scenarios (full, split, overwrite, hole, unknown-byte, volatile-load, atomic-load, volatile-store, atomic-store, unknown-write, unknown-call, may-store) = 120 cells の完全分母を検証。
+  - 30 exact numeric reconstructions、90 safe fail-closed withholdings、zero false exactness を達成。
+  - Authority verification (copied proof / copied producer / stale snapshot の拒絶)、residual load へのフォールバック、決定論的リプレイおよび AbortSignal キャンセルを確認。
+- **C2-02 (Range / Bitmask / Congruence / SCCP / Downstream Induction Product Transfer)**:
+  - Bit mask algebra (AND/OR/XOR/ashr および incompatible known bits による不等式判定)。
+  - SCCP pass による compound expressions の canonical range / bitmask facts パブリッシュ。
+  - Joins および Widening における monotone over-approximation (値の非欠落) を検証。
+  - Downstream induction における validated canonical scalar facts の消費と、未検証 identity・stale snapshot・partial facts の厳密な拒絶を確認。
+
+テスト結果:
+- [`tests/phase8/memory/c2-acceptance.test.mjs`](file:///mnt/workspace/hex-ida/tests/phase8/memory/c2-acceptance.test.mjs): 8/8 PASS
+- [`tests/phase8/memory/c2-byte-forwarding-matrix.test.mjs`](file:///mnt/workspace/hex-ida/tests/phase8/memory/c2-byte-forwarding-matrix.test.mjs): 120 cells PASS
+- [`tests/phase8/scalar/c2-*.test.mjs`](file:///mnt/workspace/hex-ida/tests/phase8/scalar/c2-domain-contract-matrix.test.mjs): 43/43 PASS
+- [`tests/phase8/integration/c2-02-downstream-range.test.mjs`](file:///mnt/workspace/hex-ida/tests/phase8/integration/c2-02-downstream-range.test.mjs): 5/5 PASS
+- [`tests/semantic-v2/issue-c2-01-byte-exact-forwarding.test.mjs`](file:///mnt/workspace/hex-ida/tests/semantic-v2/issue-c2-01-byte-exact-forwarding.test.mjs): 1/1 PASS
+- [`tests/phase8/ownership/roadmap-v8-integration.test.mjs`](file:///mnt/workspace/hex-ida/tests/phase8/ownership/roadmap-v8-integration.test.mjs): 24/24 PASS
+
+全native corpus、独立shadow、実機・release、他 finding は継続対象であり、ロードマップ全体の `CHECKPOINT-LOCKED` / `transformAuthorization: false` は維持します。
+
 ## 2026-09-16: C3-01/C3-02 exact-head local acceptance 完了
 
 PR #7036 の候補 `fc91d16328b98f7d6e2e3d5f030ea8580f39c3fa` を clean checkout に固定し、Node `v22.22.3` で担当範囲の有限受入を再検証しました。C3 combined は **188/188 PASS**（C3-01 48/48、C3-02 140/140）、Phase7 types lane は **239/239 PASS**（30/449 discovered test files）、Phase6+Phase8 ABI は **507/507 PASS**、required profile matrix は **66/66 PASS** でした。C3-02 ownership manifest は feature 38 / generated 2 / governance 2 を満たし、Phase7 ownership 24/24、Phase8 routing 5/5 も通過しています。

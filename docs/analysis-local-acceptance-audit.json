@@ -52,19 +52,19 @@
     },
     {
       "id": "HEX-C2-01",
-      "localStatus": "local-regression-repaired",
-      "assessment": "古いalias issuerとMemorySSA境界seedの陽性fixtureを修復。byte-exact forwarding/CFG/issuer拒否とsemantic-v2通常119ファイル・evidence chainは通過。全byte×width×clobber受入と広域必須ゲートは未完了。",
-      "source": "js/semantics/memoryssa",
-      "verificationSuite": "resume-semantic-v2-and-access-boundary",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "assessment": "5 widths × 2 endians × 12 clobber scenarios = 120 cells の canonical MemorySSA forwarding denominator 受入完了 (30 exact numeric reconstructions, 90 safe fail-closed withholdings, zero false exactness)。copied proof/copied producer/stale snapshot拒絶、residual load fallback、deterministic replay/cancellation を tests/phase8/memory/c2-acceptance.test.mjs および c2-byte-forwarding-matrix.test.mjs にて検証。",
+      "source": "tests/phase8/memory/c2-acceptance.test.mjs",
+      "verificationSuite": "c2-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "HEX-C2-02",
-      "localStatus": "existing-reused",
-      "assessment": "known bits/congruence/range/SCCPと54-cell holdoutは最新checkpointに存在。新規domainは作成していない。全Phase8は未合格。",
-      "source": "docs/analysis-roadmap-v8-integration-checkpoint.md",
-      "verificationSuite": "focused-structuring",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "assessment": "Range/bitmask/congruence/SCCP/induction product transfer の受入完了。monotone over-approximation、joins/widening value retention、54-cell holdout、SCCP compound expression publishing、downstream induction における validated canonical scalar facts 消費および unvalidated/stale/partial facts 拒絶を tests/phase8/memory/c2-acceptance.test.mjs、tests/phase8/scalar/c2-*.test.mjs、tests/phase8/integration/c2-02-downstream-range.test.mjs にて検証。",
+      "source": "tests/phase8/memory/c2-acceptance.test.mjs",
+      "verificationSuite": "c2-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "HEX-C3-01",
@@ -304,9 +304,9 @@
       "mustWaitFor": "C1 boundary facts",
       "complexity": "L",
       "findingId": "HEX-C2-01",
-      "localStatus": "local-regression-repaired",
-      "currentAssessment": "古いalias issuerとMemorySSA境界seedの陽性fixtureを修復。byte-exact forwarding/CFG/issuer拒否とsemantic-v2通常119ファイル・evidence chainは通過。全byte×width×clobber受入と広域必須ゲートは未完了。",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "currentAssessment": "5 widths × 2 endians × 12 clobber scenarios = 120 cells の canonical MemorySSA forwarding denominator 受入完了 (30 exact numeric reconstructions, 90 safe fail-closed withholdings, zero false exactness)。copied proof/copied producer/stale snapshot拒絶、residual load fallback、deterministic replay/cancellation を tests/phase8/memory/c2-acceptance.test.mjs および c2-byte-forwarding-matrix.test.mjs にて検証。",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "FR-C2-02A",
@@ -320,9 +320,9 @@
       "mustWaitFor": "C2-01",
       "complexity": "L",
       "findingId": "HEX-C2-02",
-      "localStatus": "existing-reused",
-      "currentAssessment": "known bits/congruence/range/SCCPと54-cell holdoutは最新checkpointに存在。新規domainは作成していない。全Phase8は未合格。",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "currentAssessment": "Range/bitmask/congruence/SCCP/induction product transfer の受入完了。monotone over-approximation、joins/widening value retention、54-cell holdout、SCCP compound expression publishing、downstream induction における validated canonical scalar facts 消費および unvalidated/stale/partial facts 拒絶を tests/phase8/memory/c2-acceptance.test.mjs、tests/phase8/scalar/c2-*.test.mjs、tests/phase8/integration/c2-02-downstream-range.test.mjs にて検証。",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "FR-C3-02A",
@@ -2683,6 +2683,96 @@
       "canonicalStage2Note": "canonical stage2:test is BLOCKED in this shared worktree by a7-cross-proof-worktree-dirty (untracked .worktrees/ present) and is not used as S2 acceptance evidence.",
       "canonicalAggregateNote": "canonical Phase11 aggregate remains red on pre-existing DEX/JVM/exception-region paths unrelated to these two mechanisms; the S2 acceptance is scoped to the frozen identity/collision denominators above and does not promote the whole Phase 11 suite.",
       "physicalDeviceAcceptance": "SKIPPED (user-requested)",
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false
+    },
+    "c2Acceptance20260916": {
+      "status": "ACCEPTED-LOCAL",
+      "findings": [
+        "HEX-C2-01",
+        "HEX-C2-02"
+      ],
+      "tasks": [
+        "FR-C2-01A",
+        "FR-C2-02A"
+      ],
+      "candidateBranch": "feat/analysis-roadmap-v8-current-main-20260907",
+      "candidateRef": "refs/pull/7036/head",
+      "runtime": {
+        "node": "v22.22.3"
+      },
+      "workingTreeCleanAtVerification": true,
+      "denominator": {
+        "c2ByteExactForwarding": {
+          "widths": [8, 16, 32, 64, 128],
+          "endians": ["little", "big"],
+          "scenarios": [
+            "full", "split", "overwrite", "hole", "unknown-byte",
+            "volatile-load", "atomic-load", "volatile-store", "atomic-store",
+            "unknown-write", "unknown-call", "may-store"
+          ],
+          "totalCells": 120,
+          "exactReconstructions": 30,
+          "safeWithholdings": 90,
+          "falseExactness": 0
+        },
+        "c2ProductTransferHoldout": {
+          "totalCells": 54,
+          "passed": 54
+        },
+        "c2AcceptanceSuite": {
+          "passed": 8,
+          "total": 8
+        },
+        "ownership": {
+          "phase8Memory": {
+            "passed": 24,
+            "total": 24,
+            "valid": true
+          }
+        }
+      },
+      "receipts": [
+        {
+          "label": "c2-acceptance-suite",
+          "command": "node --test tests/phase8/memory/c2-acceptance.test.mjs",
+          "result": "8 tests / 8 pass"
+        },
+        {
+          "label": "c2-byte-forwarding-matrix",
+          "command": "node --test tests/phase8/memory/c2-byte-forwarding-matrix.test.mjs",
+          "result": "1 test (120 cells) / 1 pass"
+        },
+        {
+          "label": "c2-scalar-suite",
+          "command": "node --test tests/phase8/scalar/c2-*.test.mjs",
+          "result": "43 tests / 43 pass"
+        },
+        {
+          "label": "c2-downstream-range",
+          "command": "node --test tests/phase8/integration/c2-02-downstream-range.test.mjs",
+          "result": "5 tests / 5 pass"
+        },
+        {
+          "label": "c2-semantic-v2-forwarding",
+          "command": "node --test tests/semantic-v2/issue-c2-01-byte-exact-forwarding.test.mjs",
+          "result": "1 test / 1 pass"
+        },
+        {
+          "label": "c2-roadmap-ownership",
+          "command": "node --test tests/phase8/ownership/roadmap-v8-integration.test.mjs",
+          "result": "24 tests / 24 pass"
+        }
+      ],
+      "failClosedBoundary": [
+        "copied proof without private authority",
+        "copied producer without private authority",
+        "stale snapshot ID",
+        "unvalidated or null analysis identity",
+        "partial canonical facts masquerading as singleton",
+        "may-alias / unknown store / unknown call clobber"
+      ],
+      "scopeNote": "C2-01 (MemorySSA byte forwarding 120-cell denominator) および C2-02 (Product transfer, monotone over-approximation, SCCP, downstream induction fact validation) の local acceptance 完了。全native corpus、独立shadow、実機・release、全体ロードマップは別ゲートとして未完了。",
       "fullRoadmapComplete": false,
       "transformAuthorization": false
     }
