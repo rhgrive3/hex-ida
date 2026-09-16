@@ -21,6 +21,17 @@ function storeArm(builder, value) {
   } };
 }
 
+function removeJoinPhi(ir) {
+  const input = ir.values.find(value => value.kind === 'arg' && value.reg === 'x0');
+  const join = ir.blocks[3];
+  assert.ok(input && join);
+  join.phis = [];
+  const ret = join.insts.find(inst => inst.op === 'ret');
+  assert.ok(ret);
+  ret.args = [{ value:input }];
+  ir.instructions = ir.blocks.flatMap(block => [...block.phis, ...block.insts]);
+}
+
 const proofOptions = Object.freeze({
   identity,
   addressBits:8,
@@ -28,8 +39,8 @@ const proofOptions = Object.freeze({
   timeoutMs:5000,
 });
 
-function fixture() {
-  const f = conditionalRegionFixture({ armEffect:storeArm });
+function fixture({ withJoinPhi = false } = {}) {
+  const f = conditionalRegionFixture({ armEffect:storeArm, ...(withJoinPhi ? {} : { mutate:removeJoinPhi }) });
   const projection = enhanceSemanticDecompilation(f.seed, { name:'reachability', calls:[] }, {
     phase8PrepareProof:true,
     phase8PrepareRegionProof:true,
@@ -39,15 +50,9 @@ function fixture() {
   return { ...f, projection };
 }
 
-test('C4-04B issued condition binds the exact copied region and mints only private flat-body authority', async () => {
-  const f = fixture();
+async function prepare(f) {
   const conditionPlan = await prepareConditionalRegionCondition(f.structure, f.projection, proofOptions);
   assert.equal(conditionPlan.status, 'complete', conditionPlan.reason);
-  const condition = readConditionalRegionCondition(conditionPlan, f.projection, f.structure, identity);
-  assert.ok(condition);
-  assert.equal(condition.region.original, f.structure.region);
-  assert.equal(condition.header, condition.region.header);
-
   const reachability = await f.run();
   const plan = prepareConditionalRegionErasure(f.structure, reachability, f.ir, {
     identity,
@@ -56,6 +61,17 @@ test('C4-04B issued condition binds the exact copied region and mints only priva
     conditionPlan,
   });
   assert.equal(plan.status, 'complete', plan.reason);
+  return { conditionPlan, reachability, plan };
+}
+
+test('C4-04B issued condition binds the exact copied region and mints only private no-PHI flat-body authority', async () => {
+  const f = fixture();
+  assert.equal(f.structure.phis.length, 0);
+  const { conditionPlan, plan } = await prepare(f);
+  const condition = readConditionalRegionCondition(conditionPlan, f.projection, f.structure, identity);
+  assert.ok(condition);
+  assert.equal(condition.region.original, f.structure.region);
+  assert.equal(condition.header, condition.region.header);
   assert.equal(plan.bodyValidation, 'proved-no-phi-flat-stores');
   assert.deepEqual(plan.pendingValidation, ['removed-entity-provenance']);
 
@@ -75,17 +91,18 @@ test('C4-04B issued condition binds the exact copied region and mints only priva
     'copied public plan fields must not manufacture body authority');
 });
 
+test('C4-04B join PHI remains an explicit validation obligation and cannot mint body authority', async () => {
+  const f = fixture({ withJoinPhi:true });
+  assert.ok(f.structure.phis.length > 0);
+  const { plan } = await prepare(f);
+  assert.equal(plan.bodyValidation, 'required');
+  assert.ok(plan.pendingValidation.includes('live-phi-render-correspondence'));
+  assert.equal(readRegionErasureBody(plan, f.projection, f.ir, identity), null);
+});
+
 test('C4-04B body authority is revoked when the observed copied region becomes stale', async () => {
   const f = fixture();
-  const conditionPlan = await prepareConditionalRegionCondition(f.structure, f.projection, proofOptions);
-  assert.equal(conditionPlan.status, 'complete', conditionPlan.reason);
-  const reachability = await f.run();
-  const plan = prepareConditionalRegionErasure(f.structure, reachability, f.ir, {
-    identity,
-    timeoutMs:5000,
-    projection:f.projection,
-    conditionPlan,
-  });
+  const { plan } = await prepare(f);
   assert.equal(plan.bodyValidation, 'proved-no-phi-flat-stores');
   const body = readRegionErasureBody(plan, f.projection, f.ir, identity);
   assert.ok(body);
