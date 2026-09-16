@@ -20,6 +20,10 @@ function inAnyMapping(address, mappings) {
   return mappings.some((m) => address >= m.address && address < m.address + m.size);
 }
 
+function inTargetRange(address, range) {
+  return range != null && range.size > 0n && address >= range.start && address < range.start + range.size;
+}
+
 function isPowerOfTwo(value) {
   return Number.isSafeInteger(value) && value > 0 && (value & (value - 1)) === 0;
 }
@@ -43,11 +47,15 @@ export function parseSlideInfo5Structure(bytes, mapping, totalSize) {
   return { version, pageSize, starts, valueAdd };
 }
 
-function decodeRecord(mapping, pageOffset, raw, info, slide, mappings) {
+function decodeRecord(mapping, pageOffset, raw, info, slide, mappings, targetRange) {
   const authenticated = ((raw >> 63n) & 1n) !== 0n;
   const runtimeOffset = raw & RUNTIME_OFFSET_MASK;
   const targetAddress = info.valueAdd + runtimeOffset;
-  if (!inAnyMapping(targetAddress, mappings)) throw new Error('dyld shared cache v5 rebase target is outside mapped cache address space');
+  const targetInCurrentFileMappings = inAnyMapping(targetAddress, mappings);
+  const targetInSharedRegion = inTargetRange(targetAddress, targetRange);
+  if (!targetInCurrentFileMappings && !targetInSharedRegion) {
+    throw new Error('dyld shared cache v5 rebase target is outside declared shared region');
+  }
   const next = Number((raw >> 52n) & NEXT_MASK);
   const high8 = Number((raw >> 34n) & 0xffn);
   const record = {
@@ -59,6 +67,8 @@ function decodeRecord(mapping, pageOffset, raw, info, slide, mappings) {
     authenticated,
     runtimeOffset,
     nextPointerUnits: next,
+    targetInCurrentFileMappings,
+    targetInSharedRegion,
   };
   if (authenticated) {
     record.diversity = Number((raw >> 34n) & 0xffffn);
@@ -77,7 +87,7 @@ function initialOffset(info, page) {
   return start * 8;
 }
 
-export function walkSlideInfo5Sync(bytes, mapping, info, slide, mappings, maxRecords) {
+export function walkSlideInfo5Sync(bytes, mapping, info, slide, mappings, maxRecords, targetRange = null) {
   const r = new ByteView(bytes, { littleEndian: true, base: mapping.fileOffset });
   const rebases = [];
   for (let page = 0; page < info.starts.length; page++) {
@@ -90,7 +100,7 @@ export function walkSlideInfo5Sync(bytes, mapping, info, slide, mappings, maxRec
       const offset = pageStart + withinPage;
       if ((withinPage & 7) !== 0 || offset < pageStart || offset + 8 > pageEnd) throw new Error('dyld shared cache v5 rebase chain leaves its page');
       if (rebases.length >= maxRecords) throw new Error('dyld shared cache rebase record budget exceeded');
-      const { next, record } = decodeRecord(mapping, offset, r.u64(offset), info, slide, mappings);
+      const { next, record } = decodeRecord(mapping, offset, r.u64(offset), info, slide, mappings, targetRange);
       rebases.push(record);
       if (next === 0) break;
       withinPage += next * 8;
@@ -100,7 +110,7 @@ export function walkSlideInfo5Sync(bytes, mapping, info, slide, mappings, maxRec
   return rebases;
 }
 
-export async function walkSlideInfo5Source(read64, mapping, info, slide, mappings, maxRecords) {
+export async function walkSlideInfo5Source(read64, mapping, info, slide, mappings, maxRecords, targetRange = null) {
   const rebases = [];
   for (let page = 0; page < info.starts.length; page++) {
     let withinPage = initialOffset(info, page);
@@ -113,7 +123,7 @@ export async function walkSlideInfo5Source(read64, mapping, info, slide, mapping
       if ((withinPage & 7) !== 0 || offset < pageStart || offset + 8 > pageEnd) throw new Error('dyld shared cache v5 rebase chain leaves its page');
       if (rebases.length >= maxRecords) throw new Error('dyld shared cache rebase record budget exceeded');
       const raw = await read64(mapping.fileOffset + BigInt(offset));
-      const { next, record } = decodeRecord(mapping, offset, raw, info, slide, mappings);
+      const { next, record } = decodeRecord(mapping, offset, raw, info, slide, mappings, targetRange);
       rebases.push(record);
       if (next === 0) break;
       withinPage += next * 8;
