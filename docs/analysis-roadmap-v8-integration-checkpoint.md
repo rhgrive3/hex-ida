@@ -7766,3 +7766,8 @@ X-02有限行列は114 pass / 4 evidence-gap / 2 environment-excluded、95%は�
 全C4/120ms、独立実機、active runtime/signing/releaseが残るためCHECKPOINT-LOCKED、
 fullRoadmapComplete:false、transformAuthorization:false、マージ未実施を維持する。
 今回の全source/hash/log/生成物/失敗理由は監査JSONのintegrationFollowup.completionResume。
+
+
+## 2026-09-16 C4-02 local acceptance
+
+`tests/phase8/structuring/c4-02-acceptance.test.mjs` で CFG region/edge-kind の4カテゴリ（irreducible / exception-unwind / switch-fallthrough / flattened-dispatcher）を固定分母化した。全CFG edge/kindは independent recount を必須とし、ordinary switch fallthrough は edge を保持して構造化、irreducible/flattened dispatcher は residual-goto、unwind/foreign edge は constraint-edge として保持する。dispatcher shapeだけから loop/switch authorityを発行しない。conditional projection にPHIが残る場合は `live-phi-render-correspondence` を pending validation として保持する。HEX-C4-02 / FR-C4-02A はこのローカル要件について accepted-local。C4-03/C4-05 と全roadmap/release/device受入は未完了のまま。

@@ -100,11 +100,11 @@
     },
     {
       "id": "HEX-C4-02",
-      "localStatus": "partial",
-      "assessment": "既存executorの全経路完走を条件に有限ループ後の入口到達性を追加。反転条件を保持し、親内で閉じてheader文を移動しない入れ子ループを既存emitterで表示。領域全体/PHI/CFG削除、任意回数、exception/unwindの意味保存受入は残る。",
-      "source": "js/decompiler/phase8",
-      "verificationSuite": "c4-continuation-scoped-regressions",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "assessment": "C4-02 の CFG region/edge-kind 分母を irreducible / exception-unwind / switch-fallthrough / flattened-dispatcher の4カテゴリで固定。edge accounting は全CFG edge/kindを独立再計数し、ordinary switch fallthrough は edge を保持した validated switch region、irreducible と flattened dispatcher は residual-goto、unwind/foreign edge は constraint-edge として fail closed。shapeだけから dispatcher loop/switch を構造化しない。既存 conditional projection は PHI が残る場合 live-phi-render-correspondence を pending validation として保持する。C4-03/C4-05 と whole-roadmap/release/device gates は別。",
+      "source": "tests/phase8/structuring/c4-02-acceptance.test.mjs",
+      "verificationSuite": "c4-02-final-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "HEX-C4-03",
@@ -464,9 +464,9 @@
       "mustWaitFor": "validator",
       "complexity": "L",
       "findingId": "HEX-C4-02",
-      "localStatus": "partial",
-      "currentAssessment": "既存executorの全経路完走を条件に有限ループ後の入口到達性を追加。反転条件を保持し、親内で閉じてheader文を移動しない入れ子ループを既存emitterで表示。領域全体/PHI/CFG削除、任意回数、exception/unwindの意味保存受入は残る。",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "currentAssessment": "irreducible / exception-unwind / switch-fallthrough / flattened-dispatcher の固定4カテゴリを production structuring と independent edge recount で受入。安全に構造化できる switch fallthrough は全edge kindを保持し、証明のない irreducible/dispatcher は residual jump、foreign unwind は constraint edge のまま保持する。PHI保持時は live-phi-render-correspondence を未解決条件として保持する。",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "FR-C4-05A",
@@ -2314,6 +2314,26 @@
       ],
       "conditionalRegionScope": "only independently proved unreachable no-PHI/no-MemoryPHI flat-store render arm; canonical Semantic IR/SSA/CFG unchanged",
       "wholeRoadmapNote": "C4-04 local acceptance does not close C4-02, C4-05, independent review, device, release, or other roadmap findings."
+    },
+    "c4StructuringAcceptance20260916": {
+      "status": "ACCEPTED-LOCAL",
+      "finding": "HEX-C4-02",
+      "task": "FR-C4-02A",
+      "denominator": [
+        "irreducible",
+        "exception-unwind",
+        "switch-fallthrough",
+        "flattened-dispatcher"
+      ],
+      "acceptanceTest": "tests/phase8/structuring/c4-02-acceptance.test.mjs",
+      "edgeAccounting": "independent-recount-required",
+      "unsafeDisposition": [
+        "residual-goto",
+        "constraint-edge"
+      ],
+      "phiDisposition": "live-phi-render-correspondence-required",
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false
     }
   },
   "integrationFollowupHistory": [

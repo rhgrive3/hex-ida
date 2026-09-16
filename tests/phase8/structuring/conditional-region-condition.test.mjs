@@ -301,7 +301,7 @@ test('committed region projection repairs the actual C precedence counterexample
   assert.deepEqual(f.ir.instructions, beforeInstructions); assert.deepEqual(f.ir.blocks[3].phis, beforePhis);
   assert.equal(output.cAst.body.length, initial.length);
   assert.equal(f.plan.transformAuthorization, false);
-  assert.deepEqual(f.plan.pendingValidation, ['removed-entity-provenance']);
+  assert.deepEqual(f.plan.pendingValidation, ['live-phi-render-correspondence', 'removed-entity-provenance']);
   const history = readLineExpressionHistory(output.lines[changed[0]], f.ir);
   assert.ok(history.some(record => record.rule === 'project-proved-conditional-predicate'));
   assert.ok(readProjectedConditionalRegions(output.cAst, f.ir));

@@ -202,7 +202,8 @@
       "tests/phase8/substrate/c4-memory-rewrite-adoption.test.mjs",
       "tests/phase8/substrate/pass-validation-owned-snapshot.test.mjs",
       "js/decompiler/phase8/structuring.js",
-      "tests/phase8/structuring/edge-accounting.test.mjs"
+      "tests/phase8/structuring/edge-accounting.test.mjs",
+      "tests/phase8/structuring/c4-02-acceptance.test.mjs"
     ],
     "symbolic": [
       "js/symbolic/egraph/graph.js",
