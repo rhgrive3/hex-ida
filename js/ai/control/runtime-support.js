@@ -155,15 +155,79 @@ export function withPlanEvidenceBinding(plan, records) {
 
 const MAX_FALLBACK_EVIDENCE = 50;
 
+const CLAIM_ADDRESS_PATTERN = /0x[0-9a-fA-F]{1,16}/g;
+
+/**
+ * Canonical addresses the final answer actually asserts.
+ *
+ * A verified record proves its own subject, not an arbitrary sentence that
+ * happens to cite it (#9009). Only literal `0x…` tokens count, so this stays a
+ * deterministic typed check instead of a textual-entailment guess.
+ */
+export function claimedAddresses(...texts) {
+  const claimed = new Set();
+  for (const text of texts) {
+    if (typeof text !== 'string' || !text) continue;
+    for (const match of text.match(CLAIM_ADDRESS_PATTERN) || []) claimed.add(match.toLowerCase());
+  }
+  return claimed;
+}
+
+function recordSubjects(record) {
+  const subjects = new Set();
+  for (const value of [record?.functionAddress, record?.address]) {
+    if (value == null) continue;
+    try { subjects.add(`0x${BigInt(value).toString(16)}`); } catch { subjects.add(String(value).toLowerCase()); }
+  }
+  return subjects;
+}
+
 /**
  * Records that carry the authority a final answer presents.
  *
  * `supported` planner ranking is useful provenance but it is not proof, so it
  * may not satisfy the evidence requirement that lifts the evidence-free
- * confidence cap (#8864).
+ * confidence cap (#8864). A `verified` record additionally has to prove the
+ * subject the answer asserts: a genuine `0x1000` proof cited under a claim about
+ * `0xDEAD` is provenance for a different fact, not authority for it (#9009).
+ * Nothing proves an address-free claim is unsupported, so that case keeps the
+ * pre-#9009 contract (#5159, #8864).
  */
-export function qualifyingEvidence(evidence) {
-  return (Array.isArray(evidence) ? evidence : []).filter((item) => item?.status === 'verified');
+export function qualifyingEvidence(evidence, claimAddresses = null) {
+  const verified = (Array.isArray(evidence) ? evidence : []).filter((item) => item?.status === 'verified');
+  if (!(claimAddresses instanceof Set) || !claimAddresses.size) return verified;
+  const covering = verified.filter((item) => {
+    const subjects = recordSubjects(item);
+    for (const address of claimAddresses) if (subjects.has(address)) return true;
+    return false;
+  });
+  // Fail closed when the citation set does not cover every asserted address:
+  // quantity of unrelated verified records cannot substitute for the proof of
+  // the specific claim (#9009 acceptance 5).
+  const covered = new Set();
+  for (const item of covering) for (const subject of recordSubjects(item)) covered.add(subject);
+  for (const address of claimAddresses) if (!covered.has(address)) return [];
+  return covering;
+}
+
+/**
+ * Claim-authorizing evidence for one final decision.
+ *
+ * Provider/model prose is untrusted authority input. When it asserts no typed
+ * subject that Hex can bind deterministically, merely selecting a real
+ * `verified` record cannot make an arbitrary address-free sentence terminal
+ * (#9009). Deterministic first-party fallbacks retain the historical
+ * address-free contract because their claim is produced by Hex from the plan,
+ * not authored by the provider.
+ */
+export function finalAnswerAuthorityEvidence(
+  evidence,
+  claimAddresses = null,
+  { providerControlled = false, allowAddressFreeDeterministicFallback = false } = {},
+) {
+  const hasTypedClaim = claimAddresses instanceof Set && claimAddresses.size > 0;
+  if (providerControlled && !hasTypedClaim && !allowAddressFreeDeterministicFallback) return [];
+  return qualifyingEvidence(evidence, claimAddresses);
 }
 
 /**
@@ -193,12 +257,15 @@ export function deterministicConfidence(plan) {
   if (plan?.best?.semanticFacts?.length) return 0.78;
   return plan?.best ? 0.45 : 0;
 }
-export function presentAnswer(answer, style, evidence, plan) {
+export function presentAnswer(answer, style, evidence, plan, claimAddresses = null, authorityEvidence = null) {
   if (style === 'analyst') return answer;
-  const verified = (evidence || []).filter((item) => item?.status === 'verified').length;
+  const verified = Array.isArray(authorityEvidence)
+    ? authorityEvidence.length
+    : qualifyingEvidence(evidence, claimAddresses).length;
   const unverified = Math.max(0, (evidence || []).length - verified);
   // Beginner prose must not call a merely `supported` ranking record a
-  // confirmed fact (#8864).
+  // confirmed fact (#8864), and must not call an unrelated verified fact
+  // confirmation of what the answer asserts (#9009).
   const suffix = verified
     ? `\n\nHex が確認できた根拠は ${verified} 件です。${unverified ? ` 未検証の補強根拠も ${unverified} 件添付しています。` : ''}`
     : (unverified
@@ -219,12 +286,10 @@ export function resolveMonotonicClock(...candidates) {
 // A caller-supplied clock is still an authority input. Freeze each turn's
 // observation to a finite, non-decreasing primitive so a clock correction
 // cannot extend a deadline or make elapsed time negative.
-export function createMonotonicClock(source = defaultMonotonicNow) {
-  const now = resolveMonotonicClock(source);
+export function createMonotonicClock(clock = defaultMonotonicNow) {
   let last = null;
   return () => {
-    let value;
-    try { value = now(); } catch { value = null; }
+    const value = clock();
     if (typeof value !== 'number' || !Number.isFinite(value)) return last ?? 0;
     if (last == null || value > last) last = value;
     return last;
@@ -242,7 +307,7 @@ export function ensureRunning(signal, started, timeoutMs, nowFn = defaultMonoton
   if (signal?.aborted) {
     throw new AIError(
       signal.reason === 'timeout' ? 'budget_exhausted' : 'cancelled',
-      signal.reason === 'timeout' ? 'The AI investigation timed out.' : 'AI investigation was cancelled.',
+      signal.reason === 'timeout' ? 'The AI investigation timed out.' : 'The AI investigation was cancelled.',
     );
   }
   if (elapsedSince(started, nowFn) >= timeoutMs) {
