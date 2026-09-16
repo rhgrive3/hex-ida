@@ -10,19 +10,35 @@ const gate = () => new RemoteCollaborationGate({
   projectIdentity: base.projectIdentity, binaryIdentity: base.binaryIdentity, sessionIdentity: base.sessionIdentity,
   allowedActors: { [base.actorIdentity]: ['*'] }, verifyTransportProof: () => true, transportVerifierIdentity: 'oracle:sab',
 });
-function envelope(payload, sequence, messageId) {
+function envelope(payload, sequence, messageId, rawBinary = false) {
   return createRemoteCollaborationEnvelope({
     ...base, messageId, sequence,
     operations: [{ targetEntityId: 'hex-entity:sab', factKind: 'comment', action: 'set', payload, causalParents: [] }],
     transportProof: { authenticated: true, confidentiality: 'verified', integrity: 'verified', proofIdentity: 'proof:sab' },
-    egress: { userAuthorized: true, rawBinaryBytes: false, derivedDataOnly: true },
+    egress: { userAuthorized: true, rawBinaryBytes: rawBinary, derivedDataOnly: !rawBinary },
   });
 }
+
+// #8751 sync to the current raw-binary egress policy: any binary payload
+// requires an explicit `rawBinaryBytes:true` declaration at envelope creation,
+// and the collaboration gate rejects raw-binary egress unconditionally. The
+// SharedArrayBuffer ingress boundary is verified underneath that declaration:
+// even with raw egress explicitly allowed, shared-memory state must never
+// cross the snapshot boundary.
 
 if (typeof SharedArrayBuffer !== 'undefined') {
   const sab = new SharedArrayBuffer(1);
   const bytes = new Uint8Array(sab); bytes[0] = 1;
-  const hostile = envelope(bytes, 1, 'sab-view');
+
+  // Raw-binary policy: shared or private bytes without the explicit
+  // declaration fail closed at construction.
+  assert.throws(() => envelope(bytes, 1, 'raw-policy-sab-view'), /remote-raw-binary-egress-forbidden/);
+  assert.throws(() => envelope(new Uint8Array(new ArrayBuffer(2)), 2, 'raw-policy-private-view'), /remote-raw-binary-egress-forbidden/);
+
+  // Shared-memory ingress boundary with raw egress explicitly allowed:
+  // construction succeeds, but the SAB-backed state is rejected at the
+  // snapshot/shape boundary before anything can apply.
+  const hostile = envelope(bytes, 3, 'sab-view', true);
   const g = gate();
   const log = new ChangeLog({ projectIdentity: base.projectIdentity, binaryIdentity: base.binaryIdentity, allowRemote: true, authorizedAuthors: [base.actorIdentity] });
   assert.deepEqual(g.validate(hostile), { ok: false, reason: 'remote-envelope-shape-invalid' });
@@ -30,35 +46,59 @@ if (typeof SharedArrayBuffer !== 'undefined') {
   bytes[0] = 2;
   assert.equal(log.snapshot().facts?.['hex-entity:sab\u0000comment'], undefined);
 
-  const directSab = envelope(sab, 2, 'sab-direct');
-  assert.equal(gate().validate(directSab).reason, 'remote-envelope-shape-invalid');
+  // A bare SharedArrayBuffer is not canonical-digestible even with raw egress
+  // declared: the current operation-digest hardening (#8819) fails it closed at
+  // construction (identity-unsupported-object), one layer before the snapshot
+  // shape boundary that still catches SAB-backed views/DataViews below. The
+  // fail-closed property is unchanged: shared-memory state never crosses.
+  assert.throws(() => envelope(sab, 4, 'sab-direct', true), /identity-unsupported-object/);
 
   const dvSab = new SharedArrayBuffer(8);
   const dataView = new DataView(dvSab);
-  const dvEnv = envelope(dataView, 3, 'sab-dataview');
+  const dvEnv = envelope(dataView, 5, 'sab-dataview', true);
   assert.equal(gate().validate(dvEnv).reason, 'remote-envelope-shape-invalid');
 
+  // Mutable collections stay forbidden both with and without the raw-binary
+  // declaration, including when they hide SAB-backed views.
   assert.throws(
-    () => envelope(new Map([['bytes', new Uint8Array(new SharedArrayBuffer(1))]]), 4, 'sab-map'),
+    () => envelope(new Map([['bytes', new Uint8Array(new SharedArrayBuffer(1))]]), 6, 'sab-map', true),
     /remote-operation-mutable-collection-forbidden/,
   );
-
   assert.throws(
-    () => envelope(new Set([new Uint8Array(new SharedArrayBuffer(1))]), 5, 'sab-set'),
+    () => envelope(new Set([new Uint8Array(new SharedArrayBuffer(1))]), 7, 'sab-set', true),
+    /remote-operation-mutable-collection-forbidden/,
+  );
+  assert.throws(
+    () => envelope(new Map([['k', 'v']]), 8, 'plain-map'),
+    /remote-operation-mutable-collection-forbidden/,
+  );
+  assert.throws(
+    () => envelope(new Set(['v']), 9, 'plain-set'),
     /remote-operation-mutable-collection-forbidden/,
   );
 }
 
-// Private non-shared bytes remain accepted.
+// Private (non-shared) bytes are only constructible with the explicit
+// rawBinaryBytes:true declaration, and the gate still rejects their egress —
+// the product must not re-accept raw binary through `rawBinaryBytes:false`.
 const privateBytes = new Uint8Array(new ArrayBuffer(2));
 privateBytes.set([7, 9]);
-const clean = envelope(privateBytes, 6, 'arraybuffer-view');
+const rawDeclared = envelope(privateBytes, 10, 'arraybuffer-view', true);
+const rawGate = gate();
+assert.deepEqual(rawGate.validate(rawDeclared), { ok: false, reason: 'remote-raw-binary-egress-forbidden' });
+
+// Derived-data ingress remains accepted and the validated snapshot stays
+// detached from caller-mutable structure (the aliasing-safe boundary that the
+// raw-binary policy now protects even more strictly).
+const mutablePayload = { lines: ['a'] };
+const clean = envelope(mutablePayload, 11, 'object-payload');
 const cleanGate = gate();
 assert.equal(cleanGate.validate(clean).ok, true);
 const cleanSnap = cleanGate.validatedSnapshot(clean);
 assert.ok(cleanSnap);
-assert.deepEqual([...cleanSnap.operations[0].payload], [7, 9]);
-privateBytes[0] = 99;
-assert.deepEqual([...cleanSnap.operations[0].payload], [7, 9]);
+assert.deepEqual(cleanSnap.operations[0].payload, { lines: ['a'] });
+mutablePayload.lines.push('b');
+mutablePayload.extra = 'c';
+assert.deepEqual(cleanSnap.operations[0].payload, { lines: ['a'] }, 'validated snapshot must not alias caller-mutable state');
 
 console.log('[phase12] remote SAB ingress regression passed');

@@ -1210,8 +1210,18 @@ export function pointerProvenance(value, active = null, memo = defaultPointerPro
     out = { kind:'field', root:'loaded:' + value.id, rootValue:value, offset:0n,
       location:def.loc || null, must:true, valueId:value.id };
   } else if (def && def.op === OP.MOV && def.args?.[0]?.value) {
-    const source = pointerProvenance(def.args[0].value, visiting, memo);
-    if (source) out = { ...source, valueId:value.id, via:'mov' };
+    // #8747: a MOV only preserves full pointer identity when the write is a
+    // complete 64-bit register copy. A W-register (or otherwise narrowed) MOV
+    // zero-extends/truncates the source, so the destination must NOT be treated
+    // as a must-alias of the original 64-bit pointer; degrade to a distinct,
+    // non-canonical root instead of forwarding provenance.
+    const movBits = Number(value.bits) || Number(def.dstBits) || 64;
+    if (movBits < 64) {
+      out = { kind: 'unknown', root: 'value:' + value.id, rootValue: value, offset: 0n, must: false, valueId: value.id, via: 'mov-narrow' };
+    } else {
+      const source = pointerProvenance(def.args[0].value, visiting, memo);
+      if (source) out = { ...source, valueId: value.id, via: 'mov' };
+    }
   } else if (def && def.op === OP.PHI && def.args?.length) {
     const alternatives = def.args.map((arg) => arg?.value ? pointerProvenance(arg.value, visiting, memo) : null);
     const keys = alternatives.map(pointerProvenanceKey);

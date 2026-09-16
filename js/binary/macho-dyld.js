@@ -52,33 +52,86 @@ function rememberChainedPointerSite(image, address, raw, pointerFormat, decoded)
   sites.set(BigInt(address), { raw: BigInt(raw), pointerFormat, decoded });
 }
 
-function rememberChainedPointerCoverage(image, start, end) {
-  const rangeStart = BigInt(start);
-  const rangeEnd = BigInt(end);
-  if (rangeEnd <= rangeStart) return null;
-  let ranges = CHAINED_POINTER_COVERAGE.get(image);
-  if (!ranges) { ranges = new Map(); CHAINED_POINTER_COVERAGE.set(image, ranges); }
-  const key = `${rangeStart.toString(16)}:${rangeEnd.toString(16)}`;
-  // Re-observing a declared page starts conservatively. Only a full successful
-  // walk below may promote this ownership range to complete.
-  advancePointerMetadata(image);
-  ranges.set(key, { start: rangeStart, end: rangeEnd, complete: false });
-  return key;
+// Loader-owned chained-fixup coverage is retained as a normalized, sorted,
+// non-overlapping interval set rather than one string-keyed object per declared
+// page (#8867). Contiguous pages in the same completeness state coalesce into a
+// single interval, so retained state and `chainedPointerCoverageAt` lookup scale
+// with ownership *runs/segments*, not raw page count. Every interval stays
+// conservative (`complete:false`) until its page is fully walked; a page may
+// therefore be promoted independently without overstating a neighbour's state,
+// and adjacent equal-state runs re-coalesce.
+function coverageIntervals(image) {
+  let list = CHAINED_POINTER_COVERAGE.get(image);
+  if (!list) { list = []; CHAINED_POINTER_COVERAGE.set(image, list); }
+  return list;
 }
 
-function markChainedPointerCoverageComplete(image, key) {
-  if (key == null) return;
-  const range = CHAINED_POINTER_COVERAGE.get(image)?.get(key);
-  if (range && !range.complete) { advancePointerMetadata(image); range.complete = true; }
+// Binary search: index of the last interval whose start < `address` (i.e. the
+// candidate containing interval), or -1.
+function coverageContainingIndex(list, address) {
+  let low = 0;
+  let high = list.length - 1;
+  let found = -1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (list[mid].start <= address) { found = mid; low = mid + 1; }
+    else high = mid - 1;
+  }
+  return found;
+}
+
+function coverageAssign(image, start, end, complete) {
+  const from = BigInt(start);
+  const to = BigInt(end);
+  if (to <= from) return false;
+  const list = coverageIntervals(image);
+  // Rebuild the sorted list, replacing [from,to) with `complete` while preserving
+  // the overhang of any partially-overlapping interval. Adjacent equal-state runs
+  // are coalesced on write, so the retained list stays proportional to runs.
+  const out = [];
+  const push = (s, e, c) => {
+    if (e <= s) return;
+    const last = out[out.length - 1];
+    if (last && last.complete === c && last.end === s) last.end = e;
+    else out.push({ start: s, end: e, complete: c });
+  };
+  let wroteAssignment = false;
+  for (const interval of list) {
+    if (interval.end <= from || interval.start >= to) { push(interval.start, interval.end, interval.complete); continue; }
+    if (interval.start < from) push(interval.start, from, interval.complete);
+    if (!wroteAssignment) { push(from, to, complete); wroteAssignment = true; }
+    if (interval.end > to) push(to, interval.end, interval.complete);
+  }
+  if (!wroteAssignment) push(from, to, complete);
+  const changed = out.length !== list.length
+    || out.some((interval, index) => !list[index]
+      || list[index].start !== interval.start
+      || list[index].end !== interval.end
+      || list[index].complete !== interval.complete);
+  CHAINED_POINTER_COVERAGE.set(image, out);
+  return changed;
+}
+
+function rememberChainedPointerCoverage(image, start, end) {
+  // Re-observing a declared page starts conservatively. Only a full successful
+  // walk may promote a page's ownership range to complete.
+  if (coverageAssign(image, start, end, false)) advancePointerMetadata(image);
+}
+
+function markChainedPointerCoverageComplete(image, start, end) {
+  if (coverageAssign(image, start, end, true)) advancePointerMetadata(image);
 }
 
 function chainedPointerCoverageAt(image, address) {
   if (address == null) return null;
   const target = BigInt(address);
-  for (const range of CHAINED_POINTER_COVERAGE.get(image)?.values() ?? []) {
-    if (target >= range.start && target < range.end) return range;
-  }
-  return null;
+  const list = CHAINED_POINTER_COVERAGE.get(image);
+  if (!list || !list.length) return null;
+  const index = coverageContainingIndex(list, target);
+  if (index < 0) return null;
+  const interval = list[index];
+  if (target < interval.start || target >= interval.end) return null;
+  return interval;
 }
 
 // Pointer-authority inputs must be parser-grade primitives (#5189): BigInt()
@@ -287,22 +340,46 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
     const overflowCount = (structEnd - overflowBase) / 2;
 
     // Page ownership is established by the starts table itself, before decoding
-    // any site. Pre-registering every declared page means budget exhaustion,
-    // malformed multi-start data, unsupported formats, or a broken chain can
-    // never erase the fact that raw bytes in that page are encoded candidates.
-    const coverageKeys = new Map();
+    // any site, so budget exhaustion, malformed multi-start data, unsupported
+    // formats, or a broken chain can never erase the fact that raw bytes in a
+    // declared page are encoded candidates (#569). Contiguous declared pages are
+    // coalesced into bounded ownership *runs* and every run/scan step is charged
+    // against the shared MachOMetadataBudget, so neither unsupported formats nor
+    // attacker-sized page tables can materialize unbounded retained state or run
+    // past the caller's wall-clock/cancellation deadline (#8867). On exhaustion the
+    // whole segment is retained as one conservative loader-owned interval (never a
+    // raw-pointer fallback) and parsing stops in a controlled partial state.
+    let runStart = null;
+    let runEnd = null;
+    let ownershipExhausted = false;
+    const flushOwnershipRun = () => {
+      if (runStart == null) return true;
+      if (!budget.take({ records: 1, objects: 1, estimatedHeapBytes: 96 }, 'chained-ownership-run')) return false;
+      rememberChainedPointerCoverage(image, runStart, runEnd);
+      runStart = null;
+      runEnd = null;
+      return true;
+    };
     for (let page = 0; page < pageCount; page++) {
+      if (!budget.take({ inputBytes: 2, operations: 1 }, 'chained-ownership-scan')) { ownershipExhausted = true; break; }
       const start = r.u16(p + 22 + page * 2);
-      if (start === 0xffff) continue;
+      if (start === 0xffff) { if (!flushOwnershipRun()) { ownershipExhausted = true; break; } continue; }
       const pageOffset = BigInt(page) * pageSizeBig;
       if (pageOffset >= segSize) continue;
       const pageVmEnd = pageOffset + pageSizeBig < segSize ? pageOffset + pageSizeBig : segSize;
-      const key = rememberChainedPointerCoverage(
-        image,
-        segAddress + pageOffset,
-        segAddress + pageVmEnd,
-      );
-      coverageKeys.set(page, key);
+      const pageStartAddress = segAddress + pageOffset;
+      const pageEndAddress = segAddress + pageVmEnd;
+      if (runStart == null) { runStart = pageStartAddress; runEnd = pageEndAddress; }
+      else if (pageStartAddress === runEnd) { runEnd = pageEndAddress; }
+      else if (!flushOwnershipRun()) { ownershipExhausted = true; break; }
+      else { runStart = pageStartAddress; runEnd = pageEndAddress; }
+    }
+    if (!ownershipExhausted && !flushOwnershipRun()) ownershipExhausted = true;
+    if (ownershipExhausted) {
+      rememberChainedPointerCoverage(image, segAddress, segAddress + segSize);
+      fail(`segment ${segIndex} chained page coverage exceeded the shared metadata budget`);
+      status.bindingSites = decoded;
+      return status;
     }
 
     if (!width) { fail(`segment ${segIndex} uses unsupported pointer format ${pointerFormat}`); continue; }
@@ -312,7 +389,6 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
       const start = r.u16(p + 22 + page * 2);
       if (start === 0xffff) continue;
       const pageFailureEpoch = failureEpoch;
-      const coverageKey = coverageKeys.get(page) ?? null;
       const pageOffset = BigInt(page) * pageSizeBig;
       if (pageOffset >= segSize) { fail(`segment ${segIndex} page ${page} starts outside segment`); continue; }
       const pageVmEnd = pageOffset + pageSizeBig < segSize ? pageOffset + pageSizeBig : segSize;
@@ -377,7 +453,7 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
         }
         if (!terminated && failureEpoch === pageFailureEpoch && starts.length) fail(`segment ${segIndex} page ${page} chain exceeded iteration budget`);
       }
-      if (failureEpoch === pageFailureEpoch) markChainedPointerCoverageComplete(image, coverageKey);
+      if (failureEpoch === pageFailureEpoch) markChainedPointerCoverageComplete(image, pageAddress, pageAddressEnd);
     }
   }
   status.bindingSites = decoded;
@@ -580,6 +656,14 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
     const seg = segments[segIndex];
     let address = seg.address + segOffset;
     for (let guard = 0; guard < 100000; guard++) {
+      // Every chain node re-reads an 8-byte word and re-scans every
+      // section/segment mapping inside threadedPointerFileOffset(), but only
+      // isBind hops used to charge the shared budget. A delta-only chain
+      // therefore advanced `guard` while leaving `used.operations` frozen, so
+      // the budget's every-1024-op wall-clock check never fired and
+      // `signal.aborted` was never observed (issue #8853). Charge one node
+      // before any pointer-byte work begins; exhaustion is fail-closed.
+      if (!budget.take({ inputBytes: 8, operations: 1 }, 'classic-bind-threaded-walk')) { fail('shared metadata budget exhausted while walking threaded bind chain'); return; }
       const off = threadedPointerFileOffset(address);
       if (off == null || off + 8n > BigInt(r.length)) { fail('threaded binding chain leaves mapped file data'); return; }
       const raw = r.u64(Number(off));
@@ -689,6 +773,15 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
   const status = { complete: true, nodes: 0, edges: 0, cycleDetected: false, budgetExceeded: false };
   image.metadata.exportTrie = status;
   const markPartial = (message, field) => { status.complete = false; if (field) status[field] = true; image.warnings.push(`exports trie: ${message}`); };
+  // #8802: Mach-O canonical export VAs must stay inside the target width domain.
+  const maxExportAddress = image.bits === 32 ? 0xffffffffn : 0xffffffffffffffffn;
+  const trieImageBase = image.imageBase ?? 0n;
+  const closedTrieVa = (value, absolute) => {
+    if (typeof value !== 'bigint' || value < 0n) return null;
+    if (absolute) return value <= maxExportAddress ? value : null;
+    if (trieImageBase < 0n || trieImageBase > maxExportAddress) return null;
+    return value <= maxExportAddress - trieImageBase ? trieImageBase + value : null;
+  };
   const walk = (nodeOff, path, depth) => {
     if (depth > 256) { markPartial('depth budget exceeded', 'budgetExceeded'); return; }
     if (!Number.isSafeInteger(nodeOff) || nodeOff < 0 || base + nodeOff >= end) { markPartial('child node offset is outside trie'); return; }
@@ -763,17 +856,31 @@ export function parseExportTrie(r,dc,image,sharedBudget=null){
                 }
               }
             } else {
-            const addrX = r.uleb(p, 10, terminalEnd); p = addrX.next;
-            // REGULAR and THREAD_LOCAL terminal values are implementation
-            // offsets relative to the image; only ABSOLUTE is already a raw
-            // address (dyld ExportsTrie semantics, #4366).
-            const address = exportKind === 2 ? addrX.value : image.imageBase + addrX.value;
-            const kind = exportKind === 1 ? 'thread-local' : exportKind === 2 ? 'absolute' : 'export';
-            const prefix = materializeExportTriePath(path, budget);
-            if (prefix == null) { markPartial('shared metadata path string budget exceeded', 'budgetExceeded'); return; }
-            const ex = { name: prefix, address, kind, flags, source: 'exports-trie' };
-            if (flags & 0x10) { const resolverX = r.uleb(p, 10, terminalEnd); p = resolverX.next; ex.resolver = image.imageBase + resolverX.value; }
-            if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'export-trie-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;} image.exports.push(ex);
+             const addrX = r.uleb(p, 10, terminalEnd); p = addrX.next;
+             // REGULAR and THREAD_LOCAL terminal values are implementation
+             // offsets relative to the image; only ABSOLUTE is already a raw
+             // address (dyld ExportsTrie semantics, #4366).
+             const absoluteTerminal = exportKind === 2;
+             // #8802: an exports-trie terminal only becomes canonical export
+             // metadata when its resolved VA closes inside the Mach-O target
+             // address domain. REGULAR/THREAD_LOCAL and the resolver are
+             // image-base-relative; ABSOLUTE is a raw address. Withholding the
+             // impossible address and keeping the trie explicitly partial mirrors
+             // the width closure parseFunctionStarts already enforces.
+             const address = closedTrieVa(addrX.value, absoluteTerminal);
+             const kind = exportKind === 1 ? 'thread-local' : absoluteTerminal ? 'absolute' : 'export';
+             const prefix = materializeExportTriePath(path, budget);
+             if (prefix == null) { markPartial('shared metadata path string budget exceeded', 'budgetExceeded'); return; }
+             let resolver = null; let resolverRequested = false;
+             if (flags & 0x10) { resolverRequested = true; const resolverX = r.uleb(p, 10, terminalEnd); p = resolverX.next; resolver = closedTrieVa(resolverX.value, false); }
+             if (address == null || (resolverRequested && resolver == null)) {
+               status.partialReason ||= 'export-address-overflow';
+               markPartial(`${prefix} ${resolverRequested && address != null ? 'resolver ' : ''}address is outside the target address domain`);
+               return;
+             }
+             const ex = { name: prefix, address, kind, flags, source: 'exports-trie' };
+             if (resolverRequested) ex.resolver = resolver;
+             if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'export-trie-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;} image.exports.push(ex);
             if (exportKind === 0) {
               const sec = image.sectionAt(address);
               if (sec && sec.perms.execute && image.addressToOffset(address) != null) {
