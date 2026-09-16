@@ -76,7 +76,7 @@ function attachAccessCapabilities(projected, artifact, canonicalIr, instructionB
     if (!owner || ![V1_OP.CONST,V1_OP.MOV,V1_OP.BIN,V1_OP.UN,V1_OP.LOAD,V1_OP.STORE].includes(inst.op)
         || machine.bundleCompleteness !== 'exact' || inst.extra?.attributes !== node.attributes
         || machine.architectureId !== owner.machine.architectureId || machine.mode !== owner.machine.mode
-        || stableDigest(machine.possibleFaults) !== stableDigest(owner.machine.possibleFaults)) continue;
+        || stableDigest(machine?.possibleFaults ?? []) !== stableDigest(owner.machine?.possibleFaults ?? [])) continue;
     projectedNormalMemoryFragments.set(inst, { projected, node, op:inst.op, owner:owner.access });
   }
   projectedAccessContexts.set(projected, { context, canonicalIr, artifact });

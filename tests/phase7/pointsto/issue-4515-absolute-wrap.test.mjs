@@ -27,10 +27,15 @@ function target(rootEntityId, address, offsetRange = exactRange(0n), widthBits =
   });
 }
 
+function rawSet(target) {
+  if (target && Array.isArray(target.targets)) return target;
+  return Object.freeze({ top: false, lossReasons: Object.freeze([]), targets: Object.freeze([target]) });
+}
+
 function alias(left, right, widthBitsLeft = 64, widthBitsRight = 64) {
   return pointsToAlias(
-    createPointsToSet({ targets: [left] }),
-    createPointsToSet({ targets: [right] }),
+    rawSet(left),
+    rawSet(right),
     { status: complete, widthBitsLeft, widthBitsRight },
   );
 }

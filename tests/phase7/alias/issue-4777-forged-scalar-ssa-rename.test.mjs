@@ -5,7 +5,13 @@ import { createSemanticIrFunction } from '../../../js/semantics/ir/index.js';
 import { createSemanticCfg } from '../../../js/semantics/cfg/index.js';
 import { buildSemanticSsa } from '../../../js/semantics/ssa/index.js';
 import { buildMemorySsa, MEMORY_SSA_BUILD_VERSION } from '../../../js/semantics/memoryssa/index.js';
-import { classifySemanticMemoryRegion, deriveMemoryRegion } from '../../../js/analysis/alias/regions-v2.js';
+import {
+  canonicalMemoryPointerRegionEvidence,
+  classifySemanticMemoryRegion,
+  deriveMemoryRegion,
+  genuineRenamedDefinitionRow,
+  genuineRenamedUseRow,
+} from '../../../js/analysis/alias/regions-v2.js';
 import { stableDigest } from '../../../js/core/identity/index.js';
 
 // The pointer-reload recovery trusts scalar SSA rename links to connect a
@@ -86,17 +92,18 @@ function connectedReloadIr({ targetOffset = '32' } = {}) {
   return createSemanticIrFunction(raw);
 }
 
-function buildContext(target = buildIr()) {
+function buildContext(target = buildIr(), options = {}) {
   const ir = target && target.nodes ? target : buildIr(target);
   const cfg = createSemanticCfg({ functionId: FUNCTION_ID, entryBlockId: BLOCK_ID, blocks: [{ id: BLOCK_ID, successors: [] }] });
-  const ssa = buildSemanticSsa(ir, cfg);
+  const snapshotId = options.snapshotId ?? 'snapshot-4777';
+  const ssa = options.ssa ?? buildSemanticSsa(ir, cfg, { snapshotId });
   const semanticIrDigest = stableDigest(ir);
   const scalarSsaDigest = stableDigest(ssa);
   const identity = {
     binaryId: 'binary_4777',
     sliceId: 'slice_4777',
     functionId: FUNCTION_ID,
-    snapshotId: 'snapshot-4777',
+    snapshotId,
     semanticIrId: `ir-${semanticIrDigest}`,
     semanticIrContractVersion: ir.contractVersion,
     semanticIrDigest,
@@ -111,7 +118,7 @@ function buildContext(target = buildIr()) {
     resolveRegion: (memory, context) => classifySemanticMemoryRegion(ir, context.node, { binaryId: 'binary_4777', ssa }),
     queryAlias: () => ({ relation: 'must', reasonCodes: [], evidenceIds: [] }),
     identity,
-    snapshotId: 'snapshot-4777',
+    snapshotId,
     canonicalIrIdentity: { functionId: FUNCTION_ID, semanticIrId: identity.semanticIrId, semanticIrContractVersion: ir.contractVersion, semanticIrDigest },
   });
   return { ir, ssa, memorySsa };
@@ -249,4 +256,134 @@ test('deriveMemoryRegion directly rejects metadata-complete forged scalar rows (
   });
   assert.equal(forgedRegion?.kind, 'unknown',
     'deriveMemoryRegion must reject forged scalar rows directly without depending on wrapper options');
+});
+
+test('genuineRenamedUseRow and genuineRenamedDefinitionRow directly reject forged rows (#4777)', () => {
+  const { ir, ssa } = buildContext();
+  const forged = metadataCompleteForgedScalarSsa();
+  const addressRead = ir.nodes.find((n) => n.id === 'node_r0');
+  const blockIdByNode = new Map(ir.blocks.flatMap((b) => b.nodeIds.map((id) => [id, b.id])));
+  const nodesById = new Map(ir.nodes.map((n) => [n.id, n]));
+  const validBinding = { functionId: ir.functionId, semanticIrDigest: stableDigest(ir), snapshotId: 'snapshot-4777' };
+
+  assert.equal(
+    genuineRenamedUseRow(ir, forged.uses[0], addressRead, 'r0', blockIdByNode, { ssa, binding: validBinding }),
+    false,
+    'genuineRenamedUseRow must reject unbranded forged use row',
+  );
+
+  assert.equal(
+    genuineRenamedDefinitionRow(ir, forged.definitions[0], forged.uses[0], addressRead, 'loaded', nodesById, { ssa, binding: validBinding }),
+    false,
+    'genuineRenamedDefinitionRow must reject unbranded forged definition row',
+  );
+
+  // Missing ssa or binding
+  assert.equal(genuineRenamedUseRow(ir, forged.uses[0], addressRead, 'r0', blockIdByNode), false);
+  assert.equal(genuineRenamedDefinitionRow(ir, forged.definitions[0], forged.uses[0], addressRead, 'loaded', nodesById), false);
+});
+
+test('genuineRenamedUseRow and genuineRenamedDefinitionRow accept genuine rows and reject mismatched bindings (#4777)', () => {
+  const ir = connectedReloadIr();
+  const { ssa } = buildContext(ir);
+  const addressRead = ir.nodes.find((n) => n.id === 'node_r0');
+  const blockIdByNode = new Map(ir.blocks.flatMap((b) => b.nodeIds.map((id) => [id, b.id])));
+  const nodesById = new Map(ir.nodes.map((n) => [n.id, n]));
+  const genuineUse = ssa.uses.find((u) => u.sourceEntityId === 'node_r0');
+  const genuineDef = ssa.definitions.find((d) => d.variableKey === 'state:r0');
+  const validBinding = { functionId: ir.functionId, semanticIrDigest: stableDigest(ir), snapshotId: 'snapshot-4777' };
+
+  assert.ok(genuineUse, 'genuine use must exist');
+  assert.ok(genuineDef, 'genuine definition must exist');
+
+  // Genuine passes with valid binding
+  assert.equal(
+    genuineRenamedUseRow(ir, genuineUse, addressRead, 'r0', blockIdByNode, { ssa, binding: validBinding }),
+    true,
+    'genuineRenamedUseRow must accept genuine row with matching binding',
+  );
+  assert.equal(
+    genuineRenamedDefinitionRow(ir, genuineDef, genuineUse, addressRead, genuineDef.proof.sourceSemanticValueId, nodesById, { ssa, binding: validBinding }),
+    true,
+    'genuineRenamedDefinitionRow must accept genuine row with matching binding',
+  );
+
+  // Mismatched snapshotId
+  assert.equal(
+    genuineRenamedUseRow(ir, genuineUse, addressRead, 'r0', blockIdByNode, {
+      ssa, binding: { ...validBinding, snapshotId: 'mismatched-snapshot' },
+    }),
+    false,
+    'genuineRenamedUseRow must reject mismatched snapshotId',
+  );
+  assert.equal(
+    genuineRenamedDefinitionRow(ir, genuineDef, genuineUse, addressRead, genuineDef.proof.sourceSemanticValueId, nodesById, {
+      ssa, binding: { ...validBinding, snapshotId: 'mismatched-snapshot' },
+    }),
+    false,
+    'genuineRenamedDefinitionRow must reject mismatched snapshotId',
+  );
+
+  // Mismatched functionId
+  assert.equal(
+    genuineRenamedUseRow(ir, genuineUse, addressRead, 'r0', blockIdByNode, {
+      ssa, binding: { ...validBinding, functionId: 'other-function' },
+    }),
+    false,
+    'genuineRenamedUseRow must reject mismatched functionId',
+  );
+
+  // Mismatched semanticIrDigest
+  assert.equal(
+    genuineRenamedUseRow(ir, genuineUse, addressRead, 'r0', blockIdByNode, {
+      ssa, binding: { ...validBinding, semanticIrDigest: 'digest-mismatch' },
+    }),
+    false,
+    'genuineRenamedUseRow must reject mismatched semanticIrDigest',
+  );
+});
+
+test('canonicalMemoryPointerRegionEvidence rejects forged rows and mismatched snapshot bindings (#4777)', () => {
+  const { ir, ssa, memorySsa } = buildContext();
+  const targetNode = ir.nodes.find((n) => n.id === 'node_store2');
+
+  const forgedEvidence = canonicalMemoryPointerRegionEvidence(ir, targetNode, {
+    canonicalMemorySsa: memorySsa,
+    ssa: metadataCompleteForgedScalarSsa(),
+  });
+  assert.equal(forgedEvidence, null, 'forged scalar rows must yield null region evidence');
+
+  // Mismatched snapshot binding
+  const mismatchedMemorySsa = {
+    ...memorySsa,
+    snapshotId: 'other-snapshot',
+    identity: { ...memorySsa.identity, snapshotId: 'other-snapshot' },
+  };
+  const mismatchedEvidence = canonicalMemoryPointerRegionEvidence(ir, targetNode, {
+    canonicalMemorySsa: mismatchedMemorySsa,
+    ssa,
+  });
+  assert.equal(mismatchedEvidence, null, 'mismatched snapshot must reject');
+});
+
+test('pointer reload is rejected when scalar SSA has a different snapshot binding (#4777)', () => {
+  const ir = connectedReloadIr();
+  const context = buildContext(ir);
+  const cfg = createSemanticCfg({ functionId: FUNCTION_ID, entryBlockId: BLOCK_ID, blocks: [{ id: BLOCK_ID, successors: [] }] });
+  const differentSnapshotSsa = buildSemanticSsa(ir, cfg, { snapshotId: 'different-snapshot' });
+  const region = regionFor(ir, differentSnapshotSsa, context.memorySsa);
+  assert.equal(region?.kind, 'unknown',
+    'scalar SSA from a different snapshot must not authorize pointer reload refinement');
+});
+
+test('pointer reload is rejected when scalar SSA has a different function binding (#4777)', () => {
+  const ir = connectedReloadIr();
+  const context = buildContext(ir);
+  const otherFunctionId = 'function_4777_other';
+  const otherIr = { ...ir, functionId: otherFunctionId };
+  const cfg = createSemanticCfg({ functionId: otherFunctionId, entryBlockId: BLOCK_ID, blocks: [{ id: BLOCK_ID, successors: [] }] });
+  const differentFunctionSsa = buildSemanticSsa(otherIr, cfg, { snapshotId: 'snapshot-4777' });
+  const region = regionFor(ir, differentFunctionSsa, context.memorySsa);
+  assert.equal(region?.kind, 'unknown',
+    'scalar SSA from a different function must not authorize pointer reload refinement');
 });

@@ -9,7 +9,7 @@ import {
 import { createOriginSet, mergeOriginSets } from '../../core/identity/origin.js';
 import { createMemoryRegionRef } from '../../semantics/memoryssa/contract.js';
 import { isCanonicalMemorySsaProducerArtifact } from '../../semantics/memoryssa/build.js';
-import { canonicalSemanticSsaProducerMatches } from '../../semantics/ssa/build.js';
+import { canonicalSemanticSsaProducerMatches, canonicalSemanticSsaRowMatches } from '../../semantics/ssa/build.js';
 import { normalizeAddressProofIr } from './address-ir-normalize-v2.js';
 import { FLAT_MEMORY_SPACE, canonicalAddressSpace } from './address-space.js';
 import {
@@ -208,7 +208,15 @@ function sameVariableIdentity(left, right) {
   return stableDigest(left) === stableDigest(right);
 }
 
-function genuineRenamedUseRow(ir, use, addressRead, addressReadValueId, blockIdByNode) {
+export function genuineRenamedUseRow(ir, use, addressRead, addressReadValueId, blockIdByNode, options = {}) {
+  const ssa = options?.ssa;
+  const binding = options?.binding;
+  if (!ssa || !binding) return false;
+  if (binding.snapshotId == null) return false;
+  if (ir?.functionId == null || String(binding.functionId) !== String(ir.functionId)) return false;
+  if (String(binding.semanticIrDigest) !== stableDigest(ir)) return false;
+  if (!canonicalSemanticSsaProducerMatches(ssa, binding)) return false;
+  if (!canonicalSemanticSsaRowMatches(use, ssa)) return false;
   const proof = use?.proof;
   if (!proof || proof.kind !== 'renamed-use') return false;
   if (String(use.sourceEntityId ?? '') !== String(addressRead.id)) return false;
@@ -226,11 +234,19 @@ function genuineRenamedUseRow(ir, use, addressRead, addressReadValueId, blockIdB
     && String(use.blockId ?? '') === String(blockIdByNode.get(String(addressRead.id)));
 }
 
-function genuineRenamedDefinitionRow(ir, definition, stateUse, addressRead, loadedSemanticValueId, nodesById) {
+export function genuineRenamedDefinitionRow(ir, definition, stateUse, addressRead, loadedSemanticValueId, nodesById, options = {}) {
+  const ssa = options?.ssa;
+  const binding = options?.binding;
+  if (!ssa || !binding) return false;
+  if (binding.snapshotId == null) return false;
+  if (ir?.functionId == null || String(binding.functionId) !== String(ir.functionId)) return false;
+  if (String(binding.semanticIrDigest) !== stableDigest(ir)) return false;
+  if (!canonicalSemanticSsaProducerMatches(ssa, binding)) return false;
+  if (!canonicalSemanticSsaRowMatches(definition, ssa)) return false;
   const proof = definition?.proof;
   if (!proof || proof.kind !== 'renamed-definition') return false;
   if (String(definition.valueId ?? '') !== String(stateUse.valueId ?? '')) return false;
-  if (String(proof.sourceSemanticValueId ?? '') !== String(loadedSemanticValueId)) return false;
+  if (loadedSemanticValueId != null && String(proof.sourceSemanticValueId ?? '') !== String(loadedSemanticValueId)) return false;
   if (String(proof.sourceSemanticEntityId ?? '') !== String(definition.sourceEntityId ?? '')) return false;
   if (proof.transform?.ruleId !== 'rename-definition' || proof.transform?.proofKind !== 'dominance-renaming') return false;
   if (!sameVariableIdentity(proof.variableIdentity, ssaVariableIdentity(addressRead.variable))) return false;
@@ -241,6 +257,15 @@ function genuineRenamedDefinitionRow(ir, definition, stateUse, addressRead, load
   const definitionKey = definition.variableKey == null ? null : String(definition.variableKey);
   if (variantKey == null || definitionKey == null) return false;
   if (definitionKey !== variantKey && !definitionKey.startsWith(`${variantKey}::`)) return false;
+  const writingNode = nodesById?.get(String(definition.sourceEntityId ?? ''));
+  if (writingNode) {
+    if (writingNode.kind === 'state-write') {
+      if (proof.sourceSemanticValueId != null && Array.isArray(writingNode.inputs)
+          && !writingNode.inputs.map(String).includes(String(proof.sourceSemanticValueId))) return false;
+    } else if (writingNode.kind !== 'load') {
+      return false;
+    }
+  }
   // A state-variable rename consumes the value flowing through the variable,
   // which is not an output of the writing node — only the builder metadata
   // above binds it.
@@ -248,10 +273,16 @@ function genuineRenamedDefinitionRow(ir, definition, stateUse, addressRead, load
     === `ssa_def_${stableDigest({ functionId: ir.functionId, valueId: definition.valueId })}`;
 }
 
-function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
+export function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
+  const debug = typeof process !== 'undefined'
+    && process?.env?.HEX_DEBUG_C2_POINTER === '1'
+    && typeof process?.stderr?.write === 'function';
   const memorySsa = options.canonicalMemorySsa;
   const ssa = options.ssa;
   const semanticIrDigest = stableDigest(ir);
+  if (debug) {
+    process.stderr.write(`pointer-hint inputs ${String(node?.id)} brand=${isCanonicalMemorySsaProducerArtifact(memorySsa)} fn=${String(memorySsa?.functionId)} irfn=${String(ir?.functionId)} md=${String(memorySsa?.identity?.semanticIrDigest)} id=${semanticIrDigest} uses=${Array.isArray(memorySsa?.uses)} defs=${Array.isArray(memorySsa?.definitions)} meta=${Array.isArray(memorySsa?.accessMetadata)} ssa=${Boolean(ssa)}\n`);
+  }
   const identity = memorySsa?.identity;
   const scalarSsaDigest = typeof identity?.scalarSsaDigest === 'string' && identity.scalarSsaDigest.trim()
     ? identity.scalarSsaDigest.trim() : null;
@@ -259,6 +290,12 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
     ? memorySsa.snapshotId.trim() : null;
   const identitySnapshotId = typeof identity?.snapshotId === 'string' && identity.snapshotId.trim()
     ? identity.snapshotId.trim() : null;
+  const binding = Object.freeze({
+    functionId: ir?.functionId,
+    semanticIrDigest,
+    scalarSsaDigest,
+    snapshotId,
+  });
   if (!isCanonicalMemorySsaProducerArtifact(memorySsa)
       || String(memorySsa.functionId ?? '') !== String(ir?.functionId ?? '')
       || String(identity?.functionId ?? '') !== String(ir?.functionId ?? '')
@@ -267,11 +304,7 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
       || snapshotId == null
       || identitySnapshotId == null
       || snapshotId !== identitySnapshotId
-      || !canonicalSemanticSsaProducerMatches(ssa, {
-        functionId: ir?.functionId,
-        semanticIrDigest,
-        scalarSsaDigest,
-      })
+      || !canonicalSemanticSsaProducerMatches(ssa, binding)
       || !Array.isArray(memorySsa.uses)
       || !Array.isArray(memorySsa.definitions)
       || !Array.isArray(memorySsa.accessMetadata)
@@ -315,13 +348,13 @@ function canonicalMemoryPointerRegionEvidence(ir, node, options = {}) {
   const stateUses = ssa.uses.filter((use) => String(use.sourceEntityId ?? '') === String(addressRead.id)
     && use.proof?.kind === 'renamed-use'
     && String(use.proof?.sourceSemanticValueId ?? addressReadValueId) === String(addressReadValueId)
-    && genuineRenamedUseRow(ir, use, addressRead, addressReadValueId, blockIdByNode));
+    && genuineRenamedUseRow(ir, use, addressRead, addressReadValueId, blockIdByNode, { ssa, binding }));
   const candidates = [];
   for (const stateUse of stateUses) {
     const scalarDefinition = ssa.definitions.find((definition) =>
       String(definition.valueId ?? '') === String(stateUse.valueId ?? '')
       && definition.proof?.kind === 'renamed-definition'
-      && genuineRenamedDefinitionRow(ir, definition, stateUse, addressRead, definition?.proof?.sourceSemanticValueId, nodesById));
+      && genuineRenamedDefinitionRow(ir, definition, stateUse, addressRead, definition?.proof?.sourceSemanticValueId, nodesById, { ssa, binding }));
     const loadedSemanticValueId = scalarDefinition?.proof?.sourceSemanticValueId;
     const loadedValue = loadedSemanticValueId == null ? null : valuesById.get(String(loadedSemanticValueId));
     const loadNode = loadedValue?.definitionNodeId == null

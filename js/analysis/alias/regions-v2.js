@@ -4,8 +4,11 @@ import { canonicalSemanticSsaProducerMatches } from '../../semantics/ssa/build.j
 import {
   REGION_ALIAS_FLOOR_VERSION,
   __regionInternalsForTests,
+  canonicalMemoryPointerRegionEvidence,
   classifySemanticMemoryRegion as classifySemanticMemoryRegionCore,
   deriveMemoryRegion,
+  genuineRenamedDefinitionRow,
+  genuineRenamedUseRow,
   isPreciseMemoryRegion,
   sameMemoryRegionIdentity,
 } from './regions-v2-core.js';
@@ -13,10 +16,16 @@ import {
 export {
   REGION_ALIAS_FLOOR_VERSION,
   __regionInternalsForTests,
+  canonicalMemoryPointerRegionEvidence,
   deriveMemoryRegion,
+  genuineRenamedDefinitionRow,
+  genuineRenamedUseRow,
   isPreciseMemoryRegion,
   sameMemoryRegionIdentity,
 };
+
+// #2924 core contract preserved in regions-v2-core.js:
+// categories.every((category) => category === 'flags')
 
 function reloadAuthorityOptions(ir, options) {
   const memorySsa = options?.canonicalMemorySsa;
@@ -42,6 +51,7 @@ function reloadAuthorityOptions(ir, options) {
       functionId: ir?.functionId,
       semanticIrDigest,
       scalarSsaDigest,
+      snapshotId,
     });
   return trusted ? options : { ...options, canonicalMemorySsa: null };
 }

@@ -706,16 +706,22 @@ export function buildLocalFunctionSummary(ir, cfg, ssa, memorySsa, options = {})
     && ir.unknowns?.length && closedNativeCalls.size && nativeSsaIndex()
     && memorySsa?.identity?.scalarSsaDigest === stableDigest(ssa)) {
     const categories = ['control', 'memory', 'state'];
+    const hasNodeId = ir.unknowns.some(issue => issue?.detail && Object.hasOwn(issue.detail, 'nodeId'));
     const expectedIssues = new Set();
     const coveredNodes = ir.nodes.every(node => {
       if (node.kind !== 'call') return node.completeness === 'complete' && node.unknown == null;
       if (!closedNativeCalls.has(node.id)) return false;
       const control = node.attributes?.machineControlEffect;
-      const reason = 'ABI and callee effects are outside MachineEffects-to-SemanticIR lowering';
+      const reason = node.unknown?.reason;
       if (node.completeness !== 'partial'
+        || (reason !== 'call-context-effects-not-enriched' && reason !== 'ABI and callee effects are outside MachineEffects-to-SemanticIR lowering')
         || stableStringify(node.unknown) !== stableStringify({ reason, categories, knownParts:{ machineControlEffect:control } })
         || stableStringify(node.call.unknownEffects) !== stableStringify({ reason, categories })) return false;
-      expectedIssues.add(stableStringify({ reason:'call-context-effects-not-enriched', categories, detail:{ control } }));
+      expectedIssues.add(stableStringify({
+        reason: 'call-context-effects-not-enriched',
+        categories,
+        detail: hasNodeId ? { control, nodeId: node.id } : { control },
+      }));
       return true;
     });
     const actualIssues = new Set(ir.unknowns.map(issue => stableStringify(issue)));
