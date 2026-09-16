@@ -6,34 +6,31 @@ on:
       - integration-candidate/benchmark-auth-20260914
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  diagnose:
+  plan:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Resolve and lease-push merge commit
+      - name: Build resolved tree plan
         shell: bash
         run: |
-          set -u
-          : > pr8671-diagnostic.txt
-          record() { printf '%s\n' "$1" >> pr8671-diagnostic.txt; }
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          set -euo pipefail
           git config merge.conflictstyle diff3
-          if git fetch --no-tags origin main >/dev/null 2>&1; then record 'fetch-main: PASS'; else record 'fetch-main: FAIL'; exit 0; fi
-          if git merge-base --is-ancestor origin/main HEAD; then record 'main-already-merged: PASS'; exit 0; fi
+          git fetch --no-tags origin main
+          MAIN_SHA="$(git rev-parse origin/main)"
+          MAIN_TREE="$(git rev-parse origin/main^{tree})"
+          HEAD_SHA="$(git rev-parse HEAD)"
           set +e
           git merge --no-commit --no-ff origin/main >/dev/null 2>&1
           ms=$?
           set -e
-          if [ "$ms" -ne 1 ]; then record "merge-status: UNEXPECTED-$ms"; exit 0; fi
-          record 'merge-status: PASS'
-          python <<'PY' >> pr8671-diagnostic.txt 2>&1
+          if [ "$ms" -ne 1 ]; then echo "unexpected merge status $ms"; exit 1; fi
+          python <<'PY'
           from pathlib import Path
           import json,re,subprocess
           def r(path,mode):
@@ -85,32 +82,50 @@ jobs:
           text,n=re.subn(r'^<<<<<<< .*?^>>>>>>> .*?\n',repl,text,count=1,flags=re.M|re.S)
           if n!=1: raise RuntimeError('build conflict count '+str(n))
           p.write_text(text)
-          print('resolver-python: PASS')
           PY
-          if grep -q 'FAIL\|Traceback\|RuntimeError' pr8671-diagnostic.txt; then exit 0; fi
           git checkout --theirs -- userscript/hex.user.template.js userscript/release-version.json
           git add js/ai/dev/ui/settings.js js/ai/ui/assistant.js js/userscript/loader.js package.json scripts/build-userscript.mjs tests/phase7/ownership/cross-lane-routing.test.mjs tools/validation/phase7/cross-lane-inventory.mjs userscript/hex.user.template.js userscript/release-version.json
-          if [ -n "$(git diff --name-only --diff-filter=U)" ]; then record 'unmerged: FAIL'; exit 0; fi
-          for p in js/ai/dev/ui/settings.js js/ai/ui/assistant.js js/userscript/loader.js scripts/build-userscript.mjs tests/phase7/ownership/cross-lane-routing.test.mjs tools/validation/phase7/cross-lane-inventory.mjs; do node --check "$p" >/dev/null 2>&1 || { record "syntax: FAIL $p"; exit 0; }; done
-          node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'));JSON.parse(require('fs').readFileSync('userscript/release-version.json','utf8'))" >/dev/null 2>&1 || { record 'json: FAIL'; exit 0; }
-          git diff --check >/dev/null 2>&1 || { record 'diff-check: FAIL'; exit 0; }
-          git commit -m "Merge current main into PR #8671 and resolve conflicts" >/dev/null 2>&1 || { record 'commit: FAIL'; exit 0; }
-          record 'commit: PASS'
-          set +e
-          git push --force-with-lease=refs/heads/integration-candidate/benchmark-auth-20260914:${GITHUB_SHA} origin HEAD:refs/heads/integration-candidate/benchmark-auth-20260914 >/tmp/push.out 2>/tmp/push.err
-          ps=$?
-          set -e
-          if [ "$ps" -eq 0 ]; then
-            record 'lease-push: PASS'
-          else
-            record "lease-push: FAIL-$ps"
-            sed -n '1,12p' /tmp/push.err | sed 's/^/push-error: /' >> pr8671-diagnostic.txt
-          fi
-          cat pr8671-diagnostic.txt >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload diagnostic
-        if: always()
+          test -z "$(git diff --name-only --diff-filter=U)"
+          node --check js/ai/dev/ui/settings.js
+          node --check js/ai/ui/assistant.js
+          node --check js/userscript/loader.js
+          node --check scripts/build-userscript.mjs
+          node --check tests/phase7/ownership/cross-lane-routing.test.mjs
+          node --check tools/validation/phase7/cross-lane-inventory.mjs
+          node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'));JSON.parse(require('fs').readFileSync('userscript/release-version.json','utf8'))"
+          git diff --check
+          export MAIN_SHA MAIN_TREE HEAD_SHA
+          python <<'PY'
+          from pathlib import Path
+          import json, os, subprocess, base64
+          def run(*args): return subprocess.check_output(args,text=True).strip()
+          def obj(ref,path):
+              try: return run('git','rev-parse',f'{ref}:{path}')
+              except subprocess.CalledProcessError: return None
+          raw=subprocess.check_output(['git','diff','--name-status','--no-renames','-z','origin/main','--'])
+          parts=raw.split(b'\0'); entries=[]; i=0; nnew=0
+          outdir=Path('pr8671-tree-plan/new'); outdir.mkdir(parents=True,exist_ok=True)
+          while i < len(parts) and parts[i]:
+              status=parts[i].decode(); path=parts[i+1].decode(); i+=2
+              if status.startswith('D'):
+                  entries.append({'path':path,'delete':True}); continue
+              mode=run('git','ls-files','-s','--',path).split()[0]
+              sha=run('git','hash-object',path)
+              hsha=obj('HEAD',path); msha=obj('origin/main',path)
+              if sha==hsha or sha==msha:
+                  entries.append({'path':path,'mode':mode,'type':'blob','sha':sha,'source':'existing'})
+              else:
+                  fn=f'{nnew:03d}.b64'; nnew+=1
+                  (outdir/fn).write_text(base64.b64encode(Path(path).read_bytes()).decode())
+                  entries.append({'path':path,'mode':mode,'type':'blob','content_file':'new/'+fn,'merged_sha':sha,'source':'new'})
+          manifest={'main_sha':os.environ['MAIN_SHA'],'main_tree':os.environ['MAIN_TREE'],'head_sha':os.environ['HEAD_SHA'],'entries':entries,'new_blob_count':nnew}
+          Path('pr8671-tree-plan/manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+          Path('pr8671-tree-plan/summary.txt').write_text(f"entries={len(entries)}\nnew_blobs={nnew}\nmain_sha={manifest['main_sha']}\nhead_sha={manifest['head_sha']}\n")
+          print(Path('pr8671-tree-plan/summary.txt').read_text())
+          PY
+      - name: Upload tree plan
         uses: actions/upload-artifact@v4
         with:
-          name: pr8671-resolver-diagnostic
-          path: pr8671-diagnostic.txt
+          name: pr8671-tree-plan
+          path: pr8671-tree-plan
           retention-days: 1
