@@ -62,7 +62,13 @@ test('#8028 JVM aconst_null keeps its definite-null authority in the final Seman
   });
   const aconstNull = fn.bundles.find((b) => b.mnemonic === 'aconst_null');
   assert.equal(aconstNull.completeness, 'exact');
-  assert.deepEqual(aconstNull.producedValues, [{ bits: 64, isNull: true }]);
+  // #8028: the definite-null fact must be published; #8836: a `aconst_null` is
+  // additionally the null objectref and must carry canonical managed-heap
+  // reference authority (previously a bare 64-bit bitvector dropped it).
+  const produced = aconstNull.producedValues[0];
+  assert.equal(produced.isNull, true);
+  assert.equal(produced.type?.kind, 'address');
+  assert.equal(produced.type?.addressSpace, 'managed-heap');
 
   const { value } = loweredOutput(fn, 'aconst_null');
   assert.ok(value, 'aconst_null output value required');
