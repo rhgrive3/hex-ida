@@ -35,3 +35,35 @@ test('T014 bounded hashing rejects cyclic expression graphs without recursion', 
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'cyclic-expression-dag');
 });
+
+test('T014 bounded hashing fails closed on hostile unknown detail accessors and proxies', () => {
+  const throwingAccessor = {};
+  Object.defineProperty(throwingAccessor, 'x', {
+    enumerable: true,
+    get() { throw new Error('boom'); },
+  });
+  const accessorNode = {
+    kind: 'unknown_semantic',
+    sort: bvSort(8),
+    reason: 'hostile-accessor',
+    detail: throwingAccessor,
+  };
+  assert.deepEqual(
+    computeStructuralHashesBounded([accessorNode], { maxNodes: 8 }),
+    { ok: false, reason: 'malformed-unknown-detail', nodeCount: 1 },
+  );
+
+  const throwingProxy = new Proxy({}, {
+    ownKeys() { throw new Error('boom'); },
+  });
+  const proxyNode = {
+    kind: 'unknown_semantic',
+    sort: bvSort(8),
+    reason: 'hostile-proxy',
+    detail: throwingProxy,
+  };
+  assert.deepEqual(
+    computeStructuralHashesBounded([proxyNode], { maxNodes: 8 }),
+    { ok: false, reason: 'malformed-unknown-detail', nodeCount: 1 },
+  );
+});
