@@ -71,8 +71,42 @@ jobs:
         run: node tests/chatgpt-conversation-storage-security.mjs
       - name: Dynamic Task Graph focused regression
         run: node tests/dev-agent/dynamic-task-graph.mjs
-      - name: Build and userscript tests
-        run: npm run userscript:test
+      - name: Diagnostic dev-agent suite
+        run: npm run dev-agent:test
+      - name: Diagnostic userscript build and version contracts
+        run: |
+          npm run userscript:build
+          node --check userscript/hex.user.template.js
+          node --check worker-entry.js
+          node tests/userscript-release-version.mjs
+      - name: Diagnostic userscript host contracts
+        run: |
+          node tests/userscript-importscripts-literals.mjs
+          node tests/issue-5034-worker-blob-url-cleanup.mjs
+          node tests/issue-4940-onready-callback-isolation.mjs
+          node tests/issue-5017-protected-worker-cleanup-ownership.mjs
+          node tests/issue-4968-array-key-precision.mjs
+          node tests/issue-5016-protected-workers-origin-guard.mjs
+          node tests/userscript-embed-protocol.mjs
+          node tests/issue-5020-sanitize-details-shared-refs.mjs
+          node tests/userscript-embed-bootstrap.mjs
+          node tests/chatgpt-web-bridge-contract.mjs
+          node tests/chatgpt-send-control-resolution.mjs
+          node tests/chatgpt-disabled-stop-settlement.mjs
+          node tests/userscript-chatgpt-parent-rpc.mjs
+          node tests/userscript-chatgpt-iframe-host.mjs
+          node tests/userscript-chatgpt-sandbox-host.mjs
+          node tests/userscript-embed-child.mjs
+          node tests/userscript-dev-worker-runtime.mjs
+          node tests/userscript-host.mjs
+          node tests/userscript-decompress.mjs
+          node tests/issue-5013-gzip-unhandled-rejection.mjs
+          node tests/userscript-worker-arraybuffer.mjs
+          node tests/userscript-network.mjs
+          node tests/chatgpt-web-runtime.mjs
+          node tests/ai-chatgpt-web-provider.mjs
+          node tests/userscript-routes.mjs
+          node tests/userscript-embed-route.mjs
       - name: Round 4 production bootstrap contract
         run: node tests/dev-agent/round4-production-bootstrap.mjs
       - name: Verify tiny committed loader is current
