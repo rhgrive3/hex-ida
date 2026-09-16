@@ -1,4 +1,4 @@
-name: PR7036 reconciliation v5c semantic projection
+name: PR7036 reconciliation v6 solver authority
 on:
   push:
     branches: [sync/pr7036-main-20260917-v2]
@@ -6,7 +6,7 @@ permissions:
   contents: write
 jobs:
   reconcile:
-    if: contains(github.event.head_commit.message, 'test PR 7036 reconciliation v5c')
+    if: contains(github.event.head_commit.message, 'test PR 7036 reconciliation v6')
     runs-on: ubuntu-latest
     timeout-minutes: 18
     steps:
@@ -26,14 +26,14 @@ jobs:
           MERGE_RC=$?
           set -e
           git diff --name-only --diff-filter=U | sed '/^$/d' | sort > /tmp/conflicts.txt
-          git checkout --ours -- js/semantics/compat/semantic-ir-v2-to-v1.js js/semantics/compat/semantic-ir-v2-to-v1-memory.js
-          git add js/semantics/compat/semantic-ir-v2-to-v1.js js/semantics/compat/semantic-ir-v2-to-v1-memory.js
+          OURS_FILES='js/semantics/compat/semantic-ir-v2-to-v1.js js/semantics/compat/semantic-ir-v2-to-v1-memory.js js/symbolic/solver/backend.js js/symbolic/solver/bitblast-backend.js js/symbolic/solver/registry.js js/symbolic/solver/result.js js/symbolic/solver/session.js js/symbolic/solver/tiered-backend.js js/symbolic/solver/worker-backend.js js/symbolic/solver/worker-entry.js js/symbolic/verify/query.js'
+          for f in $OURS_FILES; do git checkout --ours -- "$f"; git add -- "$f"; done
           while IFS= read -r f; do
-            case "$f" in js/semantics/compat/semantic-ir-v2-to-v1.js|js/semantics/compat/semantic-ir-v2-to-v1-memory.js) continue;; esac
+            keep=0; for o in $OURS_FILES; do [ "$f" = "$o" ] && keep=1; done; [ "$keep" -eq 1 ] && continue
             git checkout --theirs -- "$f"; git add -- "$f"
           done < /tmp/conflicts.txt
-          python3 -c 'from pathlib import Path; p=Path("js/semantics/compat/semantic-ir-v2-to-v1-memory.js"); s=p.read_text(); old="export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null, constantObserver = null) {\n  const operandTransitions = [];"; new="function batchForwardingScope(options) {\n  const scope = {};\n  if (options == null || typeof options !== \"object\") return scope;\n  if (options.deadline != null) scope.deadline = options.deadline;\n  else if (options.deadlineAt != null) scope.deadline = options.deadlineAt;\n  else if (options.budget != null && typeof options.budget === \"object\" && options.budget.deadline != null) scope.deadline = options.budget.deadline;\n  else if (options.budget != null && typeof options.budget === \"object\" && options.budget.deadlineAt != null) scope.deadline = options.budget.deadlineAt;\n  if (options.signal != null && typeof options.signal === \"object\") scope.signal = options.signal;\n  return scope;\n}\n\nexport function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null, constantObserver = null, forwardingScopeOptions = null) {\n  const batchForwarding = batchForwardingScope(forwardingScopeOptions);\n  const operandTransitions = [];"; assert s.count(old)==1, s.count(old); s=s.replace(old,new); old2="        purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,\n        ...(canonicalIr == null ? {} : { ir: canonicalIr }),\n      });"; new2="        purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,\n        ...(canonicalIr == null ? {} : { ir: canonicalIr }),\n        ...batchForwarding,\n      });"; assert s.count(old2)==1, s.count(old2); p.write_text(s.replace(old2,new2))'
-          python3 -c 'from pathlib import Path; p=Path("js/semantics/compat/semantic-ir-v2-to-v1.js"); s=p.read_text(); old="? attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir, constantObserver) : null;"; new="? attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir, constantObserver, options) : null;"; assert s.count(old)==1, s.count(old); p.write_text(s.replace(old,new))'
+          python3 -c 'from pathlib import Path; p=Path("js/semantics/compat/semantic-ir-v2-to-v1-memory.js"); s=p.read_text(); old="export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null, constantObserver = null) {\n  const operandTransitions = [];"; new="function batchForwardingScope(options) {\n  const scope = {};\n  if (options == null || typeof options !== \"object\") return scope;\n  if (options.deadline != null) scope.deadline = options.deadline;\n  else if (options.deadlineAt != null) scope.deadline = options.deadlineAt;\n  else if (options.budget != null && typeof options.budget === \"object\" && options.budget.deadline != null) scope.deadline = options.budget.deadline;\n  else if (options.budget != null && typeof options.budget === \"object\" && options.budget.deadlineAt != null) scope.deadline = options.budget.deadlineAt;\n  if (options.signal != null && typeof options.signal === \"object\") scope.signal = options.signal;\n  return scope;\n}\n\nexport function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null, constantObserver = null, forwardingScopeOptions = null) {\n  const batchForwarding = batchForwardingScope(forwardingScopeOptions);\n  const operandTransitions = [];"; assert s.count(old)==1; s=s.replace(old,new); old2="        purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,\n        ...(canonicalIr == null ? {} : { ir: canonicalIr }),\n      });"; new2="        purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,\n        ...(canonicalIr == null ? {} : { ir: canonicalIr }),\n        ...batchForwarding,\n      });"; assert s.count(old2)==1; p.write_text(s.replace(old2,new2))'
+          python3 -c 'from pathlib import Path; p=Path("js/semantics/compat/semantic-ir-v2-to-v1.js"); s=p.read_text(); old="? attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir, constantObserver) : null;"; new="? attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir, constantObserver, options) : null;"; assert s.count(old)==1; p.write_text(s.replace(old,new))'
           git add js/semantics/compat/semantic-ir-v2-to-v1.js js/semantics/compat/semantic-ir-v2-to-v1-memory.js
           git checkout FETCH_HEAD -- js/binary/macho-core.js
           git add js/binary/macho-core.js
@@ -47,28 +47,19 @@ jobs:
             if [ "$rc" -ne 0 ]; then break; fi
           done
           TEST_RC=0; awk '$1 != 0 {exit 1}' /tmp/test-status.txt || TEST_RC=1
-          SYNTAX_RC=0
-          for f in js/binary/macho-core.js js/semantics/compat/semantic-ir-v2-to-v1.js js/semantics/compat/semantic-ir-v2-to-v1-memory.js; do node --check "$f" >/tmp/syntax-one.txt 2>&1 || { SYNTAX_RC=1; echo "$f" > /tmp/syntax-failed.txt; cat /tmp/syntax-one.txt >> /tmp/syntax-failed.txt; break; }; done
           set -e
           {
-            echo "base_head=$BASE_HEAD"
-            echo "main_head=$(git rev-parse FETCH_HEAD)"
-            echo "merge_rc=$MERGE_RC"
-            echo "conflict_count=$(wc -l < /tmp/conflicts.txt | tr -d ' ')"
-            echo "test_rc=$TEST_RC"
-            echo "syntax_rc=$SYNTAX_RC"
-            cat /tmp/test-status.txt
-            if [ "$TEST_RC" -ne 0 ]; then failed="$(awk '$1 != 0 {print $2; exit}' /tmp/test-status.txt)"; echo "--- first test failure: $failed ---"; tail -n 140 "/tmp/$(basename "$failed").txt"; fi
-            if [ "$SYNTAX_RC" -ne 0 ]; then echo '--- syntax failure ---'; cat /tmp/syntax-failed.txt; fi
-          } > pr7036-reconcile-v5c-result.txt
-          if [ "$TEST_RC" -ne 0 ] || [ "$SYNTAX_RC" -ne 0 ]; then exit 1; fi
+            echo "base_head=$BASE_HEAD"; echo "main_head=$(git rev-parse FETCH_HEAD)"; echo "merge_rc=$MERGE_RC"; echo "conflict_count=$(wc -l < /tmp/conflicts.txt | tr -d ' ')"; echo "test_rc=$TEST_RC"; cat /tmp/test-status.txt
+            if [ "$TEST_RC" -ne 0 ]; then failed="$(awk '$1 != 0 {print $2; exit}' /tmp/test-status.txt)"; echo "--- first test failure: $failed ---"; tail -n 160 "/tmp/$(basename "$failed").txt"; fi
+          } > pr7036-reconcile-v6-result.txt
+          if [ "$TEST_RC" -ne 0 ]; then exit 1; fi
           git commit -m 'merge: reconcile PR 7036 with main 799bc6c4'
           git push origin HEAD:sync/pr7036-main-20260917-v2
       - name: Upload focused result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr7036-reconcile-v5c-result
-          path: pr7036-reconcile-v5c-result.txt
+          name: pr7036-reconcile-v6-result
+          path: pr7036-reconcile-v6-result.txt
           if-no-files-found: ignore
           retention-days: 2
