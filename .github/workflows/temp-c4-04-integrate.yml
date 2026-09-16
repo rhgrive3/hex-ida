@@ -41,10 +41,10 @@ jobs:
             const { prepareConditionalRegionErasure,readRegionErasureBody }=await import('./js/decompiler/phase8/conditional-region-erasure.js');
             const { runPhase8Vertical }=await import('./js/decompiler/phase8/index.js');
             const { applyPhase8Projection,readProjectedConditionalRegions }=await import('./js/decompiler/phase8/projection.js');
-            const { stableDigest }=await import('./js/core/identity/index.js');
+            const { isDeepStrictEqual }=await import('node:util');
             function storeArm(builder,value){const store=builder.store(value,{locKind:'global',locKey:'g',bits:8});Object.assign(store.loc,{address:16n,addressSpace:'data'});store.extra={completeness:'complete',addressPrecise:true,memoryAccess:{addressSpace:'data',widthBits:8,volatility:false,atomic:false,ordering:'unknown',endian:'little',faults:[]}};}
             const f=conditionalRegionFixture({armEffect:storeArm});
-            const canonicalHash=stableDigest(f.ir);
+            const canonical=structuredClone(f.ir);
             const projection=enhanceSemanticDecompilation(f.seed,{name:'reachability',calls:[]},{phase8PrepareProof:true,phase8PrepareRegionProof:true,deterministicTransforms:true,renderProvenance:true});
             const proofOptions={identity,addressBits:8,backendTier:'exhaustive',timeoutMs:5000};
             const conditionPlan=await prepareConditionalRegionCondition(f.structure,projection,proofOptions);
@@ -56,7 +56,7 @@ jobs:
             const result=applyPhase8Projection(projection,stage.analysis,opts);
             const carrier=readProjectedConditionalRegions(result.cAst,f.ir);
             const projected=carrier?.regions.find(r=>r.original===f.structure.region);
-            console.log(JSON.stringify({ok:true,bodyValidation:plan.bodyValidation,bodyIssued:!!body,stagePublished:stage.ledger.published,changed:result!==projection,irUnchanged:stableDigest(f.ir)===canonicalHash,originalBody:projection.cAst.body.map(n=>n.text),resultBody:result.cAst.body.map(n=>n.text),returnTexts:result.cAst.body.filter(n=>n.semantic?.op==='return'||/^return\b/.test(n.text??'')).map(n=>n.text),removals:result.rewriteProof.filter(r=>r.rule==='erase-proved-unreachable-arm-store').length,removedArmNodes:projected?.arms.find(a=>a.role===plan.removedRole)?.nodes.length??null,liveArmNodes:projected?.arms.find(a=>a.role===plan.liveRole)?.nodes.length??null,provenance:result.renderProvenance?.completeness??null},null,2));
+            console.log(JSON.stringify({ok:true,bodyValidation:plan.bodyValidation,bodyIssued:!!body,stagePublished:stage.ledger.published,changed:result!==projection,irUnchanged:isDeepStrictEqual(structuredClone(f.ir),canonical),originalBody:projection.cAst.body.map(n=>n.text),resultBody:result.cAst.body.map(n=>n.text),returnTexts:result.cAst.body.filter(n=>n.semantic?.op==='return'||/^return\b/.test(n.text??'')).map(n=>n.text),removals:result.rewriteProof.filter(r=>r.rule==='erase-proved-unreachable-arm-store').length,removedArmNodes:projected?.arms.find(a=>a.role===plan.removedRole)?.nodes.length??null,liveArmNodes:projected?.arms.find(a=>a.role===plan.liveRole)?.nodes.length??null,provenance:result.renderProvenance?.completeness??null},null,2));
           } catch(e) { console.log(JSON.stringify({ok:false,name:e?.name,message:e?.message,stack:String(e?.stack??'').split('\n').slice(0,3)},null,2)); }
           NODE
       - uses: actions/upload-artifact@v4
