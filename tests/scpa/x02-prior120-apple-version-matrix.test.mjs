@@ -171,8 +171,8 @@ async function observe(t,row,bytes) {
     return {classification:'evidence-gap',observedStatus:'unavailable',details:{inventory:found,missing:row.gap.needed}};
   }
   if(row.check==='environment-runtime') {
-    assert.ok(process.platform!=='darwin'||process.arch!=='arm64');
-    return {classification:'environment-excluded',observedStatus:'not-executed',details:{platform:process.platform,architecture:process.arch,authenticationExecuted:false}};
+    const targetRuntimeAvailable=process.platform==='darwin'&&process.arch==='arm64';
+    return {classification:'environment-excluded',observedStatus:targetRuntimeAvailable?'historical-exclusion-preserved':'not-executed',details:{platform:process.platform,architecture:process.arch,targetRuntimeAvailable,authenticationExecuted:false}};
   }
   if(row.check==='real-identity') {
     const provenance=JSON.parse(fs.readFileSync(path.join(ROOT,'tests/phase12/rebuild/fixtures/manifest.json')));

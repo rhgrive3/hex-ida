@@ -2,6 +2,7 @@ import { BinaryImage } from './model.js';
 import { ByteView } from './reader.js';
 import { asByteSource } from './source.js';
 import { decodeDyldSharedCacheMagic } from './detect.js';
+import { parseSlideInfo5Structure, walkSlideInfo5Sync, walkSlideInfo5Source } from './dyld-shared-cache-slide-v5.js';
 
 const MIN_HEADER_SIZE = 0x28;
 const MODERN_HEADER_SIZE = 0x140;
@@ -341,9 +342,14 @@ function parseSlideInfoSync(allBytes, item, slide, mappings, opts) {
   const offset = Number(item.slideInfoFileOffset), size = Number(item.slideInfoFileSize);
   const infoBytes = allBytes.subarray(offset, offset + size);
   const version = new ByteView(infoBytes, { littleEndian: true }).u32(0);
+  const mappingBytes = allBytes.subarray(Number(item.fileOffset), Number(item.fileOffset + item.size));
+  if (version === 5) {
+    const info = parseSlideInfo5Structure(infoBytes, item, BigInt(allBytes.byteLength));
+    const rebases = walkSlideInfo5Sync(mappingBytes, item, info, slide, mappings, maxRecordsOption(opts));
+    return { version, pageSize: info.pageSize, valueAdd: info.valueAdd, complete: true, rebaseCount: rebases.length, rebases };
+  }
   if (version !== 2) throw new Error(`unsupported dyld shared cache slide info version ${version}`);
   const info = parseSlideInfo2Structure(infoBytes, item, BigInt(allBytes.byteLength));
-  const mappingBytes = allBytes.subarray(Number(item.fileOffset), Number(item.fileOffset + item.size));
   const rebases = walkSlideInfo2Sync(mappingBytes, item, info, slide, mappings, maxRecordsOption(opts));
   return { version, pageSize: info.pageSize, complete: true, rebaseCount: rebases.length, rebases };
 }
@@ -352,6 +358,12 @@ async function parseSlideInfoSource(source, item, slide, mappings, opts) {
   if (item.slideInfoFileSize === 0n) return { version: null, complete: true, rebaseCount: 0, rebases: [] };
   const infoBytes = await readBoundedRange(source, item.slideInfoFileOffset, Number(item.slideInfoFileSize), opts.signal);
   const version = new ByteView(infoBytes, { littleEndian: true }).u32(0);
+  if (version === 5) {
+    const info = parseSlideInfo5Structure(infoBytes, item, source.size);
+    const read64 = async (offset) => new ByteView(await readBoundedRange(source, offset, 8, opts.signal), { littleEndian: true }).u64(0);
+    const rebases = await walkSlideInfo5Source(read64, item, info, slide, mappings, maxRecordsOption(opts));
+    return { version, pageSize: info.pageSize, valueAdd: info.valueAdd, complete: true, rebaseCount: rebases.length, rebases };
+  }
   if (version !== 2) throw new Error(`unsupported dyld shared cache slide info version ${version}`);
   const info = parseSlideInfo2Structure(infoBytes, item, source.size);
   const rebases = await walkSlideInfo2Source(source, item, info, slide, mappings, maxRecordsOption(opts), opts.signal);
