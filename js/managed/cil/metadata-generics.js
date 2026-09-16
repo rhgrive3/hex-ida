@@ -43,11 +43,15 @@ export function readCilGenericMetadata(bytes, view, layout, stringsStream, defs)
   });
 
   const numbersByOwner = new Map();
+  const numberMembershipByOwner = new Map();
   for (const row of genericParams) {
     const numbers = numbersByOwner.get(row.ownerToken) ?? [];
-    if (numbers.includes(row.number)) fail('cil-generic-param-number-duplicate');
+    const seen = numberMembershipByOwner.get(row.ownerToken) ?? new Set();
+    if (seen.has(row.number)) fail('cil-generic-param-number-duplicate');
+    seen.add(row.number);
     numbers.push(row.number);
     numbersByOwner.set(row.ownerToken, numbers);
+    numberMembershipByOwner.set(row.ownerToken, seen);
   }
   for (const numbers of numbersByOwner.values()) {
     const ordered = [...numbers].sort((a, b) => a - b);
