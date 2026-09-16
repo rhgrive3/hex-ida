@@ -1,4 +1,4 @@
-name: PR 8671 auth failure diagnostic
+name: PR 8671 final verification diagnostic
 
 on:
   push:
@@ -8,45 +8,63 @@ permissions:
   contents: read
 
 jobs:
-  auth-failure:
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned dependencies
         shell: bash
         run: timeout 300s npm ci
-      - name: Capture first auth failure only
+      - name: Run focused and canonical verification
         shell: bash
         run: |
           set -u
-          set +e
-          timeout 240s npm run auth:test > /tmp/auth.out 2>&1
-          code=$?
-          set -e
-          printf 'auth-test-exit: %s\n' "$code" > pr8671-auth-failure.txt
-          if [ "$code" -eq 0 ]; then
-            printf 'auth-test: PASS\n' >> pr8671-auth-failure.txt
-          else
-            python <<'PY'
+          mkdir -p pr8671-final-verification/generated
+          : > pr8671-final-verification/result.txt
+          run_check() {
+            name="$1"; limit="$2"; shift 2
+            out="/tmp/${name}.out"
+            set +e
+            timeout "$limit" "$@" >"$out" 2>&1
+            code=$?
+            set -e
+            if [ "$code" -eq 0 ]; then
+              printf '%s: PASS\n' "$name" >> pr8671-final-verification/result.txt
+              return 0
+            fi
+            printf '%s: FAIL exit=%s\n' "$name" "$code" >> pr8671-final-verification/result.txt
+            printf '%s\n' "--- ${name} minimal failure ---" >> pr8671-final-verification/result.txt
+            python - "$out" >> pr8671-final-verification/result.txt <<'PY'
+          import sys
           from pathlib import Path
-          lines=Path('/tmp/auth.out').read_text(errors='replace').splitlines()
-          idx=next((i for i,l in enumerate(lines) if l.startswith('not ok ')), None)
-          out=Path('pr8671-auth-failure.txt')
-          with out.open('a') as f:
-              if idx is None:
-                  f.write('first-failure: not-ok marker not found\n')
-                  for line in lines[-35:]: f.write(line+'\n')
-              else:
-                  f.write('first-failure-context:\n')
-                  for line in lines[max(0,idx-3):min(len(lines),idx+28)]: f.write(line+'\n')
+          lines=Path(sys.argv[1]).read_text(errors='replace').splitlines()
+          idx=next((i for i,l in enumerate(lines) if l.startswith('not ok ') or 'AssertionError' in l or 'Error:' in l), None)
+          if idx is None:
+              part=lines[-30:]
+          else:
+              part=lines[max(0,idx-4):min(len(lines),idx+28)]
+          print('\n'.join(part))
           PY
+            return 1
+          }
+          set -e
+          run_check auth-test 240s npm run auth:test || exit 0
+          run_check public-benchmark 180s npm run benchmark:public:test || exit 0
+          run_check ai-ui-dev-profile 120s node tests/ai-ui-dev-profile.mjs || exit 0
+          run_check phase7-cross-lane 120s node tests/phase7/ownership/cross-lane-routing.test.mjs || exit 0
+          run_check auth-build-test 300s npm run auth:build-test || exit 0
+          git status --porcelain -- userscript/hex.user.template.js userscript/release-version.json > pr8671-final-verification/generated-status.txt
+          if [ -s pr8671-final-verification/generated-status.txt ]; then
+            cp userscript/hex.user.template.js pr8671-final-verification/generated/hex.user.template.js
+            cp userscript/release-version.json pr8671-final-verification/generated/release-version.json
           fi
-          cat pr8671-auth-failure.txt >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload auth failure evidence
+          printf 'verification-all: PASS\n' >> pr8671-final-verification/result.txt
+          cat pr8671-final-verification/result.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload compact final evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr8671-auth-failure
-          path: pr8671-auth-failure.txt
+          name: pr8671-final-verification
+          path: pr8671-final-verification
           retention-days: 1
