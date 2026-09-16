@@ -2,6 +2,7 @@ import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedExceptionRegionId, createManagedMethodId, createVMOperationId } from '../shared/identity.js';
 import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
 import { resolveJvmFieldRef } from './field-reference.js';
+import { resolveJvmMethodSignature } from './method-reference.js';
 import { decodeJvmInstructionBoundary } from './instruction-boundary.js';
 
 function fail(code) { throw new TypeError(code); }
@@ -740,12 +741,42 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           pc += 2;
           if (opcode === 0xb9) pc += 2; // skip count, 0
           const kinds = { 0xb6: 'virtual', 0xb7: 'special', 0xb8: 'static', 0xb9: 'interface' };
-          mnemonic = `invoke${kinds[opcode]}`;
+          const dispatchKind = kinds[opcode];
+          mnemonic = `invoke${dispatchKind}`;
+          // #1138: the operand-stack effect of a call is a fact of the resolved
+          // method descriptor, not of the opcode alone. When that descriptor is
+          // losslessly resolvable the bundle carries the exact receiver /
+          // argument / return signature; when it is not, no stack authority is
+          // invented and the bundle fails closed instead of publishing an exact
+          // call that silently leaves the machine stack untouched.
+          const signature = resolveJvmMethodSignature(jvmClass, methIdx, { dispatchKind });
+          if (!signature) {
+            completeness = 'partial';
+            stackModelTrusted = false;
+            callEffects.push({ cpIndex: methIdx, dispatchKind, descriptorUnresolved: true });
+            unknownEffects.push(
+              { category: 'calls', reason: `jvm-invoke-descriptor-unresolved:${methIdx}` },
+              { category: 'stack', reason: 'jvm-invoke-stack-effect-unresolved' },
+            );
+            break;
+          }
           callEffects.push({
             cpIndex: methIdx,
-            dispatchKind: kinds[opcode],
+            dispatchKind,
+            owner: signature.owner,
+            name: signature.name,
+            descriptor: signature.descriptor,
+            receiverRequired: signature.receiverRequired,
+            argumentDescriptors: signature.parameters.map((parameter) => parameter.descriptor),
+            returnDescriptor: signature.returnType?.descriptor ?? null,
+            ...(signature.initializesReceiver ? { initializesReceiver: true } : {}),
           });
-          stackModelTrusted = false;
+          consumedValues.push(...signature.consumedValues);
+          producedValues.push(...signature.producedValues);
+          // JVMS §6.5: `invokespecial <init>` pops the objectref and pushes that
+          // same objectref back, so the receiver's slot count cancels out and the
+          // arguments leave the stack.
+          currentStackHeight += signature.producedSlots - signature.consumedSlots;
         }
         break;
 
