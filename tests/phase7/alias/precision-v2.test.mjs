@@ -25,10 +25,18 @@ test('alias v2 solver achieves 100% exact precision and recall on v2 ground trut
 
   const score = scoreAliasQueriesV2(candidateAnswer, { queries: ALIAS_QUERIES_V2 });
 
+  // #8809 sync: three corpus entries (v2-frame-non-escaping, v2-callee-ret,
+  // v2-tls-vs-stack) were re-evaluated against the current evidence contract:
+  // #4977's both-roots non-escaping AND rule, the callee-return escape
+  // boundary, and the missing canonical TLS proof authority (#6066) each turn
+  // a formerly-`no` truth into a conservative `may`. The v2 corpus truth was
+  // redefined accordingly (see tests/phase7/corpus/fixtures.mjs). The gate's
+  // actual invariant is unchanged: zero false strong answers, and every
+  // exact claim correct.
   assert.equal(score.queryCount, 30);
-  assert.equal(score.exactAvailable, 15);
-  assert.equal(score.exactClaimed, 15);
-  assert.equal(score.exactCorrect, 15);
+  assert.equal(score.exactAvailable, 12);
+  assert.equal(score.exactClaimed, 12);
+  assert.equal(score.exactCorrect, 12);
   assert.equal(score.exactPrecision, 1.0);
   assert.equal(score.exactRecall, 1.0);
   assert.equal(score.falseMustAlias, 0);

@@ -1,4 +1,5 @@
 import { decodeUleb128 } from './parser-core.js';
+import { wasmModuleIndex } from './module-index.js';
 
 const I32 = 0x7f;
 const I64 = 0x7e;
@@ -50,11 +51,7 @@ function memoryAddressType(memory) {
 }
 
 export function createWasmMemoryValidationContext(wasmModule) {
-  const imported = (wasmModule?.imports || [])
-    .filter((entry) => entry?.desc?.kind === 2)
-    .map((entry) => entry.desc);
-  const defined = Array.isArray(wasmModule?.memories) ? wasmModule.memories : [];
-  return Object.freeze({ memories: Object.freeze([...imported, ...defined]) });
+  return Object.freeze({ memories: wasmModuleIndex(wasmModule).memories });
 }
 
 export function decodeWasmMemarg(bytecode, offset) {

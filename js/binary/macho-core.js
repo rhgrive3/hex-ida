@@ -535,15 +535,18 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
       budget.warn(`Mach-O symbol ${i} has n_strx ${strx} outside string table`);
       continue;
     }
-    const span = r.bytes.subarray(st.stroff + strx, st.stroff + st.strsize);
-    if (span.indexOf(0) === -1) {
+    // Bounded first-NUL scan rather than materializing the whole suffix: on a
+    // sparse backing the old `subarray(strx, strsize).indexOf(0)` copied the
+    // entire remaining string table once per symbol (O(nsyms x strsize), #8651).
+    const nameEnd = r.findZero(st.stroff + strx, st.stroff + st.strsize);
+    if (nameEnd < 0) {
       markMachOMetadataPartial(image, 'symbol-name-not-terminated');
       budget.warn(`Mach-O symbol ${i} name has no NUL terminator before string-table end`);
       continue;
     }
     // An empty name at n_strx==0 is the string-table sentinel, not a malformed
     // symbol. Keep the existing behavior for any other valid empty entry too.
-    name = r.cstring(st.stroff + strx, st.strsize - strx);
+    name = r.decodeString(st.stroff + strx, nameEnd);
     if (!name) continue;
     if (!budget.take({ stringBytes:name.length*2, estimatedHeapBytes:name.length*2+32 }, 'symbol-name')) break;
     const ntype = type & 0x0e;
@@ -557,10 +560,11 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
       const targetIndex = Number(value);
       let cached = indirectTargets.get(targetIndex);
       if (cached === undefined) {
-        if (r.bytes.subarray(st.stroff + targetIndex, st.stroff + st.strsize).indexOf(0) === -1) {
+        const targetEnd = r.findZero(st.stroff + targetIndex, st.stroff + st.strsize);
+        if (targetEnd < 0) {
           cached = INDIRECT_TARGET_INVALID;
         } else {
-          const target = r.cstring(st.stroff + targetIndex, st.strsize - targetIndex);
+          const target = r.decodeString(st.stroff + targetIndex, targetEnd);
           if (target && !budget.take({
             stringBytes: target.length * 2,
             estimatedHeapBytes: target.length * 2 + 32,

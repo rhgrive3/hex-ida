@@ -63,7 +63,7 @@ function isInt128(type) {
   return /^(?:unsigned )?__int128(?:_t)?$/.test(text) || /^(?:u?int128)(?:_t)?$/.test(text);
 }
 
-function typeBits(type, fallback = 64) {
+function typeBits(type, fallback = 64, pointerBits = 64) {
   type = normalizedType(type);
   if (isComplexLongDouble(type)) return 256;
   if (isLongDouble(type)) return 128;
@@ -71,11 +71,16 @@ function typeBits(type, fallback = 64) {
   if (/\b(?:bool|char|int8|uint8)\b/.test(type)) return 8;
   if (/\b(?:short|int16|uint16)\b/.test(type)) return 16;
   if (/\b(?:int|unsigned int|int32|uint32|float)\b/.test(type)) return 32;
-  if (/\b(?:double|long|int64|uint64|pointer|ptr)\b|\*/.test(type)) return 64;
+  // x86-64 ILP32 (x32 ABI): C `long` / `unsigned long` and pointer/`ptr`/`*`
+  // carry a 32-bit logical width; the physical carrier remains the AMD64 GP
+  // bank. In LP64 (`pointerBits = 64`, the default) this branch is byte-identical
+  // to the previous behavior, so the supported LP64 profile is unchanged (#8885).
+  if (/\b(?:long|pointer|ptr)\b|\*/.test(type)) return pointerBits === 32 ? 32 : 64;
+  if (/\b(?:double|int64|uint64)\b/.test(type)) return 64;
   return fallback;
 }
 
-function parameterClass(parameter) {
+function parameterClass(parameter, pointerBits = 64) {
   const type = normalizedType(parameter?.type || parameter?.name || '');
   const abiClass = normalizedType(parameter?.abiClass || parameter?.class || parameter?.kind || '');
   const complexX87 = parameter?.complexX87 === true || isComplexLongDouble(type, abiClass);
@@ -90,7 +95,7 @@ function parameterClass(parameter) {
   const aggregateLayout = aggregate && aggregateLayoutPresent ? canonicalAggregateLayout(parameter) : null;
   const aggregateLayoutProven = !aggregate || !aggregateLayoutPresent || aggregateLayout != null;
   const declaredBits = aggregateLayout?.bits ?? parameter?.bits ?? parameter?.sizeBits;
-  const rawBits = Number(declaredBits ?? (pointer ? 64 : typeBits(type, vector ? 128 : 64)));
+  const rawBits = Number(declaredBits ?? (pointer ? pointerBits : typeBits(type, vector ? 128 : 64, pointerBits)));
   const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : 64;
   const nonTrivialForCalls = parameter?.nonTrivialForCalls === true || parameter?.nonTrivial === true;
   const integerEightbytes = !pointer && !aggregate && !vector && !floating && !x87 && bits === 128 ? 2 : 1;
@@ -203,6 +208,7 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
   const prototype = callPrototypeOf(instruction, options);
   const parameters = parameterList(prototype);
   if (!parameters) return conservativeUnknownArguments();
+  const pointerBits = Number(options.pointerBits) || (options.dataModel === 'ilp32' ? 32 : 64);
 
   const srcs = [];
   const seenSources = new Set();
@@ -226,13 +232,13 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
   }
   const indirectResult = returnDecision.kind === 'indirect';
   if (indirectResult) {
-    appendRegisterSource(srcs, seenSources, INTEGER_ARGUMENT_REGISTERS[0], 64, { purpose:'indirect-result' });
-    arguments_.push({ index:-1, role:'indirect-result', location:'register', reg:INTEGER_ARGUMENT_REGISTERS[0], abiClass:'pointer', pointer:true, bits:64, hidden:true });
+    appendRegisterSource(srcs, seenSources, INTEGER_ARGUMENT_REGISTERS[0], pointerBits, { purpose:'indirect-result' });
+    arguments_.push({ index:-1, role:'indirect-result', location:'register', reg:INTEGER_ARGUMENT_REGISTERS[0], abiClass:'pointer', pointer:true, bits:pointerBits, hidden:true });
     integerIndex = 1;
   }
 
   parameters.forEach((parameter, index) => {
-    const classified = parameterClass(parameter);
+    const classified = parameterClass(parameter, pointerBits);
     // An explicit aggregate descriptor is a proof input regardless of whether
     // the eventual ABI path is an invisible reference, register class, or
     // memory.  Do not let a malformed nested layout bypass validation through
@@ -288,10 +294,10 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
       const reg = INTEGER_ARGUMENT_REGISTERS[integerIndex];
       if (reg) {
         integerIndex += 1;
-        appendRegisterSource(srcs, seenSources, reg, 64, { purpose:'invisible-reference' });
-        arguments_.push({ index, location:'register', reg, abiClass:'invisible-reference', pointer:true, bits:64, pointeeBits:classified.bits, hiddenIndirection:true });
+        appendRegisterSource(srcs, seenSources, reg, pointerBits, { purpose:'invisible-reference' });
+        arguments_.push({ index, location:'register', reg, abiClass:'invisible-reference', pointer:true, bits:pointerBits, pointeeBits:classified.bits, hiddenIndirection:true });
       } else {
-        const entry = { index, location:'stack', offset:stackOffset, offsetBase:'incoming-stack-arguments', calleeEntryOffset:8 + stackOffset, bytes:8, abiClass:'invisible-reference', pointer:true, bits:64, pointeeBits:classified.bits, hiddenIndirection:true };
+        const entry = { index, location:'stack', offset:stackOffset, offsetBase:'incoming-stack-arguments', calleeEntryOffset:8 + stackOffset, bytes:8, abiClass:'invisible-reference', pointer:true, bits:pointerBits, pointeeBits:classified.bits, hiddenIndirection:true };
         arguments_.push(entry); stackArguments.push(entry); stackOffset += 8; stackArgsMayContainPointers = true;
       }
       return;
@@ -622,6 +628,7 @@ function returnHiddenResultState(prototype, options = {}) {
 
 function classifyReturn(prototype, options = {}) {
   if (!prototype) return null;
+  const pointerBits = Number(options.pointerBits) || (options.dataModel === 'ilp32' ? 32 : 64);
   const returnType = normalizedReturnType(prototype, options);
   const type = returnType.value;
   const returnClass = normalizedReturnClass(prototype, options);
@@ -634,7 +641,7 @@ function classifyReturn(prototype, options = {}) {
   }
   if (hiddenResult.kind === 'indirect') {
     return {
-      reg:'rax', bits:64, indirect:true,
+      reg:'rax', bits:pointerBits, indirect:true,
       ...(hiddenResult.aggregate === true ? { aggregate:true } : {}),
       ...(Number.isSafeInteger(hiddenResult.pointeeBits) && hiddenResult.pointeeBits > 0 ? { pointeeBits:hiddenResult.pointeeBits } : {}),
       hiddenResultPointer:{ input:'rdi', returned:'rax' },
@@ -689,7 +696,7 @@ function classifyReturn(prototype, options = {}) {
   }
   const vector = prototype.vector === true || options.vector === true || /vector|simd|sse|__m(?:128|256|512)/.test(`${type} ${abiClass}`);
   const floating = vector || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`);
-  const rawBits = Number(options.returnBits ?? prototype.returnBits ?? prototype.bits ?? typeBits(type, vector ? 128 : 64));
+  const rawBits = Number(options.returnBits ?? prototype.returnBits ?? prototype.bits ?? typeBits(type, vector ? 128 : 64, pointerBits));
   const saneBits = Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : 64;
   if (vector && saneBits > 128) {
     const reg = vectorRegisterView(0, saneBits, options);
@@ -749,6 +756,48 @@ export const SYSV_AMD64_ABI = new ABIPlugin({
     aggregateClassification:'partial',
     variadicRegisterSaveAreaBytes:176,
     directionFlag:'clear-on-entry-and-return',
+  }),
+  redZone:()=>128,
+  unwindRules:()=>Object.freeze({ framePointer:'rbp', returnAddress:'stack', returnAddressOffset:0 }),
+  defaultUnknownCallEffects:()=>Object.freeze({
+    registerClobbers:CALLER_SAVED,
+    memoryEffects:'unknown',
+    mayThrow:true,
+    redZonePreservedAcrossCall:false,
+    aggregateEffects:'unknown',
+    variadicEffects:'unknown',
+  }),
+});
+
+// x32 / x86-64 ILP32 profile (#8885). The physical carrier, register bank,
+// stack alignment and 8-byte argument slots are the AMD64 SysV layout, but the
+// logical `long`/pointer width is 32 bits. The classifiers honor an explicit
+// `pointerBits`/`dataModel` option, so this plugin is the LP64 plugin with the
+// ILP32 data model bound in — never a re-derived guess.
+export const SYSV_AMD64_ILP32_ABI = new ABIPlugin({
+  id:'sysv-amd64-ilp32',
+  semanticVersion:'2',
+  architectureId:'x86_64',
+  platformPredicate:({ platform }) => !platform || ['linux','freebsd','netbsd','openbsd','solaris','unix','unknown'].includes(platform),
+  callingConventions:()=>Object.freeze(['sysv-amd64-ilp32', 'sysv-x32', 'ilp32']),
+  classifyArguments:(insn, opts = {}) => classifySysVAMD64Arguments(insn, { ...opts, dataModel:'ilp32', pointerBits:32 }),
+  classifyCallReturn:(insn, opts = {}) => classifySysVAMD64CallReturn(insn, { ...opts, dataModel:'ilp32', pointerBits:32 }),
+  classifyFunctionReturn:(opts = {}) => classifySysVAMD64FunctionReturn({ ...opts, dataModel:'ilp32', pointerBits:32 }),
+  classifyEntryRegister:SYSV_AMD64_ABI.classifyEntryRegister,
+  callerSaved:()=>CALLER_SAVED,
+  calleeSaved:()=>CALLEE_SAVED,
+  stackRules:()=>Object.freeze({
+    alignment:16,
+    stackGrows:'down',
+    argumentSlotBytes:8,
+    returnAddressBytes:8,
+    calleeEntryAlignmentOffset:8,
+    shadowSpaceBytes:0,
+    aggregateClassification:'partial',
+    variadicRegisterSaveAreaBytes:176,
+    directionFlag:'clear-on-entry-and-return',
+    dataModel:'ilp32',
+    pointerBits:32,
   }),
   redZone:()=>128,
   unwindRules:()=>Object.freeze({ framePointer:'rbp', returnAddress:'stack', returnAddressOffset:0 }),
