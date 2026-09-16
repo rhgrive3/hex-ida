@@ -413,6 +413,43 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     "tests/phase7/ownership/cross-lane-routing.test.mjs",
     "tools/validation/phase7/cross-lane-inventory.mjs",
   ]),
+  // #8702 is a root-regression runner whose compatibility fixes span the
+  // Phase 8 printer, adapter/AI contracts, and test/workflow owners. Phase 8
+  // validates only its owned subset; this exact foreign inventory keeps the
+  // temporary integration route fail-closed.
+  "fix/issue-8702-canonical-root-regressions": Object.freeze([
+    ".circleci/config.yml",
+    ".github/workflows/ui-regression.yml",
+    "js/adapters/index.js",
+    "js/ai/runtime.js",
+    "tests/ai/adversarial/issue-3758-ai-annotation-persistence.test.mjs",
+    "tests/issue-3246-3247-fresh-symbol-identity.mjs",
+    "tests/issue-3601-simd-structure-load-store-memory.mjs",
+    "tests/issue-3602-atomic-rmw-read-write-memory.mjs",
+    "tests/issue-3748-macho-nindr-address.mjs",
+    "tests/issue-3935-interprocedural-fallback-replacement.mjs",
+    "tests/issue-3964-cil-prefix-opcode-decode.mjs",
+    "tests/issue-4027-arm64-global-address-wrap.mjs",
+    "tests/issue-4135-pe-section-virtual-layout.mjs",
+    "tests/issue-4224-emu-fp-pair-ldp-stp.mjs",
+    "tests/issue-4638-compact-snapshot-mutation-isolation.mjs",
+    "tests/issue-465-macho-symbol-types.mjs",
+    "tests/issue-4677-standalone-provider-capabilities.mjs",
+    "tests/issue-4847-exception-region-block-boundary.mjs",
+    "tests/issue-5186-atomic-publication-trusted-provider.test.mjs",
+    "tests/issue-5272-sandbox-strict-scalars.mjs",
+    "tests/issue-560-multi-exec.mjs",
+    "tests/issue-572-bounded-leb.mjs",
+    "tests/issue-5812-bounded-memory-write-expected-before.test.mjs",
+    "tests/issue-6216-turn-store-isolation.mjs",
+    "tests/issue-6281-dev-supervisor-decision-type.mjs",
+    "tests/issue-7162-jvm-defining-class-names.mjs",
+    "tests/issue-7301-cil-orphan-methoddef.mjs",
+    "tests/issue-861-862-c-printer-signedness.mjs",
+    "tests/phase11/dex/dex-parser.test.mjs",
+    "tests/root-issue-regression-membership.test.mjs",
+    "tests/root-issue-regressions.mjs",
+  ]),
 });
 
 function phase8Owned(file, patterns) {
