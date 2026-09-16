@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Capture exact ownership first divergence
+      - name: Capture exact ownership divergence
         shell: bash
         env:
           ORIGINAL_HEAD: c28e07ba1424bac27fab318878da06cedf97e293
@@ -24,36 +24,32 @@ jobs:
           set -euo pipefail
           git fetch --no-tags origin main:refs/remotes/origin/main
           BASE_SHA="$(git rev-parse refs/remotes/origin/main)"
-          OUT=diag-c4-ownership.txt
-          : > "$OUT"
+          BASE_SHA="$BASE_SHA" ORIGINAL_HEAD="$ORIGINAL_HEAD" node --input-type=module <<'NODE' > diag-c4-ownership.txt
+          import fs from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          const manifest = JSON.parse(fs.readFileSync('tools/validation/analysis-roadmap/ownership.json', 'utf8'));
+          const assigned = new Set(Object.values(manifest.owners).flat());
+          const changed = execFileSync('git', ['diff', '--name-only', '--diff-filter=ACMR', `${process.env.BASE_SHA}...${process.env.ORIGINAL_HEAD}`], { encoding: 'utf8' })
+            .split(/\r?\n/).filter(Boolean);
+          const undeclared = changed.filter(file => !assigned.has(file));
+          console.log(`[inventory] changed=${changed.length} undeclared=${undeclared.length}`);
+          for (const file of undeclared) console.log(file);
+          NODE
           for phase in phase7 phase8; do
-            printf '%s\n' "[$phase]" >> "$OUT"
+            printf '%s\n' "[$phase]" >> diag-c4-ownership.txt
             set +e
-            FILES_JSON="$(node tools/validation/analysis-roadmap/ownership.mjs --branch feat/analysis-roadmap-v8-current-main-20260907 --phase "$phase" --base-sha "$BASE_SHA" --head-sha "$ORIGINAL_HEAD" 2>&1)"
+            RESULT="$(node tools/validation/analysis-roadmap/ownership.mjs --branch feat/analysis-roadmap-v8-current-main-20260907 --phase "$phase" --base-sha "$BASE_SHA" --head-sha "$ORIGINAL_HEAD" 2>&1)"
             RC=$?
             set -e
-            if [ "$RC" -ne 0 ]; then
-              printf 'projection rc=%s\n%s\n' "$RC" "$FILES_JSON" >> "$OUT"
-              continue
-            fi
-            printf 'projection ok\n' >> "$OUT"
-            set +e
-            if [ "$phase" = phase7 ]; then
-              VALIDATION="$(node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON" 2>&1)"
-            else
-              VALIDATION="$(node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON" 2>&1)"
-            fi
-            RC=$?
-            set -e
-            printf 'validation rc=%s\n%s\n' "$RC" "$VALIDATION" >> "$OUT"
+            printf 'projection rc=%s\n%s\n' "$RC" "$RESULT" >> diag-c4-ownership.txt
           done
-          head -c 12000 "$OUT" > "$OUT.trim"
-          mv "$OUT.trim" "$OUT"
+          head -c 16000 diag-c4-ownership.txt > diag-c4-ownership.txt.trim
+          mv diag-c4-ownership.txt.trim diag-c4-ownership.txt
       - name: Commit diagnostic evidence
         shell: bash
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add diag-c4-ownership.txt
-          git commit -m 'ci(diag): capture C4 ownership first divergence'
+          git commit -m 'ci(diag): enumerate C4 ownership divergence'
           git push origin HEAD:diag/c4-ownership-20260916
