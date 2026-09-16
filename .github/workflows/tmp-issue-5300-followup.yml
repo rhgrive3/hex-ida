@@ -26,13 +26,25 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           p=Path('tests/phase11/dex/issue-5300-dex-switch-control-flow.test.mjs')
-          s=p.read_text().replace("[0x3d,['if-lez','le',1]]);", "[0x3d,['if-lez','le',1]]]);")
-          p.write_text(s)
+          p.write_text(p.read_text().replace("[0x3d,['if-lez','le',1]]);", "[0x3d,['if-lez','le',1]]]);"))
           PY
       - name: Focused #5300 regression
         run: timeout 90s node --test tests/phase11/dex/issue-5300-dex-switch-control-flow.test.mjs
       - name: Arithmetic regression
-        run: timeout 60s node tests/phase11/dex/issue-1136-dex-arithmetic-produced-value.test.mjs
+        shell: bash
+        run: |
+          set +e
+          timeout 60s node tests/phase11/dex/issue-1136-dex-arithmetic-produced-value.test.mjs > /tmp/arithmetic.out 2>&1
+          code=$?
+          tail -50 /tmp/arithmetic.out > /tmp/arithmetic-first-failure.txt
+          exit $code
+      - name: Upload arithmetic failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-1136-first-failure-under-5300
+          path: /tmp/arithmetic-first-failure.txt
+          retention-days: 1
       - name: Nearby DEX regressions
         run: |
           timeout 60s node tests/phase11/dex/issue-7981-receiver-null-npe.test.mjs
