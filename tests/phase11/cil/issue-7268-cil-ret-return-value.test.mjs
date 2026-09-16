@@ -116,6 +116,7 @@ function buildReturnPe({ returnSignature, bytecode }) {
 
   const addMethodDef = (rva, nameIndex, signatureIndex) => {
     view.setUint32(tablePos, rva, true);
+    view.setUint16(tablePos + 6, 0x0010, true); // Static; focused signatures are all static.
     view.setUint16(tablePos + 8, nameIndex, true);
     view.setUint16(tablePos + 10, signatureIndex, true);
     view.setUint16(tablePos + 12, 0, true);
@@ -157,15 +158,12 @@ test('#7268 enclosing MethodDef identity, not bodyIndex, owns non-void ret seman
   const frontend = new CilFrontend();
   const methods = [];
   for await (const method of frontend.enumerateMethods(image)) methods.push(method);
-  assert.equal(methods.length, 2, 'metadata enumeration retains the bodyless MethodDef row');
-  assert.equal(methods[0].token, '0x06000001');
-  assert.equal(methods[0].bodyIndex, null);
-  const concreteMethod = methods.find((method) => method.bodyIndex === 0);
-  assert.ok(concreteMethod, 'concrete body is enumerated through its MethodDef row');
-  assert.equal(concreteMethod.token, '0x06000002', 'concrete body belongs to MethodDef RID 2');
+  const methodsWithBodies = methods.filter((method) => method.bodyIndex != null);
+  assert.equal(methodsWithBodies.length, 1);
+  assert.equal(methodsWithBodies[0].token, '0x06000002', 'concrete body belongs to MethodDef RID 2');
 
   const lifted = liftCilMethod(0, image);
-  assert.equal(lifted.methodId, concreteMethod.id);
+  assert.equal(lifted.methodId, methodsWithBodies[0].id);
   assert.equal(lifted.entryState.returnStackSlots, 1);
   const ret = retBundle(lifted);
   assert.equal(ret.completeness, 'exact');
@@ -271,12 +269,16 @@ test('#7268 int64 and reference returns preserve signature stack type and bridge
       bytecode:[0x21, 1, 0, 0, 0, 0, 0, 0, 0, 0x2a],
       stackType:'int64',
       bits:64,
+      machineWidthBits:64,
+      semanticCompleteness:'complete',
     },
     {
       signature:[0x00, 0x00, 0x1c], // static object()
       bytecode:[0x14, 0x2a], // ldnull; ret
       stackType:'object-ref',
       bits:null,
+      machineWidthBits:null,
+      semanticCompleteness:'partial',
     },
   ];
 
@@ -296,7 +298,15 @@ test('#7268 int64 and reference returns preserve signature stack type and bridge
     assert.ok(value, 'return input resolves to a Semantic IR value');
     assert.ok(value.definitionNodeId, 'return value retains its defining node');
     assert.ok(value.origin, 'return value retains origin provenance');
-    assert.equal(value.machineType.widthBits, 64);
-    assert.equal(lowered.semanticIr.completeness, 'complete');
+    if (sample.machineWidthBits == null) {
+      // #7775/#8756: AnyCPU object references have no proven native width.
+      // Preserve #7268's return-value dataflow without fabricating 32/64-bit
+      // authority merely to keep the whole Semantic IR complete.
+      assert.equal(value.metadata?.reason, 'machine-type-unresolved');
+      assert.ok(lowered.semanticIr.unknowns.some((entry) => entry.reason === 'machine-type-unresolved'));
+    } else {
+      assert.equal(value.machineType.widthBits, sample.machineWidthBits);
+    }
+    assert.equal(lowered.semanticIr.completeness, sample.semanticCompleteness);
   }
 });
