@@ -1,6 +1,11 @@
 /* Binary patching and the small ARM64 patch assembler. */
 import { parseOperands } from './arm64.js';
 
+export function instructionPatchArchitectureSupported(value) {
+  const architecture = String(value || '').toLowerCase();
+  return architecture === 'arm64' || architecture === 'arm64e';
+}
+
 function integerBigInt(value, name) {
   if (typeof value === 'bigint') return value;
   if (typeof value === 'number') {

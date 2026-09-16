@@ -22,7 +22,7 @@ function controlIr(kind, targets, inputs = []) {
       sourceEntityId: 'cond', variableKey: null, origin,
     }]
     : [];
-  const entryNodeIds = kind === 'conditional-branch' ? ['cmp', 'control'] : ['control'];
+  const entryNodeIds = ['control'];
   const leafNodes = targets.map((id) => ({
     id: `leaf-${id}`, kind: 'return', blockId: id, inputs: [], outputs: [],
     targets: [], attributes: {}, completeness: 'complete', origin,
@@ -35,12 +35,6 @@ function controlIr(kind, targets, inputs = []) {
     blocks: blockIds.map((id) => ({ id, nodeIds: id === 'b0' ? entryNodeIds : [`leaf-${id}`] })),
     values: condition,
     nodes: [
-      ...(kind === 'conditional-branch'
-        ? [{
-          id: 'cmp', kind: 'compare', blockId: 'b0', inputs, outputs: [],
-          operator: 'eq', attributes: {}, completeness: 'complete', origin,
-        }]
-        : []),
       {
         id: 'control', kind, blockId: 'b0', inputs, outputs: [], targets,
         attributes: {}, completeness: 'complete', origin,

@@ -93,7 +93,7 @@ export function parseELF(input, options = {}) {
   nameSections(r, rawSections, h, image, metadataBudget);
   let riscvFileIsa = null;
   const isRiscv = Number(h.machine) === EM_RISCV || image.arch === 'riscv64' || image.arch === 'riscv32';
-  if (isRiscv) {
+  if (isRiscv && !metadataBudget.stopped) {
     const namedAttributeSections = rawSections.filter((section) => section.name === '.riscv.attributes');
     const attributes = namedAttributeSections.find((section) => section.type === SHT_RISCV_ATTRIBUTES) || null;
     if (namedAttributeSections.some((section) => section.type !== SHT_RISCV_ATTRIBUTES)) {
@@ -216,11 +216,13 @@ export function parseELF(input, options = {}) {
       evidence:riscvFileIsa ? 'elf-attribute' : 'missing',
     };
   }
+  const hasRelocations = rawSections.some((s) => s.type === SHT_REL || s.type === SHT_RELA);
+  const relocationIndexes = hasRelocations ? prepareRelocationIndexes(image, metadataBudget) : null;
   for (const s of rawSections) {
-    if (s.type === SHT_REL || s.type === SHT_RELA) parseRelocations(r, s, rawSections, image, bits, h.type, metadataBudget);
+    if (metadataBudget.stopped) break;
+    if (s.type === SHT_REL || s.type === SHT_RELA) parseRelocations(r, s, rawSections, image, bits, h.type, metadataBudget, relocationIndexes);
     else if (s.type === SHT_DYNAMIC) parseDynamic(r, s, rawSections, image, bits, metadataBudget);
   }
-  const hasRelocations = rawSections.some((s) => s.type === SHT_REL || s.type === SHT_RELA);
   const hasDynamic = rawSections.some((s) => s.type === SHT_DYNAMIC);
   parseProgramDynamic(r, programHeaders, image, bits, {
     signal: options.signal,
@@ -229,13 +231,13 @@ export function parseELF(input, options = {}) {
     sectionDynamicPresent: hasDynamic,
   });
   if (!dynsymAuthoritative) reconcileDynamicSymbolFallbackEvidence(image);
-  validateSectionRiscvVariantCcTag(image, rawSections);
+  if (!metadataBudget.stopped) validateSectionRiscvVariantCcTag(image, rawSections);
   let ehFrameHdr = rawSections.find((s) => s.name === '.eh_frame_hdr') || null;
   if (!ehFrameHdr) {
     const ph = programHeaders.find((item) => item.type === PT_GNU_EH_FRAME && item.filesz > 0n);
     if (ph) ehFrameHdr = { name: 'PT_GNU_EH_FRAME', addr: ph.vaddr, offset: ph.offset, size: ph.filesz };
   }
-  if (ehFrameHdr) parseEhFrameHeader(r, ehFrameHdr, image, bits, metadataBudget);
+  if (ehFrameHdr && !metadataBudget.stopped) parseEhFrameHeader(r, ehFrameHdr, image, bits, metadataBudget);
   image.metadata.elfMetadata = metadataBudget.snapshot();
 
   return image.finalize();
@@ -925,7 +927,41 @@ function validateSectionRiscvVariantCcTag(image, sections) {
   if (!image.warnings.includes(warning)) image.warnings.push(warning);
 }
 
-function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
+function prepareRelocationIndexes(image, budget) {
+  if (!budget?.checkpoint?.() || budget.stopped) return null;
+  const symbols = Array.isArray(image.symbols) ? image.symbols : [];
+  const imports = Array.isArray(image.imports) ? image.imports : [];
+  // Preflight the complete one-time indexing cost before either table-wide scan.
+  // This ensures an already-stopped/exhausted budget never pays hidden O(N) work.
+  const entries = symbols.length + imports.length;
+  if (!budget.take({
+    objects:entries,
+    operations:entries,
+    estimatedHeapBytes:symbols.length * 56 + imports.length * 64,
+  }, 'relocation-lookup-index')) return null;
+  const symbolsByTable = new Map();
+  for (let i = 0; i < symbols.length; i++) {
+    if ((i & 1023) === 0 && !budget.checkpoint()) return null;
+    const symbol = symbols[i];
+    if (!symbol || !Number.isInteger(symbol.tableIndex) || !Number.isInteger(symbol.index)) continue;
+    let table = symbolsByTable.get(symbol.tableIndex);
+    if (!table) symbolsByTable.set(symbol.tableIndex, table = new Map());
+    if (!table.has(symbol.index)) table.set(symbol.index, symbol);
+  }
+  const importsByTable = new Map();
+  for (let i = 0; i < imports.length; i++) {
+    if ((i & 1023) === 0 && !budget.checkpoint()) return null;
+    const imp = imports[i];
+    if (!imp || imp.library != null || !Number.isInteger(imp.tableIndex) || !Number.isInteger(imp.symbolIndex)) continue;
+    let table = importsByTable.get(imp.tableIndex);
+    if (!table) importsByTable.set(imp.tableIndex, table = new Map());
+    if (!table.has(imp.symbolIndex)) table.set(imp.symbolIndex, imp);
+  }
+  return { symbolsByTable, importsByTable };
+}
+
+function parseRelocations(r, sec, sections, image, bits, elfType, budget, indexes) {
+  if (budget.stopped || !budget.checkpoint()) return;
   if(!sec.entsize)return;
   const minEnt=BigInt(bits===64?(sec.type===SHT_RELA?24:16):(sec.type===SHT_RELA?12:8));
   if(sec.entsize<minEnt){budget.partial(`relocations:${sec.index}:entry-size`,`ELF relocation section ${sec.index} entry size ${sec.entsize} is smaller than ${minEnt}`);return;}
@@ -947,21 +983,10 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
       symbolEntryCount=symbolTable.size/symbolTable.entsize;
     }
   }
-  const symbols=image.symbols.filter((x)=>x.tableIndex===sec.link);
-  if(!budget.take({objects:symbols.length,operations:symbols.length,estimatedHeapBytes:symbols.length*48},'relocation-symbol-index'))return;
-  const byIndex=new Map(symbols.map((x)=>[x.index,x]));
-  // Relocation→import-site attachment used to run `image.imports.find(...)` for
-  // every relocation, giving Θ(relocations × imports) hidden work that the
-  // constant per-relocation budget charge never reflected (#8963). Index the
-  // external (library==null) import records once by (tableIndex,symbolIndex) —
-  // the same identity #5682 established — so each site resolves in O(1). The
-  // build is set-if-absent so duplicate keys can never take last-write-wins
-  // semantics, and the per-site name check preserves weak/global and cross-table
-  // distinctions exactly as the previous predicate did.
-  const importBySymbol=new Map();
-  for(const imp of image.imports){
-    if(imp&&imp.library==null){const k=`${imp.tableIndex}:${imp.symbolIndex}`;if(!importBySymbol.has(k))importBySymbol.set(k,imp);}
-  }
+  // #567 residual: relocation sections sharing sh_link reuse one parser-owned
+  // index. Never filter/materialize image.symbols after the budget has stopped.
+  const byIndex=indexes?.symbolsByTable?.get(sec.link) || new Map();
+  const importBySymbol=indexes?.importsByTable?.get(sec.link) || new Map();
   const target=elfType===ET_REL?sections[sec.info]:null;
   if(elfType===ET_REL&&!normalSectionIndex(sec.info,sections)){budget.partial(`relocations:${sec.index}:target-section`,`ELF ET_REL relocation section ${sec.index} has invalid sh_info target section ${sec.info}`);return;}
   for(let i=0;i<count;i++){
@@ -988,7 +1013,7 @@ function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
     if(symIndex!==0&&symbolEntryCount!=null&&BigInt(symIndex)>=symbolEntryCount){budget.partial(`relocations:${sec.index}:symbol-index-range`,`ELF relocation section ${sec.index} references symbol index ${symIndex} outside its associated table count ${symbolEntryCount}`);continue;}
     const sym=byIndex.get(symIndex)||null;
     image.relocations.push({address,fileOffset,type,symbol:(sym&&sym.name)?sym.name:null,symbolIndex:symIndex,addend,section:sec.name,source:sec.type===SHT_RELA?'RELA':'REL',symbolTableIndex:sec.link,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null,addressDomain});
-    if(sym&&sym.defined===false){const cand=importBySymbol.get(`${sec.link}:${symIndex}`)||null;const imp=cand&&cand.name===sym.name?cand:null;if(imp){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:96},'relocation-import-site'))break;imp.sites.push({address,offset:fileOffset,kind:'relocation',type,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null});}}
+    if(sym&&sym.defined===false){const cand=importBySymbol.get(symIndex)||null;const imp=cand&&cand.name===sym.name?cand:null;if(imp){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:96},'relocation-import-site'))break;imp.sites.push({address,offset:fileOffset,kind:'relocation',type,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null});}}
   }
 }
 
