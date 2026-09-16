@@ -9,14 +9,34 @@ import { queryRecord, queryArray } from '../../symbolic/memory/data-input.js';
 import { assertMemoryExpr } from '../../symbolic/memory/byte-memory.js';
 import { createQueryGuard, QueryFailure } from '../../symbolic/memory/query-state.js';
 import { verifyDeobfuscationCandidate } from '../../symbolic/taint/proof-consumer.js';
-import { expr } from '../ast/nodes.js';
+import { expr, isPure } from '../ast/nodes.js';
 import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { RewriteEngine } from '../rewrite/engine.js';
 import { recoverArm64ClangIdiom } from '../idioms/arm64-clang.js';
 import { compileProofExpression } from './proof-expression.js';
 
 export const REPRESENTATION_CANDIDATE_VERSION = 'hex.representation-candidates/5';
-const RULES = Object.freeze(DEFAULT_RULES.map(rule => Object.freeze({...rule})));
+// Candidate mining observes the historical display schedule, including its
+// width-one edge case. The production rewrite keeps the strict `sh < bits`
+// precondition, but the private observation must also retain the legacy
+// `x+x -> x<<1` step so independent verification can refute the resulting
+// masked shift instead of silently dropping that denominator cell.
+const RULES = Object.freeze(DEFAULT_RULES.map(rule => Object.freeze(
+  rule.name === 'strength-mul-power-two'
+    ? {...rule,
+      // The ordinary rule first normalizes a constant through its declared BV
+      // width; at BV1 that turns the historical literal `2` into zero and
+      // loses the legacy display step we need to verify/refute. Candidate
+      // observation keeps the raw literal for this one schedule edge.
+      match:(n) => {
+        if (n?.kind !== 'binary' || n.op !== 'mul' || n.right?.kind !== 'const'
+            || typeof n.right.value !== 'bigint' || n.right.value <= 0n
+            || (n.right.value & (n.right.value - 1n)) !== 0n) return null;
+        return {sh:n.right.value.toString(2).length - 1};
+      },
+      precondition:(n,m) => isPure(n.left) && Number.isInteger(Number(n.bits)) && Number(m.sh) <= Number(n.bits)}
+    : {...rule}
+)));
 if (new Set(RULES.map(rule => rule.name)).size !== RULES.length) throw new TypeError('duplicate-representation-rule');
 export const REPRESENTATION_RULES = Object.freeze(RULES.map(rule => Object.freeze({name:rule.name,phase:rule.phase})));
 // Reuse the ordinary recognizer through the same bounded engine. Its local
@@ -44,13 +64,27 @@ const IDIOM_RULES = Object.freeze([Object.freeze({
     if (!Number.isInteger(source.bits) || source.bits < 1 || source.bits > 64
         || !Number.isInteger(proposed.bits) || proposed.bits < 1 || proposed.bits > 64
         || offset.kind !== 'const' || width.kind !== 'const' || typeof offset.value !== 'bigint'
-        || typeof width.value !== 'bigint' || width.value !== BigInt(proposed.bits)
+        || typeof width.value !== 'bigint' || width.value < 1n
         || offset.value < 0n || offset.value + width.value > BigInt(source.bits)) return null;
     // Restore this expression's width before any enclosing comparison or cast
-    // observes it. Resizing only the final root changes intermediate domains.
-    return {proposed:proposed.bits === node.bits ? proposed : expr.unary('zext',proposed,node.bits,false)};
+    // observes it. The recognizer deliberately keeps the original result
+    // width for the #8921 producer contract, so use the encoded field width to
+    // decide whether a display-side zext is required. Resizing only the final
+    // root would change intermediate domains (and would make nested extracts
+    // look collapsible when they are not).
+    // Keep the producer recognizer's public result-width contract untouched,
+    // but use the actual field width for this disposable proposal. That gives
+    // the restoring cast a genuinely narrower source, so the ordinary
+    // redundant-zext rule cannot erase the boundary before an enclosing
+    // consumer is compiled.
+    const field = expr.intrinsic('bit_extract',proposed.args,Number(width.value),proposed.signed,proposed.source);
+    return {proposed:width.value < BigInt(node.bits) ? expr.unary('zext',field,node.bits,false) : field};
   },
   rewrite:(_node,match) => match.proposed,
+  // The intrinsic carries an explicit width operand, so its node count is
+  // larger than the three-node shift/mask spelling. This is still only a
+  // display proposal and must pass the independent whole-target proof below.
+  allowExpansion:true,
   proof:Object.freeze({kind:'candidate-only-idiom-observation',
     detail:'existing shift/low-mask recognizer; independent whole-target proof required'}),
 })]);
@@ -182,9 +216,13 @@ export function compileRepresentationProposal(root, inputs, guard) {
       const args = queryArray(n.args,guard,3);
       if (args.length !== 3) throw new QueryFailure('representation-intrinsic-arity');
       const offset = queryRecord(args[1],guard), width = queryRecord(args[2],guard);
+      const source = child(args[0]);
       if (offset.kind !== 'const' || width.kind !== 'const' || typeof offset.value !== 'bigint'
-          || width.value !== BigInt(bits) || offset.value < 0n || offset.value > 63n) throw new QueryFailure('representation-extract-bounds');
-      value = E.createExtract(child(args[0]),Number(offset.value) + bits - 1,Number(offset.value));
+          || typeof width.value !== 'bigint' || width.value < 1n || offset.value < 0n
+          || source.sort.kind !== 'bv' || offset.value + width.value > BigInt(source.sort.width)) {
+        throw new QueryFailure('representation-extract-bounds');
+      }
+      value = E.createExtract(source,Number(offset.value + width.value - 1n),Number(offset.value));
     }
     if (!value) throw new QueryFailure('unsupported-representation-proposal');
     guard?.take('allocationUnits'); active.delete(node); done.set(node,value); return value;
