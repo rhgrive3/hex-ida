@@ -1,9 +1,12 @@
 import { parseMachOSource as parseMachOSourceRaw } from './source-loaders.js';
+import { resolveMachOMetadataLimits } from './macho-budget.js';
 
 /*
- * Selected FAT Mach-O slices are immutable loader artifacts.  Keep the cache at
+ * Selected FAT Mach-O slices are shared producer artifacts. Keep the cache at
  * the public source-loader boundary so analysis and pointer-resolution share the
- * same parse instead of each reparsing identical bytes.
+ * same parse instead of each reparsing identical bytes. The producer image
+ * is never returned directly: each waiter receives a detached mutable view so
+ * consumer annotations cannot mutate the cache or another consumer's result.
  *
  * The producer owns its AbortController.  Consumer cancellation only detaches
  * that waiter; the producer is aborted when the last waiter leaves.  This avoids
@@ -20,9 +23,14 @@ function abortError(signal) {
 }
 
 function normalizeScalar(value) {
-  if (typeof value === 'bigint') return value.toString();
   if (value == null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value ?? null;
-  return String(value);
+  // #5183: bigint/structured option values are not parser-accepted primitives
+  // (parseMachOSource demands a number or non-empty string sliceIndex; the
+  // range budgets demand safe integers). They must key distinctly — any
+  // String() form ('0', '65536') would alias a cached parse of a differently
+  // typed but colliding request and bypass the parser's typed validation.
+  // Tagged keys guarantee a cache miss, so the raw parser rejects them.
+  return { nonPrimitive: typeof value === 'bigint' ? value.toString() : String(value) };
 }
 
 function cacheableStringsOptions(value) {
@@ -52,13 +60,79 @@ function producerRangeOptions(value) {
   return rest;
 }
 
+function cloneCachedArtifact(value) {
+  const shared = new Set();
+  if (value?.source && typeof value.source === 'object') shared.add(value.source);
+  return cloneValue(value, new Map(), shared);
+}
+
+function cloneValue(value, seen, shared) {
+  if (value == null || typeof value !== 'object' || shared.has(value)) return value;
+  if (seen.has(value)) return seen.get(value);
+
+  if (value instanceof ArrayBuffer) {
+    const copy = value.slice(0);
+    seen.set(value, copy);
+    return copy;
+  }
+  if (ArrayBuffer.isView(value)) {
+    const copy = value instanceof DataView
+      ? new DataView(cloneValue(value.buffer, seen, shared), value.byteOffset, value.byteLength)
+      : value.slice();
+    seen.set(value, copy);
+    return copy;
+  }
+  if (value instanceof Date) {
+    const copy = new Date(value.getTime());
+    seen.set(value, copy);
+    return copy;
+  }
+  if (value instanceof RegExp) {
+    const copy = new RegExp(value.source, value.flags);
+    copy.lastIndex = value.lastIndex;
+    seen.set(value, copy);
+    return copy;
+  }
+  if (value instanceof Map) {
+    const copy = new Map();
+    seen.set(value, copy);
+    for (const [key, item] of value) {
+      copy.set(cloneValue(key, seen, shared), cloneValue(item, seen, shared));
+    }
+    return copy;
+  }
+  if (value instanceof Set) {
+    const copy = new Set();
+    seen.set(value, copy);
+    for (const item of value) copy.add(cloneValue(item, seen, shared));
+    return copy;
+  }
+
+  const copy = Array.isArray(value) ? [] : Object.create(Object.getPrototypeOf(value));
+  seen.set(value, copy);
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor) continue;
+    if ('value' in descriptor) descriptor.value = cloneValue(descriptor.value, seen, shared);
+    try { Object.defineProperty(copy, key, descriptor); } catch { /* preserve best-effort data copies */ }
+  }
+  return copy;
+}
+
 function cacheKey(options = {}) {
   const ranges = options.ranges || {};
   const source = options.source || {};
   const strings = cacheableStringsOptions(options.strings);
   return JSON.stringify({
     sliceIndex: normalizeScalar(options.sliceIndex),
+    // The FAT page-alignment policy is part of the result's semantic authority:
+    // a relaxed (`strictPageAlignment === false`) parse runs `validateFatSlice`
+    // under a weaker contract than the strict default (#6316). Cache identity
+    // must therefore discriminate it, or a relaxed-populated slice would be
+    // served to a strict caller (or the strict default) without re-validation.
+    strictPageAlignment: options.strictPageAlignment !== false,
     strings,
+    metadataLimits: resolveMachOMetadataLimits(options.metadataLimits || {}),
     source: {
       maxReadLength: normalizeScalar(source.maxReadLength),
     },
@@ -112,7 +186,16 @@ function waitForEntry(entry, signal, onProgress = null) {
       reject(abortError(signal));
     };
     signal?.addEventListener('abort', onAbort, { once:true });
-    entry.promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
+    /* Issue #5263: the initial aborted check happened before registration, so
+       an abort landing in that window never dispatches (AbortSignals do not
+       replay past events). Re-check after the listener is in place — the
+       done flag keeps a real event delivery and this re-check mutually
+       idempotent. */
+    if (signal?.aborted) { onAbort(); return; }
+    entry.promise.then((value) => {
+      try { finish(resolve, cloneCachedArtifact(value)); }
+      catch (error) { finish(reject, error); }
+    }, (error) => finish(reject, error));
   });
 }
 
@@ -122,8 +205,14 @@ export function parseMachOSource(input, options = {}, prefix = null, rangeOption
      provide stable source identity. */
   const effectiveRangeOptions = rangeOptions ?? options.ranges ?? {};
   const source = input && (typeof input === 'object' || typeof input === 'function') ? input : null;
+  // Only immutable ByteSources have stable identity worth caching: a mutable
+  // Uint8Array/ArrayBuffer input (MemoryByteSource keeps the caller's buffer
+  // by reference) can change between calls while the cached image still
+  // reflects the old bytes — the cache would launder that mismatch into a
+  // "confirmed" parse (#5536).
+  const cacheable = !!source && !(input instanceof Uint8Array || input instanceof ArrayBuffer || ArrayBuffer.isView(input) || (typeof Blob !== 'undefined' && input instanceof Blob));
   const selected = options.sliceIndex != null;
-  if (!source || !selected || prefix != null) return parseMachOSourceRaw(input, options, prefix, effectiveRangeOptions);
+  if (!source || !cacheable || !selected || prefix != null) return parseMachOSourceRaw(input, options, prefix, effectiveRangeOptions);
 
   const signal = options.signal ?? null;
   // An already-aborted caller must not mint a cache entry: the producer would

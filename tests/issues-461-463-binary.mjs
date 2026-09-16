@@ -88,7 +88,7 @@ function rejected(image, fragment) {
   rejected(parsePE(peFixture({ executable: false })), 'section is not executable');
   rejected(parsePE(peFixture({ entryRva: 0x100 })), 'not mapped by a section');
   rejected(parsePE(peFixture({ entryRva: 0x1800 })), 'not mapped by a section');
-  rejected(parsePE(peFixture({ entryRva: 0x1280, virtualSize: 0x300, rawSize: 0x40 })), 'no file-backed instruction byte');
+  rejected(parsePE(peFixture({ entryRva: 0x1280, virtualSize: 0x300, rawSize: 0x40 })), 'instruction span is not fully file-backed');
   rejected(parsePE(peFixture({ entryRva: 0x4000 })), 'outside SizeOfImage');
   rejected(parsePE(peFixture({ entryRva: 0x1002, machine: 0xaa64 })), 'not 4-byte aligned');
 }
@@ -111,6 +111,7 @@ function aarch64GnuPropertyFixture({ namesz = 4, owner = [0x47, 0x4e, 0x55, 0x00
   dv.setUint32(ph, 0x6474e553, true);
   dv.setBigUint64(ph + 8, BigInt(noteOffset), true);
   dv.setBigUint64(ph + 32, BigInt(noteEnd - noteOffset), true);
+  dv.setBigUint64(ph + 48, 8n, true);
   dv.setUint32(noteOffset, namesz, true);
   dv.setUint32(noteOffset + 4, descSize, true);
   dv.setUint32(noteOffset + 8, 5, true);

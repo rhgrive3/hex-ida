@@ -54,6 +54,12 @@ export function createELFMetadataBudget(image, options = {}) {
     limits, used, signal,
     get stopped() { return stopped; },
     get remainingStringBytes() { return Math.max(0, limits.stringBytes - used.stringBytes); },
+    checkpoint() {
+      if (stopped) return false;
+      if (signal?.aborted) return stop('aborted');
+      if (Date.now() - started > limits.wallClockMs) return stop('wall-clock');
+      return true;
+    },
     take(cost = {}, reason = 'metadata') {
       if (stopped) return false;
       if (signal?.aborted) return stop('aborted');

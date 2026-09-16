@@ -18,9 +18,16 @@ function markPEPartial(image, reason, warning = null) {
   if (warning && !image.warnings.includes(warning)) image.warnings.push(warning);
 }
 
+// Budget limits and costs are typed evidence: only real safe-integer numbers
+// participate. JavaScript coercion would otherwise let structured values
+// ('16', ['1'], true) silently shrink analysis coverage or turn the used
+// counters into strings (#5188) — fail closed to the fallback/typed zero.
 function metadataLimit(value, fallback) {
-  const n = Number(value);
-  return Number.isSafeInteger(n) && n > 0 ? n : fallback;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function metadataCost(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function resolveMetadataLimits(overrides = {}) {
@@ -30,6 +37,8 @@ function resolveMetadataLimits(overrides = {}) {
   }
   return out;
 }
+
+const PE_BUDGET_KEYS = ['inputBytes','records','objects','stringBytes','operations','estimatedHeapBytes'];
 
 export function createPEMetadataBudget(image, options = {}) {
   image.metadata ||= {};
@@ -51,16 +60,26 @@ export function createPEMetadataBudget(image, options = {}) {
     take(cost = {}, reason = 'metadata') {
       if (stopped) return false;
       if (signal?.aborted) return fail('aborted');
-      const nextOps = used.operations + (cost.operations || 0);
+      // A malformed cost is a caller contract violation, never silently zero:
+      // reject the take and stop the budget so typed accounting cannot drift.
+      const typedCost = {};
+      for (const key of PE_BUDGET_KEYS) {
+        const value = cost[key];
+        if (value === undefined) continue;
+        const typed = metadataCost(value);
+        if (typed === null) return fail(`${reason}:${key}`);
+        typedCost[key] = typed;
+      }
+      const nextOps = used.operations + (typedCost.operations ?? 0);
       if (nextOps >= nextTimeCheck) {
         nextTimeCheck = nextOps + 1024;
         if (Date.now() - started > limits.wallClockMs) return fail('wall-clock');
       }
-      for (const key of ['inputBytes','records','objects','stringBytes','operations','estimatedHeapBytes']) {
-        const next = used[key] + (cost[key] || 0);
+      for (const key of PE_BUDGET_KEYS) {
+        const next = used[key] + (typedCost[key] ?? 0);
         if (!Number.isFinite(next) || next < 0 || next > limits[key]) return fail(`${reason}:${key}`);
       }
-      for (const key of Object.keys(used)) used[key] += cost[key] || 0;
+      for (const key of PE_BUDGET_KEYS) used[key] += typedCost[key] ?? 0;
       return true;
     },
     partial(reason, warning = null) { markPEPartial(image, reason, warning); return false; },
@@ -70,10 +89,17 @@ export function createPEMetadataBudget(image, options = {}) {
 
 function ensureBudget(image, budget) { return budget || createPEMetadataBudget(image); }
 
+export const PE_SECTION_MAPPING_SOURCE = 'PE-section';
+export const PE_LOW_ALIGNMENT_RAW_IDENTITY_SOURCE = 'PE-section-low-alignment-raw-offset';
+
+export function peExactMappingOwner(owner) {
+  return !!owner && owner.source !== PE_LOW_ALIGNMENT_RAW_IDENTITY_SOURCE;
+}
+
 export function mappedFileRangeForRva(image, rva) {
   if (!Number.isInteger(rva) || rva <= 0) return null;
   const address = image.imageBase + BigInt(rva);
-  const owners = [...(image.sections || []), ...(image.segments || [])];
+  const owners = [...(image.sections || []), ...(image.segments || [])].filter(peExactMappingOwner);
   for (const owner of owners) {
     if (!owner || owner.address == null || owner.fileOffset == null || owner.fileSize == null) continue;
     const fileSize = BigInt(owner.fileSize);
@@ -93,6 +119,27 @@ export function mappedFileSpanForRva(image, rva, size) {
   const range = mappedFileRangeForRva(image, rva);
   if (!range || size > range.end - range.start) return null;
   return { ...range, spanEnd: range.start + size };
+}
+
+function mappedMemorySpanForRva(image, rva, size, { writable = false } = {}) {
+  if (!Number.isInteger(rva) || rva <= 0 || !Number.isSafeInteger(size) || size <= 0) return null;
+  const address = image.imageBase + BigInt(rva), spanEnd = address + BigInt(size);
+  const owners = [...(image.sections || []), ...(image.segments || [])].filter(peExactMappingOwner);
+  let cursor = address;
+  while (cursor < spanEnd) {
+    let coveredTo = cursor;
+    for (const owner of owners) {
+      if (!owner || owner.address == null || owner.size == null) continue;
+      if (writable && !owner.perms?.write) continue;
+      const ownerAddress = BigInt(owner.address), ownerSize = BigInt(owner.size);
+      if (ownerSize <= 0n) continue;
+      const ownerEnd = ownerAddress + ownerSize;
+      if (ownerAddress <= cursor && cursor < ownerEnd && ownerEnd > coveredTo) coveredTo = ownerEnd;
+    }
+    if (coveredTo === cursor) return null;
+    cursor = coveredTo;
+  }
+  return { address, spanEnd };
 }
 
 function mappedFileRangeForAddress(image, address) {
@@ -141,6 +188,15 @@ function markImportPartial(image, message) {
   markPEPartial(image, 'imports-partial', message);
 }
 
+const PE64_IMPORT_ORDINAL_FLAG = 0x8000000000000000n;
+const PE64_IMPORT_NAME_RESERVED_MASK = 0x7fffffff80000000n;
+const PE64_IMPORT_ORDINAL_RESERVED_MASK = 0x7fffffffffff0000n;
+
+function pe64ImportThunkHasReservedBits(raw, { nameIsRva = true } = {}) {
+  if ((raw & PE64_IMPORT_ORDINAL_FLAG) !== 0n) return (raw & PE64_IMPORT_ORDINAL_RESERVED_MASK) !== 0n;
+  return nameIsRva && (raw & PE64_IMPORT_NAME_RESERVED_MASK) !== 0n;
+}
+
 export function parseImports(r, dir, image, sharedBudget = null) {
   if (!dir || !dir.rva || !dir.size) return;
   const budget = ensureBudget(image, sharedBudget);
@@ -168,12 +224,12 @@ export function parseImports(r, dir, image, sharedBudget = null) {
       if (!budget.take({inputBytes:ptrSize*2,records:1,objects:1,operations:2,estimatedHeapBytes:192},'import-thunk')) break;
       const raw=image.bits===64?r.u64(thunkOff):BigInt(r.u32(thunkOff));
       if(raw===0n){terminated=true;break;}
-      const ordinalMask=image.bits===64?0x8000000000000000n:0x80000000n;
+      const ordinalMask=image.bits===64?PE64_IMPORT_ORDINAL_FLAG:0x80000000n;
       let name=null,ordinal=null,hint=null;
+      if(image.bits===64&&pe64ImportThunkHasReservedBits(raw)){markImportPartial(image,`Ignored PE32+ import thunk with nonzero reserved bits for ${library||'<unknown>'}`);continue;}
       if(raw&ordinalMask) ordinal=Number(raw&0xffffn);
       else {
-        const ibnRaw=raw&(image.bits===64?0x7fffffffffffffffn:0x7fffffffn);
-        if(ibnRaw>0xffffffffn){markImportPartial(image,`Ignored PE import thunk with out-of-range name RVA for ${library||'<unknown>'}`);continue;}
+        const ibnRaw=raw&(image.bits===64?0x7fffffffn:0x7fffffffn);
         const ibnRva=Number(ibnRaw), ibnRange=mappedFileRangeForRva(image,ibnRva);
         if(ibnRange && ibnRange.start+2<ibnRange.end){hint=r.u16(ibnRange.start);name=mappedCStringAtOffset(r,ibnRange.start+2,ibnRange.end,budget,'PE import name');}
         if(!name){markImportPartial(image,`Ignored malformed PE import thunk for ${library||'<unknown>'}`);continue;}
@@ -268,6 +324,93 @@ function parseX64UnwindDescriptor(r, image, runtimeFunction, budget, seen = new 
   return { primary:{ begin, finish, unwind }, fragments:[] };
 }
 
+function arm64UnwindOpcode(r, start, size, index) {
+  const first = r.u8(start + index);
+  let length = 1;
+  if (first >= 0xc0 && first <= 0xdf) length = 2;
+  else if (first === 0xe0) length = 4;
+  else if (first === 0xe2) length = 2;
+  else if (first === 0xe7) length = 3;
+  else if ((first >= 0xed && first <= 0xfb) || first >= 0xfd) return { reserved:true, length:1 };
+  if (index + length > size) return { truncated:true, length };
+  if (first === 0xe7) {
+    const second = r.u8(start + index + 1), third = r.u8(start + index + 2);
+    // save_any encodings with bit 7 set are reserved. For the P-register form
+    // (type=11, p=1), registers p0-p3 are reserved as well.
+    if ((second & 0x80) !== 0 || ((third & 0xc0) === 0xc0 && (second & 0x10) !== 0 && (second & 0x0f) < 4)) {
+      return { reserved:true, length };
+    }
+  }
+  return { length, end:first === 0xe4 };
+}
+
+function validateArm64XdataUnwindCodes(r, image, kind, xdataRva, recordSpan, headerBytes, packedEpilog, epilogCount, codeWords, budget) {
+  const codeBytes = codeWords * 4;
+  if (!codeBytes) {
+    return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-unwind-index', `Ignored ARM64 .xdata record without an unwind-code byte pool at RVA 0x${xdataRva.toString(16)}`);
+  }
+  const scopeBytes = packedEpilog ? 0 : epilogCount * 4;
+  const codeStart = recordSpan.start + headerBytes + scopeBytes;
+  if (!budget.take({ estimatedHeapBytes:codeBytes }, 'arm64-xdata-unwind-index-set')) return null;
+  const requiredStarts = new Uint8Array(codeBytes);
+  requiredStarts[0] = 1;
+  let unresolvedStarts = 1, maxStart = 0;
+  const requireStart = (index) => {
+    if (!Number.isSafeInteger(index) || index < 0 || index >= codeBytes) return false;
+    if (!requiredStarts[index]) { requiredStarts[index] = 1; unresolvedStarts++; }
+    if (index > maxStart) maxStart = index;
+    return true;
+  };
+
+  if (packedEpilog) {
+    if (!requireStart(epilogCount)) {
+      return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-unwind-index', `Ignored ARM64 .xdata packed epilog index ${epilogCount} outside its unwind-code pool at RVA 0x${xdataRva.toString(16)}`);
+    }
+  } else if (epilogCount > 0) {
+    if (!budget.take({ inputBytes:scopeBytes }, 'arm64-xdata-epilog-scopes')) return null;
+    const scopeStart = recordSpan.start + headerBytes;
+    for (let i = 0; i < epilogCount; i++) {
+      if (!budget.take({ operations:1 }, 'arm64-xdata-epilog-index')) return null;
+      const scope = r.u32(scopeStart + i * 4), index = scope >>> 22;
+      if (((scope >>> 18) & 0xf) !== 0) {
+        const scopeRva = xdataRva + headerBytes + i * 4;
+        return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-epilog-reserved', `Ignored ARM64 .xdata epilog scope with nonzero reserved bits at RVA 0x${scopeRva.toString(16)}`);
+      }
+      if (!requireStart(index)) {
+        return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-unwind-index', `Ignored ARM64 .xdata epilog index ${index} outside its unwind-code pool at RVA 0x${xdataRva.toString(16)}`);
+      }
+    }
+  }
+
+  // The whole declared code pool is metadata input, while operation cost is
+  // charged only for decoded reachable opcodes. Decoding stops at the first
+  // real `end` at/after the greatest referenced start, so trailing word
+  // padding is never interpreted as unwind instructions.
+  if (!budget.take({ inputBytes:codeBytes }, 'arm64-xdata-unwind-codes')) return null;
+  let cursor = 0, finalEnd = -1;
+  while (cursor < codeBytes) {
+    if (!budget.take({ operations:1 }, 'arm64-xdata-unwind-opcode')) return null;
+    if (requiredStarts[cursor]) { requiredStarts[cursor] = 0; unresolvedStarts--; }
+    const opcode = arm64UnwindOpcode(r, codeStart, codeBytes, cursor);
+    if (opcode.reserved) {
+      return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-unwind-reserved', `Ignored ARM64 .xdata record with a reserved unwind opcode at byte index ${cursor} (RVA 0x${(xdataRva + headerBytes + scopeBytes + cursor).toString(16)})`);
+    }
+    if (opcode.truncated) {
+      return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-unwind-truncated', `Ignored ARM64 .xdata record with a truncated unwind opcode at byte index ${cursor} (RVA 0x${(xdataRva + headerBytes + scopeBytes + cursor).toString(16)})`);
+    }
+    if (opcode.end) finalEnd = cursor;
+    cursor += opcode.length;
+    if (finalEnd >= maxStart) break;
+  }
+  if (unresolvedStarts !== 0) {
+    return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-unwind-index', `Ignored ARM64 .xdata epilog index that does not name an unwind opcode boundary at RVA 0x${xdataRva.toString(16)}`);
+  }
+  if (finalEnd < maxStart) {
+    return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-unwind-unterminated', `Ignored ARM64 .xdata unwind sequence without a reachable end opcode at RVA 0x${xdataRva.toString(16)}`);
+  }
+  return true;
+}
+
 function parseArm64XdataDescriptor(r, image, begin, xdataRva, budget) {
   const kind = 'arm64-pdata';
   const first = mappedFileSpanForRva(image, xdataRva, 4);
@@ -284,10 +427,35 @@ function parseArm64XdataDescriptor(r, image, begin, xdataRva, budget) {
     if (!budget.take({ inputBytes:4, operations:1 }, 'arm64-xdata-extension')) return null;
   }
   const recordBytes = headerBytes + (packedEpilog ? 0 : epilogCount * 4) + codeWords * 4 + (hasHandler ? 4 : 0);
-  if (!Number.isSafeInteger(recordBytes) || !mappedFileSpanForRva(image, xdataRva, recordBytes)) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-span', `Ignored ARM64 .xdata record that crosses its file-backed mapping at RVA 0x${xdataRva.toString(16)}`);
+  const recordSpan = Number.isSafeInteger(recordBytes) ? mappedFileSpanForRva(image, xdataRva, recordBytes) : null;
+  if (!recordSpan) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-span', `Ignored ARM64 .xdata record that crosses its file-backed mapping at RVA 0x${xdataRva.toString(16)}`);
+  let handlerRva = null;
+  if (hasHandler) {
+    const handlerOffset = recordSpan.spanEnd - 4;
+    if (handlerOffset < 0 || handlerOffset + 4 > r.length) return invalidExceptionRecord(image, kind, budget, 'arm64-handler-tail', `Ignored truncated ARM64 exception handler RVA at .xdata RVA 0x${xdataRva.toString(16)}`);
+    if (!budget.take({ inputBytes:4, operations:1 }, 'arm64-xdata-handler')) return null;
+    handlerRva = r.u32(handlerOffset);
+    if (!handlerRva || !mappedFileRangeForRva(image, handlerRva) || !executableRvaRange(image, handlerRva, 1)) {
+      return invalidExceptionRecord(image, kind, budget, 'arm64-handler-not-executable', `Ignored ARM64 .xdata whose exception handler RVA 0x${handlerRva.toString(16)} is not an executable file-backed routine`);
+    }
+  }
   const bytes = functionLength * 4;
   if (!executableRvaRange(image, begin, bytes)) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-range', `Ignored ARM64 .xdata range outside executable mapping at RVA 0x${begin.toString(16)}`);
-  return { size:bytes, xdataRva, version, hasHandler, packedEpilog, epilogCount, codeWords };
+  if (!validateArm64XdataUnwindCodes(r, image, kind, xdataRva, recordSpan, headerBytes, packedEpilog, epilogCount, codeWords, budget)) return null;
+  return { size:bytes, xdataRva, version, hasHandler, handlerRva, packedEpilog, epilogCount, codeWords };
+}
+
+function arm64PackedFrameFields(unwindData) {
+  const regF = (unwindData >>> 13) & 0x7;
+  const regI = (unwindData >>> 16) & 0xf;
+  const home = (unwindData >>> 20) & 0x1;
+  const cr = (unwindData >>> 21) & 0x3;
+  const frameSize = (unwindData >>> 23) & 0x1ff;
+  const integerSaveBytes = regI * 8 + (cr === 1 ? 8 : 0);
+  const fpSaveBytes = regF === 0 ? 0 : (regF + 1) * 8;
+  const mandatoryBytes = integerSaveBytes + fpSaveBytes + (home ? 64 : 0);
+  const saveAreaBytes = Math.ceil(mandatoryBytes / 16) * 16;
+  return { regF, regI, home, cr, frameSize, frameBytes:frameSize * 16, saveAreaBytes };
 }
 
 export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = null) {
@@ -341,11 +509,19 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
       if(begin%4!==0){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-pdata-alignment',`Ignored ARM64 exception entry at unaligned RVA 0x${begin.toString(16)} (AArch64 instructions are 4-byte aligned)`);previousBegin=begin;continue;}
       const flag=unwindData&3; let descriptor=null;
       if(flag===1||flag===2){const functionLength=(unwindData>>>2)&0x7ff;if(!functionLength){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-packed-length',`Ignored zero-length ARM64 packed unwind entry at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
-        // Packed unwind encodes RegI as the count of saved nonvolatile integer
-        // registers x19-x28; only 10 such registers exist, so values 11-15
-        // cannot describe a valid function prologue (#5673).
-        const packedRegI=(unwindData>>>16)&0xf;if(packedRegI>10){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-packed-registers',`Ignored ARM64 packed unwind entry with invalid RegI ${packedRegI} (x19-x28 hold at most 10 registers) at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
-        const bytes=functionLength*4;if((previousEnd!=null&&begin<previousEnd)||!executableRvaRange(image,begin,bytes)){image.warnings.push(`Ignored overlapping/unmapped ARM64 exception range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;previousBegin=begin;continue;}descriptor={size:bytes,fragment:flag===2,encoding:flag===2?'packed-fragment':'packed'};}
+        // Decode the packed frame as one structural unit: individual fields can
+        // be representable while their combination is impossible.  Windows'
+        // canonical packed-unwind reconstruction requires FrameSize to cover
+        // the rounded integer/FP save area plus the optional x0-x7 home area.
+        const packed=arm64PackedFrameFields(unwindData);
+        if(packed.regI>10){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-packed-registers',`Ignored ARM64 packed unwind entry with invalid RegI ${packed.regI} (x19-x28 hold at most 10 registers) at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
+        if(packed.frameBytes<packed.saveAreaBytes){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-packed-frame-size',`Ignored ARM64 packed unwind entry whose FrameSize ${packed.frameBytes} byte(s) cannot contain the mandatory ${packed.saveAreaBytes}-byte save/home area at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
+        const bytes=functionLength*4;if((previousEnd!=null&&begin<previousEnd)||!executableRvaRange(image,begin,bytes)){image.warnings.push(`Ignored overlapping/unmapped ARM64 exception range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;previousBegin=begin;continue;}
+        // #8787: a packed .pdata entry publishes a concrete `bytes`-wide extent, so
+        // the whole extent must be file-backed. executableRvaRange() only proves the
+        // virtual range is executable; validate the real backing before claiming the
+        // extent (an extent that crosses into zero-fill is downgraded, not seeded).
+        if(!mappedFileSpanForRva(image,begin,bytes)){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-pdata-backing',`Ignored ARM64 exception entry at RVA 0x${begin.toString(16)} whose ${bytes}-byte extent is not fully file-backed`);previousBegin=begin;continue;}descriptor={size:bytes,fragment:flag===2,encoding:flag===2?'packed-fragment':'packed'};}
       else if(flag===0){descriptor=parseArm64XdataDescriptor(r,image,begin,unwindData>>>0,budget);}
       else{invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-reserved-flag',`Ignored reserved ARM64 packed unwind flag at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
       if(!descriptor){previousBegin=begin;continue;}
@@ -361,8 +537,48 @@ function allowedBaseRelocationTypes(machine) {
   if (machine === 0x014c) return new Set([1, 2, 3, 4]);
   if (machine === 0x8664) return new Set([1, 2, 3, 4, 10]);
   if (machine === 0x01c0 || machine === 0x01c4) return new Set([3, 5, 7]);
-  if (machine === 0xaa64 || machine === 0xa641) return new Set([4, 5, 6, 7, 8, 10]);
+  if (machine === 0xaa64 || machine === 0xa641) return new Set([4, 10]);
   return new Set([1, 2, 3, 4, 5, 6, 7, 8, 10]);
+}
+function mappedBaseRelocationTarget(image, rva) {
+  if (!Number.isSafeInteger(rva) || rva < 0 || rva > 0xffffffff) return null;
+  const sizeOfImage = image.metadata?.sizeOfImage;
+  if (Number.isSafeInteger(sizeOfImage) && sizeOfImage >= 0 && rva >= sizeOfImage) return null;
+  const address = image.imageBase + BigInt(rva);
+  const owners = [...(image.sections || []), ...(image.segments || [])].filter(peExactMappingOwner);
+  for (const owner of owners) {
+    if (!owner || typeof owner.address !== 'bigint' || typeof owner.size !== 'bigint' || owner.size <= 0n) continue;
+    if (address >= owner.address && address < owner.address + owner.size) return address;
+  }
+  return null;
+}
+function baseRelocationTargetWidth(machine, type) {
+  if (type === 10) return 8;
+  if (type === 3) return 4;
+  if ((machine === 0x01c0 || machine === 0x01c4) && (type === 5 || type === 7)) return 8;
+  if ((machine === 0xaa64 || machine === 0xa641) && type === 4) return 4;
+  if ((machine === 0x5032 || machine === 0x5064) && (type === 5 || type === 7 || type === 8)) return 4;
+  if (type === 1 || type === 2 || type === 4) return 2;
+  return 1;
+}
+function mappedBaseRelocationTargetSpan(image, rva, width) {
+  if (!Number.isSafeInteger(width) || width <= 0) return false;
+  const sizeOfImage = image.metadata?.sizeOfImage;
+  if (Number.isSafeInteger(sizeOfImage) && sizeOfImage >= 0 && (rva > sizeOfImage - width)) return false;
+  const start = image.imageBase + BigInt(rva), finish = start + BigInt(width);
+  const owners = [...(image.sections || []), ...(image.segments || [])].filter(peExactMappingOwner);
+  let cursor = start;
+  while (cursor < finish) {
+    let coveredTo = cursor;
+    for (const owner of owners) {
+      if (!owner || typeof owner.address !== 'bigint' || typeof owner.size !== 'bigint' || owner.size <= 0n) continue;
+      const ownerEnd = owner.address + owner.size;
+      if (owner.address <= cursor && cursor < ownerEnd && ownerEnd > coveredTo) coveredTo = ownerEnd;
+    }
+    if (coveredTo === cursor) return false;
+    cursor = coveredTo;
+  }
+  return true;
 }
 export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget = null) {
   if(!dir||!dir.rva||dir.size===0)return; const budget=ensureBudget(image,sharedBudget);
@@ -389,7 +605,11 @@ export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget
         addend=BigInt(r.i16(off+8+(i+1)*2));
         i++;
       }
-      const address=image.imageBase+BigInt(pageRva+within);image.relocations.push({address,fileOffset:image.addressToOffset(address),type,symbol:null,addend,section:null,source:'PE-base-reloc'});
+      const targetRva=pageRva+within,address=mappedBaseRelocationTarget(image,targetRva);
+      if(address===null){budget.partial('relocations:unmapped-target',`Ignored PE base relocation target outside loaded image at RVA 0x${targetRva.toString(16)}`);continue;}
+      const targetWidth=baseRelocationTargetWidth(machine,type);
+      if(!mappedBaseRelocationTargetSpan(image,targetRva,targetWidth)){budget.partial('relocations:target-span',`Ignored PE base relocation whose ${targetWidth}-byte target field crosses the loaded image at RVA 0x${targetRva.toString(16)}`);continue;}
+      image.relocations.push({address,fileOffset:image.addressToOffset(address),type,symbol:null,addend,section:null,source:'PE-base-reloc'});
     }
     off+=blockSize;
   }
@@ -406,8 +626,8 @@ export function parseCoffSymbols(r, ptr, count, image, sharedBudget = null) {
     if(!budget.take({inputBytes:18,records:1,objects:2,operations:2,estimatedHeapBytes:256},'coff-symbol-record'))break;
     const p=ptr+i*18;let name;
     if(r.u32(p)===0){const noff=r.u32(p+4);name=noff>=4&&noff<strSize&&strBase+noff<strEnd?mappedCStringAtOffset(r,strBase+noff,strEnd,budget,'COFF symbol'):'';}else{name=r.ascii(p,8);if(name&&!budget.take({stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'coff-inline-name'))name='';}
-    const value=r.u32(p+8),secNo=r.i16(p+12),type=r.u16(p+14),storage=r.u8(p+16),aux=r.u8(p+17);const sec=image.sections.find((s)=>s.index===secNo);const address=sec?sec.address+BigInt(value):0n;
-    if(name){const derivedFunction=!!(type&0x20),valueInSection=!!(sec&&sec.size!=null&&BigInt(value)<BigInt(sec.size)),executable=!!(valueInSection&&sec.perms?.execute),executableExternal=!!(executable&&storage===2);image.symbols.push({name,address,size:null,kind:derivedFunction?'function':'symbol',binding:storage===2?'global':'local',defined:secNo>0,sectionIndex:secNo,source:'COFF'});if(derivedFunction&&executable&&address)image.functions.push(functionSeed(address,{name,source:'symbol',confidence:0.98,exactFunctionStart:true,functionStartEvidence:'COFF derived function type'}));else if(executableExternal&&address)image.functions.push(functionSeed(address,{name,source:'symbol-heuristic',confidence:0.55}));}
+    const value=r.u32(p+8),secNo=r.i16(p+12),type=r.u16(p+14),storage=r.u8(p+16),aux=r.u8(p+17);const sec=image.sections.find((s)=>s.index===secNo&&peExactMappingOwner(s));const address=sec?sec.address+BigInt(value):0n;
+    if(name){const derivedFunction=((type>>>4)&0x3)===2,valueInSection=!!(sec&&sec.size!=null&&BigInt(value)<BigInt(sec.size)),executable=!!(valueInSection&&sec.perms?.execute),executableExternal=!!(executable&&storage===2);image.symbols.push({name,address,size:null,kind:derivedFunction?'function':'symbol',binding:storage===2?'global':'local',defined:secNo>0,sectionIndex:secNo,source:'COFF'});if(derivedFunction&&executable&&address)image.functions.push(functionSeed(address,{name,source:'symbol',confidence:0.98,exactFunctionStart:true,functionStartEvidence:'COFF derived function type'}));else if(executableExternal&&address)image.functions.push(functionSeed(address,{name,source:'symbol-heuristic',confidence:0.55}));}
     if(aux>count-i-1){budget.partial('coff:aux-overrun','PE COFF auxiliary symbol records exceed declared symbol count');break;}i+=1+aux;
   }
 }
@@ -450,15 +670,20 @@ export function parseDelayImports(r, dir, image, sharedBudget = null) {
   let off=dirRange.start;const end=dirRange.spanEnd,ptrSize=image.bits===64?8:4;
   for(let guard=0;guard<65536&&off+32<=end;guard++,off+=32){
     if(!budget.take({inputBytes:32,records:1,operations:1,estimatedHeapBytes:32},'delay-import-descriptor'))break;
-    const attrs=r.u32(off),nameField=r.u32(off+4),iatField=r.u32(off+12),intField=r.u32(off+16),bound=r.u32(off+20),unload=r.u32(off+24),stamp=r.u32(off+28);if(!(attrs||nameField||iatField||intField||bound||unload||stamp))break;
+    const attrs=r.u32(off),nameField=r.u32(off+4),hmodField=r.u32(off+8),iatField=r.u32(off+12),intField=r.u32(off+16),bound=r.u32(off+20),unload=r.u32(off+24),stamp=r.u32(off+28);if(!(attrs||nameField||hmodField||iatField||intField||bound||unload||stamp))break;
+    if((attrs>>>1)!==0){budget.partial('delay-imports:reserved-attributes','Ignored PE delay-import descriptor with reserved Attributes bits');continue;}
+    const hmodRva=rvaFromDelayField(hmodField,attrs,image);
+    if(!hmodRva||!mappedMemorySpanForRva(image,hmodRva,ptrSize)){budget.partial('delay-imports:module-handle-span','Ignored PE delay-import descriptor with unmapped/truncated module-handle storage');continue;}
+    if(!mappedMemorySpanForRva(image,hmodRva,ptrSize,{writable:true})){budget.partial('delay-imports:module-handle-non-writable','Ignored PE delay-import descriptor with non-writable module-handle storage');continue;}
     const nameRva=rvaFromDelayField(nameField,attrs,image),iatRva=rvaFromDelayField(iatField,attrs,image),intRva=rvaFromDelayField(intField,attrs,image);const library=mappedCStringAtRva(r,image,nameRva,budget,'PE delay import library');
     const iatRange=mappedFileRangeForRva(image,iatRva),thunkRange=mappedFileRangeForRva(image,intRva||iatRva);if(!library||!iatRva||!iatRange||!thunkRange){budget.partial('delay-imports:malformed-descriptor','Ignored malformed PE delay-import descriptor');continue;}image.libraries.push(library);
     let terminated=false;
     for(let index=0;index<100000;index++){
       const thunkOff=thunkRange.start+index*ptrSize,iatOff=iatRange.start+index*ptrSize;if(thunkOff+ptrSize>thunkRange.end||iatOff+ptrSize>iatRange.end||thunkOff+ptrSize>r.length||iatOff+ptrSize>r.length)break;
       if(!budget.take({inputBytes:ptrSize*2,records:1,objects:1,operations:2,estimatedHeapBytes:192},'delay-import-thunk'))break;
-      const raw=image.bits===64?r.u64(thunkOff):BigInt(r.u32(thunkOff));if(raw===0n){terminated=true;break;}const ordinalMask=image.bits===64?0x8000000000000000n:0x80000000n;let name=null,ordinal=null,hint=null;
-      if(raw&ordinalMask)ordinal=Number(raw&0xffffn);else{let ibnRva;if(attrs&1){const masked=raw&(image.bits===64?0x7fffffffffffffffn:0x7fffffffn);if(masked>0xffffffffn)continue;ibnRva=Number(masked);}else{const va=raw&(image.bits===64?0x7fffffffffffffffn:0x7fffffffn);ibnRva=va>=image.imageBase&&va-image.imageBase<=0xffffffffn?Number(va-image.imageBase):0;}const ibnRange=mappedFileRangeForRva(image,ibnRva);if(ibnRange&&ibnRange.start+2<ibnRange.end){hint=r.u16(ibnRange.start);name=mappedCStringAtOffset(r,ibnRange.start+2,ibnRange.end,budget,'PE delay import name');}if(!name){image.warnings.push(`Ignored malformed PE delay-import thunk for ${library||'<unknown>'}`);continue;}}
+      const raw=image.bits===64?r.u64(thunkOff):BigInt(r.u32(thunkOff));if(raw===0n){terminated=true;break;}const ordinalMask=image.bits===64?PE64_IMPORT_ORDINAL_FLAG:0x80000000n;let name=null,ordinal=null,hint=null;
+      if(image.bits===64&&pe64ImportThunkHasReservedBits(raw,{nameIsRva:!!(attrs&1)})){budget.partial('delay-imports:malformed-thunk',`Ignored malformed PE32+ delay-import thunk with nonzero reserved bits for ${library||'<unknown>'}`);continue;}
+      if(raw&ordinalMask)ordinal=Number(raw&0xffffn);else{let ibnRva;if(attrs&1){const masked=raw&(image.bits===64?0x7fffffffn:0x7fffffffn);ibnRva=Number(masked);}else{const va=raw&(image.bits===64?0x7fffffffffffffffn:0x7fffffffn);ibnRva=va>=image.imageBase&&va-image.imageBase<=0xffffffffn?Number(va-image.imageBase):0;}const ibnRange=mappedFileRangeForRva(image,ibnRva);if(ibnRange&&ibnRange.start+2<ibnRange.end){hint=r.u16(ibnRange.start);name=mappedCStringAtOffset(r,ibnRange.start+2,ibnRange.end,budget,'PE delay import name');}if(!name){image.warnings.push(`Ignored malformed PE delay-import thunk for ${library||'<unknown>'}`);continue;}}
       const iatAddress=image.imageBase+BigInt(iatRva+index*ptrSize);image.imports.push({name:name||`#${ordinal}`,library,ordinal,hint,source:'PE-delay-import',sites:[{address:iatAddress,offset:BigInt(iatOff),kind:'delay-iat'}]});
     }
     if(!terminated)budget.partial('delay-imports:unterminated-thunk',`PE delay-import thunk table for ${library} reached its mapped boundary`);
@@ -466,6 +691,9 @@ export function parseDelayImports(r, dir, image, sharedBudget = null) {
 }
 
 function readPointer(r, off, bits) { return bits===64?r.u64(off):BigInt(r.u32(off)); }
+
+const IMAGE_GUARD_FLAG_FID_SUPPRESSED = 0x01;
+const IMAGE_GUARD_FLAG_EXPORT_SUPPRESSED = 0x02;
 
 export function parseTlsDirectory(r, dir, image, sharedBudget = null) {
   const need=image.bits===64?40:24;if(!dir||!dir.rva||dir.size<need)return;const budget=ensureBudget(image,sharedBudget);const hdr=mappedFileSpanForRva(image,dir.rva,need);if(!hdr){budget.partial('tls:directory-span','PE TLS directory header is not fully file-backed');return;}const off=hdr.start,callbacksVa=readPointer(r,off+(image.bits===64?24:12),image.bits),callbacks=[];
@@ -475,20 +703,114 @@ export function parseTlsDirectory(r, dir, image, sharedBudget = null) {
     // alignment contract so crafted tables cannot mint misplaced seeds (#5667).
     const alignment=image.metadata?.machine===0xaa64||image.metadata?.machine===0xa641?4n:image.metadata?.machine===0x01c4?2n:1n;
     if(target%alignment!==0n){budget.partial('tls:callback-target-alignment',`Ignored PE TLS callback target 0x${target.toString(16)} not ${alignment}-byte aligned`);continue;}
+    // #8787: an aligned ARM64 callback whose first byte is file-backed but whose
+    // remaining instruction bytes fall in zero-fill must not mint a seed; require
+    // the whole minimum instruction span to be file-backed.
+    if(!mappedFileSpanForRva(image,Number(BigInt(target)-image.imageBase),Number(alignment))){budget.partial('tls:callback-target-span',`Ignored PE TLS callback target 0x${target.toString(16)} whose ${alignment}-byte instruction span is not fully file-backed`);continue;}
     callbacks.push(target);image.functions.push(functionSeed(target,{source:'tls-callback',confidence:0.999}));}if(!terminated)budget.partial('tls:unterminated-callback-table','PE TLS callback table reached its mapped boundary without a zero terminator');}}
   image.metadata.tls={callbacks,callbacksAddress:callbacksVa||null};
 }
 
 export function parseLoadConfig(r, dir, image, sharedBudget = null) {
-  if(!dir||!dir.rva||dir.size<4)return;const budget=ensureBudget(image,sharedBudget),head=mappedFileSpanForRva(image,dir.rva,4);if(!head){budget.partial('load-config:header-span','PE load-config header is not file-backed');return;}const off=head.start,declared=Math.min(r.u32(off),dir.size);const full=mappedFileSpanForRva(image,dir.rva,declared);if(!full){budget.partial('load-config:directory-span','PE load-config directory crosses a mapped boundary');return;}const is64=image.bits===64,tableOffset=is64?128:80,countOffset=is64?136:84,flagsOffset=is64?144:88,ptrSize=is64?8:4;if(declared<countOffset+ptrSize)return;
-  const tableVa=readPointer(r,off+tableOffset,image.bits),count64=readPointer(r,off+countOffset,image.bits),guardFlags=declared>=flagsOffset+4?r.u32(off+flagsOffset):0,extra=(guardFlags>>>28)&0xf,entrySize=4+extra,functions=[];const tableRange=tableVa?mappedFileRangeForAddress(image,tableVa):null;
-  if(tableVa&&!tableRange)budget.partial('load-config:guardcf-table-span','PE GuardCF table is not file-backed');
-  if(tableRange){const capacity=Math.floor((tableRange.end-tableRange.start)/entrySize);if(count64>BigInt(capacity))budget.partial('load-config:guardcf-count-span','PE GuardCF count exceeds its mapped file-backed table');const count=Number(count64<BigInt(capacity)?count64:BigInt(capacity));for(let i=0;i<count;i++){if(!budget.take({inputBytes:entrySize,records:1,objects:1,operations:1,estimatedHeapBytes:128},'guardcf-function'))break;const p=tableRange.start+i*entrySize,rva=r.u32(p);if(!rva)continue;const address=image.imageBase+BigInt(rva),sec=image.sectionAt(address);if(!sec?.perms?.execute)continue;if(!mappedFileRangeForAddress(image,address))continue;
-    // GuardCF targets are function entries: reject addresses that are not on
-    // the architecture's instruction boundary (seedValidatedEntrypoint's
-    // alignment contract), so crafted tables cannot mint misplaced seeds (#5667).
-    const alignment=image.metadata?.machine===0xaa64||image.metadata?.machine===0xa641?4n:image.metadata?.machine===0x01c4?2n:1n;
-    if(address%alignment!==0n){budget.partial('load-config:guardcf-target-alignment',`Ignored PE GuardCF target 0x${address.toString(16)} not ${alignment}-byte aligned`);continue;}
-    functions.push(address);image.functions.push(functionSeed(address,{source:'guard-cf',confidence:0.995}));}}
-  image.metadata.loadConfig={guardFlags,guardCFFunctionTable:tableVa||null,guardCFFunctionCount:count64,guardCFFunctions:functions};
+  if (!dir || !dir.rva || dir.size < 4) return;
+  const budget = ensureBudget(image, sharedBudget);
+  const head = mappedFileSpanForRva(image, dir.rva, 4);
+  if (!head) {
+    budget.partial('load-config:header-span', 'PE load-config header is not file-backed');
+    return;
+  }
+  const off = head.start;
+  const declared = Math.min(r.u32(off), dir.size);
+  const full = mappedFileSpanForRva(image, dir.rva, declared);
+  if (!full) {
+    budget.partial('load-config:directory-span', 'PE load-config directory crosses a mapped boundary');
+    return;
+  }
+  const is64 = image.bits === 64;
+  const tableOffset = is64 ? 128 : 80;
+  const countOffset = is64 ? 136 : 84;
+  const flagsOffset = is64 ? 144 : 88;
+  const ptrSize = is64 ? 8 : 4;
+  if (declared < countOffset + ptrSize) return;
+
+  const tableVa = readPointer(r, off + tableOffset, image.bits);
+  const count64 = readPointer(r, off + countOffset, image.bits);
+  const guardFlags = declared >= flagsOffset + 4 ? r.u32(off + flagsOffset) : 0;
+  const extra = (guardFlags >>> 28) & 0xf;
+  const entrySize = 4 + extra;
+  const functions = [];
+  const guardCFFunctionMetadata = [];
+  const suppressedGuardCFFunctions = [];
+  const exportSuppressedGuardCFFunctions = [];
+  const tableRange = tableVa ? mappedFileRangeForAddress(image, tableVa) : null;
+
+  if (tableVa && !tableRange) {
+    budget.partial('load-config:guardcf-table-span', 'PE GuardCF table is not file-backed');
+  }
+  if (tableRange) {
+    const capacity = Math.floor((tableRange.end - tableRange.start) / entrySize);
+    if (count64 > BigInt(capacity)) {
+      budget.partial('load-config:guardcf-count-span', 'PE GuardCF count exceeds its mapped file-backed table');
+    }
+    const count = Number(count64 < BigInt(capacity) ? count64 : BigInt(capacity));
+    const entries = [];
+    let previousRva = null;
+    let ordered = true;
+    for (let i = 0; i < count; i++) {
+      if (!budget.take({ inputBytes: entrySize, records: 1, objects: 1, operations: 1, estimatedHeapBytes: 128 }, 'guardcf-function')) break;
+      const p = tableRange.start + i * entrySize;
+      const rva = r.u32(p);
+      const metadataFlags = extra > 0 ? r.u8(p + 4) : 0;
+      if (previousRva !== null && rva < previousRva) {
+        budget.partial('load-config:guardcf-order', 'PE GuardCF function table RVAs are not sorted');
+        ordered = false;
+        break;
+      }
+      previousRva = rva;
+      entries.push([rva, metadataFlags]);
+    }
+    if (ordered) for (const [rva, metadataFlags] of entries) {
+      if (!rva) continue;
+      const address = image.imageBase + BigInt(rva);
+      guardCFFunctionMetadata.push({ rva, address, flags: metadataFlags });
+      const sec = image.sectionAt(address);
+      if (!sec?.perms?.execute) continue;
+      if (!mappedFileRangeForAddress(image, address)) continue;
+      // GuardCF targets are function entries: reject addresses that are not on
+      // the architecture's instruction boundary (seedValidatedEntrypoint's
+      // alignment contract), so crafted tables cannot mint misplaced seeds (#5667).
+      const alignment = image.metadata?.machine === 0xaa64 || image.metadata?.machine === 0xa641
+        ? 4n
+        : image.metadata?.machine === 0x01c4 ? 2n : 1n;
+      if (address % alignment !== 0n) {
+        budget.partial('load-config:guardcf-target-alignment', `Ignored PE GuardCF target 0x${address.toString(16)} not ${alignment}-byte aligned`);
+        continue;
+      }
+      // #8787: require the whole minimum instruction span to be file-backed, not
+      // just the first byte, so an aligned ARM64 GuardCF target straddling the
+      // raw/zero-fill boundary cannot mint a high-confidence seed.
+      if (!mappedFileSpanForRva(image, rva, Number(alignment))) {
+        budget.partial('load-config:guardcf-target-span', `Ignored PE GuardCF target 0x${address.toString(16)} whose ${alignment}-byte instruction span is not fully file-backed`);
+        continue;
+      }
+      if (metadataFlags & IMAGE_GUARD_FLAG_FID_SUPPRESSED) {
+        suppressedGuardCFFunctions.push(address);
+        continue;
+      }
+      if (metadataFlags & IMAGE_GUARD_FLAG_EXPORT_SUPPRESSED) {
+        exportSuppressedGuardCFFunctions.push(address);
+      }
+      functions.push(address);
+      image.functions.push(functionSeed(address, { source: 'guard-cf', confidence: 0.995 }));
+    }
+  }
+  image.metadata.loadConfig = {
+    guardFlags,
+    guardCFFunctionTable: tableVa || null,
+    guardCFFunctionCount: count64,
+    guardCFFunctions: functions,
+    guardCFFunctionMetadata,
+    suppressedGuardCFFunctions,
+    exportSuppressedGuardCFFunctions,
+  };
 }

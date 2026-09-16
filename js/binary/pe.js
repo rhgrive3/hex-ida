@@ -1,6 +1,6 @@
 import { ByteView } from './reader.js';
 import { BinaryImage, functionSeed } from './model.js';
-import { parseImports, parseExports, parseExceptionFunctions, parseBaseRelocations, parseCoffSymbols, parseDelayImports, parseTlsDirectory, parseLoadConfig, directory, peMachineName, createPEMetadataBudget } from './pe-loader.js';
+import { parseImports, parseExports, parseExceptionFunctions, parseBaseRelocations, parseCoffSymbols, parseDelayImports, parseTlsDirectory, parseLoadConfig, directory, peMachineName, createPEMetadataBudget, PE_SECTION_MAPPING_SOURCE, PE_LOW_ALIGNMENT_RAW_IDENTITY_SOURCE } from './pe-loader.js';
 
 const IMAGE_DIRECTORY_ENTRY_EXPORT = 0;
 const IMAGE_DIRECTORY_ENTRY_IMPORT = 1;
@@ -10,6 +10,32 @@ const IMAGE_DIRECTORY_ENTRY_TLS = 9;
 const IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10;
 const IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT = 13;
 const WINDOWS_IMAGE_RAW_ALIGNMENT = 0x200;
+const WINDOWS_IMAGE_PAGE_SIZE = 0x1000;
+const WINDOWS_IMAGE_BASE_ALIGNMENT = 0x10000n;
+const WINDOWS_IMAGE_MAX_SECTIONS = 96;
+
+// Width is architectural authority only for machine values whose image class
+// this parser understands. Keep UNKNOWN/unsupported machines format-neutral,
+// rather than guessing from numeric ranges or IMAGE_FILE_32BIT_MACHINE.
+const PE_MACHINE_BITS = new Map([
+  [0x014c, 32], // IMAGE_FILE_MACHINE_I386
+  [0x01c0, 32], // IMAGE_FILE_MACHINE_ARM
+  [0x01c4, 32], // IMAGE_FILE_MACHINE_ARMNT
+  [0x5032, 32], // IMAGE_FILE_MACHINE_RISCV32
+  [0x8664, 64], // IMAGE_FILE_MACHINE_AMD64
+  [0xaa64, 64], // IMAGE_FILE_MACHINE_ARM64
+  [0xa641, 64], // IMAGE_FILE_MACHINE_ARM64EC
+  [0xa64e, 64], // IMAGE_FILE_MACHINE_ARM64X
+  [0x5064, 64], // IMAGE_FILE_MACHINE_RISCV64
+]);
+
+function validatePEMachineMagic(machine, bits) {
+  const machineBits = PE_MACHINE_BITS.get(machine);
+  if (machineBits != null && machineBits !== bits) {
+    const format = bits === 64 ? 'PE32+' : 'PE32';
+    throw new Error(`PE Machine 0x${machine.toString(16)} is incompatible with ${format}`);
+  }
+}
 
 function windowsImageSectionRawMapping(pointerToRawData, { sectionAlignment } = {}) {
   if (pointerToRawData === 0) {
@@ -22,7 +48,7 @@ function windowsImageSectionRawMapping(pointerToRawData, { sectionAlignment } = 
   // declared raw offsets: the loader does not reinterpret PointerToRawData,
   // and rounding it down would redirect the mapping into the MZ/header
   // bytes (#5539).
-  if (Number.isSafeInteger(sectionAlignment) && sectionAlignment > 0 && sectionAlignment < 0x1000) {
+  if (Number.isSafeInteger(sectionAlignment) && sectionAlignment > 0 && sectionAlignment < WINDOWS_IMAGE_PAGE_SIZE) {
     return {
       effectiveFileOffset: pointerToRawData,
       fileBacked: true,
@@ -38,14 +64,41 @@ function windowsImageSectionRawMapping(pointerToRawData, { sectionAlignment } = 
   };
 }
 
+function isPELowAlignmentImage(sectionAlignment) {
+  return Number.isSafeInteger(sectionAlignment) && sectionAlignment > 0 && sectionAlignment < WINDOWS_IMAGE_PAGE_SIZE;
+}
+
+function peSectionRawIdentityMismatch({ lowAlignment, fileBacked, effectiveFileOffset, virtualAddress }) {
+  return lowAlignment && fileBacked && effectiveFileOffset !== virtualAddress;
+}
+
 function isPowerOfTwo(value) {
   return Number.isInteger(value) && value > 0 && (value & (value - 1)) === 0;
 }
 
 function validPEFileAlignment(fileAlignment, sectionAlignment) {
   if (!isPowerOfTwo(fileAlignment)) return false;
-  if (sectionAlignment > 0 && sectionAlignment < 0x1000) return fileAlignment === sectionAlignment;
+  if (sectionAlignment > 0 && sectionAlignment < WINDOWS_IMAGE_PAGE_SIZE) return fileAlignment === sectionAlignment;
   return fileAlignment >= 0x200 && fileAlignment <= 0x10000;
+}
+
+// Microsoft IMAGE_OPTIONAL_HEADER32/64: SectionAlignment must be at least
+// FileAlignment, and when it is below the architecture page size the two must
+// be equal. An Optional Header that breaks this contract is not a canonical
+// image, so none of its section/entrypoint evidence may be promoted (#4118).
+function validatePEImageAlignment(sectionAlignment, fileAlignment) {
+  if (sectionAlignment <= 0) {
+    throw new Error(`PE SectionAlignment 0x${(sectionAlignment >>> 0).toString(16)} must be positive to map a canonical image`);
+  }
+  if (fileAlignment <= 0) {
+    throw new Error(`PE FileAlignment 0x${(fileAlignment >>> 0).toString(16)} must be positive to map a canonical image`);
+  }
+  if (sectionAlignment < fileAlignment) {
+    throw new Error(`PE SectionAlignment 0x${sectionAlignment.toString(16)} is smaller than FileAlignment 0x${fileAlignment.toString(16)}`);
+  }
+  if (sectionAlignment < 0x1000 && sectionAlignment !== fileAlignment) {
+    throw new Error(`PE SectionAlignment 0x${sectionAlignment.toString(16)} is below the 0x1000 page size, so FileAlignment must equal SectionAlignment (got 0x${fileAlignment.toString(16)})`);
+  }
 }
 
 function windowsImageSectionRawSize(sizeOfRawData, fileAlignment, sectionAlignment) {
@@ -57,20 +110,63 @@ function windowsImageSectionRawSize(sizeOfRawData, fileAlignment, sectionAlignme
   return { effectiveRawSize, alignmentValid: true, roundedUp: effectiveRawSize !== sizeOfRawData };
 }
 
+function validatePESizeOfImage(sizeOfImage, sizeOfHeaders, sectionAlignment) {
+  if (sizeOfImage < sizeOfHeaders) {
+    throw new Error(`PE SizeOfImage 0x${sizeOfImage.toString(16)} is smaller than SizeOfHeaders 0x${sizeOfHeaders.toString(16)}`);
+  }
+  // SectionAlignment itself has independent validity rules (#4118). When it
+  // is usable, however, SizeOfImage is a loader-level aligned image extent.
+  if (sectionAlignment > 0 && sizeOfImage % sectionAlignment !== 0) {
+    throw new Error(`PE SizeOfImage 0x${sizeOfImage.toString(16)} is not aligned to SectionAlignment 0x${sectionAlignment.toString(16)}`);
+  }
+}
+
+function peImageRvaRangeFits(sizeOfImage, startRva, extent = 1n) {
+  const limit = BigInt(sizeOfImage);
+  const start = BigInt(startRva);
+  const size = BigInt(extent);
+  return start >= 0n && size >= 0n && start < limit && size <= limit - start;
+}
+
+// A loaded PE image occupies [ImageBase, ImageBase + SizeOfImage) inside the
+// *target* address domain. Unbounded BigInt arithmetic otherwise invents a
+// third address domain that no Windows loader can express (#8757).
+function peLoadedAddressDomainLimit(bits) {
+  return 1n << BigInt(bits === 64 ? 64 : 32);
+}
+
+function peImageAddressRangeInDomain(bits, address, extent = 1n) {
+  const limit = peLoadedAddressDomainLimit(bits);
+  const start = BigInt(address), size = BigInt(extent);
+  return start >= 0n && size >= 0n && start <= limit - size;
+}
+
+// One checked RVA -> VA conversion for the whole PE parser. Returns null when
+// the sum leaves the target address domain instead of silently extending it.
+function peCanonicalVirtualAddress(bits, imageBase, rva) {
+  if (typeof rva !== 'number' || !Number.isSafeInteger(rva) || rva < 0) return null;
+  const address = BigInt(imageBase) + BigInt(rva);
+  return peImageAddressRangeInDomain(bits, address) ? address : null;
+}
+
+function validatePELoadedAddressDomain(bits, imageBase, sizeOfImage) {
+  if (peImageAddressRangeInDomain(bits, imageBase, BigInt(sizeOfImage))) return;
+  throw new Error(`PE ImageBase 0x${BigInt(imageBase).toString(16)} + SizeOfImage 0x${BigInt(sizeOfImage).toString(16)} crosses the ${bits === 64 ? 64 : 32}-bit loaded image address domain`);
+}
+
 function seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine) {
-  const address = image.imageBase + BigInt(entryRva);
   const reject = (reason) => {
     image.warnings.push(`PE entrypoint 0x${entryRva.toString(16)} rejected: ${reason}`);
     image.metadata.entrypointValid = false;
     image.metadata.entrypointDiagnostic = reason;
   };
-  if (entryRva >= sizeOfImage) { reject('RVA is outside SizeOfImage'); return; }
-  const segment = image.segments.find((s) => s.source === 'PE-section' &&
+  if (!peImageRvaRangeFits(sizeOfImage, entryRva)) { reject('RVA is outside SizeOfImage'); return; }
+  const address = peCanonicalVirtualAddress(image.bits, image.imageBase, entryRva);
+  if (address === null) { reject('VA is outside the loaded image address domain'); return; }
+  const segment = image.segments.find((s) => s.source === PE_SECTION_MAPPING_SOURCE &&
     address >= s.address && address < s.address + s.size);
   if (!segment) { reject('RVA is not mapped by a section'); return; }
   if (!segment.perms?.execute) { reject('section is not executable'); return; }
-  const offset = address - segment.address;
-  if (offset < 0n || offset >= segment.fileSize) { reject('entrypoint has no file-backed instruction byte'); return; }
   // RISC-V base ISA is IALIGN=32 (4-byte); the issue only demands rejecting
   // non-instruction-boundary addresses, and 2 is the loosest legal IALIGN, so
   // 2-byte alignment is the fail-closed floor for RISC-V entrypoints (#5545).
@@ -78,6 +174,15 @@ function seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine) {
     : machine === 0x5032 || machine === 0x5064 || machine === 0x01c4 ? 2n
     : 1n;
   if (address % alignment !== 0n) { reject(`address is not ${alignment}-byte aligned`); return; }
+  const offset = address - segment.address;
+  // Proving only the first byte is file-backed lets an aligned ARM64 entrypoint
+  // straddle the raw/zero-fill boundary and still mint a high-confidence seed
+  // whose remaining instruction bytes are synthesized (#8787). Require the whole
+  // minimum instruction span ([alignment] bytes) to be file-backed.
+  if (offset < 0n || offset + alignment > segment.fileSize) {
+    reject('entrypoint instruction span is not fully file-backed');
+    return;
+  }
   image.metadata.entrypointValid = true;
   image.metadata.entrypointDiagnostic = null;
   image.functions.push(functionSeed(address, { source: 'entrypoint', confidence: 0.9 }));
@@ -136,12 +241,20 @@ export function parsePE(input, options = {}) {
   const bits = magic === 0x20b ? 64 : 32;
   const minimumOptionalSize = bits === 64 ? 112 : 96;
   if (sizeOptional < minimumOptionalSize) throw new Error(`PE optional header size ${sizeOptional} is smaller than ${minimumOptionalSize}`);
+  validatePEMachineMagic(machine, bits);
   const entryRva = r.u32(opt + 16);
   const imageBase = bits === 64 ? r.u64(opt + 24) : BigInt(r.u32(opt + 28));
+  if (imageBase % WINDOWS_IMAGE_BASE_ALIGNMENT !== 0n) throw new Error(`PE ImageBase 0x${imageBase.toString(16)} is not 64 KiB aligned`);
   const sectionAlignment = r.u32(opt + 32);
   const fileAlignment = r.u32(opt + 36);
   const sizeOfImage = r.u32(opt + 56);
   const sizeOfHeaders = r.u32(opt + 60);
+  validatePEImageAlignment(sectionAlignment, fileAlignment);
+  if (numberOfSections > WINDOWS_IMAGE_MAX_SECTIONS) {
+    throw new Error(`PE NumberOfSections ${numberOfSections} exceeds Windows image loader limit ${WINDOWS_IMAGE_MAX_SECTIONS}`);
+  }
+  validatePESizeOfImage(sizeOfImage, sizeOfHeaders, sectionAlignment);
+  validatePELoadedAddressDomain(bits, imageBase, sizeOfImage);
   const subsystem = r.u16(opt + 68);
   const numberOfRvaAndSizes = r.u32(opt + (bits === 64 ? 108 : 92));
   const dirBase = opt + (bits === 64 ? 112 : 96);
@@ -155,9 +268,19 @@ export function parsePE(input, options = {}) {
   const directoryShortfall = requiredKnownEntries - dirCount;
   for (let i = 0; i < dirCount; i++) directories.push({ rva: r.u32(dirBase + i * 8), size: r.u32(dirBase + i * 8 + 4) });
 
+  const secBase = opt + sizeOptional;
+  const sectionTableEnd = secBase + numberOfSections * 40;
+  if (sectionTableEnd > r.length) throw new Error('PE section table is invalid');
+  if (sizeOfHeaders < sectionTableEnd) {
+    throw new Error(`PE SizeOfHeaders ${sizeOfHeaders} does not cover section table ending at ${sectionTableEnd}`);
+  }
+  if (validPEFileAlignment(fileAlignment, sectionAlignment) && sizeOfHeaders % fileAlignment !== 0) {
+    throw new Error(`PE SizeOfHeaders ${sizeOfHeaders} is not aligned to FileAlignment ${fileAlignment}`);
+  }
+
   const image = new BinaryImage(bytes, {
     format: 'pe', arch: peMachineName(machine), bits, endian: 'little', platform: 'windows',
-    imageBase, entrypoint: entryRva ? imageBase + BigInt(entryRva) : null,
+    imageBase, entrypoint: entryRva ? peCanonicalVirtualAddress(bits, imageBase, entryRva) : null,
     metadata: { machine, timestamp, characteristics, subsystem, sectionAlignment, fileAlignment, sizeOfImage, sizeOfHeaders, directories, peSectionRawMappings: [], peSectionRawSizes: [] },
   });
   if (directoryShortfall > 0) {
@@ -167,8 +290,7 @@ export function parsePE(input, options = {}) {
   }
 
   image.addSegment({ name: 'headers', address: imageBase, size: BigInt(sizeOfHeaders), fileOffset: 0n, fileSize: BigInt(Math.min(sizeOfHeaders, bytes.length)), perms: { read: true, write: false, execute: false }, source: 'PE-headers' });
-  const secBase = opt + sizeOptional;
-  if (numberOfSections > 4096 || secBase + numberOfSections * 40 > r.length) throw new Error('PE section table is invalid');
+  let prevSectionLayout = null;
   for (let i = 0; i < numberOfSections; i++) {
     const p = secBase + i * 40;
     // Executable-image section-table names are literal 8-byte fields. The
@@ -180,7 +302,7 @@ export function parsePE(input, options = {}) {
     const sizeRaw = r.u32(p + 16);
     const ptrRaw = r.u32(p + 20);
     const flags = r.u32(p + 36);
-    const address = imageBase + BigInt(virtualAddress);
+    const address = peCanonicalVirtualAddress(bits, imageBase, virtualAddress);
     const virtualExtent = BigInt(virtualSize || sizeRaw);
     // Section virtual ranges live inside the 32-bit RVA domain and inside the
     // declared SizeOfImage; BigInt arithmetic would otherwise happily map a
@@ -190,15 +312,31 @@ export function parsePE(input, options = {}) {
     const endRva = startRva + virtualExtent;
     const rvaLimit = 1n << 32n;
     const beyondRvaDomain = endRva > rvaLimit;
-    const beyondSizeOfImage = endRva > BigInt(sizeOfImage);
-    const virtualRangeInvalid = beyondRvaDomain || beyondSizeOfImage;
+    const beyondSizeOfImage = !peImageRvaRangeFits(sizeOfImage, startRva, virtualExtent);
+    // The RVA facts above say nothing about ImageBase + RVA: a near-limit
+    // ImageBase pushes an ordinary in-range RVA out of the target address
+    // domain, which no 64-bit loader can represent (#8757).
+    const beyondAddressDomain = address === null || !peImageAddressRangeInDomain(bits, address, virtualExtent);
+    const virtualRangeInvalid = beyondRvaDomain || beyondSizeOfImage || beyondAddressDomain;
+    const virtualAddressMisaligned = sectionAlignment > 0 && virtualAddress % sectionAlignment !== 0;
     const rawMapping = windowsImageSectionRawMapping(ptrRaw, { sectionAlignment });
     const rawSize = windowsImageSectionRawSize(sizeRaw, fileAlignment, sectionAlignment);
+    const lowAlignmentRawIdentityMismatch = peSectionRawIdentityMismatch({
+      lowAlignment: isPELowAlignmentImage(sectionAlignment),
+      fileBacked: rawMapping.fileBacked,
+      effectiveFileOffset: rawMapping.effectiveFileOffset,
+      virtualAddress,
+    });
+    const mappingSource = lowAlignmentRawIdentityMismatch ? PE_LOW_ALIGNMENT_RAW_IDENTITY_SOURCE : PE_SECTION_MAPPING_SOURCE;
     const availableFileBytes = rawMapping.fileBacked ? Math.max(0, bytes.length - rawMapping.effectiveFileOffset) : 0;
     const rawAvailableNumber = rawMapping.fileBacked ? Math.min(rawSize.effectiveRawSize, availableFileBytes) : 0;
     const rawAvailable = BigInt(rawAvailableNumber);
     const mappedFileSize = rawAvailable < virtualExtent ? rawAvailable : virtualExtent;
-    const perms = { read: !!(flags & 0x40000000), write: !!(flags & 0x80000000), execute: !!(flags & 0x20000000) };
+    const perms = {
+      read: !!(flags & 0x40000000),
+      write: !!(flags & 0x80000000),
+      execute: !lowAlignmentRawIdentityMismatch && !!(flags & 0x20000000),
+    };
     image.metadata.peSectionRawMappings.push({
       sectionIndex: i + 1,
       name,
@@ -233,21 +371,77 @@ export function parsePE(input, options = {}) {
       image.warnings.push(`PE section ${name || `#${i + 1}`} raw mapping is truncated: 0x${rawAvailableNumber.toString(16)} of 0x${rawSize.effectiveRawSize.toString(16)} bytes are available`);
     }
     const effectiveFileOffset = BigInt(rawMapping.effectiveFileOffset);
+    if (virtualAddressMisaligned) {
+      const reason = 'pe:section-virtual-address-misaligned';
+      image.metadata.peMetadata ||= { complete: true, reasons: [] };
+      image.metadata.peMetadata.complete = false;
+      if (!image.metadata.peMetadata.reasons.includes(reason)) image.metadata.peMetadata.reasons.push(reason);
+      image.metadata.peSectionsWithMisalignedVirtualAddress ||= [];
+      image.metadata.peSectionsWithMisalignedVirtualAddress.push({
+        sectionIndex: i + 1, name, virtualAddress, sectionAlignment,
+      });
+      image.warnings.push(`PE section ${name || `#${i + 1}`} VirtualAddress 0x${virtualAddress.toString(16)} is not aligned to SectionAlignment 0x${sectionAlignment.toString(16)}; excluded from canonical mapping`);
+    }
+    if (lowAlignmentRawIdentityMismatch) {
+      image.metadata.peMetadata ||= { complete: true, reasons: [] };
+      image.metadata.peMetadata.complete = false;
+      const reason = 'pe:section-low-alignment-raw-offset-rva-mismatch';
+      if (!image.metadata.peMetadata.reasons.includes(reason)) image.metadata.peMetadata.reasons.push(reason);
+      image.metadata.peSectionsWithNonCanonicalRawMapping ||= [];
+      image.metadata.peSectionsWithNonCanonicalRawMapping.push({
+        sectionIndex: i + 1, name, virtualAddress, declaredFileOffset: ptrRaw,
+        effectiveFileOffset: rawMapping.effectiveFileOffset, sizeOfRawData: sizeRaw,
+        sectionAlignment, declaredExecutable: !!(flags & 0x20000000),
+      });
+      image.warnings.push(`PE section ${name || `#${i + 1}`} is in a low-alignment image (SectionAlignment 0x${sectionAlignment.toString(16)}), where PointerToRawData must equal the section RVA, but PointerToRawData 0x${rawMapping.effectiveFileOffset.toString(16)} maps RVA 0x${virtualAddress.toString(16)}; the declared mapping is kept for reads and excluded from canonical Windows image mapping authority`);
+    }
     if (virtualRangeInvalid) {
-      const reason = beyondRvaDomain ? 'pe:section-virtual-range-rva-overflow' : 'pe:section-virtual-range-exceeds-size-of-image';
+      const reason = beyondRvaDomain ? 'pe:section-virtual-range-rva-overflow'
+        : beyondSizeOfImage ? 'pe:section-virtual-range-exceeds-size-of-image'
+          : 'pe:section-virtual-range-outside-loaded-address-domain';
       image.metadata.peMetadata ||= { complete: true, reasons: [] };
       image.metadata.peMetadata.complete = false;
       if (!image.metadata.peMetadata.reasons.includes(reason)) image.metadata.peMetadata.reasons.push(reason);
       image.metadata.peSectionsWithInvalidVirtualRange ||= [];
       image.metadata.peSectionsWithInvalidVirtualRange.push({
         sectionIndex: i + 1, name, virtualAddress, virtualSize, sizeOfImage,
-        endRva: endRva.toString(), beyondRvaDomain, beyondSizeOfImage,
+        endRva: endRva.toString(), beyondRvaDomain, beyondSizeOfImage, beyondAddressDomain,
       });
-      image.warnings.push(`PE section ${name || `#${i + 1}`} virtual range RVA 0x${virtualAddress.toString(16)}+0x${virtualExtent.toString(16)} exceeds ${beyondRvaDomain ? 'the 32-bit RVA domain' : `SizeOfImage 0x${sizeOfImage.toString(16)}`}; excluded from canonical mapping`);
+      image.warnings.push(`PE section ${name || `#${i + 1}`} virtual range RVA 0x${virtualAddress.toString(16)}+0x${virtualExtent.toString(16)} exceeds ${beyondRvaDomain ? 'the 32-bit RVA domain' : beyondSizeOfImage ? `SizeOfImage 0x${sizeOfImage.toString(16)}` : `the ${bits === 64 ? 64 : 32}-bit loaded image address domain`}; excluded from canonical mapping`);
+    }
+    // PE image section-layout contract (#4135): every section VirtualAddress is
+    // a multiple of SectionAlignment, the source section table is RVA-ascending,
+    // and virtual extents do not overlap. A violated section is excluded from
+    // canonical mapping and the image is marked partial, so exact downstream
+    // evidence is never promoted from a mapping no Windows loader would build.
+    // Every in-range section advances the running layout bound so ordering is
+    // judged against the declared source table, which finalize()'s address sort
+    // would otherwise hide.
+    const previous = prevSectionLayout;
+    const misaligned = sectionAlignment > 0 && virtualAddress % sectionAlignment !== 0;
+    const outOfOrder = previous !== null && startRva < previous.end;
+    prevSectionLayout = previous === null || endRva > previous.end
+      ? { start: startRva, end: endRva }
+      : { start: startRva, end: previous.end };
+    const violatesLayout = misaligned || outOfOrder;
+    if (violatesLayout) {
+      const layoutReason = misaligned ? 'pe:section-virtual-address-misaligned'
+        : startRva < previous.start ? 'pe:section-table-not-ascending'
+        : 'pe:section-virtual-range-overlap';
+      image.metadata.peMetadata ||= { complete: true, reasons: [] };
+      image.metadata.peMetadata.complete = false;
+      if (!image.metadata.peMetadata.reasons.includes(layoutReason)) image.metadata.peMetadata.reasons.push(layoutReason);
+      image.metadata.peSectionsWithInvalidVirtualLayout ||= [];
+      image.metadata.peSectionsWithInvalidVirtualLayout.push({
+        sectionIndex: i + 1, name, virtualAddress, virtualSize, sizeOfImage,
+        endRva: endRva.toString(), misaligned,
+      });
+      image.warnings.push(`PE section ${name || `#${i + 1}`} violates the image section-layout contract (${layoutReason}): RVA 0x${virtualAddress.toString(16)} extent 0x${virtualExtent.toString(16)}; excluded from canonical mapping`);
       continue;
     }
-    image.addSegment({ name, address, size: virtualExtent, fileOffset: effectiveFileOffset, fileSize: mappedFileSize, perms, flags, source: 'PE-section' });
-    image.addSection({ name, address, size: virtualExtent, fileOffset: effectiveFileOffset, fileSize: mappedFileSize, perms, flags, type: null, index: i + 1, source: 'PE-section' });
+    if (virtualAddressMisaligned || virtualRangeInvalid) continue;
+    image.addSegment({ name, address, size: virtualExtent, fileOffset: effectiveFileOffset, fileSize: mappedFileSize, perms, flags, source: mappingSource });
+    image.addSection({ name, address, size: virtualExtent, fileOffset: effectiveFileOffset, fileSize: mappedFileSize, perms, flags, type: null, index: i + 1, source: mappingSource });
   }
 
   if (entryRva) seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine);

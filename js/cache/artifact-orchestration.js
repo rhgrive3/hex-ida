@@ -1,4 +1,5 @@
 import { createArtifactDescriptor, createArtifactStore } from '../core/artifacts/index.js';
+import { assertWorldScope } from '../core/identity/world.js';
 import { createEntityId, createSliceId } from '../core/identity/index.js';
 import { AnalysisScheduler } from '../core/scheduler/index.js';
 import { BudgetExceededError } from '../core/budgets/index.js';
@@ -11,6 +12,23 @@ export const ANALYSIS_ORCHESTRATION_ROUTE = Object.freeze({
 export const WORKER_CACHE_MIGRATION_VERSION = 'hex-worker-cache-migration-v1';
 const LEGACY_WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION = 'hex-worker-analysis-payload-v1';
 export const WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION = 'hex-worker-analysis-payload-v2';
+
+// #8738: byte-domain payload fields at or above this size are kept as raw
+// Uint8Array views in the in-memory envelope instead of being eagerly boxed
+// into per-element JS arrays. encodeArtifactPayload (js/core/artifacts/
+// contracts.js) streams the identical canonical decimal text from the view, so
+// the stored bytes, payload checksum, and artifact identity are unchanged.
+const STREAMED_VIEW_MIN_BYTES = 64 * 1024;
+// Requests whose encoded payload carries at least this many raw view bytes get
+// their post-produce encoding/persistence materialization charged against the
+// scheduler's residentBytes budget, so an oversized result returns a bounded
+// BudgetExceededError before the allocations instead of a V8 heap abort.
+const PAYLOAD_CHARGE_MIN_VIEW_BYTES = 1024 * 1024;
+
+function bytePayloadField(buffer, byteOffset, byteLength) {
+  const bytes = new Uint8Array(buffer, byteOffset, byteLength);
+  return bytes.byteLength >= STREAMED_VIEW_MIN_BYTES ? bytes : Array.from(bytes);
+}
 export const CURRENT_WORKER_ANALYSIS_PRODUCER_ID = 'hex-current-worker-analysis';
 
 const CANONICAL_BINARY_ID = /^bin_sha256_[0-9a-f]{64}$/i;
@@ -46,7 +64,8 @@ const DATA_VIEW_BYTE_OFFSET_GETTER = Object.getOwnPropertyDescriptor(DataView.pr
 const DATA_VIEW_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteLength')?.get;
 
 function required(value, code) {
-  const text = String(value ?? '').trim();
+  if (typeof value !== 'string') throw new TypeError(code);
+  const text = value.trim();
   if (!text) throw new TypeError(code);
   return text;
 }
@@ -62,7 +81,10 @@ export function requireCanonicalBinaryId(value) {
 }
 
 export function normalizeAnalysisRoute(route) {
-  const value = String(route ?? '').trim();
+  if (typeof route !== 'string') {
+    throw new TypeError(`analysis-orchestration-route-invalid:${route == null ? '<empty>' : '<non-string>'}`);
+  }
+  const value = route.trim();
   if (value === ANALYSIS_ORCHESTRATION_ROUTE.CURRENT || value === ANALYSIS_ORCHESTRATION_ROUTE.ARTIFACT) return value;
   throw new TypeError(`analysis-orchestration-route-invalid:${value || '<empty>'}`);
 }
@@ -107,6 +129,14 @@ function canonicalBigInt(value) {
 }
 
 function canonicalBytes(value) {
+  if (ArrayBuffer.isView(value)) {
+    // #8738: large byte-domain fields may arrive as raw Uint8Array/DataView
+    // views straight from the encoder. Consumers derive `.buffer` (array-buffer)
+    // or `new DataView(bytes.buffer)` (data-view) from the result, so a partial
+    // view must collapse to a dedicated exact-extent copy.
+    const bytes = value instanceof Uint8Array ? value : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    return bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes : bytes.slice();
+  }
   const entries = wireArray(value);
   for (const entry of entries) {
     if (typeof entry !== 'number' || !Number.isInteger(entry) || entry < 0 || entry > 255) invalidPayloadNode();
@@ -145,6 +175,12 @@ function canonicalFloatTypedArrayValue(value) {
 }
 
 function canonicalTypedArrayValues(name, value) {
+  if (ArrayBuffer.isView(value)) {
+    // #8738: the encoder keeps only byte-domain root views unboxed; every other
+    // element domain (signed, float, bigint) arrives as the canonical value list.
+    if (name !== 'Uint8Array' && name !== 'Uint8ClampedArray') invalidPayloadNode();
+    return value instanceof Uint8Array ? value : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
   const entries = wireArray(value);
   const integerRange = INTEGER_TYPED_ARRAY_RANGES.get(name);
   if (integerRange) {
@@ -247,12 +283,15 @@ export function encodeWorkerAnalysisPayload(value, { rejectSparseArrays = false 
         references.set(input, i);
         active.add(input);
         try {
-          if (dataViewBuffer) return { t:'data-view', i, v:Array.from(new Uint8Array(buffer, byteOffset, byteLength)) };
+          if (dataViewBuffer) return { t:'data-view', i, v:bytePayloadField(buffer, byteOffset, byteLength) };
           const name = input.constructor?.name;
           const ctor = TYPED_ARRAYS.get(name);
           if (!ctor) throw new TypeError(`analysis-artifact-typed-array-unsupported:${String(name)}`);
           const bigint = name === 'BigInt64Array' || name === 'BigUint64Array';
           const float = name === 'Float32Array' || name === 'Float64Array';
+          if (!bigint && !float && (name === 'Uint8Array' || name === 'Uint8ClampedArray')) {
+            return { t:'typed-array', i, c:name, v:bytePayloadField(buffer, byteOffset, byteLength) };
+          }
           return { t:'typed-array', i, c:name, v:Array.from(input, (entry) => bigint ? entry.toString() : float ? encodeFloatTypedArrayValue(entry) : entry) };
         } finally {
           active.delete(input);
@@ -288,9 +327,9 @@ export function encodeWorkerAnalysisPayload(value, { rejectSparseArrays = false 
     active.add(input);
     try {
       if (input instanceof Date) return { t:'date', i, v:input.toISOString() };
-      if (input instanceof ArrayBuffer) return { t:'array-buffer', i, v:Array.from(new Uint8Array(input)) };
+      if (input instanceof ArrayBuffer) return { t:'array-buffer', i, v:bytePayloadField(input, 0, input.byteLength) };
       if (typeof SharedArrayBuffer === 'function' && input instanceof SharedArrayBuffer) {
-        return { t:'shared-array-buffer', i, v:Array.from(new Uint8Array(input)) };
+        return { t:'shared-array-buffer', i, v:bytePayloadField(input, 0, input.byteLength) };
       }
       if (input instanceof Map) {
         return { t:'map', i, v:[...input.entries()].map(([key, entry]) => [encode(key), encode(entry)]) };
@@ -511,6 +550,57 @@ export function decodeWorkerAnalysisPayload(payload, { rejectSparseArrays = fals
   return decode(payload.root);
 }
 
+// #8738: encodeArtifactPayload and the post-write store validation transiently
+// materialize a few times the payload's canonical size even after the streaming
+// fixes. For results dominated by byte payloads, charge that work against the
+// scheduler's residentBytes budget up front so an oversized publication is
+// rejected with a bounded BudgetExceededError before the allocations, mirroring
+// how producers already charge their own results. Small results stay untouched
+// to keep the charge free of measurable overhead.
+function walkWorkerEnvelopeForCharge(value, state, seen) {
+  if (state.stopped) return;
+  if (value === null || typeof value !== 'object') {
+    if (typeof value === 'string') state.textBytes += value.length;
+    state.nodes += 1;
+    if (state.nodes > 4 * 1024 * 1024) state.stopped = true;
+    return;
+  }
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
+    try {
+      state.viewBytes += Number(value.byteLength) || 0;
+    } catch {
+      state.stopped = true;
+    }
+    state.nodes += 1;
+    return;
+  }
+  if (seen.has(value)) return;
+  seen.add(value);
+  state.nodes += 1;
+  if (state.nodes > 4 * 1024 * 1024) { state.stopped = true; return; }
+  if (value instanceof Map) {
+    for (const [key, entry] of value) { walkWorkerEnvelopeForCharge(key, state, seen); walkWorkerEnvelopeForCharge(entry, state, seen); }
+    return;
+  }
+  if (value instanceof Set) {
+    for (const entry of value) walkWorkerEnvelopeForCharge(entry, state, seen);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) walkWorkerEnvelopeForCharge(entry, state, seen);
+    return;
+  }
+  for (const key of Object.keys(value)) walkWorkerEnvelopeForCharge(value[key], state, seen);
+}
+
+function chargeWorkerPayloadMaterialization(budget, envelope) {
+  if (typeof budget?.consume !== 'function') return;
+  const state = { viewBytes:0, textBytes:0, nodes:0, stopped:false };
+  walkWorkerEnvelopeForCharge(envelope, state, new WeakSet());
+  if (state.stopped || state.viewBytes < PAYLOAD_CHARGE_MIN_VIEW_BYTES) return;
+  budget.consume('residentBytes', 4096 + state.viewBytes * 4 + state.textBytes * 4);
+}
+
 /**
  * Bind the scheduler's cancellation signal to the existing worker request.
  * The worker remains the only semantic producer; cancellation only controls
@@ -557,16 +647,54 @@ export function awaitCancellableProducer(operation, signal) {
  * already-canonical identity is supplied.
  */
 export function createWorkerAnalysisArtifactDescriptor(input = {}) {
-  const binaryId = requireCanonicalBinaryId(input.binaryId);
+  return createBoundWorkerAnalysisArtifactDescriptor({ ...input, dependencyScope: null }, requireCanonicalBinaryId(input.binaryId));
+}
+
+/** Local immutable sources are scoped identities, NOT fake whole-file SHA256s.
+ * This internal boundary requires a host-created world and binds that world's
+ * generation into the existing artifact key. It does not weaken the legacy
+ * content-addressed descriptor API or permit cross-session source reuse.
+ */
+export function createScopedWorkerAnalysisArtifactDescriptor(input = {}, world) {
+  assertWorldScope(world);
+  const binaryId = required(input.binaryId, 'analysis-scoped-binary-required');
+  const requestedSliceId = input.sliceId == null
+    ? createSliceId({ binaryId, index: input.sliceIndex ?? 0, architecture: input.architecture ?? 'unknown' })
+    : required(input.sliceId, 'analysis-scoped-slice-required').toLowerCase();
+  const member = world.binarySet.find((entry) => entry.binaryId === binaryId && entry.sliceId === requestedSliceId);
+  if (!member) throw new TypeError('analysis-scoped-source-outside-world');
+  if (CANONICAL_BINARY_ID.test(binaryId)) {
+    if (binaryId !== binaryId.toLowerCase()) throw new TypeError('analysis-scoped-binary-not-canonical');
+  } else if (!/^local_immutable_[0-9a-f]{32}$/.test(binaryId)
+    || member.sourceIdentity.kind !== 'local-immutable'
+    || member.sourceIdentity.sourceInstance !== binaryId) {
+    throw new TypeError('analysis-scoped-source-binding-invalid');
+  }
+  const descriptor = createBoundWorkerAnalysisArtifactDescriptor({ ...input,
+    config: { ...(input.config ?? {}), scopedWorldId: world.id, scopedGeneration: world.generation },
+    keyExtras: { ...(input.keyExtras ?? {}), sourceIdentityKind: member.sourceIdentity.kind,
+      scopedIdentityContract: 'host-bound-local-immutable/v1' },
+  }, binaryId);
+  if (descriptor.sliceId !== member.sliceId) throw new TypeError('analysis-scoped-slice-mismatch');
+  return descriptor;
+}
+
+function createBoundWorkerAnalysisArtifactDescriptor(input, binaryId) {
   const artifactKind = required(input.artifactKind ?? 'worker-analysis-result', 'analysis-artifact-kind-required');
   const architecture = required(input.architecture ?? 'unknown', 'analysis-artifact-architecture-required');
+  // Canonical identity must have exactly one text representation. The
+  // generated slice/entity ids are lowercase hex (stableDigest toString(16)),
+  // so caller-supplied canonical ids are case-normalized here the same way
+  // requireCanonicalBinaryId() normalizes binaryId: accepting both cases while
+  // letting them collapse onto the same identity material would fork the
+  // canonical namespace and mint distinct ArtifactIds for the same slice.
   const sliceId = input.sliceId == null
     ? createSliceId({ binaryId, index:input.sliceIndex ?? 0, architecture })
-    : required(input.sliceId, 'analysis-artifact-slice-id-required');
+    : required(input.sliceId, 'analysis-artifact-slice-id-required').toLowerCase();
   if (!CANONICAL_SLICE_ID.test(sliceId)) throw new TypeError('analysis-artifact-slice-id-not-canonical');
   const entityId = input.entityId == null
     ? createEntityId({ binaryId, sliceId, kind:'worker-analysis', identity:{ artifactKind, sliceIndex:input.sliceIndex ?? 0 } })
-    : required(input.entityId, 'analysis-artifact-entity-id-required');
+    : required(input.entityId, 'analysis-artifact-entity-id-required').toLowerCase();
   if (!CANONICAL_ENTITY_ID.test(entityId)) throw new TypeError('analysis-artifact-entity-id-not-canonical');
 
   return createArtifactDescriptor({
@@ -584,11 +712,12 @@ export function createWorkerAnalysisArtifactDescriptor(input = {}) {
     },
     config:input.config ?? {},
     keyExtras:{
+      ...(input.keyExtras ?? {}),
       migrationContract:WORKER_CACHE_MIGRATION_VERSION,
       payloadCodec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION,
-      ...(input.keyExtras ?? {}),
     },
     upstreamArtifactIds:input.upstreamArtifactIds ?? [],
+    ...(input.dependencyScope ? { dependencyScope: input.dependencyScope } : {}),
     originRefs:input.originRefs ?? [],
   });
 }
@@ -633,14 +762,16 @@ export class ArtifactAnalysisOrchestrator {
         ? (encodedPayload, record, context) => validate(decodeWorkerAnalysisPayload(encodedPayload, { rejectSparseArrays:true }), record, context)
         : null,
       creation:{
+        ...(creation || {}),
         migrationContract:WORKER_CACHE_MIGRATION_VERSION,
         payloadCodec:WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION,
         sourceRoute:ANALYSIS_ORCHESTRATION_ROUTE.CURRENT,
-        ...(creation || {}),
       },
       produce:async (context) => {
         this.metrics.producerInvocations++;
-        return encodeWorkerAnalysisPayload(await produce(context), { rejectSparseArrays:true });
+        const envelope = encodeWorkerAnalysisPayload(await produce(context), { rejectSparseArrays:true });
+        chargeWorkerPayloadMaterialization(context.budget, envelope);
+        return envelope;
       },
     });
 

@@ -24,6 +24,7 @@ const DYLD_CACHE_HEADER_PREFIX_SIZE = 104;
 const DYLD_CACHE_MAPPING_SIZE = 32;
 const MAX_DYLD_CACHE_MAPPINGS = 4096;
 const MAX_SIGNATURE_BLOBS = 4096;
+const MAX_SOURCE_BACKED_SIGNATURE_BYTES = 256 * 1024;
 const MAX_APPLE_IDENTITY_BYTES = 64 * 1024 * 1024;
 const CSMAGIC_EMBEDDED_SIGNATURE = 0xfade0cc0;
 const CSMAGIC_DETACHED_SIGNATURE = 0xfade0cc1;
@@ -438,7 +439,16 @@ export function parseAppleCodeSignature(input, options = {}) {
   let bytes;
   try { bytes = residentRange(input, dataOffset, dataSize); }
   catch (error) {
-    if (error?.code === 'BINARY_SOURCE_RANGE_MISSING') throw error;
+    if (error?.code === 'BINARY_SOURCE_RANGE_MISSING'
+      && input?.__binaryByteBacking === true
+      && dataSize > MAX_SOURCE_BACKED_SIGNATURE_BYTES) {
+    return signatureResult('partial', {
+      complete: false,
+      reasons: ['signature-bytes-deferred'],
+      provenance,
+    });
+  }
+  if (error?.code === 'BINARY_SOURCE_RANGE_MISSING') throw error;
     return malformedSignature('signature-range-invalid', { provenance });
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);

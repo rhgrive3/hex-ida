@@ -1,9 +1,11 @@
+import { stableDigest } from '../core/identity/index.js';
 import { validatePluginManifest, checkManifestCompatibility, PluginCompatibilityError } from './plugin-manifest.js';
 
 const TYPES = new Set(['format', 'architecture', 'analyzer', 'knowledgeProvider', 'signatureProvider', 'recognitionProvider', 'viewContribution', 'goalProvider']);
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_READ_CALL_BYTES = 1024 * 1024;
 const DEFAULT_READ_TOTAL_BYTES = 8 * 1024 * 1024;
+let budgetScopeNamespaceSequence = 0n;
 
 function deepFreeze(value, seen = new WeakSet()) {
   if (!value || typeof value !== 'object' || seen.has(value)) return value;
@@ -19,23 +21,235 @@ function fallbackClone(value, seen = new WeakMap(), depth = 0) {
   if (value == null || typeof value !== 'object') return value;
   if (depth > 32) throw new Error('plugin context nesting exceeds safety limit');
   if (seen.has(value)) return seen.get(value);
-  if (value instanceof Date) return new Date(value.getTime());
-  if (value instanceof ArrayBuffer) return value.slice(0);
-  if (ArrayBuffer.isView(value)) { if (value instanceof DataView) return new DataView(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength)); return value.slice ? value.slice() : new value.constructor(value); }
-  if (value instanceof Map) { const out = new Map(); seen.set(value, out); for (const [k, v] of value) out.set(fallbackClone(k, seen, depth + 1), fallbackClone(v, seen, depth + 1)); return out; }
-  if (value instanceof Set) { const out = new Set(); seen.set(value, out); for (const v of value) out.add(fallbackClone(v, seen, depth + 1)); return out; }
+  const dateValue = intrinsicDateValue(value);
+  if (dateValue.ok) {
+    const copy = new Date(dateValue.value);
+    seen.set(value, copy);
+    return copy;
+  }
+  // A snapshot must be detached: `structuredClone` and `TypedArray.prototype.slice`
+  // both keep a SharedArrayBuffer's backing shared, so a plugin could still reach
+  // host bytes through the "snapshot". Clone the complete backing store into a
+  // fresh ordinary ArrayBuffer so view offsets and shared-view topology survive
+  // while writes on either side of the boundary cannot alias the source.
+  if (isSharedBuffer(value)) {
+    const copy = detachSharedBuffer(value);
+    seen.set(value, copy);
+    return copy;
+  }
+  const arrayBufferLength = ordinaryArrayBufferByteLength(value);
+  if (arrayBufferLength != null) {
+    const copy = new ArrayBuffer(arrayBufferLength);
+    new Uint8Array(copy).set(new Uint8Array(value, 0, arrayBufferLength));
+    seen.set(value, copy);
+    return copy;
+  }
+  if (ArrayBuffer.isView(value)) {
+    const dataView = dataViewMeta(value);
+    const typedArray = dataView == null ? typedArrayMeta(value) : null;
+    const backing = dataView?.buffer ?? typedArray?.buffer ?? viewBackingBuffer(value);
+    if (backing == null) throw new TypeError('plugin snapshot view backing is invalid');
+    const buffer = fallbackClone(backing, seen, depth + 1);
+    const copy = dataView != null
+      ? new DataView(buffer, dataView.byteOffset, dataView.byteLength)
+      : new typedArray.ctor(buffer, typedArray.byteOffset, typedArray.length);
+    seen.set(value, copy);
+    return copy;
+  }
+  const mapEntries = intrinsicMapEntries(value);
+  if (mapEntries != null) {
+    const out = new Map();
+    seen.set(value, out);
+    for (const [k, v] of mapEntries) out.set(fallbackClone(k, seen, depth + 1), fallbackClone(v, seen, depth + 1));
+    return out;
+  }
+  const setValues = intrinsicSetValues(value);
+  if (setValues != null) {
+    const out = new Set();
+    seen.set(value, out);
+    for (const v of setValues) out.add(fallbackClone(v, seen, depth + 1));
+    return out;
+  }
   if (Array.isArray(value)) { const out = []; seen.set(value, out); for (const v of value) out.push(fallbackClone(v, seen, depth + 1)); return out; }
   const out = Object.create(null); seen.set(value, out);
   for (const [key, v] of Object.entries(value)) { if (typeof v === 'function') continue; out[key] = fallbackClone(v, seen, depth + 1); }
   return out;
 }
 
+const SHARED_ARRAY_BUFFER_CTOR = typeof SharedArrayBuffer === 'function' ? SharedArrayBuffer : null;
+const SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER = SHARED_ARRAY_BUFFER_CTOR == null
+  ? null
+  : Object.getOwnPropertyDescriptor(SHARED_ARRAY_BUFFER_CTOR.prototype, 'byteLength')?.get ?? null;
+const ARRAY_BUFFER_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')?.get;
+const TYPED_ARRAY_PROTOTYPE = Object.getPrototypeOf(Uint8Array.prototype);
+const TYPED_ARRAY_BUFFER_GETTER = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, 'buffer')?.get;
+const TYPED_ARRAY_BYTE_OFFSET_GETTER = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, 'byteOffset')?.get;
+const TYPED_ARRAY_LENGTH_GETTER = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, 'length')?.get;
+const TYPED_ARRAY_TAG_GETTER = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, Symbol.toStringTag)?.get;
+const DATA_VIEW_BUFFER_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer')?.get;
+const DATA_VIEW_BYTE_OFFSET_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteOffset')?.get;
+const DATA_VIEW_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteLength')?.get;
+const DATE_GET_TIME = Date.prototype.getTime;
+const MAP_ENTRIES = Map.prototype.entries;
+const SET_VALUES = Set.prototype.values;
+const TYPED_ARRAY_CTORS = new Map([
+  ['Int8Array', Int8Array], ['Uint8Array', Uint8Array], ['Uint8ClampedArray', Uint8ClampedArray],
+  ['Int16Array', Int16Array], ['Uint16Array', Uint16Array], ['Int32Array', Int32Array], ['Uint32Array', Uint32Array],
+  ...(typeof Float16Array === 'function' ? [['Float16Array', Float16Array]] : []),
+  ['Float32Array', Float32Array], ['Float64Array', Float64Array],
+  ...(typeof BigInt64Array === 'function' ? [['BigInt64Array', BigInt64Array]] : []),
+  ...(typeof BigUint64Array === 'function' ? [['BigUint64Array', BigUint64Array]] : []),
+]);
+
+function isSharedBuffer(value) {
+  if (typeof SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER !== 'function' || value == null || typeof value !== 'object') return false;
+  try {
+    SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER.call(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function ordinaryArrayBufferByteLength(value) {
+  if (typeof ARRAY_BUFFER_BYTE_LENGTH_GETTER !== 'function' || value == null || typeof value !== 'object') return null;
+  try { return ARRAY_BUFFER_BYTE_LENGTH_GETTER.call(value); } catch { return null; }
+}
+function intrinsicDateValue(value) {
+  if (value == null || typeof value !== 'object') return { ok: false, value: null };
+  try { return { ok: true, value: DATE_GET_TIME.call(value) }; } catch { return { ok: false, value: null }; }
+}
+function intrinsicMapEntries(value) {
+  if (value == null || typeof value !== 'object') return null;
+  try { return MAP_ENTRIES.call(value); } catch { return null; }
+}
+function intrinsicSetValues(value) {
+  if (value == null || typeof value !== 'object') return null;
+  try { return SET_VALUES.call(value); } catch { return null; }
+}
+function viewBackingBuffer(value) {
+  if (typeof TYPED_ARRAY_BUFFER_GETTER === 'function') {
+    try { return TYPED_ARRAY_BUFFER_GETTER.call(value); } catch {}
+  }
+  if (typeof DATA_VIEW_BUFFER_GETTER === 'function') {
+    try { return DATA_VIEW_BUFFER_GETTER.call(value); } catch {}
+  }
+  return null;
+}
+
+function typedArrayMeta(value) {
+  if (typeof TYPED_ARRAY_BUFFER_GETTER !== 'function'
+    || typeof TYPED_ARRAY_BYTE_OFFSET_GETTER !== 'function'
+    || typeof TYPED_ARRAY_LENGTH_GETTER !== 'function'
+    || typeof TYPED_ARRAY_TAG_GETTER !== 'function') return null;
+  try {
+    const tag = TYPED_ARRAY_TAG_GETTER.call(value);
+    const ctor = TYPED_ARRAY_CTORS.get(tag);
+    if (ctor == null) return null;
+    return {
+      buffer: TYPED_ARRAY_BUFFER_GETTER.call(value),
+      byteOffset: TYPED_ARRAY_BYTE_OFFSET_GETTER.call(value),
+      length: TYPED_ARRAY_LENGTH_GETTER.call(value),
+      ctor,
+    };
+  } catch {
+    return null;
+  }
+}
+function dataViewMeta(value) {
+  if (typeof DATA_VIEW_BUFFER_GETTER !== 'function'
+    || typeof DATA_VIEW_BYTE_OFFSET_GETTER !== 'function'
+    || typeof DATA_VIEW_BYTE_LENGTH_GETTER !== 'function') return null;
+  try {
+    return {
+      buffer: DATA_VIEW_BUFFER_GETTER.call(value),
+      byteOffset: DATA_VIEW_BYTE_OFFSET_GETTER.call(value),
+      byteLength: DATA_VIEW_BYTE_LENGTH_GETTER.call(value),
+    };
+  } catch {
+    return null;
+  }
+}
+function detachSharedBuffer(buffer) {
+  const byteLength = SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER.call(buffer);
+  const copy = new ArrayBuffer(byteLength);
+  new Uint8Array(copy).set(new Uint8Array(buffer, 0, byteLength));
+  return copy;
+}
+
+// Only graphs that actually contain a SharedArrayBuffer need the
+// detach-preserving fallback clone; everything else keeps using the platform's
+// `structuredClone` unchanged so no existing snapshot behaviour or cost shifts.
+function containsSharedBuffer(value, seen = new WeakSet()) {
+  if (value == null || typeof value !== 'object') return false;
+  if (SHARED_ARRAY_BUFFER_CTOR == null) return false;
+  if (isSharedBuffer(value)) return true;
+  if (ArrayBuffer.isView(value)) return isSharedBuffer(viewBackingBuffer(value));
+  if (ordinaryArrayBufferByteLength(value) != null) return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) { for (const item of value) if (containsSharedBuffer(item, seen)) return true; return false; }
+  const mapEntries = intrinsicMapEntries(value);
+  if (mapEntries != null) { for (const [k, v] of mapEntries) { if (containsSharedBuffer(k, seen) || containsSharedBuffer(v, seen)) return true; } return false; }
+  const setValues = intrinsicSetValues(value);
+  if (setValues != null) { for (const v of setValues) if (containsSharedBuffer(v, seen)) return true; return false; }
+  for (const key of Reflect.ownKeys(value)) {
+    const desc = Object.getOwnPropertyDescriptor(value, key);
+    if (desc && 'value' in desc && containsSharedBuffer(desc.value, seen)) return true;
+  }
+  return false;
+}
+
 function safeSnapshot(value) {
   if (value == null) return null;
   let clone;
-  if (typeof structuredClone === 'function') { try { clone = structuredClone(value); } catch { clone = fallbackClone(value); } }
-  else clone = fallbackClone(value);
+  if (typeof structuredClone === 'function' && !containsSharedBuffer(value)) {
+    try { clone = structuredClone(value); } catch { clone = fallbackClone(value); }
+  } else {
+    clone = fallbackClone(value);
+  }
   return deepFreeze(clone);
+}
+
+function makeBudgetCapability(budget) {
+  if (!budget || (typeof budget !== 'object' && typeof budget !== 'function')) return undefined;
+  const capability = Object.create(null);
+  if (typeof budget.consume === 'function') {
+    Object.defineProperty(capability, 'consume', {
+      enumerable: true,
+      value: (resource, amount = 1) => budget.consume(resource, amount),
+    });
+  }
+  if (typeof budget.remaining === 'function') {
+    Object.defineProperty(capability, 'remaining', {
+      enumerable: true,
+      value: (resource) => budget.remaining(resource),
+    });
+  }
+  if (typeof budget.snapshot === 'function') {
+    Object.defineProperty(capability, 'snapshot', {
+      enumerable: true,
+      value: (options) => safeSnapshot(options === undefined ? budget.snapshot() : budget.snapshot(safeSnapshot(options))),
+    });
+  }
+  return Object.freeze(capability);
+}
+
+function withInvocationSignal(snapshot, signal) {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return snapshot;
+  const out = Object.create(Object.getPrototypeOf(snapshot));
+  for (const key of Reflect.ownKeys(snapshot)) {
+    if (key === 'signal') continue;
+    const descriptor = Object.getOwnPropertyDescriptor(snapshot, key);
+    if (descriptor) Object.defineProperty(out, key, descriptor);
+  }
+  Object.defineProperty(out, 'signal', {
+    value: signal,
+    enumerable: true,
+    writable: false,
+    configurable: false,
+  });
+  return Object.freeze(out);
 }
 
 function strictPositiveInteger(value, fallback) {
@@ -100,15 +314,45 @@ function makeReadCapability(context, pluginScope = null, record = null) {
   };
 }
 
-function settleWithin(promise, timeoutMs, signal) {
+function invocationAbortError(reason) {
+  const message = reason instanceof Error ? reason.message : reason == null ? 'plugin invocation aborted' : String(reason);
+  const error = new Error(message || 'plugin invocation aborted');
+  error.name = 'AbortError';
+  error.code = 'PLUGIN_INVOCATION_ABORTED';
+  error.executionMayContinue = true;
+  if (reason != null) error.cause = reason;
+  return error;
+}
+
+function invocationTimeoutError(timeoutMs) {
+  const error = new Error(`plugin invocation timed out after ${timeoutMs}ms`);
+  error.code = 'PLUGIN_INVOCATION_TIMEOUT';
+  error.executionMayContinue = true;
+  return error;
+}
+
+// JavaScript cannot preempt an arbitrary plugin promise on this thread. The
+// invocation signal gives cooperative plugins a stop boundary; the outer
+// registry lease revokes host capabilities for plugins that keep running.
+// Timeout/abort results therefore disclose that arbitrary plugin code may
+// still be completing after the failure has been returned.
+function settleWithin(promise, timeoutMs, signal, invocationController) {
   return new Promise((resolve, reject) => {
     let done = false;
     const finish = (fn, value) => { if (done) return; done = true; clearTimeout(timer); signal?.removeEventListener?.('abort', onAbort); fn(value); };
-    const onAbort = () => finish(reject, signal.reason instanceof Error ? signal.reason : new Error('plugin invocation aborted'));
-    const timer = setTimeout(() => finish(reject, new Error(`plugin invocation timed out after ${timeoutMs}ms`)), timeoutMs);
-    if (signal?.aborted) return onAbort();
+    const onAbort = () => {
+      const error = invocationAbortError(signal?.reason);
+      if (!invocationController.signal.aborted) invocationController.abort(error);
+      finish(reject, error);
+    };
+    const timer = setTimeout(() => {
+      const error = invocationTimeoutError(timeoutMs);
+      if (!invocationController.signal.aborted) invocationController.abort(error);
+      finish(reject, error);
+    }, timeoutMs);
     signal?.addEventListener?.('abort', onAbort, { once: true });
     Promise.resolve(promise).then((v) => finish(resolve, v), (e) => finish(reject, e));
+    if (signal?.aborted) onAbort();
   });
 }
 
@@ -119,8 +363,31 @@ function validateContributionId(id) {
   return id;
 }
 
+const LEGACY_ANALYZER_PLUGIN_PREFIX = 'legacy.analyzer.';
+const LEGACY_ANALYZER_HASHED_PLUGIN_PREFIX = 'legacy.analyzer-hash.';
+const PLUGIN_ID_MAX_LENGTH = 128;
+
+function legacyAnalyzerPluginId(id) {
+  const direct = `${LEGACY_ANALYZER_PLUGIN_PREFIX}${id}`;
+  if (direct.length <= PLUGIN_ID_MAX_LENGTH) return direct;
+
+  // Keep long synthetic IDs in a disjoint namespace so no valid short legacy
+  // analyzer ID can alias the bounded representation. The contribution ID
+  // itself remains untouched and continues to carry the public identity.
+  const digest = stableDigest(id);
+  const retainedLength = PLUGIN_ID_MAX_LENGTH
+    - LEGACY_ANALYZER_HASHED_PLUGIN_PREFIX.length
+    - 1
+    - digest.length;
+  return `${LEGACY_ANALYZER_HASHED_PLUGIN_PREFIX}${id.slice(0, retainedLength)}.${digest}`;
+}
+
 export class PlatformPluginRegistry {
+  #budgetScopeNamespace;
+  #budgetInvocationSequence = 0n;
+
   constructor(options = {}) {
+    this.#budgetScopeNamespace = ++budgetScopeNamespaceSequence;
     this.entries = new Map([...TYPES].map((type) => [type, new Map()]));
     this.plugins = new Map();
     this.failures = [];
@@ -134,7 +401,7 @@ export class PlatformPluginRegistry {
     if (!contribution || typeof contribution !== 'object') throw new TypeError('plugin contribution must be an object');
     const validId = validateContributionId(id);
     const legacyManifest = {
-      id: `legacy.analyzer.${validId}`,
+      id: legacyAnalyzerPluginId(validId),
       name: `Legacy analyzer ${validId}`,
       version: '1.0.0',
       apiVersion: '2.0.0',
@@ -245,31 +512,46 @@ export class PlatformPluginRegistry {
     const rawOptions = args.at(-1) && typeof args.at(-1) === 'object' ? args.at(-1) : {};
     const timeoutMs = strictPositiveInteger(rawOptions.timeoutMs, this.timeoutMs);
     const signal = rawOptions.signal;
-
-    let pluginScope = null;
-    if (context.resourceBudget && typeof context.resourceBudget.scope === 'function') {
-      const sanitized = `${type}.${id}.${method}`.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
-      try {
-        pluginScope = context.resourceBudget.scope(sanitized);
-      } catch {
-        pluginScope = context.resourceBudget;
-      }
-    }
+    const invocationController = new AbortController();
 
     try {
+      let pluginScope = null;
+      if (context.resourceBudget && typeof context.resourceBudget.scope === 'function') {
+        const baseScopeName = `${type}.${id}.${method}`.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+        this.#budgetInvocationSequence += 1n;
+        pluginScope = context.resourceBudget.scope(`${baseScopeName}.r${this.#budgetScopeNamespace}.i${this.#budgetInvocationSequence}`);
+        if (!pluginScope) throw new Error('plugin resource budget scope unavailable');
+      }
+
       const safeContext = Object.freeze({
         binary: safeSnapshot(context.binary), capability: safeSnapshot(context.capability), project: safeSnapshot(context.project),
         read: makeReadCapability(context, pluginScope, record),
-        resourceBudget: pluginScope || context.resourceBudget,
+        resourceBudget: makeBudgetCapability(pluginScope || context.resourceBudget),
         reportProgress: typeof context.reportProgress === 'function' ? (...progressArgs) => context.reportProgress(...progressArgs.map((x) => safeSnapshot(x))) : undefined,
+        signal: invocationController.signal,
       });
       const safeArgs = args.map((arg) => safeSnapshot(arg));
-      const value = await settleWithin(Promise.resolve().then(() => fn(safeContext, ...safeArgs)), timeoutMs, signal);
+      const lastArg = args.at(-1);
+      if (lastArg && typeof lastArg === 'object' && !Array.isArray(lastArg)) {
+        safeArgs[safeArgs.length - 1] = withInvocationSignal(safeArgs.at(-1), invocationController.signal);
+      }
+      const invocation = Promise.resolve().then(() => {
+        if (invocationController.signal.aborted) throw invocationController.signal.reason || invocationAbortError(signal?.reason);
+        return fn(safeContext, ...safeArgs);
+      });
+      const value = await settleWithin(invocation, timeoutMs, signal, invocationController);
       return { ok: true, value: safeSnapshot(value) };
     } catch (error) {
       const failure = { type, id, method, error: error?.message || String(error), at: Date.now() };
       this.failures.push(failure); if (this.failures.length > 100) this.failures.shift();
-      return { ok: false, error: failure.error, isolated: true, timeout: /timed out/i.test(failure.error) };
+      const timedOut = error?.code === 'PLUGIN_INVOCATION_TIMEOUT' || /timed out/i.test(failure.error);
+      return {
+        ok: false,
+        error: failure.error,
+        isolated: true,
+        timeout: timedOut,
+        ...(error?.executionMayContinue === true ? { executionMayContinue: true } : {}),
+      };
     }
   }
 

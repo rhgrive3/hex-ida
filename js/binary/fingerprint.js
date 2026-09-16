@@ -1,9 +1,8 @@
 import { sectionHasMappedAddress } from './audit.js';
+import { fnv64ByteView } from '../core/identity/fnv64.js';
 
 const FNV_OFFSET_HI = 0xcbf29ce4;
 const FNV_OFFSET_LO = 0x84222325;
-const FNV_PRIME_LO = 0x1b3;
-const FNV_PRIME_HI = 0x100;
 
 /*
  * FNV-1a 64-bit without a BigInt operation per byte.
@@ -44,19 +43,10 @@ function fnv1a64State(bytes, seed = null) {
     lo = loLimb >>> 0;
   } else throw new TypeError('FNV seed must be BigInt or {hi, lo}');
 
-  for (let i = 0; i < bytes.length; i++) {
-    lo = (lo ^ bytes[i]) >>> 0;
-    const a0 = lo & 0xffff;
-    const a1 = lo >>> 16;
-    const p0 = a0 * FNV_PRIME_LO;
-    const p1 = a1 * FNV_PRIME_LO;
-    const lowWide = p0 + ((p1 & 0xffff) * 0x10000);
-    const carry = Math.floor(lowWide / 0x100000000) + Math.floor(p1 / 0x10000);
-    const nextLo = lowWide >>> 0;
-    hi = (Math.imul(hi, FNV_PRIME_LO) + carry + Math.imul(lo, FNV_PRIME_HI)) >>> 0;
-    lo = nextLo;
-  }
-  return { hi, lo };
+  // Keep the seed boundary and indexed byte coercion unchanged; the
+  // shared integer-carry multiply computes the same limbs without divisions.
+  const state = fnv64ByteView(bytes, lo, hi);
+  return { hi: state.high, lo: state.low };
 }
 
 export function fnv1a64(bytes, seed = null) {
@@ -81,8 +71,8 @@ function functionFingerprintResult(bytes, fn) {
 }
 
 function byteCountOption(value, fallback, minimum = 1) {
-  const n = Number(value);
-  return Number.isSafeInteger(n) && n > 0 ? Math.max(minimum, n) : fallback;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) return fallback;
+  return Math.max(minimum, value);
 }
 
 /**
@@ -133,104 +123,66 @@ function requireMappingChunk(bytes, expectedLength) {
   return bytes;
 }
 
-function mergeIntervals(intervals) {
-  if (intervals.length <= 1) return intervals;
-  intervals.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
-  const merged = [];
-  for (const iv of intervals) {
-    if (!merged.length) {
-      merged.push({ start: iv.start, end: iv.end });
-    } else {
-      const last = merged[merged.length - 1];
-      if (iv.start <= last.end) {
-        if (iv.end > last.end) last.end = iv.end;
-      } else {
-        merged.push({ start: iv.start, end: iv.end });
-      }
-    }
-  }
-  return merged;
+function compareFingerprintSpans(a, b) {
+  if (a.start < b.start) return -1;
+  if (a.start > b.start) return 1;
+  if (a.end < b.end) return -1;
+  if (a.end > b.end) return 1;
+  if (a.bias == null) return b.bias == null ? 0 : 1;
+  if (b.bias == null) return -1;
+  if (a.bias < b.bias) return -1;
+  if (a.bias > b.bias) return 1;
+  return 0;
 }
 
-function subtractIntervals(start, end, covered) {
-  const result = [];
-  let cursor = start;
-  for (const iv of covered) {
-    if (iv.end <= cursor) continue;
-    if (iv.start >= end) break;
-    if (iv.start > cursor) {
-      result.push({ start: cursor, end: iv.start < end ? iv.start : end });
+function collectFingerprintSpans(mappings, spans, unrepresentable) {
+  for (const mapping of mappings) {
+    if (mapping.fileOffset == null) {
+      unrepresentable.push(mapping);
+      continue;
     }
-    if (iv.end > cursor) {
-      cursor = iv.end;
-    }
-    if (cursor >= end) break;
+    const start = BigInt(mapping.fileOffset);
+    spans.push({
+      start,
+      end: start + BigInt(mapping.fileSize),
+      bias: mapping.address == null ? null : start - BigInt(mapping.address),
+      name: mapping.name,
+      perms: mapping.perms,
+    });
   }
-  if (cursor < end) {
-    result.push({ start: cursor, end });
-  }
-  return result;
 }
 
 function fingerprintRanges(image, executableOnly) {
   const sections = (image.sections || []).filter((x) => BigInt(x.fileSize ?? 0) > 0n && (!executableOnly || (x.perms?.execute && sectionHasMappedAddress(x))));
   const segments = (image.segments || []).filter((x) => BigInt(x.fileSize ?? 0) > 0n && (!executableOnly || x.perms?.execute));
 
-  if (!sections.length) return segments;
-  if (!segments.length) return sections;
+  const spans = [];
+  const unrepresentable = [];
+  collectFingerprintSpans(sections, spans, unrepresentable);
+  collectFingerprintSpans(segments, spans, unrepresentable);
+  if (!spans.length) return unrepresentable;
 
-  const ranges = [...sections];
+  spans.sort(compareFingerprintSpans);
 
-  for (const seg of segments) {
-    if (seg.address == null) continue;
-    const segStart = BigInt(seg.address);
-    const segFileSize = BigInt(seg.fileSize ?? 0);
-    if (segFileSize <= 0n) continue;
-    const segEnd = segStart + segFileSize;
-    const segBias = BigInt(seg.fileOffset ?? 0) - segStart;
-
-    const coveredIntervals = [];
-    for (const sec of sections) {
-      if (sec.address == null || !sectionHasMappedAddress(sec)) continue;
-      const secStart = BigInt(sec.address);
-      const secSize = BigInt(sec.fileSize ?? sec.size ?? 0);
-      if (secSize <= 0n) continue;
-      const secEnd = secStart + secSize;
-      if (secEnd <= segStart || secStart >= segEnd) continue;
-
-      if (sec.fileOffset != null && seg.fileOffset != null) {
-        const secBias = BigInt(sec.fileOffset) - secStart;
-        if (secBias !== segBias) {
-          // Inconsistent file mapping: section does not cover segment file bytes
-          continue;
-        }
-      } else {
-        continue;
-      }
-
-      const overlapStart = secStart > segStart ? secStart : segStart;
-      const overlapEnd = secEnd < segEnd ? secEnd : segEnd;
-      if (overlapStart < overlapEnd) {
-        coveredIntervals.push({ start: overlapStart, end: overlapEnd });
-      }
-    }
-
-    const mergedCovered = mergeIntervals(coveredIntervals);
-    const uncovered = subtractIntervals(segStart, segEnd, mergedCovered);
-    for (const span of uncovered) {
-      const spanSize = span.end - span.start;
-      const offsetDelta = span.start - segStart;
-      const fileOffset = BigInt(seg.fileOffset ?? 0) + offsetDelta;
-      ranges.push({
-        name: seg.name,
-        address: span.start,
-        fileOffset,
-        fileSize: spanSize,
-        perms: seg.perms,
-      });
-    }
+  // `spans` is ordered by file offset, so one frontier is enough to build the
+  // canonical file-range union. Each span is visited once after the sort; no
+  // accumulated prefix is rescanned or re-sorted as the union grows.
+  const ranges = [];
+  let coveredEnd = null;
+  for (const span of spans) {
+    const start = coveredEnd != null && span.start < coveredEnd ? coveredEnd : span.start;
+    if (start >= span.end) continue;
+    ranges.push({
+      name: span.name,
+      address: span.bias == null ? null : start - span.bias,
+      fileOffset: start,
+      fileSize: span.end - start,
+      perms: span.perms,
+    });
+    coveredEnd = span.end;
   }
 
+  for (const mapping of unrepresentable) ranges.push(mapping);
   return ranges;
 }
 
