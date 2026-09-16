@@ -4,7 +4,7 @@ on:
     branches:
       - diag/7036-ownership-first-failure
 permissions:
-  contents: read
+  contents: write
 jobs:
   diagnose:
     runs-on: ubuntu-latest
@@ -13,29 +13,64 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Reproduce ownership gates
+      - name: Validate and publish ownership fix
         shell: bash
         run: |
           set +e
           set -uo pipefail
           STATUS=/tmp/diag-7036.txt
           : > "$STATUS"
-          HEAD_SHA=8beac18cf4b9ac8604dd75be093fd0acf7904f27
+          ORIGINAL_HEAD=8beac18cf4b9ac8604dd75be093fd0acf7904f27
           LOGICAL_BRANCH=feat/analysis-roadmap-v8-current-main-20260907
 
-          timeout 90s git fetch --no-tags origin main "$HEAD_SHA" >/tmp/fetch.log 2>&1
+          timeout 90s git fetch --no-tags origin main "$ORIGINAL_HEAD" >/tmp/fetch.log 2>&1
           rc=$?
           echo "fetch rc=$rc" >> "$STATUS"
           if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/fetch.log >> "$STATUS"; exit "$rc"; fi
-          git checkout --detach "$HEAD_SHA" >/tmp/checkout.log 2>&1
+          git checkout --detach "$ORIGINAL_HEAD" >/tmp/checkout.log 2>&1
           rc=$?
           echo "checkout rc=$rc" >> "$STATUS"
           if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/checkout.log >> "$STATUS"; exit "$rc"; fi
 
+          python3 - <<'PY' >/tmp/edit.log 2>&1
+          from pathlib import Path
+          edits = [
+              (Path('tools/validation/analysis-roadmap/ownership.mjs'),
+               "    '.github/workflows/ghidra-differential.yml',",
+               "    '.github/workflows/ghidra-differential.yml',\n    '.github/workflows/x02-apple-evidence.yml',"),
+              (Path('tools/validation/analysis-roadmap/ownership.json'),
+               '      ".github/workflows/ghidra-differential.yml",',
+               '      ".github/workflows/ghidra-differential.yml",\n      ".github/workflows/x02-apple-evidence.yml",'),
+          ]
+          for path, old, new in edits:
+              text = path.read_text()
+              if text.count('.github/workflows/x02-apple-evidence.yml'):
+                  raise SystemExit(f'{path}: x02 workflow already declared')
+              if text.count(old) != 1:
+                  raise SystemExit(f'{path}: expected exactly one insertion anchor, found {text.count(old)}')
+              path.write_text(text.replace(old, new))
+          PY
+          rc=$?
+          echo "edit rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/edit.log >> "$STATUS"; exit "$rc"; fi
+
+          git diff --check >/tmp/diffcheck.log 2>&1
+          rc=$?
+          echo "diff_check rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/diffcheck.log >> "$STATUS"; exit "$rc"; fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tools/validation/analysis-roadmap/ownership.mjs tools/validation/analysis-roadmap/ownership.json
+          git commit -m 'fix(analysis): declare X-02 workflow ownership' >/tmp/commit.log 2>&1
+          rc=$?
+          echo "commit rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/commit.log >> "$STATUS"; exit "$rc"; fi
+
           BASE_SHA=$(git rev-parse refs/remotes/origin/main)
-          ACTUAL_HEAD=$(git rev-parse HEAD)
+          TEST_HEAD=$(git rev-parse HEAD)
           echo "base=$BASE_SHA" >> "$STATUS"
-          echo "head=$ACTUAL_HEAD" >> "$STATUS"
+          echo "test_head=$TEST_HEAD" >> "$STATUS"
 
           fail_tail() {
             label="$1"; file="$2"; rc="$3"
@@ -49,10 +84,9 @@ jobs:
           rc=$?
           [ "$rc" -eq 0 ] || fail_tail phase7_manifest /tmp/p7manifest.log "$rc"
           echo "phase7_manifest rc=0" >> "$STATUS"
-
           timeout 120s node tools/validation/analysis-roadmap/ownership.mjs \
             --branch "$LOGICAL_BRANCH" --phase phase7 \
-            --base-sha "$BASE_SHA" --head-sha "$ACTUAL_HEAD" \
+            --base-sha "$BASE_SHA" --head-sha "$TEST_HEAD" \
             >/tmp/p7files.json 2>/tmp/p7gen.log
           rc=$?
           [ "$rc" -eq 0 ] || fail_tail phase7_inventory /tmp/p7gen.log "$rc"
@@ -67,10 +101,9 @@ jobs:
           rc=$?
           [ "$rc" -eq 0 ] || fail_tail phase8_manifest /tmp/p8manifest.log "$rc"
           echo "phase8_manifest rc=0" >> "$STATUS"
-
           timeout 120s node tools/validation/analysis-roadmap/ownership.mjs \
             --branch "$LOGICAL_BRANCH" --phase phase8 \
-            --base-sha "$BASE_SHA" --head-sha "$ACTUAL_HEAD" \
+            --base-sha "$BASE_SHA" --head-sha "$TEST_HEAD" \
             >/tmp/p8files.json 2>/tmp/p8gen.log
           rc=$?
           [ "$rc" -eq 0 ] || fail_tail phase8_inventory /tmp/p8gen.log "$rc"
@@ -80,7 +113,12 @@ jobs:
           rc=$?
           [ "$rc" -eq 0 ] || fail_tail phase8_validate /tmp/p8validate.log "$rc"
           echo "phase8_validate rc=0" >> "$STATUS"
-          echo "ownership gates reproduced green" >> "$STATUS"
+
+          timeout 60s git push origin "$TEST_HEAD:refs/heads/$LOGICAL_BRANCH" >/tmp/push.log 2>&1
+          rc=$?
+          echo "push rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/push.log >> "$STATUS"; exit "$rc"; fi
+          echo "ownership fix published" >> "$STATUS"
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
