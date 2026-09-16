@@ -33,16 +33,16 @@ jobs:
           python3 - <<'PY' >/tmp/patch.log 2>&1
           from pathlib import Path
           edits = [
-            ('tools/validation/analysis-roadmap/ownership.mjs', "    '.github/workflows/ghidra-differential.yml',\n", "    '.github/workflows/x02-collector-fix.yml',\n"),
-            ('tools/validation/analysis-roadmap/ownership.json', '      ".github/workflows/ghidra-differential.yml",\n', '      ".github/workflows/x02-collector-fix.yml",\n'),
-            ('tools/validation/analysis-roadmap/ownership.mjs', "    'tests/scpa/x02-declared-metadata-boundaries.test.mjs',\n", "    'tests/scpa/fixtures/x02-real-apple-evidence-20260916.json',\n"),
-            ('tools/validation/analysis-roadmap/ownership.json', '      "tests/scpa/x02-declared-metadata-boundaries.test.mjs",\n', '      "tests/scpa/fixtures/x02-real-apple-evidence-20260916.json",\n'),
+            ('tools/validation/analysis-roadmap/ownership.mjs', "    '.github/workflows/ghidra-differential.yml',\n", '.github/workflows/x02-collector-fix.yml', "    '.github/workflows/x02-collector-fix.yml',\n"),
+            ('tools/validation/analysis-roadmap/ownership.json', '      ".github/workflows/ghidra-differential.yml",\n', '.github/workflows/x02-collector-fix.yml', '      ".github/workflows/x02-collector-fix.yml",\n'),
+            ('tools/validation/analysis-roadmap/ownership.mjs', "    'tests/scpa/x02-declared-metadata-boundaries.test.mjs',\n", 'tests/scpa/fixtures/x02-real-apple-evidence-20260916.json', "    'tests/scpa/fixtures/x02-real-apple-evidence-20260916.json',\n"),
+            ('tools/validation/analysis-roadmap/ownership.json', '      "tests/scpa/x02-declared-metadata-boundaries.test.mjs",\n', 'tests/scpa/fixtures/x02-real-apple-evidence-20260916.json', '      "tests/scpa/fixtures/x02-real-apple-evidence-20260916.json",\n'),
           ]
-          for name, target, add in edits:
+          for name, anchor, token, add in edits:
               p=Path(name); s=p.read_text()
-              if add not in s:
-                  if target not in s: raise SystemExit(f'anchor missing: {name}: {target.strip()}')
-                  s=s.replace(target,target+add,1); p.write_text(s)
+              if token not in s:
+                  if anchor not in s: raise SystemExit(f'anchor missing: {name}: {anchor.strip()}')
+                  s=s.replace(anchor, anchor+add, 1); p.write_text(s)
           PY
           rc=$?; echo "patch rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 80 /tmp/patch.log >> "$STATUS"; exit $rc; }
           git config user.name 'github-actions[bot]'
