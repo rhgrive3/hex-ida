@@ -52,8 +52,6 @@ jobs:
           }
           fs.writeFileSync(jsPath, src);
           NODE
-          node tools/validation/analysis-roadmap/ownership.mjs --branch feat/analysis-roadmap-v8-current-main-20260907 --phase phase7 --base-sha "$(git rev-parse origin/main)" --head-sha HEAD >/tmp/phase7.json
-          node tools/validation/analysis-roadmap/ownership.mjs --branch feat/analysis-roadmap-v8-current-main-20260907 --phase phase8 --base-sha "$(git rev-parse origin/main)" --head-sha HEAD >/tmp/phase8.json
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add tools/validation/analysis-roadmap/ownership.json tools/validation/analysis-roadmap/ownership.mjs
