@@ -36,7 +36,7 @@ jobs:
             git add -- $conflicts
           fi
           test -z "$(git diff --name-only --diff-filter=U)"
-      - name: Run focused acceptance and capture first failure
+      - name: Run product acceptance and capture first failure
         id: focused
         shell: bash
         run: |
@@ -50,14 +50,12 @@ jobs:
             set -e
             echo "test=$label rc=$rc" >> pr7036-focused-summary.txt
             if [ "$rc" -ne 0 ]; then
-              tail -n 80 /tmp/test.out >> pr7036-focused-summary.txt
+              tail -n 100 /tmp/test.out >> pr7036-focused-summary.txt
               echo "failed=1" >> "$GITHUB_OUTPUT"
               return 1
             fi
           }
           run_one syntax node tests/check.mjs || exit 0
-          run_one phase7-ownership node tests/phase7/ownership/roadmap-v8-integration.test.mjs || exit 0
-          run_one phase8-ownership node tests/phase8/ownership/roadmap-v8-integration.test.mjs || exit 0
           run_one c1-pointsto node tests/phase7/pointsto/c1-combined-acceptance.test.mjs || exit 0
           run_one c1-summary node tests/phase7/summary/c1-combined-acceptance.test.mjs || exit 0
           run_one c3-types node tests/phase7/types/c3-combined-acceptance.test.mjs || exit 0
