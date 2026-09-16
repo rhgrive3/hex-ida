@@ -59,6 +59,29 @@ function metadataMappingSnapshot(mapping) {
   };
 }
 
+function snapshotAuthorityValue(value, seen = new WeakMap()) {
+  if (value == null || typeof value !== 'object') return value;
+  if (ArrayBuffer.isView(value)) return value.slice ? value.slice() : value;
+  if (value instanceof ArrayBuffer) return value.slice(0);
+  if (seen.has(value)) return seen.get(value);
+  if (Array.isArray(value)) {
+    const out = [];
+    seen.set(value, out);
+    for (const item of value) out.push(snapshotAuthorityValue(item, seen));
+    return out;
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return value;
+  const out = {};
+  seen.set(value, out);
+  for (const [key, child] of Object.entries(value)) out[key] = snapshotAuthorityValue(child, seen);
+  return out;
+}
+
+function authoritySnapshot(value) {
+  return value == null ? null : deepFreeze(snapshotAuthorityValue(value));
+}
+
 function canonicalResidentReader(bytes, sections, segments) {
   if (!(bytes instanceof Uint8Array)) return null;
   const mappings = [...sections, ...segments];
@@ -482,28 +505,29 @@ function parseThin(bytes, opts) {
     if (residentDigest(snapshot) !== sourceDigest) return null;
     return deepFreeze({ readAt: canonicalResidentReader(snapshot, authoritySections, authoritySegments) });
   };
-  ISSUED_MACHO_IMAGES.set(issued, deepFreeze({
+  const authority = {
     binaryIdentity: boundIdentity(residentIdentity.binaryIdentity),
     sliceIdentity: boundIdentity(residentIdentity.sliceIdentity),
     architecture: issued.arch,
-    buildVersion: issued.metadata.buildVersion ?? null,
+    buildVersion: authoritySnapshot(issued.metadata.buildVersion),
     fileOffset: issued.fileOffset,
     fileSize: issued.fileSize,
     imageBase: issued.imageBase,
     platform: issued.platform,
-    sections: authoritySections,
-    segments: authoritySegments,
+    sections: deepFreeze(authoritySections),
+    segments: deepFreeze(authoritySegments),
     createMetadataSource,
     sourceComplete: sourceDigest !== null,
     contentMatches,
-    machoMetadata: issued.metadata.machoMetadata,
-    codeSignatureCommandsComplete: issued.metadata.codeSignatureCommandsComplete === true,
-    codeSignature: issued.metadata.codeSignature ?? null,
-    chainedFixups: issued.metadata.chainedFixups ?? null,
-    chainedSites: chainedPointerSites(issued),
+    get machoMetadata() { return authoritySnapshot(issued.metadata.machoMetadata); },
+    get codeSignatureCommandsComplete() { return issued.metadata.codeSignatureCommandsComplete === true; },
+    get codeSignature() { return issued.metadata.codeSignature ?? null; },
+    get chainedFixups() { return authoritySnapshot(issued.metadata.chainedFixups); },
+    chainedSites: deepFreeze(chainedPointerSites(issued)),
     dyldCache: opts.dyldCache ?? null,
-    dyldCacheBinding,
-  }));
+    dyldCacheBinding: authoritySnapshot(dyldCacheBinding),
+  };
+  ISSUED_MACHO_IMAGES.set(issued, Object.freeze(authority));
   return issued;
 }
 
