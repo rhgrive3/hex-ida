@@ -1,4 +1,4 @@
-name: PR 8671 focused diagnostic
+name: PR 8671 auth failure diagnostic
 
 on:
   push:
@@ -8,46 +8,45 @@ permissions:
   contents: read
 
 jobs:
-  focused:
+  auth-failure:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned dependencies
         shell: bash
         run: timeout 300s npm ci
-      - name: Run focused checks independently
+      - name: Capture first auth failure only
         shell: bash
         run: |
           set -u
-          : > pr8671-focused-diagnostic.txt
-          run_check() {
-            name="$1"; limit="$2"; shift 2
-            out="/tmp/${name}.out"
-            set +e
-            timeout "$limit" "$@" >"$out" 2>&1
-            code=$?
-            set -e
-            if [ "$code" -eq 0 ]; then
-              printf '%s: PASS\n' "$name" >> pr8671-focused-diagnostic.txt
-              return 0
-            fi
-            printf '%s: FAIL exit=%s\n' "$name" "$code" >> pr8671-focused-diagnostic.txt
-            printf '%s\n' "--- ${name} minimal tail ---" >> pr8671-focused-diagnostic.txt
-            tail -n 25 "$out" >> pr8671-focused-diagnostic.txt
-            return 1
-          }
+          set +e
+          timeout 240s npm run auth:test > /tmp/auth.out 2>&1
+          code=$?
           set -e
-          run_check auth-test 240s npm run auth:test || exit 0
-          run_check public-benchmark 180s npm run benchmark:public:test || exit 0
-          run_check ai-ui-dev-profile 120s node tests/ai-ui-dev-profile.mjs || exit 0
-          run_check phase7-cross-lane 120s node tests/phase7/ownership/cross-lane-routing.test.mjs || exit 0
-          printf 'focused-all: PASS\n' >> pr8671-focused-diagnostic.txt
-          cat pr8671-focused-diagnostic.txt >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload focused diagnostic
+          printf 'auth-test-exit: %s\n' "$code" > pr8671-auth-failure.txt
+          if [ "$code" -eq 0 ]; then
+            printf 'auth-test: PASS\n' >> pr8671-auth-failure.txt
+          else
+            python <<'PY'
+          from pathlib import Path
+          lines=Path('/tmp/auth.out').read_text(errors='replace').splitlines()
+          idx=next((i for i,l in enumerate(lines) if l.startswith('not ok ')), None)
+          out=Path('pr8671-auth-failure.txt')
+          with out.open('a') as f:
+              if idx is None:
+                  f.write('first-failure: not-ok marker not found\n')
+                  for line in lines[-35:]: f.write(line+'\n')
+              else:
+                  f.write('first-failure-context:\n')
+                  for line in lines[max(0,idx-3):min(len(lines),idx+28)]: f.write(line+'\n')
+          PY
+          fi
+          cat pr8671-auth-failure.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload auth failure evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr8671-focused-diagnostic
-          path: pr8671-focused-diagnostic.txt
+          name: pr8671-auth-failure
+          path: pr8671-auth-failure.txt
           retention-days: 1
