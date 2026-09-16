@@ -15,6 +15,7 @@ on:
       - 'js/viewer.js'
       - 'js/graphview.js'
       - 'tests/browser.mjs'
+      - 'tests/issue-6262-destroy-resize-timer.mjs'
       - 'tests/ui/**'
       - 'tests/ux.mjs'
       - 'package.json'

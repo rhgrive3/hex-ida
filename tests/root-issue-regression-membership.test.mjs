@@ -14,6 +14,13 @@ test('root issue regressions have total canonical membership', () => {
   assert.equal(inventory.all.length, inventory.executed.length + inventory.excluded.length);
   assert.equal(new Set([...inventory.executed, ...inventory.excluded]).size, inventory.all.length);
   assert.deepEqual(Object.keys(ROOT_ISSUE_EXCLUSIONS), inventory.excluded);
+  const packageJson = JSON.parse(fs.readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'));
+  for (const name of inventory.excluded) {
+    const record = ROOT_ISSUE_EXCLUSIONS[name];
+    assert.equal(typeof record.script, 'string');
+    assert.equal(typeof packageJson.scripts[record.script], 'string');
+    assert.ok(packageJson.scripts[record.script].includes(name), `${name} must be present in ${record.script}`);
+  }
 });
 
 test('required test script routes through the canonical root issue runner', () => {

@@ -13,14 +13,16 @@ const MAX_DIAGNOSTIC_BYTES = 12 * 1024;
 // omission from this table is never a way to remove a regression from the gate.
 export const ROOT_ISSUE_EXCLUSIONS = Object.freeze({
   'issue-6262-destroy-resize-timer.mjs': Object.freeze({
-    reason: 'requires the Playwright Chromium executable; run in the browser regression job',
+    reason: 'requires the Playwright Chromium executable; delegated to the required AI browser regression lane',
     owner: 'rhgrive3',
     reviewed: '2026-09-17',
+    script: 'ai:browser',
   }),
   'issue-6264-ai-capability-refresh.mjs': Object.freeze({
-    reason: 'requires the Playwright Chromium executable; run in the browser regression job',
+    reason: 'requires the Playwright Chromium executable; delegated to the required AI browser regression lane',
     owner: 'rhgrive3',
     reviewed: '2026-09-17',
+    script: 'ai:browser',
   }),
 });
 
@@ -37,14 +39,27 @@ function positiveInteger(value, fallback, label) {
   return parsed;
 }
 
-function validateExclusions(allNames) {
+function packageScripts(root) {
+  const packagePath = path.join(root, '..', 'package.json');
+  const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+  if (!packageJson.scripts || typeof packageJson.scripts !== 'object') {
+    throw new Error('root issue exclusion policy requires package scripts');
+  }
+  return packageJson.scripts;
+}
+
+function validateExclusions(allNames, scripts) {
   for (const [name, record] of Object.entries(ROOT_ISSUE_EXCLUSIONS)) {
     if (!allNames.includes(name)) throw new Error(`root issue exclusion names missing file: ${name}`);
     if (!record || typeof record !== 'object'
       || typeof record.reason !== 'string' || record.reason.trim() === ''
       || typeof record.owner !== 'string' || record.owner.trim() === ''
-      || typeof record.reviewed !== 'string' || record.reviewed.trim() === '') {
-      throw new TypeError(`root issue exclusion requires reason, owner, and reviewed: ${name}`);
+      || typeof record.reviewed !== 'string' || record.reviewed.trim() === ''
+      || typeof record.script !== 'string' || record.script.trim() === '') {
+      throw new TypeError(`root issue exclusion requires reason, owner, reviewed, and script: ${name}`);
+    }
+    if (typeof scripts[record.script] !== 'string' || !scripts[record.script].includes(name)) {
+      throw new Error(`root issue exclusion is not delegated to its declared package script: ${name} -> ${record.script}`);
     }
   }
 }
@@ -60,7 +75,7 @@ export function discoverRootIssueRegressions(root = TESTS_ROOT) {
     .map((entry) => entry.name)
     .sort(compareFileNames);
   if (names.length === 0) throw new Error('root issue regression discovery found no tests/issue-* files');
-  validateExclusions(names);
+  validateExclusions(names, packageScripts(root));
   const excluded = names.filter((name) => Object.hasOwn(ROOT_ISSUE_EXCLUSIONS, name));
   const executed = names.filter((name) => !Object.hasOwn(ROOT_ISSUE_EXCLUSIONS, name));
   return Object.freeze({
