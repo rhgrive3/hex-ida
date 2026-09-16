@@ -18,16 +18,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-      - name: Check patch applicability
-        run: git apply --check .github/t016-index.patch
-      - name: Apply patch
-        run: git apply .github/t016-index.patch
-      - name: Check index syntax
-        run: node --check js/analysis/index.js
-      - name: Check artifact syntax
-        run: node --check js/analysis/discovery/artifact.js
-      - name: Check typed identity syntax
-        run: node --check js/analysis/discovery/canonical-value.js
+      - name: Wire artifact at exact current-main boundaries
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('js/analysis/index.js')
+          text = p.read_text()
+          old_import = "import { GENERIC_PRODUCERS } from './discovery/producers.js';\nimport { validateMemorySsaBinding } from './memoryssa-binding.js';"
+          new_import = "import { GENERIC_PRODUCERS } from './discovery/producers.js';\nimport { createDiscoveryArtifact } from './discovery/artifact.js';\nimport { validateMemorySsaBinding } from './memoryssa-binding.js';"
+          old_body = """  const collected = registry.collect(input, architectureId, options);\n  return fuseFunctionCandidates(collected.evidence, {\n    architectureId,\n    ...options,\n    producerStatus: { truncated: collected.truncated, stopReason: collected.stopReason },\n  });"""
+          new_body = """  const collected = registry.collect(input, architectureId, options);\n  const fused = fuseFunctionCandidates(collected.evidence, {\n    architectureId,\n    ...options,\n    producerStatus: { truncated: collected.truncated, stopReason: collected.stopReason },\n  });\n  const canonicalProducerIds = new Set(GENERIC_PRODUCERS.map((producer) => producer.id));\n  const evidenceCounts = new Map();\n  for (const item of collected.evidence) {\n    evidenceCounts.set(item.producerId, (evidenceCounts.get(item.producerId) ?? 0) + 1);\n  }\n  const producerRuns = collected.producerIds.map((id) => ({\n    id,\n    version: '1.0.0',\n    completeness: collected.truncated ? 'partial' : 'complete',\n    stopReason: collected.truncated ? (collected.stopReason ?? 'evidence-missing') : null,\n    evidenceCount: evidenceCounts.get(id) ?? 0,\n    authorityClass: canonicalProducerIds.has(id) ? 'canonical' : 'external',\n  }));\n  const artifact = createDiscoveryArtifact({\n    evidence: collected.evidence,\n    candidates: fused.candidates,\n    status: fused.status,\n    producerRuns,\n    binding: {\n      binaryId: options.binaryId ?? null,\n      sourceHash: options.sourceHash ?? null,\n      snapshotId: options.snapshotId ?? null,\n      architectureId,\n    },\n    budget: options.artifactBudget ?? {},\n  });\n  return { ...fused, artifact };"""
+          if text.count(old_import) != 1 or text.count(old_body) != 1:
+              raise SystemExit('t016-index-boundary-mismatch')
+          text = text.replace(old_import, new_import).replace(old_body, new_body)
+          p.write_text(text)
+      - name: Check syntax
+        run: |
+          node --check js/analysis/index.js
+          node --check js/analysis/discovery/artifact.js
+          node --check js/analysis/discovery/canonical-value.js
       - name: Commit current-main artifact wiring
         shell: bash
         run: |
