@@ -1,4 +1,5 @@
 name: T017 focused verification
+# Rerun after current-main closure-matrix provenance adaptation.
 
 on:
   push:
