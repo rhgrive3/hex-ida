@@ -43,23 +43,28 @@ jobs:
         run: node --test tests/phase8/structuring/conditional-region-reachability.test.mjs
       - name: Test conditional region structure
         run: node --test tests/phase8/structuring/conditional-region-structure.test.mjs
-      - name: Build protected userscript and commit candidate
+      - name: Generate protected userscript
+        run: npm run userscript:build
+      - name: Validate generated diff
+        run: git diff --check
+      - name: Commit candidate
         shell: bash
         run: |
           set -euo pipefail
-          npm run userscript:build
-          git diff --check
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add js/decompiler/phase8/structuring.js tests/phase8/structuring/edge-accounting.test.mjs userscript/hex.user.template.js userscript/release-version.json
           git commit -m 'fix(phase8): keep dispatcher loops residual'
-      - name: Verify ownership and deterministic generated output
+      - name: Rebuild protected userscript
+        run: npm run userscript:build
+      - name: Verify deterministic generated output
+        run: git diff --exit-code
+      - name: Verify Phase 8 ownership manifest
+        run: node tools/validation/phase8-ownership.mjs --check-manifest
+      - name: Verify roadmap Phase 8 ownership
         shell: bash
         run: |
           set -euo pipefail
-          npm run userscript:build
-          git diff --exit-code
-          node tools/validation/phase8-ownership.mjs --check-manifest
           git fetch --no-tags --depth=400 origin main:refs/remotes/origin/main
           BASE_SHA=$(git rev-parse refs/remotes/origin/main)
           node tools/validation/analysis-roadmap/ownership.mjs --branch "$TARGET_BRANCH" --phase phase8 --base-sha "$BASE_SHA" --head-sha "$(git rev-parse HEAD)"
