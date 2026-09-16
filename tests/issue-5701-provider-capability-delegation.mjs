@@ -1,3 +1,4 @@
+import './issue-5086-gemini-configured-availability.mjs';
 // Regression for #5701: UserscriptAIProvider never delegated
 // prepareCapabilities()/getCapabilities() to the selected child provider, so
 // a Gemini/Worker turn was budgeted against the wrapper's static defaults and
