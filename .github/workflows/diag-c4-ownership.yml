@@ -1,4 +1,4 @@
-name: Finalize C4-04 audit
+name: Diagnose C4-04 audit patch
 
 on:
   push:
@@ -6,119 +6,54 @@ on:
       - 'diag/c4-ownership-20260916'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  finalize:
+  diagnose:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
         with:
           ref: feat/analysis-roadmap-v8-current-main-20260907
-          fetch-depth: 0
-      - name: Synchronize C4-04 audit with scoped adoption
+          fetch-depth: 1
+      - name: Audit JSON patch contract
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
-
-          const auditPath = 'docs/analysis-local-acceptance-audit.json';
-          const audit = JSON.parse(fs.readFileSync(auditPath, 'utf8'));
-          audit.assessmentDate = '2026-09-16';
+          const audit = JSON.parse(fs.readFileSync('docs/analysis-local-acceptance-audit.json','utf8'));
           const finding = audit.findings.find(row => row.id === 'HEX-C4-04');
           const taskA = audit.tasks.find(row => row.id === 'FR-C4-04A');
           const taskB = audit.tasks.find(row => row.id === 'FR-C4-04B');
-          if (!finding || !taskA || !taskB) throw new Error('C4-04 audit rows missing');
-
-          finding.localStatus = 'partial';
-          finding.assessment = 'scalar proof-gated adoptionは既存transaction/verificationへ接続済み。さらに独立証明済みの到達不能conditional regionについて、no-PHI/no-MemoryPHIのflat-store bodyだけをrendered C ASTから削除し、producer-bound tombstone/provenanceとstale/history失敗時rollbackを必須化した。canonical IR/SSA/CFGは変更しない。terminal return/memory/control targetはobservableだが、native fault/exception/unwindと任意memory/CFG rewriteは未モデル化のため元要求はpartial。';
-          finding.source = 'js/decompiler/phase8/projection.js';
-          finding.verificationSuite = 'c4-proof-adoption-scoped';
-          finding.originalRequirementAcceptedHere = false;
-
-          taskA.localStatus = 'partial';
-          taskA.currentAssessment = 'requested-target decisions、frozen width/operator matrices、real nonconstant proof-only publicationをactual committed/rendered scalar adoptionへ接続済み。copied/stale/unknown/refuted/budget-failed proofはcommitできない。ordinary legacy-view normalizationとexhaustive per-rule/full-width denominatorは未完了のため元FRはpartial。';
-          taskA.originalRequirementAcceptedHere = false;
-
-          taskB.localStatus = 'partial';
-          taskB.currentAssessment = 'terminal return、all terminal memory bytes、terminal control targetはversioned observable。独立証明済みの到達不能flat-store conditional armはexact private region/body authorityと完全なremoval provenanceを要求するrender-only adoption境界を通る。canonical IR/SSA/CFGは不変。native fault/exception/unwind、任意CFG/memory rewrite、bounded-loop semantic equivalenceは未完了のため元FRはpartial。';
-          taskB.originalRequirementAcceptedHere = false;
-
-          audit.integrationFollowup.c4ProofAdoption20260916 = {
-            date: '2026-09-16',
-            preDocumentationHead: '6530c214a287fdf849d0d052650242e97b954f1c',
-            status: 'SCOPED-ADOPTION-PROVED',
-            fullRoadmapComplete: false,
-            globalTransformAuthorization: false,
-            scope: 'independently proved unreachable conditional-region render arm; no-PHI/no-MemoryPHI flat-store body only',
-            canonicalIRMutation: false,
-            failClosed: [
-              'copied public metadata cannot mint body authority',
-              'stale region/body authority refuses adoption',
-              'missing or truncated provenance/history rolls back',
-              'canonical Semantic IR/SSA/CFG remain unchanged'
-            ],
-            focusedTests: [
-              'tests/phase8/structuring/conditional-region-body-authority.test.mjs',
-              'tests/phase8/structuring/conditional-region-body-projection.test.mjs',
-              'tests/phase8/substrate/proof-target-decisions.test.mjs',
-              'tests/phase9/memory/terminal-control-equivalence.test.mjs'
-            ],
-            preDocumentationCi: {
-              prFastGate: 'success',
-              userscriptHost: 'success',
-              phase7Ownership: 'success',
-              phase8Ownership: 'success'
-            },
-            remaining: [
-              'ordinary legacy-view normalization/adoption denominator',
-              'exhaustive per-rule/full-width scalar denominator',
-              'native fault/exception/unwind observables',
-              'arbitrary memory/CFG rewrite equivalence',
-              'whole-roadmap independent/device/release acceptance'
-            ]
-          };
-          fs.writeFileSync(auditPath, `${JSON.stringify(audit, null, 2)}\n`);
-
-          const statusPath = 'docs/解析ツール改善.md';
-          let status = fs.readFileSync(statusPath, 'utf8');
-          status = status.replace(
-            '# 解析ツール改善 — 実装・受入の現況（2026-09-15）',
-            '# 解析ツール改善 — 実装・受入の現況（2026-09-16）'
-          );
-          const statusSection = `## 2026-09-16 C4-04 proof-gated adoption の更新\n\nC4-04 の既存 scalar proof gate は requested-target decision、frozen width/operator matrix、actual committed/rendered publication まで接続済みです。今回さらに、独立に到達不能と証明できた conditional region について、**no PHI / no MemoryPHI の flat-store body に限り**、private な exact-region/body authority を使って rendered C AST の不要 arm を実際に削除する境界を接続しました。canonical Semantic IR / SSA / CFG は変更しません。producer-bound tombstone と完全な provenance/history が欠ける場合、region/body が stale な場合、history budget が不足する場合は変換を公開せず rollback します。\n\nこれは FR-C4-04B 全体の完了ではありません。terminal return、全 terminal memory byte、terminal control target は versioned observable として比較できますが、native fault/exception/unwind、任意 memory/CFG rewrite、bounded-loop semantic equivalence、ordinary legacy-view 全体の adoption と exhaustive per-rule/full-width denominator は残ります。したがって `HEX-C4-04` / `FR-C4-04A` / `FR-C4-04B` は引き続き **partial**、全体は **CHECKPOINT-LOCKED** / \`transformAuthorization:false\` です。\n\npre-documentation head \`6530c214a287fdf849d0d052650242e97b954f1c\` では PR fast gate、ChatGPT userscript host、CircleCI phase7/phase8 ownership が success まで復旧しました。文書更新後の exact-head は別に再確認します。\n\n`;
-          if (!status.includes('## 2026-09-16 C4-04 proof-gated adoption の更新')) {
-            const anchor = '研究完了、有限テスト成功、全機能完成、生成物同期、独立検証、実機受入は別の事実である。\n\n';
-            if (!status.includes(anchor)) throw new Error('status insertion anchor missing');
-            status = status.replace(anchor, `${anchor}${statusSection}`);
-          }
-          const oldRow = '| HEX-C4-04 | partial | generic normal-return PCをbyte equivalenceの独立observableに追加。native全state/fault/exceptionの変換authorityは依然未許可。 |';
-          const newRow = '| HEX-C4-04 | partial | scalar proof-gated publicationに加え、独立証明済み到達不能 conditional arm の no-PHI/no-MemoryPHI flat-store body を render-only で実削除。canonical IR/SSA/CFGは不変、stale/history/provenance不備はrollback。native fault/exception/unwind・任意memory/CFG rewrite・全rule/width受入は未完了。 |';
-          if (!status.includes(oldRow) && !status.includes(newRow)) throw new Error('C4-04 status row missing');
-          status = status.replace(oldRow, newRow);
-          fs.writeFileSync(statusPath, status);
-
-          const checkpointPath = 'docs/analysis-roadmap-v8-integration-checkpoint.md';
-          let checkpoint = fs.readFileSync(checkpointPath, 'utf8');
-          const checkpointSection = `## 2026-09-16: C4-04 scoped render adoption と CI ownership 復旧\n\nC4-04 の scalar proof-only publicationに加え、既存 conditional-region reachability / erasure plan から exact copied-region capability を private に引き継ぎ、独立証明済み到達不能 arm の **no PHI / no MemoryPHI / flat-store body** だけを rendered C AST から削除する adoption 境界を接続しました。公開 text/ID/plan のコピーでは body authority を再構成できません。region/body の mutation、欠落した authority、provenance/history 不完全、history budget 不足では fail closed し、削除を公開しません。削除された statement は producer-bound tombstone と removal record を持ちます。canonical Semantic IR / SSA / CFG は変更しません。\n\nこの scoped adoption は ordinary legacy-view normalization 全体、PHI/MemoryPHI を含む領域削除、任意 CFG/memory rewrite、native fault/exception/unwind、bounded-loop semantic equivalence の証明ではありません。terminal return / all terminal memory bytes / terminal control target の versioned observables は維持しますが、未モデル化 machine effect は unknown のままです。そのため FR-C4-04A/B と HEX-C4-04 は **partial** を維持し、全体の CHECKPOINT-LOCKED / transformAuthorization:false は解除しません。\n\n追加した \`conditional-region-body-authority.test.mjs\` と \`conditional-region-body-projection.test.mjs\` は Phase8 owner に、final-head 契約2本と userscript embed-child 契約は integration owner に登録しました。pre-documentation head \`6530c214a287fdf849d0d052650242e97b954f1c\` では PR fast gate と ChatGPT userscript host が success、CircleCI の phase7/phase8 ownership も success へ復旧しています。文書更新後の exact-head gate はこの記録とは分離して再確認します。\n\n`;
-          if (!checkpoint.includes('## 2026-09-16: C4-04 scoped render adoption と CI ownership 復旧')) {
-            const anchor = '# Analysis roadmap v8 integration checkpoint\n\n';
-            if (!checkpoint.startsWith(anchor)) throw new Error('checkpoint heading anchor missing');
-            checkpoint = checkpoint.replace(anchor, `${anchor}${checkpointSection}`);
-          }
-          fs.writeFileSync(checkpointPath, checkpoint);
+          if (!finding || !taskA || !taskB) throw new Error('missing C4 rows');
+          if (!audit.integrationFollowup || typeof audit.integrationFollowup !== 'object') throw new Error('integrationFollowup not object');
+          audit.integrationFollowup.c4ProofAdoption20260916 = {status:'probe'};
+          JSON.parse(JSON.stringify(audit));
           NODE
-          node -e "JSON.parse(require('fs').readFileSync('docs/analysis-local-acceptance-audit.json','utf8')); console.log('audit-json-ok')"
-          git diff --check
-          git diff --stat
-      - name: Commit audit synchronization
+      - name: Status markdown patch contract
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add docs/analysis-local-acceptance-audit.json docs/analysis-roadmap-v8-integration-checkpoint.md docs/解析ツール改善.md
-          git commit -m 'docs(analysis): record scoped C4-04 adoption'
-          git push origin HEAD:feat/analysis-roadmap-v8-current-main-20260907
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const status = fs.readFileSync('docs/解析ツール改善.md','utf8');
+          const anchor = '研究完了、有限テスト成功、全機能完成、生成物同期、独立検証、実機受入は別の事実である。\n\n';
+          const oldRow = '| HEX-C4-04 | partial | generic normal-return PCをbyte equivalenceの独立observableに追加。native全state/fault/exceptionの変換authorityは依然未許可。 |';
+          if (!status.includes(anchor)) throw new Error('status anchor missing');
+          if (!status.includes(oldRow)) throw new Error('status C4 row missing');
+          NODE
+      - name: Checkpoint markdown patch contract
+        continue-on-error: true
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const checkpoint = fs.readFileSync('docs/analysis-roadmap-v8-integration-checkpoint.md','utf8');
+          const anchor = '# Analysis roadmap v8 integration checkpoint\n\n';
+          if (!checkpoint.startsWith(anchor)) throw new Error('checkpoint heading anchor missing');
+          NODE
+      - name: Diff-check probe
+        shell: bash
+        run: git diff --check
