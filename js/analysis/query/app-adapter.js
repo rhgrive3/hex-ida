@@ -295,12 +295,32 @@ function cloneableLegacyModel(model) {
 // Query snapshots publish the serializable IR, while the live callback remains
 // owned by the producer. Other unclonable query data still fails closed.
 function cloneableDecompilerProjection(value) {
-  if (!value || typeof value !== 'object'
-    || !value.ir || typeof value.ir !== 'object'
-    || typeof value.ir.defUse !== 'function') return value;
-  const ir = { ...value.ir };
-  delete ir.defUse;
-  return { ...value, ir };
+  if (!value || typeof value !== 'object') return value;
+  let changed = false;
+  const projection = { ...value };
+  if (value.ir && typeof value.ir === 'object' && typeof value.ir.defUse === 'function') {
+    const ir = { ...value.ir };
+    delete ir.defUse;
+    projection.ir = ir;
+    changed = true;
+  }
+  if (value.ctx && typeof value.ctx === 'object') {
+    const ctx = { ...value.ctx };
+    let ctxChanged = false;
+    if (value.ctx.values && typeof value.ctx.values === 'object') {
+      const values = { ...value.ctx.values };
+      let valuesChanged = false;
+      for (const key of ['at', 'defAt']) {
+        if (typeof values[key] === 'function') { delete values[key]; valuesChanged = true; }
+      }
+      if (valuesChanged) { ctx.values = values; ctxChanged = true; }
+    }
+    for (const key of ['rowOfAddress', 'addrOfRow', 'symbolFor', 'rawSymbolFor', 'fieldFor']) {
+      if (typeof ctx[key] === 'function') { delete ctx[key]; ctxChanged = true; }
+    }
+    if (ctxChanged) { projection.ctx = ctx; changed = true; }
+  }
+  return changed ? projection : value;
 }
 
 function legacyPresentationModel(model) {
