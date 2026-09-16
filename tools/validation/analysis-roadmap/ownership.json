@@ -548,7 +548,10 @@
       "tests/ci/final-head-admission-6570.test.mjs",
       "tests/ci/final-head-admission-auto-reviewer-identity-6570.test.mjs",
       "tests/userscript-embed-child.mjs",
-      "js/core/evidence/index.js"
+      "js/core/evidence/index.js",
+      "js/expr.js",
+      "tests/semantic-v2/lowering-memory-control.test.mjs",
+      "tests/semantic-v2/phase3-hard-timeout.test.mjs"
     ]
   }
 }
