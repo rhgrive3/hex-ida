@@ -675,6 +675,18 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     "tests/phase8/ownership/cross-lane-routing.test.mjs",
     "tools/validation/phase8/cross-lane-inventory.mjs",
   ]),
+  // PR #9006 (lane-02 batch-04) pairs the Phase 7 discovery producers.js fix
+  // (#8833) with test-only fixture synchronization for Phase 4 (#8813) and
+  // Phase 6 (#8719) owned files. Phase 7 validates only its owned subset;
+  // every foreign path is enumerated so this route cannot become a general
+  // Phase 7 ownership exemption.
+  "codex/issue-campaign-20260914-lane-02-batch-04": Object.freeze([
+    ".circleci/config.yml",
+    "tests/phase4/binary/issue-4358-elf-dynamic-xindex-common.test.mjs",
+    "tests/phase4/issue-3630-elf-dynamic-section-authority.test.mjs",
+    "tests/phase6/generic-core/issues-889-897.test.mjs",
+    "tests/phase6/generic-core/issues-907-909-910-913.test.mjs",
+  ]),
 });
 
 function phase7Owned(file, patterns) {

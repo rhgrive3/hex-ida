@@ -35,7 +35,7 @@ import { NavigationHistory } from './navigation.js';
 import { STRING_SCAN_BUDGET, StringCollectionBudget } from './string-budget.js';
 import { productDescriptor } from './platform/product-descriptor.js';
 import { ProductWorkspace } from './workspace.js';
-import { AnalysisQueryAPI, createAppAnalysisQueryAdapter } from './analysis/query/index.js';
+import { createLazyAppAnalysisQueryAPI } from './analysis/query/lazy-app-adapter.js';
 import { appProducerAbortError, waitForAppProducer } from './analysis/producer-wait.js';
 import { clearSchemaRecoveryTasks } from './analysis/schema-recovery-task.js';
 
@@ -335,7 +335,7 @@ export class App {
     });
     this.viewer.attachScrubber(this.dom.scrubber, this.dom.thumb);
     this.workspace = new ProductWorkspace(this);
-    this.analysisQueries = new AnalysisQueryAPI(createAppAnalysisQueryAdapter(this));
+    this.analysisQueries = createLazyAppAnalysisQueryAPI(this);
     this.activeProject = null;
 
     this.applyTheme(this.prefs.theme || 'system');

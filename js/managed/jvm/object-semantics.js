@@ -176,6 +176,13 @@ export function applyJvmObjectIdentitySemantics(lifted, jvmClass, options = {}) 
             receiverAllocationId: receiver.allocationId,
             initializesAllocation: true,
           } : effect);
+          // #1138: `invokespecial <init>` pushes its own objectref back onto the
+          // stack, so the freshly initialized object is the value the following
+          // bytecode sees. Carry the receiver's allocation identity across that
+          // push instead of dropping it with the popped slot.
+          producedValues = original.producedValues.map((value) => value?.aliasConsumedReceiver === true
+            ? withAllocation(value, { ...receiver, allocationState: 'initialized' })
+            : value);
           for (const fact of stackFacts) {
             if (fact?.allocationId === receiver.allocationId) fact.allocationState = 'initialized';
           }

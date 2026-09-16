@@ -412,6 +412,17 @@ jobs:
                   --head-sha "$OWNERSHIP_HEAD_SHA")"
                 node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
                 ;;
+              codex/issue-campaign-20260914-lane-02-batch-04)
+                # PR #9006 (lane-02 batch-04) is a three-issue cross-lane
+                # batch. Enumerate every foreign path through the exact route
+                # before validating the Phase 7-owned subset so the gate
+                # stays fail-closed.
+                FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+                  --branch "$CIRCLE_BRANCH" \
+                  --base-sha "$OWNERSHIP_BASE_SHA" \
+                  --head-sha "$OWNERSHIP_HEAD_SHA")"
+                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
+                ;;
               codex/issue-campaign-20260914-lane-04-b01r)
                 # PR #9014 is a reviewed cross-lane Semantic IR repair. Require
                 # the complete six-file inventory before projecting the single
