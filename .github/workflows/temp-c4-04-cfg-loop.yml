@@ -1,0 +1,33 @@
+name: Temporary C4-04 CFG loop validation
+on:
+  push:
+    branches: ['impl/c4-04-finish-20260916']
+    paths: ['.github/workflows/temp-c4-04-cfg-loop.yml']
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: impl/c4-04-finish-20260916
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: C4 CFG and bounded-loop tests
+        shell: bash
+        run: |
+          set -o pipefail
+          node --test tests/phase9/memory/c4-cfg-loop-equivalence.test.mjs 2>&1 | tee /tmp/c4-cfg-loop.log
+      - name: Upload focused evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c4-04-cfg-loop-evidence
+          path: /tmp/c4-cfg-loop.log
+          if-no-files-found: ignore
+          retention-days: 1
