@@ -70,12 +70,12 @@ export class ProposalStore {
    * still current. The record's provenance is already carried as
    * `sourceBinding`; once the analysis revision (or binary/project/runtime
    * binding) moves on, that record must not authorize a new proposal. Records
-   * that carry no revision-bound provenance are unaffected.
+   * with missing/invalid provenance fail closed whenever a current-binding resolver is configured.
    */
   evidenceBindingIsCurrent(record) {
     if (!this.currentEvidenceBinding) return true;
     const bound = record?.sourceBinding;
-    if (typeof bound !== 'string' || !bound) return true;
+    if (typeof bound !== 'string' || !bound) return false;
     let current;
     try { current = this.currentEvidenceBinding(); } catch { return false; }
     return typeof current === 'string' && current.length > 0 && current === bound;

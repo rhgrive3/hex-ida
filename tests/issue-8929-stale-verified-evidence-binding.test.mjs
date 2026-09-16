@@ -154,6 +154,14 @@ test('#8929 adapters without a binding resolver keep the legacy status contract'
   const proposal = legacy.create(draft(['ev-1']));
   assert.deepEqual(proposal.evidenceIds, ['ev-1']);
 
+  // A configured resolver also requires provenance on the verified record itself.
+  // Missing sourceBinding is not an implicit revision-invariant authority class.
+  const missing = new ProposalStore({
+    evidenceStore: { get: (id) => (id === 'ev-1' ? { id, status: 'verified' } : null) },
+    currentEvidenceBinding: () => 'current-binding',
+  });
+  assert.throws(() => missing.create(draft(['ev-1'])), (error) => error?.type === 'invalid_tool_call');
+
   // A configured resolver that cannot prove a current binding fails closed.
   const strict = new ProposalStore({
     evidenceStore: { get: (id) => (id === 'ev-1' ? { id, status: 'verified', sourceBinding: 'stale-binding' } : null) },

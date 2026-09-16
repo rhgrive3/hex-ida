@@ -7,8 +7,10 @@ import test from 'node:test';
 import { AIRuntime } from '../js/ai/runtime.js';
 
 function stubEvidence() {
+  const sourceBinding = 'test-evidence-binding';
   return {
-    get(id) { return id === 'ev-1' ? { id, status: 'verified' } : null; },
+    observationStore: { binding() { return { key: sourceBinding }; } },
+    get(id) { return id === 'ev-1' ? { id, status: 'verified', sourceBinding } : null; },
     has(id) { return id === 'ev-1'; },
   };
 }
