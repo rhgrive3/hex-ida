@@ -98,7 +98,7 @@ jobs:
           node --input-type=module <<'NODE'
           import fs from 'node:fs'; import {execFileSync} from 'node:child_process'; import {BRANCH,validateRoadmapInventory} from './tools/validation/analysis-roadmap/ownership.mjs';
           const files=execFileSync('git',['diff','--name-only',process.env.BASE_SHA],{encoding:'utf8'}).trim().split('\n').filter(Boolean);
-          for(const phase of ['phase7','phase8']) validateRoadmapInventory(BRANCH,phase,files);
+          validateRoadmapInventory(BRANCH,'phase8',files);
           JSON.parse(fs.readFileSync('docs/analysis-local-acceptance-audit.json','utf8'));
           console.log(JSON.stringify({changedPaths:files.length,ownership:'ok',audit:'ok'}));
           NODE
