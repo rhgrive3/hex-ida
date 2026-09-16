@@ -1,0 +1,15 @@
+diff --git a/tests/apple-knowledge-x02.test.mjs b/tests/apple-knowledge-x02.test.mjs
+--- a/tests/apple-knowledge-x02.test.mjs
++++ b/tests/apple-knowledge-x02.test.mjs
+@@ -143,9 +143,9 @@ function machoWithMetadataSection(sectionName, { swiftDescriptor = false } = {}) {
+   setAscii(bytes, 120, '__DATA', 16);
+   view.setBigUint64(136, 0x2000n, true);
+   view.setBigUint64(144, 4n, true);
+-  view.setUint32(152, 0x200, true);
++  view.setUint32(152, 0x1000, true);
+   if (swiftDescriptor) {
+-    view.setInt32(0x200, 0x100, true);
++    view.setInt32(0x1000, 0x100, true);
+     view.setUint32(0x1100, 17, true);
+     view.setInt32(0x1104, 0, true);
+     view.setInt32(0x1108, 0xf8, true);
