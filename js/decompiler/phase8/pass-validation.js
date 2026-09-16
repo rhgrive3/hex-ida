@@ -514,7 +514,7 @@ function metadataValidationRecord(value) {
       queryHash:metadataNonEmpty(value.queryHash, 'phase8-pass-transform-validation-query-hash-required'),
     });
     if (!hasCanonicalEquivalenceAuthority(value)) metadataFail('phase8-pass-transform-validation-equivalence-authority-required');
-    return Object.freeze({ record, equivalenceAuthority:true });
+    return Object.freeze({ record, equivalenceAuthority:true, authoritySource:value });
   }
   return Object.freeze({
     record:Object.freeze({
@@ -543,20 +543,23 @@ export function createValidatedPassResult(input = {}) {
     baseTransforms.push({ kind:raw.kind, targets:raw.targets, proof:raw.proof, originRefs:raw.originRefs });
     const extra = {};
     let equivalenceAuthority = false;
+    let authoritySource = null;
     if (Object.hasOwn(raw, 'rewrite')) extra.rewrite = metadataCloneOwned(raw.rewrite);
     if (Object.hasOwn(raw, 'unvalidatedReason')) extra.unvalidatedReason = metadataNonEmpty(raw.unvalidatedReason, 'phase8-pass-transform-unvalidated-reason-required');
     if (Object.hasOwn(raw, 'validation')) {
       const validated = metadataValidationRecord(raw.validation);
       extra.validation = validated.record;
       equivalenceAuthority = validated.equivalenceAuthority;
+      authoritySource = validated.authoritySource ?? null;
     }
-    extras.push(Object.freeze({ extra:Object.freeze(extra), equivalenceAuthority }));
+    extras.push(Object.freeze({ extra:Object.freeze(extra), equivalenceAuthority, authoritySource }));
   }
   const result = createPassResult({ ...input, transforms:baseTransforms });
   const entries = result.transforms.map((transform, index) => Object.freeze({
     base:Object.freeze({ kind:transform.kind, targets:transform.targets, proof:transform.proof, originRefs:transform.originRefs }),
     extra:extras[index].extra,
     equivalenceAuthority:extras[index].equivalenceAuthority,
+    authoritySource:extras[index].authoritySource,
   }));
   VALIDATED_REWRITE_METADATA.set(result, Object.freeze(entries));
   return result;
@@ -585,4 +588,5 @@ configurePhase8ProofApi({
   attachValidatedRewriteMetadata,
   recomputeEquivalenceProofId,
   validatedRewriteMetadataFor,
+  hasCanonicalEquivalenceAuthority,
 });

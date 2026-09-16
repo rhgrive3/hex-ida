@@ -55,7 +55,8 @@ export function configurePhase8RegionProofApi(api) {
 export function configurePhase8ProofApi(api) {
   if (!api || typeof api !== 'object') fail('phase8-proof-api-required');
   const required = ['PROOF_REWRITE_PASS', 'proofAdmissionReason', 'proofPublicationResult',
-    'attachValidatedRewriteMetadata', 'recomputeEquivalenceProofId', 'validatedRewriteMetadataFor'];
+    'attachValidatedRewriteMetadata', 'recomputeEquivalenceProofId', 'validatedRewriteMetadataFor',
+    'hasCanonicalEquivalenceAuthority'];
   if (required.some((key) => typeof api[key] !== (key === 'PROOF_REWRITE_PASS' ? 'object' : 'function'))) {
     fail('phase8-proof-api-invalid');
   }
@@ -491,12 +492,13 @@ function admission(result, descriptor, metadata) {
     const transform = result.transforms[index];
     const validation = transform.validation;
     if (validation == null) {
-      if (transform.rewrite != null && transform.unvalidatedReason == null) throw new RewriteRefusal('rewrite-unvalidated');
+      if (transform.rewrite != null) throw new RewriteRefusal('rewrite-unvalidated');
       transforms.push(transform); retainedIndexes.push(index); continue;
     }
     if (validation.validation === 'refuted') throw new RewriteRefusal('rewrite-refuted');
     if (validation.validation === 'equivalent') {
-      if (metadata?.[index]?.equivalenceAuthority !== true) {
+      if (metadata?.[index]?.equivalenceAuthority !== true
+        || !phase8ProofApi.hasCanonicalEquivalenceAuthority(metadata[index].authoritySource)) {
         throw new RewriteRefusal('rewrite-equivalence-authority-missing');
       }
       const expected = phase8ProofApi.recomputeEquivalenceProofId(transform, descriptor);
