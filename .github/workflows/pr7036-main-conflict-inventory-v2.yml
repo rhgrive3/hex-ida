@@ -1,0 +1,38 @@
+name: PR7036 live-main conflict inventory v2
+on:
+  push:
+    branches: [sync/pr7036-main-20260917-v2]
+jobs:
+  inventory:
+    if: contains(github.event.head_commit.message, 'inventory PR 7036 live-main conflicts')
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Inventory exact conflicts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git fetch --no-tags --depth=1 origin 799bc6c4c0e862e4854a56aac20601caf9e74c4c
+          set +e
+          git merge --no-commit --no-ff FETCH_HEAD >/dev/null 2>&1
+          RC=$?
+          set -e
+          {
+            echo "branch_head=$(git rev-parse HEAD)"
+            echo "main_head=$(git rev-parse FETCH_HEAD)"
+            echo "merge_rc=$RC"
+            git diff --name-only --diff-filter=U | sed '/^$/d' | sort | tee /tmp/conflicts.txt
+            echo "conflict_count=$(wc -l < /tmp/conflicts.txt | tr -d ' ')"
+          } > pr7036-main-conflicts-v2.txt
+          git merge --abort 2>/dev/null || true
+      - name: Upload inventory
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr7036-main-conflicts-v2
+          path: pr7036-main-conflicts-v2.txt
+          retention-days: 2
