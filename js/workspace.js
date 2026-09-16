@@ -136,18 +136,24 @@ export function snapshotWorkspace(app, identity){
   const notes=app.notes;
   const navigation=app.navigation;
   const bookmarks=(app.bookmarks?.list?.()||[]).slice(-500);
+  const currentProjectId = app?.project?.id || app?.currentProject?.id || app?.workspace?.project?.id || app?.activeProject?.id || app?.workspace?.projectId || null;
   const allSessions = app?.aiRuntime?.sessionStore?.list?.()
     || (app?.aiRuntime?.sessionStore?.sessions ? Array.from(app.aiRuntime.sessionStore.sessions.values()) : null)
     || (Array.isArray(app?.investigationSessions) ? app.investigationSessions : (Array.isArray(app?.project?.findings?.investigationSessions) ? app.project.findings.investigationSessions : []));
   const activeSessions = Array.isArray(allSessions)
-    ? allSessions.filter((session) => session?.binaryId == null || sessionMatchesBinaryHash(session.binaryId, identity?.hash))
+    ? allSessions.filter((session) => {
+        if (session?.binaryId != null && identity?.hash && !sessionMatchesBinaryHash(session.binaryId, identity.hash)) return false;
+        if (session?.projectId != null && currentProjectId != null && session.projectId !== currentProjectId) return false;
+        return true;
+      })
     : allSessions;
   const rawTurns = aiTurns();
   const safeTurns = rawTurns.map((turn) => stripSecrets(turn));
   const safeSessions = Array.isArray(activeSessions) && activeSessions.length
     ? activeSessions.map((s) => stripSecrets(s))
-    : (safeTurns.length ? [{ id: 'default', binaryId: identity?.hash || identity?.binaryId || null, turns: safeTurns }] : []);
+    : (safeTurns.length ? [{ id: 'default', binaryId: identity?.hash || identity?.binaryId || null, projectId: currentProjectId, turns: safeTurns }] : []);
   const project=createHexProject({
+    id: currentProjectId,
     binary:identity,
     userNames:noteEntries(notes?.names),
     comments:noteEntries(notes?.comments),
@@ -249,10 +255,14 @@ export function applyWorkspaceProject(app, project){
     explain:app?.prefs?.explain,
     textSize:app?.prefs?.textSize,
     currentFunction:app?.store?.get?.('currentAddress')??null,
+    project:app.project,
+    workspaceProject:app.workspace?.project,
   };
   const addedSessionIds=[];
   const restoreMaps=(target,entries)=>{ target.clear(); for(const [k,v] of entries) target.set(k,v); };
   const rollback=()=>{
+    app.project=previous.project;
+    if(app.workspace)app.workspace.project=previous.workspaceProject;
     restoreMaps(notes.names, previous.names);
     restoreMaps(notes.comments, previous.comments);
     restoreMaps(notes.types, previous.types);
@@ -348,6 +358,8 @@ export function applyWorkspaceProject(app, project){
     }
     // Apply imported analysis settings only after the rest of the project restore succeeds.
     applyWorkspaceAnalysisSettings(app,project.analysis?.settings);
+    app.project = project;
+    if (app.workspace) app.workspace.project = project;
     // Commit durability last (#8961): every fallible in-memory step already
     // succeeded, so a storage failure here is the only post-mutation risk and
     // it is fully rolled back before it propagates.
@@ -392,7 +404,7 @@ export class ProductWorkspace{
     this.app=app;this.backendFactory=backendFactory;this.storage=storage||null;this.project=null;this.identity=null;this.baseline=null;this.diffState=null;this.busy=null;
     this.bindingRevision=0;this.bindSequence=0;this.baselineSequence=0;
   }
-  _resetBoundState(){const previous=this.baseline;this.bindingRevision++;this.baselineSequence++;this.project=null;this.baseline=null;this.diffState=null;this.busy=null;if(previous?.ownedBackend)previous.backend?.dispose?.();}
+  _resetBoundState(){const previous=this.baseline;this.bindingRevision++;this.baselineSequence++;this.project=null;if(this.app)this.app.project=null;this.baseline=null;this.diffState=null;this.busy=null;if(previous?.ownedBackend)previous.backend?.dispose?.();}
   _assertBinding(revision){if(revision!==this.bindingRevision)throw staleWorkspaceError();}
   async bind(){
     const sequence=++this.bindSequence;
@@ -409,11 +421,12 @@ export class ProductWorkspace{
     if(this.identity&&identityKey(this.identity)!==identityKey(nextIdentity))this._resetBoundState();
     this.identity=nextIdentity;
     const saved=this._loadLocal(this.identity);
-    if(saved){const ok=sameProjectIdentity(saved,this.identity);if(ok.ok){try{applyWorkspaceProject(this.app,saved);this.project=saved;}catch{/* local restore is best effort */}}}
+    if(saved){const ok=sameProjectIdentity(saved,this.identity);if(ok.ok){try{applyWorkspaceProject(this.app,saved);this.project=saved;this.app.project=saved;}catch{/* local restore is best effort */}}}
     if(!this.project)this.project=snapshotWorkspace(this.app,this.identity);
+    this.app.project=this.project;
     return this.project;
   }
-  snapshot(){if(!this.identity)return null;this.project=snapshotWorkspace(this.app,this.identity);return this.project;}
+  snapshot(){if(!this.identity)return null;this.project=snapshotWorkspace(this.app,this.identity);this.app.project=this.project;return this.project;}
   autosave(){
     const project=this.snapshot();if(!project||!this.storage)return false;
     try{this.storage.setItem(this._localKey(this.identity),serializeHexProject(project));return true;}catch{return false;}
@@ -439,7 +452,7 @@ export class ProductWorkspace{
     const project=await importHexProject(input);assertCurrent();
     const match=sameProjectIdentity(project,this.identity);
     if(!match.ok){const error=new Error(match.reason);error.code='HEX_PROJECT_BINARY_MISMATCH';error.detail=match;throw error;}
-    applyWorkspaceProject(this.app,project);this.project=project;this.autosave();return project;
+    applyWorkspaceProject(this.app,project);this.project=project;this.app.project=project;this.autosave();return project;
   }
   _localKey(identity){return LOCAL_PREFIX+identity.hash+':'+keyOf(identity.metadata?.sliceIndex)+':'+keyOf(identity.metadata?.uuid||identity.metadata?.architecture);}
   _loadLocal(identity){if(!this.storage)return null;try{const raw=this.storage.getItem(this._localKey(identity));return raw?parseHexProject(raw):null;}catch{return null;}}

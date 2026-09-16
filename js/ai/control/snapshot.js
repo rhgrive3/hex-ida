@@ -53,7 +53,7 @@ export function createTurnSnapshot(local = {}, request = {}) {
   const binding = resolveBinaryBinding(local, request);
   if (binding.conflict) throw new AIError('scope_violation', 'The requested binary identity does not match the live workbench binary.');
   const identity = binding.identity;
-  const projectId = firstBinding(request.projectId, local.projectId, local.project?.id, local.project?.binaryHash);
+  const projectId = firstBinding(request.projectId, local.projectId, local.project?.id);
   const runtimeId = firstBinding(local.runtimeSession?.id, local.runtime?.sessionId, local.runtimeSessionId);
   const runtimeKnown = local.runtimeSessionKnown === true || runtimeId != null;
   const requestedScope = String(request.scope || 'auto');
