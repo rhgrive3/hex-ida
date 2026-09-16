@@ -215,13 +215,15 @@ export function repairMachOZeroEntrypoint(image) {
   if (!image || image.entrypoint !== 0n || image.metadata?.entrypointSource == null) return image;
   const entrySegment = typeof image.segmentAt === 'function' ? image.segmentAt(0n) : null;
   const alignment = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32') ? 4n : image.arch === 'arm' ? 2n : 1n;
-  if (entrySegment?.perms?.execute && 0n % alignment === 0n) {
+  const instructionUnit = machoInstructionUnit(image.arch);
+  const fileBacked = instructionUnit != null && isContiguousFileBackedSpan(image, 0n, instructionUnit);
+  if (entrySegment?.perms?.execute && 0n % alignment === 0n && fileBacked) {
     image.metadata.entrypointValid = true;
     const seed = functionSeed(0n, { source:'entrypoint', confidence:0.9 });
     image.functions = mergeFunctionSeeds([...(image.functions || []), seed], image);
   } else {
     image.metadata.entrypointValid = false;
-    const warning = `Ignored ${image.metadata.entrypointSource || 'Mach-O'} entrypoint 0x0 outside executable/aligned mapping`;
+    const warning = `Ignored ${image.metadata.entrypointSource || 'Mach-O'} entrypoint 0x0 outside executable/aligned/file-backed mapping`;
     if (!image.warnings.includes(warning)) image.warnings.push(warning);
   }
   return image;
