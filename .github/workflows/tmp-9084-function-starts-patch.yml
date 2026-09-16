@@ -1,0 +1,87 @@
+name: Temporary PR 9084 function-starts patch
+
+on:
+  push:
+    branches:
+      - fix/lowest-open-issues-20260916
+    paths:
+      - '.github/workflows/tmp-9084-function-starts-patch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/lowest-open-issues-20260916
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Apply bounded 400k function-starts ceiling
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 30s python3 - <<'PY'
+          from pathlib import Path
+          macho=Path('js/macho.js')
+          s=macho.read_text()
+          old='const FUNCTION_STARTS_MAX = 200_000;'
+          new='const FUNCTION_STARTS_MAX = 400_000;'
+          if s.count(old) != 1:
+              raise SystemExit(f'expected exactly one old function-start ceiling, got {s.count(old)}')
+          macho.write_text(s.replace(old,new))
+
+          test=Path('tests/phase4/binary/issue-8805-legacy-macho-function-starts-budget.test.mjs')
+          s=test.read_text()
+          replacements={
+            "assert.equal(list.length, 200_000, 'default retained-start ceiling bounds materialization');":"assert.equal(list.length, 400_000, 'default retained-start ceiling bounds materialization');",
+            "assert.equal(list[199999], BASE + 200_000n * 4n, 'the retained prefix is monotone and complete up to the cut');":"assert.equal(list[399999], BASE + 400_000n * 4n, 'the retained prefix is monotone and complete up to the cut');",
+            "if (list.length !== 200_000 || !list.truncated || list.complete) {":"if (list.length !== 400_000 || !list.truncated || list.complete) {",
+            "const result = await runWorker(dense(250_000), { entry: 0x100000000n + 2n * 4n });":"const result = await runWorker(dense(450_000), { entry: 0x100000000n + 2n * 4n });",
+            "assert.equal(result.funcs.length, 200_000, 'retention ceiling holds inside the worker, entry seed already included');":"assert.equal(result.funcs.length, 400_000, 'retention ceiling holds inside the worker, entry seed already included');",
+          }
+          for old,new in replacements.items():
+              if s.count(old) != 1:
+                  raise SystemExit(f'missing/ambiguous expected test pattern: {old[:80]} count={s.count(old)}')
+              s=s.replace(old,new)
+          needle="""  {
+            const result = await runWorker(dense(3), { entry: 0x100000000n + 1000n });
+          """
+          insert="""  {
+            const result = await runWorker(dense(293_794), { entry: 0x100000000n + 500_000n * 4n });
+            assert.equal(result.functionDiscovery.capped, false, 'real YWP-scale function starts stay within the safe retention ceiling');
+            assert.equal(result.functionDiscovery.complete, true);
+            assert.equal(result.capped, false);
+            assert.ok(result.functionStartsExact, '293,794 authoritative starts remain exact');
+            assert.equal(result.funcs.length, 293_795, 'entry seed merges without forcing a retention cap');
+          }
+          {
+            const result = await runWorker(dense(3), { entry: 0x100000000n + 1000n });
+          """
+          if s.count(needle) != 1:
+              raise SystemExit(f'missing/ambiguous insertion point count={s.count(needle)}')
+          test.write_text(s.replace(needle,insert))
+          PY
+      - name: Focused safety regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 150s node tests/phase4/binary/issue-8805-legacy-macho-function-starts-budget.test.mjs
+          timeout 30s node tests/issue-8822-macho-function-starts-terminator-clamp.mjs
+          timeout 30s node tests/issue-8824-macho-thread-zero-fill-and-empty-regions.mjs
+          timeout 30s node tests/issue-8838-macho-data-in-code-exclusion.mjs
+          timeout 120s npm run lint
+      - name: Commit patch and remove staging workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/tmp-9084-function-starts-patch.yml
+          git add js/macho.js tests/phase4/binary/issue-8805-legacy-macho-function-starts-budget.test.mjs
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'fix(macho): retain real-scale function starts safely'
+          timeout 30s git push origin HEAD:fix/lowest-open-issues-20260916
