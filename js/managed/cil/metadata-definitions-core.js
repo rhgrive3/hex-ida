@@ -1145,5 +1145,66 @@ export function bindCilMetadataTables(defs, blobHeap, admission = null) {
     }
     for (const rid of path) nestedChainState[rid] = 2;
   }
+  // #8778 — ECMA-335 [ERROR] duplicate-semantic-identity enforcement. Definition
+  // identity is derived from the metadata token, so two rows that carry one
+  // authoritative key silently split a single CLI definition across multiple Hex
+  // identities instead of failing closed. Ordinary overloads stay valid because
+  // their signature blobs differ, and CompilerControlled Field/MethodDef rows are
+  // excluded per II.22.24 / II.22.26. Nested TypeDef identity is
+  // (enclosing type, name) while top-level identity is (namespace, name).
+  const fieldCompilerControlled = (flags) => (flags & 0x0007) === 0x0000;
+  const methodCompilerControlled = (flags) => (flags & 0x0007) === 0x0000;
+  const assertUniqueKeys = (rows, keyOf, code) => {
+    const seen = new Set();
+    for (const row of rows ?? []) {
+      const key = keyOf(row);
+      if (key === null) continue;
+      if (seen.has(key)) fail(code);
+      seen.add(key);
+    }
+  };
+  const sameDefinitionBlob = (left, right) => {
+    if (left.length !== right.length) return false;
+    for (let i = 0; i < left.length; i++) if (left[i] !== right[i]) return false;
+    return true;
+  };
+  const signatureIdentityBuckets = new Map();
+  const assertUniqueSignatureRows = (rows, prefixOf, blobIndexOf, code, blobCode) => {
+    for (const row of rows ?? []) {
+      const prefix = prefixOf(row);
+      if (prefix === null) continue;
+      if (!blobHeap) fail(blobCode);
+      const raw = readCilMetadataBlob(blobHeap, blobIndexOf(row), blobCode);
+      // The hash only narrows the exact-byte candidates; a collision never
+      // becomes duplicate authority without the byte-for-byte comparison.
+      let hash = 0x811c9dc5;
+      for (const byte of raw) hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
+      const bucketKey = `${prefix}\u0000${raw.length}\u0000${hash}`;
+      const bucket = signatureIdentityBuckets.get(bucketKey);
+      if (bucket?.some((previous) => sameDefinitionBlob(previous, raw))) fail(code);
+      if (bucket) bucket.push(raw);
+      else signatureIdentityBuckets.set(bucketKey, [raw]);
+    }
+  };
+  assertUniqueKeys(types, (type) => type.enclosingTypeToken == null
+    ? `T\u0000${type.namespace ?? ''}\u0000${type.name ?? ''}`
+    : `N\u0000${type.enclosingTypeToken}\u0000${type.name ?? ''}`,
+  'cil-typedef-identity-duplicate');
+  assertUniqueSignatureRows(fields,
+    (field) => fieldCompilerControlled(field.accessFlags) ? null
+      : `F\u0000${field.declaringTypeToken ?? ''}\u0000${field.name ?? ''}`,
+    (field) => field.signatureBlobIndex,
+    'cil-field-identity-duplicate', 'cil-field-signature-blob-invalid');
+  assertUniqueSignatureRows(methods,
+    (method) => methodCompilerControlled(method.accessFlags) ? null
+      : `M\u0000${method.declaringTypeToken ?? ''}\u0000${method.name ?? ''}`,
+    (method) => method.signatureBlobIndex,
+    'cil-methoddef-identity-duplicate', 'cil-method-signature-blob-invalid');
+  assertUniqueSignatureRows(properties,
+    (property) => `P\u0000${property.ownerToken ?? ''}\u0000${property.name ?? ''}`,
+    (property) => property.typeBlobIndex,
+    'cil-property-identity-duplicate', 'cil-property-signature-blob-invalid');
+  assertUniqueKeys(defs.events, (event) => `E\u0000${event.ownerToken ?? ''}\u0000${event.name ?? ''}`,
+    'cil-event-identity-duplicate');
   return { ...defs, constants: constantRows };
 }

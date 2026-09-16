@@ -63,54 +63,109 @@ function eventInterventionIds(raw) {
     : source?.interventionIds ?? null;
 }
 
-function materializeRuntimeValue(value, seen = new WeakMap()) {
+// #8847: the provider must own one immutable-enough envelope snapshot so a
+// compromised/mutating backend cannot rewrite an event between filtering,
+// correlation and publication, and so getter-backed fields are read exactly once
+// (#4778). But the previous recursive clone had NO depth or size limit: a deep or
+// oversized backend event ran `materializeRuntimeValue` into a native stack
+// overflow / unbounded synchronous allocation *before* the normalizer's
+// events.maxBytes budget was ever consulted, producing the wrong failure
+// (runtime-invalid-event "Maximum call stack size exceeded") instead of a bounded
+// drop. The clone shape is kept exactly as #4778 requires (DataView stays a
+// DataView over an owned buffer, Map/Set stay, typed views are copied, functions
+// are rejected), but it is now bounded by the same event byte budget + a hard
+// depth ceiling and fails closed with the normalizer's own overflow code
+// (runtime-event-resource-limit) so an over-budget event is cheaply dropped rather
+// than blown up or partially materialized.
+const MAX_ENVELOPE_DEPTH = 64;
+const ENVELOPE_BASE_DEFAULT_MAX_BYTES = 4 * 1024 * 1024;
+
+function envelopeByteBudget(eventOptions) {
+  const configured = eventOptions && typeof eventOptions === 'object' ? eventOptions.maxBytes : undefined;
+  if (typeof configured === 'number' && Number.isSafeInteger(configured) && configured >= 1024) return configured;
+  return ENVELOPE_BASE_DEFAULT_MAX_BYTES;
+}
+
+function materializeRuntimeValue(value, state) {
   if (value == null || typeof value !== 'object') {
     if (typeof value === 'function') throw new DebugAdapterError('runtime-invalid-event', 'runtime event contains a function');
     return value;
   }
-  if (seen.has(value)) return seen.get(value);
-  if (value instanceof Date) return new Date(value.getTime());
-  if (value instanceof RegExp) return new RegExp(value.source, value.flags);
-  if (value instanceof ArrayBuffer) return value.slice(0);
-  if (value instanceof DataView) {
-    const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-    const ownedBytes = Uint8Array.from(bytes);
-    return new DataView(ownedBytes.buffer);
-  }
-  if (ArrayBuffer.isView(value)) return new value.constructor(value);
-  if (value instanceof Map) {
-    const output = new Map();
-    seen.set(value, output);
-    for (const [key, item] of value) {
-      output.set(materializeRuntimeValue(key, seen), materializeRuntimeValue(item, seen));
+  state.depth += 1;
+  if (state.depth > MAX_ENVELOPE_DEPTH) throw new DebugAdapterError('runtime-event-resource-limit', 'runtime event exceeds pre-normalization depth budget');
+  try {
+    if (state.seen.has(value)) return state.seen.get(value);
+    const overBudget = () => {
+      if (state.bytes > state.maxBytes) {
+        throw new DebugAdapterError('runtime-event-resource-limit', `runtime event exceeds pre-normalization byte budget (${state.maxBytes})`);
+      }
+    };
+    if (value instanceof Date) { state.bytes += 24; overBudget(); return new Date(value.getTime()); }
+    if (value instanceof RegExp) { state.bytes += 24; overBudget(); return new RegExp(value.source, value.flags); }
+    if (value instanceof ArrayBuffer) {
+      state.bytes += value.byteLength + 16; overBudget();
+      return value.slice(0);
+    }
+    if (value instanceof DataView) {
+      const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+      state.bytes += value.byteLength + 16; overBudget();
+      const ownedBytes = Uint8Array.from(bytes);
+      return new DataView(ownedBytes.buffer);
+    }
+    if (ArrayBuffer.isView(value)) {
+      state.bytes += value.byteLength + 16; overBudget();
+      return new value.constructor(value);
+    }
+
+    if (value instanceof Map) {
+      state.bytes += value.size * 8 + 16; overBudget();
+      const output = new Map();
+      state.seen.set(value, output);
+      for (const [key, item] of value) {
+        output.set(materializeRuntimeValue(key, state), materializeRuntimeValue(item, state));
+      }
+      return output;
+    }
+    if (value instanceof Set) {
+      state.bytes += value.size * 8 + 16; overBudget();
+      const output = new Set();
+      state.seen.set(value, output);
+      for (const item of value) output.add(materializeRuntimeValue(item, state));
+      return output;
+    }
+
+    if (Array.isArray(value)) {
+      state.bytes += value.length * 2 + 16; overBudget();
+      const output = new Array(value.length);
+      state.seen.set(value, output);
+      for (let index = 0; index < value.length; index += 1) output[index] = materializeRuntimeValue(value[index], state);
+      return output;
+    }
+
+    const output = {};
+    state.seen.set(value, output);
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== 'string' || key === 'length') continue;
+      state.bytes += key.length + 8; overBudget();
+      const item = materializeRuntimeValue(value[key], state);
+      if (typeof item === 'string') { state.bytes += item.length; overBudget(); }
+      Object.defineProperty(output, key, {
+        value: item,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
     return output;
+  } finally {
+    state.depth -= 1;
   }
-  if (value instanceof Set) {
-    const output = new Set();
-    seen.set(value, output);
-    for (const item of value) output.add(materializeRuntimeValue(item, seen));
-    return output;
-  }
-
-  const output = Array.isArray(value) ? [] : {};
-  seen.set(value, output);
-  if (Array.isArray(value)) output.length = value.length;
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key !== 'string' || key === 'length') continue;
-    Object.defineProperty(output, key, {
-      value: materializeRuntimeValue(value[key], seen),
-      enumerable: true,
-      configurable: true,
-      writable: true,
-    });
-  }
-  return output;
 }
 
-function materializeRuntimeEvent(raw) {
+function materializeRuntimeEvent(raw, maxBytes) {
+  const state = { seen: new WeakMap(), depth: 0, bytes: 0, maxBytes };
   try {
-    return materializeRuntimeValue(raw);
+    return materializeRuntimeValue(raw, state);
   } catch (error) {
     if (error instanceof DebugAdapterError) throw error;
     throw new DebugAdapterError('runtime-invalid-event', `runtime event could not be materialized: ${String(error?.message || error)}`);
@@ -144,11 +199,20 @@ export class InstrumentationProvider {
 
   descriptor() { return this._descriptor; }
 
-  async #authorizeMutation(kind, details, callOptions = {}) {
+  async #authorizeMutation(kind, details, callOptions = {}, operationIdentity = null) {
     const direct = kind === 'function-replacement' ? this.options.allowReplacement === true : kind === 'memory-write' ? this.options.allowMemoryWrite === true : false;
     if (direct) return true;
     if (typeof this.options.authorizeMutation !== 'function') return false;
-    return (await this.options.authorizeMutation({ kind, providerId: this._descriptor.id, details, context: callOptions.authorizationContext ?? null })) === true;
+    // #8692: bind the authorization decision to the canonical captured
+    // session/epoch identity of the operation that requested it, instead of
+    // letting policy callbacks infer freshness from mutable ambient state.
+    return (await this.options.authorizeMutation({
+      kind,
+      providerId: this._descriptor.id,
+      details,
+      context: callOptions.authorizationContext ?? null,
+      ...(operationIdentity ? { runtimeSessionId: operationIdentity.runtimeSessionId, sessionEpoch: operationIdentity.sessionEpoch } : {}),
+    })) === true;
   }
 
   async openSession(request = {}, options = {}) {
@@ -177,8 +241,25 @@ export class InstrumentationProvider {
     const interventions = new InterventionLedger();
     const probes = new Map();
 
+    const envelopeMaxBytes = envelopeByteBudget(this.options.events);
+    // #8847: produce ONE owned envelope snapshot with the SAME ownership shape
+    // #4778 requires (getters read once, DataView/Map/Set/typed views owned), but a
+    // now-BOUNDED clone: a deep or oversized hostile backend event is rejected with
+    // the normalizer's own runtime-event-resource-limit code and cheaply dropped,
+    // instead of running the old unbounded recursion into a native stack overflow /
+    // unbounded allocation outside events.maxBytes.
     const ingest = (raw, normalizerOptions = {}) => {
-      const ownedRaw = materializeRuntimeEvent(raw);
+      // #8891: a closing/closed session must not admit new events or mint runtime
+      // module/address authority from either the direct facet or a racing backend
+      // callback. Revocation is enforced before the normalizer or session.modules.
+      session.assertAdmissible();
+      let ownedRaw;
+      try {
+        ownedRaw = materializeRuntimeEvent(raw, envelopeMaxBytes);
+      } catch (error) {
+        if (error?.code === 'runtime-event-resource-limit') return null;
+        throw error;
+      }
       if (typeof this.options.eventFilter === 'function' && this.options.eventFilter(ownedRaw) === false) return null;
       const handle = eventProbeHandle(ownedRaw);
       const interventionId = handle == null ? null : probes.get(handle) ?? null;
@@ -249,13 +330,14 @@ export class InstrumentationProvider {
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
         });
         const operation = createRuntimeOperationController(session, callOptions?.signal);
-        const startedEpoch = session.epoch;
         let result;
         try {
+          // #8692: fail closed before the side-effecting backend call when the
+          // request is already cancelled/closed/epoch-stale, so a probe can
+          // never be installed-and-orphaned by a dead request.
+          operation.throwIfStale('probe installation stopped before its backend invocation');
           result = await install(spec, { ...callOptions, signal: operation.signal });
-          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
-            throw new DebugAdapterError('runtime-session-stale', 'probe installation completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
-          }
+          operation.throwIfStale('probe installation completed after its runtime epoch changed');
         } finally {
           operation.release();
         }
@@ -278,13 +360,11 @@ export class InstrumentationProvider {
           parentInterventionIds: [...new Set([...(callOptions.parentInterventionIds ?? []), ...(parent ? [parent] : [])])],
         });
         const operation = createRuntimeOperationController(session, callOptions?.signal);
-        const startedEpoch = session.epoch;
         let result;
         try {
+          operation.throwIfStale('probe removal stopped before its backend invocation');
           result = await remove(handle, { ...callOptions, signal: operation.signal });
-          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
-            throw new DebugAdapterError('runtime-session-stale', 'probe removal completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
-          }
+          operation.throwIfStale('probe removal completed after its runtime epoch changed');
         } finally {
           operation.release();
         }
@@ -305,13 +385,11 @@ export class InstrumentationProvider {
           parentInterventionIds: callOptions.parentInterventionIds ?? [],
         });
         const operation = createRuntimeOperationController(session, callOptions?.signal);
-        const startedEpoch = session.epoch;
         let result;
         try {
+          operation.throwIfStale('interception stopped before its backend invocation');
           result = await install(spec, { ...callOptions, signal: operation.signal });
-          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
-            throw new DebugAdapterError('runtime-session-stale', 'interception completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
-          }
+          operation.throwIfStale('interception completed after its runtime epoch changed');
         } finally {
           operation.release();
         }
@@ -321,25 +399,35 @@ export class InstrumentationProvider {
         return { result, intervention };
       },
       replace: async (target, replacement, callOptions = {}) => {
-        const authorized = await this.#authorizeMutation('function-replacement', { target, replacement }, callOptions);
-        if (!authorized) throw new DebugAdapterError('permission-denied', 'instrumentation replacement requires provider-authorized mutation capability');
-        const replace = requiredMethod(this.backend, 'replace', 'function replacement');
-        const draft = validateInterventionDraft(interventions, {
-          runtimeSessionId: session.runtimeSessionId,
-          providerId: session.providerId,
-          kind: 'function-replacement',
-          target,
-          requestedChange: replacement,
-          parentInterventionIds: callOptions.parentInterventionIds ?? [],
-        });
+        // #8692: establish the session-owned operation token and capture the
+        // starting epoch before the awaited authorization precondition, so an
+        // epoch transition/close/caller abort during authorization invalidates
+        // the request instead of letting it silently rebase onto a new
+        // generation. The completion-time check remains for abort-ignoring
+        // backends, and authorization receives the canonical captured identity.
         const operation = createRuntimeOperationController(session, callOptions?.signal);
-        const startedEpoch = session.epoch;
         let result;
+        let draft;
         try {
+          operation.throwIfStale('function replacement stopped before mutation authorization');
+          const authorized = await this.#authorizeMutation('function-replacement', { target, replacement }, callOptions, {
+            runtimeSessionId: session.runtimeSessionId,
+            sessionEpoch: operation.startedEpoch,
+          });
+          operation.throwIfStale('function replacement authorization completed after cancellation or a runtime epoch change');
+          if (!authorized) throw new DebugAdapterError('permission-denied', 'instrumentation replacement requires provider-authorized mutation capability');
+          const replace = requiredMethod(this.backend, 'replace', 'function replacement');
+          draft = validateInterventionDraft(interventions, {
+            runtimeSessionId: session.runtimeSessionId,
+            providerId: session.providerId,
+            kind: 'function-replacement',
+            target,
+            requestedChange: replacement,
+            parentInterventionIds: callOptions.parentInterventionIds ?? [],
+          });
+          operation.throwIfStale('function replacement stopped before its backend invocation');
           result = await replace(target, replacement, { ...callOptions, signal: operation.signal });
-          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
-            throw new DebugAdapterError('runtime-session-stale', 'function replacement completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
-          }
+          operation.throwIfStale('function replacement completed after its runtime epoch changed');
         } finally {
           operation.release();
         }
@@ -352,45 +440,53 @@ export class InstrumentationProvider {
       readMemory: async (address, size, callOptions = {}) => {
         const read = requiredMethod(this.backend, 'readMemory', 'memory read');
         const operation = createRuntimeOperationController(session, callOptions?.signal);
-        const startedEpoch = session.epoch;
         try {
+          // #8692: reads follow the same helper contract; an already-stale
+          // request never reaches the backend either.
+          operation.throwIfStale('memory read stopped before its backend invocation');
           const result = await read(address, size, { ...callOptions, signal: operation.signal });
-          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
-            throw new DebugAdapterError('runtime-session-stale', 'memory read completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
-          }
+          operation.throwIfStale('memory read completed after its runtime epoch changed');
           return result;
         } finally {
           operation.release();
         }
       },
       writeMemory: async (address, bytes, callOptions = {}) => {
-        const authorized = await this.#authorizeMutation('memory-write', { address, byteLength: bytes?.byteLength ?? bytes?.length ?? null }, callOptions);
-        if (!authorized) throw new DebugAdapterError('permission-denied', 'instrumentation memory write requires provider-authorized mutation capability');
-        const write = requiredMethod(this.backend, 'writeMemory', 'memory write');
-        const draft = validateInterventionDraft(interventions, {
-          runtimeSessionId: session.runtimeSessionId,
-          providerId: session.providerId,
-          kind: 'memory-write',
-          target: { address },
-          requestedChange: { bytes },
-          parentInterventionIds: callOptions.parentInterventionIds ?? [],
-        });
+        // #8692: same authorization-window repair as replace(): the session
+        // operation token and starting epoch exist before the first await,
+        // authorization is bound to that captured identity, and every awaited
+        // precondition is re-checked before the side-effecting backend call.
         const operation = createRuntimeOperationController(session, callOptions?.signal);
-        const startedEpoch = session.epoch;
         let result;
+        let draft;
         try {
+          operation.throwIfStale('memory write stopped before mutation authorization');
+          const authorized = await this.#authorizeMutation('memory-write', { address, byteLength: bytes?.byteLength ?? bytes?.length ?? null }, callOptions, {
+            runtimeSessionId: session.runtimeSessionId,
+            sessionEpoch: operation.startedEpoch,
+          });
+          operation.throwIfStale('memory write authorization completed after cancellation or a runtime epoch change');
+          if (!authorized) throw new DebugAdapterError('permission-denied', 'instrumentation memory write requires provider-authorized mutation capability');
+          const write = requiredMethod(this.backend, 'writeMemory', 'memory write');
+          draft = validateInterventionDraft(interventions, {
+            runtimeSessionId: session.runtimeSessionId,
+            providerId: session.providerId,
+            kind: 'memory-write',
+            target: { address },
+            requestedChange: { bytes },
+            parentInterventionIds: callOptions.parentInterventionIds ?? [],
+          });
+          operation.throwIfStale('memory write stopped before its backend invocation');
           result = await write(address, bytes, { ...callOptions, signal: operation.signal });
-          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
-            throw new DebugAdapterError('runtime-session-stale', 'memory write completed after its runtime epoch changed', { startedEpoch, currentEpoch: session.epoch });
-          }
+          operation.throwIfStale('memory write completed after its runtime epoch changed');
         } finally {
           operation.release();
         }
         const intervention = interventions.add({ ...draft, acknowledgedResult: result });
         return { result, intervention };
       },
-      getObjCRuntimeInfo: async (...args) => requiredMethod(this.backend, 'getObjCRuntimeInfo', 'Objective-C runtime metadata')(...args),
-      getSwiftRuntimeInfo: async (...args) => requiredMethod(this.backend, 'getSwiftRuntimeInfo', 'Swift runtime metadata')(...args),
+      getObjCRuntimeInfo: async (...args) => { session.assertAdmissible(); return requiredMethod(this.backend, 'getObjCRuntimeInfo', 'Objective-C runtime metadata')(...args); },
+      getSwiftRuntimeInfo: async (...args) => { session.assertAdmissible(); return requiredMethod(this.backend, 'getSwiftRuntimeInfo', 'Swift runtime metadata')(...args); },
       events: Object.freeze({
         // Direct facet ingress occurs synchronously at the current provider
         // boundary, so it may attest the current epoch for legacy callers.

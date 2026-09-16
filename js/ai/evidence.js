@@ -1,7 +1,7 @@
 import { EVIDENCE_STATUSES } from './schema.js';
 import { addressText, jsonSafe } from './validation.js';
 import { evidenceStoreToCanonicalGraph } from '../core/evidence/compat.js';
-import { stableDigest } from '../core/identity/index.js';
+import { stableDigest, stableStringify, jsonSafe as canonicalJsonSafe } from '../core/identity/index.js';
 import { isPersistedConfirmedEnvelope } from './session-core/persisted-confirmed.js';
 import { globalCandidateAuthority } from '../agent/candidate-authority.js';
 
@@ -182,6 +182,35 @@ function canonicalIdentityRef(value) {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
+/*
+ * #8788: `EvidenceStore.add()` previously collapsed every structured
+ * `sourceBinding` through `String(...)`, so two distinct provenances (for
+ * example `{type:'fn',target:'A'}` and `{type:'fn',target:'B'}`) both became
+ * `"[object Object]"` and hashed to the same auto evidence ID. The canonical
+ * contract is that a record's declared source binding is identity material, so
+ * it must either stay a primitive string (existing binding-key path) or be an
+ * owned, JSON-safe canonical value; the store must not launder a
+ * `toString()`/`Symbol.toStringTag` object into the shared `[object Object]`
+ * spelling. Unsupported shapes (function, symbol, cyclic, class instance,
+ * non-plain prototype, oversized array) fail closed instead of silently
+ * aliasing to another provenance.
+ */
+function canonicalSourceBinding(value) {
+  if (value == null) return '';
+  const type = typeof value;
+  if (type === 'string' || type === 'number' || type === 'boolean' || type === 'bigint') {
+    return String(value);
+  }
+  if (type !== 'object') throw new TypeError('evidence-invalid-sourceBinding');
+  let normalized;
+  try { normalized = canonicalJsonSafe(value); }
+  catch { throw new TypeError('evidence-invalid-sourceBinding'); }
+  if (normalized == null || typeof normalized !== 'object') {
+    throw new TypeError('evidence-invalid-sourceBinding');
+  }
+  return normalized;
+}
+
 // A present-but-unusable sourceRef: neither canonicalizable to a reference
 // nor absent. String refs are always canonical; object refs must carry at
 // least one canonical identity field, and an explicit path must itself be a
@@ -297,14 +326,16 @@ export class EvidenceStore {
         sourceRef = { evidenceSourceId: localId, path: '$' };
       }
     }
-    const sourceBinding = String(input.sourceBinding ?? sourceRef?.bindingKey ?? '');
+    const sourceBinding = canonicalSourceBinding(input.sourceBinding ?? sourceRef?.bindingKey ?? null);
     const sourceCoordinate = canonicalIdentityRef(input.sourceCoordinate);
     const identityParts = [
-      input.sourceTool || 'unknown', input.sourceId || null, sourceBinding || null, input.address ?? null,
+      input.sourceTool || 'unknown', input.sourceId || null,
+      (typeof sourceBinding === 'object' ? sourceBinding : (sourceBinding || null)),
+      input.address ?? null,
       input.functionAddress ?? null, input.kind || 'observation', input.title || '',
     ];
     if (sourceCoordinate) identityParts.push({ sourceCoordinate });
-    const identity = JSON.stringify(jsonSafe(identityParts));
+    const identity = stableStringify(identityParts);
     const id = explicitId || `ev_${stableDigest(identity).slice(0, 32)}`;
     const record = {
       id,

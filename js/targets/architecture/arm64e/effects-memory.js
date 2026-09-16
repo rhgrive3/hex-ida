@@ -16,6 +16,7 @@ import {
   createArm64RegisterWrite,
 } from '../arm64/effects/addressing.js';
 import { ARM64E_PAUTH_KEYS } from './effects.js';
+import { arm64eEffectDataEndianness, arm64eEffectInstructionId, arm64eEffectMode, arm64eEffectOrigin } from './identity.js';
 
 export const ARM64E_EFFECTS_MEMORY_SEMANTIC_VERSION = '2';
 
@@ -148,32 +149,16 @@ function displacementValue(mem) {
   return null;
 }
 
-function instructionIdOf(decoded, context) {
-  const instructionId = String(context?.instructionId ?? decoded?.instructionId ?? '').trim();
-  if (!instructionId) throw new TypeError('arm64e-instruction-id-required');
-  return instructionId;
-}
-
-function originOf(decoded, context, instructionId) {
-  const origin = context?.origin ?? decoded?.origin;
-  if (origin != null) return origin;
-  return { instructionIds: [instructionId] };
-}
-
-function modeOf(decoded, context) {
-  return String(context?.mode ?? decoded?.mode ?? 'arm64e').trim() || 'arm64e';
-}
-
 function partialMissing(decoded, context, instructionId, reason) {
   const categories = ['memory', 'registers', 'faults'];
   return createMachineEffectBundle({
     instructionId,
     architectureId: 'arm64e',
-    mode: modeOf(decoded, context),
+    mode: arm64eEffectMode(decoded, context),
     operations: [createMachineOperation({ kind: 'unknown', reason, categories })],
     controlEffect: { kind: 'fallthrough' },
     possibleFaults: [{ kind: 'pointer-authentication-fault', condition: { kind: 'unresolved-arm64e-state' } }],
-    origin: originOf(decoded, context, instructionId),
+    origin: arm64eEffectOrigin(decoded, context, instructionId),
     completeness: 'partial',
     unknownEffects: { categories, reason, detail: { mnemonic: mnemonicOf(decoded) } },
     metadata: {
@@ -253,7 +238,7 @@ export function liftArm64eAuthenticatedLoadEffects(decoded, context = {}) {
   const mnemonic = mnemonicOf(decoded);
   const descriptor = AUTHENTICATED_LOADS[mnemonic];
   if (!descriptor) return null;
-  const instructionId = instructionIdOf(decoded, context);
+  const instructionId = arm64eEffectInstructionId(decoded, context);
 
   const operands = structuredOperandList(decoded);
   if (operands.length !== 2) return partialMissing(decoded, context, instructionId, 'authenticated load operand shape is invalid');
@@ -335,7 +320,7 @@ export function liftArm64eAuthenticatedLoadEffects(decoded, context = {}) {
     space: 'memory',
     addressExpr,
     widthBits: POINTER_BITS,
-    endian: String(context?.dataEndianness ?? decoded?.dataEndianness ?? context?.endian ?? decoded?.endian ?? 'little'),
+    endian: arm64eEffectDataEndianness(decoded, context),
   }, context?.machineEffectsOptions ?? context?.options ?? {});
   const raw = arm64Temporary(`${instructionId}.load.raw`, POINTER_BITS);
   operations.push(createMachineOperation({
@@ -374,7 +359,7 @@ export function liftArm64eAuthenticatedLoadEffects(decoded, context = {}) {
   return createMachineEffectBundle({
     instructionId,
     architectureId: 'arm64e',
-    mode: modeOf(decoded, context),
+    mode: arm64eEffectMode(decoded, context),
     operations,
     controlEffect: { kind: 'fallthrough' },
     possibleFaults: [
@@ -382,7 +367,7 @@ export function liftArm64eAuthenticatedLoadEffects(decoded, context = {}) {
       ...stackPointerAlignmentFault(base, 0),
       dataAbortFault(mnemonic, 0, { tagChecked: base.kind !== 'sp' || addressing.mode !== 'offset' }),
     ],
-    origin: originOf(decoded, context, instructionId),
+    origin: arm64eEffectOrigin(decoded, context, instructionId),
     completeness: 'exact-with-intrinsic',
     metadata: {
       semanticVersion: ARM64E_EFFECTS_MEMORY_SEMANTIC_VERSION,

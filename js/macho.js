@@ -417,7 +417,11 @@
     info.textVM=textVM; info.textFileOff=textFileOff;
     const align=instructionAlignment(architecture);
     const execSegments=info.segments.filter((seg)=>seg.validMapping && !!(seg.initprot&4) && seg.vmsize>0n);
-    const validPc=(pc)=>pc!=null && pc%align===0n && execSegments.some((seg)=>inRange(pc,seg.vmaddr,seg.vmsize));
+    // A PC must be inside the segment's *file-backed* VM span, not merely inside
+    // the segment's vmsize: the tail past `filesize` is loader zero-fill and has
+    // no instruction bytes to seed. #5551/#5555 enforced this on the canonical
+    // side (`image.addressToOffset(addr) != null`); the legacy path must agree.
+    const validPc=(pc)=>pc!=null && pc%align===0n && execSegments.some((seg)=>inRange(pc,seg.vmaddr,seg.filesize));
     if (info.entryOff != null) {
       const seg=execSegments.find((candidate)=>inRange(info.entryOff,candidate.fileoff,candidate.filesize));
       if (seg) {
@@ -443,7 +447,8 @@
     if (sliceEnd<sliceOff || sliceEnd>fileSize) return regions;
     for(const seg of info.segments||[]){
       if(!seg.validMapping) continue;
-      for(const sec of seg.sections||[]){
+      const sections=seg.sections||[];
+      for(const sec of sections){
         if(!sec.validMapping) continue;
         const fileOffset=sliceOff+sec.offset;
         let avail=0n;
@@ -454,6 +459,20 @@
         }
         regions.push({id:'sec'+(id++),kind:'section',name:sec.segment+','+sec.name,segment:sec.segment,section:sec.name,
           fileOffset,vmAddr:sec.addr,size:avail,declaredSize:sec.size,exec:sec.exec,zerofill:sec.zerofill,cstrings:!!sec.cstrings,truncated:false});
+      }
+      // Some valid legacy Mach-O images intentionally have an executable
+      // segment with nsects=0. In that case section-derived authority is absent,
+      // but the segment's validated *file-backed* bytes are still executable
+      // mapping authority. Expose only filesize (never the zero-fill vmsize tail)
+      // as a segment fallback; if sections exist, keep the stricter section
+      // semantics so data sections inside __TEXT are not promoted to code.
+      if(sections.length===0 && !!(seg.initprot&4) && seg.filesize>0n){
+        const fileOffset=sliceOff+seg.fileoff;
+        const end=fileOffset+seg.filesize;
+        if(end>=fileOffset&&fileOffset>=sliceOff&&end<=sliceEnd&&end<=fileSize){
+          regions.push({id:'seg'+(id++),kind:'segment',name:seg.name,segment:seg.name,section:null,
+            fileOffset,vmAddr:seg.vmaddr,size:seg.filesize,declaredSize:seg.vmsize,exec:true,zerofill:false,cstrings:false,truncated:false});
+        }
       }
     }
     return regions;
@@ -503,7 +522,7 @@
       if (v === 0n) continue;
       const name = sym.names[i];
       if (!name) continue;
-      // N_EXT が立っていれば、外のライブラリからも呼べる名前（エクスポート）
+      // N_EXT が立っていれば、外のライブラリからも呼べる名前（エクスポート）の印
       out.push({ addr: v, name, ext: !!(t & N_EXT) });
     }
     out.sort((a, b) => (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0));
@@ -515,23 +534,113 @@
   /** ULEB128 の差分列を、絶対アドレスの配列にほどく。 */
   function parseFunctionStarts(buf, base, options = {}) {
     const out=[]; let addr=base; let i=0; let malformed=false; let rejected=0;
+    let terminated=false; let partialReason=null;
     const regions=Array.isArray(options.regions)?options.regions:[];
     const alignment=instructionAlignment(options.architecture||'arm64');
-    const valid=(value)=>value%alignment===0n && (!regions.length || regions.some((r)=>r.exec&&r.size>0n&&value>=r.vmAddr&&value-r.vmAddr<r.size));
+    // #8838: LC_DATA_IN_CODE declares ranges inside __text that are physically
+    // data (jump tables, kind-tagged blobs). A function start is valid only if
+    // its complete architecture instruction span does not overlap such a range;
+    // checking the first byte alone would bless an ARM64 instruction starting at
+    // 0x1204 even when DICE marks bytes [0x1205,0x1207) as data.
+    const dataInCode=Array.isArray(options.dataInCode)?options.dataInCode:[];
+    const overlapsDataInCode=(value)=>{
+      const end=value+alignment;
+      return dataInCode.some((range)=>{
+        if(!Array.isArray(range)||range.length<2) return false;
+        const lo=BigInt(range[0]),hi=BigInt(range[1]);
+        return hi>lo && value<hi && end>lo;
+      });
+    };
+    const valid=(value)=>value%alignment===0n
+      && regions.length>0 && regions.some((r)=>r.exec&&r.size>0n&&value>=r.vmAddr&&value-r.vmAddr<r.size)
+      && !overlapsDataInCode(value);
     while(i<buf.length){
       let delta=0n,shift=0n,byte=0;
       do {
-        if(i>=buf.length){malformed=true;break;}
+        if(i>=buf.length){malformed=true;partialReason='truncated-leb';break;}
         byte=buf[i++]; delta|=BigInt(byte&0x7f)<<shift; shift+=7n;
-        if(shift>70n){malformed=true;break;}
+        if(shift>70n){malformed=true;partialReason='truncated-leb';break;}
       } while(byte&0x80);
-      if(malformed||delta===0n) break;
+      if(malformed) break;
+      if(delta===0n){terminated=true;break;}
       const next=addr+delta;
-      if(next<addr){malformed=true;break;}
+      if(next<addr){malformed=true;partialReason='address-overflow';break;}
       addr=next;
       if(valid(addr)) out.push(addr); else rejected++;
     }
+    if(!terminated&&!malformed){malformed=true;partialReason='missing-terminator';}
     out.rejected=rejected; out.complete=!malformed&&rejected===0; out.malformed=malformed;
+    out.partialReason=partialReason;
+    return out;
+  }
+
+  /* ── LC_DATA_IN_CODE (#8838) ──────────────────────────── */
+
+  /**
+   * `data_in_code_entry` (Mach-O): eight bytes per record —
+   *   uint32 offset (file offset within the slice), uint16 length, uint16 kind.
+   * The canonical parser (`js/binary/macho-core.js`) converts each entry's file
+   * offset to a VM address via `image.offsetToAddress()` and refuses any
+   * `LC_FUNCTION_STARTS` delta whose address falls inside a declared range.
+   * The legacy parser must not promote declared data bytes to exact function
+   * starts. This helper accepts the raw `data_in_code_entry[]` payload and the
+   * already-parsed `info` (which carries the executable segments and their
+   * fileoff/filesize mapping), returning a list of `[lo, hi]` VM ranges plus
+   * an explicit `truncated`/`partialReason` when the payload cannot be fully
+   * trusted so the caller can decline to bless function starts as complete.
+   *
+   * @param {Uint8Array} buf  raw data_in_code_entry[] payload
+   * @param {object} info     result of `parseSlice()`
+   * @returns {Array<[BigInt,BigInt,Number]> & { truncated:boolean, partialReason:string|null }}
+   */
+  function parseDataInCode(buf, info) {
+    const out = [];
+    out.truncated = false;
+    out.partialReason = null;
+    if (!buf || buf.length === 0) return out;
+    if (buf.length % 8 !== 0) {
+      out.truncated = true;
+      out.partialReason = 'size-not-multiple-of-entry';
+    }
+    const count = Math.floor(buf.length / 8);
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    const segments = Array.isArray(info && info.segments) ? info.segments : [];
+    for (let i = 0; i < count; i++) {
+      const pos = i * 8;
+      const offset = BigInt(dv.getUint32(pos, true));
+      const length = BigInt(dv.getUint16(pos + 4, true));
+      const kind = dv.getUint16(pos + 6, true);
+      const fileHi = offset + length;
+      let address = null;
+      for (const seg of segments) {
+        if (!seg.validMapping || !(seg.filesize > 0n)) continue;
+        const segFileHi = seg.fileoff + seg.filesize;
+        if (segFileHi < seg.fileoff) continue;
+        // The *entire* DICE source span must belong to one proven file mapping.
+        // Accepting only the first byte lets an entry at the end of one segment
+        // extend into an unmapped gap or a different segment while still being
+        // treated as a complete exclusion range.
+        if (offset >= seg.fileoff && offset < segFileHi && fileHi >= offset && fileHi <= segFileHi) {
+          address = seg.vmaddr + (offset - seg.fileoff);
+          break;
+        }
+      }
+      if (address === null) {
+        // Entry spans outside any one file-mapped segment. The canonical parser
+        // marks the whole table partial; the legacy worker must do the same so
+        // it cannot silently bless the remaining entries as an exact exclusion set.
+        out.truncated = true;
+        if (!out.partialReason) out.partialReason = 'entry-out-of-range';
+        continue;
+      }
+      const hi = address + length;
+      if (hi < address) {
+        out.truncated = true;
+        if (!out.partialReason) out.partialReason = 'address-overflow';
+        continue;
+      }
+      out.push([address, hi, kind]);
+    }
     return out;
   }
 
@@ -1142,7 +1251,7 @@
 
   root.MachO = {
     detect, parseFat, parseSlice, regionsFrom, cpuName,
-    parseSymbols, definedSymbols, parseFunctionStarts, parseUnwindStarts, parseUnwindLsdaEntries, parseLsdaLandingPads, parseEhFrameRanges, parseObjcMethodStarts, stubSymbols,
+    parseSymbols, definedSymbols, parseFunctionStarts, parseDataInCode, parseUnwindStarts, parseUnwindLsdaEntries, parseLsdaLandingPads, parseEhFrameRanges, parseObjcMethodStarts, stubSymbols,
     CPU_TYPE_ARM64, CPU_TYPE_ARM64_32,
   };
 })(typeof self !== 'undefined' ? self : globalThis);

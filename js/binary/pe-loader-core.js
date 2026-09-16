@@ -516,7 +516,12 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
         const packed=arm64PackedFrameFields(unwindData);
         if(packed.regI>10){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-packed-registers',`Ignored ARM64 packed unwind entry with invalid RegI ${packed.regI} (x19-x28 hold at most 10 registers) at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
         if(packed.frameBytes<packed.saveAreaBytes){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-packed-frame-size',`Ignored ARM64 packed unwind entry whose FrameSize ${packed.frameBytes} byte(s) cannot contain the mandatory ${packed.saveAreaBytes}-byte save/home area at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
-        const bytes=functionLength*4;if((previousEnd!=null&&begin<previousEnd)||!executableRvaRange(image,begin,bytes)){image.warnings.push(`Ignored overlapping/unmapped ARM64 exception range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;previousBegin=begin;continue;}descriptor={size:bytes,fragment:flag===2,encoding:flag===2?'packed-fragment':'packed'};}
+        const bytes=functionLength*4;if((previousEnd!=null&&begin<previousEnd)||!executableRvaRange(image,begin,bytes)){image.warnings.push(`Ignored overlapping/unmapped ARM64 exception range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;previousBegin=begin;continue;}
+        // #8787: a packed .pdata entry publishes a concrete `bytes`-wide extent, so
+        // the whole extent must be file-backed. executableRvaRange() only proves the
+        // virtual range is executable; validate the real backing before claiming the
+        // extent (an extent that crosses into zero-fill is downgraded, not seeded).
+        if(!mappedFileSpanForRva(image,begin,bytes)){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-pdata-backing',`Ignored ARM64 exception entry at RVA 0x${begin.toString(16)} whose ${bytes}-byte extent is not fully file-backed`);previousBegin=begin;continue;}descriptor={size:bytes,fragment:flag===2,encoding:flag===2?'packed-fragment':'packed'};}
       else if(flag===0){descriptor=parseArm64XdataDescriptor(r,image,begin,unwindData>>>0,budget);}
       else{invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-reserved-flag',`Ignored reserved ARM64 packed unwind flag at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
       if(!descriptor){previousBegin=begin;continue;}
@@ -698,6 +703,10 @@ export function parseTlsDirectory(r, dir, image, sharedBudget = null) {
     // alignment contract so crafted tables cannot mint misplaced seeds (#5667).
     const alignment=image.metadata?.machine===0xaa64||image.metadata?.machine===0xa641?4n:image.metadata?.machine===0x01c4?2n:1n;
     if(target%alignment!==0n){budget.partial('tls:callback-target-alignment',`Ignored PE TLS callback target 0x${target.toString(16)} not ${alignment}-byte aligned`);continue;}
+    // #8787: an aligned ARM64 callback whose first byte is file-backed but whose
+    // remaining instruction bytes fall in zero-fill must not mint a seed; require
+    // the whole minimum instruction span to be file-backed.
+    if(!mappedFileSpanForRva(image,Number(BigInt(target)-image.imageBase),Number(alignment))){budget.partial('tls:callback-target-span',`Ignored PE TLS callback target 0x${target.toString(16)} whose ${alignment}-byte instruction span is not fully file-backed`);continue;}
     callbacks.push(target);image.functions.push(functionSeed(target,{source:'tls-callback',confidence:0.999}));}if(!terminated)budget.partial('tls:unterminated-callback-table','PE TLS callback table reached its mapped boundary without a zero terminator');}}
   image.metadata.tls={callbacks,callbacksAddress:callbacksVa||null};
 }
@@ -775,6 +784,13 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
         : image.metadata?.machine === 0x01c4 ? 2n : 1n;
       if (address % alignment !== 0n) {
         budget.partial('load-config:guardcf-target-alignment', `Ignored PE GuardCF target 0x${address.toString(16)} not ${alignment}-byte aligned`);
+        continue;
+      }
+      // #8787: require the whole minimum instruction span to be file-backed, not
+      // just the first byte, so an aligned ARM64 GuardCF target straddling the
+      // raw/zero-fill boundary cannot mint a high-confidence seed.
+      if (!mappedFileSpanForRva(image, rva, Number(alignment))) {
+        budget.partial('load-config:guardcf-target-span', `Ignored PE GuardCF target 0x${address.toString(16)} whose ${alignment}-byte instruction span is not fully file-backed`);
         continue;
       }
       if (metadataFlags & IMAGE_GUARD_FLAG_FID_SUPPRESSED) {
