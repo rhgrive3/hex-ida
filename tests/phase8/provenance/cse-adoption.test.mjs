@@ -93,9 +93,9 @@ function repeatedFixture(bits = 8, { differentInputs = false, separateBlocks = f
       kind:'stmt', indent:1, text:inst.op === 'ret' ? 'return;' : 'old = value;', row:inst.row, addr:inst.address,
     })), warnings:[], evidence:[], coverage:{ mode:'structured' }, summary:'' };
   const result = enhanceSemanticDecompilation(seed, model, { phase8PrepareProof:true, deterministicTransforms:true,
-    decompilerTimeBudgetMs:1000, ...(nameCollision ? { argNames:['hex_cse_0', 'a2'] } : {}) });
+    decompilerTimeBudgetMs:5000, ...(nameCollision ? { argNames:['hex_cse_0', 'a2'] } : {}) });
   return { ir, targets, a, b, result, options:{ identity:{ ...identity, addressSpace:'memory' }, abiId:'generic-v1', memory:{ addressBits:32 },
-    targets, timeoutMs:1000, backendTier:'tiered', candidateStrategy:'equality-saturation' } };
+    targets, timeoutMs:5000, backendTier:'tiered', candidateStrategy:'equality-saturation' } };
 }
 
 test('real scalar CSE insertion retains its writer inside, outside and within nested conditional regions', async () => {

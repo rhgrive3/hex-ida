@@ -1,6 +1,8 @@
 import { enhanceSemanticDecompilation } from '../../../js/decompiler/pipeline.js';
 import { enhanceSemanticDecompilation as enhanceCore } from '../../../js/decompiler/pipeline-core.js';
 import { expr, sourceOf } from '../../../js/decompiler/ast/nodes.js';
+import { fixture as irFixture } from '../helpers/ir-fixtures.mjs';
+import { identity } from '../helpers/proof-fixtures.mjs';
 
 export { expr, sourceOf };
 
@@ -135,3 +137,43 @@ export function suppressedSpillFixture({ matching = true, alreadyHidden = false,
     warnings:[], evidence:[], coverage:{ mode:'structured' }, summary:'' };
   return { store, ret, result:enhanceCore(seed, { calls:[] }, { deterministicTransforms:true, ...options }) };
 }
+
+export function repeatedCseFixture(bits = 8, { differentInputs = false, separateBlocks = false, nameCollision = false, conditional = false, timeoutMs = 5000 } = {}) {
+  const f = irFixture('proved-cse'); f.block(0);
+  const a = f.opaque(bits), b = f.opaque(bits);
+  a.index = 0; a.reg = 'x0'; b.index = 1; b.reg = 'x1';
+  const c = differentInputs ? f.opaque(bits) : b;
+  if (differentInputs) { c.index = 2; c.reg = 'x2'; }
+  const targets = [];
+  const zero = f.constant(0n, bits);
+  for (let i = 0; i < 2; i++) {
+    const other = i ? c : b;
+    const xor = f.binary('xor', a, other, bits), and = f.binary('and', a, other, bits);
+    const sum = f.binary('add', xor, and, bits);
+    targets.push(f.binary('add', sum, zero, bits));
+  }
+  f.store(targets[0], { locKind:'global', locKey:'global:32768' });
+  if (separateBlocks) { f.branch(1); f.block(1, { pred:[0] }); }
+  f.store(targets[1], { locKind:'global', locKey:'global:32776' });
+  f.ret();
+  const ir = f.build(); ir.instructions = ir.blocks.flatMap(block => block.insts);
+  for (const [index, store] of ir.instructions.filter(inst => inst.op === 'store').entries()) {
+    store.loc.address = 0x8000n + BigInt(index * 8);
+    Object.assign(store.extra.memoryAccess, { volatility:false, atomic:false, ordering:'none', endian:'little' });
+  }
+  ir.instructions.forEach((inst, index) => { inst.id = index + 100; inst.row = index; inst.address = 0x6000n + BigInt(index * 4); });
+  if (separateBlocks) {
+    ir.instructions.find(inst => inst.op === 'br').extra = { target:ir.blocks[1].insts[0].address };
+    for (const block of ir.blocks) { block.startRow = block.insts[0].row; block.endRow = block.insts.at(-1).row; }
+  }
+  ir.values.forEach(value => { value.signed = false; });
+  const seed = { semantic:true, ir, types:{ values:new Map(), locations:new Map() },
+    lines:ir.instructions.filter(inst => ['store', 'ret'].includes(inst.op)).map(inst => ({
+      kind:'stmt', indent:1, text:inst.op === 'ret' ? 'return;' : 'old = value;', row:inst.row, addr:inst.address,
+    })), warnings:[], evidence:[], coverage:{ mode:'structured' }, summary:'' };
+  const result = enhanceSemanticDecompilation(seed, null, { phase8PrepareProof:true, deterministicTransforms:true,
+    decompilerTimeBudgetMs:timeoutMs, ...(nameCollision ? { argNames:['hex_cse_0', 'a2'] } : {}) });
+  return { ir, targets, a, b, result, options:{ identity:{ ...identity, addressSpace:'memory' }, abiId:'generic-v1', memory:{ addressBits:32 },
+    targets, timeoutMs, backendTier:'tiered', candidateStrategy:'equality-saturation' } };
+}
+

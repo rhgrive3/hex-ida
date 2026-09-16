@@ -108,11 +108,11 @@
     },
     {
       "id": "HEX-C4-03",
-      "localStatus": "partial",
-      "assessment": "来歴の同一読取内共有と最終再確認、不変データ認証の引継ぎを実装。実283 consumerを保持しdescriptor読取を1,017,774から160,997へ削減。aggregate認証予算と旧representation件数の3回帰を修復。標準120ms、全recovery/deletion受入は未達。",
-      "source": "js/decompiler/pipeline-core.js",
-      "verificationSuite": "c4-continuation-scoped-regressions",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "assessment": "CSE/DCE/phi/switch/struct-field の多対一写像および stale-snapshot 拒絶の固定6カテゴリを production render-provenance と independent validation で受入。rendered-entity および removed-transform-class の分母において provenance loss zero（counts.provenanceLoss === 0）と双方向の逆ナビゲーション（reverse navigation complete）を機械検証。C4-05、alias/SSA 真正性、実機/release gates は未達のため全体は partial。",
+      "source": "tests/phase8/provenance/c4-03-acceptance.test.mjs",
+      "verificationSuite": "c4-03-final-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "HEX-C4-04",
@@ -384,9 +384,9 @@
       "mustWaitFor": "C2 facts",
       "complexity": "L",
       "findingId": "HEX-C4-03",
-      "localStatus": "partial",
-      "currentAssessment": "来歴の同一読取内共有と最終再確認、不変データ認証の引継ぎを実装。実283 consumerを保持しdescriptor読取を1,017,774から160,997へ削減。aggregate認証予算と旧representation件数の3回帰を修復。標準120ms、全recovery/deletion受入は未達。",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "currentAssessment": "CSE/DCE/phi/switch/struct-field の多対一写像および stale-snapshot 拒絶の固定6カテゴリを production render-provenance と independent validation で受入。rendered-entity および removed-transform-class の分母において provenance loss zero（counts.provenanceLoss === 0）と双方向の逆ナビゲーション（reverse navigation complete）を機械検証。C4-05、alias/SSA 真正性、実機/release gates は未達のため全体は partial。",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "FR-SYM-01A",
@@ -2447,6 +2447,28 @@
       "incompleteAlwaysJoinsUnknown": true,
       "summaryDigestDependencyRequired": true,
       "deterministicReplay": true,
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false
+    },
+    "c4ProvenanceAcceptance20260916": {
+      "status": "ACCEPTED-LOCAL",
+      "finding": "HEX-C4-03",
+      "task": "FR-C4-03A",
+      "denominator": [
+        "rendered-entity",
+        "removed-transform-class"
+      ],
+      "requiredProof": [
+        "cse",
+        "dce",
+        "phi",
+        "switch",
+        "struct-field",
+        "stale-snapshot"
+      ],
+      "acceptanceTest": "tests/phase8/provenance/c4-03-acceptance.test.mjs",
+      "provenanceLoss": 0,
+      "reverseNavigation": "complete",
       "fullRoadmapComplete": false,
       "transformAuthorization": false
     }
