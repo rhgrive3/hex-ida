@@ -1,48 +1,80 @@
-name: PR 8671 latest-main merge inputs
+name: PR 8671 final acceptance
 
 on:
   push:
     branches: [integration-candidate/benchmark-auth-20260914]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  merge-inputs:
+  final-acceptance:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Capture auto-merged workflow and two conflict inputs
+      - name: Verify latest main is integrated
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf pr8671-merge-inputs && mkdir -p pr8671-merge-inputs
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git config merge.conflictstyle diff3
           git fetch --no-tags origin main
-          head_sha="$(git rev-parse HEAD)"
-          main_sha="$(git rev-parse origin/main)"
-          set +e
-          git merge --no-commit --no-ff origin/main >/dev/null 2>&1
-          status=$?
-          set -e
-          printf 'head=%s\nmain=%s\nmerge_status=%s\n' "$head_sha" "$main_sha" "$status" > pr8671-merge-inputs/summary.txt
-          git diff --name-only --diff-filter=U | sort >> pr8671-merge-inputs/summary.txt
-          cp .github/workflows/phase7-ownership.yml pr8671-merge-inputs/phase7-ownership.merged.yml
-          cp package.json pr8671-merge-inputs/package.diff3.json
-          cp tools/validation/phase7/cross-lane-inventory.mjs pr8671-merge-inputs/cross-lane-inventory.diff3.mjs
-          for stage in 1 2 3; do
-            git show ":${stage}:package.json" > "pr8671-merge-inputs/package.stage${stage}.json"
-          done
-          cat pr8671-merge-inputs/summary.txt >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload merge inputs
+          git merge-base --is-ancestor origin/main HEAD
+          printf 'main=%s\nhead=%s\n' "$(git rev-parse origin/main)" "$(git rev-parse HEAD)" > pr8671-final-acceptance.txt
+      - name: Install pinned dependencies
+        shell: bash
+        run: timeout 300s npm ci
+      - name: Verify real ARM64 product CLI
+        shell: bash
+        run: timeout 120s node --test tests/public-benchmark/product-cli.test.mjs
+      - name: Verify public benchmark suite
+        shell: bash
+        run: timeout 180s npm run benchmark:public:test
+      - name: Verify auth suite
+        shell: bash
+        run: timeout 240s npm run auth:test
+      - name: Install Playwright Chromium
+        shell: bash
+        run: timeout 240s npx playwright install chromium
+      - name: Verify AI UI Dev profile
+        shell: bash
+        run: timeout 120s node tests/ai-ui-dev-profile.mjs
+      - name: Verify Phase 7 cross-lane routing
+        shell: bash
+        run: timeout 120s node tests/phase7/ownership/cross-lane-routing.test.mjs
+      - name: Verify canonical auth build
+        shell: bash
+        run: timeout 300s npm run auth:build-test
+      - name: Publish regenerated committed userscript artifacts if needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          git status --porcelain -- userscript/hex.user.template.js userscript/release-version.json >> pr8671-final-acceptance.txt
+          git add userscript/hex.user.template.js userscript/release-version.json
+          if ! git diff --cached --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git diff --cached --check
+            git commit -m "chore(userscript): regenerate artifacts after latest main merge"
+            git push origin HEAD:integration-candidate/benchmark-auth-20260914
+            printf 'generated_artifacts=committed\n' >> pr8671-final-acceptance.txt
+          else
+            printf 'generated_artifacts=clean\n' >> pr8671-final-acceptance.txt
+          fi
+          printf '%s\n' \
+            'real-arm64-product-cli=pass' \
+            'public-benchmark=pass' \
+            'auth-test=pass' \
+            'ai-ui-dev-profile=pass' \
+            'phase7-cross-lane=pass' \
+            'auth-build-test=pass' >> pr8671-final-acceptance.txt
+          cat pr8671-final-acceptance.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload final acceptance evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr8671-merge-inputs
-          path: pr8671-merge-inputs
+          name: pr8671-final-acceptance
+          path: pr8671-final-acceptance.txt
+          if-no-files-found: ignore
           retention-days: 1
