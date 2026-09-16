@@ -149,6 +149,16 @@ test('#8929 persisted r1 finding restored at r2 is not mutation authority', asyn
   assert.deepEqual(accepted.evidenceIds, [r1.id]);
 });
 
+test('#8929 AIRuntime does not force a binding resolver onto custom evidence adapters', () => {
+  const adapter = {
+    get(id) { return id === 'ev-1' ? { id, status: 'verified' } : null; },
+    has(id) { return id === 'ev-1'; },
+  };
+  const runtime = new AIRuntime({ context: makeContext('r2'), evidenceStore: adapter, planner: false });
+  const proposal = runtime.proposalStore.create(draft(['ev-1']));
+  assert.deepEqual(proposal.evidenceIds, ['ev-1']);
+});
+
 test('#8929 adapters without a binding resolver keep the legacy status contract', () => {
   const legacy = new ProposalStore({ evidenceStore: { get: (id) => (id === 'ev-1' ? { id, status: 'verified', sourceBinding: 'stale-binding' } : null) } });
   const proposal = legacy.create(draft(['ev-1']));
