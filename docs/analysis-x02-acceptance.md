@@ -1,5 +1,35 @@
 # X-02 Apple 横断受入 — 2026-09-13 ローカル検証
 
+## 2026-09-16 F-48 / current-disposition reconciliation
+
+元120行の frozen JSON と historical disposition は変更しない。固定JSON SHA-256 は
+`c95ea2ba89d072fe9110565072462d5efca496b72a66ff365d8b8d15a95274ad` のまま。
+`tests/scpa/x02-declared-metadata-boundaries.test.mjs` で、X02-F-48 に対して手書きPAC wordではなく
+実コンパイラ生成 arm64e Mach-O object を固定証拠として追加した。source SHA-256 は
+`608bedd0e779fc50bbb6a8b4f3f9f17fc4c1f6abc268098a819238f491c04a49`、object SHA-256 は
+`aa196ec267e323ad1910ffc17dc72e7c17d13e2f5271f50dedc067c700611bb0`。producer は
+`clang version 17.0.0 (https://github.com/swiftlang/llvm-project.git 10999b6d034fe318f3d56c83bddb6572593a8bb0)`、
+target は `arm64e-apple-macos13.0`、引数は `-c -O1 -ffreestanding -fno-stack-protector -msign-return-address=all`。
+loader は `macho / arm64e / macOS / LC_BUILD_VERSION minos 13.0.0` を読み、compiler output 内の
+PACIASP と authenticated-return path を検査する。これは producer-pinned arm64e corpus の受入だけであり、
+X02-F-47 の実PAC runtime authentication を成功扱いしない。
+
+このcurrent overlayを含む有限120行の分類は、指定LLVM 18.1.3 readobjが利用できない通常環境では
+**115 pass / 0 product-gap / 3 evidence-gap / 2 environment-excluded**。指定版LLVMが実際に存在し、
+X02-H-02の独立reparse・実行ファイルdigest・version・format・architectureまで成功した環境では
+**116 pass / 0 product-gap / 3 evidence-gap / 1 environment-excluded** とする。環境判定はpreflight結果からのみ行い、
+version gateを緩めない。
+
+残る3 evidence-gap は、(1) versioned Apple OS/toolchain/runtime corpus、(2) real dyld shared cache と
+OS-derived slide/rebase provenance、(3) genuine signed Mach-O と trusted signing validation。
+repo内の現行実物だけではこれらを正当に閉じられない。LC_CODE_SIGNATURE の宣言fixture、synthetic cache、
+Linux上のcross-target宣言を実Apple証拠へ昇格しない。X02-F-47 は引き続き実Apple arm64e runtime環境依存。
+
+このreconciliationのexact head `1db64d8d402cbadf8cdb18663264a9589f1360ae` では、CodeRabbit、
+Phase7/8 ownership、universal-platform-verify、universal-platform-benchmark、migration guardrails、
+final-head-admission を含む公開CI contextが成功した。これは有限X-02のcurrent overlayとbranch整合性の証拠であり、
+X-02全体・実機・release gateの完了宣言ではない。`CHECKPOINT-LOCKED` を維持する。
+
 ## 2026-09-14 現在headへの修正と再検証
 
 開始元はPR #7036の `bce2a7582b890af00686e91f462f381630b813bc`、mainは
