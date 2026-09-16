@@ -24,6 +24,7 @@ export class DevAgentUiSettings {
     this.decisionPolicy = lostDevPrivilege || !this.identity.capabilities.canUseDevYolo ? DEV_DECISION_POLICY.NORMAL : safePolicy(saved.decisionPolicy);
     this.analysisScope = safeScope(saved.analysisScope);
     this.lastRun = null;
+    this.unsubscribeAuth = authProvider.subscribe?.(() => this.refreshIdentity());
   }
 
   refreshIdentity({ notify = true } = {}) {
@@ -39,11 +40,12 @@ export class DevAgentUiSettings {
       this.agentProfile = AGENT_PROFILE.STANDARD;
       this.decisionPolicy = DEV_DECISION_POLICY.NORMAL;
       this.persist();
-      if (notify) this.emit();
     }
+    if (notify && (identityChanged || downgraded)) this.emit();
     return identityChanged || downgraded;
   }
 
+  destroy() { this.unsubscribeAuth?.(); this.listeners.clear(); }
   profiles() {
     this.refreshIdentity();
     return availableAgentProfiles(this.identity);
