@@ -27,11 +27,10 @@ jobs:
   development:
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.base.repo.full_name == github.repository && (startsWith(github.head_ref, 'component/final-closure-') || startsWith(github.head_ref, 'recovery/final-closure-') || startsWith(github.head_ref, 'analysis/final-closure-') || github.head_ref == 'perf/development-gate-policy' || startsWith(github.base_ref, 'recovery/final-closure-') || startsWith(github.base_ref, 'analysis/final-closure-'))
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          # PRs test GitHub's combined merge candidate, including the base changes.
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
@@ -39,6 +38,24 @@ jobs:
         with:
           node-version: 22
       - run: npm ci --no-audit --no-fund
+      - name: PR7097 migration guardrail
+        if: github.head_ref == 'perf/development-gate-policy'
+        run: node tests/migration-guardrails.mjs
+      - name: PR7097 reusable release validation
+        if: github.head_ref == 'perf/development-gate-policy'
+        run: node tests/reusable-release-validation.mjs
+      - name: PR7097 universal source
+        if: github.head_ref == 'perf/development-gate-policy'
+        run: node tests/universal-binary-source.mjs
+      - name: PR7097 binary platform
+        if: github.head_ref == 'perf/development-gate-policy'
+        run: node tests/binary-platform.mjs
+      - name: PR7097 universal binary
+        if: github.head_ref == 'perf/development-gate-policy'
+        run: node tests/universal-binary.mjs
+      - name: PR7097 binary gate
+        if: github.head_ref == 'perf/development-gate-policy'
+        run: node tests/universal-binary-gate.mjs
       - name: Focused checks on the combined development candidate
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -51,7 +68,6 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          # This is the immutable PR merge candidate, not the mutable branch tip.
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
@@ -84,6 +100,3 @@ jobs:
       - name: Run canonical final product checks once
         if: inputs.mode == 'release'
         run: node scripts/run-quiet-command.mjs --label release-check -- npm run check
-      # This job is product-test evidence, not automatic deployment or final signoff.
-      # Generated, independent verifier and applicable target/runtime proof remain
-      # final release requirements in the development-speed policy.
