@@ -29,28 +29,28 @@ const imageId = createManagedImageId('bin-123', 'sub-entry');
 assert.equal(imageId, 'managed-image:bin-123:sub-entry');
 
 const moduleId = createManagedModuleId(imageId, 'classes.dex');
-assert.equal(moduleId, 'managed-mod:managed-image:bin-123:sub-entry:classes.dex');
+assert.equal(moduleId, 'managed-mod:managed-image%3Abin-123%3Asub-entry:classes.dex');
 
 const typeId = createManagedTypeId(moduleId, 'Lcom/example/MyClass;');
-assert.equal(typeId, 'managed-type:managed-mod:managed-image:bin-123:sub-entry:classes.dex:Lcom/example/MyClass;');
+assert.equal(typeId, 'managed-type:managed-mod%3Amanaged-image%253Abin-123%253Asub-entry%3Aclasses.dex:Lcom/example/MyClass;');
 
 const methodId = createManagedMethodId(typeId, 'doSomething', '(I)V');
-assert.equal(methodId, 'managed-method:managed-type:managed-mod:managed-image:bin-123:sub-entry:classes.dex:Lcom/example/MyClass;:doSomething:(I)V');
+assert.equal(methodId, 'managed-method:managed-type%3Amanaged-mod%253Amanaged-image%25253Abin-123%25253Asub-entry%253Aclasses.dex%3ALcom/example/MyClass;:doSomething:(I)V');
 
 const fieldId = createManagedFieldId(typeId, 'mField');
-assert.equal(fieldId, 'managed-field:managed-type:managed-mod:managed-image:bin-123:sub-entry:classes.dex:Lcom/example/MyClass;:mField');
+assert.equal(fieldId, 'managed-field:managed-type%3Amanaged-mod%253Amanaged-image%25253Abin-123%25253Asub-entry%253Aclasses.dex%3ALcom/example/MyClass;:mField');
 
 const opId = createVMOperationId(methodId, 0x14, 1);
-assert.equal(opId, `vm-op:${methodId}:0x14:1`);
+assert.equal(opId, 'vm-op:managed-method%3Amanaged-type%253Amanaged-mod%25253Amanaged-image%2525253Abin-123%2525253Asub-entry%25253Aclasses.dex%253ALcom/example/MyClass;%3AdoSomething%3A(I)V:0x14:1');
 
 const valId = createVMValueId(methodId, opId, 'r0');
-assert.equal(valId, `vm-val:${methodId}:${opId}:r0`);
+assert.equal(valId, 'vm-val:managed-method%3Amanaged-type%253Amanaged-mod%25253Amanaged-image%2525253Abin-123%2525253Asub-entry%25253Aclasses.dex%253ALcom/example/MyClass;%3AdoSomething%3A(I)V:vm-op%3Amanaged-method%253Amanaged-type%25253Amanaged-mod%2525253Amanaged-image%252525253Abin-123%252525253Asub-entry%2525253Aclasses.dex%25253ALcom/example/MyClass;%253AdoSomething%253A(I)V%3A0x14%3A1:r0');
 
 const frameId = createVMFrameStateId(methodId, 0x14);
-assert.equal(frameId, `vm-frame:${methodId}:0x14`);
+assert.equal(frameId, 'vm-frame:managed-method%3Amanaged-type%253Amanaged-mod%25253Amanaged-image%2525253Abin-123%2525253Asub-entry%25253Aclasses.dex%253ALcom/example/MyClass;%3AdoSomething%3A(I)V:0x14');
 
 const excId = createManagedExceptionRegionId(methodId, 0);
-assert.equal(excId, `managed-exc:${methodId}:0`);
+assert.equal(excId, 'managed-exc:managed-method%3Amanaged-type%253Amanaged-mod%25253Amanaged-image%2525253Abin-123%2525253Asub-entry%25253Aclasses.dex%253ALcom/example/MyClass;%3AdoSomething%3A(I)V:0');
 
 const profileId = createManagedTargetProfileId('wasm', '1', 'core-3.0');
 assert.equal(profileId, 'managed-profile:wasm:1:core-3.0');
