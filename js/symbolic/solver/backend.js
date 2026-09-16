@@ -14,6 +14,7 @@ export const PROOF_AUTHORITY = Object.freeze({
 });
 
 const AUTHORITY_VALUES = new Set(Object.values(PROOF_AUTHORITY));
+const BACKEND_INSTANCES = new WeakSet();
 
 export class SolverBackend {
   constructor({
@@ -40,6 +41,7 @@ export class SolverBackend {
     this.proofAuthority = proofAuthority;
     this.isRemote = isRemote ?? false;
     this.isWasm = isWasm ?? false;
+    BACKEND_INSTANCES.add(this);
   }
 
   /**
@@ -86,8 +88,12 @@ export class SolverBackend {
   }
 }
 
+export function isSolverBackendInstance(value) {
+  return value != null && typeof value === 'object' && BACKEND_INSTANCES.has(value);
+}
+
 export function isExactProofBackend(backend) {
-  if (!backend || typeof backend !== 'object') return false;
+  if (!isSolverBackendInstance(backend)) return false;
   if (backend.proofAuthority !== PROOF_AUTHORITY.EXACT) return false;
   if (typeof backend.id !== 'string' || !backend.id || typeof backend.version !== 'string' || !backend.version) return false;
   if (typeof backend.capabilities !== 'function' || typeof backend.capabilityFingerprint !== 'function') return false;
