@@ -1,0 +1,243 @@
+name: Temporary C4-04 transaction patch v2
+on:
+  push:
+    branches: ['impl/c4-04-finish-20260916']
+    paths: ['.github/workflows/temp-c4-04-wire-proof-v2.yml']
+permissions:
+  contents: write
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: impl/c4-04-finish-20260916
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Patch C4 proof authority
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p=Path('js/decompiler/phase8/pass-validation-core.js')
+          s=p.read_text()
+          old="""export const REWRITE_VALIDATION_VERIFIER = 'hex.symbolic.verify.bounded-equivalence';
+          export const REWRITE_VALIDATION_STATUSES = Object.freeze(['equivalent', 'refuted', 'unknown', 'unsupported']);
+
+          const CANONICAL_EQUIVALENCE_AUTHORITIES = new WeakSet();
+          """
+          new="""export const REWRITE_VALIDATION_VERIFIER = 'hex.symbolic.verify.bounded-equivalence';
+          export const MEMORY_REWRITE_VALIDATION_VERIFIER = 'hex.symbolic.query.memory-equivalence';
+          export const TERMINAL_EFFECT_REWRITE_VALIDATION_VERIFIER = 'hex.symbolic.query.terminal-effect-equivalence';
+          export const REWRITE_VALIDATION_STATUSES = Object.freeze(['equivalent', 'refuted', 'unknown', 'unsupported']);
+
+          const CANONICAL_EQUIVALENCE_AUTHORITIES = new WeakSet();
+          const CANONICAL_EQUIVALENCE_CURRENTNESS = new WeakMap();
+          """
+          assert old in s
+          s=s.replace(old,new,1)
+          old="""export function hasCanonicalEquivalenceAuthority(validation) {
+            return !!validation && typeof validation === 'object'
+              && CANONICAL_EQUIVALENCE_AUTHORITIES.has(validation);
+          }
+          """
+          new="""export function hasCanonicalEquivalenceAuthority(validation) {
+            if (!validation || typeof validation !== 'object' || !CANONICAL_EQUIVALENCE_AUTHORITIES.has(validation)) return false;
+            const current = CANONICAL_EQUIVALENCE_CURRENTNESS.get(validation);
+            if (current == null) return true;
+            try { return current() === true; } catch { return false; }
+          }
+          """
+          assert old in s
+          s=s.replace(old,new,1)
+          anchor="""/**
+           * Recompute the proof id a transform's validation record must carry.
+          """
+          assert anchor in s
+          insert=r'''
+          function validatedQueryRecord({ passId, passVersion, transformKind, targets, binding, verifierIdentity, outcome, isCurrent }) {
+            if (outcome?.verdict === 'proved' && outcome.eligible === true && typeof outcome.bindingDigest === 'string' && outcome.bindingDigest.length > 0) {
+              if (typeof isCurrent !== 'function' || isCurrent() !== true) {
+                return Object.freeze({ validation:'unknown', reason:'rewrite-proof-stale', verifier:verifierIdentity, solverStatus:null });
+              }
+              const equivalenceProofId = rewriteProofDigest({
+                passId, passVersion, transformKind, targets, ...binding,
+                verifierIdentity, verdict:'proved', claimKind:CLAIM_KIND.EQUIVALENT,
+                queryHash:outcome.bindingDigest,
+              });
+              const validation = Object.freeze({
+                validation:'equivalent', equivalenceProofId, verifier:verifierIdentity,
+                verdictSource:'unsat-difference', solverStatus:'unsat',
+                completeness:Object.freeze({ queryScope:'complete', declaredScope:outcome.scope?.kind ?? null,
+                  effects:Object.freeze([...(outcome.scope?.effects ?? [])]) }),
+                queryHash:outcome.bindingDigest,
+              });
+              CANONICAL_EQUIVALENCE_AUTHORITIES.add(validation);
+              CANONICAL_EQUIVALENCE_CURRENTNESS.set(validation,isCurrent);
+              return validation;
+            }
+            if (outcome?.verdict === 'refuted') {
+              return Object.freeze({ validation:'refuted', reason:outcome.reason ?? 'rewrite-not-equivalent',
+                verifier:verifierIdentity, solverStatus:'sat',
+                counterexample:outcome.firstDivergence ? Object.freeze({ ...outcome.firstDivergence }) : null });
+            }
+            return Object.freeze({ validation:'unknown', reason:outcome?.reason ?? 'rewrite-validation-unknown',
+              verifier:verifierIdentity, solverStatus:null });
+          }
+
+          export async function validateMemoryRewriteAdoption({
+            passId, passVersion, transformKind, targets, rewrite = null, memoryRequest = null,
+          } = {}) {
+            if (!passId || !passVersion || !transformKind) fail('phase8-rewrite-adoption-identity-required');
+            if (!Array.isArray(targets) || targets.length === 0) fail('phase8-rewrite-adoption-targets-required');
+            if (!memoryRequest || typeof memoryRequest !== 'object') fail('phase8-memory-rewrite-proof-request-required');
+            const binding = rewriteBinding(rewrite);
+            const { queryMemoryEquivalence, isAdoptableMemoryEquivalence } = await import('../../symbolic/query/memory-equivalence.js');
+            const outcome = await queryMemoryEquivalence(memoryRequest);
+            return validatedQueryRecord({ passId, passVersion, transformKind, targets, binding,
+              verifierIdentity:MEMORY_REWRITE_VALIDATION_VERIFIER, outcome,
+              isCurrent:() => isAdoptableMemoryEquivalence(outcome,memoryRequest) });
+          }
+
+          export async function validateTerminalEffectRewriteAdoption({
+            passId, passVersion, transformKind, targets, rewrite = null, effectRequest = null,
+          } = {}) {
+            if (!passId || !passVersion || !transformKind) fail('phase8-rewrite-adoption-identity-required');
+            if (!Array.isArray(targets) || targets.length === 0) fail('phase8-rewrite-adoption-targets-required');
+            if (!effectRequest || typeof effectRequest !== 'object') fail('phase8-terminal-effect-proof-request-required');
+            const binding = rewriteBinding(rewrite);
+            const { queryTerminalEffectEquivalence, isAdoptableTerminalEffectEquivalence } = await import('../../symbolic/query/terminal-effect-equivalence.js');
+            const outcome = await queryTerminalEffectEquivalence(effectRequest);
+            return validatedQueryRecord({ passId, passVersion, transformKind, targets, binding,
+              verifierIdentity:TERMINAL_EFFECT_REWRITE_VALIDATION_VERIFIER, outcome,
+              isCurrent:() => isAdoptableTerminalEffectEquivalence(outcome,effectRequest) });
+          }
+
+          '''
+          s=s.replace(anchor,insert+anchor,1)
+          p.write_text(s)
+
+          p=Path('js/decompiler/phase8/pass-validation.js')
+          s=p.read_text()
+          old="return Object.freeze({ record, equivalenceAuthority:true });"
+          assert old in s
+          s=s.replace(old,"return Object.freeze({ record, equivalenceAuthority:true, authoritySource:value });",1)
+          old="""    let equivalenceAuthority = false;
+              if (Object.hasOwn(raw, 'rewrite')) extra.rewrite = metadataCloneOwned(raw.rewrite);"""
+          new="""    let equivalenceAuthority = false;
+              let authoritySource = null;
+              if (Object.hasOwn(raw, 'rewrite')) extra.rewrite = metadataCloneOwned(raw.rewrite);"""
+          assert old in s
+          s=s.replace(old,new,1)
+          old="""      equivalenceAuthority = validated.equivalenceAuthority;
+              }
+              extras.push(Object.freeze({ extra:Object.freeze(extra), equivalenceAuthority }));"""
+          new="""      equivalenceAuthority = validated.equivalenceAuthority;
+                authoritySource = validated.authoritySource ?? null;
+              }
+              extras.push(Object.freeze({ extra:Object.freeze(extra), equivalenceAuthority, authoritySource }));"""
+          assert old in s
+          s=s.replace(old,new,1)
+          old="""    equivalenceAuthority:extras[index].equivalenceAuthority,
+            }));"""
+          new="""    equivalenceAuthority:extras[index].equivalenceAuthority,
+              authoritySource:extras[index].authoritySource,
+            }));"""
+          assert old in s
+          s=s.replace(old,new,1)
+          old="""  recomputeEquivalenceProofId,
+            validatedRewriteMetadataFor,
+          });"""
+          new="""  recomputeEquivalenceProofId,
+            validatedRewriteMetadataFor,
+            hasCanonicalEquivalenceAuthority,
+          });"""
+          assert old in s
+          s=s.replace(old,new,1)
+          p.write_text(s)
+
+          p=Path('js/decompiler/phase8/transaction-core.js')
+          s=p.read_text()
+          old="""  const required = ['PROOF_REWRITE_PASS', 'proofAdmissionReason', 'proofPublicationResult',
+              'attachValidatedRewriteMetadata', 'recomputeEquivalenceProofId', 'validatedRewriteMetadataFor'];"""
+          new="""  const required = ['PROOF_REWRITE_PASS', 'proofAdmissionReason', 'proofPublicationResult',
+              'attachValidatedRewriteMetadata', 'recomputeEquivalenceProofId', 'validatedRewriteMetadataFor',
+              'hasCanonicalEquivalenceAuthority'];"""
+          assert old in s
+          s=s.replace(old,new,1)
+          old="""    if (validation == null) {
+                if (transform.rewrite != null && transform.unvalidatedReason == null) throw new RewriteRefusal('rewrite-unvalidated');
+                transforms.push(transform); retainedIndexes.push(index); continue;
+              }"""
+          new="""    if (validation == null) {
+                if (transform.rewrite != null) throw new RewriteRefusal('rewrite-unvalidated');
+                transforms.push(transform); retainedIndexes.push(index); continue;
+              }"""
+          assert old in s
+          s=s.replace(old,new,1)
+          old="""      if (metadata?.[index]?.equivalenceAuthority !== true) {
+                  throw new RewriteRefusal('rewrite-equivalence-authority-missing');
+                }"""
+          new="""      if (metadata?.[index]?.equivalenceAuthority !== true
+                  || !phase8ProofApi.hasCanonicalEquivalenceAuthority(metadata[index].authoritySource)) {
+                  throw new RewriteRefusal('rewrite-equivalence-authority-missing');
+                }"""
+          assert old in s
+          s=s.replace(old,new,1)
+          p.write_text(s)
+
+          p=Path('tests/phase8/substrate/pass-validation-owned-snapshot.test.mjs')
+          s=p.read_text()
+          old="""test('C4-04 explicit non-BV unvalidated reason remains admissible', () => {
+            const outcome = runPassTransaction(createAnalysisState(FULL_STATE), passFor([{
+              kind:'memory-probe', targets:['value_1'], proof:'memory proof', rewrite:{ memory:true },
+              unvalidatedReason:'outside scalar BV validation scope',
+            }]), {}, {});
+            assert.equal(outcome.committed, true, outcome.stopReason);
+          });"""
+          new="""test('C4-04 non-BV rewrite cannot bypass proof admission with an unvalidated reason', () => {
+            const state = createAnalysisState(FULL_STATE), before = state.snapshot();
+            const outcome = runPassTransaction(state, passFor([{
+              kind:'memory-probe', targets:['value_1'], proof:'memory proof', rewrite:{ before:{memory:1}, after:{memory:2} },
+              unvalidatedReason:'outside scalar BV validation scope',
+            }]), {}, {});
+            assert.equal(outcome.committed, false);
+            assert.match(outcome.stopReason, /^rewrite-unvalidated:/);
+            assert.deepEqual(state.snapshot(), before);
+          });"""
+          assert old in s
+          s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+          git diff --check
+      - name: Focused C4-04 transaction tests
+        shell: bash
+        run: |
+          set -o pipefail
+          node --test \
+            tests/phase8/substrate/pass-validation-owned-snapshot.test.mjs \
+            tests/phase8/substrate/c4-memory-rewrite-adoption.test.mjs \
+            tests/phase9/memory/terminal-effect-equivalence.test.mjs 2>&1 | tee /tmp/c4-wire.log
+      - name: Commit validated patch
+        if: success()
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/decompiler/phase8/pass-validation-core.js js/decompiler/phase8/pass-validation.js js/decompiler/phase8/transaction-core.js tests/phase8/substrate/pass-validation-owned-snapshot.test.mjs
+          git commit -m 'feat(c4): wire memory and effect proof authority'
+          git push origin HEAD:impl/c4-04-finish-20260916
+      - name: Upload focused evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c4-04-wire-evidence-v2
+          path: /tmp/c4-wire.log
+          if-no-files-found: ignore
+          retention-days: 1
