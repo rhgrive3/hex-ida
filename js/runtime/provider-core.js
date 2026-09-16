@@ -141,6 +141,11 @@ export class RuntimeProviderSession {
     this.state = 'opening';
     this.epoch = 1;
     this.closed = false;
+    // #8891: capability/authority revocation boundary, revoked synchronously at the
+    // start of close() (before async teardown). It is deliberately separate from
+    // `closed`: during `closing` the session is no longer `closed` yet must stop
+    // admitting any new backend/adapter-touching or authority-creating operation.
+    this._admitting = true;
     this.controllers = new Set();
     this._close = typeof close === 'function' ? close : null;
     this._closing = null;
@@ -155,8 +160,21 @@ export class RuntimeProviderSession {
     return state;
   }
 
+  // #8891: the single session-liveness authority consulted by every published
+  // facet capability and by controller()/newEpoch(). Admission is revoked
+  // synchronously at the start of close() and never restored, so a retained
+  // capability from a closing/closed session fails closed before it can touch a
+  // shared backend/adapter or mint new runtime authority.
+  assertAdmissible() {
+    if (!this._admitting) {
+      throw new DebugAdapterError('runtime-session-closed', this.closed
+        ? 'runtime provider session is closed'
+        : 'runtime provider session is closing and no longer admits operations');
+    }
+  }
+
   controller() {
-    if (this.closed) throw new DebugAdapterError('runtime-session-closed', 'runtime provider session is closed');
+    this.assertAdmissible();
     const controller = new AbortController();
     this.controllers.add(controller);
     controller.signal.addEventListener('abort', () => this.controllers.delete(controller), { once: true });
@@ -171,13 +189,17 @@ export class RuntimeProviderSession {
   }
 
   newEpoch(reason = 'runtime-session-epoch-changed') {
-    if (this.closed) throw new DebugAdapterError('runtime-session-closed', 'runtime provider session is closed');
+    this.assertAdmissible();
     this.epoch++;
     this.cancelAll(reason);
     return this.epoch;
   }
 
   async close() {
+    // Revoke admission before any await or state transition so a facet operation
+    // that begins after close() starts cannot reach the shared adapter, even
+    // while teardown is still in flight and `closed` is still false.
+    this._admitting = false;
     if (this.closed) return;
     if (this._closing) return this._closing;
     this.setState('closing');
@@ -246,58 +268,76 @@ function adapterFacetNames(adapter) {
   return [...facets];
 }
 
+// #8891: bind every backend/adapter-touching capability method to the owning
+// session's admission lifecycle. A bare `(...args) => adapter.method(...args)`
+// closure captured the shared adapter with no lifecycle check, so a stale facet
+// from a closing/closed session could still drive a successor session's adapter
+// state. `admitted()` fails closed before invoking the adapter.
+function admitted(session, method) {
+  return async (...args) => {
+    session.assertAdmissible();
+    return method(...args);
+  };
+}
+
 function debuggerFacet(adapter, session) {
+  const bound = (name) => admitted(session, (...args) => adapter[name](...args));
   return Object.freeze({
     adapter,
     capabilities: adapter.capabilities,
-    attach: (...args) => adapter.attach(...args),
-    launch: (...args) => adapter.launch(...args),
-    pause: (...args) => adapter.pause(...args),
-    resume: (...args) => adapter.resume(...args),
-    stepInto: (...args) => adapter.stepInto(...args),
-    stepOver: (...args) => adapter.stepOver(...args),
-    stepOut: (...args) => adapter.stepOut(...args),
-    setBreakpoint: (...args) => adapter.setBreakpoint(...args),
-    removeBreakpoint: (...args) => adapter.removeBreakpoint(...args),
-    listBreakpoints: (...args) => adapter.listBreakpoints(...args),
-    readRegisters: (...args) => adapter.readRegisters(...args),
+    attach: bound('attach'),
+    launch: bound('launch'),
+    pause: bound('pause'),
+    resume: bound('resume'),
+    stepInto: bound('stepInto'),
+    stepOver: bound('stepOver'),
+    stepOut: bound('stepOut'),
+    setBreakpoint: bound('setBreakpoint'),
+    removeBreakpoint: bound('removeBreakpoint'),
+    listBreakpoints: bound('listBreakpoints'),
+    readRegisters: bound('readRegisters'),
     writeRegister: async (...args) => {
+      session.assertAdmissible();
       const result = await adapter.writeRegister(...args);
       return { result, intervention: { kind: 'register-write', runtimeSessionId: session.runtimeSessionId } };
     },
-    readMemory: (...args) => adapter.readMemory(...args),
+    readMemory: bound('readMemory'),
     writeMemory: async (...args) => {
+      session.assertAdmissible();
       const result = await adapter.writeMemory(...args);
       return { result, intervention: { kind: 'memory-write', runtimeSessionId: session.runtimeSessionId } };
     },
-    getThreads: (...args) => adapter.getThreads(...args),
-    getModules: (...args) => adapter.getModules(...args),
-    getBacktrace: (...args) => adapter.getBacktrace(...args),
-    evaluate: (...args) => adapter.evaluate(...args),
+    getThreads: bound('getThreads'),
+    getModules: bound('getModules'),
+    getBacktrace: bound('getBacktrace'),
+    evaluate: bound('evaluate'),
   });
 }
 
-function traceFacet(adapter) {
+function traceFacet(adapter, session) {
+  const bound = (name) => admitted(session, (...args) => adapter[name](...args));
   return Object.freeze({
     capabilities: adapter.capabilities,
-    trace: (...args) => adapter.trace(...args),
-    replay: (...args) => adapter.replay(...args),
+    trace: bound('trace'),
+    replay: bound('replay'),
   });
 }
 
 function instrumentationFacet(adapter, session) {
+  const bound = (name) => admitted(session, (...args) => adapter[name](...args));
   return Object.freeze({
     compatibility: true,
     capabilities: adapter.capabilities,
-    trace: (...args) => adapter.trace(...args),
-    getObjCRuntimeInfo: (...args) => adapter.getObjCRuntimeInfo(...args),
-    getSwiftRuntimeInfo: (...args) => adapter.getSwiftRuntimeInfo(...args),
+    trace: bound('trace'),
+    getObjCRuntimeInfo: bound('getObjCRuntimeInfo'),
+    getSwiftRuntimeInfo: bound('getSwiftRuntimeInfo'),
     interventionContext: () => ({ runtimeSessionId: session.runtimeSessionId }),
   });
 }
 
-function emulatorFacet(adapter) {
-  return Object.freeze({ compatibility: true, capabilities: adapter.capabilities, launch: (...args) => adapter.launch(...args), resume: (...args) => adapter.resume(...args) });
+function emulatorFacet(adapter, session) {
+  const bound = (name) => admitted(session, (...args) => adapter[name](...args));
+  return Object.freeze({ compatibility: true, capabilities: adapter.capabilities, launch: bound('launch'), resume: bound('resume') });
 }
 
 export class DebugAdapterRuntimeProvider {
@@ -379,8 +419,8 @@ export class DebugAdapterRuntimeProvider {
       for (const facetName of adapterFacetNames(this.adapter)) {
         if (facetName === 'debugger') facets.debugger = debuggerFacet(this.adapter, session);
         else if (facetName === 'instrumentation') facets.instrumentation = instrumentationFacet(this.adapter, session);
-        else if (facetName === 'trace') facets.trace = traceFacet(this.adapter);
-        else if (facetName === 'emulator') facets.emulator = emulatorFacet(this.adapter);
+        else if (facetName === 'trace') facets.trace = traceFacet(this.adapter, session);
+        else if (facetName === 'emulator') facets.emulator = emulatorFacet(this.adapter, session);
       }
     }
     session.capabilityState = deferredConnect ? 'unnegotiated' : 'negotiated';

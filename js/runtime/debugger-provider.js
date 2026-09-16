@@ -145,6 +145,9 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
     let modulePublicationAuthority = 0;
 
     const ingest = (raw) => {
+      // #8891: revoke ingress for a closing/closed session so a stale facet or a
+      // backend callback racing teardown cannot mutate session.modules / setState.
+      session.assertAdmissible();
       const event = normalizer.push(raw);
       if (!event) return null;
       const module = moduleFields(event);
@@ -251,6 +254,9 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
       interventions,
       resolveAddress: (runtimeAddress, resolutionOptions = {}) => session.modules.resolve(runtimeAddress, resolutionOptions),
       refreshModules: async () => {
+        // #8891: adapter-touching refresh is a stateful capability — revoke it for
+        // a closing/closed session so a stale handle cannot drive the shared adapter.
+        session.assertAdmissible();
         if (!this.adapter.capabilities?.modules || typeof this.adapter.getModules !== 'function') return session.modules.active();
         // #8686: capture the epoch and claim publication authority before the
         // first await, and register a session-owned operation so
