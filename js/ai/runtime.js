@@ -9,7 +9,9 @@ import { createAgentJobManager } from './jobs/index.js';
 import { InvestigationSessionStore, isValidSessionId } from './session-core/index.js';
 import { sanitizeActions, addressText, validateSchema } from './validation.js';
 import { executeTurn } from './control/turn-executor.js';
-import { addressExistsAsync, assertLiveBindingsUnchanged, defaultMonotonicNow, deterministicConfidence, fallbackEvidence, presentAnswer, qualifyingEvidence } from './control/runtime-support.js';
+import { addressExistsAsync, assertLiveBindingsUnchanged, claimedAddresses, defaultMonotonicNow, deterministicConfidence, fallbackEvidence, finalAnswerAuthorityEvidence, presentAnswer, qualifyingEvidence } from './control/runtime-support.js';
+import { canonicalBindingId, resolveAnalysisRevision } from './control/snapshot.js';
+import { analysisBinding } from './tools/storage/observation-store.js';
 
 const BUDGET_LIMIT_REASONS = new Set([
   'budget_exhausted',
@@ -25,7 +27,11 @@ export class AIRuntime {
     this.sessionStore = options.sessionStore || new InvestigationSessionStore({ persistence: options.persistence });
     this.evidenceStore = options.evidenceStore || new EvidenceStore();
     this.hypothesisStore = options.hypothesisStore || new HypothesisStore(this.evidenceStore);
-    this.proposalStore = options.proposalStore || new ProposalStore({ evidenceStore: this.evidenceStore, binding: () => proposalBinding(this.localContext) });
+    this.proposalStore = options.proposalStore || new ProposalStore({
+      evidenceStore: this.evidenceStore,
+      binding: () => proposalBinding(this.localContext),
+      currentEvidenceBinding: evidenceBindingResolver(this.evidenceStore, this.localContext),
+    });
     this.initialStores = { evidenceStore: this.evidenceStore, hypothesisStore: this.hypothesisStore, proposalStore: this.proposalStore };
     this.initialStoresClaimed = false;
     this.initialStoresExplicit = options.evidenceStore != null || options.hypothesisStore != null || options.proposalStore != null;
@@ -54,7 +60,11 @@ export class AIRuntime {
       const evidenceStore = new EvidenceStore(session.confirmedFindings || []);
       evidenceStore.restorePersistedConfirmed(session.confirmedFindings || []);
       const hypothesisStore = new HypothesisStore(evidenceStore, session.hypotheses || []);
-      const proposalStore = new ProposalStore({ evidenceStore, binding: () => proposalBinding(this.localContext) });
+      const proposalStore = new ProposalStore({
+        evidenceStore,
+        binding: () => proposalBinding(this.localContext),
+        currentEvidenceBinding: evidenceBindingResolver(evidenceStore, this.localContext),
+      });
       proposalStore.restorePersistedPending(session.proposedActions || []);
       stores = { evidenceStore, hypothesisStore, proposalStore };
     }
@@ -110,7 +120,7 @@ export class AIRuntime {
   async runJobSlice(jobOrId, options = {}) { return this.jobs.runSlice(jobOrId, options); }
   async resumeJob(id, options = {}) { return this.jobs.resume(id, options); }
 
-  async finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, monotonicNow = defaultMonotonicNow, limitReason, registry, snapshot, effectiveScope, stores, signal, assertFresh = null }) {
+  async finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, monotonicNow = defaultMonotonicNow, limitReason, registry, snapshot, effectiveScope, stores, signal, assertFresh = null, providerControlledDecision = false, deterministicDecisionProvenance = false }) {
     // Store authority comes from the turn's captured namespace, never from the
     // shared fields: a concurrent turn re-points `this.*Store` across awaits
     // and would otherwise swap this turn's evidence/hypothesis/proposal
@@ -169,7 +179,22 @@ export class AIRuntime {
     // came from an explicit citation or planner fallback, but only qualifying
     // authority may lift the no-authority confidence cap (#8864). #5159's
     // invalid-explicit-citation no-substitution rule remains unchanged above.
-    const evidenceSatisfiesAuthority = qualifyingEvidence(finalEvidence).length > 0;
+    // A genuinely `verified` record is only authority for the subject it proves:
+    // citing an authentic `0x1000` proof must not terminalise an unrelated claim
+    // about `0xDEAD` (#9009), which is the same trust boundary HypothesisStore
+    // already enforces for model-created hypotheses.
+    const claimAddresses = claimedAddresses(decision.answer, request.goal);
+    const authorityEvidence = finalAnswerAuthorityEvidence(finalEvidence, claimAddresses, {
+      providerControlled: providerControlledDecision,
+      // A provider that made no explicit citation may still consume the exact
+      // verified record set bound to this turn's deterministic plan (#8864).
+      // This is Hex-owned fallback authority, not model-selected session state.
+      allowAddressFreeDeterministicFallback: deterministicDecisionProvenance === true,
+    });
+    if (authorityEvidence.length < finalEvidence.filter((item) => item?.status === 'verified').length) {
+      activity.push({ type: 'consistency-check', label: '引用された検証済み記録が最終回答の主張住所を証明していないため、権限を付与せず根拠提示のみとしました', timestamp: new Date().toISOString() });
+    }
+    const evidenceSatisfiesAuthority = authorityEvidence.length > 0;
     if (!evidenceSatisfiesAuthority) confidence = Math.min(confidence, 0.5);
     const budgetReason = BUDGET_LIMIT_REASONS.has(limitReason) ? limitReason : null;
     const elapsedNow = typeof monotonicNow === 'function' ? monotonicNow() : defaultMonotonicNow();
@@ -178,7 +203,7 @@ export class AIRuntime {
       : 0;
     return {
       mode: request.mode, style: request.style,
-      answer: presentAnswer(String(decision.answer || ''), request.style, finalEvidence, plan), confidence, evidence: finalEvidence, hypotheses, actions,
+      answer: presentAnswer(String(decision.answer || ''), request.style, finalEvidence, plan, claimAddresses, authorityEvidence), confidence, evidence: finalEvidence, hypotheses, actions,
       proposals,
       followups: (decision.followups || []).map(String).slice(0, 8), activity,
       usage: { modelCalls, toolCalls, elapsedMs, contextBytes, ...wireUsage, candidateCount: plan?.candidates?.length || 0, analyzedFunctions: plan?.stats?.analyzedFunctions || 0, disassembly: Math.max(plan?.stats?.disassembly || 0, registry.analysisStats?.disassembly || 0), toolCost: registry.accounting.cost },
@@ -250,8 +275,27 @@ export function createAIRuntime(options) { return new AIRuntime(options); }
 
 function proposalBinding(context) {
   return {
-    binaryId: context?.binaryId == null ? null : String(context.binaryId),
-    projectId: context?.projectId == null ? null : String(context.projectId),
-    runtimeSessionId: context?.runtimeSessionId == null ? null : String(context.runtimeSessionId),
+    binaryId: canonicalBindingId(context?.binaryId),
+    projectId: canonicalBindingId(context?.projectId),
+    runtimeSessionId: canonicalBindingId(context?.runtimeSessionId),
+    // `analysisRevision` is part of the proposal's identity: a proposal created
+    // against r1 must not apply after the analysis moved to r2 (#8929).
+    analysisRevision: canonicalBindingId(resolveAnalysisRevision(context)),
   };
+}
+
+/**
+ * Resolve the canonical binding key that authority-bearing evidence must still
+ * carry. The EvidenceStore's own ObservationStore is the exact store that
+ * minted the current turn's provenance, so it wins; `analysisBinding()` on the
+ * live context is the fallback for stores that have not been turn-wired yet.
+ */
+function evidenceBindingResolver(evidenceStore, context) {
+  const store = evidenceStore?.observationStore;
+  if (store && typeof store.binding === 'function') return () => store.binding().key;
+  // Custom evidence adapters predate revision-bound provenance. Do not
+  // silently upgrade them into a resolver-backed authority contract. First-
+  // party EvidenceStore instances retain the live-context fallback (#8929).
+  if (!(evidenceStore instanceof EvidenceStore)) return null;
+  return () => analysisBinding(context).key;
 }
