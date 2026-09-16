@@ -42,15 +42,21 @@ jobs:
             if (error?.code === 'BINARY_SOURCE_RANGE_MISSING') throw error;"""
           if text.count(old_line) != 1:
               raise SystemExit(f'code-signature catch boundary mismatch: {text.count(old_line)}')
-          text = text.replace(old_line, new_block, 1)
-          p.write_text(text)
+          p.write_text(text.replace(old_line, new_block, 1))
           PY
           node --check js/apple/knowledge.js
       - name: Focused Apple signature regressions
         shell: bash
         run: |
-          set -euo pipefail
-          node --test tests/apple-code-signature-source-budget.test.mjs tests/apple-knowledge-x02.test.mjs
+          set +e
+          node --test tests/apple-code-signature-source-budget.test.mjs tests/apple-knowledge-x02.test.mjs > /tmp/t015-focused.out 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            tail -n 120 /tmp/t015-focused.out > /tmp/t015-first-failure.txt
+            cat /tmp/t015-first-failure.txt >> "$GITHUB_STEP_SUMMARY"
+            exit "$status"
+          fi
+          tail -n 40 /tmp/t015-focused.out
       - name: Fetch and verify pinned fixtures
         shell: bash
         run: |
@@ -63,7 +69,16 @@ jobs:
           set -euo pipefail
           npm --silent run binary:benchmark > /tmp/t015-benchmark.json
           node tools/benchmark/compare.mjs --binary=/tmp/t015-benchmark.json
+      - name: Upload focused first-failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: t015-focused-first-failure
+          path: /tmp/t015-first-failure.txt
+          if-no-files-found: ignore
+          retention-days: 1
       - name: Commit verified production fix
+        if: success()
         shell: bash
         run: |
           set -euo pipefail
