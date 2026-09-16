@@ -7786,3 +7786,8 @@ fullRoadmapComplete:false、transformAuthorization:false、マージ未実施を
 ## 2026-09-16 C1-01 local acceptance
 
 loaded pointer recoveryを32/64-bit × little/big-endian陽性4セルとMemorySSA authority陰性分母で固定した。current canonical MemorySSAの単一complete reaching-store proofのみ exact pointer を発行し、MayAlias/unknown clobber/partial/endian mismatch/volatile/atomic/stale/malformed/cancel-budgetではunknownを維持する。同一replayのpoints-to digest/proof/statusも一致する。HEX-C1-01 / FR-C1-01A はこのローカル要件について accepted-local。C1-02と全roadmap/release/device受入は未完了のまま。
+
+
+## 2026-09-16 C1-02 local acceptance
+
+return summary propagationを3 return kind × 4 graph topology × 6 target/completeness mode = 72セルで固定した。complete direct/exhaustive setは実caller/wrapperへprecisionを伝播し、nonexhaustive/missing/stale/unknown/schema mismatchはunknownへjoinする。summary digestをcaller dependencyに含め、recursive SCC discoveryと同一replay決定性も再検証した。HEX-C1-02 / FR-C1-02A はこのローカル要件について accepted-local。全roadmap/release/device受入は未完了のまま。

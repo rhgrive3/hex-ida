@@ -36,11 +36,11 @@
     },
     {
       "id": "HEX-C1-02",
-      "localStatus": "existing-reused",
-      "assessment": "最新checkpointのrecursive return-equation/SCC接続を再利用。過去台帳の非再帰のみの記述を現況へ読み替えない。",
-      "source": "docs/analysis-c1-acceptance.md",
-      "verificationSuite": "phase7-test",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "assessment": "C1-02 の return summary propagation を frozen 72-cell matrix（arg/root/allocation × leaf/wrapper-chain/self-recursive/mutual-recursive × direct/exhaustive/nonexhaustive/missing/stale/unknown）と recursive discovery/identity hardening/target matrix で再受入。complete direct/exhaustive candidate union は実callerとwrapperへ有限precisionを伝播し、nonexhaustive/missing/stale/unknown/schema-contract mismatch/absent return は必ず unknown をjoinする。candidate summary digestはcaller dependencyへ入り、semantic change/stale snapshotを無効化し、同一入力 replay は決定的。whole-roadmap/release/device gates は別。",
+      "source": "tests/phase7/summary/c1-02-exhaustive-return-matrix.test.mjs",
+      "verificationSuite": "c1-02-final-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "HEX-C1-03",
@@ -288,9 +288,9 @@
       "mustWaitFor": "C1-03",
       "complexity": "L",
       "findingId": "HEX-C1-02",
-      "localStatus": "existing-reused",
-      "currentAssessment": "最新checkpointのrecursive return-equation/SCC接続を再利用。過去台帳の非再帰のみの記述を現況へ読み替えない。",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "currentAssessment": "arg/root/allocation × leaf/wrapper/self-recursive/mutual-recursive × direct/exhaustive/nonexhaustive/missing/stale/unknown の72セルを固定。complete candidate setだけ caller precisionを改善し、不完全・stale・schema/digest不整合はunknownへjoin、summary digest mutationはcaller dependencyを更新する。",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "FR-C2-01A",
@@ -2414,6 +2414,38 @@
         "malformed-metadata",
         "cancel-or-budget"
       ],
+      "deterministicReplay": true,
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false
+    },
+    "c1ReturnSummaryAcceptance20260916": {
+      "status": "ACCEPTED-LOCAL",
+      "finding": "HEX-C1-02",
+      "task": "FR-C1-02A",
+      "matrix": {
+        "returnKinds": [
+          "arg",
+          "root",
+          "allocation"
+        ],
+        "topologies": [
+          "leaf",
+          "wrapper-chain",
+          "self-recursive",
+          "mutual-recursive"
+        ],
+        "modes": [
+          "direct",
+          "exhaustive",
+          "nonexhaustive",
+          "missing",
+          "stale",
+          "unknown"
+        ],
+        "cells": 72
+      },
+      "incompleteAlwaysJoinsUnknown": true,
+      "summaryDigestDependencyRequired": true,
       "deterministicReplay": true,
       "fullRoadmapComplete": false,
       "transformAuthorization": false
