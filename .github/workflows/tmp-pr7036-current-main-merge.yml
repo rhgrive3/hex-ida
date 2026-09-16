@@ -1,4 +1,4 @@
-name: Temporary PR7036 current-main merge diagnosis
+name: Temporary PR7036 current-main candidate validation
 
 on:
   push:
@@ -11,14 +11,14 @@ permissions:
   contents: read
 
 jobs:
-  merge-diagnosis:
+  focused-candidate:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 650
-      - name: Reproduce merge and capture conflict list only
+      - name: Build current-main candidate
         shell: bash
         run: |
           set -euo pipefail
@@ -26,24 +26,55 @@ jobs:
           git config user.email 'diag@localhost'
           git fetch --no-tags --depth=650 origin ac36cc16b42fb10fbd54b5bd3f1e1a6474ca902b
           set +e
-          base=$(git merge-base HEAD^ ac36cc16b42fb10fbd54b5bd3f1e1a6474ca902b 2>/tmp/merge-base.err)
-          base_rc=$?
-          git merge --no-commit --no-ff ac36cc16b42fb10fbd54b5bd3f1e1a6474ca902b >/dev/null 2>/tmp/merge.err
+          git merge --no-commit --no-ff ac36cc16b42fb10fbd54b5bd3f1e1a6474ca902b >/tmp/merge.out 2>/tmp/merge.err
           rc=$?
           set -e
-          {
-            echo "merge_base_rc=$base_rc"
-            echo "merge_base=${base:-none}"
-            head -n 5 /tmp/merge-base.err | sed 's/^/merge_base_error=/'
-            echo "merge_rc=$rc"
-            head -n 8 /tmp/merge.err | sed 's/^/merge_error=/'
-            echo "conflict_count=$(git diff --name-only --diff-filter=U | wc -l | tr -d ' ')"
-            git diff --name-only --diff-filter=U | sed 's/^/conflict=/'
-          } > pr7036-merge-summary.txt
-          git merge --abort >/dev/null 2>&1 || true
-          git reset --hard HEAD >/dev/null 2>&1 || true
+          if [ "$rc" -ne 0 ]; then
+            conflicts=$(git diff --name-only --diff-filter=U)
+            test -n "$conflicts"
+            git checkout --theirs -- $conflicts
+            git add -- $conflicts
+          fi
+          test -z "$(git diff --name-only --diff-filter=U)"
+      - name: Run focused acceptance and capture first failure
+        id: focused
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > pr7036-focused-summary.txt
+          run_one() {
+            label="$1"; shift
+            set +e
+            timeout 240s "$@" >/tmp/test.out 2>&1
+            rc=$?
+            set -e
+            echo "test=$label rc=$rc" >> pr7036-focused-summary.txt
+            if [ "$rc" -ne 0 ]; then
+              tail -n 80 /tmp/test.out >> pr7036-focused-summary.txt
+              echo "failed=1" >> "$GITHUB_OUTPUT"
+              return 1
+            fi
+          }
+          run_one syntax node tests/check.mjs || exit 0
+          run_one phase7-ownership node tests/phase7/ownership/roadmap-v8-integration.test.mjs || exit 0
+          run_one phase8-ownership node tests/phase8/ownership/roadmap-v8-integration.test.mjs || exit 0
+          run_one c1-pointsto node tests/phase7/pointsto/c1-combined-acceptance.test.mjs || exit 0
+          run_one c1-summary node tests/phase7/summary/c1-combined-acceptance.test.mjs || exit 0
+          run_one c3-types node tests/phase7/types/c3-combined-acceptance.test.mjs || exit 0
+          run_one c2-memory node tests/phase8/memory/c2-acceptance.test.mjs || exit 0
+          run_one c3-abi node tests/phase8/abi/c3-combined-acceptance.test.mjs || exit 0
+          run_one c4-substrate node tests/phase8/substrate/c4-01-acceptance.test.mjs || exit 0
+          run_one c4-structuring node tests/phase8/structuring/c4-02-acceptance.test.mjs || exit 0
+          run_one sym-acceptance node tests/phase9/verify/sym-acceptance.test.mjs || exit 0
+          run_one x01 node tests/stage2/x01-format-safe-rebuild-acceptance.test.mjs || exit 0
+          run_one x03 node tests/stage2/x03-rebuild-discovery-acceptance.test.mjs || exit 0
+          run_one x02-v5 node tests/scpa/x02-dyld-slide-info5.test.mjs || exit 0
+          echo "failed=0" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
-          name: pr7036-merge-summary
-          path: pr7036-merge-summary.txt
+          name: pr7036-focused-summary
+          path: pr7036-focused-summary.txt
           retention-days: 1
+      - name: Preserve focused status
+        shell: bash
+        run: test '${{ steps.focused.outputs.failed }}' = '0'
