@@ -1,0 +1,110 @@
+name: Temporary C4-02 acceptance publication
+on:
+  push:
+    branches: ['impl/c4-02-finish-20260916']
+    paths: ['.github/workflows/temp-c4-02-acceptance-publish.yml']
+permissions:
+  contents: write
+jobs:
+  accept:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ACCEPT_BRANCH: impl/c4-02-acceptance-20260916
+      ACCEPT_HEAD: a64e8d8c91a4c38a9b8b9410bba7a0ade64556e3
+      TARGET_BRANCH: feat/analysis-roadmap-v8-current-main-20260907
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.ACCEPT_HEAD }}
+          fetch-depth: 400
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Update C4-02 ownership and acceptance records
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          test_path='tests/phase8/structuring/c4-02-acceptance.test.mjs'
+          p=Path('tools/validation/analysis-roadmap/ownership.json')
+          data=json.loads(p.read_text())
+          phase8=data['owners']['phase8']
+          if test_path not in phase8:
+              phase8.append(test_path)
+          p.write_text(json.dumps(data, ensure_ascii=False, indent=2)+'\n')
+
+          p=Path('docs/analysis-local-acceptance-audit.json')
+          audit=json.loads(p.read_text())
+          finding=next(x for x in audit['findings'] if x['id']=='HEX-C4-02')
+          finding['localStatus']='accepted-local'
+          finding['assessment']='C4-02 の CFG region/edge-kind 分母を irreducible / exception-unwind / switch-fallthrough / flattened-dispatcher の4カテゴリで固定。edge accounting は全CFG edge/kindを独立再計数し、ordinary switch fallthrough は edge を保持した validated switch region、irreducible と flattened dispatcher は residual-goto、unwind/foreign edge は constraint-edge として fail closed。shapeだけから dispatcher loop/switch を構造化しない。C4-03/C4-05 と whole-roadmap/release/device gates は別。'
+          finding['source']='tests/phase8/structuring/c4-02-acceptance.test.mjs'
+          finding['verificationSuite']='c4-02-final-acceptance-20260916'
+          finding['originalRequirementAcceptedHere']=True
+          task=next(x for x in audit['tasks'] if x['id']=='FR-C4-02A')
+          task['localStatus']='accepted-local'
+          task['currentAssessment']='irreducible / exception-unwind / switch-fallthrough / flattened-dispatcher の固定4カテゴリを production structuring と independent edge recount で受入。安全に構造化できる switch fallthrough は全edge kindを保持し、証明のない irreducible/dispatcher は residual jump、foreign unwind は constraint edge のまま保持する。'
+          task['originalRequirementAcceptedHere']=True
+          follow=audit.setdefault('integrationFollowup', {})
+          follow['c4StructuringAcceptance20260916']={
+            'status':'ACCEPTED-LOCAL',
+            'finding':'HEX-C4-02',
+            'task':'FR-C4-02A',
+            'denominator':['irreducible','exception-unwind','switch-fallthrough','flattened-dispatcher'],
+            'acceptanceTest':test_path,
+            'edgeAccounting':'independent-recount-required',
+            'unsafeDisposition':['residual-goto','constraint-edge'],
+            'fullRoadmapComplete':False,
+            'transformAuthorization':False,
+          }
+          p.write_text(json.dumps(audit, ensure_ascii=False, indent=2)+'\n')
+
+          p=Path('docs/解析ツール改善.md')
+          text=p.read_text()
+          section='''## 2026-09-16: C4-02 local acceptance 完了\n\nHEX-C4-02 / FR-C4-02A は、CFG region/edge-kind の固定4カテゴリ（irreducible / exception-unwind / switch-fallthrough / flattened-dispatcher）を production structuring と独立 edge recount で再検証し、このローカル要件について `accepted-local` とする。通常の switch fallthrough は edge kind を落とさず validated switch region として保持し、irreducible と flattened dispatcher は residual jump、unwind/foreign edge は constraint edge のまま fail closed とする。shape だけから flattened dispatcher を loop/switch に昇格しない。C4-03 / C4-05、独立レビュー、実機、release、他 finding は閉じていないため、ロードマップ全体の `CHECKPOINT-LOCKED` / `transformAuthorization:false` は維持する。\n\n'''
+          if '## 2026-09-16: C4-02 local acceptance 完了' not in text:
+              marker='## 2026-09-16: C4-04 local acceptance 完了\n'
+              if marker not in text: raise SystemExit('analysis md insertion marker missing')
+              text=text.replace(marker, section+marker, 1)
+          p.write_text(text)
+
+          p=Path('docs/analysis-roadmap-v8-integration-checkpoint.md')
+          text=p.read_text()
+          note='''\n\n## 2026-09-16 C4-02 local acceptance\n\n`tests/phase8/structuring/c4-02-acceptance.test.mjs` で CFG region/edge-kind の4カテゴリ（irreducible / exception-unwind / switch-fallthrough / flattened-dispatcher）を固定分母化した。全CFG edge/kindは independent recount を必須とし、ordinary switch fallthrough は edge を保持して構造化、irreducible/flattened dispatcher は residual-goto、unwind/foreign edge は constraint-edge として保持する。dispatcher shapeだけから loop/switch authorityを発行しない。HEX-C4-02 / FR-C4-02A はこのローカル要件について accepted-local。C4-03/C4-05 と全roadmap/release/device受入は未完了のまま。\n'''
+          if '## 2026-09-16 C4-02 local acceptance' not in text:
+              text += note
+          p.write_text(text)
+          PY
+          node -e "JSON.parse(require('fs').readFileSync('docs/analysis-local-acceptance-audit.json','utf8')); JSON.parse(require('fs').readFileSync('tools/validation/analysis-roadmap/ownership.json','utf8'))"
+          git diff --check
+      - name: Run frozen C4-02 acceptance
+        run: node --test tests/phase8/structuring/c4-02-acceptance.test.mjs
+      - name: Run Phase 8 structuring regression suite
+        run: node --test tests/phase8/structuring/*.test.mjs
+      - name: Commit accepted C4-02 checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tests/phase8/structuring/c4-02-acceptance.test.mjs tools/validation/analysis-roadmap/ownership.json docs/analysis-local-acceptance-audit.json docs/解析ツール改善.md docs/analysis-roadmap-v8-integration-checkpoint.md
+          git commit -m 'test(phase8): accept C4-02 CFG denominator'
+      - name: Verify ownership on committed candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tools/validation/phase8-ownership.mjs --check-manifest
+          git fetch --no-tags --depth=400 origin main:refs/remotes/origin/main
+          BASE_SHA=$(git rev-parse refs/remotes/origin/main)
+          node tools/validation/analysis-roadmap/ownership.mjs --branch "$TARGET_BRANCH" --phase phase8 --base-sha "$BASE_SHA" --head-sha "$(git rev-parse HEAD)"
+      - name: Publish accepted candidate branch only
+        shell: bash
+        run: |
+          set -euo pipefail
+          REMOTE=$(git ls-remote origin "refs/heads/$ACCEPT_BRANCH" | cut -f1)
+          test "$REMOTE" = "$ACCEPT_HEAD" || { echo "accept branch moved: expected $ACCEPT_HEAD got $REMOTE"; exit 1; }
+          git push origin "HEAD:refs/heads/$ACCEPT_BRANCH"
