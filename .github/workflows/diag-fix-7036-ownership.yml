@@ -1,0 +1,79 @@
+name: diag-fix-7036-ownership
+on:
+  push:
+    branches:
+      - fix/7036-ownership-x02-collector-20260917
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch fixture ownership and validate
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          STATUS=/tmp/fix-7036.txt
+          : > "$STATUS"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          timeout 90s git fetch --no-tags origin main >/tmp/fetch.log 2>&1
+          rc=$?
+          if [ "$rc" -ne 0 ]; then echo "fetch rc=$rc" >> "$STATUS"; tail -n 40 /tmp/fetch.log >> "$STATUS"; exit "$rc"; fi
+          python3 - <<'PY'
+          from pathlib import Path
+          entries = [
+              ('tools/validation/analysis-roadmap/ownership.mjs', "    '.github/workflows/x02-collector-fix.yml',\n", "    'tests/scpa/fixtures/x02-real-apple-evidence-20260916.json',\n"),
+              ('tools/validation/analysis-roadmap/ownership.json', '      ".github/workflows/x02-collector-fix.yml",\n', '      "tests/scpa/fixtures/x02-real-apple-evidence-20260916.json",\n'),
+          ]
+          for name, anchor, add in entries:
+              p = Path(name)
+              s = p.read_text()
+              if add in s:
+                  continue
+              if anchor not in s:
+                  raise SystemExit(f'anchor missing: {name}')
+              p.write_text(s.replace(anchor, anchor + add, 1))
+          PY
+          rc=$?
+          if [ "$rc" -ne 0 ]; then echo "patch rc=$rc" >> "$STATUS"; exit "$rc"; fi
+          git rm .github/workflows/diag-fix-7036-ownership.yml >/dev/null 2>&1
+          git add tools/validation/analysis-roadmap/ownership.mjs tools/validation/analysis-roadmap/ownership.json
+          git diff --cached --check >/tmp/diffcheck.log 2>&1
+          rc=$?
+          if [ "$rc" -ne 0 ]; then echo "diffcheck rc=$rc" >> "$STATUS"; tail -n 40 /tmp/diffcheck.log >> "$STATUS"; exit "$rc"; fi
+          git commit -m 'fix(analysis): register X-02 evidence fixture ownership' >/tmp/commit.log 2>&1
+          rc=$?
+          if [ "$rc" -ne 0 ]; then echo "commit rc=$rc" >> "$STATUS"; tail -n 40 /tmp/commit.log >> "$STATUS"; exit "$rc"; fi
+          CLEAN_HEAD=$(git rev-parse HEAD)
+          BASE_SHA=$(git rev-parse refs/remotes/origin/main)
+          echo "base=$BASE_SHA" >> "$STATUS"
+          echo "clean_head=$CLEAN_HEAD" >> "$STATUS"
+          LOGICAL_BRANCH=feat/analysis-roadmap-v8-current-main-20260907
+          fail() { echo "$1 rc=$3" >> "$STATUS"; echo '--- first failure ---' >> "$STATUS"; tail -n 80 "$2" >> "$STATUS"; exit "$3"; }
+          timeout 120s node tools/validation/phase7-ownership.mjs --check-manifest >/tmp/p7m.log 2>&1
+          rc=$?; [ "$rc" -eq 0 ] || fail phase7_manifest /tmp/p7m.log "$rc"; echo 'phase7_manifest=pass' >> "$STATUS"
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase7 --base-sha "$BASE_SHA" --head-sha "$CLEAN_HEAD" >/tmp/p7.json 2>/tmp/p7i.log
+          rc=$?; [ "$rc" -eq 0 ] || fail phase7_inventory /tmp/p7i.log "$rc"
+          timeout 120s node tools/validation/phase7-ownership.mjs --files-json "$(cat /tmp/p7.json)" >/tmp/p7v.log 2>&1
+          rc=$?; [ "$rc" -eq 0 ] || fail phase7_validate /tmp/p7v.log "$rc"; echo 'phase7=pass' >> "$STATUS"
+          timeout 120s node tools/validation/phase8-ownership.mjs --check-manifest >/tmp/p8m.log 2>&1
+          rc=$?; [ "$rc" -eq 0 ] || fail phase8_manifest /tmp/p8m.log "$rc"; echo 'phase8_manifest=pass' >> "$STATUS"
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase8 --base-sha "$BASE_SHA" --head-sha "$CLEAN_HEAD" >/tmp/p8.json 2>/tmp/p8i.log
+          rc=$?; [ "$rc" -eq 0 ] || fail phase8_inventory /tmp/p8i.log "$rc"
+          timeout 120s node tools/validation/phase8-ownership.mjs --files-json "$(cat /tmp/p8.json)" >/tmp/p8v.log 2>&1
+          rc=$?; [ "$rc" -eq 0 ] || fail phase8_validate /tmp/p8v.log "$rc"; echo 'phase8=pass' >> "$STATUS"
+          timeout 90s git push origin HEAD:fix/7036-ownership-x02-collector-20260917 >/tmp/push.log 2>&1
+          rc=$?; [ "$rc" -eq 0 ] || fail push /tmp/push.log "$rc"; echo 'push=pass' >> "$STATUS"
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fix-7036-ownership
+          path: /tmp/fix-7036.txt
+          retention-days: 1
