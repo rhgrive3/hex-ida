@@ -536,7 +536,13 @@ let signature;
   assert.equal(residentFat.metadata.codeSignature.status, 'structurally-valid');
   assert.equal(residentFat.metadata.codeSignature.provenance.commandOffset, 0x120n);
   assert.equal(residentFat.metadata.codeSignature.provenance.dataOffset, 0x200n);
-  const sourceFat = await parseMachOSource(new MemoryByteSource(container, { maxReadLength: 128 }), { sliceIndex: 0 }, null, {
+  const deferredSourceFat = await parseMachOSource(new MemoryByteSource(container, { maxReadLength: 128 }), { sliceIndex: 0 }, null, {
+    pageSize: 16, maxPageSize: 128, maxCachedBytes: 4096, maxReads: 128,
+  });
+  assert.equal(deferredSourceFat.metadata.codeSignature.status, 'partial');
+  assert.ok(deferredSourceFat.metadata.codeSignature.reasons.includes('signature-payload-not-requested'));
+  assert.ok(deferredSourceFat.metadata.sourceReads.largestRead <= 128);
+  const sourceFat = await parseMachOSource(new MemoryByteSource(container, { maxReadLength: 128 }), { sliceIndex: 0, appleKnowledge: true }, null, {
     pageSize: 16, maxPageSize: 128, maxCachedBytes: 4096, maxReads: 128,
   });
   assert.equal(sourceFat.metadata.codeSignature.status, 'structurally-valid');

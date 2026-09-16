@@ -409,6 +409,15 @@ export function malformedAppleCodeSignature(reason, details = {}) {
   return malformedSignature(reason, details);
 }
 
+/** Preserve LC_CODE_SIGNATURE provenance without forcing sparse source I/O. */
+export function deferredAppleCodeSignature(details = {}) {
+  return signatureResult('partial', {
+    ...details,
+    complete: false,
+    reasons: ['signature-payload-not-requested'],
+  });
+}
+
 /** Parse Apple code-signing structure; never claim cryptographic validity. */
 export function parseAppleCodeSignature(input, options = {}) {
   let inputLength;
@@ -766,6 +775,7 @@ export function buildAppleKnowledge({ image = null, binaryIdentity = null, slice
   if (identityAuthoritative && signature) {
     if (signature.status === 'structurally-valid' && machoComplete) signatureStatus = 'supported';
     else if (signature.status === 'unsupported') signatureStatus = 'unsupported';
+    else if (signature.status === 'partial') signatureStatus = 'partial';
     else if (signature.status === 'malformed') signatureStatus = 'malformed';
     else if (signature.status === 'absent' && machoComplete) signatureStatus = 'absent';
   }

@@ -3,7 +3,7 @@ import { BinaryImage, functionSeed } from './model.js';
 import { chainedPointerSites, parseChainedImports, parseChainedBindingSites, parseClassicBindings, parseExportTrie, resolveMachOPointer } from './macho-dyld.js';
 import { MACHO_METADATA_LIMITS, createMachOMetadataBudget, ensureMachOMetadataBudget, markMachOMetadataPartial } from './macho-budget.js';
 import { cpuName, subtypeBase, cpuArchName, sliceArchName, selectDefaultFatSlice, validateFatSlice, validateFatContainer, probePastEndArm64SliceSync, parseInnerMachOHeader } from './macho-fat.js';
-import { dyldCacheAuthority, malformedAppleCodeSignature, parseAppleCodeSignature } from '../apple/knowledge.js';
+import { deferredAppleCodeSignature, dyldCacheAuthority, malformedAppleCodeSignature, parseAppleCodeSignature } from '../apple/knowledge.js';
 import { deepFreeze } from '../core/identity/index.js';
 import { IncrementalSha256 } from '../cache/content-identity.js';
 
@@ -400,15 +400,28 @@ function parseThin(bytes, opts) {
   image.imageBase = text ? text.address : 0n;
 
   if (linkeditData.codeSignature) {
-    image.metadata.codeSignature = parseAppleCodeSignature(r.bytes, {
-      dataOffset: linkeditData.codeSignature.offset,
-      dataSize: linkeditData.codeSignature.size,
-      commandOffset: BigInt(image.fileOffset) + BigInt(linkeditData.codeSignature.commandOffset),
-      containerOffset: image.fileOffset,
-    });
-    if (image.metadata.codeSignature.status !== 'structurally-valid') {
-      markMachOMetadataPartial(image, 'code-signature-structure-incomplete');
-      image.warnings.push(`code signature structure is ${image.metadata.codeSignature.status}; validity remains unknown`);
+    const signatureCommandOffset = BigInt(image.fileOffset) + BigInt(linkeditData.codeSignature.commandOffset);
+    const signatureDataOffset = BigInt(image.fileOffset) + BigInt(linkeditData.codeSignature.offset);
+    const sparseSource = r.bytes?.__binaryByteBacking === true && !(r.bytes instanceof Uint8Array);
+    if (sparseSource && opts.appleKnowledge !== true) {
+      image.metadata.codeSignature = deferredAppleCodeSignature({
+        provenance: {
+          commandOffset: signatureCommandOffset,
+          dataOffset: signatureDataOffset,
+          dataSize: linkeditData.codeSignature.size,
+        },
+      });
+    } else {
+      image.metadata.codeSignature = parseAppleCodeSignature(r.bytes, {
+        dataOffset: linkeditData.codeSignature.offset,
+        dataSize: linkeditData.codeSignature.size,
+        commandOffset: signatureCommandOffset,
+        containerOffset: image.fileOffset,
+      });
+      if (image.metadata.codeSignature.status !== 'structurally-valid') {
+        markMachOMetadataPartial(image, 'code-signature-structure-incomplete');
+        image.warnings.push(`code signature structure is ${image.metadata.codeSignature.status}; validity remains unknown`);
+      }
     }
   }
 
