@@ -31,30 +31,30 @@ jobs:
           from pathlib import Path
           p = Path('js/apple/knowledge.js')
           text = p.read_text()
-          old = """  let bytes;
-          try { bytes = residentRange(input, dataOffset, dataSize); }
-          catch (error) {
-            if (error?.code === 'BINARY_SOURCE_RANGE_MISSING') throw error;
-            return malformedSignature('signature-range-invalid', { provenance });
-          }
+          old_comment = """  // Request exactly the declared LC_CODE_SIGNATURE range. Sparse source-backed
+          // parsing will surface a cache miss for this one bounded range and restart;
+          // it never needs to materialize the whole Mach-O slice.
           """
-          new = """  let bytes;
-          try { bytes = residentRange(input, dataOffset, dataSize); }
-          catch (error) {
-            if (error?.code === 'BINARY_SOURCE_RANGE_MISSING' && input?.__binaryByteBacking === true) {
+          new_comment = """  // Resident inputs can validate the full declared signature structure. Sparse
+          // source-backed parsing must not pull a potentially multi-megabyte optional
+          // signing blob merely to open the image; an uncached blob stays explicitly
+          // partial until a caller provides those bytes through a dedicated path.
+          """
+          old_line = "    if (error?.code === 'BINARY_SOURCE_RANGE_MISSING') throw error;"
+          new_block = """    if (error?.code === 'BINARY_SOURCE_RANGE_MISSING' && input?.__binaryByteBacking === true) {
               return signatureResult('partial', {
                 complete: false,
                 reasons: ['signature-bytes-deferred'],
                 provenance,
               });
             }
-            if (error?.code === 'BINARY_SOURCE_RANGE_MISSING') throw error;
-            return malformedSignature('signature-range-invalid', { provenance });
-          }
-          """
-          if text.count(old) != 1:
-              raise SystemExit(f'code-signature range boundary mismatch: {text.count(old)}')
-          p.write_text(text.replace(old, new, 1))
+            if (error?.code === 'BINARY_SOURCE_RANGE_MISSING') throw error;"""
+          if text.count(old_comment) != 1:
+              raise SystemExit(f'code-signature comment boundary mismatch: {text.count(old_comment)}')
+          if text.count(old_line) != 1:
+              raise SystemExit(f'code-signature catch boundary mismatch: {text.count(old_line)}')
+          text = text.replace(old_comment, new_comment, 1).replace(old_line, new_block, 1)
+          p.write_text(text)
           PY
           node --check js/apple/knowledge.js
       - name: Focused Apple signature regressions
