@@ -14,14 +14,14 @@ function width(op) {
       op === 0x1a || op === 0x22 || op === 0x29 || (op >= 0x32 && op <= 0x3d) ||
       (op >= 0x52 && op <= 0x5f) || (op >= 0x90 && op <= 0x9a) ||
       (op >= 0xd8 && op <= 0xdf)) return 2;
-  if (op === 0x14 || (op >= 0x6e && op <= 0x72)) return 3;
+  if (op === 0x14 || op === 0x2a || (op >= 0x6e && op <= 0x72)) return 3;
   return null;
 }
 
 // These opcodes can be certified without a register-type dataflow pass. Other
 // recognized opcodes are checked for local structural constraints but remain
 // verifier-partial, preventing an exact semantic bundle from minting spec truth.
-const LOCAL_COMPLETE = new Set([0x00, 0x0e, 0x12, 0x13, 0x14, 0x16, 0x1a, 0x28, 0x29]);
+const LOCAL_COMPLETE = new Set([0x00, 0x0e, 0x12, 0x13, 0x14, 0x16, 0x1a, 0x28, 0x29, 0x2a]);
 const finding = (code, details = {}) => ({ code, ...details });
 const typeWords = (type) => type === 'J' || type === 'D' ? 2 : 1;
 function returnKind(type) {
@@ -90,6 +90,7 @@ function instructionFact(view, start, pc, op, w, image) {
 
   if (op === 0x28) branch = (pc + (fmt >= 128 ? fmt - 256 : fmt)) * 2;
   else if (op === 0x29 || (op >= 0x32 && op <= 0x3d)) branch = (pc + sword(1)) * 2;
+  else if (op === 0x2a) branch = (pc + view.getInt32(start + (pc + 1) * 2, true)) * 2;
 
   if (op >= 0x6e && op <= 0x72) {
     const count = (fmt >> 4) & 15, packed = word(2), methodIndex = word(1);
@@ -261,7 +262,7 @@ export function validateDexMethod(decoded) {
   }
 
   if (meta.scanComplete && facts.length) {
-    const last = facts[facts.length - 1], terminal = last.opcode === 0x27 || last.opcode === 0x28 || last.opcode === 0x29 || (last.opcode >= 0x0e && last.opcode <= 0x11);
+    const last = facts[facts.length - 1], terminal = last.opcode === 0x27 || last.opcode === 0x28 || last.opcode === 0x29 || last.opcode === 0x2a || (last.opcode >= 0x0e && last.opcode <= 0x11);
     if (!terminal) errors.push(finding('dex-method-falls-through-end', { offset: last.offset, opcode: last.opcode }));
   }
   let previousEnd = -1;
