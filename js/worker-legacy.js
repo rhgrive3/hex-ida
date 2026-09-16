@@ -27,6 +27,12 @@ const HEADER_MAX = 4 * 1024 * 1024;  // cap on load-command area we will read
 
 const SYMBOL_MAX = 400_000;          // シンボルはこれ以上読まない（メモリ保護）
 const STRTAB_MAX = 48 * 1024 * 1024;
+// #8838: cap the raw data_in_code_entry[] payload we're willing to read. Each
+// record is 8 bytes; 8 MiB bounds ~1M entries, well past anything a real
+// Mach-O file declares. Anything larger is truncated and the excluded range
+// set is treated as incomplete (function starts are then not blessed as
+// complete exact evidence).
+const DATA_IN_CODE_MAX = 8 * 1024 * 1024;
 /* 文字列一覧の上限。20000 で切っていたころは、The Battle Cats の
    メソッド名 37161 本のうち 17161 本が黙って消えていた（＝機能の 46%）。
    1 本あたり数十バイトなので、この数でも数十 MB には届かない。 */
@@ -480,9 +486,13 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
       const ind = await readRange(base + BigInt(info.dysymtab.indirectsymoff), n * 4);
       if (ind.length >= 4) {
         try {
-          for (const s of MachO.stubSymbols(info, ind, sym)) {
+          const stubList = MachO.stubSymbols(info, ind, sym);
+          for (const s of stubList) {
             entries.push({ addr: s.addr, name: s.name, kind: s.stub ? 1 : 2 });
           }
+          // Indirect-symbol expansion hit its aggregate budget: symbol discovery
+          // is capped and must not be reported as complete (#8800).
+          if (stubList.truncated) capped = true;
         } catch { /* 壊れていても他は返す */ }
       }
     }
@@ -515,22 +525,60 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
 
   let funcs = new BigUint64Array(0);
   let functionStartsExact = false;
+  let functionStartsPartialReason = null;
   // Exact decoded starts (plus the Mach-O entry seed) are also the hard
   // control-flow roots for ADR/ADRP provenance in the worker scans.
   slice.functionStarts = [];
-  if (info.functionStarts && info.functionStarts.datasize > 0 && info.textVM != null) {
-    const buf = await readRange(base + BigInt(info.functionStarts.dataoff),
-                                Math.min(info.functionStarts.datasize, 8 * 1024 * 1024));
+
+  // #8838: decode LC_DATA_IN_CODE so a declared data range inside __text can
+  // never be promoted to exact function-start authority. A missing or unread
+  // table is a legitimate no-op; a table that overflows the read clamp or
+  // contains an out-of-slice entry means we can no longer prove the exclusion
+  // set is complete, so function starts must not be blessed as complete.
+  let dataInCodeRanges = [];
+  let dataInCodeIncomplete = false;
+  if (info.dataInCode && info.dataInCode.datasize > 0) {
+    const declared = info.dataInCode.datasize;
+    const diceClamped = declared > DATA_IN_CODE_MAX;
+    const diceBuf = await readRange(base + BigInt(info.dataInCode.dataoff),
+                                    Math.min(declared, DATA_IN_CODE_MAX));
+    if (diceClamped) dataInCodeIncomplete = true;
     try {
-      const list = MachO.parseFunctionStarts(buf, info.textVM, { regions:slice.regions || [], architecture:info.architecture || 'arm64' });
+      const entries = MachO.parseDataInCode(diceBuf, info);
+      dataInCodeRanges = entries.map((e) => [e[0], e[1]]);
+      if (entries.truncated) dataInCodeIncomplete = true;
+    } catch { dataInCodeIncomplete = true; }
+  }
+
+  if (info.functionStarts && info.functionStarts.datasize > 0 && info.textVM != null) {
+    const declared = info.functionStarts.datasize;
+    const clampLimit = 8 * 1024 * 1024;
+    const clamped = declared > clampLimit;
+    const buf = await readRange(base + BigInt(info.functionStarts.dataoff),
+                                Math.min(declared, clampLimit));
+    if (clamped) {
+      // #8822: a clamped prefix is not a complete ULEB stream. Even if the
+      // prefix's last byte happens to be a valid terminator, the suffix was
+      // never read, so the whole stream is not evidence. Never bless a prefix.
+      capped = true;
+      functionStartsPartialReason = 'clamp-truncated';
+    }
+    try {
+      const list = MachO.parseFunctionStarts(buf, info.textVM,
+        { regions: slice.regions || [], architecture: info.architecture || 'arm64',
+          dataInCode: dataInCodeRanges });
       const seeds = list.slice();
       if (info.entry != null && !seeds.some((value) => value === info.entry)) seeds.push(info.entry);
       seeds.sort((a,b)=>(a<b?-1:a>b?1:0));
       slice.functionStarts = seeds;
       funcs = new BigUint64Array(seeds.length);
       for (let i = 0; i < seeds.length; i++) funcs[i] = seeds[i];
-      functionStartsExact = list.length > 0 && list.complete === true;
-    } catch { slice.functionStarts = []; funcs = new BigUint64Array(0); }
+      functionStartsExact = !clamped && !dataInCodeIncomplete
+        && list.length > 0 && list.complete === true;
+      if (!functionStartsExact && list.partialReason) functionStartsPartialReason = list.partialReason;
+      else if (!functionStartsExact && dataInCodeIncomplete && !functionStartsPartialReason)
+        functionStartsPartialReason = 'data-in-code-incomplete';
+    } catch { slice.functionStarts = []; funcs = new BigUint64Array(0); if (!functionStartsPartialReason) functionStartsPartialReason = 'parse-threw'; }
   }
 
   if ((!info.functionStarts || !info.functionStarts.datasize) && info.entry != null) {
@@ -562,8 +610,10 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
     allSeedsExact: funcs.length > 0,
     discoveryComplete: functionStartsExact,
     functionStartsExact,
-    functionDiscovery: { complete:functionStartsExact, capped:false,
-      reasons:functionStartsExact ? [] : ['no-complete-lc-function-starts'] },
+    functionDiscovery: { complete:functionStartsExact, capped:functionStartsPartialReason==='clamp-truncated',
+      reasons:functionStartsExact ? [] : (functionStartsPartialReason
+        ? ['no-complete-lc-function-starts', 'function-starts:' + functionStartsPartialReason]
+        : ['no-complete-lc-function-starts']) },
     capped,
     __transfer: [outAddrs.buffer, outKinds.buffer, outFlags.buffer, funcs.buffer],
   };
@@ -742,14 +792,27 @@ async function initializerFunctionStarts(slice, lo, hi, imageBase, requestId) {
  * optional initialization/vtable records). Unknown/future layouts are skipped
  * rather than guessed.
  */
+/* #8764: aggregate walk budget for the Swift reflection helper. Aliased
+ * __swift5_types entries resolve to the SAME physical descriptor; without a
+ * cache every alias re-read and re-walked a full (up to 4096-entry) VTable,
+ * so ~65 KiB of metadata cost ~8.7s while the final Set deduplicated the
+ * identical results afterwards. One shared budget is charged before each
+ * distinct-descriptor parse and before each VTable walk (never after output
+ * insertion), and exhaustion is reported as truncated/incomplete evidence. */
+const SWIFT_REFLECTION_WORK_MAX = 200_000;
+
 async function swiftReflectionFunctionStarts(slice, lo, hi, requestId) {
   const out = new Set();
   if (!slice) return out;
+  let truncationReason = null;
+  const markTruncated = (reason) => { if (!truncationReason) truncationReason = reason; };
+  const descriptorTargets = new Map();   // desc address -> resolved targets (negative cache included)
+  let work = 0;
   const typeSections = (slice.regions || []).filter((r) => r.section === '__swift5_types' && r.size > 0n);
   const addRelative = (field, raw) => {
-    if (!raw) return;
+    if (!raw) return null;
     const target = field + BigInt(raw);
-    if (target >= lo && target < hi && !(target & 3n)) out.add(target);
+    return (target >= lo && target < hi && !(target & 3n)) ? target : null;
   };
   for (const sec of typeSections) {
     if (sec.size > 16n * 1024n * 1024n) continue;
@@ -761,64 +824,89 @@ async function swiftReflectionFunctionStarts(slice, lo, hi, requestId) {
       if (!rel) continue;
       const field = sec.vmAddr + BigInt(p);
       const desc = field + BigInt(rel);
-      const head = await readMappedVM(slice, desc, 20);
-      if (!head) continue;
-      const hv = new DataView(head.buffer, head.byteOffset, head.byteLength);
-      const flags = hv.getUint32(0, true);
-      const kind = flags & 0x1f; // class=16, struct=17, enum=18
-      if (kind !== 16 && kind !== 17 && kind !== 18) continue;
+      let targets = descriptorTargets.get(desc);
+      if (targets === undefined) {
+        if (++work > SWIFT_REFLECTION_WORK_MAX) { markTruncated('work-limit'); return finish(); }
+        targets = [];
+        const head = await readMappedVM(slice, desc, 20);
+        if (head) {
+          const hv = new DataView(head.buffer, head.byteOffset, head.byteLength);
+          const flags = hv.getUint32(0, true);
+          const kind = flags & 0x1f; // class=16, struct=17, enum=18
+          if (kind === 16 || kind === 17 || kind === 18) {
+            // TargetTypeContextDescriptor::AccessFunction (metadata accessor).
+            const accessor = addRelative(desc + 12n, hv.getInt32(12, true));
+            if (accessor != null) targets.push(accessor);
 
-      // TargetTypeContextDescriptor::AccessFunction (metadata accessor).
-      addRelative(desc + 12n, hv.getInt32(12, true));
+            const generic = !!(flags & 0x80);
+            const specific = (flags >>> 16) & 0xffff;
+            const metadataInit = specific & 0x3;
+            const resilientSuperclass = kind === 16 && !!(specific & (1 << 13));
+            const fixedSize = kind === 16 ? 44 : 28;
 
-      const generic = !!(flags & 0x80);
-      const specific = (flags >>> 16) & 0xffff;
-      const metadataInit = specific & 0x3;
-      const resilientSuperclass = kind === 16 && !!(specific & (1 << 13));
-      const fixedSize = kind === 16 ? 44 : 28;
+            // For non-generic/non-resilient descriptors the initialization record is
+            // the first trailing object. Singleton init is 3 relative int32 fields;
+            // foreign init is one compact relative completion-function pointer.
+            if (!generic && !resilientSuperclass && metadataInit === 1) {
+              const init = await readMappedVM(slice, desc + BigInt(fixedSize), 12);
+              if (init) {
+                const iv = new DataView(init.buffer, init.byteOffset, init.byteLength);
+                const t = addRelative(desc + BigInt(fixedSize + 8), iv.getInt32(8, true));
+                if (t != null) targets.push(t);
+              }
+            } else if (!generic && !resilientSuperclass && metadataInit === 2) {
+              const init = await readMappedVM(slice, desc + BigInt(fixedSize), 4);
+              if (init) {
+                const iv = new DataView(init.buffer, init.byteOffset, init.byteLength);
+                const t = addRelative(desc + BigInt(fixedSize), iv.getInt32(0, true));
+                if (t != null) targets.push(t);
+              }
+            }
 
-      // For non-generic/non-resilient descriptors the initialization record is
-      // the first trailing object. Singleton init is 3 relative int32 fields;
-      // foreign init is one compact relative completion-function pointer.
-      if (!generic && !resilientSuperclass && metadataInit === 1) {
-        const init = await readMappedVM(slice, desc + BigInt(fixedSize), 12);
-        if (init) {
-          const iv = new DataView(init.buffer, init.byteOffset, init.byteLength);
-          addRelative(desc + BigInt(fixedSize + 8), iv.getInt32(8, true));
-        }
-      } else if (!generic && !resilientSuperclass && metadataInit === 2) {
-        const init = await readMappedVM(slice, desc + BigInt(fixedSize), 4);
-        if (init) {
-          const iv = new DataView(init.buffer, init.byteOffset, init.byteLength);
-          addRelative(desc + BigInt(fixedSize), iv.getInt32(0, true));
-        }
-      }
-
-      // Simple class descriptors place VTableDescriptorHeader immediately
-      // after the 44-byte fixed record: uint32 offset, uint32 count, then
-      // {flags, relative-impl} method descriptors.
-      const hasVTable = kind === 16 && !!(specific & (1 << 15));
-      if (hasVTable && !generic && !resilientSuperclass && metadataInit === 0) {
-        const vh = await readMappedVM(slice, desc + 44n, 8);
-        if (vh) {
-          const vv = new DataView(vh.buffer, vh.byteOffset, vh.byteLength);
-          const count = vv.getUint32(4, true);
-          if (count <= 4096) {
-            const methods = await readMappedVM(slice, desc + 52n, count * 8);
-            if (methods) {
-              const mv = new DataView(methods.buffer, methods.byteOffset, methods.byteLength);
-              for (let i = 0; i < count; i++) {
-                const fieldAddr = desc + 52n + BigInt(i * 8 + 4);
-                addRelative(fieldAddr, mv.getInt32(i * 8 + 4, true));
+            // Simple class descriptors place VTableDescriptorHeader immediately
+            // after the 44-byte fixed record: uint32 offset, uint32 count, then
+            // {flags, relative-impl} method descriptors.
+            const hasVTable = kind === 16 && !!(specific & (1 << 15));
+            if (hasVTable && !generic && !resilientSuperclass && metadataInit === 0) {
+              const vh = await readMappedVM(slice, desc + 44n, 8);
+              if (vh) {
+                const vv = new DataView(vh.buffer, vh.byteOffset, vh.byteLength);
+                const count = vv.getUint32(4, true);
+                if (count <= 4096) {
+                  if (work + count > SWIFT_REFLECTION_WORK_MAX) {
+                    markTruncated('vtable-work-limit');
+                    descriptorTargets.set(desc, targets);
+                    for (const t of targets) out.add(t);
+                    return finish();
+                  }
+                  work += count;
+                  const methods = await readMappedVM(slice, desc + 52n, count * 8);
+                  if (methods) {
+                    const mv = new DataView(methods.buffer, methods.byteOffset, methods.byteLength);
+                    for (let i = 0; i < count; i++) {
+                      const fieldAddr = desc + 52n + BigInt(i * 8 + 4);
+                      const t = addRelative(fieldAddr, mv.getInt32(i * 8 + 4, true));
+                      if (t != null) targets.push(t);
+                    }
+                  }
+                }
               }
             }
           }
         }
+        descriptorTargets.set(desc, targets);   // negatives cached too: repeated bad aliases stay bounded
+        /* Results of a re-aliased descriptor are already in the Set; only the
+         * first parse of a physical descriptor merges into the output. */
+        for (const t of targets) out.add(t);
       }
-      if (cancelled(requestId)) return out;
+      if (cancelled(requestId)) return finish();
     }
   }
-  return out;
+  function finish() {
+    if (truncationReason) { out.truncated = true; out.truncationReason = truncationReason; }
+    return out;
+  }
+  return finish();
 }
 
 /* ── 名前がないファイルで、関数の切れ目を推測する ───────────── */
@@ -865,12 +953,21 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   const slice = slices.find((s) => (s.regions || []).some((r) => r.id === regionId));
   const imageBase = slice && slice.info ? slice.info.textVM : null;
   const unwind = slice ? (slice.regions || []).find((r) => r.section === '__unwind_info' && r.size > 0n) : null;
+  let unwindMetadataTruncated = false;
+  let unwindMetadataReason = null;
+  let swiftMetadataTruncated = false;
+  let swiftMetadataReason = null;
   if (unwind && imageBase != null && unwind.size < BigInt(16 * 1024 * 1024)) {
     try {
       const buf = await readRange(unwind.fileOffset, Number(unwind.size));
-      for (const a of MachO.parseUnwindStarts(buf, imageBase)) {
-        if (a >= lo && a < hi && found.size < cap) found.add(a);
+      const remaining = Math.max(0, cap - found.size);
+      if (remaining > 0) {
+        const unwindStarts = MachO.parseUnwindStarts(buf, imageBase, { maxResults: remaining, maxWork: remaining, shouldCancel: () => cancelled(requestId) });
+        for (const a of unwindStarts) if (a >= lo && a < hi && found.size < cap) found.add(a);
+        if (unwindStarts.truncated) { unwindMetadataTruncated = true; unwindMetadataReason = 'unwind-starts-' + (unwindStarts.truncationReason || 'truncated'); }
       }
+      await yieldToQueue();
+      if (cancelled(requestId)) return { starts: new BigUint64Array(0), cancelled: true };
     } catch { /* 読めなければ推測だけで進む */ }
   }
 
@@ -887,9 +984,14 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
     if (found.size >= cap) break;
     found.add(a);
   }
-  for (const a of await swiftReflectionFunctionStarts(slice, lo, hi, requestId)) {
+  const swiftStarts = await swiftReflectionFunctionStarts(slice, lo, hi, requestId);
+  for (const a of swiftStarts) {
     if (found.size >= cap) break;
     found.add(a);
+  }
+  if (swiftStarts.truncated) {
+    swiftMetadataTruncated = true;
+    swiftMetadataReason = 'swift-reflection-' + (swiftStarts.truncationReason || 'truncated');
   }
 
   /*
@@ -1300,8 +1402,8 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   const starts = new BigUint64Array(list.length);
   for (let i = 0; i < list.length; i++) starts[i] = list[i];
   const startCapHit = found.size >= cap;
-  const capped = startCapHit || candidateBudgetHit;
-  const truncationReason = candidateBudgetHit ? 'candidate-memory-budget' : startCapHit ? 'function-start-cap-reached' : null;
+  const capped = startCapHit || candidateBudgetHit || unwindMetadataTruncated || swiftMetadataTruncated;
+  const truncationReason = candidateBudgetHit ? 'candidate-memory-budget' : startCapHit ? 'function-start-cap-reached' : unwindMetadataReason || swiftMetadataReason;
   return {
     starts, cancelled: false, capped, truncated: capped, complete: !capped, cap, truncationReason,
     completeness: {
