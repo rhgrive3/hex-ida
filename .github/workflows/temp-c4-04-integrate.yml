@@ -1,136 +1,49 @@
-name: Temporary C4-04 final publication
+name: Temporary exact ownership diagnostic
 on:
   push:
     branches: ['impl/c4-04-integrate-20260916']
     paths: ['.github/workflows/temp-c4-04-integrate.yml']
 permissions:
-  contents: write
+  contents: read
 jobs:
-  publish:
+  diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     env:
-      BASE_SHA: 4b810a3b3e3bfd1a1b7ed8de9751edece783e2d6
+      HEAD_SHA: 006a6f0617b2c4f699bf341a6525c5061891fcc1
       TARGET_BRANCH: feat/analysis-roadmap-v8-current-main-20260907
-      ACCEPTANCE_RUN_ID: 35063189837
-      C4_TESTS: 108
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ env.BASE_SHA }}
-          fetch-depth: 1
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: npm
-      - name: Reconstruct accepted C4 tree
+          ref: ${{ env.HEAD_SHA }}
+          fetch-depth: 400
+      - name: Fetch only main history needed for merge-base
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git fetch --depth=40 origin impl/c4-04-finish-20260916
-          for sha in 89f2467ea66c80f43d8e70fa6a0cf8742adde89b a4148d277444f694a46057e80926c6bbeb8034e2 45fe53634ee6cdaf3c3d3a2b7551743416800b7c 99db96607313d3435c841ca1f6783491d4bb97bb b439a53a642d486ab0161ed5f464608cd6f2ce9d 6c648bf306b9a8df27523249358d7d4ce1e90d47 bd5ff13372b780e2d45e2d35c01791479b4681d4 1a4eddfe46584401dab337d15923f50998de7fc1 a97a9ee7cfa88f014cae7188d4581be4ecf68f33 15f946e8af6d33f3d874cfe2961e0ef551888f60 76eac24b69860b4f34e106eee1363f0fb30e788f f963ee4e316eaf1bcbb2b4a33122c0d00a60b2b2 c1d616710990db7dbb6664a4ea49b8608d556055; do git cherry-pick "$sha" >/dev/null; done
-          python - <<'PY'
-          from pathlib import Path
-          p=Path('js/symbolic/verify/equivalence.js'); s=p.read_text()
-          anchor="import { createSymbolicEvidence } from '../evidence/symbolic-evidence.js';\n"
-          if "ownDataEntries" not in s: s=s.replace(anchor,anchor+"import { ownDataEntries } from '../expr/data-boundary.js';\n")
-          marker='export async function verifyBoundedEquivalence({'
-          helper="""function memoryRegionIdentitySnapshot(memoryRegions) {\n  if (!Array.isArray(memoryRegions)) return memoryRegions;\n  ownDataEntries(memoryRegions, 4096);\n  return Object.freeze(memoryRegions.map(region => {\n    if (region == null || typeof region !== 'object' || Array.isArray(region)) return region;\n    const normalized = Object.create(null);\n    for (const [key, value] of ownDataEntries(region, 64)) {\n      normalized[key] = typeof value === 'bigint'\n        ? Object.freeze({ scalarType:'bigint', decimal:value.toString() }) : value;\n    }\n    return Object.freeze(normalized);\n  }));\n}\n\n"""
-          if 'function memoryRegionIdentitySnapshot(' not in s: s=s.replace(marker,helper+marker)
-          if 'const queryMemoryRegions = memoryRegionIdentitySnapshot(memoryRegions);' not in s: s=s.replace('  const query = createVerificationQuery({\n','  const queryMemoryRegions = memoryRegionIdentitySnapshot(memoryRegions);\n  const query = createVerificationQuery({\n')
-          s=s.replace('      memoryRegions,\n    },\n    constraints,','      memoryRegions:queryMemoryRegions,\n    },\n    constraints,')
-          s=s.replace("      kind: VERIFICATION_QUERY_KIND.BOUNDED_EQUIVALENCE,\n      memoryRegions,\n    },\n  });", "      kind: VERIFICATION_QUERY_KIND.BOUNDED_EQUIVALENCE,\n      memoryRegions:queryMemoryRegions,\n    },\n  });")
-          p.write_text(s)
-          p=Path('js/decompiler/phase8/conditional-region-erasure.js'); s=p.read_text()
-          old="""    // Join PHIs are retained by this render-only deletion and therefore do not\n    // make an otherwise flat arm unsafe. Only PHIs (including MemoryPHIs) whose\n    // owning block is inside the removed arm keep the body at `required`.\n    const erasedBlocks = new Set(erased.emittedBlocks ?? []);\n    const erasedHasPhi = structure.phis.some(item => erasedBlocks.has(item.block));\n    const erasedHasMemoryPhi = structure.memoryPhis.some(item => erasedBlocks.has(item.block));\n    const flatStores = condition && !erasedHasPhi && !erasedHasMemoryPhi\n"""
-          new="""    // No PHI correspondence is issued for render-only arm deletion. Even a\n    // join PHI can still be printed as an unresolved local after one arm is\n    // removed, so every PHI/MemoryPHI keeps body authority fail-closed until\n    // an explicit live-PHI render correspondence is proved.\n    const flatStores = condition && !structure.phis.length && !structure.memoryPhis.length\n"""
-          if old not in s: raise SystemExit('PHI safety block not found')
-          p.write_text(s.replace(old,new))
-          PY
-      - run: npm ci --ignore-scripts
-      - name: Record ownership and C4 acceptance
+          git fetch --no-tags --depth=300 origin main:refs/remotes/origin/main
+          git merge-base refs/remotes/origin/main "$HEAD_SHA" >/tmp/merge-base.txt
+          git rev-parse refs/remotes/origin/main >/tmp/main-sha.txt
+      - name: Capture exact ownership first failures
         shell: bash
         run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          p=Path('tools/validation/analysis-roadmap/ownership.json'); data=json.loads(p.read_text())
-          additions={
-            'phase8':['js/decompiler/phase8/c4-equivalence-registry.js','tests/phase8/substrate/c4-equivalence-registry.test.mjs','tests/phase8/substrate/c4-memory-rewrite-adoption.test.mjs','tests/phase8/substrate/pass-validation-owned-snapshot.test.mjs'],
-            'symbolic':['js/symbolic/verify/equivalence.js','js/symbolic/query/terminal-effect-equivalence.js','tests/phase9/memory/terminal-effect-equivalence.test.mjs','tests/phase9/memory/c4-cfg-loop-equivalence.test.mjs'],
-          }
-          for owner,paths in additions.items():
-            for path in paths:
-              if path not in data['owners'][owner]: data['owners'][owner].append(path)
-          p.write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n')
-          audit=Path('docs/analysis-local-acceptance-audit.json'); a=json.loads(audit.read_text())
-          for row in a['findings']:
-            if row['id']=='HEX-C4-04':
-              row.update(localStatus='accepted-local',source='js/decompiler/phase8/pass-validation-core.js',verificationSuite='c4-04-final-acceptance-20260916',originalRequirementAcceptedHere=True)
-              row['assessment']='C4-04 の元カードをローカル受入。scalar は frozen width/operator/family x 3 strategy の production denominator で adopted/refuted/explicit unknown/unsupported を保持し、private proof authority がない rewrite は commit 不可。memory/CFG は exact four-family registry、finite byte memory、CFG edge change、bounded loop、terminal control/fault predicates を proof-adoption へ接続した。宣言 memory region を未比較の generic proof、非canonical exception/unwind、PHI/MemoryPHI を含む render body、stale/cancel/timeout/invalid model は fail closed。C4-02/C4-05 と whole-roadmap/release/device gates は別。'
-          for row in a['tasks']:
-            if row['id']=='FR-C4-04A':
-              row['localStatus']='accepted-local'; row['originalRequirementAcceptedHere']=True
-              row['currentAssessment']='pure Bool/BV scalar の binary/compare/unary/cast/select 等を frozen width/operator/family と local-rewrites/representation-rules/equality-saturation の production 分母で再受入。unsupported legacy operand/view、deadline/cancel/budget/stale/refuted/unknown は明示的に denominator に残り、eligible private proof のない candidate は commit しない。'
-            elif row['id']=='FR-C4-04B':
-              row['localStatus']='accepted-local'; row['originalRequirementAcceptedHere']=True
-              row['currentAssessment']='memory-byte/cfg/bounded-loop/terminal-control-effect の exact four-family registryを固定。terminal return、全 terminal memory byte、control target、canonical ARM64 PC-alignment fault predicate、CFG path、bounded loopを比較し、semantic mismatch は refute。未比較 memoryRegions、非canonical exception/unwind、探索上限、stale authority、PHI/MemoryPHI render body は unknown/unsupported/required として採用禁止。no-PHI flat-store render arm のみ既存private body authorityで削除する。'
-          stale='C4 full flags/region/PHI/CFG/memory/exception/loop proof missing'
-          a['localIntegrationLimitations']=[x for x in a.get('localIntegrationLimitations',[]) if x!=stale]
-          marker='C4-04 local acceptance is complete; C4-02/C4-05 and whole-roadmap independent/device/release gates remain separate.'
-          if marker not in a['localIntegrationLimitations']: a['localIntegrationLimitations'].insert(0,marker)
-          a.setdefault('integrationFollowup',{})['c4ProofCompletion20260916']={'date':'2026-09-16','status':'LOCAL-ACCEPTED','finding':'HEX-C4-04','tasks':['FR-C4-04A','FR-C4-04B'],'originalRequirementAcceptedHere':True,'fullRoadmapComplete':False,'transformAuthorization':False,'acceptanceRunId':int(os.environ['ACCEPTANCE_RUN_ID']),'publicationValidationRunId':int(os.environ['GITHUB_RUN_ID']),'acceptanceTests':int(os.environ['C4_TESTS']),'scalarDenominator':'frozen production width/operator/family matrices across local-rewrites, representation-rules and equality-saturation; explicit unknown/unsupported retained','effectDenominator':['memory-byte-rewrite','cfg-rewrite','bounded-loop-rewrite','terminal-control-effect-rewrite'],'observables':['scalar Bool/BV result','terminal return','all terminal memory bytes','terminal control target','terminal normal-completion predicate','canonical terminal fault predicates','CFG path coverage','bounded-loop terminal state'],'failClosed':['declared-but-unencoded memoryRegions','noncanonical exception/unwind annotations','PHI/MemoryPHI render erasure without explicit correspondence','stale/cancel/timeout/budget','invalid SAT model','unregistered or cross-verifier rewrite'],'conditionalRegionScope':'only independently proved unreachable no-PHI/no-MemoryPHI flat-store render arm; canonical Semantic IR/SSA/CFG unchanged','wholeRoadmapNote':'C4-04 local acceptance does not close C4-02, C4-05, independent review, device, release, or other roadmap findings.'}
-          audit.write_text(json.dumps(a,ensure_ascii=False,indent=2)+'\n')
-          section='''\n## 2026-09-16: C4-04 local acceptance 完了\n\nHEX-C4-04 / FR-C4-04A / FR-C4-04B は、production scalar denominator、memory/CFG rewrite registry、bounded-loop、terminal return/memory/control/fault observables、stale/refuted/unknown/unsupported と generic memory-region fail-closed を同一 acceptance で再検証し、このローカル要件について `accepted-local` とする。PHI / MemoryPHI を含む render body と非canonical exception/unwind は証明済みと偽らず adoption 不可のまま保持する。C4-02 / C4-05、独立レビュー、実機、release、他 finding は閉じていないため、ロードマップ全体の `CHECKPOINT-LOCKED` / `transformAuthorization:false` は維持する。\n\n'''
-          for name in ['docs/analysis-roadmap-v8-integration-checkpoint.md','docs/解析ツール改善.md']:
-            f=Path(name); text=f.read_text()
-            if '## 2026-09-16: C4-04 local acceptance 完了' not in text:
-              pos=text.find('\n')+1; f.write_text(text[:pos]+section+text[pos:])
-          PY
-      - name: Audit JSON parse
-        run: node -e "JSON.parse(require('fs').readFileSync('docs/analysis-local-acceptance-audit.json','utf8')); console.log('audit ok')"
-      - name: Diff whitespace check
-        run: git diff --check
-      - name: Ownership validation
-        shell: bash
-        run: |
-          set -euo pipefail
-          node --input-type=module <<'NODE'
-          import {execFileSync} from 'node:child_process';
-          import {BRANCH,validateRoadmapInventory} from './tools/validation/analysis-roadmap/ownership.mjs';
-          const raw=execFileSync('git',['diff','--name-only','-z',process.env.BASE_SHA],{encoding:'utf8'});
-          const files=raw.split('\0').filter(Boolean);
-          const selected=validateRoadmapInventory(BRANCH,'phase8',files);
-          console.log(JSON.stringify({changedPaths:files.length,phase8:selected.length,ownership:'ok'}));
-          NODE
-      - name: Generated output reproducibility
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm run userscript:build >/tmp/c4-build-1.log 2>&1
-          sha256sum userscript/hex.user.template.js userscript/release-version.json >/tmp/c4-generated-1.sha
-          npm run userscript:build >/tmp/c4-build-2.log 2>&1
-          sha256sum userscript/hex.user.template.js userscript/release-version.json >/tmp/c4-generated-2.sha
-          cmp /tmp/c4-generated-1.sha /tmp/c4-generated-2.sha
-          cat /tmp/c4-generated-2.sha | tee /tmp/c4-publication-summary.txt
-          git diff --check
-      - name: Commit and publish only on unchanged PR head
-        shell: bash
-        run: |
-          set -euo pipefail
-          git add -A
-          git commit -m 'feat(analysis): complete C4-04 proof acceptance'
-          REMOTE=$(git ls-remote origin "refs/heads/$TARGET_BRANCH" | cut -f1)
-          test "$REMOTE" = "$BASE_SHA" || { echo "target moved: expected $BASE_SHA got $REMOTE"; exit 1; }
-          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
-          echo "FINAL_SHA=$(git rev-parse HEAD)" | tee -a /tmp/c4-publication-summary.txt
+          set +e
+          BASE_SHA=$(cat /tmp/main-sha.txt)
+          : > /tmp/ownership-exact.txt
+          for phase in phase7 phase8; do
+            echo "[$phase manifest]" >> /tmp/ownership-exact.txt
+            node "tools/validation/${phase}-ownership.mjs" --check-manifest >> /tmp/ownership-exact.txt 2>&1
+            echo "manifest_rc=$?" >> /tmp/ownership-exact.txt
+            echo "[$phase roadmap]" >> /tmp/ownership-exact.txt
+            node tools/validation/analysis-roadmap/ownership.mjs --branch "$TARGET_BRANCH" --phase "$phase" --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" >> /tmp/ownership-exact.txt 2>&1
+            echo "roadmap_rc=$?" >> /tmp/ownership-exact.txt
+          done
+          echo "base=$BASE_SHA" >> /tmp/ownership-exact.txt
+          echo "head=$HEAD_SHA" >> /tmp/ownership-exact.txt
+          echo "merge_base=$(cat /tmp/merge-base.txt)" >> /tmp/ownership-exact.txt
+          sed -n '1,80p' /tmp/ownership-exact.txt
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: c4-04-publication-summary
-          path: /tmp/c4-publication-summary.txt
-          if-no-files-found: ignore
+          name: exact-ownership-first-failure
+          path: /tmp/ownership-exact.txt
           retention-days: 1
