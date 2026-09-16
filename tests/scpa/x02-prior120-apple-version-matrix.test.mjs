@@ -34,7 +34,7 @@ const matrix = JSON.parse(matrixBytes);
 // require a mapped cache through the same public entrypoint. The extra input
 // and current disposition are reported separately from the historical row.
 const currentDispositions = Object.freeze({
-  'X02-A-07':'pass', 'X02-B-01':'pass', 'X02-B-02':'pass',
+  'X02-A-07':'pass', 'X02-A-08':'pass', 'X02-B-01':'pass', 'X02-B-02':'pass',
   'X02-D-13':'pass', 'X02-E-11':'pass', 'X02-G-03':'pass',
   'X02-G-09':'pass',
 });
@@ -48,6 +48,7 @@ assert.deepEqual(matrix.rows.filter(row => Object.hasOwn(currentDispositions, ro
   .map(row => [row.id, row.check, row.expectedDisposition]),
   [
     ['X02-A-07','build-tool-gap','product-gap'],
+    ['X02-A-08','evidence-missing','evidence-gap'],
     ['X02-B-01','cache-sync','product-gap'], ['X02-B-02','cache-async','product-gap'],
     ['X02-D-13','swift-version-gap','product-gap'], ['X02-E-11','objc-classless-gap','product-gap'],
     ['X02-G-03','signature-gap','product-gap'],
@@ -167,6 +168,41 @@ function localCorpus() {
 
 async function observe(t,row,bytes) {
   const e=row.expectedContract;
+  if(row.id==='X02-A-08' && row.check==='evidence-missing') {
+    const evidencePath='tests/scpa/fixtures/x02-a08-versioned-apple-corpus-20260917.json';
+    const evidence=JSON.parse(fs.readFileSync(path.join(ROOT,evidencePath)));
+    assert.equal(evidence.schema,'hex-x02-a08-versioned-apple-corpus/v1');
+    assert.equal(evidence.source.workflowRunId,35124584494);
+    assert.equal(evidence.source.headSha,'2734f0faa85c15fbda44dd264496b4d7ae136fff');
+    assert.equal(evidence.source.checkoutPolicy,'github.sha');
+    assert.deepEqual(evidence.points.map(point=>point.runnerLabel),['macos-14','macos-15','macos-26']);
+    assert.equal(evidence.coverage.pointCount,3);
+    assert.equal(new Set(evidence.points.map(point=>point.evidence.appleEnvironment.osProductVersion)).size,3);
+    assert.equal(new Set(evidence.points.map(point=>point.evidence.appleEnvironment.darwinRelease)).size,3);
+    assert.equal(new Set(evidence.points.map(point=>point.evidence.appleEnvironment.xcodeVersion)).size,3);
+    assert.equal(new Set(evidence.points.map(point=>point.evidence.appleEnvironment.clangVersion)).size,3);
+    assert.equal(new Set(evidence.points.map(point=>point.evidence.compilerProducedArtifacts.object.sha256)).size,3);
+    assert.equal(new Set(evidence.points.map(point=>point.evidence.compilerProducedArtifacts.executable.sha256)).size,3);
+    assert.equal(new Set(evidence.points.map(point=>point.evidence.source.sha256)).size,1);
+    assert.equal(evidence.points[0].evidence.source.sha256,evidence.coverage.sourceSha256);
+    for(const point of evidence.points) {
+      assert.equal(point.evidence.schema,'hex-x02-a08-provenance-point/v1');
+      assert.equal(point.evidence.runner.requestedLabel,point.runnerLabel);
+      assert.equal(point.evidence.runner.runnerArch,'ARM64');
+      assert.equal(point.evidence.appleEnvironment.machine,'arm64');
+      assert.equal(point.evidence.runtimeObservation.executedOnCapturedOs,true);
+      assert.equal(point.evidence.runtimeObservation.exitStatus,0);
+      assert.match(point.artifact.digest,/^sha256:[0-9a-f]{64}$/);
+      assert.match(point.evidence.compilerProducedArtifacts.object.fileKind,/Mach-O.*arm64/i);
+      assert.match(point.evidence.compilerProducedArtifacts.executable.fileKind,/Mach-O.*arm64/i);
+    }
+    assert.equal(evidence.currentAcceptance['X02-A-08'].classification,'pass');
+    return passed('cross-version-provenance-corpus',{evidencePath,workflowRunId:evidence.source.workflowRunId,headSha:evidence.source.headSha,
+      runners:evidence.points.map(point=>({runnerLabel:point.runnerLabel,jobId:point.jobId,artifactDigest:point.artifact.digest,
+        os:point.evidence.appleEnvironment.osProductVersion,xcode:point.evidence.appleEnvironment.xcodeVersion.split('\n')[0],
+        clang:point.evidence.appleEnvironment.clangVersion.split('\n')[0],objectSha256:point.evidence.compilerProducedArtifacts.object.sha256,
+        executableSha256:point.evidence.compilerProducedArtifacts.executable.sha256,runtimeExit:point.evidence.runtimeObservation.exitStatus}))});
+  }
   if(row.id==='X02-G-09' && row.check==='evidence-missing') {
     const evidence=JSON.parse(fs.readFileSync(path.join(ROOT,'tests/scpa/fixtures/x02-real-apple-evidence-20260916.json')));
     assert.equal(evidence.schema,'hex-x02-real-apple-evidence-snapshot/v1');
