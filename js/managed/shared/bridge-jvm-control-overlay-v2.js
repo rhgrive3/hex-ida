@@ -3,6 +3,7 @@ import { createSemanticIrFunction } from '../../semantics/ir/function.js';
 import { buildSemanticSsa } from '../../semantics/ssa/build.js';
 
 const PREDICATES = new Set(['eq', 'ne', 'lt', 'ge', 'gt', 'le']);
+const JVM_FLOAT_TYPE_AUTHORITY_REASON = 'jvm-floating-value-type-authority-missing';
 const OPERATORS = Object.freeze({
   eq: 'eq',
   ne: 'ne',
@@ -107,6 +108,17 @@ function buildBlocksFromOriginalOrder(old, nodes, additionsBefore, replacements)
 
 export function overlayJvmControlLowering(fn, lowered, options = {}) {
   if (fn?.frontendId !== 'jvm') return lowered;
+  const invalidFloatingEffectIds = new Set();
+  for (const bundle of fn.bundles ?? []) {
+    const values = [...(bundle?.consumedValues ?? []), ...(bundle?.producedValues ?? [])];
+    const invalid = values.some((value) => {
+      if (value?.valueKind !== 'float' && value?.valueKind !== 'double') return false;
+      const widthBits = value.valueKind === 'float' ? 32 : 64;
+      const format = widthBits === 32 ? 'binary32' : 'binary64';
+      return value.type?.kind !== 'float' || value.type?.widthBits !== widthBits || value.type?.format !== format;
+    });
+    if (invalid && typeof bundle?.operationId === 'string') invalidFloatingEffectIds.add(bundle.operationId);
+  }
   const old = lowered.semanticIr;
   const bundleByEffect = new Map((fn.bundles ?? []).map((bundle) => [bundle.operationId, bundle]));
   const additionsBefore = new Map();
@@ -115,9 +127,21 @@ export function overlayJvmControlLowering(fn, lowered, options = {}) {
   let unresolved = false;
 
   for (const node of old.nodes) {
+    if (node.sourceEffectIds?.some((id) => invalidFloatingEffectIds.has(id))) {
+      replacements.set(node.id, {
+        ...node,
+        completeness: 'partial',
+        unknown: { reason: JVM_FLOAT_TYPE_AUTHORITY_REASON, categories: ['types'] },
+      });
+    }
     if (node.kind !== 'conditional-branch') continue;
     const effectId = node.sourceEffectIds?.find((id) => bundleByEffect.has(id));
     const bundle = effectId == null ? null : bundleByEffect.get(effectId);
+    // Branches whose predicate was already materialized as a compare node
+    // during lowering carry comparisonArity 2 with a single predicate input;
+    // the overlay must not demote them for lacking raw-operand
+    // integer-comparison arity agreement (#8917).
+    if (node.inputs.length === 1 && node.attributes?.comparisonArity === 2) continue;
     const control = bundle?.controlEffects?.find((effect) => effect?.kind === 'conditional-branch') ?? null;
     const condition = normalizeJvmBranchCondition(control, node.inputs.length);
     if (!condition) {
@@ -209,7 +233,7 @@ export function overlayJvmControlLowering(fn, lowered, options = {}) {
     });
   }
 
-  if (!additionsBefore.size && !unresolved) return lowered;
+  if (!additionsBefore.size && !unresolved && invalidFloatingEffectIds.size === 0) return lowered;
 
   const nodes = [];
   for (const node of old.nodes) {
@@ -217,15 +241,19 @@ export function overlayJvmControlLowering(fn, lowered, options = {}) {
     nodes.push(replacements.get(node.id) ?? node);
   }
   const blocks = buildBlocksFromOriginalOrder(old, nodes, additionsBefore, replacements);
-  const unknowns = unresolved
+  let unknowns = unresolved
     ? [...(old.unknowns ?? []), { reason: 'jvm-branch-predicate-unresolved', categories: ['control'] }]
-    : old.unknowns;
+    : [...(old.unknowns ?? [])];
+  if (invalidFloatingEffectIds.size > 0
+      && !unknowns.some((item) => item?.reason === JVM_FLOAT_TYPE_AUTHORITY_REASON)) {
+    unknowns.push({ reason: JVM_FLOAT_TYPE_AUTHORITY_REASON, categories: ['types'] });
+  }
   const semanticIr = createSemanticIrFunction({
     ...old,
     blocks,
     nodes,
     values: [...old.values, ...addedValues],
-    completeness: unresolved ? 'partial' : old.completeness,
+    completeness: unresolved || invalidFloatingEffectIds.size > 0 ? 'partial' : old.completeness,
     unknowns,
   }, options);
   return deepFreeze({
