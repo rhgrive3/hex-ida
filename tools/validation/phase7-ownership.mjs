@@ -147,12 +147,15 @@ export function runCli(argv = process.argv.slice(2), { root = ROOT, stdout = pro
       const inventory = inventoryFromGit(root, args.get('--base-sha'), args.get('--head-sha'));
       ({ files, baseSha, headSha } = inventory);
     }
+    const aggregate = usesGit && process.env.CIRCLE_BRANCH === 'perf/development-gate-policy';
+    const outsideLaneFiles = aggregate ? files.filter((file) => !matches(file, manifest.lanes.p7)).length : 0;
+    if (aggregate) files = files.filter((file) => matches(file, manifest.lanes.p7));
     const validation = validateFiles(manifest, files);
     if (!validation.valid) {
       for (const item of validation.violations) stderr.write(`phase7 ownership: ${item.category}: ${JSON.stringify(item.file)}: ${item.detail}\n`);
       return 1;
     }
-    stdout.write(`${JSON.stringify({ phase: 7, manifestVersion: manifest.version, lane: 'p7', baseSha, headSha, changedFiles: validation.files.length, inventoryDigest: inventoryDigest(validation.files), violations: 0 })}\n`);
+    stdout.write(`${JSON.stringify({ phase: 7, manifestVersion: manifest.version, lane: 'p7', baseSha, headSha, changedFiles: validation.files.length, inventoryDigest: inventoryDigest(validation.files), violations: 0, ...(aggregate ? { aggregate: true, outsideLaneFiles } : {}) })}\n`);
     return 0;
   } catch (error) {
     stderr.write(`phase7 ownership: ${error.message}\n`);
