@@ -8,6 +8,11 @@ import {
   latestStatuses,
 } from '../../tools/validation/final-head-admission.mjs';
 
+// Post-#9036 contract: campaign-only draft and exact-head AUTO-approval gates
+// are retired. Admission follows ordinary PR safety signals — real GitHub
+// review blockers plus exact-head CI evidence — while AUTO markers and
+// external review providers stay advisory. These regressions pin that exact
+// contract: retired gates stay retired, retained gates stay enforced.
 const HEAD = '1340a18dd3f13b9a54f3e75b763cfbd8743202e7';
 const OLD = '8ee3431a41c3c836b1979eeac6a033c67e4c1eb1';
 const TRUSTED = 'rhgrive3';
@@ -76,8 +81,9 @@ assert.doesNotMatch(
   'the privileged controller must not inspect only the first check-run page',
 );
 
-// Reproduces the #6570 landing class: approval was for an older head and the
-// final head carried a red ownership status. Both facts must be visible.
+// Reproduces the #6570 landing class: the final head carried a red ownership
+// status. That alone must fail admission regardless of any AUTO review
+// evidence on older heads.
 {
   const result = evaluate({
     headSha: HEAD,
@@ -90,33 +96,33 @@ assert.doesNotMatch(
     checkRuns: [check('PR fast gate')],
   });
   assert.equal(result.state, 'failure');
-  assert.ok(result.pending.includes('missing exact-head AUTO approval'));
   assert.ok(result.blockers.includes('CI status failed: ci/circleci: phase7-ownership'));
+  assert.ok(result.pending.every((reason) => !reason.includes('AUTO approval')));
 }
 
-// A completely green final head is still not admissible until AUTO approval is
-// explicitly bound to that exact SHA.
+// A completely green final head is admissible without AUTO approval: the
+// exact-head AUTO gate was retired by #9036 and must not come back silently.
 {
   const result = evaluate({ headSha: HEAD, reviews: [auto(OLD)], ...greenEvidence() });
-  assert.equal(result.state, 'pending');
-  assert.ok(result.pending.includes('missing exact-head AUTO approval'));
+  assert.equal(result.state, 'success');
+  assert.ok(result.pending.every((reason) => !reason.includes('AUTO approval')));
+  assert.ok(result.blockers.every((reason) => !reason.includes('AUTO review')));
 }
 
-// A forged marker from an untrusted PR participant must never satisfy AUTO
-// admission, even when every external check is green.
+// A forged marker from an untrusted PR participant carries no authority in
+// either direction: it cannot admit, and it cannot block a green head.
 {
   const result = evaluate({
     headSha: HEAD,
     reviews: [auto(HEAD, 'APPROVED', 'untrusted-contributor')],
     ...greenEvidence(),
   });
-  assert.equal(result.state, 'pending');
+  assert.equal(result.state, 'success');
   assert.equal(result.evidence.exactAutoApprovalCount, 0);
-  assert.ok(result.pending.includes('missing exact-head AUTO approval'));
 }
 
 // A trusted exact-text marker without the review object's commit binding is
-// insufficient evidence and must remain pending.
+// inert evidence: green CI alone decides admission.
 {
   const missingCommit = auto(HEAD);
   delete missingCommit.commit_id;
@@ -125,13 +131,13 @@ assert.doesNotMatch(
     reviews: [missingCommit],
     ...greenEvidence(),
   });
-  assert.equal(result.state, 'pending');
+  assert.equal(result.state, 'success');
   assert.equal(result.evidence.exactAutoApprovalCount, 0);
-  assert.ok(result.pending.includes('missing exact-head AUTO approval'));
 }
 
-// With no trusted-reviewer/required-context configuration the evaluator fails
-// safe as pending rather than silently admitting an underconfigured caller.
+// With no required-context configuration the evaluator fails safe as pending
+// rather than silently admitting an underconfigured caller. The retired
+// trusted-AUTO-reviewer check must stay retired.
 {
   const result = evaluateFinalHeadAdmission({
     headSha: HEAD,
@@ -139,21 +145,21 @@ assert.doesNotMatch(
     ...greenEvidence(),
   });
   assert.equal(result.state, 'pending');
-  assert.ok(result.pending.includes('no trusted AUTO reviewer configured'));
   assert.ok(result.pending.includes('no required CI status contexts configured'));
+  assert.ok(result.pending.every((reason) => !reason.includes('trusted AUTO reviewer')));
 }
 
-// Exact-head trusted approval + complete required CI + resolved review threads
-// is admitted without external-review evidence.
+// Complete required CI on the exact head is admitted without any AUTO review
+// evidence at all; AUTO counters remain diagnostic-only at zero.
 {
   const result = evaluate({
     headSha: HEAD,
-    reviews: [auto(HEAD)],
+    reviews: [],
     unresolvedReviewThreads: 0,
     ...greenEvidence(),
   });
   assert.equal(result.state, 'success');
-  assert.equal(result.evidence.exactAutoApprovalCount, 1);
+  assert.equal(result.evidence.exactAutoApprovalCount, 0);
   assert.equal(result.evidence.trustedAutoReviewerCount, 1);
   assert.equal(result.evidence.missingRequiredStatusCount, 0);
 }
@@ -179,7 +185,7 @@ assert.doesNotMatch(
     const baseEvidence = greenEvidence();
     const result = evaluate({
       headSha: HEAD,
-      reviews: [auto(HEAD)],
+      reviews: [],
       ...baseEvidence,
       statuses: [...baseEvidence.statuses, ...statuses],
       checkRuns: [...baseEvidence.checkRuns, ...checkRuns],
@@ -189,31 +195,31 @@ assert.doesNotMatch(
     assert.equal(result.blockers.some((reason) => reason.includes('CodeRabbit')), false);
   }
 
-  // A provider success cannot substitute for independent exact-head AUTO
-  // approval, even when all required CI contexts are green.
+  // Provider success cannot grant anything on its own either: a red required
+  // status still blocks even with a completed CodeRabbit review.
   const providerOnly = evaluate({
     headSha: HEAD,
     reviews: [],
     statuses: [
-      status('ci/circleci: phase7-ownership', 'success'),
+      status('ci/circleci: phase7-ownership', 'failure'),
       status('ci/circleci: migration-guardrails', 'success'),
       codeRabbitStatus('Review completed'),
     ],
     checkRuns: [check('PR fast gate')],
   });
-  assert.equal(providerOnly.state, 'pending');
-  assert.ok(providerOnly.pending.includes('missing exact-head AUTO approval'));
+  assert.equal(providerOnly.state, 'failure');
+  assert.ok(providerOnly.blockers.includes('CI status failed: ci/circleci: phase7-ownership'));
   assert.equal(providerOnly.pending.some((reason) => reason.includes('CodeRabbit')), false);
 }
 
-// Provider check-runs are excluded from generic CI accounting, but independent
-// required CI and AUTO evidence remain authoritative.
+// Provider check-runs are excluded from generic CI accounting, but required
+// CI remains authoritative.
 {
   for (const conclusion of ['neutral', 'skipped', 'failure']) {
     const baseEvidence = greenEvidence();
     const result = evaluate({
       headSha: HEAD,
-      reviews: [auto(HEAD)],
+      reviews: [],
       ...baseEvidence,
       checkRuns: [...baseEvidence.checkRuns, codeRabbitCheck(conclusion)],
     });
@@ -222,7 +228,7 @@ assert.doesNotMatch(
 
   const completed = evaluate({
     headSha: HEAD,
-    reviews: [auto(HEAD)],
+    reviews: [],
     statuses: [
       status('ci/circleci: phase7-ownership', 'success'),
       status('ci/circleci: migration-guardrails', 'success'),
@@ -233,7 +239,7 @@ assert.doesNotMatch(
 
   const configuredAsRequired = evaluateFinalHeadAdmission({
     headSha: HEAD,
-    reviews: [auto(HEAD)],
+    reviews: [],
     statuses: [
       status('ci/circleci: phase7-ownership', 'success'),
       status('ci/circleci: migration-guardrails', 'success'),
@@ -248,7 +254,7 @@ assert.doesNotMatch(
 
   const genericNeutral = evaluate({
     headSha: HEAD,
-    reviews: [auto(HEAD)],
+    reviews: [],
     ...greenEvidence(),
     checkRuns: [check('PR fast gate'), check('optional-neutral', 'neutral')],
   });
@@ -256,12 +262,12 @@ assert.doesNotMatch(
 }
 
 // Conflicting/ambiguous provider receipts remain advisory and cannot affect an
-// otherwise complete independent admission.
+// otherwise complete admission.
 {
   const at = '2026-09-07T00:05:00Z';
   const duplicateStatus = evaluate({
     headSha: HEAD,
-    reviews: [auto(HEAD)],
+    reviews: [],
     statuses: [
       status('ci/circleci: phase7-ownership', 'success'),
       status('ci/circleci: migration-guardrails', 'success'),
@@ -274,7 +280,7 @@ assert.doesNotMatch(
 
   const mixedEvidence = evaluate({
     headSha: HEAD,
-    reviews: [auto(HEAD)],
+    reviews: [],
     statuses: [
       status('ci/circleci: phase7-ownership', 'success'),
       status('ci/circleci: migration-guardrails', 'success'),
@@ -290,7 +296,7 @@ assert.doesNotMatch(
 {
   const result = evaluate({
     headSha: HEAD,
-    reviews: [auto(HEAD)],
+    reviews: [],
     statuses: [
       status('ci/circleci: phase7-ownership', 'success'),
       codeRabbitStatus(),
@@ -302,22 +308,19 @@ assert.doesNotMatch(
 }
 
 // Only the latest review from a reviewer is active. An older changes-requested
-// review must not permanently poison a later approval; likewise, an old AUTO
-// CHANGES_REQUESTED on this head is superseded by a newer exact-head approval.
+// review must not permanently poison a later approval.
 {
   const reviews = [
     { state: 'CHANGES_REQUESTED', submitted_at: '2026-09-07T00:00:00Z', author: { login: 'reviewer-a' }, body: 'blocking review' },
     { state: 'APPROVED', submitted_at: '2026-09-07T00:01:00Z', author: { login: 'reviewer-a' }, body: 'fixed' },
-    auto(HEAD, 'CHANGES_REQUESTED', TRUSTED, '2026-09-07T00:00:00Z'),
-    auto(HEAD, 'APPROVED', TRUSTED, '2026-09-07T00:02:00Z'),
   ];
-  assert.equal(latestReviewsByAuthor(reviews).length, 2);
+  assert.equal(latestReviewsByAuthor(reviews).length, 1);
   const result = evaluate({ headSha: HEAD, reviews, ...greenEvidence() });
   assert.equal(result.state, 'success');
   assert.equal(result.evidence.exactAutoChangesRequestedCount, 0);
 }
 
-// Formal GitHub review state is separate from COMMENTED AUTO evidence:
+// Formal GitHub review state is a retained admission signal:
 // a later comment cannot clear a still-active CHANGES_REQUESTED decision.
 {
   const result = evaluate({
@@ -325,7 +328,6 @@ assert.doesNotMatch(
     reviews: [
       formal('CHANGES_REQUESTED', 'reviewer-a', '2026-09-07T00:00:00Z'),
       formal('COMMENTED', 'reviewer-a', '2026-09-07T00:01:00Z'),
-      auto(HEAD),
     ],
     ...greenEvidence(),
   });
@@ -341,7 +343,6 @@ assert.doesNotMatch(
     reviews: [
       formal('CHANGES_REQUESTED', 'reviewer-a', '2026-09-07T00:00:00Z'),
       formal('APPROVED', 'reviewer-a', '2026-09-07T00:01:00Z'),
-      auto(HEAD),
     ],
     ...greenEvidence(),
   });
@@ -352,7 +353,6 @@ assert.doesNotMatch(
     reviews: [
       formal('APPROVED', 'reviewer-a', '2026-09-07T00:00:00Z'),
       formal('CHANGES_REQUESTED', 'reviewer-a', '2026-09-07T00:01:00Z'),
-      auto(HEAD),
     ],
     ...greenEvidence(),
   });
@@ -370,7 +370,6 @@ assert.doesNotMatch(
     reviews: [
       formal('CHANGES_REQUESTED', 'reviewer-a', '2026-09-07T00:00:00Z'),
       dismissed,
-      auto(HEAD),
     ],
     ...greenEvidence(),
   });
@@ -380,23 +379,34 @@ assert.doesNotMatch(
     headSha: HEAD,
     reviews: [
       formal('REVIEWED', 'reviewer-a', '2026-09-07T00:01:00Z'),
-      auto(HEAD),
     ],
     ...greenEvidence(),
   });
   assert.equal(unknown.state, 'failure');
 }
- 
-// The inverse ordering is blocking: a newer changes-requested review overrides
-// an older approval from the same reviewer.
+
+// The inverse ordering is blocking for formal reviews: a newer
+// changes-requested review overrides an older approval from the same reviewer.
+{
+  const reviews = [
+    { state: 'APPROVED', submitted_at: '2026-09-07T00:00:00Z', author: { login: 'reviewer-a' }, body: 'looks good' },
+    { state: 'CHANGES_REQUESTED', submitted_at: '2026-09-07T00:01:00Z', author: { login: 'reviewer-a' }, body: 'blocking review' },
+  ];
+  const result = evaluate({ headSha: HEAD, reviews, ...greenEvidence() });
+  assert.equal(result.state, 'failure');
+  assert.ok(result.blockers.includes('active GitHub changes-requested review'));
+}
+
+// AUTO review markers carry no authority after #9036: even a trusted,
+// exact-head CHANGES_REQUESTED marker must not block a green head.
 {
   const reviews = [
     auto(HEAD, 'APPROVED', TRUSTED, '2026-09-07T00:00:00Z'),
     auto(HEAD, 'CHANGES_REQUESTED', TRUSTED, '2026-09-07T00:01:00Z'),
   ];
   const result = evaluate({ headSha: HEAD, reviews, ...greenEvidence() });
-  assert.equal(result.state, 'failure');
-  assert.ok(result.blockers.includes('exact-head AUTO review requests changes'));
+  assert.equal(result.state, 'success');
+  assert.ok(result.blockers.every((reason) => !reason.includes('AUTO review')));
 }
 
 // Equal-newest conflicting CI statuses are all retained, so neither input
@@ -417,7 +427,7 @@ assert.doesNotMatch(
     assert.equal(latestStatuses(conflict).length, 2);
     const result = evaluate({
       headSha: HEAD,
-      reviews: [auto(HEAD)],
+      reviews: [],
       statuses: [
         ...conflict,
         status('ci/circleci: migration-guardrails', 'success', at),
@@ -430,8 +440,8 @@ assert.doesNotMatch(
   }
 }
 
-// Equal-newest conflicting trusted AUTO verdicts are likewise blocking in both
-// input orders.
+// Equal-newest conflicting AUTO verdicts are inert: they neither admit nor
+// block, and latestReviewsByAuthor still deduplicates per author identity.
 {
   const at = '2026-09-07T00:04:00Z';
   const conflicts = [
@@ -451,8 +461,8 @@ assert.doesNotMatch(
       reviews,
       ...greenEvidence(),
     });
-    assert.equal(result.state, 'failure');
-    assert.ok(result.blockers.includes('exact-head AUTO review requests changes'));
+    assert.equal(result.state, 'success');
+    assert.equal(result.evidence.exactAutoChangesRequestedCount, 0);
   }
 }
 
@@ -460,7 +470,7 @@ assert.doesNotMatch(
 {
   const unresolved = evaluate({
     headSha: HEAD,
-    reviews: [auto(HEAD)],
+    reviews: [],
     unresolvedReviewThreads: 2,
     ...greenEvidence(),
   });
@@ -470,7 +480,6 @@ assert.doesNotMatch(
   const requested = evaluate({
     headSha: HEAD,
     reviews: [
-      auto(HEAD),
       { state: 'CHANGES_REQUESTED', submitted_at: '2026-09-07T00:01:00Z', author: { login: 'reviewer-b' }, body: 'blocking review' },
     ],
     ...greenEvidence(),
@@ -488,7 +497,7 @@ assert.doesNotMatch(
   ];
   const result = evaluate({
     headSha: HEAD,
-    reviews: [auto(HEAD)],
+    reviews: [],
     ...greenEvidence(),
     checkRuns: [check('PR fast gate'), ...lateChecks],
   });
@@ -500,7 +509,7 @@ assert.doesNotMatch(
 {
   const result = evaluate({
     headSha: HEAD,
-    reviews: [auto(HEAD)],
+    reviews: [],
     statuses: [
       codeRabbitStatus(),
       status('ci/circleci: phase7-ownership', 'pending'),
@@ -523,7 +532,7 @@ assert.doesNotMatch(
 
   const result = evaluate({
     headSha: HEAD,
-    reviews: [auto(HEAD)],
+    reviews: [],
     statuses: [
       status(FINAL_HEAD_ADMISSION_CONTEXT, 'pending'),
       codeRabbitStatus(),
@@ -535,9 +544,8 @@ assert.doesNotMatch(
   assert.equal(result.state, 'success');
 }
 
-// The AUTO reviewer interleaves a [BASE:<sha>] segment between HEAD and
-// VERDICT on current-base reviews; the marker must stay parseable so exact
-// approvals are not silently dropped (#fleet: BASE marker regression).
+// AUTO marker shapes (including BASE segments) must remain inert evidence:
+// they can neither grant admission nor block a green head, in any verdict.
 {
   const baseMarker = (sha, verdict = 'APPROVED') => ({
     state: 'COMMENTED',
@@ -546,31 +554,22 @@ assert.doesNotMatch(
     author: { login: TRUSTED },
     body: `[AUTO-REVIEW:R2][HEAD:${sha}][BASE:${sha.slice(0, 4)}${'a'.repeat(36)}][VERDICT:${verdict}]`,
   });
-  const result = evaluate({
+  const approved = evaluate({
     headSha: HEAD,
     reviews: [baseMarker(HEAD)],
-    statuses: [
-      codeRabbitStatus(),
-      status('ci/circleci: phase7-ownership', 'success'),
-      status('ci/circleci: migration-guardrails', 'success'),
-    ],
+    ...greenEvidence(),
   });
-  assert.equal(result.state, 'success', 'an exact-head APPROVED marker with a BASE segment admits');
+  assert.equal(approved.state, 'success', 'an APPROVED marker stays advisory on a green head');
   const rejected = evaluate({
     headSha: HEAD,
     reviews: [baseMarker(HEAD, 'CHANGES_REQUESTED')],
-    statuses: [
-      codeRabbitStatus(),
-      status('ci/circleci: phase7-ownership', 'success'),
-      status('ci/circleci: migration-guardrails', 'success'),
-    ],
+    ...greenEvidence(),
   });
-  assert.equal(rejected.state, 'failure', 'a BASE-segment CHANGES_REQUESTED marker still blocks');
+  assert.equal(rejected.state, 'success', 'a BASE-segment CHANGES_REQUESTED marker cannot block a green head');
 }
 
-// Current-base review identity: approvals are bound to the authoritative
-// current base. Same HEAD + advanced BASE, BASE-less legacy markers, matching
-// (HEAD, BASE) tuples, and matching-tuple CHANGES_REQUESTED are all pinned.
+// Current-base marker binding was retired with the AUTO gate: stale bases,
+// BASE-less legacy markers, and matching tuples are all advisory-only.
 {
   const NEW_BASE = 'b'.repeat(40);
   const marker = (sha, verdict, base) => ({
@@ -582,50 +581,21 @@ assert.doesNotMatch(
       ? `[AUTO-REVIEW:R2][HEAD:${sha}][BASE:${base}][VERDICT:${verdict}]`
       : `[AUTO-REVIEW:R2][HEAD:${sha}][VERDICT:${verdict}]`,
   });
-  const greenContexts = [
-    codeRabbitStatus(),
-    status('ci/circleci: phase7-ownership', 'success'),
-    status('ci/circleci: migration-guardrails', 'success'),
+  const cases = [
+    marker(HEAD, 'APPROVED', 'a'.repeat(40)),
+    marker(HEAD, 'APPROVED', null),
+    marker(HEAD, 'APPROVED', NEW_BASE),
+    marker(HEAD, 'CHANGES_REQUESTED', NEW_BASE),
   ];
-  // Same HEAD, BASE advanced: the old (HEAD, BASE_old) approval must not admit.
-  const staleBase = evaluate({
-    headSha: HEAD,
-    reviews: [marker(HEAD, 'APPROVED', 'a'.repeat(40))],
-    statuses: greenContexts,
-    currentBaseSha: NEW_BASE,
-  });
-  assert.equal(staleBase.state, 'pending', 'an approval bound to an older base cannot admit');
-  // BASE-less legacy evidence stays parseable but never satisfies the gate.
-  const legacy = evaluate({
-    headSha: HEAD,
-    reviews: [marker(HEAD, 'APPROVED', null)],
-    statuses: greenContexts,
-    currentBaseSha: NEW_BASE,
-  });
-  assert.equal(legacy.state, 'pending', 'a BASE-less marker cannot satisfy current-base admission');
-  // Exact (HEAD, BASE) match admits.
-  const matched = evaluate({
-    headSha: HEAD,
-    reviews: [marker(HEAD, 'APPROVED', NEW_BASE)],
-    statuses: greenContexts,
-    currentBaseSha: NEW_BASE,
-  });
-  assert.equal(matched.state, 'success', 'the exact (HEAD, BASE) tuple admits');
-  // Matching-tuple CHANGES_REQUESTED blocks.
-  const blocked = evaluate({
-    headSha: HEAD,
-    reviews: [marker(HEAD, 'CHANGES_REQUESTED', NEW_BASE)],
-    statuses: greenContexts,
-    currentBaseSha: NEW_BASE,
-  });
-  assert.equal(blocked.state, 'failure', 'a matching-tuple CHANGES_REQUESTED still blocks');
-  // Without currentBaseSha (legacy callers), the previous behavior holds.
-  const legacyCaller = evaluate({
-    headSha: HEAD,
-    reviews: [marker(HEAD, 'APPROVED', null)],
-    statuses: greenContexts,
-  });
-  assert.equal(legacyCaller.state, 'success', 'legacy callers without a current base keep the old contract');
+  for (const reviews of [cases]) {
+    const result = evaluate({
+      headSha: HEAD,
+      reviews,
+      ...greenEvidence(),
+    });
+    assert.equal(result.state, 'success', 'AUTO markers must not influence current-base admission');
+    assert.equal(result.evidence.exactAutoApprovalCount, 0);
+  }
 }
 
 assert.throws(
