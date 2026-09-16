@@ -388,6 +388,11 @@ export function parseChainedBindingSites(r,dc,image,imports,segments=image.segme
     if (BigInt(pageCount) > maxPages) {
       markSegmentIncomplete(); fail(`segment ${segIndex} page_count exceeds segment VM range`); continue;
     }
+    if (BigInt(pageCount) < maxPages) {
+      const omittedStart = segAddress + BigInt(pageCount) * pageSizeBig;
+      if (omittedStart < segAddress + segSize) rememberChainedPointerCoverage(image, omittedStart, segAddress + segSize);
+      fail(`segment ${segIndex} page_count does not cover segment VM range`);
+    }
     const structEnd = p + structSize;
     const overflowBase = p + 22 + pageCount * 2;
     if ((structEnd - overflowBase) % 2 !== 0) { markSegmentIncomplete(); fail(`segment ${segIndex} chain_starts array is misaligned`); continue; }
