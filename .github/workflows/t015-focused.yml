@@ -1,6 +1,6 @@
 name: T015 focused verification
 
-# rerun after live authority snapshot fix
+# rerun after conservative chained coverage fix
 on:
   push:
     branches:
