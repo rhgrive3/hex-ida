@@ -30,21 +30,7 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git fetch --depth=40 origin impl/c4-04-finish-20260916
-          for sha in \
-            89f2467ea66c80f43d8e70fa6a0cf8742adde89b \
-            a4148d277444f694a46057e80926c6bbeb8034e2 \
-            45fe53634ee6cdaf3c3d3a2b7551743416800b7c \
-            99db96607313d3435c841ca1f6783491d4bb97bb \
-            b439a53a642d486ab0161ed5f464608cd6f2ce9d \
-            6c648bf306b9a8df27523249358d7d4ce1e90d47 \
-            bd5ff13372b780e2d45e2d35c01791479b4681d4 \
-            1a4eddfe46584401dab337d15923f50998de7fc1 \
-            a97a9ee7cfa88f014cae7188d4581be4ecf68f33 \
-            15f946e8af6d33f3d874cfe2961e0ef551888f60 \
-            76eac24b69860b4f34e106eee1363f0fb30e788f \
-            f963ee4e316eaf1bcbb2b4a33122c0d00a60b2b2 \
-            c1d616710990db7dbb6664a4ea49b8608d556055
-          do git cherry-pick "$sha" >/dev/null; done
+          for sha in 89f2467ea66c80f43d8e70fa6a0cf8742adde89b a4148d277444f694a46057e80926c6bbeb8034e2 45fe53634ee6cdaf3c3d3a2b7551743416800b7c 99db96607313d3435c841ca1f6783491d4bb97bb b439a53a642d486ab0161ed5f464608cd6f2ce9d 6c648bf306b9a8df27523249358d7d4ce1e90d47 bd5ff13372b780e2d45e2d35c01791479b4681d4 1a4eddfe46584401dab337d15923f50998de7fc1 a97a9ee7cfa88f014cae7188d4581be4ecf68f33 15f946e8af6d33f3d874cfe2961e0ef551888f60 76eac24b69860b4f34e106eee1363f0fb30e788f f963ee4e316eaf1bcbb2b4a33122c0d00a60b2b2 c1d616710990db7dbb6664a4ea49b8608d556055; do git cherry-pick "$sha" >/dev/null; done
           python - <<'PY'
           from pathlib import Path
           p=Path('js/symbolic/verify/equivalence.js'); s=p.read_text()
@@ -53,12 +39,10 @@ jobs:
           marker='export async function verifyBoundedEquivalence({'
           helper="""function memoryRegionIdentitySnapshot(memoryRegions) {\n  if (!Array.isArray(memoryRegions)) return memoryRegions;\n  ownDataEntries(memoryRegions, 4096);\n  return Object.freeze(memoryRegions.map(region => {\n    if (region == null || typeof region !== 'object' || Array.isArray(region)) return region;\n    const normalized = Object.create(null);\n    for (const [key, value] of ownDataEntries(region, 64)) {\n      normalized[key] = typeof value === 'bigint'\n        ? Object.freeze({ scalarType:'bigint', decimal:value.toString() }) : value;\n    }\n    return Object.freeze(normalized);\n  }));\n}\n\n"""
           if 'function memoryRegionIdentitySnapshot(' not in s: s=s.replace(marker,helper+marker)
-          if 'const queryMemoryRegions = memoryRegionIdentitySnapshot(memoryRegions);' not in s:
-            s=s.replace('  const query = createVerificationQuery({\n','  const queryMemoryRegions = memoryRegionIdentitySnapshot(memoryRegions);\n  const query = createVerificationQuery({\n')
+          if 'const queryMemoryRegions = memoryRegionIdentitySnapshot(memoryRegions);' not in s: s=s.replace('  const query = createVerificationQuery({\n','  const queryMemoryRegions = memoryRegionIdentitySnapshot(memoryRegions);\n  const query = createVerificationQuery({\n')
           s=s.replace('      memoryRegions,\n    },\n    constraints,','      memoryRegions:queryMemoryRegions,\n    },\n    constraints,')
           s=s.replace("      kind: VERIFICATION_QUERY_KIND.BOUNDED_EQUIVALENCE,\n      memoryRegions,\n    },\n  });", "      kind: VERIFICATION_QUERY_KIND.BOUNDED_EQUIVALENCE,\n      memoryRegions:queryMemoryRegions,\n    },\n  });")
           p.write_text(s)
-
           p=Path('js/decompiler/phase8/conditional-region-erasure.js'); s=p.read_text()
           old="""    // Join PHIs are retained by this render-only deletion and therefore do not\n    // make an otherwise flat arm unsafe. Only PHIs (including MemoryPHIs) whose\n    // owning block is inside the removed arm keep the body at `required`.\n    const erasedBlocks = new Set(erased.emittedBlocks ?? []);\n    const erasedHasPhi = structure.phis.some(item => erasedBlocks.has(item.block));\n    const erasedHasMemoryPhi = structure.memoryPhis.some(item => erasedBlocks.has(item.block));\n    const flatStores = condition && !erasedHasPhi && !erasedHasMemoryPhi\n"""
           new="""    // No PHI correspondence is issued for render-only arm deletion. Even a\n    // join PHI can still be printed as an unresolved local after one arm is\n    // removed, so every PHI/MemoryPHI keeps body authority fail-closed until\n    // an explicit live-PHI render correspondence is proved.\n    const flatStores = condition && !structure.phis.length && !structure.memoryPhis.length\n"""
@@ -76,14 +60,13 @@ jobs:
           from pathlib import Path
           p=Path('tools/validation/analysis-roadmap/ownership.json'); data=json.loads(p.read_text())
           additions={
-            'phase8':['js/decompiler/phase8/c4-equivalence-registry.js','tests/phase8/substrate/c4-equivalence-registry.test.mjs','tests/phase8/substrate/c4-memory-rewrite-adoption.test.mjs'],
+            'phase8':['js/decompiler/phase8/c4-equivalence-registry.js','tests/phase8/substrate/c4-equivalence-registry.test.mjs','tests/phase8/substrate/c4-memory-rewrite-adoption.test.mjs','tests/phase8/substrate/pass-validation-owned-snapshot.test.mjs'],
             'symbolic':['js/symbolic/verify/equivalence.js','js/symbolic/query/terminal-effect-equivalence.js','tests/phase9/memory/terminal-effect-equivalence.test.mjs','tests/phase9/memory/c4-cfg-loop-equivalence.test.mjs'],
           }
           for owner,paths in additions.items():
             for path in paths:
               if path not in data['owners'][owner]: data['owners'][owner].append(path)
           p.write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n')
-
           audit=Path('docs/analysis-local-acceptance-audit.json'); a=json.loads(audit.read_text())
           for row in a['findings']:
             if row['id']=='HEX-C4-04':
@@ -100,16 +83,7 @@ jobs:
           a['localIntegrationLimitations']=[x for x in a.get('localIntegrationLimitations',[]) if x!=stale]
           marker='C4-04 local acceptance is complete; C4-02/C4-05 and whole-roadmap independent/device/release gates remain separate.'
           if marker not in a['localIntegrationLimitations']: a['localIntegrationLimitations'].insert(0,marker)
-          a.setdefault('integrationFollowup',{})['c4ProofCompletion20260916']={
-            'date':'2026-09-16','status':'LOCAL-ACCEPTED','finding':'HEX-C4-04','tasks':['FR-C4-04A','FR-C4-04B'],
-            'originalRequirementAcceptedHere':True,'fullRoadmapComplete':False,'transformAuthorization':False,
-            'acceptanceRunId':int(os.environ['ACCEPTANCE_RUN_ID']),'publicationValidationRunId':int(os.environ['GITHUB_RUN_ID']),'acceptanceTests':int(os.environ['C4_TESTS']),
-            'scalarDenominator':'frozen production width/operator/family matrices across local-rewrites, representation-rules and equality-saturation; explicit unknown/unsupported retained',
-            'effectDenominator':['memory-byte-rewrite','cfg-rewrite','bounded-loop-rewrite','terminal-control-effect-rewrite'],
-            'observables':['scalar Bool/BV result','terminal return','all terminal memory bytes','terminal control target','terminal normal-completion predicate','canonical terminal fault predicates','CFG path coverage','bounded-loop terminal state'],
-            'failClosed':['declared-but-unencoded memoryRegions','noncanonical exception/unwind annotations','PHI/MemoryPHI render erasure without explicit correspondence','stale/cancel/timeout/budget','invalid SAT model','unregistered or cross-verifier rewrite'],
-            'conditionalRegionScope':'only independently proved unreachable no-PHI/no-MemoryPHI flat-store render arm; canonical Semantic IR/SSA/CFG unchanged',
-            'wholeRoadmapNote':'C4-04 local acceptance does not close C4-02, C4-05, independent review, device, release, or other roadmap findings.'}
+          a.setdefault('integrationFollowup',{})['c4ProofCompletion20260916']={'date':'2026-09-16','status':'LOCAL-ACCEPTED','finding':'HEX-C4-04','tasks':['FR-C4-04A','FR-C4-04B'],'originalRequirementAcceptedHere':True,'fullRoadmapComplete':False,'transformAuthorization':False,'acceptanceRunId':int(os.environ['ACCEPTANCE_RUN_ID']),'publicationValidationRunId':int(os.environ['GITHUB_RUN_ID']),'acceptanceTests':int(os.environ['C4_TESTS']),'scalarDenominator':'frozen production width/operator/family matrices across local-rewrites, representation-rules and equality-saturation; explicit unknown/unsupported retained','effectDenominator':['memory-byte-rewrite','cfg-rewrite','bounded-loop-rewrite','terminal-control-effect-rewrite'],'observables':['scalar Bool/BV result','terminal return','all terminal memory bytes','terminal control target','terminal normal-completion predicate','canonical terminal fault predicates','CFG path coverage','bounded-loop terminal state'],'failClosed':['declared-but-unencoded memoryRegions','noncanonical exception/unwind annotations','PHI/MemoryPHI render erasure without explicit correspondence','stale/cancel/timeout/budget','invalid SAT model','unregistered or cross-verifier rewrite'],'conditionalRegionScope':'only independently proved unreachable no-PHI/no-MemoryPHI flat-store render arm; canonical Semantic IR/SSA/CFG unchanged','wholeRoadmapNote':'C4-04 local acceptance does not close C4-02, C4-05, independent review, device, release, or other roadmap findings.'}
           audit.write_text(json.dumps(a,ensure_ascii=False,indent=2)+'\n')
           section='''\n## 2026-09-16: C4-04 local acceptance 完了\n\nHEX-C4-04 / FR-C4-04A / FR-C4-04B は、production scalar denominator、memory/CFG rewrite registry、bounded-loop、terminal return/memory/control/fault observables、stale/refuted/unknown/unsupported と generic memory-region fail-closed を同一 acceptance で再検証し、このローカル要件について `accepted-local` とする。PHI / MemoryPHI を含む render body と非canonical exception/unwind は証明済みと偽らず adoption 不可のまま保持する。C4-02 / C4-05、独立レビュー、実機、release、他 finding は閉じていないため、ロードマップ全体の `CHECKPOINT-LOCKED` / `transformAuthorization:false` は維持する。\n\n'''
           for name in ['docs/analysis-roadmap-v8-integration-checkpoint.md','docs/解析ツール改善.md']:
@@ -122,8 +96,7 @@ jobs:
         run: |
           set -euo pipefail
           node --input-type=module <<'NODE'
-          import fs from 'node:fs'; import {execFileSync} from 'node:child_process';
-          import {BRANCH,validateRoadmapInventory} from './tools/validation/analysis-roadmap/ownership.mjs';
+          import fs from 'node:fs'; import {execFileSync} from 'node:child_process'; import {BRANCH,validateRoadmapInventory} from './tools/validation/analysis-roadmap/ownership.mjs';
           const files=execFileSync('git',['diff','--name-only',process.env.BASE_SHA],{encoding:'utf8'}).trim().split('\n').filter(Boolean);
           for(const phase of ['phase7','phase8']) validateRoadmapInventory(BRANCH,phase,files);
           JSON.parse(fs.readFileSync('docs/analysis-local-acceptance-audit.json','utf8'));
