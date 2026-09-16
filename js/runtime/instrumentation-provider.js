@@ -248,6 +248,29 @@ export class InstrumentationProvider {
     // the normalizer's own runtime-event-resource-limit code and cheaply dropped,
     // instead of running the old unbounded recursion into a native stack overflow /
     // unbounded allocation outside events.maxBytes.
+    // #8862: the event subscription goes live before the asynchronous bootstrap
+    // snapshot is imported, so module lifecycle events accepted during that window
+    // previously mutated the pre-snapshot table: an unload was a no-op that the
+    // older snapshot then resurrected as an exact binding, and a load collided with
+    // the unconditional snapshot import with module-binding-already-loaded. Stage
+    // the table effects of accepted bootstrap events and replay them, in arrival
+    // order, only after the snapshot has been fully imported, so the snapshot can
+    // never overwrite newer lifecycle authority. Canonical queue admission is
+    // unchanged; only the module-binding-table effect is linearized.
+    let bootstrapModuleEffectsStaged = true;
+    const stagedBootstrapModuleEffects = [];
+    const applyModuleLifecycle = (effect) => {
+      if (effect.kind === 'module-load') {
+        if (!session.modules.get(effect.bindingKey)) {
+          session.modules.load(normalizeRuntimeModuleBinding(effect.module, {
+            bindingKey: effect.bindingKey,
+            loadedSequence: effect.sequence,
+          }));
+        }
+        return;
+      }
+      session.modules.unload(effect.bindingKey, effect.sequence);
+    };
     const ingest = (raw, normalizerOptions = {}) => {
       // #8891: a closing/closed session must not admit new events or mint runtime
       // module/address authority from either the direct facet or a racing backend
@@ -275,15 +298,18 @@ export class InstrumentationProvider {
       const module = moduleFields(event);
       if (event.kind === 'module-load' && (module.runtimeBase ?? module.base) != null && (module.runtimeSize ?? module.size) != null) {
         const bindingKey = module.bindingKey ?? module.moduleKey ?? module.id ?? module.uuid ?? module.name;
-        if (bindingKey && !session.modules.get(bindingKey)) {
-          session.modules.load(normalizeRuntimeModuleBinding(module, {
-            bindingKey,
-            loadedSequence: event.sequence,
-          }));
+        if (bindingKey) {
+          const effect = { kind: 'module-load', bindingKey, module, sequence: event.sequence };
+          if (bootstrapModuleEffectsStaged) stagedBootstrapModuleEffects.push(effect);
+          else applyModuleLifecycle(effect);
         }
       } else if (event.kind === 'module-unload') {
         const bindingKey = module.bindingKey ?? module.moduleKey ?? module.id ?? module.uuid ?? module.name;
-        if (bindingKey) session.modules.unload(bindingKey, event.sequence);
+        if (bindingKey) {
+          const effect = { kind: 'module-unload', bindingKey, sequence: event.sequence };
+          if (bootstrapModuleEffectsStaged) stagedBootstrapModuleEffects.push(effect);
+          else applyModuleLifecycle(effect);
+        }
       }
       return event;
     };
@@ -311,6 +337,14 @@ export class InstrumentationProvider {
           session.modules.load(normalizeRuntimeModuleBinding(module, { bindingKey }));
         }
       }
+      // #8862: the snapshot is fully imported; replay the lifecycle effects of
+      // events accepted during the bootstrap window in arrival order (newer
+      // authority wins over the snapshot through the same load guard the
+      // steady-state event path uses), then return module events to the
+      // direct-apply path. No await runs between the import and this replay,
+      // so the staged set is exactly the bootstrap window.
+      bootstrapModuleEffectsStaged = false;
+      for (const effect of stagedBootstrapModuleEffects.splice(0)) applyModuleLifecycle(effect);
     } catch (error) {
       session.setState('failed');
       try { await session.close(); } catch {}
