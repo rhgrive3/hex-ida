@@ -1,0 +1,49 @@
+name: Stage A publish canonical generated outputs
+
+on:
+  push:
+    branches:
+      - validation/stage-a-final-20260917
+    paths:
+      - .github/workflows/stage-a-generate-publish.yml
+
+permissions:
+  contents: write
+
+jobs:
+  generate-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 5e7a86384a58e351bd65b243c647afc97e6f0f46
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies quietly
+        run: npm ci --silent --no-audit --no-fund
+      - name: Generate twice and prove stability
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run userscript:build --silent
+          git diff --no-ext-diff --binary > /tmp/pass1.diff
+          npm run userscript:build --silent
+          git diff --no-ext-diff --binary > /tmp/pass2.diff
+          cmp /tmp/pass1.diff /tmp/pass2.diff
+          actual="$(git diff --name-only | sort)"
+          expected="$(printf '%s\n%s' 'userscript/hex.user.template.js' 'userscript/release-version.json')"
+          test "$actual" = "$expected"
+          npm run userscript:test --silent
+      - name: Publish clean generated branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add userscript/hex.user.template.js userscript/release-version.json
+          git commit -m 'build(stage-a): synchronize canonical userscript artifacts'
+          git push origin HEAD:refs/heads/fix/stage-a-generated-sync-20260917
