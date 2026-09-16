@@ -1,0 +1,40 @@
+name: Temporary current-main syntax diagnosis
+
+on:
+  push:
+    branches:
+      - diag/current-main-syntax-20260916
+    paths:
+      - '.github/workflows/tmp-current-main-syntax-diag.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Capture first syntax failure only
+        id: lint
+        shell: bash
+        run: |
+          set +e
+          timeout 120s node tests/check.mjs >/tmp/syntax.out 2>&1
+          rc=$?
+          head -n 40 /tmp/syntax.out > syntax-first.txt
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: syntax-first
+          path: syntax-first.txt
+          retention-days: 1
+      - name: Preserve failure status
+        shell: bash
+        run: |
+          test '${{ steps.lint.outputs.exit_code }}' = '0'
