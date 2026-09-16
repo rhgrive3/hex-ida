@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { openBinary, openBinarySource, MemoryByteSource } from '../../js/binary/index.js';
 import { parseSwiftNominalDescriptor } from '../../js/swift.js';
 import { ObjcMetadataProvider } from '../../js/metadata/objc.js';
@@ -87,4 +89,66 @@ test('X02 category-only and protocol-only providers retain partial records and r
       assert.equal(rejected.completeness.complete,false);assert.equal(invalid.cachedIndex,null);
     }
   }
+});
+
+const F48_SOURCE = `__attribute__((noinline)) int x02_leaf(int x) {
+    return x + 7;
+}
+
+__attribute__((noinline)) int x02_call(int x) {
+    return x02_leaf(x) ^ 0x5a;
+}
+`;
+const F48_OBJECT_BASE64 = 'z/rt/gwAAAECAACAAQAAAAQAAAAYAQAAACAAAAAAAAAZAAAAmAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADQAAAAAAAAAOAEAAAAAAAA0AAAAAAAAAAcAAAAHAAAAAQAAAAAAAABfX3RleHQAAAAAAAAAAAAAX19URVhUAAAAAAAAAAAAAAAAAAAAAAAANAAAAAAAAAA4AQAAAgAAAHABAAABAAAAAAQAgAAAAAAAAAAAAAAAADIAAAAYAAAAAQAAAAAADQAAAAAAAAAAAAIAAAAYAAAAeAEAAAMAAACoAQAAIAAAAAsAAABQAAAAAAAAAAEAAAABAAAAAgAAAAMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPyMD1QAcABH/C1/WPyMD1X8jA9X9e7+p/QMAkQAAAJRIC4BSAAAISv17wai/IwPV/w9f1gAAAAAcAAAAAgAALRUAAAAOAQAAAAAAAAAAAAABAAAADwEAAAwAAAAAAAAACwAAAA8BAAAAAAAAAAAAAABfeDAyX2NhbGwAX3gwMl9sZWFmAGx0bXAwAAAAAAAA';
+const F48_PROVENANCE = Object.freeze({
+  compiler: 'clang version 17.0.0 (https://github.com/swiftlang/llvm-project.git 10999b6d034fe318f3d56c83bddb6572593a8bb0)',
+  target: 'arm64e-apple-macos13.0',
+  arguments: ['-c','-O1','-ffreestanding','-fno-stack-protector','-msign-return-address=all'],
+  sourceSha256: '608bedd0e779fc50bbb6a8b4f3f9f17fc4c1f6abc268098a819238f491c04a49',
+  objectSha256: 'aa196ec267e323ad1910ffc17dc72e7c17d13e2f5271f50dedc067c700611bb0',
+  byteLength: 456,
+});
+const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+const u32 = (bytes, offset) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(offset,true);
+const wordOffsets = (bytes, word) => {
+  const offsets=[];
+  for(let offset=0;offset+4<=bytes.length;offset+=4) if(u32(bytes,offset)===word) offsets.push(offset);
+  return offsets;
+};
+
+test('X02-F-48 current acceptance uses a pinned compiler-produced arm64e PAC object', () => {
+  const bytes=Uint8Array.from(Buffer.from(F48_OBJECT_BASE64,'base64'));
+  assert.equal(sha256(Buffer.from(F48_SOURCE)),F48_PROVENANCE.sourceSha256);
+  assert.equal(sha256(bytes),F48_PROVENANCE.objectSha256);
+  assert.equal(bytes.length,F48_PROVENANCE.byteLength);
+  assert.doesNotMatch(F48_SOURCE,/\b(?:__asm__|asm)\b|\.inst\b|0xd50323(?:3f|bf)\b|0xd65f0bff\b/i);
+  assert.equal(u32(bytes,0),0xfeedfacf);
+  assert.equal(u32(bytes,4),0x0100000c);
+  const subtype=u32(bytes,8);
+  assert.equal(subtype&0x00ffffff,2);
+  assert.equal((subtype&0xff000000)>>>0,0x80000000);
+  const image=openBinary(bytes);
+  assert.equal(image.format,'macho');assert.equal(image.arch,'arm64e');assert.equal(image.platform,'macOS');
+  assert.equal(image.metadata.buildVersion?.minos,'13.0.0');assert.equal(image.metadata.buildVersion?.source,'LC_BUILD_VERSION');
+  assert.ok(wordOffsets(bytes,0xd503233f).length>=1,'compiler output must contain PACIASP');
+  assert.ok(wordOffsets(bytes,0xd50323bf).length>=1||wordOffsets(bytes,0xd65f0bff).length>=1,
+    'compiler output must contain an authenticated return path');
+  // F-48 is producer-pinned corpus evidence only. Runtime authentication remains F-47.
+  assert.equal(Object.hasOwn(F48_PROVENANCE,'runtimeAuthenticationExecuted'),false);
+});
+
+test('X02 current disposition overlay advances F-48 without rewriting the frozen denominator', () => {
+  const matrixBytes=fs.readFileSync(new URL('./fixtures/x02-prior120-apple-version-matrix.json',import.meta.url));
+  assert.equal(sha256(matrixBytes),'c95ea2ba89d072fe9110565072462d5efca496b72a66ff365d8b8d15a95274ad');
+  const matrix=JSON.parse(matrixBytes);
+  const overrides=Object.freeze({
+    'X02-A-07':'pass','X02-B-01':'pass','X02-B-02':'pass','X02-D-13':'pass',
+    'X02-E-11':'pass','X02-F-48':'pass','X02-G-03':'pass',
+  });
+  const counts={};
+  for(const row of matrix.rows){const value=overrides[row.id]??row.expectedDisposition;counts[value]=(counts[value]??0)+1;}
+  assert.deepEqual(counts,{pass:115,'evidence-gap':3,'environment-excluded':2});
+  const f48=matrix.rows.find(row=>row.id==='X02-F-48');
+  assert.equal(f48?.check,'evidence-missing');assert.equal(f48?.expectedDisposition,'evidence-gap');
+  assert.match(f48?.gap?.needed??'',/Compiler\/OS\/version-pinned real arm64e fixtures/);
 });
