@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { parseDex } from '../../../js/managed/dex/parser.js';
+import { applyDexIntegrity } from '../fixtures/dex-integrity.mjs';
 
 console.log('[phase11] running DEX MUTF-8 regression #3726...');
 
@@ -38,7 +39,7 @@ function buildStringDex(data) {
     view.setUint32(pos + 8, offset, true);
   }
   bytes.set(data, stringDataOff);
-  return bytes;
+  return applyDexIntegrity(bytes);
 }
 
 function rejects(data) {
