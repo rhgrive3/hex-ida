@@ -133,6 +133,8 @@ async function loadRuntime() {
     let sourceCopies = 0;
     await runtimeStage('protected runtime start', () => runtimeModule.startProtectedRuntime({
       hostLocation: RUNTIME_HOST_LOCATION,
+      privilegedManifest: bootstrap.manifest.privileged,
+      userscriptManager: captureUserscriptManager(),
       apiOrigin: HEX_ORIGIN,
       loaderVersion: LOADER_VERSION,
       buildId: EXPECTED_BUILD,
@@ -243,3 +245,15 @@ function toHex(bytes) { return Array.from(bytes, (value) => value.toString(16).p
 function utf8(value) { return new TextEncoder().encode(String(value)); }
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function normalizeCommit(value) { const text = String(value || '').trim().toLowerCase(); return /^[0-9a-f]{40}$/.test(text) ? text : null; }
+
+// Grant functions remain in the parent realm; this object is never serialized to the sandbox.
+function captureUserscriptManager() {
+  const manager = typeof GM === 'object' ? GM : null;
+  if (!manager) return null;
+  const captured = {};
+  for (const name of ['getValue', 'setValue', 'deleteValue', 'xmlHttpRequest']) {
+    if (typeof manager[name] !== 'function') return null;
+    captured[name] = manager[name].bind(manager);
+  }
+  return Object.freeze(captured);
+}

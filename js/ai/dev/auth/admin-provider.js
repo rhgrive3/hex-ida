@@ -12,6 +12,7 @@ export class AllowAllAdminProvider extends AdminAuthProvider {
       authenticated: true,
       admin: true,
       provider: 'allow-all-admin',
+      capabilities: Object.freeze({ canUseDevAgent: true, canUseDevYolo: true }),
     });
   }
 }
@@ -35,9 +36,17 @@ export function readAdminIdentity(provider) {
   }
   const identity = provider.getIdentity();
   if (!identity || typeof identity !== 'object') throw new TypeError('AdminAuthProvider returned an invalid identity.');
+  const authenticated = identity.authenticated === true;
+  const admin = authenticated && identity.admin === true;
+  const explicit = identity.capabilities && typeof identity.capabilities === 'object' ? identity.capabilities : null;
+  const capabilities = Object.freeze({
+    canUseDevAgent: authenticated && (explicit ? explicit.canUseDevAgent === true : admin),
+    canUseDevYolo: authenticated && (explicit ? explicit.canUseDevYolo === true : admin),
+  });
   return Object.freeze({
-    authenticated: identity.authenticated === true,
-    admin: identity.admin === true,
+    authenticated,
+    admin,
     provider: String(identity.provider || 'unknown'),
+    capabilities,
   });
 }

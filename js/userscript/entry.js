@@ -7,9 +7,8 @@ import { LEGACY_MODE, SANDBOX_MODE, readTrustedEmbedMode } from './embed-mode.js
 import { DEV_BOOTSTRAP_PARAM, setEmbedProvider, shouldEnableDevBootstrap } from './embed-bootstrap.js';
 import { installProtectedWorkers } from './protected-workers.js';
 import { installUserscriptNetworkBridge } from './network.js';
-import { startParentDevWorkerRuntime } from './dev/parent-worker-runtime.js';
-import { createDevWorkerParentRpc } from './dev/parent-rpc.js';
-import { installDevBootstrapHost } from './dev/bootstrap-host.js';
+import { startParentAuth, startChildAuth } from '../auth/runtime.js';
+import { createAuthRpcServer } from '../auth/rpc.js';
 
 const PROVIDER_KEY = 'hex.ai.provider';
 const SESSION_CLEANUP_KEY = '__HEX_CHATGPT_EMBED_CLEANUP__';
@@ -22,38 +21,40 @@ export async function startChatGPTUserscript(options = {}) {
 
   cleanupPreviousSession();
 
-  const devWorkerRuntime = await startParentDevWorkerRuntime({
+  const parentAuth = await startParentAuth({
+    apiOrigin, privilegedManifest: options.privilegedManifest, manager: options.userscriptManager,
     runtimeIdentity: {
       commit: options.sourceCommit,
       buildId: options.buildId,
       userscriptVersion: options.loaderVersion,
     },
-    ...(options.devWorkerOptions || {}),
+    devWorkerOptions: options.devWorkerOptions,
   });
 
   const bridge = installChatGPTWebBridge();
   globalThis.__HEX_AI_PROVIDER__ = readProvider();
 
   if (readEmbedMode() === LEGACY_MODE) {
-    globalThis.__HEX_DEV_WORKER_CLIENT__ = devWorkerRuntime;
-    const result = await startLegacy({ bridge, devWorkerRuntime });
-    return Object.freeze({ mode: LEGACY_MODE, ...result, devWorkerRuntime });
+    try {
+      const result = await startLegacy({ bridge, parentAuth, apiOrigin });
+      return Object.freeze({ mode: LEGACY_MODE, ...result });
+    } catch (error) { parentAuth.close(); throw error; }
   }
 
   try {
     const result = await startSandbox({
       apiOrigin,
       bridge,
-      devWorkerRuntime,
+      parentAuth,
       runtimeSourceProvider: options.runtimeSourceProvider,
       loaderVersion: options.loaderVersion,
       buildId: options.buildId,
       sourceCommit: options.sourceCommit,
       runtimeContentHash: options.runtimeContentHash,
     });
-    return Object.freeze({ mode: SANDBOX_MODE, ...result, devWorkerRuntime });
+    return Object.freeze({ mode: SANDBOX_MODE, ...result });
   } catch (error) {
-    devWorkerRuntime.close();
+    parentAuth.close();
     throw error;
   }
 }
@@ -91,11 +92,9 @@ async function startSandbox(options) {
         bridge: options.bridge,
         onUiClose: () => host.hide(),
       });
-      const devRpc = createDevWorkerParentRpc({ port, runtime: options.devWorkerRuntime });
-      return () => {
-        devRpc.close();
-        parentRpc.close();
-      };
+      const authRpc = createAuthRpcServer({ port, auth: options.parentAuth.auth, showLogin: options.parentAuth.login });
+      const devRpc = options.parentAuth.extension?.attach(port);
+      return () => { devRpc?.close(); authRpc.close(); parentRpc.close(); };
     },
     onReady(info) {
       if (settled) return;
@@ -112,7 +111,7 @@ async function startSandbox(options) {
   });
 
   const bootstrapHost = bootstrapEnabled
-    ? installDevBootstrapHost({ host, runtimeIdentity: { commit: sourceCommit, buildId } })
+    ? options.parentAuth.extension?.bootstrap(host, { commit: sourceCommit, buildId })
     : null;
 
   // The protected Hex panel already owns its own visibility controls. The
@@ -123,14 +122,15 @@ async function startSandbox(options) {
   installSessionCleanup(() => {
     bootstrapHost?.close();
     host.destroy();
-    options.devWorkerRuntime.close();
+    options.parentAuth.close();
   });
-  const info = await ready;
+  let info;
+  try { info = await ready; } catch (error) { bootstrapHost?.close(); host.destroy(); options.parentAuth.close(); throw error; }
   host.show();
   return Object.freeze({ host, bridge: options.bridge, info, bootstrapHost });
 }
 
-async function startLegacy({ bridge, devWorkerRuntime }) {
+async function startLegacy({ bridge, parentAuth, apiOrigin }) {
   const host = ensureLegacyHost();
   setUiRoot(host);
   host.lang = navigator.language || 'ja';
@@ -138,11 +138,15 @@ async function startLegacy({ bridge, devWorkerRuntime }) {
   installUserscriptNetworkBridge();
   installProtectedWorkers();
   const launcher = installLegacyLauncher(host);
+  const authContext = await startChildAuth({
+    apiOrigin, suppliedAuth: parentAuth.auth, showLogin: parentAuth.login,
+    workerClient: parentAuth.extension?.runtime,
+  });
   installSessionCleanup(() => {
     try { host.remove(); } catch {}
     try { launcher.remove(); } catch {}
     try { document.getElementById('hex-userscript-style')?.remove(); } catch {}
-    devWorkerRuntime.close();
+    authContext.close(); parentAuth.close();
   });
   try {
     setLegacyLauncherState(launcher, 'Preparing Hex…', true);

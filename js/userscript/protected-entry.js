@@ -3,6 +3,7 @@ import { setUiRoot } from '../ui-root.js';
 import { installProtectedWorkers } from './protected-workers.js';
 import { runtimeHostSnapshotFromGlobals, runtimeLocationFromSnapshot } from './runtime-host-location.js';
 import { installOpaqueSandboxStorage } from './sandbox-storage.js';
+import { startChildAuth } from '../auth/runtime.js';
 import {
   PROTECTED_RUNTIME_CONTEXT,
   classifyProtectedRuntime,
@@ -23,6 +24,8 @@ export async function startProtectedRuntime(options = {}) {
     if (typeof entry?.startChatGPTUserscript !== 'function') throw new Error('ChatGPT userscript entry point is unavailable.');
     return entry.startChatGPTUserscript({
       apiOrigin,
+      privilegedManifest: options.privilegedManifest,
+      userscriptManager: options.userscriptManager,
       runtimeLocation,
       runtimeSourceProvider: options.runtimeSourceProvider,
       loaderVersion: String(options.loaderVersion || globalThis.__HEX_SECURE_LOADER__?.version || ''),
@@ -41,9 +44,10 @@ export async function startProtectedRuntime(options = {}) {
   host.lang = navigator.language || 'ja';
   installStyle(PROTECTED_HOST.css);
   installProtectedWorkers();
+  const auth = await startChildAuth({ apiOrigin, privilegedManifest: options.privilegedManifest });
   await import('../app.js');
   await import('../ux.js');
-  return Object.freeze({ context, runtimeLocation, apiOrigin });
+  return Object.freeze({ context, runtimeLocation, apiOrigin, close: () => auth.close() });
 }
 
 const sandboxAutoStart = readSandboxAutoStart();

@@ -13,7 +13,7 @@ export class DevAgentUiSettings {
     this.key = key;
     this.listeners = new Set();
     const saved = this.load();
-    let profile = saved.agentProfile || AGENT_PROFILE.STANDARD;
+    let profile = safeProfile(saved.agentProfile);
     const lostDevPrivilege = profile === AGENT_PROFILE.DEV && !canSelectAgentProfile(this.identity, profile);
     if (!canSelectAgentProfile(this.identity, profile)) profile = AGENT_PROFILE.STANDARD;
     this.agentProfile = profile;
@@ -21,28 +21,31 @@ export class DevAgentUiSettings {
     // dev/yolo preference that can no longer be honoured (privilege lost / no trusted admin
     // identity) is downgraded to Standard + the normal policy rather than silently retaining
     // YOLO semantics.
-    this.decisionPolicy = lostDevPrivilege ? DEV_DECISION_POLICY.NORMAL : safePolicy(saved.decisionPolicy);
+    this.decisionPolicy = lostDevPrivilege || !this.identity.capabilities.canUseDevYolo ? DEV_DECISION_POLICY.NORMAL : safePolicy(saved.decisionPolicy);
     this.analysisScope = safeScope(saved.analysisScope);
     this.lastRun = null;
+    this.unsubscribeAuth = authProvider.subscribe?.(() => this.refreshIdentity());
   }
 
   refreshIdentity({ notify = true } = {}) {
     const next = readAdminIdentity(this.authProvider);
-    const canUseDev = canSelectAgentProfile(next, AGENT_PROFILE.DEV);
+    const canUseDev = next.capabilities.canUseDevAgent && canSelectAgentProfile(next, AGENT_PROFILE.DEV);
     const wasDev = this.agentProfile === AGENT_PROFILE.DEV;
     const wasYolo = this.decisionPolicy === DEV_DECISION_POLICY.YOLO;
     const identityChanged = this.identity !== next;
-    const downgraded = !canUseDev && (wasDev || wasYolo);
+    const lostYoloPrivilege = !next.capabilities.canUseDevYolo && wasYolo;
+    const downgraded = (!canUseDev && wasDev) || lostYoloPrivilege;
     this.identity = next;
     if (downgraded) {
       this.agentProfile = AGENT_PROFILE.STANDARD;
       this.decisionPolicy = DEV_DECISION_POLICY.NORMAL;
       this.persist();
-      if (notify) this.emit();
     }
+    if (notify && (identityChanged || downgraded)) this.emit();
     return identityChanged || downgraded;
   }
 
+  destroy() { this.unsubscribeAuth?.(); this.listeners.clear(); }
   profiles() {
     this.refreshIdentity();
     return availableAgentProfiles(this.identity);
@@ -58,7 +61,7 @@ export class DevAgentUiSettings {
   setDecisionPolicy(policy) {
     this.refreshIdentity();
     const next = assertDevDecisionPolicy(policy);
-    if (next === DEV_DECISION_POLICY.YOLO && !canSelectAgentProfile(this.identity, AGENT_PROFILE.DEV)) {
+    if (next === DEV_DECISION_POLICY.YOLO && (!this.identity.capabilities.canUseDevYolo || !canSelectAgentProfile(this.identity, AGENT_PROFILE.DEV))) {
       throw new Error('Admin privileges are required for the YOLO policy.');
     }
     if (this.decisionPolicy === next) return false;
@@ -107,6 +110,7 @@ export class DevAgentUiSettings {
   }
 }
 
+function safeProfile(value) { try { return assertAgentProfile(value || AGENT_PROFILE.STANDARD); } catch { return AGENT_PROFILE.STANDARD; } }
 function safePolicy(value) { try { return assertDevDecisionPolicy(value || DEV_DECISION_POLICY.NORMAL); } catch { return DEV_DECISION_POLICY.NORMAL; } }
 function safeScope(value) { try { return value?.initial ? createDevAnalysisScopeRequest(value.initial) : createDevAnalysisScopeRequest(); } catch { return createDevAnalysisScopeRequest(); } }
 function defaultStorage() { try { return typeof localStorage === 'undefined' ? null : localStorage; } catch { return null; } }

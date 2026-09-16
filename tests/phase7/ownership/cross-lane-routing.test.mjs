@@ -839,6 +839,171 @@ for (const file of ['.circleci/config.yml', '.github/workflows/phase7-ownership.
   assert.match(workflow, /tools\/validation\/phase7\/cross-lane-inventory\.mjs/);
 }
 
+// PR #8671: static source-union fixture catches a missing route member.
+const benchmarkAuthBranch = "integration-candidate/benchmark-auth-20260914";
+const benchmarkAuthInventory = [
+  ".circleci/config.yml",
+  ".github/workflows/phase7-ownership.yml",
+  ".gitignore",
+  "benchmarks/public/README.md",
+  "docs/DISCORD_AUTH_IMPLEMENTATION_VERIFICATION.md",
+  "docs/DISCORD_AUTH_LOCAL_SETUP.md",
+  "docs/PUBLIC_COMPETITOR_BENCHMARK.md",
+  "docs/chatgpt-userscript.md",
+  "js/ai/dev/auth/admin-provider.js",
+  "js/ai/dev/policy/agent-profile.js",
+  "js/ai/dev/ui/engine-router.js",
+  "js/ai/dev/ui/settings.js",
+  "js/ai/ui/assistant.js",
+  "js/analysis/query/app-adapter.js",
+  "js/auth/admin-app.js",
+  "js/auth/assistant-host.js",
+  "js/auth/capabilities.js",
+  "js/auth/client.js",
+  "js/auth/extension-loader.js",
+  "js/auth/privileged/child-entry.js",
+  "js/auth/privileged/parent-entry.js",
+  "js/auth/rpc.js",
+  "js/auth/runtime-context.js",
+  "js/auth/runtime.js",
+  "js/auth/server/admin-site.js",
+  "js/auth/server/oauth.js",
+  "js/auth/server/primitives.js",
+  "js/auth/server/repository.js",
+  "js/auth/server/router.js",
+  "js/auth/transport.js",
+  "js/auth/userscript-login.js",
+  "js/userscript/dev/bootstrap-host.js",
+  "js/userscript/dev/parent-rpc.js",
+  "js/userscript/embed-child.js",
+  "js/userscript/entry.js",
+  "js/userscript/loader.js",
+  "js/userscript/protected-entry.js",
+  "migrations/auth/0001_auth.sql",
+  "package.json",
+  "scripts/auth-build-policy.mjs",
+  "scripts/build-userscript.mjs",
+  "scripts/deploy-production.mjs",
+  "scripts/userscript-publication.mjs",
+  "scripts/validate-auth-config.mjs",
+  "tests/ai-ui-dev-profile.mjs",
+  "tests/auth/browser-dom.mjs",
+  "tests/auth/browser.mjs",
+  "tests/auth/build-acceptance.mjs",
+  "tests/auth/build-policy.test.mjs",
+  "tests/auth/client.test.mjs",
+  "tests/auth/deploy-production.test.mjs",
+  "tests/auth/server.test.mjs",
+  "tests/auth/sqlite-d1.mjs",
+  "tests/auth/worker-entry-harness.mjs",
+  "tests/auth/worker-entry-routing.test.mjs",
+  "tests/dev-agent/issue-5154-human-blocking-true-only.mjs",
+  "tests/dev-agent/issue-5162-human-resume-per-conversation.mjs",
+  "tests/dev-agent/round1-foundation.mjs",
+  "tests/dev-agent/round2-single-tab-supervisor.mjs",
+  "tests/dev-agent/round4-bootstrap-gate.mjs",
+  "tests/dev-agent/supervisor-conversation-continuity.mjs",
+  "tests/dev-agent/supervisor-progress-budget.mjs",
+  "tests/dev-agent/supervisor-prompt-modes.mjs",
+  "tests/issue-4614-progress-budget-repeated-observation.mjs",
+  "tests/issue-4617-engine-router-descriptor-invariant.mjs",
+  "tests/issue-6200-dev-supervisor-wait-events.mjs",
+  "tests/issue-6210-progress-budget-concurrent-runs.mjs",
+  "tests/phase12/adversarial/issue-4599-dev-supervisor-wait-events.test.mjs",
+  "tests/phase7/analysis-query/analysis-query-decompiler-projection.test.mjs",
+  "tests/phase7/ownership/cross-lane-routing.test.mjs",
+  "tests/phase9/integration/dev-supervisor-progress-window-6210.test.mjs",
+  "tests/public-benchmark/ida-parser.test.mjs",
+  "tests/public-benchmark/manifest.test.mjs",
+  "tests/public-benchmark/normalization.test.mjs",
+  "tests/public-benchmark/path-containment.test.mjs",
+  "tests/public-benchmark/prepare.test.mjs",
+  "tests/public-benchmark/product-cli.test.mjs",
+  "tests/public-benchmark/product-path.test.mjs",
+  "tests/public-benchmark/runner-hardening.test.mjs",
+  "tests/public-benchmark/smoke.test.mjs",
+  "tests/userscript-embed-child.mjs",
+  "tests/userscript-host.mjs",
+  "tests/userscript-publication.mjs",
+  "tools/validation/phase7/cross-lane-inventory.mjs",
+  "tools/validation/public-benchmark/compare.mjs",
+  "tools/validation/public-benchmark/ida-parser.mjs",
+  "tools/validation/public-benchmark/manifest.mjs",
+  "tools/validation/public-benchmark/metrics.mjs",
+  "tools/validation/public-benchmark/node-worker-entry.mjs",
+  "tools/validation/public-benchmark/node-worker.mjs",
+  "tools/validation/public-benchmark/normalize.mjs",
+  "tools/validation/public-benchmark/outcome.mjs",
+  "tools/validation/public-benchmark/prepare.mjs",
+  "tools/validation/public-benchmark/product-host.mjs",
+  "tools/validation/public-benchmark/report.mjs",
+  "tools/validation/public-benchmark/run-case.mjs",
+  "tools/validation/public-benchmark/run.mjs",
+  "tools/validation/public-benchmark/subject.mjs",
+  "userscript/hex.user.template.js",
+  "userscript/release-version.json",
+  "worker-entry.js",
+  "wrangler.jsonc"
+];
+const benchmarkAuthOwned = [
+  ".github/workflows/phase7-ownership.yml",
+  "js/analysis/query/app-adapter.js",
+  "package.json",
+  "tests/phase7/analysis-query/analysis-query-decompiler-projection.test.mjs",
+  "tests/phase7/ownership/cross-lane-routing.test.mjs",
+  "tools/validation/phase7/cross-lane-inventory.mjs",
+  "userscript/hex.user.template.js",
+  "userscript/release-version.json"
+];
+
+assert.deepEqual(
+  validateCrossLaneInventory(benchmarkAuthBranch, benchmarkAuthInventory),
+  benchmarkAuthOwned,
+  'the complete reviewed ZIP union must retain its exact Phase 7 owner slice',
+);
+assert.deepEqual(
+  [...CROSS_LANE_ROUTES[benchmarkAuthBranch]].sort(),
+  benchmarkAuthInventory.filter(file => !benchmarkAuthOwned.includes(file)),
+  'the route may not lose a required foreign member or gain an undeclared one',
+);
+for (const file of CROSS_LANE_ROUTES[benchmarkAuthBranch]) {
+  assert.throws(
+    () => validateCrossLaneInventory(benchmarkAuthBranch, [...benchmarkAuthInventory, file + '.undeclared']),
+    /unexpected foreign paths/,
+    'an undeclared sibling must not inherit integration ownership: ' + file,
+  );
+}
+assert.throws(
+  () => validateCrossLaneInventory(benchmarkAuthBranch + '-similar', benchmarkAuthInventory),
+  /no exact Phase 7 cross-lane route/,
+);
+assert.throws(
+  () => validateCrossLaneInventory(benchmarkAuthBranch, CROSS_LANE_ROUTES[benchmarkAuthBranch]),
+  /no Phase 7-owned paths/,
+);
+for (const [file, start, end, ref] of [
+  ['.circleci/config.yml', '              ' + benchmarkAuthBranch + ')', '                ;;', '$CIRCLE_BRANCH'],
+  ['.github/workflows/phase7-ownership.yml', '          elif [[ "$HEAD_REF" == "' + benchmarkAuthBranch + '" ]]; then', '          elif [[', '$HEAD_REF'],
+]) {
+  const workflow = readFileSync(file, 'utf8');
+  let validationWorkflow = workflow;
+  if (file === '.circleci/config.yml') {
+    const phase7Job = routeBlock(workflow, '\n  phase7-ownership:', '\n  phase8-ownership:');
+    const prepareIndex = phase7Job.indexOf('name: Prepare exact ownership inventory');
+    const validateIndex = phase7Job.indexOf('name: Validate Phase 7 ownership');
+    assert.ok(prepareIndex >= 0 && validateIndex > prepareIndex, 'exact SHAs must be prepared before ownership validation');
+    assert.ok(!phase7Job.slice(0, prepareIndex).includes('$OWNERSHIP_BASE_SHA'), 'impact detection must not consume the unprepared base SHA');
+    assert.ok(!phase7Job.slice(0, prepareIndex).includes('$OWNERSHIP_HEAD_SHA'), 'impact detection must not consume the unprepared head SHA');
+    validationWorkflow = phase7Job.slice(validateIndex);
+  }
+  const route = routeBlock(validationWorkflow, start, end);
+  const inventoryIndex = route.indexOf('node tools/validation/phase7/cross-lane-inventory.mjs');
+  const validatorIndex = route.indexOf('node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"');
+  assert.ok(inventoryIndex >= 0 && validatorIndex > inventoryIndex, file + ': full inventory must be validated before projection');
+  assert.ok(route.includes('--branch "' + ref + '"'));
+  assert.ok(route.includes('--base-sha "') && route.includes('--head-sha "'));
+}
+
 
 const batch8936Branch = 'fix/batch-10-issues-20260915';
 const batch8936OwnedFiles = [

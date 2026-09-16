@@ -291,6 +291,38 @@ function cloneableLegacyModel(model) {
   return data;
 }
 
+// The decompiler keeps a closure on semantic IR for in-process def-use lookups.
+// Query snapshots publish the serializable IR, while the live callback remains
+// owned by the producer. Other unclonable query data still fails closed.
+function cloneableDecompilerProjection(value) {
+  if (!value || typeof value !== 'object') return value;
+  let changed = false;
+  const projection = { ...value };
+  if (value.ir && typeof value.ir === 'object' && typeof value.ir.defUse === 'function') {
+    const ir = { ...value.ir };
+    delete ir.defUse;
+    projection.ir = ir;
+    changed = true;
+  }
+  if (value.ctx && typeof value.ctx === 'object') {
+    const ctx = { ...value.ctx };
+    let ctxChanged = false;
+    if (value.ctx.values && typeof value.ctx.values === 'object') {
+      const values = { ...value.ctx.values };
+      let valuesChanged = false;
+      for (const key of ['at', 'defAt']) {
+        if (typeof values[key] === 'function') { delete values[key]; valuesChanged = true; }
+      }
+      if (valuesChanged) { ctx.values = values; ctxChanged = true; }
+    }
+    for (const key of ['rowOfAddress', 'addrOfRow', 'symbolFor', 'rawSymbolFor', 'fieldFor']) {
+      if (typeof ctx[key] === 'function') { delete ctx[key]; ctxChanged = true; }
+    }
+    if (ctxChanged) { projection.ctx = ctx; changed = true; }
+  }
+  return changed ? projection : value;
+}
+
 function legacyPresentationModel(model) {
   if (!model || typeof model !== 'object' || typeof model.blockOfRow === 'function') return model;
   if (!Array.isArray(model.semantic)) return model;
@@ -868,13 +900,19 @@ export function createAppAnalysisQueryAdapter(app) {
     async decompile(_snapshot, id, options = {}) {
       if (typeof app?.getDecompile === 'function') {
         const value = await app.getDecompile(id, options);
-        if (value != null) return wrap(value);
+        if (value != null) return wrap(cloneableDecompilerProjection(value));
       }
       const result = await loadFunction(id, options);
-      if (result?.value?.decompiler) return wrap(result.value.decompiler, result.status?.completeness);
+      if (result?.value?.decompiler) {
+        return wrap(cloneableDecompilerProjection(result.value.decompiler), result.status?.completeness);
+      }
       if (!result?.value?.model) return unsupported(id, 'decompiler-projection-unavailable');
       const address = addressOf(id) ?? result.value.startAddr ?? result.value.startAddress;
-      return wrap(decompile(result.value.model, { name:address == null ? null : app?.symbols?.nameAt?.(address), addr:address }), result.status?.completeness);
+      const projection = decompile(result.value.model, {
+        name:address == null ? null : app?.symbols?.nameAt?.(address),
+        addr:address,
+      });
+      return wrap(cloneableDecompilerProjection(projection), result.status?.completeness);
     },
 
     async search(_snapshot, query, page = {}, options = {}) {

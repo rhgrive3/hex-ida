@@ -1,11 +1,13 @@
 import { build, transform } from 'esbuild';
+import { privilegedIdentity, releaseIdentityFor, assertStandardGraph, assertPrivilegedGraph } from './auth-build-policy.mjs';
 import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
-import { access, readFile, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, readFile, mkdir, rm } from 'node:fs/promises';
 import { dirname, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveUserscriptReleaseVersion } from './userscript-release-version.mjs';
 import { parseImportScriptsArguments } from './userscript-classic-imports.mjs';
+import { writeFileVerified as writeFile, publishUserscriptFiles } from './userscript-publication.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = resolve(root, 'dist');
@@ -18,6 +20,8 @@ const MAX_LOADER_BYTES = 64 * 1024;
 const CLASSIC_ENTRIES = ['js/worker.js', 'js/platform/capstone-probe-worker.js', 'js/platform/capstone-disasm-worker.js'];
 const OPTIONAL_BUNDLED_CLASSIC_ENTRIES = ['js/targets/architecture/x86_64/semantic-revalidation-worker.js'];
 const MODULE_WORKER_ENTRIES = ['js/platform/worker.js', 'js/symbolic/solver/worker-entry.js'];
+const previousReleaseBytes = await readFile(releaseStatePath);
+const previousTemplateBytes = await readFile(committedTemplate);
 
 await Promise.all([rm(dist, { recursive: true, force: true }), rm(generated, { recursive: true, force: true })]);
 await Promise.all([mkdir(resolve(dist, 'assets'), { recursive: true }), mkdir(resolve(dist, '.runtime'), { recursive: true }), mkdir(resolve(dist, 'userscript'), { recursive: true }), mkdir(generated, { recursive: true })]);
@@ -28,18 +32,33 @@ const body = extractBody(htmlSource);
 const scopedCss = scopeCss(css);
 await writeGeneratedModule('embedded-assets.js', `export const PROTECTED_HOST=${JSON.stringify({ html: body, css, scopedCss })};\nexport const PROTECTED_WORKER_ASSETS=${JSON.stringify(workerAssets)};\n`);
 
-const runtime = await bundle('js/userscript/protected-entry.js', { format: 'esm', rewriteImportMeta: true });
-const loaderBundle = await bundle('js/userscript/loader.js', { format: 'iife' });
+const runtime = await bundle('js/userscript/protected-entry.js', { format: 'esm', rewriteImportMeta: true, inventory: 'standard-runtime', graph: 'standard' });
+// Also prove the real parent entry's transitive input graph separately.
+await bundle('js/userscript/entry.js', { format: 'esm', rewriteImportMeta: true, inventory: 'standard-parent', graph: 'standard' });
+const parent = await bundle('js/auth/privileged/parent-entry.js', { format: 'esm', rewriteImportMeta: true, inventory: 'privileged-parent', graph: 'parent' });
+const child = await bundle('js/auth/privileged/child-entry.js', { format: 'iife', globalName: 'HexPrivilegedChild', rewriteImportMeta: true, inventory: 'privileged-child', graph: 'child' });
+const admin = await bundle('js/auth/admin-app.js', { format: 'iife', inventory: 'admin-app' });
+const loaderBundle = await bundle('js/userscript/loader.js', { format: 'iife', inventory: 'standard-loader', graph: 'standard' });
 const contentHash = sha256(runtime), buildId = contentHash.slice(0, 24);
-const releaseIdentity = sha256(Buffer.concat([
-  Buffer.from(contentHash, 'utf8'),
-  Buffer.from(sha256(loaderBundle), 'utf8'),
+const privileged = privilegedIdentity(buildId, parent, child, admin);
+await writeGeneratedModule('privileged-assets.js', `export const PRIVILEGED_BUILD=Object.freeze(${JSON.stringify({ ...privileged, parentSource: parent.toString('utf8'), childSource: child.toString('utf8'), adminSource: admin.toString('utf8') })});\n`);
+const releaseInputs = [
+  runtime, loaderBundle, parent, child, admin,
+  await readFile(new URL('./auth-build-policy.mjs', import.meta.url)),
   await readFile(fileURLToPath(import.meta.url)),
-]));
-const previousRelease = JSON.parse(await readFile(releaseStatePath, 'utf8'));
+  await readFile(new URL('./userscript-publication.mjs', import.meta.url)),
+];
+const releaseIdentity = releaseIdentityFor(releaseInputs);
+// Private build evidence binds actual emitted source bytes to the committed
+// release identity; it contains no runtime encryption key or session secret.
+await writeFile(resolve(generated, 'loader-input.js'), loaderBundle);
+await writeFile(resolve(generated, 'release-inputs.json'), JSON.stringify({
+  names: ['runtime', 'loader', 'parent', 'child', 'admin', 'policy', 'builder', 'publication'],
+  digests: releaseInputs.map(sha256), releaseIdentity,
+}, null, 2));
+const previousRelease = JSON.parse(previousReleaseBytes.toString('utf8'));
 const release = resolveUserscriptReleaseVersion(previousRelease, { releaseIdentity, buildId });
 const LOADER_VERSION = release.version;
-if (release.changed) await writeFile(releaseStatePath, JSON.stringify(release.state, null, 2) + '\n');
 const compressed = gzipSync(runtime, { level: 9 });
 const contentKey = randomBytes(32), iv = randomBytes(12);
 const runtimeVersion = `2.${LOADER_VERSION}`;
@@ -57,7 +76,7 @@ const releaseManifest = Object.freeze({
   byteLength: ciphertext.length,
 });
 const releaseManifestHash = sha256(Buffer.from(JSON.stringify(releaseManifest), 'utf8'));
-const manifest = Object.freeze({ buildId, runtimeVersion, ciphertextHash: sha256(ciphertext), contentHash, iv: b64(iv), aad, compression: 'gzip', assetPath, byteLength: ciphertext.length });
+const manifest = Object.freeze({ buildId, privileged, runtimeVersion, ciphertextHash: sha256(ciphertext), contentHash, iv: b64(iv), aad, compression: 'gzip', assetPath, byteLength: ciphertext.length });
 await writeFile(resolve(dist, assetPath.slice(1)), ciphertext);
 await writeGeneratedModule('runtime-secrets.js', `export const RUNTIME_BUILD=Object.freeze(${JSON.stringify({ manifest, contentKey: b64(contentKey), signingKey: b64(randomBytes(32)) })});\n`);
 
@@ -78,11 +97,15 @@ await writeFile(resolve(dist, 'assets', loaderName), publicLoader);
 const metadata = userscriptMetadata();
 const template = metadata + loaderForOrigin(ORIGIN_TOKEN);
 if (Buffer.byteLength(template) > MAX_LOADER_BYTES) throw new Error(`hex.user.js template exceeds ${MAX_LOADER_BYTES} bytes.`);
-await Promise.all([writeFile(resolve(dist, 'userscript/hex.user.template.js'), template), writeFile(committedTemplate, template)]);
+await writeFile(resolve(dist, 'userscript/hex.user.template.js'), template);
 
 const index = standaloneIndex(htmlSource, `/assets/${loaderName}`);
 await writeFile(resolve(dist, 'index.html'), index);
 await writeFile(resolve(dist, 'runtime-manifest.json'), JSON.stringify(publicManifest(manifest), null, 2));
+await publishUserscriptFiles([
+  { path:committedTemplate, expected:previousTemplateBytes, content:template },
+  { path:releaseStatePath, expected:previousReleaseBytes, content:JSON.stringify(release.state, null, 2) + '\n' },
+]);
 
 console.log(`built tiny userscript loader ${LOADER_VERSION} (${Buffer.byteLength(template)} bytes)`);
 console.log(`userscript release identity ${releaseIdentity}${release.changed ? " (version advanced)" : ""}`);
@@ -96,8 +119,11 @@ async function bundleCss() {
   return output.text;
 }
 
-async function bundle(entry, { format = 'iife', rewriteImportMeta = false } = {}) {
-  const result = await build({ absWorkingDir: root, entryPoints: [entry], bundle: true, write: false, format, platform: 'browser', target: ['safari17.4'], charset: 'utf8', legalComments: 'none', minify: true, minifyIdentifiers: true, minifySyntax: true, minifyWhitespace: true, sourcemap: false, plugins: rewriteImportMeta ? [protectedImportMetaPlugin()] : [] });
+async function bundle(entry, { format = 'iife', rewriteImportMeta = false, globalName, inventory, graph } = {}) {
+  const result = await build({ absWorkingDir: root, entryPoints: [entry], bundle: true, write: false, metafile: true, globalName, format, platform: 'browser', target: ['safari17.4'], charset: 'utf8', legalComments: 'none', minify: true, minifyIdentifiers: true, minifySyntax: true, minifyWhitespace: true, sourcemap: false, plugins: rewriteImportMeta ? [protectedImportMetaPlugin()] : [] });
+  if (graph === 'standard') assertStandardGraph(result.metafile, entry);
+  else if (graph) assertPrivilegedGraph(result.metafile, graph);
+  if (inventory) await writeFile(resolve(generated, `${inventory}.metafile.json`), JSON.stringify(result.metafile, null, 2));
   const source = result.outputFiles?.[0]?.contents;
   if (!source) throw new Error(`esbuild produced no output for ${entry}`);
   return Buffer.from(source);
@@ -110,6 +136,7 @@ async function bundleInlinedClassic(entry, source) {
   source = source.replace(/\bvar MCapstone\s*=/, 'globalThis.MCapstone=');
   const result = await build({
     absWorkingDir: root,
+    metafile: true,
     stdin: {
       contents: source,
       resolveDir: resolve(root, posix.dirname(entry)),
@@ -133,6 +160,8 @@ async function bundleInlinedClassic(entry, source) {
     // dead branch is retained without making esbuild resolve a Node module.
     external: ['node:fs'],
   });
+  assertStandardGraph(result.metafile, `embedded classic ${entry}`);
+  await writeFile(resolve(generated, `embedded-worker-${entry.replace(/[^a-zA-Z0-9]+/g, '-')}.metafile.json`), JSON.stringify(result.metafile, null, 2));
   const output = result.outputFiles?.[0]?.contents;
   if (!output) throw new Error(`esbuild produced no protected classic worker for ${entry}`);
   return Buffer.from(output);
@@ -168,6 +197,12 @@ async function buildWorkerAssets() {
   const bundledClassicEntries = await existingOptionalEntries(OPTIONAL_BUNDLED_CLASSIC_ENTRIES);
   const sources = new Map();
   for (const entry of [...CLASSIC_ENTRIES, ...bundledClassicEntries]) await collectClassic(entry, sources);
+  // These sources become strings inside embedded-assets.js, so they are not
+  // transitive inputs in the final runtime metafile. Validate the real collected
+  // importScripts inventory before flattening, not merely its generated wrapper.
+  const classicInventory = { kind: 'classic-importScripts-source-inventory', inputs: Object.fromEntries([...sources.keys()].map((path) => [path, {}])) };
+  assertStandardGraph(classicInventory, 'embedded classic source inventory');
+  await writeFile(resolve(generated, 'classic-source-inventory.json'), JSON.stringify(classicInventory, null, 2));
   const classic = {};
   for (const entry of CLASSIC_ENTRIES) {
     const minified = await transform(inlineImports(entry, sources), { loader: 'js', target: 'safari17.4', minify: true, legalComments: 'none', sourcemap: false });
@@ -177,10 +212,10 @@ async function buildWorkerAssets() {
     classic[entry] = (await bundleInlinedClassic(entry, inlineImports(entry, sources))).toString('utf8');
   }
   const modules = {
-    [MODULE_WORKER_ENTRIES[0]]: (await bundle(MODULE_WORKER_ENTRIES[0], { format: 'iife' })).toString('utf8'),
+    [MODULE_WORKER_ENTRIES[0]]: (await bundle(MODULE_WORKER_ENTRIES[0], { format: 'iife', graph: 'standard', inventory: 'embedded-worker-platform' })).toString('utf8'),
   };
   for (const entry of MODULE_WORKER_ENTRIES.slice(1)) {
-    modules[entry] = (await bundle(entry, { format: 'esm' })).toString('utf8');
+    modules[entry] = (await bundle(entry, { format: 'esm', graph: 'standard', inventory: `embedded-worker-${entry.replace(/[^a-zA-Z0-9]+/g, '-')}` })).toString('utf8');
   }
   const wasm = await readFile(resolve(root, 'capstone.wasm'));
   return { classic, modules, wasm: wasm.toString('base64') };
@@ -217,7 +252,7 @@ function scopeCss(source) {
     .replace(/(^|[{},])\s*body(?=[\s.#:[,{>+~])/g, '$1:scope');
   return `@scope (#hex-userscript-host){${translated}}#hex-userscript-host{position:fixed;inset:0;width:100vw;height:100dvh;z-index:2147483646;overflow:hidden;background:var(--bg);isolation:isolate}`;
 }
-function userscriptMetadata() { return `// ==UserScript==\n// @name         Hex for ChatGPT\n// @namespace    https://github.com/rhgrive3/hex\n// @version      ${LOADER_VERSION}\n// @description  Securely load the Hex binary analysis workbench on ChatGPT Web.\n// @match        https://chatgpt.com/*\n// @run-at       document-start\n// @inject-into  content\n// @grant        GM.xmlHttpRequest\n// @connect      ida.rhgrive.workers.dev\n// @updateURL    ${ORIGIN_TOKEN}/hex.meta.js\n// @downloadURL  ${ORIGIN_TOKEN}/hex.user.js\n// ==/UserScript==\n\n`; }
+function userscriptMetadata() { return `// ==UserScript==\n// @name         Hex for ChatGPT\n// @namespace    https://github.com/rhgrive3/hex\n// @version      ${LOADER_VERSION}\n// @description  Securely load the Hex binary analysis workbench on ChatGPT Web.\n// @match        https://chatgpt.com/*\n// @run-at       document-start\n// @inject-into  content\n// @grant        GM.xmlHttpRequest\n// @grant        GM.getValue\n// @grant        GM.setValue\n// @grant        GM.deleteValue\n// @connect      ida.rhgrive.workers.dev\n// @updateURL    ${ORIGIN_TOKEN}/hex.meta.js\n// @downloadURL  ${ORIGIN_TOKEN}/hex.user.js\n// ==/UserScript==\n\n`; }
 function publicManifest(value) { const { assetPath: _private, ...safe } = value; return safe; }
 function sha256(value) { return createHash('sha256').update(value).digest('hex'); }
 function b64(value) { return Buffer.from(value).toString('base64url'); }
