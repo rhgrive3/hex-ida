@@ -1,0 +1,33 @@
+name: T015 apply local patches
+
+on:
+  push:
+    branches:
+      - recovery/t015-apple-knowledge-20260916
+    paths:
+      - .github/workflows/t015-apply-local-patches.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Apply validated Mach-O patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --check .github/t015-core.patch .github/t015-dyld.patch
+          git apply .github/t015-core.patch .github/t015-dyld.patch
+          node --check js/binary/macho-core.js
+          node --check js/binary/macho-dyld.js
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/binary/macho-core.js js/binary/macho-dyld.js
+          git commit -m 'recovery(t015): bind Apple knowledge to current Mach-O parser'
+          git push origin HEAD:recovery/t015-apple-knowledge-20260916
