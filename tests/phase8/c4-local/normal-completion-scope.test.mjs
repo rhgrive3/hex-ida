@@ -38,3 +38,25 @@ test('RET alignment discharge never redeems an added nonterminal fault on its pr
   const result=execute();assert.equal(result.status,'partial',`${op}/${layer}: RET may discharge only its own alignment condition`);assert.deepEqual(result.paths,[]);
  }
 });
+
+test('C4 every exceptional annotation revokes issued execution at each mutable IR layer',()=>{
+ const annotations={mayThrow:true,mayUnwind:true,unwindTarget:0xdeadn,unwindTargets:[0xdeadn],
+  unwindMetadata:{handler:'foreign'},unwindSummary:{kind:'cleanup'},cleanupOrder:['cleanup'],
+  exceptionTargets:[0xdeadn],exceptionalEdges:[{target:0xdeadn}],undefinedResult:{reason:'unmodeled'}};
+ for(const [key,value] of Object.entries(annotations))for(const layer of ['direct','extra','attributes']){
+  // Mutable plain IR is also a supported executor input. Producer-frozen
+  // attributes cannot substitute for monitoring this public input boundary.
+  const input={id:'input',bits:8,kind:'arg',index:0},out={id:'out',bits:8};
+  const inst={id:'move',op:'mov',dst:out,args:[{value:input}],extra:{attributes:{}}};out.def=inst;
+  const ret={id:'return',op:'ret',args:[{value:out}]};
+  const ir={entry:0,instructions:[inst,ret],blocks:[{index:0,insts:[inst,ret],succ:[]}]};
+  const execute=()=>symbolicExecute(ir,{captureValues:true,symbolicArgs:{0:7n},byteMemory:{identity,addressBits:8}});
+  const initial=execute();assert.equal(initial.status,'complete',`${key}/${layer}: ${initial.reason}`);
+  const target=layer==='direct'?inst:layer==='extra'?inst.extra:inst.extra.attributes;
+  target[key]=value;
+  assert.equal(isExecutionResult(initial,identity,ir),false,`${key}/${layer}: result must revoke`);
+  assert.equal(isExecutionSnapshot(initial.paths[0].snapshot,identity,ir),false,`${key}/${layer}: snapshot must revoke`);
+  const rerun=execute();assert.equal(rerun.status,'partial',`${key}/${layer}: new execution must refuse`);
+  assert.deepEqual(rerun.paths,[]);
+ }
+});

@@ -35,7 +35,7 @@ import { resolveABIPlugin } from './targets/abi/index.js';
 import { semanticAbiAdapter } from './analysis/semantic-function-base.js';
 import { observeProjectedOperationData, projectedStateTransitionCandidates, projectedConstantTransitionCandidate,
   projectedMemoryOperandTransitionCandidate } from './semantics/compat/semantic-ir-v2-to-v1.js';
-import { PROJECTION_LIMITS } from './core/identity/live-data.js';
+import { createProjectionIrObserver, PROJECTION_LIMITS } from './core/identity/live-data.js';
 
 const facadeConstantTransitions = new WeakMap();
 const expectedFacadeConstantTransitions = new WeakMap();
@@ -115,44 +115,264 @@ export function prepareCanonicalRegisterStateBindings(projected, identity) {
 }
 const canonicalComparisonCarrierBindings = new WeakMap();
 
+const COMPARISON_CARRIER_MISSING = Symbol('comparison-carrier-missing');
+
+function comparisonCarrierOwnData(value, key) {
+  if (value == null || typeof value !== 'object') return COMPARISON_CARRIER_MISSING;
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : COMPARISON_CARRIER_MISSING;
+}
+
+function comparisonCarrierConditionSignedness(condition) {
+  if (['lt', 'le', 'gt', 'ge'].includes(condition)) return true;
+  if (['lo', 'ls', 'hi', 'hs'].includes(condition)) return false;
+  return null;
+}
+
+function comparisonCarrierConsumerRecord(projected, instruction, argumentIndex, carriedValueId, valuesById) {
+  const op = comparisonCarrierOwnData(instruction, 'op');
+  const args = comparisonCarrierOwnData(instruction, 'args');
+  const extra = comparisonCarrierOwnData(instruction, 'extra');
+  const conditionValue = comparisonCarrierOwnData(instruction, 'conditionValue');
+  const conditionValueId = extra === COMPARISON_CARRIER_MISSING
+    ? COMPARISON_CARRIER_MISSING : comparisonCarrierOwnData(extra, 'conditionValueId');
+  const conditionCarrierValueId = extra === COMPARISON_CARRIER_MISSING
+    ? COMPARISON_CARRIER_MISSING : comparisonCarrierOwnData(extra, 'conditionCarrierValueId');
+  const conditionValueLegacyId = comparisonCarrierOwnData(conditionValue, 'id');
+  const compat = comparisonCarrierOwnData(projected, 'compat');
+  const semanticValueMap = compat === COMPARISON_CARRIER_MISSING ? COMPARISON_CARRIER_MISSING
+    : comparisonCarrierOwnData(compat, 'semanticValueToLegacyValueId');
+  const mappedConditionValueId = semanticValueMap === COMPARISON_CARRIER_MISSING
+    ? COMPARISON_CARRIER_MISSING : comparisonCarrierOwnData(semanticValueMap, conditionValueId);
+  const conditionIdentityMatches = Object.is(conditionValueLegacyId, conditionValueId)
+    || Object.is(mappedConditionValueId, conditionValueLegacyId);
+  const canonicalConditionValue = valuesById.get(conditionValueLegacyId);
+  if (!Array.isArray(args) || extra === COMPARISON_CARRIER_MISSING || !extra
+      || conditionValue === COMPARISON_CARRIER_MISSING || !conditionValue
+      || conditionValueId === COMPARISON_CARRIER_MISSING || conditionValueId == null
+      || canonicalConditionValue !== conditionValue || !conditionIdentityMatches
+      || !Object.is(conditionCarrierValueId, carriedValueId)) return null;
+  const isSelect = op === LEGACY_OP.SEL && argumentIndex === 2 && args.length === 3;
+  const isBranch = op === LEGACY_OP.CBR && argumentIndex === 0 && args.length === 1;
+  if (!isSelect && !isBranch) return null;
+  const condition = comparisonCarrierOwnData(instruction, 'cond');
+  return Object.freeze({
+    kind: 'display-consumer',
+    carriedValueId,
+    producerInstructionId: null,
+    sourceEntityId: null,
+    role: isSelect ? 'select-condition-carrier' : 'branch-condition-carrier',
+    argumentIndex,
+    conditionValueId,
+    condition: condition === COMPARISON_CARRIER_MISSING ? null : condition,
+    signedness: condition === COMPARISON_CARRIER_MISSING ? null : comparisonCarrierConditionSignedness(condition),
+  });
+}
+
+function comparisonCarrierIdentitySnapshot(identity) {
+  if (!identity || typeof identity !== 'object' || Array.isArray(identity)) return null;
+  const keys = Reflect.ownKeys(identity);
+  const entries = [];
+  for (const key of keys) {
+    if (typeof key !== 'string') return null;
+    const descriptor = Object.getOwnPropertyDescriptor(identity, key);
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) return null;
+    entries.push([key, descriptor.value]);
+  }
+  return Object.freeze(entries);
+}
+
+function comparisonCarrierIdentityCurrent(identity, snapshot) {
+  if (!identity || typeof identity !== 'object' || Array.isArray(identity)) return false;
+  try {
+    const keys = Reflect.ownKeys(identity);
+    if (keys.length !== snapshot.length || keys.some(key => typeof key !== 'string')) return false;
+    for (const [key, value] of snapshot) {
+      const descriptor = Object.getOwnPropertyDescriptor(identity, key);
+      if (!descriptor || !Object.hasOwn(descriptor, 'value') || !Object.is(descriptor.value, value)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function comparisonCarrierInstructions(projected) {
+  const direct = comparisonCarrierOwnData(projected, 'instructions');
+  if (Array.isArray(direct)) return { instructions: direct, instructionRoot: direct };
+  const blocks = comparisonCarrierOwnData(projected, 'blocks');
+  if (!Array.isArray(blocks)) return null;
+  const instructions = [];
+  for (const block of blocks) {
+    const insts = comparisonCarrierOwnData(block, 'insts');
+    if (!Array.isArray(insts)) return null;
+    instructions.push(...insts);
+  }
+  return { instructions, instructionRoot: blocks };
+}
+
+function comparisonCarrierProducer(projected, instruction, instructions, values, valuesById) {
+  const extra = comparisonCarrierOwnData(instruction, 'extra');
+  if (!extra || extra === COMPARISON_CARRIER_MISSING) return null;
+  if (comparisonCarrierOwnData(extra, 'semanticComparisonCarrier') !== true
+      || comparisonCarrierOwnData(extra, 'comparison') !== 'semantic-flag-result'
+      || comparisonCarrierOwnData(extra, 'completeness') !== 'complete') return null;
+  const sourceEntityId = comparisonCarrierOwnData(instruction, 'sourceEntityId');
+  const semanticNodeId = comparisonCarrierOwnData(instruction, 'semanticNodeId');
+  const instructionId = comparisonCarrierOwnData(instruction, 'id');
+  const carried = comparisonCarrierOwnData(instruction, 'dst');
+  if (typeof sourceEntityId !== 'string' || !sourceEntityId || semanticNodeId !== sourceEntityId
+      || !Number.isSafeInteger(instructionId) || instructionId < 0
+      || !carried || carried === COMPARISON_CARRIER_MISSING || typeof carried !== 'object'
+      || !values.has(carried)) return null;
+  const carriedValueId = comparisonCarrierOwnData(carried, 'id');
+  if (!Number.isSafeInteger(carriedValueId) || carriedValueId < 0 || valuesById.get(carriedValueId) !== carried
+      || comparisonCarrierOwnData(carried, 'bits') !== 1
+      || comparisonCarrierOwnData(carried, 'compatDerived') !== 'comparison-carrier'
+      || comparisonCarrierOwnData(carried, 'machineType') === COMPARISON_CARRIER_MISSING) return null;
+  const machineType = comparisonCarrierOwnData(carried, 'machineType');
+  if (!machineType || comparisonCarrierOwnData(machineType, 'kind') !== 'predicate'
+      || comparisonCarrierOwnData(machineType, 'widthBits') !== 1
+      || comparisonCarrierOwnData(carried, 'def') !== instruction
+      || comparisonCarrierOwnData(carried, 'sourceEntityId') !== sourceEntityId
+      || comparisonCarrierOwnData(carried, 'semanticValueId') != null
+      || comparisonCarrierOwnData(carried, 'semanticSsaValueId') != null) return null;
+  const compat = comparisonCarrierOwnData(projected, 'compat');
+  const derived = compat === COMPARISON_CARRIER_MISSING ? COMPARISON_CARRIER_MISSING
+    : comparisonCarrierOwnData(compat, 'derivedComparisonCarriers');
+  const derivedId = derived === COMPARISON_CARRIER_MISSING ? COMPARISON_CARRIER_MISSING
+    : comparisonCarrierOwnData(derived, sourceEntityId);
+  if (!derived || derived === COMPARISON_CARRIER_MISSING || !Object.is(derivedId, carriedValueId)) return null;
+  const semanticInstructionMap = compat === COMPARISON_CARRIER_MISSING ? COMPARISON_CARRIER_MISSING
+    : comparisonCarrierOwnData(compat, 'semanticNodeToLegacyInstructionIds');
+  const semanticInstructionIds = semanticInstructionMap === COMPARISON_CARRIER_MISSING
+    ? COMPARISON_CARRIER_MISSING : comparisonCarrierOwnData(semanticInstructionMap, sourceEntityId);
+  if (!Array.isArray(semanticInstructionIds) || !semanticInstructionIds.includes(instructionId)) return null;
+  const origins = compat === COMPARISON_CARRIER_MISSING ? COMPARISON_CARRIER_MISSING
+    : comparisonCarrierOwnData(compat, 'origins');
+  const originNodes = origins === COMPARISON_CARRIER_MISSING ? COMPARISON_CARRIER_MISSING
+    : comparisonCarrierOwnData(origins, 'nodes');
+  const origin = comparisonCarrierOwnData(instruction, 'origin');
+  if (!origin || origin === COMPARISON_CARRIER_MISSING || originNodes === COMPARISON_CARRIER_MISSING
+      || !originNodes || comparisonCarrierOwnData(originNodes, sourceEntityId) !== origin) return null;
+  const originInstructionIds = comparisonCarrierOwnData(origin, 'instructionIds');
+  if (!Array.isArray(originInstructionIds) || !originInstructionIds.length
+      || originInstructionIds.some(id => typeof id !== 'string' || !id)) return null;
+  for (const other of instructions) {
+    if (other === instruction) continue;
+    const otherDst = comparisonCarrierOwnData(other, 'dst');
+    if (otherDst === carried || otherDst !== COMPARISON_CARRIER_MISSING
+        && comparisonCarrierOwnData(otherDst, 'id') === carriedValueId) return null;
+  }
+  return { instruction, carried, carriedValueId, sourceEntityId, instructionId };
+}
+
 /** Display-only semantic comparison carriers. This is bundle membership only:
- * a carrier is admitted exactly while the projection's own evidence still holds
- * (it is a `semantic-flag-result` comparison) and it stays display-only — no
- * other instruction publishes its carried value as a destination and no other
- * instruction consumes it as an operand. No predicate, operand equality, or
- * flag fact is discharged here. A carrier that loses its display-only shape,
- * or an identity that cannot be re-checked, fails closed as unavailable so the
- * caller rejects it instead of publishing an unproved carrier. */
+ * a carrier is admitted exactly while the projection's producer-owned evidence
+ * still holds (it is a complete `semantic-flag-result` comparison), and it
+ * stays display-only — no other instruction publishes its carried value as a
+ * destination. A condition consumer may reference the exact carrier object
+ * through the canonical `SEL`/`CBR` display-carrier edge; that edge is exposed
+ * as a separate `display-consumer` binding and never discharges a predicate,
+ * operand equality, or flag fact. A carrier that loses its producer evidence,
+ * an identity that cannot be re-checked, or a source graph that changes fails
+ * closed as unavailable so callers reject an unproved carrier. */
 export function prepareCanonicalComparisonCarrierBindings(projected, identity) {
   // Unlike the register/return-fault helpers this binding is consumed without a
   // status check, so the unavailable shape must stay usable and fail closed.
   const unavailable = Object.freeze({ status:'unavailable', size:0, observationCount:0, workItems:0,
     get: () => null, isCurrent: () => false });
   try {
-    const instructions = Array.isArray(projected?.instructions) ? projected.instructions
-      : Array.isArray(projected?.blocks) ? projected.blocks.flatMap(block => block?.insts ?? []) : null;
-    if (!instructions) return unavailable;
-    const expected = instructions.filter(instruction => instruction?.extra?.semanticComparisonCarrier === true);
+    const instructionData = comparisonCarrierInstructions(projected);
+    if (!instructionData) return unavailable;
+    const { instructions, instructionRoot } = instructionData;
+    const expected = instructions.filter(instruction => comparisonCarrierOwnData(
+      comparisonCarrierOwnData(instruction, 'extra'), 'semanticComparisonCarrier') === true);
     if (!expected.length) return null;
-    const records = new Map();
-    for (const instruction of expected) {
-      const carried = instruction.dst?.id ?? null;
-      const displayEvidence = instruction.extra?.comparison === 'semantic-flag-result';
-      const published = instructions.some(other => other !== instruction && other?.dst?.id === carried);
-      const consumed = instructions.some(other => other !== instruction
-        && (other.args ?? []).some(argument => argument?.id === carried));
-      if (carried == null || !displayEvidence || published || consumed) return unavailable;
-      records.set(instruction, Object.freeze({ kind:'display-carrier', carriedValueId:carried }));
+    const values = comparisonCarrierOwnData(projected, 'values');
+    if (!Array.isArray(values)) return unavailable;
+    const valuesById = new Map();
+    for (const value of values) {
+      if (!value || typeof value !== 'object') return unavailable;
+      const id = comparisonCarrierOwnData(value, 'id');
+      if (!Number.isSafeInteger(id) || id < 0 || valuesById.has(id)) return unavailable;
+      valuesById.set(id, value);
     }
-    const identityEntries = identity && typeof identity === 'object' ? Object.entries(identity) : null;
-    const contextCurrent = () => identityEntries != null
-      && identityEntries.every(([key, value]) => identity[key] === value);
-    const workItems = records.size * 16 + 2;
+    const records = new Map();
+    const producerRecords = [];
+    const consumersByProducer = new Map();
+    for (const instruction of expected) {
+      const producer = comparisonCarrierProducer(projected, instruction, instructions, new Set(values), valuesById);
+      if (!producer) return unavailable;
+      producerRecords.push(producer);
+      consumersByProducer.set(producer, []);
+    }
+    for (const producer of producerRecords) {
+      const consumers = consumersByProducer.get(producer);
+      const { carried, carriedValueId } = producer;
+      for (const instruction of instructions) {
+        if (instruction === producer.instruction) continue;
+        const args = comparisonCarrierOwnData(instruction, 'args');
+        if (!Array.isArray(args)) continue;
+        for (let argumentIndex = 0; argumentIndex < args.length; argumentIndex++) {
+          const argument = args[argumentIndex];
+          const value = comparisonCarrierOwnData(argument, 'value');
+          if (value === carried) {
+            const consumer = comparisonCarrierConsumerRecord(projected, instruction, argumentIndex, carriedValueId, valuesById);
+            if (!consumer) return unavailable;
+            consumers.push({ instruction, argumentIndex, consumer });
+          } else if (value && value !== COMPARISON_CARRIER_MISSING
+              && comparisonCarrierOwnData(value, 'id') === carriedValueId) return unavailable;
+        }
+      }
+      const uses = comparisonCarrierOwnData(carried, 'uses');
+      if (!Array.isArray(uses) || uses.length !== consumers.length
+          || uses.some(use => !consumers.some(candidate => candidate.instruction === use))) return unavailable;
+      const carrierRecord = Object.freeze({ kind:'display-carrier', carriedValueId,
+        producerInstructionId: producer.instructionId, sourceEntityId: producer.sourceEntityId,
+        consumerCount: consumers.length });
+      records.set(producer.instruction, carrierRecord);
+      for (const { instruction, consumer } of consumers) {
+        records.set(instruction, Object.freeze({ ...consumer, producerInstructionId: producer.instructionId,
+          sourceEntityId: producer.sourceEntityId }));
+      }
+    }
+    const identitySnapshot = comparisonCarrierIdentitySnapshot(identity);
+    if (!identitySnapshot) return unavailable;
+    const projectedRoots = [instructionRoot, values];
+    const blocks = comparisonCarrierOwnData(projected, 'blocks');
+    if (Array.isArray(blocks) && blocks !== instructionRoot) projectedRoots.push(blocks);
+    const compat = comparisonCarrierOwnData(projected, 'compat');
+    if (!compat || compat === COMPARISON_CARRIER_MISSING || typeof compat !== 'object') return unavailable;
+    projectedRoots.push(compat);
+    // `captureGraph` intentionally treats SSA reverse-use lists as identity
+    // edges so an unrelated user graph is not pulled into every expression.
+    // These carrier-owned lists are part of the producer membership contract,
+    // however, so observe each exact list as a real root and revoke if a user
+    // is added, removed, or replaced.
+    for (const producer of producerRecords) {
+      const uses = comparisonCarrierOwnData(producer.carried, 'uses');
+      if (!Array.isArray(uses)) return unavailable;
+      projectedRoots.push(uses);
+    }
+    const observation = createProjectionIrObserver().captureGraph(projectedRoots);
+    const rootRefs = Object.freeze({ instructions: comparisonCarrierOwnData(projected, 'instructions'),
+      blocks, values: comparisonCarrierOwnData(projected, 'values'), compat });
+    const rootsCurrent = () => comparisonCarrierOwnData(projected, 'instructions') === rootRefs.instructions
+      && comparisonCarrierOwnData(projected, 'blocks') === rootRefs.blocks
+      && comparisonCarrierOwnData(projected, 'values') === rootRefs.values
+      && comparisonCarrierOwnData(projected, 'compat') === rootRefs.compat;
+    const contextCurrent = () => comparisonCarrierIdentityCurrent(identity, identitySnapshot);
+    const workItems = producerRecords.length * 16 + observation.metrics.nodes + observation.metrics.edges + 2;
     if (!Number.isSafeInteger(workItems)) return unavailable;
-    try { if (!contextCurrent()) return unavailable; } catch { return unavailable; }
-    const binding = Object.freeze({ status:'prepared', size:records.size, observationCount:records.size, workItems,
+    try { if (!contextCurrent() || !rootsCurrent() || !observation.matches()) return unavailable; } catch { return unavailable; }
+    const binding = Object.freeze({ status:'prepared', size:producerRecords.length, observationCount:producerRecords.length, workItems,
       get:instruction => records.get(instruction) ?? null,
-      isCurrent() { try { return contextCurrent(); } catch { return false; } } });
+      isCurrent() {
+        try {
+          return contextCurrent() && rootsCurrent() && observation.matches();
+        } catch { return false; }
+      } });
     canonicalComparisonCarrierBindings.set(projected, binding);
     return binding;
   }

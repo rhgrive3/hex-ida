@@ -96,9 +96,23 @@ export function translateExecutionValue(value,state,options={},active=new Set())
     else { inputs=[semanticValueIdentity(matches[0].value)];expression=translateExecutionValue(matches[0].value,state,options,active); }
   } else if(value.def?.op===OP.SEL) {
     const inst=value.def;
-    if (!inst.conditionValue || (inst.args?.length??0)!==2) expression=undef(bits,'memory-select-needs-canonical-condition');
+    const selectArgs = inst.args ?? [];
+    // The compatibility projection may retain one third, display-only
+    // comparison carrier so the rendered select remains linked to the
+    // producer's flag result. It is authenticated by the executor's issued
+    // carrier binding and is never evaluated as a data operand.
+    let hasDisplayCarrier = false;
+    if (selectArgs.length === 3) {
+      const displayValue = selectArgs[2]?.value;
+      const record = displayValue?.def ? state.comparisonCarriers?.get(displayValue.def) : null;
+      const expectedId = displayValue?.semanticValueId ?? displayValue?.semanticSsaValueId ?? displayValue?.id;
+      hasDisplayCarrier = record?.kind === 'display-carrier'
+        && record.carriedValueId === displayValue?.id
+        && inst.extra?.conditionCarrierValueId === expectedId;
+    }
+    if (!inst.conditionValue || (selectArgs.length !== 2 && !hasDisplayCarrier)) expression=undef(bits,'memory-select-needs-canonical-condition');
     else {
-      const values=[inst.conditionValue,...inst.args.map(a=>a.value)];
+      const values=[inst.conditionValue,...selectArgs.slice(0,2).map(a=>a.value)];
       inputs=values.slice(1).map(semanticValueIdentity);
       control=state.taint?.joinHandles(state.control,semanticValueIdentity(inst.conditionValue)) ?? state.control;
       const [condition,yes,no]=values.map(v=>translateExecutionValue(v,state,options,active));

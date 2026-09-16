@@ -69,7 +69,9 @@ export function scalarOperation(inst) {
 }
 export function scalarOperationSupported(inst, op = inst?.op) {
   const operation = scalarOperation(inst);
-  if (op === OP.BIN) return BINARY.has(operation);
+  if (op === OP.BIN) return BINARY.has(operation) || operation === 'eq'
+    && (inst.dst?.bits ?? inst.bits) === 1 && inst.args?.length === 2
+    && inst.args.every(arg => arg?.value?.bits === 1);
   if (op === OP.UN) return UNARY.has(operation) || CASTS.has(operation) || operation === 'is-zero';
   return true;
 }
@@ -167,6 +169,14 @@ export function lowerScalarInstruction(inst, args, bits, condition = null) {
     const predicate = createCompare('eq', args[0], createBv(args[0].sort.width, 0n));
     return createIte(predicate, createBv(1, 1n), createBv(1, 0n));
   }
+  if (inst.op === OP.BIN && operation === 'eq') {
+    // The canonical equal-bool projection carries its result as BV1, just
+    // like is-zero. It is not a general integer equality instruction.
+    if (bits !== 1 || args.some(arg => arg?.sort?.kind !== 'bv' || arg.sort.width !== 1)) {
+      return undef(bits, 'boolean-equality-contract');
+    }
+    return createIte(createCompare('eq', args[0], args[1]), createBv(1, 1n), createBv(1, 0n));
+  }
   if (inst.op === OP.CMP) {
     const signedDeclarations = [inst.signed, inst.extra?.signed].filter(x => x != null);
     if (signedDeclarations.some(x => typeof x !== 'boolean')) return undef(bits, 'invalid-comparison-signedness');
@@ -184,6 +194,11 @@ export function lowerScalarInstruction(inst, args, bits, condition = null) {
     return createCompare(comparisons[conditionToken], args[0], args[1]);
   }
   if (inst.op === OP.SEL) {
+    // Machine predicates are explicitly typed BV1 (0/1). Wider integers
+    // cannot stand in for a condition by truthiness.
+    if (condition?.sort?.kind === 'bv' && condition.sort.width === 1) {
+      condition = createCompare('ne', condition, createBv(1, 0n));
+    }
     if (condition?.sort?.kind !== 'bool') return undef(bits, 'memory-select-needs-canonical-condition');
     if (args.some(x => x?.sort?.kind !== 'bv' || x.sort.width !== bits)) return undef(bits, 'select-sort-contract');
     return createIte(condition, args[0], args[1]);

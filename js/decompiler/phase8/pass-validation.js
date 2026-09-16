@@ -12,6 +12,7 @@ import { committedProofOverlay, configurePhase8ProofApi } from './transaction.js
 // Consume the public IR vocabulary. The opcode binding is used only while
 // preparing a plan, after the facade and its pipeline have initialized.
 import { OP } from '../../ir-base.js';
+import { scalarEffectObligationReason } from '../../semantics/compat/effect-obligations.js';
 import { createTaintModels } from '../../symbolic/taint/models.js';
 import { queryRecord, queryArray } from '../../symbolic/memory/data-input.js';
 import { createQueryGuard, QueryFailure, memoryIdentity, sameMemoryIdentity } from '../../symbolic/memory/query-state.js';
@@ -109,6 +110,8 @@ function targetExclusionReason(target, guard) {
     if (value.float === true || value.floatConst != null || value.bits < 1 || value.bits > 64) return unsupported;
     if (value.kind === 'arg' || value.def == null && typeof value.const === 'bigint') continue;
     const def = queryRecord(value.def, guard);
+    const obligation = scalarEffectObligationReason(value.def);
+    if (obligation) return obligation;
     if (value.const != null && ![OP.CONST,OP.ADDR].includes(def.op)) return unsupported;
     if (def.volatile || def.atomic) return unsupported;
     if (def.extra != null) {

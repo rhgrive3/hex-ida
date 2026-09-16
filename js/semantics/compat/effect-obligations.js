@@ -9,7 +9,7 @@
 const UNKNOWN = Symbol('unreadable-effect-metadata');
 function own(record, key) {
   const descriptor = Object.getOwnPropertyDescriptor(record, key);
-  if (!descriptor) return undefined;
+  if (!descriptor) return key in record ? UNKNOWN : undefined;
   return Object.hasOwn(descriptor, 'value') ? descriptor.value : UNKNOWN;
 }
 function plain(value) {
@@ -29,14 +29,15 @@ export function scalarEffectObligationReason(instruction) {
   }
   for (const record of layers) {
     for (const key of ['possibleFaults', 'faults']) {
-      if (!Object.hasOwn(record, key)) continue;
       const value = own(record, key);
+      if (value === undefined) continue;
       if (!Array.isArray(value) || value.length !== 0) return `unresolved-${key}`;
     }
     for (const key of ['mayThrow', 'mayUnwind']) {
-      if (Object.hasOwn(record, key) && own(record, key) !== false) return `unresolved-${key}`;
+      const value = own(record, key);
+      if (value !== undefined && value !== false) return `unresolved-${key}`;
     }
-    for (const key of ['unknownEffects', 'undefinedResult', 'unwindTarget', 'unwindMetadata',
+    for (const key of ['unknownEffects', 'undefinedResult', 'unwindTarget', 'unwindTargets', 'unwindMetadata',
       'unwindSummary', 'cleanupOrder', 'exceptionTargets', 'exceptionalEdges']) {
       const value = own(record, key);
       if (value !== undefined && value !== null && value !== false) return `unresolved-${key}`;
