@@ -1,0 +1,63 @@
+name: Apply issue 8987 follow-up
+
+on:
+  push:
+    branches:
+      - fix/issue-8987-stack-checkpoint-regression
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/issue-8987-stack-checkpoint-regression
+          fetch-depth: 0
+
+      - name: Apply reviewed bridge fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('js/managed/shared/bridge-lowering-v2.js')
+          s = p.read_text()
+          old = 'e.includes("add")||e.includes("sub")||e.includes("mul")||e.includes("div")||e.includes("and")||e.includes("or")||e.includes("xor")||e.includes("shl")||e.includes("shr")||e.includes("rem")?d="binary":'
+          new = '(e.includes("add")||e.includes("sub")||e.includes("mul")||e.includes("div")||e.includes("and")||e.includes("or")||e.includes("xor")||e.includes("shl")||e.includes("shr")||e.includes("rem"))&&z.length===2&&x.length===1?d="binary":'
+          if s.count(old) != 1:
+              raise SystemExit(f'expected exactly one binary-classification site, got {s.count(old)}')
+          p.write_text(s.replace(old, new))
+          PY
+          git diff --check
+
+      - name: Validate focused managed bridge regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test \
+            tests/phase11/shared/issue-8987-bridge-operand-stack-checkpoint-type.test.mjs \
+            tests/phase11/shared/issue-8065-managed-state-rendering.test.mjs \
+            tests/phase11/shared/issue-8065-managed-state-identifiers.test.mjs \
+            tests/phase11/wasm/issue-7890-bridge-machine-type.test.mjs \
+            tests/phase11/wasm/issue-3884-wasm-typed-stack.test.mjs \
+            tests/phase11/shared/issue-8767-bridge-right-shift-signedness.test.mjs \
+            tests/phase11/cil/issue-4043-cil-arithmetic-operand-width.test.mjs \
+            tests/phase11/dex/issue-1136-dex-arithmetic-produced-value-authority.test.mjs
+          node tests/check.mjs
+
+      - name: Commit reviewed production fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/managed/shared/bridge-lowering-v2.js
+          git diff --cached --check
+          git commit -m "fix(managed): prevent state op binary misclassification (#8987)"
+          git push origin HEAD:fix/issue-8987-stack-checkpoint-regression
