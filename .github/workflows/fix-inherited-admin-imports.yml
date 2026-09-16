@@ -1,0 +1,49 @@
+name: fix-inherited-admin-imports
+on:
+  push:
+    branches:
+      - fix/owner9-current-main-20260916
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Deduplicate exact admin-provider imports and validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          changed=0
+          while IFS= read -r f; do
+            awk '
+              /^import \{ AllowAllAdminProvider \} from .*admin-provider\.js.;$/ {
+                if (seen[$0]++) next
+              }
+              { print }
+            ' "$f" > "$f.tmp"
+            if cmp -s "$f" "$f.tmp"; then
+              rm "$f.tmp"
+            else
+              mv "$f.tmp" "$f"
+              changed=$((changed + 1))
+            fi
+          done < <(grep -rl --include='*.mjs' 'AllowAllAdminProvider' tests)
+          echo "dedup_changed=$changed"
+          test "$changed" -gt 0
+          timeout 240s node tests/check.mjs
+          timeout 180s node tests/stage2/issue-4898-stage1-proof-authority.test.mjs
+          timeout 180s node tests/issue-4890-wasm-origin-bytecode-offset.mjs
+          timeout 180s node tests/issue-4858-embed-abort-registration-race.mjs
+          timeout 180s node tests/issue-5257-remote-gate-replay-window.mjs
+          timeout 180s node tests/module-boundaries.mjs
+          git rm .github/workflows/fix-inherited-admin-imports.yml
+          git add tests
+          git diff --cached --check
+          git commit -m 'test(dev-agent): remove duplicate admin-provider imports'
+          timeout 120s git push origin HEAD:fix/owner9-current-main-20260916
