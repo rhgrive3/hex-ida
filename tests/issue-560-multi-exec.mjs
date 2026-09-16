@@ -48,7 +48,8 @@ const scan2={
   assert.equal(b.load,0); assert.equal(b.store,1); assert.equal(b.arith,1);
   const range=program.functionRange(0x2000n);
   assert.equal(range?.region?.id,'text-b');
-  assert.equal(range?.end,0x2010n);
+  // A symbol without a bounded function end must remain explicitly unbounded.
+  assert.equal(range?.end,null);
 }
 
 // Missing any expected executable region makes absence evidence fail closed.

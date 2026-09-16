@@ -15,9 +15,12 @@ assert.ok(Object.isFrozen(compact));
 assert.equal(compact.count, 2);
 assert.equal(compact.total, 2);
 assert.equal(compact.complete, true);
-assert.equal(compact.functionAddresses, funcs);
-assert.equal(compact.symbolAddresses, addrs);
-assert.equal(compact.symbolNames, names);
+assert.notEqual(compact.functionAddresses, funcs);
+assert.notEqual(compact.symbolAddresses, addrs);
+assert.notEqual(compact.symbolNames, names);
+assert.deepEqual(compact.functionAddresses, funcs);
+assert.deepEqual(compact.symbolAddresses, addrs);
+assert.deepEqual(compact.symbolNames, names);
 
 const before = materializeCompactFunctionSet(compact);
 assert.equal(before.length, 2);
@@ -28,10 +31,16 @@ assert.ok(Object.isFrozen(compact.functionAddresses));
 assert.ok(Object.isFrozen(compact.symbolAddresses));
 assert.ok(Object.isFrozen(compact.symbolNames));
 
-assert.throws(() => funcs.push(0x1200n), TypeError);
-assert.throws(() => { funcs[0] = 0x9999n; }, TypeError);
-assert.throws(() => addrs.push(0x9000n), TypeError);
-assert.throws(() => { names[1] = 'renamed'; }, TypeError);
+assert.throws(() => compact.functionAddresses.push(0x1200n), TypeError);
+assert.throws(() => { compact.functionAddresses[0] = 0x9999n; }, TypeError);
+assert.throws(() => compact.symbolAddresses.push(0x9000n), TypeError);
+assert.throws(() => { compact.symbolNames[1] = 'renamed'; }, TypeError);
+
+// The snapshot is isolated in both directions: freezing the published copy
+// must not freeze or otherwise alter the caller's input columns.
+funcs.push(0x1200n);
+addrs.push(0x9000n);
+names[1] = 'renamed';
 
 assert.equal(compact.functionAddresses.length, 2);
 assert.equal(compact.count, 2);
@@ -42,7 +51,12 @@ assert.deepEqual(after, before);
 assert.equal(after[1].size, 0);
 assert.deepEqual(after.map((row) => row.name), ['alpha', 'beta']);
 
-const recreated = createCompactFunctionSet(symbols, 'arm64');
+const recreated = createCompactFunctionSet({
+  funcs: [0x1000n, 0x1100n],
+  addrs: [0x1000n, 0x1100n],
+  names: ['alpha', 'beta'],
+  functionStartsComplete: true,
+}, 'arm64');
 assert.equal(recreated.count, 2);
 assert.deepEqual(materializeCompactFunctionSet(recreated), before);
 

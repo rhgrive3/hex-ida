@@ -174,7 +174,7 @@ function writeArgs(overrides = {}) {
 {
   const io = {
     fetch: async () => ({ mn: 'ret', ops: '' }),
-    read: async () => null,
+    read: async () => new Uint8Array(0x1000),
     isExecutable: () => true,
     symbolFor: () => null,
   };

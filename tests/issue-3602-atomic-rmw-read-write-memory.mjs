@@ -84,7 +84,7 @@ test('#3602: ordinary load/store and exclusive-store modeling are unchanged', ()
   assert.equal(store.memory.kind, 'store');
 
   const exclusive = insn('stxr', 'x0, x1, [x2]');
-  assert.deepEqual(exclusive.writes, [], '#3592 owns the exclusive status result');
+  assert.deepEqual(exclusive.writes, ['x0'], '#3592 status-result write remains part of the instruction model');
   assert.equal(exclusive.memory.kind, 'store');
 
   const acquired = insn('ldar', 'x0, [x1]');

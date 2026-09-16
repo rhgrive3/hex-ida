@@ -152,6 +152,7 @@ function installStorage(storage) {
       setComment: () => true,
       nameOf: () => 'before',
       setName: () => true,
+      typeOf: () => null,
       setType: () => true,
       save: () => { saved += 1; return true; },
     },

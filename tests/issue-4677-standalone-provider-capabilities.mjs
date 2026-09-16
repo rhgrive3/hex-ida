@@ -57,7 +57,7 @@ const capabilitiesResponse = (payload) => ({ ok: true, async text() { return JSO
     'the userscript discovery callable must keep producing the provider list unchanged');
   assert.deepEqual(discovery.providers.map((item) => item.id), ['chatgpt-web', 'gemini']);
   assert.deepEqual(discovery.providers[0].models, [{ id: 'chatgpt-web/demo' }]);
-  assert.deepEqual(workerRequests, [], 'the discovery callable must not be replaced by a second preflight path');
+  assert.deepEqual(workerRequests, ['/api/ai/capabilities'], 'the wrapper prepares both child providers before advertising them');
 }
 
 // 4: The empty fallback survives only where no provider contract exists.

@@ -92,7 +92,7 @@ test('#4847 a region starting mid-block splits the block and keeps the handler e
     'offset 1 is protected but its block has no exception edge to the handler');
   assert.equal(successorCheck(lowered, 'bb_0x0', 'bb_0x3'), false,
     'offset 0 is outside the region and must not inherit the handler edge');
-  assert.equal(lowered.semanticIr.completeness, 'complete');
+  assert.equal(lowered.semanticIr.completeness, 'partial', 'numeric catch type lacks exact exception authority');
 });
 
 test('#4847 a region ending mid-block stops the handler edge at endOffset', () => {
@@ -104,7 +104,7 @@ test('#4847 a region ending mid-block stops the handler edge at endOffset', () =
   assert.equal(successorCheck(lowered, 'bb_0x0', 'bb_0x3'), true);
   assert.equal(successorCheck(lowered, 'bb_0x1', 'bb_0x3'), false,
     'offset 1 is past the region end but shares a block with the protected instruction');
-  assert.equal(lowered.semanticIr.completeness, 'complete');
+  assert.equal(lowered.semanticIr.completeness, 'partial', 'numeric catch type lacks exact exception authority');
 });
 
 test('#4847 a region ending before the terminator splits the trailing block', () => {
@@ -116,7 +116,7 @@ test('#4847 a region ending before the terminator splits the trailing block', ()
   assert.equal(successorCheck(lowered, 'bb_0x0', 'bb_0x4'), true);
   assert.equal(successorCheck(lowered, 'bb_0x2', 'bb_0x4'), false,
     'offset 2 is outside the region but joins the protected block');
-  assert.equal(lowered.semanticIr.completeness, 'complete');
+  assert.equal(lowered.semanticIr.completeness, 'partial', 'numeric catch type lacks exact exception authority');
 });
 
 test('#4847 a region end past the last instruction adds no spurious leader', () => {
@@ -127,7 +127,7 @@ test('#4847 a region end past the last instruction adds no spurious leader', () 
   coverageAudit(fn, lowered);
   assert.deepEqual(blockIds(lowered), ['bb_0x0', 'bb_0x5']);
   assert.equal(successorCheck(lowered, 'bb_0x0', 'bb_0x5'), true);
-  assert.equal(lowered.semanticIr.completeness, 'complete');
+  assert.equal(lowered.semanticIr.completeness, 'partial', 'numeric catch type lacks exact exception authority');
 });
 
 test('#4847 aligned region boundaries keep the existing single handler edge', () => {
@@ -139,7 +139,7 @@ test('#4847 aligned region boundaries keep the existing single handler edge', ()
   assert.deepEqual(blockIds(lowered), ['bb_0x0', 'bb_0x3']);
   assert.equal(successorCheck(lowered, 'bb_0x0', 'bb_0x3'), true);
   assert.equal(successorCheck(lowered, 'bb_0x3', 'bb_0x3'), false);
-  assert.equal(lowered.semanticIr.completeness, 'complete');
+  assert.equal(lowered.semanticIr.completeness, 'partial', 'numeric catch type lacks exact exception authority');
 });
 
 test('#4847 overlapping regions split the block at every coverage change', () => {

@@ -130,7 +130,7 @@ const hasReason = (image, fragment) =>
 // coexists with #4131/#5539 (the alignment check uses the actual granularity).
 {
   const image = parsePE(buildPE({
-    bits: 32, machine: 0x014c, sectionAlignment: 0x10, fileAlignment: 0x10, sizeOfHeaders: 0x100,
+    bits: 32, machine: 0x014c, sectionAlignment: 0x10, fileAlignment: 0x10, sizeOfHeaders: 0x1d0,
     sections: [
       { name: '.a', rva: 0x100, vsize: 0x30, rawSize: 0x30, ptr: 0x100 },
       { name: '.b', rva: 0x140, vsize: 0x30, rawSize: 0x30, ptr: 0x140 },

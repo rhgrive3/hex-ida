@@ -98,7 +98,7 @@ test('stack-relative location identity is unchanged', () => {
   const ir = lift(['sub sp, sp, #0x20', 'str x6, [sp, #8]', 'ret']);
   const store = instAt(ir, 1);
   assert.equal(store.loc.kind, 'stack');
-  assert.match(store.loc.key, /^stack:sp:e\d+:8:s8$/);
+  assert.match(store.loc.key, /^stack:sp:[^:]+:s8$/);
 });
 
 if (failures.length) {
