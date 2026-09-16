@@ -1,0 +1,49 @@
+name: diag-7036-merge-8fa
+on:
+  push:
+    branches:
+      - diag/7036-merge-8fa
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Identify conflict files only
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          STATUS=/tmp/diag-7036-merge.txt
+          : > "$STATUS"
+          HEAD_SHA=8fa082b7d3cbabbf2eac60a87155dc2f4dd08b09
+          timeout 90s git fetch --no-tags origin main "$HEAD_SHA" >/tmp/fetch.log 2>&1
+          rc=$?; if [ "$rc" -ne 0 ]; then echo "fetch rc=$rc" >> "$STATUS"; tail -n 40 /tmp/fetch.log >> "$STATUS"; exit "$rc"; fi
+          git checkout --detach "$HEAD_SHA" >/tmp/co.log 2>&1
+          rc=$?; if [ "$rc" -ne 0 ]; then echo "checkout rc=$rc" >> "$STATUS"; tail -n 40 /tmp/co.log >> "$STATUS"; exit "$rc"; fi
+          BASE_SHA=$(git rev-parse refs/remotes/origin/main)
+          echo "base=$BASE_SHA" >> "$STATUS"
+          echo "head=$HEAD_SHA" >> "$STATUS"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git merge --no-commit --no-ff refs/remotes/origin/main >/tmp/merge.log 2>&1
+          rc=$?
+          echo "merge_rc=$rc" >> "$STATUS"
+          conflicts=$(git diff --name-only --diff-filter=U)
+          count=$(printf '%s\n' "$conflicts" | sed '/^$/d' | wc -l)
+          echo "conflict_count=$count" >> "$STATUS"
+          if [ "$count" -gt 0 ]; then
+            printf '%s\n' "$conflicts" >> "$STATUS"
+          fi
+          exit 0
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-7036-merge-8fa
+          path: /tmp/diag-7036-merge.txt
+          retention-days: 1
