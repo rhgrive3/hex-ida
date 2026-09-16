@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { AllowAllAdminProvider } from '../js/ai/dev/auth/admin-provider.js';
 import { DevSupervisorV0 } from '../js/ai/dev/supervisor/dev-supervisor-v0.js';
 import { ProgressBudgetDevSupervisorEngineV0 } from '../js/ai/dev/supervisor/dev-supervisor-progress-budget.js';
 import { DevAgentUiSettings } from '../js/ai/dev/ui/settings.js';
@@ -36,14 +37,14 @@ function finalDecision(answer = 'done') {
 }
 
 function createEngine({ maxDecisions, onRequest, identityProvider } = {}) {
-  const supervisor = new DevSupervisorV0({
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
     workerClient: workerClient(),
     idFactory: (kind) => `p4614-${kind}`,
     now: () => '2026-08-18T08:00:00.000Z',
   });
   // Force the engine-owned read-only identity provider path (no parent runtime).
   supervisor.adminTools = null;
-  const settings = new DevAgentUiSettings({ storage: { getItem: () => null, setItem() {} } });
+  const settings = new DevAgentUiSettings({ authProvider: new AllowAllAdminProvider(), storage: { getItem: () => null, setItem() {} } });
   settings.setAgentProfile(AGENT_PROFILE.DEV);
   const bridge = Object.freeze({ request: async (...args) => onRequest(...args) });
   const engine = new ProgressBudgetDevSupervisorEngineV0({
