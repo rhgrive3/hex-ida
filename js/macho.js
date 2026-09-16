@@ -112,6 +112,52 @@
     return Math.min(value, maximum);
   }
 
+  // #8745/#8776: bound decoded-name materialization, not only input bytes.
+  const STRING_DECODE_CHUNK = 8192;
+  const SYMBOL_NAMES_MAX_BYTES = 48 * 1024 * 1024;
+  const SYMBOL_NAME_ROW_OVERHEAD = 64;
+
+  function decodeLatin1(u8, start, end) {
+    if (end - start <= STRING_DECODE_CHUNK) {
+      return String.fromCharCode.apply(null, u8.subarray(start, end));
+    }
+    const parts = [];
+    for (let i = start; i < end; i += STRING_DECODE_CHUNK) {
+      parts.push(String.fromCharCode.apply(null, u8.subarray(i, Math.min(i + STRING_DECODE_CHUNK, end))));
+    }
+    return parts.join('');
+  }
+
+  function createStringDecodingBudget(maxBytes) {
+    return { retained: 0, limit: maxBytes, capped: false, reason: null };
+  }
+
+  function budgetedDecodeLatin1(u8, start, end, budget) {
+    const retained = end - start + SYMBOL_NAME_ROW_OVERHEAD;
+    if (budget.retained + retained > budget.limit) {
+      budget.capped = true;
+      if (!budget.reason) budget.reason = 'decoded-name-budget';
+      return null;
+    }
+    budget.retained += retained;
+    return decodeLatin1(u8, start, end);
+  }
+
+  const LC_NAME_MAX = 256 * 1024;
+  const LC_STRINGS_MAX = 1024 * 1024;
+
+  function lcName(u8, off, end, budget) {
+    let p = off;
+    while (p < end && u8[p] !== 0) p++;
+    if (p >= end) return null;
+    if (p - off > LC_NAME_MAX) {
+      budget.capped = true;
+      if (!budget.reason) budget.reason = 'lc-name-budget';
+      return null;
+    }
+    return budgetedDecodeLatin1(u8, off, p, budget);
+  }
+
   function cpuName(type, sub) {
     const s = sub & 0x00ffffff;
     switch (type) {
@@ -125,19 +171,11 @@
     }
   }
 
-  /*
-   * Architecture identity used to reject duplicate fat slices. It mirrors the
-   * canonical loader's `canonicalArchitectureSubtype()` in js/binary/macho-fat.js
-   * exactly (dyld canonicalizes only the pre-versioned fat-header arm64e value
-   * 2 to the ABI-v0 identity; every other subtype keeps its lower 24 bits) so
-   * the classic path cannot invent a second architecture-duplication policy.
-   */
+  /* Canonical architecture identity for duplicate fat slices (#8840). */
   function canonicalFatArchKey(cputype, cpusubtype) {
     const cpu = cputype >>> 0;
     const sub = cpusubtype >>> 0;
-    const id = cpu === CPU_TYPE_ARM64
-      ? (sub === 2 ? 0x80000002 : sub)
-      : (sub & 0x00ffffff);
+    const id = cpu === CPU_TYPE_ARM64 ? (sub === 2 ? 0x80000002 : sub) : (sub & 0x00ffffff);
     return cpu + ':' + id;
   }
 
@@ -155,14 +193,12 @@
   // the first NUL inside the table and fail closed when the entry is not
   // terminated, instead of laundering a fixed-length prefix as a complete name
   // (#3806).
-  function cstrNul(u8, off) {
+  function cstrNul(u8, off, budget) {
     if (off < 0 || off >= u8.length) return null;
     let end = off;
     while (end < u8.length && u8[end] !== 0) end++;
     if (end >= u8.length) return null;
-    let s = '';
-    for (let i = off; i < end; i++) s += String.fromCharCode(u8[i]);
-    return s;
+    return budget ? budgetedDecodeLatin1(u8, off, end, budget) : decodeLatin1(u8, off, end);
   }
 
   function ver32(v) {
@@ -193,11 +229,9 @@
     const magic = dv.getUint32(0, false);
     const is64 = magic === FAT_MAGIC_64;
     const n = dv.getUint32(4, false);
-    if (n === 0 || n > 32) return null;               // sanity: not a real fat binary
+    if (n === 0 || n > 32) return null;
     const entry = is64 ? 32 : 20;
     if (8 + n * entry > buf.byteLength) return null;
-    // Stage every declared entry as a descriptor first; publish nothing until
-    // the whole container's ownership is proven (#8840 expected-fix 1/7).
     const staged = [];
     for (let i = 0; i < n; i++) {
       const o = 8 + i * entry;
@@ -205,19 +239,15 @@
       const cpusubtype = dv.getInt32(o + 4, false);
       const offset = is64 ? dv.getBigUint64(o + 8, false) : BigInt(dv.getUint32(o + 8, false));
       const size = is64 ? dv.getBigUint64(o + 16, false) : BigInt(dv.getUint32(o + 12, false));
-      if (size <= 0n) return null;                    // empty slice: not a real fat binary
-      if (offset + size > fileSize) return null;      // not a fat binary after all
+      if (size <= 0n || offset + size > fileSize) return null;
       staged.push({ cputype, cpusubtype, offset, size });
     }
-    // Duplicate architecture identity (canonical subtype normalization).
     const seen = new Set();
     for (const e of staged) {
       const key = canonicalFatArchKey(e.cputype, e.cpusubtype);
-      if (seen.has(key)) return null;                 // #8840: reject duplicate arch
+      if (seen.has(key)) return null;
       seen.add(key);
     }
-    // Pairwise physical slice-range overlap must be rejected before any slice is
-    // read/registered, so no file byte can gain a second architecture/VM owner.
     for (let i = 0; i < staged.length; i++) {
       const a = staged[i];
       for (let j = i + 1; j < staged.length; j++) {
@@ -225,13 +255,11 @@
         if (a.offset < b.offset + b.size && b.offset < a.offset + a.size) return null;
       }
     }
-    const out = [];
-    for (const e of staged) {
+    return staged.map((e) => {
       const cn = cpuName(e.cputype, e.cpusubtype);
-      out.push({ offset: e.offset, size: e.size, cputype: e.cputype, cpusubtype: e.cpusubtype,
-        name: cn.cpu + (cn.sub && cn.sub !== 'all' ? ' (' + cn.sub + ')' : '') });
-    }
-    return out;
+      return { offset:e.offset, size:e.size, cputype:e.cputype, cpusubtype:e.cpusubtype,
+        name:cn.cpu + (cn.sub && cn.sub !== 'all' ? ' (' + cn.sub + ')' : '') };
+    });
   }
 
   /**
@@ -339,6 +367,7 @@
     const end = hdrSize + sizeofcmds;
     let textVM = null, textFileOff = null;
     const threadEntries = [];
+    const lcStrings = createStringDecodingBudget(LC_STRINGS_MAX);
 
     for (let i = 0; i < ncmds; i++) {
       if (off + 8 > end) { info.diagnostics.push('truncated load-command header'); break; }
@@ -437,7 +466,14 @@
         case LC.LOAD_WEAK_DYLIB:
         case LC.REEXPORT_DYLIB: {
           info.dylibCount++; const nameOff=dv.getUint32(off+8,true);
-          if(nameOff>=24&&off+nameOff<commandEnd){const value=cstr(u8,off+nameOff,commandEnd-(off+nameOff));if(value)info.dylibs.push(value);} break;
+          if(nameOff>=24&&off+nameOff<commandEnd){
+            const value=lcName(u8,off+nameOff,commandEnd,lcStrings);
+            if(value==null) info.diagnostics.push(lcStrings.capped
+              ? 'dylib install name exceeds the decoded-name budget'
+              : 'unterminated dylib install name');
+            else if(value) info.dylibs.push(value);
+          }
+          break;
         }
         case LC.SYMTAB: info.symtab={symoff:dv.getUint32(off+8,true),nsyms:dv.getUint32(off+12,true),stroff:dv.getUint32(off+16,true),strsize:dv.getUint32(off+20,true)}; break;
         case LC.DYSYMTAB: info.dysymtab={indirectsymoff:dv.getUint32(off+56,true),nindirectsyms:dv.getUint32(off+60,true)}; break;
@@ -455,10 +491,8 @@
     }
 
     info.textVM=textVM; info.textFileOff=textFileOff;
-    // #8828: reject ambiguous segment byte-ownership before any consumer picks a
-    // winner by load-command order. The canonical loader fails closed on the same
-    // layout (#7064); the classic path demotes both conflicting segments to a
-    // non-authoritative mapping so `execSegments`/`regionsFrom` publish neither.
+    info.loadCommandStringsCapped=lcStrings.capped;
+    info.loadCommandStringsReason=lcStrings.reason||null;
     rejectAmbiguousSegmentOwnership(info);
     const align=instructionAlignment(architecture);
     const execSegments=info.segments.filter((seg)=>seg.validMapping && !!(seg.initprot&4) && seg.vmsize>0n);
@@ -487,13 +521,11 @@
   }
 
   function classicOwnershipAmbiguous(a, b) {
-    const aVmEnd = a.vmaddr + a.vmsize;
-    const bVmEnd = b.vmaddr + b.vmsize;
+    const aVmEnd = a.vmaddr + a.vmsize, bVmEnd = b.vmaddr + b.vmsize;
     const overlapStart = a.vmaddr > b.vmaddr ? a.vmaddr : b.vmaddr;
     const overlapEnd = aVmEnd < bVmEnd ? aVmEnd : bVmEnd;
     if (overlapStart >= overlapEnd) return false;
-    const aFileEnd = a.vmaddr + a.filesize;
-    const bFileEnd = b.vmaddr + b.filesize;
+    const aFileEnd = a.vmaddr + a.filesize, bFileEnd = b.vmaddr + b.filesize;
     const boundaries = [...new Set([overlapStart, overlapEnd, aFileEnd, bFileEnd]
       .filter((point) => point > overlapStart && point < overlapEnd))]
       .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
@@ -504,9 +536,7 @@
       const bBacked = point >= b.vmaddr && point < bFileEnd;
       if (!aBacked && !bBacked) continue;
       if (aBacked !== bBacked) return true;
-      const aOff = a.fileoff + (point - a.vmaddr);
-      const bOff = b.fileoff + (point - b.vmaddr);
-      if (aOff !== bOff) return true;
+      if (a.fileoff + (point - a.vmaddr) !== b.fileoff + (point - b.vmaddr)) return true;
     }
     return false;
   }
@@ -575,7 +605,7 @@
    * @returns {{names: string[], values: BigUint64Array, types: Uint8Array, sects: Uint8Array}}
    *          添字はシンボル番号。間接シンボルの解決にそのまま使える。
    */
-  function parseSymbols(symBuf, strBuf, is64) {
+  function parseSymbols(symBuf, strBuf, is64, options = {}) {
     const entry = is64 ? 16 : 12;
     const n = Math.floor(symBuf.length / entry);
     const dv = new DataView(symBuf.buffer, symBuf.byteOffset, symBuf.byteLength);
@@ -583,16 +613,28 @@
     const values = new BigUint64Array(n);
     const types = new Uint8Array(n);
     const sects = new Uint8Array(n);
+    const budgetLimit = boundedExpansionBudget(
+      options.maxDecodedBytes, SYMBOL_NAMES_MAX_BYTES, SYMBOL_NAMES_MAX_BYTES);
+    const budget = createStringDecodingBudget(budgetLimit);
+    const decoded = new Map();
     for (let i = 0; i < n; i++) {
       const o = i * entry;
       const strx = dv.getUint32(o, true);
       types[i] = symBuf[o + 4];
       sects[i] = symBuf[o + 5];
       values[i] = is64 ? dv.getBigUint64(o + 8, true) : BigInt(dv.getUint32(o + 8, true));
-      const name = strx > 0 && strx < strBuf.length ? cstrNul(strBuf, strx) : null;
+      if (!(strx > 0 && strx < strBuf.length)) { names[i] = ''; continue; }
+      let name = decoded.get(strx);
+      if (name === undefined) {
+        name = cstrNul(strBuf, strx, budget);
+        decoded.set(strx, name);
+      }
       names[i] = name == null ? '' : name;
     }
-    return { names, values, types, sects };
+    const out = { names, values, types, sects };
+    Object.defineProperty(out, 'capped', { value: budget.capped, enumerable: false, writable: true, configurable: true });
+    Object.defineProperty(out, 'truncationReason', { value: budget.reason, enumerable: false, writable: true, configurable: true });
+    return out;
   }
 
   /** セクションに定義されている（＝アドレスを持つ）シンボルだけを取り出す。 */
@@ -615,17 +657,18 @@
 
   /* ── LC_FUNCTION_STARTS ───────────────────────────────── */
 
+  const FUNCTION_STARTS_MAX = 200_000;
+
   /** ULEB128 の差分列を、絶対アドレスの配列にほどく。 */
   function parseFunctionStarts(buf, base, options = {}) {
-    const out=[]; let addr=base; let i=0; let malformed=false; let rejected=0;
+    const out=attachTruncatedFlag([]); let addr=base; let i=0; let malformed=false; let rejected=0;
     let terminated=false; let partialReason=null;
     const regions=Array.isArray(options.regions)?options.regions:[];
     const alignment=instructionAlignment(options.architecture||'arm64');
+    const resultLimit=boundedExpansionBudget(options.maxStarts, FUNCTION_STARTS_MAX, FUNCTION_STARTS_MAX);
+    const shouldCancel=typeof options.shouldCancel==='function'?options.shouldCancel:null;
     // #8838: LC_DATA_IN_CODE declares ranges inside __text that are physically
-    // data (jump tables, kind-tagged blobs). A function start is valid only if
-    // its complete architecture instruction span does not overlap such a range;
-    // checking the first byte alone would bless an ARM64 instruction starting at
-    // 0x1204 even when DICE marks bytes [0x1205,0x1207) as data.
+    // data. Preserve that exclusion while applying the #8805 retention cap.
     const dataInCode=Array.isArray(options.dataInCode)?options.dataInCode:[];
     const overlapsDataInCode=(value)=>{
       const end=value+alignment;
@@ -650,10 +693,17 @@
       const next=addr+delta;
       if(next<addr){malformed=true;partialReason='address-overflow';break;}
       addr=next;
-      if(valid(addr)) out.push(addr); else rejected++;
+      if(!valid(addr)){rejected++;continue;}
+      if(out.length>=resultLimit){markTruncated(out,'result-limit');partialReason='result-limit';break;}
+      out.push(addr);
+      if(shouldCancel&&((out.length&63)===0)&&shouldCancel()){markTruncated(out,'cancelled');partialReason='cancelled';break;}
     }
-    if(!terminated&&!malformed){malformed=true;partialReason='missing-terminator';}
-    out.rejected=rejected; out.complete=!malformed&&rejected===0; out.malformed=malformed;
+    // #8822: only a fully read stream with an explicit zero terminator can be exact.
+    // A result/cancel cap is already explicitly partial and must not be rewritten
+    // into the less precise missing-terminator failure.
+    if(!terminated&&!malformed&&!out.truncated){malformed=true;partialReason='missing-terminator';}
+    if(malformed&&!out.truncated){markTruncated(out,'malformed');}
+    out.rejected=rejected; out.complete=!malformed&&rejected===0&&!out.truncated; out.malformed=malformed;
     out.partialReason=partialReason;
     return out;
   }
@@ -1032,10 +1082,7 @@
     if (align && align > 1n && (start % align) !== 0n) return false;
     const ranges = options && options.execRanges;
     if (!Array.isArray(ranges)) return true;
-    for (const range of ranges) {
-      if (range.start <= start && end <= range.end) return true;
-    }
-    return false;
+    return ranges.some((range) => range.start <= start && end <= range.end);
   }
 
   /**

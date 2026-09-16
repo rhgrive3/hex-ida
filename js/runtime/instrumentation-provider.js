@@ -248,6 +248,38 @@ export class InstrumentationProvider {
     // the normalizer's own runtime-event-resource-limit code and cheaply dropped,
     // instead of running the old unbounded recursion into a native stack overflow /
     // unbounded allocation outside events.maxBytes.
+    // #8862: the event subscription goes live before the asynchronous bootstrap
+    // snapshot is imported, so module lifecycle events accepted during that window
+    // previously mutated the pre-snapshot table: an unload was a no-op that the
+    // older snapshot then resurrected as an exact binding, and a load collided with
+    // the unconditional snapshot import with module-binding-already-loaded. Stage
+    // the table effects of accepted bootstrap events and replay them, in arrival
+    // order, only after the snapshot has been fully imported, so the snapshot can
+    // never overwrite newer lifecycle authority. Canonical queue admission is
+    // unchanged; only the module-binding-table effect is linearized.
+    let bootstrapModuleEffectsStaged = true;
+    const stagedBootstrapModuleEffects = [];
+    // #9008: the epoch handoff window (including a supported asynchronous
+    // backend.setEpoch pending) previously admitted no next-generation events:
+    // the local epoch/normalizer authority was only committed after the backend
+    // transition succeeded, so explicitly epoch-N events emitted by the
+    // transition itself were silently dropped while the transition returned
+    // clean. Those events are buffered in a bounded handoff capture during the
+    // window and replayed atomically on commit; a failed transition discards
+    // the buffer, and an overflowing buffer fails the transition closed.
+    let epochHandoffCapture = null;
+    const applyModuleLifecycle = (effect) => {
+      if (effect.kind === 'module-load') {
+        if (!session.modules.get(effect.bindingKey)) {
+          session.modules.load(normalizeRuntimeModuleBinding(effect.module, {
+            bindingKey: effect.bindingKey,
+            loadedSequence: effect.sequence,
+          }));
+        }
+        return;
+      }
+      session.modules.unload(effect.bindingKey, effect.sequence);
+    };
     const ingest = (raw, normalizerOptions = {}) => {
       // #8891: a closing/closed session must not admit new events or mint runtime
       // module/address authority from either the direct facet or a racing backend
@@ -270,20 +302,31 @@ export class InstrumentationProvider {
             interventionIds: [...new Set([...(existingInterventionIds ?? []), interventionId])],
           }
         : ownedRaw;
+      const envelopeEpoch = enrichedRaw != null && typeof enrichedRaw === 'object'
+        ? (enrichedRaw.epoch ?? enrichedRaw.sessionEpoch)
+        : null;
+      if (epochHandoffCapture != null && envelopeEpoch === epochHandoffCapture.epoch) {
+        if (epochHandoffCapture.events.length >= normalizer.maxEvents) epochHandoffCapture.overflowed = true;
+        else epochHandoffCapture.events.push(enrichedRaw);
+        return null;
+      }
       const event = normalizer.push(enrichedRaw, normalizerOptions);
       if (!event) return null;
       const module = moduleFields(event);
       if (event.kind === 'module-load' && (module.runtimeBase ?? module.base) != null && (module.runtimeSize ?? module.size) != null) {
         const bindingKey = module.bindingKey ?? module.moduleKey ?? module.id ?? module.uuid ?? module.name;
-        if (bindingKey && !session.modules.get(bindingKey)) {
-          session.modules.load(normalizeRuntimeModuleBinding(module, {
-            bindingKey,
-            loadedSequence: event.sequence,
-          }));
+        if (bindingKey) {
+          const effect = { kind: 'module-load', bindingKey, module, sequence: event.sequence };
+          if (bootstrapModuleEffectsStaged) stagedBootstrapModuleEffects.push(effect);
+          else applyModuleLifecycle(effect);
         }
       } else if (event.kind === 'module-unload') {
         const bindingKey = module.bindingKey ?? module.moduleKey ?? module.id ?? module.uuid ?? module.name;
-        if (bindingKey) session.modules.unload(bindingKey, event.sequence);
+        if (bindingKey) {
+          const effect = { kind: 'module-unload', bindingKey, sequence: event.sequence };
+          if (bootstrapModuleEffectsStaged) stagedBootstrapModuleEffects.push(effect);
+          else applyModuleLifecycle(effect);
+        }
       }
       return event;
     };
@@ -311,6 +354,14 @@ export class InstrumentationProvider {
           session.modules.load(normalizeRuntimeModuleBinding(module, { bindingKey }));
         }
       }
+      // #8862: the snapshot is fully imported; replay the lifecycle effects of
+      // events accepted during the bootstrap window in arrival order (newer
+      // authority wins over the snapshot through the same load guard the
+      // steady-state event path uses), then return module events to the
+      // direct-apply path. No await runs between the import and this replay,
+      // so the staged set is exactly the bootstrap window.
+      bootstrapModuleEffectsStaged = false;
+      for (const effect of stagedBootstrapModuleEffects.splice(0)) applyModuleLifecycle(effect);
     } catch (error) {
       session.setState('failed');
       try { await session.close(); } catch {}
@@ -501,30 +552,54 @@ export class InstrumentationProvider {
     session.setState('ready');
     this.activeSession = session;
     let epochTransitionPending = false;
-    const commitEpoch = (reason) => {
+    const commitEpoch = (reason, handoffCapture = null) => {
       const committed = session.newEpoch(reason);
       normalizer.resetEpoch(committed);
+      // #9008: the commit cleared the queue/epoch context; replay the buffered
+      // transition events first so the next epoch's canonical queue starts
+      // with the lifecycle the producer actually emitted.
+      if (handoffCapture) {
+        for (const rawEvent of handoffCapture.events) ingest(rawEvent);
+      }
       return committed;
+    };
+    const endHandoffWindow = () => {
+      epochTransitionPending = false;
+      const capture = epochHandoffCapture;
+      epochHandoffCapture = null;
+      if (capture != null && capture.overflowed) {
+        throw new DebugAdapterError('runtime-epoch-handoff-overflow',
+          'next-generation events exceeded the handoff buffer; the epoch transition fails closed');
+      }
+      return capture;
     };
     session.newProviderEpoch = (reason = 'instrumentation-provider-epoch-changed') => {
       if (session.closed) throw new DebugAdapterError('runtime-session-closed', 'runtime provider session is closed');
       if (epochTransitionPending) throw new DebugAdapterError('runtime-epoch-transition-active', 'instrumentation provider epoch transition is already in progress');
       const next = session.epoch + 1;
       if (typeof this.backend.setEpoch !== 'function') return commitEpoch(reason);
+      // #9008: the handoff admission window spans the whole supported
+      // transition, including an asynchronous setEpoch pending.
+      epochHandoffCapture = { epoch: next, events: [], overflowed: false };
       epochTransitionPending = true;
       let backendResult;
       try {
         backendResult = this.backend.setEpoch(next);
       } catch (err) {
+        epochHandoffCapture = null;
         epochTransitionPending = false;
         throw err;
       }
       if (!backendResult || typeof backendResult.then !== 'function') {
-        epochTransitionPending = false;
-        return commitEpoch(reason);
+        return commitEpoch(reason, endHandoffWindow());
       }
       return Promise.resolve(backendResult)
-        .then(() => commitEpoch(reason))
+        .then(() => commitEpoch(reason, endHandoffWindow()))
+        .catch((err) => {
+          epochHandoffCapture = null;
+          epochTransitionPending = false;
+          throw err;
+        })
         .finally(() => { epochTransitionPending = false; });
     };
     return session;

@@ -23,6 +23,8 @@ export const FUNCTION_CANDIDATE_SCHEMA_VERSION = 1;
  */
 export const EVIDENCE_AUTHORITY = Object.freeze({
   'loader-function-start': 'authoritative',
+  // Loader start authority is independent from extent authority (#8846).
+  'loader-function-extent': 'corroborating',
   'unwind-entry': 'authoritative',
   'debug-symbol': 'authoritative',
   // Debug providers can deliberately downgrade a symbol after identity/coverage

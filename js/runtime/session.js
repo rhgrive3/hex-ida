@@ -69,6 +69,9 @@ export class DebugSession {
     this.binaryHash = options.binaryHash || null; this.modules=[]; this.threads=[]; this.breakpoints=[]; this.experiments=[]; this.observations=[];
     this.traces = new TraceRingBuffer(options.trace || {}); this.epoch=1; this.connected=false; this.closed=false; this.controllers=new Set(); this._unsubscribe=null;
     this.refreshErrors={modules:null,threads:null}; this._refreshToken=null; this._onClosed=typeof options.onClosed==='function'?options.onClosed:null; this._disconnecting=null; this._connectPromise=null; this._lifecycleGeneration=1;
+    // #9008: bounded capture for explicitly next-generation events emitted by
+    // the adapter's own setEpoch transition; replayed when the epoch commits.
+    this._handoffCapture=null;
   }
   _connectIsCurrent(generation) { return !this.closed && this._lifecycleGeneration===generation; }
   async _cleanupStaleConnect() {
@@ -181,7 +184,18 @@ export class DebugSession {
       epoch = safeEpoch != null ? eventEpoch(safeEpoch) : eventEpoch(sourceEpoch);
     }
     if (epoch == null) return { ok:false, reason:'event-epoch-invalid' };
-    if (epoch !== this.epoch) return { ok:false, reason:'event-epoch-mismatch' };
+    if (epoch !== this.epoch) {
+      // #9008: an explicit next-generation event observed inside the adapter
+      // handoff window of newEpoch() is captured (wire-safe form) for replay at
+      // commit instead of being silently discarded; it still reports the current
+      // mismatch to the caller because it is not yet part of committed state.
+      if (this._handoffCapture != null && epoch === this._handoffCapture.epoch
+        && safeEvent != null && typeof safeEvent === 'object') {
+        if (this._handoffCapture.events.length >= 4096) this._handoffCapture.overflowed = true;
+        else this._handoffCapture.events.push(safeEvent);
+      }
+      return { ok:false, reason:'event-epoch-mismatch' };
+    }
     return { ok:true, present:true, value:safeEvent };
   }
   acceptEvent(event, sourceEpoch = null) {
@@ -206,9 +220,22 @@ export class DebugSession {
   newEpoch() {
     if(this.closed) throw new DebugAdapterError('session-closed','cannot start a new epoch on a closed debug session');
     const next = this.epoch + 1;
-    if (typeof this.adapter.setEpoch === 'function') this.adapter.setEpoch(next); else if (typeof this.adapter.nextEpoch === 'function') this.adapter.nextEpoch();
+    // #9008: open the bounded handoff capture around the external transition;
+    // a failed transition discards the buffer (epoch stays committed-current),
+    // an overflowing one fails closed, and a successful commit replays the
+    // captured next-generation events after the trace reset.
+    const capture = { epoch: next, events: [], overflowed: false };
+    this._handoffCapture = capture;
+    try {
+      if (typeof this.adapter.setEpoch === 'function') this.adapter.setEpoch(next); else if (typeof this.adapter.nextEpoch === 'function') this.adapter.nextEpoch();
+    } finally {
+      this._handoffCapture = null;
+    }
+    if (capture.overflowed) throw new DebugAdapterError('runtime-epoch-handoff-overflow','next-generation events exceeded the handoff buffer; the epoch transition fails closed');
     this.epoch = next;
-    this.cancelAll('session-epoch-changed'); this.traces.clear(); return this.epoch;
+    this.cancelAll('session-epoch-changed'); this.traces.clear();
+    for (const event of capture.events) this.acceptEvent(event);
+    return this.epoch;
   }
   controller() {
     if(this.closed) throw new DebugAdapterError('session-closed','cannot mint a controller on a closed debug session');

@@ -275,7 +275,7 @@ const compareCanonicalRules = [{
   name:'compare-constant-right', phase:'boolean',
   match:(n)=>n?.kind==='compare' && isConst(n.left) && !isConst(n.right) && ['eq','ne','lt','le','gt','ge'].includes(n.op) ? {} : null,
   precondition:(n)=>isStable(n.right),
-  rewrite:(n)=>expr.compare(({eq:'eq',ne:'ne',lt:'gt',le:'ge',gt:'lt',ge:'le'})[n.op], n.right, n.left, n.compareSigned, n.source),
+  rewrite:(n)=>expr.compare(({eq:'eq',ne:'ne',lt:'gt',le:'ge',gt:'lt',ge:'le'})[n.op], n.right, n.left, n.compareSigned, n.source, { comparisonDomain: n.comparisonDomain }),
   proof:proof('comparison-symmetry','swap operands and invert ordering'), cost,
 }, {
   name:'bool-eq-one', phase:'boolean',

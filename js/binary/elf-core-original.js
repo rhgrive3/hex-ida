@@ -30,6 +30,7 @@ const SHF_WRITE = 0x1n;
 const SHF_ALLOC = 0x2n;
 const SHF_EXECINSTR = 0x4n;
 const EM_RISCV = 243;
+const SECTION_NAME_MAX_SPAN = 1 << 20;
 export const EM_AARCH64 = 183;
 export const STO_RISCV_VARIANT_CC = 0x80;
 export const STO_AARCH64_VARIANT_PCS = 0x80;
@@ -75,8 +76,12 @@ export function parseELF(input, options = {}) {
     },
   });
 
-  const programHeaders = parseProgramHeaders(r, h, image, bits);
-  const rawSections = parseSectionHeaders(r, h, bits, image);
+  // Program headers, raw section headers, and section names are structural
+  // metadata fan-out and therefore share one finite budget. Admission must
+  // happen before materializing each header object (#8714).
+  const metadataBudget = createELFMetadataBudget(image, { signal: options.signal, limits: options.metadataLimits });
+  const programHeaders = parseProgramHeaders(r, h, image, bits, metadataBudget);
+  const rawSections = parseSectionHeaders(r, h, bits, image, metadataBudget);
   // Keep section-table presence separate from parse success. `[]` can mean a
   // genuinely sectionless ELF *or* a declared table that was truncated /
   // invalid; PT_DYNAMIC symbol authority must not conflate those cases (#4197).
@@ -84,7 +89,8 @@ export function parseELF(input, options = {}) {
     declared: h.shoff !== 0n,
     valid: h.shoff === 0n || rawSections.length > 0,
   });
-  nameSections(r, rawSections, h, image);
+  // Section names must also be resolved inside the budget established above.
+  nameSections(r, rawSections, h, image, metadataBudget);
   let riscvFileIsa = null;
   const isRiscv = Number(h.machine) === EM_RISCV || image.arch === 'riscv64' || image.arch === 'riscv32';
   if (isRiscv) {
@@ -166,7 +172,6 @@ export function parseELF(input, options = {}) {
       image.metadata.entrypointZeroEvidence = 'zero-sentinel-unproven';
     }
   }
-  const metadataBudget = createELFMetadataBudget(image, { signal: options.signal, limits: options.metadataLimits });
 
   const symbolTables = rawSections.filter((s) => s.type === SHT_SYMTAB || s.type === SHT_DYNSYM);
   let dynsymAuthoritative = false;
@@ -549,13 +554,25 @@ function rejectAmbiguousPtLoadOverlap(image, index, ph) {
   }
 }
 
-function parseProgramHeaders(r, h, image, bits) {
+function parseProgramHeaders(r, h, image, bits, budget) {
   const out = [];
   const off = safeOffset(h.phoff);
   if (off == null) { image.warnings.push('ELF program header offset is not safely representable'); return out; }
   if (!h.phnum || !h.phentsize || off <= 0) return out;
-  if (off + h.phnum * h.phentsize > r.length) { image.warnings.push('ELF program header table is truncated'); return out; }
-  for (let i = 0; i < h.phnum; i++) {
+  // The declared count is only authority for what the file can actually hold.
+  // Reading the in-file prefix and marking the table partial keeps a `PN_XNUM`
+  // expansion from turning a small file into an unbudgeted object fan-out
+  // (#8714), the same fail-closed shape `parseSymbols` uses for truncated tables.
+  const capacity = Math.max(0, Math.floor((r.length - off) / h.phentsize));
+  let count = h.phnum;
+  if (count > capacity) {
+    markELFMetadataPartial(image, 'program-headers:truncated', `ELF program header table declares ${count} entries of ${h.phentsize} bytes at offset ${off} but only ${capacity} fit in the file`);
+    count = capacity;
+  }
+  let parsed = 0;
+  for (let i = 0; i < count; i++) {
+    if (!budget.take({ inputBytes: h.phentsize, objects: 1, operations: 4, estimatedHeapBytes: 288 }, 'program-header')) break;
+    parsed++;
     const p = off + i * h.phentsize;
     let ph;
     if (bits === 64) {
@@ -589,10 +606,15 @@ function parseProgramHeaders(r, h, image, bits) {
       });
     }
   }
+  // `e_phnum = PN_XNUM` stores the real count in section header 0's `sh_info`,
+  // which is attacker-controlled. Publish what was actually consumed, never the
+  // declared figure, so downstream authority cannot size itself from a count the
+  // file does not contain (#8714).
+  if (h.extendedPhnum != null) image.metadata.extendedProgramHeaderCount = parsed;
   return out;
 }
 
-function parseSectionHeaders(r, h, bits, image) {
+function parseSectionHeaders(r, h, bits, image, budget) {
   const off = safeOffset(h.shoff);
   let count = h.shnum;
   if (off == null) { image.warnings.push('ELF section header offset is not safely representable'); return []; }
@@ -602,6 +624,7 @@ function parseSectionHeaders(r, h, bits, image) {
   if (count > 100000 || off + count * h.shentsize > r.length) { image.warnings.push(`invalid ELF section count ${count}`); return []; }
   const out = [];
   for (let i = 0; i < count; i++) {
+    if (!budget.take({ inputBytes: h.shentsize, records: 1, objects: 1, operations: 6, estimatedHeapBytes: 384 }, 'section-header')) break;
     const p = off + i * h.shentsize;
     if (bits === 64) {
       out.push({ index: i, nameOffset: r.u32(p), type: r.u32(p + 4), flags: r.u64(p + 8), addr: r.u64(p + 16), offset: r.u64(p + 24), size: r.u64(p + 32), link: r.u32(p + 40), info: r.u32(p + 44), addralign: r.u64(p + 48), entsize: r.u64(p + 56), name: '' });
@@ -618,16 +641,18 @@ function parseSectionHeaders(r, h, bits, image) {
  * when no NUL exists, which would admit malformed bytes as canonical symbol /
  * DT_NEEDED / SONAME / section names. Returns null when the span has no NUL.
  */
-function terminatedStringInTable(r, strStart, strSize, offset, maxSpan) {
+function terminatedStringInTable(r, strStart, strSize, offset, maxSpan, stats = null) {
   const max = Math.min(strSize - offset, maxSpan);
-  if (max <= 0) return null;
+  if (max <= 0) { if (stats) stats.scanned = 0; return null; }
   const slice = r.slice(strStart + offset, max);
   const nul = slice.indexOf(0);
-  if (nul < 0) return null;
-  return r.cstring(strStart + offset, Math.min(nul + 1, max));
+  if (nul < 0) { if (stats) stats.scanned = max; return null; }
+  const span = Math.min(nul + 1, max);
+  if (stats) stats.scanned = span;
+  return r.cstring(strStart + offset, span);
 }
 
-function nameSections(r, sections, h, image) {
+function nameSections(r, sections, h, image, budget) {
   let shstrndx = h.shstrndx;
   if (shstrndx === SHN_XINDEX) {
     const link = sections[0]?.link;
@@ -654,11 +679,31 @@ function nameSections(r, sections, h, image) {
     return;
   }
   if (str.offset + str.size > BigInt(r.length)) return;
+  const strStart = Number(str.offset);
+  const strBytes = Number(str.size);
+  // `sh_name` is an offset, so a conforming ELF may point any number of section
+  // headers at one shared string. Resolve each distinct offset exactly once and
+  // charge the scan plus the retained text against the metadata budget; repeated
+  // references are free (#8678). Failed (unterminated/out-of-span) lookups are
+  // cached too, so an adversarial table cannot re-scan the same bytes per row.
+  const resolved = new Map();
+  const scan = { scanned: 0 };
   for (const s of sections) {
     if (BigInt(s.nameOffset) >= str.size) continue;
-    const sectionName = terminatedStringInTable(r, Number(str.offset), Number(str.size), s.nameOffset, 1 << 20);
-    if (sectionName != null) { s.name = sectionName; continue; }
-    s.name = '';
+    const cached = resolved.get(s.nameOffset);
+    if (cached !== undefined) { s.name = cached; continue; }
+    if (!budget.take({ records: 1, objects: 1, operations: 2 }, 'section-name')) return;
+    const sectionName = terminatedStringInTable(r, strStart, strBytes, s.nameOffset, SECTION_NAME_MAX_SPAN, scan) || '';
+    // The scan itself already happened, so charging it afterwards still caps the
+    // total bytes examined at the configured input limit plus one bounded span
+    // instead of the previous per-reference cost.
+    if (!budget.take({
+      inputBytes: scan.scanned,
+      stringBytes: sectionName.length * 2,
+      estimatedHeapBytes: sectionName.length * 2 + 32,
+    }, 'section-name')) return;
+    resolved.set(s.nameOffset, sectionName);
+    s.name = sectionName;
   }
 }
 
@@ -798,6 +843,13 @@ export function parseSymbols(r, table, sections, image, bits, elfType, budget) {
 }
 
 function reconcileDynamicSymbolFallbackEvidence(image) {
+  // The reconciliation only ever replaces section-backed `dynsym` records that
+  // duplicate a PT_DYNAMIC fallback. A sectionless PT_DYNAMIC image carries no
+  // `dynsym`-source symbols (and therefore no `elf-dynsym` imports or dynsym
+  // exports), so the pass is a strict no-op there; keying every large aliased
+  // `st_name` on such an image would re-materialize the shared name once per
+  // record and defeat #8821's interning budget (#8821). Skip it in that case.
+  if (!image.symbols.some((symbol) => symbol.source === 'dynsym')) return;
   const scalar = (value) => typeof value === 'bigint' ? value.toString() : value ?? null;
   const key = (values) => JSON.stringify(values.map(scalar));
   const symbolKey = (symbol) => key([

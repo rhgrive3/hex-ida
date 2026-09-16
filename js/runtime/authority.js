@@ -22,6 +22,18 @@ const PROVIDER_PROFILE_PATTERNS = Object.freeze([
 ]);
 const MANAGED_TARGET_PROFILE = /^managed:(?:wasm|dex|cil|jvm):m6$/;
 const VALID_RUNTIME_PROFILE_SUPPORT = new WeakSet();
+// Runtime support is a live-provider authority, so the branding transition may
+// not be driven by caller-supplied booleans. A receipt is only minted by a
+// tracker that actually accepted the runtime traffic it now attests to (#8851).
+const RUNTIME_VALIDATION_RECEIPT_SCHEMA = 'hex-runtime-validation-receipt/v1';
+const VALID_RUNTIME_VALIDATION_RECEIPTS = new WeakSet();
+const LIVE_RUNTIME_TRACKERS = new WeakSet();
+const RECEIPT_BINDING_FIELDS = Object.freeze([
+  'bindingId', 'providerIdentity', 'providerProfileId', 'runtimeInstanceIdentity',
+  'targetIdentity', 'targetProfileId', 'binaryIdentity', 'buildIdentity',
+  'moduleIdentity', 'loadMappingIdentity', 'sessionIdentity', 'commitSha',
+  'treeSha', 'epoch',
+]);
 const BINDING_FIELDS = Object.freeze([
   'schemaVersion', 'providerIdentity', 'providerProfileId', 'providerVersion',
   'runtimeInstanceIdentity', 'targetIdentity', 'targetProfileId',
@@ -330,6 +342,14 @@ function hasOwnTrueCapability(source, capability) {
     && source[capability] === true;
 }
 
+function identityList(value, code) {
+  if (!Array.isArray(value) || value.length === 0) throw new TypeError(code);
+  const normalized = value.map((item) => required(item, code));
+  const out = [...new Set(normalized)].sort();
+  if (out.length === 0) throw new TypeError(code);
+  return out;
+}
+
 function bindingPayload(input = {}) {
   const targetProfileId = identityAlias(input, 'targetProfileId', 'architectureProfileId', 'runtime-target-profile-required');
   const buildIdentity = identityAlias(input, 'buildIdentity', 'runtimeBuildIdentity', 'runtime-build-identity-invalid');
@@ -602,6 +622,8 @@ function freezeObservationValue(value, seen = new WeakSet()) {
 export class RuntimeAuthorityTracker {
   #observations;
   #retainedBytes;
+  #acceptedObservationIds;
+  #mutationAuthorityIds;
 
   constructor(bindingInput, options = {}) {
     this.binding = canonicalBinding(bindingInput || {});
@@ -616,6 +638,14 @@ export class RuntimeAuthorityTracker {
     );
     this.#observations = [];
     this.#retainedBytes = 0;
+    this.#acceptedObservationIds = new Set();
+    this.#mutationAuthorityIds = new Set();
+    LIVE_RUNTIME_TRACKERS.add(this);
+  }
+
+  #recordBounded(set, id) {
+    set.add(id);
+    while (set.size > this.maxObservations) set.delete(set.values().next().value);
   }
 
   get retainedPayloadBytes() {
@@ -650,6 +680,7 @@ export class RuntimeAuthorityTracker {
       const evicted = this.#observations.shift();
       this.#retainedBytes -= payloadRetainedBytes(evicted.payload);
     }
+    this.#recordBounded(this.#acceptedObservationIds, observation.observationId);
     return Object.freeze({ status: 'accepted', observationId: observation.observationId, sequence: observation.sequence });
   }
 
@@ -674,7 +705,47 @@ export class RuntimeAuthorityTracker {
       issuedAt: required(input.issuedAt, 'runtime-mutation-issued-at-required'),
       authority: 'explicit-local-runtime-mutation',
     };
-    return Object.freeze({ status: 'authorized', token: deepFreeze({ ...token, tokenId: `runtime-mutation:${stableDigest(token)}` }) });
+    const tokenId = `runtime-mutation:${stableDigest(token)}`;
+    this.#recordBounded(this.#mutationAuthorityIds, tokenId);
+    return Object.freeze({ status: 'authorized', token: deepFreeze({ ...token, tokenId }) });
+  }
+
+  mintProfileSupportReceipt(input = {}) {
+    if (!LIVE_RUNTIME_TRACKERS.has(this)) throw new TypeError('runtime-receipt-mint-untrusted');
+    if (this.closed) throw new TypeError('runtime-receipt-tracker-closed');
+    const observationIdentities = identityList(input.observationIdentities, 'runtime-receipt-observation-identities-required');
+    const mutationAuthorityIdentities = identityList(input.mutationAuthorityIdentities, 'runtime-receipt-mutation-identities-required');
+    const testItemIdentities = identityList(input.testItemIdentities, 'runtime-receipt-test-identities-required');
+    for (const observationId of observationIdentities) {
+      if (!this.#acceptedObservationIds.has(observationId)) throw new TypeError(`runtime-receipt-observation-unbound:${observationId}`);
+    }
+    for (const mutationId of mutationAuthorityIdentities) {
+      if (!this.#mutationAuthorityIds.has(mutationId)) throw new TypeError(`runtime-receipt-mutation-authority-unbound:${mutationId}`);
+    }
+    const receipt = {
+      schemaVersion: RUNTIME_VALIDATION_RECEIPT_SCHEMA,
+      bindingId: this.binding.bindingId,
+      providerIdentity: this.binding.providerIdentity,
+      providerProfileId: this.binding.providerProfileId,
+      runtimeInstanceIdentity: this.binding.runtimeInstanceIdentity,
+      targetIdentity: this.binding.targetIdentity,
+      targetProfileId: this.binding.targetProfileId,
+      binaryIdentity: this.binding.binaryIdentity,
+      buildIdentity: this.binding.buildIdentity,
+      moduleIdentity: this.binding.moduleIdentity,
+      loadMappingIdentity: this.binding.loadMappingIdentity,
+      sessionIdentity: this.binding.sessionIdentity,
+      commitSha: this.binding.commitSha,
+      treeSha: this.binding.treeSha,
+      epoch: this.binding.epoch,
+      lastSequence: this.lastSequence,
+      observationIdentities: Object.freeze(observationIdentities),
+      mutationAuthorityIdentities: Object.freeze(mutationAuthorityIdentities),
+      testItemIdentities: Object.freeze(testItemIdentities),
+    };
+    const branded = deepFreeze({ ...receipt, receiptId: `runtime-receipt:${stableDigest(receipt)}` });
+    VALID_RUNTIME_VALIDATION_RECEIPTS.add(branded);
+    return branded;
   }
 
   nextEpoch(bindingOverrides = {}) {
@@ -688,6 +759,20 @@ export class RuntimeAuthorityTracker {
   }
 }
 
+function runtimeReceiptReason(receipt, canonical, providerProfileId, targetProfileId) {
+  if (!receipt || typeof receipt !== 'object' || !VALID_RUNTIME_VALIDATION_RECEIPTS.has(receipt)) return 'runtime-validation-receipt-required';
+  if (receipt.schemaVersion !== RUNTIME_VALIDATION_RECEIPT_SCHEMA) return 'runtime-validation-receipt-schema-invalid';
+  for (const field of RECEIPT_BINDING_FIELDS) {
+    if (receipt[field] !== canonical[field]) return `runtime-validation-receipt-identity-mismatch:${field}`;
+  }
+  if (receipt.providerProfileId !== providerProfileId) return 'runtime-validation-receipt-provider-profile-mismatch';
+  if (receipt.targetProfileId !== targetProfileId) return 'runtime-validation-receipt-target-profile-mismatch';
+  for (const field of ['observationIdentities', 'mutationAuthorityIdentities', 'testItemIdentities']) {
+    if (!Array.isArray(receipt[field]) || receipt[field].length === 0) return `runtime-validation-receipt-evidence-missing:${field}`;
+  }
+  return null;
+}
+
 export function runtimeProfileSupport({
   binding,
   providerProfileId = null,
@@ -699,6 +784,7 @@ export function runtimeProfileSupport({
   expectedTreeSha = null,
   expectedBuildIdentity = null,
   profileProof = null,
+  runtimeReceipt = null,
 } = {}) {
   const canonical = canonicalBinding(binding || {}, { throwOnError: false });
   const hasBinding = canonical != null;
@@ -746,6 +832,7 @@ export function runtimeProfileSupport({
     else if (expectedHead != null && (canonical.commitSha !== expectedHead || proofHeadSha !== expectedHead)) reason = 'runtime-proof-stale-head';
     else if (expectedTree != null && (canonical.treeSha !== expectedTree || proofTreeSha !== expectedTree)) reason = 'runtime-proof-stale-tree';
   }
+  if (!reason && hasBinding) reason = runtimeReceiptReason(runtimeReceipt, canonical, normalizedProviderProfileId, normalizedTargetProfileId);
   const proven = hasBinding
     && declared.length > 0
     && missing.length === 0
@@ -766,6 +853,8 @@ export function runtimeProfileSupport({
     treeSha: hasBinding ? canonical.treeSha : null,
     reason,
     authority: proven ? 'runtime-evidence-bound' : 'none',
+    runtimeReceiptId: proven ? runtimeReceipt.receiptId : null,
+    runtimeReceiptBindingId: proven ? runtimeReceipt.bindingId : null,
   });
   if (proven) VALID_RUNTIME_PROFILE_SUPPORT.add(result);
   return result;
