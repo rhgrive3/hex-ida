@@ -1,0 +1,29 @@
+name: tmp-route-8996-v4
+on:
+  push:
+    branches:
+      - codex/issue-campaign-20260914-lane-10-batch-04
+permissions:
+  contents: write
+jobs:
+  route:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Repair ownership route syntax
+        run: python tools/tmp-route-8996.py
+      - name: Validate ownership route
+        run: |
+          node tools/validation/phase7-ownership.mjs --files-json '["js/analysis/semantic-function-base.js","tests/phase7/abi/issue-8817-aapcs64-proven-fixed-prefix-retention.test.mjs"]'
+          node tests/ci/circleci-impact.test.mjs
+      - name: Commit repair and remove temporary files
+        run: |
+          rm tools/tmp-route-8996.py .github/workflows/tmp-route-8996-v4.yml
+          git config user.name 'rhgrive3'
+          git config user.email 'rhgrive@gmail.com'
+          git add .circleci/config.yml tools/tmp-route-8996.py .github/workflows/tmp-route-8996-v4.yml
+          git commit -m 'ci: repair PR 8996 ownership route syntax'
+          git push origin HEAD:codex/issue-campaign-20260914-lane-10-batch-04
