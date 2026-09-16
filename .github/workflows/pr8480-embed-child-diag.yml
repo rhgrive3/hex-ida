@@ -1,0 +1,44 @@
+name: pr8480-embed-child-diag
+on:
+  push:
+    branches:
+      - diag/pr8480-embed-child
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Reproduce exact and base
+        shell: bash
+        run: |
+          set -u
+          OUT=/tmp/pr8480-embed-child.txt
+          : > "$OUT"
+          for spec in exact:12ff333598b2489bef32b4d47220e2da1fba0bbe base:64bc4e45d4965ad19980b5f54c96dc55f06998c8; do
+            label=${spec%%:*}
+            sha=${spec#*:}
+            git checkout --detach "$sha" >/dev/null 2>&1 || { echo "$label checkout_rc=$?" >> "$OUT"; continue; }
+            npm ci --ignore-scripts >/dev/null 2>&1 || { echo "$label npm_ci_rc=$?" >> "$OUT"; continue; }
+            timeout 90s node tests/userscript-embed-child.mjs >/tmp/out 2>&1
+            rc=$?
+            echo "$label rc=$rc" >> "$OUT"
+            if [ "$rc" -ne 0 ]; then
+              sed -n '1,80p' /tmp/out >> "$OUT"
+            fi
+          done
+          exit 0
+      - name: Upload minimal evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr8480-embed-child
+          path: /tmp/pr8480-embed-child.txt
+          retention-days: 1
