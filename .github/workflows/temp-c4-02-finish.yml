@@ -1,0 +1,129 @@
+name: Temporary C4-02 dispatcher refusal repair
+on:
+  push:
+    branches: ['impl/c4-02-finish-20260916']
+    paths: ['.github/workflows/temp-c4-02-finish.yml']
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      HEAD_SHA: 0610dbd0bec3444625bbdc1ceed71610e9a4a928
+      TARGET_BRANCH: feat/analysis-roadmap-v8-current-main-20260907
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          fetch-depth: 400
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply conservative dispatcher refusal and regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('js/decompiler/phase8/structuring.js')
+          s=p.read_text()
+          old="const { byIndex, loopsByHeader, innermostLoopOf, postDominates, ipdom } = context;"
+          new="const { byIndex, loopsByHeader, innermostLoopOf, dispatcherLoopOf, postDominates, ipdom } = context;"
+          if old not in s: raise SystemExit('classify context anchor missing')
+          s=s.replace(old,new,1)
+          anchor="""  const enclosing = innermostLoopOf(from);\n\n  // 2. An edge inside an irreducible region is emitted as an explicit jump. The\n"""
+          insert="""  const dispatcher = typeof dispatcherLoopOf === 'function'\n    ? (dispatcherLoopOf(from) ?? dispatcherLoopOf(to))\n    : null;\n  if (dispatcher != null) {\n    return {\n      construct: 'residual-goto',\n      reason: `switch-headed loop ${dispatcher.header} has multiple direct state arms returning to its header, so it is retained as explicit control flow rather than guessed as a structured loop`,\n    };\n  }\n\n  const enclosing = innermostLoopOf(from);\n\n  // 2. An edge inside an irreducible region is emitted as an explicit jump. The\n"""
+          if anchor not in s: raise SystemExit('dispatcher classify anchor missing')
+          s=s.replace(anchor,insert,1)
+          anchor="""  const nodeSets = new Map(loops.map((loop) => [loop.header, new Set(loop.nodes)]));\n\n  const innermostLoopOf = (index) => {\n"""
+          insert="""  const nodeSets = new Map(loops.map((loop) => [loop.header, new Set(loop.nodes)]));\n\n  // A switch-headed natural loop whose distinct case blocks are all direct\n  // latches back to the same header is dispatcher-shaped control flow. It may\n  // be a flattened state machine, and this pass has no independent state-machine\n  // proof. Preserve every edge as a residual jump instead of minting a loop or\n  // switch region from the shape alone.\n  const dispatcherLoopHeaders = new Set();\n  for (const loop of loops) {\n    if (loop.classification !== 'natural') continue;\n    const nodes = nodeSets.get(loop.header);\n    const header = byIndex.get(loop.header);\n    if (!nodes || !header || terminatorOf(header)?.op !== 'switch') continue;\n    const internal = successorEdgesOf(header).filter((edge) => nodes.has(edge.to));\n    if (internal.length < 2 || internal.some((edge) => edge.to === loop.header)) continue;\n    const latches = new Set(loop.latches);\n    const allDirectLatches = internal.every((edge) => {\n      if (!latches.has(edge.to)) return false;\n      const armEdges = successorEdgesOf(byIndex.get(edge.to));\n      return armEdges.length === 1 && armEdges[0].to === loop.header\n        && armEdges[0].kinds.every((kind) => STRUCTURED_EDGE_KINDS.has(kind));\n    });\n    if (allDirectLatches) dispatcherLoopHeaders.add(loop.header);\n  }\n\n  const dispatcherLoopOf = (index) => {\n    let best = null;\n    for (const loop of loops) {\n      if (!dispatcherLoopHeaders.has(loop.header) || !nodeSets.get(loop.header).has(index)) continue;\n      if (best == null || loop.nodes.length < best.nodes.length) best = loop;\n    }\n    return best;\n  };\n\n  const innermostLoopOf = (index) => {\n"""
+          if anchor not in s: raise SystemExit('dispatcher detection anchor missing')
+          s=s.replace(anchor,insert,1)
+          old="const accountingContext = { byIndex, blockOrder, loopsByHeader, innermostLoopOf, loopExitedBy, postDominates, ipdom, sharedPostDominator };"
+          new="const accountingContext = { byIndex, blockOrder, loopsByHeader, innermostLoopOf, dispatcherLoopOf, loopExitedBy, postDominates, ipdom, sharedPostDominator };"
+          if old not in s: raise SystemExit('accounting context anchor missing')
+          s=s.replace(old,new,1)
+          old="""  for (const loop of loops) {\n    const exits = [...new Set(loop.exitEdges.map((edge) => edge.to))].sort((left, right) => left - right);\n"""
+          new="""  for (const loop of loops) {\n    if (dispatcherLoopHeaders.has(loop.header)) continue;\n    const exits = [...new Set(loop.exitEdges.map((edge) => edge.to))].sort((left, right) => left - right);\n"""
+          if old not in s: raise SystemExit('loop region anchor missing')
+          s=s.replace(old,new,1)
+          old="""    const successors = successorEdgesOf(block);\n    if (successors.length < 2) continue;\n    if (loopsByHeader.has(index) && loopsByHeader.get(index).guardBlock === index) continue;\n"""
+          new="""    const successors = successorEdgesOf(block);\n    if (successors.length < 2) continue;\n    if (dispatcherLoopHeaders.has(index)) continue;\n    if (loopsByHeader.has(index) && loopsByHeader.get(index).guardBlock === index) continue;\n"""
+          if old not in s: raise SystemExit('branch region anchor missing')
+          s=s.replace(old,new,1)
+          p.write_text(s)
+
+          p=Path('tests/phase8/structuring/edge-accounting.test.mjs')
+          s=p.read_text()
+          marker="test('nested loops name the back edge, the entry and the guard exit at each level', () => {"
+          if marker not in s: raise SystemExit('test insertion anchor missing')
+          tests=r'''test('switch case fallthrough remains an explicit accounted edge inside the switch region', () => {
+  const f = fixture('switch-fallthrough');
+  const selector = f.block(0, { succ: [1, 2, 3] }).opaque(32);
+  f.switchBranch(selector, [[0, 1], [1, 2]], 3);
+  f.block(1, { succ: [2], edges: [{ to: 2, kind: 'fallthrough' }] }).branch(2);
+  f.block(2, { succ: [4] }).branch(4);
+  f.block(3, { succ: [4] }).branch(4);
+  f.block(4).ret();
+  const ir = f.build();
+  const { facts } = structuring(ir);
+  assert.equal(facts.edges.find((edge) => edge.from === 1 && edge.to === 2)?.construct, 'sequence');
+  assert.ok(facts.edges.find((edge) => edge.from === 1 && edge.to === 2)?.kinds.includes('fallthrough'));
+  assert.ok(facts.regions.some((entry) => entry.kind === 'switch' && entry.entry === 0));
+  assert.deepEqual(edgeAccountingFailures(ir, facts), []);
+});
+
+test('flattened switch dispatcher remains residual control flow instead of a guessed loop', () => {
+  const f = fixture('flattened-dispatcher');
+  f.block(0, { succ: [1] }).branch(1);
+  const state = f.block(1, { succ: [2, 3, 4] }).opaque(32);
+  f.switchBranch(state, [[0, 2], [1, 3]], 4);
+  f.block(2, { succ: [1] }).branch(1);
+  f.block(3, { succ: [1] }).branch(1);
+  f.block(4).ret();
+  const ir = f.build();
+  const { facts } = structuring(ir);
+  assert.equal(facts.residualGotoCount, facts.edgeCount);
+  assert.ok(facts.edges.every((edge) => edge.construct === 'residual-goto'));
+  assert.ok(!facts.regions.some((entry) => entry.entry === 1 && (entry.kind === 'loop' || entry.kind === 'switch')));
+  assert.deepEqual(edgeAccountingFailures(ir, facts), []);
+});
+
+'''
+          s=s.replace(marker,tests+marker,1)
+          p.write_text(s)
+          PY
+          git diff --check
+      - name: Run focused structuring regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/phase8/structuring/*.test.mjs
+      - name: Build protected userscript and commit candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run userscript:build
+          git diff --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/decompiler/phase8/structuring.js tests/phase8/structuring/edge-accounting.test.mjs userscript/hex.user.template.js userscript/release-version.json
+          git commit -m 'fix(phase8): keep dispatcher loops residual'
+      - name: Verify ownership and deterministic generated output
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run userscript:build
+          git diff --exit-code
+          node tools/validation/phase8-ownership.mjs --check-manifest
+          git fetch --no-tags --depth=400 origin main:refs/remotes/origin/main
+          BASE_SHA=$(git rev-parse refs/remotes/origin/main)
+          node tools/validation/analysis-roadmap/ownership.mjs --branch "$TARGET_BRANCH" --phase phase8 --base-sha "$BASE_SHA" --head-sha "$(git rev-parse HEAD)"
+      - name: Publish only if PR head is unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          REMOTE=$(git ls-remote origin "refs/heads/$TARGET_BRANCH" | cut -f1)
+          test "$REMOTE" = "$HEAD_SHA" || { echo "target moved: expected $HEAD_SHA got $REMOTE"; exit 1; }
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
