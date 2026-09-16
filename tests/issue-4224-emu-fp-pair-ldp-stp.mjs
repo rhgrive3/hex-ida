@@ -96,7 +96,7 @@ async function testQPairFailsClosed() {
     () => emu.execute('ldp', 'q0, q1, [x2]', 0n),
     (err) => {
       assert.ok(err instanceof EmulatorFault, 'EmulatorFault expected, got ' + String(err && err.code) + ' ' + String(err));
-      assert.equal(err.code, 'unsupported', 'Q pair must fail closed as unsupported, not invalid-register: ' + err.code);
+      assert.equal(err.code, 'unsupported-instruction', 'Q pair must fail closed as unsupported, not invalid-register: ' + err.code);
       return true;
     },
   );

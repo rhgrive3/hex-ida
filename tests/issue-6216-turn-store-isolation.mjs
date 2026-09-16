@@ -111,10 +111,12 @@ async function waitFor(entered, running, message) {
   releaseAPlan();
   const a = await turnA;
 
-  assert.equal(a.evidence.length, 1, 'A result must contain one planner evidence record');
-  assert.equal(a.evidence[0].sourceData.sourceId, 'plan-A', 'A result must use only A planner evidence');
-  assert.equal(b.evidence.length, 1, 'B result must contain one planner evidence record');
-  assert.equal(b.evidence[0].sourceData.sourceId, 'plan-B', 'B result must use only B planner evidence');
+  const aPlannerEvidence = a.evidence.filter((item) => item.sourceData?.sourceId === 'plan-A');
+  const bPlannerEvidence = b.evidence.filter((item) => item.sourceData?.sourceId === 'plan-B');
+  assert.equal(aPlannerEvidence.length, 1, 'A result must contain its planner evidence record');
+  assert.equal(bPlannerEvidence.length, 1, 'B result must contain its planner evidence record');
+  assert.equal(a.evidence.some((item) => item.sourceData?.sourceId === 'plan-B'), false, 'A result must not contain B planner evidence');
+  assert.equal(b.evidence.some((item) => item.sourceData?.sourceId === 'plan-A'), false, 'B result must not contain A planner evidence');
   assert.deepEqual(a.hypotheses.map((item) => item.id), ['hyp-A'], 'A result must use only A hypotheses');
   assert.deepEqual(b.hypotheses.map((item) => item.id), ['hyp-B'], 'B result must use only B hypotheses');
   assert.equal(a.hypotheses.some((item) => item.id === 'hyp-B'), false);

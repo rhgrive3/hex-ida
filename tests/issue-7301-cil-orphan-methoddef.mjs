@@ -124,7 +124,8 @@ test('#7301 owned MethodDef with a TypeDef row still parses and binds the owner'
   assert.equal(methods[0].declaringTypeId != null, true);
   // The resolved signature blob is `static void()` — a zero-slot return shape.
   const validation = await frontend.validateMethod(decoded, { image, returnStackSlots: 0 });
-  assert.equal(validation.status, 'valid', JSON.stringify(validation.errors));
+  assert.equal(validation.status, 'partial', JSON.stringify(validation.errors));
+  assert.deepEqual(validation.errors, [], 'the owned method remains structurally valid even when the tiny header omits maxStack authority');
 });
 
 test('#7301 probe does not advertise a binary whose metadata has orphan methods', () => {

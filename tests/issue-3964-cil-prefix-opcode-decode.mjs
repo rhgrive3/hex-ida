@@ -35,13 +35,14 @@ function hasMnemonic(bundles, mnemonic) {
 }
 
 test('#3964 FE16 decodes as constrained. and consumes its 4-byte type token', () => {
-  // FE 16 2A 00 00 00 -> constrained. <token 0x0000002a>
-  const bundles = decode([0xfe, 0x16, 0x2a, 0x00, 0x00, 0x00]);
+  // FE 16 2A 00 00 00 28 00 00 00 00 -> constrained. <token> + call.
+  const bundles = decode([0xfe, 0x16, 0x2a, 0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x00]);
   assert.equal(bundles.length, 1, 'token bytes must not become extra instructions');
   const prefix = bundles[0];
-  assert.equal(prefix.opcode, 0xfe16);
-  assert.equal(prefix.mnemonic, 'constrained.');
-  assert.equal(byteEnd(prefix), 6, 'the whole prefix + token must be one span');
+  assert.equal(prefix.opcode, 0x28);
+  assert.equal(prefix.mnemonic, 'call');
+  assert.equal(byteEnd(prefix), 11, 'the whole prefix + token + instruction must be one span');
+  assert.equal(prefix.metadata.constrained.typeToken, 0x2a);
   // fail-closed: an unattached modifier is never promoted to exact.
   assert.equal(prefix.completeness, 'partial');
   assert.ok(prefix.unknownEffects?.length >= 1);
@@ -58,39 +59,47 @@ test('#3964 constrained. token bytes never lift as a fake ret/nop stream', () =>
 });
 
 test('#3964 FE12 decodes as unaligned. and consumes its 1-byte alignment', () => {
-  // FE 12 01 -> unaligned. 1
-  const bundles = decode([0xfe, 0x12, 0x01]);
+  // FE 12 01 28 00 00 00 00 -> unaligned. 1 + call.
+  const bundles = decode([0xfe, 0x12, 0x01, 0x28, 0x00, 0x00, 0x00, 0x00]);
   assert.equal(bundles.length, 1, 'alignment byte must not become a break instruction');
   const prefix = bundles[0];
-  assert.equal(prefix.opcode, 0xfe12);
-  assert.equal(prefix.mnemonic, 'unaligned.');
-  assert.equal(byteEnd(prefix), 3);
+  assert.equal(prefix.opcode, 0x28);
+  assert.equal(prefix.mnemonic, 'call');
+  assert.equal(prefix.metadata.unaligned.alignment, 1);
+  assert.equal(byteEnd(prefix), 8);
   assert.equal(prefix.completeness, 'partial');
 });
 
 test('#3964 unaligned. with an invalid alignment stays partial, never exact', () => {
   // ECMA-335 only permits alignment 1/2/4 for unaligned.; 3 is malformed.
-  const bundles = decode([0xfe, 0x12, 0x03]);
-  assert.equal(bundles.length, 1);
-  const prefix = bundles[0];
-  assert.equal(prefix.mnemonic, 'unaligned.');
-  assert.equal(prefix.completeness, 'partial');
-  assert.ok(prefix.unknownEffects?.length >= 1);
+  assert.throws(
+    () => decode([0xfe, 0x12, 0x03, 0x28, 0x00, 0x00, 0x00, 0x00]),
+    /cil-invalid-unaligned-alignment/,
+  );
 });
 
 test('#3964 FE13 is recognized as volatile. (was falling to default partial)', () => {
-  const bundles = decode([0xfe, 0x13]);
+  const bundles = decode([0xfe, 0x13, 0x28, 0x00, 0x00, 0x00, 0x00]);
   const prefix = bundles[0];
-  assert.equal(prefix.opcode, 0xfe13);
-  assert.equal(prefix.mnemonic, 'volatile.');
+  assert.equal(prefix.opcode, 0x28);
+  assert.equal(prefix.mnemonic, 'call');
+  assert.equal(prefix.metadata.volatile.mnemonic, 'volatile.');
   assert.equal(prefix.completeness, 'partial');
 });
 
 test('#3964 tail. and readonly. remain recognized and are not exact standalone ops', () => {
-  const tail = decode([0xfe, 0x14])[0];
-  assert.equal(tail.mnemonic, 'tail.');
+  const tail = decode([0xfe, 0x14, 0x2a])[0];
+  assert.equal(tail.mnemonic, 'ret');
+  assert.equal(tail.metadata.tail.mnemonic, 'tail.');
   assert.equal(tail.completeness, 'partial');
-  const readonly = decode([0xfe, 0x1e])[0];
-  assert.equal(readonly.mnemonic, 'readonly.');
+  const readonly = decode([0xfe, 0x1e, 0x28, 0x00, 0x00, 0x00, 0x00])[0];
+  assert.equal(readonly.mnemonic, 'call');
+  assert.equal(readonly.metadata.readonly.mnemonic, 'readonly.');
   assert.equal(readonly.completeness, 'partial');
+});
+
+test('#3964 a modifier without a following instruction fails closed', () => {
+  for (const bytes of [[0xfe, 0x13], [0xfe, 0x14], [0xfe, 0x1e]]) {
+    assert.throws(() => decode(bytes), /cil-prefix-without-instruction/);
+  }
 });

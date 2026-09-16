@@ -154,7 +154,7 @@ for (const bad of [true, ['16'], 1.5, { valueOf: () => 1 }, ' 16', '']) {
 {
   const { LocalFunctionSandboxAdapter } = await import('../js/adapters/index.js');
   const adapter = new LocalFunctionSandboxAdapter({ fetch: async () => null });
-  const launched = await adapter.launch({
+  await adapter.launch({
     address: 0x1000n, args: [1n],
     heap: [
       { address: 0x620000000000n, size: 1, value: 256n },
@@ -162,11 +162,12 @@ for (const bad of [true, ['16'], 1.5, { valueOf: () => 1 }, ' 16', '']) {
     ],
     globalValues: [{ address: 0x620000001000n, size: 2, value: 65536n }],
   });
-  assert.deepEqual(launched.canonicalInput.heap, [
+  const canonicalInput = adapter.sandbox.canonicalInput;
+  assert.deepEqual(canonicalInput.heap, [
     { address: (0x620000000000n).toString(), size: 1, value: '0' },
     { address: (0x620000000010n).toString(), size: 1, value: '255' },
   ]);
-  assert.deepEqual(launched.canonicalInput.globalValues, [
+  assert.deepEqual(canonicalInput.globalValues, [
     { address: (0x620000001000n).toString(), size: 2, value: '0' },
   ]);
   assert.deepEqual([...await adapter.readMemory(0x620000000000n, 1)], [0x00]);
@@ -174,12 +175,12 @@ for (const bad of [true, ['16'], 1.5, { valueOf: () => 1 }, ' 16', '']) {
   assert.deepEqual([...await adapter.readMemory(0x620000001000n, 2)], [0x00, 0x00]);
 
   const other = new LocalFunctionSandboxAdapter({ fetch: async () => null });
-  const launchedOther = await other.launch({
+  await other.launch({
     address: 0x1000n, args: [1n],
     heap: [{ address: 0x620000000000n, size: 8, value: 2n }],
     globalValues: [{ address: 0x620000001000n, size: 4, value: 2n }],
   });
-  assert.notDeepEqual(launched.canonicalInput, launchedOther.canonicalInput,
+  assert.notDeepEqual(canonicalInput, other.sandbox.canonicalInput,
     'machine-state differences remain visible in evidence identity');
 }
 
@@ -193,9 +194,10 @@ for (const bad of [true, ['16'], 1.5, { valueOf: () => 1 }, ' 16', '']) {
     get value() { reads.value++; return 257n; },
   };
   const adapter = new LocalFunctionSandboxAdapter({ fetch: async () => null });
-  const launched = await adapter.launch({ address: 0x1000n, args: [1n], heap: [item] });
+  await adapter.launch({ address: 0x1000n, args: [1n], heap: [item] });
+  const canonicalInput = adapter.sandbox.canonicalInput;
   assert.deepEqual(reads, { address: 1, size: 1, value: 1 });
-  assert.deepEqual(launched.canonicalInput.heap, [{ address: (0x620000000020n).toString(), size: 1, value: '1' }]);
+  assert.deepEqual(canonicalInput.heap, [{ address: (0x620000000020n).toString(), size: 1, value: '1' }]);
   assert.deepEqual([...await adapter.readMemory(0x620000000020n, 1)], [1]);
 }
 

@@ -101,6 +101,7 @@ function guardedDivision(n, opts) {
   // architectural 0; printing any division there would be UB-in-C.
   const divisor = n.right;
   if (divisor?.kind === 'const' && divisor.value === 0n) return '0';
+  if (divisor?.kind === 'const') return null;
   return `(${signed ? exactSignedType(bits) : exactUnsignedType(bits)})(${right} == 0 ? 0 : ${left} / ${right})`;
 }
 

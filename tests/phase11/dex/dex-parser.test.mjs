@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { parseDex, probeDex } from '../../../js/managed/dex/parser.js';
 import { validateDexMap } from '../../../js/managed/dex/map-validation.js';
+import { createHash } from 'node:crypto';
 
 console.log('[phase11] running dex parser tests...');
 
@@ -22,6 +23,21 @@ function writeMap(buf) {
     view.setUint32(pos + 4, size, true);
     view.setUint32(pos + 8, offset, true);
   });
+}
+
+function sealDexIntegrity(buf) {
+  // DEX stores SHA-1 over the payload at 0x20 and Adler-32 over the signature
+  // plus payload at 0x0c. Keep every fixture accepted by the public parser so
+  // mutations in these tests reach the header/map authority under test rather
+  // than failing first at the integrity gate.
+  buf.set(createHash('sha1').update(buf.subarray(32)).digest(), 12);
+  let a = 1, b = 0;
+  for (let i = 12; i < buf.length; i++) {
+    a = (a + buf[i]) % 65521;
+    b = (b + a) % 65521;
+  }
+  new DataView(buf.buffer, buf.byteOffset, buf.byteLength).setUint32(8, ((b << 16) | a) >>> 0, true);
+  return buf;
 }
 
 export function buildMinimalDex() {
@@ -82,7 +98,7 @@ export function buildMinimalDex() {
   view.setUint32(0x148, 0, true); view.setUint32(0x14c, 2, true);
   buf.set([0x12, 0x10, 0x0e, 0x00], 0x150);
   writeMap(buf);
-  return buf;
+  return sealDexIntegrity(buf);
 }
 
 function expectTypeError(bytes, code, parser = parseDex) {
@@ -194,7 +210,7 @@ function buildVariableMapDex(type, payload, version = '035') {
     view.setUint16(pos, itemType, true); view.setUint16(pos + 2, 0, true);
     view.setUint32(pos + 4, size, true); view.setUint32(pos + 8, offset, true);
   }
-  return bytes;
+  return sealDexIntegrity(bytes);
 }
 
 for (const [type, payload] of [

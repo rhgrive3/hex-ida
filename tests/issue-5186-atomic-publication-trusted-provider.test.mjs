@@ -38,7 +38,13 @@ async function greenFixture() {
   );
   const validation = await validateRebuildTransaction(transaction, materialized, {
     original: source,
-    loaderReparse: () => ({ ok: true }),
+    loaderReparse: () => ({
+      ok: true,
+      format: 'macho',
+      architecture: 'x86_64',
+      loaderVersion: 'loader:macho:issue-5186',
+      outputHash: materialized.outputHash,
+    }),
     validators,
   });
   assert.equal(validation.status, 'valid', JSON.stringify(validation.failures));

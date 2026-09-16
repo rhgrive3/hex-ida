@@ -37,6 +37,12 @@ test('#3935 resolved pure callee closes the local summary-missing fallback', () 
       addressSpaces: ['memory'],
       source: 'unknown-call-fallback',
     })],
+    memoryReadRegions: [createMemoryEffect({
+      regionKind: 'unknown',
+      broad: true,
+      addressSpaces: ['memory'],
+      source: 'unknown-call-fallback',
+    })],
     noreturn: 'unknown',
     mayThrow: 'unknown',
     status: status('partial', 'evidence-missing'),
