@@ -1,0 +1,51 @@
+name: Temporary #6534 safe perf extraction
+
+on:
+  push:
+    branches:
+      - staging/6534-safe-perf-extract-20260917
+    paths:
+      - '.github/workflows/tmp6534-safe-perf-extract.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: staging/6534-safe-perf-extract-20260917
+          fetch-depth: 1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Apply safe current-main extraction
+        run: python .github/tmp6534-extract.py
+      - name: Focused MemorySSA cache regression
+        run: node tests/semantic-v2/memoryssa-proof-cache.test.mjs
+      - name: Syntax and current workflow contract
+        run: |
+          node --check js/semantics/memoryssa/proof-core.js
+          node --check tests/accuracy-pseudoc-worker.mjs
+          node tests/issue-497-cross-binary-workflow.mjs
+      - name: Verify pseudoc dependency scope
+        run: |
+          node --input-type=module - <<'NODE'
+          import fs from 'node:fs';
+          const worker = fs.readFileSync('tests/accuracy-pseudoc-worker.mjs', 'utf8');
+          const evaluator = fs.readFileSync('tests/accuracy-pseudoc-eval.mjs', 'utf8');
+          if (!worker.includes("openBinary(target, { strings: false })")) throw new Error('worker strings trim missing');
+          if (!worker.includes('NodeBackend.prototype.scanProgram = async () => null')) throw new Error('worker scan trim missing');
+          if (/\bw\.(?:program|scan|strings)\b/.test(evaluator)) throw new Error('pseudoc evaluator consumes skipped global indexes');
+          NODE
+      - name: Publish clean staged tree
+        run: |
+          rm .github/tmp6534-extract.py .github/workflows/tmp6534-safe-perf-extract.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'perf(accuracy): retain safe #6534 cache and worker boot trims'
+          git push origin HEAD:staging/6534-safe-perf-extract-20260917
