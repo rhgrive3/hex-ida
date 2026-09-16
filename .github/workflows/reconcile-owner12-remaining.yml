@@ -1,0 +1,109 @@
+name: Reconcile owner12 remaining fixes
+
+on:
+  push:
+    branches:
+      - reconcile/owner12-5096-5146-20260916
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Apply reviewed current-main production patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            https://raw.githubusercontent.com/rhgrive3/hex-ida/batch-20260912-owner12/.github/l9/pr-8409-current-main.patch \
+            --output /tmp/owner12.patch
+          git apply --check \
+            --include='js/managed/cil/lifter-core.js' \
+            --include='js/binary/model.js' \
+            /tmp/owner12.patch
+          git apply \
+            --include='js/managed/cil/lifter-core.js' \
+            --include='js/binary/model.js' \
+            /tmp/owner12.patch
+
+      - name: Restore focused regressions on current authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            https://raw.githubusercontent.com/rhgrive3/hex-ida/batch-20260912-owner12/tests/issue-5096-cil-fe-prefix-operand-table.mjs \
+            --output tests/issue-5096-cil-fe-prefix-operand-table.mjs
+          curl --fail --silent --show-error --location \
+            https://raw.githubusercontent.com/rhgrive3/hex-ida/batch-20260912-owner12/tests/issue-5146-import-site-identity-typed-keys.mjs \
+            --output tests/issue-5146-import-site-identity-typed-keys.mjs
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('tests/issue-5096-cil-fe-prefix-operand-table.mjs')
+          text = p.read_text()
+          old = """  assert.deepEqual(store.memoryEffects[0], {
+            space: 'static-field',
+            token: 0x0a000001,
+            isWrite: true,
+            volatile: true,
+          });"""
+          new = """  const effect = store.memoryEffects[0];
+          assert.equal(effect.space, 'static-field');
+          assert.equal(effect.token, 0x0a000001);
+          assert.equal(effect.isWrite, true);
+          assert.equal(effect.volatile, true);
+          assert.equal(effect.fieldResolved, false);
+          assert.deepEqual(effect.typeInitialization, { declaringTypeResolved: false });"""
+          if old not in text:
+              raise SystemExit('issue-5096-current-authority-anchor-missing')
+          p.write_text(text.replace(old, new, 1))
+          PY
+
+          cat >> tests/issue-5146-import-site-identity-typed-keys.mjs <<'EOF'
+
+          test('#5146 current site record identity fields remain part of dedupe identity', () => {
+            const base = { address: 1n, offset: 0n, kind: 'bind', type: 1, addend: 0n, pointerFormat: 1, weak: false };
+            const imports = finalizeWith({
+              library: 'L', name: 'f', ordinal: 1,
+              sites: [
+                { ...base, recordFileOffset: 10n, recordIndex: 0, recordEncoding: 'dyld' },
+                { ...base, recordFileOffset: 11n, recordIndex: 0, recordEncoding: 'dyld' },
+                { ...base, recordFileOffset: 10n, recordIndex: 1, recordEncoding: 'dyld' },
+                { ...base, recordFileOffset: 10n, recordIndex: 0, recordEncoding: 'elf' },
+                { ...base, recordFileOffset: 10n, recordIndex: 0, recordEncoding: 'dyld' },
+              ],
+            });
+            assert.equal(imports[0].sites.length, 4);
+          });
+          EOF
+
+      - name: Focused validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/issue-5096-cil-fe-prefix-operand-table.mjs
+          node --test tests/issue-5146-import-site-identity-typed-keys.mjs
+          npm run binary:test
+          node tests/check.mjs
+
+      - name: Publish reconciled branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/reconcile-owner12-remaining.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add js/managed/cil/lifter-core.js js/binary/model.js \
+            tests/issue-5096-cil-fe-prefix-operand-table.mjs \
+            tests/issue-5146-import-site-identity-typed-keys.mjs \
+            .github/workflows/reconcile-owner12-remaining.yml
+          git commit -m 'fix(owner12): reconcile #5096 and #5146 onto current main'
+          git push origin HEAD:reconcile/owner12-5096-5146-20260916
