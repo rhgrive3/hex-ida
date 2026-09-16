@@ -1,0 +1,85 @@
+name: T017 focused verification
+
+on:
+  push:
+    branches:
+      - recovery/t017-machine-effects-20260917
+    paths:
+      - .github/workflows/t017-focused.yml
+      - js/semantics/effects/index.js
+      - js/semantics/compat/semantic-ir-v2-to-v1-nodes.js
+      - js/targets/architecture/x86_64/effects/bit-manipulation.js
+      - js/targets/architecture/x86_64/effects/bit-scan.js
+      - js/targets/architecture/x86_64/effects/index.js
+      - tools/validation/machine-effects/x86-long64-closure-matrix.mjs
+      - tests/machine-effects/t017-undefined-result-boundaries.test.mjs
+      - tests/machine-effects/x86-bit-scan-undefined-result.test.mjs
+      - tests/machine-effects/x86-long64-closure-matrix.test.mjs
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Undefined-result authority boundaries
+        shell: bash
+        run: |
+          set +e
+          node --test tests/machine-effects/t017-undefined-result-boundaries.test.mjs > /tmp/t017-boundaries.out 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            tail -n 100 /tmp/t017-boundaries.out > /tmp/t017-first-failure.txt
+            cat /tmp/t017-first-failure.txt >> "$GITHUB_STEP_SUMMARY"
+            exit "$status"
+          fi
+          tail -n 30 /tmp/t017-boundaries.out
+      - name: X86 bit-scan semantics
+        shell: bash
+        run: |
+          set +e
+          node --test tests/machine-effects/x86-bit-scan-undefined-result.test.mjs > /tmp/t017-bitscan.out 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            tail -n 120 /tmp/t017-bitscan.out > /tmp/t017-first-failure.txt
+            cat /tmp/t017-first-failure.txt >> "$GITHUB_STEP_SUMMARY"
+            exit "$status"
+          fi
+          tail -n 40 /tmp/t017-bitscan.out
+      - name: X86 closure matrix authority
+        shell: bash
+        run: |
+          set +e
+          node --test tests/machine-effects/x86-long64-closure-matrix.test.mjs > /tmp/t017-matrix.out 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            tail -n 120 /tmp/t017-matrix.out > /tmp/t017-first-failure.txt
+            cat /tmp/t017-first-failure.txt >> "$GITHUB_STEP_SUMMARY"
+            exit "$status"
+          fi
+          tail -n 40 /tmp/t017-matrix.out
+      - name: Adjacent integer-effect regressions
+        shell: bash
+        run: |
+          set +e
+          node --test tests/phase5/effects/int-control/control.test.mjs tests/phase6/effects/integer-reference.test.mjs > /tmp/t017-adjacent.out 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            tail -n 120 /tmp/t017-adjacent.out > /tmp/t017-first-failure.txt
+            cat /tmp/t017-first-failure.txt >> "$GITHUB_STEP_SUMMARY"
+            exit "$status"
+          fi
+          tail -n 40 /tmp/t017-adjacent.out
+      - name: Upload minimal first-failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: t017-first-failure
+          path: /tmp/t017-first-failure.txt
+          if-no-files-found: error
+          retention-days: 1
