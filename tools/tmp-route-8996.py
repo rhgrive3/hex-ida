@@ -1,5 +1,6 @@
 from pathlib import Path
 
+# One-shot helper: repair the exact PR #8996 ownership route, then the workflow removes this file.
 p = Path('.circleci/config.yml')
 s = p.read_text()
 start_marker = '              codex/issue-campaign-20260914-lane-10-batch-04)\n'
