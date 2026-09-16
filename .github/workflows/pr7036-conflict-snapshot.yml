@@ -1,0 +1,51 @@
+name: PR7036 conflict snapshot
+
+on:
+  push:
+    branches:
+      - sync/pr7036-main-20260917
+    paths:
+      - '.github/workflows/pr7036-conflict-snapshot.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Snapshot only conflict stages
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          set +e
+          git merge --no-commit --no-ff origin/main >/dev/null 2>&1
+          set -e
+          mkdir -p conflict-snapshot/{base,ours,theirs}
+          git diff --name-only --diff-filter=U | sort -u > conflict-snapshot/conflicts.txt
+          while IFS= read -r p; do
+            [ -n "$p" ] || continue
+            for stage in 1 2 3; do
+              case "$stage" in
+                1) out="conflict-snapshot/base/$p" ;;
+                2) out="conflict-snapshot/ours/$p" ;;
+                3) out="conflict-snapshot/theirs/$p" ;;
+              esac
+              mkdir -p "$(dirname "$out")"
+              if ! git show ":$stage:$p" > "$out" 2>/dev/null; then
+                printf '__MISSING__\n' > "$out"
+              fi
+            done
+          done < conflict-snapshot/conflicts.txt
+          git merge --abort >/dev/null 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr7036-conflict-snapshot
+          path: conflict-snapshot
+          if-no-files-found: error
+          retention-days: 3
