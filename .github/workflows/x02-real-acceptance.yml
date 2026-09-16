@@ -3,7 +3,11 @@ name: X-02 real Apple acceptance
 on:
   push:
     branches: [feat/analysis-roadmap-v8-current-main-20260907]
-    paths: [.github/workflows/x02-real-acceptance.yml, tools/validation/x02-apple-runtime-evidence.mjs]
+    paths:
+      - .github/workflows/x02-real-acceptance.yml
+      - tools/validation/x02-apple-runtime-evidence.mjs
+      - tools/validation/x02-a08-provenance.mjs
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -61,3 +65,52 @@ jobs:
             collector-exit.txt
           if-no-files-found: ignore
           retention-days: 14
+
+  a08-version-corpus:
+    name: A08 provenance (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-14, macos-15, macos-26]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/analysis-roadmap-v8-current-main-20260907
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Collect versioned Apple provenance point
+        env:
+          X02_RUNNER_LABEL: ${{ matrix.runner }}
+        run: node tools/validation/x02-a08-provenance.mjs x02-a08-${{ matrix.runner }}.json
+      - name: Validate and print provenance point
+        env:
+          EVIDENCE_PATH: x02-a08-${{ matrix.runner }}.json
+          EXPECTED_RUNNER: ${{ matrix.runner }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const e = JSON.parse(fs.readFileSync(process.env.EVIDENCE_PATH, 'utf8'));
+          if (e.schema !== 'hex-x02-a08-provenance-point/v1') throw new Error('schema');
+          if (e.runner.requestedLabel !== process.env.EXPECTED_RUNNER) throw new Error('runner-label');
+          if (e.appleEnvironment.machine !== 'arm64') throw new Error('machine');
+          if (e.runtimeObservation.executedOnCapturedOs !== true || e.runtimeObservation.exitStatus !== 0) throw new Error('runtime');
+          for (const key of ['osProductVersion','osBuildVersion','darwinRelease','xcodeVersion','clangVersion','sdkVersion']) {
+            if (!e.appleEnvironment[key]) throw new Error(`missing-${key}`);
+          }
+          for (const artifact of ['object','executable']) {
+            const a = e.compilerProducedArtifacts[artifact];
+            if (!/^[0-9a-f]{64}$/.test(a.sha256) || !/Mach-O/i.test(a.file) || !/arm64/i.test(a.file)) throw new Error(`artifact-${artifact}`);
+          }
+          console.log('A08_EVIDENCE_JSON=' + JSON.stringify(e));
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x02-a08-${{ matrix.runner }}-${{ github.sha }}
+          path: x02-a08-${{ matrix.runner }}.json
+          if-no-files-found: error
+          retention-days: 30
