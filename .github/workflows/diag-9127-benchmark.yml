@@ -15,58 +15,45 @@ jobs:
       HEX_FIXTURE_YWP_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/YWP
     steps:
       - uses: actions/checkout@v4
-      - name: Reproduce benchmark gate
+        with:
+          fetch-depth: 0
+      - name: Reproduce base benchmark gate
         shell: bash
         run: |
           set +e
           set -uo pipefail
           STATUS=/tmp/diag-9127.txt
           : > "$STATUS"
+          BASE=9a944ba09f317763bd4d20863e3c91c344269be6
+          timeout 90s git checkout --detach "$BASE" >/tmp/checkout.out 2>&1
+          rc=$?; echo "checkout_base rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 60 /tmp/checkout.out >> "$STATUS"; exit $rc; }
           check() {
             label="$1"; shift
             timeout 420s "$@" >/tmp/cmd.out 2>&1
             rc=$?
             echo "$label rc=$rc" >> "$STATUS"
-            if [ $rc -ne 0 ]; then
-              echo "--- first failure: $label ---" >> "$STATUS"
-              tail -n 80 /tmp/cmd.out >> "$STATUS"
-              exit $rc
-            fi
+            if [ $rc -ne 0 ]; then echo "--- first failure: $label ---" >> "$STATUS"; tail -n 80 /tmp/cmd.out >> "$STATUS"; exit $rc; fi
           }
           check fixtures_fetch npm run fixtures:fetch
           check fixtures_check npm run fixtures:check
           timeout 420s npm --silent run binary:benchmark > /tmp/universal-platform-benchmark.json 2>/tmp/benchmark.err
-          rc=$?
-          echo "binary_benchmark rc=$rc" >> "$STATUS"
-          if [ $rc -ne 0 ]; then
-            echo '--- first failure: binary_benchmark ---' >> "$STATUS"
-            tail -n 80 /tmp/benchmark.err >> "$STATUS"
-            tail -n 40 /tmp/universal-platform-benchmark.json >> "$STATUS"
-            exit $rc
-          fi
+          rc=$?; echo "binary_benchmark rc=$rc" >> "$STATUS"; if [ $rc -ne 0 ]; then echo '--- first failure: binary_benchmark ---' >> "$STATUS"; tail -n 80 /tmp/benchmark.err >> "$STATUS"; exit $rc; fi
           timeout 120s node tools/benchmark/compare.mjs --binary=/tmp/universal-platform-benchmark.json >/tmp/compare.out 2>&1
-          rc=$?
-          echo "compare rc=$rc" >> "$STATUS"
-          if [ $rc -ne 0 ]; then
-            echo '--- first failure: compare ---' >> "$STATUS"
-            tail -n 80 /tmp/compare.out >> "$STATUS"
-            python3 - <<'PY' >> "$STATUS" 2>/dev/null
+          rc=$?; echo "compare rc=$rc" >> "$STATUS"
+          tail -n 40 /tmp/compare.out >> "$STATUS"
+          python3 - <<'PY' >> "$STATUS" 2>/dev/null
           import json
-          p='/tmp/universal-platform-benchmark.json'
-          try:
-              data=json.load(open(p))
-              print('benchmark_summary='+json.dumps(data, separators=(',',':'))[:5000])
-          except Exception as e:
-              print('benchmark_json_read_error='+repr(e))
+          d=json.load(open('/tmp/universal-platform-benchmark.json'))
+          for k,v in d.get('targets',{}).items():
+              w=v.get('work',{})
+              print(f"{k}: rangeReads={w.get('rangeReads')} totalRequestedBytes={w.get('totalRequestedBytes')} largestSingleRead={w.get('largestSingleRead')}")
           PY
-            exit $rc
-          fi
-          echo 'benchmark_gate=pass' >> "$STATUS"
+          exit $rc
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: diag-9127-benchmark
+          name: diag-9127-benchmark-base
           path: |
             /tmp/diag-9127.txt
             /tmp/universal-platform-benchmark.json
