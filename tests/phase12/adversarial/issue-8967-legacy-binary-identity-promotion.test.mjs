@@ -16,6 +16,7 @@ import test from 'node:test';
 
 import { resolveBinaryIdentity } from '../../../js/ai/control/snapshot.js';
 import { sessionMatchesSnapshot } from '../../../js/ai/control/runtime-support.js';
+import { AIRuntime } from '../../../js/ai/runtime.js';
 
 function makeSnapshot(local) {
   const identity = resolveBinaryIdentity(local);
@@ -91,4 +92,66 @@ test('#8967: project + runtime bindings present on both sides do not rescue weak
   };
   assert.equal(sessionMatchesSnapshot(legacy, snapshotB), false,
     'project/runtime equality must not upgrade a filename:slice legacy binding to strong identity');
+});
+
+test('#8967: explicit resume of a legacy filename:slice session against the foreign strong snapshot fails closed at the turn boundary', async () => {
+  let providerCalls = 0;
+  const runtime = new AIRuntime({
+    context: { binaryHash: 'bbbbbbbb', binaryId: 'same.bin:0' },
+    planner: false,
+    provider: {
+      async nextTurn() {
+        providerCalls++;
+        return { type: 'final', answer: 'must not run', evidenceIds: [], hypotheses: [], suggestedActions: [] };
+      },
+    },
+  });
+  // Binary A: an older build persisted its session with only the weak
+  // `filename:slice` binding (no content digest was recorded).
+  const savedEvidence = {
+    id: 'ev_saved_8967',
+    kind: 'observation',
+    status: 'verified',
+    title: 'old binary finding',
+    sourceTool: 'deterministic-test',
+  };
+  const session = runtime.sessionStore.register({
+    id: 'legacy-bound-8967',
+    binaryId: 'same.bin:0',
+    binaryIdentity: null,
+    projectId: null,
+    messages: [{ role: 'assistant', content: 'old binary conversation' }],
+    investigationMemory: { goal: 'old goal', anchor: null },
+    confirmedFindings: [savedEvidence],
+    hypotheses: [{
+      id: 'hyp_saved_8967',
+      claim: 'old binary hypothesis',
+      confidence: 0.8,
+      status: 'verified',
+      supportEvidenceIds: [savedEvidence.id],
+      contradictionEvidenceIds: [],
+      missingEvidence: [],
+    }],
+  });
+
+  // Binary B: a byte-different file, same filename and slice, strong digest.
+  await assert.rejects(
+    runtime.turn({ sessionId: session.id, mode: 'chat', scope: 'auto', goal: 'resume old session' }),
+    (error) => error?.type === 'scope_violation',
+    '#8967 item 2: the sameLegacy upgrade must be rejected before the provider sees the turn',
+  );
+
+  assert.equal(providerCalls, 0, 'provider must not observe a mismatched persisted session');
+  assert.equal(runtime.storeNamespaces.size, 0,
+    '#8967 item 3: A confirmed findings/hypotheses must not hydrate B current-binary namespaces');
+  assert.equal(runtime.evidenceStore.get(savedEvidence.id), null);
+  assert.equal(runtime.hypothesisStore.get('hyp_saved_8967'), null);
+
+  const after = await runtime.sessionStore.get(session.id);
+  assert.equal(after.binaryId, 'same.bin:0',
+    '#8967 item 4: the rejected legacy session must not be rewritten to B strong identity');
+  assert.equal(after.binaryIdentity, null, 'no irreversible identity upgrade on rejection');
+  assert.deepEqual(after.messages.map((message) => message.content), ['old binary conversation']);
+  assert.equal(after.confirmedFindings.length, 1, 'A provenance is preserved untouched for its own host');
+  assert.equal(after.hypotheses.length, 1);
 });

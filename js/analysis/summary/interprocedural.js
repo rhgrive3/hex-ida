@@ -519,6 +519,22 @@ function unionKnowledge(values) {
 }
 
 /**
+ * `noreturn` is a must-property, so a callee never strengthens it: only a
+ * contribution set in which every side proves divergence publishes `true`, and
+ * a caller that proves a reachable normal return keeps that fact even when one
+ * callee diverges. Where the sides disagree, A3 composition holds no
+ * control-flow proof that the call dominates every return path, so the
+ * composite publishes the explicit conservative `unknown` (#4061).
+ */
+function mustKnowledge(values) {
+  if (values.some((value) => value === 'unknown')) return 'unknown';
+  const diverged = values.some((value) => value === true);
+  const returned = values.some((value) => value === false);
+  if (diverged && returned) return 'unknown';
+  return diverged;
+}
+
+/**
  * Solves interprocedural summaries for the components reachable from `roots`.
  *
  * `localSummaries` maps functionId to its P7-3a local summary. `libraryModels`
@@ -1008,7 +1024,7 @@ function composeSummary({
     directCalls: publishedDirectCalls,
     indirectCallSets: local.indirectCallSets,
     unknownCallEffects: dedupedUnknowns,
-    noreturn: hasUnknown ? 'unknown' : unionKnowledge(noreturn),
+    noreturn: hasUnknown ? 'unknown' : mustKnowledge(noreturn),
     mayThrow: hasUnknown ? 'unknown' : unionKnowledge(mayThrow),
     stackDelta: local.stackDelta,
     semanticFacts: local.semanticFacts,
