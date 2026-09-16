@@ -42,6 +42,7 @@ await testStaleResponse();
 await testCloseCleanup();
 await testStackNeverCrossesWire();
 await testArbitraryMethodCannotExecute();
+await import('./issue-4858-embed-abort-registration-race.mjs');
 
 console.log('userscript embed protocol: ok');
 
