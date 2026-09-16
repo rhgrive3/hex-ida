@@ -1,0 +1,63 @@
+name: PR7036 run staging reconciliation
+
+on:
+  push:
+    branches:
+      - sync/pr7036-main-20260917
+    paths:
+      - '.github/workflows/pr7036-run-reconcile.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Merge current main into staging
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch --no-tags origin main
+          ours=$(git rev-parse HEAD)
+          theirs=$(git rev-parse origin/main)
+          set +e
+          git merge --no-commit --no-ff origin/main
+          rc=$?
+          set -e
+          conflicts=$(git diff --name-only --diff-filter=U | sort -u)
+          if [ "$rc" -ne 0 ] || [ -n "$conflicts" ]; then
+            {
+              echo '## PR #7036 staging reconciliation blocked'
+              echo
+              echo "merge_exit=$rc"
+              echo
+              echo '```text'
+              printf '%s\n' "$conflicts"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          rm -f .github/workflows/pr7036-reconcile-diagnostic.yml
+          rm -f .github/workflows/pr7036-run-reconcile.yml
+          git add -A
+          git commit -m 'Merge current main into PR #7036 staging' \
+            -m "Non-force reconciliation only. Parent 1: $ours. Parent 2: $theirs. PR #7036 itself remains unmerged."
+          merged=$(git rev-parse HEAD)
+          parents=$(git show -s --format=%P HEAD)
+          {
+            echo '## PR #7036 staging reconciliation complete'
+            echo
+            echo "ours=$ours"
+            echo "main=$theirs"
+            echo "merge=$merged"
+            echo "parents=$parents"
+          } >> "$GITHUB_STEP_SUMMARY"
+          git push origin HEAD:sync/pr7036-main-20260917
