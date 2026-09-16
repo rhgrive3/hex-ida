@@ -43,7 +43,7 @@ jobs:
             -o build/Payload/F47Probe.app/F47Probe
           chmod +x build/Payload/F47Probe.app/F47Probe
 
-      - name: Verify arm64e and PAC instructions
+      - name: Verify arm64e and IA PAC instructions
         shell: bash
         run: |
           set -euo pipefail
@@ -53,7 +53,11 @@ jobs:
           grep -qw arm64e build/archs.txt
           otool -hv "$BIN" | tee build/macho-header.txt
           otool -tvV "$BIN" > build/disassembly.txt
-          grep -Eiq '\b(pac|aut)[a-z0-9]*\b' build/disassembly.txt
+          grep -Eiw '\bpacia\b' build/disassembly.txt > build/pac-instructions.txt
+          grep -Eiw '\bautia\b' build/disassembly.txt >> build/pac-instructions.txt
+          grep -Eiw '\bxpaci\b' build/disassembly.txt >> build/pac-instructions.txt
+          test "$(wc -l < build/pac-instructions.txt | tr -d ' ')" -ge 3
+          cat build/pac-instructions.txt
 
       - name: Package SideStore-installable IPA
         shell: bash
@@ -76,6 +80,7 @@ jobs:
             "xcodeVersion": "${XCODE_VERSION}",
             "executableSha256": "${EXEC_SHA}",
             "ipaSha256": "${IPA_SHA}",
+            "requiredInstructions": ["PACIA", "AUTIA", "XPACI"],
             "runtimeAcceptance": "pending-real-device"
           }
           JSON
@@ -90,5 +95,6 @@ jobs:
             build/file.txt
             build/archs.txt
             build/macho-header.txt
+            build/pac-instructions.txt
           if-no-files-found: error
           retention-days: 30
