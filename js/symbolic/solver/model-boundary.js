@@ -21,29 +21,13 @@ export function validateExactModelBindings(symbols, model) {
   if (values.size !== entries.length || entries.some(([key]) => typeof key !== 'string')) {
     return Object.freeze({ valid: false, reason: 'invalid-exact-model-key' });
   }
-  const allowed = new Set();
-  const canonicalIds = new Set();
-  for (const symbol of symbols) {
-    allowed.add(symbol.name);
-    allowed.add(symbol.symbolId);
-    canonicalIds.add(symbol.symbolId);
-  }
+  const allowed = new Set(symbols.map((symbol) => symbol.symbolId));
   for (const key of values.keys()) {
     if (!allowed.has(key)) return Object.freeze({ valid: false, reason: `unexpected-exact-model-binding:${key}` });
   }
   for (const symbol of symbols) {
-    const hasName = values.has(symbol.name);
-    const hasId = values.has(symbol.symbolId);
-    // A display name may equal another symbol's canonical id. Treat that
-    // entry as the other symbol's id; canonical ids always win over aliases.
-    const nameIsForeignCanonicalId = symbol.name !== symbol.symbolId &&
-      canonicalIds.has(symbol.name);
-    const hasUsableName = hasName && !nameIsForeignCanonicalId;
-    if (!hasUsableName && !hasId) return Object.freeze({ valid: false, reason: `missing-exact-model-binding:${symbol.symbolId}` });
-    const value = hasId ? values.get(symbol.symbolId) : values.get(symbol.name);
-    if (hasUsableName && hasId && !Object.is(values.get(symbol.name), values.get(symbol.symbolId))) {
-      return Object.freeze({ valid: false, reason: `conflicting-exact-model-binding:${symbol.symbolId}` });
-    }
+    if (!values.has(symbol.symbolId)) return Object.freeze({ valid: false, reason: `missing-exact-model-binding:${symbol.symbolId}` });
+    const value = values.get(symbol.symbolId);
     if (symbol.sort.kind === SORT_KIND.BOOL) {
       if (typeof value !== 'boolean') return Object.freeze({ valid: false, reason: `noncanonical-bool-model-value:${symbol.symbolId}` });
     } else if (symbol.sort.kind === SORT_KIND.BV) {

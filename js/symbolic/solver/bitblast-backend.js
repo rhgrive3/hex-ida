@@ -20,7 +20,7 @@ import {
 import { validateSatModel } from '../verify/validate-model.js';
 import { validateVerificationQuery } from '../verify/query.js';
 import { PROOF_AUTHORITY, SolverBackend } from './backend.js';
-import { collectSymbols } from './exhaustive-backend.js';
+import { analyzeSolverExpressions } from './query-analysis.js';
 import { effectivePositiveSafeInteger, requirePositiveSafeInteger } from './limits.js';
 import { validateExactModelBindings } from './model-boundary.js';
 import { SOLVER_STATUS, createSolverResult } from './result.js';
@@ -49,9 +49,15 @@ class LimitError extends Error {
   }
 }
 
+function monotonicNow() {
+  return typeof globalThis.performance?.now === 'function' ? globalThis.performance.now() : Date.now();
+}
+
 function deadlineFrom(options) {
-  const timeoutMs = Number(options.timeoutMs);
-  return Number.isFinite(timeoutMs) && timeoutMs > 0 ? Date.now() + timeoutMs : Infinity;
+  const timeoutMs = options?.timeoutMs;
+  return typeof timeoutMs === 'number' && Number.isSafeInteger(timeoutMs) && timeoutMs > 0
+    ? monotonicNow() + timeoutMs
+    : Infinity;
 }
 
 class CnfBuilder {
@@ -70,7 +76,7 @@ class CnfBuilder {
 
   guard() {
     if (this.signal?.aborted) throw new LimitError('cancelled');
-    if (Date.now() >= this.deadline) throw new LimitError('timeout');
+    if (monotonicNow() >= this.deadline) throw new LimitError('timeout');
   }
 
   newVariable() {
@@ -85,6 +91,7 @@ class CnfBuilder {
     const unique = [];
     const seen = new Set();
     for (const literal of literals) {
+      if (!Number.isSafeInteger(literal) || literal === 0) throw new LimitError('invalid-cnf-literal');
       if (seen.has(-literal)) return;
       if (!seen.has(literal)) {
         seen.add(literal);
@@ -465,14 +472,14 @@ async function solveCnf(builder, { signal, deadline, limits }) {
 
   async function guard() {
     if (signal?.aborted) return 'cancelled';
-    if (Date.now() >= deadline) return 'timeout';
+    if (monotonicNow() >= deadline) return 'timeout';
     if (decisions > limits.maxDecisions) return 'decision-budget-exceeded';
     if (propagations > limits.maxPropagations) return 'propagation-budget-exceeded';
     if (propagations - yieldedAt >= limits.yieldEvery) {
       yieldedAt = propagations;
       await new Promise((resolve) => setTimeout(resolve, 0));
       if (signal?.aborted) return 'cancelled';
-      if (Date.now() >= deadline) return 'timeout';
+      if (monotonicNow() >= deadline) return 'timeout';
     }
     return null;
   }
@@ -583,14 +590,13 @@ function extractModel(symbols, builder, assignment) {
       }
     }
     model.set(symbol.symbolId, value);
-    if (!model.has(symbol.name)) model.set(symbol.name, value);
   }
   return model;
 }
 
 class BitBlastSolverSession extends SolverSession {
   async _executeCheck(query, options = {}, _token, signal) {
-    const startedAt = Date.now();
+    const startedAt = monotonicNow();
     const resultBase = { backend: this.backend.id, backendVersion: this.backend.version, queryHash: query?.queryHash || null };
     let limits;
     try {
@@ -616,7 +622,7 @@ class BitBlastSolverSession extends SolverSession {
     if (constraints.length > limits.maxConstraints) {
       return createSolverResult({ ...resultBase, status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'constraint-budget-exceeded', lifecycle: { budgetExceeded: true, publishable: false } });
     }
-    const collected = collectSymbols(expressions, { maxExprNodes: limits.maxExprNodes, maxExprDepth: limits.maxExprDepth });
+    const collected = analyzeSolverExpressions(expressions, { maxExprNodes: limits.maxExprNodes, maxExprDepth: limits.maxExprDepth });
     if (collected.limitExceeded) {
       return createSolverResult({ ...resultBase, status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-node-budget-exceeded', lifecycle: { budgetExceeded: true, publishable: false } });
     }
@@ -649,14 +655,14 @@ class BitBlastSolverSession extends SolverSession {
         ...resultBase,
         status,
         reason: error.reason,
-        stats: { solveTimeMs: Date.now() - startedAt },
+        stats: { solveTimeMs: monotonicNow() - startedAt },
         lifecycle: { cancelled: status === SOLVER_STATUS.CANCELLED, timedOut: status === SOLVER_STATUS.TIMEOUT, budgetExceeded: status === SOLVER_STATUS.RESOURCE_LIMIT, publishable: false },
       });
     }
 
     const solved = await solveCnf(builder, { signal, deadline, limits });
     const stats = {
-      solveTimeMs: Date.now() - startedAt,
+      solveTimeMs: monotonicNow() - startedAt,
       nodesEvaluated: solved.decisions,
       cnfVariables: builder.variableCount,
       cnfClauses: builder.clauses.length,

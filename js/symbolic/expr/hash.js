@@ -44,7 +44,7 @@ export function computeStructuralHash(node) {
       // Fresh symbols are independent variables even when they share a name;
       // the solver binds them by symbolId, so structural identity must agree
       // with solver binding identity (#3246).
-      canonicalRep = `SYM:${sortStr}:${node.symbolId ?? ''}:${node.name ?? ''}`;
+      canonicalRep = `SYM:${sortStr}:${node.symbolId ?? node.name}`;
       break;
 
     case EXPR_KIND.UNKNOWN_SEMANTIC:
@@ -82,7 +82,7 @@ export function computeStructuralHash(node) {
       break;
 
     case EXPR_KIND.CAST:
-      canonicalRep = `CAST:${node.op}:${sortStr}:${node.targetWidth}(${computeStructuralHash(node.arg)})`;
+      canonicalRep = `CAST:${node.op}:${sortStr}(${computeStructuralHash(node.arg)})`;
       break;
 
     default:
@@ -119,8 +119,24 @@ function boundedAcyclicValue(value, maxNodes = 4096, maxDepth = 64) {
       if (colors.get(frame.value) === 1 || frame.depth > maxDepth || ++count > maxNodes) return false;
       if (colors.get(frame.value) === 2) { stack.pop(); continue; }
       colors.set(frame.value, 1);
-      if (ArrayBuffer.isView(frame.value) || frame.value instanceof ArrayBuffer || frame.value instanceof Date) frame.children = [];
-      else frame.children = Array.isArray(frame.value) ? frame.value : Object.values(frame.value);
+      if (ArrayBuffer.isView(frame.value) || frame.value instanceof ArrayBuffer || frame.value instanceof Date) {
+        frame.children = [];
+      } else {
+        try {
+          const descriptors = Object.getOwnPropertyDescriptors(frame.value);
+          const keys = Reflect.ownKeys(descriptors);
+          const children = [];
+          for (const key of keys) {
+            if (typeof key === 'symbol') return false;
+            const descriptor = descriptors[key];
+            if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) return false;
+            if (descriptor.enumerable) children.push(descriptor.value);
+          }
+          frame.children = children;
+        } catch {
+          return false;
+        }
+      }
       frame.entered = true;
     }
     if (frame.index < frame.children.length) {
@@ -193,11 +209,11 @@ export function computeStructuralHashesBounded(roots, { maxNodes = 100000 } = {}
           canonicalRep = `CONST:${sortStr}:${typeof node.value === 'bigint' ? `0x${node.value.toString(16)}` : String(node.value)}`;
           break;
         case EXPR_KIND.FRESH_SYMBOL:
-          canonicalRep = `SYM:${sortStr}:${node.symbolId ?? ''}:${node.name ?? ''}`;
+          canonicalRep = `SYM:${sortStr}:${node.symbolId ?? node.name}`;
           break;
         case EXPR_KIND.UNKNOWN_SEMANTIC:
           if (!boundedAcyclicValue(node.detail)) return Object.freeze({ ok: false, reason: 'malformed-unknown-detail', nodeCount });
-          try { canonicalRep = `UNKNOWN:${sortStr}:${node.reason}:${node.detail == null ? '' : stableDigest(node.detail)}`; }
+          try { canonicalRep = `UNKNOWN:${sortStr}:${node.reason}:${canonicalDetailJson(node.detail)}`; }
           catch { return Object.freeze({ ok: false, reason: 'malformed-unknown-detail', nodeCount }); }
           break;
         case EXPR_KIND.UNARY: canonicalRep = `UNARY:${node.op}:${sortStr}(${childHashes[0]})`; break;
@@ -207,7 +223,7 @@ export function computeStructuralHashesBounded(roots, { maxNodes = 100000 } = {}
         case EXPR_KIND.ITE: canonicalRep = `ITE:${sortStr}(${childHashes.join(',')})`; break;
         case EXPR_KIND.EXTRACT: canonicalRep = `EXTRACT:${sortStr}[${node.high}:${node.low}](${childHashes[0]})`; break;
         case EXPR_KIND.CONCAT: canonicalRep = `CONCAT:${sortStr}(${childHashes.join(',')})`; break;
-        case EXPR_KIND.CAST: canonicalRep = `CAST:${node.op}:${sortStr}:${node.targetWidth}(${childHashes[0]})`; break;
+        case EXPR_KIND.CAST: canonicalRep = `CAST:${node.op}:${sortStr}(${childHashes[0]})`; break;
         default: canonicalRep = `GENERIC:${node.kind}:${sortStr}`;
       }
       hashes.set(node, sha256Hex(canonicalRep));

@@ -5,9 +5,26 @@
  */
 
 import { FakeSolverBackend } from './fake-backend.js';
-import { PROOF_AUTHORITY } from './backend.js';
+import { isExactProofBackend } from './backend.js';
+import { ExhaustiveBvBackend } from './exhaustive-backend.js';
 import { TieredBvBackend } from './tiered-backend.js';
 import { WorkerSolverBackend } from './worker-backend.js';
+
+/* #5391: production mode (allowNonExactDefault:false) must not let a backend
+   promote itself to the exact proof authority with a single self-declared
+   property. Default-exact selection is gated on the full isExactProofBackend()
+   trust contract (identity, capabilities, exactProofs, model extraction and
+   fingerprint pairing), not on proofAuthority alone. */
+function qualifiesAsExactDefault(backend, allowNonExactDefault) {
+  if (allowNonExactDefault) return true;
+  try {
+    return isExactProofBackend(backend);
+  } catch {
+    // Capability providers are external plugin surfaces. A malformed provider
+    // is ineligible, but must not block selection of a later exact backend.
+    return false;
+  }
+}
 
 export class SolverRegistry {
   constructor({ allowNonExactDefault = true } = {}) {
@@ -20,8 +37,11 @@ export class SolverRegistry {
     if (!backend || !backend.id) {
       throw new TypeError('registerBackend: backend must have a valid id');
     }
+    if (this._backends.has(backend.id)) {
+      throw new Error(`registerBackend: backend '${backend.id}' is already registered`);
+    }
     this._backends.set(backend.id, backend);
-    if (!this._defaultBackendId && (this._allowNonExactDefault || backend.proofAuthority === PROOF_AUTHORITY.EXACT)) {
+    if (!this._defaultBackendId && qualifiesAsExactDefault(backend, this._allowNonExactDefault)) {
       this._defaultBackendId = backend.id;
     }
   }
@@ -30,7 +50,7 @@ export class SolverRegistry {
     this._backends.delete(id);
     if (this._defaultBackendId === id) {
       const replacement = [...this._backends.values()].find((backend) =>
-        this._allowNonExactDefault || backend.proofAuthority === PROOF_AUTHORITY.EXACT
+        qualifiesAsExactDefault(backend, this._allowNonExactDefault)
       );
       this._defaultBackendId = replacement?.id || null;
     }
@@ -50,7 +70,7 @@ export class SolverRegistry {
     if (!this._backends.has(id)) {
       throw new Error(`setDefaultBackend: backend '${id}' is not registered`);
     }
-    if (!this._allowNonExactDefault && this._backends.get(id).proofAuthority !== PROOF_AUTHORITY.EXACT) {
+    if (!qualifiesAsExactDefault(this._backends.get(id), this._allowNonExactDefault)) {
       throw new Error(`setDefaultBackend: backend '${id}' is not an exact production backend`);
     }
     this._defaultBackendId = id;
@@ -77,7 +97,7 @@ export function createProductionSolverRegistry({ workerFactory = null, preferWor
   const registry = new SolverRegistry({ allowNonExactDefault: false });
   const canUseWorker = preferWorker && (workerFactory || typeof globalThis.Worker === 'function');
   const backend = canUseWorker
-    ? new WorkerSolverBackend({ workerFactory: workerFactory || undefined })
+    ? new WorkerSolverBackend({ workerFactory: workerFactory || undefined, maxBvWidth: 64 })
     : new TieredBvBackend();
   registry.registerBackend(backend);
   return registry;
@@ -90,8 +110,6 @@ export function createTestSolverRegistry() {
 }
 
 // Production imports never receive a fake provider. Browser targets select the
-// isolated worker transport; Node/CI uses the same exact tiered backend
-// directly because Worker is not a browser primitive there. The exhaustive
-// backend remains registered only inside the tiered backend as its <=8-bit
-// oracle/fallback.
+// isolated worker transport; Node/CI uses the same exact tiered backend directly.
+// The <=8-bit exhaustive backend remains the oracle tier inside that router.
 export const defaultSolverRegistry = createProductionSolverRegistry();

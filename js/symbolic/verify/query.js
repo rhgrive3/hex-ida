@@ -6,7 +6,7 @@
  */
 
 import { stableDigest } from '../../core/identity/index.js';
-import { computeStructuralHashesBounded } from '../expr/hash.js';
+import { computeStructuralHash, computeStructuralHashesBounded } from '../expr/hash.js';
 import { createCompleteness } from '../translate/support-matrix.js';
 
 export const VERIFICATION_QUERY_KIND = Object.freeze({
@@ -15,7 +15,7 @@ export const VERIFICATION_QUERY_KIND = Object.freeze({
   GLOBAL_EDGE_REACHABILITY: 'global_edge_reachability',
 });
 
-export const QUERY_SCHEMA_VERSION = '1.2.0';
+export const QUERY_SCHEMA_VERSION = '1.1.0';
 export const SEMANTIC_IR_VERSION = '2.0.0';
 export const TRANSLATOR_VERSION = '1.1.0';
 
@@ -40,12 +40,8 @@ export const VERDICT = Object.freeze({
 export const QUERY_METADATA_MAX_DEPTH = 512;
 export const QUERY_METADATA_MAX_NODES = 65536;
 
-function freezeDeep(value, seen = new WeakSet(), depth = 0, budget = { nodes: 0 }, skipCanonicalExpressions = false) {
+function freezeDeep(value, seen = new WeakSet(), depth = 0, budget = { nodes: 0 }) {
   if (!value || typeof value !== 'object' || seen.has(value)) return value;
-  // Expression DAGs have their own iterative structural node/depth budgets.
-  // Keep this metadata guard focused on caller-controlled query metadata so a
-  // valid deep expression reaches the solver's expression budget checks.
-  if (skipCanonicalExpressions && isCanonicalExpression(value)) return Object.freeze(value);
   if (depth > QUERY_METADATA_MAX_DEPTH) {
     throw new TypeError(`createVerificationQuery: metadata depth budget exceeded (>${QUERY_METADATA_MAX_DEPTH})`);
   }
@@ -54,159 +50,8 @@ function freezeDeep(value, seen = new WeakSet(), depth = 0, budget = { nodes: 0 
     throw new TypeError(`createVerificationQuery: metadata node budget exceeded (>${QUERY_METADATA_MAX_NODES})`);
   }
   seen.add(value);
-  for (const child of Object.values(value)) freezeDeep(child, seen, depth + 1, budget, skipCanonicalExpressions);
+  for (const child of Object.values(value)) freezeDeep(child, seen, depth + 1, budget);
   return Object.freeze(value);
-}
-
-const DEFAULT_QUERY_HASH_LIMITS = Object.freeze({
-  maxExprNodes: 100000,
-  maxIdentityNodes: 10000,
-  maxIdentityEdges: 40000,
-  maxIdentityDepth: QUERY_METADATA_MAX_DEPTH,
-});
-
-const CANONICAL_EXPRESSION_KINDS = new Set([
-  'const',
-  'fresh_symbol',
-  'unknown_semantic',
-  'unary',
-  'binary',
-  'compare',
-  'connective',
-  'ite',
-  'extract',
-  'concat',
-  'cast',
-]);
-
-function isCanonicalExpression(value) {
-  return value && typeof value === 'object' && CANONICAL_EXPRESSION_KINDS.has(value.kind);
-}
-
-function requirePositiveSafeInteger(value, name) {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
-    throw new TypeError(`${name} must be a primitive positive safe integer`);
-  }
-  return value;
-}
-
-function identityChildren(value) {
-  const prototype = Object.getPrototypeOf(value);
-  if (Array.isArray(value)) {
-    const keys = Reflect.ownKeys(value);
-    if (keys.some((key) => typeof key === 'symbol')) throw new TypeError('symbol-keyed-query-identity');
-    let elementKeys = 0;
-    for (const key of keys) {
-      if (key === 'length') continue;
-      if (!/^(0|[1-9]\d*)$/.test(key) || Number(key) >= value.length) throw new TypeError('noncanonical-array-query-identity');
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) throw new TypeError('accessor-query-identity');
-      elementKeys++;
-    }
-    if (elementKeys !== value.length) throw new TypeError('sparse-array-query-identity');
-    return value;
-  }
-  if (prototype !== Object.prototype && prototype !== null) throw new TypeError('unsupported-query-identity-object');
-  const keys = Reflect.ownKeys(value);
-  if (keys.some((key) => typeof key === 'symbol')) throw new TypeError('symbol-keyed-query-identity');
-  return keys.map((key) => {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!descriptor?.enumerable) throw new TypeError('non-enumerable-query-identity');
-    if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) throw new TypeError('accessor-query-identity');
-    return descriptor.value;
-  });
-}
-
-function validateIdentityPrimitive(value) {
-  if (value == null || typeof value === 'string' || typeof value === 'boolean') return null;
-  if (typeof value === 'number' && Number.isFinite(value)) return null;
-  return 'unsupported-query-identity-value';
-}
-
-function validateBoundedIdentityValues(values, { maxIdentityNodes, maxIdentityEdges, maxIdentityDepth }) {
-  const colors = new WeakMap();
-  const heights = new WeakMap();
-  let nodeCount = 0;
-  let edgeCount = 0;
-  let maximumDepth = 0;
-  for (const root of values) {
-    if (root == null || typeof root !== 'object') {
-      const reason = validateIdentityPrimitive(root);
-      if (reason) return { ok: false, reason };
-      continue;
-    }
-    const stack = [{ value: root, entered: false, children: null, index: 0, childHeight: 0 }];
-    while (stack.length > 0) {
-      const frame = stack[stack.length - 1];
-      if (!frame.entered) {
-        if (colors.get(frame.value) === 1) return { ok: false, reason: 'cyclic-query-identity' };
-        if (colors.get(frame.value) === 2) { stack.pop(); continue; }
-        if (stack.length > maxIdentityDepth) return { ok: false, reason: 'query-identity-depth-exceeded', limitExceeded: true };
-        nodeCount++;
-        if (nodeCount > maxIdentityNodes) return { ok: false, reason: 'query-identity-node-budget-exceeded', limitExceeded: true };
-        colors.set(frame.value, 1);
-        try { frame.children = identityChildren(frame.value); }
-        catch (error) { return { ok: false, reason: error.message || 'malformed-query-identity' }; }
-        frame.entered = true;
-      }
-      if (frame.index < frame.children.length) {
-        edgeCount++;
-        if (edgeCount > maxIdentityEdges) return { ok: false, reason: 'query-identity-edge-budget-exceeded', limitExceeded: true };
-        const child = frame.children[frame.index++];
-        if (child != null && typeof child === 'object') {
-          if (colors.get(child) === 1) return { ok: false, reason: 'cyclic-query-identity' };
-          if (colors.get(child) === 2) {
-            const childHeight = heights.get(child) || 1;
-            const combinedDepth = stack.length + childHeight;
-            maximumDepth = Math.max(maximumDepth, combinedDepth);
-            if (combinedDepth > maxIdentityDepth) return { ok: false, reason: 'query-identity-depth-exceeded', limitExceeded: true };
-            frame.childHeight = Math.max(frame.childHeight, childHeight);
-          } else {
-            stack.push({ value: child, entered: false, children: null, index: 0, childHeight: 0 });
-          }
-        } else {
-          const reason = validateIdentityPrimitive(child);
-          if (reason) return { ok: false, reason };
-        }
-        continue;
-      }
-      const height = frame.childHeight + 1;
-      heights.set(frame.value, height);
-      maximumDepth = Math.max(maximumDepth, stack.length - 1 + height);
-      if (stack.length - 1 + height > maxIdentityDepth) return { ok: false, reason: 'query-identity-depth-exceeded', limitExceeded: true };
-      colors.set(frame.value, 2);
-      stack.pop();
-      if (stack.length > 0) stack[stack.length - 1].childHeight = Math.max(stack[stack.length - 1].childHeight, height);
-    }
-  }
-  return { ok: true, nodeCount, edgeCount, maxDepth: maximumDepth };
-}
-
-function immutableIdentitySnapshot(value, memo = new WeakMap()) {
-  if (value == null || typeof value !== 'object') return value;
-  if (memo.has(value)) return memo.get(value);
-  const output = Array.isArray(value) ? [] : Object.create(null);
-  memo.set(value, output);
-  if (Array.isArray(value)) {
-    for (const child of value) output.push(immutableIdentitySnapshot(child, memo));
-  } else {
-    for (const key of Object.keys(value)) output[key] = immutableIdentitySnapshot(value[key], memo);
-  }
-  return Object.freeze(output);
-}
-
-function freezeExpressionDag(expressions) {
-  const seen = new WeakSet();
-  const ordered = [];
-  const stack = [...expressions];
-  while (stack.length > 0) {
-    const current = stack.pop();
-    if (!current || typeof current !== 'object' || seen.has(current)) continue;
-    seen.add(current);
-    ordered.push(current);
-    for (const child of Object.values(current)) stack.push(child);
-  }
-  for (let index = ordered.length - 1; index >= 0; index--) Object.freeze(ordered[index]);
 }
 
 function requireIdentityString(value, name) {
@@ -225,7 +70,8 @@ function normalizeBitWidth(value) {
 }
 
 function normalizeTargetEntity(value) {
-  if (value == null || typeof value === 'string') return value ?? null;
+  if (value == null) return null;
+  if (typeof value === 'string') return value;
   if (typeof value !== 'object' || Array.isArray(value)) {
     throw new TypeError('createVerificationQuery: targetEntity must be null, string, or plain object');
   }
@@ -233,93 +79,80 @@ function normalizeTargetEntity(value) {
   if (prototype !== Object.prototype && prototype !== null) {
     throw new TypeError('createVerificationQuery: targetEntity must be null, string, or plain object');
   }
-  return value;
+  // Copy once so hash material and the returned record share the same
+  // canonical target representation, including null-prototype records.
+  const normalized = Object.create(null);
+  for (const key of Object.keys(value)) normalized[key] = value[key];
+  return normalized;
 }
 
-function expressionHashPayload(expression, hash) {
-  const payload = { hash };
-  // Canonical expression hashes intentionally exclude source/provenance and
-  // other metadata. A noncanonical constraint still needs content identity;
-  // otherwise distinct generic objects collapse to the same kind/sort hash
-  // (#5643).
-  if (!expression || typeof expression !== 'object' || !CANONICAL_EXPRESSION_KINDS.has(expression.kind)) {
-    payload.identity = stableDigest(expression);
-  }
-  return payload;
-}
-
-function queryHashPayload(query, constraintHashes, assertionHash) {
+// The factory's hash material must be reproducible from any accepted query so
+// the first proof-authority boundary can recompute identity instead of trusting
+// a caller-supplied queryHash (#3963).
+function canonicalQueryHashPayload(query) {
+  const constraints = Array.isArray(query.constraints) ? query.constraints.filter(Boolean) : [];
   return {
     schemaVersion: QUERY_SCHEMA_VERSION,
     kind: query.kind,
     claimKind: query.claimKind,
-    targetEntity: query.targetEntity ?? null,
-    constraints: constraintHashes.map((hash, index) => expressionHashPayload(query.constraints[index], hash)),
-    assertion: assertionHash ? expressionHashPayload(query.assertion, assertionHash) : null,
-    assumptions: query.assumptions,
-    completeness: query.completeness,
-    requestedOutputs: query.requestedOutputs,
-    semanticIrVersion: query.semanticIrVersion,
-    translatorVersion: query.translatorVersion,
-    architecture: query.architecture,
-    bitWidth: query.bitWidth,
+    targetEntity: normalizeTargetEntity(query.targetEntity ?? null),
+    constraints: constraints.map((c) => ({ hash: computeStructuralHash(c), expression: c })),
+    assertion: query.assertion ? { hash: computeStructuralHash(query.assertion), expression: query.assertion } : null,
+    assumptions: Array.isArray(query.assumptions) ? query.assumptions : [],
+    completeness: query.completeness || createCompleteness(),
+    requestedOutputs: Array.isArray(query.requestedOutputs) ? query.requestedOutputs : [],
+    semanticIrVersion: requireIdentityString(query.semanticIrVersion, 'semanticIrVersion'),
+    translatorVersion: requireIdentityString(query.translatorVersion, 'translatorVersion'),
+    architecture: requireIdentityString(query.architecture, 'architecture'),
+    bitWidth: normalizeBitWidth(query.bitWidth),
     proofScope: query.proofScope ?? null,
   };
 }
 
-export function validateVerificationQuery(query, options = {}) {
-  let limits;
+export function computeCanonicalQueryHash(query) {
+  return stableDigest(canonicalQueryHashPayload(query));
+}
+
+export function verifyVerificationQueryIdentity(query) {
+  if (!query || typeof query !== 'object') return 'not-an-object';
+  if (typeof query.kind !== 'string' || !Object.values(VERIFICATION_QUERY_KIND).includes(query.kind)) return 'unknown-query-kind';
+  if (typeof query.claimKind !== 'string' || !Object.values(CLAIM_KIND).includes(query.claimKind)) return 'unknown-claim-kind';
+  if (!Array.isArray(query.constraints)) return 'constraints-not-array';
+  if (query.schemaVersion !== QUERY_SCHEMA_VERSION) return 'schema-version-mismatch';
+  if (typeof query.queryHash !== 'string' || query.queryHash.length === 0) return 'missing-query-hash';
+  let canonical;
   try {
-    limits = {
-      maxExprNodes: requirePositiveSafeInteger(Object.prototype.hasOwnProperty.call(options, 'maxExprNodes') ? options.maxExprNodes : DEFAULT_QUERY_HASH_LIMITS.maxExprNodes, 'maxExprNodes'),
-      maxIdentityNodes: requirePositiveSafeInteger(Object.prototype.hasOwnProperty.call(options, 'maxIdentityNodes') ? options.maxIdentityNodes : DEFAULT_QUERY_HASH_LIMITS.maxIdentityNodes, 'maxIdentityNodes'),
-      maxIdentityEdges: requirePositiveSafeInteger(Object.prototype.hasOwnProperty.call(options, 'maxIdentityEdges') ? options.maxIdentityEdges : Math.min(DEFAULT_QUERY_HASH_LIMITS.maxIdentityEdges, (Object.prototype.hasOwnProperty.call(options, 'maxIdentityNodes') ? options.maxIdentityNodes : DEFAULT_QUERY_HASH_LIMITS.maxIdentityNodes) * 4), 'maxIdentityEdges'),
-      maxIdentityDepth: requirePositiveSafeInteger(Object.prototype.hasOwnProperty.call(options, 'maxIdentityDepth') ? options.maxIdentityDepth : DEFAULT_QUERY_HASH_LIMITS.maxIdentityDepth, 'maxIdentityDepth'),
-    };
-  } catch (error) {
-    return Object.freeze({ valid: false, reason: error.message, invalidBudget: true });
+    canonical = computeCanonicalQueryHash(query);
+  } catch {
+    return 'unhashable-query-content';
   }
-  if (!query || typeof query !== 'object' || query.schemaVersion !== QUERY_SCHEMA_VERSION ||
-      !Object.values(VERIFICATION_QUERY_KIND).includes(query.kind) || !Object.values(CLAIM_KIND).includes(query.claimKind) ||
-      !Array.isArray(query.constraints) || !Array.isArray(query.assumptions) || !Array.isArray(query.requestedOutputs) ||
-      typeof query.semanticIrVersion !== 'string' || !query.semanticIrVersion.trim() ||
-      typeof query.translatorVersion !== 'string' || !query.translatorVersion.trim() ||
-      typeof query.architecture !== 'string' || !query.architecture.trim() ||
-      !(query.bitWidth == null || (typeof query.bitWidth === 'number' && Number.isSafeInteger(query.bitWidth) && query.bitWidth > 0)) ||
-      typeof query.queryHash !== 'string' || !query.queryHash.trim()) {
+  if (canonical !== query.queryHash) return 'query-hash-identity-mismatch';
+  return null;
+}
+
+export function validateVerificationQuery(query, options = {}) {
+  const maxExprNodes = Object.prototype.hasOwnProperty.call(options, 'maxExprNodes') ? options.maxExprNodes : 100000;
+  const maxExprDepth = Object.prototype.hasOwnProperty.call(options, 'maxExprDepth') ? options.maxExprDepth : 1024;
+  if (typeof maxExprNodes !== 'number' || !Number.isSafeInteger(maxExprNodes) || maxExprNodes <= 0 ||
+      typeof maxExprDepth !== 'number' || !Number.isSafeInteger(maxExprDepth) || maxExprDepth <= 0) {
+    return Object.freeze({ valid: false, reason: 'invalid-query-validation-budget', invalidBudget: true });
+  }
+  if (!query || typeof query !== 'object' || !Array.isArray(query.constraints)) {
     return Object.freeze({ valid: false, reason: 'invalid-verification-query-shape' });
-  }
-  if (query.constraints.length + (query.assertion ? 1 : 0) > limits.maxExprNodes) {
-    return Object.freeze({ valid: false, reason: 'expression-node-budget-exceeded', limitExceeded: true });
   }
   const expressions = query.constraints.slice();
   if (query.assertion) expressions.push(query.assertion);
-  const structural = computeStructuralHashesBounded(expressions, { maxNodes: limits.maxExprNodes });
-  if (!structural.ok) return Object.freeze({ valid: false, reason: structural.reason, limitExceeded: structural.limitExceeded === true });
-  const identities = validateBoundedIdentityValues([
-    query.targetEntity,
-    query.assumptions,
-    query.completeness,
-    query.requestedOutputs,
-    query.proofScope,
-  ], limits);
-  if (!identities.ok) return Object.freeze({ valid: false, ...identities });
-  let recomputedHash;
-  try {
-    const constraintHashes = structural.hashes.slice(0, query.constraints.length);
-    const assertionHash = query.assertion ? structural.hashes[structural.hashes.length - 1] : null;
-    recomputedHash = stableDigest(queryHashPayload(query, constraintHashes, assertionHash));
-  } catch {
-    return Object.freeze({ valid: false, reason: 'malformed-query-identity' });
-  }
-  if (recomputedHash !== query.queryHash) {
-    return Object.freeze({ valid: false, reason: 'query-hash-content-mismatch', recomputedHash, nodeCount: structural.nodeCount });
-  }
-  return Object.freeze({ valid: true, recomputedHash, nodeCount: structural.nodeCount });
+  if (expressions.length > maxExprNodes) return Object.freeze({ valid: false, reason: 'expression-node-budget-exceeded', limitExceeded: true });
+  const bounded = computeStructuralHashesBounded(expressions, { maxNodes: maxExprNodes, maxDepth: maxExprDepth });
+  if (!bounded.ok) return Object.freeze({ valid: false, reason: bounded.reason, limitExceeded: bounded.limitExceeded === true });
+  let reason;
+  try { reason = verifyVerificationQueryIdentity(query); } catch { reason = 'unhashable-query-content'; }
+  if (reason) return Object.freeze({ valid: false, reason });
+  return Object.freeze({ valid: true, nodeCount: bounded.nodeCount, maxDepth: bounded.maxDepth });
 }
 
-export function isVerificationQuery(query, options = {}) {
-  return validateVerificationQuery(query, options).valid;
+export function isVerificationQuery(query) {
+  return verifyVerificationQueryIdentity(query) === null;
 }
 
 export function createVerificationQuery({
@@ -348,7 +181,7 @@ export function createVerificationQuery({
   const normalizedTranslatorVersion = requireIdentityString(translatorVersion, 'translatorVersion');
   const normalizedArchitecture = requireIdentityString(architecture, 'architecture');
   const normalizedBitWidth = normalizeBitWidth(bitWidth);
-  const normalizedTargetEntityInput = normalizeTargetEntity(targetEntity);
+  const normalizedTargetEntity = normalizeTargetEntity(targetEntity);
 
   let normalizedConstraints = [];
   if (Array.isArray(constraints)) {
@@ -360,57 +193,32 @@ export function createVerificationQuery({
   const normalizedAssumptions = Array.isArray(assumptions) ? [...assumptions] : [];
   const normalizedOutputs = Array.isArray(requestedOutputs) ? [...requestedOutputs] : [];
   const normalizedCompleteness = completeness || createCompleteness();
-  // Preserve the metadata guard's explicit depth/node errors before the
-  // bounded identity walk below. The caller-owned graph is frozen as part of
-  // the query contract, then copied into immutable identity snapshots.
-  freezeDeep(normalizedTargetEntityInput);
-  freezeDeep(normalizedConstraints, new WeakSet(), 0, { nodes: 0 }, true);
-  freezeDeep(assertion, new WeakSet(), 0, { nodes: 0 }, true);
+  freezeDeep(normalizedTargetEntity);
+  freezeDeep(normalizedConstraints);
+  freezeDeep(assertion);
   freezeDeep(normalizedAssumptions);
   freezeDeep(normalizedOutputs);
   freezeDeep(normalizedCompleteness);
   freezeDeep(proofScope);
 
-  const identities = validateBoundedIdentityValues([
-    normalizedTargetEntityInput,
-    normalizedAssumptions,
-    normalizedCompleteness,
-    normalizedOutputs,
-    proofScope,
-  ], DEFAULT_QUERY_HASH_LIMITS);
-  if (!identities.ok) throw new TypeError(`createVerificationQuery: ${identities.reason}`);
-
-  const normalizedTargetEntity = immutableIdentitySnapshot(normalizedTargetEntityInput);
-  const normalizedAssumptionIdentity = immutableIdentitySnapshot(normalizedAssumptions);
-  const normalizedCompletenessIdentity = immutableIdentitySnapshot(normalizedCompleteness);
-  const normalizedOutputIdentity = immutableIdentitySnapshot(normalizedOutputs);
-  const normalizedProofScope = immutableIdentitySnapshot(proofScope);
-  const unhashedQuery = {
+  const hashPayload = {
     schemaVersion: QUERY_SCHEMA_VERSION,
     kind,
     claimKind,
     targetEntity: normalizedTargetEntity,
-    constraints: normalizedConstraints,
-    assertion: assertion || null,
-    assumptions: normalizedAssumptionIdentity,
-    completeness: normalizedCompletenessIdentity,
-    requestedOutputs: normalizedOutputIdentity,
+    constraints: normalizedConstraints.map((c) => ({ hash: computeStructuralHash(c), expression: c })),
+    assertion: assertion ? { hash: computeStructuralHash(assertion), expression: assertion } : null,
+    assumptions: normalizedAssumptions,
+    completeness: normalizedCompleteness,
+    requestedOutputs: normalizedOutputs,
     semanticIrVersion: normalizedSemanticIrVersion,
     translatorVersion: normalizedTranslatorVersion,
     architecture: normalizedArchitecture,
     bitWidth: normalizedBitWidth,
-    proofScope: normalizedProofScope,
+    proofScope: proofScope || null,
   };
 
-  const expressions = [...normalizedConstraints, ...(assertion ? [assertion] : [])];
-  const structural = computeStructuralHashesBounded(expressions, { maxNodes: DEFAULT_QUERY_HASH_LIMITS.maxExprNodes });
-  if (!structural.ok) throw new TypeError(`createVerificationQuery: ${structural.reason}`);
-  const queryHash = stableDigest(queryHashPayload(
-    unhashedQuery,
-    structural.hashes.slice(0, normalizedConstraints.length),
-    assertion ? structural.hashes[structural.hashes.length - 1] : null,
-  ));
-  freezeExpressionDag(expressions);
+  const queryHash = stableDigest(hashPayload);
 
   return Object.freeze({
     schemaVersion: QUERY_SCHEMA_VERSION,
@@ -419,14 +227,14 @@ export function createVerificationQuery({
     targetEntity: normalizedTargetEntity,
     constraints: Object.freeze(normalizedConstraints),
     assertion: assertion || null,
-    assumptions: normalizedAssumptionIdentity,
-    completeness: normalizedCompletenessIdentity,
-    requestedOutputs: normalizedOutputIdentity,
+    assumptions: Object.freeze(normalizedAssumptions),
+    completeness: normalizedCompleteness,
+    requestedOutputs: Object.freeze(normalizedOutputs),
     semanticIrVersion: normalizedSemanticIrVersion,
     translatorVersion: normalizedTranslatorVersion,
     architecture: normalizedArchitecture,
     bitWidth: normalizedBitWidth,
-    proofScope: normalizedProofScope,
+    proofScope: proofScope || null,
     queryHash,
   });
 }
