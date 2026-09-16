@@ -1,5 +1,6 @@
 name: T015 focused verification
 
+# rerun after live authority snapshot fix
 on:
   push:
     branches:
