@@ -1,0 +1,74 @@
+name: T015 source-backed signature budget fix v2
+
+on:
+  push:
+    branches:
+      - fix/t015-code-signature-source-budget-20260917
+    paths:
+      - .github/workflows/t015-source-signature-budget-fix-v2.yml
+
+permissions:
+  contents: write
+
+env:
+  HEX_FIXTURE_BATTLECATS_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/battlecats
+  HEX_FIXTURE_TSUMTSUM_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/TsumTsum
+  HEX_FIXTURE_YWP_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/YWP
+
+jobs:
+  fix-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Defer uncached source-backed signature blob
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          p = Path('js/apple/knowledge.js')
+          text = p.read_text()
+          old_line = "    if (error?.code === 'BINARY_SOURCE_RANGE_MISSING') throw error;"
+          new_block = """    if (error?.code === 'BINARY_SOURCE_RANGE_MISSING' && input?.__binaryByteBacking === true) {
+              return signatureResult('partial', {
+                complete: false,
+                reasons: ['signature-bytes-deferred'],
+                provenance,
+              });
+            }
+            if (error?.code === 'BINARY_SOURCE_RANGE_MISSING') throw error;"""
+          if text.count(old_line) != 1:
+              raise SystemExit(f'code-signature catch boundary mismatch: {text.count(old_line)}')
+          text = text.replace(old_line, new_block, 1)
+          p.write_text(text)
+          PY
+          node --check js/apple/knowledge.js
+      - name: Focused Apple signature regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/apple-code-signature-source-budget.test.mjs tests/apple-knowledge-x02.test.mjs
+      - name: Fetch and verify pinned fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run fixtures:fetch
+          npm run fixtures:check
+      - name: Verify universal binary benchmark budget
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --silent run binary:benchmark > /tmp/t015-benchmark.json
+          node tools/benchmark/compare.mjs --binary=/tmp/t015-benchmark.json
+      - name: Commit verified production fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/apple/knowledge.js
+          git commit -m 'fix(t015): defer uncached source-backed signature blobs'
+          git push origin HEAD:fix/t015-code-signature-source-budget-20260917
