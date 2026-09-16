@@ -9,7 +9,7 @@ on:
       - '.github/pr9122-rebuild.py'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   focused:
@@ -27,7 +27,9 @@ jobs:
       - name: Fetch reviewed donor only
         run: timeout 60s git fetch --depth=1 origin component/final-closure-t014-v3:refs/remotes/origin/component/final-closure-t014-v3
       - name: Reconstruct current-contract backend
-        run: python .github/pr9122-rebuild.py
+        run: |
+          python .github/pr9122-rebuild.py
+          cp js/symbolic/solver/bitblast-backend.js /tmp/bitblast-backend.js
       - name: Syntax
         run: timeout 120s node tests/check.mjs
       - name: T014 structural hash
@@ -42,9 +44,16 @@ jobs:
         run: timeout 120s node --test --test-concurrency=1 tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs
       - name: T014 eligibility authority
         run: timeout 120s node --test --test-concurrency=1 tests/issue-5498-eligibility-result-status-authority.mjs
-      - uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: pr9122-reconstructed-backend
-          path: js/symbolic/solver/bitblast-backend.js
-          retention-days: 1
+      - name: Push clean one-file fix to PR branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 60s git fetch --depth=1 origin fix-bitblast-main-syntax-20260917:refs/remotes/origin/fix-bitblast-main-syntax-20260917
+          test "$(git rev-parse origin/fix-bitblast-main-syntax-20260917)" = "1b7818d00dec177a24aad1aa75289406c34bcb7a"
+          git checkout --detach origin/fix-bitblast-main-syntax-20260917
+          cp /tmp/bitblast-backend.js js/symbolic/solver/bitblast-backend.js
+          git add js/symbolic/solver/bitblast-backend.js
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'fix(symbolic): restore current-contract bitblast backend'
+          timeout 60s git push origin HEAD:fix-bitblast-main-syntax-20260917
