@@ -2,6 +2,7 @@ import { createOriginSet } from '../../core/identity/origin.js';
 import { createManagedExceptionRegionId, createManagedMethodId, createVMOperationId } from '../shared/identity.js';
 import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
 import { decodeDexInstructionBoundary } from './instruction-boundary.js';
+import { dexMethodDefinitions } from './method-definitions.js';
 
 function fail(code) { throw new TypeError(code); }
 
@@ -57,15 +58,13 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
 
   const methodId = createManagedMethodId(dexImage.moduleId, methodIdx, methodDef.name);
 
-  // Find class and direct/virtual method entry to check codeOff and accessFlags
+  // Resolve codeOff/accessFlags from the shared method-definition authority (built
+  // once per frozen image, O(1) lookup) instead of linearly re-scanning every class'
+  // direct/virtual method arrays on each method decode (#8976).
   let codeOff = 0;
   let accessFlags = 0;
-  for (const cls of dexImage.classes) {
-    const dm = cls.directMethods.find((m) => m.methodIdx === methodIdx);
-    if (dm) { codeOff = dm.codeOff; accessFlags = dm.accessFlags; break; }
-    const vm = cls.virtualMethods.find((m) => m.methodIdx === methodIdx);
-    if (vm) { codeOff = vm.codeOff; accessFlags = vm.accessFlags; break; }
-  }
+  const definitionEntry = dexMethodDefinitions(dexImage).get(methodIdx);
+  if (definitionEntry) { codeOff = definitionEntry.codeOff; accessFlags = definitionEntry.accessFlags; }
 
   const isNative = (accessFlags & 0x0100) !== 0; // ACC_NATIVE
   if (isNative || codeOff === 0) {
@@ -437,6 +436,12 @@ export function liftDexMethod(methodIdx, dexImage, options = {}) {
           locationReads.push({ kind: 'register', index: vBB, bits: 32 });
           locationReads.push({ kind: 'register', index: vCC, bits: 32 });
           locationWrites.push({ kind: 'register', index: vAA, bits: 32 });
+          // The arithmetic result is the value bound to the destination
+          // register; without an explicit produced value the shared bridge has
+          // no result identity for the locationWrite and falls back to an
+          // operand read value, so `add-int v0,v1,v2` would leave v0 equal to
+          // v2 instead of v1+v2 (#1136).
+          producedValues.push({ bits: 32 });
           // Dalvik: div-int/rem-int throw java/lang/ArithmeticException when
           // the divisor (vCC) is zero — a specified exceptional path the
           // bundle must carry instead of publishing exception-free exact

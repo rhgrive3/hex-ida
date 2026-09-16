@@ -20,8 +20,8 @@ const shapes = source.slice(shapesStart, shapesEnd);
 // The shared shapes producer must not capture the creating consumer's signal:
 // per-consumer waits delegate to waitForShared so one consumer's abort cannot
 // cancel the producer out from under the remaining waiters (#5266/#5320/#5334).
-assert.match(shapes, /if \(app\.shapesBusy && app\.shapesBusyEpoch === epoch && !app\.shapesBusy\.cancelled\) return waitForShared\(app\.shapesBusy, signal\);/);
-assert.match(shapes, /promise:null, settled:false, cancelled:false, waiters:0,/);
+assert.match(shapes, /if \(app\.shapesBusy && app\.shapesBusyEpoch === epoch && app\.shapesBusy\.demandKey === key && !app\.shapesBusy\.cancelled\) return waitForShared\(app\.shapesBusy, signal\);/);
+assert.match(shapes, /promise:null, settled:false, cancelled:false, waiters:0, demandKey:key,/);
 assert.match(shapes, /finally\(\(\) => \{ if \(app\.shapesBusy === entry\) \{ app\.shapesBusy = null; app\.shapesBusyEpoch = -1; \} \}\);/);
 assert.match(shapes, /return waitForShared\(entry, signal\);/);
 assert.doesNotMatch(shapes, /return app\.shapesBusy;/);

@@ -8,6 +8,13 @@ export const DEFAULT_MATCH_BUDGET = Object.freeze({
   maxIndexEntries: 2_000_000,
   maxCandidateEvaluations: 500_000,
   maxCandidateEdges: 100_000,
+  // Public-API admission bound for externally supplied candidate iterables
+  // (#8914). The raw-enumeration cap is intentionally large so an already
+  // bounded `matchFunctions()` eligible array (governed by
+  // maxCandidateEvaluations/maxCandidateEdges above) never trips it; it exists
+  // only to stop an unbounded or duplicate-heavy generator from being
+  // enumerated forever before the retained-edge cap or cancellation fires.
+  maxCandidateAdmission: 2_000_000,
   maxComponentNodes: 2_048,
   maxComponentEdges: 20_000,
   maxSolverRelaxations: 500_000,
@@ -55,6 +62,7 @@ export function createMatchBudget(overrides = {}) {
     maxIndexEntries: limit(overrides.maxIndexEntries, DEFAULT_MATCH_BUDGET.maxIndexEntries),
     maxCandidateEvaluations: limit(overrides.maxCandidateEvaluations, DEFAULT_MATCH_BUDGET.maxCandidateEvaluations),
     maxCandidateEdges: limit(overrides.maxCandidateEdges, DEFAULT_MATCH_BUDGET.maxCandidateEdges),
+    maxCandidateAdmission: limit(overrides.maxCandidateAdmission, DEFAULT_MATCH_BUDGET.maxCandidateAdmission),
     maxComponentNodes: limit(overrides.maxComponentNodes, DEFAULT_MATCH_BUDGET.maxComponentNodes),
     maxComponentEdges: limit(overrides.maxComponentEdges, DEFAULT_MATCH_BUDGET.maxComponentEdges),
     maxSolverRelaxations: limit(overrides.maxSolverRelaxations, DEFAULT_MATCH_BUDGET.maxSolverRelaxations),
@@ -73,6 +81,8 @@ export function createMatchBudget(overrides = {}) {
   let indexEntries = 0;
   let candidateEvaluations = 0;
   let candidateEdges = 0;
+  let candidateAdmissions = 0;
+  let retainedCandidateEdges = 0;
   let solverRelaxations = 0;
   let solverAugmentations = 0;
   let postprocessWork = 0;
@@ -159,6 +169,44 @@ export function createMatchBudget(overrides = {}) {
       return true;
     },
     checkCandidateWall() { return wallOkay('candidate generation', true); },
+    // #8914: a caller-supplied candidate iterable must be treated as
+    // untrusted/enumerating work, not a free buffer. admitCandidate() is
+    // consulted BEFORE requesting the next item from a non-array iterator so an
+    // already-aborted signal or exhausted admission budget cannot consume the
+    // stream at all; checkCandidateRetained() caps how many valid candidates are
+    // kept in adjacency before the solver's own component budget would otherwise
+    // be reached only after the full enumeration. admitEnumerated() is the
+    // integer-only variant used for an already-materialized array (the
+    // matchFunctions() eligible path): it bounds raw enumeration count and
+    // retained adjacency WITHOUT reading AbortSignal or the wall clock, so the
+    // solver/post-processing stage-independence that #4527 pins stays exact.
+    admitEnumerated() {
+      if (truncated) return false;
+      candidateAdmissions++;
+      if (candidateAdmissions > limits.maxCandidateAdmission) {
+        return stop(`candidate admissions exceeded ${limits.maxCandidateAdmission}`, true);
+      }
+      return true;
+    },
+    admitCandidate() {
+      if (truncated) return false;
+      if (signal?.aborted) return stop('candidate admission aborted', true);
+      candidateAdmissions++;
+      if (candidateAdmissions > limits.maxCandidateAdmission) {
+        return stop(`candidate admissions exceeded ${limits.maxCandidateAdmission}`, true);
+      }
+      return (candidateAdmissions & 0xfff) === 0 ? wallOkay('candidate admission', true) : true;
+    },
+    checkCandidateRetained() {
+      if (truncated) return false;
+      retainedCandidateEdges++;
+      if (retainedCandidateEdges > limits.maxCandidateEdges) {
+        return stop(`retained candidate adjacency exceeded ${limits.maxCandidateEdges}`, true);
+      }
+      return true;
+    },
+    get admissionEnumerated() { return candidateAdmissions; },
+    get admissionRetained() { return retainedCandidateEdges; },
     checkSolverWall(stage = 'matching') { return wallOkay(stage, false); },
     checkPostprocessingWall(stage = 'match post-processing') { return postprocessingWallOkay(stage); },
     postprocess(cost = 1, stage = 'match post-processing') {
