@@ -1,8 +1,8 @@
 {
   "schema": "x02-arm64e-real-producer/v1",
   "acceptanceRow": "X02-F-48",
-  "sourcePath": "tests/scpa/fixtures/x02-arm64e-authenticated.c",
-  "binaryPath": "tests/scpa/fixtures/x02-arm64e-authenticated.o",
+  "sourcePath": "fixtures/x02/x02-arm64e-authenticated.c",
+  "binaryPath": "fixtures/x02/x02-arm64e-authenticated.o",
   "sourceSha256": "608bedd0e779fc50bbb6a8b4f3f9f17fc4c1f6abc268098a819238f491c04a49",
   "binarySha256": "aa196ec267e323ad1910ffc17dc72e7c17d13e2f5271f50dedc067c700611bb0",
   "binaryByteLength": 456,

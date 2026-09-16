@@ -4,9 +4,9 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { openBinary } from '../../js/binary/index.js';
 
-const sourceUrl = new URL('./fixtures/x02-arm64e-authenticated.c', import.meta.url);
-const binaryUrl = new URL('./fixtures/x02-arm64e-authenticated.o', import.meta.url);
-const provenanceUrl = new URL('./fixtures/x02-arm64e-authenticated-provenance.json', import.meta.url);
+const sourceUrl = new URL('../../fixtures/x02/x02-arm64e-authenticated.c', import.meta.url);
+const binaryUrl = new URL('../../fixtures/x02/x02-arm64e-authenticated.o', import.meta.url);
+const provenanceUrl = new URL('../../fixtures/x02/x02-arm64e-authenticated-provenance.json', import.meta.url);
 const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const u32 = (bytes, offset) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(offset, true);
 const occurrences = (bytes, word) => {
