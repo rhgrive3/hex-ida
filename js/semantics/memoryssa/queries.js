@@ -1008,7 +1008,43 @@ function forwardingCheckSourceNode(node, memory, role, { requireComplete = false
   }
 }
 
-function forwardingStatusFromArtifact(memorySsa, options) {
+/*
+ * Issue #8979: repeated load-forwarding queries over the same immutable
+ * producer artifact must not re-digest the whole Semantic IR, re-verify the
+ * canonical MemorySSA digest, re-run full validation, or rebuild the
+ * access-metadata / use / region indexes for every load.  The cache below is
+ * WeakMap-keyed by the exact deep-frozen canonical producer artifact, so a
+ * caller-owned mutable or cloned object can never receive or serve a cached
+ * precomputation.  The first query over an (artifact, ir, check-shape) tuple
+ * performs the full gate and validation; later identical-identity queries
+ * reuse the verified result and the artifact-derived views.  Every guard the
+ * full path checks is either a property of the frozen artifact itself (stable
+ * across calls by construction) or part of the cached key, so bypassing the
+ * re-derivation cannot accept a stale, tampered, or mismatched context.
+ */
+const forwardingPrecomputations = new WeakMap();
+const NO_FORWARDING_CFG = Symbol('memoryssa-forwarding-no-cfg');
+
+function forwardingGateOptionKey(options) {
+  if (Object.hasOwn(options, 'currentIdentity')) return null;
+  let snapshotPart;
+  try {
+    snapshotPart = options.snapshotId == null ? '\u0000s' : `s${String(snapshotIdIdentity(options.snapshotId))}`;
+  } catch {
+    return null;
+  }
+  return [
+    options.functionId == null ? '\u0000f' : `f${String(options.functionId)}`,
+    snapshotPart,
+    options.memorySsaBuildVersion == null ? '\u0000b' : `b${String(options.memorySsaBuildVersion)}`,
+  ].join('|');
+}
+
+function forwardingValidationBudgetKey(options) {
+  return options.validationBudget == null ? '\u0000default' : String(options.validationBudget);
+}
+
+function forwardingStatusFromArtifactFull(memorySsa, options) {
   if (options.signal?.aborted) throw new ForwardingStop('cancelled', 'analysis-cancelled');
   const deadlineMs = forwardingDeadlineMs(options);
   if (deadlineMs != null && Date.now() >= deadlineMs) {
@@ -1165,6 +1201,55 @@ function forwardingStatusFromArtifact(memorySsa, options) {
         || currentIdentity === artifact.identity
         || stableDigest(currentIdentity) !== stableDigest(artifact.identity)) {
       throw new ForwardingStop('stale', 'memoryssa-independent-current-identity-mismatch');
+    }
+  }
+}
+
+function forwardingStatusFromArtifact(memorySsa, options) {
+  const canonicalArtifact = forwardingObject(memorySsa)
+    && isCanonicalMemorySsaProducerArtifact(memorySsa)
+    && Object.isFrozen(memorySsa);
+  const ir = options.ir;
+  const irCacheable = ir == null || (forwardingObject(ir) && Object.isFrozen(ir));
+  const gateKey = canonicalArtifact && irCacheable && !options.skipValidation
+    && options.accessMetadata == null
+    && options.consumerId === CANONICAL_MEMORY_FORWARDING_CONSUMER
+    && options.purpose === CANONICAL_MEMORY_FORWARDING_PURPOSE
+    ? forwardingGateOptionKey(options) : null;
+  if (gateKey != null) {
+    if (options.signal?.aborted) throw new ForwardingStop('cancelled', 'analysis-cancelled');
+    const deadlineMs = forwardingDeadlineMs(options);
+    if (deadlineMs != null && Date.now() >= deadlineMs) {
+      throw new ForwardingStop('budget-limited', 'memory-forwarding-deadline-exhausted');
+    }
+    const pre = forwardingPrecomputations.get(memorySsa);
+    if (pre != null && pre.gateKey === gateKey && pre.gateOk
+      && (ir == null ? pre.irNullOk : (pre.irOk != null && pre.irOk.has(ir)))) {
+      return;
+    }
+  }
+  forwardingStatusFromArtifactFull(memorySsa, options);
+  if (gateKey != null) {
+    let pre = forwardingPrecomputations.get(memorySsa);
+    if (pre == null || pre.gateKey !== gateKey || !pre.gateOk) {
+      pre = {
+        gateKey,
+        gateOk: true,
+        irNullOk: false,
+        irOk: null,
+        useIndex: null,
+        regionById: null,
+        metadataIndex: null,
+        validatedOk: false,
+        validatedCfg: null,
+        validatedBudget: null,
+      };
+      forwardingPrecomputations.set(memorySsa, pre);
+    }
+    if (ir == null) pre.irNullOk = true;
+    else {
+      if (pre.irOk == null) pre.irOk = new WeakSet();
+      pre.irOk.add(ir);
     }
   }
 }
@@ -2036,19 +2121,38 @@ export function forwardMemoryValue(memorySsa, useOrId, options = {}) {
   let context = null;
   try {
     forwardingStatusFromArtifact(memorySsa, options);
-    const validated = validateMemorySsa(memorySsa, {
-      signal: options.signal,
-      budget: options.validationBudget,
-      cfg: options.cfg,
-    });
+    const pre = forwardingObject(memorySsa) && isCanonicalMemorySsaProducerArtifact(memorySsa)
+      && Object.isFrozen(memorySsa)
+      ? forwardingPrecomputations.get(memorySsa) : null;
+    const validationKey = forwardingValidationBudgetKey(options);
+    const validationCfg = options.cfg ?? NO_FORWARDING_CFG;
+    let validated;
+    if (pre != null && pre.validatedOk && pre.validatedCfg === validationCfg
+        && pre.validatedBudget === validationKey) {
+      validated = memorySsa;
+    } else {
+      validated = validateMemorySsa(memorySsa, {
+        signal: options.signal,
+        budget: options.validationBudget,
+        cfg: options.cfg,
+      });
+      if (pre != null) {
+        pre.validatedOk = true;
+        pre.validatedCfg = validationCfg;
+        pre.validatedBudget = validationKey;
+      }
+    }
     // Preserve the producer-published object when validation succeeds.  The
     // validator may return a normalized overlay, but that new object must not
     // silently lose the private producer binding required for exactness.
     const artifact = isCanonicalMemorySsaProducerArtifact(memorySsa)
       ? memorySsa
       : (validated ?? memorySsa);
+    if (pre != null && pre.useIndex == null && artifact === memorySsa && Array.isArray(artifact.uses)) {
+      pre.useIndex = new Map(artifact.uses.map((use) => [use.id, use]));
+    }
     const use = useOrId && typeof useOrId === 'object'
-      ? useMap(artifact).get(String(useOrId.id ?? ''))
+      ? (pre != null && pre.useIndex != null ? pre.useIndex : useMap(artifact)).get(String(useOrId.id ?? ''))
       : useFrom(artifact, useOrId);
     if (!use || typeof use !== 'object') throw new ForwardingStop('unknown', 'memory-forwarding-use-missing');
     const definitions = Array.isArray(artifact.definitions) ? artifact.definitions : null;
@@ -2065,9 +2169,19 @@ export function forwardMemoryValue(memorySsa, useOrId, options = {}) {
       maxIterations: forwardingPositiveInteger(options.maxIterations ?? options.budget?.maxIterations ?? 4194304, 'memory-forwarding-invalid-iteration-budget'),
       deadlineMs: forwardingDeadlineMs(options),
     };
-    const regionById = new Map(regions.map((region) => [String(region.id), region]));
-    const metadataById = forwardingMetadataIndex(artifact, state);
     const sourceById = forwardingSourceMap(options);
+    if (pre != null && artifact === memorySsa) {
+      if (pre.regionById == null) {
+        pre.regionById = new Map(regions.map((region) => [String(region.id), region]));
+      }
+      if (pre.metadataIndex == null) {
+        pre.metadataIndex = forwardingMetadataIndex(artifact, state);
+      }
+    }
+    const regionById = pre != null && pre.regionById != null ? pre.regionById : new Map(regions.map((region) => [String(region.id), region]));
+    const metadataById = pre != null && pre.metadataIndex != null
+      ? pre.metadataIndex
+      : forwardingMetadataIndex(artifact, state);
     context = forwardingLoadContext(artifact, use, options, metadataById, regionById, sourceById);
     const stores = forwardingCollect(artifact, use, context, options, metadataById, regionById, sourceById, state);
     const operandStore = forwardingExactOperand(stores, context, state);
