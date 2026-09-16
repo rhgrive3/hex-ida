@@ -1,0 +1,124 @@
+name: Temporary C1-03 local acceptance
+on:
+  push:
+    branches: ['impl/c1-03-acceptance-20260916']
+    paths: ['.github/workflows/temp-c1-03-acceptance.yml']
+permissions:
+  contents: write
+jobs:
+  accept:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      TARGET_HEAD: 0c143bb95e0141f51d4bcee0f9c9bbf12caddd3b
+      TARGET_BRANCH: feat/analysis-roadmap-v8-current-main-20260907
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TARGET_HEAD }}
+          fetch-depth: 400
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install locked dependencies
+        timeout-minutes: 3
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify frozen C1-03 denominator
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { ALIAS_QUERIES_V2 } from './tests/phase7/corpus/fixtures.mjs';
+          assert.equal(ALIAS_QUERIES_V2.length, 30, 'frozen alias denominator changed');
+          const cats = new Set(ALIAS_QUERIES_V2.map(row => row.category));
+          for (const category of ['different-globals','same-allocation-site','different-allocation-sites','tls-identities-same','tls-identities-distinct','tls-identities-vs-stack']) assert.ok(cats.has(category), category);
+          const exact = ALIAS_QUERIES_V2.filter(row => row.truth === 'no' || row.truth === 'must');
+          const conservative = ALIAS_QUERIES_V2.filter(row => row.truth === 'may');
+          assert.ok(exact.length > 0 && conservative.length > 0);
+          console.log(JSON.stringify({rows:ALIAS_QUERIES_V2.length, exact:exact.length, conservative:conservative.length, requiredCategories:[...cats].filter(x=>/global|allocation|tls/.test(x))}));
+          NODE
+      - name: Run C1-03 focused authority suite
+        run: >-
+          node --test
+          tests/phase7/alias/c1-root-rename-metamorphism.test.mjs
+          tests/phase7/alias/issue-4777-forged-scalar-ssa-rename.test.mjs
+          tests/phase7/alias/issue-5215-stale-escape-cache.test.mjs
+          tests/phase7/alias/issue-5802-canonical-root-conflict.test.mjs
+          tests/phase7/alias/issue-5323-provider-separation-authority.test.mjs
+          tests/phase7/alias/issue-c1-consolidated-regressions.test.mjs
+      - name: Run complete Phase 7 alias regression directory
+        run: node --test tests/phase7/alias/*.test.mjs
+      - name: Record C1-03 acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('docs/analysis-local-acceptance-audit.json')
+          audit=json.loads(p.read_text())
+          finding=next(x for x in audit['findings'] if x['id']=='HEX-C1-03')
+          finding['localStatus']='accepted-local'
+          finding['assessment']='C1-03 の exact alias authority を frozen 30-query corpus と 240-cell bijective root/node/value rename matrixで再受入。global/heap/TLS を実 root descriptor として含み、similar/overlap/incomplete/stale/conflicting/provider-forged cases は false No/MustAlias を発行しない。名前・ID spelling は exactness authorityにならず、root evidence/schema/current snapshot のみで強い relation を発行する。C1-01/C1-02 と whole-roadmap/release/device gates は別。'
+          finding['source']='tests/phase7/alias/c1-root-rename-metamorphism.test.mjs'
+          finding['verificationSuite']='c1-03-final-acceptance-20260916'
+          finding['originalRequirementAcceptedHere']=True
+          task=next(x for x in audit['tasks'] if x['id']=='FR-C1-03A')
+          task['localStatus']='accepted-local'
+          task['currentAssessment']='frozen 30-query exact alias corpus、240-cell rename metamorphism、global/heap/TLS adversarial roots、forged rename/stale escape/root conflict/provider authority negativesを受入。spelling変更で relation/reason/completeness は不変、false exact No/MustAlias は0。'
+          task['originalRequirementAcceptedHere']=True
+          audit.setdefault('integrationFollowup', {})['c1AliasAuthorityAcceptance20260916']={
+            'status':'ACCEPTED-LOCAL',
+            'finding':'HEX-C1-03',
+            'task':'FR-C1-03A',
+            'denominator':{'frozenQueries':30,'renameCells':240,'rootFamilies':['stack','global','heap','tls','absolute','opaque']},
+            'focusedTests':['c1-root-rename-metamorphism','issue-4777-forged-scalar-ssa-rename','issue-5215-stale-escape-cache','issue-5802-canonical-root-conflict','issue-5323-provider-separation-authority','issue-c1-consolidated-regressions'],
+            'falseExactness':'zero-required',
+            'fullRoadmapComplete':False,
+            'transformAuthorization':False,
+          }
+          p.write_text(json.dumps(audit, ensure_ascii=False, indent=2)+'\n')
+
+          p=Path('docs/解析ツール改善.md')
+          text=p.read_text()
+          section='''## 2026-09-16: C1-03 local acceptance 完了\n\nHEX-C1-03 / FR-C1-03A は、frozen 30-query alias corpus、240-cell の root/node/value rename metamorphism、global / heap / TLS の実 root descriptor、forged rename / stale escape / conflicting root / provider authority の陰性ケースを同一受入で再検証し、このローカル要件について `accepted-local` とする。名前やID spellingは exact alias authorityに使わず、false `NoAlias` / `MustAlias` は許容しない。C1-01 / C1-02、独立レビュー、実機、release、他 finding は閉じていないため、ロードマップ全体の `CHECKPOINT-LOCKED` / `transformAuthorization:false` は維持する。\n\n'''
+          if '## 2026-09-16: C1-03 local acceptance 完了' not in text:
+              marker='## 2026-09-16: C4-02 local acceptance 完了\n'
+              if marker not in text: raise SystemExit('analysis md marker missing')
+              text=text.replace(marker, section+marker, 1)
+          p.write_text(text)
+
+          p=Path('docs/analysis-roadmap-v8-integration-checkpoint.md')
+          text=p.read_text()
+          note='''\n\n## 2026-09-16 C1-03 local acceptance\n\n`tests/phase7/alias/c1-root-rename-metamorphism.test.mjs` の frozen 30-query / 240 rename cells と alias authority negative suite で、global/heap/TLSを含むroot evidenceを再受入した。名前・node/value/state-key IDのspelling変更は relation/reason/completeness を変えず、forged rename、stale escape、conflicting root、provider separation の不完全証拠から exact NoAlias/MustAlias を発行しない。HEX-C1-03 / FR-C1-03A はこのローカル要件について accepted-local。C1-01/C1-02 と全roadmap/release/device受入は未完了のまま。\n'''
+          if '## 2026-09-16 C1-03 local acceptance' not in text:
+              text += note
+          p.write_text(text)
+          PY
+          node -e "JSON.parse(require('fs').readFileSync('docs/analysis-local-acceptance-audit.json','utf8'))"
+          git diff --check
+      - name: Commit accepted C1-03 checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add docs/analysis-local-acceptance-audit.json docs/解析ツール改善.md docs/analysis-roadmap-v8-integration-checkpoint.md
+          git commit -m 'docs(analysis): accept C1-03 alias authority'
+      - name: Verify ownership on committed candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tools/validation/phase7-ownership.mjs --check-manifest
+          git fetch --no-tags --depth=400 origin main:refs/remotes/origin/main
+          BASE_SHA=$(git rev-parse refs/remotes/origin/main)
+          node tools/validation/analysis-roadmap/ownership.mjs --branch "$TARGET_BRANCH" --phase phase7 --base-sha "$BASE_SHA" --head-sha "$(git rev-parse HEAD)"
+      - name: Publish only if target head is unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          REMOTE=$(git ls-remote origin "refs/heads/$TARGET_BRANCH" | cut -f1)
+          test "$REMOTE" = "$TARGET_HEAD" || { echo "target moved: expected $TARGET_HEAD got $REMOTE"; exit 1; }
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
