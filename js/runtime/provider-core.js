@@ -332,15 +332,28 @@ export class DebugAdapterRuntimeProvider {
       provider: this,
       request,
       close: async () => {
+        // #8683: only the session that still holds provider ownership may touch
+        // the shared transport. A stale/orphaned session can never disconnect a
+        // successor session's live connection or clear its reservation.
+        if (this.activeSession !== session) return;
         if (disconnectPending || connectedBySession) {
           disconnectPending = true;
           await this.adapter.disconnect();
           disconnectPending = false;
         }
-        if (this.activeSession === session) this.activeSession = null;
+        this.activeSession = null;
       },
     });
     session.epoch = nextSessionEpoch;
+    // #8683: claim provider ownership synchronously before the shared adapter
+    // epoch mutation and before the first await in `adapter.connect()`. The
+    // `adapter-in-use` guard is only exclusive if the reservation completes
+    // without an interleaving point, matching the invariant already enforced
+    // for Instrumentation/Emulator by #4716. A second concurrent open now
+    // fails closed before a second connect and without advancing the adapter
+    // or session epoch; failure paths release the reservation only when
+    // `activeSession === session`.
+    this.activeSession = session;
     if (typeof this.adapter.setEpoch === 'function') this.adapter.setEpoch(session.epoch);
     this.sessionEpoch = session.epoch;
     // Connect BEFORE the session facet surface is built: RemoteDebugAdapter
@@ -373,7 +386,6 @@ export class DebugAdapterRuntimeProvider {
     session.capabilityState = deferredConnect ? 'unnegotiated' : 'negotiated';
     session.negotiated = !deferredConnect;
     session.facets = Object.freeze(facets);
-    this.activeSession = session;
 
     try {
       if (!deferredConnect && this.adapter.capabilities?.modules && typeof this.adapter.getModules === 'function') {
