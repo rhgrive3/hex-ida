@@ -30,19 +30,6 @@ export class DenyAllAdminProvider extends AdminAuthProvider {
   }
 }
 
-/* #8854: fail-closed default. Production must not manufacture admin authority from a synthetic
-   default; a trusted authenticated provider has to be supplied explicitly. When none is wired the
-   principal is unauthenticated and Standard-only. */
-export class DenyAllAdminProvider extends AdminAuthProvider {
-  getIdentity() {
-    return Object.freeze({
-      authenticated: false,
-      admin: false,
-      provider: 'deny-all-admin',
-    });
-  }
-}
-
 export function readAdminIdentity(provider) {
   if (!provider || typeof provider.getIdentity !== 'function') {
     throw new TypeError('An AdminAuthProvider is required.');
