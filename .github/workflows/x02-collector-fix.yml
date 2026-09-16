@@ -1,0 +1,57 @@
+name: X-02 collector finite fix
+
+on:
+  push:
+    branches: [feat/analysis-roadmap-v8-current-main-20260907]
+    paths: [.github/workflows/x02-collector-fix.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/analysis-roadmap-v8-current-main-20260907
+          fetch-depth: 1
+      - name: Patch collector and acceptance trigger
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('tools/validation/x02-apple-runtime-evidence.mjs')
+          s=p.read_text()
+          old="import { createReadStream } from 'node:fs';"
+          new="import { createReadStream, existsSync } from 'node:fs';"
+          if old not in s: raise SystemExit('collector import first-failure: expected old import missing')
+          s=s.replace(old,new,1)
+          old2="""const cachePath = CACHE_CANDIDATES.find((candidate) => {\n  try { return command('/usr/bin/test', ['-f', candidate]) === ''; } catch { return false; }\n});"""
+          new2="const cachePath = CACHE_CANDIDATES.find((candidate) => existsSync(candidate));"
+          if old2 not in s: raise SystemExit('collector cache-path first-failure: expected old probe missing')
+          p.write_text(s.replace(old2,new2,1))
+
+          w=Path('.github/workflows/x02-real-acceptance.yml')
+          y=w.read_text()
+          old3='    paths: [.github/workflows/x02-real-acceptance.yml]'
+          new3='    paths: [.github/workflows/x02-real-acceptance.yml, tools/validation/x02-apple-runtime-evidence.mjs]'
+          if old3 not in y: raise SystemExit('acceptance trigger first-failure: expected old path filter missing')
+          w.write_text(y.replace(old3,new3,1))
+          PY
+          git diff --check
+      - name: Commit exact patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          BRANCH='feat/analysis-roadmap-v8-current-main-20260907'
+          git fetch origin "$BRANCH" --depth=1
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/$BRANCH)" || { echo 'remote-head-moved'; exit 23; }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tools/validation/x02-apple-runtime-evidence.mjs .github/workflows/x02-real-acceptance.yml
+          git diff --cached --quiet && { echo 'no-change'; exit 24; }
+          git commit -m 'fix(x02): detect real Apple cache without external test'
+          git push origin "HEAD:$BRANCH"
