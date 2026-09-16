@@ -1,4 +1,4 @@
-name: Temporary PR7036 current-main candidate validation
+name: Temporary PR7036 current-main component validation
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  focused-candidate:
+  component-matrix:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -36,43 +36,44 @@ jobs:
             git add -- $conflicts
           fi
           test -z "$(git diff --name-only --diff-filter=U)"
-      - name: Run product acceptance and capture first failure
-        id: focused
+      - name: Run component matrix
+        id: matrix
         shell: bash
         run: |
           set -euo pipefail
-          : > pr7036-focused-summary.txt
+          : > pr7036-component-summary.txt
+          failed=0
           run_one() {
             label="$1"; shift
             set +e
             timeout 240s "$@" >/tmp/test.out 2>&1
             rc=$?
             set -e
-            echo "test=$label rc=$rc" >> pr7036-focused-summary.txt
+            echo "test=$label rc=$rc" >> pr7036-component-summary.txt
             if [ "$rc" -ne 0 ]; then
-              tail -n 100 /tmp/test.out >> pr7036-focused-summary.txt
-              echo "failed=1" >> "$GITHUB_OUTPUT"
-              return 1
+              failed=$((failed+1))
+              tail -n 35 /tmp/test.out | sed "s/^/[$label] /" >> pr7036-component-summary.txt
             fi
           }
-          run_one syntax node tests/check.mjs || exit 0
-          run_one c1-pointsto node tests/phase7/pointsto/c1-combined-acceptance.test.mjs || exit 0
-          run_one c1-summary node tests/phase7/summary/c1-combined-acceptance.test.mjs || exit 0
-          run_one c3-types node tests/phase7/types/c3-combined-acceptance.test.mjs || exit 0
-          run_one c2-memory node tests/phase8/memory/c2-acceptance.test.mjs || exit 0
-          run_one c3-abi node tests/phase8/abi/c3-combined-acceptance.test.mjs || exit 0
-          run_one c4-substrate node tests/phase8/substrate/c4-01-acceptance.test.mjs || exit 0
-          run_one c4-structuring node tests/phase8/structuring/c4-02-acceptance.test.mjs || exit 0
-          run_one sym-acceptance node tests/phase9/verify/sym-acceptance.test.mjs || exit 0
-          run_one x01 node tests/stage2/x01-format-safe-rebuild-acceptance.test.mjs || exit 0
-          run_one x03 node tests/stage2/x03-rebuild-discovery-acceptance.test.mjs || exit 0
-          run_one x02-v5 node tests/scpa/x02-dyld-slide-info5.test.mjs || exit 0
-          echo "failed=0" >> "$GITHUB_OUTPUT"
+          run_one syntax node tests/check.mjs
+          run_one c1-pointsto node tests/phase7/pointsto/c1-combined-acceptance.test.mjs
+          run_one c1-summary node tests/phase7/summary/c1-combined-acceptance.test.mjs
+          run_one c3-types node tests/phase7/types/c3-combined-acceptance.test.mjs
+          run_one c2-memory node tests/phase8/memory/c2-acceptance.test.mjs
+          run_one c3-abi node tests/phase8/abi/c3-combined-acceptance.test.mjs
+          run_one c4-substrate node tests/phase8/substrate/c4-01-acceptance.test.mjs
+          run_one c4-structuring node tests/phase8/structuring/c4-02-acceptance.test.mjs
+          run_one sym-acceptance node tests/phase9/verify/sym-acceptance.test.mjs
+          run_one x01 node tests/stage2/x01-format-safe-rebuild-acceptance.test.mjs
+          run_one x03 node tests/stage2/x03-rebuild-discovery-acceptance.test.mjs
+          run_one x02-v5 node tests/scpa/x02-dyld-slide-info5.test.mjs
+          echo "failed_count=$failed" >> pr7036-component-summary.txt
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
-          name: pr7036-focused-summary
-          path: pr7036-focused-summary.txt
+          name: pr7036-component-summary
+          path: pr7036-component-summary.txt
           retention-days: 1
-      - name: Preserve focused status
+      - name: Preserve component status
         shell: bash
-        run: test '${{ steps.focused.outputs.failed }}' = '0'
+        run: test '${{ steps.matrix.outputs.failed }}' = '0'
