@@ -1,0 +1,94 @@
+name: X-02 F47 iOS PAC probe IPA
+
+on:
+  push:
+    branches: [feat/analysis-roadmap-v8-current-main-20260907]
+    paths:
+      - .github/workflows/x02-f47-ios-probe.yml
+      - tools/validation/f47-ios-probe/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-f47-probe:
+    runs-on: macos-15
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Build arm64e iOS probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="$(xcrun -sdk iphoneos --show-sdk-path)"
+          mkdir -p build/Payload/F47Probe.app
+          cp tools/validation/f47-ios-probe/Info.plist build/Payload/F47Probe.app/Info.plist
+          xcrun -sdk iphoneos clang \
+            -arch arm64e \
+            -miphoneos-version-min=15.0 \
+            -fobjc-arc \
+            -O0 \
+            -Wall -Wextra -Werror \
+            -DHEX_F47_BUILD_SHA='"'"${GITHUB_SHA}"'"' \
+            -isysroot "$SDK" \
+            -framework UIKit \
+            -framework Foundation \
+            tools/validation/f47-ios-probe/main.m \
+            -o build/Payload/F47Probe.app/F47Probe
+          chmod +x build/Payload/F47Probe.app/F47Probe
+
+      - name: Verify arm64e and PAC instructions
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN=build/Payload/F47Probe.app/F47Probe
+          file "$BIN" | tee build/file.txt
+          lipo -archs "$BIN" | tee build/archs.txt
+          grep -qw arm64e build/archs.txt
+          otool -hv "$BIN" | tee build/macho-header.txt
+          otool -tvV "$BIN" > build/disassembly.txt
+          grep -Eiq '\b(pac|aut)[a-z0-9]*\b' build/disassembly.txt
+
+      - name: Package SideStore-installable IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd build
+          /usr/bin/zip -qry HEX-F47-Probe.ipa Payload
+          cd ..
+          EXEC_SHA="$(shasum -a 256 build/Payload/F47Probe.app/F47Probe | awk '{print $1}')"
+          IPA_SHA="$(shasum -a 256 build/HEX-F47-Probe.ipa | awk '{print $1}')"
+          SDK_VERSION="$(xcrun -sdk iphoneos --show-sdk-version)"
+          XCODE_VERSION="$(xcodebuild -version | tr '\n' ' ' | sed 's/ $//')"
+          cat > build/f47-build-evidence.json <<JSON
+          {
+            "schema": "hex-x02-f47-probe-build/v1",
+            "headSha": "${GITHUB_SHA}",
+            "targetArchitecture": "arm64e",
+            "minimumIOS": "15.0",
+            "sdkVersion": "${SDK_VERSION}",
+            "xcodeVersion": "${XCODE_VERSION}",
+            "executableSha256": "${EXEC_SHA}",
+            "ipaSha256": "${IPA_SHA}",
+            "runtimeAcceptance": "pending-real-device"
+          }
+          JSON
+          cat build/f47-build-evidence.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HEX-F47-Probe-${{ github.sha }}
+          path: |
+            build/HEX-F47-Probe.ipa
+            build/f47-build-evidence.json
+            build/file.txt
+            build/archs.txt
+            build/macho-header.txt
+          if-no-files-found: error
+          retention-days: 30
