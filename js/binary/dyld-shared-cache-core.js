@@ -337,7 +337,7 @@ function maxRecordsOption(opts) {
   return opts.maxRebases;
 }
 
-function parseSlideInfoSync(allBytes, item, slide, mappings, opts) {
+function parseSlideInfoSync(allBytes, item, slide, mappings, opts, targetRange) {
   if (item.slideInfoFileSize === 0n) return { version: null, complete: true, rebaseCount: 0, rebases: [] };
   const offset = Number(item.slideInfoFileOffset), size = Number(item.slideInfoFileSize);
   const infoBytes = allBytes.subarray(offset, offset + size);
@@ -345,7 +345,7 @@ function parseSlideInfoSync(allBytes, item, slide, mappings, opts) {
   const mappingBytes = allBytes.subarray(Number(item.fileOffset), Number(item.fileOffset + item.size));
   if (version === 5) {
     const info = parseSlideInfo5Structure(infoBytes, item, BigInt(allBytes.byteLength));
-    const rebases = walkSlideInfo5Sync(mappingBytes, item, info, slide, mappings, maxRecordsOption(opts));
+    const rebases = walkSlideInfo5Sync(mappingBytes, item, info, slide, mappings, maxRecordsOption(opts), targetRange);
     return { version, pageSize: info.pageSize, valueAdd: info.valueAdd, complete: true, rebaseCount: rebases.length, rebases };
   }
   if (version !== 2) throw new Error(`unsupported dyld shared cache slide info version ${version}`);
@@ -354,14 +354,14 @@ function parseSlideInfoSync(allBytes, item, slide, mappings, opts) {
   return { version, pageSize: info.pageSize, complete: true, rebaseCount: rebases.length, rebases };
 }
 
-async function parseSlideInfoSource(source, item, slide, mappings, opts) {
+async function parseSlideInfoSource(source, item, slide, mappings, opts, targetRange) {
   if (item.slideInfoFileSize === 0n) return { version: null, complete: true, rebaseCount: 0, rebases: [] };
   const infoBytes = await readBoundedRange(source, item.slideInfoFileOffset, Number(item.slideInfoFileSize), opts.signal);
   const version = new ByteView(infoBytes, { littleEndian: true }).u32(0);
   if (version === 5) {
     const info = parseSlideInfo5Structure(infoBytes, item, source.size);
     const read64 = async (offset) => new ByteView(await readBoundedRange(source, offset, 8, opts.signal), { littleEndian: true }).u64(0);
-    const rebases = await walkSlideInfo5Source(read64, item, info, slide, mappings, maxRecordsOption(opts));
+    const rebases = await walkSlideInfo5Source(read64, item, info, slide, mappings, maxRecordsOption(opts), targetRange);
     return { version, pageSize: info.pageSize, valueAdd: info.valueAdd, complete: true, rebaseCount: rebases.length, rebases };
   }
   if (version !== 2) throw new Error(`unsupported dyld shared cache slide info version ${version}`);
@@ -384,7 +384,8 @@ export function parseDyldSharedCache(input, opts = {}) {
   validateSlideMappings(slideMappings, mappings);
   const slide = normalizeSlide(header, opts);
   if (slide !== 0n && slideMappings.length === 0) throw new Error('cannot apply a nonzero dyld shared cache slide without slide info');
-  const slideMetadata = slideMappings.map((item) => parseSlideInfoSync(bytes, item, slide, mappings, opts));
+  const targetRange = header.sharedRegionSize > 0n ? { start: header.sharedRegionStart, size: header.sharedRegionSize } : null;
+  const slideMetadata = slideMappings.map((item) => parseSlideInfoSync(bytes, item, slide, mappings, opts, targetRange));
   return makeImage(bytes, null, header, mappings, slideMappings, slide, slideMetadata);
 }
 
@@ -404,7 +405,8 @@ export async function parseDyldSharedCacheSource(input, opts = {}) {
   const slide = normalizeSlide(header, opts);
   if (slide !== 0n && slideMappings.length === 0) throw new Error('cannot apply a nonzero dyld shared cache slide without slide info');
   const slideMetadata = [];
-  for (const item of slideMappings) slideMetadata.push(await parseSlideInfoSource(source, item, slide, mappings, opts));
+  const targetRange = header.sharedRegionSize > 0n ? { start: header.sharedRegionStart, size: header.sharedRegionSize } : null;
+  for (const item of slideMappings) slideMetadata.push(await parseSlideInfoSource(source, item, slide, mappings, opts, targetRange));
   return makeImage(null, source, header, mappings, slideMappings, slide, slideMetadata);
 }
 
