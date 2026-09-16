@@ -1,5 +1,6 @@
 import { codedIndexSize, tableIndexSize, cilMetadataToken } from './metadata-layout.js';
 import { readCilMetadataBlob } from './call-signature-metadata.js';
+import { readInternedCilHeapString } from './metadata-string-cache.js';
 import { parseCilMethodSignature, parseCilPropertySignature, parseCilTypeSpecSignature, cilMethodSlotElementByte, cilPropertyTypeElementByte } from './call-signature-types.js';
 import { decodeCilCustomAttributeValue } from './custom-attribute-values.js';
 import { stableStringify } from '../../core/identity/index.js';
@@ -114,13 +115,7 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     // Preserve legacy minimal metadata with an absent optional heap and null names.
     if (value === 0) return null;
     if (!stringsStream || value >= stringsStream.size) fail('cil-definition-string-index-invalid');
-    const start = stringsStream.offset + value, end = stringsStream.offset + stringsStream.size;
-    let pos = start;
-    while (pos < end && bytes[pos] !== 0) pos++;
-    if (pos === end) fail('cil-definition-string-unterminated');
-    admission?.chargeStringBytes(pos - start);
-    try { return utf8.decode(bytes.subarray(start, pos)); }
-    catch { fail('cil-invalid-strings-utf8'); }
+    return readInternedCilHeapString(bytes, stringsStream, admission, value, utf8);
   };
   const requiredText = (value, code) => {
     const valueText = text(value);
@@ -581,6 +576,12 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
   });
   const overridesByClass = new Map();
   const seenImplDeclarations = new Set();
+  // #8974: attachment stages mutable containers and freezes once after the
+  // loop; a per-body token list plus an O(1) per-class (declaration, body)
+  // membership set replaces the per-row immutable prefix copy and the
+  // owner-local list scan that made binding Θ(N²) on one body/class.
+  const explicitOverrideBodies = new Map();
+  const seenImplPairsByClass = new Map();
   // ECMA-335 II.22.27: an explicit override must be a virtual method pair
   // owned consistently by the Class, must not declare the same target twice,
   // and — where both signatures decode from the #Blob heap — must agree on
@@ -629,14 +630,21 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     }
     failIf(seenImplDeclarations.has(`${row.classToken}\u0000${row.methodDeclarationToken}`), 'cil-methodimpl-declaration-duplicate');
     seenImplDeclarations.add(`${row.classToken}\u0000${row.methodDeclarationToken}`);
-    if (body != null) body.explicitOverrideTokens = Object.freeze([...(body.explicitOverrideTokens ?? []), row.methodDeclarationToken]);
-    const list = overridesByClass.get(row.classToken) ?? [];
-    if (list.some(entry => entry.methodDeclarationToken === row.methodDeclarationToken && entry.methodBodyToken === row.methodBodyToken)) {
-      fail('cil-methodimpl-duplicate');
+    const pairKey = `${row.methodDeclarationToken}\u0000${row.methodBodyToken}`;
+    let seenPairs = seenImplPairsByClass.get(row.classToken);
+    if (seenPairs === undefined) { seenPairs = new Set(); seenImplPairsByClass.set(row.classToken, seenPairs); }
+    if (seenPairs.has(pairKey)) fail('cil-methodimpl-duplicate');
+    seenPairs.add(pairKey);
+    if (body != null) {
+      let tokens = explicitOverrideBodies.get(body);
+      if (tokens === undefined) { tokens = []; explicitOverrideBodies.set(body, tokens); }
+      tokens.push(row.methodDeclarationToken);
     }
+    const list = overridesByClass.get(row.classToken) ?? [];
     list.push(row);
     overridesByClass.set(row.classToken, list);
   }
+  for (const [body, tokens] of explicitOverrideBodies) body.explicitOverrideTokens = Object.freeze(tokens);
   for (const type of types) type.methodImpls = Object.freeze(overridesByClass.get(type.token) ?? []);
 
   // II.22.22 ImplMap + II.22.30 ModuleRef: P/Invoke dispatch authority. A
@@ -794,6 +802,18 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
   }
   const customAttributeTypeTables = new Map([[2, 0x06], [3, 0x0a]]);
   const memberRefByToken = new Map(memberRefs.map(row => [row.token, row]));
+  // Shared Value-blob aliasing (#8951 addendum): multiple CustomAttribute rows
+  // may reference the same #Blob offsets, and the decoder is validation-only
+  // (prolog + numNamed), so the same (value blob, constructor signature) pair
+  // must decode exactly once per image. A failure is cached and replayed so
+  // fail-closed semantics stay identical without rescanning the blob per row.
+  const customAttributeValueDecodes = new Map();
+  const customAttributeParents = {
+    0x01: typeRefs, 0x02: types, 0x04: fields, 0x06: methods, 0x08: params,
+    0x0a: memberRefs, 0x14: events, 0x17: properties, 0x1a: moduleRefs,
+    0x1b: typeSpecs, 0x23: assemblyRefs, 0x28: manifestResources,
+  };
+  const customAttributeLists = new Map();
   const customAttributes = readRows(0x0c, pos => {
     const parentBase = index(pos, hasCustomAttributeSize);
     const typeBase = index(pos + hasCustomAttributeSize, customAttributeTypeSize);
@@ -832,10 +852,20 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
       if (!blobHeap) fail('cil-customattribute-value-blob-missing');
       rawValue = readCilMetadataBlob(blobHeap, valueBlobIndex, 'cil-customattribute-value-blob-invalid');
     }
-    const decodedValue = decodeCilCustomAttributeValue(rawValue ?? new Uint8Array(0), constructorSignatureBytes,
-      customAttributeContext);
-    prolog = decodedValue.prolog;
-    numNamed = decodedValue.numNamed;
+    const aliasKey = `${valueBlobIndex}\u0000${constructorSignatureBlobIndex}`;
+    let decodedValue = customAttributeValueDecodes.get(aliasKey);
+    if (decodedValue === undefined) {
+      try {
+        decodedValue = { value: decodeCilCustomAttributeValue(rawValue ?? new Uint8Array(0), constructorSignatureBytes,
+          customAttributeContext) };
+      } catch (error) {
+        decodedValue = { error };
+      }
+      customAttributeValueDecodes.set(aliasKey, decodedValue);
+    }
+    if (decodedValue.error !== undefined) throw decodedValue.error;
+    prolog = decodedValue.value.prolog;
+    numNamed = decodedValue.value.numNamed;
     return {
       parentToken: cilMetadataToken(parentTable, parentRid),
       parent: { table: parentTable, rid: parentRid },
@@ -851,17 +881,19 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
 
   // An attribute is authority for its Parent, so the owning canonical row also
   // carries it (the same way a Field carries its FieldRVA). Parent kinds without
-  // a decoded row array stay represented by the canonical table alone.
-  const customAttributeParents = {
-    0x01: typeRefs, 0x02: types, 0x04: fields, 0x06: methods, 0x08: params,
-    0x0a: memberRefs, 0x14: events, 0x17: properties, 0x1a: moduleRefs,
-    0x1b: typeSpecs, 0x23: assemblyRefs, 0x28: manifestResources,
-  };
+  // a decoded row array stay represented by the canonical table alone. The
+  // attachment pass stages one mutable list per owner and freezes once (#8951):
+  // the previous per-row spread rebuild copied every prefix, making attachment
+  // Θ(N²) in rows per owner while the final result only needs N references.
+  // Row order is preserved because rows are staged in decode order.
   for (const attribute of customAttributes) {
     const owner = customAttributeParents[attribute.parent.table]?.[attribute.parent.rid - 1];
     if (owner == null) continue;
-    owner.attributes = [...(owner.attributes ?? []), attribute];
+    const list = customAttributeLists.get(owner) ?? [];
+    list.push(attribute);
+    customAttributeLists.set(owner, list);
   }
+  for (const [owner, list] of customAttributeLists) owner.attributes = Object.freeze(list);
 
   const hasConstantSize = codedIndexSize(counts, [0x04, 0x08, 0x17], 2);
   const hasConstantTables = [0x04, 0x08, 0x17];
@@ -950,11 +982,7 @@ export function bindCilMetadataTables(defs, blobHeap, admission = null) {
       isEnum = coreLibraryNames.has(assembly?.name) && baseType?.namespace === 'System' && baseType?.name === 'Enum';
     }
     if (!isEnum) return null;
-    const valueFields = fields.filter(field => field.declaringTypeToken === enumType.token
-      && field.name === 'value__'
-      && (field.accessFlags & 0x10) === 0
-      && (field.accessFlags & 0x0600) === 0x0600
-      && (field.accessFlags & 0x0007) === 0x0006);
+    const valueFields = valueFieldsForEnumType(enumType);
     if (valueFields.length !== 1) return null;
     const valueField = valueFields[0];
     if (!Number.isSafeInteger(valueField.signatureBlobIndex) || valueField.signatureBlobIndex <= 0) return null;
@@ -966,6 +994,24 @@ export function bindCilMetadataTables(defs, blobHeap, admission = null) {
       return null;
     }
   };
+  // #8954: the Constant loop must never rescan a canonical table per row.
+  // Owner resolution is token-indexed, enum `value__` resolution is indexed by
+  // declaring type (built lazily once per enum type, proof kept exact), and
+  // immutable scalar value materialization is cached per #Blob alias so N rows
+  // sharing one Value blob decode once instead of N retained copies.
+  const methodByOwnerToken = new Map(methods.map(method => [method.token, method]));
+  const enumValueFieldByTypeToken = new Map();
+  const valueFieldsForEnumType = (enumType) => {
+    if (enumValueFieldByTypeToken.has(enumType.token)) return enumValueFieldByTypeToken.get(enumType.token);
+    const valueFields = fields.filter(field => field.declaringTypeToken === enumType.token
+      && field.name === 'value__'
+      && (field.accessFlags & 0x10) === 0
+      && (field.accessFlags & 0x0600) === 0x0600
+      && (field.accessFlags & 0x0007) === 0x0006);
+    enumValueFieldByTypeToken.set(enumType.token, valueFields);
+    return valueFields;
+  };
+  const constantValueByShapeBlob = new Map();
   const constantRows = [];
   const constantParents = new Set();
   for (const row of constants ?? []) {
@@ -976,7 +1022,7 @@ export function bindCilMetadataTables(defs, blobHeap, admission = null) {
     const shape = constantValueTypes.get(row.type);
     const blob = readCilMetadataBlob(blobHeap, row.valueIndex, 'cil-constant-blob-invalid');
     if (shape.width != null && blob.length !== shape.width) fail('cil-constant-blob-length-invalid');
-    if (shape.name === 'string' && blob.length % 2 !== 0) fail('cil-constant-blob-length-invalid');
+    if (row.type === 0x0e && blob.length % 2 !== 0) fail('cil-constant-blob-length-invalid');
     if (row.parent.table === 0x04) {
       const field = fields[row.parent.rid - 1];
       if (!field || !Number.isSafeInteger(field.signatureBlobIndex) || field.signatureBlobIndex <= 0) {
@@ -1004,7 +1050,7 @@ export function bindCilMetadataTables(defs, blobHeap, admission = null) {
       let declaredExact = null;
       if (row.parent.table === 0x08) {
         const param = params?.[row.parent.rid - 1] ?? null;
-        const owner = param?.ownerToken != null ? methods.find(m => m.token === param.ownerToken) ?? null : null;
+        const owner = param?.ownerToken != null ? methodByOwnerToken.get(param.ownerToken) ?? null : null;
         if (!owner || !Number.isSafeInteger(owner.signatureBlobIndex)) fail('cil-constant-parent-type-unprovable');
         const ownerSigBlob = readCilMetadataBlob(blobHeap, owner.signatureBlobIndex, 'cil-method-signature-blob-invalid');
         const methodSig = parseCilMethodSignature(ownerSigBlob);
@@ -1033,7 +1079,15 @@ export function bindCilMetadataTables(defs, blobHeap, admission = null) {
         fail('cil-constant-type-mismatch');
       }
     }
-    const value = Object.freeze({ type: shape.name, value: shape.decode(blob) });
+    // `readCilMetadataBlob` is a zero-copy view, so the raw shape validation
+    // above is O(width) per row; only the value materialization (UTF-16 string
+    // decode, DataView/BigInt reads) is aliased onto the shared #Blob offset.
+    const aliasKey = `${row.type}\u0000${row.valueIndex}`;
+    let value = constantValueByShapeBlob.get(aliasKey);
+    if (value === undefined) {
+      value = Object.freeze({ type: shape.name, value: shape.decode(blob) });
+      constantValueByShapeBlob.set(aliasKey, value);
+    }
     row.value = value;
     constantRows.push(Object.freeze({ token: row.token, parent: row.parent.token, ...value }));
     if (row.parent.table === 0x04) fields[row.parent.rid - 1].constant = value;
@@ -1073,12 +1127,84 @@ export function bindCilMetadataTables(defs, blobHeap, admission = null) {
     if ((types[row.nested - 1].accessFlags & 0x7) < 2) fail('cil-nested-class-visibility-invalid');
     types[row.nested - 1].enclosingTypeToken = types[row.enclosing - 1].token;
   }
-  for (const type of types) {
-    let current = type, steps = 0;
-    while (current?.enclosingTypeToken != null) {
-      if (++steps > types.length) fail('cil-nested-class-cycle');
+  // Acyclic enclosing-chain proof in O(total nodes): mark chains as proven on
+  // the way out instead of re-walking each chain from every TypeDef, which was
+  // Θ(N²) on a valid deep nesting (#8974 folding note). A back-edge into the
+  // current walk still fails closed with the same code.
+  const nestedChainState = new Uint8Array(types.length + 1);
+  for (const start of types) {
+    if (nestedChainState[start.rid] !== 0) continue;
+    let current = start;
+    const path = [];
+    while (current != null && current.enclosingTypeToken != null) {
+      if (nestedChainState[current.rid] === 2) break;
+      if (nestedChainState[current.rid] === 1) fail('cil-nested-class-cycle');
+      nestedChainState[current.rid] = 1;
+      path.push(current.rid);
       current = types[(parseInt(current.enclosingTypeToken, 16) & 0xffffff) - 1];
     }
+    for (const rid of path) nestedChainState[rid] = 2;
   }
+  // #8778 — ECMA-335 [ERROR] duplicate-semantic-identity enforcement. Definition
+  // identity is derived from the metadata token, so two rows that carry one
+  // authoritative key silently split a single CLI definition across multiple Hex
+  // identities instead of failing closed. Ordinary overloads stay valid because
+  // their signature blobs differ, and CompilerControlled Field/MethodDef rows are
+  // excluded per II.22.24 / II.22.26. Nested TypeDef identity is
+  // (enclosing type, name) while top-level identity is (namespace, name).
+  const fieldCompilerControlled = (flags) => (flags & 0x0007) === 0x0000;
+  const methodCompilerControlled = (flags) => (flags & 0x0007) === 0x0000;
+  const assertUniqueKeys = (rows, keyOf, code) => {
+    const seen = new Set();
+    for (const row of rows ?? []) {
+      const key = keyOf(row);
+      if (key === null) continue;
+      if (seen.has(key)) fail(code);
+      seen.add(key);
+    }
+  };
+  const sameDefinitionBlob = (left, right) => {
+    if (left.length !== right.length) return false;
+    for (let i = 0; i < left.length; i++) if (left[i] !== right[i]) return false;
+    return true;
+  };
+  const signatureIdentityBuckets = new Map();
+  const assertUniqueSignatureRows = (rows, prefixOf, blobIndexOf, code, blobCode) => {
+    for (const row of rows ?? []) {
+      const prefix = prefixOf(row);
+      if (prefix === null) continue;
+      if (!blobHeap) fail(blobCode);
+      const raw = readCilMetadataBlob(blobHeap, blobIndexOf(row), blobCode);
+      // The hash only narrows the exact-byte candidates; a collision never
+      // becomes duplicate authority without the byte-for-byte comparison.
+      let hash = 0x811c9dc5;
+      for (const byte of raw) hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
+      const bucketKey = `${prefix}\u0000${raw.length}\u0000${hash}`;
+      const bucket = signatureIdentityBuckets.get(bucketKey);
+      if (bucket?.some((previous) => sameDefinitionBlob(previous, raw))) fail(code);
+      if (bucket) bucket.push(raw);
+      else signatureIdentityBuckets.set(bucketKey, [raw]);
+    }
+  };
+  assertUniqueKeys(types, (type) => type.enclosingTypeToken == null
+    ? `T\u0000${type.namespace ?? ''}\u0000${type.name ?? ''}`
+    : `N\u0000${type.enclosingTypeToken}\u0000${type.name ?? ''}`,
+  'cil-typedef-identity-duplicate');
+  assertUniqueSignatureRows(fields,
+    (field) => fieldCompilerControlled(field.accessFlags) ? null
+      : `F\u0000${field.declaringTypeToken ?? ''}\u0000${field.name ?? ''}`,
+    (field) => field.signatureBlobIndex,
+    'cil-field-identity-duplicate', 'cil-field-signature-blob-invalid');
+  assertUniqueSignatureRows(methods,
+    (method) => methodCompilerControlled(method.accessFlags) ? null
+      : `M\u0000${method.declaringTypeToken ?? ''}\u0000${method.name ?? ''}`,
+    (method) => method.signatureBlobIndex,
+    'cil-methoddef-identity-duplicate', 'cil-method-signature-blob-invalid');
+  assertUniqueSignatureRows(properties,
+    (property) => `P\u0000${property.ownerToken ?? ''}\u0000${property.name ?? ''}`,
+    (property) => property.typeBlobIndex,
+    'cil-property-identity-duplicate', 'cil-property-signature-blob-invalid');
+  assertUniqueKeys(defs.events, (event) => `E\u0000${event.ownerToken ?? ''}\u0000${event.name ?? ''}`,
+    'cil-event-identity-duplicate');
   return { ...defs, constants: constantRows };
 }

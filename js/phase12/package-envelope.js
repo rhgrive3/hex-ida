@@ -83,7 +83,8 @@ function utf8ByteLength(text) {
 // so a stricter byte limit rejects before any canonicalization work. Token
 // counts have no object analogue and stay byte-budget covered. Returns the
 // admitted snapshot.
-function scanObjectBudget(value, limits, maxBytes) {
+function scanObjectBudget(value, limits, maxBytes, options = {}) {
+  const preserveSemanticValues = options.preserveSemanticValues === true;
   const { maxDepth, maxStrings, maxStringBytes, maxEntries } = limits;
   let strings = 0;
   let stringBytes = 0;
@@ -120,7 +121,7 @@ function scanObjectBudget(value, limits, maxBytes) {
   // Values jsonSafe canonicalizes to null: omitted from plain objects (unless
   // the raw value itself is null), kept in place inside arrays/Sets/Maps.
   const jsonSafeNull = (item) => item === undefined || typeof item === 'function' || typeof item === 'symbol' || (typeof item === 'number' && !Number.isFinite(item));
-  const enter = (container, depth) => {
+  const enter = (container, depth, isRoot = false) => {
     if (ancestors.has(container)) {
       throw new PackageValidationError('package-input-structure-invalid', 'package input contains a cyclic reference');
     }
@@ -129,9 +130,10 @@ function scanObjectBudget(value, limits, maxBytes) {
     if (container instanceof Map) return { container, depth, kind: 'map', iterator: container.entries(), stage: 'next', entry: null, admittedKey: undefined, snap: new Map() };
     if (container instanceof Set) return { container, depth, kind: 'set', iterator: container.values(), snap: new Set() };
     if (Array.isArray(container)) return { container, depth, kind: 'array', index: 0, snap: [] };
-    return { container, depth, kind: 'object', keys: Object.keys(container), index: 0, snap: {} };
+    const keys = isRoot && Array.isArray(options.rootKeys) ? options.rootKeys : Object.keys(container);
+    return { container, depth, kind: 'object', keys, index: 0, snap: {} };
   };
-  const rootFrame = enter(value, 1);
+  const rootFrame = enter(value, 1, true);
   rootFrame.parentSlot = null;
   const stack = [rootFrame];
   while (stack.length > 0) {
@@ -193,11 +195,16 @@ function scanObjectBudget(value, limits, maxBytes) {
         continue;
       }
       const key = frame.keys[frame.index++];
-      item = frame.container[key];
+      item = preserveSemanticValues && frame === rootFrame && options.rootCapturedValues?.has(key)
+        ? options.rootCapturedValues.get(key)
+        : frame.container[key];
       // jsonSafe omits plain-object entries whose canonical value is null
       // (unless the raw value itself is null): they contribute no canonical
       // bytes and no entry.
-      if (jsonSafeNull(item) && item !== null) continue;
+      if (jsonSafeNull(item) && item !== null) {
+        if (preserveSemanticValues) defineKey(frame.snap, key, item);
+        continue;
+      }
       chargeEntry();
       countString(key);
       slot = { objectFrame: frame, objectKey: key };
@@ -220,21 +227,29 @@ function scanObjectBudget(value, limits, maxBytes) {
       return;
     }
     if (item instanceof Date) {
-      // jsonSafe canonicalizes a Date to its ISO string; admit that string
-      // once so no downstream pass can observe a different value (#5219).
-      if (!Number.isFinite(item.getTime())) {
+      // Canonical package admission stores the ISO text. Provider-output
+      // admission keeps a detached Date so #7127 type semantics survive while
+      // canonicalization still consumes only the once-read snapshot.
+      const time = Date.prototype.getTime.call(item);
+      if (!Number.isFinite(time)) {
         throw new PackageValidationError('package-input-structure-invalid', 'package input contains an invalid date');
       }
-      const iso = item.toISOString();
+      const admittedDate = preserveSemanticValues ? new Date(time) : new Date(time).toISOString();
+      const iso = preserveSemanticValues ? admittedDate.toISOString() : admittedDate;
       countString(iso);
-      if (slot) assignSlot(slot, iso);
+      if (slot) assignSlot(slot, admittedDate);
       return;
     }
     if (ArrayBuffer.isView(item) || item instanceof ArrayBuffer) {
       entries += item.byteLength;
       if (entries > maxEntries) throw new PackageValidationError('package-entry-budget-exceeded');
       chargeCanonicalBytes(2 * item.byteLength);
-      if (slot) assignSlot(slot, item);
+      // Copy only after the byte/entry admission succeeds. This prevents a
+      // later getter in the same provider graph from mutating bytes that the
+      // admitted snapshot will canonicalize, while keeping package-input
+      // behavior unchanged.
+      const admittedBinary = preserveSemanticValues ? structuredClone(item) : item;
+      if (slot) assignSlot(slot, admittedBinary);
       return;
     }
     const frame = enter(item, parentDepth + 1);
@@ -479,28 +494,96 @@ export function createPackageArtifactDescriptor(envelope, input = {}) {
 const ALLOWED_OUTPUT_FIELDS = new Set(['schemaVersion', 'provenance', 'completeness', 'targetIdentity', 'items', 'results', 'unique']);
 const ALLOWED_ITEM_FIELDS = new Set(['id', 'targetIdentity', 'value', 'confidence', 'metadata', 'evidence', 'provenance']);
 
+// #8760: provider-output resource failures are reported in the provider
+// namespace even though the bounded scanner is shared with package input.
+function providerOutputResourceCode(packageCode) {
+  switch (packageCode) {
+    case 'package-input-too-large': return 'provider-output-too-large';
+    case 'package-entry-budget-exceeded': return 'provider-output-entry-budget-exceeded';
+    case 'package-string-budget-exceeded': return 'provider-output-string-budget-exceeded';
+    case 'package-nesting-budget-exceeded': return 'provider-output-nesting-budget-exceeded';
+    case 'package-input-structure-invalid': return 'provider-output-structure-invalid';
+    default: return 'provider-output-resource-exhausted';
+  }
+}
+
+function admitProviderOutputShape(value, limits, maxBytes, maxEntries) {
+  try {
+    // Capture the root key-set and the two authority-bearing collection
+    // properties exactly once. This preserves the historical validation order
+    // (schema type before ambiguity before length budget) without re-reading a
+    // stateful getter between admission and canonicalization.
+    const rootKeys = Object.keys(value);
+    for (const key of rootKeys) {
+      if (!ALLOWED_OUTPUT_FIELDS.has(key)) throw new PackageValidationError('provider-output-unknown-field', `unknown field: ${key}`);
+    }
+    const hasItems = Object.hasOwn(value, 'items');
+    const hasResults = Object.hasOwn(value, 'results');
+    const rootCapturedValues = new Map();
+    if (hasItems) {
+      const items = value.items;
+      rootCapturedValues.set('items', items);
+      if (!Array.isArray(items)) throw new PackageValidationError('provider-output-schema-invalid', 'items must be an array when supplied');
+    }
+    if (hasResults) {
+      const results = value.results;
+      rootCapturedValues.set('results', results);
+      if (!Array.isArray(results)) throw new PackageValidationError('provider-output-schema-invalid', 'results must be an array when supplied');
+    }
+    if (hasItems && hasResults) throw new PackageValidationError('provider-output-entry-collection-ambiguous');
+    if (hasItems && rootCapturedValues.get('items').length > maxEntries) throw new PackageValidationError('provider-output-entry-budget-exceeded');
+    if (hasResults && rootCapturedValues.get('results').length > maxEntries) throw new PackageValidationError('provider-output-entry-budget-exceeded');
+
+    // Unlike the package-input canonical snapshot, provider output must retain
+    // Date/Map/Set/binary/function value semantics for the #7127 detach step.
+    // Every caller-owned property is nevertheless read only once; all
+    // validation, canonicalization and freezing below consume this snapshot.
+    return scanObjectBudget(value, limits, maxBytes, {
+      preserveSemanticValues: true,
+      rootKeys,
+      rootCapturedValues,
+    });
+  } catch (error) {
+    if (error instanceof PackageValidationError) {
+      if (typeof error.code === 'string' && error.code.startsWith('provider-output-')) throw error;
+      throw new PackageValidationError(providerOutputResourceCode(error.code), error.message, error.detail);
+    }
+    throw error;
+  }
+}
+
 export function validateProviderOutput(value, options = {}) {
   try {
     const maxEntries = positiveLimit(options.maxEntries, 100_000, 'maxEntries', 'provider-output-resource-limit-invalid');
     const maxBytes = positiveLimit(options.maxBytes, 8 * 1024 * 1024, 'maxBytes', 'provider-output-resource-limit-invalid');
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new PackageValidationError('provider-output-schema-invalid');
-    for (const key of Object.keys(value)) {
+
+    const admissionLimits = {
+      maxDepth: positiveLimit(options.maxDepth, DEFAULT_PACKAGE_LIMITS.maxDepth, 'maxDepth', 'provider-output-resource-limit-invalid'),
+      maxStrings: positiveLimit(options.maxStrings, DEFAULT_PACKAGE_LIMITS.maxStrings, 'maxStrings', 'provider-output-resource-limit-invalid'),
+      maxStringBytes: positiveLimit(options.maxStringBytes, DEFAULT_PACKAGE_LIMITS.maxStringBytes, 'maxStringBytes', 'provider-output-resource-limit-invalid'),
+      maxEntries: DEFAULT_PACKAGE_LIMITS.maxEntries,
+    };
+    const admitted = admitProviderOutputShape(value, admissionLimits, maxBytes, maxEntries);
+
+    for (const key of Object.keys(admitted)) {
       if (!ALLOWED_OUTPUT_FIELDS.has(key)) throw new PackageValidationError('provider-output-unknown-field', `unknown field: ${key}`);
     }
-    const encoded = stableStringify(value);
-    if (new TextEncoder().encode(encoded).byteLength > maxBytes) throw new PackageValidationError('provider-output-too-large');
-    const hasItems = Object.hasOwn(value, 'items');
-    const hasResults = Object.hasOwn(value, 'results');
-    if (hasItems && !Array.isArray(value.items)) throw new PackageValidationError('provider-output-schema-invalid', 'items must be an array when supplied');
-    if (hasResults && !Array.isArray(value.results)) throw new PackageValidationError('provider-output-schema-invalid', 'results must be an array when supplied');
+    const hasItems = Object.hasOwn(admitted, 'items');
+    const hasResults = Object.hasOwn(admitted, 'results');
+    if (hasItems && !Array.isArray(admitted.items)) throw new PackageValidationError('provider-output-schema-invalid', 'items must be an array when supplied');
+    if (hasResults && !Array.isArray(admitted.results)) throw new PackageValidationError('provider-output-schema-invalid', 'results must be an array when supplied');
     if (hasItems && hasResults) throw new PackageValidationError('provider-output-entry-collection-ambiguous');
-    const entries = hasItems ? value.items : hasResults ? value.results : [];
+    const entries = hasItems ? admitted.items : hasResults ? admitted.results : [];
     if (entries.length > maxEntries) throw new PackageValidationError('provider-output-entry-budget-exceeded');
-    if (value.schemaVersion !== PHASE12_PROVIDER_OUTPUT_SCHEMA) throw new PackageValidationError('provider-output-schema-unsupported');
-    if (!value.provenance || typeof value.provenance !== 'object' || Array.isArray(value.provenance)) throw new PackageValidationError('provider-output-provenance-required');
-    if (!['complete', 'partial', 'truncated'].includes(value.completeness)) throw new PackageValidationError('provider-output-completeness-invalid');
-    if (value.completeness !== 'complete' && value.unique === true) throw new PackageValidationError('provider-output-incomplete-unique-invalid');
-    if (value.targetIdentity != null) required(value.targetIdentity, 'provider-output-target-identity-invalid');
+
+    const encoded = stableStringify(admitted);
+    if (new TextEncoder().encode(encoded).byteLength > maxBytes) throw new PackageValidationError('provider-output-too-large');
+    if (admitted.schemaVersion !== PHASE12_PROVIDER_OUTPUT_SCHEMA) throw new PackageValidationError('provider-output-schema-unsupported');
+    if (!admitted.provenance || typeof admitted.provenance !== 'object' || Array.isArray(admitted.provenance)) throw new PackageValidationError('provider-output-provenance-required');
+    if (!['complete', 'partial', 'truncated'].includes(admitted.completeness)) throw new PackageValidationError('provider-output-completeness-invalid');
+    if (admitted.completeness !== 'complete' && admitted.unique === true) throw new PackageValidationError('provider-output-incomplete-unique-invalid');
+    if (admitted.targetIdentity != null) required(admitted.targetIdentity, 'provider-output-target-identity-invalid');
     for (const item of entries) {
       if (!item || typeof item !== 'object') throw new PackageValidationError('provider-output-item-invalid');
       for (const key of Object.keys(item)) {
@@ -508,11 +591,11 @@ export function validateProviderOutput(value, options = {}) {
       }
       if (typeof item.id !== 'string' || item.id.trim() === '' || item.targetIdentity == null) throw new PackageValidationError('provider-output-item-identity-required');
       required(item.targetIdentity, 'provider-output-item-target-identity-invalid');
-      if (value.targetIdentity != null && item.targetIdentity !== value.targetIdentity) throw new PackageValidationError('provider-output-item-target-mismatch');
+      if (admitted.targetIdentity != null && item.targetIdentity !== admitted.targetIdentity) throw new PackageValidationError('provider-output-item-target-mismatch');
     }
     if (options.targetIdentity != null) required(options.targetIdentity, 'provider-output-target-identity-invalid');
-    if (options.targetIdentity != null && value.targetIdentity !== options.targetIdentity) throw new PackageValidationError('provider-output-target-mismatch');
-    return { ok: true, value: deepFreeze(value) };
+    if (options.targetIdentity != null && admitted.targetIdentity !== options.targetIdentity) throw new PackageValidationError('provider-output-target-mismatch');
+    return { ok: true, value: deepFreeze(admitted) };
   } catch (error) { return { ok: false, error: error.message, code: error.code }; }
 }
 

@@ -2,7 +2,9 @@ import { deepFreeze } from '../../core/identity/index.js';
 import { codedIndexSize, cilMetadataToken } from './metadata-layout.js';
 import { readCilMetadataContext } from './metadata-context.js';
 import { readCilMetadataBlob } from './call-signature-metadata.js';
+import { readInternedCilHeapString } from './metadata-string-cache.js';
 
+const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 function fail(code) { throw new TypeError(code); }
 
 function readManifestSecurity(bytes, view, layout, stringsStream, blobStream, defs, admission = null) {
@@ -13,13 +15,7 @@ function readManifestSecurity(bytes, view, layout, stringsStream, blobStream, de
   const text = value => {
     if (value === 0) return null;
     if (!stringsStream || value >= stringsStream.size) fail('cil-definition-string-index-invalid');
-    const start = stringsStream.offset + value, end = stringsStream.offset + stringsStream.size;
-    let pos = start;
-    while (pos < end && bytes[pos] !== 0) pos += 1;
-    if (pos === end) fail('cil-definition-string-unterminated');
-    admission?.chargeStringBytes(pos - start);
-    try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes.subarray(start, pos)); }
-    catch { fail('cil-invalid-strings-utf8'); }
+    return readInternedCilHeapString(bytes, stringsStream, admission, value, utf8);
   };
   const readRows = (table, decode) => {
     // Manifest/security tables share the definitions admission budget (#8704):

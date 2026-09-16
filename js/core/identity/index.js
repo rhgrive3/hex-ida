@@ -1,4 +1,4 @@
-import { fnv64Text } from './fnv64.js';
+import { fnv64Text, fnv64Hex } from './fnv64.js';
 
 const ID_SCHEMA_VERSION = 1;
 const HEX_RE = /^[0-9a-f]+$/i;
@@ -109,6 +109,49 @@ export function stableStringify(value) {
 export function stableDigest(value) {
   const text = stableStringify(value);
   return fnv64Text(text) + fnv64Text(text, 0xcbf29ce4, 0x84222325);
+}
+
+const FNV_OFFSET_LOW = 0x84222325;
+const FNV_OFFSET_HIGH = 0xcbf29ce4;
+
+// Byte-native equivalent of `stableDigest(Array.from(bytes))`. It reproduces the
+// exact canonical decimal-JSON text of a byte array ("[b0,b1,...]") and folds it
+// through the same dual FNV-1a-64 pair WITHOUT materializing the boxed number
+// array, the intermediate jsonSafe copy, or the whole-buffer decimal JSON string.
+// Optional [start,end) bounds the hashed span, and [maskStart,maskEnd) treats that
+// span as zeroed without cloning, so masked / partial binary identity stays
+// content-complete at O(1) working memory (#8969). Output is byte-for-byte equal to
+// `stableDigest(Array.from(bytes))` for the same integer 0..255 elements.
+export function stableDigestBytes(bytes, start = 0, end = bytes == null ? 0 : bytes.length, maskStart = -1, maskEnd = -1) {
+  if (bytes == null || typeof bytes.length !== 'number') fail('identity-bytes-required');
+  if (start < 0 || end > bytes.length || end < start) fail('identity-byte-range-invalid');
+  let aLow = FNV_OFFSET_LOW; let aHigh = FNV_OFFSET_HIGH;
+  let bLow = FNV_OFFSET_HIGH; let bHigh = FNV_OFFSET_LOW;
+  const feed = (code) => {
+    aLow ^= code;
+    const aCarry = ((aLow >>> 16) * 0x1b3 + (((aLow & 0xffff) * 0x1b3) >>> 16)) >>> 16;
+    aHigh = (Math.imul(aHigh, 0x1b3) + (aLow << 8) + aCarry) | 0;
+    aLow = Math.imul(aLow, 0x1b3);
+    bLow ^= code;
+    const bCarry = ((bLow >>> 16) * 0x1b3 + (((bLow & 0xffff) * 0x1b3) >>> 16)) >>> 16;
+    bHigh = (Math.imul(bHigh, 0x1b3) + (bLow << 8) + bCarry) | 0;
+    bLow = Math.imul(bLow, 0x1b3);
+  };
+  feed(0x5b); // '['
+  const last = end - 1;
+  for (let index = start; index < end; index += 1) {
+    const byte = (index >= maskStart && index < maskEnd) ? 0 : bytes[index];
+    if (typeof byte !== 'number' || !Number.isInteger(byte) || byte < 0 || byte > 255) fail('identity-byte-invalid');
+    if (byte < 10) {
+      feed(0x30 + byte);
+    } else {
+      const digits = byte.toString();
+      for (let k = 0; k < digits.length; k += 1) feed(digits.charCodeAt(k));
+    }
+    if (index !== last) feed(0x2c); // ','
+  }
+  feed(0x5d); // ']'
+  return fnv64Hex(aLow, aHigh) + fnv64Hex(bLow, bHigh);
 }
 
 function canonicalWitnessParts(value, seen = new WeakSet()) {

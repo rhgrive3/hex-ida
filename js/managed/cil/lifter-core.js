@@ -527,7 +527,14 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
               mnemonic = opcode === 0x2c ? 'brfalse.s' : 'brtrue.s';
               consumedValues.push({ id: 'cond' });
               currentStackHeight--;
-              controlEffects.push({ kind: 'conditional-branch', targetOffset });
+              // brfalse jumps when the condition is zero/null, so the branch's
+              // architectural target is the FALSE edge, not the TRUE edge. Encode
+              // the polarity through targetOffset/falseTargetOffset (fallthrough is
+              // pc) so the shared bridge emits conditional-true -> fallthrough and
+              // conditional-false -> taken, instead of collapsing both onto one
+              // conditional-true edge (#8790).
+              if (opcode === 0x2c) controlEffects.push({ kind: 'conditional-branch', targetOffset: pc, falseTargetOffset: targetOffset });
+              else controlEffects.push({ kind: 'conditional-branch', targetOffset });
             } else {
               const shortNames = {
                 0x2e: 'beq.s', 0x2f: 'bge.s', 0x30: 'bgt.s', 0x31: 'ble.s', 0x32: 'blt.s',
@@ -558,7 +565,9 @@ export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority
               mnemonic = opcode === 0x39 ? 'brfalse' : 'brtrue';
               consumedValues.push({ id: 'cond' });
               currentStackHeight--;
-              controlEffects.push({ kind: 'conditional-branch', targetOffset });
+              // Same polarity encoding as the short form above (#8790).
+              if (opcode === 0x39) controlEffects.push({ kind: 'conditional-branch', targetOffset: pc, falseTargetOffset: targetOffset });
+              else controlEffects.push({ kind: 'conditional-branch', targetOffset });
             } else {
               const longNames = {
                 0x3b: 'beq', 0x3c: 'bge', 0x3d: 'bgt', 0x3e: 'ble', 0x3f: 'blt',
