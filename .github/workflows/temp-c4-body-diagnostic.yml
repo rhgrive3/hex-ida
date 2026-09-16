@@ -42,20 +42,26 @@ jobs:
           const dead=reachability.arms.find(a=>a.verdict==='proved');
           const erased=f.structure.region.arms.find(a=>a.role===dead?.role);
           const copiedArm=condition?.region.arms.find(a=>a.original===erased);
+          const phiRows=f.structure.phis.map(item=>({
+            block:item.block.index,
+            phiId:item.phi.id,
+            dstId:item.phi.dst?.id ?? null,
+            incoming:item.incoming.map(x=>({role:x.role,predecessor:x.predecessor.index,valueId:x.value?.id ?? null,const:x.value?.const?.toString?.() ?? null})),
+          }));
           const record={
             conditionStatus:conditionPlan.status,
             reachabilityStatus:reachability.status,
             semanticRegionValidation:reachability.semanticRegionValidation,
             deadRole:dead?.role ?? null,
+            liveRole:reachability.arms.find(a=>a.verdict==='refuted')?.role ?? null,
             structurePhis:f.structure.phis.length,
             structureMemoryPhis:f.structure.memoryPhis.length,
-            erasedNodes:erased?.nodes.length ?? null,
-            erasedKinds:erased?.nodes.map(n=>n.kind) ?? null,
-            copiedArmFound:!!copiedArm,
-            copiedNodes:copiedArm?.nodes.length ?? null,
-            copiedKinds:copiedArm?.nodes.map(n=>n.kind) ?? null,
-            copiedSemanticOps:copiedArm?.nodes.map(n=>n.semantic?.op ?? null) ?? null,
-            conditionRegionOriginal:condition?.region.original===f.structure.region,
+            phiRows,
+            erasedNodes:erased?.nodes.map(n=>({kind:n.kind,text:n.text,semanticOp:n.semantic?.op??null})) ?? null,
+            copiedNodes:copiedArm?.nodes.map(n=>({kind:n.kind,text:n.text,semanticOp:n.semantic?.op??null})) ?? null,
+            regionNodes:f.structure.region.nodes.map(n=>({kind:n.kind,text:n.text,semanticOp:n.semantic?.op??null})),
+            projectionLines:projection.lines?.map(x=>({kind:x.kind,text:x.text,indent:x.indent,row:x.row})) ?? null,
+            pseudocode:projection.pseudocode ?? null,
             bodyValidation:plan.bodyValidation,
             pendingValidation:plan.pendingValidation,
             bodyIssued:!!readRegionErasureBody(plan,projection,f.ir,identity),
