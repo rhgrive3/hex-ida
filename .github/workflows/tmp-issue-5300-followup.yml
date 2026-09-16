@@ -23,7 +23,19 @@ jobs:
           sed -i '/^timeout 90s /,$d' /tmp/prepare-5300.sh
           bash /tmp/prepare-5300.sh
       - name: Focused #5300 regression
-        run: timeout 90s node --test tests/phase11/dex/issue-5300-dex-switch-control-flow.test.mjs
+        run: |
+          set +e
+          timeout 90s node --test tests/phase11/dex/issue-5300-dex-switch-control-flow.test.mjs > /tmp/focused.out 2>&1
+          code=$?
+          tail -80 /tmp/focused.out > /tmp/first-failure.txt
+          exit $code
+      - name: Upload focused failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-5300-focused-first-failure
+          path: /tmp/first-failure.txt
+          retention-days: 1
       - name: Arithmetic regression
         run: timeout 60s node tests/phase11/dex/issue-1136-dex-arithmetic-produced-value.test.mjs
       - name: Nearby DEX regressions
