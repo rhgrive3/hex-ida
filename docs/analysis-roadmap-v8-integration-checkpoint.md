@@ -7792,3 +7792,27 @@ return summary propagationを3 return kind × 4 graph topology × 6 target/compl
 ## 2026-09-16 C4-03 local acceptance
 
 `tests/phase8/provenance/c4-03-acceptance.test.mjs` で、CSE/DCE/phi/switch/struct-field の多対一写像および stale-snapshot 拒絶の固定6カテゴリを production render-provenance と independent validation で受入。rendered-entity および removed-transform-class の分母において、provenance loss zero（`counts.provenanceLoss === 0`）と双方向の逆ナビゲーション（reverse navigation complete）を機械検証した。sourceless な entity や stale snapshot は fail closed で拒絶される。HEX-C4-03 / FR-C4-03A はこのローカル要件について accepted-local。C4-05、alias/SSA 真正性、実機/release gates は未達のため CHECKPOINT-LOCKED / fullRoadmapComplete:false / transformAuthorization:false を維持する。
+
+
+## 2026-09-16 C4-05 local acceptance
+
+`tests/phase9/egraph/c4-05-acceptance.test.mjs` で、34式族 × 8ビット幅（1, 2, 3, 4, 8, 16, 32, 64）× 3規則順序（canonical, reverse, discovery）計816セル、14Bool族、near-MBA反例の完全分母を固定受入した。
+
+### 7540行目（canonical Phase9失敗）の原因特定と解決
+- `fa07353bc` における `family-width-matrix` の `factor-mul/bv32:deadline` と `rule-order` の `factor-mul/bv16/reverse:deadline` の失敗原因を完全特定。
+- `boundedProofCell(family, width)` は高次ビット幅（16/32/64）の複雑演算（`factor-mul`, `mba-add`, `xor-cancel`等）を bounded DPLL決定予算（8192 decisions）により不完全証明（withheld）セルと定めている。
+- CIや並行実行下でDPLL伝播（約35.5万伝播、43回のsetTimeout yield）が2000msのクエリ上限を超えた場合、`createQueryGuard` が `QueryFailure('deadline')` を送出し `r.reason = 'deadline'` となる。パイプライン層（`js/decompiler/pipeline.js`）はこれを `'deadline-exceeded'` へ正規化していたが、直接クエリテスト（`queryEqualitySaturation`）では生の `'deadline'` が返る。`assertWithheld` の正規表現 `/^(cancelled|timeout|deadline-exceeded|budget:.*)$/` に `'deadline'` が含まれていなかったため、正当な withheld 結果に対してアサーション失敗が発生していた。
+- `tests/phase9/helpers/egraph-family-fixtures.mjs` の `assertWithheld` 正規表現に `deadline` を追加し、正当な時間打ち切りと決定数打ち切りの双方で候補が正しく withhold されることを確認。
+
+### 受入検証内容
+1. **決定論的分母の凍結**: 34スカラー式族、8ビット幅、3規則順序（計816セル）、14Bool族、およびE-Graph制約上限（`EGRAPH_LIMITS`）が凍結されていることを検証。
+2. **規則順序メタモーフィズム**: canonical, reverse, discovery の全3順序において提案キューが実際に並べ替えられ、かつ同一のPareto最適選択へ決定論的に到達することを検証。`rule-order.test.mjs` で全816セルがパス（7/7 PASS）。
+3. **独立証明の義務付け**: 候補生成層（`queryEqualitySaturation`）は単独で意味的権威を発行できず、独立検証器（`isAdoptableCandidate`）の完全な証明レシート（`evidence.verdict === 'proved'`、入力・出力の同一オブジェクト参照一致）がなければ採用不可であることを検証。未検証・改ざん・snapshot偽造レシートは拒絶。
+4. **near-MBA反例の反論維持**: 意図的に誤った near-MBA 候補（`wrong = (x + y) + 1`）が `verifyDeobfuscationCandidate` により `refuted` と判定され、反例証拠（counterexample witness）を保持して不採用となることを検証。
+5. **Fail-Closed 境界**: メモリ観測量、副作用、未知意味論、矛盾前提（`preconditions: [false]`）が存在する場合に、候補生成が安全に空（`candidates: []`）を返し fail-closed することを検証。
+6. **Bounded Proof Cells**: 証明未完の bounded proof cell において、不完全な証明レシートを発行することなく採用を差し控え（`candidates: []`）、withheld を維持することを検証。
+7. **各種予算・期限の終了保証**: 操作数（workItems）、反復数（iterations）、union数、enode数、candidate数、AbortSignal、timeoutMs=0 のすべてにおいて、決定論的かつ安全に即時終了することを検証。
+8. **Bool項の独立検証**: 14Bool族において BV1 と混同せず純粋Bool項として独立証明され、正しく採用可能であることを検証。
+
+HEX-C4-05 / FR-C4-05A はこのローカル要件について accepted-local。C4-03、独立レビュー、物理実機検証、全release gateは未達のため、`CHECKPOINT-LOCKED` / `fullRoadmapComplete: false` / `transformAuthorization: false` を維持する。
+

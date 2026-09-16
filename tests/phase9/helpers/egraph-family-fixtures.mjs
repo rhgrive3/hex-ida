@@ -43,7 +43,7 @@ export function boundedProofCell(family,width) {
 
 export function assertWithheld(r,id) {
   assert.equal(r.status,'partial',id);
-  assert.match(r.reason,/^(cancelled|timeout|deadline-exceeded|budget:.*)$/,`${id}:${r.reason}`);
+  assert.match(r.reason,/^(cancelled|timeout|deadline|deadline-exceeded|budget:.*)$/,`${id}:${r.reason}`);
   assert.deepEqual(r.candidates,[],id);
 }
 

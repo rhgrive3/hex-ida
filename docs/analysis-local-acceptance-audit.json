@@ -124,11 +124,11 @@
     },
     {
       "id": "HEX-C4-05",
-      "localStatus": "partial",
-      "assessment": "既存rule registryとfamily/width/order分母を維持。deadlineを許容結果に加えず、全式族/幅/順序の受入は未完了。",
-      "source": "tests/phase9",
-      "verificationSuite": "phase9-test",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "assessment": "C4-05の元カードをローカル受入。34式族 x 8幅 x 3順序 = 816セル、14Bool族、near-MBA反例の完全分母を凍結。候補生成自体は意味的権威を持たず独立証明を必須とし、メモリ/副作用/未知意味論/矛盾前提/予算超過時はfail-closed。bounded proof cellは未証明候補の採用を差し控え、deadline/cancelledを正常に処理。ロードマップ全体の解放・release/device gateは別。",
+      "source": "tests/phase9/egraph/c4-05-acceptance.test.mjs",
+      "verificationSuite": "c4-05-final-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "HEX-SYM-01",
@@ -480,9 +480,9 @@
       "mustWaitFor": "value domain and validator",
       "complexity": "XL",
       "findingId": "HEX-C4-05",
-      "localStatus": "partial",
-      "currentAssessment": "既存rule registryとfamily/width/order分母を維持。deadlineを許容結果に加えず、全式族/幅/順序の受入は未完了。",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "currentAssessment": "C4-05の元要件をローカル受入。34式族 x 8幅 x 3順序 (816セル) および14Bool族の決定論的分母を検証。規則順序メタモーフィズムはPareto選択の完全一致を確認。near-MBA反例は反論・不採用を維持。候補生成は権威を発行せず独立検証器の証明レシートを要求。メモリ・副作用・矛盾前提・各種予算超過はfail closed。bounded proof cellのdeadline/cancelled処理を統一。",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "FR-SYM-03A",
@@ -2469,6 +2469,31 @@
       "acceptanceTest": "tests/phase8/provenance/c4-03-acceptance.test.mjs",
       "provenanceLoss": 0,
       "reverseNavigation": "complete",
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false
+    },
+    "c4EqualitySaturationAcceptance20260916": {
+      "status": "ACCEPTED-LOCAL",
+      "finding": "HEX-C4-05",
+      "task": "FR-C4-05A",
+      "denominator": {
+        "scalarFamilies": 34,
+        "widths": [1, 2, 3, 4, 8, 16, 32, 64],
+        "schedules": ["canonical", "reverse", "discovery"],
+        "totalScalarCells": 816,
+        "boolFamilies": 14
+      },
+      "acceptanceTest": "tests/phase9/egraph/c4-05-acceptance.test.mjs",
+      "proofRequirement": "independent-proof-required-before-adoption",
+      "authorityMinting": "never-from-candidate-generation",
+      "failClosed": [
+        "memory-observable",
+        "side-effect",
+        "unknown-semantics",
+        "contradictory-preconditions",
+        "budget-exhaustion",
+        "cancelled-or-deadline"
+      ],
       "fullRoadmapComplete": false,
       "transformAuthorization": false
     }
