@@ -1,0 +1,50 @@
+name: diag-7036-discovery-dual
+on:
+  push:
+    branches:
+      - diag/7036-merge-8fa
+permissions:
+  contents: write
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build dual-schema latest candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .github/diag/resolve-7036-latest.sh /tmp/resolve-7036-v3.sh
+          cp .github/diag/patch-7036-discovery-dual.sh /tmp/patch-7036-discovery-dual.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('/tmp/resolve-7036-v3.sh')
+          s = p.read_text()
+          anchor = "git add js/binary/macho-core.js\n\nif git diff --name-only --diff-filter=U -- js/analysis/index.js"
+          replacement = "git add js/binary/macho-core.js\n\nsource /tmp/patch-7036-discovery-dual.sh\n\nif git diff --name-only --diff-filter=U -- js/analysis/index.js"
+          if anchor not in s:
+              raise SystemExit('dual patch insertion anchor missing')
+          s = s.replace(anchor, replacement, 1)
+          anchor = "  git add js/analysis/index.js\nfi\n\npython3 - <<'PY'"
+          replacement = "  git add js/analysis/index.js\nfi\nif ! grep -q \"functionDiscoveryArtifact\" js/analysis/index.js; then\n  printf '\\\\n// X03 compatibility surface retained alongside canonical T016 v2 discovery.\\\\nexport {functionDiscoveryArtifact, normalizeDiscoveryArtifactBudget, discoveryReferencesFromImage} from '\\\\''./discovery/artifact.js'\\\\'';\\\\n' >> js/analysis/index.js\nfi\ngit add js/analysis/index.js\n\npython3 - <<'PY'"
+          if anchor not in s:
+              raise SystemExit('index compatibility anchor missing')
+          s = s.replace(anchor, replacement, 1)
+          anchor = "run_if discovery_artifact tests/phase7/discovery/x03-ambiguity-artifact.test.mjs\nrun_if discovery_layout tests/phase7/discovery/layout-v6.test.mjs"
+          replacement = "run syntax_discovery_v2 node --check js/analysis/discovery/artifact.js\nrun syntax_discovery_v1 node --check js/analysis/discovery/legacy-artifact.js\nrun_if discovery_artifact tests/phase7/discovery/x03-ambiguity-artifact.test.mjs\nrun_if t016_discovery tests/phase7/discovery/t016-discovery-preservation.test.mjs\nrun_if t016_rebuild tests/rebuild/t016-discovery-preservation.test.mjs\nrun_if discovery_layout tests/phase7/discovery/layout-v6.test.mjs"
+          if anchor not in s:
+              raise SystemExit('focused test insertion anchor missing')
+          s = s.replace(anchor, replacement, 1)
+          p.write_text(s)
+          PY
+          bash /tmp/resolve-7036-v3.sh
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-7036-discovery-dual
+          path: /tmp/diag-7036-latest-candidate.txt
+          retention-days: 1
