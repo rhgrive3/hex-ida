@@ -29,7 +29,7 @@ function buildMachO(sectionIndex) {
   const section = p + 72;
   put(section, '__text'); put(section + 16, '__TEXT');
   u64(section + 32, 0x1000); u64(section + 40, 4);
-  u32(section + 48, 0x180); u32(section + 52, 2);
+  u32(section + 48, 0x0); u32(section + 52, 2);
   u32(section + 64, 0x80000400); // S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS
 
   p += 152;
