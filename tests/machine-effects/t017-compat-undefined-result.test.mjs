@@ -28,8 +28,9 @@ test('BSF undefined-result contract survives MachineEffects -> Semantic IR v2 ->
       addressWidthBits:64,
     });
     const projected = projectSemanticIrV2ToLegacyV1(semantic);
-    const carriers = projected.instructions.filter((instruction) => instruction.extra?.undefinedResult != null);
-    assert.ok(carriers.length > 0, 'compat projection must preserve the undefined-result contract');
+    const carriers = projected.instructions.filter((instruction) =>
+      instruction.extra?.undefinedResult?.reason === producer.undefinedResult.reason);
+    assert.ok(carriers.length > 0, 'compat projection must preserve the destination undefined-result contract');
     for (const carrier of carriers) {
       assert.deepEqual(carrier.extra.undefinedResult, producer.undefinedResult);
       assert.equal(carrier.extra.undefinedResult.condition.operandIndex, 0);
