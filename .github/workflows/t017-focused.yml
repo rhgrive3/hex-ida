@@ -1,5 +1,5 @@
 name: T017 focused verification
-# Rerun after current-main closure-matrix provenance adaptation.
+# Rerun after narrowing validation-context fail-closed handling to INT uncertainty.
 
 on:
   push:
