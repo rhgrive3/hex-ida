@@ -424,6 +424,7 @@
       "tests/issue-4961-worker-request-id-identity.mjs",
       "tests/issue-5498-eligibility-result-status-authority.mjs",
       "tests/objc-metadata.mjs",
+      "tests/phase12/integration/c3-03-metadata-provider-acceptance.test.mjs",
       "tests/issue-529-objc-integration.mjs",
       "tests/machine-effects/arm64-direct-branch-coherence.test.mjs",
       "tests/machine-effects/arm64-literal-target-coherence.test.mjs",

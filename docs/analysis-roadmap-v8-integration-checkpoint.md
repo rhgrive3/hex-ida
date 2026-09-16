@@ -1,5 +1,16 @@
 # Analysis roadmap v8 integration checkpoint
 
+## 2026-09-16: C3-03 versioned metadata provider exact-head local acceptance 完了
+
+HEX-C3-03 / FR-C3-03A の有限受入を [`tests/phase12/integration/c3-03-metadata-provider-acceptance.test.mjs`](file:///mnt/workspace/hex-ida/tests/phase12/integration/c3-03-metadata-provider-acceptance.test.mjs) に追加し、Node `v24.20.0`、候補入力 `16f4d68607fe05851cfb8c6b86be140a7fb2cead` で **20/20 PASS** としました。
+
+- version contract: Go / Rust / Swift / ObjC の4 providerを検査。
+- positive denominator: Go 4（1.2 / 1.16 / 1.18 / 1.20+）、Rust 2（legacy / v0）、Swift 2（arm64 / arm64_32）、ObjC 1（ObjC 2.0 arm64_32）。
+- negative denominator: unknown version、truncated/cyclic metadata、reader欠落、unknown pointer ABI、unknown record kind、provider/build identity mismatchを含む fail-closed 6行と境界検査。
+- ObjCは class/category/protocol の公開record、IMP address、probe世代境界を検査。失敗結果は旧cacheを公開せず、incomplete/identity-unavailableまたはmatched-partialを保持。
+
+C3-03の有限ローカル要件を `accepted-local` とします。これは全native corpus、ME依存、独立shadow、実機・release、またはロードマップ全体の完了ではありません。未知・不完全・identity不一致のmetadataは exact authorityへ昇格せず、`CHECKPOINT-LOCKED` / `transformAuthorization: false` を維持します。
+
 ## 2026-09-16: SYM (HEX-SYM-01 / HEX-SYM-02 / HEX-SYM-03) exact-head local acceptance 完了
 
 HEX-SYM-01 (FR-SYM-01A)、HEX-SYM-02 (FR-SYM-02A)、HEX-SYM-03 (FR-SYM-03A) のローカル要件について、統合受入スイート [`tests/phase9/verify/sym-acceptance.test.mjs`](file:///mnt/workspace/hex-ida/tests/phase9/verify/sym-acceptance.test.mjs) を追加し、`accepted-local` として受入完了としました。
@@ -65,7 +76,7 @@ HEX-C2-01 (FR-C2-01A) および HEX-C2-02 (FR-C2-02A) のローカル要件に�
 
 PR #7036 の候補 `fc91d16328b98f7d6e2e3d5f030ea8580f39c3fa` を clean checkout に固定し、Node `v22.22.3` で担当範囲の有限受入を再検証しました。C3 combined は **188/188 PASS**（C3-01 48/48、C3-02 140/140）、Phase7 types lane は **239/239 PASS**（30/449 discovered test files）、Phase6+Phase8 ABI は **507/507 PASS**、required profile matrix は **66/66 PASS** でした。C3-02 ownership manifest は feature 38 / generated 2 / governance 2 を満たし、Phase7 ownership 24/24、Phase8 routing 5/5 も通過しています。
 
-これにより checkpoint がこのレーンへ割り当てた有限ユーザー側 C3-01/C3-02 を `accepted-local` として受入完了にします。C3-03 の versioned metadata provider matrix、ME依存、全native corpus、独立shadow、実機・release、および解析ロードマップ全体は未完了です。したがって `CHECKPOINT-LOCKED` / `transformAuthorization:false` は維持します。実行ログとSHA-256は `/mnt/workspace/.dev-state/agent-work/evidence/pr7036-c3-acceptance-current-fc91/`、機械可読な分母と状態は `analysis-local-acceptance-audit.json` に固定しています。
+これにより checkpoint がこのレーンへ割り当てた有限ユーザー側 C3-01/C3-02 を `accepted-local` として受入完了にします。C3-03 は上記の別の有限マトリクスで `accepted-local` として受入完了にします。ME依存、全native corpus、独立shadow、実機・release、および解析ロードマップ全体は未完了です。したがって `CHECKPOINT-LOCKED` / `transformAuthorization:false` は維持します。実行ログとSHA-256は `/mnt/workspace/.dev-state/agent-work/evidence/pr7036-c3-acceptance-current-fc91/`、機械可読な分母と状態は `analysis-local-acceptance-audit.json` に固定しています。
 
 ## 2026-09-16: C4-04 local acceptance 完了
 
@@ -7928,5 +7939,3 @@ HEX-ME-01 / FR-ME-01A / FR-ME-01B はこのローカル要件について accept
 HEX-X-02 / FR-X-02A については、元120行の canonical 統合および current overlay（X02-F-48 compiler-produced arm64e PAC Mach-O による pass）を維持し、全 120 行テスト（`x02-prior120-apple-version-matrix.test.mjs` 120/120 PASS）、公開入口テスト（`x02-apple-version-matrix.test.mjs` 61/61 PASS）、宣言境界テスト（`x02-declared-metadata-boundaries.test.mjs` 12/12 PASS）の全件通過を維持。残る 3 evidence-gap（versioned Apple OS/toolchain/runtime corpus、real dyld shared cache と slide/rebase 来歴、genuine signed Mach-O と trusted signing）および 2 environment-excluded（実 Apple arm64e runtime 上の PAC 認証 X02-F-47、pinned LLVM 18.1.3 oracle X02-H-02）は実機・Apple実物なしに昇格させず、厳格に fail closed のまま維持する。
 
 HEX-X-01 / HEX-X-03 はこのローカル要件について accepted-local。物理実機検証、現代 Apple runtime、全 release gate は未達のため、`CHECKPOINT-LOCKED` / `fullRoadmapComplete: false` / `transformAuthorization: false` を維持する。
-
-

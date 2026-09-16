@@ -1,12 +1,20 @@
 # C3 ユーザー側ローカル受入 — 2026-09-13 最終追記反映
 
+## 2026-09-16: C3-03 versioned metadata provider local acceptance 完了
+
+HEX-C3-03 / FR-C3-03A の有限マトリクスを [`tests/phase12/integration/c3-03-metadata-provider-acceptance.test.mjs`](file:///mnt/workspace/hex-ida/tests/phase12/integration/c3-03-metadata-provider-acceptance.test.mjs) に固定し、Node `v24.20.0`、候補入力 `16f4d68607fe05851cfb8c6b86be140a7fb2cead` で **20/20 PASS** とした。
+
+固定分母は provider contract 1、Go 4（1.2 / 1.16 / 1.18 / 1.20+）、Rust 2（rustc 1.56 legacy / 1.80 v0）、Swift 2（swift5 arm64 / arm64_32）、ObjC 1（ObjC 2.0 arm64_32）、fail-closed 6、unknown record kind 1、provider identity mismatch 1、unified dispatch 1、ObjC cache successor 1である。陽性ObjC行は class/category/protocol の公開ページ、IMP address、ObjC provider identityを検査した。
+
+required proof の version drift、unknown kind、truncated/cyclic metadata、provider identity mismatchを、unsupported / matched-partial / incomplete として保持し、公開recordが exact authorityへ昇格しないことを検査した。reader欠落・unknown pointer ABI・後続probe失敗後のcache消去も含む。これは C3-03 の `accepted-local` であり、ME依存、全native corpus、独立shadow、実機・release、解析ロードマップ全体の `COMPLETE` ではない。全体の `CHECKPOINT-LOCKED` / `transformAuthorization:false` は維持する。
+
 ## 2026-09-16: PR #7036 exact-head 再検証（受入完了）
 
 現行PR HEAD `fc91d16328b98f7d6e2e3d5f030ea8580f39c3fa` を clean checkout で再検証した。Node `v22.22.3` の同一コマンドで、C3 combined（C3-01 + C3-02）は **188/188 PASS**、Phase7 types lane は **239/239 PASS**（30/449 discovered test files）、Phase6+Phase8 ABI は **507/507 PASS**、required profile matrix は **66/66 行 PASS**。C3-02 ownership manifest は `featurePaths=38 / generatedPaths=2 / governancePaths=2 / valid=true`、関連 Phase7 ownership 24/24 と Phase8 routing 5/5 も PASS した。
 
 この再検証により、checkpointで割り当てた有限ユーザー側の C3-01/C3-02 は `accepted-local` とする。C3-01 は5 recursive/layout shapesと8状態、SCC iteration-limit、debug/no-debug、hard pointer/integer conflict、unknown extent、bounded dependency failureを含み、C3-02 は9 profiles×5 shapes、63 invalidation、18 variadic、Darwin indirect-copy、AAPCS64 stack alignment、arm64e envelope、LP64F/LP64D flatteningを含む。固定fixtureを期待値のoracleとし、canonical graph / ABI classifier / prototype consumerの二重実装は作っていない。
 
-これは C3-03 の versioned language metadata provider matrix、ME依存、全native corpus、独立shadow、実機・release、または解析ロードマップ全体の `COMPLETE` ではない。未知・stale・cancel・budget・不完全layoutは従来どおり exact publicationを拒否し、全体の `CHECKPOINT-LOCKED` は維持する。永続実行ログは `/mnt/workspace/.dev-state/agent-work/evidence/pr7036-c3-acceptance-current-fc91/` に保存し、各ログはこのHEADとNode22 identityへ結び付けた。
+この節は C3-01/C3-02 の有限再検証を記録する。C3-03 は上記の別分母で `accepted-local` とした。未知・stale・cancel・budget・不完全layoutは従来どおり exact publicationを拒否し、ME依存、全native corpus、独立shadow、実機・release、解析ロードマップ全体の `COMPLETE` とは分離する。全体の `CHECKPOINT-LOCKED` は維持する。永続実行ログは `/mnt/workspace/.dev-state/agent-work/evidence/pr7036-c3-acceptance-current-fc91/` に保存し、各ログは当時のHEADとNode22 identityへ結び付けた。
 
 正本は `analysis-roadmap-v8-integration-checkpoint.md` の2026-09-12担当分担。
 唯一の開始ツリーは `hex-ida-roadmap-v8-user-c1-c3-20260912.zip`。

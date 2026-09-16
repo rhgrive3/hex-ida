@@ -91,7 +91,7 @@ const SPECIAL_PATHS = Object.freeze({
     'js/ui/decompiler-provenance.js', 'js/ui/product-base.js', 'css/components.css',
     'js/ui/decompiler-provenance-sheet.js', 'js/tools-base.js',
     'tests/issue-5498-eligibility-result-status-authority.mjs',
-    'tests/objc-metadata.mjs', 'tests/issue-529-objc-integration.mjs',
+    'tests/objc-metadata.mjs', 'tests/phase12/integration/c3-03-metadata-provider-acceptance.test.mjs', 'tests/issue-529-objc-integration.mjs',
     'js/targets/architecture/arm64e/effects.js', 'tests/machine-effects/arm64e-retained-provider-union.test.mjs',
     'js/targets/architecture/arm64/effects/memory.js', 'tests/machine-effects/arm64-literal-target-coherence.test.mjs',
     'js/targets/architecture/arm64/effects/control.js', 'js/targets/architecture/arm64/effects/dispatcher.js',

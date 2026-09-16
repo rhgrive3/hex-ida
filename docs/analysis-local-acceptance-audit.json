@@ -84,11 +84,11 @@
     },
     {
       "id": "HEX-C3-03",
-      "localStatus": "local-runtime-repair",
-      "assessment": "既存versioned providerを維持しObjC class/category/protocolの公開入口、address、cache世代境界を修正。OS/runtime版横断は未完了。",
-      "source": "js/metadata/objc.js",
-      "verificationSuite": "metadata-test",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "assessment": "Go 4 / Rust 2 / Swift 2 / ObjC 1のversioned provider行、6 fail-closed行、unknown kind・identity mismatch・unified dispatch・cache successorを20/20で受入。ObjC class/category/protocol公開ページ、実行可能IMP address、reader欠落・unknown ABI・不完全metadataのexact authority拒否を含む。全native corpus、ME依存、独立shadow、実機・releaseは別ゲート。",
+      "source": "tests/phase12/integration/c3-03-metadata-provider-acceptance.test.mjs",
+      "verificationSuite": "c3-03-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "HEX-C4-01",
@@ -368,9 +368,9 @@
       "mustWaitFor": "ABI contract",
       "complexity": "XL",
       "findingId": "HEX-C3-03",
-      "localStatus": "local-runtime-repair",
-      "currentAssessment": "既存versioned providerを維持しObjC class/category/protocolの公開入口、address、cache世代境界を修正。OS/runtime版横断は未完了。",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "currentAssessment": "Go 4 / Rust 2 / Swift 2 / ObjC 1のversioned provider行と6 fail-closed行を含む20/20の有限acceptanceを追加。version drift、unknown kind、truncated/cyclic metadata、provider identity mismatch、unified dispatch、ObjC class/category/protocol公開ページ、IMP address、cache世代境界を検査し、不完全dataはexactへ昇格しない。全native corpus、ME依存、独立shadow、実機・releaseは別ゲート。",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "FR-C4-03A",
@@ -2590,6 +2590,115 @@
         "unregistered or mismatched profile"
       ],
       "scopeNote": "Checkpoint が割り当てた有限ユーザー側 C3-01/C3-02 の local acceptance 完了。C3-03 の versioned metadata provider、ME依存、全native corpus、独立shadow、実機・release、全体ロードマップは別ゲートとして未完了。",
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false
+    },
+    "c3_03Acceptance20260916": {
+      "status": "ACCEPTED-LOCAL",
+      "finding": "HEX-C3-03",
+      "task": "FR-C3-03A",
+      "candidateHead": "16f4d68607fe05851cfb8c6b86be140a7fb2cead",
+      "candidateBranch": "feat/analysis-roadmap-v8-current-main-20260907",
+      "candidateRef": "refs/pull/7036/head",
+      "runtime": {
+        "node": "v24.20.0"
+      },
+      "workingTreeCleanAtVerification": true,
+      "denominator": {
+        "providerContract": {
+          "passed": 1,
+          "total": 1
+        },
+        "versionRows": {
+          "go": {
+            "versions": [
+              "1.2",
+              "1.16",
+              "1.18",
+              "1.20+"
+            ],
+            "passed": 4,
+            "total": 4
+          },
+          "rust": {
+            "versions": [
+              "rustc 1.56 legacy",
+              "rustc 1.80 v0"
+            ],
+            "passed": 2,
+            "total": 2
+          },
+          "swift": {
+            "versions": [
+              "swift5 arm64",
+              "swift5 arm64_32"
+            ],
+            "passed": 2,
+            "total": 2
+          },
+          "objc": {
+            "versions": [
+              "objc-2.0 arm64_32"
+            ],
+            "passed": 1,
+            "total": 1
+          },
+          "passed": 9,
+          "total": 9
+        },
+        "failClosed": {
+          "passed": 6,
+          "total": 6,
+          "classes": [
+            "unknown-version",
+            "truncated",
+            "cyclic",
+            "reader-unavailable",
+            "unknown-pointer-abi"
+          ]
+        },
+        "contractBoundaries": {
+          "unknownRecordKind": {
+            "passed": 1,
+            "total": 1
+          },
+          "providerIdentityMismatch": {
+            "passed": 1,
+            "total": 1
+          },
+          "unifiedDispatch": {
+            "passed": 1,
+            "total": 1
+          },
+          "objcCacheSuccessor": {
+            "passed": 1,
+            "total": 1
+          }
+        },
+        "total": {
+          "passed": 20,
+          "total": 20
+        }
+      },
+      "acceptanceTests": [
+        "tests/phase12/integration/c3-03-metadata-provider-acceptance.test.mjs"
+      ],
+      "productionChange": "js/metadata/objc.js",
+      "ownership": {
+        "phase12Lane": "p12-integration",
+        "roadmapLane": "integration",
+        "manifestPath": "tools/validation/analysis-roadmap/ownership.json",
+        "testPathDeclared": true
+      },
+      "failClosedBoundary": [
+        "unknown provider version or magic",
+        "unknown record kind",
+        "truncated or cyclic metadata",
+        "reader unavailable or unknown pointer ABI",
+        "provider/build identity mismatch",
+        "failed successor probe clears previous ObjC cache"
+      ],
+      "scopeNote": "C3-03 finite local acceptance only. Full native corpus, ME dependency, independent shadow, physical device/release evidence, and full roadmap completion remain separate gates.",
       "fullRoadmapComplete": false,
       "transformAuthorization": false
     },
