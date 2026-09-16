@@ -3,10 +3,10 @@ import test from 'node:test';
 import { functionCandidates } from '../../../js/analysis/index.js';
 
 const binding = { binaryId: 't016-binary', sourceHash: 'source-v1', snapshotId: 'snapshot-v1', architectureId: 'x86_64' };
-function discover(sizeBytes, sourceHash = binding.sourceHash) {
+function discover(sizeBytes, sourceHash = binding.sourceHash, snapshotId = binding.snapshotId) {
   return functionCandidates({
     input: { image: { functions: [{ address: 0x1000, source: 'function_starts', ...(sizeBytes == null ? {} : { sizeBytes }) }] } },
-    ...binding, sourceHash,
+    ...binding, sourceHash, snapshotId,
   });
 }
 
@@ -17,8 +17,8 @@ test('T016 production discovery retains a start whose extent is unknown', async 
   const { discoveryArtifactForRebuild, verifyDiscoveryReparse } = await import('../../../js/analysis/discovery/artifact.js');
   const source = discoveryArtifactForRebuild(result.artifact, binding);
   assert.equal(source.functionCandidates[0].extentState, 'unknown');
-  assert.equal(verifyDiscoveryReparse(source, discover(undefined, 'output-v1').artifact, { expectedOutputHash: 'output-v1' }).ok, true);
-  assert.equal(verifyDiscoveryReparse(source, discover(16, 'output-v1').artifact, { expectedOutputHash: 'output-v1' }).ok, false,
+  assert.equal(verifyDiscoveryReparse(source, discover(undefined, 'output-v1', 'snapshot-v2').artifact, { expectedOutputHash: 'output-v1' }).ok, true);
+  assert.equal(verifyDiscoveryReparse(source, discover(16, 'output-v1', 'snapshot-v2').artifact, { expectedOutputHash: 'output-v1' }).ok, false,
     'an unchanged collision-ID set cannot authorize invented exact extent');
 });
 
