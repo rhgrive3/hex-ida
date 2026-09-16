@@ -29,7 +29,13 @@ jobs:
           node --test tests/scpa/x02-apple-version-matrix.test.mjs
           node --test tests/scpa/x02-declared-metadata-boundaries.test.mjs
       - name: Collect real Apple evidence
-        run: node tools/validation/x02-apple-runtime-evidence.mjs x02-apple-runtime-evidence.json
+        shell: bash
+        run: |
+          set +e
+          node tools/validation/x02-apple-runtime-evidence.mjs x02-apple-runtime-evidence.json > collector-stdout.txt 2> collector-error.txt
+          RC=$?
+          printf '%s\n' "$RC" > collector-exit.txt
+          exit "$RC"
       - name: Validate real Apple evidence
         run: |
           node --input-type=module <<'NODE'
@@ -48,5 +54,10 @@ jobs:
         if: always()
         with:
           name: x02-real-apple-acceptance-${{ github.sha }}
-          path: x02-apple-runtime-evidence.json
+          path: |
+            x02-apple-runtime-evidence.json
+            collector-stdout.txt
+            collector-error.txt
+            collector-exit.txt
+          if-no-files-found: ignore
           retention-days: 14
