@@ -1,0 +1,87 @@
+name: X-02 H02 exact LLVM oracle
+
+on:
+  push:
+    branches:
+      - feat/analysis-roadmap-v8-current-main-20260907
+    paths:
+      - .github/workflows/x02-h02-exact-llvm.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  h02:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Checkout exact head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Use Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install exact LLVM 18 lane
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends llvm-18
+          test -x /usr/bin/llvm-readobj-18
+          first_line="$(/usr/bin/llvm-readobj-18 --version | head -n1)"
+          test "$first_line" = "Ubuntu LLVM version 18.1.3"
+
+      - name: Run H02 independent reparse through frozen 120 denominator
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/x02-h02
+          node --test tests/scpa/x02-prior120-apple-version-matrix.test.mjs > evidence/x02-h02/prior120.tap
+          grep -q '^# fail 0$' evidence/x02-h02/prior120.tap
+
+      - name: Record exact oracle provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          tool = pathlib.Path('/usr/bin/llvm-readobj-18').resolve()
+          version = subprocess.check_output([str(tool), '--version'], text=True).splitlines()[0]
+          fixture = pathlib.Path('tests/phase12/rebuild/fixtures/vertical-macho-x86_64.o')
+          header = subprocess.check_output([str(tool), '--file-headers', str(fixture)], text=True)
+          evidence = {
+              'schemaVersion': 'hex-x02-h02-independent-oracle/v1',
+              'githubSha': os.environ['GITHUB_SHA'],
+              'toolPath': str(tool),
+              'toolVersion': version,
+              'toolSha256': hashlib.sha256(tool.read_bytes()).hexdigest(),
+              'fixturePath': str(fixture),
+              'fixtureSha256': hashlib.sha256(fixture.read_bytes()).hexdigest(),
+              'formatObserved': 'Mach-O' if 'Format: Mach-O' in header else None,
+              'architectureObserved': 'x86_64' if ('Arch: x86_64' in header or 'Arch: x86-64' in header) else None,
+              'frozenMatrixSha256': hashlib.sha256(pathlib.Path('tests/scpa/fixtures/x02-prior120-apple-version-matrix.json').read_bytes()).hexdigest(),
+              'h02IndependentReparse': 'pass',
+              'prior120Exit': 0,
+          }
+          assert evidence['toolVersion'] == 'Ubuntu LLVM version 18.1.3'
+          assert evidence['formatObserved'] == 'Mach-O'
+          assert evidence['architectureObserved'] == 'x86_64'
+          assert evidence['frozenMatrixSha256'] == 'c95ea2ba89d072fe9110565072462d5efca496b72a66ff365d8b8d15a95274ad'
+          out = pathlib.Path('evidence/x02-h02/h02.json')
+          out.write_text(json.dumps(evidence, indent=2) + '\n')
+          print(json.dumps(evidence, indent=2))
+          PY
+
+      - name: Upload bounded H02 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: x02-h02-${{ github.sha }}
+          path: evidence/x02-h02
+          if-no-files-found: error
+          retention-days: 14
