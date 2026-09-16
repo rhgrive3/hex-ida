@@ -182,6 +182,13 @@ export function createArtifactDescriptor(input = {}) {
     inputArtifactIds:upstreamArtifactIds,
   });
   if (upstreamArtifactIds.includes(descriptor.artifactId)) throw new ArtifactError('artifact-self-dependency');
+  // #8808: persist the artifact-key `optionsHash` on the descriptor so a record
+  // created from it can be identity-reauthenticated on a fresh store. Without
+  // this material the storage envelope was the sole "proof" of upstream
+  // identity, and a party able to mutate a row could also recompute its
+  // self-consistent checksum; recomputing the artifactId from durable record
+  // material is the only proof that does not collapse to a rehash.
+  descriptor.optionsHash = optionsHash;
   const frozen = deepFreeze(descriptor);
   CANONICAL_ARTIFACT_DESCRIPTORS.add(frozen);
   return frozen;
@@ -236,6 +243,7 @@ export function createArtifactRecord(descriptor, payloadBytes, metadata = {}) {
     entityId:descriptor.entityId,
     runtimeSnapshotId:descriptor.runtimeSnapshotId,
     originRefs:descriptor.originRefs,
+    optionsHash:descriptor.optionsHash,
     ...(descriptor.dependencyScope ? { dependencyScope:descriptor.dependencyScope } : {}),
     payloadEncoding:ARTIFACT_PAYLOAD_ENCODING,
     payloadEncodingVersion:1,

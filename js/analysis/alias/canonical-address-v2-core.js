@@ -5,6 +5,7 @@ import {
   stableDigest,
   stableStringify,
 } from '../../core/identity/index.js';
+import { FLAT_MEMORY_SPACE, canonicalAddressSpace, sameCanonicalAddressSpace } from './address-space.js';
 
 export const CANONICAL_ADDRESS_DERIVATION_VERSION = '1.0.2';
 export const GENERIC_ROOT_DESCRIPTOR_KINDS = Object.freeze([
@@ -278,7 +279,10 @@ function normalizeGenericDescriptor(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
   const kind = identityString(input.kind);
   if (kind == null || !ROOT_KINDS.has(kind)) return null;
-  const addressSpace = input.addressSpace == null ? null : identityString(input.addressSpace);
+  // The address space is stored canonically: it later becomes separation
+  // authority and region identity, so a case/whitespace drift must not survive
+  // as a second physical domain (#8879).
+  const addressSpace = input.addressSpace == null ? null : canonicalAddressSpace(input.addressSpace);
   if (input.addressSpace != null && addressSpace == null) return null;
   if (kind === 'stack-like') {
     const baseOffset = parseInteger(input.baseOffset ?? 0);
@@ -436,7 +440,7 @@ function rootFromDescriptor(descriptor, fallbackIdentity, expectedAddressSpace, 
   if (descriptor === CONFLICTING_ROOT_DESCRIPTORS) return unknown('canonical-root-descriptor-conflict');
   if (!descriptor) return null;
   const addressSpace = descriptor.addressSpace ?? expectedAddressSpace ?? 'memory';
-  if (expectedAddressSpace != null && descriptor.addressSpace != null && String(expectedAddressSpace) !== descriptor.addressSpace) {
+  if (expectedAddressSpace != null && descriptor.addressSpace != null && !sameCanonicalAddressSpace(expectedAddressSpace, descriptor.addressSpace)) {
     return unknown('canonical-root-address-space-mismatch');
   }
   if (descriptor.kind === 'absolute-address') {
@@ -603,12 +607,12 @@ function mergeAlternatives(proofs, reason) {
   if (proofs.some((proof) => proof.kind === 'unknown' || proof.kind === 'constant')) return unknown(reason);
   if (proofs.every((proof) => proof.kind === 'absolute')) {
     const first = proofs[0];
-    return proofs.every((proof) => proof.addressSpace === first.addressSpace && proof.address === first.address)
+    return proofs.every((proof) => sameCanonicalAddressSpace(proof.addressSpace, first.addressSpace) && proof.address === first.address)
       ? first
       : unknown(reason);
   }
   const first = proofs[0];
-  if (!proofs.every((proof) => sameRoot(first, proof) && proof.addressSpace === first.addressSpace)) return unknown(reason);
+  if (!proofs.every((proof) => sameRoot(first, proof) && sameCanonicalAddressSpace(proof.addressSpace, first.addressSpace))) return unknown(reason);
   const exactOffsets = proofs.every((proof) => proof.kind !== 'root-only' && proof.offset === first.offset);
   if (exactOffsets) {
     return deepFreeze({
@@ -948,10 +952,11 @@ export function canonicalAddressProofToRegionEvidence(proof) {
   if (!proof || proof.kind === 'unknown' || proof.kind === 'constant' || proof.kind === 'root-only') return null;
   if (proof.kind === 'absolute') {
     const address = canonicalAddress(proof.address);
-    const proofSpace = typeof proof.addressSpace === 'string' && proof.addressSpace
-      ? proof.addressSpace
-      : 'memory';
-    if (proofSpace === 'memory') return deepFreeze({ kind: 'global-absolute', address });
+    // Canonical comparison, not raw equality: `"MEMORY"` is flat memory spelled
+    // non-canonically, not a genuine non-memory domain, so it must not be
+    // reclassified as a rooted storage domain (#8879).
+    const proofSpace = canonicalAddressSpace(proof.addressSpace) ?? FLAT_MEMORY_SPACE;
+    if (proofSpace === FLAT_MEMORY_SPACE) return deepFreeze({ kind: 'global-absolute', address });
     return deepFreeze({
       kind: 'rooted-offset',
       rootEntityId: absoluteAddressRootId(proof, address),
@@ -966,8 +971,9 @@ export function canonicalAddressProofToRegionEvidence(proof) {
   // Preserve the proof's proven storage domain into the region layer (#5901).
   // Flat `memory` rooted-offsets keep their historical shape; a rooted proof
   // in `tls`/`io`/etc. must not silently become a flat memory region.
-  const proofSpace = typeof proof.addressSpace === 'string' && proof.addressSpace && proof.addressSpace !== 'memory'
-    ? proof.addressSpace : null;
+  const proofSpaceCanonical = canonicalAddressSpace(proof.addressSpace);
+  const proofSpace = proofSpaceCanonical && proofSpaceCanonical !== FLAT_MEMORY_SPACE
+    ? proofSpaceCanonical : null;
   if (proof.separationSafe) {
     return deepFreeze({
       kind: 'rooted-offset',
@@ -989,7 +995,9 @@ export function deriveCanonicalAddressProof(ir, addressValueId, options = {}) {
   if (addressValueId == null) return unknown('canonical-address-value-id-required');
   const normalizedAddressValueId = identityString(addressValueId);
   if (normalizedAddressValueId == null || !getGraphValidity(ir, options)) return unknown('canonical-address-identity-invalid');
-  const expectedAddressSpace = options.addressSpace == null ? 'memory' : identityString(options.addressSpace);
+  const expectedAddressSpace = options.addressSpace == null
+    ? FLAT_MEMORY_SPACE
+    : canonicalAddressSpace(options.addressSpace);
   if (expectedAddressSpace == null) return unknown('canonical-address-address-space-invalid');
   const ctx = buildContext(ir, options);
   let proof = deriveValue(ctx, normalizedAddressValueId, expectedAddressSpace, { visiting: new Set(), depth: 0 });
@@ -1014,7 +1022,7 @@ export function sameCanonicalAddressProof(left, right) {
   if (left.kind === 'constant' || right.kind === 'constant') return false;
   if (left.kind === 'absolute' || right.kind === 'absolute') {
     return left.kind === 'absolute' && right.kind === 'absolute'
-      && left.addressSpace === right.addressSpace
+      && sameCanonicalAddressSpace(left.addressSpace, right.addressSpace)
       && left.address === right.address;
   }
   if (left.kind === 'root-only' || right.kind === 'root-only') return false;
