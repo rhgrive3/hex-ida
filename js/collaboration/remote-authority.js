@@ -1,6 +1,6 @@
 import { deepFreeze, jsonSafe } from '../core/identity/index.js';
 import { isValidatedStage2CapabilityProof } from '../platform/stage2-profile-evidence.js';
-import { CHANGELOG_SCHEMA_VERSION, ChangeLog, collaborationDigest, createProjectOperation, canonicalizeProjectOperation, isCanonicalProjectOperation } from './index.js';
+import { CHANGELOG_SCHEMA_VERSION, ChangeLog, IMMUTABLE_BYTES_MARKER, collaborationDigest, createProjectOperation, canonicalizeProjectOperation, isCanonicalProjectOperation } from './index.js';
 import { applyRemoteEnvelopeQueued } from './remote-delivery.js';
 
 export const REMOTE_COLLAB_SCHEMA = 'hex-remote-collaboration-envelope/v1';
@@ -9,6 +9,7 @@ export const REMOTE_SECURITY_PROFILE_ID = 'collaboration:remote-security-v1';
 const VALID_REMOTE_COLLABORATION_SUPPORT = new WeakSet();
 const VERIFIED_TRANSPORT_PROOFS = new WeakMap();
 const VALIDATED_REMOTE_SNAPSHOTS = new WeakMap();
+const TRUSTED_TRANSPORT_VERIFIER_IDENTITIES = new WeakMap();
 const MAX_MESSAGE_ID_LENGTH = 512;
 
 function validMessageId(value) {
@@ -109,6 +110,44 @@ function isSharedMemory(value) {
   return isSharedArrayBuffer(value.buffer);
 }
 
+export function containsRawBinaryBytes(value, depth = 0, seen = new WeakSet()) {
+  if (value == null || typeof value !== 'object') return false;
+  try {
+    if (isSharedMemory(value) || ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return true;
+    if (value.__binaryByteBacking === true) return true;
+    // #8869 canonical binary records still commit to raw byte content.
+    if (value[IMMUTABLE_BYTES_MARKER] !== undefined) return true;
+    if (depth > SNAPSHOT_SCAN_DEPTH_LIMIT) return true;
+    if (seen.has(value)) return false;
+    seen.add(value);
+    if (value instanceof Map) {
+      for (const [key, item] of value) {
+        if (containsRawBinaryBytes(key, depth + 1, seen)) return true;
+        if (containsRawBinaryBytes(item, depth + 1, seen)) return true;
+      }
+      return false;
+    }
+    if (value instanceof Set) {
+      for (const item of value) {
+        if (containsRawBinaryBytes(item, depth + 1, seen)) return true;
+      }
+      return false;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (containsRawBinaryBytes(item, depth + 1, seen)) return true;
+      }
+      return false;
+    }
+    for (const key of Object.keys(value)) {
+      if (containsRawBinaryBytes(value[key], depth + 1, seen)) return true;
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 function isMutableCollection(value) {
   if (value == null || typeof value !== 'object') return false;
   try { Map.prototype.has.call(value, undefined); return true; } catch { }
@@ -155,6 +194,212 @@ function snapshotRemoteEnvelope(envelope) {
   return deepFreeze(snapshot);
 }
 
+// #8652 — the ingress budget must bound work and allocation before any
+// canonicalization pass. This preflight only ever accumulates a lower bound of
+// the canonical byte size, so an over-budget verdict is exactly what the
+// post-snapshot byteLength() authority would have reported, while a graph that
+// the walker cannot measure stays with the existing fail-closed paths.
+const PREFLIGHT_DEPTH_LIMIT = SNAPSHOT_SCAN_DEPTH_LIMIT;
+
+function ownEnumerableEntry(record, key) {
+  const descriptor = Object.getOwnPropertyDescriptor(record, key);
+  if (descriptor === undefined || descriptor.enumerable !== true) return { kind: 'absent', value: undefined };
+  if (descriptor.get !== undefined || descriptor.set !== undefined) return { kind: 'accessor', value: undefined };
+  return { kind: 'data', value: descriptor.value };
+}
+
+function preflightStop(state, reason) {
+  if (state.stop === null) state.stop = reason;
+  return false;
+}
+
+function preflightAdd(state, bytes) {
+  state.bytes += bytes;
+  if (state.bytes > state.maxMessageBytes) preflightStop(state, 'over-size');
+}
+
+function preflightNode(state) {
+  state.nodes += 1;
+  if (state.nodes > state.nodeCeiling) return preflightStop(state, 'over-size');
+  return false;
+}
+
+function preflightEntry(state) {
+  state.entries += 1;
+  if (state.entries > state.entryCeiling) return preflightStop(state, 'over-size');
+  return false;
+}
+
+// Count the JSON string representation directly instead of materializing an
+// escaped copy. This matches JSON.stringify + UTF-8 for strings and lets the
+// preflight stop as soon as the byte ceiling is crossed (#8652 review).
+function preflightJsonString(state, value) {
+  preflightAdd(state, 2); // surrounding quotes
+  for (let index = 0; index < value.length && state.stop === null; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code === 0x22 || code === 0x5c || code === 0x08 || code === 0x09
+      || code === 0x0a || code === 0x0c || code === 0x0d) {
+      preflightAdd(state, 2);
+    } else if (code <= 0x1f) {
+      preflightAdd(state, 6);
+    } else if (code <= 0x7f) {
+      preflightAdd(state, 1);
+    } else if (code <= 0x7ff) {
+      preflightAdd(state, 2);
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        preflightAdd(state, 4);
+        index += 1;
+      } else {
+        // Well-formed JSON.stringify escapes lone surrogates as \udxxx.
+        preflightAdd(state, 6);
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      preflightAdd(state, 6);
+    } else {
+      preflightAdd(state, 3);
+    }
+  }
+}
+
+function preflightMeasure(value, depth, state, inOperations) {
+  if (state.stop !== null) return false;
+  if (value === null) { preflightAdd(state, 4); return true; }
+  const type = typeof value;
+  if (type === 'string') { preflightJsonString(state, value); return true; }
+  if (type === 'number') {
+    const finite = Number.isFinite(value);
+    preflightAdd(state, finite ? String(value).length : 0);
+    return finite;
+  }
+  if (type === 'boolean') { preflightAdd(state, value === true ? 4 : 5); return true; }
+  if (type === 'bigint') { preflightAdd(state, value.toString().length + 2); return true; }
+  if (type !== 'object') return false;
+  if (depth > PREFLIGHT_DEPTH_LIMIT) return preflightStop(state, 'depth');
+  if (state.path.includes(value)) return preflightStop(state, 'cyclic');
+  try {
+    const isView = ArrayBuffer.isView(value);
+    const isArrayBuffer = !isView && value instanceof ArrayBuffer;
+    if (isView || isArrayBuffer || isSharedMemory(value)) {
+      if (inOperations && state.rawEgressGuard) return preflightStop(state, 'raw-binary');
+      preflightAdd(state, (isView || isArrayBuffer ? value.byteLength : 0) * 2 + 2);
+      return true;
+    }
+    const backing = ownEnumerableEntry(value, '__binaryByteBacking');
+    if (backing.kind === 'accessor') return preflightStop(state, 'accessor');
+    if (inOperations && backing.kind === 'data' && backing.value === true && state.rawEgressGuard) {
+      return preflightStop(state, 'raw-binary');
+    }
+    // #8869 canonical binary records commit to raw byte content as well.
+    const canonicalBytes = ownEnumerableEntry(value, IMMUTABLE_BYTES_MARKER);
+    if (canonicalBytes.kind === 'accessor') return preflightStop(state, 'accessor');
+    if (inOperations && canonicalBytes.kind === 'data' && canonicalBytes.value !== undefined && state.rawEgressGuard) {
+      return preflightStop(state, 'raw-binary');
+    }
+    state.path.push(value);
+    if (preflightNode(state)) return false;
+    if (value instanceof Map) {
+      for (const [key, item] of value) {
+        if (preflightEntry(state)) break;
+        preflightMeasure(key, depth + 1, state, inOperations);
+        preflightMeasure(item, depth + 1, state, inOperations);
+        if (state.stop !== null) break;
+      }
+    } else if (value instanceof Set) {
+      for (const item of value) {
+        if (preflightEntry(state)) break;
+        preflightMeasure(item, depth + 1, state, inOperations);
+        if (state.stop !== null) break;
+      }
+    } else if (Array.isArray(value)) {
+      preflightAdd(state, 2 + (value.length > 0 ? value.length - 1 : 0));
+      for (const item of value) {
+        if (preflightEntry(state)) break;
+        preflightMeasure(item, depth + 1, state, inOperations);
+        if (state.stop !== null) break;
+      }
+    } else {
+      preflightAdd(state, 2);
+      let emitted = 0;
+      for (const key of Object.keys(value)) {
+        const entry = ownEnumerableEntry(value, key);
+        if (entry.kind === 'accessor') break;
+        if (entry.kind !== 'data') continue;
+        const childInOperations = inOperations || (depth === 0 && key === 'operations');
+        const childKept = preflightMeasure(entry.value, depth + 1, state, childInOperations);
+        if (state.stop !== null) break;
+        // The child's own canonical lower bound was accumulated by the recursion.
+        if (childKept) {
+          if (preflightEntry(state)) break;
+          preflightJsonString(state, key);
+          if (state.stop !== null) break;
+          preflightAdd(state, 1 + (emitted > 0 ? 1 : 0)); // colon + optional comma
+          emitted += 1;
+        }
+      }
+    }
+    state.path.pop();
+    return true;
+  } catch {
+    return preflightStop(state, 'error');
+  }
+}
+
+function childBytesOf(_kept, bytes) { return bytes; }
+
+function admitRemoteEnvelope(envelope, maxBatch, maxMessageBytes) {
+  try {
+    return measureRemoteEnvelopeAdmission(envelope, maxBatch, maxMessageBytes);
+  } catch {
+    // Anything the bounded preflight cannot evaluate stays with the existing
+    // fail-closed snapshot/verification paths instead of throwing at ingress.
+    return { status: 'indeterminate' };
+  }
+}
+
+function measureRemoteEnvelopeAdmission(envelope, maxBatch, maxMessageBytes) {
+  if (!isPlainRecord(envelope)) return { status: 'indeterminate' };
+  const operations = ownEnumerableEntry(envelope, 'operations');
+  // An accessor cannot be read without executing caller code, so it is rejected
+  // by the owned snapshot scan instead of being probed as trusted data.
+  if (operations.kind === 'accessor') return { status: 'shape-unreadable' };
+  if (operations.kind !== 'data' || !Array.isArray(operations.value)) return { status: 'over-batch' };
+  let batch = 0;
+  try {
+    batch = operations.value.length;
+  } catch {
+    return { status: 'indeterminate' };
+  }
+  if (batch === 0 || batch > maxBatch) return { status: 'over-batch' };
+  let rawEgressGuard = true;
+  try {
+    rawEgressGuard = envelope?.egress?.rawBinaryBytes !== true && envelope?.egress?.derivedDataOnly !== false;
+  } catch {
+    rawEgressGuard = true;
+  }
+  const state = {
+    bytes: 0,
+    nodes: 0,
+    entries: 0,
+    stop: null,
+    path: [],
+    rawEgressGuard,
+    maxMessageBytes,
+    nodeCeiling: maxMessageBytes + 1,
+    entryCeiling: maxMessageBytes + 1,
+  };
+  preflightMeasure(envelope, 0, state, false);
+  return { status: state.stop ?? 'admitted' };
+}
+
+const ADMISSION_REJECTIONS = Object.freeze({
+  'over-batch': 'remote-batch-budget-exceeded',
+  'over-size': 'remote-message-budget-exceeded',
+  'raw-binary': 'remote-raw-binary-egress-forbidden',
+  'cyclic': 'remote-envelope-shape-invalid',
+});
+
 function isCanonicalRemoteOperation(operation) {
   if (!isPlainRecord(operation)) return false;
   const canonical = canonicalizeProjectOperation(operation);
@@ -186,6 +431,10 @@ export function createRemoteCollaborationEnvelope(input = {}) {
   const sequence = input.sequence;
   if (!validSequence(sequence)) throw new TypeError('remote-sequence-invalid');
   if (!Array.isArray(input.operations) || input.operations.length === 0) throw new TypeError('remote-operations-required');
+  if (input.egress?.rawBinaryBytes !== true && input.egress?.derivedDataOnly !== false
+    && containsRawBinaryBytes(input.operations)) {
+    throw new TypeError('remote-raw-binary-egress-forbidden');
+  }
   if (containsMutableCollection(input.operations)) throw new TypeError('remote-operation-mutable-collection-forbidden');
   const operations = input.operations.map((operation) => createProjectOperation({
     ...operation,
@@ -195,6 +444,11 @@ export function createRemoteCollaborationEnvelope(input = {}) {
     deviceIdentity,
     provenance: { ...(operation.provenance || {}), source: 'collaborator', transport: 'remote', actorIdentity, deviceIdentity },
   }));
+  if (input.egress?.rawBinaryBytes !== true && input.egress?.derivedDataOnly !== false) {
+    for (const operation of operations) {
+      if (containsRawBinaryBytes(operation)) throw new TypeError('remote-raw-binary-egress-forbidden');
+    }
+  }
   const envelope = {
     schemaVersion: REMOTE_COLLAB_SCHEMA,
     operationSchemaVersion: CHANGELOG_SCHEMA_VERSION,
@@ -223,6 +477,68 @@ export function createRemoteCollaborationEnvelope(input = {}) {
   return deepFreeze({ ...envelope, envelopeId: envelopeIdentity(envelope) });
 }
 
+// Independent-oracle behavior attestation (issue #8839). A genuine transport
+// verifier attests only proofs its own oracle issued, so it must reject every
+// fabricated, high-entropy probe — including the realistic attack shape (valid
+// self-attested flags plus an unrecognised proofIdentity). A trivially permissive
+// capability such as `() => true`, or one that merely echoes the `authenticated`
+// flag the gate already checks, returns true for a probe and therefore cannot
+// self-mint the trusted brand. A verifier that throws on a fabricated proof is
+// treated as a fail-closed rejection, matching gate.validate's `=== true` rule.
+const ATTESTATION_PROBE_SHAPES = Object.freeze([
+  (token) => Object.freeze({ authenticated: false, confidentiality: 'unverified', integrity: 'unverified', proofIdentity: token }),
+  (token) => Object.freeze({ authenticated: true, confidentiality: 'verified', integrity: 'verified', proofIdentity: token }),
+  (token) => Object.freeze({ authenticated: true, confidentiality: 'unverified', integrity: 'verified', proofIdentity: token }),
+  () => Object.freeze({ authenticated: true, confidentiality: 'verified', integrity: 'verified', proofIdentity: null }),
+  () => Object.freeze({ authenticated: true, confidentiality: 'verified', integrity: 'verified' }),
+]);
+
+function attestationProbeTokens(count) {
+  const tokens = [];
+  const crypto = globalThis.crypto;
+  for (let index = 0; index < count; index += 1) {
+    if (crypto && typeof crypto.randomUUID === 'function') tokens.push(crypto.randomUUID());
+    else tokens.push(`${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`);
+  }
+  return tokens;
+}
+
+function passesOracleBehaviorAttestation(verifyTransportProof) {
+  for (const token of attestationProbeTokens(2)) {
+    for (const shape of ATTESTATION_PROBE_SHAPES) {
+      let verdict;
+      try {
+        verdict = verifyTransportProof(shape(token));
+      } catch {
+        continue;
+      }
+      if (verdict === true) return false;
+    }
+  }
+  return true;
+}
+
+export function createRemoteTransportVerifier({ oracleIdentity, verifyTransportProof } = {}) {
+  const identity = required(oracleIdentity, 'remote-gate-transport-verifier-identity-invalid');
+  if (typeof verifyTransportProof !== 'function') throw new TypeError('remote-gate-transport-verifier-required');
+  if (TRUSTED_TRANSPORT_VERIFIER_IDENTITIES.has(verifyTransportProof)
+    && TRUSTED_TRANSPORT_VERIFIER_IDENTITIES.get(verifyTransportProof) !== identity) {
+    throw new TypeError('remote-gate-transport-verifier-identity-conflict');
+  }
+  // Only a capability that behaves like an independent oracle earns the trusted
+  // brand. A permissive caller function is still returned as a usable verifier
+  // (the gate keeps functioning) but is deliberately left unbranded, so
+  // remoteCollaborationSupport cannot be promoted through the public mint.
+  if (passesOracleBehaviorAttestation(verifyTransportProof)) {
+    TRUSTED_TRANSPORT_VERIFIER_IDENTITIES.set(verifyTransportProof, identity);
+  }
+  return Object.freeze({ verifyTransportProof, transportVerifierIdentity: identity });
+}
+
+function remoteTransportVerifierIdentity(verifier) {
+  return typeof verifier === 'function' ? TRUSTED_TRANSPORT_VERIFIER_IDENTITIES.get(verifier) ?? null : null;
+}
+
 export class RemoteCollaborationGate {
   constructor(input = {}) {
     this.schemaVersion = REMOTE_GATE_SCHEMA;
@@ -247,6 +563,14 @@ export class RemoteCollaborationGate {
   validate(envelope) {
     VERIFIED_TRANSPORT_PROOFS.delete(this);
     VALIDATED_REMOTE_SNAPSHOTS.delete(envelope);
+    const admission = admitRemoteEnvelope(envelope, this.maxBatch, this.maxMessageBytes);
+    const admissionReason = ADMISSION_REJECTIONS[admission.status];
+    if (admissionReason) return { ok: false, reason: admissionReason };
+    if (admission.status !== 'admitted' && admission.status !== 'shape-unreadable'
+      && envelope?.egress?.rawBinaryBytes !== true && envelope?.egress?.derivedDataOnly !== false
+      && Array.isArray(envelope?.operations) && containsRawBinaryBytes(envelope.operations)) {
+      return { ok: false, reason: 'remote-raw-binary-egress-forbidden' };
+    }
     const snap = snapshotRemoteEnvelope(envelope);
     if (!snap) return { ok: false, reason: 'remote-envelope-shape-invalid' };
     if (!this.supportedEnvelopeSchemas.has(snap.schemaVersion)) return { ok: false, reason: 'remote-envelope-schema-unsupported' };
@@ -282,6 +606,7 @@ export class RemoteCollaborationGate {
     if (snap.egress?.userAuthorized !== true) return { ok: false, reason: 'remote-egress-user-authorization-required' };
     if (snap.egress?.rawBinaryBytes === true || snap.egress?.derivedDataOnly !== true) return { ok: false, reason: 'remote-raw-binary-egress-forbidden' };
     for (const operation of snap.operations) {
+      if (containsRawBinaryBytes(operation)) return { ok: false, reason: 'remote-raw-binary-egress-forbidden' };
       if (!isCanonicalRemoteOperation(operation)) return { ok: false, reason: 'remote-operation-shape-invalid' };
       if (operation.projectIdentity !== this.projectIdentity || (operation.binaryIdentity ?? null) !== this.binaryIdentity) return { ok: false, reason: 'remote-operation-scope-mismatch' };
       if (operation.authorIdentity !== snap.actorIdentity || operation.deviceIdentity !== snap.deviceIdentity) return { ok: false, reason: 'remote-operation-actor-binding-mismatch' };
@@ -373,6 +698,15 @@ export class RemoteCollaborationChannel {
   receive(envelope) {
     return applyRemoteEnvelopeQueued(this.log, this.gate, envelope);
   }
+
+  // #8856 — revocation must be more than a future-ingress rule: an actor that
+  // can no longer deliver its own missing parents cannot be allowed to keep the
+  // session paying for its retained unresolved backlog. Pending operations were
+  // never applied, so purging them cannot rewrite converged history.
+  revokeActor(actorIdentity) {
+    this.gate.revoke(actorIdentity);
+    return Object.freeze({ status: 'revoked', ...this.log.purgePendingByAuthor(actorIdentity) });
+  }
 }
 
 export function remoteCollaborationSupport({
@@ -381,14 +715,18 @@ export function remoteCollaborationSupport({
   expectedCommitSha = null,
   expectedTreeSha = null,
 } = {}) {
-  const commitSha = String(expectedCommitSha || '').toLowerCase();
-  const treeSha = String(expectedTreeSha || '').toLowerCase();
+  const commitSha = typeof expectedCommitSha === 'string' ? expectedCommitSha.toLowerCase() : '';
+  const treeSha = typeof expectedTreeSha === 'string' ? expectedTreeSha.toLowerCase() : '';
   const exactIdentity = /^[0-9a-f]{40}$/.test(commitSha) && /^[0-9a-f]{40}$/.test(treeSha);
   const brandedProfile = isValidatedStage2CapabilityProof(profileProof, {
     itemId: 'S2-P12-COLLAB-REMOTE',
     profileIds: [REMOTE_SECURITY_PROFILE_ID],
   });
   const transportVerifierIdentity = gate instanceof RemoteCollaborationGate ? gate.transportVerifierIdentity : null;
+  const gateVerifier = gate instanceof RemoteCollaborationGate ? gate.verifyTransportProof : null;
+  const verifierProvenanceIdentity = remoteTransportVerifierIdentity(gateVerifier);
+  const verifierProvenanceBound = typeof verifierProvenanceIdentity === 'string'
+    && verifierProvenanceIdentity === transportVerifierIdentity;
   const transportVerifierBound = typeof transportVerifierIdentity === 'string'
     && Array.isArray(profileProof?.independentOracleIdentities)
     && profileProof.independentOracleIdentities.includes(transportVerifierIdentity);
@@ -398,6 +736,7 @@ export function remoteCollaborationSupport({
     && activeTransportProof.verifierIdentity === transportVerifierIdentity;
   const ready = gate instanceof RemoteCollaborationGate
     && typeof gate.verifyTransportProof === 'function'
+    && verifierProvenanceBound
     && transportVerifierBound
     && activeVerificationBound
     && exactIdentity

@@ -9,6 +9,7 @@ import {
   irFor, readModifyWrite, OP, MK, VK,
   valueInfo, originOf, pointerProvenance,
 } from './ir.js';
+import { SCORE } from './blocks.js';
 
 export const FACT = Object.freeze({
   READ: 'read', WRITE: 'write', RMW: 'read-modify-write',
@@ -130,7 +131,8 @@ export function proveClampSelect(sel) {
   const reversed = sameSemanticValue(whenTrue, rhs) && sameSemanticValue(whenFalse, lhs);
   if (!direct && !reversed) return null;
 
-  const cond = String(sel.cond || '').toLowerCase();
+  const rawCondition = sel.cond || '';
+  const cond = typeof rawCondition === 'string' ? rawCondition.toLowerCase() : '';
   let kind = null;
   if (GREATER_CONDITIONS.has(cond)) kind = direct ? 'max' : 'min';
   else if (LESSER_CONDITIONS.has(cond)) kind = direct ? 'min' : 'max';
@@ -167,7 +169,8 @@ export function canonicalThresholdComparison(c) {
   const left = c.value || null, right = c.other || null;
   const leftConst = left?.const != null, rightConst = right?.const != null;
   if (leftConst === rightConst) return null;
-  const originalCondition = String(c.cond || '').toLowerCase();
+  const rawConditionToken = c.cond || '';
+  const originalCondition = typeof rawConditionToken === 'string' ? rawConditionToken.toLowerCase() : '';
   const rawOperator = THRESHOLD_OPERATOR[originalCondition];
   if (!rawOperator) return null;
   const swapped = leftConst;
@@ -247,28 +250,100 @@ function rmwFacts(ir, out, precomputedRmw = null) {
   }
 }
 
-/**
- * Memory sources that deterministically contribute to an SSA value. This walks
- * def-use edges only; it never scans source instructions heuristically.
- */
-function sourceMemoryLoads(value, opts = {}) {
+const BRANCH_SOURCE_OPTIONS = 32;
+
+function sourceLoadKey(load) {
+  if (!load || !load.loc) return null;
+  if (load.loc.key != null) return 'key:' + String(load.loc.key);
+  return String(load.loc.kind) + ':' + String(load.loc.disp) + ':' + String(load.loc.address);
+}
+
+function sourceMemoryProvenance(value, opts = {}) {
   const maxNodes = Math.max(8, opts.maxNodes || 128);
-  const work = value ? [value] : [];
-  const seenValues = new Set(), seenInsts = new Set(), out = [];
+  const maxOptions = Math.max(2, opts.maxOptions || BRANCH_SOURCE_OPTIONS);
+  const accept = typeof opts.accept === 'function' ? opts.accept : () => true;
   let visited = 0;
-  while (work.length && visited++ < maxNodes) {
-    const v = work.pop();
-    if (!v || seenValues.has(v.id)) continue;
-    seenValues.add(v.id);
-    const d = v.def;
-    if (!d) continue;
-    if (d.op === OP.LOAD && d.loc) {
-      if (!seenInsts.has(d.id)) { seenInsts.add(d.id); out.push(d); }
-      continue;
-    }
-    for (const a of d.args || []) if (a && a.value) work.push(a.value);
+  const memo = new Map();
+  const active = new Set();
+
+  function branchArms(def) {
+    if (def.op === OP.PHI) return (def.args || []).filter((a) => a && a.value);
+    if (def.op === OP.SEL) return (def.args || []).slice(0, 2).filter((a) => a && a.value);
+    return null;
   }
-  return out;
+
+  function optionsOf(v) {
+    if (!v) return [[]];
+    if (memo.has(v.id)) return memo.get(v.id);
+    if (active.has(v.id) || visited++ >= maxNodes) return [[]];
+    active.add(v.id);
+    const d = v.def;
+    let out;
+    if (!d) out = [[]];
+    else if (d.op === OP.LOAD && d.loc) out = accept(d) ? [[d]] : [[]];
+    else {
+      const arms = branchArms(d);
+      if (arms) {
+        const joined = [];
+        let lost = !arms.length;
+        for (const arm of arms) {
+          const child = optionsOf(arm.value);
+          if (!child.length || joined.length + child.length > maxOptions) { lost = true; break; }
+          for (const option of child) joined.push(option);
+        }
+        out = lost ? [] : joined;
+      } else {
+        let product = [[]];
+        for (const a of d.args || []) {
+          if (!a || !a.value) continue;
+          const child = optionsOf(a.value);
+          if (!child.length) { product = []; break; }
+          const next = [];
+          let over = false;
+          for (const left of product) {
+            for (const right of child) {
+              next.push(left.length ? left.concat(right) : right.slice());
+              if (next.length > maxOptions) { over = true; break; }
+            }
+            if (over) break;
+          }
+          if (over) { product = []; break; }
+          product = next;
+        }
+        out = product;
+      }
+    }
+    active.delete(v.id);
+    memo.set(v.id, out);
+    return out;
+  }
+
+  const options = optionsOf(value);
+  const keySets = options.map((option) => {
+    const keys = new Set();
+    for (const load of option) { const key = sourceLoadKey(load); if (key != null) keys.add(key); }
+    return keys;
+  });
+  const deterministicKeys = new Set();
+  if (keySets.length) {
+    for (const key of keySets[0]) if (keySets.every((set) => set.has(key))) deterministicKeys.add(key);
+  }
+  const deterministic = [], byKey = new Map(), alternatives = [];
+  const seenAlternativeKeys = new Set();
+  for (let index = 0; index < options.length; index++) {
+    for (const load of options[index]) {
+      const key = sourceLoadKey(load);
+      if (key == null) continue;
+      if (deterministicKeys.has(key)) {
+        if (byKey.has(key)) byKey.get(key).siblings.push(load);
+        else { const entry = { load, siblings: [] }; byKey.set(key, entry); deterministic.push(entry); }
+      } else if (!seenAlternativeKeys.has(key)) {
+        seenAlternativeKeys.add(key);
+        alternatives.push(load);
+      }
+    }
+  }
+  return { deterministic, alternatives };
 }
 
 function memoryFacts(ir, out) {
@@ -294,8 +369,11 @@ function memoryFacts(ir, out) {
     }
 
     if (!isLoad && loc && loc.kind === MK.FIELD) {
-      for (const load of sourceMemoryLoads(v)) {
-        if (!load.loc || load.loc.kind !== MK.FIELD || load.loc.key === inst.loc.key) continue;
+      const provenance = sourceMemoryProvenance(v, {
+        accept: (load) => !!(load.loc && load.loc.kind === MK.FIELD && load.loc.key !== inst.loc.key),
+      });
+      for (const entry of provenance.deterministic) {
+        const load = entry.load;
         out.push(fact(FACT.TRANSFER, inst, {
           id: 'fact:transfer:' + load.id + ':' + inst.id,
           source: { kind: 'field', location: locationShape(load.loc), value: valueShape(load.dst) },
@@ -304,6 +382,33 @@ function memoryFacts(ir, out) {
           relation: 'field→compute→field',
           evidence: uniqueEvidence([
             instructionEvidence(load, 'source-read'),
+            ...entry.siblings.map((sibling) => instructionEvidence(sibling, 'source-read')),
+            instructionEvidence(inst, 'destination-write'),
+          ]),
+        }));
+      }
+      if (provenance.alternatives.length) {
+        const alternatives = provenance.alternatives.map((load) => ({
+          instructionId: load.id,
+          row: load.row == null ? null : load.row,
+          address: load.address == null ? null : load.address,
+          kind: 'field',
+          location: locationShape(load.loc),
+          value: valueShape(load.dst),
+        }));
+        out.push(fact(FACT.TRANSFER, inst, {
+          id: 'fact:transfer:branch:' + inst.id + ':' + provenance.alternatives.map((load) => String(load.id)).join('+'),
+          source: { kind: 'branch-alternatives', locations: alternatives.map((a) => a.location), value: valueShape(v) },
+          sink: loc,
+          value: valueShape(v),
+          relation: 'field→branch-select→field',
+          operationKind: 'branch-transfer',
+          branchDependent: true,
+          alternatives,
+          confidence: SCORE.inferred,
+          confidenceSource: 'semantic-ir-branch-alternatives',
+          evidence: uniqueEvidence([
+            ...provenance.alternatives.map((load) => instructionEvidence(load, 'branch-source-read')),
             instructionEvidence(inst, 'destination-write'),
           ]),
         }));

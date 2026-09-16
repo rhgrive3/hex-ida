@@ -89,14 +89,75 @@ assert.deepEqual(
   assert.equal(result.fat, true, 'valid minimal FAT64 header confirms macho/fat');
 }
 
-// A short probe prefix of a real fat image still detects: source-backed
-// openBinarySource()/worker routes hand detectBinary() only 16 bytes, so the
-// arch-table bounds belong to the Mach-O parser, not the detector.
+// A short probe prefix of a real fat image still routes, but remains
+// explicitly provisional rather than minting the complete-table shape.
 {
   const prefix = Uint8Array.from([0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x01, ...new Array(8).fill(0)]);
-  const result = detectBinary(prefix);
+  const result = detectBinary(prefix, { probeLength: 16, totalSize: 0x4000 });
   assert.equal(result.format, 'macho');
-  assert.equal(result.fat, true, '16-byte prefix probe of a real fat image remains confirmed');
+  assert.equal(result.fat, true, '16-byte prefix probe keeps candidate routing');
+  assert.equal(result.truncated, true, 'prefix-probe routing is provisional');
+}
+
+assert.deepEqual(
+  detectBinary(Uint8Array.from([0xca,0xfe,0xba,0xbe, 0,0,0,1]), { truncated:true }),
+  { format:'unknown' },
+  'a forged truncated flag cannot bypass structural bounds',
+);
+assert.deepEqual(
+  detectBinary(Uint8Array.from([0xca,0xfe,0xba,0xbe, 0,0,0,1, ...new Array(19).fill(0)]), { probeLength:27, totalSize:27 }),
+  { format:'unknown' },
+  'complete short tables stay fail-closed',
+);
+assert.deepEqual(
+  detectBinary(Uint8Array.from([0xca,0xfe,0xba,0xbe, 0,0,0,1]), { probeLength:8n, totalSize:28n }),
+  { format:'macho', fat:true, truncated:true },
+  'consistent prefix metadata only mints the provisional shape',
+);
+assert.deepEqual(
+  detectBinary(Uint8Array.from([0xca,0xfe,0xba,0xbe, 0,0,0,1]), { probeLength:16n, totalSize:28n }),
+  { format:'unknown' },
+  'probe/input length mismatch is ignored',
+);
+assert.equal(
+  detectBinary(Uint8Array.from([0xca,0xfe,0xba,0xbe, 0,0,0,1, ...new Array(8).fill(0)]), { probeLength:16n, totalSize:9007199254740993n }).fat,
+  true,
+  'BigInt source sizes above 2^53 preserve candidate routing',
+);
+for (const malformed of [
+  { probeLength:'16', totalSize:28 },
+  { probeLength:16.5, totalSize:28 },
+  { probeLength:16, totalSize:-28 },
+  { probeLength:-16, totalSize:28 },
+  { probeLength:null, totalSize:28 },
+]) {
+  assert.deepEqual(
+    detectBinary(Uint8Array.from([0xca,0xfe,0xba,0xbe, 0,0,0,1, ...new Array(8).fill(0)]), malformed),
+    { format:'unknown' },
+    `malformed probe metadata ${JSON.stringify(malformed)} fails closed`,
+  );
+}
+
+assert.deepEqual(
+  detectBinary(Uint8Array.from([0xca,0xfe,0xba,0xbe, 0,0,0,1])),
+  { format:'unknown' },
+  'complete FAT32 header without its declared arch entry is fail-closed',
+);
+assert.deepEqual(
+  detectBinary(Uint8Array.from([0xca,0xfe,0xba,0xbf, 0,0,0,1])),
+  { format:'unknown' },
+  'complete FAT64 header without its declared arch entry is fail-closed',
+);
+assert.deepEqual(
+  detectBinary(Uint8Array.from([0xca,0xfe,0xba,0xbe, 0,0,0,1, ...new Array(19).fill(0)])),
+  { format:'unknown' },
+  'a FAT32 arch entry one byte short is fail-closed',
+);
+{
+  const cigam64Short = Uint8Array.from([0xbf,0xba,0xfe,0xca, 1,0,0,0, ...new Array(20).fill(0)]);
+  assert.deepEqual(detectBinary(cigam64Short), { format:'unknown' });
+  const cigam64Complete = Uint8Array.from([0xbf,0xba,0xfe,0xca, 1,0,0,0, ...new Array(32).fill(0)]);
+  assert.deepEqual(detectBinary(cigam64Complete), { format:'macho', fat:true });
 }
 
 // Thin Mach-O detection and unrelated magics are unchanged.

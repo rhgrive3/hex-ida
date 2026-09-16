@@ -2,13 +2,14 @@ import { ByteView } from './reader.js';
 import { BinaryImage, functionSeed } from './model.js';
 import { parseChainedImports, parseChainedBindingSites, parseClassicBindings, parseExportTrie, resolveMachOPointer } from './macho-dyld.js';
 import { createMachOMetadataBudget, ensureMachOMetadataBudget, markMachOMetadataPartial } from './macho-budget.js';
-import { validateFatSlice, validateFatContainer, probePastEndArm64SliceSync, parseInnerMachOHeader } from './macho-fat.js';
+import { cpuName, subtypeBase, cpuArchName, sliceArchName, selectDefaultFatSlice, validateFatSlice, validateFatContainer, probePastEndArm64SliceSync, parseInnerMachOHeader } from './macho-fat.js';
 
 const S_MOD_INIT_FUNC_POINTERS = 0x9;
 const S_MOD_TERM_FUNC_POINTERS = 0xa;
 const S_INIT_FUNC_OFFSETS = 0x16;
 const S_ATTR_PURE_INSTRUCTIONS = 0x80000000;
 const S_INTERPOSING = 0x0d;
+const N_SECT = 0x0e;
 
 export const DICE_KIND_DATA = 1;
 export const DICE_KIND_JUMP_TABLE8 = 2;
@@ -106,7 +107,7 @@ function parseThin(bytes, opts) {
     fileOffset: opts.containerOffset || 0n,
     metadata: {
       cpu, subtype, cpuName: cpuName(cpu), subtypeBase: subtypeBase(subtype),
-      subtypeName: arch === 'arm64e' ? 'arm64e' : String(subtypeBase(subtype)),
+      subtypeName: arch === cpuName(cpu) ? String(subtypeBase(subtype)) : arch,
       filetype, flags, ncmds, sizeofcmds,
     },
   });
@@ -130,8 +131,8 @@ function parseThin(bytes, opts) {
     if (!metadataBudget.take({ inputBytes:cmdsize, records:1, objects:1, operations:1, estimatedHeapBytes:64 }, 'load-command')) break;
     commands.push({ cmd, offset: p, size: cmdsize });
     try {
-      if (cmd === LC_SEGMENT_64 && bits === 64) parseSegment64(r, p, cmdsize, image, segmentOrder);
-      else if (cmd === LC_SEGMENT && bits === 32) parseSegment32(r, p, cmdsize, image, segmentOrder);
+      if (cmd === LC_SEGMENT_64 && bits === 64) parseSegment64(r, p, cmdsize, image, segmentOrder, metadataBudget);
+      else if (cmd === LC_SEGMENT && bits === 32) parseSegment32(r, p, cmdsize, image, segmentOrder, metadataBudget);
       else if (cmd === LC_SYMTAB) {
         requireExactCommandSize(cmdsize, 24, 'LC_SYMTAB');
         symtabs.push({ symoff: r.u32(p + 8), nsyms: r.u32(p + 12), stroff: r.u32(p + 16), strsize: r.u32(p + 20) });
@@ -172,16 +173,20 @@ function parseThin(bytes, opts) {
         requireExactCommandSize(cmdsize, 48, 'LC_DYLD_INFO');
         dyldInfos.push(parseDyldInfo(r, p));
       }
-      else if (cmd === LC_BUILD_VERSION && cmdsize >= 24) parseBuildVersion(r, p, image);
+      else if (cmd === LC_BUILD_VERSION && cmdsize >= 24) parseBuildVersion(r, p, cmdsize, image);
       else if (cmd === LC_ENCRYPTION_INFO || cmd === LC_ENCRYPTION_INFO_64) {
         // encryption_info_command is 20 bytes; the 64-bit variant adds a pad
         // field (24). cryptid != 0 marks an encrypted (App Store FairPlay)
         // image: the evidence must reach the descriptor instead of the
         // hardcoded encrypted:false (#4994).
         requireExactCommandSize(cmdsize, bits === 64 ? 24 : 20, 'LC_ENCRYPTION_INFO');
-        const encryption = { cryptoff: r.u32(p + 8), cryptsize: r.u32(p + 12), cryptid: r.u32(p + 16) };
-        if (linkeditData.encryption) markMachOMetadataPartial(image, 'duplicate-encryption-info-command');
-        else linkeditData.encryption = encryption;
+        const cryptoff = r.u32(p + 8), cryptsize = r.u32(p + 12), cryptid = r.u32(p + 16);
+        const cryptEnd = BigInt(cryptoff) + BigInt(cryptsize);
+        if (cryptEnd > r.lengthBigInt) {
+          markMachOMetadataPartial(image, 'encryption-crypt-range-out-of-file');
+          image.warnings.push(`LC_ENCRYPTION_INFO crypt range ${cryptoff}+${cryptsize} exceeds ${r.lengthBigInt}-byte image`);
+        } else if (linkeditData.encryption) markMachOMetadataPartial(image, 'duplicate-encryption-info-command');
+        else linkeditData.encryption = { cryptoff, cryptsize, cryptid };
       }
     } catch (e) {
       if (e?.code === 'BINARY_SOURCE_RANGE_MISSING' || e?.code === 'MACHO_SEGMENT_VM_OVERLAP') throw e;
@@ -189,6 +194,11 @@ function parseThin(bytes, opts) {
       image.warnings.push(`load command 0x${cmd.toString(16)}: ${e.message}`);
     }
     p += cmdsize;
+  }
+
+  if (commands.length === ncmds && p !== commandEnd) {
+    markMachOMetadataPartial(image, 'load-command-count-size-mismatch');
+    image.warnings.push(`Mach-O ncmds consumes ${p - headerSize} bytes but sizeofcmds declares ${sizeofcmds}`);
   }
 
   image.metadata.loadCommands = commands.length;
@@ -288,10 +298,32 @@ function validateMappedRange(label, address, size, fileOffset, fileSize, image) 
   return { vmEnd: address + size, fileEnd: fileOffset + fileSize };
 }
 
-function validateSectionRange(label, saddr, ssize, fileOffset, fileSize, seg, image, zeroFill) {
+function validateSectionRange(label, saddr, ssize, fileOffset, fileSize, seg, image, zeroFill, sflags = 0) {
   if (saddr < seg.address || saddr > seg.address + seg.size || ssize > seg.address + seg.size - saddr) throw new Error(`${label} VM range escapes parent segment`);
   if (!zeroFill) {
     if (fileOffset < seg.fileOffset || fileOffset > seg.fileOffset + seg.fileSize || fileSize > seg.fileOffset + seg.fileSize - fileOffset) throw new Error(`${label} file range escapes parent segment`);
+    // #8962 — Parent-segment byte provenance is authoritative for ordinary
+    // file-backed sections. A section in a file-backed parent segment must
+    // resolve each VM byte to the *same* file byte its parent maps at that
+    // virtual address; that is, its file offset must equal
+    // `seg.fileOffset + (saddr - seg.address)`. The independent containment
+    // check above allows a section to claim different file bytes for the same
+    // VM range. Because BinaryImage's narrower-mapping precedence (#970)
+    // legitimately prefers the section over the segment when both describe
+    // consistent bytes, a contradictory section silently redirects virtual
+    // reads (and therefore `LC_MAIN`) to a different file span. Fail closed on
+    // any such contradiction. Only S_REGULAR (SECTION_TYPE 0) sections are
+    // covered: other section types (thread-local, attributes, `S_ATTR_OFF`,
+    // and related) may legitimately not follow the ordinary file-backed
+    // layout. A zero-fileSize section has no file provenance to enforce.
+    if (seg.fileSize > 0n && fileSize > 0n && (sflags & 0xff) === 0) {
+      const expectedFileOffset = seg.fileOffset + (saddr - seg.address);
+      if (fileOffset !== expectedFileOffset) {
+        const error = new Error(`${label} file offset 0x${fileOffset.toString(16)} contradicts parent segment ${seg.name || '?'} byte provenance at VM 0x${saddr.toString(16)} (expected 0x${expectedFileOffset.toString(16)})`);
+        error.code = 'MACHO_SECTION_CONTRADICTS_PARENT_MAPPING';
+        throw error;
+      }
+    }
     validateMappedRange(label, saddr, ssize, fileOffset, fileSize, image);
   }
 }
@@ -345,7 +377,8 @@ function rejectAmbiguousSegmentOwnership(image, label, address, fileOffset, file
   }
 }
 
-function parseSegment64(r, p, cmdsize, image, order) {
+function parseSegment64(r, p, cmdsize, image, order, sharedBudget = null) {
+  const budget = ensureMachOMetadataBudget(image, sharedBudget);
   if (cmdsize < 72) throw new Error(`invalid LC_SEGMENT_64 size ${cmdsize}`);
   const name = r.ascii(p + 8, 16);
   const address = r.u64(p + 24);
@@ -358,10 +391,12 @@ function parseSegment64(r, p, cmdsize, image, order) {
   const flags = r.u32(p + 68);
   validateMappedRange(`segment ${name}`, address, size, fileOffset, fileSize, image);
   rejectAmbiguousSegmentOwnership(image, `segment ${name}`, address, fileOffset, fileSize, size);
+  if (!budget.take({ objects: 1, operations: 1, estimatedHeapBytes: 256 }, 'segment')) return;
   const seg = image.addSegment({ name, address, size, fileOffset, fileSize, perms: vmPerms(initprot), flags, source: 'LC_SEGMENT_64' });
   order.push(seg);
   let q = p + 72;
   for (let i = 0; i < nsects; i++, q += 80) {
+    if (!budget.take({ objects: 1, operations: 1, estimatedHeapBytes: 320 }, 'segment-section')) break;
     r.check(q, 80);
     const sectname = r.ascii(q, 16);
     const segname = r.ascii(q + 16, 16);
@@ -371,7 +406,7 @@ function parseSegment64(r, p, cmdsize, image, order) {
     const sflags = r.u32(q + 64);
     const zeroFill = (sflags & 0xff) === 1 || (sflags & 0xff) === 0x0c || (sflags & 0xff) === 0x12;
     const sectionFileOffset = BigInt(offset), sectionFileSize = zeroFill ? 0n : ssize;
-    validateSectionRange(`section ${sectname}`, saddr, ssize, sectionFileOffset, sectionFileSize, seg, image, zeroFill);
+    validateSectionRange(`section ${sectname}`, saddr, ssize, sectionFileOffset, sectionFileSize, seg, image, zeroFill, sflags);
     image.addSection({ name: sectname, segment: segname, address: saddr, size: ssize, fileOffset: sectionFileOffset, fileSize: sectionFileSize, perms: vmPerms(initprot), flags: sflags, index: image.sections.length + 1 });
   }
 }
@@ -380,7 +415,8 @@ function requireExactCommandSize(actual, expected, label) {
   if (actual !== expected) throw new Error(`invalid ${label} size ${actual}; expected exactly ${expected}`);
 }
 
-function parseSegment32(r, p, cmdsize, image, order) {
+function parseSegment32(r, p, cmdsize, image, order, sharedBudget = null) {
+  const budget = ensureMachOMetadataBudget(image, sharedBudget);
   if (cmdsize < 56) throw new Error(`invalid LC_SEGMENT size ${cmdsize}`);
   const name = r.ascii(p + 8, 16);
   const address = BigInt(r.u32(p + 24));
@@ -393,10 +429,12 @@ function parseSegment32(r, p, cmdsize, image, order) {
   const flags = r.u32(p + 52);
   validateMappedRange(`segment ${name}`, address, size, fileOffset, fileSize, image);
   rejectAmbiguousSegmentOwnership(image, `segment ${name}`, address, fileOffset, fileSize, size);
+  if (!budget.take({ objects: 1, operations: 1, estimatedHeapBytes: 256 }, 'segment')) return;
   const seg = image.addSegment({ name, address, size, fileOffset, fileSize, perms: vmPerms(initprot), flags, source: 'LC_SEGMENT' });
   order.push(seg);
   let q = p + 56;
   for (let i = 0; i < nsects; i++, q += 68) {
+    if (!budget.take({ objects: 1, operations: 1, estimatedHeapBytes: 320 }, 'segment-section')) break;
     r.check(q, 68);
     const sectname = r.ascii(q, 16);
     const segname = r.ascii(q + 16, 16);
@@ -406,7 +444,7 @@ function parseSegment32(r, p, cmdsize, image, order) {
     const sflags = r.u32(q + 56);
     const zeroFill = (sflags & 0xff) === 1 || (sflags & 0xff) === 0x0c || (sflags & 0xff) === 0x12;
     const sectionFileOffset = BigInt(offset), sectionFileSize = zeroFill ? 0n : ssize;
-    validateSectionRange(`section ${sectname}`, saddr, ssize, sectionFileOffset, sectionFileSize, seg, image, zeroFill);
+    validateSectionRange(`section ${sectname}`, saddr, ssize, sectionFileOffset, sectionFileSize, seg, image, zeroFill, sflags);
     image.addSection({ name: sectname, segment: segname, address: saddr, size: ssize, fileOffset: sectionFileOffset, fileSize: sectionFileSize, perms: vmPerms(initprot), flags: sflags, index: image.sections.length + 1 });
   }
 }
@@ -420,7 +458,12 @@ function parseDylib(r, p, cmdsize, image, isId) {
   if (isId) image.metadata.installName = name;
   else if (name) image.libraries.push(name);
 }
-function parseBuildVersion(r, p, image) {
+function parseBuildVersion(r, p, cmdsize, image) {
+  const ntools = r.u32(p + 20);
+  const required = 24 + ntools * 8;
+  if (!Number.isSafeInteger(required) || required > cmdsize) {
+    throw new Error(`invalid LC_BUILD_VERSION ntools ${ntools}; requires at least ${required} bytes, got ${cmdsize}`);
+  }
   const platform = r.u32(p + 8);
   const minos = r.u32(p + 12);
   const sdk = r.u32(p + 16);
@@ -463,8 +506,15 @@ function parseDyldInfo(r, p) {
   };
 }
 
+const INDIRECT_TARGET_INVALID = Symbol('indirect-target-invalid');
+const INDIRECT_TARGET_STOP = Symbol('indirect-target-stop');
+
 function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
   const budget = ensureMachOMetadataBudget(image, sharedBudget);
+  // Intern decoded N_INDR target strings by string-table offset so repeated
+  // aliases share one immutable string instead of rescanning/redecoding and
+  // retaining a fresh copy per record (the retained-target budget bypass).
+  const indirectTargets = new Map();
   const ent = bits === 64 ? 16 : 12;
   if (st.symoff + st.nsyms * ent > r.length || st.stroff + st.strsize > r.length) {
     markMachOMetadataPartial(image, 'symbol-table-truncated');
@@ -485,20 +535,73 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
       budget.warn(`Mach-O symbol ${i} has n_strx ${strx} outside string table`);
       continue;
     }
-    const span = r.bytes.subarray(st.stroff + strx, st.stroff + st.strsize);
-    if (span.indexOf(0) === -1) {
+    // Bounded first-NUL scan rather than materializing the whole suffix: on a
+    // sparse backing the old `subarray(strx, strsize).indexOf(0)` copied the
+    // entire remaining string table once per symbol (O(nsyms x strsize), #8651).
+    const nameEnd = r.findZero(st.stroff + strx, st.stroff + st.strsize);
+    if (nameEnd < 0) {
       markMachOMetadataPartial(image, 'symbol-name-not-terminated');
       budget.warn(`Mach-O symbol ${i} name has no NUL terminator before string-table end`);
       continue;
     }
     // An empty name at n_strx==0 is the string-table sentinel, not a malformed
     // symbol. Keep the existing behavior for any other valid empty entry too.
-    name = r.cstring(st.stroff + strx, st.strsize - strx);
+    name = r.decodeString(st.stroff + strx, nameEnd);
     if (!name) continue;
     if (!budget.take({ stringBytes:name.length*2, estimatedHeapBytes:name.length*2+32 }, 'symbol-name')) break;
     const ntype = type & 0x0e;
     const external = !!(type & 1);
+    if (ntype === 0x0a) {
+      if (value > BigInt(Number.MAX_SAFE_INTEGER) || value >= BigInt(st.strsize)) {
+        markMachOMetadataPartial(image, 'indirect-symbol-target-out-of-range');
+        budget.warn(`Mach-O indirect symbol ${i} n_value ${value} is outside the string table`);
+        continue;
+      }
+      const targetIndex = Number(value);
+      let cached = indirectTargets.get(targetIndex);
+      if (cached === undefined) {
+        const targetEnd = r.findZero(st.stroff + targetIndex, st.stroff + st.strsize);
+        if (targetEnd < 0) {
+          cached = INDIRECT_TARGET_INVALID;
+        } else {
+          const target = r.decodeString(st.stroff + targetIndex, targetEnd);
+          if (target && !budget.take({
+            stringBytes: target.length * 2,
+            estimatedHeapBytes: target.length * 2 + 32,
+          }, 'symbol-indirect-target')) cached = INDIRECT_TARGET_STOP;
+          else cached = target;
+        }
+        indirectTargets.set(targetIndex, cached);
+      }
+      if (cached === INDIRECT_TARGET_STOP) break;
+      if (cached === INDIRECT_TARGET_INVALID) {
+        markMachOMetadataPartial(image, 'indirect-symbol-target-not-terminated');
+        budget.warn(`Mach-O indirect symbol ${i} target name has no NUL terminator before string-table end`);
+        continue;
+      }
+      image.symbols.push({
+        name,
+        address: 0n,
+        size: null,
+        common: false,
+        kind: 'indirect',
+        indirectTarget: cached,
+        binding: external ? 'global' : 'local',
+        defined: false,
+        sectionIndex: sect, desc, source: 'LC_SYMTAB',
+      });
+      continue;
+    }
     const isUndefinedType = ntype === 0;
+    const sectionOrdinalKnown = sect >= 1 && image.sections.some((section) => section.index === sect);
+    if (ntype === N_SECT && !sectionOrdinalKnown) {
+      // Keep the newer specific reason while retaining the historical reason
+      // consumed by the phase12 adversarial contract.
+      markMachOMetadataPartial(image, 'symbol-invalid-section-index');
+      markMachOMetadataPartial(image, 'symbol-section-index-out-of-range');
+      budget.warn(`Mach-O section symbol ${i} n_sect ${sect} does not resolve to a parsed section`);
+      continue;
+    }
     // For N_UNDF with non-zero n_value, Mach-O defines a tentative/common
     // symbol: n_value is the requested byte size, never a VM address.
     const commonSymbol = isUndefinedType && value !== 0n;
@@ -543,13 +646,18 @@ function isSymbolFunctionCandidate(image, address, requirePureInstructions) {
 
 function parseFunctionStarts(r, dc, image, sharedBudget = null) {
   const budget = ensureMachOMetadataBudget(image, sharedBudget);
-  if (!dc.size || dc.offset > r.length || dc.size > r.length - dc.offset) return;
+  const status = image.metadata.functionStarts = { complete: true, recovered: 0, partialReason: null };
+  if (!dc.size || dc.offset > r.length || dc.size > r.length - dc.offset) {
+    status.complete = false;
+    status.partialReason = 'invalid-or-truncated-payload';
+    markMachOMetadataPartial(image, 'function-starts-invalid-payload');
+    return;
+  }
   let p = dc.offset;
   const end = dc.offset + dc.size;
   let addr = image.imageBase;
   const maxAddress = image.bits === 32 ? 0xffffffffn : 0xffffffffffffffffn;
   const alignment = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32') ? 4n : image.arch === 'arm' ? 2n : 1n;
-  const status = image.metadata.functionStarts = { complete: true, recovered: 0, partialReason: null };
   let terminated = false;
   while (p < end) {
     if (!budget.take({ records:1, operations:1, estimatedHeapBytes:32 }, 'function-start-record')) { status.complete=false; status.partialReason='metadata-budget'; break; }
@@ -601,13 +709,6 @@ function dylibForOrdinal(image, ordinal) {
   if (ordinal === -3) return '<weak-lookup>';
   return ordinal > 0 ? image.libraries[ordinal - 1] || null : null;
 }
-function cpuName(cpu) {
-  const u = cpu >>> 0;
-  return ({ 7: 'x86', 12: 'arm', 18: 'ppc', 0x01000007: 'x86_64', 0x0100000c: 'arm64', 0x0200000c: 'arm64_32' })[u] || `cpu-${u}`;
-}
-function subtypeBase(subtype) { return (subtype >>> 0) & 0x00ffffff; }
-function cpuArchName(cpu, subtype) { return cpuName(cpu) === 'arm64' && subtypeBase(subtype) === 2 ? 'arm64e' : cpuName(cpu); }
-function sliceArchName(slice) { return cpuArchName(slice.cpu, slice.subtype); }
 function platformName(p) { return ({ 1: 'macOS', 2: 'iOS', 3: 'tvOS', 4: 'watchOS', 5: 'bridgeOS', 6: 'macCatalyst', 7: 'iOS-simulator', 8: 'tvOS-simulator', 9: 'watchOS-simulator', 10: 'driverKit', 11: 'visionOS', 12: 'visionOS-simulator' })[p] || `apple-platform-${p}`; }
 function version32(v) { return `${(v >>> 16) & 0xffff}.${(v >>> 8) & 0xff}.${v & 0xff}`; }
 
@@ -681,7 +782,7 @@ function selectFatSlice(bytes, kind, preferredArch, opts = {}) {
   const indexed = requestedIndex == null ? null : all[requestedIndex];
   const want = requestedIndex == null && preferredArch ? all.find((s) => sliceArchName(s) === preferredArch) : null;
   if (requestedIndex == null && preferredArch && !want) throw new Error(`requested Mach-O architecture ${preferredArch} is not present in the universal binary`);
-  const chosen = indexed || want || all.find((s) => sliceArchName(s) === 'arm64e') || all.find((s) => sliceArchName(s) === 'arm64') || all.find((s) => sliceArchName(s) === 'x86_64') || all[0];
+  const chosen = indexed || want || selectDefaultFatSlice(all);
   return chosen ? { ...chosen, all } : null;
 }
 export function parseCompactUnwind(r, image, metadataBudget = null) {
@@ -1070,9 +1171,9 @@ function parseModLifecycleFunctions(r, image, bits, metadataBudget) {
   });
   if (lifecycleSections.length === 0) return;
 
-  const ptrSize = bits === 64 ? 8 : 4;
-  const ptrSizeBig = BigInt(ptrSize);
   const arch = image.arch;
+  const ptrSize = arch === 'arm64_32' ? 4 : bits === 64 ? 8 : 4;
+  const ptrSizeBig = BigInt(ptrSize);
   const alignment = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
   const instructionBytes = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
   const recoveredInitializers = new Set();
@@ -1116,7 +1217,7 @@ function parseModLifecycleFunctions(r, image, bits, metadataBudget) {
       }
       const slotVa = sec.address + BigInt(i * ptrSize);
       const slotFileOff = secFileOffset + i * ptrSize;
-      const raw = bits === 64 ? r.u64(slotFileOff) : BigInt(r.u32(slotFileOff));
+      const raw = ptrSize === 8 ? r.u64(slotFileOff) : BigInt(r.u32(slotFileOff));
 
       // Resolve under Mach-O pointer/rebase/chained-fixup authority.
       const resolved = resolveMachOPointer(image, raw, { address: slotVa });

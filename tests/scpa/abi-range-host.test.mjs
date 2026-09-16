@@ -26,6 +26,25 @@ function abiFixture(t, kind, prototype) {
 const scalar = { type: 'uint64', bits: 64 };
 const pair = { type: 'struct Pair', aggregate: true, bits: 128,
   members: [0, 8].map(byteOffset => ({ type: 'uint64', bits: 64, byteOffset })) };
+for (const [type, bits, registers] of [['float', 32, ['v0']], ['double', 64, ['v0']], ['__int128', 128, ['x0', 'x1']]]) {
+  test(`real ABI ${type} without size cannot publish a hard scalar constraint`, async t => {
+    const { run } = abiFixture(t, 'arguments', { parameters:[{ type, bits }] });
+    const r = await run();
+    assert.equal(r.status, 'completed');
+    assert.equal(r.results[0].status, 'unresolved');
+    assert.deepEqual(r.results[0].pieces, []);
+    assert.equal(r.results[0].graph.layers.abi?.hardConstraints.length ?? 0, 0);
+  });
+  test(`real ABI ${type} with explicit size retains its declared scalar constraint`, async t => {
+    const { run } = abiFixture(t, 'arguments', { parameters:[{ type, bits, bytes:bits / 8 }] });
+    const r = await run();
+    assert.equal(r.status, 'completed');
+    assert.equal(r.results[0].status, 'owner-declared');
+    assert.deepEqual(r.results[0].pieces.map(piece => piece.destination.register), registers);
+    assert.equal(r.results[0].pieces.reduce((sum, piece) => sum + piece.physicalBytes, 0), bits / 8);
+    assert.equal(r.results[0].graph.layers.abi.hardConstraints.length, 1);
+  });
+}
 test('real ABI owner scalar and stack placements retain physical evidence without prototype authority', async t => {
   const { run } = abiFixture(t, 'arguments', { parameters: Array.from({ length: 10 }, () => ({ ...scalar })) });
   const r = await run(); assert.equal(r.status, 'completed'); assert.equal(r.results.length, 10);

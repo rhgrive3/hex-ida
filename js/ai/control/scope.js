@@ -95,10 +95,19 @@ export class ScopeController {
   }
 }
 
+function hasBinaryBinding(snapshot) {
+  const binaryId = snapshot?.binaryId;
+  if (binaryId == null || binaryId === '') return false;
+  const identity = snapshot?.binaryIdentity;
+  if (identity?.kind === 'fallback' && identity?.confidence === 'none') return false;
+  if (String(binaryId) === 'fallback:unbound') return false;
+  return true;
+}
+
 export function initialScope(snapshot) {
   if (snapshot?.selection?.start != null) return 'selection';
   if (snapshot?.currentFunction?.address != null) return 'function';
-  return snapshot?.projectIdentity && !snapshot?.binaryId ? 'project' : 'binary';
+  return snapshot?.projectIdentity && !hasBinaryBinding(snapshot) ? 'project' : 'binary';
 }
 
 export function scopeForIntent(intent, snapshot = {}) {

@@ -55,7 +55,10 @@ function validateExprNode(expr) {
   switch (expr.kind) {
     case EXPR_KIND.CONST:
       if (isBoolSort(expr.sort) && typeof expr.value !== 'boolean') return 'invalid-bool-constant';
-      if (isBvSort(expr.sort) && typeof expr.value !== 'bigint') return 'invalid-bv-constant';
+      if (isBvSort(expr.sort)) {
+        if (typeof expr.value !== 'bigint') return 'invalid-bv-constant';
+        if (expr.value < 0n || expr.value >= 1n << BigInt(expr.sort.width)) return 'non-canonical-bv-constant';
+      }
       return null;
     case EXPR_KIND.FRESH_SYMBOL:
       return typeof expr.name === 'string' && expr.name && typeof (expr.symbolId || expr.name) === 'string' ? null : 'malformed-symbol';
@@ -70,7 +73,7 @@ function validateExprNode(expr) {
       return Object.values(BV_COMPARE_OP).includes(expr.op) && isBoolSort(expr.sort) && sameBvSort(expr.left, expr.right)
         ? null : 'invalid-compare-expression';
     case EXPR_KIND.CONNECTIVE: {
-      if (!Object.values(BOOL_CONNECTIVE_OP).includes(expr.op) || !isBoolSort(expr.sort) || !Array.isArray(expr.args) || !expr.args.every((arg) => isBoolSort(arg?.sort))) return 'invalid-connective-expression';
+      if (!Object.values(BOOL_CONNECTIVE_OP).includes(expr.op) || !isBoolSort(expr.sort) || !Array.isArray(expr.args)) return 'invalid-connective-expression';
       if (expr.args.length === 0 || (expr.op === BOOL_CONNECTIVE_OP.NOT && expr.args.length !== 1) ||
           ([BOOL_CONNECTIVE_OP.IMPLIES, BOOL_CONNECTIVE_OP.EQ, BOOL_CONNECTIVE_OP.NE].includes(expr.op) && expr.args.length !== 2)) return 'invalid-connective-arity';
       return null;
@@ -98,20 +101,39 @@ function validateExprNode(expr) {
   }
 }
 
-function collectSymbols(expressions) {
+function collectSymbols(expressions, maxExprNodes) {
   const symbols = new Map();
   const visited = new Set();
   let nodeCount = 0;
   let unsupportedReason = null;
+  let budgetExceeded = false;
+  // Keep only one sequence frame per nesting level. In particular, a wide
+  // CONNECTIVE must not enqueue every argument before the node budget can be
+  // observed (#5163). Each frame advances its child array incrementally.
+  const worklist = [{ expressions, index: 0, requireBoolSort: false }];
 
-  function visit(expr) {
+  while (worklist.length > 0) {
+    const frame = worklist[worklist.length - 1];
+    if (frame.index >= frame.expressions.length) {
+      worklist.pop();
+      continue;
+    }
+
+    const expr = frame.expressions[frame.index++];
+    if (frame.requireBoolSort && !isBoolSort(expr?.sort)) {
+      unsupportedReason ||= 'invalid-connective-expression';
+    }
     if (!expr || typeof expr !== 'object') {
       unsupportedReason ||= 'malformed-expression-node';
-      return;
+      continue;
     }
-    if (visited.has(expr)) return;
+    if (visited.has(expr)) continue;
     visited.add(expr);
     nodeCount++;
+    if (nodeCount > maxExprNodes) {
+      budgetExceeded = true;
+      break;
+    }
     unsupportedReason ||= validateExprNode(expr);
     if (expr.kind === EXPR_KIND.FRESH_SYMBOL) {
       const key = String(expr.symbolId || expr.name || '');
@@ -122,11 +144,18 @@ function collectSymbols(expressions) {
         symbols.set(key, { key, name: String(expr.name), symbolId: String(expr.symbolId || key), sort: expr.sort });
       }
     }
-    for (const child of childExpressions(expr)) visit(child);
+
+    const children = childExpressions(expr);
+    if (children.length > 0) {
+      worklist.push({
+        expressions: children,
+        index: 0,
+        requireBoolSort: expr.kind === EXPR_KIND.CONNECTIVE,
+      });
+    }
   }
 
-  for (const expr of expressions) visit(expr);
-  return { symbols: [...symbols.values()].sort((a, b) => a.key.localeCompare(b.key)), nodeCount, unsupportedReason };
+  return { symbols: [...symbols.values()].sort((a, b) => a.key.localeCompare(b.key)), nodeCount, unsupportedReason, budgetExceeded };
 }
 
 function symbolConstantPair(left, right) {
@@ -182,9 +211,42 @@ function domainValue(symbol, index) {
   return index;
 }
 
+const hasMonotonicClock = typeof performance !== 'undefined' && typeof performance.now === 'function';
+function monotonicNow() {
+  return hasMonotonicClock ? performance.now() : Date.now();
+}
+
+// Microtask-only yields (await Promise.resolve()) never let host timers, UI
+// callbacks, or same-realm AbortSignal producers run, so a long enumeration can
+// starve its own timeout/cancellation budget (#3959). Yield to a real
+// event-loop turn instead: a MessageChannel port task (browser + worker + Node)
+// with a bounded setTimeout(0) fallback for runtimes without MessageChannel.
+let yieldPort = null;
+let yieldSource = null;
+function yieldToEventLoop() {
+  if (typeof MessageChannel === 'function') {
+    if (!yieldPort) {
+      const channel = new MessageChannel();
+      channel.port1.unref?.();
+      yieldPort = channel.port1;
+      yieldSource = channel.port2;
+    }
+    return new Promise((resolve) => {
+      const port = yieldPort;
+      port.onmessage = () => { port.onmessage = null; resolve(); };
+      yieldSource.postMessage(0);
+    });
+  }
+  return new Promise((resolve) => {
+    const handle = setTimeout(resolve, 0);
+    handle?.unref?.();
+  });
+}
+
 class ExhaustiveSolverSession extends SolverSession {
   async _executeCheck(query, options = {}, token, signal) {
     const startedAt = Date.now();
+    const startedMono = monotonicNow();
     if (!isVerificationQuery(query)) {
       return createSolverResult({
         status: SOLVER_STATUS.INVALID_QUERY,
@@ -203,8 +265,8 @@ class ExhaustiveSolverSession extends SolverSession {
       return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'constraint-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
     }
 
-    const collected = collectSymbols(expressions);
-    if (collected.nodeCount > maxExprNodes) {
+    const collected = collectSymbols(expressions, maxExprNodes);
+    if (collected.budgetExceeded) {
       return createSolverResult({ status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-node-budget-exceeded', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });
     }
     if (collected.unsupportedReason) {
@@ -238,6 +300,12 @@ class ExhaustiveSolverSession extends SolverSession {
 
     let nodesEvaluated = 0;
     const yieldEvery = positiveFiniteBudget(options.yieldEvery, 4096);
+    const timeoutBudget = Number.isFinite(options.timeoutMs)
+      ? options.timeoutMs
+      : Number.isFinite(this.options.timeoutMs)
+        ? this.options.timeoutMs
+        : 0;
+    const deadlineAt = timeoutBudget > 0 ? startedMono + timeoutBudget : null;
     let found = null;
     const visit = async (position) => {
       if (signal?.aborted) return 'cancelled';
@@ -246,7 +314,11 @@ class ExhaustiveSolverSession extends SolverSession {
         nodesEvaluated++;
         const model = assignmentModel(collected.symbols, assignments);
         if (evaluateAll(query, model)) found = model;
-        if (nodesEvaluated % yieldEvery === 0) await Promise.resolve();
+        if (nodesEvaluated % yieldEvery === 0) {
+          await yieldToEventLoop();
+          if (signal?.aborted) return 'cancelled';
+          if (deadlineAt !== null && monotonicNow() >= deadlineAt) return 'timeout';
+        }
         return found ? 'found' : 'continue';
       }
       const symbol = freeSymbols[position];
@@ -255,7 +327,7 @@ class ExhaustiveSolverSession extends SolverSession {
         if (signal?.aborted) return 'cancelled';
         assignments.set(symbol.key, domainValue(symbol, index));
         const outcome = await visit(position + 1);
-        if (outcome === 'cancelled' || outcome === 'found') return outcome;
+        if (outcome === 'cancelled' || outcome === 'found' || outcome === 'timeout') return outcome;
       }
       assignments.delete(symbol.key);
       return 'continue';
@@ -264,6 +336,9 @@ class ExhaustiveSolverSession extends SolverSession {
     const outcome = await visit(0);
     if (outcome === 'cancelled') {
       return createSolverResult({ status: SOLVER_STATUS.CANCELLED, reason: 'provider-aborted', backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { cancelled: true, publishable: false } });
+    }
+    if (outcome === 'timeout') {
+      return createSolverResult({ status: SOLVER_STATUS.TIMEOUT, reason: 'internal-deadline-exceeded', stats: { solveTimeMs: Date.now() - startedAt, nodesEvaluated }, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash, lifecycle: { timedOut: true, publishable: false } });
     }
     const stats = { solveTimeMs: Date.now() - startedAt, nodesEvaluated };
     if (found) return createSolverResult({ status: SOLVER_STATUS.SAT, model: found, stats, backend: this.backend.id, backendVersion: this.backend.version, queryHash: query.queryHash });

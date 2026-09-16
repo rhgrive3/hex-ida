@@ -11,6 +11,7 @@ import {
 import { isCanonicalMemorySsaProducerArtifact } from '../memoryssa/build.js';
 import { forwardExactStackOperandIdentity } from '../memoryssa/operand-forwarding.js';
 import { propagateScalarConstants } from './semantic-ir-v2-to-v1-finalize.js';
+import { canonicalGlobalAddress } from '../../architecture/compat/ir-core-arm64-aapcs64-v1.js';
 
 const MEMORY_CLOBBER_KINDS = new Set(['may-alias-clobber', 'unknown-clobber', 'call-clobber', 'intrinsic-clobber']);
 
@@ -68,7 +69,7 @@ function fallbackLocation(inst) {
   if (!inst?.addr) return { key: 'unknown', kind: V1_MK.UNKNOWN, size: inst?.extra?.size ?? null };
   const base = inst.addr.base;
   if (base?.const != null && inst.addr.index == null) {
-    const address = base.const + (inst.addr.disp ?? 0n);
+    const address = canonicalGlobalAddress(base.const, inst.addr.disp ?? 0n);
     return { key: `global:${address.toString(16)}`, kind: V1_MK.GLOBAL, address, size: inst.addr.size ?? null };
   }
   return { key: `unknown:${inst.semanticNodeId ?? inst.id ?? 'memory'}`, kind: V1_MK.UNKNOWN, size: inst.addr.size ?? null };
@@ -196,7 +197,25 @@ function replaceLoadWithForwardedValue(source, forwardedValue, proof) {
   };
 }
 
-export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null) {
+// Issue #8979: a caller-supplied absolute deadline or abort signal must be
+// shared by every load query in one projection batch instead of being
+// re-created (and therefore effectively reset) per query.
+function batchForwardingScope(options) {
+  const scope = {};
+  if (options == null || typeof options !== 'object') return scope;
+  if (options.deadline != null) scope.deadline = options.deadline;
+  else if (options.deadlineAt != null) scope.deadline = options.deadlineAt;
+  else if (options.budget != null && typeof options.budget === 'object' && options.budget.deadline != null) {
+    scope.deadline = options.budget.deadline;
+  } else if (options.budget != null && typeof options.budget === 'object' && options.budget.deadlineAt != null) {
+    scope.deadline = options.budget.deadlineAt;
+  }
+  if (options.signal != null && typeof options.signal === 'object') scope.signal = options.signal;
+  return scope;
+}
+
+export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null, forwardingScopeOptions = null) {
+  const batchForwarding = batchForwardingScope(forwardingScopeOptions);
   propagateScalarConstants(projected);
   const regionById = new Map(memorySsa.regions.map((region) => [region.id, region]));
   const locationByRegion = new Map();
@@ -310,6 +329,7 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
         consumerId: CANONICAL_MEMORY_FORWARDING_CONSUMER,
         purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,
         ...(canonicalIr == null ? {} : { ir: canonicalIr }),
+        ...batchForwarding,
       });
       const useMetadata = metadataById.get(String(use.id)) ?? null;
       const currentContext = canonicalMemoryForwardingContext(fact, {

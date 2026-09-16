@@ -3,6 +3,7 @@ import { createSemanticIrFunction } from '../../semantics/ir/function.js';
 import { buildSemanticSsa } from '../../semantics/ssa/build.js';
 
 const PREDICATES = new Set(['eq', 'ne', 'lt', 'ge', 'gt', 'le']);
+const JVM_FLOAT_TYPE_AUTHORITY_REASON = 'jvm-floating-value-type-authority-missing';
 const OPERATORS = Object.freeze({
   eq: 'eq',
   ne: 'ne',
@@ -36,8 +37,88 @@ function partialBranch(node) {
   };
 }
 
+function ownershipFailure() {
+  throw new TypeError('jvm-control-overlay-block-node-owner-invalid');
+}
+
+function buildBlocksFromOriginalOrder(old, nodes, additionsBefore, replacements) {
+  const originalNodeById = new Map();
+  for (const node of old.nodes) {
+    if (!node || typeof node.id !== 'string' || originalNodeById.has(node.id)) ownershipFailure();
+    originalNodeById.set(node.id, node);
+  }
+
+  const transformedNodeById = new Map();
+  for (const node of nodes) {
+    if (!node || typeof node.id !== 'string' || transformedNodeById.has(node.id)) ownershipFailure();
+    transformedNodeById.set(node.id, node);
+  }
+
+  for (const [originalNodeId, additions] of additionsBefore) {
+    const original = originalNodeById.get(originalNodeId);
+    if (!original || !Array.isArray(additions)) ownershipFailure();
+    for (const addition of additions) {
+      if (!addition || addition.blockId !== original.blockId
+          || transformedNodeById.get(addition.id) !== addition) {
+        ownershipFailure();
+      }
+    }
+  }
+  for (const originalNodeId of replacements.keys()) {
+    if (!originalNodeById.has(originalNodeId)) ownershipFailure();
+  }
+
+  const placedOriginalNodeIds = new Set();
+  const placedTransformedNodeIds = new Set();
+  const blocks = old.blocks.map((block) => {
+    if (!Array.isArray(block.nodeIds)) {
+      throw new TypeError('jvm-control-overlay-block-order-missing');
+    }
+    const nodeIds = [];
+    for (const originalNodeId of block.nodeIds) {
+      if (typeof originalNodeId !== 'string' || placedOriginalNodeIds.has(originalNodeId)) {
+        throw new TypeError('jvm-control-overlay-block-node-identity-invalid');
+      }
+      const original = originalNodeById.get(originalNodeId);
+      if (!original || original.blockId !== block.id) ownershipFailure();
+      placedOriginalNodeIds.add(originalNodeId);
+
+      for (const addition of additionsBefore.get(originalNodeId) ?? []) {
+        if (placedTransformedNodeIds.has(addition.id)) ownershipFailure();
+        placedTransformedNodeIds.add(addition.id);
+        nodeIds.push(addition.id);
+      }
+
+      const replacement = replacements.get(originalNodeId) ?? original;
+      if (!replacement || replacement.blockId !== block.id
+          || transformedNodeById.get(replacement.id) !== replacement
+          || placedTransformedNodeIds.has(replacement.id)) {
+        ownershipFailure();
+      }
+      placedTransformedNodeIds.add(replacement.id);
+      nodeIds.push(replacement.id);
+    }
+    return { ...block, nodeIds };
+  });
+
+  if (placedOriginalNodeIds.size !== old.nodes.length
+      || placedTransformedNodeIds.size !== nodes.length) ownershipFailure();
+  return blocks;
+}
+
 export function overlayJvmControlLowering(fn, lowered, options = {}) {
   if (fn?.frontendId !== 'jvm') return lowered;
+  const invalidFloatingEffectIds = new Set();
+  for (const bundle of fn.bundles ?? []) {
+    const values = [...(bundle?.consumedValues ?? []), ...(bundle?.producedValues ?? [])];
+    const invalid = values.some((value) => {
+      if (value?.valueKind !== 'float' && value?.valueKind !== 'double') return false;
+      const widthBits = value.valueKind === 'float' ? 32 : 64;
+      const format = widthBits === 32 ? 'binary32' : 'binary64';
+      return value.type?.kind !== 'float' || value.type?.widthBits !== widthBits || value.type?.format !== format;
+    });
+    if (invalid && typeof bundle?.operationId === 'string') invalidFloatingEffectIds.add(bundle.operationId);
+  }
   const old = lowered.semanticIr;
   const bundleByEffect = new Map((fn.bundles ?? []).map((bundle) => [bundle.operationId, bundle]));
   const additionsBefore = new Map();
@@ -46,9 +127,21 @@ export function overlayJvmControlLowering(fn, lowered, options = {}) {
   let unresolved = false;
 
   for (const node of old.nodes) {
+    if (node.sourceEffectIds?.some((id) => invalidFloatingEffectIds.has(id))) {
+      replacements.set(node.id, {
+        ...node,
+        completeness: 'partial',
+        unknown: { reason: JVM_FLOAT_TYPE_AUTHORITY_REASON, categories: ['types'] },
+      });
+    }
     if (node.kind !== 'conditional-branch') continue;
     const effectId = node.sourceEffectIds?.find((id) => bundleByEffect.has(id));
     const bundle = effectId == null ? null : bundleByEffect.get(effectId);
+    // Branches whose predicate was already materialized as a compare node
+    // during lowering carry comparisonArity 2 with a single predicate input;
+    // the overlay must not demote them for lacking raw-operand
+    // integer-comparison arity agreement (#8917).
+    if (node.inputs.length === 1 && node.attributes?.comparisonArity === 2) continue;
     const control = bundle?.controlEffects?.find((effect) => effect?.kind === 'conditional-branch') ?? null;
     const condition = normalizeJvmBranchCondition(control, node.inputs.length);
     if (!condition) {
@@ -140,26 +233,27 @@ export function overlayJvmControlLowering(fn, lowered, options = {}) {
     });
   }
 
-  if (!additionsBefore.size && !unresolved) return lowered;
+  if (!additionsBefore.size && !unresolved && invalidFloatingEffectIds.size === 0) return lowered;
 
   const nodes = [];
   for (const node of old.nodes) {
     nodes.push(...(additionsBefore.get(node.id) ?? []));
     nodes.push(replacements.get(node.id) ?? node);
   }
-  const nodeIdsByBlock = new Map();
-  for (const block of old.blocks) nodeIdsByBlock.set(block.id, []);
-  for (const node of nodes) nodeIdsByBlock.get(node.blockId)?.push(node.id);
-  const blocks = old.blocks.map((block) => ({ ...block, nodeIds: nodeIdsByBlock.get(block.id) ?? [] }));
-  const unknowns = unresolved
+  const blocks = buildBlocksFromOriginalOrder(old, nodes, additionsBefore, replacements);
+  let unknowns = unresolved
     ? [...(old.unknowns ?? []), { reason: 'jvm-branch-predicate-unresolved', categories: ['control'] }]
-    : old.unknowns;
+    : [...(old.unknowns ?? [])];
+  if (invalidFloatingEffectIds.size > 0
+      && !unknowns.some((item) => item?.reason === JVM_FLOAT_TYPE_AUTHORITY_REASON)) {
+    unknowns.push({ reason: JVM_FLOAT_TYPE_AUTHORITY_REASON, categories: ['types'] });
+  }
   const semanticIr = createSemanticIrFunction({
     ...old,
     blocks,
     nodes,
     values: [...old.values, ...addedValues],
-    completeness: unresolved ? 'partial' : old.completeness,
+    completeness: unresolved || invalidFloatingEffectIds.size > 0 ? 'partial' : old.completeness,
     unknowns,
   }, options);
   return deepFreeze({

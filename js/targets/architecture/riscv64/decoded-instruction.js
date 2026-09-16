@@ -52,6 +52,7 @@ const UINT8_ARRAY_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(
   'byteLength',
 )?.get;
 
+
 function isUint8ArrayView(value) {
   if (value instanceof Uint8Array) return true;
   if (!ArrayBuffer.isView(value)) return false;
@@ -154,8 +155,8 @@ export function createRiscv64DecodedInstruction(input = {}) {
     architecture: 'riscv64',
     mode,
     instructionAlignment,
-    ...(input.isaIdentity == null ? {} : { isaIdentity:String(input.isaIdentity) }),
-    ...(input.isaEvidence == null ? {} : { isaEvidence:String(input.isaEvidence) }),
+    ...(input.isaIdentity == null ? {} : { isaIdentity: strictToken(input.isaIdentity, 'riscv64-decoded-instruction-invalid-isa-identity') }),
+    ...(input.isaEvidence == null ? {} : { isaEvidence: strictToken(input.isaEvidence, 'riscv64-decoded-instruction-invalid-isa-evidence') }),
     ...(compressedInstructions == null ? {} : { compressedInstructions }),
     address,
     size,
@@ -179,7 +180,7 @@ export function createRiscv64DecodedInstruction(input = {}) {
     compressed: fields.supported ? fields.compressed === true : null,
     detailAvailable: fields.supported === true,
     detailStatus: fields.supported ? 'complete' : 'unsupported-encoding',
-    ...(input.instructionId == null ? {} : { instructionId: String(input.instructionId) }),
+    ...(input.instructionId == null ? {} : { instructionId: strictToken(input.instructionId, 'riscv64-decoded-instruction-invalid-instruction-id') }),
     ...(input.origin == null ? {} : { origin: input.origin }),
   });
 }

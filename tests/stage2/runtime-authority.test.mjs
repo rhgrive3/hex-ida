@@ -32,9 +32,12 @@ assert.match(binding.bindingId, /^runtime-binding:/);
 assert.throws(() => new RuntimeAuthorityTracker(binding, { maxObservations: Number.NaN }), /runtime-max-observations-invalid/);
 assert.throws(() => new RuntimeAuthorityTracker(binding, { maxObservations: 5000 }), /runtime-max-observations-invalid/);
 const tracker = new RuntimeAuthorityTracker(binding, { maxObservations: 2 });
+const acceptedObservationIds = [];
 for (let sequence = 1; sequence <= 3; sequence++) {
   const observation = createRuntimeObservation({ binding, sequence, observedAt: `2026-08-22T00:00:0${sequence}Z`, kind: 'stop', payload: { pc: `0x100${sequence}` } });
-  assert.equal(tracker.accept(observation).status, 'accepted');
+  const accepted = tracker.accept(observation);
+  assert.equal(accepted.status, 'accepted');
+  acceptedObservationIds.push(accepted.observationId);
 }
 assert.equal(tracker.snapshot().observations.length, 2, 'runtime observation history must stay bounded');
 const replay = createRuntimeObservation({ binding, sequence: 3, observedAt: '2026-08-22T00:00:04Z', kind: 'stop' });
@@ -84,9 +87,16 @@ const support = runtimeProfileSupport({
   requiredCapabilities,
   proof: fullProof,
   profileProof: profileProofs['S2-A7-NATIVE'],
+  runtimeReceipt: tracker.mintProfileSupportReceipt({
+    observationIdentities: acceptedObservationIds.slice(-2),
+    mutationAuthorityIdentities: [authorized.token.tokenId],
+    testItemIdentities: ['lifecycle', 'capability', 'module-mapping', 'stale-event', 'mutation-authority'],
+  }),
 });
 assert.equal(support.status, 'supported-for-exact-provider-profile');
 assert.equal(support.targetProfileId, targetProfileId);
+assert.equal(support.runtimeReceiptBindingId, binding.bindingId, 'branded support must carry its live receipt provenance');
+assert.match(support.runtimeReceiptId, /^runtime-receipt:/);
 const inheritedCapabilities = Object.create(providerCapabilities);
 assert.equal(
   runtimeProfileSupport({
@@ -116,7 +126,13 @@ assert.equal(
 );
 assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:remote-debug-v1:qemu-lldb', targetProfileId, providerCapabilities, requiredCapabilities, proof: { ...fullProof, headSha: null }, profileProof: profileProofs['S2-A7-NATIVE'] }).reason, 'runtime-proof-exact-identity-required');
 const currentHeadProof = { ...fullProof, headSha: binding.commitSha, treeSha: binding.treeSha };
-assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:remote-debug-v1:qemu-lldb', targetProfileId, providerCapabilities, requiredCapabilities, proof: currentHeadProof, expectedHeadSha: binding.commitSha, expectedTreeSha: binding.treeSha, profileProof: profileProofs['S2-A7-NATIVE'] }).status, 'supported-for-exact-provider-profile');
+const runtimeReceipt = tracker.mintProfileSupportReceipt({
+  observationIdentities: acceptedObservationIds.slice(-2),
+  mutationAuthorityIdentities: [authorized.token.tokenId],
+  testItemIdentities: ['lifecycle', 'capability', 'module-mapping', 'stale-event', 'mutation-authority'],
+});
+assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:remote-debug-v1:qemu-lldb', targetProfileId, providerCapabilities, requiredCapabilities, proof: currentHeadProof, expectedHeadSha: binding.commitSha, expectedTreeSha: binding.treeSha, profileProof: profileProofs['S2-A7-NATIVE'], runtimeReceipt }).status, 'supported-for-exact-provider-profile');
+assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:remote-debug-v1:qemu-lldb', targetProfileId, providerCapabilities, requiredCapabilities, proof: currentHeadProof, expectedHeadSha: binding.commitSha, expectedTreeSha: binding.treeSha, profileProof: profileProofs['S2-A7-NATIVE'] }).reason, 'runtime-validation-receipt-required', 'caller-declared booleans alone must not mint runtime authority (#8851)');
 assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:remote-debug-v1:qemu-lldb', targetProfileId, providerCapabilities, requiredCapabilities, proof: { ...currentHeadProof, headSha: 'c'.repeat(40) }, expectedHeadSha: binding.commitSha, profileProof: profileProofs['S2-A7-NATIVE'] }).reason, 'runtime-proof-stale-head');
 assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:remote-debug-v1:qemu-lldb', targetProfileId, providerCapabilities, requiredCapabilities, proof: currentHeadProof, profileProof: { ...profileProofs['S2-A7-NATIVE'] } }).status, 'partial', 'copied profile evidence must lose promotion authority');
 assert.equal(runtimeProfileSupport({ binding, providerProfileId: 'native:replay-v1:test', targetProfileId, providerCapabilities, requiredCapabilities, proof: fullProof }).reason, 'runtime-provider-target-profile-mismatch', 'a provider profile from another target boundary cannot reuse this authority binding');

@@ -37,8 +37,10 @@ function putDynamic(view, index, tag, value) {
   view.setBigUint64(off + 8, BigInt(value), true);
 }
 
-// options: { stOther, withTag, machine, type }
-function fixture({ stOther = 0x80, withTag = false, machine = 243, type = 2 } = {}) {
+// options: { stOther, withTag, machine, type, jmprelTarget }
+function fixture({
+  stOther = 0x80, withTag = false, machine = 243, type = 2, jmprelTarget = BASE + 0x600n,
+} = {}) {
   const bytes = new Uint8Array(0x800);
   const view = new DataView(bytes.buffer);
   const strtabVa = BASE + BigInt(STRTAB_OFFSET);
@@ -68,8 +70,10 @@ function fixture({ stOther = 0x80, withTag = false, machine = 243, type = 2 } = 
   view.setBigUint64(SYMTAB_OFFSET + 32, BASE + 0x1000n, true);
   view.setBigUint64(SYMTAB_OFFSET + 40, 16n, true);
 
-  // JMPREL: one R_RISCV_JUMP_SLOT (type 5) against symbol 1
-  view.setBigUint64(JMPREL_OFFSET, BASE + 0x2000n, true);
+  // JMPREL: one R_RISCV_JUMP_SLOT (type 5) against symbol 1. #8096 requires every
+  // relocation site to sit inside a loaded PT_LOAD span, so the fixture targets the
+  // mapping it actually declares ([BASE, BASE + 0x800)) instead of an unmapped page.
+  view.setBigUint64(JMPREL_OFFSET, jmprelTarget, true);
   view.setBigUint64(JMPREL_OFFSET + 8, (1n << 32n) | 5n, true);
   view.setBigInt64(JMPREL_OFFSET + 16, 0n, true);
 
@@ -161,13 +165,20 @@ test('6071: non-RISC-V machine ignores the invariant', () => {
 });
 
 
-function buildSectionBackedVariantCcElf({ withTag = false } = {}) {
+function buildSectionBackedVariantCcElf({ withTag = false, withLoad = true } = {}) {
   const dynstrOffset = 0x100;
   const dynsymOffset = 0x120;
   const relaOffset = 0x160;
   const dynamicOffset = 0x180;
   const shstrOffset = 0x1c0;
   const shoff = 0x240;
+  const sectionCount = 6;
+  // #8096: a section-backed relocation site is only authoritative inside a loaded
+  // PT_LOAD span, so this fixture declares one program header covering the whole file.
+  // `withLoad:false` keeps the shape without any loaded mapping to pin the fail-closed side.
+  const phoff = shoff + sectionCount * 64;
+  const phentsize = 56;
+  const loadSpanBytes = 0x800;
   const names = ['', '.dynsym', '.dynstr', '.rela.plt', '.dynamic', '.shstrtab'];
   const shstrParts = [];
   const nameOffsets = new Map();
@@ -177,8 +188,7 @@ function buildSectionBackedVariantCcElf({ withTag = false } = {}) {
   }
   const dynstr = Uint8Array.from([0, ...Buffer.from('vecfn', 'utf8'), 0]);
   const shstr = Uint8Array.from(shstrParts);
-  const sectionCount = names.length;
-  const bytes = new Uint8Array(shoff + sectionCount * 64);
+  const bytes = new Uint8Array(Math.max(phoff + phentsize, loadSpanBytes));
   const view = new DataView(bytes.buffer);
 
   bytes.set(dynstr, dynstrOffset);
@@ -189,15 +199,27 @@ function buildSectionBackedVariantCcElf({ withTag = false } = {}) {
   view.setUint16(18, 243, true); // EM_RISCV
   view.setUint32(20, 1, true);
   view.setBigUint64(24, 0n, true); // entry
-  view.setBigUint64(32, 0n, true); // phoff
+  view.setBigUint64(32, withLoad ? BigInt(phoff) : 0n, true); // e_phoff
   view.setBigUint64(40, BigInt(shoff), true);
   view.setUint32(48, 0, true);
   view.setUint16(52, 64, true);
-  view.setUint16(54, 56, true);
-  view.setUint16(56, 0, true);
+  view.setUint16(54, phentsize, true);
+  view.setUint16(56, withLoad ? 1 : 0, true); // e_phnum
   view.setUint16(58, 64, true);
   view.setUint16(60, sectionCount, true);
   view.setUint16(62, names.length - 1, true);
+
+  if (withLoad) {
+    // PT_LOAD: [BASE, BASE + loadSpanBytes) backed by file [0, loadSpanBytes).
+    view.setUint32(phoff, 1, true);          // p_type = PT_LOAD
+    view.setUint32(phoff + 4, 5, true);      // p_flags = PF_R | PF_X
+    view.setBigUint64(phoff + 8, 0n, true);  // p_offset
+    view.setBigUint64(phoff + 16, BASE, true); // p_vaddr
+    view.setBigUint64(phoff + 24, BASE, true); // p_paddr
+    view.setBigUint64(phoff + 32, BigInt(loadSpanBytes), true); // p_filesz
+    view.setBigUint64(phoff + 40, BigInt(loadSpanBytes), true); // p_memsz
+    view.setBigUint64(phoff + 48, 0x1000n, true); // p_align
+  }
 
   const putDynamic = (index, tag, value) => {
     const off = dynamicOffset + index * 16;
@@ -218,8 +240,8 @@ function buildSectionBackedVariantCcElf({ withTag = false } = {}) {
   view.setBigUint64(dynsymOffset + 24 + 8, 0n, true);
   view.setBigUint64(dynsymOffset + 24 + 16, 16n, true);
 
-  // One R_RISCV_JUMP_SLOT relocation against dynsym[1].
-  view.setBigUint64(relaOffset, 0x500n, true);
+  // One R_RISCV_JUMP_SLOT relocation against dynsym[1], inside the declared PT_LOAD span.
+  view.setBigUint64(relaOffset, BASE + 0x500n, true);
   view.setBigUint64(relaOffset + 8, (1n << 32n) | 5n, true);
   view.setBigInt64(relaOffset + 16, 0n, true);
 
@@ -264,4 +286,20 @@ test('6071: full parseELF section-backed dynsym JUMP_SLOT without DT_RISCV_VARIA
   assert.equal(tagged.metadata.riscvVariantCcTagPresent, true);
   assert.equal(tagged.metadata.programDynamicPartial ?? false, false);
   assert.equal(tagged.warnings.some((warning) => warning.includes('section-backed RISC-V variant-cc JUMP_SLOT requires DT_RISCV_VARIANT_CC')), false);
+});
+
+// #8096 is the reason the two fixtures above carry a loaded mapping: making #6071 pass
+// by publishing an unmapped relocation site would re-open that boundary. Pin both
+// program-backed and section-backed fail-closed shapes in this variant-cc file.
+test('8096: a program-backed variant-cc JUMP_SLOT outside every PT_LOAD publishes no site', () => {
+  const image = fixture({ withTag: true, jmprelTarget: BASE + 0x2000n });
+  assert.equal(image.relocations.length, 0, 'unmapped target must not become a canonical relocation');
+  assert.equal(image.metadata.programDynamicPartial, true);
+  assert.ok((image.metadata.programDynamicDiagnostics || []).some((diagnostic) => diagnostic
+    .includes('outside every loaded PT_LOAD memory span')));
+});
+
+test('8096: a section-backed variant-cc JUMP_SLOT without any loaded mapping publishes no site', () => {
+  const image = parseELF(buildSectionBackedVariantCcElf({ withTag: true, withLoad: false }));
+  assert.equal(image.relocations.length, 0, 'a section-backed site needs loaded mapping authority');
 });

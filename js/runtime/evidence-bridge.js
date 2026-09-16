@@ -1,5 +1,5 @@
 import { createEvidenceEdge, createEvidenceNode, EvidenceGraph, EVIDENCE_COMPLETENESS } from '../core/evidence/index.js';
-import { createEvidenceId, deepFreeze, stableDigest, stableStringify } from '../core/identity/index.js';
+import { createEvidenceId, deepFreeze, lossyTypeWitness, stableDigest, stableStringify } from '../core/identity/index.js';
 import { createOriginSet } from '../core/identity/origin.js';
 import { DebugAdapterError } from '../debug/adapter.js';
 import { createRuntimeEvent } from './events.js';
@@ -20,10 +20,6 @@ function stringArray(value, name) {
   const normalized = [];
   for (const item of value) {
     if (typeof item !== 'string') throw new DebugAdapterError('runtime-invalid-array', `${name} must contain only non-empty strings`);
-    // Same canonical contract as the scalar ids and the core evidence
-    // stringArray: trim, require non-empty, dedupe/sort canonicalized values.
-    // Keeping raw strings would alias padded duplicates and make parent
-    // references unresolvable against their canonical record ids (#5966).
     const text = item.trim();
     if (!text) throw new DebugAdapterError('runtime-invalid-array', `${name} must contain only non-empty strings`);
     normalized.push(text);
@@ -54,9 +50,63 @@ function ownedClone(value) {
   return out;
 }
 
+// #8868: intervention records are public identity-bearing provenance. Core
+// deepFreeze intentionally skips binary backing stores, so detach binary input
+// and publish only frozen byte arrays. Cyclic explicit-id records fail closed
+// instead of retaining a mutable back-reference into an otherwise frozen record.
+function sharedArrayBuffer(value) {
+  return typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer;
+}
+
+function canonicalizeBinaryLeaf(value) {
+  if (value instanceof ArrayBuffer || sharedArrayBuffer(value)) return Object.freeze(Array.from(new Uint8Array(value)));
+  if (value instanceof DataView) return Object.freeze(Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)));
+  if (ArrayBuffer.isView(value)) return Object.freeze(Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)));
+  return null;
+}
+
+function canonicalizeInterventionValue(value, seen = new WeakSet()) {
+  if (value == null || typeof value !== 'object') return value;
+  const binary = canonicalizeBinaryLeaf(value);
+  if (binary !== null) return binary;
+  if (seen.has(value)) {
+    throw new DebugAdapterError('runtime-invalid-intervention-value', 'intervention values must be acyclic');
+  }
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const out = new Array(value.length);
+      for (let index = 0; index < value.length; index += 1) out[index] = canonicalizeInterventionValue(value[index], seen);
+      return out;
+    }
+    if (value instanceof Map) {
+      const out = new Map();
+      for (const [key, item] of value) out.set(canonicalizeInterventionValue(key, seen), canonicalizeInterventionValue(item, seen));
+      return out;
+    }
+    if (value instanceof Set) {
+      const out = new Set();
+      for (const item of value) out.add(canonicalizeInterventionValue(item, seen));
+      return out;
+    }
+    if (value instanceof Date || value instanceof RegExp) return value;
+    const out = {};
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== 'string') continue;
+      Object.defineProperty(out, key, {
+        value: canonicalizeInterventionValue(value[key], seen),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return out;
+  } finally {
+    seen.delete(value);
+  }
+}
+
 function completeness(value, fallback = 'partial') {
-  // Completeness is canonical evidence authority. A structured value must not
-  // launder into a ranking through String() coercion (String(['complete']).
   const normalized = value ?? fallback;
   if (typeof normalized !== 'string') {
     throw new DebugAdapterError('runtime-invalid-completeness', `invalid evidence completeness: ${String(normalized)}`);
@@ -66,8 +116,6 @@ function completeness(value, fallback = 'partial') {
 }
 
 function canonicalConfidence(value) {
-  // Confidence is canonical evidence strength. Only a primitive finite number
-  // may define it; numeric strings, Arrays, booleans fail closed.
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     throw new DebugAdapterError('runtime-invalid-confidence', 'evidence confidence must be a finite number');
   }
@@ -86,15 +134,43 @@ function assertInterventionParents(records, record) {
   }
 }
 
+// Collision comparison key for the ledger (#8868 + #8794). The stored
+// `identityTypeWitness` is derived from the PRE-canonical source input so the
+// auto-generated id can distinguish a `Uint8Array` from a numeric `Array` that
+// canonicalize to the same bytes; it is therefore not reproducible from a
+// persisted canonical replay and must not participate in the same-id collision
+// check (that would turn a legitimate replay into a false collision). The
+// `lossyTypeWitness` of the canonical content still makes the check reject a
+// caller-supplied id reused for genuinely different, stringify-aliasing values
+// (`1n` vs `'1'`, #8794).
+function canonicalInterventionCollisionKey(record) {
+  const { identityTypeWitness: _witness, ...canonical } = record;
+  return stableStringify([canonical, lossyTypeWitness(canonical)]);
+}
+
 export function createInterventionRecord(input = {}) {
   const runtimeSessionId = required(input.runtimeSessionId, 'runtime-session-id-required', 'intervention requires runtimeSessionId');
   const providerId = required(input.providerId, 'runtime-provider-required', 'intervention requires providerId');
   const kind = required(input.kind, 'runtime-intervention-kind-required', 'intervention kind is required');
   const sequence = optionalSequence(input.sequence);
   const parentInterventionIds = stringArray(input.parentInterventionIds, 'parentInterventionIds');
-  const target = ownedClone(input.target ?? null);
-  const requestedChange = ownedClone(input.requestedChange ?? null);
-  const acknowledgedResult = ownedClone(input.acknowledgedResult ?? null);
+
+  const sourceTarget = ownedClone(input.target ?? null);
+  const sourceRequestedChange = ownedClone(input.requestedChange ?? null);
+  const sourceAcknowledgedResult = ownedClone(input.acknowledgedResult ?? null);
+  const sourceIdentity = {
+    runtimeSessionId,
+    providerId,
+    kind,
+    target: sourceTarget,
+    requestedChange: sourceRequestedChange,
+    sequence,
+    parentInterventionIds,
+  };
+
+  const target = canonicalizeInterventionValue(sourceTarget);
+  const requestedChange = canonicalizeInterventionValue(sourceRequestedChange);
+  const acknowledgedResult = canonicalizeInterventionValue(sourceAcknowledgedResult);
   const identity = {
     runtimeSessionId,
     providerId,
@@ -104,9 +180,23 @@ export function createInterventionRecord(input = {}) {
     sequence,
     parentInterventionIds,
   };
+
+  // #8794 requires the type domain to participate in identity, while #8868
+  // requires the generated id to commit to the exact canonical snapshot that
+  // is actually stored. Persist the source type witness alongside that
+  // canonical snapshot and hash both. Full persisted-record replay can then
+  // reproduce the same commitment without reintroducing mutable binary views.
+  const computedTypeWitness = lossyTypeWitness(sourceIdentity);
+  const identityTypeWitness = input.interventionId != null && input.identityTypeWitness != null
+    ? ownedClone(input.identityTypeWitness)
+    : computedTypeWitness;
+  // Validate that a caller-supplied persisted witness is serializable before it
+  // becomes part of an authoritative record/collision comparison.
+  stableStringify(identityTypeWitness);
   const interventionId = input.interventionId == null
-    ? `intervention_${stableDigest(identity)}`
+    ? `intervention_${stableDigest({ identity, typed: identityTypeWitness })}`
     : required(input.interventionId, 'runtime-intervention-id-invalid', 'intervention id must be a non-empty string');
+
   return deepFreeze({
     interventionId,
     runtimeSessionId,
@@ -118,6 +208,7 @@ export function createInterventionRecord(input = {}) {
     sequence,
     parentInterventionIds,
     evidenceIds: stringArray(input.evidenceIds, 'evidenceIds'),
+    identityTypeWitness,
   });
 }
 
@@ -131,12 +222,6 @@ export class InterventionLedger {
     return record;
   }
 
-  // Every executed intervention occurrence gets a ledger-local monotonic
-  // sequence (#5327): repeated identical target/change operations are
-  // distinct executions, so their auto-derived intervention identity must
-  // differ — otherwise add() silently dedups the later execution and its
-  // acknowledged backend result is lost. Caller-provided sequences stay
-  // authoritative; a sequence is allocated only when the draft omits it.
   nextSequence() {
     const sequence = this.#sequence;
     this.#sequence += 1;
@@ -152,7 +237,7 @@ export class InterventionLedger {
       // returning the existing record for a different execution (a different
       // acknowledged backend result) loses the later occurrence and its
       // provenance. Identical re-ingestion (persisted replay) stays allowed.
-      if (stableStringify(existing) !== stableStringify(record)) {
+      if (canonicalInterventionCollisionKey(existing) !== canonicalInterventionCollisionKey(record)) {
         throw new DebugAdapterError(
           'runtime-intervention-id-collision',
           `intervention id is already bound to a different record: ${record.interventionId}`,
@@ -319,8 +404,6 @@ export class RuntimeEvidenceBridge {
   }
 
   linkClaim(claimId, evidenceId, relation, resolution = null) {
-    // Relation edges decide EvidenceGraph semantics; a structured relation must
-    // not coerce into a canonical edge type via String().
     if (typeof relation !== 'string') throw new DebugAdapterError('runtime-invalid-evidence-relation', `invalid runtime evidence relation: ${String(relation)}`);
     const type = relation;
     if (!RELATIONS.includes(type)) throw new DebugAdapterError('runtime-invalid-evidence-relation', `invalid runtime evidence relation: ${type}`);

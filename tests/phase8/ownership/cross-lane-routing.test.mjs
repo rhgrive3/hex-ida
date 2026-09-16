@@ -63,3 +63,62 @@ test('CircleCI derives the Phase 8 subset through the exact route helper', () =>
 });
 
 console.log('phase8 cross-lane ownership routing: PASS');
+
+
+test('#8936 issue batch uses an exact Phase 8 cross-lane route', () => {
+  const branch = 'fix/batch-10-issues-20260915';
+  const owned = [
+    '.github/workflows/phase8-ownership.yml',
+    'js/decompiler/idioms/arm64-clang.js',
+    'tests/phase8/abi/hex-c3-02-boundaries.test.mjs',
+    'tests/phase8/ownership/cross-lane-routing.test.mjs',
+    'tools/validation/phase8/cross-lane-inventory.mjs',
+  ];
+  const foreign = CROSS_LANE_ROUTES[branch];
+  const inventory = [...owned, ...foreign];
+  assert.deepEqual(
+    validateCrossLaneInventory(branch, inventory),
+    [...owned].sort((a, b) => Buffer.from(a).compare(Buffer.from(b))),
+    'the #8936 route must return only the Phase 8-owned decompiler/ABI subset',
+  );
+  assert.throws(
+    () => validateCrossLaneInventory(branch, [...inventory, 'js/ui/__undeclared_8936.js']),
+    /unexpected foreign paths|outside-lane|forbidden/,
+    'the #8936 route must reject an undeclared foreign path',
+  );
+  assert.throws(
+    () => validateCrossLaneInventory(`${branch}-similar`, inventory),
+    /no exact Phase 8 cross-lane route/,
+    'a similar batch branch name must not activate the #8936 route',
+  );
+  assert.throws(
+    () => validateCrossLaneInventory(branch, foreign),
+    /no Phase 8-owned paths/,
+    'the #8936 route must fail closed without Phase 8 evidence',
+  );
+  assert.ok(CONFIG.includes(branch), 'CircleCI must route the #8936 subset');
+  const fallback = readFileSync('.github/workflows/phase8-ownership.yml', 'utf8');
+  assert.ok(fallback.includes(branch), 'the GitHub fallback must route the #8936 subset');
+});
+
+test('Dependabot workflow group uses an exact Phase 8 cross-lane route', () => {
+  const branch = "dependabot/github_actions/github-actions-436ea2ae3a";
+  const owned = [
+    '.github/workflows/phase8-ownership.yml',
+    '.github/workflows/phase8-release-validation.yml',
+    'tests/phase8/ownership/cross-lane-routing.test.mjs',
+    'tools/validation/phase8/cross-lane-inventory.mjs',
+  ];
+  const inventory = [...owned, ...CROSS_LANE_ROUTES[branch]];
+  assert.deepEqual(
+    validateCrossLaneInventory(branch, inventory),
+    [...owned].sort((a, b) => Buffer.from(a).compare(Buffer.from(b))),
+  );
+  assert.throws(
+    () => validateCrossLaneInventory(branch, [...inventory, 'js/ui/unrelated.js']),
+    /unexpected foreign paths|outside-lane|forbidden/,
+  );
+  assert.ok(CONFIG.includes(branch));
+  const fallback = readFileSync('.github/workflows/phase8-ownership.yml', 'utf8');
+  assert.ok(fallback.includes(branch));
+});

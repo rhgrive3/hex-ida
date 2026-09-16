@@ -110,6 +110,64 @@ function managedDivisionRemainderOperatorForNode(node, frontendId, mnemonic) {
   return node.operator;
 }
 
+const MANAGED_COMPARE_OPERATORS = new Map([
+  ['eq', { op: 'eq', signed: null, arity: 2 }],
+  ['ne', { op: 'ne', signed: null, arity: 2 }],
+  ['is-zero', { op: 'eq', signed: null, arity: 1 }],
+  ['is-nonzero', { op: 'ne', signed: null, arity: 1 }],
+  ['slt', { op: 'lt', signed: true, arity: 2 }],
+  ['ult', { op: 'lt', signed: false, arity: 2 }],
+  ['sle', { op: 'le', signed: true, arity: 2 }],
+  ['ule', { op: 'le', signed: false, arity: 2 }],
+  ['sgt', { op: 'gt', signed: true, arity: 2 }],
+  ['ugt', { op: 'gt', signed: false, arity: 2 }],
+  ['sge', { op: 'ge', signed: true, arity: 2 }],
+  ['uge', { op: 'ge', signed: false, arity: 2 }],
+]);
+
+function managedWasmComparison(mnemonic) {
+  const text = typeof mnemonic === 'string' ? mnemonic.trim().toLowerCase() : '';
+  const match = /^i(?:32|64)\.(eqz|eq|ne|(?:lt|le|gt|ge)_[su])$/.exec(text);
+  if (!match) return null;
+  const operation = match[1];
+  if (operation === 'eqz') return { op: 'eq', signed: null, arity: 1 };
+  if (operation === 'eq' || operation === 'ne') return { op: operation, signed: null, arity: 2 };
+  const relation = operation.slice(0, 2);
+  return { op: relation, signed: operation.endsWith('_s'), arity: 2 };
+}
+
+function sameManagedComparison(a, b) {
+  return a && b && a.op === b.op && a.signed === b.signed && a.arity === b.arity;
+}
+
+function legacyManagedComparison(mnemonic) {
+  const text = typeof mnemonic === 'string' ? mnemonic.trim().toLowerCase() : '';
+  const op = text.includes('eq') ? 'eq'
+    : text.includes('ne') ? 'ne'
+    : text.includes('le') ? 'le'
+    : text.includes('ge') ? 'ge'
+    : text.includes('lt') ? 'lt'
+    : text.includes('gt') ? 'gt'
+    : null;
+  return op ? { op, signed: null, arity: 2 } : null;
+}
+
+function managedComparisonForNode(node, frontendId, mnemonic) {
+  const hasCanonicalOperator = node?.operator != null;
+  const canonical = typeof node?.operator === 'string'
+    ? MANAGED_COMPARE_OPERATORS.get(node.operator) || null
+    : null;
+  const frontend = typeof frontendId === 'string' ? frontendId.trim().toLowerCase() : '';
+  const wasm = frontend === 'wasm' ? managedWasmComparison(mnemonic) : null;
+
+  if (hasCanonicalOperator) {
+    if (!canonical || (wasm && !sameManagedComparison(canonical, wasm))) return null;
+    return canonical;
+  }
+  if (frontend === 'wasm') return wasm;
+  return legacyManagedComparison(mnemonic);
+}
+
 function safeIdent(s, fallback = 'value') {
   const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_$]/g, '_').replace(/^([0-9])/, '_$1');
   return x || fallback;
@@ -146,9 +204,9 @@ function managedStateIdent(variable, frontendId) {
 }
 
 function normalizeMachineType(t) {
-  if (!t) return { kind: 'bitvector', widthBits: 32 };
-  const kind = t.kind || 'bitvector';
-  const widthBits = Number(t.widthBits || t.bits || 32);
+  const kind = (t && t.kind) || 'bitvector';
+  const widthBits = Number(t && (t.widthBits != null ? t.widthBits : t.bits));
+  if (!Number.isSafeInteger(widthBits) || widthBits <= 0) fail('semantic-ir-invalid-width');
   if (kind === 'float') {
     return { kind, widthBits, format: t.format || (widthBits === 64 ? 'binary64' : 'binary32') };
   } else if (kind === 'address') {
@@ -157,6 +215,35 @@ function normalizeMachineType(t) {
     return { kind, widthBits };
   }
   return { kind: 'bitvector', widthBits };
+}
+
+// Type-elision contract (#8756): a VMEffect value entry with neither a type
+// nor an explicit bit width has an unresolved machine type. It must never be
+// fabricated as 32-bit complete; consumers demote to partial with an
+// explicit machine-type-unresolved reason.
+const UNRESOLVED_MACHINE_TYPE = Object.freeze({ kind: 'bitvector', widthBits: 32 });
+const MACHINE_TYPE_NUMERIC_CODES = new Map([
+  [0x7f, Object.freeze({ kind: 'bitvector', widthBits: 32 })],
+  [0x7e, Object.freeze({ kind: 'bitvector', widthBits: 64 })],
+  [0x7d, Object.freeze({ kind: 'float', widthBits: 32, format: 'binary32' })],
+  [0x7c, Object.freeze({ kind: 'float', widthBits: 64, format: 'binary64' })],
+]);
+function resolveVMValueType(type, bits) {
+  if (type == null) {
+    const width = Number(bits);
+    return Number.isSafeInteger(width) && width > 0 ? { kind: 'bitvector', widthBits: width } : null;
+  }
+  if (typeof type === 'number') {
+    const mapped = MACHINE_TYPE_NUMERIC_CODES.get(type);
+    if (mapped) return mapped;
+    const width = Number(bits);
+    return Number.isSafeInteger(width) && width > 0 ? { kind: 'bitvector', widthBits: width } : null;
+  }
+  const width = Number(type.widthBits != null ? type.widthBits : type.bits);
+  return Number.isSafeInteger(width) && width > 0 ? type : null;
+}
+function machineTypeKey(t) {
+  return `${t.kind}:${t.widthBits}:${t.format || ''}:${t.addressSpace || ''}`;
 }
 
 export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
@@ -230,6 +317,7 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
     };
     if (metadata != null) valInput.metadata = metadata;
     const val = createSemanticValue(valInput);
+    if (metadata?.reason !== 'machine-type-unresolved') valueTypeByValueId.set(val.id, val.machineType);
     allValues.push(val);
     return val;
   }
@@ -249,6 +337,8 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
   }
 
   const evalStack = [];
+  const valueTypeByValueId = new Map();
+  let fabricatedValueType = false;
 
   for (const [blkId, blkBundles] of blockBundlesMap.entries()) {
     currentBlockNodeIds = [];
@@ -264,11 +354,19 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
       }));
 
       // 1. Process location reads (e.g. locals/registers/stack)
+      let bundleFabricated = false;
       const readValues = [];
       for (const r of b.locationReads) {
         nodeCounter++;
         const readNodeId = `node_${nodeCounter}`;
-        const val = makeValue(r.type || { kind: 'bitvector', widthBits: r.bits || 32 }, nodeOrigin, readNodeId);
+        let readType = resolveVMValueType(r.type, r.bits);
+        const readUnresolved = readType == null;
+        if (readUnresolved) {
+          readType = UNRESOLVED_MACHINE_TYPE;
+          bundleFabricated = true;
+          fabricatedValueType = true;
+        }
+        const val = makeValue(readType, nodeOrigin, readNodeId, readUnresolved ? { reason: 'machine-type-unresolved' } : null);
         const node = createSemanticNode({
           id: readNodeId,
           blockId: blkId,
@@ -283,6 +381,7 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
           }),
           origin: nodeOrigin,
           sourceEffectIds: [b.operationId],
+          ...(readUnresolved ? { completeness: 'partial', unknown: { reason: 'machine-type-unresolved', categories: ['types'] } } : {}),
         });
         allNodes.push(node);
         currentBlockNodeIds.push(node.id);
@@ -303,13 +402,19 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
             functionId: methodId,
             canonicalDefinitionIdentity: `entry_${valCounter}`,
           });
+          const cvType = resolveVMValueType(cv.type, cv.bits);
           const entryVal = createSemanticValue({
             id: entryVid,
             kind: 'entry',
-            machineType: createSemanticMachineType(normalizeMachineType(cv.type || { kind: 'bitvector', widthBits: cv.bits || 32 })),
+            machineType: createSemanticMachineType(normalizeMachineType(cvType ?? UNRESOLVED_MACHINE_TYPE)),
             origin: nodeOrigin,
           });
           allValues.push(entryVal);
+          if (cvType != null) valueTypeByValueId.set(entryVal.id, entryVal.machineType);
+          else {
+            bundleFabricated = true;
+            fabricatedValueType = true;
+          }
           consumedInputs.unshift(entryVal.id);
         }
       }
@@ -319,13 +424,33 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
       const mainNodeId = `node_${nodeCounter}`;
       let opOutputs = [];
       if (b.producedValues && b.producedValues.length > 0) {
-        for (const p of b.producedValues) {
-          const v = makeValue(
-            p.type || { kind: 'bitvector', widthBits: p.bits || 32 },
-            nodeOrigin,
-            mainNodeId,
-            p.constant != null ? { constant: String(p.constant) } : null,
-          );
+        const producedTypes = b.producedValues.map((p) => resolveVMValueType(p.type, p.bits));
+        if (producedTypes.some((t) => t == null)
+          && !(b.memoryEffects?.length || b.callEffects?.length || b.controlEffects?.length)) {
+          const sources = [...readValues, ...consumedInputs];
+          const sourceTypes = sources.map((id) => valueTypeByValueId.get(id));
+          let propagate = sources.length > 0 && sourceTypes.every((t) => t != null);
+          if (propagate) {
+            const key = machineTypeKey(sourceTypes[0]);
+            propagate = sourceTypes.every((t) => machineTypeKey(t) === key);
+          }
+          if (propagate) {
+            for (let ti = 0; ti < producedTypes.length; ti++) {
+              if (producedTypes[ti] == null) producedTypes[ti] = sourceTypes[0];
+            }
+          }
+        }
+        for (let pi = 0; pi < b.producedValues.length; pi++) {
+          const p = b.producedValues[pi];
+          let producedType = producedTypes[pi];
+          let metadata = p.constant != null ? { constant: String(p.constant) } : null;
+          if (producedType == null) {
+            producedType = UNRESOLVED_MACHINE_TYPE;
+            metadata = { ...(metadata ?? {}), reason: 'machine-type-unresolved' };
+            bundleFabricated = true;
+            fabricatedValueType = true;
+          }
+          const v = makeValue(producedType, nodeOrigin, mainNodeId, metadata);
           opOutputs.push(v.id);
           evalStack.push(v.id);
         }
@@ -403,6 +528,11 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
         };
       }
 
+      if (bundleFabricated && nodePayload.completeness === 'complete') {
+        nodePayload.completeness = 'partial';
+        nodePayload.unknown = { reason: 'machine-type-unresolved', categories: ['types'] };
+      }
+
       if (targets.length > 0) {
         nodePayload.targets = targets;
       }
@@ -459,13 +589,19 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
             functionId: methodId,
             canonicalDefinitionIdentity: `entry_${valCounter}`,
           });
+          const wType = resolveVMValueType(w.type, w.bits);
           const synthVal = createSemanticValue({
             id: synthVid,
             kind: 'entry',
-            machineType: createSemanticMachineType(normalizeMachineType(w.type || { kind: 'bitvector', widthBits: w.bits || 32 })),
+            machineType: createSemanticMachineType(normalizeMachineType(wType ?? UNRESOLVED_MACHINE_TYPE)),
             origin: nodeOrigin,
           });
           allValues.push(synthVal);
+          if (wType != null) valueTypeByValueId.set(synthVal.id, synthVal.machineType);
+          else {
+            bundleFabricated = true;
+            fabricatedValueType = true;
+          }
           writeInput = synthVal.id;
         }
         const writeNode = createSemanticNode({
@@ -482,6 +618,7 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
           }),
           origin: nodeOrigin,
           sourceEffectIds: [b.operationId],
+          ...(bundleFabricated ? { completeness: 'partial', unknown: { reason: 'machine-type-unresolved', categories: ['types'] } } : {}),
         });
         allNodes.push(writeNode);
         currentBlockNodeIds.push(writeNode.id);
@@ -495,7 +632,7 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
     });
   }
 
-  const isComplete = vmEffectFunction.aggregateCompleteness === 'exact';
+  const isComplete = vmEffectFunction.aggregateCompleteness === 'exact' && !fabricatedValueType;
   const unknowns = [];
   if (!isComplete) {
     const collectedReasons = new Set();
@@ -506,6 +643,7 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
         }
       }
     }
+    if (fabricatedValueType) collectedReasons.add('machine-type-unresolved');
     if (collectedReasons.size === 0) collectedReasons.add('partial-vm-effects');
     for (const reason of collectedReasons) {
       unknowns.push({ reason, categories: ['other'] });
@@ -800,18 +938,18 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
       }
     } else if (node.kind === 'load') {
       memoryReads.push(createMemoryEffect({
-        regionKind: 'heap',
-        broad: false,
-        addressSpaces: ['memory'],
-        source: 'instruction',
+        regionKind: 'unknown',
+        broad: true,
+        addressSpaces: [node.memory?.addressSpace || 'memory'],
+        source: 'proven-summary',
         evidenceIds: [node.id],
       }));
     } else if (node.kind === 'store') {
       memoryWrites.push(createMemoryEffect({
-        regionKind: 'heap',
-        broad: false,
-        addressSpaces: ['memory'],
-        source: 'instruction',
+        regionKind: 'unknown',
+        broad: true,
+        addressSpaces: [node.memory?.addressSpace || 'memory'],
+        source: 'proven-summary',
         evidenceIds: [node.id],
       }));
     } else if (node.kind === 'trap') {
@@ -1036,9 +1174,11 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
     } else if (n.kind === 'compare') {
       const left = n.inputs[0] ? buildValueExpr(n.inputs[0]) : expr.constant(0n, bits);
       const right = n.inputs[1] ? buildValueExpr(n.inputs[1]) : expr.constant(0n, bits);
-      const mn = (n.metadata?.mnemonic || '').toLowerCase();
-      const op = mn.includes('eq') ? 'eq' : mn.includes('ne') ? 'ne' : mn.includes('le') ? 'le' : mn.includes('ge') ? 'ge' : mn.includes('lt') ? 'lt' : mn.includes('gt') ? 'gt' : 'eq';
-      res = expr.compare(op, left, right);
+      const mnemonic = typeof n.metadata?.mnemonic === 'string' ? n.metadata.mnemonic : '';
+      const comparison = managedComparisonForNode(n, frontendId, mnemonic);
+      res = comparison
+        ? expr.compare(comparison.op, left, right, comparison.signed)
+        : expr.intrinsic(safeIdent(mnemonic || 'managed_compare'), [left, right], bits);
     } else if (n.kind === 'unary') {
       const arg = n.inputs[0] ? buildValueExpr(n.inputs[0]) : expr.constant(0n, bits);
       const mnemonic = typeof n.metadata?.mnemonic === 'string' ? n.metadata.mnemonic : '';
@@ -1079,10 +1219,22 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
   }
 
   const body = [];
+  const cfgBlockById = new Map((cfg.blocks || []).map((block) => [block.id, block]));
   const renderedControlTargets = new Set();
   for (const n of semanticIr.nodes) {
-    if (n.kind !== 'branch') continue;
-    for (const target of n.targets || []) renderedControlTargets.add(target);
+    if (n.kind !== 'branch' && n.kind !== 'switch') continue;
+    for (const target of n.targets || []) {
+      if (typeof target === 'string' && target.length > 0) renderedControlTargets.add(target);
+    }
+    if (n.kind === 'switch') {
+      const cfgBlock = cfgBlockById.get(n.blockId);
+      for (const successor of cfgBlock?.successors || []) {
+        if ((successor.kind === 'switch-case' || successor.kind === 'switch-default')
+            && typeof successor.to === 'string' && successor.to.length > 0) {
+          renderedControlTargets.add(successor.to);
+        }
+      }
+    }
   }
 
   const loopHeaders = new Set();
@@ -1177,6 +1329,61 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
           body.push({ kind: 'goto', indent: isLoop ? 3 : 2, text: `goto ${n.targets[0]};` });
         }
         body.push({ kind: 'if_close', indent: isLoop ? 2 : 1, text: '}' });
+      } else if (n.kind === 'switch') {
+        const selector = n.inputs?.[0] ? printExpression(buildValueExpr(n.inputs[0])) : 'selector';
+        const cfgBlock = cfgBlockById.get(n.blockId);
+        const caseEdges = [];
+        const defaultEdges = [];
+        for (const successor of cfgBlock?.successors || []) {
+          if (typeof successor?.to !== 'string' || successor.to.length === 0) continue;
+          if (successor.kind === 'switch-case') caseEdges.push(successor.to);
+          else if (successor.kind === 'switch-default') defaultEdges.push(successor.to);
+        }
+
+        const dispatchParts = [];
+        const roleTargets = new Set();
+        for (let index = 0; index < caseEdges.length; index++) {
+          const target = caseEdges[index];
+          roleTargets.add(target);
+          // The CFG proves that this is a case edge, but it does not publish
+          // the source-language case value. Preserve the ordinal edge without
+          // inventing a value such as `case 0:` (#4028).
+          dispatchParts.push(`case_edge(${index}, ${target})`);
+        }
+        for (const target of defaultEdges) {
+          roleTargets.add(target);
+          dispatchParts.push(`default_edge(${target})`);
+        }
+
+        // Some callers can provide a valid Semantic IR switch with targets but
+        // without CFG edge-role metadata. Keep every target (including
+        // duplicates) as an explicitly unknown-role edge rather than silently
+        // converting the switch to layout fallthrough.
+        if (caseEdges.length === 0 && defaultEdges.length === 0) {
+          for (let index = 0; index < (n.targets || []).length; index++) {
+            const target = n.targets[index];
+            if (typeof target !== 'string' || target.length === 0) continue;
+            dispatchParts.push(`target_edge(${index}, ${target})`);
+          }
+        } else {
+          for (const target of n.targets || []) {
+            if (typeof target !== 'string' || target.length === 0 || roleTargets.has(target)) continue;
+            dispatchParts.push(`target_edge(${dispatchParts.length}, ${target})`);
+          }
+        }
+
+        const controlIncomplete = n.completeness !== 'complete'
+          || (Array.isArray(n.unknown?.categories) && n.unknown.categories.includes('control'));
+        body.push({
+          kind: 'switch',
+          indent: isLoop ? 2 : 1,
+          text: dispatchParts.length === 0
+            ? `switch_unknown(${selector});`
+            : controlIncomplete
+              ? `switch_partial(${selector}, ${dispatchParts.join(', ')});`
+              : `switch_dispatch(${selector}, ${dispatchParts.join(', ')});`,
+          source: n.origin,
+        });
       } else if (n.kind === 'trap') {
         // A language-level throw renders the actual thrown operand (#7311);
         // only a genuine runtime trap keeps the fabricated exception form.

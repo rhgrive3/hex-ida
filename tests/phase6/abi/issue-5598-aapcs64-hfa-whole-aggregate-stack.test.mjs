@@ -12,8 +12,8 @@ import { classifyAAPCS64Arguments } from '../../../js/targets/abi/aapcs64-core.j
  * contract of tests/phase6/abi/issue-5988 with the standard-ABI C.3 rounding. */
 
 const EXHAUSTED_BANKS = [
-  ...Array.from({ length:8 }, () => ({ type:'float' })),
-  ...Array.from({ length:8 }, () => ({ type:'long' })),
+  ...Array.from({ length:8 }, () => ({ type:'float', bits:32, bytes:4 })),
+  ...Array.from({ length:8 }, () => ({ type:'long', bits:64, bytes:8 })),
 ];
 
 function classify(args) {
@@ -30,7 +30,7 @@ test('#5598 HFA float[2] stack fallback rounds the whole argument once (8 bytes,
   const result = classify([...EXHAUSTED_BANKS, {
     type:'H2', hfa:true, bits:64, bytes:8, alignment:4,
     members:[{ bits:32, bytes:4, byteOffset:0 }, { bits:32, bytes:4, byteOffset:4 }],
-  }, { type:'unsigned char' }]);
+  }, { type:'unsigned char', bits:8, bytes:1 }]);
   const entry = stackEntry(result, 16);
   assert.equal(entry.bytes, 8, 'float[2] HFA must occupy 8 stack bytes, not 16');
   assert.equal(entry.stackElementBytes, 4);
@@ -48,7 +48,7 @@ test('#5598 HFA float[4] keeps 16-byte layout with member offsets 0/4/8/12', () 
       { bits:32, bytes:4, byteOffset:0 }, { bits:32, bytes:4, byteOffset:4 },
       { bits:32, bytes:4, byteOffset:8 }, { bits:32, bytes:4, byteOffset:12 },
     ],
-  }, { type:'unsigned char' }]);
+  }, { type:'unsigned char', bits:8, bytes:1 }]);
   const entry = stackEntry(result, 16);
   assert.equal(entry.bytes, 16);
   assert.deepEqual(entry.pieces.map((piece) => piece.byteOffset), [0, 4, 8, 12]);
@@ -60,7 +60,7 @@ test('#5598 HFA __fp16[2] rounds the whole aggregate to 8 and keeps member offse
   const result = classify([...EXHAUSTED_BANKS, {
     type:'H2h', hfa:true, bits:32, bytes:4, alignment:2,
     members:[{ bits:16, bytes:2, byteOffset:0 }, { bits:16, bytes:2, byteOffset:2 }],
-  }, { type:'unsigned char' }]);
+  }, { type:'unsigned char', bits:8, bytes:1 }]);
   const entry = stackEntry(result, 16);
   assert.equal(entry.bytes, 8, 'C.3 rounds size(H2h)=4 up to 8 exactly once');
   assert.equal(entry.stackElementBytes, 2);
@@ -104,12 +104,12 @@ test('#5598 exhausted v-registers still set NSRN=8 before the stack fallback', (
 });
 
 test('#5598 natural 16-byte HVA alignment aligns the stack offset, not member layout', () => {
-  const result = classify([...EXHAUSTED_BANKS, { type:'unsigned long' }, { type:'unsigned long' }, {
+  const result = classify([...EXHAUSTED_BANKS, { type:'unsigned long', bits:64, bytes:8 }, { type:'unsigned long', bits:64, bytes:8 }, {
     type:'VA2', hva:true, bits:256, bytes:32, alignment:16,
     members:[
       { bits:128, bytes:16, byteOffset:0 }, { bits:128, bytes:16, byteOffset:16 },
     ],
-  }, { type:'unsigned char' }]);
+  }, { type:'unsigned char', bits:8, bytes:1 }]);
   const entry = stackEntry(result, 18);
   assert.equal(entry.offset, 16, 'C.4 aligns the NSAA to the 16-byte aggregate alignment');
   assert.equal(entry.bytes, 32);

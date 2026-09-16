@@ -80,7 +80,7 @@ function fixture({ pageStarts, overflow = [], pageCount = pageStarts.length, nod
   pageStarts.forEach((start, i) => dv.setUint16(S + 22 + i * 2, start, LE));
   overflow.forEach((x, i) => dv.setUint16(S + 22 + pageCount * 2 + i * 2, x, LE));
   for (const [offset, node] of Object.entries(nodes)) {
-    const raw = (1n << 63n) | (BigInt(node.next ?? 0) << 51n) | BigInt(node.ordinal ?? 0);
+    const raw = node.raw ?? ((1n << 63n) | (BigInt(node.next ?? 0) << 51n) | BigInt(node.ordinal ?? 0));
     dv.setBigUint64(0x4000 + Number(offset), raw, LE);
   }
   file.set(Buffer.from('puts\0'), F + 92);
@@ -103,6 +103,12 @@ test('#5388 a slot on a declared chain still recovers its import name', async ()
     { addr: stub, name: 'puts', kind: 1 },
     { addr: slotAddr(0x100), name: 'puts', kind: 2 },
   ]);
+});
+
+test('#4216 reserved bits invalidate lightweight chained-import membership', async () => {
+  const malformed = (1n << 63n) | (1n << 32n); // format-6 bind, reserved bit 32 set
+  const file = fixture({ pageStarts: [0x100], nodes: { 0x100: { raw: malformed } }, slot: 0x100 });
+  assert.deepEqual(await chainedImportSymbols(file, 0), [], 'malformed chained words must not publish stub/GOT names');
 });
 
 test('#5388 a chain member beyond the first node is accepted (next is walked)', async () => {

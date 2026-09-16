@@ -179,7 +179,7 @@ function peExportFixture({ withPdata = false } = {}) {
 // #962: scalable SVE types must never silently consume xN/vN scalar ABI locations.
 {
   const classified = classifyAAPCS64Arguments({
-    callPrototype:{ args:[{ type:'svint32_t' }, { type:'svbool_t' }, { type:'uint64_t' }] },
+    callPrototype:{ args:[{ type:'svint32_t' }, { type:'svbool_t' }, { type:'uint64_t', bits:64, bytes:8 }] },
   });
   assert.equal(classified.unsupported, true);
   assert.equal(classified.arguments[0].location, 'unsupported');

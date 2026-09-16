@@ -22,6 +22,7 @@ const model = {
     },
     { name: 'ChildData', addr: 0x1010n, superName: 'PlayerData', protocols: [], methods: [], classMethods: [] },
     { name: 'OtherData', addr: 0x1020n, superName: null, protocols: [], methods: [{ selector: 'debugName', imp: 0x2100n, types: '@16@0:8' }], classMethods: [] },
+    { name: 'UnrelatedData', addr: 0x1030n, superName: null, protocols: [], methods: [], classMethods: [] },
   ],
   categories: [{
     name: 'Debug', className: 'PlayerData', protocols: [{ name: 'Trackable' }],
@@ -60,7 +61,7 @@ assert.equal(index.methodsByIMP.get('4608')?.[0]?.source, 'category');
 // unrelated class.
 const wrongReceiver = resolveObjcDispatch(index, { receiverType: 'ChildData', selector: 'debugName' });
 assert.equal(wrongReceiver.resolved?.imp, 0x1200n, 'subclass should inherit category method on superclass');
-const unrelatedReceiver = resolveObjcDispatch(index, { receiverType: 'NoSuchClass', selector: 'debugName' });
+const unrelatedReceiver = resolveObjcDispatch(index, { receiverType: 'UnrelatedData', selector: 'debugName' });
 assert.equal(unrelatedReceiver.resolved, null);
 assert.equal(unrelatedReceiver.candidates.length, 0);
 

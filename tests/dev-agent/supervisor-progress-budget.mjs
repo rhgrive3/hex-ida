@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
 import { ProgressBudgetDevSupervisorEngineV0 } from '../../js/ai/dev/supervisor/dev-supervisor-progress-budget.js';
 import { DevAgentUiSettings } from '../../js/ai/dev/ui/settings.js';
@@ -13,13 +14,13 @@ console.log('Dev Supervisor progress budget: ok');
 async function successfulToolsResetDecisionBudgetWithFrozenBridge() {
   const requests = [];
   const client = workerClient(async () => [{ tabNodeId: 'same-tab' }]);
-  const supervisor = new DevSupervisorV0({
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
     workerClient: client,
     idFactory: (kind) => `progress-${kind}`,
     now: () => '2026-08-18T08:00:00.000Z',
   });
   const storage = { getItem: () => null, setItem() {} };
-  const settings = new DevAgentUiSettings({ storage });
+  const settings = new DevAgentUiSettings({ authProvider: new AllowAllAdminProvider(), storage });
   settings.setAgentProfile(AGENT_PROFILE.DEV);
 
   let count = 0;

@@ -170,6 +170,11 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
   const categories = [];
   const protocols = new Map();
   const proofRequired = objcModel.implementationProofRequired === true;
+  // #8899: per-target protocol merge accumulator (class name -> { seen, list }).
+  // Created lazily on the first category that actually adds a protocol, so a class
+  // with no adopting category keeps its exact original (possibly duplicate-bearing)
+  // `protocols` array untouched, matching the prior rebuild semantics.
+  const protocolMerge = new Map();
 
   for (const c of objcModel.classes || []) {
     if (!c) continue;
@@ -236,7 +241,28 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
     categories.push(entry);
     const target = targetClass ? classes.get(targetClass) : null;
     if (target && Array.isArray(cat.protocols) && cat.protocols.length) {
-      target.protocols = [...new Set([...(target.protocols || []), ...cat.protocols.map((p) => cleanClassName(p?.name || p)).filter(Boolean)])];
+      // Linear, insertion-ordered de-duplication. The previous code rebuilt and
+      // re-`Set`-scanned the whole accumulated array on every category, so N
+      // categories adopting into one class cost Θ(N²) while the metadata itself is
+      // linear. Folding each new protocol through a persistent per-class `seen` set
+      // yields the identical first-occurrence-ordered unique array in Θ(total).
+      let acc = protocolMerge.get(target.name);
+      if (!acc) {
+        acc = { seen: new Set(), list: [] };
+        for (const existing of target.protocols || []) {
+          if (acc.seen.has(existing)) continue;
+          acc.seen.add(existing);
+          acc.list.push(existing);
+        }
+        target.protocols = acc.list;
+        protocolMerge.set(target.name, acc);
+      }
+      for (const p of cat.protocols) {
+        const adopted = cleanClassName(p?.name || p);
+        if (!adopted || acc.seen.has(adopted)) continue;
+        acc.seen.add(adopted);
+        acc.list.push(adopted);
+      }
     }
     for (const m of cat.instanceMethods || cat.methods || []) {
       const x = normalizeMethod(m, targetClass, false, 'category', proofRequired);
@@ -511,7 +537,12 @@ export function recognizeObjcBlockLiteral(fields, opts = {}) {
   const descriptorOffset = invokeOffset + pointerSize;
   const capturesOffset = descriptorOffset + pointerSize;
   const isa = get(0), flags = get(flagsOffset), invoke = get(invokeOffset), descriptor = get(descriptorOffset);
-  if (invoke == null) return null;
+  // invoke is the block's function pointer: only a canonical non-negative
+  // address can be Block evidence (#5368). Null pointer (0), negatives,
+  // fractional/unsafe numbers, and non-address spellings fail closed to null
+  // without throwing — same grammar as canonicalAddressKey().
+  const invokeValue = canonicalAddressKey(invoke);
+  if (invokeValue == null || invokeValue === '0') return null;
   const captures = [];
   const entries = fields instanceof Map ? [...fields.entries()] : Object.entries(fields || {}).map(([k, v]) => [Number(k), v]);
   for (const [rawOff, value] of entries) {

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import worker from '../worker.js';
 import { AI_QUOTA, acquireQuotaState, releaseQuotaState } from '../js/ai/quota.js';
+import './issue-5775-ai-quota-session-id-collision.test.mjs';
 
 {
   let state = null;

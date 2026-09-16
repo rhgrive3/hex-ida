@@ -20,6 +20,12 @@ const IDLE_MS = 140;
 const PREFETCH_CHUNKS = 1;
 const HEX_ROW_BYTES = 4;
 const IMM_RE = /(#?-?0x[0-9a-f]+|#-?\d+)/gi;
+const MAX_SAFE_ROW = BigInt(Number.MAX_SAFE_INTEGER);
+
+function rowIdentity(rowBig) { return rowBig <= MAX_SAFE_ROW ? Number(rowBig) : rowBig; }
+function toRowBig(row) { return typeof row === 'bigint' ? row : BigInt(row); }
+function bigMin(a, b) { return a < b ? a : b; }
+function bigMax(a, b) { return a > b ? a : b; }
 
 function isAbort(error) { return error?.name === 'AbortError' || error?.code === 'ABORT_ERR'; }
 
@@ -44,6 +50,8 @@ export class CodeViewer {
     this.blockRegionId = null;
     this._ctx = null;
     this.totalRows = 0;
+    this.totalRowsBig = 0n;
+    this.pageRow = 0n;
     this.windowRows = 0;
     this.baseRow = 0;
     this.rowH = 24;
@@ -97,6 +105,14 @@ export class CodeViewer {
     return this.fixedInstructionSize() == null && decode !== 'unsupported' && this.architectureId() !== 'unknown';
   }
 
+  _bigRows() { return this.totalRowsBig > MAX_SAFE_ROW; }
+
+  _setTotalRows(totalBig) {
+    this.totalRowsBig = totalBig;
+    this.pageRow = 0n;
+    this.totalRows = totalBig <= MAX_SAFE_ROW ? Number(totalBig) : Number(MAX_SAFE_ROW);
+  }
+
   instrumentation() {
     return Object.freeze({
       ...this.variableIndex.metrics(),
@@ -121,8 +137,9 @@ export class CodeViewer {
     const maxWindowRows = Math.max(1, Math.floor(WINDOW_PX / this.rowH));
     const anchorAddress = keepPosition ? this.topAddress() : null;
     const anchorRow = keepPosition && !this.isVariableAsm() ? this.topRow() : 0;
-    this.windowRows = Math.min(this.totalRows, maxWindowRows);
-    this.maxBase = Math.max(0, this.totalRows - this.windowRows);
+    const big = this._bigRows();
+    this.windowRows = big ? maxWindowRows : Math.min(this.totalRows, maxWindowRows);
+    this.maxBase = big ? Math.max(0, maxWindowRows - this.visibleRows()) : Math.max(0, this.totalRows - this.windowRows);
     this.baseRow = Math.min(this.baseRow, this.maxBase);
     this.rowsEl.style.height = (this.windowRows * this.rowH) + 'px';
     if (keepPosition && this.totalRows) {
@@ -135,7 +152,9 @@ export class CodeViewer {
 
   topRow() {
     if (!this.totalRows) return 0;
-    return Math.min(Math.max(0, this.totalRows - 1), this.baseRow + Math.floor(this.vp.scrollTop / this.rowH));
+    const local = this.baseRow + Math.floor(this.vp.scrollTop / this.rowH);
+    if (this._bigRows()) return rowIdentity(bigMin(this.totalRowsBig - 1n, this.pageRow + BigInt(local)));
+    return Math.min(Math.max(0, this.totalRows - 1), local);
   }
 
   rowOfAddress(addr) {
@@ -155,7 +174,7 @@ export class CodeViewer {
     if (!width) return null;
     const w = BigInt(width);
     if (this.mode !== 'hex' && fixed != null && rel % w !== 0n) return null;
-    return Number(rel / w);
+    return rowIdentity(rel / w);
   }
 
   topAddress() {
@@ -182,8 +201,8 @@ export class CodeViewer {
     this.modeAddressAnchor = null;
     this.variableRows = Object.freeze([]);
     this.variableError = null;
-    this.totalRows = region ? (this.mode === 'hex' ? Number((region.size + 3n) / 4n)
-      : (this.fixedInstructionSize() ? Number((region.size + BigInt(this.fixedInstructionSize() - 1)) / BigInt(this.fixedInstructionSize())) : 0)) : 0;
+    this._setTotalRows(region ? (this.mode === 'hex' ? (region.size + 3n) / 4n
+      : (this.fixedInstructionSize() ? (region.size + BigInt(this.fixedInstructionSize() - 1)) / BigInt(this.fixedInstructionSize()) : 0n)) : 0n);
     this.baseRow = 0;
     this.selAnchor = -1;
     this.selFocus = -1;
@@ -224,21 +243,23 @@ export class CodeViewer {
     for (const el of this.pool) { el._hex = null; el._ops = null; el._mn = null; el._note = null; }
     if (this.region) {
       if (mode === 'hex') {
-        this.totalRows = Number((this.region.size + 3n) / 4n);
+        this._setTotalRows((this.region.size + 3n) / 4n);
         this.baseRow = 0;
         this._recomputeWindow(false);
         if (anchor != null) {
           const rel = BigInt(anchor) - this.region.vmAddr;
-          if (rel >= 0n && rel < this.region.size) this.goToRow(Number(rel / 4n), 'top');
+          if (rel >= 0n && rel < this.region.size) this.goToRow(rowIdentity(rel / 4n), 'top');
         }
       } else if (this.fixedInstructionSize()) {
         const width = this.fixedInstructionSize();
-        this.totalRows = Number((this.region.size + BigInt(width - 1)) / BigInt(width));
+        this._setTotalRows((this.region.size + BigInt(width - 1)) / BigInt(width));
         this.baseRow = 0;
         this._recomputeWindow(false);
         if (anchor != null) this.goToAddress(anchor);
       } else {
         this.totalRows = this.variableRows.length;
+        this.totalRowsBig = BigInt(this.totalRows);
+        this.pageRow = 0n;
         this.baseRow = 0;
         this._recomputeWindow(false);
         if (anchor != null) this._navigateVariable(anchor, { trusted:this.variableIndex.knownEntry(anchor) != null, where:'top' });
@@ -295,10 +316,15 @@ export class CodeViewer {
   }
   wantAsm() { return this.mode === 'asm' && !!(this.region && this.region.disasm !== false); }
 
-  clampRow(row) { if (!this.totalRows) return 0; return Math.max(0, Math.min(this.totalRows - 1, row)); }
+  clampRow(row) {
+    if (!this.totalRows) return 0;
+    if (this._bigRows()) return rowIdentity(bigMax(0n, bigMin(this.totalRowsBig - 1n, toRowBig(row))));
+    return Math.max(0, Math.min(this.totalRows - 1, row));
+  }
 
   goToRow(row, where = 'third') {
     if (!this.totalRows) return;
+    if (this._bigRows()) { this._goToRowPaged(row, where); return; }
     row = this.clampRow(row);
     const vpH = this.vp.clientHeight;
     let lead = 0;
@@ -311,6 +337,26 @@ export class CodeViewer {
       this.baseRow = Math.max(0, Math.min(this.maxBase, desiredBase));
     } else this.baseRow = 0;
     const local = row - this.baseRow;
+    this.vp.scrollTop = Math.max(0, Math.min(Math.max(0, windowPx - vpH), local * this.rowH - lead));
+    this.invalidate();
+  }
+
+  _goToRowPaged(row, where) {
+    const target = bigMax(0n, bigMin(this.totalRowsBig - 1n, toRowBig(row)));
+    const vpH = this.vp.clientHeight;
+    let lead = 0;
+    if (where === 'center') lead = Math.max(0, Math.floor((vpH - this.rowH) / 2));
+    else if (where === 'third') lead = Math.max(0, Math.floor(vpH / 3));
+    lead = Math.floor(lead / this.rowH) * this.rowH;
+    const half = Math.floor(this.windowRows / 2);
+    const maxBaseBig = this.totalRowsBig > BigInt(this.windowRows) ? this.totalRowsBig - BigInt(this.windowRows) : 0n;
+    let base = target - BigInt(half);
+    if (base < 0n) base = 0n;
+    if (base > maxBaseBig) base = maxBaseBig;
+    this.pageRow = base;
+    this.baseRow = 0;
+    const local = Number(target - base);
+    const windowPx = this.windowRows * this.rowH;
     this.vp.scrollTop = Math.max(0, Math.min(Math.max(0, windowPx - vpH), local * this.rowH - lead));
     this.invalidate();
   }
@@ -385,6 +431,8 @@ export class CodeViewer {
       && !this.variableIndex.containingEntry(this.variableError.address);
     this.variableRows = errorIsUnresolved ? Object.freeze([]) : rows;
     this.totalRows = this.variableRows.length + (this.variableRows.length === 0 && this.variableError ? 1 : 0);
+    this.totalRowsBig = BigInt(this.totalRows);
+    this.pageRow = 0n;
     this.baseRow = 0;
     this._recomputeWindow(false);
     if (oldAddress != null) this._goToKnownVariableAddress(oldAddress, 'top');
@@ -412,21 +460,23 @@ export class CodeViewer {
         return;
       }
     }
-    this.goToRow(this.topRow() + n, 'top');
+    this.goToRow(this._rowPlus(this.topRow(), n), 'top');
   }
   scrollByPages(n) { this.scrollByRows(n * Math.max(1, this.visibleRows() - 2)); }
+  _rowPlus(row, n) { return typeof row === 'bigint' ? row + BigInt(n) : row + n; }
+  _chunkOf(row) { return typeof row === 'bigint' ? Number(row / BigInt(CHUNK_ROWS)) : Math.floor(row / CHUNK_ROWS); }
   revealRow(row) {
     if (!this.totalRows) return;
     row = this.clampRow(row);
     const top = this.topRow(), visible = this.visibleRows();
     if (row <= top) this.goToRow(row, 'top');
-    else if (row >= top + visible - 1) this.goToRow(Math.max(0, row - visible + 2), 'top');
+    else if (row >= this._rowPlus(top, visible - 1)) this.goToRow(this.clampRow(this._rowPlus(row, 2 - visible)), 'top');
   }
   mark(row) { this.markedRow = row; this.invalidate(); }
 
   selectionRange() {
     if (!this.totalRows || this.selAnchor < 0 || this.selFocus < 0) return null;
-    const start = Math.min(this.selAnchor, this.selFocus), end = Math.max(this.selAnchor, this.selFocus);
+    const start = bigMin(this.selAnchor, this.selFocus), end = bigMax(this.selAnchor, this.selFocus);
     const out = { start, end, count:end - start + 1 };
     if (this.isVariableAsm()) {
       const first = this.variableRows[start], last = this.variableRows[end];
@@ -454,14 +504,24 @@ export class CodeViewer {
   }
   beginRange(row) { if (!this.totalRows) return; row=this.clampRow(row); this.selAnchor=row; this.selFocus=row; this.rangeMode=true; this.invalidate(); this.onRangeChange(); }
   extendTo(row) { if (!this.totalRows) return; row=this.clampRow(row); if (this.selAnchor<0) this.selAnchor=row; this.selFocus=row; this.rangeMode=true; this.invalidate(); this.onRangeChange(); }
-  extendByRows(n) { if (!this.totalRows) return; const from=this.selFocus>=0?this.selFocus:this.topRow(); const row=this.clampRow(from+n); this.extendTo(row); this.revealRow(row); }
+  extendByRows(n) { if (!this.totalRows) return; const from=this.selFocus>=0?this.selFocus:this.topRow(); const row=this.clampRow(this._rowPlus(from,n)); this.extendTo(row); this.revealRow(row); }
   extendByPages(n) { this.extendByRows(n * Math.max(1, this.visibleRows() - 2)); }
   extendToRow(row) { this.extendTo(row); this.revealRow(this.selFocus); }
-  selectAllRows() { if (!this.totalRows || this.isVariableAsm()) return; this.selAnchor=0; this.selFocus=this.totalRows-1; this.rangeMode=true; this.invalidate(); this.onRangeChange(); }
+  selectAllRows() { if (!this.totalRows || this.isVariableAsm()) return; this.selAnchor=0; this.selFocus=this._bigRows()?this.totalRowsBig-1n:this.totalRows-1; this.rangeMode=true; this.invalidate(); this.onRangeChange(); }
   clearRange() { this.deselect(); }
 
+  _rowInBounds(row) {
+    if (typeof row === 'bigint') return row >= 0n && row < this.totalRowsBig;
+    return row >= 0 && (this._bigRows() ? BigInt(row) < this.totalRowsBig : row < this.totalRows);
+  }
+  _rowChunk(row) {
+    if (typeof row === 'bigint') return { chunk: Number(row / BigInt(CHUNK_ROWS)), idx: Number(row % BigInt(CHUNK_ROWS)) };
+    const chunk = Math.floor(row / CHUNK_ROWS);
+    return { chunk, idx: row - chunk * CHUNK_ROWS };
+  }
+
   rowData(row) {
-    if (!this.region || row < 0 || row >= this.totalRows) return null;
+    if (!this.region || !this._rowInBounds(row)) return null;
     if (this.isVariableAsm()) {
       const entry = this.variableRows[row];
       if (!entry) {
@@ -470,7 +530,8 @@ export class CodeViewer {
       }
       return { row, address:entry.address, bytes:bytesHex(entry.bytes, 0, entry.length, true), mnemonic:entry.mnemonic, operands:entry.opStr, length:entry.length, decoded:entry.decoded };
     }
-    const chunk=Math.floor(row/CHUNK_ROWS), idx=row-chunk*CHUNK_ROWS, entry=this.backend.peek(this.region.id,chunk,false);
+    const { chunk, idx } = this._rowChunk(row);
+    const entry=this.backend.peek(this.region.id,chunk,false);
     const out={ row, address:this.rowAddress(row), bytes:null, mnemonic:null, operands:null };
     if (entry?.bytes) { const off=idx*4, n=Math.min(4,entry.bytes.length-off); if(n>0) out.bytes=bytesHex(entry.bytes,off,n,true); }
     const asm=this.backend.peek(this.region.id,chunk,true);
@@ -485,6 +546,15 @@ export class CodeViewer {
     const windowPx=this.windowRows*this.rowH, vpH=this.vp.clientHeight, st=this.vp.scrollTop, lo=windowPx*0.25, hi=windowPx*0.75-vpH;
     if(st>lo&&st<hi)return;
     const target=Math.max(0,(windowPx-vpH)/2); let delta=Math.round((st-target)/this.rowH);
+    if (this._bigRows()) {
+      let page = this.pageRow + BigInt(delta);
+      const maxPage = this.totalRowsBig - 1n - BigInt(this.maxBase);
+      if (page < 0n) page = 0n;
+      if (maxPage > 0n && page > maxPage) page = maxPage;
+      const shift = Number(page - this.pageRow);
+      if (!shift) return;
+      this.pageRow = page; this.vp.scrollTop = st - shift * this.rowH; this.invalidate(); return;
+    }
     const newBase=Math.max(0,Math.min(this.maxBase,this.baseRow+delta)); delta=newBase-this.baseRow; if(!delta)return;
     this.baseRow=newBase; this.vp.scrollTop=st-delta*this.rowH; this.invalidate();
   }
@@ -493,14 +563,22 @@ export class CodeViewer {
     this.frame=0;
     if(!this.region||!this.totalRows){ for(const el of this.pool)el.style.display='none'; return; }
     const rowH=this.rowH, vpH=this.vp.clientHeight;
-    this._selLo=this.selAnchor<0?-1:Math.min(this.selAnchor,this.selFocus); this._selHi=this.selAnchor<0?-1:Math.max(this.selAnchor,this.selFocus);
+    this._selLo=this.selAnchor<0?-1:bigMin(this.selAnchor,this.selFocus); this._selHi=this.selAnchor<0?-1:bigMax(this.selAnchor,this.selFocus);
     const firstLocal=Math.max(0,Math.floor(this.vp.scrollTop/rowH)-OVERSCAN);
     const count=Math.min(this.windowRows-firstLocal,Math.ceil(vpH/rowH)+OVERSCAN*2);
-    const startRow=this.baseRow+firstLocal, endRow=Math.min(this.totalRows,startRow+Math.max(0,count));
-    this._ensurePool(endRow-startRow);
+    let startRow,endRow;
+    if(this._bigRows()){
+      startRow=this.pageRow+BigInt(this.baseRow+firstLocal);
+      endRow=bigMin(this.totalRowsBig,startRow+BigInt(Math.max(0,count)));
+    } else {
+      startRow=this.baseRow+firstLocal;
+      endRow=Math.min(this.totalRows,startRow+Math.max(0,count));
+    }
+    const rowCount=Number(endRow-startRow);
+    this._ensurePool(rowCount);
     if(this.isVariableAsm()) this._renderVariable(startRow,endRow);
     else this._renderFixed(startRow,endRow);
-    for(let i=endRow-startRow;i<this.pool.length;i++) if(this.pool[i].style.display!=='none')this.pool[i].style.display='none';
+    for(let i=rowCount;i<this.pool.length;i++) if(this.pool[i].style.display!=='none')this.pool[i].style.display='none';
     const top=this.topRow();
     if(top!==this.lastTopRow){this.lastTopRow=top;this.onTopChange(top,this.rowAddress(top));}
     this._updateScrubber();
@@ -512,13 +590,18 @@ export class CodeViewer {
   }
 
   _renderFixed(startRow,endRow) {
-    const wantAsm=this.wantAsm(); let chunkIdx=-1,entry=null,asmEntry=null;
+    const wantAsm=this.wantAsm();
+    const big=typeof startRow==='bigint';
+    const globalBase=big?this.pageRow+BigInt(this.baseRow):0;
+    let chunkIdx=-1,entry=null,asmEntry=null;
     for(let r=startRow,i=0;r<endRow;r++,i++){
-      const el=this.pool[i],c=Math.floor(r/CHUNK_ROWS);
+      const el=this.pool[i],c=big?Number(r/BigInt(CHUNK_ROWS)):Math.floor(r/CHUNK_ROWS);
       if(c!==chunkIdx){chunkIdx=c;entry=this.backend.peek(this.region.id,c,false);asmEntry=wantAsm?this.backend.peek(this.region.id,c,true):null;if(!entry||(wantAsm&&!asmEntry))this.backend.request(this.region.id,c,wantAsm,{priority:'visible'});}
-      this._paintFixedRow(el,r,entry,asmEntry,(r-this.baseRow)*this.rowH);
+      this._paintFixedRow(el,r,entry,asmEntry,(big?Number(r-globalBase):r-this.baseRow)*this.rowH);
     }
-    const firstChunk=Math.floor(startRow/CHUNK_ROWS),lastChunk=Math.floor((endRow-1)/CHUNK_ROWS),maxChunk=Math.floor((this.totalRows-1)/CHUNK_ROWS);
+    const firstChunk=big?Number(startRow/BigInt(CHUNK_ROWS)):Math.floor(startRow/CHUNK_ROWS);
+    const lastChunk=big?Number((endRow-1n)/BigInt(CHUNK_ROWS)):Math.floor((endRow-1)/CHUNK_ROWS);
+    const maxChunk=big?Number((this.totalRowsBig-1n)/BigInt(CHUNK_ROWS)):Math.floor((this.totalRows-1)/CHUNK_ROWS);
     for(let c=Math.max(0,firstChunk-PREFETCH_CHUNKS);c<=Math.min(maxChunk,lastChunk+PREFETCH_CHUNKS);c++){if(c>=firstChunk&&c<=lastChunk)continue;this.backend.request(this.region.id,c,wantAsm,{priority:'prefetch'});}
   }
 
@@ -538,7 +621,7 @@ export class CodeViewer {
   }
 
   _paintFixedRow(el,row,entry,asmEntry,top) {
-    const idx=row-Math.floor(row/CHUNK_ROWS)*CHUNK_ROWS,off=idx*4,avail=entry?.bytes?Math.min(4,entry.bytes.length-off):0;
+    const { idx } = this._rowChunk(row),off=idx*4,avail=entry?.bytes?Math.min(4,entry.bytes.length-off):0;
     const bytes=avail>0?entry.bytes.subarray(off,off+avail):null;
     let mn='',ops='';if(this.mode==='asm'){if(asmEntry?.mn){mn=asmEntry.mn[idx]||'';ops=asmEntry.ops[idx]||'';}else if(entry?.error)mn='???';else mn='…';}
     this._paintBase(el,row,top,this.rowAddress(row),bytes,mn,ops,{idx,asmEntry});
@@ -577,7 +660,7 @@ export class CodeViewer {
   _updateScrubber() {
     if(!this.track||!this.region)return;const trackH=this.track.clientHeight;if(!trackH)return;const thumbH=this._thumbHeight(trackH);let frac=0;
     if(this.isVariableAsm()){const address=this.topAddress()??this.region.vmAddr;frac=this.region.size>0n?Number(((address-this.region.vmAddr)*1_000_000n)/this.region.size)/1_000_000:0;}
-    else if(this.totalRows){const span=Math.max(1,this.totalRows-this.visibleRows());frac=Math.max(0,Math.min(1,this.topRow()/span));}
+    else if(this.totalRows){if(this._bigRows()){const address=this.topAddress();frac=address!=null&&this.region.size>0n?Number(((address-this.region.vmAddr)*1_000_000n)/this.region.size)/1_000_000:0;}else{const span=Math.max(1,this.totalRows-this.visibleRows());frac=Math.max(0,Math.min(1,this.topRow()/span));}}
     const y=Math.round(Math.max(0,Math.min(1,frac))*(trackH-thumbH)),style=this.thumb.style,h=thumbH+'px',t=y+'px';if(style.height!==h)style.height=h;if(style.top!==t)style.top=t;
   }
 
@@ -669,7 +752,10 @@ export class CodeViewer {
   }
 
   chunkArrived(regionId,chunk) {
-    if(!this.region||regionId!==this.region.id||this.isVariableAsm())return;const first=Math.floor(this.topRow()/CHUNK_ROWS)-1,last=Math.floor((this.topRow()+this.visibleRows())/CHUNK_ROWS)+1;if(chunk>=first&&chunk<=last)this.invalidate();
+    if(!this.region||regionId!==this.region.id||this.isVariableAsm())return;
+    const top=this.topRow();
+    const first=this._chunkOf(top)-1,last=this._chunkOf(this._rowPlus(top,this.visibleRows()))+1;
+    if(chunk>=first&&chunk<=last)this.invalidate();
   }
 
   dispose() {

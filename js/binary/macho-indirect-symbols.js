@@ -166,7 +166,10 @@ export function applyMachOIndirectSymbols(thinInput, image, opts={}) {
   const tableSize=dc.nindirectsyms*4;
   if (!Number.isSafeInteger(tableSize) || dc.indirectsymoff>r.length || tableSize>r.length-dc.indirectsymoff) { partial('table-range-invalid','LC_DYSYMTAB indirect symbol table exceeds Mach-O input'); return image; }
 
-  const ptrSize=kind.bits===64 ? 8n : 4n;
+  // ARM64_32 uses the 64-bit Mach-O container/nlist layout but a 32-bit
+  // native pointer ABI. Keep structural width (`kind.bits`) separate from
+  // indirect pointer-section entry width.
+  const ptrSize=image.arch==='arm64_32' ? 4n : (kind.bits===64 ? 8n : 4n);
   const symbolCache=new Map();
   const symbolAt=(index) => {
     if (symbolCache.has(index)) return symbolCache.get(index);
@@ -174,6 +177,20 @@ export function applyMachOIndirectSymbols(thinInput, image, opts={}) {
     symbolCache.set(index,value);
     return value;
   };
+  const importsByName = new Map();
+  for (const imp of image.imports || []) {
+    const byOrdinal = importsByName.get(imp.name) || new Map();
+    const byWeak = byOrdinal.get(imp.ordinal) || new Map();
+    const key = !!imp.weak;
+    const bucket = byWeak.get(key) || [];
+    bucket.push(imp);
+    byWeak.set(key, bucket);
+    byOrdinal.set(imp.ordinal, byWeak);
+    importsByName.set(imp.name, byOrdinal);
+  }
+  const matchingImports = (sym) => importsByName.get(sym.name)?.get(sym.ordinal)?.get(sym.weak) || [];
+  const preferredByBucket = new Map();
+  const siteAddressesByBucket = new Map();
 
   for (const sec of image.sections || []) {
     const type=sec.flags & 0xff;
@@ -200,14 +217,27 @@ export function applyMachOIndirectSymbols(thinInput, image, opts={}) {
       if (decoded.error) { if (decoded.error==='metadata-budget') { status.complete=false; status.partialReason ||= 'metadata-budget'; return image; } partial(decoded.error,`Mach-O indirect symbol index ${raw} has no usable LC_SYMTAB record`); continue; }
       const sym=decoded.symbol;
       if (!sym) continue;
-      const imports=(image.imports || []).filter((imp)=>imp.name===sym.name && imp.ordinal===sym.ordinal && !!imp.weak===sym.weak);
-      const preferred=imports.find((imp)=>imp.source==='symbol-table') || imports[0];
+      const imports=matchingImports(sym);
+      let preferred=preferredByBucket.get(imports);
+      if (!preferred) {
+        preferred=imports.find((imp)=>imp.source==='symbol-table') || imports[0];
+        if (preferred) preferredByBucket.set(imports, preferred);
+      }
       if (!preferred) { partial('symbol-import-unavailable',`Mach-O indirect symbol ${sym.name} has no canonical import record`); continue; }
       const address=sec.address+BigInt(i)*width;
-      if (imports.some((imp)=>(imp.sites||[]).some((site)=>site.address===address))) continue;
+      let siteAddresses=siteAddressesByBucket.get(imports);
+      if (!siteAddresses) {
+        siteAddresses=new Set();
+        for (const imp of imports) for (const site of imp.sites || []) siteAddresses.add(site.address);
+        siteAddressesByBucket.set(imports, siteAddresses);
+      }
+      // Preserve the old strict site-address equality while avoiding a growing
+      // scan of every site attached to the matching import bucket.
+      if (siteAddresses.has(address)) continue;
       if (!budget.take({ objects:1, operations:1, estimatedHeapBytes:96 }, 'indirect-symbol-site')) { status.complete=false; status.partialReason ||= 'metadata-budget'; return image; }
       preferred.sites ||= [];
       preferred.sites.push({ address, offset:sec.fileOffset+BigInt(i)*width, kind:isStub?'indirect-symbol-stub':'indirect-symbol-pointer' });
+      siteAddresses.add(address);
       status.sites++;
     }
   }

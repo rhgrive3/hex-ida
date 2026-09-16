@@ -1,5 +1,22 @@
 import { normalizeSchemaRecoveryLimit } from '../schema.js';
 
+function normalizeGeneration(value) {
+  return Number.isSafeInteger(value) ? value : 0;
+}
+
+/**
+ * The semantic dependency identity that decides which ProgramIndex a schema
+ * result was recovered from. `SymbolIndex.gen` / `ProgramIndex.gen` is the
+ * canonical freshness authority already established upstream by
+ * `shared-app-artifacts` (#4487); schema recovery consumes that generation-bound
+ * ProgramIndex and must carry it forward instead of dropping it. A missing or
+ * non-integer generation normalizes to the same `0` that `ProgramIndex` and
+ * `symbolsGenerationOf()` use, so callers without a symbol index are unaffected.
+ */
+export function schemaDependencyGeneration(app) {
+  return normalizeGeneration(app?.symbols?.gen);
+}
+
 /**
  * Reduce the shared string/program inputs to the schema artifact's
  * completeness contract.  Both the legacy App producer and the modern UI
@@ -22,7 +39,7 @@ export function dependencyCompleteness(strings, program) {
  * collection.  Metadata is deliberately non-enumerable to preserve the
  * existing array API while making cache reuse fail closed.
  */
-export function annotateSchemaResult(value, completeness = {}, { epoch = null, maxSchemas = null } = {}) {
+export function annotateSchemaResult(value, completeness = {}, { epoch = null, maxSchemas = null, dependencyGeneration = null } = {}) {
   const schemas = Array.isArray(value) ? value : [];
   const reasons = [...new Set((Array.isArray(completeness.reasons) ? completeness.reasons : []).filter(Boolean))];
   const dependencyComplete = completeness.complete === true && reasons.length === 0;
@@ -41,19 +58,25 @@ export function annotateSchemaResult(value, completeness = {}, { epoch = null, m
     schemaRecoveryMaxSchemas:{ value:normalizeSchemaRecoveryLimit(maxSchemas), enumerable:false, configurable:true },
     schemaRecoveryDependencyComplete:{ value:dependencyComplete, enumerable:false, configurable:true },
     schemaRecoveryBudgetPartial:{ value:budgetPartial, enumerable:false, configurable:true },
+    schemaRecoveryDependencyGeneration:{ value:normalizeGeneration(dependencyGeneration), enumerable:false, configurable:true },
   });
   return schemas;
 }
 
 /**
  * A schema array can satisfy a request only when it is a current, typed
- * artifact. Complete results are safe to reuse; incomplete results are
- * reusable only when dependencies were complete (the intentional budget
- * partial case). Dependency-partial/failure results must be retried.
+ * artifact AND it was recovered from the same semantic dependency generation.
+ * Complete results are safe to reuse; incomplete results are reusable only when
+ * dependencies were complete (the intentional budget partial case).
+ * Dependency-partial/failure results must be retried. A `complete:true` artifact
+ * is never reusable across a `ProgramIndex` / symbol generation change, because
+ * that generation determines the candidate universe (`functionsReferencing()` /
+ * `functionRange()`) and can advance within one backend epoch (#4487).
  */
-export function schemaResultSatisfies(result, epoch, maxSchemas) {
+export function schemaResultSatisfies(result, epoch, maxSchemas, dependencyGeneration = null) {
   if (!Array.isArray(result)) return false;
   if (result.schemaRecoveryEpoch !== epoch) return false;
+  if (normalizeGeneration(result.schemaRecoveryDependencyGeneration) !== normalizeGeneration(dependencyGeneration)) return false;
   if (!Number.isSafeInteger(result.schemaRecoveryMaxSchemas)) return false;
   if (result.complete === true) return true;
   return result.schemaRecoveryDependencyComplete === true

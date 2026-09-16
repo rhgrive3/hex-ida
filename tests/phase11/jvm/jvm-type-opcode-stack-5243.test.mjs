@@ -17,7 +17,7 @@ function buildClass(maxLocals, bytecode, options = {}) {
   buf[0] = 0xca; buf[1] = 0xfe; buf[2] = 0xba; buf[3] = 0xbe;
   view.setUint16(4, 0, false);   // minor_version
   view.setUint16(6, 61, false);  // major_version (Java 17)
-  view.setUint16(8, 6, false);   // constant pool count (entries 1..5)
+  view.setUint16(8, 8, false);   // constant pool count (entries 1..7)
   let p = 10;
   buf[p++] = 1; view.setUint16(p, 9, false); p += 2;   // CP1 Utf8 "TestClass"
   buf.set(new TextEncoder().encode('TestClass'), p); p += 9;
@@ -28,9 +28,12 @@ function buildClass(maxLocals, bytecode, options = {}) {
   buf.set(new TextEncoder().encode('()V'), p); p += 3;
   buf[p++] = 1; view.setUint16(p, 4, false); p += 2;   // CP5 Utf8 "Code"
   buf.set(new TextEncoder().encode('Code'), p); p += 4;
+  buf[p++] = 1; view.setUint16(p, 16, false); p += 2;  // CP6 Utf8 "java/lang/Object"
+  buf.set(new TextEncoder().encode('java/lang/Object'), p); p += 16;
+  buf[p++] = 7; view.setUint16(p, 6, false); p += 2;   // CP7 Class -> 6
   view.setUint16(p, 0x0001, false); p += 2;            // access_flags
   view.setUint16(p, 2, false); p += 2;                 // this_class
-  view.setUint16(p, 0, false); p += 2;                 // super_class
+  view.setUint16(p, 7, false); p += 2;                 // super_class
   view.setUint16(p, 0, false); p += 2;                 // interfaces
   view.setUint16(p, 0, false); p += 2;                 // fields
   view.setUint16(p, 1, false); p += 2;                 // methods
@@ -64,9 +67,17 @@ test('#5243 instanceof consumes the objectref and produces only the int result',
   assert.equal(instanceofBundle.producedValues.length, 1,
     'instanceof must push exactly the int result');
   assert.equal(instanceofBundle.producedValues[0].bits, 32);
-  assert.equal(instanceofBundle.completeness, 'exact',
-    'the stack/data effect of instanceof is fully modelled');
-  assert.equal(vmFn.aggregateCompleteness, 'exact');
+  // #5243 owns the stack contract; #8848 supersedes the *type-authority*
+  // aspect: this fixture's `instanceof #1` targets a Utf8 slot (not a
+  // `CONSTANT_Class`), so the checked CP resolver correctly fails closed and
+  // the bundle is now `partial`. Even a valid class operand stays `partial`
+  // because the shared bridge cannot yet express a first-class type-test
+  // predicate on the canonical node (see #8848 reqs 2-4).
+  assert.equal(instanceofBundle.completeness, 'partial',
+    'invalid CP class ref must fail closed (see #8848)');
+  assert.ok(instanceofBundle.unknownEffects.some((e) => e.reason === 'jvm-instanceof-cp-class-invalid'),
+    'invalid CP class ref must publish a stable reason');
+  assert.equal(vmFn.aggregateCompleteness, 'partial');
 });
 
 // aload_0 (0x2a), checkcast #1 (0xc0), areturn (0xb0)

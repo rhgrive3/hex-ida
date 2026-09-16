@@ -65,24 +65,59 @@ export function parseJvm(bytes,options={}){
   function requireCp(idx,tag,code){if(!Number.isInteger(idx)||idx<=0||idx>=constantPool.length)fail(code);const entry=constantPool[idx];if(!entry||entry.tag!==tag)fail(code);return entry;}
   function requireCpOneOf(idx,tags,code){if(!Number.isInteger(idx)||idx<=0||idx>=constantPool.length)fail(code);const entry=constantPool[idx];if(!entry||!tags.includes(entry.tag))fail(code);return entry;}
   function requireUtf8(idx,code='jvm-invalid-utf8-index'){return requireCp(idx,1,code).value;}
+  // #8718: constant-pool entries may legally alias one Utf8 value, so every
+  // semantic validation/parse result is memoized by the referenced Utf8 index
+  // (all Utf8 text is decoded before validation, so index identity is exact).
+  // The aggregate scan budget keeps a re-introduced per-reference rescan from
+  // turning references x bytes back into unbounded synchronous work; it fails
+  // closed, never skipping validation on a trusted image.
+  const semanticScan = { chars: 0, limit: 16 * u8.length + 256 };
+  function useScanWork(text) { semanticScan.chars += text.length; if (semanticScan.chars > semanticScan.limit) fail('jvm-constant-pool-validation-budget-exceeded'); }
+  const classInfoNameMemo = new Map();
+  const binaryNameMemo = new Map();
+  const memberNameMemo = new Map();
+  const memberMethodNameMemo = new Map();
+  const fieldDescriptorMemo = new Map();
+  const methodDescriptorMemo = new Map();
+  function memoizeCheck(memo, idx, code, isValid) {
+    const name = requireUtf8(idx, code);
+    let valid = memo.get(idx);
+    if (valid === undefined) { useScanWork(name); valid = isValid(name); memo.set(idx, valid); }
+    if (!valid) fail(code);
+    return name;
+  }
+  function memoizedDescriptorParse(memo, idx, parse) {
+    let outcome = memo.get(idx);
+    if (outcome === undefined) {
+      const text = constantPool[idx].value;
+      useScanWork(text);
+      try { outcome = { value: parse(text) }; } catch (error) { outcome = { error }; }
+      memo.set(idx, outcome);
+    }
+    if (outcome.error) throw outcome.error;
+    return outcome.value;
+  }
+  function parseFieldDescriptorAt(idx) { return memoizedDescriptorParse(fieldDescriptorMemo, idx, parseJvmFieldDescriptor); }
+  function parseMethodDescriptorAt(idx) { return memoizedDescriptorParse(methodDescriptorMemo, idx, parseJvmMethodDescriptor); }
   // JVMS §4.2.1 binary class/interface name (internal form): identifiers are
   // non-empty UTF-8 sequences of alphanumerics plus $/_ and must not contain
   // ';' '[' or '/'. Internal names use '/' as the package separator, so an
   // empty segment ('a//b', leading/trailing '/') or a '[' is malformed (#7162).
-  function isValidBinaryName(name){if(typeof name!=='string'||name.length===0)return false;if(name.includes('.')||/[[;]/.test(name))return false;return name.split('/').every((segment)=>segment.length>0);}
+  // Single allocation-free pass: no split()/array churn (#8718).
+  function isValidBinaryName(name){if(typeof name!=='string'||name.length===0)return false;if(name[0]==='/'||name[name.length-1]==='/')return false;for(let i=0;i<name.length;i++){const ch=name[i];if(ch==='.'||ch==='['||ch===';')return false;if(ch==='/'&&name[i+1]==='/')return false;}return true;}
   // JVMS §4.4.1: a CONSTANT_Class_info name may also be a field descriptor for
   // an array type (e.g. '[I', '[Ljava/lang/String;').
-  function isValidClassInfoName(name){return isValidBinaryName(name)||(name.startsWith('[')&&parseJvmFieldDescriptor(name)!==undefined);}
+  function computeClassInfoNameValidity(name){if(isValidBinaryName(name))return{valid:true};if(name.startsWith('[')){try{return{valid:parseJvmFieldDescriptor(name)!==undefined};}catch(error){return{error};}}return{valid:false};}
   // JVMS §4.1: this_class/super_class/interfaces must name a class or
   // interface — an array descriptor is never a defining class identity (#7162).
-  function requireDefiningClassName(idx,code){const name=requireClassName(idx,code);if(!isValidBinaryName(name))fail(code);return name;}
-  function requireClassName(idx,code='jvm-invalid-class-index'){const entry=requireCp(idx,7,code);const name=requireUtf8(entry.nameIndex,`${code}-name`);if(!isValidClassInfoName(name))fail(code);return name;}
+  function requireClassName(idx,code='jvm-invalid-class-index'){const entry=requireCp(idx,7,code);const nameIndex=entry.nameIndex;const name=requireUtf8(nameIndex,`${code}-name`);let outcome=classInfoNameMemo.get(nameIndex);if(outcome===undefined){useScanWork(name);outcome=computeClassInfoNameValidity(name);classInfoNameMemo.set(nameIndex,outcome);}if(outcome.error)throw outcome.error;if(!outcome.valid)fail(code);return name;}
+  function requireDefiningClassName(idx,code){const name=requireClassName(idx,code);const nameIndex=constantPool[idx].nameIndex;let binary=binaryNameMemo.get(nameIndex);if(binary===undefined){useScanWork(name);binary=isValidBinaryName(name);binaryNameMemo.set(nameIndex,binary);}if(!binary)fail(code);return name;}
   // JVMS §4.2.2 unqualified member names are non-empty and must not contain
   // '.', ';', '[' or '/'. '<' and '>' are additionally restricted only for
   // ordinary method names; <init>/<clinit> are the special method names.
   function isValidUnqualifiedName(name,{method=false}={}){if(typeof name!=='string'||name.length===0)return false;if(/[.;[\/]/.test(name))return false;if(method&&(name==='<init>'||name==='<clinit>'))return true;if(method&&/[<>]/.test(name))return false;return true;}
-  function requireMemberName(idx,code,{method=false}={}){const name=requireUtf8(idx,code);if(!isValidUnqualifiedName(name,{method}))fail(code);return name;}
-  function parseNameAndTypeDescriptor(index,kind,code){const nameAndType=requireCp(index,12,code);const descriptor=requireUtf8(nameAndType.descriptorIndex,`${code}-descriptor-index`);if(kind==='field')parseJvmFieldDescriptor(descriptor);else parseJvmMethodDescriptor(descriptor);return nameAndType;}
+  function requireMemberName(idx,code,{method=false}={}){return memoizeCheck(method?memberMethodNameMemo:memberNameMemo,idx,code,(name)=>isValidUnqualifiedName(name,{method}));}
+  function parseNameAndTypeDescriptor(index,kind,code){const nameAndType=requireCp(index,12,code);const descriptorIndex=nameAndType.descriptorIndex;requireUtf8(descriptorIndex,`${code}-descriptor-index`);if(kind==='field')parseFieldDescriptorAt(descriptorIndex);else parseMethodDescriptorAt(descriptorIndex);return nameAndType;}
   function validateMemberRef(entry){
     const method=entry.tag!==9;
     requireCp(entry.classIndex,7,'jvm-invalid-cp-memberref-class-index');
@@ -92,15 +127,15 @@ export function parseJvm(bytes,options={}){
     // JVMS §4.4.2: a CONSTANT_Methodref_info named <init> must have a
     // return-void descriptor; OpenJDK rejects violators with
     // ClassFormatError even when the reference is never resolved (#7405).
-    if(entry.tag===10&&name==='<init>'){const parsed=parseJvmMethodDescriptor(requireUtf8(nameAndType.descriptorIndex,'jvm-invalid-cp-memberref-name-and-type-index'));if(parsed.returnType!==null)fail('jvm-invalid-cp-methodref-init-return-type');}
+    if(entry.tag===10&&name==='<init>'){const initDescriptorIndex=nameAndType.descriptorIndex;requireUtf8(initDescriptorIndex,'jvm-invalid-cp-memberref-name-and-type-index');const parsed=parseMethodDescriptorAt(initDescriptorIndex);if(parsed.returnType!==null)fail('jvm-invalid-cp-methodref-init-return-type');}
   }
   function validateConstantPool(){for(let i=1;i<constantPool.length;i++){const entry=constantPool[i];if(!entry)continue;switch(entry.tag){
     case 7:requireClassName(i,'jvm-invalid-cp-class-name-index');break;
     case 8:requireCp(entry.stringIndex,1,'jvm-invalid-cp-string-index');break;
     case 9:case 10:case 11:validateMemberRef(entry);break;
-    case 12:{requireCp(entry.nameIndex,1,'jvm-invalid-cp-nameandtype-name-index');const descriptor=requireUtf8(entry.descriptorIndex,'jvm-invalid-cp-nameandtype-descriptor-index');let valid=false;try{parseJvmFieldDescriptor(descriptor);valid=true;}catch{}if(!valid){try{parseJvmMethodDescriptor(descriptor);valid=true;}catch{}}if(!valid)fail('jvm-invalid-cp-nameandtype-descriptor');break;}
+    case 12:{requireCp(entry.nameIndex,1,'jvm-invalid-cp-nameandtype-name-index');const descriptorIndex=entry.descriptorIndex;requireUtf8(descriptorIndex,'jvm-invalid-cp-nameandtype-descriptor-index');let valid=false;try{parseFieldDescriptorAt(descriptorIndex);valid=true;}catch{}if(!valid){try{parseMethodDescriptorAt(descriptorIndex);valid=true;}catch{}}if(!valid)fail('jvm-invalid-cp-nameandtype-descriptor');break;}
     case 15:{const kind=entry.referenceKind;if(!Number.isInteger(kind)||kind<1||kind>9)fail('jvm-invalid-cp-methodhandle-reference-kind');let tags;if(kind>=1&&kind<=4)tags=[9];else if(kind===9)tags=[11];else if((kind===6||kind===7)&&majorVersion>=52)tags=[10,11];else tags=[10];const target=requireCpOneOf(entry.referenceIndex,tags,'jvm-invalid-cp-methodhandle-reference-index');if(kind>=5){const nameAndType=requireCp(target.nameAndTypeIndex,12,'jvm-invalid-cp-methodhandle-name-and-type-index');const name=requireUtf8(nameAndType.nameIndex,'jvm-invalid-cp-methodhandle-name-index');if((kind===8&&name!=='<init>')||(kind!==8&&(name==='<init>'||name==='<clinit>')))fail('jvm-invalid-cp-methodhandle-target-name');}break;}
-    case 16:{const descriptor=requireUtf8(entry.descriptorIndex,'jvm-invalid-cp-methodtype-descriptor-index');parseJvmMethodDescriptor(descriptor);break;}
+    case 16:{requireUtf8(entry.descriptorIndex,'jvm-invalid-cp-methodtype-descriptor-index');parseMethodDescriptorAt(entry.descriptorIndex);break;}
     case 17:parseNameAndTypeDescriptor(entry.nameAndTypeIndex,'field','jvm-invalid-cp-dynamic-name-and-type-index');break;
     case 18:parseNameAndTypeDescriptor(entry.nameAndTypeIndex,'method','jvm-invalid-cp-dynamic-name-and-type-index');break;
     case 19:case 20:requireCp(entry.nameIndex,1,'jvm-invalid-cp-module-name-index');break;
@@ -119,7 +154,7 @@ export function parseJvm(bytes,options={}){
   for(let i=0;i<fieldsCount;i++){
     ensure(pos,8,'jvm-truncated-field-info');const fFlags=view.getUint16(pos,false),nameIdx=view.getUint16(pos+2,false),descIdx=view.getUint16(pos+4,false),attrCount=view.getUint16(pos+6,false);pos+=8;
     const fieldFlagValidation=validateJvmFieldFlags(fFlags,{ownerAccessFlags:accessFlags,majorVersion});if(fieldFlagValidation.errors.length)fail(fieldFlagValidation.errors[0]);
-    const fieldDescriptor=requireUtf8(descIdx,'jvm-invalid-field-descriptor-index');parseJvmFieldDescriptor(fieldDescriptor);let constantValue=null;
+    const fieldDescriptor=requireUtf8(descIdx,'jvm-invalid-field-descriptor-index');parseFieldDescriptorAt(descIdx);let constantValue=null;
     for(let a=0;a<attrCount;a++){
       ensure(pos,6,'jvm-truncated-field-attribute');const attrName=requireUtf8(view.getUint16(pos,false),'jvm-invalid-field-attribute-name-index'),aLen=view.getUint32(pos+2,false);ensure(pos+6,aLen,'jvm-truncated-field-attribute');
       if(attrName==='ConstantValue'){
@@ -139,7 +174,7 @@ export function parseJvm(bytes,options={}){
     for(let a=0;a<attrCount;a++){ensure(pos,6,'jvm-truncated-method-attribute');const attrNameIdx=view.getUint16(pos,false),attrLen=view.getUint32(pos+2,false),attrName=requireUtf8(attrNameIdx,'jvm-invalid-method-attribute-name-index'),attrDataStart=pos+6;ensure(attrDataStart,attrLen,'jvm-truncated-method-attribute');pos+=6+attrLen;
       if(attrName==='Code'){codeCount++;if(codeCount>1)fail('jvm-duplicate-code-attribute');const attrEnd=attrDataStart+attrLen,ensureCode=(o,s,c)=>checkedRange(attrEnd,o,s,c);ensureCode(attrDataStart,8,'jvm-truncated-code-attribute');const maxStack=view.getUint16(attrDataStart,false),maxLocals=view.getUint16(attrDataStart+2,false),codeLength=view.getUint32(attrDataStart+4,false);if(codeLength<1||codeLength>0xffff)fail('jvm-invalid-code-length');ensureCode(attrDataStart+8,codeLength+2,'jvm-truncated-code-bytes');const bytecode=u8.subarray(attrDataStart+8,attrDataStart+8+codeLength);let cPos=attrDataStart+8+codeLength;const excTableLength=view.getUint16(cPos,false);cPos+=2;const exceptionTable=[];ensureCode(cPos,excTableLength*8,'jvm-truncated-exception-table');for(let e=0;e<excTableLength;e++){const startPc=view.getUint16(cPos,false),endPc=view.getUint16(cPos+2,false),handlerPc=view.getUint16(cPos+4,false),catchType=view.getUint16(cPos+6,false);cPos+=8;if(startPc>=endPc||endPc>codeLength||handlerPc>=codeLength)fail('jvm-invalid-exception-table-range');exceptionTable.push({startPc,endPc,handlerPc,catchType:catchType!==0?requireClassName(catchType,'jvm-invalid-catch-type-index'):null});}ensureCode(cPos,2,'jvm-truncated-code-attributes-count');const nestedAttrCount=view.getUint16(cPos,false);cPos+=2;for(let n=0;n<nestedAttrCount;n++){ensureCode(cPos,6,'jvm-truncated-code-attribute');requireUtf8(view.getUint16(cPos,false),'jvm-invalid-code-attribute-name-index');const nestedLen=view.getUint32(cPos+2,false);ensureCode(cPos+6,nestedLen,'jvm-truncated-code-attribute');cPos+=6+nestedLen;}if(cPos!==attrEnd)fail('jvm-invalid-code-attribute-length');codeAttr={maxStack,maxLocals,codeLength,bytecode,exceptionTable,offset:attrDataStart+8};}}
     const forbidsCode=!!(mFlags&(0x0100|0x0400));if(forbidsCode?codeCount!==0:codeCount!==1)fail(forbidsCode?'jvm-code-attribute-forbidden':'jvm-code-attribute-required');
-    const methodDescriptor=requireUtf8(descIdx,'jvm-invalid-method-descriptor-index'),parsedMethodDescriptor=parseJvmMethodDescriptor(methodDescriptor);
+    const methodDescriptor=requireUtf8(descIdx,'jvm-invalid-method-descriptor-index'),parsedMethodDescriptor=parseMethodDescriptorAt(descIdx);
     // JVMS §4.6 special-method contract, checked against the parsed
     // descriptor rather than raw syntax: <init> and <clinit> must be void,
     // and <clinit> (major >= 51) must take no parameters (#7321). OpenJDK
@@ -150,7 +185,19 @@ export function parseJvm(bytes,options={}){
     }
     if((mFlags&0x0008)===0){const parameterSlots=parsedMethodDescriptor.parameters.reduce((slots,type)=>slots+(type.kind==='base'&&(type.tag==='J'||type.tag==='D')?2:1),0);if(parameterSlots>=255)fail('jvm-invalid-method-descriptor');}claimMemberSignature(seenMethodSignatures,methodName,methodDescriptor,'jvm-duplicate-method-name-descriptor');methods.push({accessFlags:mFlags,name:methodName,descriptor:methodDescriptor,code:codeAttr});
   }
-  const thisClassName=requireDefiningClassName(thisClassIdx,'jvm-invalid-this-class-index'),superClassName=superClassIdx===0?null:requireDefiningClassName(superClassIdx,'jvm-invalid-super-class-index');
+  const thisClassName=requireDefiningClassName(thisClassIdx,'jvm-invalid-this-class-index');
+  // JVMS §4.1 super_class contract: super_class=0 is reserved for the class
+  // Object; interfaces and ACC_MODULE class files must carry a nonzero
+  // super_class naming class Object. Cross-field violations fail closed (#4860).
+  const isInterfaceClass=(accessFlags&0x0200)!==0,isModuleClass=(accessFlags&0x8000)!==0;
+  let superClassName;
+  if(superClassIdx===0){
+    if(isInterfaceClass||isModuleClass||thisClassName!=='java/lang/Object')fail('jvm-invalid-zero-super-class');
+    superClassName=null;
+  }else{
+    superClassName=requireDefiningClassName(superClassIdx,'jvm-invalid-super-class-index');
+    if((isInterfaceClass||isModuleClass)&&superClassName!=='java/lang/Object')fail('jvm-super-class-must-be-object');
+  }
   ensure(pos,2,'jvm-truncated-class-attributes-count');const classAttrCount=view.getUint16(pos,false);pos+=2;let bootstrapMethodsCount=null;for(let a=0;a<classAttrCount;a++){ensure(pos,6,'jvm-truncated-class-attribute');const attrName=requireUtf8(view.getUint16(pos,false),'jvm-invalid-class-attribute-name-index'),attrLen=view.getUint32(pos+2,false),attrDataStart=pos+6;ensure(attrDataStart,attrLen,'jvm-truncated-class-attribute');pos=attrDataStart+attrLen;if(majorVersion>=51&&attrName==='BootstrapMethods'){if(bootstrapMethodsCount!==null)fail('jvm-duplicate-bootstrap-methods-attribute');const attrEnd=pos,ensureBootstrap=(o,s,c='jvm-truncated-bootstrap-methods-attribute')=>checkedRange(attrEnd,o,s,c);ensureBootstrap(attrDataStart,2);bootstrapMethodsCount=view.getUint16(attrDataStart,false);let bPos=attrDataStart+2;for(let b=0;b<bootstrapMethodsCount;b++){ensureBootstrap(bPos,4);const argumentCount=view.getUint16(bPos+2,false);bPos+=4;ensureBootstrap(bPos,argumentCount*2);bPos+=argumentCount*2;}if(bPos!==attrEnd)fail('jvm-invalid-bootstrap-methods-attribute-length');}}validateBootstrapMethodReferences(bootstrapMethodsCount);if(pos!==u8.length)fail('jvm-trailing-bytes');
   const binaryId=options.binaryId||'jvm-binary',imageId=createManagedImageId(binaryId),moduleId=createManagedModuleId(imageId,`${thisClassName}.class`);
   return deepFreeze({imageId,moduleId,formatVersion:`class-${majorVersion}.${minorVersion}`,vmSpecEdition:probe.vmSpecEdition,thisClassName,superClassName,interfaces,accessFlags,constantPool,fields,methods,rawBytes:u8});

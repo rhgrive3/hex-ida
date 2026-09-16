@@ -6,6 +6,7 @@ import {
   publishRebuildTransaction,
 } from '../js/rebuild/transaction-v2.js';
 import { stableDigest } from '../js/core/identity/index.js';
+import './stage2/issue-5540-rebuild-v2-impact-sections.test.mjs';
 
 // Issue #5785: an external validator answer containing an explicit failure
 // token (`ok:false`) must fail even when a success token (`status:'passed'` /

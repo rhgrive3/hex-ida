@@ -158,7 +158,7 @@ test('an exhaustive indirect candidate propagates control facts exactly like a d
     localSummaries: new Map([['fn_dispatch_exact', directCaller], ['fn_target', callee]]),
   }).summaries.get('fn_dispatch_exact');
 
-  assert.equal(indirect.noreturn, true);
+  assert.equal(indirect.noreturn, 'unknown');
   assert.equal(indirect.mayThrow, true);
   assert.equal(indirect.noreturn, direct.noreturn);
   assert.equal(indirect.mayThrow, direct.mayThrow);
@@ -189,7 +189,7 @@ test('multiple exhaustive indirect candidates union their control facts', () => 
   }).summaries.get('fn_dispatch_exact');
 
   assert.equal(summary.status.completeness, 'complete');
-  assert.equal(summary.noreturn, true);
+  assert.equal(summary.noreturn, 'unknown');
   assert.equal(summary.mayThrow, true);
 });
 
@@ -342,7 +342,7 @@ test('a proven library model propagates through a recursive component (#6074)', 
     ...base.get('fn_self'),
     directCalls: [
       ...base.get('fn_self').directCalls,
-      { callSiteId: 'call_fn_self_model', targetEntityIds: ['fn_modeled'] },
+      { callSiteId: 'call_fn_self_model', targetEntityIds: ['fn_modeled'], effectSource: 'library-model' },
     ],
   });
   const solved = solveInterproceduralSummaries({
@@ -366,14 +366,14 @@ test('a proven escape-only library model converges through recursive and indirec
   });
   const recursiveA = createFunctionSummary({
     functionId: 'escape-a',
-    directCalls: [{ callSiteId: 'escape-a-to-b', targetEntityIds: ['escape-b'] }],
+    directCalls: [{ callSiteId: 'escape-a-to-b', targetEntityIds: ['escape-b'], effectSource: 'proven-summary' }],
     status: complete,
   });
   const recursiveB = createFunctionSummary({
     functionId: 'escape-b',
     directCalls: [
-      { callSiteId: 'escape-b-to-a', targetEntityIds: ['escape-a'] },
-      { callSiteId: 'escape-b-to-ext', targetEntityIds: ['escape-ext'] },
+      { callSiteId: 'escape-b-to-a', targetEntityIds: ['escape-a'], effectSource: 'proven-summary' },
+      { callSiteId: 'escape-b-to-ext', targetEntityIds: ['escape-ext'], effectSource: 'library-model' },
     ],
     status: complete,
   });
@@ -464,8 +464,8 @@ test('same semantic escapes union evidence across propagated and model records (
   const caller = createFunctionSummary({
     functionId: 'escape-caller',
     directCalls: [
-      { callSiteId: 'escape-caller-propagated', targetEntityIds: ['escape-propagated'] },
-      { callSiteId: 'escape-caller-model', targetEntityIds: ['escape-model'] },
+      { callSiteId: 'escape-caller-propagated', targetEntityIds: ['escape-propagated'], effectSource: 'proven-summary' },
+      { callSiteId: 'escape-caller-model', targetEntityIds: ['escape-model'], effectSource: 'library-model' },
     ],
     status: sharedStatus,
   });

@@ -41,6 +41,8 @@ function enrichCallBundle(bundle, resolveSignature, nativePointerBits = null) {
       parameterCount:stackEffect.parameterCount,
       hasThis:stackEffect.hasThis,
       returnsValue:stackEffect.returnsValue,
+      callTargetResolved:stackEffect.callTargetResolved,
+      ...(stackEffect.callTargetResolved ? {} : { callTargetReason:stackEffect.callTargetReason }),
     } : {
       signatureReason:stackEffect.reason,
     }),
@@ -53,11 +55,19 @@ function enrichCallBundle(bundle, resolveSignature, nativePointerBits = null) {
   const producedValues = stackEffect.producedValues.map((value) => attachNativeWidth(value, nativePointerBits));
 
   if (stackEffect.complete) {
+    const targetUnresolved = stackEffect.callTargetResolved === false;
     return {
       ...bundle,
       consumedValues:stackEffect.consumedValues,
       producedValues,
       callEffects,
+      ...(targetUnresolved ? {
+        completeness:bundle.completeness === 'unknown' ? 'unknown' : 'partial',
+        unknownEffects:[
+          ...(bundle.unknownEffects || []),
+          { category:'calls', reason:stackEffect.callTargetReason || 'cil-call-target-owner-external' },
+        ],
+      } : {}),
     };
   }
 
@@ -74,11 +84,17 @@ function enrichCallBundle(bundle, resolveSignature, nativePointerBits = null) {
   };
 }
 
-export function liftCilMethod(bodyIndex, cilImage, options = {}) {
+export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority = null) {
   const methodBody = cilImage?.methodBodies?.[bodyIndex];
-  const resolveMethodSignature = createCilMethodSignatureResolver(cilImage);
-  const methodAuthority = resolveMethodSignature(methodBody);
-  const lifted = liftCilMethodCore(bodyIndex, cilImage, options, methodAuthority);
+  // `CilFrontend.decodeMethod()` already resolved this body's MethodDef
+  // authority, so the lift reuses it instead of resolving the same signature a
+  // second time (#8791). An authority is only reusable when it names the very
+  // body it is applied to; a mismatched or absent authority resolves normally,
+  // so one method's signature can never be laundered into another method.
+  const authority = methodAuthority != null && methodAuthority.bodyOffset === methodBody?.headerOffset
+    ? methodAuthority
+    : createCilMethodSignatureResolver(cilImage)(methodBody);
+  const lifted = liftCilMethodCore(bodyIndex, cilImage, options, authority);
   const hasCalls = lifted.bundles.some((bundle) => CALL_MNEMONICS.has(bundle.mnemonic));
   const nativePointerBits = cilImage?.requires32Bit === true ? 32
     : cilImage?.requires64Bit === true ? 64

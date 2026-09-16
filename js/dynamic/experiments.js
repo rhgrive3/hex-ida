@@ -34,6 +34,20 @@ function strictMachineInteger(value) {
   try { return BigInt(value.trim()); } catch { return null; }
 }
 
+export function validateCanonicalArguments(argumentsList) {
+  if (!Array.isArray(argumentsList)) throw new DebugAdapterError('invalid-experiment', 'experiment case arguments must be an array');
+  return argumentsList.map((value, index) => {
+    if (value == null) return 0n;
+    const canonical = strictMachineInteger(value);
+    if (canonical == null
+      || (typeof value === 'string' && value.trim() !== value)
+      || (typeof value === 'string' && !/^[+-]?(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(value))) {
+      throw new DebugAdapterError('invalid-experiment', `experiment case argument ${index} must be a bigint, safe integer, or strict integer string`);
+    }
+    return canonical;
+  });
+}
+
 function normalizeInteger(value, bits, signed) {
   const width = BigInt(bits);
   const mod = 1n << width;
@@ -102,8 +116,15 @@ function relationExpected(hypothesis, initial, input, bits, signed) {
   return normalizeInteger(result, bits, signed);
 }
 
+function explicitIdentifier(value, name) {
+  if (value == null) return null;
+  if (typeof value !== 'string' || value.trim() === '') throw new DebugAdapterError('invalid-hypothesis', `${name} must be a non-empty string`);
+  return value;
+}
+
 export function compileExperiment(hypothesis, options = {}) {
   if (!hypothesis || typeof hypothesis !== 'object') throw new DebugAdapterError('invalid-hypothesis','hypothesis must be an object');
+  const hypothesisId = explicitIdentifier(hypothesis.id, 'hypothesis.id');
   const functionAddress = asAddress(hypothesis.functionAddress ?? hypothesis.function ?? options.functionAddress, 'functionAddress');
   const fieldOffset = hypothesis.fieldOffset == null ? null : asAddress(hypothesis.fieldOffset, 'fieldOffset');
   const fieldSize = integerInRange(hypothesis.fieldSize, 8, 1, 8, 'fieldSize');
@@ -124,7 +145,7 @@ export function compileExperiment(hypothesis, options = {}) {
     const args = Array.from({length:Math.max(argIndex + 1, 2)}, () => 0n); args[0] = objectBase; args[argIndex] = value;
     const expected = item.kind === 'scalar' && fieldOffset != null ? relationExpected(hypothesis, initial, value, fieldBits, signed) : null;
     cases.push({
-      id:`${hypothesis.id || 'hypothesis'}:${item.id}`,
+      id:`${hypothesisId ?? 'hypothesis'}:${item.id}`,
       input:{ arguments:args, scalar:value },
       initialState:{ objectBase, fields:fieldOffset == null ? [] : [{ offset:fieldOffset, size:fieldSize, value:initial }] },
       watch:fieldOffset == null ? [] : [{ name:hypothesis.fieldName || null, offset:fieldOffset, size:fieldSize }],
@@ -132,7 +153,7 @@ export function compileExperiment(hypothesis, options = {}) {
     });
   }
   return {
-    id:String(hypothesis.id || `experiment:${functionAddress.toString(16)}`),
+    id:hypothesisId ?? `experiment:${functionAddress.toString(16)}`,
     hypothesis:{ ...hypothesis, functionAddress, fieldOffset },
     // An explicit hypothesis binding wins over an options override so callers
     // cannot silently re-label a hypothesis onto a different binary; identity
@@ -229,13 +250,15 @@ export class HypothesisVerifier {
     if (maxCases < planned) reasons.push('max-cases');
     let cancelled = false, stoppedOnContradiction = false;
     for (const testCase of experiment.cases.slice(0,maxCases)) {
-      let observation;
+      let observation, launchCanonicalInput = null;
       if (options.signal && options.signal.aborted) {
         observation = { stop:{ kind:'cancelled', message:String(options.signal.reason || 'cancelled') }, memoryDelta:[], memoryAfter:[], returnValue:null };
       } else {
         const objectMemory = (testCase.initialState.fields || []).map((f) => ({ offset:f.offset, size:f.size, value:f.value }));
         try {
-          await this.adapter.launch({ address:experiment.functionAddress, arguments:testCase.input.arguments, objectBase:testCase.initialState.objectBase, objectMemory, watch:testCase.watch, memoryMappings:options.memoryMappings || [], globals:options.globals || [], maxObjectSize:options.maxObjectSize, traceMemoryReads:!!options.traceMemoryReads }, { signal:options.signal });
+          const canonicalArgs = validateCanonicalArguments(testCase.input?.arguments);
+          const launchResult = await this.adapter.launch({ address:experiment.functionAddress, arguments:canonicalArgs, objectBase:testCase.initialState.objectBase, objectMemory, watch:testCase.watch, memoryMappings:options.memoryMappings || [], globals:options.globals || [], maxObjectSize:options.maxObjectSize, traceMemoryReads:!!options.traceMemoryReads }, { signal:options.signal });
+          launchCanonicalInput = launchResult?.canonicalInput || null;
           observation = await this.adapter.resume({ maxSteps, timeoutMs, signal:options.signal });
         } catch (error) {
           const code = String(error && error.code || '');
@@ -246,7 +269,7 @@ export class HypothesisVerifier {
         }
       }
       const comparison = compareExpected(testCase, observation);
-      const evidence = this.evidenceFactory ? this.evidenceFactory({ experiment, testCase, observation, comparison }) : null;
+      const evidence = this.evidenceFactory ? this.evidenceFactory({ experiment, testCase, observation, comparison, launchCanonicalInput }) : null;
       results.push({ case:testCase, observation, comparison, evidence });
       if (comparison.status === 'unsupported' && observation.stop && observation.stop.kind === 'cancelled') { cancelled=true; reasons.push('cancelled'); break; }
       if (options.stopOnContradiction !== false && comparison.status === 'contradicted') { stoppedOnContradiction=true; reasons.push('stop-on-contradiction'); break; }

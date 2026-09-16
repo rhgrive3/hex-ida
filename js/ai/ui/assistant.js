@@ -21,6 +21,7 @@ import { renderProposal } from '../render/proposal.js';
 import { showTerm } from '../../panels.js';
 import { uiRoot } from '../../ui-root.js';
 import { DevAgentUiSettings } from '../dev/ui/settings.js';
+import { DenyAllAdminProvider } from '../dev/auth/admin-provider.js';
 import { createAgentProfileEngine } from '../dev/ui/engine-router.js';
 import { installDevAgentControls } from '../dev/ui/controls.js';
 import { DevSupervisorV0 } from '../dev/supervisor/dev-supervisor-v0.js';
@@ -67,8 +68,12 @@ export function installAssistant(app, ui) {
 
   const engine = createAiEngine(app);
   app.aiRuntime = engine;
-  const devSettings = new DevAgentUiSettings();
-  const devSupervisor = new DevSupervisorV0();
+  // #8854: Dev admin authority must come from a trusted authenticated provider, never a synthetic
+  // allow-all default. The production page wires a real one; when absent the Dev surface fails
+  // closed to Standard-only, and Admin mutation dispatch is rejected at the supervisor boundary.
+  const adminAuthProvider = globalThis.__HEX_DEV_ADMIN_AUTH_PROVIDER__ ?? new DenyAllAdminProvider();
+  const devSettings = new DevAgentUiSettings({ authProvider: adminAuthProvider });
+  const devSupervisor = new DevSupervisorV0({ adminAuthProvider });
   const sessionEngine = createAgentProfileEngine({ standardEngine: engine, settings: devSettings, supervisor: devSupervisor });
   const session = new AiSession({ engine: sessionEngine });
   let open = false;
@@ -191,7 +196,9 @@ export function installAssistant(app, ui) {
     if (options.style) session.setStyle(options.style);
     if (options.scope) session.setScope(options.scope);
     panel.update({ stick: false });
-    return session.ask(question, { context: workbenchContext(app) });
+    const context = workbenchContext(app);
+    if (options.untrustedTarget != null) context.untrustedTarget = options.untrustedTarget;
+    return session.ask(question, { context });
   }
 
   session.on((event) => {

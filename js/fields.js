@@ -55,6 +55,12 @@ export class FieldIndex {
   constructor(model) {
     this.classes = new Map();      // クラス名 -> {name, instanceSize, ivars, byOffset}
     this.methodOwner = new Map();  // 実装アドレス(string) -> owner[]（同一IMP共有を保持）
+    // #8855: per-insert (address, class, selector, kind) identity index. The
+    // shared-IMP list may hold thousands of owners; scanning the growing array
+    // for every insertion is Θ(M²) and a valid 60 000-method Objective-C image
+    // blocks the analysis loop for seconds. Insertion order and the exact
+    // duplicate identity (className, sel, kind) stay unchanged.
+    this._ownerIdentities = new Set();
     this.classOfName = new Map();  // クラス名 -> クラス情報（別名）
     /*
      * 「位置が書いてある場所」→ フィールド。
@@ -138,8 +144,11 @@ export class FieldIndex {
           className: c.name, sel: m.sel || null, kind: m.kind || defaultKind,
           accessorField: allowInstanceAccessor ? accessorField(m.sel) : null,
         };
+        const identity = `${key}\u0000${owner.className}\u0000${owner.sel ?? ''}\u0000${owner.kind ?? ''}`;
+        if (this._ownerIdentities.has(identity)) return;
+        this._ownerIdentities.add(identity);
         const owners = this.methodOwner.get(key) || [];
-        if (!owners.some((x) => x.className === owner.className && x.sel === owner.sel && x.kind === owner.kind)) owners.push(owner);
+        owners.push(owner);
         this.methodOwner.set(key, owners);
       };
       for (const m of c.methods || []) addMethodOwner(m, '-', true);

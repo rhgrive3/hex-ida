@@ -113,7 +113,7 @@ export function foldShapes(scan) {
     if (sp >= BIG_OBJECT) src.inBigObject++;
     src.usedAsAmount++;
     const targetIdentity = identityAt(bases, i);
-    const againstKey = targetIdentity != null ? `${targetIdentity}:${disp[i]}` : `unknown:${disp[i]}`;
+    const againstKey = locKey(targetIdentity, disp[i]);
     src.usedAgainst.set(againstKey, (src.usedAgainst.get(againstKey) || 0) + 1);
     if (flags[i] & SHAPE.SCALED) src.usedScaled++;
     if (flags[i] & SHAPE.CROSS) src.usedCross++;
@@ -127,6 +127,7 @@ function looksLikeContainerHead(e) {
 }
 function plausibleStatSize(e) { return !e.size || e.size === 4 || e.size === 2; }
 function provenancePenalty(e) { return e.identityKnown ? 1 : 0.25; }
+function locKey(identity, offset) { return identity != null ? `${identity}:${offset}` : `unknown:${offset}`; }
 
 function resourceScore(e) {
   if (!e.decreases || looksLikeContainerHead(e) || !plausibleStatSize(e)) return 0;
@@ -144,7 +145,10 @@ function damageSourceScore(e, resourceKeys) {
   if (e.usedCross) s += Math.min(1, e.usedCross / 3) * 0.25;
   if (e.usedScaled) s += Math.min(1, e.usedScaled / 3) * 0.15;
   let againstResource = 0;
-  for (const [key, n] of e.usedAgainst) if (resourceKeys.has(key) || resourceKeys.has(key.split(':').pop())) againstResource += n;
+  for (const [key, n] of e.usedAgainst) {
+    if (resourceKeys.has(key)) { againstResource += n; continue; }
+    if (key.startsWith('unknown:') && resourceKeys.has(key.slice('unknown:'.length))) againstResource += n;
+  }
   if (againstResource) s += Math.min(1, againstResource / 3) * 0.25;
   if (e.decreases + e.increases > e.usedAsAmount) s *= 0.3;
   return Math.min(1, s) * provenancePenalty(e);
@@ -154,7 +158,7 @@ function assignRoles(folded) {
   if (folded.__roles) return folded.__roles;
   const roles = new Map();
   const draft = new Set();
-  for (const e of folded.values()) if (resourceScore(e) > 0) { draft.add(e.key); draft.add(String(e.offset)); }
+  for (const e of folded.values()) if (resourceScore(e) > 0) { draft.add(locKey(e.identity, e.offset)); if (e.identity == null) draft.add(String(e.offset)); }
   for (const e of folded.values()) {
     const res = resourceScore(e), dmg = damageSourceScore(e, draft);
     let role = null;
@@ -204,7 +208,7 @@ export function resources(folded, limit = 12) {
 export function damageSources(folded, res, limit = 12) {
   const safeLimit = boundedLimit(limit, 12);
   const resourceKeys = new Set();
-  for (const r of res || []) { resourceKeys.add(r.key); resourceKeys.add(String(r.offset)); }
+  for (const r of res || []) { resourceKeys.add(locKey(r.identity, r.offset)); if (r.identity == null) resourceKeys.add(String(r.offset)); }
   const roles = assignRoles(folded), out = [];
   for (const e of folded.values()) {
     const r = roles.get(e.key);
@@ -229,7 +233,7 @@ export function evidenceFor(folded, offset, goalId) {
   }
   const res = resources(folded, 24);
   const resourceKeys = new Set();
-  for (const r of res) { resourceKeys.add(r.key); resourceKeys.add(String(r.offset)); }
+  for (const r of res) { resourceKeys.add(locKey(r.identity, r.offset)); if (r.identity == null) resourceKeys.add(String(r.offset)); }
   const role = assignRoles(folded).get(e.key) || { role: null };
   if (role.role === 'ambiguous') codes.push({ code: 'loc-role-conflict', strength: 1, detail: { offset, resource: role.resource, damage: role.damage } });
   if (goalId === 'attack' || goalId === 'damage') {

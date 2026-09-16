@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 import { IframeWorkerPool } from '../../js/userscript/dev/frame-mesh/iframe-worker-pool.js';
 import { startParentDevWorkerRuntime } from '../../js/userscript/dev/parent-worker-runtime.js';
 import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
@@ -139,7 +140,7 @@ async function testSupervisorInjectsCurrentRunId() {
     async execute(tool, args) { captured.push({ tool, args }); return args; },
   };
   const workerTools = { toolNames: [], has() { return false; } };
-  const supervisor = new DevSupervisorV0({
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
     adminTools,
     workerTools,
     idFactory: (kind) => `${kind}-id`,
@@ -335,7 +336,7 @@ async function testRunTransitionIgnoresPreviousRun() {
 async function testDevRunEventHostResumesSameRunExactlyOnce() {
   const { runtime, clients } = await runtimeWithSlots(1);
   try {
-    const supervisor = new DevSupervisorV0({
+    const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
       workerClient: runtime,
       idFactory: (kind) => `${kind}-integration`,
       now: () => NOW,

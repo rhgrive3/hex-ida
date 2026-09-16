@@ -16,6 +16,7 @@ const TRACE_CAPABILITY_EVENT_TYPES = Object.freeze({
   traceBranch: 'branch',
   traceMemoryWrite: 'memory-write',
 });
+const REMOTE_TRACE_MULTIPLEX_CAPABILITIES = Object.freeze(new Set(['traceFunction','traceCall','traceReturn','traceBranch','traceMemoryWrite','traceMemoryRead']));
 const REMOTE_CALL_METHODS = new Set(['attach','launch','pause','resume','stepInto','stepOver','stepOut','removeBreakpoint','listBreakpoints','readRegisters','writeRegister','readMemory','writeMemory','getThreads','getModules','getBacktrace','evaluate','trace','watchMemory']);
 
 // Listener isolation must cover async failures too: a listener returning a
@@ -104,6 +105,18 @@ function cancelledRunResult(emulator) {
   };
 }
 function callsFromTrace(trace) {
+  // The emulator records both a generic instruction event and a typed call
+  // event for each BL/BLR. Pair those representations by instruction site so
+  // resume() does not report one executed call twice, while preserving
+  // legacy-only and repeated same-site calls.
+  const typedBySite = new Map();
+  for (const e of trace || []) {
+    if (e?.type !== 'call') continue;
+    const site = e.addr ?? e.address;
+    if (site == null) continue;
+    const key = typeof site === 'bigint' ? site.toString() : String(site);
+    typedBySite.set(key, (typedBySite.get(key) || 0) + 1);
+  }
   const out = [];
   for (const e of trace || []) {
     if (e?.type === 'call') {
@@ -111,6 +124,16 @@ function callsFromTrace(trace) {
       continue;
     }
     if (!/^(bl|blr)\b/i.test(e?.text || '')) continue;
+    const site = e.addr ?? e.address;
+    if (site != null) {
+      const key = typeof site === 'bigint' ? site.toString() : String(site);
+      const remaining = typedBySite.get(key) || 0;
+      if (remaining > 0) {
+        if (remaining === 1) typedBySite.delete(key);
+        else typedBySite.set(key, remaining - 1);
+        continue;
+      }
+    }
     const match = /^bl\s+#?(0x[0-9a-f]+|[0-9]+)/i.exec(e.text || '');
     let target = null; try { if (match) target = BigInt(match[1]); } catch { target = null; }
     out.push({ type:'call', address:e.addr ?? e.address, target, indirect:/^blr\b/i.test(e.text || ''), text:e.text });
@@ -265,14 +288,14 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const heapSize = boundedInteger(spec.heapSize, RUNTIME_HEAP_SIZE, 0x1000, 16 * 1024 * 1024, 'heapSize');
     const memoryMap = spec.memoryMap instanceof RuntimeMemoryMap ? spec.memoryMap : createSandboxMemoryMap({
       objectBase, objectSize:boundedInteger(spec.maxObjectSize, 0x10000, 0x100, 16 * 1024 * 1024, 'maxObjectSize'),
-      stackTop:STACK_TOP, heapBase, heapSize, globals:spec.globals ?? [], mappings:spec.memoryMappings ?? []
+      stackTop:STACK_TOP, heapBase, heapSize, globals:spec.globals ?? [], mappings:spec.memoryMappings ?? [], signal
     });
     const launchGeneration = ++this.launchGeneration;
     const sandbox = createFunctionSandbox(this.io, { objectBase, maxObjectSize:spec.maxObjectSize });
     const traceBuffer = new TraceRingBuffer(this.options.trace || {});
     const traceState = { suppressMemory:false, runMemoryEvents:null };
     const emu = sandbox.emulator;
-    emu.heap = heapBase;
+    emu.configureHeap({ base: heapBase, size: heapSize });
     let initializing = true;
     const rawLoad = emu.load.bind(emu), rawStore = emu.store.bind(emu);
     emu.load = async (addr,size) => {
@@ -310,13 +333,27 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       }
       throw error;
     }
+    const canonicalHeap = [];
     for (const item of spec.heap || []) {
       if (signal?.aborted) throw new DebugAdapterError('cancelled', 'local sandbox launch was cancelled during setup', { kind: 'cancelled' });
-      await emu.store(asAddress(item.address), initialMemorySize(item.size), initialMemoryValue(item.value));
+      const heapAddress = asAddress(item.address);
+      const heapSize = initialMemorySize(item.size);
+      const heapValue = BigInt.asUintN(heapSize * 8, initialMemoryValue(item.value));
+      await emu.store(heapAddress, heapSize, heapValue);
+      canonicalHeap.push({ address:heapAddress.toString(), size:heapSize, value:heapValue.toString() });
     }
+    const canonicalGlobals = [];
     for (const item of spec.globalValues || []) {
       if (signal?.aborted) throw new DebugAdapterError('cancelled', 'local sandbox launch was cancelled during setup', { kind: 'cancelled' });
-      await emu.store(asAddress(item.address), initialMemorySize(item.size), initialMemoryValue(item.value));
+      const globalAddress = asAddress(item.address);
+      const globalSize = initialMemorySize(item.size);
+      const globalValue = BigInt.asUintN(globalSize * 8, initialMemoryValue(item.value));
+      await emu.store(globalAddress, globalSize, globalValue);
+      canonicalGlobals.push({ address:globalAddress.toString(), size:globalSize, value:globalValue.toString() });
+    }
+    if (canonicalHeap.length || canonicalGlobals.length) {
+      sandbox.canonicalInput.heap = canonicalHeap;
+      sandbox.canonicalInput.globalValues = canonicalGlobals;
     }
     const initialRegisters = cloneRegisters(emu);
     initializing = false;
@@ -440,6 +477,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     this.activeRun = run;
     this.running = true;
     try {
+      if (sandbox.emulator.stopped === 'paused') sandbox.emulator.stopped = null;
       const before = cloneRegisters(sandbox.emulator); const raw = await sandbox.step();
       if (this.activeRun !== run || sandbox !== this.sandbox || run.epoch !== this.epoch) {
         throw new DebugAdapterError('stale-run', 'local sandbox step was invalidated by a newer launch or session change', { runEpoch:run.epoch, currentEpoch:this.epoch });
@@ -656,7 +694,9 @@ export class RemoteDebugAdapter extends DebugAdapter {
     });
   }
   async connect(options = {}) {
-    const hello = await this.protocol.request('connect', { client:'hex', requestedVersion:1, options }, { epoch:this.epoch });
+    const epoch = this.epoch;
+    const hello = await this.protocol.request('connect', { client:'hex', requestedVersion:1, options }, { epoch });
+    if (epoch !== this.epoch) throw new DebugAdapterError('stale-request', 'connect was invalidated before it completed');
     const advertised = normalizeCapabilities(hello && hello.capabilities || {});
     const negotiated = {};
     for (const [key, allowed] of Object.entries(this.allowedCapabilities)) negotiated[key] = key === 'connect' || key === 'disconnect' ? !!allowed : !!allowed && !!advertised[key];
@@ -667,7 +707,7 @@ export class RemoteDebugAdapter extends DebugAdapter {
     if (wasConnected) { try { await this.protocol.request('disconnect',{}, { epoch:this.epoch, timeoutMs:1000 }); } catch {} }
     this.connected = false;
     this.eventListeners.clear();
-    if (wasConnected) this.nextEpoch();
+    this.nextEpoch();
     return { disconnected:true };
   }
   setEpoch(epoch) {
@@ -712,7 +752,7 @@ export class RemoteDebugAdapter extends DebugAdapter {
   async getModules(){return remoteArray(await this.call('getModules'),'modules',REMOTE_ARRAY_LIMITS.modules,'modules')}
   async getBacktrace(threadId){return remoteArray(await this.call('getBacktrace',{threadId}),'frames',REMOTE_ARRAY_LIMITS.backtrace,'backtrace')}
   async evaluate(expression,context){const text=evaluateExpressionText(expression); if(text.length>4096)throw new DebugAdapterError('too-large','remote evaluate expression exceeds 4096 characters'); return this.call('evaluate',{expression:text,context})}
-  async trace(options={}){const {signal,...params}=options||{};return remoteTrace(await this.call('trace',params,{signal}))}
+  async trace(options={}){const {signal,...params}=options||{};const capability=params&&REMOTE_TRACE_MULTIPLEX_CAPABILITIES.has(params.capability)?params.capability:'traceFunction';if(!REMOTE_CALL_METHODS.has('trace'))throw new DebugAdapterError('unsupported-method','remote debug method is not exposed: trace');this.requireConnected();this.require(capability);return remoteTrace(await this.protocol.request('trace',params,{ signal,epoch:this.epoch }))}
   watchMemory(spec){return this.call('watchMemory',normalizeBreakpoint({...spec,kind:'memory'}))}
   getObjCRuntimeInfo(request={}){this.requireConnected(); this.require('objcRuntime'); return this.protocol.request('objcRuntime',request,{epoch:this.epoch})}
   getSwiftRuntimeInfo(request={}){this.requireConnected(); this.require('swiftRuntime'); return this.protocol.request('swiftRuntime',request,{epoch:this.epoch})}

@@ -181,21 +181,22 @@ test('fence records its exact predecessor and successor sets', () => {
   assert.deepEqual(barrier.scope.successor, ['read', 'write']);
 });
 
-test('reserved FENCE fields fail closed instead of becoming exact barriers', () => {
-  // The base encoding reserves rd and rs1, and only fm=0000 or the complete
-  // FENCE.TSO tuple is standard in RV64IMC. These nearby words must not share
-  // the exact barrier semantics of canonical FENCE.
+test('reserved FENCE fields use forward-compatible base semantics', () => {
   const cases = [
-    { name: 'nonzero rd', bytes: [0x8f, 0x00, 0x30, 0x03], reason: 'riscv64-reserved-fence-registers' },
-    { name: 'nonzero rs1', bytes: [0x0f, 0x80, 0x30, 0x03], reason: 'riscv64-reserved-fence-registers' },
-    { name: 'reserved fm', bytes: [0x0f, 0x00, 0x30, 0x13], reason: 'riscv64-reserved-fence-mode' },
-    { name: 'noncanonical FENCE.TSO successor', bytes: [0x0f, 0x00, 0x20, 0x83], reason: 'riscv64-reserved-fence-mode' },
+    { name: 'nonzero rd', bytes: [0x8f, 0x00, 0x30, 0x03], predecessor: ['read', 'write'], successor: ['read', 'write'] },
+    { name: 'nonzero rs1', bytes: [0x0f, 0x80, 0x30, 0x03], predecessor: ['read', 'write'], successor: ['read', 'write'] },
+    { name: 'reserved fm', bytes: [0x0f, 0x00, 0x30, 0x13], predecessor: ['read', 'write'], successor: ['read', 'write'] },
+    { name: 'noncanonical FENCE.TSO successor', bytes: [0x0f, 0x00, 0x20, 0x83], predecessor: ['read', 'write'], successor: ['read'] },
   ];
   for (const item of cases) {
     const { decoded, bundle } = liftBytes(item.bytes);
-    assert.equal(decoded.fields.supported, false, item.name);
-    assert.equal(decoded.fields.reason, item.reason, item.name);
-    assert.equal(bundle, null, `${item.name} must not produce exact MachineEffects`);
+    assert.equal(decoded.fields.supported, true, item.name);
+    assert.equal(bundle.completeness, 'exact', item.name);
+    const barrier = bundle.operations.find((operation) => operation.kind === 'barrier');
+    assert.ok(barrier, item.name);
+    assert.deepEqual(barrier.scope.predecessor, item.predecessor, item.name);
+    assert.deepEqual(barrier.scope.successor, item.successor, item.name);
+    assert.equal(barrier.scope.fenceMode, 'normal', item.name);
   }
 
   const tso = liftBytes([0x0f, 0x00, 0x30, 0x83]);
