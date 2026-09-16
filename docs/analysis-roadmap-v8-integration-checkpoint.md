@@ -7855,3 +7855,16 @@ HEX-C4-05 / FR-C4-05A はこのローカル要件について accepted-local。C
 HEX-S2-01 / HEX-S2-02 はこのローカル機構要件について accepted-local。canonical Phase11 集約は既存の DEX/JVM/exception-region 失敗を含むため別ゲートのまま成功扱いにしない。corpus 幅、データライセンス、独立レビュー、物理実機検証、全 roadmap/release gate は未達のため `CHECKPOINT-LOCKED` / `fullRoadmapComplete: false` / `transformAuthorization: false` を維持する。
 
 clean commit `b14020c98b1bc7fbeb8f65dc996621f114fb5b5b` で、S2 acceptance **20/20 PASS**（log SHA256 `a6695fd17dfab305c7c1288174f6b27046b8603fa3219d108939cd4a59beb038`）、integration ownership **24/24 PASS**（`429be462221aaae0f99c02eed2abded9d0b1e2b7a9dbd82df88a696d073acde2`）、identity重点 **51/51 PASS**（`14982075fcfd72bcb472506fb9533186fdcad0befe5809b97b10c70c814d5084`）、`recognition:test` PASS を確認した。この SHA はコード head であり、後続の文書 commit はこの検証対象 SHA と区別する。canonical `stage2:test` はこの共有 worktree の未tracked `.worktrees/` により `a7-cross-proof-worktree-dirty` で起動できず、S2 の受入証拠には使用していない。
+
+## 2026-09-16 C4-01 local acceptance
+
+`tests/phase8/substrate/c4-01-acceptance.test.mjs` で、Phase 8 の pass contract および transaction lifecycle をローカル固定受入した（7/7 PASS）。全19解析キー（`ANALYSIS_KEYS`）、契約バージョン（`PHASE8_CONTRACT_VERSION = 8`）、固定ステージ順序（`PASS_STAGES`）、対話ステージ（`INTERACTIVE_STAGES`）の凍結スキーマを検証。`PassDescriptor` の `consumes`/`produces`/`preserves`/`invalidates` 宣言義務と相互排他性を固定し、under-invalidation の fail-closed 破棄（未宣言・未保存キーの確実な無効化）、over-invalidation 防止（明示保存キーのキャッシュ・バージョン維持）、変更なしパスの非無効化を実証。staged production の厳格一致（未宣言ステージ書き込み拒絶、戻り値宣言不一致の拒絶）、キャンセル・例外・予算枯渇時の一括ロールバック（完全な状態復元）、同一入力での `transactionDigest` の決定的再現性、事前事実からの安全な状態シードを機械検証した。
+
+HEX-C4-01 はこのローカル要件について accepted-local。Phase8 全体、独立レビュー、物理実機検証、全 release gate は未達のため、`CHECKPOINT-LOCKED` / `fullRoadmapComplete: false` / `transformAuthorization: false` を維持する。
+
+## 2026-09-16 ME-01 local acceptance
+
+`tests/machine-effects/me-01-acceptance.test.mjs` で、HEX-ME-01（FR-ME-01A, FR-ME-01B）の atomic / architectural undefined matrix をローカル固定受入した（7/7 PASS）。`ORDERING_UNDEFINED_MATRIX` の10固定ケース（6 ordering, 4 undefined masks）を深層凍結し、5 atomic memory orderings（relaxed, acquire, release, acq-rel, seq-cst）+ unknown の意味論写像、非atomicアクセスに対する順序指定の拒絶、未知順序の拒絶、実ARM64プロデューサ（`ldar`, `stlr`, `ldxr`）の順序保持 lowering を検証。A64 LSLV 可変シフトのレジスタ幅 modulo 演算、A64 SDIV/UDIV ゼロ除算の明示的 `returns-zero` / `wraps-min-div-minus-one`、未モデル化オペランドの `partial` 保持（具象値捏造禁止）を実証。全10ケースが実 V2, SSA, regions, MemorySSA, compatV1 射影を走査し非ブロッキング分類と経路証明（path proof）を満たすこと、下流境界での ordering 欠落・atomicity 反転・mask 変異・未定義具象化・述語欠落がすべてブロッキングな `mismatch` として検出されることを確認。isla/sail/qemu/herd の形式証拠アーティファクト検査（`generate-formal-evidence.mjs --check`）、ARM64e PAC（44 family, 45,521 cases）および RV64IMC（32-bit 75 family, compressed 37 family）の凍結分母の整合性を機械検証した。
+
+HEX-ME-01 / FR-ME-01A / FR-ME-01B はこのローカル要件について accepted-local。物理ハードウェア実機検証、現代x86形式証拠、RV64 relaxed-memory 全体カバレッジ、全 release gate は未達のため、`CHECKPOINT-LOCKED` / `fullRoadmapComplete: false` / `transformAuthorization: false` を維持する。
+

@@ -20,11 +20,11 @@
     },
     {
       "id": "HEX-ME-01",
-      "localStatus": "partial",
-      "assessment": "既存Isla/herd/Sail/QEMU資料とmask/order transportを再利用。独立定義・物理hardware・PAC・RV64 relaxed-memoryの完全な受入が残る。",
-      "source": "specs/003-oracle-mask-matrix",
-      "verificationSuite": "effects-test",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "assessment": "HEX-ME-01 の atomic / architectural undefined matrix を 10 frozen cases (6 ordering, 4 undefined masks) でローカル受入。5 atomic memory orderings + unknown の意味論写像、非atomic/未知順序の契約拒絶、A64 variable shift modulo / sdiv-udiv / unmodelled operand partiality、下流境界（ordering欠落・atomicity反転・mask変異・述語欠落・具象化）の全blocking mismatch検出、formal evidence artifacts 検査、ARM64e PAC 45,521 cases・RV64IMC frozen coverage を機械検証。物理実機/全体release gatesは別。",
+      "source": "tests/machine-effects/me-01-acceptance.test.mjs",
+      "verificationSuite": "me-01-final-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "HEX-C1-01",
@@ -92,11 +92,11 @@
     },
     {
       "id": "HEX-C4-01",
-      "localStatus": "existing-gate",
-      "assessment": "transaction/invalidation基盤は再利用。Phase8 timeoutや公開projectionの既存失敗を完了根拠にしない。",
-      "source": "docs/ENGINEERING_PROCESS_GUARDRAILS.md",
-      "verificationSuite": "focused-structuring",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "assessment": "C4-01 の pass descriptor contract / transaction lifecycle をローカル受入。全19 analysis key、PassDescriptor (consumes/produces/preserves/invalidates) 相互排他・未知キー/ステージ拒絶、under-invalidation の fail-closed 破棄、over-invalidation 防止、staged write の厳格一致、cancellation/exception での原子的一括ロールバック、同一入力 transaction digest の決定的再現性を検証。全Phase8スイート/全体release gatesは別。",
+      "source": "tests/phase8/substrate/c4-01-acceptance.test.mjs",
+      "verificationSuite": "c4-01-final-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "HEX-C4-02",
@@ -224,9 +224,9 @@
       "mustWaitFor": "C0 manifest contract",
       "complexity": "L",
       "findingId": "HEX-ME-01",
-      "localStatus": "partial",
-      "currentAssessment": "既存Isla/herd/Sail/QEMU資料とmask/order transportを再利用。独立定義・物理hardware・PAC・RV64 relaxed-memoryの完全な受入が残る。",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "currentAssessment": "HEX-ME-01 の atomic / architectural undefined matrix を 10 frozen cases (6 ordering, 4 undefined masks) でローカル受入。5 atomic memory orderings + unknown の意味論写像、非atomic/未知順序の契約拒絶、A64 variable shift modulo / sdiv-udiv / unmodelled operand partiality、下流境界（ordering欠落・atomicity反転・mask変異・述語欠落・具象化）の全blocking mismatch検出、formal evidence artifacts 検査、ARM64e PAC 45,521 cases・RV64IMC frozen coverage を機械検証。物理実機/全体release gatesは別。",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "FR-ME-01B",
@@ -240,9 +240,9 @@
       "mustWaitFor": "ME oracle schema",
       "complexity": "XL",
       "findingId": "HEX-ME-01",
-      "localStatus": "partial",
-      "currentAssessment": "既存Isla/herd/Sail/QEMU資料とmask/order transportを再利用。独立定義・物理hardware・PAC・RV64 relaxed-memoryの完全な受入が残る。",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "currentAssessment": "HEX-ME-01 の atomic / architectural undefined matrix を 10 frozen cases (6 ordering, 4 undefined masks) でローカル受入。5 atomic memory orderings + unknown の意味論写像、非atomic/未知順序の契約拒絶、A64 variable shift modulo / sdiv-udiv / unmodelled operand partiality、下流境界（ordering欠落・atomicity反転・mask変異・述語欠落・具象化）の全blocking mismatch検出、formal evidence artifacts 検査、ARM64e PAC 45,521 cases・RV64IMC frozen coverage を機械検証。物理実機/全体release gatesは別。",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "FR-C1-03A",
@@ -2773,6 +2773,81 @@
         "may-alias / unknown store / unknown call clobber"
       ],
       "scopeNote": "C2-01 (MemorySSA byte forwarding 120-cell denominator) および C2-02 (Product transfer, monotone over-approximation, SCCP, downstream induction fact validation) の local acceptance 完了。全native corpus、独立shadow、実機・release、全体ロードマップは別ゲートとして未完了。",
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false
+    },
+    "c4PassLifecycleAcceptance20260916": {
+      "status": "ACCEPTED-LOCAL",
+      "finding": "HEX-C4-01",
+      "denominator": {
+        "analysisKeys": 19,
+        "contractVersion": 8,
+        "stages": [
+          "scalar-optimization",
+          "loop-facts",
+          "structuring"
+        ],
+        "descriptorContracts": [
+          "consumes",
+          "produces",
+          "preserves",
+          "invalidates"
+        ],
+        "transactionSemantics": [
+          "under-invalidation-fail-closed",
+          "over-invalidation-exact-preservation",
+          "staged-production-agreement",
+          "atomic-rollback-cancellation",
+          "atomic-rollback-exception",
+          "deterministic-replay-digest"
+        ]
+      },
+      "acceptanceTest": "tests/phase8/substrate/c4-01-acceptance.test.mjs",
+      "receipt": {
+        "command": "node tests/phase8/substrate/c4-01-acceptance.test.mjs",
+        "result": "7 tests / 7 pass"
+      },
+      "deterministicReplay": true,
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false
+    },
+    "meDifferentialOracleAcceptance20260916": {
+      "status": "ACCEPTED-LOCAL",
+      "finding": "HEX-ME-01",
+      "tasks": [
+        "FR-ME-01A",
+        "FR-ME-01B"
+      ],
+      "denominator": {
+        "matrixCases": 10,
+        "orderings": [
+          "relaxed",
+          "acquire",
+          "release",
+          "acq-rel",
+          "seq-cst",
+          "unknown"
+        ],
+        "undefinedMaskClasses": [
+          "fully",
+          "partial",
+          "conditional",
+          "operand-dependent"
+        ],
+        "architecturalDenominators": {
+          "arm64ePacFamilies": 44,
+          "arm64ePacCases": 45521,
+          "riscv64Rv64imc32Families": 75,
+          "riscv64Rv64imcCompressed": 37
+        }
+      },
+      "acceptanceTest": "tests/machine-effects/me-01-acceptance.test.mjs",
+      "receipt": {
+        "command": "node tests/machine-effects/me-01-acceptance.test.mjs",
+        "result": "7 tests / 7 pass"
+      },
+      "formalEvidenceCheck": "PASS",
+      "boundaryMutationDetection": "blocking-mismatch",
       "fullRoadmapComplete": false,
       "transformAuthorization": false
     }
