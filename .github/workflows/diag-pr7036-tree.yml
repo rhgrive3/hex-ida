@@ -1,4 +1,4 @@
-name: Diagnose PR7036 first focused failure
+name: Build PR7036 latest-main candidate
 
 on:
   push:
@@ -8,23 +8,28 @@ on:
       - '.github/workflows/diag-pr7036-tree.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  diagnose:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ac36cc16b42fb10fbd54b5bd3f1e1a6474ca902b
           fetch-depth: 1
-      - name: Build exact candidate
+      - name: Fetch exact merge inputs
         shell: bash
         run: |
           set -euo pipefail
           timeout 90s git fetch --no-tags --depth=1 origin 178d386afc63c494d091fb3500c49361ab0a7dc7:refs/remotes/origin/pr7036-base
           timeout 90s git fetch --no-tags origin pull/7036/head:refs/remotes/origin/pr7036
+      - name: Build candidate tree with current-main authority overrides
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
           BASE=refs/remotes/origin/pr7036-base
           PR=refs/remotes/origin/pr7036
           set +e
@@ -33,8 +38,11 @@ jobs:
           set -e
           test "$mrc" = 1
           tree=$(head -n 1 /tmp/merge-tree.txt)
-          awk 'NR==1{next} NF==0{exit} {print}' /tmp/merge-tree.txt > /tmp/conflicts.txt
-          test "$(wc -l < /tmp/conflicts.txt | tr -d ' ')" = 25
+          awk 'NR==1{next} NF==0{exit} {print}' /tmp/merge-tree.txt > /tmp/overrides.txt
+          test "$(wc -l < /tmp/overrides.txt | tr -d ' ')" = 25
+          printf '%s\n' 'js/semantics/compat/index.js' >> /tmp/overrides.txt
+          sort -u /tmp/overrides.txt -o /tmp/overrides.txt
+          test "$(wc -l < /tmp/overrides.txt | tr -d ' ')" = 26
           rm -f /tmp/candidate.index
           GIT_INDEX_FILE=/tmp/candidate.index git read-tree "$tree"
           while IFS= read -r p; do
@@ -46,27 +54,30 @@ jobs:
               sha=$(printf '%s\n' "$entry" | awk '{print $3}')
               GIT_INDEX_FILE=/tmp/candidate.index git update-index --add --cacheinfo "$mode,$sha,$p"
             fi
-          done < /tmp/conflicts.txt
+          done < /tmp/overrides.txt
           resolved=$(GIT_INDEX_FILE=/tmp/candidate.index git write-tree)
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          candidate=$(printf '%s\n' 'diagnose #7036 latest-main candidate' | git commit-tree "$resolved" -p HEAD -p "$PR")
+          candidate=$(printf '%s\n' 'reconcile #7036 onto current main with current semantic authority' | git commit-tree "$resolved" -p HEAD -p "$PR")
+          echo "sha=$candidate" >> "$GITHUB_OUTPUT"
           git checkout --detach "$candidate"
-      - name: Capture #5498 first failure
-        id: focused
+      - name: Syntax preflight
+        shell: bash
+        run: timeout 150s node tests/check.mjs
+      - name: Test #5498 exact backend authority
+        shell: bash
+        run: timeout 90s node --test tests/issue-5498-eligibility-result-status-authority.mjs
+      - name: Test #5391 solver registry authority
+        shell: bash
+        run: timeout 90s node --test tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs
+      - name: Test #4513 MemorySSA access provider
+        shell: bash
+        run: timeout 90s node --test tests/semantic-v2/issue-4513-memoryssa-access-provider-completeness.test.mjs
+      - name: Test #4358 ELF dynamic XINDEX
+        shell: bash
+        run: timeout 90s node --test tests/phase4/binary/issue-4358-elf-dynamic-xindex-common.test.mjs
+      - name: Publish clean candidate branch
         shell: bash
         run: |
-          set +e
-          timeout 90s node --test tests/issue-5498-eligibility-result-status-authority.mjs > /tmp/focused.txt 2>&1
-          rc=$?
-          set -e
-          tail -n 100 /tmp/focused.txt > pr7036-first-failure.txt
-          echo "rc=$rc" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: pr7036-first-failure
-          path: pr7036-first-failure.txt
-          retention-days: 1
-      - name: Preserve test status
-        shell: bash
-        run: test '${{ steps.focused.outputs.rc }}' = '0'
+          set -euo pipefail
+          timeout 60s git push origin "${{ steps.candidate.outputs.sha }}:refs/heads/reconcile/pr7036-current-main-20260917"
