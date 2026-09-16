@@ -1,0 +1,104 @@
+name: Temporary X-02 Audit Self Sync
+
+on:
+  push:
+    branches:
+      - feat/analysis-roadmap-v8-current-main-20260907
+    paths:
+      - '.github/workflows/x02-audit-self-sync.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BASE_HEAD: 1e015841e2a0d02243b623d304908e90c0233211
+      TARGET_REF: feat/analysis-roadmap-v8-current-main-20260907
+    steps:
+      - name: Verify trigger base
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ github.event.before }}" = "${BASE_HEAD}"
+
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_REF }}
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Update current X-02 audit state
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('docs/analysis-local-acceptance-audit.json')
+          d=json.loads(p.read_text())
+          assert d['schemaVersion']=='hex-analysis-local-acceptance/v1'
+          assert d['originalFindingCount']==23 and d['originalTaskCount']==21
+          assert d['overallStatus']=='CHECKPOINT-LOCKED' and d['fullRoadmapComplete'] is False and d['transformAuthorization'] is False
+          f=[x for x in d['findings'] if x.get('id')=='HEX-X-02']; t=[x for x in d['tasks'] if x.get('id')=='FR-X-02A']
+          assert len(f)==1 and len(t)==1
+          f=f[0]; t=t[0]
+          f['localStatus']='partial-local-matrix'
+          f['assessment']='元120行と既存59機能case+2manifestを保持。current finite overlayはX02-F-48のcompiler-produced arm64e Mach-O/PAC evidenceをpassとして、pinned LLVM 18.1.3 oracleが利用できない通常環境で115 pass/0 product-gap/3 evidence-gap/2 environment-excluded。X02-H-02のindependent reparseがexecutable digest/version/format/architectureを含めて成功する環境のみ116/0/3/1。残る3 evidence-gapはversioned Apple OS/toolchain/runtime corpus、real dyld shared cache + OS-derived slide/rebase provenance、genuine signed Mach-O + trusted signing validation。X02-F-47の実PAC authenticationはreal Apple arm64e runtime依存。全X-02・実機・release受入は未完了。'
+          f['source']='docs/analysis-x02-acceptance.md'; f['verificationSuite']='scpa-test'; f['originalRequirementAcceptedHere']=False
+          t['localStatus']='partial-local-matrix'
+          t['currentAssessment']='元120行をcanonical統合し製品不足6行を修正済み。X02-F-48を実compiler生成arm64e/PAC evidenceでcurrent passへ進め、通常current分類は115/0/3/2。exact pinned LLVM 18.1.3でX02-H-02の独立reparseが成功した環境のみ116/0/3/1。unknown versionはpartialのまま保持し、残る実Apple runtime corpus、real dyld cache/slide provenance、genuine signed Mach-O/signing validation、実arm64e PAC runtimeは未完了。'
+          t['originalRequirementAcceptedHere']=False
+          q=d['integrationFollowup']
+          assert q['x02HistoricalClassification']=={'pass':108,'product-gap':6,'evidence-gap':4,'environment-excluded':2}
+          q['x02CurrentFiniteClassification']={'pass':115,'product-gap':0,'evidence-gap':3,'environment-excluded':2}
+          q['x02AcceptanceReconciliation20260916']={
+            'status':'PARTIAL-LOCAL-MATRIX','denominator':120,'frozenMatrixSha256':q['x02FrozenMatrixSha256'],
+            'historicalClassification':{'pass':108,'product-gap':6,'evidence-gap':4,'environment-excluded':2},
+            'currentWithoutPinnedLlvmOracle':{'pass':115,'product-gap':0,'evidence-gap':3,'environment-excluded':2},
+            'conditionalWithPinnedLlvmOracle':{'pass':116,'product-gap':0,'evidence-gap':3,'environment-excluded':1,'condition':'X02-H-02 exact independent reparse succeeds with pinned LLVM 18.1.3 executable digest/version/format/architecture checks'},
+            'currentPassAdded':'X02-F-48 compiler-produced arm64e Mach-O/PAC evidence',
+            'remainingEvidenceGaps':['versioned Apple OS/toolchain/runtime corpus with provenance','real dyld shared cache plus OS-derived slide/rebase provenance','genuine signed Mach-O plus trusted signing validation'],
+            'remainingEnvironmentExcluded':['X02-F-47 real PAC authentication on Apple arm64e runtime','X02-H-02 exact pinned LLVM oracle when unavailable'],
+            'sourceOfTruth':'docs/analysis-x02-acceptance.md','fullRoadmapComplete':False,'transformAuthorization':False}
+          stale='remote X02 reviewed matrix not locally available'; repl='X02 prior120 matrix is integrated; real Apple runtime/cache/signing/device evidence remains absent'
+          d['localIntegrationLimitations']=[repl if x==stale else x for x in d.get('localIntegrationLimitations',[])]
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+
+      - name: Validate JSON and invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m json.tool docs/analysis-local-acceptance-audit.json >/dev/null
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('docs/analysis-local-acceptance-audit.json').read_text())
+          f=next(x for x in d['findings'] if x['id']=='HEX-X-02'); t=next(x for x in d['tasks'] if x['id']=='FR-X-02A'); q=d['integrationFollowup']
+          assert '115 pass/0 product-gap/3 evidence-gap/2 environment-excluded' in f['assessment']
+          assert '116/0/3/1' in t['currentAssessment']
+          assert q['x02CurrentFiniteClassification']=={'pass':115,'product-gap':0,'evidence-gap':3,'environment-excluded':2}
+          assert q['x02HistoricalClassification']=={'pass':108,'product-gap':6,'evidence-gap':4,'environment-excluded':2}
+          assert q['x02AcceptanceReconciliation20260916']['conditionalWithPinnedLlvmOracle']['pass']==116
+          assert d['originalFindingCount']==23 and d['originalTaskCount']==21
+          assert d['overallStatus']=='CHECKPOINT-LOCKED' and d['fullRoadmapComplete'] is False and d['transformAuthorization'] is False
+          PY
+          git diff --check
+
+      - name: Recheck exact branch head and push JSON only
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="$(git rev-parse HEAD)"
+          remote_now="$(git ls-remote origin "refs/heads/${TARGET_REF}" | awk '{print $1}')"
+          test "${remote_now}" = "${current}"
+          git config user.name 'actions-x02-audit-sync'
+          git config user.email 'actions-x02-audit-sync@users.noreply.github.com'
+          git add docs/analysis-local-acceptance-audit.json
+          git commit -m 'docs(analysis): sync X-02 audit acceptance'
+          git push --no-verify origin "HEAD:refs/heads/${TARGET_REF}"
+          echo "pushed_head=$(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
