@@ -4,7 +4,7 @@ on:
     branches:
       - diag/7036-ownership-first-failure
 permissions:
-  contents: write
+  contents: read
 jobs:
   diagnose:
     runs-on: ubuntu-latest
@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Reconcile current main
+      - name: Resolve T014 overlap only
         shell: bash
         run: |
           set +e
@@ -21,7 +21,6 @@ jobs:
           STATUS=/tmp/diag-7036.txt
           : > "$STATUS"
           ORIGINAL_HEAD=e544f3a9a45d618e573565d39e1a49223040af06
-          LOGICAL_BRANCH=feat/analysis-roadmap-v8-current-main-20260907
           timeout 90s git fetch --no-tags origin main "$ORIGINAL_HEAD" >/tmp/fetch.log 2>&1
           rc=$?
           echo "fetch rc=$rc" >> "$STATUS"
@@ -30,64 +29,36 @@ jobs:
           rc=$?
           echo "checkout rc=$rc" >> "$STATUS"
           if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/checkout.log >> "$STATUS"; exit "$rc"; fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           BASE_SHA=$(git rev-parse refs/remotes/origin/main)
           echo "main=$BASE_SHA" >> "$STATUS"
-          timeout 120s git merge --no-edit --no-ff refs/remotes/origin/main >/tmp/merge.log 2>&1
-          rc=$?
-          echo "merge rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then
-            echo "conflicts:" >> "$STATUS"
-            git diff --name-only --diff-filter=U | head -n 80 >> "$STATUS"
-            git merge --abort >/dev/null 2>&1 || true
-            exit "$rc"
-          fi
-          MERGED_HEAD=$(git rev-parse HEAD)
-          echo "merged_head=$MERGED_HEAD" >> "$STATUS"
-          git diff --check "$BASE_SHA...$MERGED_HEAD" >/tmp/diffcheck.log 2>&1
-          rc=$?
-          echo "diff_check rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then tail -n 50 /tmp/diffcheck.log >> "$STATUS"; exit "$rc"; fi
+          git merge --no-edit --no-ff refs/remotes/origin/main >/tmp/merge.log 2>&1
+          echo "initial_merge_rc=$?" >> "$STATUS"
 
-          fail_tail() {
-            label="$1"; file="$2"; rc="$3"
-            echo "$label rc=$rc" >> "$STATUS"
-            echo "--- first failure tail ---" >> "$STATUS"
-            tail -n 80 "$file" >> "$STATUS"
-            exit "$rc"
-          }
-          check() {
-            label="$1"; shift
-            timeout 120s "$@" >"/tmp/$label.log" 2>&1
-            rc=$?
-            [ "$rc" -eq 0 ] || fail_tail "$label" "/tmp/$label.log" "$rc"
-            echo "$label rc=0" >> "$STATUS"
-          }
-          check phase7_manifest node tools/validation/phase7-ownership.mjs --check-manifest
-          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs \
-            --branch "$LOGICAL_BRANCH" --phase phase7 --base-sha "$BASE_SHA" --head-sha "$MERGED_HEAD" \
-            >/tmp/p7files.json 2>/tmp/p7_inventory.log
-          rc=$?
-          [ "$rc" -eq 0 ] || fail_tail phase7_inventory /tmp/p7_inventory.log "$rc"
-          P7_JSON=$(cat /tmp/p7files.json)
-          echo "phase7_files=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("/tmp/p7files.json","utf8")).length)')" >> "$STATUS"
-          check phase7_validate node tools/validation/phase7-ownership.mjs --files-json "$P7_JSON"
-          check phase8_manifest node tools/validation/phase8-ownership.mjs --check-manifest
-          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs \
-            --branch "$LOGICAL_BRANCH" --phase phase8 --base-sha "$BASE_SHA" --head-sha "$MERGED_HEAD" \
-            >/tmp/p8files.json 2>/tmp/p8_inventory.log
-          rc=$?
-          [ "$rc" -eq 0 ] || fail_tail phase8_inventory /tmp/p8_inventory.log "$rc"
-          P8_JSON=$(cat /tmp/p8files.json)
-          echo "phase8_files=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("/tmp/p8files.json","utf8")).length)')" >> "$STATUS"
-          check phase8_validate node tools/validation/phase8-ownership.mjs --files-json "$P8_JSON"
-
-          timeout 60s git push origin "$MERGED_HEAD:refs/heads/$LOGICAL_BRANCH" >/tmp/push.log 2>&1
-          rc=$?
-          echo "push rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then tail -n 50 /tmp/push.log >> "$STATUS"; exit "$rc"; fi
-          echo "main reconciliation published" >> "$STATUS"
+          T014=(
+            js/symbolic/expr/hash.js
+            js/symbolic/solver/backend.js
+            js/symbolic/solver/bitblast-backend.js
+            js/symbolic/solver/registry.js
+            js/symbolic/solver/tiered-backend.js
+            js/symbolic/solver/worker-backend.js
+            js/symbolic/solver/worker-entry.js
+            js/symbolic/verify/query.js
+            tests/issue-5498-eligibility-result-status-authority.mjs
+            tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs
+          )
+          for f in "${T014[@]}"; do
+            if git diff --name-only --diff-filter=U -- "$f" | grep -q .; then
+              git checkout --theirs -- "$f" && git add "$f"
+              rc=$?
+              echo "resolve_main $f rc=$rc" >> "$STATUS"
+              if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+            fi
+          done
+          echo "remaining_conflicts:" >> "$STATUS"
+          git diff --name-only --diff-filter=U >> "$STATUS"
+          count=$(git diff --name-only --diff-filter=U | wc -l)
+          echo "remaining_count=$count" >> "$STATUS"
+          exit 1
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
