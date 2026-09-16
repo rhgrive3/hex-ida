@@ -48,20 +48,19 @@ jobs:
               if s.count(old) != 1:
                   raise SystemExit(f'missing/ambiguous expected test pattern: {old[:80]} count={s.count(old)}')
               s=s.replace(old,new)
-          needle="""  {
-            const result = await runWorker(dense(3), { entry: 0x100000000n + 1000n });
-          """
-          insert="""  {
-            const result = await runWorker(dense(293_794), { entry: 0x100000000n + 500_000n * 4n });
-            assert.equal(result.functionDiscovery.capped, false, 'real YWP-scale function starts stay within the safe retention ceiling');
-            assert.equal(result.functionDiscovery.complete, true);
-            assert.equal(result.capped, false);
-            assert.ok(result.functionStartsExact, '293,794 authoritative starts remain exact');
-            assert.equal(result.funcs.length, 293_795, 'entry seed merges without forcing a retention cap');
-          }
-          {
-            const result = await runWorker(dense(3), { entry: 0x100000000n + 1000n });
-          """
+          needle="  {\n    const result = await runWorker(dense(3), { entry: 0x100000000n + 1000n });\n"
+          insert=(
+            "  {\n"
+            "    const result = await runWorker(dense(293_794), { entry: 0x100000000n + 500_000n * 4n });\n"
+            "    assert.equal(result.functionDiscovery.capped, false, 'real YWP-scale function starts stay within the safe retention ceiling');\n"
+            "    assert.equal(result.functionDiscovery.complete, true);\n"
+            "    assert.equal(result.capped, false);\n"
+            "    assert.ok(result.functionStartsExact, '293,794 authoritative starts remain exact');\n"
+            "    assert.equal(result.funcs.length, 293_795, 'entry seed merges without forcing a retention cap');\n"
+            "  }\n"
+            "  {\n"
+            "    const result = await runWorker(dense(3), { entry: 0x100000000n + 1000n });\n"
+          )
           if s.count(needle) != 1:
               raise SystemExit(f'missing/ambiguous insertion point count={s.count(needle)}')
           test.write_text(s.replace(needle,insert))
