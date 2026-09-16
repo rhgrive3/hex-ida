@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Capture merge precondition failure
+      - name: Resolve T014 overlap only
         shell: bash
         run: |
           set +e
@@ -29,23 +29,40 @@ jobs:
           rc=$?
           echo "checkout rc=$rc" >> "$STATUS"
           if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/checkout.log >> "$STATUS"; exit "$rc"; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           BASE_SHA=$(git rev-parse refs/remotes/origin/main)
           echo "main=$BASE_SHA" >> "$STATUS"
-          git merge-base "$ORIGINAL_HEAD" "$BASE_SHA" >/tmp/mb.txt 2>/tmp/mb.err
-          mb_rc=$?
-          echo "merge_base_rc=$mb_rc" >> "$STATUS"
-          if [ "$mb_rc" -eq 0 ]; then echo "merge_base=$(cat /tmp/mb.txt)" >> "$STATUS"; else tail -n 20 /tmp/mb.err >> "$STATUS"; fi
           git merge --no-edit --no-ff refs/remotes/origin/main >/tmp/merge.log 2>&1
-          rc=$?
-          echo "merge rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then
-            echo "--- merge failure tail ---" >> "$STATUS"
-            tail -n 40 /tmp/merge.log >> "$STATUS"
-            echo "unmerged_count=$(git diff --name-only --diff-filter=U | wc -l)" >> "$STATUS"
-            git diff --name-only --diff-filter=U | head -n 40 >> "$STATUS"
-            exit "$rc"
-          fi
-          echo "merge unexpectedly succeeded" >> "$STATUS"
+          merge_rc=$?
+          echo "initial_merge_rc=$merge_rc" >> "$STATUS"
+          if [ "$merge_rc" -eq 0 ]; then echo "merge_clean=true" >> "$STATUS"; exit 1; fi
+
+          T014=(
+            js/symbolic/expr/hash.js
+            js/symbolic/solver/backend.js
+            js/symbolic/solver/bitblast-backend.js
+            js/symbolic/solver/registry.js
+            js/symbolic/solver/tiered-backend.js
+            js/symbolic/solver/worker-backend.js
+            js/symbolic/solver/worker-entry.js
+            js/symbolic/verify/query.js
+            tests/issue-5498-eligibility-result-status-authority.mjs
+            tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs
+          )
+          for f in "${T014[@]}"; do
+            if git diff --name-only --diff-filter=U -- "$f" | grep -q .; then
+              git checkout --theirs -- "$f" >/tmp/resolve.log 2>&1 && git add "$f"
+              rc=$?
+              echo "resolve_main $f rc=$rc" >> "$STATUS"
+              if [ "$rc" -ne 0 ]; then tail -n 20 /tmp/resolve.log >> "$STATUS"; exit "$rc"; fi
+            fi
+          done
+          echo "remaining_conflicts:" >> "$STATUS"
+          git diff --name-only --diff-filter=U >> "$STATUS"
+          count=$(git diff --name-only --diff-filter=U | wc -l)
+          echo "remaining_count=$count" >> "$STATUS"
+          exit 1
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
