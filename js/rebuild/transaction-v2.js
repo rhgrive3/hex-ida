@@ -527,7 +527,11 @@ export function evaluateF6RebuildDenominator({ transaction, validation, publicat
   const loader = validation?.validators?.find((item) => item.validator === 'loader-reparse');
   add('loader-reparse', loader?.status === 'passed' ? 'closed' : 'blocking', loader?.status === 'passed' ? null : 'f6-loader-reparse-unproven', loader?.status === 'passed' ? 'production-loader-reparse' : null);
   const independent = validation?.validators?.find((item) => item.validator === 'independent-differential');
-  add('independent-differential-oracle', independent?.status === 'passed' && validation?.independentDifferential === 'executed' ? 'closed' : 'blocking', independent?.status === 'passed' && validation?.independentDifferential === 'executed' ? null : 'f6-independent-oracle-unproven', independent?.status === 'passed' ? 'independent-oracle-contract' : null);
+  // #8831 — this denominator unit is a release authority: an unregistered caller callback that only
+  // echoes the schema/digests/shape proves no independent implementation ran, so it may not close it.
+  const independentExecuted = independent?.status === 'passed' && validation?.independentDifferential === 'executed';
+  const independentProven = independentExecuted && validation?.independentOracleTrusted === true;
+  add('independent-differential-oracle', independentProven ? 'closed' : 'blocking', independentProven ? null : (independentExecuted ? 'f6-independent-oracle-provider-untrusted' : 'f6-independent-oracle-unproven'), independentProven ? 'trusted-independent-oracle-provider' : null);
 
   add('atomic-publication', publicationComplete ? 'closed' : 'blocking', publicationComplete ? null : 'f6-atomic-publication-unproven', publicationComplete ? 'transaction-v2-publication-identity' : null);
   add('real-fixture', proof.realFixture === true && proof.realFixtureEvidence === true ? 'closed' : 'blocking', proof.realFixture === true && proof.realFixtureEvidence === true ? null : 'f6-real-fixture-evidence-unproven', proof.realFixture === true && proof.realFixtureEvidence === true ? 'compiler-produced-fixture' : null);
@@ -1011,6 +1015,7 @@ export async function validateRebuildTransaction(transaction, materialized, opti
     status: failures.length === 0 && allExecuted ? 'valid' : 'invalid',
     failures,
     independentDifferential: independent ? (independent.status === 'passed' ? 'executed' : 'failed') : 'unavailable',
+    independentOracleTrusted: transaction.requireIndependentOracle === true ? independentOracleTrusted : false,
   };
   return deepFreeze({ ...validation, validationId: `rebuild-validation:${stableDigest(validation)}` });
 }

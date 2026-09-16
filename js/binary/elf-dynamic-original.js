@@ -38,6 +38,17 @@ const DT_JMPREL = 23n;
 const DT_GNU_HASH = 0x6ffffef5n;
 
 export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
+  // parseELF's public cancellation contract must reach the PT_DYNAMIC path:
+  // an aborted caller must not start (or keep funding) large dynamic decode
+  // work (#5584). The check runs before the header lookup because program-header
+  // decoding is itself budget-admitted and may legitimately yield no decoded
+  // table at all once the caller has cancelled (#8714).
+  const signal = opts.signal || null;
+  const cancelled = () => signal?.aborted === true;
+  if (cancelled()) {
+    markDynamicPartial(image, 'PT_DYNAMIC parse was cancelled before it started');
+    return { parsed: false };
+  }
   const dyn = (programHeaders || []).find((p) => p.type === PT_DYNAMIC);
   if (!dyn || dyn.filesz <= 0n) return { parsed: false };
   const start = toSafeNumber(dyn.offset);
@@ -48,15 +59,6 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   }
 
   const entSize = bits === 64 ? 16 : 8;
-  // parseELF's public cancellation contract must reach the PT_DYNAMIC path:
-  // an aborted caller must not start (or keep funding) large dynamic decode
-  // work (#5584).
-  const signal = opts.signal || null;
-  const cancelled = () => signal?.aborted === true;
-  if (cancelled()) {
-    markDynamicPartial(image, 'PT_DYNAMIC parse was cancelled before it started');
-    return { parsed: false };
-  }
   const tags = new Map();
   const ordered = [];
   const entrySpanRemainder = size % entSize;
@@ -106,22 +108,58 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   if (strtab != null && strSize > 0 && !strSpan) markDynamicPartial(image, 'DT_STRTAB/DT_STRSZ crosses a file-backed PT_LOAD boundary');
   const strOff = strSpan?.start ?? null;
 
+  // String-table offsets are references, not ownership: a conforming ELF may
+  // point every `st_name`, DT_NEEDED, and version field at one entry. Resolve
+  // each distinct offset once — caching the invalid/unterminated results too —
+  // and charge the decoded text against the caller's dynamic budget *before* the
+  // string is retained, so repeated aliases cannot multiply heap (#8821).
+  const dynamicStrings = new Map();
   const stringAt = (offset, options = {}) => {
     if (strOff == null || strSize == null || !strSpan) return '';
+    const budget = options.budget || null;
     const n = Number(offset);
+    const cached = dynamicStrings.get(n);
+    if (cached !== undefined) {
+      if (budget && !cached.charged) {
+        if (!budget.claimString(cached.chars, `dynamic string at offset ${n}`)) return '';
+        cached.charged = true;
+      }
+      return cached.value;
+    }
     const inRange = Number.isSafeInteger(n) && n >= 0 && n < strSize && strOff + n < strSpan.spanEnd;
     if (!inRange) {
       if (n === 0 && options.allowZeroOffset) return '';
       markDynamicPartial(image, 'dynamic string table reference is out of range');
+      dynamicStrings.set(n, { value: null, chars: 0, charged: true });
       return null;
     }
-    const maxLength = Math.min(strSize - n, strSpan.spanEnd - strOff - n, 1 << 20);
-    const bytes = r.slice(strOff + n, maxLength);
-    if (bytes.indexOf(0) < 0) {
+    if (budget?.stopped) return '';
+    const fileWindow = Math.min(strSize - n, strSpan.spanEnd - strOff - n, 1 << 20);
+    const window = budget ? Math.min(fileWindow, budget.remainingStringChars) : fileWindow;
+    const nul = r.slice(strOff + n, window).indexOf(0);
+    if (nul < 0) {
+      // Either the entry has no terminator inside DT_STRSZ, or the remaining
+      // aggregate string budget is smaller than the name. Both must yield no
+      // name at all; only the first may be reported as a termination defect,
+      // and the budget path never publishes a truncated name (#8821, #2167).
+      if (window !== fileWindow) {
+        dynamicStrings.set(n, { value: '', chars: window + 1, charged: true });
+        budget.claimString(window + 1, `dynamic string at offset ${n}`);
+        return '';
+      }
       markDynamicPartial(image, `dynamic string at offset ${n} is not NUL-terminated within DT_STRSZ`);
+      dynamicStrings.set(n, { value: '', chars: window, charged: !budget });
+      if (budget) budget.claimString(window, `dynamic string at offset ${n}`);
       return '';
     }
-    return r.cstring(strOff + n, maxLength);
+    const chars = nul + 1;
+    if (budget && !budget.claimString(chars, `dynamic string at offset ${n}`)) {
+      dynamicStrings.set(n, { value: '', chars, charged: true });
+      return '';
+    }
+    const value = r.cstring(strOff + n, window);
+    dynamicStrings.set(n, { value, chars, charged: !!budget });
+    return value;
   };
 
   // #8688 — DT_NEEDED/DT_SONAME names were decoded and retained with only a
@@ -276,10 +314,11 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
     markDynamicPartial(image, `dynamic symbol count ${declaredSymbolCount} exceeds symbol record limit ${symbolBudget.limits.maxSymbolRecords}; clamped`);
   }
 
-  const versions = parseDynamicSymbolVersions(r, tags, image, symbolCount, stringAt, { budget: symbolBudget });
+  const budgetedStringAt = (offset, options = {}) => stringAt(offset, { ...options, budget: symbolBudget });
+  const versions = parseDynamicSymbolVersions(r, tags, image, symbolCount, budgetedStringAt, { budget: symbolBudget });
   let symbols = [];
   if (!symbolBudget.stopped && opts.symbols !== false && symtab != null && symbolCount > 0) {
-    symbols = parseDynamicSymbols(r, image, bits, symtab, syment, symbolCount, stringAt, tags, versions, symbolBudget);
+    symbols = parseDynamicSymbols(r, image, bits, symtab, syment, symbolCount, budgetedStringAt, tags, versions, symbolBudget);
   } else if (symtab != null && symbolCount > 0) {
     symbols = dynamicSymbolsFromImage(image, symbolCount);
   }

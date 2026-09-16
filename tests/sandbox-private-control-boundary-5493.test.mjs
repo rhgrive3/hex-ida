@@ -9,7 +9,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SANDBOX_SOURCE = fs.readFileSync(path.join(ROOT, 'js/sandbox.js'), 'utf8');
 
 function loadWorkerProgram() {
-  const start = SANDBOX_SOURCE.indexOf('const WORKER_PRELUDE = String.raw`');
+  const start = SANDBOX_SOURCE.indexOf('const MAX_RPC_TOTAL =');
   const end = SANDBOX_SOURCE.indexOf('\nconst FRAME = `', start);
   assert.ok(start >= 0 && end > start, 'sandbox worker program source must remain extractable');
   const scope = {};

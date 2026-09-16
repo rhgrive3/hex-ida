@@ -10,6 +10,11 @@ function executableOwnerForSymbol(image, symbol) {
 
 export function repairElfZeroAddressFunctionSeeds(image) {
   if (!image || !Array.isArray(image.symbols)) return image;
+  // Production BinaryImage instances always carry a warnings array, but this
+  // exported repair helper is also exercised with minimal sectionless images.
+  // #8803 may now emit authority diagnostics from this path, so normalize the
+  // diagnostic sink before calling the shared metadata-partial helper.
+  if (!Array.isArray(image.warnings)) image.warnings = [];
   const zeroSeeds = [];
   for (const symbol of image.symbols) {
     if (symbol?.defined !== true || symbol.address !== 0n || !['function','indirect-function'].includes(symbol.kind)) continue;

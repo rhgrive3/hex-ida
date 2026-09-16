@@ -8,6 +8,7 @@ import { overlayDexLowering } from './bridge-dex-overlay-v2.js';
 import { overlayJvmControlLowering } from './bridge-jvm-control-overlay-v2.js';
 import { overlayJvmObjectLowering } from './bridge-jvm-object-overlay-v2.js';
 import { overlayJvmLocalLowering } from './bridge-jvm-local-overlay-v2.js';
+import { overlayManagedI32ShiftCounts } from './bridge-shift-count-overlay-v2.js';
 import { overlayWasmNarrowLoadExtensions } from './bridge-wasm-narrow-load-overlay-v2.js';
 import { assertVMEffectFunctionBundleOwnership } from './vm-effects.js';
 import { overlayWasmSelect, projectWasmSelectView } from './bridge-wasm-select-overlay-v2.js';
@@ -100,7 +101,8 @@ export function lowerVMEffectsToSemanticIr(value, options = {}) {
   const lowered = overlayJvmControlLowering(representable, overlayWasmSelect(representable, lowerCore(representable, options), options), options);
   const jvmLowered = overlayJvmObjectLowering(representable, lowered, options);
   const wasmLowered = overlayWasmNarrowLoadExtensions(representable, jvmLowered, options);
-  const overlaid = overlayJvmLocalLowering(representable, overlayDexLowering(representable, wasmLowered), options);
+  const locallyOverlaid = overlayJvmLocalLowering(representable, overlayDexLowering(representable, wasmLowered), options);
+  const overlaid = overlayManagedI32ShiftCounts(representable, locallyOverlaid, options);
   const hasUnrepresentedFunctionExit = representable.bundles?.some((bundle) =>
     bundle.controlEffects?.some((effect) => effect.kind === 'switch'
       && (effect.caseKinds?.some((kind) => kind === 'function-exit')

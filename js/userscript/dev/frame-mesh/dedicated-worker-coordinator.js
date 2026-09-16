@@ -1,4 +1,5 @@
 import { DEV_WORKER_FAILURE, DEV_WORKER_STATE } from '../../../ai/dev/workers/contracts.js';
+import { canonicalWorkerIdentity, optionalWorkerIdentity } from './worker-identity.js';
 
 const EVENT_QUEUE_LIMIT = 128;
 const TERMINAL = new Set(['completed','failed','cancelled']);
@@ -22,7 +23,7 @@ export class DedicatedWorkerCoordinator {
   }
   async discover() { return Object.freeze([this.advertisement()]); }
   async claim({ runId, workerId } = {}) {
-    const r = required(runId,'runId'), w = required(workerId,'workerId');
+    const r = canonicalWorkerIdentity(runId,'runId'), w = canonicalWorkerIdentity(workerId,'workerId');
     if (this.claimed && (this.claimed.runId !== r || this.claimed.workerId !== w)) throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY,'Dedicated Worker tab is already claimed.');
     this.claimed = { runId:r, workerId:w };
     this.lastResult = null;
@@ -42,11 +43,14 @@ export class DedicatedWorkerCoordinator {
   }
   waitEvent({ events, runId=null }={}, { signal }={}) {
     const wanted = new Set((Array.isArray(events)?events:[events]).map(String).filter(Boolean));
-    const idx=this.events.findIndex((event)=>matches(event,wanted,runId));
+    let filter;
+    try { filter=optionalWorkerIdentity(runId,'runId'); }
+    catch (error) { return Promise.reject(error); }
+    const idx=this.events.findIndex((event)=>matches(event,wanted,filter));
     if (idx>=0) return Promise.resolve(this.events.splice(idx,1)[0]);
     if (signal?.aborted) return Promise.reject(abortError(signal.reason));
     return new Promise((resolve,reject)=>{
-      const waiter={wanted,runId:runId==null?null:String(runId),resolve,reject,signal,onAbort:null};
+      const waiter={wanted,runId:filter,resolve,reject,signal,onAbort:null};
       waiter.onAbort=()=>{this.waiters.delete(waiter);reject(abortError(signal?.reason));};
       signal?.addEventListener?.('abort',waiter.onAbort,{once:true}); this.waiters.add(waiter);
     });
@@ -87,10 +91,10 @@ export class DedicatedWorkerCoordinator {
   onEvent(event){ if(!event?.kind||!this.claimed)return; const normalized=this.normalizeEvent(event); this.enqueue(normalized); if(TERMINAL.has(event.kind)){this.lastResult=this.withIdentity(this.controller.result()); const pending=this.pendingTerminal;this.pendingTerminal=null;pending?.resolve(normalized);} }
   normalizeEvent(event){return Object.freeze({type:`worker.${event.kind}`,data:Object.freeze({runId:this.claimed?.runId||null,workerId:this.claimed?.workerId||null,...(event.data||{})}),observedAt:String(event.observedAt||this.now())});}
   enqueue(event){for(const w of [...this.waiters]){if(!matches(event,w.wanted,w.runId))continue;this.waiters.delete(w);w.signal?.removeEventListener?.('abort',w.onAbort);w.resolve(event);return;}this.events.push(event);while(this.events.length>EVENT_QUEUE_LIMIT)this.events.shift();}
-  assertClaim(args){if(!this.claimed)throw workerError(DEV_WORKER_FAILURE.WORKER_NOT_CLAIMED,'Dedicated Worker is not claimed.');if(String(args.runId||'')!==this.claimed.runId||String(args.workerId||'')!==this.claimed.workerId)throw workerError(DEV_WORKER_FAILURE.CONVERSATION_MISMATCH,'Dedicated Worker claim identity mismatch.');return {...this.claimed};}
+  assertClaim(args){if(!this.claimed)throw workerError(DEV_WORKER_FAILURE.WORKER_NOT_CLAIMED,'Dedicated Worker is not claimed.');const runId=canonicalWorkerIdentity(args.runId,'runId'),workerId=canonicalWorkerIdentity(args.workerId,'workerId');if(runId!==this.claimed.runId||workerId!==this.claimed.workerId)throw workerError(DEV_WORKER_FAILURE.CONVERSATION_MISMATCH,'Dedicated Worker claim identity mismatch.');return {...this.claimed};}
   withIdentity(value={}){return Object.freeze({...value,tabNodeId:this.tabNodeId,runId:this.claimed?.runId||null,workerId:this.claimed?.workerId||null,chatgptConversationId:value.chatgptConversationId||this.controller.workerConversation?.()?.id||null});}
 }
-function matches(event,wanted,runId){return wanted.has(event.type)&&(runId==null||String(event.data?.runId||'')===String(runId));}
+function matches(event,wanted,runId){return wanted.has(event.type)&&(runId==null||event.data?.runId===runId);}
 function required(value,name){const text=String(value??'').trim();if(!text)throw new TypeError(`${name} is required.`);return text;}
 function workerError(code,message){const error=new Error(message);error.code=code;return error;}
 function abortError(reason){const error=workerError(DEV_WORKER_FAILURE.CANCELLED,String(reason||'cancelled'));error.name='AbortError';return error;}

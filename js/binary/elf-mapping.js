@@ -22,7 +22,7 @@ export function mappedELFFileRangeForVa(image, va) {
   const address = strictELFInteger(va, 'va');
   for (const segment of image?.segments || []) {
     const start = BigInt(segment.address ?? 0);
-    const fileSize = BigInt(segment.fileSize ?? 0);
+    const fileSize = BigInt(Object.prototype.hasOwnProperty.call(segment, "fileSize") ? (segment.fileSize ?? 0) : (segment.size ?? 0));
     if (fileSize <= 0n || address < start || address >= start + fileSize) continue;
     const delta = address - start;
     const fileStart = BigInt(segment.fileOffset ?? 0) + delta;
@@ -303,7 +303,7 @@ export function elfFunctionBytesFileBacked(image, address, bytes) {
   const start = strictELFInteger(address, 'address');
   for (const section of image?.sections || []) {
     if (!section?.perms?.execute || !sectionHasMappedAddress(section)) continue;
-    const fileSize = BigInt(section.fileSize ?? 0n);
+    const fileSize = BigInt(Object.prototype.hasOwnProperty.call(section, "fileSize") ? (section.fileSize ?? 0n) : (section.size ?? 0n));
     if (fileSize <= 0n) continue;
     const delta = start - BigInt(section.address ?? 0n);
     if (delta < 0n || delta + length > fileSize) continue;

@@ -52,6 +52,65 @@ function jvmInstanceofIntrinsic(node) {
   };
 }
 
+function machineTypeKey(machineType) {
+  if (!machineType) return '';
+  return `${machineType.kind}:${machineType.widthBits}:${machineType.format || ''}:${machineType.addressSpace || ''}`;
+}
+
+// #8843 req 1/2/3/5: `dup` is a stack identity transformation, not a
+// computation. The lowering core creates one fresh canonical value per
+// `producedValues` entry and publishes them behind an `operator: null`
+// `complete` unary node, so no consumer can recover the JVM-mandated equality
+// between the two result slots. A canonical node also cannot name one value id
+// twice (`semantic-ir-invalid-node-inputs-duplicate`), so the schema's
+// sanctioned fallback applies: lower `dup` to a single canonical `copy` of the
+// input value whose result values all share that one definition, each carrying
+// explicit alias authority (`duplicatedValueId` plus group membership) and the
+// source value's evidence, instead of an invented unary computation.
+const DUPLICATED_VALUE_EVIDENCE = Object.freeze(
+  ['constant', 'isNull', 'valueType', 'referenceKind', 'stringRef'],
+);
+
+function applyDupIdentityAuthority({ dupPlans, nodeReplacements, valueReplacements, valuesById }) {
+  for (const plan of dupPlans) {
+    if (!plan.inputId || plan.duplicates.length === 0) continue;
+    const source = valuesById.get(plan.inputId);
+    if (!source) continue;
+    const resultIds = [plan.surviving, ...plan.duplicates];
+    const machineType = machineTypeKey(source.machineType);
+    let shapeOk = plan.node.kind === 'unary' || plan.node.kind === 'copy';
+    for (const resultId of resultIds) {
+      const value = valuesById.get(resultId);
+      if (!value || value.kind !== 'definition' || machineTypeKey(value.machineType) !== machineType) shapeOk = false;
+    }
+    if (!shapeOk) continue;
+    const evidence = {};
+    for (const key of DUPLICATED_VALUE_EVIDENCE) {
+      if (source.metadata && source.metadata[key] !== undefined) evidence[key] = source.metadata[key];
+    }
+    const base = nodeReplacements.get(plan.nodeId) ?? plan.node;
+    nodeReplacements.set(plan.nodeId, {
+      ...base,
+      kind: 'copy',
+      inputs: [plan.inputId],
+      outputs: resultIds,
+      attributes: {
+        ...(base.attributes ?? {}),
+        stackManipulation: 'dup',
+        duplicatedValueId: plan.inputId,
+        duplicateValueIds: resultIds,
+      },
+    });
+    for (const resultId of resultIds) {
+      valueReplacements.set(resultId, replaceValueMetadata(valuesById.get(resultId), {
+        ...evidence,
+        duplicatedValueId: plan.inputId,
+        duplicateValueIds: resultIds,
+      }));
+    }
+  }
+}
+
 function jvmAllocationIntrinsic(node) {
   return {
     inputs: [...node.inputs],
@@ -74,6 +133,7 @@ export function overlayJvmObjectLowering(fn, lowered, options = {}) {
   const bundleByEffect = new Map((fn.bundles ?? []).map((bundle) => [bundle.operationId, bundle]));
   const nodeReplacements = new Map();
   const valueReplacements = new Map();
+  const dupPlans = [];
   let changed = false;
 
   for (const node of old.nodes) {
@@ -150,22 +210,30 @@ export function overlayJvmObjectLowering(fn, lowered, options = {}) {
 
     if (bundle.mnemonic === 'dup') {
       const allocations = (bundle.producedValues ?? []).map(allocationMetadata);
-      if (!allocations.some(Boolean)) continue;
-      changed = true;
       const allocationIds = [...new Set(allocations.filter(Boolean).map((entry) => entry.allocationId))];
+      const allocation = allocations.find(Boolean) ?? null;
+      changed = true;
       nodeReplacements.set(node.id, {
         ...node,
         attributes: {
           ...node.attributes,
-          allocationIds,
-          preservesAllocationIdentity: true,
+          ...(allocationIds.length ? { allocationIds, preservesAllocationIdentity: true } : {}),
         },
       });
       for (let index = 0; index < node.outputs.length; index += 1) {
-        const allocation = allocations[index];
-        if (!allocation) continue;
+        const entry = allocations[index];
+        if (!entry) continue;
         const value = old.values.find((candidate) => candidate.id === node.outputs[index]);
-        if (value) valueReplacements.set(value.id, replaceValueMetadata(value, allocation));
+        if (value) valueReplacements.set(value.id, replaceValueMetadata(value, entry));
+      }
+      if (allocation == null || allocationIds.length <= 1) {
+        dupPlans.push({
+          nodeId: node.id,
+          node,
+          inputId: typeof node.inputs?.[0] === 'string' ? node.inputs[0] : null,
+          surviving: node.outputs[0],
+          duplicates: node.outputs.slice(1),
+        });
       }
       continue;
     }
@@ -192,6 +260,14 @@ export function overlayJvmObjectLowering(fn, lowered, options = {}) {
   }
 
   if (!changed) return lowered;
+  if (dupPlans.length) {
+    applyDupIdentityAuthority({
+      dupPlans,
+      nodeReplacements,
+      valueReplacements,
+      valuesById: new Map(old.values.map((value) => [value.id, value])),
+    });
+  }
   const nodes = old.nodes.map((node) => nodeReplacements.get(node.id) ?? node);
   const values = old.values.map((value) => valueReplacements.get(value.id) ?? value);
   const semanticIr = createSemanticIrFunction({ ...old, nodes, values }, options);

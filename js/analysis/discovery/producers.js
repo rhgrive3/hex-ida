@@ -48,6 +48,20 @@ const VALIDATED_LOADER_SEED_SOURCES = new Set([
 ]);
 const EXPLICIT_EXACT_SEED_SOURCES = new Set(['symbol', 'ifunc-resolver']);
 
+// #8846: an authoritative start carries the same exactness threshold the start
+// itself uses; a body whose confidence is below it, or that the model flagged
+// as inferred / a `next-function-start` guess, must not inherit start authority.
+const EXACT_EXTENT_MIN_CONFIDENCE = 0.9;
+
+function extentIsInferred(start) {
+  if (start?.extentInferred === true) return true;
+  if (start?.extentSource === 'next-function-start') return true;
+  const confidence = start?.extentConfidence;
+  return typeof confidence === 'number'
+    && Number.isFinite(confidence)
+    && confidence < EXACT_EXTENT_MIN_CONFIDENCE;
+}
+
 function seedSources(start) {
   return new Set([
     start?.source,
@@ -124,6 +138,29 @@ export const loaderProducer = Object.freeze({
       const sources = seedSources(start);
       const sourceEvidenceIds = [...sources].sort().map((source) => `loader:source:${source}:${address}`);
       const region = extentRegion(start, address);
+      // #8846: keep the exact start authoritative, but do not let it carry an
+      // inferred body as hard region authority. A `next-function-start` /
+      // low-confidence / explicitly-inferred extent is published as a separate
+      // corroborating extent item so `fuseExtent` can only mint `exact` from a
+      // genuinely validated extent source (unwind/exception/etc.), never from
+      // the start alone.
+      if (region && extentIsInferred(start)) {
+        out.push(evidence('loader-function-start', {
+          start: address,
+          name: start.name ?? null,
+          regions: [],
+          confidence: start.confidence ?? null,
+          evidenceIds: [`loader:start:${address}`, ...sourceEvidenceIds],
+        }));
+        out.push(evidence('loader-function-extent', {
+          start: address,
+          regions: [region],
+          extentRole: 'complete',
+          confidence: start.extentConfidence ?? start.confidence ?? null,
+          evidenceIds: [`loader:extent:${address}:${start.extentSource ?? 'inferred'}`, ...sourceEvidenceIds],
+        }));
+        continue;
+      }
       out.push(evidence('loader-function-start', {
         start: address,
         name: start.name ?? null,
