@@ -21,7 +21,6 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           python3 - <<'PY'
           from pathlib import Path
-
           p = Path('js/ai/proposals.js')
           s = p.read_text()
           old = "    if (typeof bound !== 'string' || !bound) return true;"
@@ -43,13 +42,15 @@ jobs:
           p.write_text(s)
           PY
           git diff --check
-      - name: Focused regressions
+      - name: Test issue 8929
         shell: bash
-        run: |
-          set -euo pipefail
-          timeout 180s node tests/issue-8929-stale-verified-evidence-binding.test.mjs
-          timeout 120s node tests/issue-8923-proposal-binding-identity.test.mjs
-          timeout 60s node --check js/ai/proposals.js
+        run: timeout 180s node tests/issue-8929-stale-verified-evidence-binding.test.mjs
+      - name: Test issue 8923
+        shell: bash
+        run: timeout 120s node tests/issue-8923-proposal-binding-identity.test.mjs
+      - name: Syntax check proposals
+        shell: bash
+        run: timeout 60s node --check js/ai/proposals.js
       - name: Publish clean fix
         shell: bash
         run: |
