@@ -1,0 +1,92 @@
+name: PR7036 reconcile v2
+
+on:
+  push:
+    branches:
+      - sync/pr7036-main-20260917
+    paths:
+      - '.github/workflows/pr7036-reconcile-v2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reconcile and capture first failure
+        id: reconcile
+        shell: bash
+        run: |
+          set -u
+          mkdir -p reconcile-result
+          : > reconcile-result/conflicts.txt
+          : > reconcile-result/result.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch --no-tags origin main
+          ours=$(git rev-parse HEAD)
+          theirs=$(git rev-parse origin/main)
+          echo "ours=$ours" >> reconcile-result/result.txt
+          echo "main=$theirs" >> reconcile-result/result.txt
+
+          set +e
+          git merge --no-commit --no-ff origin/main >/dev/null 2>reconcile-result/merge-stderr.txt
+          merge_rc=$?
+          set -e
+          git diff --name-only --diff-filter=U | sort -u > reconcile-result/conflicts.txt
+          conflict_count=$(wc -l < reconcile-result/conflicts.txt | tr -d ' ')
+          echo "merge_rc=$merge_rc" >> reconcile-result/result.txt
+          echo "conflict_count=$conflict_count" >> reconcile-result/result.txt
+          if [ "$merge_rc" -ne 0 ] || [ "$conflict_count" -ne 0 ]; then
+            echo 'stage=merge' >> reconcile-result/result.txt
+            git merge --abort >/dev/null 2>&1 || true
+            exit 0
+          fi
+
+          rm -f .github/workflows/pr7036-reconcile-diagnostic.yml
+          rm -f .github/workflows/pr7036-run-reconcile.yml
+          rm -f .github/workflows/pr7036-reconcile-v2.yml
+          git add -A
+          git status --porcelain=v1 > reconcile-result/git-status.txt
+          set +e
+          git commit -m 'Merge current main into PR #7036 staging' \
+            -m "Non-force reconciliation only. Parent 1: $ours. Parent 2: $theirs. PR #7036 itself remains unmerged." \
+            >/dev/null 2>reconcile-result/commit-stderr.txt
+          commit_rc=$?
+          set -e
+          echo "commit_rc=$commit_rc" >> reconcile-result/result.txt
+          if [ "$commit_rc" -ne 0 ]; then
+            echo 'stage=commit' >> reconcile-result/result.txt
+            exit 0
+          fi
+          merged=$(git rev-parse HEAD)
+          parents=$(git show -s --format=%P HEAD)
+          echo "merge=$merged" >> reconcile-result/result.txt
+          echo "parents=$parents" >> reconcile-result/result.txt
+
+          set +e
+          git push origin HEAD:sync/pr7036-main-20260917 >/dev/null 2>reconcile-result/push-stderr.txt
+          push_rc=$?
+          set -e
+          echo "push_rc=$push_rc" >> reconcile-result/result.txt
+          if [ "$push_rc" -ne 0 ]; then
+            echo 'stage=push' >> reconcile-result/result.txt
+          else
+            echo 'stage=success' >> reconcile-result/result.txt
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr7036-reconcile-v2-result
+          path: reconcile-result
+          if-no-files-found: error
+          retention-days: 3
+      - name: Fail if reconciliation did not publish
+        shell: bash
+        run: |
+          grep -q '^stage=success$' reconcile-result/result.txt
