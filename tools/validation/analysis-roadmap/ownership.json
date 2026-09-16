@@ -571,7 +571,8 @@
       "js/expr.js",
       "tests/semantic-v2/lowering-memory-control.test.mjs",
       "tests/semantic-v2/phase3-hard-timeout.test.mjs",
-      "tests/scpa/fixtures/x02-real-apple-evidence-20260916.json"
+      "tests/scpa/fixtures/x02-real-apple-evidence-20260916.json",
+      "tests/scpa/fixtures/x02-cross-version-runtime-map-20260917.json"
     ]
   }
 }

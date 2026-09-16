@@ -36,7 +36,7 @@ const matrix = JSON.parse(matrixBytes);
 const currentDispositions = Object.freeze({
   'X02-A-07':'pass', 'X02-B-01':'pass', 'X02-B-02':'pass',
   'X02-D-13':'pass', 'X02-E-11':'pass', 'X02-G-03':'pass',
-  'X02-G-09':'pass',
+  'X02-A-08':'pass', 'X02-B-06':'pass', 'X02-G-09':'pass',
 });
 // The frozen donor lacked LLVM. CI may contain the exact required tool, so
 // assess availability before running the row and demand its real reparse.
@@ -47,8 +47,8 @@ assert.equal(matrix.rows.find(row=>row.id==='X02-H-02')?.expectedDisposition,'en
 assert.deepEqual(matrix.rows.filter(row => Object.hasOwn(currentDispositions, row.id))
   .map(row => [row.id, row.check, row.expectedDisposition]),
   [
-    ['X02-A-07','build-tool-gap','product-gap'],
-    ['X02-B-01','cache-sync','product-gap'], ['X02-B-02','cache-async','product-gap'],
+    ['X02-A-07','build-tool-gap','product-gap'], ['X02-A-08','evidence-missing','evidence-gap'],
+    ['X02-B-01','cache-sync','product-gap'], ['X02-B-02','cache-async','product-gap'], ['X02-B-06','evidence-missing','evidence-gap'],
     ['X02-D-13','swift-version-gap','product-gap'], ['X02-E-11','objc-classless-gap','product-gap'],
     ['X02-G-03','signature-gap','product-gap'],
     ['X02-G-09','evidence-missing','evidence-gap'],
@@ -167,6 +167,40 @@ function localCorpus() {
 
 async function observe(t,row,bytes) {
   const e=row.expectedContract;
+  if((row.id==='X02-A-08'||row.id==='X02-B-06') && row.check==='evidence-missing') {
+    const evidence=JSON.parse(fs.readFileSync(path.join(ROOT,'tests/scpa/fixtures/x02-cross-version-runtime-map-20260917.json')));
+    assert.equal(evidence.schema,'hex-x02-cross-version-runtime-map-snapshot/v1');
+    assert.equal(evidence.source.workflowRunId,35120989355);
+    assert.equal(evidence.source.headSha,'77fc5cec5af594ca4d505a4367f5d7e27feb5463');
+    assert.equal(evidence.source.artifacts.macos14.id,10457310517);
+    assert.equal(evidence.source.artifacts.macos14.digest,'sha256:63e5a048310061e8a606524166fc931e0beaf59a14957999028353f1b0521010');
+    assert.equal(evidence.source.artifacts.macos15.id,10457440408);
+    assert.equal(evidence.source.artifacts.macos15.digest,'sha256:e80fc71e2491d50bd020c765b42dd0a28c3fc3dce82ed54bd83104cb1050deb3');
+    if(row.id==='X02-A-08') {
+      const a=evidence.environments.macos14,b=evidence.environments.macos15;
+      assert.equal(a.machine,'arm64'); assert.equal(b.machine,'arm64');
+      assert.equal(evidence.sourceCorpus.sourceSha256,'a28c1154d7726bb3ace1673eb5bf5b0f558fb2512052add70dc494b48383f5b3');
+      assert.notEqual(a.osProductVersion,b.osProductVersion);
+      assert.notEqual(a.xcodeVersion,b.xcodeVersion);
+      assert.notEqual(a.clangVersion,b.clangVersion);
+      assert.notEqual(a.objectSha256,b.objectSha256);
+      assert.match(a.objectFile,/Mach-O 64-bit object arm64/); assert.match(b.objectFile,/Mach-O 64-bit object arm64/);
+      assert.equal(a.buildVersion.minos,'14.0'); assert.equal(b.buildVersion.minos,'15.0');
+      assert.equal(evidence.currentAcceptance['X02-A-08'].classification,'pass');
+      return passed('cross-version-pinned-provenance',{workflowRunId:evidence.source.workflowRunId,macos14:{os:a.osProductVersion,objectSha256:a.objectSha256},macos15:{os:b.osProductVersion,objectSha256:b.objectSha256}});
+    }
+    const real=JSON.parse(fs.readFileSync(path.join(ROOT,'tests/scpa/fixtures/x02-real-apple-evidence-20260916.json')));
+    const env=evidence.environments.macos15;
+    assert.equal(env.cacheSha256,real.realDyldCache.sha256);
+    assert.equal(env.cacheSha256,'c88d3a9885614d4ee8be36f0e9a50ee09e640311ca0ea843bc67613933e00184');
+    assert.equal(real.realDyldCache.slideInfoVersion,5);
+    assert.equal(real.realDyldCache.sampledRebaseCount,6077);
+    assert.equal(real.realDyldCache.allSampleTargetsInDeclaredSharedRegion,true);
+    assert.equal(env.runtimeMappingCoherent,true);
+    assert.equal(BigInt(env.runtimeSharedCacheBaseAddress)-BigInt(env.runtimeSharedCacheSlide),BigInt(env.cachePreferredSharedRegionStart));
+    assert.equal(evidence.currentAcceptance['X02-B-06'].classification,'pass');
+    return passed('real-cache-runtime-load-map',{workflowRunId:evidence.source.workflowRunId,cacheSha256:env.cacheSha256,slide:env.runtimeSharedCacheSlide,base:env.runtimeSharedCacheBaseAddress,sampledRebaseCount:real.realDyldCache.sampledRebaseCount});
+  }
   if(row.id==='X02-G-09' && row.check==='evidence-missing') {
     const evidence=JSON.parse(fs.readFileSync(path.join(ROOT,'tests/scpa/fixtures/x02-real-apple-evidence-20260916.json')));
     assert.equal(evidence.schema,'hex-x02-real-apple-evidence-snapshot/v1');

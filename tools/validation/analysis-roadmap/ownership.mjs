@@ -82,6 +82,7 @@ const SPECIAL_PATHS = Object.freeze({
     'tests/scpa/x02-dyld-slide-info5.test.mjs',
     'tools/validation/x02-apple-runtime-evidence.mjs',
     'tests/scpa/fixtures/x02-real-apple-evidence-20260916.json',
+    'tests/scpa/fixtures/x02-cross-version-runtime-map-20260917.json',
     'js/targets/architecture/arm64/memory-access-qualifiers.js',
     'tests/semantic-v2/issue-4513-memoryssa-access-provider-completeness.test.mjs',
     'js/targets/abi/evidence.js',
