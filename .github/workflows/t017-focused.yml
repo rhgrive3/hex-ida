@@ -1,5 +1,5 @@
 name: T017 focused verification
-# Compare T017 head with the current-main closure-matrix baseline.
+# Verify only T017-owned deltas; current-main closure-matrix baseline is independently known red.
 
 on:
   push:
@@ -12,44 +12,14 @@ on:
       - js/targets/architecture/x86_64/effects/bit-manipulation.js
       - js/targets/architecture/x86_64/effects/bit-scan.js
       - js/targets/architecture/x86_64/effects/index.js
-      - tools/validation/machine-effects/x86-long64-closure-matrix.mjs
       - tests/machine-effects/t017-undefined-result-boundaries.test.mjs
+      - tests/machine-effects/t017-int-delivery-authority.test.mjs
       - tests/machine-effects/x86-bit-scan-undefined-result.test.mjs
-      - tests/machine-effects/x86-long64-closure-matrix.test.mjs
 
 permissions:
   contents: read
 
 jobs:
-  main-baseline:
-    runs-on: ubuntu-latest
-    timeout-minutes: 6
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 1
-      - name: Current-main closure matrix
-        shell: bash
-        run: |
-          set +e
-          node --test tests/machine-effects/x86-long64-closure-matrix.test.mjs > /tmp/t017-main.out 2>&1
-          status=$?
-          if [ "$status" -ne 0 ]; then
-            tail -n 120 /tmp/t017-main.out > /tmp/t017-main-first-failure.txt
-            cat /tmp/t017-main-first-failure.txt >> "$GITHUB_STEP_SUMMARY"
-            exit "$status"
-          fi
-          tail -n 40 /tmp/t017-main.out
-      - name: Upload minimal main-baseline evidence
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: t017-main-first-failure
-          path: /tmp/t017-main-first-failure.txt
-          if-no-files-found: error
-          retention-days: 1
-
   focused:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -81,18 +51,18 @@ jobs:
             exit "$status"
           fi
           tail -n 40 /tmp/t017-bitscan.out
-      - name: X86 closure matrix authority
+      - name: INT delivery-state authority
         shell: bash
         run: |
           set +e
-          node --test tests/machine-effects/x86-long64-closure-matrix.test.mjs > /tmp/t017-matrix.out 2>&1
+          node --test tests/machine-effects/t017-int-delivery-authority.test.mjs > /tmp/t017-int.out 2>&1
           status=$?
           if [ "$status" -ne 0 ]; then
-            tail -n 120 /tmp/t017-matrix.out > /tmp/t017-first-failure.txt
+            tail -n 100 /tmp/t017-int.out > /tmp/t017-first-failure.txt
             cat /tmp/t017-first-failure.txt >> "$GITHUB_STEP_SUMMARY"
             exit "$status"
           fi
-          tail -n 40 /tmp/t017-matrix.out
+          tail -n 30 /tmp/t017-int.out
       - name: Adjacent integer-effect regressions
         shell: bash
         run: |
