@@ -708,7 +708,7 @@
 
   /* ── LC_FUNCTION_STARTS ───────────────────────────────── */
 
-  const FUNCTION_STARTS_MAX = 200_000;
+  const FUNCTION_STARTS_MAX = 400_000;
 
   /** ULEB128 の差分列を、絶対アドレスの配列にほどく。 */
   function parseFunctionStarts(buf, base, options = {}) {
