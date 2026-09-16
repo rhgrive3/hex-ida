@@ -33,15 +33,24 @@ test('slide info v5 decodes regular/auth chains with pointer-unit deltas', () =>
   assert.equal(records[1].keyIsData, true);
 });
 
-test('slide info v5 rejects out-of-range targets and malformed page counts', () => {
+test('slide info v5 accepts cross-subcache targets only inside declared shared region', () => {
+  const mapping = { address: 0x180000000n, size: 4096n, fileOffset: 0n };
+  const infoBytes = new Uint8Array(26);
+  u32(infoBytes, 0, 5); u32(infoBytes, 4, 4096); u32(infoBytes, 8, 1); u64(infoBytes, 16, 0x180000000n); u16(infoBytes, 24, 0);
+  const info = parseSlideInfo5Structure(infoBytes, mapping, 4096n);
+  const data = new Uint8Array(4096);
+  u64(data, 0, 0x5000n);
+  assert.throws(() => walkSlideInfo5Sync(data, mapping, info, 0n, [mapping], 4), /outside declared shared region/);
+  const records = walkSlideInfo5Sync(data, mapping, info, 0n, [mapping], 4, { start: 0x180000000n, size: 0x10000n });
+  assert.equal(records.length, 1);
+  assert.equal(records[0].targetAddress, 0x180005000n);
+  assert.equal(records[0].targetInCurrentFileMappings, false);
+  assert.equal(records[0].targetInSharedRegion, true);
+});
+
+test('slide info v5 rejects malformed page counts', () => {
   const mapping = { address: 0x180000000n, size: 4096n, fileOffset: 0n };
   const infoBytes = new Uint8Array(26);
   u32(infoBytes, 0, 5); u32(infoBytes, 4, 4096); u32(infoBytes, 8, 2); u64(infoBytes, 16, 0x180000000n);
   assert.throws(() => parseSlideInfo5Structure(infoBytes, mapping, 4096n), /page count/);
-
-  u32(infoBytes, 8, 1); u16(infoBytes, 24, 0);
-  const info = parseSlideInfo5Structure(infoBytes, mapping, 4096n);
-  const data = new Uint8Array(4096);
-  u64(data, 0, 0x3ffffffffn);
-  assert.throws(() => walkSlideInfo5Sync(data, mapping, info, 0n, [mapping], 4), /outside mapped cache/);
 });
