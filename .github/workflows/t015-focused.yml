@@ -19,18 +19,23 @@ jobs:
         with:
           fetch-depth: 1
       - name: Run T015 Apple knowledge regression
+        id: regression
         shell: bash
         run: |
           set +e
           node tests/apple-knowledge-x02.test.mjs > /tmp/t015.out 2>&1
           status=$?
           if [ "$status" -ne 0 ]; then
-            {
-              echo '### T015 first failure tail'
-              echo '```text'
-              tail -n 80 /tmp/t015.out
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
+            tail -n 80 /tmp/t015.out > /tmp/t015-first-failure.txt
+            cat /tmp/t015-first-failure.txt >> "$GITHUB_STEP_SUMMARY"
             exit "$status"
           fi
           cat /tmp/t015.out
+      - name: Upload minimal first-failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: t015-first-failure
+          path: /tmp/t015-first-failure.txt
+          if-no-files-found: error
+          retention-days: 1
