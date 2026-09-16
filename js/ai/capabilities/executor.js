@@ -1,9 +1,11 @@
 import { AIError } from '../schema.js';
 import { assertSchema } from '../validation.js';
 import { assertProposalAuthorizationBinding, consumeProposalAuthorization, isLiveProposalAuthorization } from '../proposals.js';
-import { validatePatchRange } from '../../patch.js';
+import { validatePatchRange, instructionPatchArchitectureSupported } from '../../patch.js';
 import { CapabilityExecutor as BaseCapabilityExecutor } from './executor-base.js';
+
 export * from './executor-base.js';
+
 const APPROVAL_STATE_IDS = new Set([
 'patch.apply', 'patch.revert', 'runtime.continue', 'runtime.pause',
 'runtime.step-in', 'runtime.step-over', 'runtime.step-out', 'runtime.memory-write',
@@ -12,11 +14,13 @@ const PRECOMMIT_IDS = new Set([
 'annotation.rename', 'annotation.comment', 'annotation.set-type', 'annotation.struct-field',
 'annotation.project', 'runtime.continue', 'runtime.pause', 'runtime.step-in', 'runtime.step-over', 'runtime.step-out',
 ]);
+
 function runtimeSession(platform) {
 const session = platform?.currentSession?.(false);
 if (!session?.adapter) throw new AIError('tool_failed', 'Runtime adapter is unavailable.');
 return session;
 }
+
 function byteArray(value) {
 if (!Array.isArray(value) && !(value instanceof Uint8Array)) {
 throw new AIError('invalid_tool_call', 'Mutation bytes must be an Array or Uint8Array.');
@@ -29,15 +33,18 @@ throw new AIError('invalid_tool_call', 'Mutation contains a non-byte value.');
 }
 return Uint8Array.from(raw);
 }
+
 function equalBytes(a, b) {
 return a?.length === b?.length && Array.from(a).every((value, index) => value === b[index]);
 }
+
 function staleError(error) {
 return error?.code === 'stale-target'
 || error?.code === 'stale-request'
 || error?.stale === true
 || /stale/i.test(String(error?.message || ''));
 }
+
 function sessionSnapshot(session) {
 return Object.freeze({
 id: session?.id ?? null,
@@ -45,6 +52,7 @@ generation: session?.generation ?? null,
 adapterEpoch: session?.adapter?.epoch ?? null,
 });
 }
+
 function sameSessionSnapshot(before, session) {
 if (!session) return false;
 if (before.id != null && session.id !== before.id) return false;
@@ -52,12 +60,14 @@ if (before.generation != null && session.generation !== before.generation) retur
 if (before.adapterEpoch != null && session.adapter?.epoch !== before.adapterEpoch) return false;
 return true;
 }
+
 function assertSessionSnapshot(runtimePlatform, before) {
 const current = runtimePlatform?.currentSession?.(false);
 if (!sameSessionSnapshot(before, current)) {
 throw new AIError('tool_failed', 'Runtime memory target is stale: session generation changed during atomic write.');
 }
 }
+
 async function atomicBoundedMemoryWrite(runtimePlatform, args, options = {}, commitGuard = null) {
 const session = runtimeSession(runtimePlatform);
 const adapter = session.adapter;
@@ -69,12 +79,14 @@ throw new AIError(
 'Runtime write bytes and expected-before must have the same length between 1 and 65536.',
 );
 }
+
 if (adapter.compareAndWriteMemoryAtomic !== true || typeof adapter.compareAndWriteMemory !== 'function') {
 throw new AIError(
 'tool_failed',
 'Runtime adapter does not provide an atomic compare-and-write memory primitive.',
 );
 }
+
 const before = sessionSnapshot(session);
 commitGuard?.();
 let result;
@@ -96,7 +108,9 @@ throw error instanceof AIError
 ? error
 : new AIError('tool_failed', error?.message || 'Runtime atomic memory write failed.');
 }
+
 assertSessionSnapshot(runtimePlatform, before);
+
 if (result?.written != null && (
 typeof result.written !== 'number'
 || !Number.isSafeInteger(result.written)
@@ -104,11 +118,13 @@ typeof result.written !== 'number'
 )) {
 throw new AIError('tool_failed', 'Runtime atomic memory write returned an invalid written count.');
 }
+
 const after = await adapter.readMemory(args.address, bytes.length);
 assertSessionSnapshot(runtimePlatform, before);
 if (!equalBytes(after, bytes)) {
 throw new AIError('tool_failed', 'Runtime memory write postcondition verification failed.');
 }
+
 return {
 address: String(args.address),
 written: bytes.length,
@@ -116,6 +132,7 @@ before: Array.from(expected),
 after: Array.from(bytes),
 };
 }
+
 export class CapabilityExecutor extends BaseCapabilityExecutor {
 async execute(id, args = {}, options = {}) {
 const entry = this.catalog?.get?.(id);
@@ -147,6 +164,7 @@ if (entry.agentTool) return this.executeTool(entry, executionArgs, options);
 if (entry.actionKind) return this.executeAction(entry, executionArgs);
 return this.executeBuiltIn(entry, executionArgs, options, runtimePlatform, commitGuard);
 }
+
 async approvalState(id, args = {}, runtimePlatform = null) {
 const entry = this.catalog?.get?.(id);
 if (!entry || !entry.agentExposed) throw new AIError('invalid_tool_call', `Unknown or human-only capability: ${id}`);
@@ -178,6 +196,7 @@ default:
 throw new AIError('invalid_tool_call', `Capability ${id} cannot be proposed for approval.`);
 }
 }
+
 async executeBuiltIn(entry, args, options, runtimePlatform = null, commitGuard = null) {
 if (entry.id === 'runtime.memory-write') return atomicBoundedMemoryWrite(runtimePlatform, args, options, commitGuard);
 if (entry.id === 'patch.create') return guardedCreatePatch(this.app, args, commitGuard);
@@ -186,6 +205,7 @@ if (entry.id === 'patch.revert') return this.guardedRevertPatch(args, commitGuar
 if (commitGuard && PRECOMMIT_IDS.has(entry.id)) commitGuard();
 return super.executeBuiltIn(entry, args, options, runtimePlatform);
 }
+
 guardedRevertPatch(args, commitGuard = null) {
 const patch = this.app?.patches?.at?.(BigInt(args.fileOffset));
 if (!patch) throw new AIError('tool_failed', 'Patch is no longer present.');
@@ -196,6 +216,7 @@ this.reverts.set(String(patch.offset), metadata);
 return { reverted: true, patch: metadata };
 }
 }
+
 function captureMutationContext(entry, app, runtimePlatform) {
 const patchSet = entry?.id?.startsWith?.('patch.') ? app?.patches || null : null;
 const session = entry?.category === 'runtime' ? runtimePlatform?.currentSession?.(false) : null;
@@ -206,6 +227,7 @@ runtimeGeneration: session?.generation ?? null,
 runtimeAdapter: session?.adapter || null,
 });
 }
+
 function assertMutationContext(context, app, runtimePlatform) {
 if (context?.patchSet && app?.patches !== context.patchSet) {
 throw new AIError('scope_violation', 'The approved proposal mutation target changed before commit.');
@@ -219,11 +241,38 @@ throw new AIError('scope_violation', 'The approved runtime session changed befor
 }
 }
 }
+
 function snapshotApprovedArguments(value) {
-if (typeof structuredClone !== 'function') throw new AIError('tool_failed', 'Structured cloning is unavailable for approved capability arguments.');
-try { return structuredClone(value); }
+const clone = globalThis.structuredClone;
+if (typeof clone !== 'function') throw new AIError('tool_failed', 'Structured cloning is unavailable for approved capability arguments.');
+let snapshot;
+try { snapshot = clone(value); }
 catch { throw new AIError('invalid_tool_call', 'Approved capability arguments must be structured-cloneable.'); }
+if (containsSharedMemory(snapshot)) throw new AIError('invalid_tool_call', 'Approved capability arguments must not contain shared memory.');
+return snapshot;
 }
+
+function containsSharedMemory(value, seen = new WeakSet()) {
+if (value === null || typeof value !== 'object') return false;
+const SharedBuffer = globalThis.SharedArrayBuffer;
+if (typeof SharedBuffer === 'function' && value instanceof SharedBuffer) return true;
+if (ArrayBuffer.isView(value)) return typeof SharedBuffer === 'function' && value.buffer instanceof SharedBuffer;
+if (value instanceof ArrayBuffer || seen.has(value)) return false;
+seen.add(value);
+if (value instanceof Map) {
+for (const [key, item] of value) if (containsSharedMemory(key, seen) || containsSharedMemory(item, seen)) return true;
+return false;
+}
+if (value instanceof Set) {
+for (const item of value) if (containsSharedMemory(item, seen)) return true;
+return false;
+}
+for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+if ('value' in descriptor && containsSharedMemory(descriptor.value, seen)) return true;
+}
+return false;
+}
+
 function runtimeStatus(platform) {
 const session = platform?.currentSession?.(false);
 return session ? {
@@ -234,7 +283,12 @@ backend: session.backend,
 capabilities: session.adapter?.capabilities || {},
 } : { connected: false, sessionId: null };
 }
+
 async function guardedCreatePatch(app, args, commitGuard) {
+const architecture = String(app?.store?.get?.('architecture') || '').toLowerCase();
+if (args.instruction !== false && !instructionPatchArchitectureSupported(architecture)) {
+throw new AIError('invalid_tool_call', `Instruction patching is unsupported for architecture: ${architecture || 'unknown'}.`);
+}
 const address = BigInt(args.address), before = byteArray(args.before), after = byteArray(args.after);
 if (!before.length || before.length !== after.length) throw new AIError('invalid_tool_call', 'Patch before/after lengths must match and be non-zero.');
 const regions = app?.store?.get?.('regions') || [];
@@ -254,6 +308,7 @@ const stored = app.patches?.at?.(range.fileOffset);
 if (!stored || !equalBytes(stored.before, before) || !equalBytes(stored.after, after)) throw new AIError('tool_failed', 'Patch postcondition verification failed.');
 return serializePatch(stored);
 }
+
 async function guardedApplyPatch(app, args, commitGuard) {
 const source = args.file || app?.file;
 const patches = app?.patches;
@@ -262,6 +317,7 @@ commitGuard?.();
 if (!(output instanceof Blob)) throw new AIError('tool_failed', 'Patch application did not produce an output Blob.');
 return { ok: true, output, size: output.size, patches: patches.list().map(serializePatch) };
 }
+
 function serializePatch(item) {
 return {
 fileOffset: item.offset.toString(), address: item.addr == null ? null : String(item.addr),
@@ -269,6 +325,7 @@ before: Array.from(item.before), after: Array.from(item.after),
 label: item.label || null, reason: item.reason || null,
 };
 }
+
 export function createCapabilityExecutor(options) {
 return new CapabilityExecutor(options);
 }
