@@ -1,0 +1,42 @@
+name: Temporary C4-04 acceptance
+on:
+  push:
+    branches: ['impl/c4-04-finish-20260916']
+    paths: ['.github/workflows/temp-c4-04-acceptance.yml']
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: impl/c4-04-finish-20260916
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: C4-04 acceptance contracts
+        shell: bash
+        run: |
+          set -o pipefail
+          node --test \
+            tests/phase8/substrate/proof-target-decisions.test.mjs \
+            tests/phase8/substrate/pass-validation-owned-snapshot.test.mjs \
+            tests/phase8/substrate/c4-equivalence-registry.test.mjs \
+            tests/phase8/substrate/c4-memory-rewrite-adoption.test.mjs \
+            tests/phase8/structuring/conditional-region-body-authority.test.mjs \
+            tests/phase8/structuring/conditional-region-body-projection.test.mjs \
+            tests/phase9/memory/terminal-control-equivalence.test.mjs \
+            tests/phase9/memory/terminal-effect-equivalence.test.mjs \
+            tests/phase9/memory/c4-cfg-loop-equivalence.test.mjs 2>&1 | tee /tmp/c4-acceptance.log
+      - name: Upload acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c4-04-acceptance-evidence
+          path: /tmp/c4-acceptance.log
+          if-no-files-found: ignore
+          retention-days: 1
