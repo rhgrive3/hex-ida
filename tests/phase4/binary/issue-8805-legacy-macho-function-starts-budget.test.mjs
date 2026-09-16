@@ -27,12 +27,12 @@ const dense = (n) => { const b = new Uint8Array(n + 1); b.fill(4, 0, n); b[n] = 
 // --- dense flood stops at the declared retention ceiling, not the heap -----
 {
   const list = parseFunctionStarts(dense(4_000_000), BASE, { architecture: 'arm64', regions: EXEC_REGIONS });
-  assert.equal(list.length, 200_000, 'default retained-start ceiling bounds materialization');
+  assert.equal(list.length, 400_000, 'default retained-start ceiling bounds materialization');
   assert.equal(list.truncated, true, 'an over-budget decode must report truncation');
   assert.equal(list.truncationReason, 'result-limit');
   assert.equal(list.complete, false, 'a capped prefix is never blessed as exact evidence');
   assert.equal(list[0], BASE + 4n, 'retained starts keep exact addresses');
-  assert.equal(list[199999], BASE + 200_000n * 4n, 'the retained prefix is monotone and complete up to the cut');
+  assert.equal(list[399999], BASE + 400_000n * 4n, 'the retained prefix is monotone and complete up to the cut');
 }
 
 // --- the budget is per-item and charged BEFORE the (limit+1)th exists ------
@@ -106,7 +106,7 @@ const dense = (n) => { const b = new Uint8Array(n + 1); b.fill(4, 0, n); b[n] = 
       const list = globalThis.MachO.parseFunctionStarts(buf, base, {
         architecture: 'arm64', regions: [{ exec: true, vmAddr: base, size: 0x100000000n }]
       });
-      if (list.length !== 200_000 || !list.truncated || list.complete) {
+      if (list.length !== 400_000 || !list.truncated || list.complete) {
         console.error('missing bounded stop'); process.exit(2);
       }
       process.exit(0);
@@ -157,13 +157,21 @@ const dense = (n) => { const b = new Uint8Array(n + 1); b.fill(4, 0, n); b[n] = 
   };
 
   {
-    const result = await runWorker(dense(250_000), { entry: 0x100000000n + 2n * 4n });
+    const result = await runWorker(dense(450_000), { entry: 0x100000000n + 2n * 4n });
     assert.equal(result.functionDiscovery.capped, true, 'over-budget decode reports capped discovery (#8805)');
     assert.equal(result.functionDiscovery.complete, false);
     assert.deepEqual([...result.functionDiscovery.reasons], ['no-complete-lc-function-starts', 'function-starts:result-limit']);
     assert.equal(result.capped, true, 'the slice result itself must not hide the cut');
     assert.equal(result.functionStartsExact, false);
-    assert.equal(result.funcs.length, 200_000, 'retention ceiling holds inside the worker, entry seed already included');
+    assert.equal(result.funcs.length, 400_000, 'retention ceiling holds inside the worker, entry seed already included');
+  }
+  {
+    const result = await runWorker(dense(293_794), { entry: 0x100000000n + 500_000n * 4n });
+    assert.equal(result.functionDiscovery.capped, false, 'real YWP-scale function starts stay within the safe retention ceiling');
+    assert.equal(result.functionDiscovery.complete, true);
+    assert.equal(result.capped, false);
+    assert.ok(result.functionStartsExact, '293,794 authoritative starts remain exact');
+    assert.equal(result.funcs.length, 293_795, 'entry seed merges without forcing a retention cap');
   }
   {
     const result = await runWorker(dense(3), { entry: 0x100000000n + 1000n });
