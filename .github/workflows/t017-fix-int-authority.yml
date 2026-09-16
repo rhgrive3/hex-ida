@@ -1,0 +1,43 @@
+name: T017 narrow INT authority
+
+on:
+  push:
+    branches:
+      - recovery/t017-machine-effects-20260917
+    paths:
+      - .github/workflows/t017-fix-int-authority.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Keep INT uncertainty fail-closed without regressing current-main validation
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          p = Path('js/targets/architecture/x86_64/effects/index.js')
+          text = p.read_text()
+          old = "    || STRUCTURED_FAIL_CLOSED_REASON.test(reason)"
+          new = "    || reason === 'x86-int-delivery-state-unmodelled'\n    || (!context?.closureMatrixTerminal && STRUCTURED_FAIL_CLOSED_REASON.test(reason))"
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one terminal authority boundary, got {text.count(old)}')
+          p.write_text(text.replace(old, new, 1))
+          PY
+          node --check js/targets/architecture/x86_64/effects/index.js
+      - name: Commit narrowed authority boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/targets/architecture/x86_64/effects/index.js
+          git commit -m 'fix(t017): keep INT uncertainty fail-closed in validation contexts'
+          git push origin HEAD:recovery/t017-machine-effects-20260917
