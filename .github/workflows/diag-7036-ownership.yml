@@ -1,4 +1,4 @@
-name: diag-7036-main-reconcile
+name: diag-7036-ownership
 on:
   push:
     branches:
@@ -13,60 +13,78 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Resolve T014 overlap only
+      - name: Reproduce ownership gates
         shell: bash
         run: |
           set +e
           set -uo pipefail
           STATUS=/tmp/diag-7036.txt
           : > "$STATUS"
-          ORIGINAL_HEAD=e544f3a9a45d618e573565d39e1a49223040af06
-          timeout 90s git fetch --no-tags origin main "$ORIGINAL_HEAD" >/tmp/fetch.log 2>&1
+          HEAD_SHA=f2cad8e5f097f3243a005f9cc281b1c1470f10aa
+          LOGICAL_BRANCH=feat/analysis-roadmap-v8-current-main-20260907
+
+          timeout 90s git fetch --no-tags origin main "$HEAD_SHA" >/tmp/fetch.log 2>&1
           rc=$?
           echo "fetch rc=$rc" >> "$STATUS"
           if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/fetch.log >> "$STATUS"; exit "$rc"; fi
-          git checkout --detach "$ORIGINAL_HEAD" >/tmp/checkout.log 2>&1
+          git checkout --detach "$HEAD_SHA" >/tmp/checkout.log 2>&1
           rc=$?
           echo "checkout rc=$rc" >> "$STATUS"
           if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/checkout.log >> "$STATUS"; exit "$rc"; fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          BASE_SHA=$(git rev-parse refs/remotes/origin/main)
-          echo "main=$BASE_SHA" >> "$STATUS"
-          git merge --no-edit --no-ff refs/remotes/origin/main >/tmp/merge.log 2>&1
-          merge_rc=$?
-          echo "initial_merge_rc=$merge_rc" >> "$STATUS"
-          if [ "$merge_rc" -eq 0 ]; then echo "merge_clean=true" >> "$STATUS"; exit 1; fi
 
-          T014=(
-            js/symbolic/expr/hash.js
-            js/symbolic/solver/backend.js
-            js/symbolic/solver/bitblast-backend.js
-            js/symbolic/solver/registry.js
-            js/symbolic/solver/tiered-backend.js
-            js/symbolic/solver/worker-backend.js
-            js/symbolic/solver/worker-entry.js
-            js/symbolic/verify/query.js
-            tests/issue-5498-eligibility-result-status-authority.mjs
-            tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs
-          )
-          for f in "${T014[@]}"; do
-            if git diff --name-only --diff-filter=U -- "$f" | grep -q .; then
-              git checkout --theirs -- "$f" >/tmp/resolve.log 2>&1 && git add "$f"
-              rc=$?
-              echo "resolve_main $f rc=$rc" >> "$STATUS"
-              if [ "$rc" -ne 0 ]; then tail -n 20 /tmp/resolve.log >> "$STATUS"; exit "$rc"; fi
-            fi
-          done
-          echo "remaining_conflicts:" >> "$STATUS"
-          git diff --name-only --diff-filter=U >> "$STATUS"
-          count=$(git diff --name-only --diff-filter=U | wc -l)
-          echo "remaining_count=$count" >> "$STATUS"
-          exit 1
+          BASE_SHA=$(git rev-parse refs/remotes/origin/main)
+          ACTUAL_HEAD=$(git rev-parse HEAD)
+          echo "base=$BASE_SHA" >> "$STATUS"
+          echo "head=$ACTUAL_HEAD" >> "$STATUS"
+
+          fail_tail() {
+            label="$1"; file="$2"; rc="$3"
+            echo "$label rc=$rc" >> "$STATUS"
+            echo "--- first failure tail ---" >> "$STATUS"
+            tail -n 80 "$file" >> "$STATUS"
+            exit "$rc"
+          }
+
+          timeout 120s node tools/validation/phase7-ownership.mjs --check-manifest >/tmp/p7manifest.log 2>&1
+          rc=$?
+          [ "$rc" -eq 0 ] || fail_tail phase7_manifest /tmp/p7manifest.log "$rc"
+          echo "phase7_manifest rc=0" >> "$STATUS"
+
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs \
+            --branch "$LOGICAL_BRANCH" --phase phase7 \
+            --base-sha "$BASE_SHA" --head-sha "$ACTUAL_HEAD" \
+            >/tmp/p7files.json 2>/tmp/p7gen.log
+          rc=$?
+          [ "$rc" -eq 0 ] || fail_tail phase7_inventory /tmp/p7gen.log "$rc"
+          node -e 'const f=require("fs");const a=JSON.parse(f.readFileSync("/tmp/p7files.json","utf8"));console.log(`phase7_files=${a.length}`)' >> "$STATUS" 2>&1
+          P7_JSON=$(cat /tmp/p7files.json)
+          timeout 120s node tools/validation/phase7-ownership.mjs --files-json "$P7_JSON" >/tmp/p7validate.log 2>&1
+          rc=$?
+          [ "$rc" -eq 0 ] || fail_tail phase7_validate /tmp/p7validate.log "$rc"
+          echo "phase7_validate rc=0" >> "$STATUS"
+
+          timeout 120s node tools/validation/phase8-ownership.mjs --check-manifest >/tmp/p8manifest.log 2>&1
+          rc=$?
+          [ "$rc" -eq 0 ] || fail_tail phase8_manifest /tmp/p8manifest.log "$rc"
+          echo "phase8_manifest rc=0" >> "$STATUS"
+
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs \
+            --branch "$LOGICAL_BRANCH" --phase phase8 \
+            --base-sha "$BASE_SHA" --head-sha "$ACTUAL_HEAD" \
+            >/tmp/p8files.json 2>/tmp/p8gen.log
+          rc=$?
+          [ "$rc" -eq 0 ] || fail_tail phase8_inventory /tmp/p8gen.log "$rc"
+          node -e 'const f=require("fs");const a=JSON.parse(f.readFileSync("/tmp/p8files.json","utf8"));console.log(`phase8_files=${a.length}`)' >> "$STATUS" 2>&1
+          P8_JSON=$(cat /tmp/p8files.json)
+          timeout 120s node tools/validation/phase8-ownership.mjs --files-json "$P8_JSON" >/tmp/p8validate.log 2>&1
+          rc=$?
+          [ "$rc" -eq 0 ] || fail_tail phase8_validate /tmp/p8validate.log "$rc"
+          echo "phase8_validate rc=0" >> "$STATUS"
+          echo "ownership gates reproduced green" >> "$STATUS"
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: diag-7036-main-reconcile
+          name: diag-7036-ownership
           path: /tmp/diag-7036.txt
           retention-days: 1
