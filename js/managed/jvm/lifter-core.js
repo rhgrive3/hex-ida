@@ -3,6 +3,7 @@ import { createManagedExceptionRegionId, createManagedMethodId, createVMOperatio
 import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
 import { resolveJvmFieldRef } from './field-reference.js';
 import { decodeJvmInstructionBoundary } from './instruction-boundary.js';
+import { parseJvmMethodDescriptor } from './descriptors.js';
 
 function fail(code) { throw new TypeError(code); }
 
@@ -189,6 +190,55 @@ function withJvmLocalType(value, type) {
   return type ? { ...value, type } : value;
 }
 
+// Canonical managed-heap reference machine type. The `ldc` path (#8004) and the
+// allocation/checkcast object semantics (#8845/#8848) already project a JVM
+// `objectref` as a managed-heap address; the plain reference-transport opcodes
+// (`aload`/`astore`/`aconst_null`) dropped that authority and published a bare
+// bitvector, so nullability / alias / field-base / reference-vs-integer consumers
+// could not distinguish a reference from an int (#8836). Reuse the exact same
+// canonical shape the #8004 `ldc` reference uses (32-bit managed-heap address).
+const JVM_MANAGED_HEAP_REFERENCE_TYPE = Object.freeze({
+  kind: 'address',
+  widthBits: 32,
+  addressSpace: 'managed-heap',
+});
+
+// Slots that provably hold a managed-heap reference for the whole method, taken
+// only from fixed, sound sources: the receiver of an instance method and the
+// `L...;`/`[` parameters of the descriptor. A category-2 (`J`/`D`) parameter
+// occupies its own two slots and is never a reference. Locals whose reference-ness
+// would require an inter-procedural / assignment-tracked type are deliberately
+// NOT inferred here (that stays sound by remaining unresolved).
+function computeJvmReferenceLocals(method) {
+  const refs = new Set();
+  const isStatic = (method?.accessFlags & 0x0008) !== 0; // ACC_STATIC
+  let slot = 0;
+  if (!isStatic) {
+    refs.add(0); // `this`
+    slot = 1;
+  }
+  let parsed;
+  try { parsed = parseJvmMethodDescriptor(method?.descriptor); } catch { return refs; }
+  for (const p of parsed.parameters) {
+    const isWide = p.kind === 'base' && (p.tag === 'J' || p.tag === 'D');
+    if (p.kind === 'object' || p.kind === 'array') refs.add(slot);
+    slot += isWide ? 2 : 1;
+  }
+  return refs;
+}
+
+// Combined local-value type: float/double authority from the opcode grammar
+// (#7971) and managed-heap reference authority for `aload`/`astore` on a slot
+// whose declared type is a reference (#8836). Returns null when neither applies.
+function jvmLocalValueType(prefix, locIdx, referenceLocals) {
+  const floatType = jvmFloatingLocalType(prefix);
+  if (floatType) return floatType;
+  if ((prefix === 'aload' || prefix === 'astore') && referenceLocals.has(locIdx)) {
+    return JVM_MANAGED_HEAP_REFERENCE_TYPE;
+  }
+  return null;
+}
+
 function collectJvmControlFlowJoins(bytecode, exceptionTable) {
   const view = new DataView(bytecode.buffer, bytecode.byteOffset, bytecode.byteLength);
   const joinOffsets = new Set();
@@ -290,6 +340,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
   }
 
   const codeAttr = method.code;
+  const referenceLocals = computeJvmReferenceLocals(method);
   const bytecode = codeAttr.bytecode;
   const view = new DataView(bytecode.buffer, bytecode.byteOffset, bytecode.byteLength);
   const codeOffset = Number(codeAttr.offset ?? 0);
@@ -337,7 +388,11 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
 
       case 0x01: // aconst_null
         mnemonic = 'aconst_null';
-        producedValues.push({ bits: 64, isNull: true });
+        // `aconst_null` is an unconditional managed-heap reference (the null
+        // objectref), category-1 on the stack. It previously published a bare
+        // 64-bit bitvector, losing reference/nullability authority (#8836);
+        // project it with the same canonical managed-heap reference type as #8004.
+        producedValues.push({ bits: 32, isNull: true, type: JVM_MANAGED_HEAP_REFERENCE_TYPE, stackType: 'reference' });
         currentStackHeight++;
         break;
 
@@ -422,7 +477,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const isCategory2 = opcode === 0x16 || opcode === 0x18;
           const names = { 0x15: 'iload', 0x16: 'lload', 0x17: 'fload', 0x18: 'dload', 0x19: 'aload' };
           mnemonic = names[opcode];
-          const valueType = jvmFloatingLocalType(mnemonic);
+          const valueType = jvmLocalValueType(mnemonic, locIdx, referenceLocals);
           if (!requireLocalAccess(codeAttr.maxLocals, locIdx, isCategory2 ? 2 : 1, unknownEffects)) completeness = 'partial';
           else {
             locationReads.push(withJvmLocalType({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 }, valueType));
@@ -443,7 +498,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const prefix = opcode < 0x1e ? 'iload' : opcode < 0x22 ? 'lload' : opcode < 0x26 ? 'fload' : opcode < 0x2a ? 'dload' : 'aload';
           const locIdx = opcode - base;
           const isCategory2 = prefix === 'lload' || prefix === 'dload';
-          const valueType = jvmFloatingLocalType(prefix);
+          const valueType = jvmLocalValueType(prefix, locIdx, referenceLocals);
           mnemonic = `${prefix}_${locIdx}`;
           if (!requireLocalAccess(codeAttr.maxLocals, locIdx, isCategory2 ? 2 : 1, unknownEffects)) completeness = 'partial';
           else {
@@ -461,7 +516,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const isCategory2 = opcode === 0x37 || opcode === 0x39;
           const names = { 0x36: 'istore', 0x37: 'lstore', 0x38: 'fstore', 0x39: 'dstore', 0x3a: 'astore' };
           mnemonic = names[opcode];
-          const valueType = jvmFloatingLocalType(mnemonic);
+          const valueType = jvmLocalValueType(mnemonic, locIdx, referenceLocals);
           if (!requireLocalAccess(codeAttr.maxLocals, locIdx, isCategory2 ? 2 : 1, unknownEffects)) completeness = 'partial';
           else {
             locationWrites.push(withJvmLocalType({ kind: 'local', index: locIdx, bits: isCategory2 ? 64 : 32 }, valueType));
@@ -482,7 +537,7 @@ export function liftJvmMethod(methodIdx, jvmClass, options = {}) {
           const prefix = opcode < 0x3f ? 'istore' : opcode < 0x43 ? 'lstore' : opcode < 0x47 ? 'fstore' : opcode < 0x4b ? 'dstore' : 'astore';
           const locIdx = opcode - base;
           const isCategory2 = prefix === 'lstore' || prefix === 'dstore';
-          const valueType = jvmFloatingLocalType(prefix);
+          const valueType = jvmLocalValueType(prefix, locIdx, referenceLocals);
           mnemonic = `${prefix}_${locIdx}`;
           if (!requireLocalAccess(codeAttr.maxLocals, locIdx, isCategory2 ? 2 : 1, unknownEffects)) completeness = 'partial';
           else {

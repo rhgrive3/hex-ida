@@ -460,6 +460,7 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
   const info = slice.info;
   const base = slice.offset;
   let capped = false;
+  if (info.loadCommandStringsCapped) capped = true;
   let sym = null;
 
   if (info.symtab && info.symtab.nsyms > 0) {
@@ -475,6 +476,7 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
     const strBuf = await readRange(base + BigInt(info.symtab.stroff), strLen);
     if (symBuf.length >= entry && strBuf.length) {
       try { sym = MachO.parseSymbols(symBuf, strBuf, info.is64); } catch { sym = null; }
+      if (sym && sym.capped) capped = true;
     }
   }
 
@@ -526,6 +528,7 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
   let funcs = new BigUint64Array(0);
   let functionStartsExact = false;
   let functionStartsPartialReason = null;
+  let functionStartsCapped = false;
   // Exact decoded starts (plus the Mach-O entry seed) are also the hard
   // control-flow roots for ADR/ADRP provenance in the worker scans.
   slice.functionStarts = [];
@@ -561,20 +564,26 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
       // prefix's last byte happens to be a valid terminator, the suffix was
       // never read, so the whole stream is not evidence. Never bless a prefix.
       capped = true;
+      functionStartsCapped = true;
       functionStartsPartialReason = 'clamp-truncated';
     }
     try {
       const list = MachO.parseFunctionStarts(buf, info.textVM,
         { regions: slice.regions || [], architecture: info.architecture || 'arm64',
-          dataInCode: dataInCodeRanges });
-      const seeds = list.slice();
-      if (info.entry != null && !seeds.some((value) => value === info.entry)) seeds.push(info.entry);
-      seeds.sort((a,b)=>(a<b?-1:a>b?1:0));
-      slice.functionStarts = seeds;
-      funcs = new BigUint64Array(seeds.length);
-      for (let i = 0; i < seeds.length; i++) funcs[i] = seeds[i];
+          dataInCode: dataInCodeRanges, shouldCancel: () => cancelled(requestId) });
+      // Positive ULEB deltas make `list` strictly increasing. Insert the entry
+      // seed in place instead of copy + linear membership scan + full re-sort.
+      if (info.entry != null) {
+        let lo = 0, hi = list.length;
+        while (lo < hi) { const mid = (lo + hi) >>> 1; if (list[mid] < info.entry) lo = mid + 1; else hi = mid; }
+        if (list[lo] !== info.entry) list.splice(lo, 0, info.entry);
+      }
+      slice.functionStarts = list;
+      funcs = new BigUint64Array(list.length);
+      for (let i = 0; i < list.length; i++) funcs[i] = list[i];
       functionStartsExact = !clamped && !dataInCodeIncomplete
         && list.length > 0 && list.complete === true;
+      if (list.truncated) { functionStartsCapped = true; capped = true; }
       if (!functionStartsExact && list.partialReason) functionStartsPartialReason = list.partialReason;
       else if (!functionStartsExact && dataInCodeIncomplete && !functionStartsPartialReason)
         functionStartsPartialReason = 'data-in-code-incomplete';
@@ -610,7 +619,7 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
     allSeedsExact: funcs.length > 0,
     discoveryComplete: functionStartsExact,
     functionStartsExact,
-    functionDiscovery: { complete:functionStartsExact, capped:functionStartsPartialReason==='clamp-truncated',
+    functionDiscovery: { complete:functionStartsExact, capped:functionStartsPartialReason==='clamp-truncated'||functionStartsCapped,
       reasons:functionStartsExact ? [] : (functionStartsPartialReason
         ? ['no-complete-lc-function-starts', 'function-starts:' + functionStartsPartialReason]
         : ['no-complete-lc-function-starts']) },
