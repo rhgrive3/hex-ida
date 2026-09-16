@@ -1,0 +1,48 @@
+name: PR 8671 conflict probe
+
+on:
+  push:
+    branches:
+      - integration-candidate/benchmark-auth-20260914
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Probe merge conflicts
+        shell: bash
+        run: |
+          set -u
+          git config user.name "pr8671-conflict-probe"
+          git config user.email "pr8671-conflict-probe@users.noreply.github.com"
+          git fetch --no-tags origin main
+          set +e
+          git merge --no-commit --no-ff origin/main >/dev/null 2>&1
+          merge_status=$?
+          set -e
+          git diff --name-only --diff-filter=U > conflicts.txt
+          if [ "$merge_status" -eq 0 ]; then
+            printf '__CLEAN__\n' > conflicts.txt
+          elif [ ! -s conflicts.txt ]; then
+            printf '__MERGE_FAILED_WITHOUT_UNMERGED_PATHS__\n' > conflicts.txt
+          fi
+          {
+            echo '### PR 8671 merge probe'
+            echo '```text'
+            cat conflicts.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          git merge --abort >/dev/null 2>&1 || true
+      - name: Upload minimal conflict evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr8671-conflicts
+          path: conflicts.txt
+          retention-days: 1
