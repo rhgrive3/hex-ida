@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-      - name: Defer uncached source-backed signature blob
+      - name: Defer only large uncached source-backed signature blobs
         shell: bash
         run: |
           set -euo pipefail
@@ -31,8 +31,12 @@ jobs:
           from pathlib import Path
           p = Path('js/apple/knowledge.js')
           text = p.read_text()
+          old_const = 'const MAX_SIGNATURE_BLOBS = 4096;'
+          new_const = "const MAX_SIGNATURE_BLOBS = 4096;\nconst MAX_SOURCE_BACKED_SIGNATURE_BYTES = 256 * 1024;"
           old_line = "    if (error?.code === 'BINARY_SOURCE_RANGE_MISSING') throw error;"
-          new_block = """    if (error?.code === 'BINARY_SOURCE_RANGE_MISSING' && input?.__binaryByteBacking === true) {
+          new_block = """    if (error?.code === 'BINARY_SOURCE_RANGE_MISSING'
+                && input?.__binaryByteBacking === true
+                && dataSize > MAX_SOURCE_BACKED_SIGNATURE_BYTES) {
               return signatureResult('partial', {
                 complete: false,
                 reasons: ['signature-bytes-deferred'],
@@ -40,9 +44,12 @@ jobs:
               });
             }
             if (error?.code === 'BINARY_SOURCE_RANGE_MISSING') throw error;"""
+          if text.count(old_const) != 1:
+              raise SystemExit(f'signature threshold boundary mismatch: {text.count(old_const)}')
           if text.count(old_line) != 1:
               raise SystemExit(f'code-signature catch boundary mismatch: {text.count(old_line)}')
-          p.write_text(text.replace(old_line, new_block, 1))
+          text = text.replace(old_const, new_const, 1).replace(old_line, new_block, 1)
+          p.write_text(text)
           PY
           node --check js/apple/knowledge.js
       - name: Focused Apple signature regressions
@@ -66,9 +73,19 @@ jobs:
       - name: Verify universal binary benchmark budget
         shell: bash
         run: |
-          set -euo pipefail
-          npm --silent run binary:benchmark > /tmp/t015-benchmark.json
-          node tools/benchmark/compare.mjs --binary=/tmp/t015-benchmark.json
+          set +e
+          npm --silent run binary:benchmark > /tmp/t015-benchmark.json 2> /tmp/t015-benchmark.err
+          status=$?
+          if [ "$status" -eq 0 ]; then
+            node tools/benchmark/compare.mjs --binary=/tmp/t015-benchmark.json > /tmp/t015-compare.out 2>&1
+            status=$?
+          fi
+          if [ "$status" -ne 0 ]; then
+            { tail -n 40 /tmp/t015-benchmark.err; tail -n 100 /tmp/t015-compare.out 2>/dev/null || true; } > /tmp/t015-first-failure.txt
+            cat /tmp/t015-first-failure.txt >> "$GITHUB_STEP_SUMMARY"
+            exit "$status"
+          fi
+          tail -n 40 /tmp/t015-compare.out
       - name: Upload focused first-failure evidence
         if: failure()
         uses: actions/upload-artifact@v4
@@ -85,5 +102,5 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add js/apple/knowledge.js
-          git commit -m 'fix(t015): defer uncached source-backed signature blobs'
+          git commit -m 'fix(t015): defer large source-backed signature blobs'
           git push origin HEAD:fix/t015-code-signature-source-budget-20260917
