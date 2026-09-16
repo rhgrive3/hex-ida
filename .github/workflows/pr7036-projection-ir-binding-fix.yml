@@ -22,11 +22,13 @@ jobs:
           from pathlib import Path
           p=Path('js/decompiler/pipeline.js')
           s=p.read_text()
-          old='const irObservation = captureProjectionIrData(irRoots,options.shouldAbort);'
-          new='const irObservation = captureProjectionIrData([result.ir],options.shouldAbort);'
-          if s.count(old) != 1:
-              raise SystemExit(f'pipeline replacement count={s.count(old)}')
-          p.write_text(s.replace(old,new))
+          old_import="import { captureProjectionData, captureProjectionIrData } from './phase8/projection-origin.js';"
+          new_import="import { captureProjectionData, captureProjectionIrData, captureRecoveryIrData } from './phase8/projection-origin.js';"
+          old_obs='const irObservation = captureProjectionIrData(irRoots,options.shouldAbort);'
+          new_obs='const irObservation = captureRecoveryIrData(result.ir,irRoots,options.shouldAbort);'
+          if s.count(old_import) != 1 or s.count(old_obs) != 1:
+              raise SystemExit(f'pipeline replacement counts import={s.count(old_import)} observation={s.count(old_obs)}')
+          p.write_text(s.replace(old_import,new_import).replace(old_obs,new_obs))
 
           t=Path('tests/phase8/substrate/proof-projection-origin.test.mjs')
           s=t.read_text()
@@ -60,13 +62,13 @@ jobs:
           fi
           rm .github/workflows/pr7036-projection-ir-binding-fix.yml
           git add js/decompiler/pipeline.js tests/phase8/substrate/proof-projection-origin.test.mjs .github/workflows/pr7036-projection-ir-binding-fix.yml
-          git commit -m 'fix(decompiler): bind proof projection to complete producer IR'
+          git commit -m 'fix(decompiler): bind proof projection to canonical producer IR'
           git push origin HEAD:feat/analysis-roadmap-v8-current-main-20260907
       - name: Upload focused result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr7036-projection-ir-binding-result
+          name: pr7036-projection-ir-binding-result-v2
           path: pr7036-projection-result.txt
           if-no-files-found: ignore
           retention-days: 2
