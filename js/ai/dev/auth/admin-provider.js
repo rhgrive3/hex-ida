@@ -6,11 +6,6 @@ export class AdminAuthProvider {
   }
 }
 
-export class DenyAdminProvider extends AdminAuthProvider {
-  getIdentity() { return Object.freeze({ authenticated: false, admin: false, provider: 'no-session' }); }
-}
-
-// Explicit test/development fixture. Never a production default.
 export class AllowAllAdminProvider extends AdminAuthProvider {
   getIdentity() {
     return Object.freeze({
@@ -18,6 +13,19 @@ export class AllowAllAdminProvider extends AdminAuthProvider {
       admin: true,
       provider: 'allow-all-admin',
       capabilities: Object.freeze({ canUseDevAgent: true, canUseDevYolo: true }),
+    });
+  }
+}
+
+/* #8854: fail-closed default. Production must not manufacture admin authority from a synthetic
+   default; a trusted authenticated provider has to be supplied explicitly. When none is wired the
+   principal is unauthenticated and Standard-only. */
+export class DenyAllAdminProvider extends AdminAuthProvider {
+  getIdentity() {
+    return Object.freeze({
+      authenticated: false,
+      admin: false,
+      provider: 'deny-all-admin',
     });
   }
 }
@@ -30,9 +38,6 @@ export function readAdminIdentity(provider) {
   if (!identity || typeof identity !== 'object') throw new TypeError('AdminAuthProvider returned an invalid identity.');
   const authenticated = identity.authenticated === true;
   const admin = authenticated && identity.admin === true;
-  // Existing providers historically exposed only `admin`. New session-backed
-  // providers keep explicit capabilities so future role-policy changes (for
-  // example VIP Dev without YOLO) do not collapse back into an Admin boolean.
   const explicit = identity.capabilities && typeof identity.capabilities === 'object' ? identity.capabilities : null;
   const capabilities = Object.freeze({
     canUseDevAgent: authenticated && (explicit ? explicit.canUseDevAgent === true : admin),
