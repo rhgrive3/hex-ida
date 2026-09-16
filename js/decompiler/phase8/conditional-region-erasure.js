@@ -11,6 +11,11 @@ import { createQueryGuard, sameMemoryIdentity } from '../../symbolic/memory/quer
 import { readConditionalRegionCondition } from './conditional-region-condition.js';
 
 const issued = new WeakMap();
+// Reading the private body packet is the explicit capability hand-off for a
+// render caller.  A plan may still be carried for condition freshness without
+// silently authorizing body deletion (the public predicate route does exactly
+// that); callers that need the body must first obtain this private packet.
+const bodyCapabilityRequests = new WeakSet();
 const LIMITS = Object.freeze({ workItems:32768, allocationUnits:32768 });
 const OPTION_KEYS = new Set(['identity','timeoutMs','limits','signal','isCancelled','getCurrentIdentity','now','conditionPlan','projection']);
 const freeze = Object.freeze;
@@ -39,7 +44,13 @@ export function readRegionErasureCondition(plan, projection, ir, identity) {
 export function readRegionErasureBody(plan, projection, ir, identity) {
   if (!readConditionalRegionErasure(plan, ir, identity)) return null;
   const binding = issued.get(plan);
-  return binding.projection === projection && binding.body ? binding.body : null;
+  if (binding.projection !== projection || !binding.body) return null;
+  bodyCapabilityRequests.add(plan);
+  return binding.body;
+}
+
+export function isRegionErasureBodyRequested(plan) {
+  return !!plan && bodyCapabilityRequests.has(plan);
 }
 
 export function prepareConditionalRegionErasure(structure, reachability, ir, options = {}) {
@@ -85,7 +96,13 @@ export function prepareConditionalRegionErasure(structure, reachability, ir, opt
     // first deletion domain is a flat sequence of stores with a whole-entry
     // infeasibility proof. Nested controls, assignments and PHIs stay intact.
     const copiedArm = condition?.region.arms.find(arm => arm.original === erased);
-    const flatStores = condition && !structure.phis.length && !structure.memoryPhis.length
+    // Join PHIs are retained by this render-only deletion and therefore do not
+    // make an otherwise flat arm unsafe. Only PHIs (including MemoryPHIs) whose
+    // owning block is inside the removed arm keep the body at `required`.
+    const erasedBlocks = new Set(erased.emittedBlocks ?? []);
+    const erasedHasPhi = structure.phis.some(item => erasedBlocks.has(item.block));
+    const erasedHasMemoryPhi = structure.memoryPhis.some(item => erasedBlocks.has(item.block));
+    const flatStores = condition && !erasedHasPhi && !erasedHasMemoryPhi
       && removed.size > 0 && removed.size <= 256 && copiedArm?.nodes.length === removed.size
       && copiedArm.nodes.every(node => node.kind === 'stmt' && node.semantic?.op === 'store')
       && erased.nodes.every(node => node.kind === 'stmt');

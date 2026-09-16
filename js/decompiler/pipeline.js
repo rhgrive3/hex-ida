@@ -464,6 +464,9 @@ async function optimizeConditionalPredicate(result, submitted, proofOnlyRewrites
       || submitted.signal?.aborted === true; } catch { return true; } };
     if (!current()) return fail('stale-condition-plan');
     const projected = fullPhase8Projection(result, null, { phase8Optimize:true, phase8RegionErasurePlan:plan,
+      // The public conditional optimizer owns only the header rewrite. Body
+      // erasure requires the explicit region-rendering authority path.
+      phase8RegionErasureBody:false,
       phase8ProofIdentity:guard.identity, phase8ProofOnlyRewrites:proofOnlyRewrites,
       phase8TimeBudgetMs:Math.min(submitted.phase8TimeBudgetMs ?? 120, guard.remainingMilliseconds()),
       phase8WorkBudget:submitted.phase8WorkBudget ?? 1000000, shouldAbort:aborted });

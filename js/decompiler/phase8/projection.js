@@ -21,7 +21,11 @@ import { readDceResultProof } from './dce.js';
 import { normalizeCompatibilityLine } from '../switch.js';
 import { beginScopedTransformCapture, finishScopedTransformCapture } from './scoped-transform-capture.js';
 import { readProvedRegionErasure } from './region-erasure-pass.js';
-import { readRegionErasureCondition, readRegionErasureBody } from './conditional-region-erasure.js';
+import {
+  readRegionErasureCondition,
+  readRegionErasureBody,
+  isRegionErasureBodyRequested,
+} from './conditional-region-erasure.js';
 import { sameMemoryIdentity } from '../../symbolic/memory/query-state.js';
 
 export const PHASE8_PROJECTION_VERSION = 4;
@@ -672,8 +676,15 @@ export function applyPhase8Projection(result, analysis, opts = {}) {
   if (opts.phase8RegionErasurePlan != null && !regionPlan) return original;
   const conditionRequested = opts.phase8RegionErasurePlan?.conditionPlanId != null;
   const conditionProof = regionPlan ? readRegionErasureCondition(regionPlan, original, result.ir, opts.phase8ProofIdentity) : null;
-  const bodyExpected = regionPlan?.bodyValidation === 'proved-no-phi-flat-stores';
-  const bodyProof = regionPlan ? readRegionErasureBody(regionPlan, original, result.ir, opts.phase8ProofIdentity) : null;
+  // Conditional-predicate projection is a public, predicate-only operation.
+  // Keep the prepared region plan attached for condition freshness, but require
+  // an explicit private-packet hand-off (or a renderer-only opt-in) before
+  // consuming its independent body-erasure authority.
+  const bodyProjectionEnabled = opts.phase8RegionErasureBody === false ? false
+    : opts.phase8RegionErasureBody === true || isRegionErasureBodyRequested(opts.phase8RegionErasurePlan);
+  const bodyExpected = bodyProjectionEnabled && regionPlan?.bodyValidation === 'proved-no-phi-flat-stores';
+  const bodyProof = bodyProjectionEnabled && regionPlan
+    ? readRegionErasureBody(regionPlan, original, result.ir, opts.phase8ProofIdentity) : null;
   const currentCondition = () => !opts.shouldAbort?.() && readProvedRegionErasure(analysis, regionContext) === regionPlan
     && readRegionErasureCondition(regionPlan, original, original.ir, opts.phase8ProofIdentity) === conditionProof;
   const currentBody = () => !bodyProof || !opts.shouldAbort?.()
