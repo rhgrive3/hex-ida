@@ -41,6 +41,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: stage2-generated-drift
-          path: stage2-generated-drift.txt
+          path: |
+            stage2-generated-drift.txt
+            userscript/hex.user.template.js
+            userscript/release-version.json
           if-no-files-found: warn
           retention-days: 1
