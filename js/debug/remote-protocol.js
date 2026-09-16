@@ -32,6 +32,129 @@ function jsonByteSize(value) {
   return utf8ByteLength(json);
 }
 
+
+/*
+ * #8654/#8995 review: count the canonical wire JSON incrementally, using the
+ * same byte semantics as JSON.stringify(encodeWireValue(...)) without first
+ * materializing the encoded graph. Accepted packets are counted exactly; an
+ * oversized packet stops as soon as byte maxBytes + 1 would be emitted.
+ */
+export function assertWireBytesAtMost(value, maxBytes, code = 'packet-too-large', message = 'remote packet exceeds wire budget') {
+  if (typeof maxBytes !== 'number' || !Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+    throw new DebugAdapterError('malformed-packet', 'wire budget must be a non-negative safe integer');
+  }
+  let bytes = 0;
+  const ancestry = new WeakSet();
+  const add = (count) => {
+    bytes += count;
+    if (bytes > maxBytes) throw new DebugAdapterError(code, message);
+  };
+  const addJsonString = (text) => {
+    add(2); // quotes
+    for (let i = 0; i < text.length; i += 1) {
+      const char = text.charCodeAt(i);
+      if (char === 0x22 || char === 0x5c) { add(2); continue; } // quote, backslash
+      if (char <= 0x1f) {
+        // JSON.stringify uses the short two-byte escapes for these five
+        // controls and six-byte \u00xx escapes for every other control.
+        add(char === 0x08 || char === 0x09 || char === 0x0a || char === 0x0c || char === 0x0d ? 2 : 6);
+        continue;
+      }
+      if (char < 0x80) { add(1); continue; }
+      if (char < 0x800) { add(2); continue; }
+      if (char >= 0xd800 && char <= 0xdbff) {
+        const next = text.charCodeAt(i + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) { add(4); i += 1; }
+        else add(6); // well-formed JSON.stringify escapes lone surrogates
+        continue;
+      }
+      if (char >= 0xdc00 && char <= 0xdfff) { add(6); continue; }
+      add(3);
+    }
+  };
+  const addKey = (key, first) => {
+    if (!first) add(1);
+    addJsonString(key);
+    add(1); // colon
+  };
+  const addEncodedBigInt = (node) => {
+    add(1);
+    addKey(WIRE_TAG, true); addJsonString(BIGINT_TAG);
+    addKey('value', false); addJsonString(node.toString(10));
+    add(1);
+  };
+  const addEncodedBytes = (byteLength) => {
+    add(1);
+    addKey(WIRE_TAG, true); addJsonString(BYTES_TAG);
+    addKey('value', false);
+    add(2 + (4 * Math.ceil(byteLength / 3))); // quotes + canonical base64 length
+    addKey('length', false); add(String(byteLength).length);
+    add(1);
+  };
+  const visit = (node, depth) => {
+    if (depth > 20) throw new DebugAdapterError('malformed-packet', 'wire budget walk exceeded depth');
+    if (node === null) { add(4); return; }
+    const type = typeof node;
+    if (type === 'string') { addJsonString(node); return; }
+    if (type === 'boolean') { add(node ? 4 : 5); return; }
+    if (type === 'number') {
+      if (!Number.isFinite(node)) throw new DebugAdapterError('malformed-packet', 'remote packet numbers must be finite');
+      add(String(node).length);
+      return;
+    }
+    // Provider packets carry these as native values until encodeWireValue().
+    // Debug wire packets carry the corresponding tagged plain objects, which
+    // fall through to the object path below and are counted byte-for-byte.
+    if (type === 'bigint') { addEncodedBigInt(node); return; }
+    if (type !== 'object') throw new DebugAdapterError('malformed-packet', 'remote packet contains an unsupported value');
+    if (ArrayBuffer.isView(node)) { addEncodedBytes(node.byteLength); return; }
+    if (ancestry.has(node)) throw new DebugAdapterError('malformed-packet', 'wire budget walk encountered a cyclic value');
+    ancestry.add(node);
+    try {
+      if (Array.isArray(node)) {
+        if (node.length > MAX_ARRAY) throw new DebugAdapterError('malformed-packet', 'remote array exceeds limit');
+        add(1);
+        for (let i = 0; i < node.length; i += 1) {
+          if (i > 0) add(1);
+          const descriptor = Object.getOwnPropertyDescriptor(node, String(i));
+          // JSON.stringify/Array#map spell a hole as null. Keeping that exact
+          // accounting avoids a false size rejection; snapshot/schema checks
+          // remain responsible for whether the hole is otherwise admissible.
+          if (!descriptor) { add(4); continue; }
+          if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+            throw new DebugAdapterError('malformed-packet', 'remote packet fields must be own data properties');
+          }
+          visit(descriptor.value, depth + 1);
+        }
+        add(1);
+        return;
+      }
+      const proto = Object.getPrototypeOf(node);
+      if (proto !== Object.prototype && proto !== null) {
+        throw new DebugAdapterError('malformed-packet', 'remote packet objects must be plain data');
+      }
+      const keys = Object.keys(node);
+      if (keys.length > 1024) throw new DebugAdapterError('malformed-packet', 'remote object has too many fields');
+      add(1);
+      let first = true;
+      for (const key of keys) {
+        const descriptor = Object.getOwnPropertyDescriptor(node, key);
+        if (!descriptor || !descriptor.enumerable) continue;
+        if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+          throw new DebugAdapterError('malformed-packet', 'remote packet fields must be own data properties');
+        }
+        addKey(key, first);
+        first = false;
+        visit(descriptor.value, depth + 1);
+      }
+      add(1);
+    } finally {
+      ancestry.delete(node);
+    }
+  };
+  visit(value, 0);
+}
+
 // Snapshot untrusted wire data through own data descriptors before any
 // validation, accounting, or decode pass. This prevents accessor/proxy-backed
 // input from presenting different payloads to those authority boundaries.
@@ -252,6 +375,10 @@ export function validateRemotePacket(packet) {
   if (!packet || typeof packet !== 'object' || Array.isArray(packet)) throw new DebugAdapterError('malformed-packet', 'remote packet must be an object');
   if (!ALLOWED_TYPES.has(packet.type)) throw new DebugAdapterError('malformed-packet', 'invalid remote packet type');
   if (packet.version !== DEBUG_PROTOCOL_VERSION) throw new DebugAdapterError('protocol-version', `unsupported remote protocol version: ${packet.version}`);
+  // #8654: use the real 1 MiB authority at ingress. The incremental counter
+  // is byte-equivalent to the canonical wire spelling, so no slack or coarse
+  // per-node overestimate is needed and limit+1 stops before materialization.
+  assertWireBytesAtMost(packet, MAX_PACKET_BYTES, 'packet-too-large', 'remote packet exceeds 1 MiB');
   validateValue(packet);
   if (jsonByteSize(packet) > MAX_PACKET_BYTES) throw new DebugAdapterError('packet-too-large', 'remote packet exceeds 1 MiB');
   validateEpoch(packet);
@@ -404,7 +531,10 @@ export class RemoteProtocolClient {
   }
   receive(raw) {
     let wire;
-    try { wire = validateRemotePacket(snapshotWireData(raw)); } catch { return false; }
+    try {
+      assertWireBytesAtMost(raw, MAX_PACKET_BYTES, 'packet-too-large', 'remote packet exceeds 1 MiB');
+      wire = validateRemotePacket(snapshotWireData(raw));
+    } catch { return false; }
     if (wire.type !== 'hello' && wire.epoch !== this.epoch) {
       // A request opened with an explicit epoch legally receives its response
       // carrying that request's own epoch (#5726). Keep such a response only
