@@ -92,21 +92,28 @@ jobs:
           node --check userscript/hex.user.template.js
           node --check worker-entry.js
           node tests/userscript-release-version.mjs
-      - name: Diagnostic userscript group 4 - embed and bridge
-        shell: bash
-        run: |
-          set -euo pipefail
-          node tests/userscript-embed-protocol.mjs
-          node tests/issue-5020-sanitize-details-shared-refs.mjs
-          node tests/userscript-embed-bootstrap.mjs
-          node tests/chatgpt-web-bridge-contract.mjs
-          node tests/chatgpt-send-control-resolution.mjs
-          node tests/chatgpt-disabled-stop-settlement.mjs
-          node tests/userscript-chatgpt-parent-rpc.mjs
-          node tests/userscript-chatgpt-iframe-host.mjs
-          node tests/userscript-chatgpt-sandbox-host.mjs
-          node tests/userscript-embed-child.mjs
-          node tests/userscript-dev-worker-runtime.mjs
+      - name: Diagnostic embed protocol
+        run: node tests/userscript-embed-protocol.mjs
+      - name: Diagnostic sanitize shared refs
+        run: node tests/issue-5020-sanitize-details-shared-refs.mjs
+      - name: Diagnostic embed bootstrap
+        run: node tests/userscript-embed-bootstrap.mjs
+      - name: Diagnostic ChatGPT web bridge contract
+        run: node tests/chatgpt-web-bridge-contract.mjs
+      - name: Diagnostic ChatGPT send control resolution
+        run: node tests/chatgpt-send-control-resolution.mjs
+      - name: Diagnostic ChatGPT disabled stop settlement
+        run: node tests/chatgpt-disabled-stop-settlement.mjs
+      - name: Diagnostic ChatGPT parent RPC
+        run: node tests/userscript-chatgpt-parent-rpc.mjs
+      - name: Diagnostic ChatGPT iframe host
+        run: node tests/userscript-chatgpt-iframe-host.mjs
+      - name: Diagnostic ChatGPT sandbox host
+        run: node tests/userscript-chatgpt-sandbox-host.mjs
+      - name: Diagnostic embed child
+        run: node tests/userscript-embed-child.mjs
+      - name: Diagnostic dev worker runtime
+        run: node tests/userscript-dev-worker-runtime.mjs
       - name: Diagnostic userscript group 5 - host network runtime
         shell: bash
         run: |
