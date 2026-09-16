@@ -180,7 +180,7 @@ test('PT_DYNAMIC SHN_XINDEX without companion remains unknown, not an import', (
 
 test('PT_DYNAMIC SHN_XINDEX with truncated or invalid companion remains unknown', () => {
   assertUnknown(fixture(SHN_XINDEX, 'truncated'), 'truncated-companion');
-  assertUnknown(fixture(SHN_XINDEX, 0xff10), 'invalid-extended-index');
+  assertUnknown(fixture(SHN_XINDEX, 0xff10), 'out-of-range-section-index-65296');
 });
 
 test('version metadata does not promote an unresolved symbol into an existing import', () => {

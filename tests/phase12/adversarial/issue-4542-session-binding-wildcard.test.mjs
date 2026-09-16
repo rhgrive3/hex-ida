@@ -45,10 +45,14 @@ assert.equal(
   'two genuinely unbound snapshots remain compatible',
 );
 assert.equal(sessionMatchesSnapshot(session(), strongSnapshot), true, 'exact strong bindings remain compatible');
+// #8967 supersedes #4542's legacy→strong auto-migration allowance: a legacy-only
+// session carrying just `filename:slice` (or any non-collision-resistant legacy id)
+// is no longer proof that its bytes equal a strong snapshot. The weak migration is
+// now fail-closed; only symmetric legacy↔legacy and exact strong bindings match.
 assert.equal(
   sessionMatchesSnapshot(session({ binaryId: 'fixture:0', binaryIdentity: null }), strongSnapshot),
-  true,
-  'an explicit legacy binary ID can migrate to the matching strong identity',
+  false,
+  'an explicit legacy binary ID must not auto-migrate to a matching strong identity (#8967)',
 );
 assert.equal(
   sessionMatchesSnapshot(session({ projectId: null }), strongSnapshot),
@@ -108,8 +112,8 @@ assert.equal(
 );
 assert.equal(
   await firstSessionId([session({ binaryId: 'fixture:0', binaryIdentity: null })]),
-  'session-4542',
-  'the bridge preserves explicit legacy binary-ID migration',
+  null,
+  '#8967: the bridge must not auto-resume a legacy-only session onto a strong foreign-binary snapshot',
 );
 
 console.log('issue-4542 session binding wildcard regression: ok');

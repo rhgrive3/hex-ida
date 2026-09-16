@@ -43,7 +43,15 @@ export function sessionMatchesSnapshot(session, snapshot) {
     const sessionLegacy = sessionIdentity?.legacyId ?? (!sessionIdentity ? sessionBindingId : null);
     const snapshotLegacy = snapshot.legacyBinaryId ?? snapshotIdentity?.legacyId ?? null;
 
-    if (!sessionStrong && snapshotStrong) binaryMatches = sameLegacy(sessionLegacy, snapshotLegacy);
+    // #8967: a legacy session's `filename:slice` binding is not a collision-
+    // resistant proof that its bytes equal a strong snapshot's identity. When
+    // the session carries no strong identity but the snapshot does, matching
+    // by `sameLegacy()` promotes weak string equality into a strong binary
+    // identity and lets a byte-different file with the same name hydrate the
+    // prior conversation/confirmed findings across binaries. Fail closed; only
+    // symmetric legacy↔legacy comparisons (no strong upgrade) keep the old
+    // compatibility behaviour.
+    if (!sessionStrong && snapshotStrong) binaryMatches = false;
     else if (!sessionStrong && !snapshotStrong) binaryMatches = sameLegacy(sessionLegacy, snapshotLegacy);
     else binaryMatches = false;
   }
@@ -147,15 +155,59 @@ export function withPlanEvidenceBinding(plan, records) {
 
 const MAX_FALLBACK_EVIDENCE = 50;
 
+const CLAIM_ADDRESS_PATTERN = /0x[0-9a-fA-F]{1,16}/g;
+
+/**
+ * Canonical addresses the final answer actually asserts.
+ *
+ * A verified record proves its own subject, not an arbitrary sentence that
+ * happens to cite it (#9009). Only literal `0x…` tokens count, so this stays a
+ * deterministic typed check instead of a textual-entailment guess.
+ */
+export function claimedAddresses(...texts) {
+  const claimed = new Set();
+  for (const text of texts) {
+    if (typeof text !== 'string' || !text) continue;
+    for (const match of text.match(CLAIM_ADDRESS_PATTERN) || []) claimed.add(match.toLowerCase());
+  }
+  return claimed;
+}
+
+function recordSubjects(record) {
+  const subjects = new Set();
+  for (const value of [record?.functionAddress, record?.address]) {
+    if (value == null) continue;
+    try { subjects.add(`0x${BigInt(value).toString(16)}`); } catch { subjects.add(String(value).toLowerCase()); }
+  }
+  return subjects;
+}
+
 /**
  * Records that carry the authority a final answer presents.
  *
  * `supported` planner ranking is useful provenance but it is not proof, so it
  * may not satisfy the evidence requirement that lifts the evidence-free
- * confidence cap (#8864).
+ * confidence cap (#8864). A `verified` record additionally has to prove the
+ * subject the answer asserts: a genuine `0x1000` proof cited under a claim about
+ * `0xDEAD` is provenance for a different fact, not authority for it (#9009).
+ * Nothing proves an address-free claim is unsupported, so that case keeps the
+ * pre-#9009 contract (#5159, #8864).
  */
-export function qualifyingEvidence(evidence) {
-  return (Array.isArray(evidence) ? evidence : []).filter((item) => item?.status === 'verified');
+export function qualifyingEvidence(evidence, claimAddresses = null) {
+  const verified = (Array.isArray(evidence) ? evidence : []).filter((item) => item?.status === 'verified');
+  if (!(claimAddresses instanceof Set) || !claimAddresses.size) return verified;
+  const covering = verified.filter((item) => {
+    const subjects = recordSubjects(item);
+    for (const address of claimAddresses) if (subjects.has(address)) return true;
+    return false;
+  });
+  // Fail closed when the citation set does not cover every asserted address:
+  // quantity of unrelated verified records cannot substitute for the proof of
+  // the specific claim (#9009 acceptance 5).
+  const covered = new Set();
+  for (const item of covering) for (const subject of recordSubjects(item)) covered.add(subject);
+  for (const address of claimAddresses) if (!covered.has(address)) return [];
+  return covering;
 }
 
 /**
@@ -185,12 +237,13 @@ export function deterministicConfidence(plan) {
   if (plan?.best?.semanticFacts?.length) return 0.78;
   return plan?.best ? 0.45 : 0;
 }
-export function presentAnswer(answer, style, evidence, plan) {
+export function presentAnswer(answer, style, evidence, plan, claimAddresses = null) {
   if (style === 'analyst') return answer;
-  const verified = (evidence || []).filter((item) => item?.status === 'verified').length;
+  const verified = qualifyingEvidence(evidence, claimAddresses).length;
   const unverified = Math.max(0, (evidence || []).length - verified);
   // Beginner prose must not call a merely `supported` ranking record a
-  // confirmed fact (#8864).
+  // confirmed fact (#8864), and must not call an unrelated verified fact
+  // confirmation of what the answer asserts (#9009).
   const suffix = verified
     ? `\n\nHex が確認できた根拠は ${verified} 件です。${unverified ? ` 未検証の補強根拠も ${unverified} 件添付しています。` : ''}`
     : (unverified

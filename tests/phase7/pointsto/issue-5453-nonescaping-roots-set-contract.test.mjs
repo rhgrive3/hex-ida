@@ -64,9 +64,16 @@ test('#5453 Set-shaped nonEscapingRoots and omission keep their existing semanti
   });
   assert.equal(empty.relation, 'may', 'an empty Set is not a separation proof');
 
-  const proven = pointsToAlias(left, right, {
+  const oneRoot = pointsToAlias(left, right, {
     status: complete, widthBitsLeft: 64, widthBitsRight: 64, nonEscapingRoots: new Set(['A']),
   });
-  assert.equal(proven.relation, 'no', 'a real Set with a proven root still separates');
+  // #8809 sync: #4977 requires BOTH compared roots to be proven non-escaping,
+  // so a one-root Set is no longer a separation proof.
+  assert.equal(oneRoot.relation, 'may', 'one proven root does not separate under the #4977 both-roots contract');
+
+  const proven = pointsToAlias(left, right, {
+    status: complete, widthBitsLeft: 64, widthBitsRight: 64, nonEscapingRoots: new Set(['A', 'B']),
+  });
+  assert.equal(proven.relation, 'no', 'a real Set covering both proven roots still separates');
   assert.ok(proven.reasonCodes.includes('distinct-non-escaping-allocation'));
 });

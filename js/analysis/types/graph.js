@@ -634,9 +634,43 @@ export class TypeConstraintGraph {
       ? positiveLimit(maxIterationsPerComponent, this.limits.maxIterationsPerComponent, 'type-graph-invalid-iteration-limit')
       : this.limits.maxIterationsPerComponent;
 
-    const allEntities = (roots ? [...new Set(roots)] : this.entityIds())
-      .filter((id) => this.entities.has(id))
-      .sort();
+    // #8905: root discovery is part of the same hard node budget as SCC
+    // admission. Keep the source lazy so explicit unknown-root floods and the
+    // implicit all-entity path cannot allocate/materialize an unbounded array
+    // before condenseTypeGraph gets a chance to enforce maxNodes/cancellation.
+    // A single probe past maxNodes is enough to prove incompleteness; raw pulls
+    // count even when the yielded ID is unknown or duplicated.
+    const rootAdmission = { truncated: false };
+    const rootSource = roots ? roots : this.entities.keys();
+    const entities = this.entities;
+    const maxRootPulls = this.limits.maxNodes;
+    const boundedKnownRoots = {
+      *[Symbol.iterator]() {
+        if (signal?.aborted) return;
+        const iterator = rootSource[Symbol.iterator]();
+        let pulls = 0;
+        let exhausted = false;
+        try {
+          for (;;) {
+            if (signal?.aborted) return;
+            const next = iterator.next();
+            if (next.done) {
+              exhausted = true;
+              return;
+            }
+            pulls += 1;
+            if (pulls > maxRootPulls) {
+              rootAdmission.truncated = true;
+              return;
+            }
+            if (signal?.aborted) return;
+            if (entities.has(next.value)) yield next.value;
+          }
+        } finally {
+          if (!exhausted && typeof iterator.return === 'function') iterator.return();
+        }
+      },
+    };
 
     const {
       components,
@@ -645,7 +679,7 @@ export class TypeConstraintGraph {
       sccMembersMap,
       truncated,
       cancelled,
-    } = condenseTypeGraph(allEntities, (id) => this.dependenciesOf(id), {
+    } = condenseTypeGraph(boundedKnownRoots, (id) => this.dependenciesOf(id), {
       signal,
       maxComponents: this.limits.maxComponents,
       maxNodes: this.limits.maxNodes,
@@ -663,13 +697,13 @@ export class TypeConstraintGraph {
       });
     }
 
-    if (truncated) {
+    if (truncated || rootAdmission.truncated) {
       return createTypeGraphResult({
         snapshotId: this.snapshotId,
         results: new Map(),
         components,
         recursiveComponents,
-        iterations: 0,
+       iterations: 0,
         status: this.#status('truncated', 'budget-exhausted'),
       });
     }

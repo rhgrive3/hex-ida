@@ -21,11 +21,12 @@ new Function('root', machoSrc)(globalThis);
 const { parseFunctionStarts } = globalThis.MachO;
 
 const BASE = 0x100000000n;
+const EXEC_REGIONS = [{ exec: true, vmAddr: BASE, size: 0x100000000n }];
 const dense = (n) => { const b = new Uint8Array(n + 1); b.fill(4, 0, n); b[n] = 0; return b; };
 
 // --- dense flood stops at the declared retention ceiling, not the heap -----
 {
-  const list = parseFunctionStarts(dense(4_000_000), BASE, { architecture: 'arm64' });
+  const list = parseFunctionStarts(dense(4_000_000), BASE, { architecture: 'arm64', regions: EXEC_REGIONS });
   assert.equal(list.length, 200_000, 'default retained-start ceiling bounds materialization');
   assert.equal(list.truncated, true, 'an over-budget decode must report truncation');
   assert.equal(list.truncationReason, 'result-limit');
@@ -36,14 +37,14 @@ const dense = (n) => { const b = new Uint8Array(n + 1); b.fill(4, 0, n); b[n] = 
 
 // --- the budget is per-item and charged BEFORE the (limit+1)th exists ------
 {
-  const list = parseFunctionStarts(dense(100), BASE, { architecture: 'arm64', maxStarts: 3 });
+  const list = parseFunctionStarts(dense(100), BASE, { architecture: 'arm64', regions: EXEC_REGIONS, maxStarts: 3 });
   assert.deepEqual([...list], [BASE + 4n, BASE + 8n, BASE + 12n]);
   assert.equal(list.truncated, true);
   assert.equal(list.truncationReason, 'result-limit');
   assert.equal(list.complete, false);
 }
 {
-  const list = parseFunctionStarts(dense(3), BASE, { architecture: 'arm64', maxStarts: 0 });
+  const list = parseFunctionStarts(dense(3), BASE, { architecture: 'arm64', regions: EXEC_REGIONS, maxStarts: 0 });
   assert.equal(list.length, 0, 'a zero budget materializes nothing');
   assert.equal(list.truncated, true, 'but still reports that discovery was capped');
   assert.equal(list.complete, false);
@@ -51,7 +52,7 @@ const dense = (n) => { const b = new Uint8Array(n + 1); b.fill(4, 0, n); b[n] = 
 
 // --- within-budget streams keep exact prior semantics ----------------------
 {
-  const list = parseFunctionStarts(dense(3), BASE, { architecture: 'arm64' });
+  const list = parseFunctionStarts(dense(3), BASE, { architecture: 'arm64', regions: EXEC_REGIONS });
   assert.deepEqual([...list], [BASE + 4n, BASE + 8n, BASE + 12n]);
   assert.equal(list.complete, true, 'a normal small stream stays exact');
   assert.equal(list.truncated, false);
@@ -62,7 +63,7 @@ const dense = (n) => { const b = new Uint8Array(n + 1); b.fill(4, 0, n); b[n] = 
 // --- malformed / alignment / range rejections stay fail-closed -------------
 {
   const truncatedUleb = new Uint8Array([4, 4, 0x80]); // continuation with no payload
-  const list = parseFunctionStarts(truncatedUleb, BASE, { architecture: 'arm64' });
+  const list = parseFunctionStarts(truncatedUleb, BASE, { architecture: 'arm64', regions: EXEC_REGIONS });
   assert.equal(list.malformed, true);
   assert.equal(list.complete, false);
   assert.equal(list.truncated, true, 'malformed metadata now also marks the decode unusable');
@@ -83,6 +84,7 @@ const dense = (n) => { const b = new Uint8Array(n + 1); b.fill(4, 0, n); b[n] = 
   let calls = 0;
   const list = parseFunctionStarts(dense(4_000_000), BASE, {
     architecture: 'arm64',
+    regions: EXEC_REGIONS,
     shouldCancel: () => { calls++; return calls > 2; },
   });
   assert.equal(list.truncated, true);
@@ -100,7 +102,10 @@ const dense = (n) => { const b = new Uint8Array(n + 1); b.fill(4, 0, n); b[n] = 
       const buf = new Uint8Array(4_000_001);
       buf.fill(4, 0, 4_000_000);
       buf[4_000_000] = 0;
-      const list = globalThis.MachO.parseFunctionStarts(buf, 0x100000000n, { architecture: 'arm64' });
+      const base = 0x100000000n;
+      const list = globalThis.MachO.parseFunctionStarts(buf, base, {
+        architecture: 'arm64', regions: [{ exec: true, vmAddr: base, size: 0x100000000n }]
+      });
       if (list.length !== 200_000 || !list.truncated || list.complete) {
         console.error('missing bounded stop'); process.exit(2);
       }
@@ -142,7 +147,7 @@ const dense = (n) => { const b = new Uint8Array(n + 1); b.fill(4, 0, n); b[n] = 
         return { arrayBuffer: async () => copy.buffer.slice(copy.byteOffset, copy.byteOffset + copy.byteLength) };
       } };
       regions = new Map();
-      slices = [{ regions: [], functionStarts: [], offset: 0n, info: Object.assign({
+      slices = [{ regions: [{ exec: true, vmAddr: 0x100000000n, size: 0x100000000n }], functionStarts: [], offset: 0n, info: Object.assign({
         is64: true, architecture: 'arm64', textVM: 0x100000000n,
         functionStarts: { dataoff: ${FS_OFF}, datasize: __bytes.length - ${FS_OFF} },
       }, __infoExtra) }];
@@ -155,7 +160,7 @@ const dense = (n) => { const b = new Uint8Array(n + 1); b.fill(4, 0, n); b[n] = 
     const result = await runWorker(dense(250_000), { entry: 0x100000000n + 2n * 4n });
     assert.equal(result.functionDiscovery.capped, true, 'over-budget decode reports capped discovery (#8805)');
     assert.equal(result.functionDiscovery.complete, false);
-    assert.deepEqual([...result.functionDiscovery.reasons], ['lc-function-starts-budget-capped']);
+    assert.deepEqual([...result.functionDiscovery.reasons], ['no-complete-lc-function-starts', 'function-starts:result-limit']);
     assert.equal(result.capped, true, 'the slice result itself must not hide the cut');
     assert.equal(result.functionStartsExact, false);
     assert.equal(result.funcs.length, 200_000, 'retention ceiling holds inside the worker, entry seed already included');

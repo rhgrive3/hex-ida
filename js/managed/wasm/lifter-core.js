@@ -3,6 +3,7 @@ import { createManagedMethodId, createVMOperationId } from '../shared/identity.j
 import { createVMEffectBudgetTracker, createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
 import { decodeSleb128, decodeSleb128_64, decodeUleb128 } from './parser.js';
 import { createWasmMemoryValidationContext, decodeWasmMemarg, validateWasmMemoryInstruction } from './memory-validation.js';
+import { wasmModuleIndex } from './module-index.js';
 
 function fail(code) { throw new TypeError(code); }
 
@@ -45,12 +46,12 @@ function decodeBlockType(bytecode, pos, wasmModule, budget = null) {
   return { params: t.params.slice(), results: t.results.slice(), nextOffset: r.nextOffset, typeIndex: r.value, kind: 'type-index' };
 }
 
-function functionTypeForIndex(wasmModule, funcIndex) {
-  const imported = wasmModule.imports.filter((i) => i.desc.kind === 0);
+function functionTypeForIndex(wasmModule, funcIndex, moduleIndex = wasmModuleIndex(wasmModule)) {
+  const importedCount = moduleIndex.importedFunctionCount;
   let typeIndex;
-  if (funcIndex < imported.length) typeIndex = imported[funcIndex].desc.typeIndex;
+  if (funcIndex < importedCount) typeIndex = moduleIndex.functionTypeIndices[funcIndex];
   else {
-    const internal = funcIndex - imported.length;
+    const internal = funcIndex - importedCount;
     if (internal < 0 || internal >= wasmModule.functions.length) fail('wasm-invalid-callee-index');
     typeIndex = wasmModule.functions[internal];
   }
@@ -72,7 +73,8 @@ function unsupportedInstructionBoundary(bytecode, operandOffset, opcode) {
 
 export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
   const methodId = createManagedMethodId(wasmModule.moduleId, funcIndex);
-  const importedFuncs = wasmModule.imports.filter((i) => i.desc.kind === 0);
+  const moduleIndex = wasmModuleIndex(wasmModule);
+  const importedFuncs = moduleIndex.importedFunctions;
   const budget = createVMEffectBudgetTracker(options);
 
   if (funcIndex < importedFuncs.length) {
@@ -112,6 +114,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
   const localTotalCount = localParamCount + localDecls.length;
   const localTypeAt = (index) => (index < localParamCount ? localParams[index] : localDecls[index - localParamCount]);
   const drafts = [];
+  const switchResolutions = [];
   let pos = 0;
   let opSeq = 0;
   let currentStackHeight = 0;
@@ -243,8 +246,13 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
       }
       case 0x0e: {
         const cr = decodeUleb128(bytecode, pos); pos = cr.nextOffset;
+        // #8945: switch edge cardinality is attacker-controlled inside one
+        // admitted opcode; it is pre-admitted against the value budget before
+        // any per-target array or effect record materializes, and long walks
+        // keep bounded cancellation latency.
+        budget.chargeValues(cr.value + 1);
         const labelDepths = [];
-        for (let i = 0; i < cr.value; i++) { const r = decodeUleb128(bytecode, pos); pos = r.nextOffset; labelDepths.push(r.value); }
+        for (let i = 0; i < cr.value; i++) { const r = decodeUleb128(bytecode, pos); pos = r.nextOffset; labelDepths.push(r.value); if ((i & 0x3ff) === 0x3ff) budget.checkpoint(); }
         const dr = decodeUleb128(bytecode, pos); pos = dr.nextOffset;
         labelDepths.push(dr.value);
         for (const depth of labelDepths) if (depth >= controlStack.length) fail('wasm-invalid-branch-depth');
@@ -252,11 +260,22 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         consumedValues.push({ id: 'index', bits: 32 }); consume(1);
         const ce = { kind: 'switch', targetOffsets: new Array(labelDepths.length - 1).fill(null), defaultTargetOffset: null, labelDepths: labelDepths.slice(0, -1), defaultLabelDepth: labelDepths.at(-1) };
         const caseFrames = [];
-        for (let i = 0; i < labelDepths.length - 1; i++) { const target = controlStack[controlStack.length - 1 - labelDepths[i]]; caseFrames.push(target); labelTarget(target, ce, `__case_${i}`); }
+        const caseHolders = [];
+        for (let i = 0; i < labelDepths.length - 1; i++) {
+          const target = controlStack[controlStack.length - 1 - labelDepths[i]];
+          caseFrames.push(target);
+          // #8945: pending case targets use indexed holder records instead of
+          // per-case dynamic `__case_<i>` properties on the shared effect.
+          if (target.kind === 'loop') ce.targetOffsets[i] = target.bodyOffset;
+          else if (target.kind !== 'function') { const holder = { targetOffset: null }; target.pendingBranches.push({ effect: holder, field: 'targetOffset' }); caseHolders.push({ holder, index: i }); }
+        }
         const defFrame = controlStack[controlStack.length - 1 - labelDepths.at(-1)];
-        const defHolder = { kind: 'branch', targetOffset: null }; labelTarget(defFrame, defHolder); ce.__defaultHolder = defHolder;
+        const defHolder = { targetOffset: null };
+        if (defFrame.kind === 'loop') defHolder.targetOffset = defFrame.bodyOffset;
+        else if (defFrame.kind !== 'function') defFrame.pendingBranches.push({ effect: defHolder, field: 'targetOffset' });
         ce.caseKinds = caseFrames.map((frame) => (frame.kind === 'function' ? 'function-exit' : 'offset'));
         ce.defaultKind = defFrame.kind === 'function' ? 'function-exit' : 'offset';
+        switchResolutions.push({ effect: ce, cases: caseHolders, defaultHolder: defHolder });
         controlEffects.push(ce);
         markUnreachable();
         break;
@@ -273,7 +292,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         break;
       case 0x10: {
         const r = decodeUleb128(bytecode, pos); pos = r.nextOffset;
-        const calleeType = functionTypeForIndex(wasmModule, r.value);
+        const calleeType = functionTypeForIndex(wasmModule, r.value, moduleIndex);
         // #8711: value admission is authoritative only if it precedes the
         // per-argument effect objects; a stack-polymorphic unreachable call to
         // a multi-million-parameter signature used to materialize the whole
@@ -292,8 +311,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
         const tr = decodeUleb128(bytecode, pos); pos = tr.nextOffset;
         const type = wasmModule.types[tr.value]; if (!type) fail('wasm-invalid-call-indirect-type-index');
         const table = decodeUleb128(bytecode, pos); pos = table.nextOffset;
-        const importedTables = wasmModule.imports.filter((i) => i.desc.kind === 1).length;
-        if (table.value >= importedTables + wasmModule.tables.length) fail('wasm-invalid-call-indirect-table-index');
+        if (table.value >= moduleIndex.tableCount) fail('wasm-invalid-call-indirect-table-index');
         // #8711: same pre-admission boundary as `call` (plus the selector operand).
         preChargedValues = 1 + type.params.length + type.results.length;
         budget.chargeValues(preChargedValues);
@@ -327,8 +345,7 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
       }
       case 0x23: case 0x24: {
         const r = decodeUleb128(bytecode, pos); pos = r.nextOffset;
-        const importedGlobals = wasmModule.imports.filter((i) => i.desc.kind === 3);
-        const globals = [...importedGlobals.map((i) => i.desc), ...wasmModule.globals]; if (r.value >= globals.length) fail('wasm-invalid-global-index');
+        const globals = moduleIndex.globals; if (r.value >= globals.length) fail('wasm-invalid-global-index');
         const t = globals[r.value].valType;
         if (opcode === 0x23) { mnemonic = 'global.get'; locationReads.push({ kind: 'global', index: r.value, bits: typeBits(t), type: t }); producedValues.push({ bits: typeBits(t), type: t, fromLocationRead: 0 }); produce(1); }
         else { mnemonic = 'global.set'; if (!globals[r.value].mutable) fail('wasm-write-immutable-global'); consumedValues.push({ id: 'value', bits: typeBits(t), type: t }); consume(1); locationWrites.push({ kind: 'global', index: r.value, bits: typeBits(t), type: t }); }
@@ -393,10 +410,9 @@ export function liftWasmFunction(funcIndex, wasmModule, options = {}) {
   }
 
   if (!stoppedOnUnsupported && controlStack.length !== 0) fail('wasm-missing-function-end');
-  for (const d of drafts) for (const c of d.controlEffects) if (c.kind === 'switch') {
-    for (let i = 0; i < c.targetOffsets.length; i++) { const k = `__case_${i}`; if (c[k] != null) c.targetOffsets[i] = c[k]; delete c[k]; }
-    if (c.__defaultHolder) { c.defaultTargetOffset = c.__defaultHolder.targetOffset; if (c.defaultKind == null && c.__defaultHolder.targetKind === 'function-exit') c.defaultKind = 'function-exit'; delete c.__defaultHolder; }
-    delete c.targetKind;
+  for (const { effect: c, cases, defaultHolder } of switchResolutions) {
+    for (const { holder, index } of cases) c.targetOffsets[index] = holder.targetOffset;
+    c.defaultTargetOffset = defaultHolder.targetOffset;
   }
   const bundles = drafts.map((d) => createVMEffectBundle(d, options));
   const aggregateCompleteness = bundles.some((b) => b.completeness === 'unknown') ? 'unknown' : bundles.some((b) => b.completeness === 'partial') ? 'partial' : bundles.some((b) => b.completeness === 'exact-with-intrinsic') ? 'exact-with-intrinsic' : 'exact';
