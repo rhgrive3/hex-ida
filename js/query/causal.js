@@ -89,11 +89,22 @@ export function sliceResult(ir, seed, direction, opts) {
  * Bounded call-graph paths using ProgramIndex without forcing function analysis.
  * The result is deliberately explicit about incompleteness: [] is only proof
  * of absence when complete is true.
+ *
+ * Frontiers are represented with parent-linked states rather than copied
+ * prefix arrays so that retaining the live queue costs O(1) per pending state,
+ * and a solver-owned `maxFrontier` admission bound stops growth *before* the
+ * BFS can retain millions of path arrays (issue #8915). When that bound is
+ * reached the search fails closed with `frontier-limit` rather than exhausting
+ * the heap before `visited-limit` becomes observable.
  */
 export function functionPaths(program, from, to, opts) {
   const maxDepth = boundedOption(opts && opts.maxDepth, 6, 1, 12);
   const maxPaths = boundedOption(opts && opts.maxPaths, 8, 1, 32);
   const maxVisited = boundedOption(opts && opts.maxVisited, 10000, 16, 20000);
+  // Retained-frontier ceiling. It is independent of maxVisited so a valid
+  // high-fanout graph cannot require memory proportional to (fanout ^ depth)
+  // just to *discover* that the visited budget was already exceeded.
+  const maxFrontier = boundedOption(opts && opts.maxFrontier, 20000, 16, 50000);
   const result = { paths: [], complete: true, truncated: false, reasons: [], visited: 0 };
   if (!program) {
     result.complete = false;
@@ -109,15 +120,23 @@ export function functionPaths(program, from, to, opts) {
   }
 
   const reasons = new Set();
-  const q = [[from]];
-  while (q.length && result.paths.length < maxPaths) {
+  // Ancestor walk is bounded by maxDepth + 1, so the per-state work of the
+  // simple-path cycle guard stays O(depth) — the same semantics #4529 and
+  // #6308 rely on, now without copying a full prefix per queued edge.
+  const onPath = (node, addr) => { for (let n = node; n; n = n.parent) { if (n.addr === addr) return true; } return false; };
+  const reconstruct = (node) => { const out = []; for (let n = node; n; n = n.parent) out.push(n.addr); out.reverse(); return out; };
+
+  const q = [{ addr: from, parent: null, depth: 0 }];
+  let cursor = 0;
+  let frontierReached = false;
+  while (cursor < q.length && result.paths.length < maxPaths) {
     if (result.visited >= maxVisited) { reasons.add('visited-limit'); break; }
-    const path = q.shift();
+    const node = q[cursor++];
     result.visited++;
-    const head = path[path.length - 1];
-    if (head === to) { result.paths.push(path); continue; }
+    const head = node.addr;
+    if (head === to) { result.paths.push(reconstruct(node)); continue; }
     // The source is depth zero; only traversed call edges consume depth.
-    if (path.length - 1 >= maxDepth) { reasons.add('depth-limit'); continue; }
+    if (node.depth >= maxDepth) { reasons.add('depth-limit'); continue; }
 
     let range = null;
     try {
@@ -144,12 +163,17 @@ export function functionPaths(program, from, to, opts) {
     if (callees.length > 200) { reasons.add('callee-limit'); callees = callees.slice(0, 200); }
     for (const c of callees) {
       const addr = c && c.addr != null ? c.addr : c;
-      if (addr == null || path.some((p) => p === addr)) continue;
-      q.push(path.concat([addr]));
+      if (addr == null || onPath(node, addr)) continue;
+      // Admit the child only while the live frontier stays within budget;
+      // stop before allocating the next retained state, not after.
+      if (q.length - cursor >= maxFrontier) { frontierReached = true; break; }
+      q.push({ addr, parent: node, depth: node.depth + 1 });
     }
+    if (frontierReached) break;
   }
+  if (frontierReached) reasons.add('frontier-limit');
 
-  if (result.paths.length >= maxPaths && q.length) reasons.add('path-limit');
+  if (result.paths.length >= maxPaths && cursor < q.length) reasons.add('path-limit');
   if (program.graphCompleteness && program.graphCompleteness.callsComplete === false) reasons.add('program-calls-incomplete');
   result.paths.sort((a, b) => a.length - b.length);
   result.reasons = [...reasons];
