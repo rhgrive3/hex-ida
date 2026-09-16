@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Resolve known T014 overlap and list remainder
+      - name: Reduce known overlaps and capture remaining hunks
         shell: bash
         run: |
           set +e
@@ -28,9 +28,8 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git merge --no-commit --no-ff refs/remotes/origin/main >/tmp/merge.log 2>&1
-          merge_rc=$?
-          echo "merge_rc=$merge_rc" >> "$STATUS"
-          T014=(
+          echo "merge_rc=$?" >> "$STATUS"
+          MAIN_WINS=(
             js/symbolic/expr/hash.js
             js/symbolic/expr/serialize.js
             js/symbolic/solver/backend.js
@@ -44,9 +43,17 @@ jobs:
             js/symbolic/verify/query.js
             tests/issue-5498-eligibility-result-status-authority.mjs
             tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs
+            .circleci/config.yml
+            js/rebuild/transaction-v2.js
+            js/semantics/compat/semantic-ir-v2-to-v1-memory.js
+            js/semantics/compat/semantic-ir-v2-to-v1.js
+            scripts/build-userscript.mjs
+            tests/phase4/binary/issue-4358-elf-dynamic-xindex-common.test.mjs
+            userscript/hex.user.template.js
+            userscript/release-version.json
           )
           resolved=0
-          for f in "${T014[@]}"; do
+          for f in "${MAIN_WINS[@]}"; do
             if git diff --name-only --diff-filter=U -- "$f" | grep -q .; then
               git checkout --theirs -- "$f" >/tmp/resolve.log 2>&1
               rc=$?; if [ "$rc" -ne 0 ]; then echo "resolve $f rc=$rc" >> "$STATUS"; tail -n 20 /tmp/resolve.log >> "$STATUS"; exit "$rc"; fi
@@ -54,11 +61,15 @@ jobs:
               resolved=$((resolved+1))
             fi
           done
-          echo "resolved_t014=$resolved" >> "$STATUS"
+          echo "resolved_main=$resolved" >> "$STATUS"
           conflicts=$(git diff --name-only --diff-filter=U)
           count=$(printf '%s\n' "$conflicts" | sed '/^$/d' | wc -l)
           echo "remaining_count=$count" >> "$STATUS"
-          if [ "$count" -gt 0 ]; then printf '%s\n' "$conflicts" >> "$STATUS"; fi
+          printf '%s\n' "$conflicts" >> "$STATUS"
+          for f in $conflicts; do
+            echo "--- $f ---" >> "$STATUS"
+            git diff --cc --unified=3 -- "$f" | sed -n '1,80p' >> "$STATUS"
+          done
           exit 0
       - name: Upload result
         if: always()
