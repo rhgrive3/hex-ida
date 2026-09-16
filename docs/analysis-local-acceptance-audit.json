@@ -44,11 +44,11 @@
     },
     {
       "id": "HEX-C1-03",
-      "localStatus": "existing-gate",
-      "assessment": "root provenance/aliasの正本を維持。名前から新たなexact authorityを発行しない。",
-      "source": "js/analysis/alias",
-      "verificationSuite": "phase7-test",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "assessment": "C1-03 の exact alias authority を frozen 30-query corpus と 240-cell bijective root/node/value rename matrixで再受入。global/heap/TLS を実 root descriptor として含み、similar/overlap/incomplete/stale/conflicting/provider-forged cases は false No/MustAlias を発行しない。名前・ID spelling は exactness authorityにならず、root evidence/schema/current snapshot のみで強い relation を発行する。C1-01/C1-02 と whole-roadmap/release/device gates は別。",
+      "source": "tests/phase7/alias/c1-root-rename-metamorphism.test.mjs",
+      "verificationSuite": "c1-03-final-acceptance-20260916",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "HEX-C2-01",
@@ -256,9 +256,9 @@
       "mustWaitFor": "root evidence schema",
       "complexity": "M",
       "findingId": "HEX-C1-03",
-      "localStatus": "existing-gate",
-      "currentAssessment": "root provenance/aliasの正本を維持。名前から新たなexact authorityを発行しない。",
-      "originalRequirementAcceptedHere": false
+      "localStatus": "accepted-local",
+      "currentAssessment": "frozen 30-query exact alias corpus、240-cell rename metamorphism、global/heap/TLS adversarial roots、forged rename/stale escape/root conflict/provider authority negativesを受入。spelling変更で relation/reason/completeness は不変、false exact No/MustAlias は0。",
+      "originalRequirementAcceptedHere": true
     },
     {
       "id": "FR-C1-01A",
@@ -2332,6 +2332,34 @@
         "constraint-edge"
       ],
       "phiDisposition": "live-phi-render-correspondence-required",
+      "fullRoadmapComplete": false,
+      "transformAuthorization": false
+    },
+    "c1AliasAuthorityAcceptance20260916": {
+      "status": "ACCEPTED-LOCAL",
+      "finding": "HEX-C1-03",
+      "task": "FR-C1-03A",
+      "denominator": {
+        "frozenQueries": 30,
+        "renameCells": 240,
+        "rootFamilies": [
+          "stack",
+          "global",
+          "heap",
+          "tls",
+          "absolute",
+          "opaque"
+        ]
+      },
+      "focusedTests": [
+        "c1-root-rename-metamorphism",
+        "issue-4777-forged-scalar-ssa-rename",
+        "issue-5215-stale-escape-cache",
+        "issue-5802-canonical-root-conflict",
+        "issue-5323-provider-separation-authority",
+        "issue-c1-consolidated-regressions"
+      ],
+      "falseExactness": "zero-required",
       "fullRoadmapComplete": false,
       "transformAuthorization": false
     }

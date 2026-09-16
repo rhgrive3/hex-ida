@@ -7771,3 +7771,8 @@ fullRoadmapComplete:false、transformAuthorization:false、マージ未実施を
 ## 2026-09-16 C4-02 local acceptance
 
 `tests/phase8/structuring/c4-02-acceptance.test.mjs` で CFG region/edge-kind の4カテゴリ（irreducible / exception-unwind / switch-fallthrough / flattened-dispatcher）を固定分母化した。全CFG edge/kindは independent recount を必須とし、ordinary switch fallthrough は edge を保持して構造化、irreducible/flattened dispatcher は residual-goto、unwind/foreign edge は constraint-edge として保持する。dispatcher shapeだけから loop/switch authorityを発行しない。conditional projection にPHIが残る場合は `live-phi-render-correspondence` を pending validation として保持する。HEX-C4-02 / FR-C4-02A はこのローカル要件について accepted-local。C4-03/C4-05 と全roadmap/release/device受入は未完了のまま。
+
+
+## 2026-09-16 C1-03 local acceptance
+
+`tests/phase7/alias/c1-root-rename-metamorphism.test.mjs` の frozen 30-query / 240 rename cells と alias authority negative suite で、global/heap/TLSを含むroot evidenceを再受入した。名前・node/value/state-key IDのspelling変更は relation/reason/completeness を変えず、forged rename、stale escape、conflicting root、provider separation の不完全証拠から exact NoAlias/MustAlias を発行しない。HEX-C1-03 / FR-C1-03A はこのローカル要件について accepted-local。C1-01/C1-02 と全roadmap/release/device受入は未完了のまま。
