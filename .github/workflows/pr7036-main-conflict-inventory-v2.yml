@@ -1,4 +1,4 @@
-name: PR7036 reconciliation v5 semantic projection
+name: PR7036 reconciliation v5b semantic projection
 on:
   push:
     branches: [sync/pr7036-main-20260917-v2]
@@ -6,7 +6,7 @@ permissions:
   contents: write
 jobs:
   reconcile:
-    if: contains(github.event.head_commit.message, 'test PR 7036 reconciliation v5')
+    if: contains(github.event.head_commit.message, 'test PR 7036 reconciliation v5b')
     runs-on: ubuntu-latest
     timeout-minutes: 18
     steps:
@@ -27,78 +27,24 @@ jobs:
           set -e
           git diff --name-only --diff-filter=U | sed '/^$/d' | sort > /tmp/conflicts.txt
           while IFS= read -r f; do git checkout --theirs -- "$f"; git add -- "$f"; done < /tmp/conflicts.txt
-
-          # Preserve #7036's issued projection observers while carrying main's
-          # #8979 shared batch deadline/signal into the same MemorySSA call.
           git checkout --ours -- js/semantics/compat/semantic-ir-v2-to-v1.js js/semantics/compat/semantic-ir-v2-to-v1-memory.js
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('js/semantics/compat/semantic-ir-v2-to-v1-memory.js')
-          s=p.read_text()
-          old="export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null, constantObserver = null) {\n  const operandTransitions = [];"
-          new="""function batchForwardingScope(options) {
-  const scope = {};
-  if (options == null || typeof options !== 'object') return scope;
-  if (options.deadline != null) scope.deadline = options.deadline;
-  else if (options.deadlineAt != null) scope.deadline = options.deadlineAt;
-  else if (options.budget != null && typeof options.budget === 'object' && options.budget.deadline != null) scope.deadline = options.budget.deadline;
-  else if (options.budget != null && typeof options.budget === 'object' && options.budget.deadlineAt != null) scope.deadline = options.budget.deadlineAt;
-  if (options.signal != null && typeof options.signal === 'object') scope.signal = options.signal;
-  return scope;
-}
-
-export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null, constantObserver = null, forwardingScopeOptions = null) {
-  const batchForwarding = batchForwardingScope(forwardingScopeOptions);
-  const operandTransitions = [];"""
-          if s.count(old) != 1: raise SystemExit(f'memory signature replacement count={s.count(old)}')
-          s=s.replace(old,new)
-          old2="""        purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,
-        ...(canonicalIr == null ? {} : { ir: canonicalIr }),
-      });"""
-          new2="""        purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,
-        ...(canonicalIr == null ? {} : { ir: canonicalIr }),
-        ...batchForwarding,
-      });"""
-          if s.count(old2) != 1: raise SystemExit(f'forwarding replacement count={s.count(old2)}')
-          p.write_text(s.replace(old2,new2))
-
-          p=Path('js/semantics/compat/semantic-ir-v2-to-v1.js')
-          s=p.read_text()
-          old="? attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir, constantObserver) : null;"
-          new="? attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir, constantObserver, options) : null;"
-          if s.count(old) != 1: raise SystemExit(f'facade replacement count={s.count(old)}')
-          p.write_text(s.replace(old,new))
-          PY
+          python3 -c 'from pathlib import Path; p=Path("js/semantics/compat/semantic-ir-v2-to-v1-memory.js"); s=p.read_text(); old="export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null, constantObserver = null) {\n  const operandTransitions = [];"; new="function batchForwardingScope(options) {\n  const scope = {};\n  if (options == null || typeof options !== \"object\") return scope;\n  if (options.deadline != null) scope.deadline = options.deadline;\n  else if (options.deadlineAt != null) scope.deadline = options.deadlineAt;\n  else if (options.budget != null && typeof options.budget === \"object\" && options.budget.deadline != null) scope.deadline = options.budget.deadline;\n  else if (options.budget != null && typeof options.budget === \"object\" && options.budget.deadlineAt != null) scope.deadline = options.budget.deadlineAt;\n  if (options.signal != null && typeof options.signal === \"object\") scope.signal = options.signal;\n  return scope;\n}\n\nexport function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null, constantObserver = null, forwardingScopeOptions = null) {\n  const batchForwarding = batchForwardingScope(forwardingScopeOptions);\n  const operandTransitions = [];"; assert s.count(old)==1, s.count(old); s=s.replace(old,new); old2="        purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,\n        ...(canonicalIr == null ? {} : { ir: canonicalIr }),\n      });"; new2="        purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,\n        ...(canonicalIr == null ? {} : { ir: canonicalIr }),\n        ...batchForwarding,\n      });"; assert s.count(old2)==1, s.count(old2); p.write_text(s.replace(old2,new2))'
+          python3 -c 'from pathlib import Path; p=Path("js/semantics/compat/semantic-ir-v2-to-v1.js"); s=p.read_text(); old="? attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir, constantObserver) : null;"; new="? attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir, constantObserver, options) : null;"; assert s.count(old)==1, s.count(old); p.write_text(s.replace(old,new))'
           git add js/semantics/compat/semantic-ir-v2-to-v1.js js/semantics/compat/semantic-ir-v2-to-v1-memory.js
-
-          # The automatic non-conflict merge duplicates a parallel LC_CODE_SIGNATURE
-          # addition; current main already contains the hardened unified parser.
           git checkout FETCH_HEAD -- js/binary/macho-core.js
           git add js/binary/macho-core.js
-
           rm -f .github/workflows/pr7036-main-conflict-inventory-v2.yml
           git add -u .github/workflows/pr7036-main-conflict-inventory-v2.yml
-
           set +e
           : > /tmp/test-status.txt
-          for f in \
-            tests/phase8/substrate/proof-projection-origin.test.mjs \
-            tests/phase8/integration/proof-optimizer.test.mjs \
-            tests/phase7/discovery/x03-ambiguity-artifact.test.mjs \
-            tests/stage2/x03-rebuild-discovery-acceptance.test.mjs \
-            tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs \
-            tests/issue-5498-eligibility-result-status-authority.mjs \
-            tests/phase4/binary/issue-4358-elf-dynamic-xindex-common.test.mjs \
-            tests/issue-4135-pe-section-virtual-layout.mjs; do
-              node --test "$f" > "/tmp/$(basename "$f").txt" 2>&1
-              rc=$?; echo "$rc $f" >> /tmp/test-status.txt
-              if [ "$rc" -ne 0 ]; then break; fi
+          for f in tests/phase8/substrate/proof-projection-origin.test.mjs tests/phase8/integration/proof-optimizer.test.mjs tests/phase7/discovery/x03-ambiguity-artifact.test.mjs tests/stage2/x03-rebuild-discovery-acceptance.test.mjs tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs tests/issue-5498-eligibility-result-status-authority.mjs tests/phase4/binary/issue-4358-elf-dynamic-xindex-common.test.mjs tests/issue-4135-pe-section-virtual-layout.mjs; do
+            node --test "$f" > "/tmp/$(basename "$f").txt" 2>&1
+            rc=$?; echo "$rc $f" >> /tmp/test-status.txt
+            if [ "$rc" -ne 0 ]; then break; fi
           done
           TEST_RC=0; awk '$1 != 0 {exit 1}' /tmp/test-status.txt || TEST_RC=1
           SYNTAX_RC=0
-          for f in js/binary/macho-core.js js/semantics/compat/semantic-ir-v2-to-v1.js js/semantics/compat/semantic-ir-v2-to-v1-memory.js; do
-            node --check "$f" >/tmp/syntax-one.txt 2>&1 || { SYNTAX_RC=1; echo "$f" > /tmp/syntax-failed.txt; cat /tmp/syntax-one.txt >> /tmp/syntax-failed.txt; break; }
-          done
+          for f in js/binary/macho-core.js js/semantics/compat/semantic-ir-v2-to-v1.js js/semantics/compat/semantic-ir-v2-to-v1-memory.js; do node --check "$f" >/tmp/syntax-one.txt 2>&1 || { SYNTAX_RC=1; echo "$f" > /tmp/syntax-failed.txt; cat /tmp/syntax-one.txt >> /tmp/syntax-failed.txt; break; }; done
           set -e
           {
             echo "base_head=$BASE_HEAD"
@@ -110,7 +56,7 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
             cat /tmp/test-status.txt
             if [ "$TEST_RC" -ne 0 ]; then failed="$(awk '$1 != 0 {print $2; exit}' /tmp/test-status.txt)"; echo "--- first test failure: $failed ---"; tail -n 140 "/tmp/$(basename "$failed").txt"; fi
             if [ "$SYNTAX_RC" -ne 0 ]; then echo '--- syntax failure ---'; cat /tmp/syntax-failed.txt; fi
-          } > pr7036-reconcile-v5-result.txt
+          } > pr7036-reconcile-v5b-result.txt
           if [ "$TEST_RC" -ne 0 ] || [ "$SYNTAX_RC" -ne 0 ]; then exit 1; fi
           git commit -m 'merge: reconcile PR 7036 with main 799bc6c4'
           git push origin HEAD:sync/pr7036-main-20260917-v2
@@ -118,7 +64,7 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr7036-reconcile-v5-result
-          path: pr7036-reconcile-v5-result.txt
+          name: pr7036-reconcile-v5b-result
+          path: pr7036-reconcile-v5b-result.txt
           if-no-files-found: ignore
           retention-days: 2
