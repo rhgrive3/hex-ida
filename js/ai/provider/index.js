@@ -38,6 +38,8 @@ export class WorkerAIProvider extends AIProvider {
     this.capabilitiesController = null;
     this.capabilitiesFlight = null;
     this.capabilitiesWaiters = 0;
+    // null means capability truth has not been verified yet (#5086).
+    this.configured = null;
   }
 
   async prepareCapabilities(options = {}) {
@@ -143,6 +145,7 @@ export class WorkerAIProvider extends AIProvider {
       let payload = null;
       try { payload = JSON.parse(text); } catch { /* conservative fallback below */ }
       if (payload?.capabilities && typeof payload.capabilities === 'object') this.providerCapabilities = { ...this.providerCapabilities, ...payload.capabilities };
+      if (typeof payload?.configured === 'boolean') this.configured = payload.configured;
       this.capabilitiesPrepared = true;
       return this.getCapabilities();
     } catch (error) {
