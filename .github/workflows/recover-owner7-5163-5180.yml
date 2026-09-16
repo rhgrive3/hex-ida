@@ -14,15 +14,20 @@ jobs:
         with:
           ref: fix/recover-owner7-5163-5180-20260916
           fetch-depth: 0
-      - name: Apply donor fixes
+      - name: Configure git
         shell: bash
         run: |
-          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          timeout 60s git cherry-pick fa056f2890a5ab333c28908819d9a3e16b7c1e93
-          timeout 60s git cherry-pick 215654e62017614271358ca8046c422ca80aeecc
-          git diff --check HEAD~2..HEAD
+      - name: Apply #5163 donor
+        shell: bash
+        run: timeout 60s git cherry-pick fa056f2890a5ab333c28908819d9a3e16b7c1e93
+      - name: Apply #5180 donor
+        shell: bash
+        run: timeout 60s git cherry-pick 215654e62017614271358ca8046c422ca80aeecc
+      - name: Diff check
+        shell: bash
+        run: git diff --check HEAD~2..HEAD
       - name: Focused #5163
         shell: bash
         run: |
