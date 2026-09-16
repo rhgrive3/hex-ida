@@ -197,3 +197,24 @@ test('#6248 remote gate rejects per-operation shape violations fail-closed', () 
   tamperedEntity.envelopeId = envelopeIdentity(tamperedEntity);
   assert.equal(gate.validate(tamperedEntity).reason, 'remote-operation-shape-invalid');
 });
+
+test('#6248 applyBatch current-schema raw object with missing required field is deterministically rejected, never throws', () => {
+  const log = new ChangeLog({ projectIdentity: 'hex-project:p' });
+  const batchResult = log.applyBatch([{
+    schemaVersion: CHANGELOG_SCHEMA_VERSION,
+    operationId: 'op:batch-missing-kind',
+    projectIdentity: 'hex-project:p',
+    binaryIdentity: null,
+    targetEntityId: 'e',
+    causalParents: [],
+    action: 'set',
+    payload: 'A',
+    provenance: { source: 'local' },
+  }]);
+  assert.equal(batchResult.status, 'rejected');
+  assert.equal(batchResult.reason, 'operation-fact-kind-required');
+  assert.equal(batchResult.operationId, 'op:batch-missing-kind');
+  assert.deepEqual(log.snapshot().facts, {});
+  assert.deepEqual(log.appliedOperationIds(), []);
+  assert.deepEqual([...log.pending.keys()], []);
+});
