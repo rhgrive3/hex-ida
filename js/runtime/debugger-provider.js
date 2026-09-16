@@ -135,8 +135,19 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
        gets a distinct monotonic sequence. */
     let interventionSequence = 0;
     let unsubscribe = null;
+    // #8686: monotonic module-publication authority, shared by refreshes and
+    // accepted module load/unload lifecycle events (mirroring the legacy
+    // DebugSession.refreshState() contract established by #3928). A refresh
+    // claims and captures the value at start; any newer refresh start OR any
+    // accepted current-epoch lifecycle mutation advances it, so the commit-time
+    // check rejects a late refresh whose authoritative mapping has moved —
+    // either by a superseding refresh or by an event that replaced the binding.
+    let modulePublicationAuthority = 0;
 
     const ingest = (raw) => {
+      // #8891: revoke ingress for a closing/closed session so a stale facet or a
+      // backend callback racing teardown cannot mutate session.modules / setState.
+      session.assertAdmissible();
       const event = normalizer.push(raw);
       if (!event) return null;
       const module = moduleFields(event);
@@ -149,11 +160,15 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
               bindingKey,
               loadedSequence: event.sequence,
             }));
+            modulePublicationAuthority++;
           }
         }
       } else if (event.kind === 'module-unload') {
         const bindingKey = module.bindingKey ?? module.moduleKey ?? module.id ?? module.uuid ?? module.name;
-        if (bindingKey) session.modules.unload(bindingKey, event.sequence);
+        if (bindingKey) {
+          session.modules.unload(bindingKey, event.sequence);
+          modulePublicationAuthority++;
+        }
       } else if (event.kind === 'paused' || event.kind === 'breakpoint-hit' || event.kind === 'watchpoint-hit') {
         session.setState('paused');
       } else if (event.kind === 'resumed') {
@@ -192,20 +207,19 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
         // #5696: propagate a session-owned signal to the adapter so an
         // epoch switch/close can cancel remote work, while retaining the
         // completion-time generation check for adapters that ignore abort.
+        // #8692: the same helper is also checked before the side-effecting
+        // adapter invocation, so an already-cancelled/closed/epoch-changed
+        // request can never mutate the target just to be rejected later.
         const operation = createRuntimeOperationController(session, normalizedCallOptions.signal);
-        const startedEpoch = session.epoch;
         try {
+          operation.throwIfStale('register write stopped before its backend invocation');
           const raw = await this.adapter.writeRegister(
             name,
             value,
             normalizedCallOptions.threadId,
             { signal: operation.signal },
           );
-          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
-            throw new DebugAdapterError('runtime-session-stale', 'register write completed after its runtime epoch changed', {
-              startedEpoch, currentEpoch: session.epoch,
-            });
-          }
+          operation.throwIfStale('register write completed after its runtime epoch changed');
           const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
           return { result: raw, intervention };
         } finally {
@@ -223,14 +237,10 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
           sequence: ++interventionSequence,
         });
         const operation = createRuntimeOperationController(session, callOptions?.signal);
-        const startedEpoch = session.epoch;
         try {
+          operation.throwIfStale('memory write stopped before its backend invocation');
           const raw = await this.adapter.writeMemory(address, bytes, { ...callOptions, signal: operation.signal });
-          if (operation.signal.aborted || session.closed || session.epoch !== startedEpoch) {
-            throw new DebugAdapterError('runtime-session-stale', 'memory write completed after its runtime epoch changed', {
-              startedEpoch, currentEpoch: session.epoch,
-            });
-          }
+          operation.throwIfStale('memory write completed after its runtime epoch changed');
           const intervention = interventions.add({ ...draft, acknowledgedResult: raw });
           return { result: raw, intervention };
         } finally {
@@ -244,8 +254,35 @@ export class DebuggerProvider extends DebugAdapterRuntimeProvider {
       interventions,
       resolveAddress: (runtimeAddress, resolutionOptions = {}) => session.modules.resolve(runtimeAddress, resolutionOptions),
       refreshModules: async () => {
+        // #8891: adapter-touching refresh is a stateful capability — revoke it for
+        // a closing/closed session so a stale handle cannot drive the shared adapter.
+        session.assertAdmissible();
         if (!this.adapter.capabilities?.modules || typeof this.adapter.getModules !== 'function') return session.modules.active();
-        const modules = await this.adapter.getModules();
+        // #8686: capture the epoch and claim publication authority before the
+        // first await, and register a session-owned operation so
+        // newProviderEpoch()/close() abort an in-flight request even if the
+        // adapter later ignores cancellation. The completion-time check below
+        // remains authoritative because adapters may ignore abort.
+        const startedEpoch = session.epoch;
+        modulePublicationAuthority++;
+        const capturedAuthority = modulePublicationAuthority;
+        const operation = createRuntimeOperationController(session);
+        let modules;
+        try {
+          modules = await this.adapter.getModules({ signal: operation.signal });
+          if (
+            operation.signal.aborted
+            || session.closed
+            || session.epoch !== startedEpoch
+            || modulePublicationAuthority !== capturedAuthority
+          ) {
+            throw new DebugAdapterError('runtime-session-stale', 'module refresh completed after its runtime epoch, a newer refresh, or an accepted module lifecycle event advanced publication authority', {
+              startedEpoch, currentEpoch: session.epoch,
+            });
+          }
+        } finally {
+          operation.release();
+        }
         if (!Array.isArray(modules)) throw new DebugAdapterError('runtime-invalid-modules', 'debugger adapter getModules must return an array');
 
         // Transactional commit: validate every canonical binding in a scratch

@@ -53,7 +53,14 @@ function repairDexFieldMemory(fn, lowered) {
   const replacement=new Map(), additionsBefore=new Map(), additionsAfter=new Map(), repairedUnknownAddressValues=new Set();
   let seq=0;
   const makeValue=(id,machineType,nodeId,origin)=>{const v={id,kind:'definition',machineType,definitionNodeId:nodeId,sourceEntityId:null,variableKey:null,origin};values.push(v);valueById.set(id,v);return v};
-  const readsFor=(effectId)=>old.nodes.filter(n=>n.kind==='state-read'&&n.sourceEffectIds?.includes(effectId));
+  // Index state-read/state-write nodes by each of their sourceEffectIds ONCE so each field
+  // access is served by an O(matching-nodes) lookup instead of a full `old.nodes` rescan
+  // (#8977). A node is either state-read or state-write, and each per-effect list is built by
+  // walking `old.nodes` in order, so every list preserves the exact order `filter` produced.
+  const NO_NODES=Object.freeze([]);
+  const readsByEffect=new Map(), writesByEffect=new Map();
+  for(const n of old.nodes){const ids=n.sourceEffectIds;if(!ids)continue;const target=n.kind==='state-read'?readsByEffect:n.kind==='state-write'?writesByEffect:null;if(!target)continue;for(const id of ids){let list=target.get(id);if(!list)target.set(id,list=[]);list.push(n)}}
+  const readsFor=(effectId)=>readsByEffect.get(effectId)??NO_NODES;
   for(const node of old.nodes){
     if(!['load','store'].includes(node.kind))continue;
     const effectId=node.sourceEffectIds?.find(id=>bound.has(id));if(!effectId)continue;
@@ -67,7 +74,7 @@ function repairDexFieldMemory(fn, lowered) {
     const mem={...node.memory,addressSpace:memory.space,addressExpr:{valueId:addressValue.id},widthBits:memory.byteWidth*8,volatility:memory.volatility??'unknown',atomic:memory.atomic??'unknown',ordering:memory.ordering??'unknown'};
     let updated={...node,memory:mem};
     if(memory.isWrite){let valueId=getRead(memory.valueReadIndex);const extras=[];if(memory.valueBits>memory.byteWidth*8){const id=`${node.id}:field-truncate`,out=`${id}:value`;makeValue(out,valueType('bitvector',memory.byteWidth*8),id,node.origin);extras.push({id,kind:'trunc',blockId:node.blockId,inputs:[valueId],outputs:[out],operator:null,variable:null,memory:null,call:null,intrinsic:null,targets:[],attributes:{},unknown:null,completeness:'complete',sourceEffectIds:[effectId],origin:node.origin});valueId=out}additionsBefore.set(node.id,[addressNode,...extras]);updated={...updated,inputs:[addressValue.id,valueId]}}
-    else {updated={...updated,inputs:[addressValue.id]};if(memory.extension){const id=`${node.id}:field-extend`,out=`${id}:value`,kind=memory.extension==='sign'?'sext':'zext';makeValue(out,memory.valueType,id,node.origin);const fromBits=memory.byteWidth*8,toBits=memory.valueBits??memory.valueType?.widthBits;const ext={id,kind,blockId:node.blockId,inputs:[node.outputs[0]],outputs:[out],operator:null,variable:null,memory:null,call:null,intrinsic:null,targets:[],attributes:{fromBits,toBits},unknown:null,completeness:'complete',sourceEffectIds:[effectId],origin:node.origin};additionsAfter.set(node.id,[ext]);for(const w of old.nodes.filter(n=>n.kind==='state-write'&&n.sourceEffectIds?.includes(effectId)&&n.inputs?.[0]===node.outputs[0]))replacement.set(w.id,{...w,inputs:[out]})}}
+    else {updated={...updated,inputs:[addressValue.id]};if(memory.extension){const id=`${node.id}:field-extend`,out=`${id}:value`,kind=memory.extension==='sign'?'sext':'zext';makeValue(out,memory.valueType,id,node.origin);const fromBits=memory.byteWidth*8,toBits=memory.valueBits??memory.valueType?.widthBits;const ext={id,kind,blockId:node.blockId,inputs:[node.outputs[0]],outputs:[out],operator:null,variable:null,memory:null,call:null,intrinsic:null,targets:[],attributes:{fromBits,toBits},unknown:null,completeness:'complete',sourceEffectIds:[effectId],origin:node.origin};additionsAfter.set(node.id,[ext]);for(const w of writesByEffect.get(effectId)??NO_NODES){if(w.inputs?.[0]===node.outputs[0])replacement.set(w.id,{...w,inputs:[out]})}}}
     replacement.set(node.id,updated);
   }
   const nodes=[];for(const n of old.nodes){nodes.push(...(additionsBefore.get(n.id)??[]));nodes.push(replacement.get(n.id)??n);nodes.push(...(additionsAfter.get(n.id)??[]))}
