@@ -1,0 +1,47 @@
+name: diag-7036-main-reconcile-20260917b
+on:
+  push:
+    branches:
+      - diag/7036-main-reconcile-20260917b
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Identify merge conflicts only
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          STATUS=/tmp/diag-7036-main.txt
+          : > "$STATUS"
+          PR_HEAD=$(git rev-parse HEAD^)
+          timeout 90s git fetch --no-tags origin main >/tmp/fetch.log 2>&1
+          rc=$?
+          echo "fetch rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/fetch.log >> "$STATUS"; exit "$rc"; fi
+          MAIN=$(git rev-parse refs/remotes/origin/main)
+          echo "pr_head=$PR_HEAD" >> "$STATUS"
+          echo "main=$MAIN" >> "$STATUS"
+          git checkout --detach "$PR_HEAD" >/tmp/checkout.log 2>&1 || { echo 'checkout failed' >> "$STATUS"; exit 1; }
+          git merge --no-commit --no-ff "$MAIN" >/tmp/merge.out 2>&1
+          rc=$?
+          echo "merge rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then
+            echo 'conflicts:' >> "$STATUS"
+            git diff --name-only --diff-filter=U | sed -n '1,80p' >> "$STATUS"
+            exit "$rc"
+          fi
+          echo 'merge clean' >> "$STATUS"
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-7036-main-reconcile-20260917b
+          path: /tmp/diag-7036-main.txt
+          retention-days: 1
