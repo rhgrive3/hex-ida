@@ -1,0 +1,35 @@
+name: Temporary C4-02 condition first failure
+on:
+  push:
+    branches: ['impl/c4-02-finish-20260916']
+    paths: ['.github/workflows/temp-c4-02-condition-first-failure.yml']
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      ACCEPT_HEAD: a64e8d8c91a4c38a9b8b9410bba7a0ade64556e3
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.ACCEPT_HEAD }}
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Capture only focused assertion failure
+        shell: bash
+        run: |
+          set +e
+          node --test tests/phase8/structuring/conditional-region-condition.test.mjs > /tmp/full.txt 2>&1
+          status=$?
+          grep -E '^(not ok|# Subtest:|# (AssertionError|Error)|  (expected|actual|operator|code):|  at )' /tmp/full.txt | tail -n 80 > /tmp/first-failure.txt || true
+          echo "exit=$status" >> /tmp/first-failure.txt
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: c4-02-condition-first-failure
+          path: /tmp/first-failure.txt
+          retention-days: 1
