@@ -1,11 +1,16 @@
 import { deepFreeze, stableDigest, stableStringify } from '../../core/identity/index.js';
 
 function fail(code) { throw new TypeError(code); }
+
+function encodeComponent(text) {
+  return text.replace(/[%:]/g, (character) => (character === '%' ? '%25' : '%3A'));
+}
+
 function nonEmpty(value, code) {
   if (typeof value !== 'string') fail(code);
   const text = value.trim();
   if (!text) fail(code);
-  return text;
+  return encodeComponent(text);
 }
 function nonNegativeInteger(value, code) {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) fail(code);

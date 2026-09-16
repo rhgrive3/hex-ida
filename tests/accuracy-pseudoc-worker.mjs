@@ -1,4 +1,4 @@
-import { openBinary } from './harness.mjs';
+import { NodeBackend, openBinary } from './harness.mjs';
 import { evaluatePseudocSample } from './accuracy-pseudoc-eval.mjs';
 
 const target = process.argv[2];
@@ -7,7 +7,17 @@ if (!target || typeof process.send !== 'function') {
 }
 
 const bootStart = Date.now();
-const world = await openBinary(target);
+// Pseudoc scoring consumes per-function analysis, region geometry and symbol
+// lookup only. Skip the expensive global program/string indexes in this
+// process-local worker boot, then restore the prototype before serving tasks.
+const originalScanProgram = NodeBackend.prototype.scanProgram;
+NodeBackend.prototype.scanProgram = async () => null;
+let world;
+try {
+  world = await openBinary(target, { strings: false });
+} finally {
+  NodeBackend.prototype.scanProgram = originalScanProgram;
+}
 process.send({ type: 'ready', bootMs: Date.now() - bootStart });
 
 process.on('message', async (message) => {

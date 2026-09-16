@@ -22,6 +22,11 @@ const LANE13_BATCH02_LANE = 'codex/issue-campaign-20260914-lane-13-batch-02';
 // Each route fails closed on any undeclared foreign path before projecting the
 // Phase 7-owned subset into the canonical ownership validator.
 export const CROSS_LANE_ROUTES = Object.freeze({
+  "recovery/t016-discovery-artifact-20260916": Object.freeze([
+    ".circleci/config.yml",
+    "js/rebuild/transaction-v2.js",
+    "tests/rebuild/t016-discovery-preservation.test.mjs",
+  ]),
   // PR #8671: reviewed benchmark/auth union plus its ownership routing.
   "integration-candidate/benchmark-auth-20260914": Object.freeze([
     ".circleci/config.yml",

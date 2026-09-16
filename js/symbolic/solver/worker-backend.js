@@ -7,6 +7,7 @@
 import { PROOF_AUTHORITY, SolverBackend } from './backend.js';
 import { positiveFiniteBudget } from './budget.js';
 import { ExhaustiveBvBackend } from './exhaustive-backend.js';
+import { TieredBvBackend } from './tiered-backend.js';
 import { SOLVER_STATUS, createSolverResult } from './result.js';
 import { SolverSession } from './session.js';
 import { isCanonicalRequestId } from './worker-protocol.js';
@@ -187,13 +188,21 @@ export class WorkerSolverBackend extends SolverBackend {
   }
 
   baseCapabilities() {
+    const provider = this.maxBvWidth <= 8
+      ? new ExhaustiveBvBackend({
+          maxBvWidth: this.maxBvWidth,
+          maxAssignments: this.maxAssignments,
+          maxConstraints: this.maxConstraints,
+          maxExprNodes: this.maxExprNodes,
+        })
+      : new TieredBvBackend({
+          maxBvWidth: this.maxBvWidth,
+          exhaustiveMaxAssignments: this.maxAssignments,
+          maxConstraints: this.maxConstraints,
+          maxExprNodes: this.maxExprNodes,
+        });
     return {
-      ...new ExhaustiveBvBackend({
-        maxBvWidth: this.maxBvWidth,
-        maxAssignments: this.maxAssignments,
-        maxConstraints: this.maxConstraints,
-        maxExprNodes: this.maxExprNodes,
-      }).baseCapabilities(),
+      ...provider.baseCapabilities(),
       executionIsolation: 'dedicated-worker',
       memoryBudgetClass: 'measured-only',
     };
