@@ -125,3 +125,20 @@ test('frozen accessors remain invalid data and are never evaluated', () => {
   for(const [,capture] of captures)assert.throws(()=>capture([value]),/accessor/);
   assert.equal(calls,0);
 });
+
+
+test('v8 producer observation rejects in-place whole-IR mutation',async()=>{
+ const f=projectionFixture();assert.equal(isProducerProjection(f.result),true);
+ const last=f.result.ir.instructions.at(-1);
+ f.result.ir.instructions.push({...last,id:'ir_post_producer_injected',row:Number(last?.row ?? 0)+1});
+ assert.equal(isProducerProjection(f.result),false);
+ const r=await optimizeSemanticDecompilation(f.result,f.options);
+ assert.equal(r.proofOptimization.status,'partial');assert.equal(r.proofOptimization.adopted,0);
+ assert.equal(r.proofOptimization.reason,'unissued-or-stale-projection');
+});
+
+test('v8 producer observation rejects cross-result IR association',()=>{
+ const left=projectionFixture(),right=projectionFixture();
+ const mixed={...left.result,ir:right.result.ir};
+ assert.equal(isProducerProjection(mixed),false);
+});

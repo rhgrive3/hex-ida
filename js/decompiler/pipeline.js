@@ -6,7 +6,7 @@ import { expr, sourceOf } from './ast/nodes.js';
 import { printExpression, printProgram } from './pretty/c.js';
 import { PASS_STAGES as PHASE8_ALL_STAGES, runPhase8Stage } from './phase8/index.js';
 import { applyPhase8Projection, readProjectedConditionalRegions, readProjectedProvedCondition } from './phase8/projection.js';
-import { captureProjectionData, captureProjectionIrData } from './phase8/projection-origin.js';
+import { captureProjectionData, captureProjectionIrData, captureRecoveryIrData } from './phase8/projection-origin.js';
 import { preparePhase8RewritePlan, isPhase8RewritePlan } from './phase8/pass-validation.js';
 import { queryRecord, queryArray } from '../symbolic/memory/data-input.js';
 import { createQueryGuard } from '../symbolic/memory/query-state.js';
@@ -47,7 +47,7 @@ function rememberProducerProjection(result, options) {
   try {
     const observation = captureProjectionData([result.semanticAst,result.cAst],options.shouldAbort);
     const irRoots = producerIrRoots(result);
-    const irObservation = captureProjectionIrData(irRoots,options.shouldAbort);
+    const irObservation = captureRecoveryIrData(result.ir,irRoots,options.shouldAbort);
     producerProjections.set(result.semanticAst,{ir:result.ir,cAst:result.cAst,observation,irRoots,irObservation,
       proofOnlyRewrites:options.phase8ProofOnlyRewrites === true});
   } catch { /* The ordinary decompile still works; optional proof is withheld. */ }
