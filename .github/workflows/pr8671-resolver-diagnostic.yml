@@ -6,7 +6,7 @@ on:
       - integration-candidate/benchmark-auth-20260914
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   diagnose:
@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Diagnose exact resolver phase
+      - name: Resolve and lease-push merge commit
         shell: bash
         run: |
           set -u
@@ -26,118 +26,86 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config merge.conflictstyle diff3
           if git fetch --no-tags origin main >/dev/null 2>&1; then record 'fetch-main: PASS'; else record 'fetch-main: FAIL'; exit 0; fi
+          if git merge-base --is-ancestor origin/main HEAD; then record 'main-already-merged: PASS'; exit 0; fi
           set +e
           git merge --no-commit --no-ff origin/main >/dev/null 2>&1
           ms=$?
           set -e
           if [ "$ms" -ne 1 ]; then record "merge-status: UNEXPECTED-$ms"; exit 0; fi
           record 'merge-status: PASS'
-
           python <<'PY' >> pr8671-diagnostic.txt 2>&1
           from pathlib import Path
-          import json, re, subprocess
-
-          def resolve_markers(path, mode):
-              p = Path(path)
-              lines = p.read_text().splitlines(True)
-              out = []
-              i = 0
-              while i < len(lines):
-                  if not lines[i].startswith('<<<<<<<'):
-                      out.append(lines[i]); i += 1; continue
-                  i += 1; ours=[]; base=[]; theirs=[]
-                  while i < len(lines) and not lines[i].startswith('|||||||'):
-                      ours.append(lines[i]); i += 1
-                  if i >= len(lines) or not lines[i].startswith('|||||||'):
-                      raise RuntimeError(f'diff3 base marker missing in {path}')
-                  i += 1
-                  while i < len(lines) and not lines[i].startswith('======='):
-                      base.append(lines[i]); i += 1
-                  if i >= len(lines) or not lines[i].startswith('======='):
-                      raise RuntimeError(f'bad conflict marker in {path}')
-                  i += 1
-                  while i < len(lines) and not lines[i].startswith('>>>>>>>'):
-                      theirs.append(lines[i]); i += 1
-                  if i >= len(lines): raise RuntimeError(f'unterminated conflict in {path}')
-                  i += 1
-                  if mode == 'ours': out.extend(ours)
-                  elif mode == 'theirs': out.extend(theirs)
-                  elif mode == 'union': out.extend(ours); out.extend(theirs)
-                  else: raise ValueError(mode)
+          import json,re,subprocess
+          def r(path,mode):
+              p=Path(path); lines=p.read_text().splitlines(True); out=[]; i=0
+              while i<len(lines):
+                  if not lines[i].startswith('<<<<<<<'): out.append(lines[i]); i+=1; continue
+                  i+=1; a=[]; b=[]; c=[]
+                  while i<len(lines) and not lines[i].startswith('|||||||'): a.append(lines[i]); i+=1
+                  if i>=len(lines): raise RuntimeError('missing diff3 '+path)
+                  i+=1
+                  while i<len(lines) and not lines[i].startswith('======='): b.append(lines[i]); i+=1
+                  if i>=len(lines): raise RuntimeError('missing separator '+path)
+                  i+=1
+                  while i<len(lines) and not lines[i].startswith('>>>>>>>'): c.append(lines[i]); i+=1
+                  if i>=len(lines): raise RuntimeError('missing end '+path)
+                  i+=1; out.extend(a if mode=='ours' else a+c)
               p.write_text(''.join(out))
-
-          try:
-              for p in ['js/ai/dev/ui/settings.js','js/ai/ui/assistant.js','js/userscript/loader.js']:
-                  resolve_markers(p, 'ours')
-              print('marker-ours: PASS')
-          except Exception as e:
-              print('marker-ours: FAIL', type(e).__name__, str(e)); raise SystemExit(0)
-
-          try:
-              for p in ['tests/phase7/ownership/cross-lane-routing.test.mjs','tools/validation/phase7/cross-lane-inventory.mjs']:
-                  resolve_markers(p, 'union')
-              print('marker-union: PASS')
-          except Exception as e:
-              print('marker-union: FAIL', type(e).__name__, str(e)); raise SystemExit(0)
-
-          def stage_json(n, path):
-              return json.loads(subprocess.check_output(['git','show',f':{n}:{path}'], text=True))
-          try:
-              b,o,t = stage_json(1,'package.json'), stage_json(2,'package.json'), stage_json(3,'package.json')
-              conflicts=[]
-              def m3(b,o,t,path=''):
-                  if o==t: return o
-                  if o==b: return t
-                  if t==b: return o
-                  if isinstance(b,dict) and isinstance(o,dict) and isinstance(t,dict):
-                      d={}; missing=object()
-                      for k in dict.fromkeys([*b,*o,*t]):
-                          bv,ov,tv=b.get(k,missing),o.get(k,missing),t.get(k,missing)
-                          if bv is missing:
-                              if ov is missing: d[k]=tv
-                              elif tv is missing: d[k]=ov
-                              elif ov==tv: d[k]=ov
-                              else: conflicts.append(path+'/'+k); d[k]=ov
-                          elif ov is missing or tv is missing:
-                              if ov is missing and tv==bv: continue
-                              if tv is missing and ov==bv: continue
-                              conflicts.append(path+'/'+k); d[k]=ov if ov is not missing else tv
-                          else: d[k]=m3(bv,ov,tv,path+'/'+k)
-                      return d
-                  conflicts.append(path); return o
-              pkg=m3(b,o,t)
-              if conflicts != ['/scripts/test']:
-                  raise RuntimeError(f'unexpected package conflicts: {conflicts}')
-              prefix='node --test tests/public-benchmark/runner-hardening.test.mjs && npm run auth:test && '
-              pkg['scripts']['test'] = t['scripts']['test'] if t['scripts']['test'].startswith(prefix) else prefix + t['scripts']['test']
-              Path('package.json').write_text(json.dumps(pkg,separators=(',',':'))+'\n')
-              print('package-resolve: PASS')
-          except Exception as e:
-              print('package-resolve: FAIL', type(e).__name__, str(e)); raise SystemExit(0)
-
-          try:
-              p=Path('scripts/build-userscript.mjs')
-              text=p.read_text()
-              replacement="""const runtimeLocator = `/_runtime/${buildId}`;\nconst releaseManifest = Object.freeze({\n  buildId,\n  runtimeVersion,\n  contentHash,\n  compression: 'gzip',\n  runtimeLocator,\n  byteLength: ciphertext.length,\n});\nconst releaseManifestHash = sha256(Buffer.from(JSON.stringify(releaseManifest), 'utf8'));\nconst manifest = Object.freeze({ buildId, privileged, runtimeVersion, ciphertextHash: sha256(ciphertext), contentHash, iv: b64(iv), aad, compression: 'gzip', assetPath, byteLength: ciphertext.length });\n"""
-              text,n=re.subn(r'^<<<<<<< .*?^>>>>>>> .*?\n', replacement, text, count=1, flags=re.M|re.S)
-              if n != 1: raise RuntimeError(f'expected one build-userscript conflict, got {n}')
-              p.write_text(text)
-              print('build-resolve: PASS')
-          except Exception as e:
-              print('build-resolve: FAIL', type(e).__name__, str(e)); raise SystemExit(0)
+          for p in ['js/ai/dev/ui/settings.js','js/ai/ui/assistant.js','js/userscript/loader.js']: r(p,'ours')
+          for p in ['tests/phase7/ownership/cross-lane-routing.test.mjs','tools/validation/phase7/cross-lane-inventory.mjs']: r(p,'union')
+          def sj(n,p): return json.loads(subprocess.check_output(['git','show',f':{n}:{p}'],text=True))
+          b,o,t=sj(1,'package.json'),sj(2,'package.json'),sj(3,'package.json'); conflicts=[]
+          def m3(b,o,t,path=''):
+              if o==t:return o
+              if o==b:return t
+              if t==b:return o
+              if isinstance(b,dict) and isinstance(o,dict) and isinstance(t,dict):
+                  d={}; miss=object()
+                  for k in dict.fromkeys([*b,*o,*t]):
+                      bv,ov,tv=b.get(k,miss),o.get(k,miss),t.get(k,miss)
+                      if bv is miss:
+                          if ov is miss:d[k]=tv
+                          elif tv is miss:d[k]=ov
+                          elif ov==tv:d[k]=ov
+                          else:conflicts.append(path+'/'+k);d[k]=ov
+                      elif ov is miss or tv is miss:
+                          if ov is miss and tv==bv:continue
+                          if tv is miss and ov==bv:continue
+                          conflicts.append(path+'/'+k);d[k]=ov if ov is not miss else tv
+                      else:d[k]=m3(bv,ov,tv,path+'/'+k)
+                  return d
+              conflicts.append(path);return o
+          pkg=m3(b,o,t)
+          if conflicts!=['/scripts/test']: raise RuntimeError(str(conflicts))
+          prefix='node --test tests/public-benchmark/runner-hardening.test.mjs && npm run auth:test && '
+          pkg['scripts']['test']=t['scripts']['test'] if t['scripts']['test'].startswith(prefix) else prefix+t['scripts']['test']
+          Path('package.json').write_text(json.dumps(pkg,separators=(',',':'))+'\n')
+          p=Path('scripts/build-userscript.mjs'); text=p.read_text()
+          repl="""const runtimeLocator = `/_runtime/${buildId}`;\nconst releaseManifest = Object.freeze({\n  buildId,\n  runtimeVersion,\n  contentHash,\n  compression: 'gzip',\n  runtimeLocator,\n  byteLength: ciphertext.length,\n});\nconst releaseManifestHash = sha256(Buffer.from(JSON.stringify(releaseManifest), 'utf8'));\nconst manifest = Object.freeze({ buildId, privileged, runtimeVersion, ciphertextHash: sha256(ciphertext), contentHash, iv: b64(iv), aad, compression: 'gzip', assetPath, byteLength: ciphertext.length });\n"""
+          text,n=re.subn(r'^<<<<<<< .*?^>>>>>>> .*?\n',repl,text,count=1,flags=re.M|re.S)
+          if n!=1: raise RuntimeError('build conflict count '+str(n))
+          p.write_text(text)
+          print('resolver-python: PASS')
           PY
-
-          if grep -q 'FAIL' pr8671-diagnostic.txt; then exit 0; fi
-          if git checkout --theirs -- userscript/hex.user.template.js userscript/release-version.json >/dev/null 2>&1; then record 'generated-theirs: PASS'; else record 'generated-theirs: FAIL'; exit 0; fi
-          if git add js/ai/dev/ui/settings.js js/ai/ui/assistant.js js/userscript/loader.js package.json scripts/build-userscript.mjs tests/phase7/ownership/cross-lane-routing.test.mjs tools/validation/phase7/cross-lane-inventory.mjs userscript/hex.user.template.js userscript/release-version.json >/dev/null 2>&1; then record 'git-add: PASS'; else record 'git-add: FAIL'; exit 0; fi
-          if [ -z "$(git diff --name-only --diff-filter=U)" ]; then record 'unmerged-empty: PASS'; else record 'unmerged-empty: FAIL'; git diff --name-only --diff-filter=U | sed 's/^/unmerged: /' >> pr8671-diagnostic.txt; exit 0; fi
-          for p in js/ai/dev/ui/settings.js js/ai/ui/assistant.js js/userscript/loader.js scripts/build-userscript.mjs tests/phase7/ownership/cross-lane-routing.test.mjs tools/validation/phase7/cross-lane-inventory.mjs; do
-            if node --check "$p" >/dev/null 2>&1; then record "syntax: PASS $p"; else record "syntax: FAIL $p"; exit 0; fi
-          done
-          if node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'));JSON.parse(require('fs').readFileSync('userscript/release-version.json','utf8'))" >/dev/null 2>&1; then record 'json-parse: PASS'; else record 'json-parse: FAIL'; exit 0; fi
-          if git diff --check >/dev/null 2>&1; then record 'diff-check: PASS'; else record 'diff-check: FAIL'; exit 0; fi
-          if git commit -m 'diagnostic merge commit' >/dev/null 2>&1; then record 'commit-create: PASS'; else record 'commit-create: FAIL'; fi
-          git reset --hard HEAD^ >/dev/null 2>&1 || true
+          if grep -q 'FAIL\|Traceback\|RuntimeError' pr8671-diagnostic.txt; then exit 0; fi
+          git checkout --theirs -- userscript/hex.user.template.js userscript/release-version.json
+          git add js/ai/dev/ui/settings.js js/ai/ui/assistant.js js/userscript/loader.js package.json scripts/build-userscript.mjs tests/phase7/ownership/cross-lane-routing.test.mjs tools/validation/phase7/cross-lane-inventory.mjs userscript/hex.user.template.js userscript/release-version.json
+          if [ -n "$(git diff --name-only --diff-filter=U)" ]; then record 'unmerged: FAIL'; exit 0; fi
+          for p in js/ai/dev/ui/settings.js js/ai/ui/assistant.js js/userscript/loader.js scripts/build-userscript.mjs tests/phase7/ownership/cross-lane-routing.test.mjs tools/validation/phase7/cross-lane-inventory.mjs; do node --check "$p" >/dev/null 2>&1 || { record "syntax: FAIL $p"; exit 0; }; done
+          node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'));JSON.parse(require('fs').readFileSync('userscript/release-version.json','utf8'))" >/dev/null 2>&1 || { record 'json: FAIL'; exit 0; }
+          git diff --check >/dev/null 2>&1 || { record 'diff-check: FAIL'; exit 0; }
+          git commit -m "Merge current main into PR #8671 and resolve conflicts" >/dev/null 2>&1 || { record 'commit: FAIL'; exit 0; }
+          record 'commit: PASS'
+          set +e
+          git push --force-with-lease=refs/heads/integration-candidate/benchmark-auth-20260914:${GITHUB_SHA} origin HEAD:refs/heads/integration-candidate/benchmark-auth-20260914 >/tmp/push.out 2>/tmp/push.err
+          ps=$?
+          set -e
+          if [ "$ps" -eq 0 ]; then
+            record 'lease-push: PASS'
+          else
+            record "lease-push: FAIL-$ps"
+            sed -n '1,12p' /tmp/push.err | sed 's/^/push-error: /' >> pr8671-diagnostic.txt
+          fi
           cat pr8671-diagnostic.txt >> "$GITHUB_STEP_SUMMARY"
       - name: Upload diagnostic
         if: always()
