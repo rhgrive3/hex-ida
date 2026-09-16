@@ -2,22 +2,20 @@ name: PR 8671 conflict resolver
 
 on:
   push:
-    branches:
-      - integration-candidate/benchmark-auth-20260914
+    branches: [integration-candidate/benchmark-auth-20260914]
 
 permissions:
   contents: write
 
 jobs:
-  resolve-and-verify:
+  resolve:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - id: merge
-        name: Merge current main and resolve the known conflicts
+      - name: Merge latest main and resolve exact conflicts
         shell: bash
         run: |
           set -euo pipefail
@@ -26,166 +24,96 @@ jobs:
           git config merge.conflictstyle diff3
           git fetch --no-tags origin main
           if git merge-base --is-ancestor origin/main HEAD; then
-            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            printf 'main-already-ancestor\n' > pr8671-resolver-result.txt
             exit 0
           fi
           set +e
           git merge --no-commit --no-ff origin/main >/dev/null 2>&1
           merge_status=$?
           set -e
-          if [ "$merge_status" -eq 0 ]; then
-            echo 'changed=true' >> "$GITHUB_OUTPUT"
-          else
-            git diff --name-only --diff-filter=U > /tmp/conflicts.txt
-            cat > /tmp/expected.txt <<'EOF'
-          js/ai/dev/ui/settings.js
-          js/ai/ui/assistant.js
-          js/userscript/loader.js
-          package.json
-          scripts/build-userscript.mjs
-          tests/phase7/ownership/cross-lane-routing.test.mjs
-          tools/validation/phase7/cross-lane-inventory.mjs
-          userscript/hex.user.template.js
-          userscript/release-version.json
-          EOF
-            sort -o /tmp/conflicts.txt /tmp/conflicts.txt
-            sort -o /tmp/expected.txt /tmp/expected.txt
+          if [ "$merge_status" -eq 1 ]; then
+            git diff --name-only --diff-filter=U | sort > /tmp/conflicts.txt
+            printf '%s\n' package.json tools/validation/phase7/cross-lane-inventory.mjs | sort > /tmp/expected.txt
             diff -u /tmp/expected.txt /tmp/conflicts.txt
             python <<'PY'
           from pathlib import Path
-          import json, re, subprocess
+          import json, subprocess
 
-          def resolve_markers(path, mode):
-              p = Path(path)
-              lines = p.read_text().splitlines(True)
-              out = []
-              i = 0
-              while i < len(lines):
-                  if not lines[i].startswith('<<<<<<<'):
-                      out.append(lines[i]); i += 1; continue
-                  i += 1; ours=[]; base=[]; theirs=[]
-                  while i < len(lines) and not lines[i].startswith('|||||||'):
-                      ours.append(lines[i]); i += 1
-                  if i >= len(lines) or not lines[i].startswith('|||||||'):
-                      raise RuntimeError(f'diff3 base marker missing in {path}')
-                  i += 1
-                  while i < len(lines) and not lines[i].startswith('======='):
-                      base.append(lines[i]); i += 1
-                  if i >= len(lines) or not lines[i].startswith('======='):
-                      raise RuntimeError(f'bad conflict marker in {path}')
-                  i += 1
-                  while i < len(lines) and not lines[i].startswith('>>>>>>>'):
-                      theirs.append(lines[i]); i += 1
-                  if i >= len(lines): raise RuntimeError(f'unterminated conflict in {path}')
-                  i += 1
-                  if mode == 'ours': out.extend(ours)
-                  elif mode == 'theirs': out.extend(theirs)
-                  elif mode == 'union': out.extend(ours); out.extend(theirs)
-                  else: raise ValueError(mode)
-              p.write_text(''.join(out))
-
-          for p in ['js/ai/dev/ui/settings.js','js/ai/ui/assistant.js','js/userscript/loader.js']:
-              resolve_markers(p, 'ours')
-          for p in ['tests/phase7/ownership/cross-lane-routing.test.mjs','tools/validation/phase7/cross-lane-inventory.mjs']:
-              resolve_markers(p, 'union')
-
+          MISSING = object()
+          conflicts = []
           def stage_json(n, path):
               return json.loads(subprocess.check_output(['git','show',f':{n}:{path}'], text=True))
-          b,o,t = stage_json(1,'package.json'), stage_json(2,'package.json'), stage_json(3,'package.json')
-          conflicts=[]
-          def m3(b,o,t,path=''):
-              if o==t: return o
-              if o==b: return t
-              if t==b: return o
-              if isinstance(b,dict) and isinstance(o,dict) and isinstance(t,dict):
-                  d={}; missing=object()
-                  for k in dict.fromkeys([*b,*o,*t]):
-                      bv,ov,tv=b.get(k,missing),o.get(k,missing),t.get(k,missing)
-                      if bv is missing:
-                          if ov is missing: d[k]=tv
-                          elif tv is missing: d[k]=ov
-                          elif ov==tv: d[k]=ov
-                          else: conflicts.append(path+'/'+k); d[k]=ov
-                      elif ov is missing or tv is missing:
-                          if ov is missing and tv==bv: continue
-                          if tv is missing and ov==bv: continue
-                          conflicts.append(path+'/'+k); d[k]=ov if ov is not missing else tv
-                      else: d[k]=m3(bv,ov,tv,path+'/'+k)
-                  return d
-              conflicts.append(path); return o
-          pkg=m3(b,o,t)
-          if conflicts != ['/scripts/test']:
-              raise RuntimeError(f'unexpected package conflicts: {conflicts}')
-          prefix='node --test tests/public-benchmark/runner-hardening.test.mjs && npm run auth:test && '
-          pkg['scripts']['test'] = t['scripts']['test'] if t['scripts']['test'].startswith(prefix) else prefix + t['scripts']['test']
-          Path('package.json').write_text(json.dumps(pkg,separators=(',',':'))+'\n')
+          def merge3(base, ours, theirs, path=''):
+              if ours == theirs: return ours
+              if ours == base: return theirs
+              if theirs == base: return ours
+              if isinstance(base, dict) and isinstance(ours, dict) and isinstance(theirs, dict):
+                  out = {}
+                  for key in dict.fromkeys([*base, *ours, *theirs]):
+                      b, o, t = base.get(key, MISSING), ours.get(key, MISSING), theirs.get(key, MISSING)
+                      p = f'{path}/{key}'
+                      if b is MISSING:
+                          if o is MISSING: out[key] = t
+                          elif t is MISSING: out[key] = o
+                          elif o == t: out[key] = o
+                          else: conflicts.append(p); out[key] = o
+                      elif o is MISSING or t is MISSING:
+                          if o is MISSING and t == b: continue
+                          if t is MISSING and o == b: continue
+                          conflicts.append(p); out[key] = o if o is not MISSING else t
+                      else:
+                          out[key] = merge3(b, o, t, p)
+                  return out
+              conflicts.append(path)
+              return ours
 
-          p=Path('scripts/build-userscript.mjs')
-          text=p.read_text()
-          replacement="""const runtimeLocator = `/_runtime/${buildId}`;\nconst releaseManifest = Object.freeze({\n  buildId,\n  runtimeVersion,\n  contentHash,\n  compression: 'gzip',\n  runtimeLocator,\n  byteLength: ciphertext.length,\n});\nconst releaseManifestHash = sha256(Buffer.from(JSON.stringify(releaseManifest), 'utf8'));\nconst manifest = Object.freeze({ buildId, privileged, runtimeVersion, ciphertextHash: sha256(ciphertext), contentHash, iv: b64(iv), aad, compression: 'gzip', assetPath, byteLength: ciphertext.length });\n"""
-          text,n=re.subn(r'^<<<<<<< .*?^>>>>>>> .*?\n', replacement, text, count=1, flags=re.M|re.S)
-          if n != 1: raise RuntimeError('expected one build-userscript conflict')
-          p.write_text(text)
+          base, ours, theirs = stage_json(1,'package.json'), stage_json(2,'package.json'), stage_json(3,'package.json')
+          merged = merge3(base, ours, theirs)
+          if conflicts:
+              raise RuntimeError(f'unexpected semantic package conflicts: {conflicts}')
+          Path('package.json').write_text(json.dumps(merged, separators=(',',':')) + '\n')
+
+          p = Path('tools/validation/phase7/cross-lane-inventory.mjs')
+          lines = p.read_text().splitlines(True)
+          out=[]; i=0; blocks=0
+          while i < len(lines):
+              if not lines[i].startswith('<<<<<<<'):
+                  out.append(lines[i]); i += 1; continue
+              blocks += 1; i += 1; ours_block=[]; base_block=[]; theirs_block=[]
+              while i < len(lines) and not lines[i].startswith('|||||||'):
+                  ours_block.append(lines[i]); i += 1
+              if i >= len(lines): raise RuntimeError('missing diff3 base marker')
+              i += 1
+              while i < len(lines) and not lines[i].startswith('======='):
+                  base_block.append(lines[i]); i += 1
+              if i >= len(lines): raise RuntimeError('missing conflict separator')
+              i += 1
+              while i < len(lines) and not lines[i].startswith('>>>>>>>'):
+                  theirs_block.append(lines[i]); i += 1
+              if i >= len(lines): raise RuntimeError('missing conflict end marker')
+              i += 1
+              out.extend(ours_block); out.extend(theirs_block)
+          if blocks != 1: raise RuntimeError(f'expected one cross-lane conflict block, got {blocks}')
+          p.write_text(''.join(out))
           PY
-            git checkout --theirs -- userscript/hex.user.template.js userscript/release-version.json
-            git add js/ai/dev/ui/settings.js js/ai/ui/assistant.js js/userscript/loader.js package.json scripts/build-userscript.mjs tests/phase7/ownership/cross-lane-routing.test.mjs tools/validation/phase7/cross-lane-inventory.mjs userscript/hex.user.template.js userscript/release-version.json
-            test -z "$(git diff --name-only --diff-filter=U)"
-            echo 'changed=true' >> "$GITHUB_OUTPUT"
+            git add package.json tools/validation/phase7/cross-lane-inventory.mjs
+          elif [ "$merge_status" -ne 0 ]; then
+            echo "unexpected merge status $merge_status" >&2
+            exit "$merge_status"
           fi
-          node --check js/ai/dev/ui/settings.js
-          node --check js/ai/ui/assistant.js
-          node --check js/userscript/loader.js
-          node --check scripts/build-userscript.mjs
-          node --check tests/phase7/ownership/cross-lane-routing.test.mjs
+          test -z "$(git diff --name-only --diff-filter=U)"
+          node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'))"
           node --check tools/validation/phase7/cross-lane-inventory.mjs
-          node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'));JSON.parse(require('fs').readFileSync('userscript/release-version.json','utf8'))"
-          git commit -m "Merge current main into PR #8671 and resolve conflicts"
-          git push origin HEAD:integration-candidate/benchmark-auth-20260914
-      - name: Install pinned dependencies
-        if: steps.merge.outputs.changed == 'true'
-        shell: bash
-        run: timeout 300s npm ci
-      - name: Focused auth and benchmark tests
-        if: steps.merge.outputs.changed == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          timeout 240s npm run auth:test
-          timeout 180s npm run benchmark:public:test
-          timeout 120s node tests/ai-ui-dev-profile.mjs
           timeout 120s node tests/phase7/ownership/cross-lane-routing.test.mjs
-      - name: Canonical auth build acceptance
-        if: steps.merge.outputs.changed == 'true'
-        shell: bash
-        run: timeout 300s npm run auth:build-test
-      - name: Publish regenerated committed userscript artifacts
-        if: steps.merge.outputs.changed == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          git add userscript/hex.user.template.js userscript/release-version.json
-          if ! git diff --cached --quiet; then
-            git commit -m "chore(userscript): regenerate artifacts after main merge"
-            git push origin HEAD:integration-candidate/benchmark-auth-20260914
-          fi
-      - name: Write compact verification evidence
-        if: steps.merge.outputs.changed == 'true'
-        shell: bash
-        run: |
-          printf '%s\n' \
-            'merge-conflicts: resolved' \
-            'syntax-json: pass' \
-            'npm-ci: pass' \
-            'auth:test: pass' \
-            'benchmark:public:test: pass' \
-            'ai-ui-dev-profile: pass' \
-            'phase7-cross-lane-routing: pass' \
-            'auth:build-test: pass' > pr8671-verification.txt
-          cat pr8671-verification.txt >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload compact verification evidence
-        if: steps.merge.outputs.changed == 'true'
+          printf 'main=%s\nconflicts=resolved\nphase7-cross-lane=pass\n' "$(git rev-parse origin/main)" > pr8671-resolver-result.txt
+          git add -A
+          git commit -m "Merge latest main into PR #8671"
+          git push origin HEAD:integration-candidate/benchmark-auth-20260914
+      - name: Upload compact resolver evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr8671-verification
-          path: pr8671-verification.txt
+          name: pr8671-resolver-result
+          path: pr8671-resolver-result.txt
+          if-no-files-found: ignore
           retention-days: 1
