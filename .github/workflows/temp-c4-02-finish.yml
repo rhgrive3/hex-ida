@@ -25,6 +25,7 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
+          import base64
           from pathlib import Path
           p=Path('js/decompiler/phase8/structuring.js')
           s=p.read_text()
@@ -58,39 +59,7 @@ jobs:
           s=p.read_text()
           marker="test('nested loops name the back edge, the entry and the guard exit at each level', () => {"
           if marker not in s: raise SystemExit('test insertion anchor missing')
-          tests=r'''test('switch case fallthrough remains an explicit accounted edge inside the switch region', () => {
-  const f = fixture('switch-fallthrough');
-  const selector = f.block(0, { succ: [1, 2, 3] }).opaque(32);
-  f.switchBranch(selector, [[0, 1], [1, 2]], 3);
-  f.block(1, { succ: [2], edges: [{ to: 2, kind: 'fallthrough' }] }).branch(2);
-  f.block(2, { succ: [4] }).branch(4);
-  f.block(3, { succ: [4] }).branch(4);
-  f.block(4).ret();
-  const ir = f.build();
-  const { facts } = structuring(ir);
-  assert.equal(facts.edges.find((edge) => edge.from === 1 && edge.to === 2)?.construct, 'sequence');
-  assert.ok(facts.edges.find((edge) => edge.from === 1 && edge.to === 2)?.kinds.includes('fallthrough'));
-  assert.ok(facts.regions.some((entry) => entry.kind === 'switch' && entry.entry === 0));
-  assert.deepEqual(edgeAccountingFailures(ir, facts), []);
-});
-
-test('flattened switch dispatcher remains residual control flow instead of a guessed loop', () => {
-  const f = fixture('flattened-dispatcher');
-  f.block(0, { succ: [1] }).branch(1);
-  const state = f.block(1, { succ: [2, 3, 4] }).opaque(32);
-  f.switchBranch(state, [[0, 2], [1, 3]], 4);
-  f.block(2, { succ: [1] }).branch(1);
-  f.block(3, { succ: [1] }).branch(1);
-  f.block(4).ret();
-  const ir = f.build();
-  const { facts } = structuring(ir);
-  assert.equal(facts.residualGotoCount, facts.edgeCount);
-  assert.ok(facts.edges.every((edge) => edge.construct === 'residual-goto'));
-  assert.ok(!facts.regions.some((entry) => entry.entry === 1 && (entry.kind === 'loop' || entry.kind === 'switch')));
-  assert.deepEqual(edgeAccountingFailures(ir, facts), []);
-});
-
-'''
+          tests=base64.b64decode('dGVzdCgnc3dpdGNoIGNhc2UgZmFsbHRocm91Z2ggcmVtYWlucyBhbiBleHBsaWNpdCBhY2NvdW50ZWQgZWRnZSBpbnNpZGUgdGhlIHN3aXRjaCByZWdpb24nLCAoKSA9PiB7CiAgY29uc3QgZiA9IGZpeHR1cmUoJ3N3aXRjaC1mYWxsdGhyb3VnaCcpOwogIGNvbnN0IHNlbGVjdG9yID0gZi5ibG9jaygwLCB7IHN1Y2M6IFsxLCAyLCAzXSB9KS5vcGFxdWUoMzIpOwogIGYuc3dpdGNoQnJhbmNoKHNlbGVjdG9yLCBbWzAsIDFdLCBbMSwgMl1dLCAzKTsKICBmLmJsb2NrKDEsIHsgc3VjYzogWzJdLCBlZGdlczogW3sgdG86IDIsIGtpbmQ6ICdmYWxsdGhyb3VnaCcgfV0gfSkuYnJhbmNoKDIpOwogIGYuYmxvY2soMiwgeyBzdWNjOiBbNF0gfSkuYnJhbmNoKDQpOwogIGYuYmxvY2soMywgeyBzdWNjOiBbNF0gfSkuYnJhbmNoKDQpOwogIGYuYmxvY2soNCkucmV0KCk7CiAgY29uc3QgaXIgPSBmLmJ1aWxkKCk7CiAgY29uc3QgeyBmYWN0cyB9ID0gc3RydWN0dXJpbmcoaXIpOwogIGFzc2VydC5lcXVhbChmYWN0cy5lZGdlcy5maW5kKChlZGdlKSA9PiBlZGdlLmZyb20gPT09IDEgJiYgZWRnZS50byA9PT0gMik/LmNvbnN0cnVjdCwgJ3NlcXVlbmNlJyk7CiAgYXNzZXJ0Lm9rKGZhY3RzLmVkZ2VzLmZpbmQoKGVkZ2UpID0+IGVkZ2UuZnJvbSA9PT0gMSAmJiBlZGdlLnRvID09PSAyKT8ua2luZHMuaW5jbHVkZXMoJ2ZhbGx0aHJvdWdoJykpOwogIGFzc2VydC5vayhmYWN0cy5yZWdpb25zLnNvbWUoKGVudHJ5KSA9PiBlbnRyeS5raW5kID09PSAnc3dpdGNoJyAmJiBlbnRyeS5lbnRyeSA9PT0gMCkpOwogIGFzc2VydC5kZWVwRXF1YWwoZWRnZUFjY291bnRpbmdGYWlsdXJlcyhpciwgZmFjdHMpLCBbXSk7Cn0pOwoKdGVzdCgnZmxhdHRlbmVkIHN3aXRjaCBkaXNwYXRjaGVyIHJlbWFpbnMgcmVzaWR1YWwgY29udHJvbCBmbG93IGluc3RlYWQgb2YgYSBndWVzc2VkIGxvb3AnLCAoKSA9PiB7CiAgY29uc3QgZiA9IGZpeHR1cmUoJ2ZsYXR0ZW5lZC1kaXNwYXRjaGVyJyk7CiAgZi5ibG9jaygwLCB7IHN1Y2M6IFsxXSB9KS5icmFuY2goMSk7CiAgY29uc3Qgc3RhdGUgPSBmLmJsb2NrKDEsIHsgc3VjYzogWzIsIDMsIDRdIH0pLm9wYXF1ZSgzMik7CiAgZi5zd2l0Y2hCcmFuY2goc3RhdGUsIFtbMCwgMl0sIFsxLCAzXV0sIDQpOwogIGYuYmxvY2soMiwgeyBzdWNjOiBbMV0gfSkuYnJhbmNoKDEpOwogIGYuYmxvY2soMywgeyBzdWNjOiBbMV0gfSkuYnJhbmNoKDEpOwogIGYuYmxvY2soNCkucmV0KCk7CiAgY29uc3QgaXIgPSBmLmJ1aWxkKCk7CiAgY29uc3QgeyBmYWN0cyB9ID0gc3RydWN0dXJpbmcoaXIpOwogIGFzc2VydC5lcXVhbChmYWN0cy5yZXNpZHVhbEdvdG9Db3VudCwgZmFjdHMuZWRnZUNvdW50KTsKICBhc3NlcnQub2soZmFjdHMuZWRnZXMuZXZlcnkoKGVkZ2UpID0+IGVkZ2UuY29uc3RydWN0ID09PSAncmVzaWR1YWwtZ290bycpKTsKICBhc3NlcnQub2soIWZhY3RzLnJlZ2lvbnMuc29tZSgoZW50cnkpID0+IGVudHJ5LmVudHJ5ID09PSAxICYmIChlbnRyeS5raW5kID09PSAnbG9vcCcgfHwgZW50cnkua2luZCA9PT0gJ3N3aXRjaCcpKSk7CiAgYXNzZXJ0LmRlZXBFcXVhbChlZGdlQWNjb3VudGluZ0ZhaWx1cmVzKGlyLCBmYWN0cyksIFtdKTsKfSk7Cgo=').decode()
           s=s.replace(marker,tests+marker,1)
           p.write_text(s)
           PY
