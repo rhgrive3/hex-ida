@@ -63,7 +63,7 @@ assert.match(aggregate,/name:\s*Matcher scaling regression[\s\S]*issue-500-match
 assert.match(aggregate,/name:\s*Core tests for standalone manual validation[\s\S]*github\.event_name == 'workflow_dispatch'[\s\S]*npm test/,
   'manual release validation must retain the broad core test suite');
 assert.match(aggregate,/name:\s*Syntax lint[\s\S]*npm run lint/);
-assert.match(workflow,/pull_request:\s*\n\s+branches:\s*\[main\]/);
+assert.doesNotMatch(workflow,/^  pull_request:/m,'cross-binary accuracy stays manual/push-only under CI development-mode policy');
 assert.match(workflow,/cancel-in-progress:\s*true/);
 
 console.log('issue #3123 cross-binary 18-partition topology/cache regression: PASS');
