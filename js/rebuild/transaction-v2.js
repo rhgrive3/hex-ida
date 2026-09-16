@@ -596,6 +596,25 @@ function explicitBigInt(value, code) {
   throw new TypeError(code);
 }
 
+const FORMAT_SAFE_IMPACT_SCHEMA = 'hex-format-safe-rebuild/v1';
+
+function hasFormatSafeImpactProof(input, operations, expectedOriginalState) {
+  const additional = Array.isArray(input.additionalValidators) ? input.additionalValidators : [];
+  const safeState = expectedOriginalState?.formatSafe;
+  if (input.requireIndependentOracle !== true
+      || !additional.includes('format-invariants')
+      || !safeState || typeof safeState !== 'object' || Array.isArray(safeState)
+      || safeState.schema !== FORMAT_SAFE_IMPACT_SCHEMA
+      || typeof safeState.kind !== 'string' || !safeState.kind) return false;
+  return operations.length > 0 && operations.every((operation) => {
+    const provenance = operation?.provenance;
+    return provenance && typeof provenance === 'object' && !Array.isArray(provenance)
+      && provenance.source === 'format-safe-rebuild-adapter'
+      && provenance.schema === FORMAT_SAFE_IMPACT_SCHEMA
+      && provenance.mutationKind === safeState.kind;
+  });
+}
+
 function requiredValidators(impact, additional = [], requireIndependentOracle = false) {
   const set = new Set(['source-precondition', 'structure', 'loader-reparse', 'unchanged-regions', 'evidence']);
   if (impact.layoutMoving) set.add('layout');
@@ -656,16 +675,22 @@ export function createRebuildTransaction(input = {}) {
   if (!Array.isArray(relocationBindings)) throw new TypeError('rebuild-v2-relocation-bindings-invalid');
   const sections = input.sections ?? declaredImpact.sections ?? [];
   if (!Array.isArray(sections)) throw new TypeError('rebuild-v2-sections-invalid');
-  const impact = {
-    layoutMoving: sizeDelta !== 0 || declaredImpact.layoutMoving === true,
-    relocations: declaredImpact.relocations === true || relocationBindings.length > 0,
-    branchRanges: declaredImpact.branchRanges === true,
-    unwind: declaredImpact.unwind === true,
-    importsExports: declaredImpact.importsExports === true,
-    signature: declaredImpact.signature === true,
-    sections: clone(sections),
-    relocationBindings: clone(relocationBindings),
-  };
+  // #5192: arbitrary generic byte patches have no loader-derived range
+// authority. Caller `false` declarations cannot prove a same-size edit
+// misses relocation, branch, unwind, import/export, or signature data.
+// Only the format-safe path may retain narrow impact, and only when it
+// carries its invariant validator plus the independent-oracle gate.
+const conservativeGenericImpact = !hasFormatSafeImpactProof(input, operations, expectedOriginalState);
+const impact = {
+  layoutMoving: sizeDelta !== 0 || declaredImpact.layoutMoving === true,
+  relocations: conservativeGenericImpact || declaredImpact.relocations === true || relocationBindings.length > 0,
+  branchRanges: conservativeGenericImpact || declaredImpact.branchRanges === true,
+  unwind: conservativeGenericImpact || declaredImpact.unwind === true,
+  importsExports: conservativeGenericImpact || declaredImpact.importsExports === true,
+  signature: conservativeGenericImpact || declaredImpact.signature === true,
+  sections: clone(sections),
+  relocationBindings: clone(relocationBindings),
+};
   const requireIndependentOracle = input.requireIndependentOracle === true;
   const transaction = {
     schemaVersion: REBUILD_TRANSACTION_SCHEMA,
@@ -1000,7 +1025,7 @@ export async function validateRebuildTransaction(transaction, materialized, opti
   const operationRegionsMatch = mappingsMatchTransaction(transaction, materialized.mappings, materialized.sourceLength, materialized.outputLength)
     && operationRegionsMatchTransaction(transaction, materialized.bytes, materialized.mappings);
   const evidenceComplete = transaction.operations.every((operation) => operation.provenance && Object.keys(operation.provenance).length > 0);
-  const preservationRequiresTrustedProvider = ['elf-comment', 'pe-timestamp', 'macho-min-version'].includes(transaction.expectedOriginalState?.formatSafe?.kind);
+  const preservationRequiresTrustedProvider = transaction.expectedOriginalState?.formatSafe?.schema === FORMAT_SAFE_IMPACT_SCHEMA;
   const independentOracleTrusted = isCanonicalIndependentOracleProvider(options.independentOracle);
   builtins.set('source-precondition', () => validatorResult('source-precondition', true, sourceMatches, 'source-hash-mismatch'));
   builtins.set('structure', () => validatorResult('structure', true, structureMatches, 'output-length-inconsistent'));
