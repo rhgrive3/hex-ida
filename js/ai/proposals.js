@@ -51,12 +51,34 @@ const PROPOSAL_STATE_MAX_NODES = 250_000;
 const PROPOSAL_STATE_MAX_DEPTH = 128;
 
 export class ProposalStore {
-  constructor({ evidenceStore, binding = null } = {}) {
+  constructor({ evidenceStore, binding = null, currentEvidenceBinding = null } = {}) {
     this.evidenceStore = evidenceStore;
     this.binding = typeof binding === 'function' ? binding : null;
+    // Optional resolver for the *current* canonical analysis binding key. When
+    // present, a verified record's own `sourceBinding` must still be that key:
+    // evidence minted against an older analysis revision is not mutation
+    // authority for the current one (#8929). Adapters that expose no resolver
+    // keep the legacy status-only contract.
+    this.currentEvidenceBinding = typeof currentEvidenceBinding === 'function' ? currentEvidenceBinding : null;
     this.records = new Map();
     this.approvals = new Map();
     this.audit = [];
+  }
+
+  /**
+   * A `verified` record is only authority while the binding that produced it is
+   * still current. The record's provenance is already carried as
+   * `sourceBinding`; once the analysis revision (or binary/project/runtime
+   * binding) moves on, that record must not authorize a new proposal. Records
+   * with missing/invalid provenance fail closed whenever a current-binding resolver is configured.
+   */
+  evidenceBindingIsCurrent(record) {
+    if (!this.currentEvidenceBinding) return true;
+    const bound = record?.sourceBinding;
+    if (typeof bound !== 'string' || !bound) return false;
+    let current;
+    try { current = this.currentEvidenceBinding(); } catch { return false; }
+    return typeof current === 'string' && current.length > 0 && current === bound;
   }
 
   create(input = {}) {
@@ -88,7 +110,7 @@ export class ProposalStore {
     // persisted-restore path so the two admission boundaries cannot drift.
     const evidenceIds = Array.from(new Set((input.evidenceIds || []).filter((id) => {
       if (typeof id !== 'string') return false;
-      return hasDeterministicEvidenceAuthority(this.evidenceStore, id);
+      return hasDeterministicEvidenceAuthority(this.evidenceStore, id, (record) => this.evidenceBindingIsCurrent(record));
     })));
     if (!evidenceIds.length) throw new AIError('invalid_tool_call', 'A proposal requires deterministic evidence.');
     let id;
@@ -373,8 +395,16 @@ function requireProposalRecord(store, id) {
 // status behind deterministic-verifier authority and exposes `get()`; minimal
 // injected adapters that intentionally expose only `has()` keep their existing
 // existence contract.
-function hasDeterministicEvidenceAuthority(evidenceStore, id) {
-  if (typeof evidenceStore?.get === 'function') return evidenceStore.get(id)?.status === 'verified';
+// A `verified` record is authority only when it still belongs to the current
+// analysis binding. `bindingIsCurrent` is optional so minimal injected adapters
+// (and adapters without a revision resolver) keep the legacy status contract.
+function hasDeterministicEvidenceAuthority(evidenceStore, id, bindingIsCurrent = null) {
+  if (typeof evidenceStore?.get === 'function') {
+    const record = evidenceStore.get(id);
+    if (record?.status !== 'verified') return false;
+    if (typeof bindingIsCurrent === 'function' && !bindingIsCurrent(record)) return false;
+    return true;
+  }
   return evidenceStore?.has?.(id) === true;
 }
 
@@ -401,7 +431,7 @@ function restoredPendingRecord(store, persisted) {
   // downgrades deterministic evidence to `supported`, and the proposal may only
   // regain live mutation authority if its evidence still resolves to the same
   // deterministic `verified` predicate `create()` requires (#8889).
-  if (!evidenceIds.length || !evidenceIds.every((value) => hasDeterministicEvidenceAuthority(store.evidenceStore, value))) return null;
+  if (!evidenceIds.length || !evidenceIds.every((value) => hasDeterministicEvidenceAuthority(store.evidenceStore, value, (record) => store.evidenceBindingIsCurrent(record)))) return null;
   let binding;
   let payload;
   try {

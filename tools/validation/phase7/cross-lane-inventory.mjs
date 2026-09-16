@@ -13,6 +13,7 @@ const OBJC_PROTOCOL_LANE = 'fix/objc-protocol-class-properties-3979';
 const ANALYSIS_BATCH_LANE = 'fix/analysis-batch-20260907-l62';
 const INTEGRATION_BATCH_LANE = 'dev-agent-hardening/integration/issue-batch-20260909';
 const MAIN_GATE_BATCH_LANE = 'fix/main-gate-recovery-20260913';
+const CONSOLIDATED_OWNER3_LANE = 'consolidated-owner3';
 const ANALYSIS_QUERY_BATCH_LANE = 'fix/batch-4075-owner12';
 const ACTIONS_GROUP_LANE = 'dependabot/github_actions/github-actions-436ea2ae3a';
 const LANE13_BATCH02_LANE = 'codex/issue-campaign-20260914-lane-13-batch-02';
@@ -117,6 +118,17 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     "tools/validation/public-benchmark/subject.mjs",
     "worker-entry.js",
     "wrangler.jsonc"
+  ]),
+  [CONSOLIDATED_OWNER3_LANE]: Object.freeze([
+    '.circleci/config.yml',
+    'js/dynamic/experiments.js',
+    'js/managed/shared/bridge-v2.js',
+    'js/managed/shared/bridge.js',
+    'tests/issue-4772-unknown-call-broad-read.mjs',
+    'tests/issue-6249-unknown-target-dedupe.mjs',
+    'tests/phase10/issue-4310-compile-experiment-input-coercion.test.mjs',
+    'tests/phase10/issue-4312-observed-offset-coercion.test.mjs',
+    'tests/phase10/issue-4313-compare-expected-bits-coercion.test.mjs',
   ]),
   [LANE13_BATCH02_LANE]: Object.freeze([
     '.circleci/config.yml',

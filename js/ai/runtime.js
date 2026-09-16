@@ -10,7 +10,8 @@ import { InvestigationSessionStore, isValidSessionId } from './session-core/inde
 import { sanitizeActions, addressText, validateSchema } from './validation.js';
 import { executeTurn } from './control/turn-executor.js';
 import { addressExistsAsync, assertLiveBindingsUnchanged, claimedAddresses, defaultMonotonicNow, deterministicConfidence, fallbackEvidence, presentAnswer, qualifyingEvidence } from './control/runtime-support.js';
-import { canonicalBindingId } from './control/snapshot.js';
+import { canonicalBindingId, resolveAnalysisRevision } from './control/snapshot.js';
+import { analysisBinding } from './tools/storage/observation-store.js';
 
 const BUDGET_LIMIT_REASONS = new Set([
   'budget_exhausted',
@@ -26,7 +27,11 @@ export class AIRuntime {
     this.sessionStore = options.sessionStore || new InvestigationSessionStore({ persistence: options.persistence });
     this.evidenceStore = options.evidenceStore || new EvidenceStore();
     this.hypothesisStore = options.hypothesisStore || new HypothesisStore(this.evidenceStore);
-    this.proposalStore = options.proposalStore || new ProposalStore({ evidenceStore: this.evidenceStore, binding: () => proposalBinding(this.localContext) });
+    this.proposalStore = options.proposalStore || new ProposalStore({
+      evidenceStore: this.evidenceStore,
+      binding: () => proposalBinding(this.localContext),
+      currentEvidenceBinding: evidenceBindingResolver(this.evidenceStore, this.localContext),
+    });
     this.initialStores = { evidenceStore: this.evidenceStore, hypothesisStore: this.hypothesisStore, proposalStore: this.proposalStore };
     this.initialStoresClaimed = false;
     this.initialStoresExplicit = options.evidenceStore != null || options.hypothesisStore != null || options.proposalStore != null;
@@ -55,7 +60,11 @@ export class AIRuntime {
       const evidenceStore = new EvidenceStore(session.confirmedFindings || []);
       evidenceStore.restorePersistedConfirmed(session.confirmedFindings || []);
       const hypothesisStore = new HypothesisStore(evidenceStore, session.hypotheses || []);
-      const proposalStore = new ProposalStore({ evidenceStore, binding: () => proposalBinding(this.localContext) });
+      const proposalStore = new ProposalStore({
+        evidenceStore,
+        binding: () => proposalBinding(this.localContext),
+        currentEvidenceBinding: evidenceBindingResolver(evidenceStore, this.localContext),
+      });
       proposalStore.restorePersistedPending(session.proposedActions || []);
       stores = { evidenceStore, hypothesisStore, proposalStore };
     }
@@ -263,5 +272,22 @@ function proposalBinding(context) {
     binaryId: canonicalBindingId(context?.binaryId),
     projectId: canonicalBindingId(context?.projectId),
     runtimeSessionId: canonicalBindingId(context?.runtimeSessionId),
+    // `analysisRevision` is part of the proposal's identity: a proposal created
+    // against r1 must not apply after the analysis moved to r2 (#8929).
+    analysisRevision: canonicalBindingId(resolveAnalysisRevision(context)),
+  };
+}
+
+/**
+ * Resolve the canonical binding key that authority-bearing evidence must still
+ * carry. The EvidenceStore's own ObservationStore is the exact store that
+ * minted the current turn's provenance, so it wins; `analysisBinding()` on the
+ * live context is the fallback for stores that have not been turn-wired yet.
+ */
+function evidenceBindingResolver(evidenceStore, context) {
+  return () => {
+    const store = evidenceStore?.observationStore;
+    if (store && typeof store.binding === 'function') return store.binding().key;
+    return analysisBinding(context).key;
   };
 }

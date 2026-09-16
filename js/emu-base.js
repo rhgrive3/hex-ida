@@ -145,6 +145,7 @@ export class Emulator {
     this.steps = 0;
     this.stopped = null;
     this.faultCode = null;
+    this.stopCode = null;
     this.callStack = [];
     this.trace = [];
     this.traceTruncated = false;
@@ -474,6 +475,7 @@ export class Emulator {
     }
     this.stopped = null;
     this.faultCode = null;
+    this.stopCode = null;
     this.callStack = [{ addr: BigInt(addr), ret: 0n }];
   }
 
@@ -486,6 +488,7 @@ export class Emulator {
     throwIfAborted(signal);
     if (!insn || !insn.mn) {
       this.stopped = '0x' + at.toString(16).toUpperCase() + ' の命令が読めませんでした。';
+      this.stopCode = 'instruction-fetch-failed';
       return { ok: false, text: '', reason: this.stopped };
     }
     const text = (insn.mn + ' ' + (insn.ops || '')).trim();
@@ -503,6 +506,7 @@ export class Emulator {
     } catch (err) {
       if (signal?.aborted) throw abortError(signal);
       this.stopped = (err && err.message) || String(err);
+      this.stopCode = (err && err.code) || 'execution-fault';
       // Keep the structured EmulatorFault.code resident on the emulator so a
       // later step()/stepInto() after this fault still classifies by code
       // instead of re-deriving the taxonomy from the message wording (#5838).
@@ -540,7 +544,10 @@ export class Emulator {
       }
     }
     throwIfAborted(signal);
-    if (n >= limit && !this.stopped) this.stopped = limit.toLocaleString() + ' 命令ぶん進んだので、いったん止めました。';
+    if (n >= limit && !this.stopped) {
+      this.stopped = limit.toLocaleString() + ' 命令ぶん進んだので、いったん止めました。';
+      this.stopCode = 'max-steps';
+    }
     return { hitBreakpoint: false, steps: n, finalPc:this.pc, traceTruncated:this.traceTruncated, traceDropped:this.traceDropped };
   }
 
@@ -617,7 +624,10 @@ export class Emulator {
       const frame = this.callStack[this.callStack.length - 1];
       const returnedToTopLevel = this.callStack.length === 1 && frame != null && frame.ret === target;
       this.callStack.pop();
-      if (returnedToTopLevel) this.stopped = '最初の呼び出し元まで戻ってきました（実行おわり）。';
+      if (returnedToTopLevel) {
+        this.stopped = '最初の呼び出し元まで戻ってきました（実行おわり）。';
+        this.stopCode = 'program-return';
+      }
       return target;
     }
 
