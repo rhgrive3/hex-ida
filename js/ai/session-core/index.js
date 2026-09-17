@@ -1,6 +1,6 @@
 import { AI_MODES, AI_SCOPES, AI_STYLES } from '../schema.js';
 import { canonicalConversationId } from '../conversation-identity.js';
-import { sealPersistedConfirmedEnvelope } from './persisted-confirmed.js';
+import { isPersistedConfirmedEnvelope, sealPersistedConfirmedEnvelope } from './persisted-confirmed.js';
 
 let sessionSequence = 1;
 const MEMORY_KEYS = ['goal','anchor','confirmedFacts','activeHypotheses','rejectedHypotheses','unresolvedQuestions','userConstraints','importantPriorActions'];
@@ -43,6 +43,12 @@ export function createInvestigationMemory(input = {}) {
 export function createInvestigationSession(input = {}) {
   const now = new Date().toISOString();
   const hasExplicitId = input.id != null;
+  const confirmedFindings = Array.isArray(input.confirmedFindings) ? input.confirmedFindings.map(cloneRecord) : [];
+  // #8687: normalization is not provenance. A raw serialized/session object may
+  // carry `status:'verified'`, but it only retains deterministic authority when
+  // the incoming array already bears the private persisted-confirmed envelope.
+  // This keeps generic create/register/update from becoming seal issuers.
+  if (isPersistedConfirmedEnvelope(input.confirmedFindings)) sealPersistedConfirmedEnvelope(confirmedFindings);
   return {
     id: hasExplicitId ? requireSessionId(input.id) : `ai_${Date.now().toString(36)}_${sessionSequence++}`,
     binaryId: requireBindingId(input.binaryId, 'binaryId'),
@@ -64,7 +70,7 @@ export function createInvestigationSession(input = {}) {
     investigationMemory: createInvestigationMemory(input.investigationMemory || { goal: input.goal }),
     pinnedEvidence: Array.isArray(input.pinnedEvidence) ? Array.from(new Set(input.pinnedEvidence.map(String))) : [],
     hypotheses: Array.isArray(input.hypotheses) ? input.hypotheses.map(cloneRecord) : [],
-    confirmedFindings: sealPersistedConfirmedEnvelope(Array.isArray(input.confirmedFindings) ? input.confirmedFindings.map(cloneRecord) : []),
+    confirmedFindings,
     rejectedHypotheses: Array.isArray(input.rejectedHypotheses) ? input.rejectedHypotheses.map(cloneRecord) : [],
     proposedActions: Array.isArray(input.proposedActions) ? input.proposedActions.map(cloneRecord) : [],
     lastActivity: cloneOwned(input.lastActivity || null),
@@ -199,7 +205,14 @@ export class InvestigationSessionStore {
     if (!isValidSessionId(id)) return null;
     const key = id;
     // Own the submitted values before yielding to earlier writes in the queue.
+    // Preserve an already-issued private confirmed-findings capability across
+    // the ownership clone; raw arrays remain unsealed (#8687).
+    const trustedConfirmed = Object.prototype.hasOwnProperty.call(patch, 'confirmedFindings')
+      && isPersistedConfirmedEnvelope(patch.confirmedFindings);
     const ownedPatch = cloneOwned(patch);
+    if (trustedConfirmed && Array.isArray(ownedPatch.confirmedFindings)) {
+      sealPersistedConfirmedEnvelope(ownedPatch.confirmedFindings);
+    }
     return this.enqueueSessionWrite(key, () => this.applyUpdate(key, ownedPatch));
   }
 
@@ -249,9 +262,16 @@ export class InvestigationSessionStore {
     // succeeded: a rejected write must leave the previous canonical state
     // visible instead of a partially applied patch (#5434).
     const candidate = cloneOwned(current);
+    const replacesConfirmed = Object.prototype.hasOwnProperty.call(patch, 'confirmedFindings');
+    const trustedConfirmed = replacesConfirmed
+      ? isPersistedConfirmedEnvelope(patch.confirmedFindings)
+      : isPersistedConfirmedEnvelope(current.confirmedFindings);
     for (const key of allowed) {
       if (!Object.prototype.hasOwnProperty.call(patch, key)) continue;
       candidate[key] = key === 'investigationMemory' ? createInvestigationMemory(patch[key]) : cloneOwned(patch[key]);
+    }
+    if (trustedConfirmed && Array.isArray(candidate.confirmedFindings)) {
+      sealPersistedConfirmedEnvelope(candidate.confirmedFindings);
     }
     // Identity upgrades must update both representations atomically. Otherwise
     // a legacy/weak session can accept a strong hash on this turn but be
@@ -320,7 +340,13 @@ export function createProjectSessionPersistence(project, { onChange } = {}) {
     list() { return project.findings.investigationSessions.slice(); },
     async load(id) {
       if (!isValidSessionId(id)) return null;
-      return project.findings.investigationSessions.find((session) => session && session.id === id) || null;
+      const session = project.findings.investigationSessions.find((item) => item && item.id === id) || null;
+      // This adapter is the trusted internal persistence boundary. Re-issue the
+      // in-memory capability on load; portable project parsing has already
+      // stripped attacker-authored verified status before records can reach this
+      // adapter (#8687).
+      if (Array.isArray(session?.confirmedFindings)) sealPersistedConfirmedEnvelope(session.confirmedFindings);
+      return session;
     },
     async save(session) {
       const id = requireSessionId(session?.id);
