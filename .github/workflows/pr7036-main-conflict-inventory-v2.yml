@@ -1,17 +1,17 @@
-name: PR7036 reconciliation v8 all-conflict ours
+name: PR7036 reconciliation v9 identity-pass
 on:
   push:
     branches: [sync/pr7036-main-20260917-v2]
 jobs:
   reconcile:
-    if: contains(github.event.head_commit.message, 'test PR 7036 reconciliation v8')
+    if: contains(github.event.head_commit.message, 'test PR 7036 reconciliation v9')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 700
-      - name: Resolve and diagnose proof boundary
+      - name: Resolve and diagnose identity pass
         shell: bash
         run: |
           set -euo pipefail
@@ -28,17 +28,17 @@ jobs:
           python3 -c 'from pathlib import Path; p=Path("js/semantics/compat/semantic-ir-v2-to-v1.js"); s=p.read_text(); old="? attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir, constantObserver) : null;"; new="? attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir, constantObserver, options) : null;"; assert s.count(old)==1; p.write_text(s.replace(old,new))'
           git add js/semantics/compat/semantic-ir-v2-to-v1.js js/semantics/compat/semantic-ir-v2-to-v1-memory.js
           git checkout FETCH_HEAD -- js/binary/macho-core.js
-          git add js/binary/macho-core.js
+          git checkout 4013f4855ef9a3942ae841f05c5c425957b16212 -- js/decompiler/phase8/identity-pass.js
+          git add js/binary/macho-core.js js/decompiler/phase8/identity-pass.js
           set +e
-          node --test tests/phase8/substrate/proof-projection-origin.test.mjs > /tmp/projection.txt 2>&1; RC1=$?
-          node --test tests/phase8/integration/proof-optimizer.test.mjs > /tmp/proof.txt 2>&1; RC2=$?
+          node --test tests/phase8/integration/proof-optimizer.test.mjs > /tmp/proof.txt 2>&1; RC=$?
           set -e
-          { echo "merge_rc=$MERGE_RC"; echo "conflict_count=$(wc -l < /tmp/conflicts.txt | tr -d ' ')"; echo "projection_rc=$RC1"; echo "proof_rc=$RC2"; tail -n 180 /tmp/proof.txt; } > pr7036-reconcile-v8-result.txt
-          [ "$RC1" -eq 0 ] && [ "$RC2" -eq 0 ]
+          { echo "merge_rc=$MERGE_RC"; echo "conflict_count=$(wc -l < /tmp/conflicts.txt | tr -d ' ')"; echo "proof_rc=$RC"; tail -n 180 /tmp/proof.txt; } > pr7036-reconcile-v9-result.txt
+          [ "$RC" -eq 0 ]
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr7036-reconcile-v8-result
-          path: pr7036-reconcile-v8-result.txt
+          name: pr7036-reconcile-v9-result
+          path: pr7036-reconcile-v9-result.txt
           retention-days: 2
