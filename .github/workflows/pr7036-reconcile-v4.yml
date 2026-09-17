@@ -1,63 +1,61 @@
-name: PR7036 live-main reconcile v4
+name: PR7036 live main T016 focused v4b
 on:
   push:
-    branches: [sync/pr7036-main-20260917-v4]
+    branches:
+      - sync/pr7036-main-20260917-v4
 jobs:
   validate:
-    if: contains(github.event.head_commit.message, 'validate PR7036 live main T016 reconciliation v4')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 500
-      - name: Resolve five conflicts to current main and run focused acceptance
+      - name: Resolve conflicts
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git fetch --no-tags --depth=500 origin fce9076a8c396953146152435a61bb0d4897261d >/dev/null 2>&1
           set +e
           git merge --no-commit --no-ff FETCH_HEAD >/dev/null 2>&1
-          MERGE_RC=$?
+          echo $? > /tmp/merge-rc.txt
           set -e
           git diff --name-only --diff-filter=U | sed '/^$/d' | sort > /tmp/conflicts.txt
-          EXPECTED='js/analysis/discovery/artifact.js
-js/analysis/discovery/producers.js
-js/analysis/index.js
-js/rebuild/transaction-v2.js
-tests/issue-4135-pe-section-virtual-layout.mjs'
-          test "$(cat /tmp/conflicts.txt)" = "$EXPECTED"
-          while IFS= read -r f; do git checkout --theirs -- "$f"; git add -- "$f"; done < /tmp/conflicts.txt
+          test "$(wc -l < /tmp/conflicts.txt | tr -d ' ')" = 5
+          for f in js/analysis/discovery/artifact.js js/analysis/discovery/producers.js js/analysis/index.js js/rebuild/transaction-v2.js tests/issue-4135-pe-section-virtual-layout.mjs; do
+            grep -Fx "$f" /tmp/conflicts.txt >/dev/null
+            git checkout --theirs -- "$f"
+            git add -- "$f"
+          done
           test -z "$(git diff --name-only --diff-filter=U)"
+      - name: Focused tests
+        shell: bash
+        run: |
+          set -euo pipefail
           : > /tmp/status.txt
           for f in js/analysis/discovery/artifact.js js/analysis/discovery/producers.js js/analysis/index.js js/rebuild/transaction-v2.js; do
-            if node --check "$f" >/tmp/check.txt 2>&1; then echo "syntax PASS $f" >> /tmp/status.txt; else echo "syntax FAIL $f" >> /tmp/status.txt; tail -n 20 /tmp/check.txt >> /tmp/status.txt; exit 1; fi
+            node --check "$f" >/tmp/one.txt 2>&1 || { echo "syntax FAIL $f" >> /tmp/status.txt; tail -n 20 /tmp/one.txt >> /tmp/status.txt; exit 1; }
+            echo "syntax PASS $f" >> /tmp/status.txt
           done
-          run_test() {
-            name="$1"; shift
+          run_one() {
+            name="$1"; file="$2"
             set +e
-            node --test "$@" >/tmp/test.txt 2>&1
+            node --test "$file" >/tmp/one.txt 2>&1
             rc=$?
             set -e
-            if [ "$rc" -eq 0 ]; then
-              echo "PASS $name" >> /tmp/status.txt
-            else
-              echo "FAIL $name" >> /tmp/status.txt
-              grep -E 'not ok|error:|Error:|AssertionError|actual:|expected:|ERR_|failures|reason' /tmp/test.txt | head -n 80 >> /tmp/status.txt || true
-              exit "$rc"
-            fi
+            if [ "$rc" -eq 0 ]; then echo "PASS $name" >> /tmp/status.txt; return 0; fi
+            echo "FAIL $name" >> /tmp/status.txt
+            grep -E 'not ok|error:|Error:|AssertionError|actual:|expected:|ERR_|reason' /tmp/one.txt | head -n 80 >> /tmp/status.txt || true
+            return "$rc"
           }
-          run_test x03-artifact tests/phase7/discovery/x03-ambiguity-artifact.test.mjs
-          run_test x03-rebuild tests/stage2/x03-rebuild-discovery-acceptance.test.mjs
-          run_test t016-discovery tests/phase7/discovery/t016-discovery-preservation.test.mjs
-          run_test t016-rebuild tests/rebuild/t016-discovery-preservation.test.mjs
-          run_test pe4135 tests/issue-4135-pe-section-virtual-layout.mjs
-          run_test proof-projection tests/phase8/substrate/proof-projection-origin.test.mjs
-          run_test proof-optimizer tests/phase8/integration/proof-optimizer.test.mjs
-          echo "merge_rc=$MERGE_RC" >> /tmp/status.txt
-      - name: Upload focused result
+          run_one x03-artifact tests/phase7/discovery/x03-ambiguity-artifact.test.mjs
+          run_one x03-rebuild tests/stage2/x03-rebuild-discovery-acceptance.test.mjs
+          run_one t016-discovery tests/phase7/discovery/t016-discovery-preservation.test.mjs
+          run_one t016-rebuild tests/rebuild/t016-discovery-preservation.test.mjs
+          run_one pe4135 tests/issue-4135-pe-section-virtual-layout.mjs
+          run_one proof-projection tests/phase8/substrate/proof-projection-origin.test.mjs
+          run_one proof-optimizer tests/phase8/integration/proof-optimizer.test.mjs
+      - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
