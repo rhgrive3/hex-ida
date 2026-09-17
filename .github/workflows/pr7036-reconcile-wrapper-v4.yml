@@ -1,0 +1,43 @@
+name: PR7036 reconciliation fixture adaptation
+on:
+  push:
+    branches: [sync/pr7036-main-20260917-v3]
+permissions:
+  contents: write
+jobs:
+  reconcile:
+    if: contains(github.event.head_commit.message, 'run PR7036 reconciliation fixture adaptation v4')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 800
+      - name: Reuse reconciliation recipe with X03 conservative validators
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/pr7036-reconcile.sh
+          from pathlib import Path
+          p = Path('.github/workflows/pr7036-reconcile-v3.yml')
+          lines = p.read_text().splitlines()
+          start = next(i for i, line in enumerate(lines) if line.strip() == '- name: Resolve and run focused acceptance')
+          run = next(i for i in range(start + 1, len(lines)) if lines[i].strip() == 'run: |')
+          end = next(i for i in range(run + 1, len(lines)) if lines[i].startswith('      - name: Upload focused result'))
+          body = []
+          for line in lines[run + 1:end]:
+              body.append(line[10:] if line.startswith('          ') else line)
+          script = '\n'.join(body) + '\n'
+          marker = ': > /tmp/test-status.txt'
+          patch = r'''python3 -c 'from pathlib import Path; p=Path("tests/stage2/x03-rebuild-discovery-acceptance.test.mjs"); s=p.read_text(); anchor="const testOracle = registerCanonicalIndependentOracleProvider(async ({ output }) => makeOracleResult(output));"; addition=anchor+"\nconst x03ConservativeValidators = Object.freeze(Object.fromEntries(\n  [\\\"relocations\\\", \\\"branch-ranges\\\", \\\"unwind\\\", \\\"imports-exports\\\", \\\"signature-consequence\\\"].map((name) => [name, () => ({\n    ok: true, format: \\\"elf\\\", architecture: architectureId, loaderVersion: \\\"hex-loader:x03:v1\\\",\n    sourceHash, outputHash: materialized.outputHash, validator: name,\n  })]),\n));"; assert s.count(anchor)==1; s=s.replace(anchor,addition); needle="  independentOracle: testOracle,\n});"; replacement="  independentOracle: testOracle,\n  validators: x03ConservativeValidators,\n});"; assert s.count(needle)>=4, s.count(needle); s=s.replace(needle,replacement,4); p.write_text(s)'; git add tests/stage2/x03-rebuild-discovery-acceptance.test.mjs'''
+          if script.count(marker) != 1:
+              raise SystemExit('test-status marker mismatch')
+          script = script.replace(marker, patch + '\n' + marker, 1)
+          old = "rm .github/workflows/pr7036-reconcile-v3.yml\ngit add -u .github/workflows/pr7036-reconcile-v3.yml"
+          new = "rm .github/workflows/pr7036-reconcile-v3.yml .github/workflows/pr7036-reconcile-wrapper-v4.yml\ngit add -u .github/workflows/pr7036-reconcile-v3.yml .github/workflows/pr7036-reconcile-wrapper-v4.yml"
+          if script.count(old) != 1:
+              raise SystemExit('cleanup marker mismatch')
+          script = script.replace(old, new, 1)
+          print(script, end='')
+          PY
+          bash /tmp/pr7036-reconcile.sh
