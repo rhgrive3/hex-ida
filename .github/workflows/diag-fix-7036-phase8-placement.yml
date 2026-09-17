@@ -1,0 +1,71 @@
+name: diag-fix-7036-phase8-placement
+on:
+  push:
+    branches:
+      - fix/7036-phase8-routing-placement-20260917
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fix Phase 8 routing placement and validate
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          STATUS=/tmp/fix7036-phase8.txt
+          : > "$STATUS"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          timeout 90s git fetch --no-tags origin main >/tmp/fetch.log 2>&1
+          rc=$?; echo "fetch rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 50 /tmp/fetch.log >> "$STATUS"; exit $rc; }
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('.circleci/config.yml')
+          s=p.read_text()
+          bad='''            if [ "${CIRCLE_BRANCH:-}" = 'feat/analysis-roadmap-v8-current-main-20260907' ] || [ "${CIRCLE_BRANCH:-}" = 'integration-candidate/local-handover-20260914' ] || [ "${CIRCLE_BRANCH:-}" = 'codex/analysis-remaining-20260914' ]; then\n              FILES_JSON="$(node tools/validation/analysis-roadmap/ownership.mjs \\\n                --branch "$CIRCLE_BRANCH" --phase phase8 \\\n                --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA")"\n              node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"\n            elif [ "${CIRCLE_BRANCH:-}" = 'feat/scpa-functional-acceptance-20260912' ]; then\n              run_it=true\n'''
+          good='''            if [ "${CIRCLE_BRANCH:-}" = 'feat/analysis-roadmap-v8-current-main-20260907' ] || [ "${CIRCLE_BRANCH:-}" = 'integration-candidate/local-handover-20260914' ] || [ "${CIRCLE_BRANCH:-}" = 'codex/analysis-remaining-20260914' ]; then\n              run_it=true\n            elif [ "${CIRCLE_BRANCH:-}" = 'feat/scpa-functional-acceptance-20260912' ]; then\n              run_it=true\n'''
+          if bad not in s:
+              raise SystemExit('bad detect block missing')
+          s=s.replace(bad,good,1)
+          marker='''          name: Validate Phase 8 ownership\n'''
+          i=s.find(marker)
+          if i < 0: raise SystemExit('validate marker missing')
+          prefix, tail=s[:i], s[i:]
+          roadmap='''            if [ "${CIRCLE_BRANCH:-}" = 'feat/analysis-roadmap-v8-current-main-20260907' ] || [ "${CIRCLE_BRANCH:-}" = 'integration-candidate/local-handover-20260914' ] || [ "${CIRCLE_BRANCH:-}" = 'codex/analysis-remaining-20260914' ]; then\n              FILES_JSON="$(node tools/validation/analysis-roadmap/ownership.mjs \\\n                --branch "$CIRCLE_BRANCH" --phase phase8 \\\n                --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA")"\n              node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"\n            elif [ "${CIRCLE_BRANCH:-}" = 'feat/scpa-functional-acceptance-20260912' ]; then\n'''
+          anchor='''            if [ "${CIRCLE_BRANCH:-}" = 'feat/scpa-functional-acceptance-20260912' ]; then\n'''
+          if '--branch "$CIRCLE_BRANCH" --phase phase8' not in tail:
+              if anchor not in tail: raise SystemExit('validate anchor missing')
+              tail=tail.replace(anchor,roadmap,1)
+          p.write_text(prefix+tail)
+          PY
+          rc=$?; echo "patch rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || exit $rc
+          git rm .github/workflows/diag-fix-7036-phase8-placement.yml >/tmp/rm.log 2>&1
+          git add .circleci/config.yml
+          git diff --cached --check >/tmp/diff.log 2>&1
+          rc=$?; echo "diffcheck rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 50 /tmp/diff.log >> "$STATUS"; exit $rc; }
+          git commit -m 'fix(ci): run Phase 8 roadmap routing after inventory setup' >/tmp/commit.log 2>&1
+          rc=$?; echo "commit rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 50 /tmp/commit.log >> "$STATUS"; exit $rc; }
+          CLEAN=$(git rev-parse HEAD); BASE=$(git rev-parse refs/remotes/origin/main); export CIRCLE_BRANCH=feat/analysis-roadmap-v8-current-main-20260907
+          echo "clean=$CLEAN" >> "$STATUS"; echo "base=$BASE" >> "$STATUS"
+          runcheck() { label="$1"; shift; timeout 150s "$@" >/tmp/check.log 2>&1; rc=$?; echo "$label rc=$rc" >> "$STATUS"; if [ $rc -ne 0 ]; then tail -n 100 /tmp/check.log >> "$STATUS"; exit $rc; fi; }
+          runcheck p7_manifest node tools/validation/phase7-ownership.mjs --check-manifest
+          P7=$(timeout 150s node tools/validation/analysis-roadmap/ownership.mjs --branch "$CIRCLE_BRANCH" --phase phase7 --base-sha "$BASE" --head-sha "$CLEAN" 2>/tmp/check.log); rc=$?; echo "p7_inventory rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 100 /tmp/check.log >> "$STATUS"; exit $rc; }
+          runcheck p7_validate node tools/validation/phase7-ownership.mjs --files-json "$P7"
+          runcheck p8_manifest node tools/validation/phase8-ownership.mjs --check-manifest
+          P8=$(timeout 150s node tools/validation/analysis-roadmap/ownership.mjs --branch "$CIRCLE_BRANCH" --phase phase8 --base-sha "$BASE" --head-sha "$CLEAN" 2>/tmp/check.log); rc=$?; echo "p8_inventory rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 100 /tmp/check.log >> "$STATUS"; exit $rc; }
+          runcheck p8_validate node tools/validation/phase8-ownership.mjs --files-json "$P8"
+          git push origin HEAD:fix/7036-phase8-routing-placement-20260917 >/tmp/push.log 2>&1
+          rc=$?; echo "push rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 50 /tmp/push.log >> "$STATUS"; exit $rc; }
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fix7036-phase8
+          path: /tmp/fix7036-phase8.txt
+          retention-days: 1
