@@ -1,0 +1,170 @@
++  retaasppc: { key:'ia' },
++  retabsppc: { key:'ib' },
++});
++
++const ENHANCED_RETURN_REGISTER = Object.freeze({
++  retaasppcr: { key:'ia' },
++  retabsppcr: { key:'ib' },
++});
++
+ // This is the production pointer-authentication family registry.  Keep the
+ // list beside the dispatch tables so denominator/audit code cannot silently
+ // omit a newly supported alias.
+@@ -103,6 +119,9 @@
+   ...Object.keys(AUTH_CALL),
+   ...Object.keys(AUTH_RETURN),
+   ...Object.keys(AUTH_EXCEPTION_RETURN),
++  ...Object.keys(ENHANCED_SIGN),
++  ...Object.keys(ENHANCED_RETURN_IMMEDIATE),
++  ...Object.keys(ENHANCED_RETURN_REGISTER),
+ ]);
+ 
+ function mnemonicOf(decoded) {
+@@ -629,6 +648,157 @@
+   });
+ }
+ 
++
++function enhancedReturnAddressSign(decoded, context, instructionId, descriptor) {
++  const operands = operandList(decoded);
++  if (operands.length !== 0) {
++    return partialMissing(decoded, context, instructionId, 'enhanced return-address sign operand shape is invalid');
++  }
++  const operations = [];
++  const pointer = readRegister(operations, 'x30', `${instructionId}.pointer`, POINTER_BITS, {
++    stateKind:'pointer-authentication-pointer',
++  });
++  const modifier = readRegister(operations, 'sp', `${instructionId}.modifier`, POINTER_BITS, {
++    implicit:true, stateKind:'pointer-authentication-modifier',
++  });
++  const secondModifier = readRegister(operations, 'pc', `${instructionId}.second-modifier`, POINTER_BITS, {
++    implicit:true, stateKind:'pointer-authentication-program-counter-second-modifier',
++  });
++  const { keyId, keyValue, architectureState } = readPAuthState(operations, descriptor.key, instructionId);
++  const result = tmp(`${instructionId}.sign.result`, POINTER_BITS);
++  operations.push(intrinsicOperation({
++    intrinsicId:'arm64e.pointer.sign',
++    inputs:[pointer, modifier, secondModifier, keyValue, architectureState],
++    output:result,
++    registersRead:['x30', 'sp', 'pc', keyId, PAUTH_STATE_ID],
++    metadata:{
++      transform:'sign', use:'return-address', keyIdentity:keyId,
++      modifier:{ kind:'register', registerId:'sp' },
++      pauthLrSecondModifier:{ kind:'program-counter', registerId:'pc', unconditional:true },
++      architectureStateInput:PAUTH_STATE_ID,
++      requiredFeature:'FEAT_PAuth_LR',
++      implicitBti:true,
++      cryptographicAlgorithm:'not-modelled',
++    },
++  }));
++  writeRegister(operations, 'x30', result, { transform:'sign', keyIdentity:keyId });
++  return baseBundle(decoded, context, instructionId, operations, { kind:'fallthrough' }, 'exact-with-intrinsic', {
++    metadata:{
++      transform:'sign', destinationRegister:'x30', keyIdentity:keyId,
++      modifier:{ kind:'register', registerId:'sp' },
++      pauthLrSecondModifier:{ kind:'program-counter', registerId:'pc', unconditional:true },
++      architectureStateInput:PAUTH_STATE_ID,
++      requiredFeature:'FEAT_PAuth_LR',
++      implicitBti:true,
++    },
++  });
++}
++
++function immediatePauthLrOffset(decoded) {
++  const explicit = decoded?.pauthLrPcOffsetBytes;
++  if (explicit != null) {
++    try {
++      const value = BigInt(explicit);
++      if (value >= 0n && value <= 262140n && (value & 3n) === 0n) return value;
++    } catch { /* fall through to operand-derived target */ }
++  }
++  const address = addressOf(decoded, {});
++  const operands = operandList(decoded);
++  if (address == null || operands.length !== 1 || typeof operands[0] !== 'string') return null;
++  const text = operands[0].trim().replace(/^#/, '');
++  try {
++    const target = BigInt(text);
++    const offset = address - target;
++    return offset >= 0n && offset <= 262140n && (offset & 3n) === 0n ? offset : null;
++  } catch { return null; }
++}
++
++function enhancedAuthenticatedReturn(decoded, context, instructionId, descriptor, variant) {
++  const operands = operandList(decoded);
++  const operations = [];
++  const target = readRegister(operations, 'x30', `${instructionId}.target`, POINTER_BITS, {
++    stateKind:'authenticated-control-target',
++  });
++  const modifier = readRegister(operations, 'sp', `${instructionId}.modifier`, POINTER_BITS, {
++    implicit:true, stateKind:'pointer-authentication-modifier',
++  });
++
++  let secondModifier;
++  let secondModifierMetadata;
++  let secondModifierRegister = null;
++  if (variant === 'immediate') {
++    if (operands.length !== 1) {
++      return partialMissing(decoded, context, instructionId, 'enhanced authenticated return immediate operand shape is invalid', { control:true, fault:true });
++    }
++    const address = addressOf(decoded, context);
++    const offset = immediatePauthLrOffset(decoded);
++    if (address == null || offset == null) {
++      return partialMissing(decoded, context, instructionId, 'enhanced authenticated return PC-relative modifier is unavailable', { control:true, fault:true });
++    }
++    const pc = readRegister(operations, 'pc', `${instructionId}.pc`, POINTER_BITS, {
++      implicit:true, stateKind:'program-counter',
++    });
++    const offsetValue = createBitVectorValue(POINTER_BITS, offset);
++    secondModifier = tmp(`${instructionId}.second-modifier`, POINTER_BITS);
++    operations.push(intrinsicOperation({
++      intrinsicId:'arm64.address.pc-minus-offset',
++      inputs:[pc, offsetValue],
++      output:secondModifier,
++      registersRead:['pc'],
++      metadata:{ operation:'subtract', encodedOffsetBytes:offset.toString(), requiredFeature:'FEAT_PAuth_LR' },
++    }));
++    secondModifierRegister = 'pc';
++    secondModifierMetadata = { kind:'pc-minus-offset', registerId:'pc', encodedOffsetBytes:offset.toString() };
++  } else {
++    if (operands.length !== 1) {
++      return partialMissing(decoded, context, instructionId, 'enhanced authenticated return register operand shape is invalid', { control:true, fault:true });
++    }
++    const registerId = authenticatedControlModifierRegisterId(operands[0]);
++    if (!registerId) {
++      return partialMissing(decoded, context, instructionId, 'enhanced authenticated return second-modifier register is invalid', { control:true, fault:true });
++    }
++    secondModifier = readRegister(operations, registerId, `${instructionId}.second-modifier`, POINTER_BITS, {
++      stateKind:'pointer-authentication-second-modifier',
++    });
++    secondModifierRegister = registerId;
++    secondModifierMetadata = { kind:'register', registerId };
++  }
++
++  const { keyId, keyValue, architectureState } = readPAuthState(operations, descriptor.key, instructionId);
++  const authenticatedTarget = tmp(`${instructionId}.authenticated-target`, POINTER_BITS);
++  operations.push(intrinsicOperation({
++    intrinsicId:'arm64e.pointer.authenticate',
++    inputs:[target, modifier, secondModifier, keyValue, architectureState],
++    output:authenticatedTarget,
++    registersRead:['x30', 'sp', secondModifierRegister, keyId, PAUTH_STATE_ID].filter(Boolean),
++    metadata:{
++      transform:'authenticate', use:'control-target', keyIdentity:keyId,
++      modifier:{ kind:'register', registerId:'sp' },
++      pauthLrSecondModifier:secondModifierMetadata,
++      targetRegister:'x30', architectureStateInput:PAUTH_STATE_ID,
++      requiredFeature:'FEAT_PAuth_LR', authThenBranch:true,
++      cryptographicAlgorithm:'not-modelled',
++    },
++  }));
++
++  return baseBundle(decoded, context, instructionId, operations, {
++    kind:'return', target:authenticatedTarget,
++  }, 'exact-with-intrinsic', {
++    possibleFaults:[
++      authFault(mnemonicOf(decoded), keyId, 'control-target'),
++      authenticatedTargetAlignmentFault(),
++    ],
++    metadata:{
++      transform:'authenticate', authenticatedControlTransfer:true, indirect:true, controlKind:'return',
++      targetRegister:'x30', keyIdentity:keyId,
++      modifier:{ kind:'register', registerId:'sp' },
