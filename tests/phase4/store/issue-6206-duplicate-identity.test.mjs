@@ -17,7 +17,7 @@ const payloadBytes = encodeArtifactPayload({ value: 'duplicate-identity' });
 const good = createArtifactRecord(d, payloadBytes);
 
 // Unit level: compatiblePublishedArtifact accepts the identical record and
-// rejects each poisoned identity field, while creation/originRefs stay
+// rejects each poisoned identity/provenance field, while creation stays
 // explicitly out of the comparison (pinned CAS-duplicate semantics).
 {
   assert.equal(compatiblePublishedArtifact(good, createArtifactRecord(d, payloadBytes, { creation: { producerRun: 'other' } }), payloadBytes, payloadBytes),
@@ -26,7 +26,7 @@ const good = createArtifactRecord(d, payloadBytes);
   assert.equal(differentProvenanceDescriptor.artifactId, d.artifactId,
     'originRefs are non-key provenance: same artifactId expected');
   assert.equal(compatiblePublishedArtifact(good, createArtifactRecord(differentProvenanceDescriptor, payloadBytes), payloadBytes, payloadBytes),
-    true, 'an originRefs-only difference stays a duplicate');
+    false, 'an originRefs-only difference is not the same publication');
 }
 
 for (const [field, value] of [
