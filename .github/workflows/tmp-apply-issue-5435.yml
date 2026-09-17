@@ -25,14 +25,14 @@ jobs:
           base64 -d .github/patches/issue-5435.patch.gz.b64 | gzip -d > /tmp/issue-5435.patch
           git apply --check /tmp/issue-5435.patch
           git apply /tmp/issue-5435.patch
-      - name: Stage final files
-        run: git add -- js/semantics/ssa/build.js js/semantics/ssa/contract.js js/semantics/ssa/validate.js tests/semantic-v2/issue-5435-entry-loop-ssa.test.mjs
-      - name: Commit final files
+      - name: Stage existing source files
+        run: git add -- js/semantics/ssa/build.js js/semantics/ssa/contract.js js/semantics/ssa/validate.js
+      - name: Commit source files
         shell: bash
         run: |
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git commit -m 'fix(ssa): support entry-loop backedges (#5435)'
-      - name: Push final files
+      - name: Push source files
         run: git push origin HEAD:fix/mod5-3-5435-entry-loop-ssa
