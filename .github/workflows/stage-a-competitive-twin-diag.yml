@@ -13,39 +13,56 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: e66b7b7d896cf8a084423cf804254e70fbd16038
+          ref: 5c5e5ad3247a80fc5d428274465d7a1b045f3c01
           fetch-depth: 1
           persist-credentials: false
-      - name: Probe real same-binary toolchains
+      - name: Prepare source and tool identities
         shell: bash
         run: |
           set -euo pipefail
-          tmp=$(mktemp -d)
-          trap 'rm -rf "$tmp"' EXIT
+          tmp=$RUNNER_TEMP/hex-twin
+          rm -rf "$tmp"; mkdir -p "$tmp"
           cat > "$tmp/t.c" <<'C'
           __attribute__((noinline)) long twin(long a,long b){ return (a*3)+(b^7); }
           C
           clang=$(command -v clang)
           strip=$(command -v llvm-strip || command -v strip)
-          {
-            echo "clang=$($clang --version | head -n1)"
-            echo "strip=$($strip --version | head -n1)"
-          } > /tmp/twin-probe.txt
-
+          printf 'clang=%s\nstrip=%s\n' "$($clang --version | head -n1)" "$($strip --version | head -n1)" > /tmp/twin-probe.txt
+          printf '%s\n' "$clang" > "$tmp/clang.path"
+          printf '%s\n' "$strip" > "$tmp/strip.path"
+      - name: Probe x86 ELF twin
+        id: x86
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp=$RUNNER_TEMP/hex-twin; clang=$(cat "$tmp/clang.path"); strip=$(cat "$tmp/strip.path")
           "$clang" -g -O0 -fno-omit-frame-pointer "$tmp/t.c" -o "$tmp/x86-debug.elf"
           cp "$tmp/x86-debug.elf" "$tmp/x86-stripped.elf"
           "$strip" --strip-debug -- "$tmp/x86-stripped.elf"
           echo "x86=PASS $(sha256sum "$tmp/x86-debug.elf" "$tmp/x86-stripped.elf" | tr '\n' ' ')" >> /tmp/twin-probe.txt
-
+      - name: Probe RISC-V ELF twin
+        id: riscv
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp=$RUNNER_TEMP/hex-twin; clang=$(cat "$tmp/clang.path"); strip=$(cat "$tmp/strip.path")
           "$clang" --target=riscv64-unknown-linux-gnu -g -O0 -c "$tmp/t.c" -o "$tmp/rv-debug.o"
           cp "$tmp/rv-debug.o" "$tmp/rv-stripped.o"
           "$strip" --strip-debug -- "$tmp/rv-stripped.o"
           echo "riscv=PASS $(sha256sum "$tmp/rv-debug.o" "$tmp/rv-stripped.o" | tr '\n' ' ')" >> /tmp/twin-probe.txt
-
+      - name: Probe universal Mach-O twin
+        id: universal
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp=$RUNNER_TEMP/hex-twin; clang=$(cat "$tmp/clang.path"); strip=$(cat "$tmp/strip.path")
           "$clang" --target=x86_64-apple-macos11 -g -O0 -c "$tmp/t.c" -o "$tmp/mx.o"
           "$clang" --target=arm64-apple-macos11 -g -O0 -c "$tmp/t.c" -o "$tmp/ma.o"
           python3 - "$tmp/mx.o" "$tmp/ma.o" "$tmp/fat-debug.macho" <<'PY'
-          import os,struct,sys
+          import struct,sys
           x,a,out=sys.argv[1:]
           blobs=[(0x01000007,3,open(x,'rb').read()),(0x0100000c,0,open(a,'rb').read())]
           align=12; header=8+20*len(blobs); pos=(header+(1<<align)-1)&~((1<<align)-1); rows=[]; parts=[]
@@ -57,16 +74,17 @@ jobs:
           open(out,'wb').write(data)
           PY
           cp "$tmp/fat-debug.macho" "$tmp/fat-stripped.macho"
-          set +e
-          "$strip" --strip-debug -- "$tmp/fat-stripped.macho" >/tmp/fat-strip.out 2>&1
-          st=$?
-          set -e
-          if [ "$st" -eq 0 ]; then
-            echo "universal=PASS $(sha256sum "$tmp/fat-debug.macho" "$tmp/fat-stripped.macho" | tr '\n' ' ')" >> /tmp/twin-probe.txt
-          else
-            echo "universal=FAIL status=$st $(tail -n 5 /tmp/fat-strip.out | tr '\n' ' ')" >> /tmp/twin-probe.txt
-          fi
+          "$strip" --strip-debug -- "$tmp/fat-stripped.macho"
+          echo "universal=PASS $(sha256sum "$tmp/fat-debug.macho" "$tmp/fat-stripped.macho" | tr '\n' ' ')" >> /tmp/twin-probe.txt
+      - name: Record failed probes
+        if: always()
+        shell: bash
+        run: |
+          echo "x86_outcome=${{ steps.x86.outcome }}" >> /tmp/twin-probe.txt
+          echo "riscv_outcome=${{ steps.riscv.outcome }}" >> /tmp/twin-probe.txt
+          echo "universal_outcome=${{ steps.universal.outcome }}" >> /tmp/twin-probe.txt
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: competitive-twin-probe
           path: /tmp/twin-probe.txt
