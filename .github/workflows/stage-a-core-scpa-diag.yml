@@ -1,0 +1,38 @@
+name: Stage A core SCPA diagnostic
+
+on:
+  push:
+    branches: [diag/stage-a-core-scpa-20260918]
+    paths: [.github/workflows/stage-a-core-scpa-diag.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 3d6d2c875182d83461cd0842e8a7786ebce04ac1
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Install exact dependencies
+        run: npm ci --silent --no-audit --no-fund
+      - name: Run balanced native flow only
+        id: focused
+        shell: bash
+        run: |
+          set +e
+          node --test tests/scpa/balanced-native-flow.test.mjs > /tmp/scpa.out 2>&1
+          status=$?
+          tail -n 80 /tmp/scpa.out > /tmp/first-failure.txt
+          exit $status
+      - name: Upload first failure only
+        if: failure() && steps.focused.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: scpa-first-failure
+          path: /tmp/first-failure.txt
+          retention-days: 1
