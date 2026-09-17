@@ -1,4 +1,4 @@
-name: PR7036 live-main reconcile v5
+name: PR7036 live-main reconcile v5b
 on:
   push:
     branches:
@@ -15,23 +15,36 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git fetch --no-tags --depth=1000 origin f9806dc4653df9163e278dae1336407d8a87b6d6 >/dev/null 2>&1
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          BASE=012cacc48ec2cd9bde8a5b8a98b77f4a89f9a736
+          MAIN=f9806dc4653df9163e278dae1336407d8a87b6d6
+          git fetch --no-tags --depth=1 origin "$BASE" >/dev/null 2>&1
+          git fetch --no-tags --depth=1000 origin "$MAIN" >/dev/null 2>&1
+          : > /tmp/pr7036-v5-conflicts.txt
+          echo "head=$(git rev-parse HEAD)" >> /tmp/pr7036-v5-conflicts.txt
+          echo "main=$MAIN" >> /tmp/pr7036-v5-conflicts.txt
+          echo "base_present=$(git cat-file -e "$BASE^{commit}" 2>/dev/null && echo yes || echo no)" >> /tmp/pr7036-v5-conflicts.txt
           set +e
-          git merge --no-commit --no-ff FETCH_HEAD >/dev/null 2>&1
+          mb=$(git merge-base HEAD "$MAIN" 2>/tmp/merge-base.err)
+          mb_rc=$?
+          set -e
+          echo "merge_base_rc=$mb_rc" >> /tmp/pr7036-v5-conflicts.txt
+          echo "merge_base=${mb:-none}" >> /tmp/pr7036-v5-conflicts.txt
+          if [ "$mb_rc" -ne 0 ]; then tail -n 20 /tmp/merge-base.err >> /tmp/pr7036-v5-conflicts.txt; exit 0; fi
+          set +e
+          git merge --no-commit --no-ff "$MAIN" >/tmp/merge.out 2>/tmp/merge.err
           rc=$?
           set -e
           git diff --name-only --diff-filter=U | sed '/^$/d' | sort > /tmp/conflicts.txt
-          {
-            echo "merge_rc=$rc"
-            echo "head=$(git rev-parse HEAD)"
-            echo "main=$(git rev-parse FETCH_HEAD)"
-            echo "conflict_count=$(wc -l < /tmp/conflicts.txt | tr -d ' ')"
-            cat /tmp/conflicts.txt
-          } > /tmp/pr7036-v5-conflicts.txt
+          echo "merge_rc=$rc" >> /tmp/pr7036-v5-conflicts.txt
+          echo "conflict_count=$(wc -l < /tmp/conflicts.txt | tr -d ' ')" >> /tmp/pr7036-v5-conflicts.txt
+          cat /tmp/conflicts.txt >> /tmp/pr7036-v5-conflicts.txt
+          if [ "$rc" -gt 1 ]; then tail -n 20 /tmp/merge.err >> /tmp/pr7036-v5-conflicts.txt; fi
           git merge --abort >/dev/null 2>&1 || true
       - name: Upload inventory
         uses: actions/upload-artifact@v4
         with:
-          name: pr7036-v5-conflicts
+          name: pr7036-v5b-conflicts
           path: /tmp/pr7036-v5-conflicts.txt
           retention-days: 2
