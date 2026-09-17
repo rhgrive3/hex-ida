@@ -1,6 +1,7 @@
 import { normalizeDependencyScope } from '../dependencies.js';
 import {
   ArtifactCorruptionError,
+  ArtifactStorageError,
   canonicalSerializeArtifactRecord,
   decodeArtifactPayload,
   encodeArtifactPayload,
@@ -215,11 +216,25 @@ export function validateDescriptorRecord(record, descriptor) {
     mismatches.push('upstreamArtifactIds');
   }
   if (canonicalSerializeArtifactRecord(record.dependencyScope ?? null) !== canonicalSerializeArtifactRecord(descriptor.dependencyScope ?? null)) mismatches.push('dependencyScope');
+  const expectedOriginRefs = descriptor.originRefs || [];
+  const originRefsMismatch = record.originRefs.length !== expectedOriginRefs.length
+    || record.originRefs.some((ref, index) => ref !== expectedOriginRefs[index]);
   if (mismatches.length) {
     throw new ArtifactCorruptionError(
       'artifact-record-identity-mismatch',
       'Artifact record does not match the requested canonical descriptor',
-      { mismatches },
+      { mismatches:[...mismatches, ...(originRefsMismatch ? ['originRefs'] : [])] },
+    );
+  }
+  if (originRefsMismatch) {
+    // A provenance mismatch is a conflict between two valid descriptors that
+    // intentionally share an artifactId, not corruption of the stored row.
+    // Surface a non-corruption error so ArtifactStore does not delete the healthy
+    // first writer while refusing reuse for the second descriptor (#5700).
+    throw new ArtifactStorageError(
+      'artifact-record-provenance-mismatch',
+      'Artifact record provenance does not match the requested canonical descriptor',
+      { mismatches:['originRefs'] },
     );
   }
   return true;
@@ -281,9 +296,10 @@ export function storageRecordIdentity(record) {
  * post-publication validation would reject it, but the duplicate path would
  * refuse to delete it (#6206).
  *
- * `creation` and `originRefs` are deliberately absent: creation metadata is
- * per-run bookkeeping and originRefs is non-key provenance, and both must keep
- * the CAS-duplicate semantics the store contract pins (tests/phase4/store).
+ * `creation` is deliberately absent because it is per-run bookkeeping.
+ * `originRefs` remains non-key for artifactId derivation, but it is publication
+ * provenance: two callers that request different origins must not silently
+ * reuse the first writer's provenance (#5700).
  */
 const PUBLICATION_IDENTITY_KEYS = Object.freeze([
   'recordSchemaVersion',
@@ -300,6 +316,7 @@ const PUBLICATION_IDENTITY_KEYS = Object.freeze([
   'versions',
   'upstreamArtifactIds',
   'dependencyScope',
+  'originRefs',
   'payloadEncoding',
   'payloadEncodingVersion',
   'payloadChecksum',
