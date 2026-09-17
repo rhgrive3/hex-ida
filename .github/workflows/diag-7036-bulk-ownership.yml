@@ -36,7 +36,7 @@ jobs:
           echo "base=$BASE_SHA" >> "$STATUS"
           echo "head=$HEAD_SHA" >> "$STATUS"
 
-          git diff --name-only --diff-filter=ACMR "$BASE_SHA...$HEAD_SHA" > /tmp/changed.txt
+          git -c core.quotePath=false diff --name-only --diff-filter=ACMR "$BASE_SHA...$HEAD_SHA" > /tmp/changed.txt
           node - <<'NODE' > /tmp/missing.json
           const fs = require('node:fs');
           const manifest = JSON.parse(fs.readFileSync('tools/validation/analysis-roadmap/ownership.json','utf8'));
@@ -60,7 +60,7 @@ jobs:
               anchor = '    "integration": [\n'
               if anchor not in s:
                   raise SystemExit('ownership.json integration anchor missing')
-              insert = ''.join(f'      {json.dumps(f)},\n' for f in missing)
+              insert = ''.join(f'      {json.dumps(f, ensure_ascii=False)},\n' for f in missing)
               s = s.replace(anchor, anchor + insert, 1)
               p.write_text(s)
 
@@ -69,7 +69,7 @@ jobs:
               anchor = '  integration: [\n'
               if anchor not in s:
                   raise SystemExit('ownership.mjs integration anchor missing')
-              insert = ''.join(f'    {json.dumps(f)},\n' for f in missing)
+              insert = ''.join(f'    {json.dumps(f, ensure_ascii=False)},\n' for f in missing)
               s = s.replace(anchor, anchor + insert, 1)
               p.write_text(s)
           PY
