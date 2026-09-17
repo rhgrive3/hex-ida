@@ -1,4 +1,11 @@
-import { createMachineEffectBundle } from '../../../../semantics/effects/index.js';
+import {
+  createBitVectorValue,
+  createIntrinsicEffectSummary,
+  createMachineEffectBundle,
+  createMachineOperation,
+  createRegisterValue,
+  createTemporaryValue,
+} from '../../../../semantics/effects/index.js';
 import { arm64RegisterOperand } from './addressing.js';
 import { instructionMnemonic } from './common.js';
 import {
@@ -10,6 +17,103 @@ import { arm64FpExceptionTrapFault } from './fp-exception-traps.js';
 import { arm64FpAdvSimdAccessTrapFault } from './fp-advsimd-access-traps.js';
 
 export { ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, arm64MachineEffectFamilies };
+
+const FULL_ENVIRONMENT_SYSTEM_STATE = Object.freeze([
+  'sys:currentel',
+  'sys:daif',
+  'sys:spsel',
+  'sys:tpidr_el0',
+  'sys:tpidrro_el0',
+  'sys:cntvct_el0',
+  'sys:cntpct_el0',
+  'sys:cntfrq_el0',
+]);
+
+function instructionOperands(instruction) {
+  if (Array.isArray(instruction?.ops)) return instruction.ops;
+  if (Array.isArray(instruction?.operandsParsed)) return instruction.operandsParsed;
+  if (Array.isArray(instruction?.parsed)) return instruction.parsed;
+  return [];
+}
+
+function operandText(operand) {
+  return typeof operand?.text === 'string' ? operand.text.trim().toLowerCase() : '';
+}
+
+function unique(values) {
+  return [...new Set(values)];
+}
+
+function rewriteIntrinsicRegisters(operation, { reads = [], writes = [], replace = null } = {}) {
+  if (operation?.kind !== 'intrinsic') return operation;
+  const summary = operation.effectSummary;
+  const mapRegister = (register) => replace?.get(register) ?? register;
+  const registersRead = unique([...summary.registersRead.map(mapRegister), ...reads]);
+  const registersWritten = unique([...summary.registersWritten.map(mapRegister), ...writes]);
+  return createMachineOperation({
+    ...operation,
+    effectSummary:createIntrinsicEffectSummary({
+      ...summary,
+      registersRead,
+      registersWritten,
+    }),
+  });
+}
+
+function decorateArm64SystemStateIdentity(instruction, bundle, context = {}) {
+  if (!bundle || !Array.isArray(bundle.operations)) return bundle;
+  const mnemonic = instructionMnemonic(instruction);
+  const operands = instructionOperands(instruction);
+  let changed = false;
+  let operations = bundle.operations;
+
+  if (mnemonic === 'msr' && operands.length === 2 && operands[1]?.k === 'imm') {
+    const field = operandText(operands[0]);
+    if (field === 'daifset' || field === 'daifclr') {
+      const replace = new Map([[`sys:${field}`, 'sys:daif']]);
+      operations = operations.map((operation) => rewriteIntrinsicRegisters(operation, {
+        reads:['sys:daif'], writes:['sys:daif'], replace,
+      }));
+      changed = true;
+    }
+  }
+
+  if (bundle.metadata?.environmentFootprintComplete === true) {
+    const next = operations.map((operation) => {
+      if (operation?.kind !== 'intrinsic' || operation?.metadata?.conservativeFullEnvironment !== true) return operation;
+      changed = true;
+      return rewriteIntrinsicRegisters(operation, {
+        reads:FULL_ENVIRONMENT_SYSTEM_STATE,
+        writes:FULL_ENVIRONMENT_SYSTEM_STATE,
+      });
+    });
+    operations = next;
+  }
+
+  const hasSpMemoryBase = operands.some((operand) => {
+    if (operand?.k !== 'mem' && operand?.kind !== 'memory') return false;
+    const base = operand.base ?? operand.baseRegister;
+    return arm64RegisterOperand(base)?.kind === 'sp';
+  });
+  if (hasSpMemoryBase && !operations.some((operation) => operation?.kind === 'register-read'
+    && operation?.register?.registerId === 'sys:spsel')) {
+    const selector = createTemporaryValue('arm64.spsel.current', createBitVectorValue(1));
+    operations = [
+      createMachineOperation({
+        kind:'register-read',
+        register:createRegisterValue('sys:spsel', 1, { view:'PSTATE.SPSel' }),
+        value:selector,
+        metadata:{ architecturalState:'PSTATE.SPSel', purpose:'stack-pointer-bank-selection' },
+      }),
+      ...operations,
+    ];
+    changed = true;
+  }
+
+  if (!changed) return bundle;
+  const machineEffectsOptions = context.machineEffectsOptions ?? context.options ?? {};
+  return createMachineEffectBundle({ ...bundle, operations }, machineEffectsOptions);
+}
 
 function registerReadValue(bundle, registerId) {
   const read = bundle?.operations?.find((operation) => operation?.kind === 'register-read'
@@ -74,7 +178,8 @@ function decorateArm64FpExceptionTrapEffects(instruction, bundle, context = {}) 
 
 export function liftArm64MachineEffects(decoded, context = {}) {
   const bundle = liftArm64MachineEffectsBase(decoded, context);
-  const withAccessTrap = decorateArm64FpAdvSimdAccessTrapEffects(decoded, bundle, context);
+  const withSystemState = decorateArm64SystemStateIdentity(decoded, bundle, context);
+  const withAccessTrap = decorateArm64FpAdvSimdAccessTrapEffects(decoded, withSystemState, context);
   return decorateArm64FpExceptionTrapEffects(decoded, withAccessTrap, context);
 }
 
