@@ -13,17 +13,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Capture per-file conflict hunks
+      - name: Capture conflict stage files
         shell: bash
         run: |
           set +e
           set -uo pipefail
           OUT=/tmp/c7036
-          rm -rf "$OUT" && mkdir -p "$OUT"
+          rm -rf "$OUT" && mkdir -p "$OUT/ours" "$OUT/main" "$OUT/base"
           PR_HEAD=f8c8e281d940ab9d5f1b20d15398095f64cb50f7
           MAIN_HEAD=4d68cb6bf67622f7f3887e821388a2788cbd34fc
-          timeout 90s git fetch --no-tags origin "$PR_HEAD" "$MAIN_HEAD" >/tmp/fetch.log 2>&1 || { tail -n 40 /tmp/fetch.log > "$OUT/fetch-failure.txt"; exit 1; }
-          git checkout --detach "$PR_HEAD" >/tmp/checkout.log 2>&1 || { tail -n 40 /tmp/checkout.log > "$OUT/checkout-failure.txt"; exit 1; }
+          timeout 90s git fetch --no-tags origin "$PR_HEAD" "$MAIN_HEAD" >/tmp/fetch.log 2>&1 || exit 1
+          git checkout --detach "$PR_HEAD" >/tmp/checkout.log 2>&1 || exit 1
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           timeout 120s git merge --no-commit --no-ff "$MAIN_HEAD" >/tmp/merge.log 2>&1
@@ -37,7 +37,9 @@ jobs:
             'rebuild:js/rebuild/transaction-v2.js' \
             'pe-test:tests/issue-4135-pe-section-virtual-layout.mjs'; do
             key=${spec%%:*}; path=${spec#*:}
-            git diff --cc --unified=8 -- "$path" | sed -n '1,900p' > "$OUT/$key.diff"
+            git show ":1:$path" > "$OUT/base/$key" 2>/dev/null || true
+            git show ":2:$path" > "$OUT/ours/$key" 2>/dev/null || true
+            git show ":3:$path" > "$OUT/main/$key" 2>/dev/null || true
           done
           exit 0
       - name: Upload result
