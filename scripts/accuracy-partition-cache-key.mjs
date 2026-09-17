@@ -22,11 +22,36 @@ const PSEUDOC_FILES = [
 ];
 const slash = (value) => value.split(path.sep).join('/');
 
-function walk(dir, root, out) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes:true }).sort((a,b)=>a.name.localeCompare(b.name))) {
+function walk(dir, root, out, visitedDirs = new Set()) {
+  if (!fs.existsSync(dir)) return;
+  try {
+    const realDir = fs.realpathSync(dir);
+    if (visitedDirs.has(realDir)) return;
+    visitedDirs.add(realDir);
+  } catch {
+    return;
+  }
+
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
     const absolute = path.join(dir, entry.name);
-    if (entry.isDirectory()) walk(absolute, root, out);
-    else if (entry.isFile()) out.push(slash(path.relative(root, absolute)));
+    let isDir = entry.isDirectory();
+    let isFile = entry.isFile();
+
+    if (entry.isSymbolicLink()) {
+      try {
+        const stat = fs.statSync(absolute);
+        isDir = stat.isDirectory();
+        isFile = stat.isFile();
+      } catch {
+        continue;
+      }
+    }
+
+    if (isDir) {
+      walk(absolute, root, out, visitedDirs);
+    } else if (isFile) {
+      out.push(slash(path.relative(root, absolute)));
+    }
   }
 }
 
@@ -56,7 +81,19 @@ export function partitionDigest(root = ROOT, partition) {
     : `kind=nonpseudoc;features=${PARTITIONS[partition].join(',')};heap=4096`;
   hash.update(`accuracy-result-v8\0${partition}\0${contract}\0`);
   for (const relative of partitionFiles(root, partition)) {
-    hash.update(relative); hash.update('\0'); hash.update(fs.readFileSync(path.join(root, relative))); hash.update('\0');
+    const fullPath = path.join(root, relative);
+    hash.update(relative);
+    hash.update('\0');
+    try {
+      const lstat = fs.lstatSync(fullPath);
+      if (lstat.isSymbolicLink()) {
+        hash.update('symlink:');
+        hash.update(fs.readlinkSync(fullPath));
+        hash.update('\0');
+      }
+    } catch {}
+    hash.update(fs.readFileSync(fullPath));
+    hash.update('\0');
   }
   return hash.digest('hex');
 }

@@ -26,9 +26,9 @@ export function parseJsonc(text) {
       inString = true;
       stripped += char;
     } else if (char === '/' && next === '/') {
-      index += 1;
+      const start = index;
       while (index + 1 < source.length && source[index + 1] !== '\n' && source[index + 1] !== '\r') index += 1;
-      stripped += source[index + 1] ?? '';
+      stripped += ' '.repeat(index - start + 1);
     } else if (char === '/' && next === '*') {
       const end = source.indexOf('*/', index + 2);
       if (end < 0) throw new SyntaxError('Invalid JSONC: unterminated block comment.');

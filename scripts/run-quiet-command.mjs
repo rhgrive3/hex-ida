@@ -130,7 +130,10 @@ export async function runQuietCommand({
   log.end();
   await logClosed;
 
-  if (logError) throw logError;
+  if (logError) {
+    try { cleanupDirectory(); } catch {}
+    throw logError;
+  }
   const durationMs = Number(process.hrtime.bigint() - started) / 1e6;
   if (!status.error && status.code === 0) {
     cleanupDirectory();

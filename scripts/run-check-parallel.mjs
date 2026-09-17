@@ -21,10 +21,53 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const EXCLUSIVE_TAIL_PATTERN = /^(npm run benchmark:baseline|npm run phase7:test)$/;
 
 export function parseCheckSteps(checkScript) {
-  return String(checkScript)
-    .split('&&')
-    .map((step) => step.trim())
-    .filter(Boolean);
+  const steps = [];
+  let current = '';
+  let inSingle = false;
+  let inDouble = false;
+  let inBacktick = false;
+  let escaped = false;
+  const str = String(checkScript);
+
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\' && !inSingle) {
+      current += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === "'" && !inDouble && !inBacktick) {
+      inSingle = !inSingle;
+      current += ch;
+      continue;
+    }
+    if (ch === '"' && !inSingle && !inBacktick) {
+      inDouble = !inDouble;
+      current += ch;
+      continue;
+    }
+    if (ch === '`' && !inSingle && !inDouble) {
+      inBacktick = !inBacktick;
+      current += ch;
+      continue;
+    }
+    if (!inSingle && !inDouble && !inBacktick && ch === '&' && str[i + 1] === '&') {
+      const step = current.trim();
+      if (step) steps.push(step);
+      current = '';
+      i++; // skip next '&'
+      continue;
+    }
+    current += ch;
+  }
+  const last = current.trim();
+  if (last) steps.push(last);
+  return steps;
 }
 
 export function stepLabel(command) {
@@ -34,8 +77,56 @@ export function stepLabel(command) {
   return `check:${command.replace(/\s+/g, '-')}`;
 }
 
-function splitCommand(command) {
-  const [name, ...args] = command.split(/\s+/);
+export function tokenizeCommand(command) {
+  const tokens = [];
+  let current = '';
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+  let hasToken = false;
+  const str = String(command).trim();
+
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      hasToken = true;
+      continue;
+    }
+    if (ch === '\\' && !inSingle) {
+      escaped = true;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      hasToken = true;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      hasToken = true;
+      continue;
+    }
+    if (!inSingle && !inDouble && /\s/.test(ch)) {
+      if (hasToken || current.length > 0) {
+        tokens.push(current);
+        current = '';
+        hasToken = false;
+      }
+      continue;
+    }
+    current += ch;
+    hasToken = true;
+  }
+  if (hasToken || current.length > 0) {
+    tokens.push(current);
+  }
+  return tokens;
+}
+
+export function splitCommand(command) {
+  const [name = '', ...args] = tokenizeCommand(command);
   return { command: name, args };
 }
 
@@ -66,7 +157,7 @@ export async function runCheckParallel({ stdout = process.stdout, stderr = proce
   const steps = parseCheckSteps(pkg.scripts.check ?? '');
   if (steps.length === 0) throw new Error('run-check-parallel: no steps found in scripts.check');
 
-  const jobs = steps.map((command) => ({ label: stepLabel(command), ...splitCommand(command) }));
+  const jobs = steps.map((command) => ({ label: stepLabel(command), rawCommand: command, ...splitCommand(command) }));
   const tailIndexes = [];
   const poolJobs = [];
   const poolJobIndex = [];
@@ -76,7 +167,7 @@ export async function runCheckParallel({ stdout = process.stdout, stderr = proce
   });
 
   function commandFor(job) {
-    return [job.command, ...job.args].join(' ');
+    return job.rawCommand || [job.command, ...job.args].join(' ');
   }
 
   const results = new Array(jobs.length);
