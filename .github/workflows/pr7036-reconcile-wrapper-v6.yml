@@ -33,9 +33,23 @@ jobs:
               outputHash: materialized.outputHash,
               validator: name,
             })]),
-          ));'''
+          ));
+          const x03LoaderReparseResult = (discoveryArtifact) => ({
+            ok: true,
+            format: 'elf',
+            architecture: architectureId,
+            loaderVersion: 'hex-loader:x03:v1',
+            sourceHash,
+            outputHash: materialized.outputHash,
+            discoveryArtifact,
+          });'''
           assert s.count(anchor) == 1, s.count(anchor)
           s = s.replace(anchor, addition)
+          for artifact in ['validOutputArtifact', 'strippedArtifact', 'promotedArtifact', 'staleArtifact']:
+              old = f"loaderReparse: () => ({{ ok: true, discoveryArtifact: {artifact} }}),"
+              new = f"loaderReparse: () => x03LoaderReparseResult({artifact}),"
+              assert s.count(old) == 1, (artifact, s.count(old))
+              s = s.replace(old, new)
           needle = "  independentOracle: testOracle,\n});"
           replacement = "  independentOracle: testOracle,\n  validators: x03ConservativeValidators,\n});"
           assert s.count(needle) >= 4, s.count(needle)
@@ -71,7 +85,7 @@ jobs:
             tail -n 20 /tmp/reconcile-trace.txt
             if [ -f pr7036-reconcile-v3-result.txt ]; then
               echo '--- inner focused result ---'
-              tail -n 100 pr7036-reconcile-v3-result.txt
+              tail -n 120 pr7036-reconcile-v3-result.txt
             fi
           } > /tmp/pr7036-wrapper-v6-result.txt
           exit "$RC"
