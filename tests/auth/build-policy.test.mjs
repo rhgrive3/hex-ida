@@ -21,6 +21,29 @@ test('graph gate rejects privileged transitive modules, requires existing implem
   assert.throws(() => assertStandardGraph({ inputs: {} }, 'empty'), /no verifiable/);
   assert.throws(() => assertStandardGraph({}, 'missing'), /no verifiable/);
 });
+
+test('privileged graph kind discriminator fails closed', () => {
+  const parent = { inputs: {
+    'js/userscript/dev/parent-worker-runtime.js': {},
+    'js/userscript/dev/parent-rpc.js': {},
+    'js/userscript/dev/bootstrap-host.js': {},
+  } };
+  const child = { inputs: {
+    'js/ai/dev/supervisor/dev-supervisor-v0.js': {},
+    'js/ai/dev/ui/settings.js': {},
+    'js/ai/dev/ui/engine-router.js': {},
+    'js/ai/dev/ui/controls.js': {},
+  } };
+
+  assert.doesNotThrow(() => assertPrivilegedGraph(parent, 'parent'));
+  assert.doesNotThrow(() => assertPrivilegedGraph(child, 'child'));
+  for (const kind of ['parennt', 'admin', 'future-kind', '', undefined]) {
+    assert.throws(() => assertPrivilegedGraph(child, kind), /Unsupported privileged bundle kind/);
+  }
+  assert.throws(() => assertPrivilegedGraph({ inputs: {} }, 'parent'), /omits/);
+  assert.throws(() => assertPrivilegedGraph({ inputs: {} }, 'child'), /omits/);
+});
+
 test('local D1 configuration is usable but production sentinel is explicitly rejected', async () => {
   const config = JSON.parse(await readFile(new URL('../../wrangler.jsonc', import.meta.url), 'utf8'));
   assert.equal(validateAuthConfig(config, { local: true }), true);
