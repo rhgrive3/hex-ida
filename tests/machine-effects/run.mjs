@@ -5,6 +5,9 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { scheduleMachineEffectFiles } from '../support/machine-effects-scheduling.mjs';
+import { assertMachineEffectsPrerequisites } from '../../tools/validation/machine-effects/prerequisites.mjs';
+
+assertMachineEffectsPrerequisites();
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const files = fs.readdirSync(directory, { withFileTypes: true })
