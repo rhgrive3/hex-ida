@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 
 import { buildDex } from '../fixtures/medium-dex.mjs';
 import { DexFrontend } from '../../../js/managed/dex/frontend.js';
-import { lowerVMEffectsToSemanticIr } from '../../../js/managed/shared/bridge-v2.js';
+import { lowerVMEffectsToSemanticIr, buildManagedMethodSummary } from '../../../js/managed/shared/bridge-v2.js';
 
 console.log('[phase11] running dex div-int/rem-int exception authority regression #7975...');
 
@@ -90,7 +90,12 @@ const ZERO_DIVIDE = { kind: 'integer-divide-by-zero', condition: 'rhs==0' };
   const divNode = lowered.semanticIr.nodes.find((n) => n.metadata?.mnemonic === 'div-int');
   assert.ok(divNode, 'div-int node present in lowered IR');
   assert.deepEqual(divNode.metadata.possibleExceptions, [ZERO_DIVIDE]);
-  assert.equal(lowered.semanticIr.completeness, 'complete');
+  assert.equal(lowered.semanticIr.completeness, 'partial');
+  assert.ok(lowered.semanticIr.unknowns.some((u) => u.reason === 'managed-possible-exception-control-unrepresented'));
+  const summary = buildManagedMethodSummary(lowered);
+  assert.equal(summary.completeness, 'partial');
+  assert.equal(summary.summary.mayThrow, true);
+  assert.ok(summary.thrownExceptions.some((e) => e.kind === 'integer-divide-by-zero' && e.condition === 'rhs==0' && e.possible === true));
 }
 
 console.log('[phase11] dex div-int/rem-int exception authority regression #7975 passed');
