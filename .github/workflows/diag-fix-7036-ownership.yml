@@ -1,0 +1,121 @@
+name: diag-fix-7036-ownership
+on:
+  push:
+    branches:
+      - fix/7036-ownership-x02-collector-20260917
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch ownership and validate
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          STATUS=/tmp/fix-7036.txt
+          : > "$STATUS"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          timeout 90s git fetch --no-tags origin main >/tmp/fetch.log 2>&1
+          rc=$?
+          echo "fetch rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/fetch.log >> "$STATUS"; exit "$rc"; fi
+
+          python3 - <<'PY' >/tmp/patch.log 2>&1
+          from pathlib import Path
+          additions = [
+              '.github/workflows/x02-collector-fix.yml',
+              'tests/scpa/fixtures/x02-real-apple-evidence-20260916.json',
+          ]
+          p = Path('tools/validation/analysis-roadmap/ownership.mjs')
+          s = p.read_text()
+          anchor = "    '.github/workflows/ghidra-differential.yml',\n"
+          if anchor not in s:
+              raise SystemExit('ownership.mjs anchor missing')
+          for item in additions:
+              line = f"    '{item}',\n"
+              if line not in s:
+                  s = s.replace(anchor, anchor + line, 1)
+                  anchor = line
+          p.write_text(s)
+
+          p = Path('tools/validation/analysis-roadmap/ownership.json')
+          s = p.read_text()
+          anchor = '      ".github/workflows/ghidra-differential.yml",\n'
+          if anchor not in s:
+              raise SystemExit('ownership.json anchor missing')
+          for item in additions:
+              line = f'      "{item}",\n'
+              if line not in s:
+                  s = s.replace(anchor, anchor + line, 1)
+                  anchor = line
+          p.write_text(s)
+          PY
+          rc=$?
+          echo "patch rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/patch.log >> "$STATUS"; exit "$rc"; fi
+
+          git rm .github/workflows/diag-fix-7036-ownership.yml >/tmp/rm.log 2>&1
+          rc=$?
+          echo "remove_temp rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/rm.log >> "$STATUS"; exit "$rc"; fi
+          git add tools/validation/analysis-roadmap/ownership.mjs tools/validation/analysis-roadmap/ownership.json
+          git diff --cached --check >/tmp/diffcheck.log 2>&1
+          rc=$?
+          echo "diff_check rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/diffcheck.log >> "$STATUS"; exit "$rc"; fi
+          git commit -m 'fix(analysis): register X-02 collector ownership' >/tmp/commit.log 2>&1
+          rc=$?
+          echo "commit rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/commit.log >> "$STATUS"; exit "$rc"; fi
+          CLEAN_HEAD=$(git rev-parse HEAD)
+          BASE_SHA=$(git rev-parse refs/remotes/origin/main)
+          echo "base=$BASE_SHA" >> "$STATUS"
+          echo "clean_head=$CLEAN_HEAD" >> "$STATUS"
+          LOGICAL_BRANCH=feat/analysis-roadmap-v8-current-main-20260907
+
+          runcheck() {
+            label="$1"; shift
+            "$@" >/tmp/check.log 2>&1
+            rc=$?
+            echo "$label rc=$rc" >> "$STATUS"
+            if [ "$rc" -ne 0 ]; then
+              echo '--- first failure ---' >> "$STATUS"
+              tail -n 80 /tmp/check.log >> "$STATUS"
+              exit "$rc"
+            fi
+          }
+
+          runcheck phase7_manifest timeout 120s node tools/validation/phase7-ownership.mjs --check-manifest
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase7 --base-sha "$BASE_SHA" --head-sha "$CLEAN_HEAD" >/tmp/p7.json 2>/tmp/check.log
+          rc=$?
+          echo "phase7_inventory rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then echo '--- first failure ---' >> "$STATUS"; tail -n 80 /tmp/check.log >> "$STATUS"; exit "$rc"; fi
+          P7=$(cat /tmp/p7.json)
+          runcheck phase7_validate timeout 120s node tools/validation/phase7-ownership.mjs --files-json "$P7"
+          runcheck phase8_manifest timeout 120s node tools/validation/phase8-ownership.mjs --check-manifest
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase8 --base-sha "$BASE_SHA" --head-sha "$CLEAN_HEAD" >/tmp/p8.json 2>/tmp/check.log
+          rc=$?
+          echo "phase8_inventory rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then echo '--- first failure ---' >> "$STATUS"; tail -n 80 /tmp/check.log >> "$STATUS"; exit "$rc"; fi
+          P8=$(cat /tmp/p8.json)
+          runcheck phase8_validate timeout 120s node tools/validation/phase8-ownership.mjs --files-json "$P8"
+
+          git push origin HEAD:fix/7036-ownership-x02-collector-20260917 >/tmp/push.log 2>&1
+          rc=$?
+          echo "push rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/push.log >> "$STATUS"; exit "$rc"; fi
+          echo 'ownership gates green' >> "$STATUS"
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fix-7036-ownership
+          path: /tmp/fix-7036.txt
+          retention-days: 1
