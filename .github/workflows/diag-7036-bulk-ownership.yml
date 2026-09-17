@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Resolve conflicts to current main and run focused proofs
+      - name: Resolve conflicts and run focused proofs
         shell: bash
         run: |
           set +e
@@ -34,15 +34,16 @@ jobs:
           echo "main=$BASE_SHA" >> "$STATUS"
           echo "head=$HEAD_SHA" >> "$STATUS"
           git merge --no-commit --no-ff refs/remotes/origin/main >/tmp/merge.log 2>&1
-          merge_rc=$?
-          echo "merge rc=$merge_rc" >> "$STATUS"
+          merge_rc=$?; echo "merge rc=$merge_rc" >> "$STATUS"
           mapfile -t CONFLICTS < <(git -c core.quotePath=false diff --name-only --diff-filter=U)
           echo "conflict_count=${#CONFLICTS[@]}" >> "$STATUS"
           printf 'conflict=%s\n' "${CONFLICTS[@]}" >> "$STATUS"
           for f in "${CONFLICTS[@]}"; do
-            git checkout --theirs -- "$f" >/tmp/resolve.log 2>&1
+            side=theirs
+            if [ "$f" = 'js/semantics/ssa/build.js' ]; then side=ours; fi
+            git checkout --"$side" -- "$f" >/tmp/resolve.log 2>&1
             rc=$?
-            echo "resolve_main $f rc=$rc" >> "$STATUS"
+            echo "resolve_$side $f rc=$rc" >> "$STATUS"
             if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/resolve.log >> "$STATUS"; exit "$rc"; fi
             git add "$f"
           done
@@ -60,14 +61,12 @@ jobs:
               out = []
               for line in s.splitlines(keepends=True):
                   if line.strip() == needle:
-                      if seen:
-                          continue
+                      if seen: continue
                       seen = True
                   out.append(line)
               p.write_text(''.join(out))
           q = Path('tests/auth/build-policy.test.mjs')
-          if q.exists():
-              q.write_text(q.read_text().rstrip('\n') + '\n')
+          if q.exists(): q.write_text(q.read_text().rstrip('\n') + '\n')
           PY
           rc=$?; echo "merge_normalize rc=$rc" >> "$STATUS"
           if [ "$rc" -ne 0 ]; then exit "$rc"; fi
@@ -94,7 +93,6 @@ jobs:
               exit "$rc"
             fi
           }
-
           check syntax_macho node --check js/binary/macho-core.js
           check x03_artifact node tests/phase7/discovery/x03-ambiguity-artifact.test.mjs
           check analysis_entrypoint node tests/phase7/integration/analysis-entrypoint-dependencies.test.mjs
