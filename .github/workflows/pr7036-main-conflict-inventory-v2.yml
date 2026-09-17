@@ -1,17 +1,17 @@
-name: PR7036 proof first-divergence diagnostic
+name: PR7036 representation identity regression
 on:
   push:
     branches: [sync/pr7036-main-20260917-v2]
 jobs:
-  diagnose:
-    if: contains(github.event.head_commit.message, 'diagnose PR 7036 proof first divergence')
+  confirm:
+    if: contains(github.event.head_commit.message, 'confirm PR 7036 representation identity regression')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 700
-      - name: Reconcile and emit minimal proof decision
+      - name: Reconcile with old var-key semantics
         shell: bash
         run: |
           set -euo pipefail
@@ -27,16 +27,17 @@ jobs:
           python3 -c 'from pathlib import Path; p=Path("js/semantics/compat/semantic-ir-v2-to-v1-memory.js"); s=p.read_text(); old="export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null, constantObserver = null) {\n  const operandTransitions = [];"; new="function batchForwardingScope(options) {\n  const scope = {};\n  if (options == null || typeof options !== \"object\") return scope;\n  if (options.deadline != null) scope.deadline = options.deadline;\n  else if (options.deadlineAt != null) scope.deadline = options.deadlineAt;\n  else if (options.budget != null && typeof options.budget === \"object\" && options.budget.deadline != null) scope.deadline = options.budget.deadline;\n  else if (options.budget != null && typeof options.budget === \"object\" && options.budget.deadlineAt != null) scope.deadline = options.budget.deadlineAt;\n  if (options.signal != null && typeof options.signal === \"object\") scope.signal = options.signal;\n  return scope;\n}\n\nexport function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null, constantObserver = null, forwardingScopeOptions = null) {\n  const batchForwarding = batchForwardingScope(forwardingScopeOptions);\n  const operandTransitions = [];"; assert s.count(old)==1; s=s.replace(old,new); old2="        purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,\n        ...(canonicalIr == null ? {} : { ir: canonicalIr }),\n      });"; new2="        purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,\n        ...(canonicalIr == null ? {} : { ir: canonicalIr }),\n        ...batchForwarding,\n      });"; assert s.count(old2)==1; p.write_text(s.replace(old2,new2))'
           python3 -c 'from pathlib import Path; p=Path("js/semantics/compat/semantic-ir-v2-to-v1.js"); s=p.read_text(); old="? attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir, constantObserver) : null;"; new="? attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir, constantObserver, options) : null;"; assert s.count(old)==1; p.write_text(s.replace(old,new))'
           git checkout FETCH_HEAD -- js/binary/macho-core.js
-          python3 -c 'from pathlib import Path; p=Path("tests/phase8/integration/proof-optimizer.test.mjs"); s=p.read_text(); a="assert.equal(r.proofOptimization.adopted,1);assert.equal(r.pseudocode,\x27return 0;\x27);"; b="console.error(\x27PR7036_D1\x27,JSON.stringify({bits,candidateStrategy,status:r.proofOptimization.status,reason:r.proofOptimization.reason,adopted:r.proofOptimization.adopted,rewritePolicy:r.proofOptimization.rewritePolicy,targetDecisions:(r.proofOptimization.targetDecisions??[]).map(d=>({disposition:d.disposition,reason:d.reason,status:d.status,proofStatus:d.proof?.status,proofReason:d.proof?.reason,resultStatus:d.result?.status,resultReason:d.result?.reason}))}));"+a; assert s.count(a)==1; s=s.replace(a,b); a2="assert.equal(r.proofOptimization.targetDecisions[0].disposition,\x27refuted\x27);"; b2="console.error(\x27PR7036_D2\x27,JSON.stringify({status:r.proofOptimization.status,reason:r.proofOptimization.reason,adopted:r.proofOptimization.adopted,targetDecisions:(r.proofOptimization.targetDecisions??[]).map(d=>({disposition:d.disposition,reason:d.reason,status:d.status,proofStatus:d.proof?.status,proofReason:d.proof?.reason,resultStatus:d.result?.status,resultReason:d.result?.reason}))}));"+a2; assert s.count(a2)==1; p.write_text(s.replace(a2,b2))'
+          git checkout 4013f4855ef9a3942ae841f05c5c425957b16212 -- js/decompiler/ast/nodes.js
           set +e
-          node --test --test-name-pattern='C4-04 proof preparation|C4-04 a refuted' tests/phase8/integration/proof-optimizer.test.mjs > /tmp/proof.txt 2>&1
+          node --test tests/phase8/integration/proof-optimizer.test.mjs > /tmp/proof.txt 2>&1
           RC=$?
           set -e
-          { echo "merge_rc=$MERGE_RC"; echo "proof_rc=$RC"; grep 'PR7036_D' /tmp/proof.txt || true; grep -E 'not ok [12]|error:|Expected values|actual:|expected:' /tmp/proof.txt | head -n 50 || true; } > pr7036-proof-divergence.txt
-          exit 0
-      - name: Upload diagnostic
+          { echo "merge_rc=$MERGE_RC"; echo "proof_rc=$RC"; tail -n 80 /tmp/proof.txt; } > pr7036-representation-identity.txt
+          [ "$RC" -eq 0 ]
+      - name: Upload result
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr7036-proof-divergence
-          path: pr7036-proof-divergence.txt
+          name: pr7036-representation-identity
+          path: pr7036-representation-identity.txt
           retention-days: 2
