@@ -129,6 +129,13 @@ export function describeBinaryImage(image, options = {}) {
   const support = supportTruthForImage(image, { engine });
   const supportDisplay = supportDisplayForTruth(support);
   const regions = regionsForImage(image);
+  const dataInCode = Array.isArray(image.dataInCode) ? image.dataInCode : [];
+  for (const region of regions) {
+    if (!region.exec) continue;
+    const lo = BigInt(region.vmAddr), hi = lo + BigInt(region.size);
+    const exclusions = dataInCode.filter((entry) => entry?.address != null && BigInt(entry.address) < hi && BigInt(entry.address) + BigInt(entry.length || 0) > lo);
+    if (exclusions.length) region.dataInCode = exclusions.map((entry) => ({ ...entry }));
+  }
   const info = {
     cpu: image.arch || 'unknown',
     cpuSub: image.metadata?.subtypeName || (image.metadata?.subtypeBase == null ? 'all' : String(image.metadata.subtypeBase)),
@@ -159,6 +166,7 @@ export function describeBinaryImage(image, options = {}) {
   if (image.entrypoint != null) formatMetadata.entrypoint = image.entrypoint;
   if (image.imageBase != null) formatMetadata.imageBase = image.imageBase;
   if (image.metadata?.riscvIsa != null) formatMetadata.riscvIsa = image.metadata.riscvIsa;
+  if (image.metadata?.aarch64MappingSymbols != null) formatMetadata.aarch64MappingSymbols = image.metadata.aarch64MappingSymbols;
   const productDescriptor = {
     formatId: image.format || 'raw',
     regions,
