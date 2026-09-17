@@ -1,0 +1,88 @@
+-  assert.equal(stores.proposalStore.has(proposal.id), true, 'a pending proposal is not verification authority');
+-  assert.equal(stores.proposalStore.get(proposal.id).status, 'pending');
++  // #8889: once portable import downgrades the supporting evidence, the
++  // persisted proposal row remains portable session data but must not be
++  // re-minted as a live mutation authority.
++  assert.equal(stores.proposalStore.has(proposal.id), false);
+   assert.equal(session.proposedActions[0].id, proposal.id);
+   assert.equal(stores.hypothesisStore.get('evil-hyp').claim, '0x401000 definitely bypasses authentication');
+   assert.equal(session.messages[0].content, 'portable transcript line', 'transcript data survives the strip');
+diff -ruN a/tests/phase4/store/basic.test.mjs b/tests/phase4/store/basic.test.mjs
+--- a/tests/phase4/store/basic.test.mjs	2026-09-17 02:21:02.000000000 +0000
++++ b/tests/phase4/store/basic.test.mjs	2026-09-17 04:44:58.683653576 +0000
+@@ -88,7 +88,9 @@
+   assert.deepEqual(reopened.payload, { reopened:true });
+ }
+ 
+-// Non-key provenance cannot become a second ArtifactId implementation.
++// Non-key provenance cannot become a second ArtifactId implementation, but a
++// caller asking for different originRefs must never receive the first writer's
++// provenance as a successful duplicate/hit (#5700).
+ {
+   const entries = new Map();
+   const store = new ArtifactStore({ backend:new PersistentMemoryBackend({ entries }) });
+@@ -96,9 +98,16 @@
+   const b = descriptor('canonical-id', { originRefs:['evidence_b'] });
+   assert.equal(a.artifactId, b.artifactId);
+   await store.publish(a, { value:'same-cas' });
+-  const duplicate = await store.publish(b, { value:'same-cas' });
+-  assert.equal(duplicate.duplicate, true);
+-  assert.deepEqual(duplicate.record.originRefs, ['evidence_a']);
++  await assert.rejects(
++    () => store.publish(b, { value:'same-cas' }),
++    (error) => error.code === 'artifact-record-provenance-mismatch',
++  );
++  const incompatible = await store.get(b);
++  assert.equal(incompatible.status, 'incompatible');
++  assert.equal(incompatible.reason, 'artifact-record-provenance-mismatch');
++  const original = await store.get(a);
++  assert.equal(original.status, 'hit', 'a provenance mismatch must not delete the healthy first writer');
++  assert.deepEqual(original.record.originRefs, ['evidence_a']);
+ }
+ 
+ // Concurrent exact-ID operations cannot tear publication or reintroduce deleted data.
+diff -ruN a/tests/phase6/browser/decode-worker.test.mjs b/tests/phase6/browser/decode-worker.test.mjs
+--- a/tests/phase6/browser/decode-worker.test.mjs	2026-09-17 02:21:02.000000000 +0000
++++ b/tests/phase6/browser/decode-worker.test.mjs	2026-09-17 04:44:58.691735199 +0000
+@@ -170,3 +170,27 @@
+     for (const file of temporaryModules) { try { fs.rmSync(file, { force: true }); } catch { /* best effort */ } }
+   }
+ });
++
++test('#8353 production ARM64 worker rescues FEAT_PAuth_LR encodings from Capstone skipdata', async () => {
++  const { scope, cleanup } = runClassicWorker();
++  try {
++    const response = await decodeThroughWorker(scope, {
++      id: 8353,
++      architecture: 'arm64',
++      address: 0x1000n,
++      bytes: new Uint8Array([
++        0xfe, 0xa3, 0xc1, 0xda, // paciasppc
++        0xdf, 0x00, 0x00, 0x55, // retaasppc, encoded PC offset 24
++        0x20, 0x00, 0x80, 0x52, // mov w0,#1
++      ]),
++    });
++    assert.equal(response.ok, true, `worker failed: ${response.error}`);
++    assert.equal(response.bytesConsumed, 12);
++    const instructions = Array.from(response.instructions);
++    assert.deepEqual(instructions.map((instruction) => instruction.mnemonic), ['paciasppc', 'retaasppc', 'mov']);
++    assert.equal(instructions[0].decodeFallback, 'arm64-feat-pauth-lr');
++    assert.equal(instructions[1].decodeFallback, 'arm64-feat-pauth-lr');
++    assert.equal(BigInt(instructions[1].pauthLrPcOffsetBytes), 24n);
++    assert.ok(instructions.every((instruction) => instruction.mnemonic !== '.byte'));
++  } finally { cleanup(); }
++});
+diff -ruN a/tests/phase7/foundation/issue-9143-fetch-real-fixtures-selection.test.mjs b/tests/phase7/foundation/issue-9143-fetch-real-fixtures-selection.test.mjs
+--- a/tests/phase7/foundation/issue-9143-fetch-real-fixtures-selection.test.mjs	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/phase7/foundation/issue-9143-fetch-real-fixtures-selection.test.mjs	2026-09-17 04:44:58.694652753 +0000
+@@ -0,0 +1,10 @@
++import assert from 'node:assert/strict';
++import { spawnSync } from 'node:child_process';
++import { fileURLToPath } from 'node:url';
++
++const script = fileURLToPath(new URL('../../../scripts/fetch-real-fixtures.mjs', import.meta.url));
++const run = spawnSync(process.execPath, [script, '--check', 'all', 'definitely-not-a-fixture'], { encoding:'utf8' });
++assert.notEqual(run.status, 0);
++assert.match(run.stderr, /unknown fixture: definitely-not-a-fixture/);
++assert.doesNotMatch(run.stderr, /fixture is missing/, 'unknown explicit names must be rejected before widening to all fixtures');
++console.log('issue-9143 fetch-real-fixtures selection: PASS');
