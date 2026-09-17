@@ -17,10 +17,10 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - run: npm ci --silent --no-audit --no-fund
-      - name: Pure projection BFS
+      - name: Isolate missing canonical relation
         shell: bash
         run: |
-          cat > tests/scpa/.stage-a-bfs-diag.mjs <<'NODE'
+          cat > tests/scpa/.stage-a-cut-diag.mjs <<'NODE'
           import { captured, scope } from './native-owner-fixture.mjs';
           import { ScopedAnalysisWork } from '../../js/core/budgets/scoped-work.js';
           import { buildCanonicalQueryProjection } from '../../js/analysis/query/semantic/projection.js';
@@ -29,18 +29,22 @@ jobs:
           const allowed=new Set(['operation-input','operation-output','ssa-use-def','ssa-phi','memory-input','memory-output','memory-reaching','memory-merge']);
           try {
             p=await buildCanonicalQueryProjection(input.result.pipeline,{...f,snapshotId:'snap',work});
-            const ir=input.result.pipeline.semanticIr, store=ir.nodes.find(n=>n.kind==='store'), loads=ir.nodes.filter(n=>n.kind==='load'), sink=loads.at(-1);
-            const storeRef=p.entityReference('semantic-ir',store.id), target=p.entityReference('semantic-ir',sink.id);
-            const source=p.adjacent(storeRef,'backward').map(id=>p.edge(id)).find(e=>e.kind==='operation-input'&&e.flowKinds?.includes('data')).from;
-            const addressUse=p.adjacent(target,'backward').map(id=>p.edge(id)).find(e=>e.kind==='operation-input'&&e.flowKinds?.includes('address')).from;
-            function path(from,to){ const q=[from], parent=new Map([[from,null]]), pe=new Map(); for(let i=0;i<q.length&&i<50000;i++){ const v=q[i]; if(v===to) break; for(const id of p.adjacent(v,'forward')){ const e=p.edge(id); if(!allowed.has(e.kind)||parent.has(e.to)) continue; parent.set(e.to,v); pe.set(e.to,e); q.push(e.to); } } if(!parent.has(to)) return null; const out=[]; for(let v=to;parent.get(v)!==null;v=parent.get(v)){ const e=pe.get(v); out.push({kind:e.kind,from:e.from,to:e.to,flowKinds:e.flowKinds??null,obligations:e.obligations??[]}); } return out.reverse(); }
-            const a=path(source,addressUse), b=path(addressUse,target), direct=path(source,target);
-            console.log(JSON.stringify({source,addressUse,target,sourceToAddress:a,addressToTarget:b,direct},null,2));
+            const nodes=input.result.pipeline.semanticIr.nodes;
+            const firstLoad=nodes.filter(n=>n.kind==='load')[0];
+            const x2Write=nodes.find(n=>n.kind==='state-write'&&n.variable?.physicalIdentity?.registerId==='x2');
+            const x2Read=nodes.find(n=>n.kind==='state-read'&&n.variable?.physicalIdentity?.registerId==='x2');
+            const secondAddress=nodes.find(n=>n.kind==='address'&&n.inputs?.includes(x2Read?.outputs?.[0]));
+            const refs=Object.fromEntries(Object.entries({firstLoad,x2Write,x2Read,secondAddress}).map(([k,n])=>[k,p.entityReference('semantic-ir',n.id)]));
+            function path(from,to){const q=[from],parent=new Map([[from,null]]),pe=new Map();for(let i=0;i<q.length&&i<50000;i++){const v=q[i];if(v===to)break;for(const id of p.adjacent(v,'forward')){const e=p.edge(id);if(!allowed.has(e.kind)||parent.has(e.to))continue;parent.set(e.to,v);pe.set(e.to,e);q.push(e.to);}}if(!parent.has(to))return null;const out=[];for(let v=to;parent.get(v)!==null;v=parent.get(v)){const e=pe.get(v);out.push({kind:e.kind,from:e.from,to:e.to});}return out.reverse();}
+            const segments={loadToWrite:path(refs.firstLoad,refs.x2Write),writeToRead:path(refs.x2Write,refs.x2Read),readToAddress:path(refs.x2Read,refs.secondAddress)};
+            const adjacency={};
+            for(const [name,ref] of Object.entries(refs)) adjacency[name]={forward:p.adjacent(ref,'forward').map(id=>{const e=p.edge(id);return {kind:e.kind,from:e.from,to:e.to}}),backward:p.adjacent(ref,'backward').map(id=>{const e=p.edge(id);return {kind:e.kind,from:e.from,to:e.to}})};
+            console.log(JSON.stringify({refs,segments,adjacency,ssa:input.result.pipeline.ssa},(_k,v)=>typeof v==='bigint'?`0x${v.toString(16)}`:v,2));
           } finally {p?.release();work.dispose();}
           NODE
-          node tests/scpa/.stage-a-bfs-diag.mjs > /tmp/bfs.txt 2>&1
+          node tests/scpa/.stage-a-cut-diag.mjs > /tmp/cut.txt 2>&1
       - uses: actions/upload-artifact@v4
         with:
-          name: scpa-bfs
-          path: /tmp/bfs.txt
+          name: scpa-cut
+          path: /tmp/cut.txt
           retention-days: 1
