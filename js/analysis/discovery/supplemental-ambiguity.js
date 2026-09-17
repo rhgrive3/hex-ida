@@ -142,8 +142,46 @@ function codeIntervals(artifact) {
       });
     }
   }
-  return out.sort((a, b) => compareAddress(a.start, b.start) || compareAddress(a.end, b.end) || compareText(a.intervalId, b.intervalId));
+  return out;
 }
+
+// Loader-declared extents are consumed only to retain ambiguity. They never
+// feed candidate exactness or function-start authority, so a caller can at most
+// add a conservative blocker here, not promote a speculative function.
+function rawFunctionIntervals(image, artifact) {
+  const raw = items(own(image, 'functions', 'discovery-artifact-image-functions-invalid') ?? [], 'discovery-artifact-image-functions-invalid', artifact.budget.maxIntervals);
+  const out = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    let start;
+    try { start = address(own(item, 'address', 'discovery-artifact-function-address-invalid'), 'discovery-artifact-function-address-invalid'); }
+    catch { continue; }
+    const rawSize = own(item, 'sizeBytes', 'discovery-artifact-function-size-invalid')
+      ?? own(item, 'size', 'discovery-artifact-function-size-invalid');
+    let end = null;
+    if (rawSize != null) {
+      try {
+        const size = BigInt(address(rawSize, 'discovery-artifact-function-size-invalid'));
+        if (size > 0n) end = (BigInt(start) + size).toString();
+      } catch { end = null; }
+    } else {
+      try {
+        const candidate = own(item, 'end', 'discovery-artifact-function-end-invalid');
+        if (candidate != null) end = address(candidate, 'discovery-artifact-function-end-invalid');
+      } catch { end = null; }
+    }
+    if (end == null || BigInt(end) <= BigInt(start)) continue;
+    out.push({
+      intervalId: `loader-function-region:${artifact.binding.architectureId ?? 'generic'}:${start}:${end}`,
+      kind: 'code',
+      start,
+      end,
+      candidateStart: start,
+    });
+  }
+  return out;
+}
+
 function intervalMember(interval) {
   return { memberId: interval.intervalId, kind: interval.kind, start: interval.start, end: interval.end, candidateStart: interval.candidateStart ?? null };
 }
@@ -155,9 +193,14 @@ function collision(kind, alternatives, range = null, at = null) {
   const payload = { kind, range, at, alternatives: ordered, resolution: 'unresolved' };
   return deepFreeze({ collisionId: `discovery-collision:${canonicalTypedDigest(payload)}`, ...payload });
 }
-function supplementalCollisions(artifact, supplementalIntervals, supplementalReferences) {
+function supplementalCollisions(artifact, image, supplementalIntervals, supplementalReferences) {
   if (supplementalIntervals.length === 0 && supplementalReferences.length === 0) return [];
-  const code = codeIntervals(artifact);
+  const codeByExtent = new Map();
+  for (const interval of [...codeIntervals(artifact), ...rawFunctionIntervals(image, artifact)]) {
+    const key = `${interval.start}:${interval.end}:${interval.candidateStart ?? ''}`;
+    if (!codeByExtent.has(key)) codeByExtent.set(key, interval);
+  }
+  const code = [...codeByExtent.values()].sort((a, b) => compareAddress(a.start, b.start) || compareAddress(a.end, b.end) || compareText(a.intervalId, b.intervalId));
   const all = [...code, ...supplementalIntervals].sort((a, b) => compareAddress(a.start, b.start) || compareAddress(a.end, b.end));
   const found = new Map();
   let checks = 0;
@@ -199,7 +242,7 @@ export function augmentDiscoveryPayload(artifact, rawImage = {}, options = {}) {
   const referenceMap = new Map(artifact.references.map((item) => [item.memberId, item]));
   for (const item of supplementalReferences) referenceMap.set(item.memberId, item);
   const collisionMap = new Map(artifact.collisionSets.map((item) => [item.collisionId, item]));
-  for (const item of supplementalCollisions(artifact, supplementalIntervals, supplementalReferences)) collisionMap.set(item.collisionId, item);
+  for (const item of supplementalCollisions(artifact, image, supplementalIntervals, supplementalReferences)) collisionMap.set(item.collisionId, item);
   const intervalClaims = [...intervalMap.values()].sort((a, b) => compareAddress(a.start, b.start) || compareAddress(a.end, b.end) || compareText(a.intervalId, b.intervalId));
   const references = [...referenceMap.values()].sort((a, b) => compareAddress(a.address, b.address) || compareText(a.memberId, b.memberId));
   if (intervalClaims.length > artifact.budget.maxIntervals || references.length > artifact.budget.maxReferences) fail('discovery-artifact-budget-exhausted');
