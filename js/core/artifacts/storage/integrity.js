@@ -1,11 +1,13 @@
+import { normalizeDependencyScope } from '../dependencies.js';
 import {
   ArtifactCorruptionError,
+  ArtifactStorageError,
   canonicalSerializeArtifactRecord,
   decodeArtifactPayload,
   encodeArtifactPayload,
   validateArtifactRecord,
 } from '../contracts.js';
-import { stableDigest } from '../../identity/index.js';
+import { stableDigest, createArtifactId } from '../../identity/index.js';
 
 export const ARTIFACT_STORAGE_ENVELOPE_SCHEMA_VERSION = 1;
 
@@ -71,6 +73,10 @@ export function validateArtifactRecordShape(record) {
   nullableString(record.runtimeSnapshotId, 'artifact-record-malformed');
   requiredString(record.canonicalConfigHash, 'artifact-record-required-field-missing');
   requiredString(record.payloadChecksum, 'artifact-record-required-field-missing');
+  // #8808: the artifact-key `optionsHash` is durable identity material — the
+  // envelope's self-consistent checksum alone is not an identity proof, so a
+  // row without optionsHash cannot be authenticated from its own bytes.
+  requiredString(record.optionsHash, 'artifact-record-required-field-missing');
   if (!Number.isSafeInteger(record.payloadSize) || record.payloadSize < 0) throw new ArtifactCorruptionError('artifact-record-malformed');
   if (!isObject(record.versions)) throw new ArtifactCorruptionError('artifact-record-malformed');
   for (const key of ['loader', 'architectureSemantic', 'abiSemantic', 'semanticSchema', 'platform', 'runtime', 'plugin', 'provider']) {
@@ -78,6 +84,13 @@ export function validateArtifactRecordShape(record) {
   }
   stringArray(record.upstreamArtifactIds, 'artifact-record-malformed');
   stringArray(record.originRefs, 'artifact-record-malformed');
+  if (Object.hasOwn(record, 'dependencyScope')) {
+    try {
+      const scope = normalizeDependencyScope(record.dependencyScope);
+      if (canonicalSerializeArtifactRecord(scope) !== canonicalSerializeArtifactRecord(record.dependencyScope)
+        || scope.positiveArtifactIds.some((id) => !record.upstreamArtifactIds.includes(id))) throw new Error('dependency-scope-noncanonical');
+    } catch (error) { throw new ArtifactCorruptionError('artifact-dependency-scope-malformed', 'Invalid scoped dependency record', { cause:String(error) }); }
+  }
   return true;
 }
 
@@ -88,6 +101,42 @@ export function canonicalStoredRecord(record) {
   } catch (error) {
     if (error instanceof ArtifactCorruptionError) throw error;
     throw new ArtifactCorruptionError('artifact-record-malformed', 'Artifact record cannot be canonically serialized', { cause:String(error) });
+  }
+}
+
+function assertArtifactIdRecomputable(record) {
+  // #8808: A stored row must recompute its own artifactId from durable
+  // identity material (binary/slice/producer/entity/versions/canonical
+  // config hash/upstream list plus the persisted `optionsHash`). The
+  // envelope's self-consistent checksum is only a corruption check, not an
+  // identity proof: an attacker who can mutate a record can also recompute
+  // the checksum from the mutated bytes. Recomputing the artifactId from the
+  // record's own material is the durable identity check; a forged row that
+  // changes only `record.artifactId` while keeping the rest of a foreign
+  // record's fields cannot survive this recompute because `optionsHash` is
+  // derived from the config/keyExtras/dependencyScope of the record it
+  // originally minted. A row missing `optionsHash` (legacy / pre-hardening)
+  // also fails: it has no durable identity material at all.
+  let recomputed;
+  try {
+    recomputed = createArtifactId({
+      binaryId:record.binaryId,
+      sliceId:record.sliceId,
+      loaderVersion:record.versions?.loader,
+      architectureSemanticVersion:record.versions?.architectureSemantic,
+      abiSemanticVersion:record.versions?.abiSemantic,
+      semanticSchemaVersion:record.versions?.semanticSchema,
+      entityId:record.entityId,
+      passId:record.producerId,
+      passVersion:record.producerVersion,
+      optionsHash:record.optionsHash,
+      inputArtifactIds:record.upstreamArtifactIds,
+    });
+  } catch {
+    throw new ArtifactCorruptionError('artifact-record-identity-mismatch', 'Artifact record identity material cannot recompute its artifactId');
+  }
+  if (recomputed !== record.artifactId) {
+    throw new ArtifactCorruptionError('artifact-record-identity-mismatch', 'Artifact record artifactId does not match its durable identity material (#8808)');
   }
 }
 
@@ -137,6 +186,12 @@ export function validateUpstreamRecordIdentity(record, { expectedArtifactId, pro
     }
     return true;
   }
+  // #8808: A row this store did not publish in this session must still carry a
+  // durable identity proof. The self-consistent storage envelope is only a
+  // byte-corruption check — the record's `optionsHash` and its own artifact
+  // key material are what prove the artifactId. `canonicalStoredRecord()`
+  // already recomputes the artifactId before this hook is reached, so a
+  // forged row has been rejected; here we simply return true.
   return true;
 }
 
@@ -160,11 +215,26 @@ export function validateDescriptorRecord(record, descriptor) {
   if (record.upstreamArtifactIds.length !== expectedUpstreams.length || record.upstreamArtifactIds.some((id, index) => id !== expectedUpstreams[index])) {
     mismatches.push('upstreamArtifactIds');
   }
+  if (canonicalSerializeArtifactRecord(record.dependencyScope ?? null) !== canonicalSerializeArtifactRecord(descriptor.dependencyScope ?? null)) mismatches.push('dependencyScope');
+  const expectedOriginRefs = descriptor.originRefs || [];
+  const originRefsMismatch = record.originRefs.length !== expectedOriginRefs.length
+    || record.originRefs.some((ref, index) => ref !== expectedOriginRefs[index]);
   if (mismatches.length) {
     throw new ArtifactCorruptionError(
       'artifact-record-identity-mismatch',
       'Artifact record does not match the requested canonical descriptor',
-      { mismatches },
+      { mismatches:[...mismatches, ...(originRefsMismatch ? ['originRefs'] : [])] },
+    );
+  }
+  if (originRefsMismatch) {
+    // A provenance mismatch is a conflict between two valid descriptors that
+    // intentionally share an artifactId, not corruption of the stored row.
+    // Surface a non-corruption error so ArtifactStore does not delete the healthy
+    // first writer while refusing reuse for the second descriptor (#5700).
+    throw new ArtifactStorageError(
+      'artifact-record-provenance-mismatch',
+      'Artifact record provenance does not match the requested canonical descriptor',
+      { mismatches:['originRefs'] },
     );
   }
   return true;
@@ -192,6 +262,13 @@ export function validateStoredArtifact(raw, { artifactId, descriptor = null, all
     semanticSchemaVersion:descriptor?.versions?.semanticSchema,
     allowIncomplete,
   });
+  // #8808: after the caller-supplied artifactId/producer/semantic checks have
+  // run, the record must also recompute its own artifactId from durable
+  // identity material. The self-consistent envelope checksum cannot stand in
+  // for that proof (a party able to mutate a row can also recompute the
+  // checksum), and a swapped row is exactly the #5770 identity gap re-opened
+  // once a fresh store reads back a persisted envelope.
+  assertArtifactIdRecomputable(record);
   validateDescriptorRecord(record, descriptor);
   const envelope = validateStorageEnvelope(raw, record);
   const payload = decodeCanonicalArtifactPayload(payloadBytes);
@@ -219,9 +296,10 @@ export function storageRecordIdentity(record) {
  * post-publication validation would reject it, but the duplicate path would
  * refuse to delete it (#6206).
  *
- * `creation` and `originRefs` are deliberately absent: creation metadata is
- * per-run bookkeeping and originRefs is non-key provenance, and both must keep
- * the CAS-duplicate semantics the store contract pins (tests/phase4/store).
+ * `creation` is deliberately absent because it is per-run bookkeeping.
+ * `originRefs` remains non-key for artifactId derivation, but it is publication
+ * provenance: two callers that request different origins must not silently
+ * reuse the first writer's provenance (#5700).
  */
 const PUBLICATION_IDENTITY_KEYS = Object.freeze([
   'recordSchemaVersion',
@@ -237,6 +315,8 @@ const PUBLICATION_IDENTITY_KEYS = Object.freeze([
   'canonicalConfigHash',
   'versions',
   'upstreamArtifactIds',
+  'dependencyScope',
+  'originRefs',
   'payloadEncoding',
   'payloadEncodingVersion',
   'payloadChecksum',
