@@ -1,0 +1,71 @@
+name: reconcile-7036-main-focused
+on:
+  push:
+    branches:
+      - reconcile/7036-main-4d68-focused
+permissions:
+  contents: read
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Merge current main and resolve six conflicts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .github/diag/reconcile-7036-main.py /tmp/reconcile.py
+          git fetch --no-tags origin 4d68cb6bf67622f7f3887e821388a2788cbd34fc
+          git checkout --detach f8c8e281d940ab9d5f1b20d15398095f64cb50f7
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          set +e
+          git merge --no-commit --no-ff 4d68cb6bf67622f7f3887e821388a2788cbd34fc >/tmp/merge.log 2>&1
+          rc=$?
+          set -e
+          test "$rc" -eq 1
+          test "$(git diff --name-only --diff-filter=U | wc -l)" -eq 6
+          git checkout --theirs -- js/analysis/discovery/artifact.js
+          python3 /tmp/reconcile.py
+          git add .circleci/config.yml js/analysis/discovery/artifact.js js/analysis/discovery/producers.js js/analysis/index.js js/rebuild/transaction-v2.js tests/issue-4135-pe-section-virtual-layout.mjs
+          test -z "$(git diff --name-only --diff-filter=U)"
+          git diff --check
+      - name: Run T016 focused tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 120s node tests/phase7/discovery/t016-discovery-preservation.test.mjs
+          timeout 120s node tests/rebuild/t016-discovery-preservation.test.mjs
+      - name: Run X03 focused tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 120s node tests/phase7/discovery/x03-ambiguity-artifact.test.mjs
+          timeout 180s node tests/stage2/x03-rebuild-discovery-acceptance.test.mjs
+          timeout 120s node tests/stage2/x03-rebuild-discovery.test.mjs
+      - name: Run PE regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 120s node tests/issue-4135-pe-section-virtual-layout.mjs
+      - name: Capture resolved tree
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm -f .github/diag/reconcile-7036-main.py .github/workflows/reconcile-7036-main-focused.yml 2>/dev/null || true
+          git add -A
+          git diff --cached --check
+          git commit -m 'merge: reconcile #7036 with current main'
+          printf 'head=%s\ntree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})" > /tmp/reconcile-result.txt
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reconcile-7036-main-focused
+          path: /tmp/reconcile-result.txt
+          if-no-files-found: ignore
+          retention-days: 1
