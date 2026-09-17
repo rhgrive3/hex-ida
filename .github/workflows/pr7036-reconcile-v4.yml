@@ -4,7 +4,7 @@ on:
     branches: [sync/pr7036-main-20260918-v4]
 jobs:
   reconcile:
-    if: contains(github.event.head_commit.message, 'validate PR7036 main-authority reconciliation v4')
+    if: contains(github.event.head_commit.message, 'validate PR7036 reconciliation v4 with main macho authority')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -26,7 +26,8 @@ jobs:
           test "$(git diff --name-only --diff-filter=U | wc -l | tr -d ' ')" -eq 7
           git checkout --theirs -- .circleci/config.yml js/analysis/discovery/artifact.js js/analysis/discovery/producers.js js/analysis/index.js js/rebuild/transaction-v2.js tests/issue-4135-pe-section-virtual-layout.mjs
           git checkout --ours -- js/semantics/ssa/build.js
-          git add .circleci/config.yml js/analysis/discovery/artifact.js js/analysis/discovery/producers.js js/analysis/index.js js/rebuild/transaction-v2.js js/semantics/ssa/build.js tests/issue-4135-pe-section-virtual-layout.mjs
+          git checkout FETCH_HEAD -- js/binary/macho-core.js
+          git add .circleci/config.yml js/analysis/discovery/artifact.js js/analysis/discovery/producers.js js/analysis/index.js js/rebuild/transaction-v2.js js/semantics/ssa/build.js js/binary/macho-core.js tests/issue-4135-pe-section-virtual-layout.mjs
           python3 <<'PY'
           from pathlib import Path
           p=Path('js/semantics/ssa/build-core.js')
