@@ -1,0 +1,32 @@
+name: issue-5302-scpa-diag
+on:
+  push:
+    branches:
+      - diag/issue-5302-scpa-20260918
+permissions:
+  contents: read
+jobs:
+  scpa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - name: SCPA focused gate
+        shell: bash
+        run: |
+          set +e
+          timeout 300s npm run scpa:test > /tmp/scpa.log 2>&1
+          rc=$?
+          tail -100 /tmp/scpa.log > /tmp/scpa-tail.txt
+          exit $rc
+      - name: Upload minimal failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scpa-first-failure
+          path: /tmp/scpa-tail.txt
+          retention-days: 1
