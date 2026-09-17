@@ -4,10 +4,8 @@ on:
   push:
     branches: [diag/stage-a-core-scpa-20260918]
     paths: [.github/workflows/stage-a-core-scpa-diag.yml]
-
 permissions:
   contents: read
-
 jobs:
   focused:
     runs-on: ubuntu-latest
@@ -18,74 +16,31 @@ jobs:
           ref: 3d6d2c875182d83461cd0842e8a7786ebce04ac1
           fetch-depth: 1
           persist-credentials: false
-      - name: Install exact dependencies
-        run: npm ci --silent --no-audit --no-fund
-      - name: Run balanced native flow only
-        id: focused
+      - run: npm ci --silent --no-audit --no-fund
+      - name: Pure projection BFS
         shell: bash
         run: |
-          set +e
-          node --test tests/scpa/balanced-native-flow.test.mjs > /tmp/scpa.out 2>&1
-          status=$?
-          tail -n 80 /tmp/scpa.out > /tmp/first-failure.txt
-          exit $status
-      - name: Dump bounded projection neighborhood
-        if: always() && steps.focused.outcome == 'failure'
-        shell: bash
-        run: |
-          cat > tests/scpa/.stage-a-flow-diag.mjs <<'NODE'
+          cat > tests/scpa/.stage-a-bfs-diag.mjs <<'NODE'
           import { captured, scope } from './native-owner-fixture.mjs';
           import { ScopedAnalysisWork } from '../../js/core/budgets/scoped-work.js';
           import { buildCanonicalQueryProjection } from '../../js/analysis/query/semantic/projection.js';
-          const f = scope();
-          const input = captured(0x4000n, [['str', 'x0, [sp]', 0xf90003e0], ['ldr', 'x2, [sp]', 0xf94003e2], ['ldr', 'x3, [x2]', 0xf9400043], ['ret', '', 0xd65f03c0]]);
-          const work = new ScopedAnalysisWork({ limits: { deadlineMs: 10000 } });
-          const replacer = (_k, v) => typeof v === 'bigint' ? `0x${v.toString(16)}` : v;
-          let projection;
+          const f=scope(), input=captured(0x4000n,[['str','x0, [sp]',0xf90003e0],['ldr','x2, [sp]',0xf94003e2],['ldr','x3, [x2]',0xf9400043],['ret','',0xd65f03c0]]);
+          const work=new ScopedAnalysisWork({limits:{deadlineMs:10000}}); let p;
+          const allowed=new Set(['operation-input','operation-output','ssa-use-def','ssa-phi','memory-input','memory-output','memory-reaching','memory-merge']);
           try {
-            projection = await buildCanonicalQueryProjection(input.result.pipeline, { ...f, snapshotId: 'snap', work });
-            const ir = input.result.pipeline.semanticIr;
-            const store = ir.nodes.find(n => n.kind === 'store');
-            const loads = ir.nodes.filter(n => n.kind === 'load');
-            const sink = loads.at(-1);
-            const storeRef = projection.entityReference('semantic-ir', store.id);
-            const target = projection.entityReference('semantic-ir', sink.id);
-            const sourceEdge = projection.adjacent(storeRef, 'backward').map(id => projection.edge(id))
-              .find(e => e.kind === 'operation-input' && e.flowKinds?.includes('data'));
-            const addressEdge = projection.adjacent(target, 'backward').map(id => projection.edge(id))
-              .find(e => e.kind === 'operation-input' && e.flowKinds?.includes('address'));
-            console.log('IR_NODES');
-            for (const node of ir.nodes) console.log(JSON.stringify(node, replacer));
-            console.log('KEYS', JSON.stringify({ storeRef, source: sourceEdge?.from, target, addressUse: addressEdge?.from }));
-            const roots = [sourceEdge?.from, storeRef, projection.entityReference('semantic-ir', loads[0].id), addressEdge?.from, target].filter(Boolean);
-            const seen = new Set(); let frontier = [...roots]; let depth = 0; let emitted = 0;
-            while (frontier.length && depth < 5 && emitted < 60) {
-              const next = [];
-              for (const vertex of frontier) {
-                if (seen.has(vertex)) continue; seen.add(vertex);
-                for (const direction of ['forward','backward']) {
-                  for (const edgeId of projection.adjacent(vertex, direction)) {
-                    const e = projection.edge(edgeId);
-                    console.log('EDGE', depth, direction, JSON.stringify({ id:e.id, kind:e.kind, from:e.from, to:e.to, flowKinds:e.flowKinds, obligations:e.obligations }, replacer));
-                    emitted++; if (emitted >= 60) break;
-                    next.push(direction === 'forward' ? e.to : e.from);
-                  }
-                  if (emitted >= 60) break;
-                }
-                if (emitted >= 60) break;
-              }
-              frontier = next; depth++;
-            }
-          } finally { projection?.release(); work.dispose(); }
+            p=await buildCanonicalQueryProjection(input.result.pipeline,{...f,snapshotId:'snap',work});
+            const ir=input.result.pipeline.semanticIr, store=ir.nodes.find(n=>n.kind==='store'), loads=ir.nodes.filter(n=>n.kind==='load'), sink=loads.at(-1);
+            const storeRef=p.entityReference('semantic-ir',store.id), target=p.entityReference('semantic-ir',sink.id);
+            const source=p.adjacent(storeRef,'backward').map(id=>p.edge(id)).find(e=>e.kind==='operation-input'&&e.flowKinds?.includes('data')).from;
+            const addressUse=p.adjacent(target,'backward').map(id=>p.edge(id)).find(e=>e.kind==='operation-input'&&e.flowKinds?.includes('address')).from;
+            function path(from,to){ const q=[from], parent=new Map([[from,null]]), pe=new Map(); for(let i=0;i<q.length&&i<50000;i++){ const v=q[i]; if(v===to) break; for(const id of p.adjacent(v,'forward')){ const e=p.edge(id); if(!allowed.has(e.kind)||parent.has(e.to)) continue; parent.set(e.to,v); pe.set(e.to,e); q.push(e.to); } } if(!parent.has(to)) return null; const out=[]; for(let v=to;parent.get(v)!==null;v=parent.get(v)){ const e=pe.get(v); out.push({kind:e.kind,from:e.from,to:e.to,flowKinds:e.flowKinds??null,obligations:e.obligations??[]}); } return out.reverse(); }
+            const a=path(source,addressUse), b=path(addressUse,target), direct=path(source,target);
+            console.log(JSON.stringify({source,addressUse,target,sourceToAddress:a,addressToTarget:b,direct},null,2));
+          } finally {p?.release();work.dispose();}
           NODE
-          node tests/scpa/.stage-a-flow-diag.mjs > /tmp/projection-neighborhood.txt 2>&1
-          tail -n 100 /tmp/projection-neighborhood.txt > /tmp/projection-neighborhood-bounded.txt
-      - name: Upload bounded diagnostics
-        if: always() && steps.focused.outcome == 'failure'
-        uses: actions/upload-artifact@v4
+          node tests/scpa/.stage-a-bfs-diag.mjs > /tmp/bfs.txt 2>&1
+      - uses: actions/upload-artifact@v4
         with:
-          name: scpa-bounded-diagnostics
-          path: |
-            /tmp/first-failure.txt
-            /tmp/projection-neighborhood-bounded.txt
+          name: scpa-bfs
+          path: /tmp/bfs.txt
           retention-days: 1
