@@ -1,0 +1,39 @@
+name: PR7036 live-main reconcile v4
+on:
+  push:
+    branches: [sync/pr7036-main-20260917-v4]
+jobs:
+  inventory:
+    if: contains(github.event.head_commit.message, 'inventory PR7036 live main conflicts v4')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 500
+      - name: Inventory conflicts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git fetch --no-tags --depth=500 origin fce9076a8c396953146152435a61bb0d4897261d >/dev/null 2>&1
+          set +e
+          git merge --no-commit --no-ff FETCH_HEAD >/dev/null 2>&1
+          RC=$?
+          set -e
+          git diff --name-only --diff-filter=U | sed '/^$/d' | sort > /tmp/conflicts.txt
+          {
+            echo "merge_rc=$RC"
+            echo "head=$(git rev-parse HEAD)"
+            echo "main=$(git rev-parse FETCH_HEAD)"
+            echo "conflict_count=$(wc -l < /tmp/conflicts.txt | tr -d ' ')"
+            cat /tmp/conflicts.txt
+          } > /tmp/pr7036-v4-conflicts.txt
+          git merge --abort || true
+      - name: Upload inventory
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr7036-v4-conflicts
+          path: /tmp/pr7036-v4-conflicts.txt
+          retention-days: 2
