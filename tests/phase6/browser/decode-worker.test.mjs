@@ -170,3 +170,27 @@ test('the production probe worker reports RISC-V support from the deployed bundl
     for (const file of temporaryModules) { try { fs.rmSync(file, { force: true }); } catch { /* best effort */ } }
   }
 });
+
+test('#8353 production ARM64 worker rescues FEAT_PAuth_LR encodings from Capstone skipdata', async () => {
+  const { scope, cleanup } = runClassicWorker();
+  try {
+    const response = await decodeThroughWorker(scope, {
+      id: 8353,
+      architecture: 'arm64',
+      address: 0x1000n,
+      bytes: new Uint8Array([
+        0xfe, 0xa3, 0xc1, 0xda, // paciasppc
+        0xdf, 0x00, 0x00, 0x55, // retaasppc, encoded PC offset 24
+        0x20, 0x00, 0x80, 0x52, // mov w0,#1
+      ]),
+    });
+    assert.equal(response.ok, true, `worker failed: ${response.error}`);
+    assert.equal(response.bytesConsumed, 12);
+    const instructions = Array.from(response.instructions);
+    assert.deepEqual(instructions.map((instruction) => instruction.mnemonic), ['paciasppc', 'retaasppc', 'mov']);
+    assert.equal(instructions[0].decodeFallback, 'arm64-feat-pauth-lr');
+    assert.equal(instructions[1].decodeFallback, 'arm64-feat-pauth-lr');
+    assert.equal(BigInt(instructions[1].pauthLrPcOffsetBytes), 24n);
+    assert.ok(instructions.every((instruction) => instruction.mnemonic !== '.byte'));
+  } finally { cleanup(); }
+});

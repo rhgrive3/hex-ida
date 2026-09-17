@@ -56,6 +56,41 @@ async function handleFor(architecture, decodeProfile = null) {
   }
 }
 
+
+function arm64PauthLrFallback(bytes, offset, address) {
+  if (!(bytes instanceof Uint8Array) || offset < 0 || offset + 4 > bytes.length) return null;
+  const word = (bytes[offset]
+    | (bytes[offset + 1] << 8)
+    | (bytes[offset + 2] << 16)
+    | (bytes[offset + 3] << 24)) >>> 0;
+  const base = { address, size:4, decodeFallback:'arm64-feat-pauth-lr', rawEncoding:word };
+  if (word === 0xdac1a3fe) return { ...base, mnemonic:'paciasppc', opStr:'' };
+  if (word === 0xdac1a7fe) return { ...base, mnemonic:'pacibsppc', opStr:'' };
+
+  const immediateClass = (word & 0xffe0001f) >>> 0;
+  if (immediateClass === 0x5500001f || immediateClass === 0x5520001f) {
+    const offsetBytes = BigInt((word >>> 5) & 0xffff) * 4n;
+    const target = BigInt.asUintN(64, BigInt(address) - offsetBytes);
+    return {
+      ...base,
+      mnemonic: immediateClass === 0x5500001f ? 'retaasppc' : 'retabsppc',
+      opStr:`0x${target.toString(16)}`,
+      pauthLrPcOffsetBytes:offsetBytes,
+    };
+  }
+
+  const registerClass = (word & 0xffffffe0) >>> 0;
+  if (registerClass === 0xd65f0be0 || registerClass === 0xd65f0fe0) {
+    const rm = word & 0x1f;
+    return {
+      ...base,
+      mnemonic: registerClass === 0xd65f0be0 ? 'retaasppcr' : 'retabsppcr',
+      opStr:`x${rm}`,
+    };
+  }
+  return null;
+}
+
 const PRIORITY_ORDER = {
   visible: 0,
   current: 0,
@@ -110,10 +145,15 @@ async function decodeMessage(msg) {
               compressedInstructions:msg.riscvIsa?.compressedInstructions ?? null,
             }));
           } else {
-            instructions.push({
-              address: BigInt(msg.address) + BigInt(consumed),
+            const instructionAddress = BigInt(msg.address) + BigInt(consumed);
+            const mnemonic = M.UTF8ToString(p + OFF_MNEMONIC);
+            const fallback = mnemonic === '.byte' && size === 4
+              ? arm64PauthLrFallback(bytes, consumed, instructionAddress)
+              : null;
+            instructions.push(fallback || {
+              address: instructionAddress,
               size,
-              mnemonic: M.UTF8ToString(p + OFF_MNEMONIC),
+              mnemonic,
               opStr: M.UTF8ToString(p + OFF_OP_STR),
             });
           }
