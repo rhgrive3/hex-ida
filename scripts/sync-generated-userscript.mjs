@@ -17,6 +17,11 @@ import {
 
 const root = process.cwd();
 const argv = process.argv.slice(2);
+for (const arg of argv) {
+  if (arg !== '--rebuild') {
+    fail(`unrecognized argument: ${arg}`);
+  }
+}
 const rebuild = argv.includes('--rebuild');
 const branch = process.env.GITHUB_REF_NAME || gitRead(['rev-parse', '--abbrev-ref', 'HEAD']);
 const eventName = process.env.GITHUB_EVENT_NAME || '';
