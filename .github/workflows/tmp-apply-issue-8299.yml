@@ -1,0 +1,42 @@
+name: tmp-apply-issue-8299
+
+on:
+  push:
+    branches:
+      - fix/mod5-3-8299-machine-effects-prereqs
+
+permissions:
+  contents: write
+
+jobs:
+  apply-non-workflow-files:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/mod5-3-8299-machine-effects-prereqs
+          fetch-depth: 1
+      - name: Apply validated final patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d .github/patches/issue-8299-final.patch.gz.b64 | gzip -d > /tmp/issue-8299.patch
+          git apply --check /tmp/issue-8299.patch
+          git apply /tmp/issue-8299.patch
+          git rm .github/patches/issue-8299-final.patch.gz.b64
+      - name: Commit non-workflow files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add docs/machine-effects-prerequisites.md \
+            tests/ci/issue-8299-machine-effects-prerequisites.test.mjs \
+            tests/machine-effects/run.mjs \
+            tools/validation/machine-effects/a2-denominator.mjs \
+            tools/validation/machine-effects/prerequisites.mjs
+          git commit -m 'fix(validation): enforce MachineEffects prerequisites (#8299)'
+      - name: Push non-workflow commit
+        run: git push origin HEAD:fix/mod5-3-8299-machine-effects-prereqs
