@@ -18,7 +18,7 @@ function __dicContains(region, address, width = 1n) {
   const start = BigInt(address), end = start + BigInt(width);
   return __dicRanges(region).some((range) => start < range.end && end > range.start);
 }
-function __dicCodeSpans(region) {
+function __dicCodeSpans(region, reasons = null) {
   const lo = BigInt(region.vmAddr), hi = lo + BigInt(region.size);
   const spans = [];
   let cursor = lo;
@@ -30,6 +30,9 @@ function __dicCodeSpans(region) {
     if (end > cursor) cursor = end;
   }
   if (cursor < hi) spans.push({ start:cursor, end:hi });
+  for (const span of spans) {
+    if (span.end - span.start < 4n && reasons && !reasons.includes('aarch64-code-span-not-word-aligned')) reasons.push('aarch64-code-span-not-word-aligned');
+  }
   return spans.filter((span) => span.end - span.start >= 4n);
 }
 
@@ -54,12 +57,12 @@ getChunk = async function getChunkDataInCode(args) {
 
 scanProgram = async function scanProgramDataInCode(args) {
   const region = regions.get(args.regionId);
-  const spans = region ? __dicCodeSpans(region) : [];
+  const reasons = [];
+  const spans = region ? __dicCodeSpans(region, reasons) : [];
   if (!region || !__dicRanges(region).length) return __dicScanProgram(args);
   const words = Math.floor(Number(region.size) / 4);
   const kinds = new Uint8Array(words); // OTHER=0 is the fail-closed value.
   const calls = [], refs = [];
-  const reasons = [];
   let callsCapped = false, refsCapped = false, cancelledResult = false;
   const original = region;
   try {
