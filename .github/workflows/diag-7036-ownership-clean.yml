@@ -1,0 +1,68 @@
+name: diag-7036-ownership-clean
+on:
+  push:
+    branches:
+      - diag/7036-ownership-clean-20260917
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate clean ownership fix
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          STATUS=/tmp/diag-7036-clean.txt
+          : > "$STATUS"
+          timeout 90s git fetch --no-tags origin main fix/7036-ownership-x02-collector-20260917 >/tmp/fetch.log 2>&1
+          rc=$?
+          echo "fetch rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/fetch.log >> "$STATUS"; exit "$rc"; fi
+          git checkout --detach origin/fix/7036-ownership-x02-collector-20260917 >/tmp/checkout.log 2>&1
+          rc=$?
+          echo "checkout rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/checkout.log >> "$STATUS"; exit "$rc"; fi
+          BASE_SHA=$(git rev-parse refs/remotes/origin/main)
+          HEAD_SHA=$(git rev-parse HEAD)
+          echo "base=$BASE_SHA" >> "$STATUS"
+          echo "head=$HEAD_SHA" >> "$STATUS"
+          LOGICAL_BRANCH=feat/analysis-roadmap-v8-current-main-20260907
+          run_check() {
+            label="$1"; shift
+            "$@" >/tmp/step.log 2>&1
+            rc=$?
+            echo "$label rc=$rc" >> "$STATUS"
+            if [ "$rc" -ne 0 ]; then
+              echo '--- first failure tail ---' >> "$STATUS"
+              tail -n 80 /tmp/step.log >> "$STATUS"
+              exit "$rc"
+            fi
+          }
+          run_check p7_manifest timeout 120s node tools/validation/phase7-ownership.mjs --check-manifest
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase7 --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" >/tmp/p7.json 2>/tmp/p7.err
+          rc=$?
+          echo "p7_inventory rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then echo '--- first failure tail ---' >> "$STATUS"; tail -n 80 /tmp/p7.err >> "$STATUS"; exit "$rc"; fi
+          P7=$(cat /tmp/p7.json)
+          run_check p7_validate timeout 120s node tools/validation/phase7-ownership.mjs --files-json "$P7"
+          run_check p8_manifest timeout 120s node tools/validation/phase8-ownership.mjs --check-manifest
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase8 --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" >/tmp/p8.json 2>/tmp/p8.err
+          rc=$?
+          echo "p8_inventory rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then echo '--- first failure tail ---' >> "$STATUS"; tail -n 80 /tmp/p8.err >> "$STATUS"; exit "$rc"; fi
+          P8=$(cat /tmp/p8.json)
+          run_check p8_validate timeout 120s node tools/validation/phase8-ownership.mjs --files-json "$P8"
+          echo 'ownership=pass' >> "$STATUS"
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-7036-ownership-clean
+          path: /tmp/diag-7036-clean.txt
+          retention-days: 1
