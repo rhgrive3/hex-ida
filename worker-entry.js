@@ -4,6 +4,7 @@ import { AI_QUOTA, acquireQuotaState, releaseQuotaState } from './js/ai/quota.js
 import { RUNTIME_BUILD } from './.runtime-build/runtime-secrets.js';
 import { PRIVILEGED_BUILD } from './.runtime-build/privileged-assets.js';
 import { createAuthHandler } from './js/auth/server/router.js';
+import { AI_CAPABILITY_HEADER, verifyAICapability } from './js/auth/server/ai-capability.js';
 import { DEPLOYMENT_COMMIT } from './js/userscript/deployment-identity.generated.js';
 import { CHATGPT_ORIGINS, isAllowedRequestOrigin } from './js/userscript/request-origin-policy.js';
 import {
@@ -19,7 +20,11 @@ import {
   pruneRuntimeBootstrapState,
 } from './js/userscript/runtime-bootstrap-admission.js';
 
-const handleAuth = createAuthHandler({ privileged: PRIVILEGED_BUILD });
+const AI_CAPABILITY_SIGNING_KEY = runtimeAICapabilitySigningKey();
+const handleAuth = createAuthHandler({
+  privileged: PRIVILEGED_BUILD,
+  aiCapability: AI_CAPABILITY_SIGNING_KEY ? { signingKey: AI_CAPABILITY_SIGNING_KEY, buildId: RUNTIME_BUILD.manifest.buildId } : null,
+});
 const QUOTA_STATE_KEY = 'quota';
 const USER_SCRIPT_TEMPLATE = '/userscript/hex.user.template.js';
 const BOOTSTRAP_MAX_BYTES = 16 * 1024;
@@ -100,6 +105,14 @@ export default {
     if (url.pathname.startsWith('/api/')) {
       const origin = request.headers.get('origin');
       if (request.method === 'OPTIONS') return apiPreflight(origin);
+      if (isProviderSpendPath(url.pathname)) {
+        const capability = request.headers.get(AI_CAPABILITY_HEADER);
+        const authorized = AI_CAPABILITY_SIGNING_KEY && await verifyAICapability(capability, {
+          signingKey: AI_CAPABILITY_SIGNING_KEY,
+          buildId: RUNTIME_BUILD.manifest.buildId,
+        });
+        if (!authorized) return withApiCors(json({ error: { code: 'unauthorized', message: 'A valid Hex AI capability is required.' } }, 401), origin);
+      }
       return withApiCors(await worker.fetch(request, env, executionCtx), origin);
     }
     return worker.fetch(request, env, executionCtx);
@@ -281,6 +294,16 @@ function embedDocumentHeaders() { return new Headers({ 'content-security-policy'
 function utf8(value) { return new TextEncoder().encode(String(value)); }
 async function shortHash(value) { const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', utf8(value))); return encodeBase64URL(digest.slice(0, 12)); }
 
+
+function runtimeAICapabilitySigningKey() {
+  try {
+    if (typeof RUNTIME_BUILD?.signingKey !== 'string') return null;
+    const key = decodeBase64URL(RUNTIME_BUILD.signingKey);
+    return key.byteLength >= 32 ? key : null;
+  } catch { return null; }
+}
+function isProviderSpendPath(path) { return path === '/api/ai/turn' || path === '/api/gemini'; }
+
 function runtimePreflight(origin, workerOrigin) {
   if (!isAllowedRequestOrigin(origin, workerOrigin)) return new Response(null, { status: 403 });
   return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'Content-Type', 'access-control-max-age': '600', vary: 'Origin' } });
@@ -289,8 +312,8 @@ function runtimeAssetPreflight(origin, workerOrigin) {
   if (!isAllowedRequestOrigin(origin, workerOrigin)) return new Response(null, { status: 403 });
   return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'GET, OPTIONS', 'access-control-allow-headers': 'Authorization', 'access-control-max-age': '600', vary: 'Origin' } });
 }
-function apiPreflight(origin) { if (!CHATGPT_ORIGINS.has(origin)) return new Response(null, { status: 403 }); return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'Content-Type, X-Hex-Session', 'access-control-max-age': '86400', vary: 'Origin' } }); }
-function withApiCors(response, origin) { if (!CHATGPT_ORIGINS.has(origin)) return response; const headers = new Headers(response.headers); headers.set('access-control-allow-origin', origin); headers.set('access-control-allow-methods', 'POST, OPTIONS'); headers.set('access-control-allow-headers', 'Content-Type, X-Hex-Session'); headers.set('vary', appendVary(headers.get('vary'), 'Origin')); return new Response(response.body, { status: response.status, statusText: response.statusText, headers }); }
+function apiPreflight(origin) { if (!CHATGPT_ORIGINS.has(origin)) return new Response(null, { status: 403 }); return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'Content-Type, X-Hex-Session, X-Hex-AI-Capability', 'access-control-max-age': '86400', vary: 'Origin' } }); }
+function withApiCors(response, origin) { if (!CHATGPT_ORIGINS.has(origin)) return response; const headers = new Headers(response.headers); headers.set('access-control-allow-origin', origin); headers.set('access-control-allow-methods', 'POST, OPTIONS'); headers.set('access-control-allow-headers', 'Content-Type, X-Hex-Session, X-Hex-AI-Capability'); headers.set('vary', appendVary(headers.get('vary'), 'Origin')); return new Response(response.body, { status: response.status, statusText: response.statusText, headers }); }
 function appendVary(current, value) { const parts = String(current || '').split(',').map((item) => item.trim()).filter(Boolean); if (!parts.some((item) => item.toLowerCase() === value.toLowerCase())) parts.push(value); return parts.join(', '); }
 function json(body, status = 200, origin = null, extra = {}) { const headers = new Headers({ ...securityHeaders(), 'content-type': 'application/json; charset=utf-8', ...extra }); if (origin && CHATGPT_ORIGINS.has(origin)) { headers.set('access-control-allow-origin', origin); headers.set('vary', 'Origin'); } return new Response(JSON.stringify(body), { status, headers }); }
 

@@ -2,8 +2,16 @@ import { AIError } from '../schema.js';
 import { readBoundedText, requestJSON } from '../transport.js';
 import { validateModelDecision } from '../validation.js';
 import { SAFE_PROVIDER_CAPABILITIES } from '../budget/wire.js';
+import { getAuthContext } from '../../auth/runtime-context.js';
 
 const CAPABILITIES_MAX_RESPONSE_BYTES = 64 * 1024;
+
+async function currentAICapability() {
+  try {
+    const grant = await getAuthContext()?.auth?.aiCapability?.();
+    return typeof grant?.capability === 'string' ? grant.capability : null;
+  } catch { return null; }
+}
 
 export class AIProvider {
   constructor({ capabilities } = {}) {
@@ -176,6 +184,7 @@ export class WorkerAIProvider extends AIProvider {
     this.controllers.add(controller);
     try {
       if (controller.signal.aborted) throw interruptionError(options.signal || controller.signal);
+      const aiCapability = await currentAICapability();
       const response = await requestJSON(this.endpoint, {
         sessionId: request.sessionId || null,
         mode: request.mode,
@@ -189,7 +198,12 @@ export class WorkerAIProvider extends AIProvider {
         context: request.context || {},
         tools: request.tools || [],
         responseSchema: request.responseSchema || null,
-      }, { signal: controller.signal, timeoutMs: options.timeoutMs || this.timeoutMs, fetchImpl: this.fetchImpl });
+      }, {
+        signal: controller.signal,
+        timeoutMs: options.timeoutMs || this.timeoutMs,
+        fetchImpl: this.fetchImpl,
+        headers: aiCapability ? { 'x-hex-ai-capability': aiCapability } : null,
+      });
       if (response.capabilities && typeof response.capabilities === 'object') this.providerCapabilities = { ...this.providerCapabilities, ...response.capabilities };
       return validateModelDecision(response.decision, (request.tools || []).map((tool) => tool.name));
     } finally {

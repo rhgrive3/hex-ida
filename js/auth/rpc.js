@@ -1,6 +1,6 @@
 import { safeIdentity, ANONYMOUS_IDENTITY } from './capabilities.js';
 const PROTOCOL = 'hex-auth-rpc-v1';
-const METHODS = new Set(['identity', 'child', 'authorize', 'login', 'logout']);
+const METHODS = new Set(['identity', 'child', 'authorize', 'ai-capability', 'login', 'logout']);
 const ID = /^[a-f0-9]{32}$/;
 function valid(message) { return message && typeof message === 'object' && message.protocol === PROTOCOL && typeof message.id === 'string' && ID.test(message.id) && METHODS.has(message.method); }
 export function createAuthRpcServer({ port, auth, showLogin } = {}) {
@@ -25,6 +25,7 @@ export function createAuthRpcServer({ port, auth, showLogin } = {}) {
           if (Object.keys(params).some((key) => key !== 'policy') || !['normal', 'yolo'].includes(params.policy)) throw new Error('invalid policy');
           result = safeIdentity(await auth.authorize(params.policy)); break;
         }
+        case 'ai-capability': result = await auth.aiCapability(); break;
         case 'login': showLogin(); result = null; break;
         case 'logout': await auth.logout(); result = null; break;
       }
@@ -87,6 +88,7 @@ export function createAuthRpcClient({ port, timeoutMs = 15000 } = {}) {
       } catch (error) { update(ANONYMOUS_IDENTITY); throw error; }
     },
     source: (kind) => kind === 'child' ? call('child') : Promise.reject(new Error('Parent source is not a child capability.')),
+    aiCapability: () => call('ai-capability'),
     login: () => call('login'),
     async logout() { try { await call('logout'); } finally { update(ANONYMOUS_IDENTITY); } },
     close() { closed = true; port.removeEventListener('message', listener); for (const task of pending.values()) { clearTimeout(task.timer); task.reject(new Error('HEX auth channel closed.')); } pending.clear(); update(ANONYMOUS_IDENTITY); listeners.clear(); },
