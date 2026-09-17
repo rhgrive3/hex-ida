@@ -120,5 +120,39 @@ test('JSONC loader accepts inline comments, trailing commas, and comment-like st
   try { parseJsonc('// comment\n{"a": 1, "b": }'); } catch (e) { errorWithComment = e; }
   // Position of syntax error should be identical in line count
   assert.ok(errorWithComment instanceof SyntaxError);
+
+  // #9180: multiline block comment must preserve line terminators and source line layout
+  const blockCommentSource = `{\n  /* first\n     second */\n  "a":\n}`;
+  let blockCommentError;
+  try { parseJsonc(blockCommentSource); } catch (e) { blockCommentError = e; }
+  assert.ok(blockCommentError instanceof SyntaxError);
+  // Compare with identical whitespace layout where comment was replaced by spaces and newlines
+  const equivalentSource = `{\n            \n              \n  "a":\n}`;
+  let equivalentError;
+  try { parseJsonc(equivalentSource); } catch (e) { equivalentError = e; }
+  assert.equal(blockCommentError.message, equivalentError.message);
+
+  // #9180: CRLF preservation in block comments
+  const crlfSource = '{\r\n  /* line1\r\n     line2 */\r\n  "x": 1\r\n}';
+  assert.deepEqual(parseJsonc(crlfSource), { x: 1 });
+
+  // #9188: trailing comma normalization must preserve character width and error positions
+  const trailingCommaInput = '{"a":{"b":1,},"c":}';
+  const spaceEquivalentInput = '{"a":{"b":1 },"c":}';
+  let trailingCommaError;
+  try { parseJsonc(trailingCommaInput); } catch (e) { trailingCommaError = e; }
+  let spaceEquivalentError;
+  try { parseJsonc(spaceEquivalentInput); } catch (e) { spaceEquivalentError = e; }
+  assert.ok(trailingCommaError instanceof SyntaxError);
+  assert.equal(trailingCommaError.message, spaceEquivalentError.message);
+
+  // #9188: multiple nested trailing commas must not cause accumulated offset drift
+  const multiTrailingInput = '{"a":[1,2,],"b":{"c":3,},"d":}';
+  const multiSpaceInput = '{"a":[1,2 ],"b":{"c":3 },"d":}';
+  let multiTrailingError;
+  try { parseJsonc(multiTrailingInput); } catch (e) { multiTrailingError = e; }
+  let multiSpaceError;
+  try { parseJsonc(multiSpaceInput); } catch (e) { multiSpaceError = e; }
+  assert.equal(multiTrailingError.message, multiSpaceError.message);
 });
 
