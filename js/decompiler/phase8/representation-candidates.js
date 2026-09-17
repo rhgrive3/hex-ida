@@ -266,7 +266,10 @@ export async function queryRepresentationCandidates(options = {}) {
     if (!['bool','bv'].includes(expression.sort.kind)) throw new QueryFailure('unsupported-representation-target');
     const recipe = compileProofExpression(expression,{inputs:sourceInputs},guard);
     if (!recipe) throw new QueryFailure('unsupported-representation-source');
-    const variables = sourceInputs.map((input,index) => expr.variable(`proof_input_${index}`,input.bits,false));
+    const variables = sourceInputs.map((input,index) => {
+      const ssaId = `representation_input_${index}`;
+      return expr.variable(`proof_input_${index}`,input.bits,false,{ssaDefs:[ssaId]},{ssaId});
+    });
     const inputMap = new Map(variables.map((variable,index) => [variable,sourceInputs[index].symbol]));
     const root = proposalView(recipe,variables,inputMap,guard);
     const engine = new RewriteEngine(ALL_RULES,REPRESENTATION_REWRITE_LIMITS);
