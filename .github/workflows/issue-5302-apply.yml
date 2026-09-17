@@ -1,6 +1,9 @@
 name: issue-5302-apply
 
 on:
+  push:
+    branches:
+      - fix/issue-5302-array-type-core-20260917
   workflow_dispatch:
 
 permissions:
