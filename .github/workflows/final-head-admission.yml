@@ -82,6 +82,7 @@ jobs:
 
             const owner = context.repo.owner;
             const repo = context.repo.repo;
+            const defaultBranch = context.payload.repository?.default_branch ?? null;
             let prNumber = null;
             let triggeringHead = null;
 
@@ -103,11 +104,14 @@ jobs:
             }
 
             async function findOpenPrByHeadSha(sha) {
-              if (!sha) return null;
+              if (!sha || !defaultBranch) return null;
               const pulls = await github.paginate(github.rest.pulls.list, {
                 owner, repo, state: 'open', per_page: 100,
               });
-              return pulls.find((candidate) => candidate.head?.sha === sha) ?? null;
+              return pulls.find((candidate) => (
+                candidate.head?.sha === sha
+                && candidate.base?.ref === defaultBranch
+              )) ?? null;
             }
 
             let pr;
@@ -118,6 +122,10 @@ jobs:
             }
             if (!pr || pr.state !== 'open') {
               core.info('No open pull request is bound to this event; nothing to admit.');
+              return;
+            }
+            if (!defaultBranch || pr.base?.ref !== defaultBranch) {
+              core.info(`PR #${pr.number} targets ${pr.base?.ref ?? '(unknown)'}, not the default branch ${defaultBranch ?? '(unknown)'}; nothing to admit.`);
               return;
             }
 

@@ -51,3 +51,4 @@ jobs:
         run: |
           node tests/ci/final-head-admission-6570.test.mjs
           node tests/ci/final-head-admission-auto-reviewer-identity-6570.test.mjs
+          node tests/ci/final-head-admission-default-base-selection.test.mjs
