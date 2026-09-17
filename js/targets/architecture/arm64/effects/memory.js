@@ -20,36 +20,42 @@ import { arm64DecodedEncodingWord } from '../encoding-word.js';
 import { arm64EffectIdentityContext } from './common.js';
 
 export const LEGACY_ARM64_MEMORY_INVENTORY = Object.freeze({
-  loads: Object.freeze(['ldr','ldrb','ldrh','ldrsb','ldrsh','ldrsw','ldur','ldurb','ldurh','ldursb','ldursh','ldursw','ldp','ldpsw','ldnp','ldar','ldarb','ldarh','ldxr','ldaxr','ldtr']),
-  stores: Object.freeze(['str','strb','strh','stur','sturb','sturh','stp','stnp','stlr','stlrb','stlrh','sttr','stxr','stlxr']),
+  loads: Object.freeze(['ldr','ldrb','ldrh','ldrsb','ldrsh','ldrsw','ldur','ldurb','ldurh','ldursb','ldursh','ldursw','ldp','ldpsw','ldnp','ldar','ldarb','ldarh','ldapr','ldaprb','ldaprh','ldapur','ldapurb','ldapurh','ldapursb','ldapursh','ldapursw','ldxr','ldaxr','ldtr']),
+  stores: Object.freeze(['str','strb','strh','stur','sturb','sturh','stp','stnp','stlr','stlrb','stlrh','stlur','stlurb','stlurh','sttr','stxr','stlxr']),
   atomicHandlers: Object.freeze(['cas','casa','casl','casal','swp','swpa','swpl','swpal','ldadd','ldadda','ldaddl','ldaddal','ldset','ldclr','ldeor']),
   barriersAndHints: Object.freeze(['dmb','dsb','isb','clrex','prfm','prfum']),
   simdMemoryDeferred: Object.freeze(['ld1','ld2','ld3','ld4','st1','st2','st3','st4']),
 });
 
-const SIMPLE_LOADS = new Set(['ldr','ldrb','ldrh','ldrsb','ldrsh','ldrsw','ldur','ldurb','ldurh','ldursb','ldursh','ldursw','ldtr','ldar','ldarb','ldarh']);
-const SIMPLE_STORES = new Set(['str','strb','strh','stur','sturb','sturh','sttr','stlr','stlrb','stlrh']);
+const RCPC_BASE_LOADS = new Set(['ldapr','ldaprb','ldaprh']);
+const RCPC_UNSCALED_LOADS = new Set(['ldapur','ldapurb','ldapurh','ldapursb','ldapursh','ldapursw']);
+export const RCPC_LOADS = new Set([...RCPC_BASE_LOADS, ...RCPC_UNSCALED_LOADS]);
+export const RCPC_STORES = new Set(['stlur','stlurb','stlurh']);
+export const RCPC_MEMORY_MNEMONICS = Object.freeze([...RCPC_LOADS, ...RCPC_STORES]);
+
+const SIMPLE_LOADS = new Set(['ldr','ldrb','ldrh','ldrsb','ldrsh','ldrsw','ldur','ldurb','ldurh','ldursb','ldursh','ldursw','ldtr','ldar','ldarb','ldarh', ...RCPC_LOADS]);
+const SIMPLE_STORES = new Set(['str','strb','strh','stur','sturb','sturh','sttr','stlr','stlrb','stlrh', ...RCPC_STORES]);
 const PAIR_LOADS = new Set(['ldp','ldnp','ldpsw']);
 const PAIR_STORES = new Set(['stp','stnp']);
 const PREFETCH_MNEMONICS = new Set(['prfm','prfum']);
 const NON_ATOMIC_MEMORY_MNEMONICS = Object.freeze([...SIMPLE_LOADS, ...SIMPLE_STORES, ...PAIR_LOADS, ...PAIR_STORES, ...PREFETCH_MNEMONICS]);
 const ALL_NON_ATOMIC = new Set(NON_ATOMIC_MEMORY_MNEMONICS);
 export const ARM64_MEMORY_EFFECT_MNEMONICS = Object.freeze([...NON_ATOMIC_MEMORY_MNEMONICS, ...ARM64_ATOMIC_EFFECT_MNEMONICS]);
-const SIGNED_LOADS = new Set(['ldrsb','ldrsh','ldrsw','ldursb','ldursh','ldursw','ldpsw']);
+const SIGNED_LOADS = new Set(['ldrsb','ldrsh','ldrsw','ldursb','ldursh','ldursw','ldpsw','ldapursb','ldapursh','ldapursw']);
 const ACQUIRE_LOADS = new Set(['ldar','ldarb','ldarh']);
-const RELEASE_STORES = new Set(['stlr','stlrb','stlrh']);
-const BASE_ONLY = new Set([...ACQUIRE_LOADS, ...RELEASE_STORES]);
-const UNSCALED_ONLY = /^(?:ldur|stur|ldtr|sttr)/;
+const RELEASE_STORES = new Set(['stlr','stlrb','stlrh', ...RCPC_STORES]);
+const BASE_ONLY = new Set([...ACQUIRE_LOADS, 'stlr','stlrb','stlrh', ...RCPC_BASE_LOADS]);
+const UNSCALED_ONLY = /^(?:ldur|stur|ldtr|sttr|ldapur|stlur)/;
 const NON_TEMPORAL_PAIR = new Set(['ldnp','stnp']);
 const UNPRIVILEGED = new Set(['ldtr','sttr']);
 const LEGACY_UNSCALED_ALIASES = new Set(['ldr','str','ldrb','strb','ldrh','strh','ldrsb','ldrsh','ldrsw']);
 
 const WIDTH_OVERRIDE = Object.freeze({
-  ldrb:8, ldrsb:8, ldurb:8, ldursb:8, ldarb:8,
-  strb:8, sturb:8, stlrb:8,
-  ldrh:16, ldrsh:16, ldurh:16, ldursh:16, ldarh:16,
-  strh:16, sturh:16, stlrh:16,
-  ldrsw:32, ldursw:32, ldpsw:32,
+  ldrb:8, ldrsb:8, ldurb:8, ldursb:8, ldarb:8, ldaprb:8, ldapurb:8, ldapursb:8,
+  strb:8, sturb:8, stlrb:8, stlurb:8,
+  ldrh:16, ldrsh:16, ldurh:16, ldursh:16, ldarh:16, ldaprh:16, ldapurh:16, ldapursh:16,
+  strh:16, sturh:16, stlrh:16, stlurh:16,
+  ldrsw:32, ldursw:32, ldpsw:32, ldapursw:32,
 });
 
 function mnemonicOf(decoded) { if (typeof decoded?.mnemonic !== 'string') return ''; return decoded.mnemonic.trim().toLowerCase(); }
@@ -99,7 +105,9 @@ function memoryWidthBits(mnemonic, reg) {
   return Number(reg.bits || 0) || null;
 }
 function accessAlignment(mnemonic, widthBits) {
-  if (ACQUIRE_LOADS.has(mnemonic) || RELEASE_STORES.has(mnemonic)) return Math.max(1, widthBits / 8);
+  if (ACQUIRE_LOADS.has(mnemonic) || RCPC_BASE_LOADS.has(mnemonic) || mnemonic === 'stlr' || mnemonic === 'stlrb' || mnemonic === 'stlrh') {
+    return Math.max(1, widthBits / 8);
+  }
   return undefined;
 }
 // A64 gives LDAR/LDARB/LDARH Acquire semantics only when the destination is an
@@ -110,9 +118,22 @@ function accessAlignment(mnemonic, widthBits) {
 // zero-register forms (#8603) rather than omitting the field, and `acquire` stays
 // the single RCsc-strength identity because the machine-effects ordering domain
 // cannot represent an RCpc acquire.
+//
+// The FEAT_LRCPC / FEAT_LRCPC2 family (LDAPR*, LDAPUR*, STLUR*) provides Release
+// Consistency with Processor Consistency (RCpc). An RCpc acquire load does not
+// enforce sequential consistency ordering against a preceding store-release on
+// another processor, and therefore cannot be silently downcast to strong RCsc
+// `acquire` without fabricating false ordering edges. It publishes explicit
+// `rcpc` authority in metadata and fails closed to `partial` for non-ZR forms (#8607).
 function memoryOrdering(mnemonic, reg) {
   if (ACQUIRE_LOADS.has(mnemonic)) return reg.zero ? 'relaxed' : 'acquire';
   if (RELEASE_STORES.has(mnemonic)) return 'release';
+  if (RCPC_LOADS.has(mnemonic)) return reg.zero ? 'relaxed' : 'acquire-rcpc';
+  return null;
+}
+function memoryOrderingAuthority(mnemonic) {
+  if (ACQUIRE_LOADS.has(mnemonic) || mnemonic === 'stlr' || mnemonic === 'stlrb' || mnemonic === 'stlrh') return 'rcsc';
+  if (RCPC_LOADS.has(mnemonic) || RCPC_STORES.has(mnemonic)) return 'rcpc';
   return null;
 }
 function faultAlignment(widthBits) {
@@ -279,10 +300,10 @@ function isVector(reg, widths = [8,16,32,64,128]) {
 }
 function validSingleDataRegister(mnemonic, reg) {
   if (['ldr','str','ldur','stur'].includes(mnemonic)) return isGp(reg) && [32,64].includes(Number(reg.bits)) || isVector(reg);
-  if (['ldrb','ldrh','ldurb','ldurh','strb','strh','sturb','sturh','ldarb','ldarh','stlrb','stlrh'].includes(mnemonic)) return isGp(reg, 32);
-  if (['ldrsb','ldrsh','ldursb','ldursh'].includes(mnemonic)) return isGp(reg) && [32,64].includes(Number(reg.bits));
-  if (['ldrsw','ldursw'].includes(mnemonic)) return isGp(reg, 64);
-  if (['ldar','stlr','ldtr','sttr'].includes(mnemonic)) return isGp(reg) && [32,64].includes(Number(reg.bits));
+  if (['ldrb','ldrh','ldurb','ldurh','strb','strh','sturb','sturh','ldarb','ldarh','stlrb','stlrh','ldaprb','ldaprh','ldapurb','ldapurh','stlurb','stlurh'].includes(mnemonic)) return isGp(reg, 32);
+  if (['ldrsb','ldrsh','ldursb','ldursh','ldapursb','ldapursh'].includes(mnemonic)) return isGp(reg) && [32,64].includes(Number(reg.bits));
+  if (['ldrsw','ldursw','ldapursw'].includes(mnemonic)) return isGp(reg, 64);
+  if (['ldar','stlr','ldtr','sttr','ldapr','ldapur','stlur'].includes(mnemonic)) return isGp(reg) && [32,64].includes(Number(reg.bits));
   return false;
 }
 function validPairRegisters(mnemonic, regs) {
@@ -386,12 +407,9 @@ function simpleMemory(decoded, context, mnemonic, isLoad) {
   const reg = dataRegisters(decoded)[0];
   if (!reg) return partial(decoded, context, 'memory instruction data register is missing');
   if (!validSingleDataRegister(mnemonic, reg)) return partial(decoded, context, `${mnemonic} data register class or width is invalid`);
-  if (reg.zero && isLegacyAssemblyMemoryRecord(decoded)) {
-    return partial(decoded, context, 'legacy assembly zero-register memory access preserves the compatibility decompiler denominator');
-  }
   const widthBits = memoryWidthBits(mnemonic, reg);
   if (![8,16,32,64,128].includes(widthBits)) return partial(decoded, context, 'unsupported memory transfer width');
-  if ((mnemonic === 'ldrsw' || mnemonic === 'ldursw') && (!isGp(reg, 64))) return partial(decoded, context, `${mnemonic} requires an X/XZR destination register`);
+  if ((mnemonic === 'ldrsw' || mnemonic === 'ldursw' || mnemonic === 'ldapursw') && (!isGp(reg, 64))) return partial(decoded, context, `${mnemonic} requires an X/XZR destination register`);
 
   let addressing;
   try { addressing = buildArm64EffectiveAddress(decoded, { prefix:'addr', accessWidthBits:widthBits }); }
@@ -411,11 +429,27 @@ function simpleMemory(decoded, context, mnemonic, isLoad) {
       ? Object.freeze({ ...addressing.metadata, encoding:'legacy-abstract-unscaled' })
       : addressing.metadata;
 
+  const isRcpcLoad = RCPC_LOADS.has(mnemonic);
+  const isRcpcStore = RCPC_STORES.has(mnemonic);
+  const isBaseOnly = BASE_ONLY.has(mnemonic);
+
   const signed = isLoad && SIGNED_LOADS.has(mnemonic);
-  const atomic = BASE_ONLY.has(mnemonic) ? true : null;
+  const atomic = (isBaseOnly || isRcpcStore || isRcpcLoad) ? true : null;
   const ordering = memoryOrdering(mnemonic, reg);
+  const orderingAuthority = memoryOrderingAuthority(mnemonic);
+  let bundleCompleteness = 'exact';
+  let unknownEffects = null;
+
+  if (isRcpcLoad && !reg.zero) {
+    // RCpc acquire load with non-zero destination: do not downcast to strong RCsc acquire.
+    bundleCompleteness = 'partial';
+    unknownEffects = { categories: ['memory'], reason: 'arm64-rcpc-ordering-strength' };
+  }
+
+  const accessOrdering = (ordering === 'acquire' || ordering === 'release' || ordering === 'relaxed') ? ordering : null;
+  const accessAtomic = accessOrdering != null ? true : null;
   const alignment = accessAlignment(mnemonic, widthBits);
-  const access = accessFor({ ctx, addressExpr:addressing.addressExpr, widthBits, atomic, ordering, alignment });
+  const access = accessFor({ ctx, addressExpr:addressing.addressExpr, widthBits, atomic: accessAtomic, ordering: accessOrdering, alignment });
   const operations = [...addressing.readOperations];
   const faults = [
     ...stackPointerAlignmentFault(addressing, 0),
@@ -445,12 +479,15 @@ function simpleMemory(decoded, context, mnemonic, isLoad) {
   return bundle(decoded, context, {
     operations,
     possibleFaults:faults,
+    completeness: bundleCompleteness,
+    ...(unknownEffects ? { unknownEffects } : {}),
     metadata:{
       family:'arm64-memory', mnemonic, transfer:'single', widthBits, signed,
       addressing:addressingMetadata,
       ...(compatibilityEncodingAlias ? { compatibilityEncodingAlias } : {}),
       ...(atomic === true ? { atomic:true } : {}),
       ...(ordering ? { ordering } : {}),
+      ...(orderingAuthority ? { orderingAuthority } : {}),
       ...(UNPRIVILEGED.has(mnemonic) ? { unprivileged:true } : {}),
     },
   });
@@ -521,7 +558,7 @@ function literalLoad(decoded, context, mnemonic) {
   const reg = dataRegisters(decoded)[0];
   if (!reg) return partial(decoded, context, 'literal load destination register is missing');
   if (mnemonic === 'ldrsw' ? !isGp(reg, 64) : !(isGp(reg) && [32,64].includes(Number(reg.bits)) || isVector(reg, [32,64,128]))) return partial(decoded, context, `${mnemonic} literal destination class or width is invalid`);
-  const immediate = immediateValue(immediateOperand(decoded));
+  const immediate = immediateOperand(decoded);
   let target = literalTargetEvidence(decoded, immediate, context);
   if (target == null) return partial(decoded, context, 'literal load target evidence is contradictory or unresolved');
 
@@ -562,7 +599,7 @@ const MAX_UNSIGNED_ADDRESS_64 = (1n << 64n) - 1n;
 // to a different pool slot. Canonicalize every present evidence to an unsigned
 // 64-bit address and require full agreement; `null` means contradictory,
 // out of the architectural address domain, or unresolved.
-function literalTargetEvidence(decoded, immediateOperandValue, context = null) {
+function literalTargetEvidence(decoded, targetOperand, context = null) {
   void context;
   const asTargetInteger = (value) => {
     let target;
@@ -603,12 +640,19 @@ function literalTargetEvidence(decoded, immediateOperandValue, context = null) {
     if (address == null) return null;
     evidence.push(BigInt.asUintN(64, address + displacement));
   }
-  const pcRelTarget = asTargetInteger(decoded?.pcRelTarget);
-  if (pcRelTarget != null) evidence.push(pcRelTarget);
-  const literalTarget = asTargetInteger(decoded?.literalTarget);
-  if (literalTarget != null) evidence.push(literalTarget);
-  const immediate = asTargetInteger(immediateOperandValue);
-  if (immediate != null) evidence.push(immediate);
+  for (const value of [decoded?.pcRelTarget, decoded?.literalTarget]) {
+    if (value == null) continue;
+    const target = asTargetInteger(value);
+    if (target == null) return null;
+    evidence.push(target);
+  }
+  // Preserve operand presence until validation. Converting an invalid value
+  // to null earlier would let another target field or the encoding mask it.
+  if (targetOperand != null) {
+    const immediate = asTargetInteger(targetOperand.value);
+    if (immediate == null) return null;
+    evidence.push(immediate);
+  }
   if (evidence.length === 0) return null;
   const first = evidence[0];
   return evidence.every((value) => value === first) ? first : null;
@@ -695,7 +739,7 @@ function prefetchMetadata(mnemonic, prfop, extra) {
 // PRFM (literal) has no memory operand: the hinted address is PC-relative and
 // the disassembler prints it as a resolved immediate.
 function literalPrefetch(decoded, context, mnemonic, prfop) {
-  const immediate = immediateValue(operands(decoded).find((operand) => operand?.k === 'imm' || operand?.kind === 'immediate'));
+  const immediate = operands(decoded).find((operand) => operand?.k === 'imm' || operand?.kind === 'immediate');
   const target = literalTargetEvidence(decoded, immediate, context);
   if (target == null) return partial(decoded, context, 'prfm literal target evidence is contradictory or unresolved', ['memory','other']);
   const addressExpr = arm64ConstantExpr(target, 64);
