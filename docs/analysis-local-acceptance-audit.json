@@ -165,7 +165,7 @@
     {
       "id": "HEX-X-02",
       "localStatus": "partial-local-matrix",
-      "assessment": "元120行と既存機能case/manifestを保持。current finite overlayはX02-F-48のcompiler-produced arm64e/PAC producer evidenceとX02-G-09のtrusted Apple signing evidenceをpassとして、pinned LLVM 18.1.3 oracleが利用できない通常環境で116 pass/0 product-gap/2 evidence-gap/2 environment-excluded。X02-H-02 exact independent reparse成功環境のみ117/0/2/1。残るevidence-gapはcross-version Apple OS/toolchain/runtime corpusと、real dyld cacheに対応するobserved runtime load-map/OS-derived slide。X02-F-47はarm64 PAC実行成功を得たがexplicit arm64e probeはSIGSEGVのためruntime authentication成功を未証明。全X-02・release受入は未完了。",
+      "assessment": "元120行と既存機能case/manifestを保持。current finite overlayはX02-F-48、X02-G-09、X02-A-08の3点versioned Apple provenance corpus、X02-B-06のreal dyld cache/runtime load-map/OS-derived slideをcurrent passとして、pinned LLVM 18.1.3 oracleが利用できない通常環境で118 pass/0 product-gap/0 evidence-gap/2 environment-excluded。X02-H-02 exact independent reparse成功環境のみ119/0/0/1。current evidence-gapは0。X02-F-47はarm64 PAC実行成功を得たがexplicit arm64e probeはSIGSEGVのためruntime authentication成功を未証明。X02-H-02はexact pinned LLVM oracle不在時のみenvironment-excluded。全X-02・release受入は未完了。",
       "source": "docs/analysis-x02-acceptance.md",
       "verificationSuite": "scpa-test",
       "originalRequirementAcceptedHere": false
@@ -529,7 +529,7 @@
       "complexity": "XL",
       "findingId": "HEX-X-02",
       "localStatus": "partial-local-matrix",
-      "currentAssessment": "元120行をcanonical統合し製品不足6行を修正済み。X02-F-48とX02-G-09をcurrent passへ進め、通常current分類は116/0/2/2。exact pinned LLVM 18.1.3でX02-H-02独立reparse成功時のみ117/0/2/1。残るcross-version Apple corpus、observed runtime load-map/OS-derived slide、explicit arm64e PAC runtime authenticationは未完了。",
+      "currentAssessment": "元120行をcanonical統合し製品不足6行を修正済み。X02-F-48、X02-G-09、X02-A-08、X02-B-06をcurrent passへ進め、通常current分類は118/0/0/2。exact pinned LLVM 18.1.3でX02-H-02独立reparse成功時のみ119/0/0/1。current evidence-gapは0で、残るenvironment-excludedはexplicit arm64e PAC runtime authenticationと、exact LLVM oracle不在時のX02-H-02。",
       "originalRequirementAcceptedHere": false
     }
   ],
@@ -3230,36 +3230,54 @@
         "environment-excluded": 2
       },
       "currentWithoutPinnedLlvmOracle": {
-        "pass": 116,
+        "pass": 118,
         "product-gap": 0,
-        "evidence-gap": 2,
+        "evidence-gap": 0,
         "environment-excluded": 2
       },
       "conditionalWithPinnedLlvmOracle": {
-        "pass": 117,
+        "pass": 119,
         "product-gap": 0,
-        "evidence-gap": 2,
+        "evidence-gap": 0,
         "environment-excluded": 1,
         "condition": "X02-H-02 exact independent reparse succeeds with pinned LLVM 18.1.3 executable digest/version/format/architecture checks"
       },
-      "currentPassAdded": "X02-G-09 trusted Apple signing validation",
+      "currentPassAdded": "X02-G-09 trusted Apple signing validation; X02-A-08 versioned Apple provenance corpus; X02-B-06 observed runtime dyld slide/rebase evidence",
       "realAppleEvidence": {
         "snapshot": "tests/scpa/fixtures/x02-real-apple-evidence-20260916.json",
         "workflowRunId": 35118158460,
         "artifactId": 10457155516,
         "artifactDigest": "sha256:7cb65af30cb10a6368a18c875d21a3883006e8164be91199280c4c4ae2cc6468"
       },
-      "remainingEvidenceGaps": [
-        "cross-version Apple OS/toolchain/runtime corpus beyond the pinned macOS 15.7.9 / Xcode 16.4 point",
-        "observed real runtime load-map plus OS-derived runtime slide mapped against the pinned real dyld cache"
-      ],
+      "remainingEvidenceGaps": [],
       "remainingEnvironmentExcluded": [
         "X02-F-47 explicit arm64e runtime authentication (arm64 succeeds; arm64e probe SIGSEGV)",
         "X02-H-02 exact pinned LLVM oracle when unavailable"
       ],
       "sourceOfTruth": "docs/analysis-x02-acceptance.md",
       "fullRoadmapComplete": false,
-      "transformAuthorization": false
+      "transformAuthorization": false,
+      "a08VersionedAppleCorpus": {
+        "snapshot": "tests/scpa/fixtures/x02-a08-versioned-apple-corpus-20260917.json",
+        "workflowRunId": 35124584494,
+        "headSha": "2734f0faa85c15fbda44dd264496b4d7ae136fff",
+        "pointCount": 3,
+        "runners": [
+          "macos-14",
+          "macos-15",
+          "macos-26"
+        ]
+      },
+      "b06RuntimeDyldEvidence": {
+        "snapshot": "tests/scpa/fixtures/x02-b06-runtime-dyld-evidence-20260916.json",
+        "workflowRunId": 35124890143,
+        "headSha": "6a9277931c423a7a3cc1a7e0749c3dae313222ed",
+        "artifactId": 10459365113,
+        "artifactDigest": "sha256:60b5053acac0ae56ffc645165759fdadfab476c5795d7431eb8851dc629b4713",
+        "cacheUuid": "0517ae4831dc30868d85545fef4d70b7",
+        "runtimeSlide": "0x180d8000",
+        "sampledRebaseCount": 6077
+      }
     }
   },
   "integrationFollowupHistory": [
