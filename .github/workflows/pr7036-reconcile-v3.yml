@@ -1,20 +1,23 @@
-name: PR7036 current-main conflict inventory
+name: PR7036 current-main focused reconciliation
 on:
   push:
     branches: [sync/pr7036-main-20260917-v3]
+permissions:
+  contents: write
 jobs:
-  inventory:
-    if: contains(github.event.head_commit.message, 'inventory PR7036 current main conflicts')
+  reconcile:
+    if: contains(github.event.head_commit.message, 'validate PR7036 current main reconciliation')
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 800
-      - name: Inventory conflicts only
+      - name: Resolve and run focused acceptance
         shell: bash
         run: |
           set -euo pipefail
+          BASE_HEAD="$(git rev-parse HEAD)"
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git fetch --no-tags --depth=800 origin 012cacc48ec2cd9bde8a5b8a98b77f4a89f9a736 >/dev/null 2>&1
@@ -23,17 +26,49 @@ jobs:
           MERGE_RC=$?
           set -e
           git diff --name-only --diff-filter=U | sed '/^$/d' | sort > /tmp/conflicts.txt
+          OURS_FILES='js/semantics/compat/semantic-ir-v2-to-v1.js js/semantics/compat/semantic-ir-v2-to-v1-memory.js'
+          for f in $OURS_FILES; do git checkout --ours -- "$f"; git add -- "$f"; done
+          while IFS= read -r f; do
+            keep=0; for o in $OURS_FILES; do [ "$f" = "$o" ] && keep=1; done; [ "$keep" -eq 1 ] && continue
+            git checkout --theirs -- "$f"; git add -- "$f"
+          done < /tmp/conflicts.txt
+          python3 -c 'from pathlib import Path; p=Path("js/semantics/compat/semantic-ir-v2-to-v1-memory.js"); s=p.read_text(); old="export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null, constantObserver = null) {\n  const operandTransitions = [];"; new="function batchForwardingScope(options) {\n  const scope = {};\n  if (options == null || typeof options !== \"object\") return scope;\n  if (options.deadline != null) scope.deadline = options.deadline;\n  else if (options.deadlineAt != null) scope.deadline = options.deadlineAt;\n  else if (options.budget != null && typeof options.budget === \"object\" && options.budget.deadline != null) scope.deadline = options.budget.deadline;\n  else if (options.budget != null && typeof options.budget === \"object\" && options.budget.deadlineAt != null) scope.deadline = options.budget.deadlineAt;\n  if (options.signal != null && typeof options.signal === \"object\") scope.signal = options.signal;\n  return scope;\n}\n\nexport function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null, constantObserver = null, forwardingScopeOptions = null) {\n  const batchForwarding = batchForwardingScope(forwardingScopeOptions);\n  const operandTransitions = [];"; assert s.count(old)==1, s.count(old); s=s.replace(old,new); old2="        purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,\n        ...(canonicalIr == null ? {} : { ir: canonicalIr }),\n      });"; new2="        purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,\n        ...(canonicalIr == null ? {} : { ir: canonicalIr }),\n        ...batchForwarding,\n      });"; assert s.count(old2)==1, s.count(old2); p.write_text(s.replace(old2,new2))'
+          python3 -c 'from pathlib import Path; p=Path("js/semantics/compat/semantic-ir-v2-to-v1.js"); s=p.read_text(); old="? attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir, constantObserver) : null;"; new="? attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir, constantObserver, options) : null;"; assert s.count(old)==1, s.count(old); p.write_text(s.replace(old,new))'
+          git add js/semantics/compat/semantic-ir-v2-to-v1.js js/semantics/compat/semantic-ir-v2-to-v1-memory.js
+          set +e
+          : > /tmp/test-status.txt
+          for f in tests/phase8/substrate/proof-projection-origin.test.mjs tests/phase8/integration/proof-optimizer.test.mjs tests/phase7/discovery/x03-ambiguity-artifact.test.mjs tests/stage2/x03-rebuild-discovery-acceptance.test.mjs tests/phase9/solver/issue-5391-solver-registry-exact-default-authority.test.mjs tests/issue-5498-eligibility-result-status-authority.mjs tests/phase4/binary/issue-4358-elf-dynamic-xindex-common.test.mjs tests/issue-4135-pe-section-virtual-layout.mjs; do
+            node --test "$f" > "/tmp/$(basename "$f").txt" 2>&1
+            rc=$?; echo "$rc $f" >> /tmp/test-status.txt
+            if [ "$rc" -ne 0 ]; then break; fi
+          done
+          TEST_RC=0; awk '$1 != 0 {exit 1}' /tmp/test-status.txt || TEST_RC=1
+          SYNTAX_RC=0
+          for f in js/semantics/compat/semantic-ir-v2-to-v1.js js/semantics/compat/semantic-ir-v2-to-v1-memory.js js/decompiler/phase8/representation-candidates.js; do
+            node --check "$f" >/tmp/syntax-one.txt 2>&1 || { SYNTAX_RC=1; echo "$f" > /tmp/syntax-failed.txt; cat /tmp/syntax-one.txt >> /tmp/syntax-failed.txt; break; }
+          done
+          set -e
           {
-            echo "head=$(git rev-parse HEAD)"
-            echo "main=$(git rev-parse FETCH_HEAD)"
+            echo "base_head=$BASE_HEAD"
+            echo "main_head=$(git rev-parse FETCH_HEAD)"
             echo "merge_rc=$MERGE_RC"
             echo "conflict_count=$(wc -l < /tmp/conflicts.txt | tr -d ' ')"
-            cat /tmp/conflicts.txt
-          } > pr7036-current-main-conflicts.txt
-          git merge --abort || true
-      - name: Upload inventory
+            echo "test_rc=$TEST_RC"
+            echo "syntax_rc=$SYNTAX_RC"
+            cat /tmp/test-status.txt
+            if [ "$TEST_RC" -ne 0 ]; then failed="$(awk '$1 != 0 {print $2; exit}' /tmp/test-status.txt)"; echo "--- first test failure: $failed ---"; tail -n 120 "/tmp/$(basename "$failed").txt"; fi
+            if [ "$SYNTAX_RC" -ne 0 ]; then echo '--- syntax failure ---'; cat /tmp/syntax-failed.txt; fi
+          } > pr7036-reconcile-v3-result.txt
+          if [ "$TEST_RC" -ne 0 ] || [ "$SYNTAX_RC" -ne 0 ]; then exit 1; fi
+          rm .github/workflows/pr7036-reconcile-v3.yml
+          git add -u .github/workflows/pr7036-reconcile-v3.yml
+          git commit -m 'merge: reconcile PR 7036 with main 012cacc4'
+          git push origin HEAD:sync/pr7036-main-20260917-v3
+      - name: Upload focused result
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr7036-current-main-conflicts
-          path: pr7036-current-main-conflicts.txt
+          name: pr7036-reconcile-v3-result
+          path: pr7036-reconcile-v3-result.txt
+          if-no-files-found: ignore
           retention-days: 2
