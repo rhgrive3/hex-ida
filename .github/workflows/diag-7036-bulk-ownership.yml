@@ -40,7 +40,9 @@ jobs:
           printf 'conflict=%s\n' "${CONFLICTS[@]}" >> "$STATUS"
           for f in "${CONFLICTS[@]}"; do
             side=theirs
-            if [ "$f" = 'js/semantics/ssa/build.js' ]; then side=ours; fi
+            case "$f" in
+              js/semantics/ssa/build.js|js/analysis/discovery/artifact.js) side=ours ;;
+            esac
             git checkout --"$side" -- "$f" >/tmp/resolve.log 2>&1
             rc=$?
             echo "resolve_$side $f rc=$rc" >> "$STATUS"
@@ -75,7 +77,6 @@ jobs:
           git diff --cached --check >/tmp/diffcheck.log 2>&1
           rc=$?; echo "diff_check rc=$rc" >> "$STATUS"
           if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/diffcheck.log >> "$STATUS"; exit "$rc"; fi
-
           git commit -m 'Merge current main into #7036 candidate' >/tmp/commit.log 2>&1
           rc=$?; echo "merge_commit rc=$rc" >> "$STATUS"
           if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/commit.log >> "$STATUS"; exit "$rc"; fi
