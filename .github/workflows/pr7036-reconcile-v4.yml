@@ -4,7 +4,7 @@ on:
     branches: [sync/pr7036-main-20260918-v4]
 jobs:
   snapshot:
-    if: contains(github.event.head_commit.message, 'snapshot PR7036 current-main conflicts v4')
+    if: contains(github.event.head_commit.message, 'snapshot PR7036 current-main conflicts v4 tolerate absent stages')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -29,7 +29,11 @@ jobs:
             for stage in 1 2 3; do
               case "$stage" in 1) d=base;; 2) d=ours;; 3) d=theirs;; esac
               mkdir -p "$d/$(dirname "$f")"
-              git show ":$stage:$f" > "$d/$f"
+              if git cat-file -e ":$stage:$f" 2>/dev/null; then
+                git show ":$stage:$f" > "$d/$f"
+              else
+                printf '%s\n' '__ABSENT_STAGE__' > "$d/$f"
+              fi
             done
           done < conflicts.txt
           {
