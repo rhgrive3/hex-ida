@@ -1,34 +1,40 @@
-name: PR7036 final 1915
+name: PR7036 final 1915 merge-base diagnostic
 on:
   push:
     branches: [sync/pr7036-final-20260917-1915]
-permissions:
-  contents: write
 jobs:
-  inventory:
-    if: contains(github.event.head_commit.message, 'inventory PR7036 final 1915')
+  diagnose:
+    if: contains(github.event.head_commit.message, 'diagnose PR7036 final merge base 1915')
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 900
-      - name: Inventory current-main conflicts
+      - name: Emit minimal merge-base diagnostic
         shell: bash
         run: |
           set -euo pipefail
           git fetch --no-tags --depth=900 origin 4d68cb6bf67622f7f3887e821388a2788cbd34fc >/dev/null 2>&1
           set +e
-          git merge --no-commit --no-ff FETCH_HEAD >/dev/null 2>&1
-          rc=$?
+          mb=$(git merge-base HEAD FETCH_HEAD 2>/tmp/mb.err)
+          mb_rc=$?
+          git merge --no-commit --no-ff FETCH_HEAD >/tmp/merge.out 2>/tmp/merge.err
+          merge_rc=$?
           set -e
-          git diff --name-only --diff-filter=U | sed '/^$/d' | sort > pr7036-final-conflicts.txt
-          { echo "merge_rc=$rc"; echo "count=$(wc -l < pr7036-final-conflicts.txt | tr -d ' ')"; } > pr7036-final-summary.txt
-          git merge --abort || true
+          {
+            echo "shallow=$(git rev-parse --is-shallow-repository)"
+            echo "head=$(git rev-parse HEAD)"
+            echo "main=$(git rev-parse FETCH_HEAD)"
+            echo "merge_base_rc=$mb_rc"
+            echo "merge_base=${mb:-none}"
+            echo "merge_rc=$merge_rc"
+            echo "merge_base_error=$(head -n 3 /tmp/mb.err | tr '\n' ' ')"
+            echo "merge_error=$(head -n 5 /tmp/merge.err | tr '\n' ' ')"
+          } > pr7036-final-merge-base.txt
+          git merge --abort >/dev/null 2>&1 || true
       - uses: actions/upload-artifact@v4
         with:
-          name: pr7036-final-conflicts-1915
-          path: |
-            pr7036-final-conflicts.txt
-            pr7036-final-summary.txt
+          name: pr7036-final-merge-base-1915
+          path: pr7036-final-merge-base.txt
           retention-days: 2
