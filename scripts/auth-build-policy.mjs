@@ -21,6 +21,7 @@ export function assertStandardGraph(metafile, label) {
   if (forbidden.length) throw new Error(`${label} leaks privileged implementation: ${forbidden.join(', ')}`);
 }
 export function assertPrivilegedGraph(metafile, kind) {
+  if (kind !== 'parent' && kind !== 'child') throw new Error(`Unsupported privileged bundle kind: ${String(kind)}`);
   const inputs = Object.keys(metafile.inputs || {}).map((value) => value.replaceAll('\\', '/'));
   const required = kind === 'parent'
     ? ['js/userscript/dev/parent-worker-runtime.js', 'js/userscript/dev/parent-rpc.js', 'js/userscript/dev/bootstrap-host.js']
