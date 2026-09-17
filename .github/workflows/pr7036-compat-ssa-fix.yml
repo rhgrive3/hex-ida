@@ -6,7 +6,7 @@ permissions:
   contents: write
 jobs:
   fix-and-validate:
-    if: contains(github.event.head_commit.message, 'ci: validate PR7036 representation SSA compatibility')
+    if: contains(github.event.head_commit.message, 'validate PR7036 representation SSA compatibility')
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
@@ -23,6 +23,7 @@ jobs:
           node --check js/decompiler/phase8/representation-candidates.js
           node --test tests/phase8/integration/proof-optimizer.test.mjs tests/phase8/substrate/proof-projection-origin.test.mjs
           rm .github/workflows/pr7036-compat-ssa-fix.yml
-          git add js/decompiler/phase8/representation-candidates.js .github/workflows/pr7036-compat-ssa-fix.yml
+          git add js/decompiler/phase8/representation-candidates.js
+          git add -u .github/workflows/pr7036-compat-ssa-fix.yml
           git commit -m 'fix(phase8): preserve synthetic SSA identity in representation candidates'
           git push origin HEAD:feat/analysis-roadmap-v8-current-main-20260907
