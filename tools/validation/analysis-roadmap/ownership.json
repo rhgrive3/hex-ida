@@ -562,6 +562,7 @@
       "tests/machine-effects/issue-6079-vblendmx-blend-category.test.mjs",
       ".github/workflows/ghidra-differential.yml",
       ".github/workflows/x02-f47-ios-probe.yml",
+      ".github/workflows/x02-collector-fix.yml",
       "js/binary/dyld-runtime.js",
       "js/ui/dyld-runtime-navigation.js",
       "js/ui/dyld-runtime-worker.js",
