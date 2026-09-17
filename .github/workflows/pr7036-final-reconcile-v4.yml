@@ -1,0 +1,34 @@
+name: PR7036 final reconcile v4
+on:
+  push:
+    branches: [sync/pr7036-main-20260917-v4]
+permissions:
+  contents: write
+jobs:
+  inventory:
+    if: contains(github.event.head_commit.message, 'inventory PR7036 final reconcile v4')
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 900
+      - name: Inventory current-main conflicts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=900 origin 4d68cb6bf67622f7f3887e821388a2788cbd34fc >/dev/null 2>&1
+          set +e
+          git merge --no-commit --no-ff FETCH_HEAD >/dev/null 2>&1
+          rc=$?
+          set -e
+          git diff --name-only --diff-filter=U | sed '/^$/d' | sort > pr7036-final-conflicts.txt
+          { echo "merge_rc=$rc"; echo "count=$(wc -l < pr7036-final-conflicts.txt | tr -d ' ')"; } > pr7036-final-summary.txt
+          git merge --abort || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr7036-final-conflicts
+          path: |
+            pr7036-final-conflicts.txt
+            pr7036-final-summary.txt
+          retention-days: 2
