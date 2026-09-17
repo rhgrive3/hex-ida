@@ -33,24 +33,31 @@ jobs:
           git add .circleci/config.yml js/analysis/discovery/artifact.js js/analysis/discovery/producers.js js/analysis/index.js js/rebuild/transaction-v2.js tests/issue-4135-pe-section-virtual-layout.mjs
           test -z "$(git diff --name-only --diff-filter=U)"
           git diff --check
-      - name: Run T016 focused tests
+      - name: Run focused tests with first-failure capture
         shell: bash
         run: |
-          set -euo pipefail
-          timeout 120s node tests/phase7/discovery/t016-discovery-preservation.test.mjs
-          timeout 120s node tests/rebuild/t016-discovery-preservation.test.mjs
-      - name: Run X03 focused tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          timeout 120s node tests/phase7/discovery/x03-ambiguity-artifact.test.mjs
-          timeout 180s node tests/stage2/x03-rebuild-discovery-acceptance.test.mjs
-          timeout 120s node tests/stage2/x03-rebuild-discovery.test.mjs
-      - name: Run PE regression
-        shell: bash
-        run: |
-          set -euo pipefail
-          timeout 120s node tests/issue-4135-pe-section-virtual-layout.mjs
+          set +e
+          set -uo pipefail
+          STATUS=/tmp/reconcile-first-failure.txt
+          : > "$STATUS"
+          run_one() {
+            label="$1"; shift
+            "$@" >/tmp/test.out 2>&1
+            rc=$?
+            echo "$label rc=$rc" >> "$STATUS"
+            if [ "$rc" -ne 0 ]; then
+              echo "--- $label first failure tail ---" >> "$STATUS"
+              tail -n 100 /tmp/test.out >> "$STATUS"
+              exit "$rc"
+            fi
+          }
+          run_one t016_phase7 timeout 120s node tests/phase7/discovery/t016-discovery-preservation.test.mjs
+          run_one t016_rebuild timeout 120s node tests/rebuild/t016-discovery-preservation.test.mjs
+          run_one x03_phase7 timeout 120s node tests/phase7/discovery/x03-ambiguity-artifact.test.mjs
+          run_one x03_acceptance timeout 180s node tests/stage2/x03-rebuild-discovery-acceptance.test.mjs
+          run_one x03_rebuild timeout 120s node tests/stage2/x03-rebuild-discovery.test.mjs
+          run_one pe_4135 timeout 120s node tests/issue-4135-pe-section-virtual-layout.mjs
+          echo 'focused=green' >> "$STATUS"
       - name: Capture resolved tree
         if: success()
         shell: bash
@@ -66,6 +73,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: reconcile-7036-main-focused
-          path: /tmp/reconcile-result.txt
+          path: |
+            /tmp/reconcile-first-failure.txt
+            /tmp/reconcile-result.txt
           if-no-files-found: ignore
           retention-days: 1
