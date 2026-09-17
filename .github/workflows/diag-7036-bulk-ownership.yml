@@ -36,7 +36,6 @@ jobs:
           git merge --no-commit --no-ff refs/remotes/origin/main >/tmp/merge.log 2>&1
           merge_rc=$?
           echo "merge rc=$merge_rc" >> "$STATUS"
-          if [ "$merge_rc" -eq 0 ]; then echo 'unexpected_clean_merge=true' >> "$STATUS"; fi
           mapfile -t CONFLICTS < <(git -c core.quotePath=false diff --name-only --diff-filter=U)
           echo "conflict_count=${#CONFLICTS[@]}" >> "$STATUS"
           printf 'conflict=%s\n' "${CONFLICTS[@]}" >> "$STATUS"
@@ -50,6 +49,32 @@ jobs:
           remaining=$(git diff --name-only --diff-filter=U | wc -l)
           echo "remaining_conflicts=$remaining" >> "$STATUS"
           if [ "$remaining" -ne 0 ]; then exit 1; fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('js/binary/macho-core.js')
+          s = p.read_text()
+          needle = 'const LC_CODE_SIGNATURE = 0x1d;'
+          count = s.count(needle)
+          if count > 1:
+              seen = False
+              out = []
+              for line in s.splitlines(keepends=True):
+                  if line.strip() == needle:
+                      if seen:
+                          continue
+                      seen = True
+                  out.append(line)
+              p.write_text(''.join(out))
+          PY
+          rc=$?; echo "macho_dedupe rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+          echo "macho_code_signature_count=$(grep -c '^const LC_CODE_SIGNATURE = 0x1d;$' js/binary/macho-core.js)" >> "$STATUS"
+          git add js/binary/macho-core.js
+          git diff --cached --check >/tmp/diffcheck.log 2>&1
+          rc=$?; echo "diff_check rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/diffcheck.log >> "$STATUS"; exit "$rc"; fi
+
           git commit -m 'Merge current main into #7036 candidate' >/tmp/commit.log 2>&1
           rc=$?; echo "merge_commit rc=$rc" >> "$STATUS"
           if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/commit.log >> "$STATUS"; exit "$rc"; fi
@@ -68,6 +93,7 @@ jobs:
             fi
           }
 
+          check syntax_macho node --check js/binary/macho-core.js
           check x03_artifact node tests/phase7/discovery/x03-ambiguity-artifact.test.mjs
           check analysis_entrypoint node tests/phase7/integration/analysis-entrypoint-dependencies.test.mjs
           check x03_rebuild node tests/stage2/x03-rebuild-discovery.test.mjs
