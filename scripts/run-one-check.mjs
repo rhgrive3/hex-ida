@@ -21,21 +21,29 @@ function usage() {
 }
 
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-const [first, ...rest] = process.argv.slice(2);
-if (!first || first === '--help' || first === '-h') usage();
-if (first === '--list') {
-  for (const [name, script] of Object.entries(pkg.scripts ?? {})) console.log(`${name.padEnd(24)} ${script}`);
-  process.exit(0);
-}
-if (!(pkg.scripts?.[first])) {
-  console.error(`unknown npm script: ${first}`);
-  usage();
+export function buildNpmRunArgs(first, rest = []) {
+  if (!rest || rest.length === 0) return ['run', first];
+  return ['run', first, '--', ...rest];
 }
 
-const result = await runQuietCommand({
-  label: first,
-  command: 'npm',
-  args: ['run', first, ...rest],
-  cwd: root,
-});
-if (!result.ok) process.exitCode = result.status || 1;
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  const [first, ...rest] = process.argv.slice(2);
+  if (!first || first === '--help' || first === '-h') usage();
+  if (first === '--list') {
+    for (const [name, script] of Object.entries(pkg.scripts ?? {})) console.log(`${name.padEnd(24)} ${script}`);
+    process.exit(0);
+  }
+  if (!(pkg.scripts?.[first])) {
+    console.error(`unknown npm script: ${first}`);
+    usage();
+  }
+
+  const result = await runQuietCommand({
+    label: first,
+    command: 'npm',
+    args: buildNpmRunArgs(first, rest),
+    cwd: root,
+  });
+  if (!result.ok) process.exitCode = result.status || 1;
+}

@@ -20,97 +20,6 @@ const MAX_LOADER_BYTES = 64 * 1024;
 const CLASSIC_ENTRIES = ['js/worker.js', 'js/platform/capstone-probe-worker.js', 'js/platform/capstone-disasm-worker.js'];
 const OPTIONAL_BUNDLED_CLASSIC_ENTRIES = ['js/targets/architecture/x86_64/semantic-revalidation-worker.js'];
 const MODULE_WORKER_ENTRIES = ['js/platform/worker.js', 'js/symbolic/solver/worker-entry.js'];
-const previousReleaseBytes = await readFile(releaseStatePath);
-const previousTemplateBytes = await readFile(committedTemplate);
-
-await Promise.all([rm(dist, { recursive: true, force: true }), rm(generated, { recursive: true, force: true })]);
-await Promise.all([mkdir(resolve(dist, 'assets'), { recursive: true }), mkdir(resolve(dist, '.runtime'), { recursive: true }), mkdir(resolve(dist, 'userscript'), { recursive: true }), mkdir(generated, { recursive: true })]);
-await writeFile(deploymentIdentityStamp, '// Cloudflare Workers Builds overwrites this file during the production build.\n// Local/test builds intentionally remain unbound to a deployment commit.\nexport const DEPLOYMENT_COMMIT = null;\n');
-
-const [htmlSource, css, workerAssets] = await Promise.all([readFile(resolve(root, 'index.html'), 'utf8'), bundleCss(), buildWorkerAssets()]);
-const body = extractBody(htmlSource);
-const scopedCss = scopeCss(css);
-await writeGeneratedModule('embedded-assets.js', `export const PROTECTED_HOST=${JSON.stringify({ html: body, css, scopedCss })};\nexport const PROTECTED_WORKER_ASSETS=${JSON.stringify(workerAssets)};\n`);
-
-const runtime = await bundle('js/userscript/protected-entry.js', { format: 'esm', rewriteImportMeta: true, inventory: 'standard-runtime', graph: 'standard' });
-// Also prove the real parent entry's transitive input graph separately.
-await bundle('js/userscript/entry.js', { format: 'esm', rewriteImportMeta: true, inventory: 'standard-parent', graph: 'standard' });
-const parent = await bundle('js/auth/privileged/parent-entry.js', { format: 'esm', rewriteImportMeta: true, inventory: 'privileged-parent', graph: 'parent' });
-const child = await bundle('js/auth/privileged/child-entry.js', { format: 'iife', globalName: 'HexPrivilegedChild', rewriteImportMeta: true, inventory: 'privileged-child', graph: 'child' });
-const admin = await bundle('js/auth/admin-app.js', { format: 'iife', inventory: 'admin-app' });
-const loaderBundle = await bundle('js/userscript/loader.js', { format: 'iife', inventory: 'standard-loader', graph: 'standard' });
-const contentHash = sha256(runtime), buildId = contentHash.slice(0, 24);
-const privileged = privilegedIdentity(buildId, parent, child, admin);
-await writeGeneratedModule('privileged-assets.js', `export const PRIVILEGED_BUILD=Object.freeze(${JSON.stringify({ ...privileged, parentSource: parent.toString('utf8'), childSource: child.toString('utf8'), adminSource: admin.toString('utf8') })});\n`);
-const releaseInputs = [
-  runtime, loaderBundle, parent, child, admin,
-  await readFile(new URL('./auth-build-policy.mjs', import.meta.url)),
-  await readFile(fileURLToPath(import.meta.url)),
-  await readFile(new URL('./userscript-publication.mjs', import.meta.url)),
-];
-const releaseIdentity = releaseIdentityFor(releaseInputs);
-// Private build evidence binds actual emitted source bytes to the committed
-// release identity; it contains no runtime encryption key or session secret.
-await writeFile(resolve(generated, 'loader-input.js'), loaderBundle);
-await writeFile(resolve(generated, 'release-inputs.json'), JSON.stringify({
-  names: ['runtime', 'loader', 'parent', 'child', 'admin', 'policy', 'builder', 'publication'],
-  digests: releaseInputs.map(sha256), releaseIdentity,
-}, null, 2));
-const previousRelease = JSON.parse(previousReleaseBytes.toString('utf8'));
-const release = resolveUserscriptReleaseVersion(previousRelease, { releaseIdentity, buildId });
-const LOADER_VERSION = release.version;
-const compressed = gzipSync(runtime, { level: 9 });
-const contentKey = randomBytes(32), iv = randomBytes(12);
-const runtimeVersion = `2.${LOADER_VERSION}`;
-const aad = `hex-runtime:${buildId}:${runtimeVersion}`;
-const cipher = createCipheriv('aes-256-gcm', contentKey, iv); cipher.setAAD(Buffer.from(aad));
-const ciphertext = Buffer.concat([cipher.update(compressed), cipher.final(), cipher.getAuthTag()]);
-const assetPath = `/.runtime/runtime.${buildId}.bin`;
-const runtimeLocator = `/_runtime/${buildId}`;
-const releaseManifest = Object.freeze({
-  buildId,
-  runtimeVersion,
-  contentHash,
-  compression: 'gzip',
-  runtimeLocator,
-  byteLength: ciphertext.length,
-});
-const releaseManifestHash = sha256(Buffer.from(JSON.stringify(releaseManifest), 'utf8'));
-const manifest = Object.freeze({ buildId, privileged, runtimeVersion, ciphertextHash: sha256(ciphertext), contentHash, iv: b64(iv), aad, compression: 'gzip', assetPath, byteLength: ciphertext.length });
-await writeFile(resolve(dist, assetPath.slice(1)), ciphertext);
-await writeGeneratedModule('runtime-secrets.js', `export const RUNTIME_BUILD=Object.freeze(${JSON.stringify({ manifest, contentKey: b64(contentKey), signingKey: b64(randomBytes(32)) })});\n`);
-
-const loaderForOrigin = (origin) => loaderBundle.toString('utf8')
-  .replaceAll(ORIGIN_TOKEN, origin)
-  .replaceAll('__HEX_LOADER_VERSION__', LOADER_VERSION)
-  .replaceAll('__HEX_BUILD_ID__', buildId)
-  .replaceAll('__HEX_CONTENT_HASH__', contentHash)
-  .replaceAll('__HEX_RUNTIME_VERSION__', runtimeVersion)
-  .replaceAll('__HEX_RUNTIME_BYTE_LENGTH__', String(ciphertext.length))
-  .replaceAll('__HEX_RUNTIME_LOCATOR__', runtimeLocator)
-  .replaceAll('__HEX_RELEASE_MANIFEST_HASH__', releaseManifestHash);
-const publicLoader = loaderForOrigin('https://ida.rhgrive.workers.dev');
-if (Buffer.byteLength(publicLoader) > MAX_LOADER_BYTES) throw new Error(`Tiny loader exceeds ${MAX_LOADER_BYTES} bytes.`);
-const loaderName = `loader.${sha256(publicLoader).slice(0, 12)}.js`;
-await writeFile(resolve(dist, 'assets', loaderName), publicLoader);
-
-const metadata = userscriptMetadata();
-const template = metadata + loaderForOrigin(ORIGIN_TOKEN);
-if (Buffer.byteLength(template) > MAX_LOADER_BYTES) throw new Error(`hex.user.js template exceeds ${MAX_LOADER_BYTES} bytes.`);
-await writeFile(resolve(dist, 'userscript/hex.user.template.js'), template);
-
-const index = standaloneIndex(htmlSource, `/assets/${loaderName}`);
-await writeFile(resolve(dist, 'index.html'), index);
-await writeFile(resolve(dist, 'runtime-manifest.json'), JSON.stringify(publicManifest(manifest), null, 2));
-await publishUserscriptFiles([
-  { path:committedTemplate, expected:previousTemplateBytes, content:template },
-  { path:releaseStatePath, expected:previousReleaseBytes, content:JSON.stringify(release.state, null, 2) + '\n' },
-]);
-
-console.log(`built tiny userscript loader ${LOADER_VERSION} (${Buffer.byteLength(template)} bytes)`);
-console.log(`userscript release identity ${releaseIdentity}${release.changed ? " (version advanced)" : ""}`);
-console.log(`built protected runtime ${buildId} (${runtime.length} -> ${ciphertext.length} bytes)`);
-console.log(`built dist/ with ${manifest.ciphertextHash}`);
 
 async function bundleCss() {
   const result = await build({ absWorkingDir: root, stdin: { contents: '@import "./css/app.css";\n@import "./css/ux.css";', resolveDir: root, loader: 'css' }, bundle: true, write: false, minify: true, sourcemap: false, legalComments: 'none', target: ['safari17.4'] });
@@ -229,15 +138,15 @@ function resolvedImportScriptsArguments(args, from) {
   return parseImportScriptsArguments(args, from)
     .map((specifier) => normalizePath(posix.join(posix.dirname(from), specifier)));
 }
-function parseImports(source, from) {
+export function parseImports(source, from) {
   const out = [];
-  for (const call of source.matchAll(/\bimportScripts\s*\(([^;]*?)\)\s*;/gs)) out.push(...resolvedImportScriptsArguments(call[1], from));
+  for (const call of source.matchAll(/\bimportScripts\s*\(([\s\S]*?)\)(?:\s*;)?/g)) out.push(...resolvedImportScriptsArguments(call[1], from));
   return out;
 }
-function inlineImports(path, sources, stack = []) {
+export function inlineImports(path, sources, stack = []) {
   if (stack.includes(path)) throw new Error(`Worker import cycle: ${[...stack, path].join(' -> ')}`);
   const source = sources.get(path); if (source == null) throw new Error(`Missing worker source: ${path}`);
-  return source.replace(/\bimportScripts\s*\(([^;]*?)\)\s*;/gs, (_all, args) => resolvedImportScriptsArguments(args, path)
+  return source.replace(/\bimportScripts\s*\(([\s\S]*?)\)(?:\s*;)?/g, (_all, args) => resolvedImportScriptsArguments(args, path)
     .map((dependency) => inlineImports(dependency, sources, [...stack, path]))
     .join('\n'));
 }
@@ -252,8 +161,107 @@ function scopeCss(source) {
     .replace(/(^|[{},])\s*body(?=[\s.#:[,{>+~])/g, '$1:scope');
   return `@scope (#hex-userscript-host){${translated}}#hex-userscript-host{position:fixed;inset:0;width:100vw;height:100dvh;z-index:2147483646;overflow:hidden;background:var(--bg);isolation:isolate}`;
 }
-function userscriptMetadata() { return `// ==UserScript==\n// @name         Hex for ChatGPT\n// @namespace    https://github.com/rhgrive3/hex\n// @version      ${LOADER_VERSION}\n// @description  Securely load the Hex binary analysis workbench on ChatGPT Web.\n// @match        https://chatgpt.com/*\n// @run-at       document-start\n// @inject-into  content\n// @grant        GM.xmlHttpRequest\n// @grant        GM.getValue\n// @grant        GM.setValue\n// @grant        GM.deleteValue\n// @connect      ida.rhgrive.workers.dev\n// @updateURL    ${ORIGIN_TOKEN}/hex.meta.js\n// @downloadURL  ${ORIGIN_TOKEN}/hex.user.js\n// ==/UserScript==\n\n`; }
+function userscriptMetadata(version) { return `// ==UserScript==\n// @name         Hex for ChatGPT\n// @namespace    https://github.com/rhgrive3/hex\n// @version      ${version}\n// @description  Securely load the Hex binary analysis workbench on ChatGPT Web.\n// @match        https://chatgpt.com/*\n// @run-at       document-start\n// @inject-into  content\n// @grant        GM.xmlHttpRequest\n// @grant        GM.getValue\n// @grant        GM.setValue\n// @grant        GM.deleteValue\n// @connect      ida.rhgrive.workers.dev\n// @updateURL    ${ORIGIN_TOKEN}/hex.meta.js\n// @downloadURL  ${ORIGIN_TOKEN}/hex.user.js\n// ==/UserScript==\n\n`; }
 function publicManifest(value) { const { assetPath: _private, ...safe } = value; return safe; }
 function sha256(value) { return createHash('sha256').update(value).digest('hex'); }
 function b64(value) { return Buffer.from(value).toString('base64url'); }
 async function writeGeneratedModule(name, source) { const path = resolve(root, '.runtime-build', name); await mkdir(dirname(path), { recursive: true }); await writeFile(path, source); }
+
+export async function buildUserscript() {
+  const previousReleaseBytes = await readFile(releaseStatePath);
+  const previousTemplateBytes = await readFile(committedTemplate);
+
+  await Promise.all([rm(dist, { recursive: true, force: true }), rm(generated, { recursive: true, force: true })]);
+  await Promise.all([mkdir(resolve(dist, 'assets'), { recursive: true }), mkdir(resolve(dist, '.runtime'), { recursive: true }), mkdir(resolve(dist, 'userscript'), { recursive: true }), mkdir(generated, { recursive: true })]);
+  await writeFile(deploymentIdentityStamp, '// Cloudflare Workers Builds overwrites this file during the production build.\n// Local/test builds intentionally remain unbound to a deployment commit.\nexport const DEPLOYMENT_COMMIT = null;\n');
+
+  const [htmlSource, css, workerAssets] = await Promise.all([readFile(resolve(root, 'index.html'), 'utf8'), bundleCss(), buildWorkerAssets()]);
+  const body = extractBody(htmlSource);
+  const scopedCss = scopeCss(css);
+  await writeGeneratedModule('embedded-assets.js', `export const PROTECTED_HOST=${JSON.stringify({ html: body, css, scopedCss })};\nexport const PROTECTED_WORKER_ASSETS=${JSON.stringify(workerAssets)};\n`);
+
+  const runtime = await bundle('js/userscript/protected-entry.js', { format: 'esm', rewriteImportMeta: true, inventory: 'standard-runtime', graph: 'standard' });
+  // Also prove the real parent entry's transitive input graph separately.
+  await bundle('js/userscript/entry.js', { format: 'esm', rewriteImportMeta: true, inventory: 'standard-parent', graph: 'standard' });
+  const parent = await bundle('js/auth/privileged/parent-entry.js', { format: 'esm', rewriteImportMeta: true, inventory: 'privileged-parent', graph: 'parent' });
+  const child = await bundle('js/auth/privileged/child-entry.js', { format: 'iife', globalName: 'HexPrivilegedChild', rewriteImportMeta: true, inventory: 'privileged-child', graph: 'child' });
+  const admin = await bundle('js/auth/admin-app.js', { format: 'iife', inventory: 'admin-app' });
+  const loaderBundle = await bundle('js/userscript/loader.js', { format: 'iife', inventory: 'standard-loader', graph: 'standard' });
+  const contentHash = sha256(runtime), buildId = contentHash.slice(0, 24);
+  const privileged = privilegedIdentity(buildId, parent, child, admin);
+  await writeGeneratedModule('privileged-assets.js', `export const PRIVILEGED_BUILD=Object.freeze(${JSON.stringify({ ...privileged, parentSource: parent.toString('utf8'), childSource: child.toString('utf8'), adminSource: admin.toString('utf8') })});\n`);
+  const releaseInputs = [
+    runtime, loaderBundle, parent, child, admin,
+    await readFile(new URL('./auth-build-policy.mjs', import.meta.url)),
+    await readFile(fileURLToPath(import.meta.url)),
+    await readFile(new URL('./userscript-publication.mjs', import.meta.url)),
+  ];
+  const releaseIdentity = releaseIdentityFor(releaseInputs);
+  // Private build evidence binds actual emitted source bytes to the committed
+  // release identity; it contains no runtime encryption key or session secret.
+  await writeFile(resolve(generated, 'loader-input.js'), loaderBundle);
+  await writeFile(resolve(generated, 'release-inputs.json'), JSON.stringify({
+    names: ['runtime', 'loader', 'parent', 'child', 'admin', 'policy', 'builder', 'publication'],
+    digests: releaseInputs.map(sha256), releaseIdentity,
+  }, null, 2));
+  const previousRelease = JSON.parse(previousReleaseBytes.toString('utf8'));
+  const release = resolveUserscriptReleaseVersion(previousRelease, { releaseIdentity, buildId });
+  const LOADER_VERSION = release.version;
+  const compressed = gzipSync(runtime, { level: 9 });
+  const contentKey = randomBytes(32), iv = randomBytes(12);
+  const runtimeVersion = `2.${LOADER_VERSION}`;
+  const aad = `hex-runtime:${buildId}:${runtimeVersion}`;
+  const cipher = createCipheriv('aes-256-gcm', contentKey, iv); cipher.setAAD(Buffer.from(aad));
+  const ciphertext = Buffer.concat([cipher.update(compressed), cipher.final(), cipher.getAuthTag()]);
+  const assetPath = `/.runtime/runtime.${buildId}.bin`;
+  const runtimeLocator = `/_runtime/${buildId}`;
+  const releaseManifest = Object.freeze({
+    buildId,
+    runtimeVersion,
+    contentHash,
+    compression: 'gzip',
+    runtimeLocator,
+    byteLength: ciphertext.length,
+  });
+  const releaseManifestHash = sha256(Buffer.from(JSON.stringify(releaseManifest), 'utf8'));
+  const manifest = Object.freeze({ buildId, privileged, runtimeVersion, ciphertextHash: sha256(ciphertext), contentHash, iv: b64(iv), aad, compression: 'gzip', assetPath, byteLength: ciphertext.length });
+  await writeFile(resolve(dist, assetPath.slice(1)), ciphertext);
+  await writeGeneratedModule('runtime-secrets.js', `export const RUNTIME_BUILD=Object.freeze(${JSON.stringify({ manifest, contentKey: b64(contentKey), signingKey: b64(randomBytes(32)) })});\n`);
+
+  const loaderForOrigin = (origin) => loaderBundle.toString('utf8')
+    .replaceAll(ORIGIN_TOKEN, origin)
+    .replaceAll('__HEX_LOADER_VERSION__', LOADER_VERSION)
+    .replaceAll('__HEX_BUILD_ID__', buildId)
+    .replaceAll('__HEX_CONTENT_HASH__', contentHash)
+    .replaceAll('__HEX_RUNTIME_VERSION__', runtimeVersion)
+    .replaceAll('__HEX_RUNTIME_BYTE_LENGTH__', String(ciphertext.length))
+    .replaceAll('__HEX_RUNTIME_LOCATOR__', runtimeLocator)
+    .replaceAll('__HEX_RELEASE_MANIFEST_HASH__', releaseManifestHash);
+  const publicLoader = loaderForOrigin('https://ida.rhgrive.workers.dev');
+  if (Buffer.byteLength(publicLoader) > MAX_LOADER_BYTES) throw new Error(`Tiny loader exceeds ${MAX_LOADER_BYTES} bytes.`);
+  const loaderName = `loader.${sha256(publicLoader).slice(0, 12)}.js`;
+  await writeFile(resolve(dist, 'assets', loaderName), publicLoader);
+
+  const metadata = userscriptMetadata(LOADER_VERSION);
+  const template = metadata + loaderForOrigin(ORIGIN_TOKEN);
+  if (Buffer.byteLength(template) > MAX_LOADER_BYTES) throw new Error(`hex.user.js template exceeds ${MAX_LOADER_BYTES} bytes.`);
+  await writeFile(resolve(dist, 'userscript/hex.user.template.js'), template);
+
+  const index = standaloneIndex(htmlSource, `/assets/${loaderName}`);
+  await writeFile(resolve(dist, 'index.html'), index);
+  await writeFile(resolve(dist, 'runtime-manifest.json'), JSON.stringify(publicManifest(manifest), null, 2));
+  await publishUserscriptFiles([
+    { path:committedTemplate, expected:previousTemplateBytes, content:template },
+    { path:releaseStatePath, expected:previousReleaseBytes, content:JSON.stringify(release.state, null, 2) + '\n' },
+  ]);
+
+  console.log(`built tiny userscript loader ${LOADER_VERSION} (${Buffer.byteLength(template)} bytes)`);
+  console.log(`userscript release identity ${releaseIdentity}${release.changed ? " (version advanced)" : ""}`);
+  console.log(`built protected runtime ${buildId} (${runtime.length} -> ${ciphertext.length} bytes)`);
+  console.log(`built dist/ with ${manifest.ciphertextHash}`);
+}
+
+const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  await buildUserscript();
+}
