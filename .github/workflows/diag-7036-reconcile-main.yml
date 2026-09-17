@@ -8,48 +8,232 @@ permissions:
 jobs:
   reconcile:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Capture exact conflict hunks
+      - name: Resolve current-main overlap and validate
         shell: bash
         run: |
           set +e
           set -uo pipefail
           STATUS=/tmp/reconcile-7036.txt
-          PATCH=/tmp/reconcile-7036-conflicts.patch
           : > "$STATUS"
-          : > "$PATCH"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          fail_tail() {
+            label="$1"; file="$2"; rc="$3"
+            echo "$label rc=$rc" >> "$STATUS"
+            echo "--- $label first failure ---" >> "$STATUS"
+            tail -n 80 "$file" >> "$STATUS"
+            exit "$rc"
+          }
+          check() {
+            label="$1"; shift
+            timeout 150s "$@" >/tmp/check.out 2>&1
+            rc=$?
+            echo "$label rc=$rc" >> "$STATUS"
+            if [ "$rc" -ne 0 ]; then
+              echo "--- $label first failure ---" >> "$STATUS"
+              tail -n 80 /tmp/check.out >> "$STATUS"
+              exit "$rc"
+            fi
+          }
+
           timeout 90s git fetch --no-tags origin main >/tmp/fetch.log 2>&1
           rc=$?
-          echo "fetch rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/fetch.log >> "$STATUS"; exit "$rc"; fi
+          [ "$rc" -eq 0 ] || fail_tail fetch /tmp/fetch.log "$rc"
           MAIN=$(git rev-parse refs/remotes/origin/main)
           echo "main=$MAIN" >> "$STATUS"
           echo "head_before=$(git rev-parse HEAD)" >> "$STATUS"
+
           git merge --no-edit --no-ff refs/remotes/origin/main >/tmp/merge.log 2>&1
+          merge_rc=$?
+          mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+          echo "merge rc=$merge_rc" >> "$STATUS"
+          echo "conflict_count=${#conflicts[@]}" >> "$STATUS"
+          printf '%s\n' "${conflicts[@]}" >> "$STATUS"
+          if [ "$merge_rc" -eq 0 ]; then
+            echo 'unexpected_clean_merge=true' >> "$STATUS"
+            exit 1
+          fi
+
+          EXPECTED=(
+            .circleci/config.yml
+            js/analysis/discovery/artifact.js
+            js/analysis/discovery/producers.js
+            js/analysis/index.js
+            js/rebuild/transaction-v2.js
+            js/semantics/ssa/build.js
+            tests/issue-4135-pe-section-virtual-layout.mjs
+          )
+          actual=$(printf '%s\n' "${conflicts[@]}" | sort)
+          expected=$(printf '%s\n' "${EXPECTED[@]}" | sort)
+          if [ "$actual" != "$expected" ]; then
+            echo 'conflict_set_changed=true' >> "$STATUS"
+            exit 1
+          fi
+
+          # Current main owns the later T016/rebuild/PE implementations.
+          git checkout --theirs -- \
+            js/analysis/discovery/artifact.js \
+            js/analysis/discovery/producers.js \
+            js/analysis/index.js \
+            js/rebuild/transaction-v2.js \
+            tests/issue-4135-pe-section-virtual-layout.mjs
           rc=$?
-          echo "merge rc=$rc" >> "$STATUS"
-          mapfile -t files < <(git diff --name-only --diff-filter=U)
-          echo "conflict_count=${#files[@]}" >> "$STATUS"
-          printf '%s\n' "${files[@]}" >> "$STATUS"
-          if [ "$rc" -eq 0 ]; then echo 'unexpected_clean_merge=true' >> "$STATUS"; exit 1; fi
-          for f in "${files[@]}"; do
-            echo "===== $f =====" >> "$PATCH"
-            git diff --cc --unified=8 -- "$f" >> "$PATCH"
+          [ "$rc" -eq 0 ] || { echo "checkout_main rc=$rc" >> "$STATUS"; exit "$rc"; }
+
+          # Preserve the #7036 canonical-row wrapper. Main #9177 is ported into build-core below.
+          git checkout --ours -- js/semantics/ssa/build.js
+          rc=$?
+          [ "$rc" -eq 0 ] || { echo "checkout_ssa_wrapper rc=$rc" >> "$STATUS"; exit "$rc"; }
+
+          python3 - <<'PY' >/tmp/resolve.log 2>&1
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected 1 match, got {count}')
+              return text.replace(old, new, 1)
+
+          # Merge the two Phase-7 routing cases without discarding any other branch/main CI edits.
+          p = Path('.circleci/config.yml')
+          s = p.read_text()
+          start = s.index('<<<<<<< HEAD\n')
+          marker = '>>>>>>> refs/remotes/origin/main\n'
+          end = s.index(marker, start) + len(marker)
+          block = s[start:end]
+          if 'feat/analysis-roadmap-v8-current-main-20260907' not in block or 'recovery/t016-discovery-artifact-20260916' not in block:
+              raise SystemExit('circleci unexpected conflict block')
+          ours = block.split('<<<<<<< HEAD\n', 1)[1].split('=======\n', 1)[0]
+          theirs = block.split('=======\n', 1)[1].split('>>>>>>> refs/remotes/origin/main\n', 1)[0]
+          first_terminator = (
+              '                node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"\n'
+              '                ;;\n'
+          )
+          s = s[:start] + ours + first_terminator + theirs + s[end:]
+          if any(token in s for token in ('<<<<<<<', '=======', '>>>>>>>')):
+              raise SystemExit('circleci conflict marker remains')
+          p.write_text(s)
+
+          # Preserve #7036 original-byte discovery layout API; T016 artifact authority stays on main v2.
+          p = Path('js/analysis/index.js')
+          s = p.read_text()
+          layout_export = "export {queryDiscoveryLayout, restoreDiscoveryBytes, DISCOVERY_LAYOUT_SCHEMA, DISCOVERY_LAYOUT_LIMITS} from './discovery/layout.js';\n"
+          if layout_export not in s:
+              s += '\n// Original-byte discovery materialization retained from #7036.\n' + layout_export
+          p.write_text(s)
+
+          # Port main #9177 entry-loop SSA support into #7036's split build-core implementation.
+          p = Path('js/semantics/ssa/build-core.js')
+          s = p.read_text()
+          s = replace_once(
+              s,
+              "import { analyzeSemanticDominance, createSemanticCfg, deterministicTraversal } from '../cfg/index.js';\n",
+              "import { createSemanticCfg, deterministicTraversal } from '../cfg/index.js';\n",
+              'ssa cfg import',
+          )
+          s = replace_once(
+              s,
+              "import { createSemanticSsaContract, SEMANTIC_SSA_DEFAULT_BUDGET } from './contract.js';\n",
+              "import {\n  analyzeSemanticSsaDominance,\n  createSemanticSsaContract,\n  semanticSsaPhiPredecessors,\n  semanticSsaVirtualEntryPredecessor,\n  SEMANTIC_SSA_DEFAULT_BUDGET,\n} from './contract.js';\n",
+              'ssa contract import',
+          )
+          s = replace_once(s,
+              "  for (const variant of model.variants) definitionBlocks.get(variant.key).add('__entry_seed__');\n",
+              '', 'ssa synthetic entry seed')
+          s = replace_once(s,
+              "    const defs = [...definitionBlocks.get(variant.key)].filter((id) => id !== '__entry_seed__').sort();\n    if (defs.length || reachable.has(dominance.reversePostOrder[0])) defs.unshift(dominance.reversePostOrder[0]);\n    const pending = new Set([...new Set(defs)]);\n",
+              "    const defs = [...definitionBlocks.get(variant.key)].sort();\n    const pending = new Set(defs);\n",
+              'ssa phi seed blocks')
+          s = replace_once(s,
+              "        if (!reachable.has(frontierId) || frontierId === dominance.reversePostOrder[0]) continue;\n",
+              "        if (!reachable.has(frontierId)) continue;\n",
+              'ssa entry frontier')
+          s = replace_once(s,
+              "  if (entryBlock.predecessors.length) fail('semantic-ssa-entry-has-predecessors');\n\n  const dominance = analyzeSemanticDominance(cfg, { signal: options.signal, budget: { maxWorkItems: limit(options, 'maxWorkItems') } });\n",
+              "\n  const dominance = analyzeSemanticSsaDominance(cfg, { signal: options.signal, budget: { maxWorkItems: limit(options, 'maxWorkItems') } });\n",
+              'ssa entry dominance')
+          s = replace_once(s,
+              "  for (const variant of model.variants) {\n    const seed = seedDefinition(ir, cfg, variant, model.seedsByVariant.get(variant.key)[0] ?? null);\n    addDefinition(seed);\n    stacks.get(variant.key).push(seed.valueId);\n  }\n",
+              "  const seedValueByVariant = new Map();\n  for (const variant of model.variants) {\n    const seed = seedDefinition(ir, cfg, variant, model.seedsByVariant.get(variant.key)[0] ?? null);\n    addDefinition(seed);\n    stacks.get(variant.key).push(seed.valueId);\n    seedValueByVariant.set(variant.key, seed.valueId);\n  }\n",
+              'ssa seed map')
+          s = replace_once(s,
+              "  const addPhiIncoming = (phi, predecessorBlockId, valueId) => {\n    if (++phiLinkCount + uses.length > limit(options, 'maxLinks')) fail('semantic-ssa-budget-exceeded-maxLinks');\n    phi.incoming.push({ predecessorBlockId, valueId });\n  };\n\n  const renameReachable = (rootId) => {\n",
+              "  const addPhiIncoming = (phi, predecessorBlockId, valueId) => {\n    if (++phiLinkCount + uses.length > limit(options, 'maxLinks')) fail('semantic-ssa-budget-exceeded-maxLinks');\n    phi.incoming.push({ predecessorBlockId, valueId });\n  };\n\n  if (entryBlock.predecessors.length > 0) {\n    const virtualEntryPredecessor = semanticSsaVirtualEntryPredecessor(cfg);\n    const entryPhis = phiByBlock.get(cfg.entryBlockId);\n    for (const variantKey of [...entryPhis.keys()].sort()) {\n      const seedValueId = seedValueByVariant.get(variantKey);\n      if (!seedValueId) fail('semantic-ssa-missing-entry-phi-seed');\n      addPhiIncoming(entryPhis.get(variantKey), virtualEntryPredecessor, seedValueId);\n    }\n  }\n\n  const renameReachable = (rootId) => {\n",
+              'ssa virtual entry incoming')
+          s = replace_once(s,
+              "    const expected = cfgBlocks.get(definition.blockId).predecessors;\n",
+              "    const expected = semanticSsaPhiPredecessors(cfg, definition.blockId);\n",
+              'ssa phi predecessor set')
+          p.write_text(s)
+          PY
+          rc=$?
+          [ "$rc" -eq 0 ] || fail_tail resolve /tmp/resolve.log "$rc"
+
+          git add .circleci/config.yml \
+            js/analysis/discovery/artifact.js js/analysis/discovery/producers.js js/analysis/index.js \
+            js/rebuild/transaction-v2.js js/semantics/ssa/build.js js/semantics/ssa/build-core.js \
+            tests/issue-4135-pe-section-virtual-layout.mjs
+          remaining=$(git diff --name-only --diff-filter=U)
+          if [ -n "$remaining" ]; then
+            echo 'remaining_conflicts:' >> "$STATUS"
+            printf '%s\n' "$remaining" >> "$STATUS"
+            exit 1
+          fi
+
+          git rm .github/workflows/diag-7036-reconcile-main.yml >/tmp/rm.log 2>&1
+          rc=$?
+          [ "$rc" -eq 0 ] || fail_tail remove_diag /tmp/rm.log "$rc"
+          git commit --no-edit >/tmp/commit.log 2>&1
+          rc=$?
+          [ "$rc" -eq 0 ] || fail_tail merge_commit /tmp/commit.log "$rc"
+          CLEAN=$(git rev-parse HEAD)
+          echo "clean_head=$CLEAN" >> "$STATUS"
+
+          check diff_check git diff --check "$MAIN...$CLEAN"
+          check syntax_build node --check js/semantics/ssa/build.js
+          check syntax_build_core node --check js/semantics/ssa/build-core.js
+          check syntax_artifact node --check js/analysis/discovery/artifact.js
+          check syntax_rebuild node --check js/rebuild/transaction-v2.js
+          check ssa_5435 node tests/semantic-v2/issue-5435-entry-loop-ssa.test.mjs
+          check ssa_4777 node tests/phase7/alias/issue-4777-forged-scalar-ssa-rename.test.mjs
+          check x03_artifact node tests/phase7/discovery/x03-ambiguity-artifact.test.mjs
+          check pe_4135 node tests/issue-4135-pe-section-virtual-layout.mjs
+          check rebuild_5180 node tests/issue-5180-loader-reparse-identity.mjs
+
+          mapfile -t extra_tests < <(git ls-files '*5192*.mjs' '*t016*.mjs' | sort -u)
+          echo "extra_test_count=${#extra_tests[@]}" >> "$STATUS"
+          for t in "${extra_tests[@]}"; do
+            check "extra:$t" node "$t"
           done
-          head -n 1600 "$PATCH" > /tmp/reconcile-7036-conflicts.bounded.patch
-          exit 1
+
+          LOGICAL_BRANCH=feat/analysis-roadmap-v8-current-main-20260907
+          check p7_manifest node tools/validation/phase7-ownership.mjs --check-manifest
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase7 --base-sha "$MAIN" --head-sha "$CLEAN" >/tmp/p7.json 2>/tmp/p7i.log
+          rc=$?
+          [ "$rc" -eq 0 ] || fail_tail p7_inventory /tmp/p7i.log "$rc"
+          P7=$(cat /tmp/p7.json)
+          check p7_validate node tools/validation/phase7-ownership.mjs --files-json "$P7"
+          check p8_manifest node tools/validation/phase8-ownership.mjs --check-manifest
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase8 --base-sha "$MAIN" --head-sha "$CLEAN" >/tmp/p8.json 2>/tmp/p8i.log
+          rc=$?
+          [ "$rc" -eq 0 ] || fail_tail p8_inventory /tmp/p8i.log "$rc"
+          P8=$(cat /tmp/p8.json)
+          check p8_validate node tools/validation/phase8-ownership.mjs --files-json "$P8"
+
+          git push origin HEAD:reconcile/7036-main-75eb8e78 >/tmp/push.log 2>&1
+          rc=$?
+          [ "$rc" -eq 0 ] || fail_tail push /tmp/push.log "$rc"
+          echo 'candidate_push=pass' >> "$STATUS"
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: diag-7036-reconcile-main
-          path: |
-            /tmp/reconcile-7036.txt
-            /tmp/reconcile-7036-conflicts.bounded.patch
+          path: /tmp/reconcile-7036.txt
           retention-days: 1
