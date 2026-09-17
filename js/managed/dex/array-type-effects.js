@@ -46,7 +46,7 @@ function arrayAccess(opcode, formatByte, view, insnsStart, pc) {
   return {
     mnemonic:`a${isWrite ? 'put' : 'get'}${variant.suffix}`,
     consumedValues:[],
-    producedValues:isWrite ? [] : [{ bits:variant.byteWidth * 8, type:variant.extension ? { kind:'bitvector', widthBits:variant.byteWidth * 8 } : variant.type }],
+    producedValues:isWrite ? [] : [{ bits:variant.bits, type:variant.extension ? { kind:'bitvector', widthBits:variant.bits } : variant.type }],
     locationReads:reads,
     locationWrites:isWrite ? [] : [reg(valueRegister, variant.bits, variant.type)],
     memoryEffects:[{
@@ -73,10 +73,10 @@ function filledArray({ opcode, formatByte, view, insnsStart, pc, image, operatio
   if (element.words !== 1) fail('dex-filled-new-array-wide-element-unsupported');
   let registers;
   if (opcode === 0x24) {
-    const count = formatByte >>> 4;
+    const count = formatByte & 0x0f;
     if (count > 5) fail('dex-filled-new-array-register-count-invalid');
     const packed = view.getUint16(insnsStart + (pc + 2) * 2, true);
-    registers = [packed & 15, (packed >>> 4) & 15, (packed >>> 8) & 15, (packed >>> 12) & 15, formatByte & 15].slice(0, count);
+    registers = [packed & 15, (packed >>> 4) & 15, (packed >>> 8) & 15, (packed >>> 12) & 15, (formatByte >>> 4) & 15].slice(0, count);
   } else {
     const count = formatByte;
     const first = view.getUint16(insnsStart + (pc + 2) * 2, true);
