@@ -1,0 +1,61 @@
+name: diag-issue-5302-core
+
+on:
+  push:
+    branches:
+      - diag/issue-5302-core-20260918
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Pre-SCPA core contracts
+        id: pre
+        shell: bash
+        run: |
+          set +e
+          (node tests/issue-6168-support-scope.mjs && node tests/issue-6154-confirm-scope.mjs && node tests/issue-4466-missing-contradiction-verdict.test.mjs && node tests/core-identity-contracts.mjs && node tests/issue-1942-determinism-input-ids.mjs && node tests/issue-3786-slice-source-range-type-witness.test.mjs && node tests/issue-4251-core-identity-slice-index.test.mjs && node tests/issue-3915-core-identity-special-numbers.test.mjs && node tests/core-evidence-contracts.mjs && node tests/core-budget-scopes.mjs && node tests/evidence-canonical-roundtrip.mjs && node tests/issue-3590-5780-paged-artifact-dead-inflight.mjs && node tests/issue-5852-shl-fold-range.mjs && node tests/issue-5853-invalid-date-identity.mjs && node tests/issue-5855-cyclic-vector-element-type.mjs) > /tmp/pre.log 2>&1
+          code=$?
+          tail -n 80 /tmp/pre.log > /tmp/pre-tail.txt
+          exit $code
+      - name: SCPA contracts
+        id: scpa
+        if: success()
+        shell: bash
+        run: |
+          set +e
+          npm run scpa:test > /tmp/scpa.log 2>&1
+          code=$?
+          tail -n 80 /tmp/scpa.log > /tmp/scpa-tail.txt
+          exit $code
+      - name: Post-SCPA contract
+        id: post
+        if: success()
+        shell: bash
+        run: |
+          set +e
+          node tests/issue-4637-parse-goal-avoid-preset.mjs > /tmp/post.log 2>&1
+          code=$?
+          tail -n 80 /tmp/post.log > /tmp/post-tail.txt
+          exit $code
+      - name: Upload minimal diagnostic tails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-5302-core-first-failure
+          path: |
+            /tmp/pre-tail.txt
+            /tmp/scpa-tail.txt
+            /tmp/post-tail.txt
+          if-no-files-found: ignore
+          retention-days: 1
