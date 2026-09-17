@@ -26,19 +26,16 @@ jobs:
           git apply --check /tmp/issue-8299.patch
           git apply /tmp/issue-8299.patch
           git rm .github/patches/issue-8299-final.patch.gz.b64
-      - name: Stage non-workflow files
-        shell: bash
-        run: |
-          set -euo pipefail
-          git add docs/machine-effects-prerequisites.md \
-            tests/ci/issue-8299-machine-effects-prerequisites.test.mjs \
-            tests/machine-effects/run.mjs \
-            tools/validation/machine-effects/a2-denominator.mjs \
-            tools/validation/machine-effects/prerequisites.mjs
-          {
-            echo '### staged files'
-            git diff --cached --name-only
-          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Stage docs
+        run: git add -- docs/machine-effects-prerequisites.md
+      - name: Stage CI contract test
+        run: git add -- tests/ci/issue-8299-machine-effects-prerequisites.test.mjs
+      - name: Stage MachineEffects runner
+        run: git add -- tests/machine-effects/run.mjs
+      - name: Stage A2 denominator
+        run: git add -- tools/validation/machine-effects/a2-denominator.mjs
+      - name: Stage prerequisite preflight
+        run: git add -- tools/validation/machine-effects/prerequisites.mjs
       - name: Commit non-workflow files
         shell: bash
         run: |
