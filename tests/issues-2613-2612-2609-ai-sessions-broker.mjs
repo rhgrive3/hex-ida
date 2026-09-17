@@ -4,6 +4,7 @@ import { AiSession } from '../js/ai/ui/session.js';
 import { ContextBroker } from '../js/ai/context/broker.js';
 import { InvestigationSessionStore, createInvestigationSession } from '../js/ai/session-core/index.js';
 import { EvidenceStore } from '../js/ai/evidence.js';
+import { sealPersistedConfirmedEnvelope } from '../js/ai/session-core/persisted-confirmed.js';
 
 function memoryStorage() {
   const map = new Map();
@@ -101,9 +102,7 @@ function memoryStorage() {
       summary: `Detailed summary of verified security finding or xref trace item ${i}. ` + 'A'.repeat(200),
     });
   }
-  evidenceStore.restorePersistedConfirmed(
-    new InvestigationSessionStore().register({ id: 'sess-budget-seed', confirmedFindings: entries }).confirmedFindings,
-  );
+  evidenceStore.restorePersistedConfirmed(sealPersistedConfirmedEnvelope(entries));
 
   const session = {
     id: 'sess-budget-test',
@@ -145,9 +144,7 @@ function memoryStorage() {
       summary: `Item summary for ${i} with extra text ` + 'B'.repeat(300),
     });
   }
-  evidenceStore.restorePersistedConfirmed(
-    new InvestigationSessionStore().register({ id: 'sess-bench-seed', confirmedFindings: entries }).confirmedFindings,
-  );
+  evidenceStore.restorePersistedConfirmed(sealPersistedConfirmedEnvelope(entries));
 
   const start = performance.now();
   const { context, bytes } = broker.buildModelContext({
