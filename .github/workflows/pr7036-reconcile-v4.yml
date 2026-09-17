@@ -1,17 +1,17 @@
-name: PR7036 current-main conflict snapshot v4
+name: PR7036 main-authority reconciliation v4
 on:
   push:
     branches: [sync/pr7036-main-20260918-v4]
 jobs:
-  snapshot:
-    if: contains(github.event.head_commit.message, 'snapshot PR7036 current-main conflicts v4 tolerate absent stages')
+  reconcile:
+    if: contains(github.event.head_commit.message, 'validate PR7036 main-authority reconciliation v4')
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 900
-      - name: Snapshot conflict stages
+      - name: Reconcile and run focused acceptance
         shell: bash
         run: |
           set -euo pipefail
@@ -22,34 +22,68 @@ jobs:
           git merge --no-commit --no-ff FETCH_HEAD >/dev/null 2>&1
           rc=$?
           set -e
-          git diff --name-only --diff-filter=U | sed '/^$/d' | sort > conflicts.txt
           test "$rc" -eq 1
-          test "$(wc -l < conflicts.txt | tr -d ' ')" -eq 7
-          while IFS= read -r f; do
-            for stage in 1 2 3; do
-              case "$stage" in 1) d=base;; 2) d=ours;; 3) d=theirs;; esac
-              mkdir -p "$d/$(dirname "$f")"
-              if git cat-file -e ":$stage:$f" 2>/dev/null; then
-                git show ":$stage:$f" > "$d/$f"
-              else
-                printf '%s\n' '__ABSENT_STAGE__' > "$d/$f"
-              fi
-            done
-          done < conflicts.txt
-          {
-            echo "head=$(git rev-parse HEAD)"
-            echo "main=$(git rev-parse FETCH_HEAD)"
-            echo "merge_base=$(git merge-base HEAD FETCH_HEAD)"
-          } > summary.txt
-          git merge --abort
-      - name: Upload snapshot
+          test "$(git diff --name-only --diff-filter=U | wc -l | tr -d ' ')" -eq 7
+          git checkout --theirs -- .circleci/config.yml js/analysis/discovery/artifact.js js/analysis/discovery/producers.js js/analysis/index.js js/rebuild/transaction-v2.js tests/issue-4135-pe-section-virtual-layout.mjs
+          git checkout --ours -- js/semantics/ssa/build.js
+          git add .circleci/config.yml js/analysis/discovery/artifact.js js/analysis/discovery/producers.js js/analysis/index.js js/rebuild/transaction-v2.js js/semantics/ssa/build.js tests/issue-4135-pe-section-virtual-layout.mjs
+          python3 <<'PY'
+          from pathlib import Path
+          p=Path('js/semantics/ssa/build-core.js')
+          s=p.read_text()
+          def repl(old,new):
+              global s
+              if s.count(old)!=1:
+                  raise SystemExit(f'patch cardinality {s.count(old)} for {old[:80]!r}')
+              s=s.replace(old,new)
+          repl("import { createSemanticSsaContract, SEMANTIC_SSA_DEFAULT_BUDGET } from './contract.js';",
+               "import {\n  analyzeSemanticSsaDominance,\n  createSemanticSsaContract,\n  semanticSsaPhiPredecessors,\n  semanticSsaVirtualEntryPredecessor,\n  SEMANTIC_SSA_DEFAULT_BUDGET,\n} from './contract.js';")
+          repl("  for (const variant of model.variants) definitionBlocks.get(variant.key).add('__entry_seed__');\n", "")
+          repl("    const defs = [...definitionBlocks.get(variant.key)].filter((id) => id !== '__entry_seed__').sort();\n    if (defs.length || reachable.has(dominance.reversePostOrder[0])) defs.unshift(dominance.reversePostOrder[0]);\n    const pending = new Set([...new Set(defs)]);",
+               "    const defs = [...definitionBlocks.get(variant.key)].sort();\n    const pending = new Set(defs);")
+          repl("        if (!reachable.has(frontierId) || frontierId === dominance.reversePostOrder[0]) continue;",
+               "        if (!reachable.has(frontierId)) continue;")
+          repl("  const entryBlock = cfg.blocks.find((block) => block.id === cfg.entryBlockId);\n  if (entryBlock.predecessors.length) fail('semantic-ssa-entry-has-predecessors');\n\n  const dominance = analyzeSemanticDominance(cfg, { signal: options.signal, budget: { maxWorkItems: limit(options, 'maxWorkItems') } });",
+               "  const entryBlock = cfg.blocks.find((block) => block.id === cfg.entryBlockId);\n\n  const dominance = analyzeSemanticSsaDominance(cfg, { signal: options.signal, budget: { maxWorkItems: limit(options, 'maxWorkItems') } });")
+          repl("  for (const variant of model.variants) {\n    const seed = seedDefinition(ir, cfg, variant, model.seedsByVariant.get(variant.key)[0] ?? null);\n    addDefinition(seed);\n    stacks.get(variant.key).push(seed.valueId);\n  }",
+               "  const seedValueByVariant = new Map();\n  for (const variant of model.variants) {\n    const seed = seedDefinition(ir, cfg, variant, model.seedsByVariant.get(variant.key)[0] ?? null);\n    addDefinition(seed);\n    stacks.get(variant.key).push(seed.valueId);\n    seedValueByVariant.set(variant.key, seed.valueId);\n  }")
+          repl("  const addPhiIncoming = (phi, predecessorBlockId, valueId) => {\n    if (++phiLinkCount + uses.length > limit(options, 'maxLinks')) fail('semantic-ssa-budget-exceeded-maxLinks');\n    phi.incoming.push({ predecessorBlockId, valueId });\n  };\n\n  const renameReachable = (rootId) => {",
+               "  const addPhiIncoming = (phi, predecessorBlockId, valueId) => {\n    if (++phiLinkCount + uses.length > limit(options, 'maxLinks')) fail('semantic-ssa-budget-exceeded-maxLinks');\n    phi.incoming.push({ predecessorBlockId, valueId });\n  };\n\n  if (entryBlock.predecessors.length > 0) {\n    const virtualEntryPredecessor = semanticSsaVirtualEntryPredecessor(cfg);\n    const entryPhis = phiByBlock.get(cfg.entryBlockId);\n    for (const variantKey of [...entryPhis.keys()].sort()) {\n      const seedValueId = seedValueByVariant.get(variantKey);\n      if (!seedValueId) fail('semantic-ssa-missing-entry-phi-seed');\n      addPhiIncoming(entryPhis.get(variantKey), virtualEntryPredecessor, seedValueId);\n    }\n  }\n\n  const renameReachable = (rootId) => {")
+          repl("    const expected = cfgBlocks.get(definition.blockId).predecessors;",
+               "    const expected = semanticSsaPhiPredecessors(cfg, definition.blockId);")
+          p.write_text(s)
+          PY
+          git add js/semantics/ssa/build-core.js
+          test -z "$(git diff --name-only --diff-filter=U)"
+          node --check js/semantics/ssa/build-core.js
+          : > /tmp/result.txt
+          run_one() {
+            name="$1"; shift
+            echo "RUN $name" >> /tmp/result.txt
+            set +e
+            "$@" > /tmp/test.out 2>&1
+            trc=$?
+            set -e
+            echo "RC $trc" >> /tmp/result.txt
+            if [ "$trc" -ne 0 ]; then
+              echo "FIRST_FAILURE $name" >> /tmp/result.txt
+              tail -n 60 /tmp/test.out >> /tmp/result.txt
+              cp /tmp/result.txt pr7036-reconcile-v4-result.txt
+              exit "$trc"
+            fi
+          }
+          run_one t016-discovery node --test tests/phase7/discovery/t016-discovery-preservation.test.mjs
+          run_one t016-rebuild node --test tests/rebuild/t016-discovery-preservation.test.mjs
+          run_one pe-4135 node --test tests/issue-4135-pe-section-virtual-layout.mjs
+          run_one proof node --test tests/phase8/integration/proof-optimizer.test.mjs tests/phase8/substrate/proof-projection-origin.test.mjs
+          run_one x03 node --test tests/stage2/x03-rebuild-discovery.test.mjs tests/stage2/x03-rebuild-discovery-acceptance.test.mjs
+          echo "ALL_FOCUSED_PASS" >> /tmp/result.txt
+          cp /tmp/result.txt pr7036-reconcile-v4-result.txt
+      - name: Upload focused result
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr7036-current-main-conflict-snapshot-v4
-          path: |
-            conflicts.txt
-            summary.txt
-            base
-            ours
-            theirs
+          name: pr7036-reconcile-v4-result
+          path: pr7036-reconcile-v4-result.txt
+          if-no-files-found: ignore
           retention-days: 2
