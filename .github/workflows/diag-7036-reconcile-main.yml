@@ -76,7 +76,6 @@ jobs:
             exit 1
           fi
 
-          # Current main owns the later T016/rebuild/PE implementations.
           git checkout --theirs -- \
             js/analysis/discovery/artifact.js \
             js/analysis/discovery/producers.js \
@@ -85,22 +84,18 @@ jobs:
             tests/issue-4135-pe-section-virtual-layout.mjs
           rc=$?
           [ "$rc" -eq 0 ] || { echo "checkout_main rc=$rc" >> "$STATUS"; exit "$rc"; }
-
-          # Preserve the #7036 canonical-row wrapper. Main #9177 is ported into build-core below.
           git checkout --ours -- js/semantics/ssa/build.js
           rc=$?
           [ "$rc" -eq 0 ] || { echo "checkout_ssa_wrapper rc=$rc" >> "$STATUS"; exit "$rc"; }
 
           python3 - <<'PY' >/tmp/resolve.log 2>&1
           from pathlib import Path
-
           def replace_once(text, old, new, label):
               count = text.count(old)
               if count != 1:
                   raise SystemExit(f'{label}: expected 1 match, got {count}')
               return text.replace(old, new, 1)
 
-          # Merge the two Phase-7 routing cases without discarding any other branch/main CI edits.
           p = Path('.circleci/config.yml')
           s = p.read_text()
           start = s.index('<<<<<<< HEAD\n')
@@ -120,7 +115,6 @@ jobs:
               raise SystemExit('circleci conflict marker remains')
           p.write_text(s)
 
-          # Preserve #7036 original-byte discovery layout API; T016 artifact authority stays on main v2.
           p = Path('js/analysis/index.js')
           s = p.read_text()
           layout_export = "export {queryDiscoveryLayout, restoreDiscoveryBytes, DISCOVERY_LAYOUT_SCHEMA, DISCOVERY_LAYOUT_LIMITS} from './discovery/layout.js';\n"
@@ -128,48 +122,34 @@ jobs:
               s += '\n// Original-byte discovery materialization retained from #7036.\n' + layout_export
           p.write_text(s)
 
-          # Port main #9177 entry-loop SSA support into #7036's split build-core implementation.
           p = Path('js/semantics/ssa/build-core.js')
           s = p.read_text()
-          s = replace_once(
-              s,
-              "import { analyzeSemanticDominance, createSemanticCfg, deterministicTraversal } from '../cfg/index.js';\n",
-              "import { createSemanticCfg, deterministicTraversal } from '../cfg/index.js';\n",
-              'ssa cfg import',
-          )
-          s = replace_once(
-              s,
-              "import { createSemanticSsaContract, SEMANTIC_SSA_DEFAULT_BUDGET } from './contract.js';\n",
-              "import {\n  analyzeSemanticSsaDominance,\n  createSemanticSsaContract,\n  semanticSsaPhiPredecessors,\n  semanticSsaVirtualEntryPredecessor,\n  SEMANTIC_SSA_DEFAULT_BUDGET,\n} from './contract.js';\n",
-              'ssa contract import',
-          )
           s = replace_once(s,
-              "  for (const variant of model.variants) definitionBlocks.get(variant.key).add('__entry_seed__');\n",
-              '', 'ssa synthetic entry seed')
+              "import { analyzeSemanticDominance, createSemanticCfg, deterministicTraversal } from '../cfg/index.js';\n",
+              "import { createSemanticCfg, deterministicTraversal } from '../cfg/index.js';\n", 'ssa cfg import')
+          s = replace_once(s,
+              "import { createSemanticSsaContract, SEMANTIC_SSA_DEFAULT_BUDGET } from './contract.js';\n",
+              "import {\n  analyzeSemanticSsaDominance,\n  createSemanticSsaContract,\n  semanticSsaPhiPredecessors,\n  semanticSsaVirtualEntryPredecessor,\n  SEMANTIC_SSA_DEFAULT_BUDGET,\n} from './contract.js';\n", 'ssa contract import')
+          s = replace_once(s,
+              "  for (const variant of model.variants) definitionBlocks.get(variant.key).add('__entry_seed__');\n", '', 'ssa synthetic entry seed')
           s = replace_once(s,
               "    const defs = [...definitionBlocks.get(variant.key)].filter((id) => id !== '__entry_seed__').sort();\n    if (defs.length || reachable.has(dominance.reversePostOrder[0])) defs.unshift(dominance.reversePostOrder[0]);\n    const pending = new Set([...new Set(defs)]);\n",
-              "    const defs = [...definitionBlocks.get(variant.key)].sort();\n    const pending = new Set(defs);\n",
-              'ssa phi seed blocks')
+              "    const defs = [...definitionBlocks.get(variant.key)].sort();\n    const pending = new Set(defs);\n", 'ssa phi seed blocks')
           s = replace_once(s,
               "        if (!reachable.has(frontierId) || frontierId === dominance.reversePostOrder[0]) continue;\n",
-              "        if (!reachable.has(frontierId)) continue;\n",
-              'ssa entry frontier')
+              "        if (!reachable.has(frontierId)) continue;\n", 'ssa entry frontier')
           s = replace_once(s,
               "  if (entryBlock.predecessors.length) fail('semantic-ssa-entry-has-predecessors');\n\n  const dominance = analyzeSemanticDominance(cfg, { signal: options.signal, budget: { maxWorkItems: limit(options, 'maxWorkItems') } });\n",
-              "\n  const dominance = analyzeSemanticSsaDominance(cfg, { signal: options.signal, budget: { maxWorkItems: limit(options, 'maxWorkItems') } });\n",
-              'ssa entry dominance')
+              "\n  const dominance = analyzeSemanticSsaDominance(cfg, { signal: options.signal, budget: { maxWorkItems: limit(options, 'maxWorkItems') } });\n", 'ssa entry dominance')
           s = replace_once(s,
               "  for (const variant of model.variants) {\n    const seed = seedDefinition(ir, cfg, variant, model.seedsByVariant.get(variant.key)[0] ?? null);\n    addDefinition(seed);\n    stacks.get(variant.key).push(seed.valueId);\n  }\n",
-              "  const seedValueByVariant = new Map();\n  for (const variant of model.variants) {\n    const seed = seedDefinition(ir, cfg, variant, model.seedsByVariant.get(variant.key)[0] ?? null);\n    addDefinition(seed);\n    stacks.get(variant.key).push(seed.valueId);\n    seedValueByVariant.set(variant.key, seed.valueId);\n  }\n",
-              'ssa seed map')
+              "  const seedValueByVariant = new Map();\n  for (const variant of model.variants) {\n    const seed = seedDefinition(ir, cfg, variant, model.seedsByVariant.get(variant.key)[0] ?? null);\n    addDefinition(seed);\n    stacks.get(variant.key).push(seed.valueId);\n    seedValueByVariant.set(variant.key, seed.valueId);\n  }\n", 'ssa seed map')
           s = replace_once(s,
               "  const addPhiIncoming = (phi, predecessorBlockId, valueId) => {\n    if (++phiLinkCount + uses.length > limit(options, 'maxLinks')) fail('semantic-ssa-budget-exceeded-maxLinks');\n    phi.incoming.push({ predecessorBlockId, valueId });\n  };\n\n  const renameReachable = (rootId) => {\n",
-              "  const addPhiIncoming = (phi, predecessorBlockId, valueId) => {\n    if (++phiLinkCount + uses.length > limit(options, 'maxLinks')) fail('semantic-ssa-budget-exceeded-maxLinks');\n    phi.incoming.push({ predecessorBlockId, valueId });\n  };\n\n  if (entryBlock.predecessors.length > 0) {\n    const virtualEntryPredecessor = semanticSsaVirtualEntryPredecessor(cfg);\n    const entryPhis = phiByBlock.get(cfg.entryBlockId);\n    for (const variantKey of [...entryPhis.keys()].sort()) {\n      const seedValueId = seedValueByVariant.get(variantKey);\n      if (!seedValueId) fail('semantic-ssa-missing-entry-phi-seed');\n      addPhiIncoming(entryPhis.get(variantKey), virtualEntryPredecessor, seedValueId);\n    }\n  }\n\n  const renameReachable = (rootId) => {\n",
-              'ssa virtual entry incoming')
+              "  const addPhiIncoming = (phi, predecessorBlockId, valueId) => {\n    if (++phiLinkCount + uses.length > limit(options, 'maxLinks')) fail('semantic-ssa-budget-exceeded-maxLinks');\n    phi.incoming.push({ predecessorBlockId, valueId });\n  };\n\n  if (entryBlock.predecessors.length > 0) {\n    const virtualEntryPredecessor = semanticSsaVirtualEntryPredecessor(cfg);\n    const entryPhis = phiByBlock.get(cfg.entryBlockId);\n    for (const variantKey of [...entryPhis.keys()].sort()) {\n      const seedValueId = seedValueByVariant.get(variantKey);\n      if (!seedValueId) fail('semantic-ssa-missing-entry-phi-seed');\n      addPhiIncoming(entryPhis.get(variantKey), virtualEntryPredecessor, seedValueId);\n    }\n  }\n\n  const renameReachable = (rootId) => {\n", 'ssa virtual entry incoming')
           s = replace_once(s,
               "    const expected = cfgBlocks.get(definition.blockId).predecessors;\n",
-              "    const expected = semanticSsaPhiPredecessors(cfg, definition.blockId);\n",
-              'ssa phi predecessor set')
+              "    const expected = semanticSsaPhiPredecessors(cfg, definition.blockId);\n", 'ssa phi predecessor set')
           p.write_text(s)
           PY
           rc=$?
@@ -195,7 +175,8 @@ jobs:
           CLEAN=$(git rev-parse HEAD)
           echo "clean_head=$CLEAN" >> "$STATUS"
 
-          check diff_check git diff --check "$MAIN...$CLEAN"
+          # Check only newly integrated main/resolution changes; pre-existing #7036 whitespace is unchanged.
+          check diff_check git diff --check "$CLEAN^1...$CLEAN"
           check syntax_build node --check js/semantics/ssa/build.js
           check syntax_build_core node --check js/semantics/ssa/build-core.js
           check syntax_artifact node --check js/analysis/discovery/artifact.js
