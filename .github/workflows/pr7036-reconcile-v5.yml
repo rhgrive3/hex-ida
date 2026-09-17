@@ -1,17 +1,19 @@
-name: PR7036 live-main reconcile v5b
+name: PR7036 live-main reconcile v5c
 on:
   push:
     branches:
       - sync/pr7036-main-20260917-v5
+permissions:
+  contents: write
 jobs:
-  inventory:
+  validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1000
-      - name: Inventory current-main conflicts
+      - name: Reconcile current main
         shell: bash
         run: |
           set -euo pipefail
@@ -21,30 +23,69 @@ jobs:
           MAIN=f9806dc4653df9163e278dae1336407d8a87b6d6
           git fetch --no-tags --depth=1 origin "$BASE" >/dev/null 2>&1
           git fetch --no-tags --depth=1000 origin "$MAIN" >/dev/null 2>&1
-          : > /tmp/pr7036-v5-conflicts.txt
-          echo "head=$(git rev-parse HEAD)" >> /tmp/pr7036-v5-conflicts.txt
-          echo "main=$MAIN" >> /tmp/pr7036-v5-conflicts.txt
-          echo "base_present=$(git cat-file -e "$BASE^{commit}" 2>/dev/null && echo yes || echo no)" >> /tmp/pr7036-v5-conflicts.txt
-          set +e
-          mb=$(git merge-base HEAD "$MAIN" 2>/tmp/merge-base.err)
-          mb_rc=$?
-          set -e
-          echo "merge_base_rc=$mb_rc" >> /tmp/pr7036-v5-conflicts.txt
-          echo "merge_base=${mb:-none}" >> /tmp/pr7036-v5-conflicts.txt
-          if [ "$mb_rc" -ne 0 ]; then tail -n 20 /tmp/merge-base.err >> /tmp/pr7036-v5-conflicts.txt; exit 0; fi
-          set +e
-          git merge --no-commit --no-ff "$MAIN" >/tmp/merge.out 2>/tmp/merge.err
-          rc=$?
-          set -e
+          git merge --no-commit --no-ff "$MAIN" >/dev/null 2>&1 || true
           git diff --name-only --diff-filter=U | sed '/^$/d' | sort > /tmp/conflicts.txt
-          echo "merge_rc=$rc" >> /tmp/pr7036-v5-conflicts.txt
-          echo "conflict_count=$(wc -l < /tmp/conflicts.txt | tr -d ' ')" >> /tmp/pr7036-v5-conflicts.txt
-          cat /tmp/conflicts.txt >> /tmp/pr7036-v5-conflicts.txt
-          if [ "$rc" -gt 1 ]; then tail -n 20 /tmp/merge.err >> /tmp/pr7036-v5-conflicts.txt; fi
-          git merge --abort >/dev/null 2>&1 || true
-      - name: Upload inventory
+          : > /tmp/result.txt
+          echo "conflict_count=$(wc -l < /tmp/conflicts.txt | tr -d ' ')" >> /tmp/result.txt
+          cat /tmp/conflicts.txt | sed 's/^/conflict /' >> /tmp/result.txt
+          for f in js/analysis/discovery/artifact.js js/analysis/discovery/producers.js js/analysis/index.js js/rebuild/transaction-v2.js tests/issue-4135-pe-section-virtual-layout.mjs; do
+            grep -Fx "$f" /tmp/conflicts.txt >/dev/null
+            git checkout --theirs -- "$f"
+            git add -- "$f"
+            echo "resolved-main $f" >> /tmp/result.txt
+          done
+          unresolved=$(git diff --name-only --diff-filter=U | sed '/^$/d' | wc -l | tr -d ' ')
+          echo "unresolved=$unresolved" >> /tmp/result.txt
+          test "$unresolved" = 0
+      - name: Focused acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in js/analysis/discovery/artifact.js js/analysis/discovery/producers.js js/analysis/index.js js/rebuild/transaction-v2.js; do
+            node --check "$f" >/tmp/one.txt 2>&1 || { echo "syntax FAIL $f" >> /tmp/result.txt; tail -n 20 /tmp/one.txt >> /tmp/result.txt; exit 1; }
+            echo "syntax PASS $f" >> /tmp/result.txt
+          done
+          run_one() {
+            name="$1"; file="$2"
+            set +e
+            node --test "$file" >/tmp/one.txt 2>&1
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then echo "PASS $name" >> /tmp/result.txt; return 0; fi
+            echo "FAIL $name" >> /tmp/result.txt
+            grep -E 'not ok|error:|Error:|AssertionError|actual:|expected:|ERR_|reason|operator:' /tmp/one.txt | head -n 100 >> /tmp/result.txt || true
+            return "$rc"
+          }
+          run_one x03-artifact tests/phase7/discovery/x03-ambiguity-artifact.test.mjs
+          run_one x03-rebuild tests/stage2/x03-rebuild-discovery-acceptance.test.mjs
+          run_one t016-discovery tests/phase7/discovery/t016-discovery-preservation.test.mjs
+          run_one t016-rebuild tests/rebuild/t016-discovery-preservation.test.mjs
+          run_one pe4135 tests/issue-4135-pe-section-virtual-layout.mjs
+          run_one proof-projection tests/phase8/substrate/proof-projection-origin.test.mjs
+          run_one proof-optimizer tests/phase8/integration/proof-optimizer.test.mjs
+      - name: Produce clean merge object
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm -f .github/workflows/pr7036-reconcile-v5.yml >/dev/null
+          git add -A
+          tree=$(git write-tree)
+          git commit -m "merge: reconcile PR 7036 with main f9806dc4" >/dev/null
+          commit=$(git rev-parse HEAD)
+          echo "tree=$tree" >> /tmp/result.txt
+          echo "local_commit=$commit" >> /tmp/result.txt
+          set +e
+          git push origin HEAD:refs/heads/sync/pr7036-main-20260917-v5-result >/tmp/push.out 2>/tmp/push.err
+          push_rc=$?
+          set -e
+          echo "push_rc=$push_rc" >> /tmp/result.txt
+          if [ "$push_rc" -ne 0 ]; then tail -n 12 /tmp/push.err >> /tmp/result.txt; fi
+      - name: Upload result
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr7036-v5b-conflicts
-          path: /tmp/pr7036-v5-conflicts.txt
+          name: pr7036-v5c-result
+          path: /tmp/result.txt
+          if-no-files-found: ignore
           retention-days: 2
