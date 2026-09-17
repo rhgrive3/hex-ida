@@ -132,6 +132,16 @@ try {
   assert.notEqual(sh(origin, ['rev-parse', 'release']), releaseSha, 'explicit release branch may publish canonical output');
   assert.equal(sh(origin, ['show', `release:${TEMPLATE}`]).trim(), '2');
 
+  const missingPushRemote = path.join(sandbox, 'missing-push.git');
+  sh(work, ['remote', 'set-url', '--push', 'origin', missingPushRemote]);
+  result = runSync('release', ['--rebuild']);
+  assert.equal(result.status, 1, 'permanent push failure must fail immediately');
+  assert.match(result.stderr, /failed without a remote branch advance/);
+  assert.doesNotMatch(result.stdout, /push raced with release/);
+  sh(work, ['remote', 'set-url', '--push', 'origin', origin]);
+  sh(work, ['fetch', '--no-tags', 'origin', '+refs/heads/release:refs/remotes/origin/release']);
+  sh(work, ['reset', '--hard', 'refs/remotes/origin/release']);
+
   fs.writeFileSync(path.join(work, 'js/app.js'), 'export const answer = 43;\n');
   result = runSync('release', ['--rebuild']);
   assert.equal(result.status, 1);
