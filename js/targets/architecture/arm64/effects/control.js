@@ -9,6 +9,14 @@ import {
 import { arm64DecodedEncodingWord } from '../encoding-word.js';
 import { decorateArm64BtypeEffects } from './btype.js';
 import { emitArm64Condition } from './flags.js';
+import {
+  createBitVectorValue,
+  createMachineEffectBundle,
+  createMachineOperation,
+  createMemoryAccess,
+  createRegisterValue,
+  createTemporaryValue,
+} from '../../../../semantics/effects/index.js';
 
 const DIRECT_BRANCH = new Set(['b','bl']);
 const INDIRECT_BRANCH = new Set(['br','blr']);
@@ -373,6 +381,144 @@ function liftArm64ControlEffectsCore(instruction, options = {}) {
   });
 }
 
+export function decorateArm64GcsEffects(instruction, options = {}, bundle) {
+  if (!bundle) return bundle;
+  const mnemonic = typeof instruction?.mnemonic === 'string' ? instruction.mnemonic.toLowerCase() : '';
+  if (!['bl', 'blr', 'ret'].includes(mnemonic)) return bundle;
+
+  const gcsRequested = options.gcsRequested ?? options.gcsPolicy?.gcsRequested ?? options.aarch64SecurityFeatures?.gcsRequested ?? options.arm64GnuProperty?.gcsRequested ?? options.arm64Bti?.gcsRequested ?? options.image?.metadata?.arm64GnuProperty?.gcsRequested ?? options.image?.metadata?.arm64Bti?.gcsRequested ?? null;
+  const gcsEnabled = options.gcsEnabled ?? options.runtime?.gcsEnabled ?? null;
+
+  if (gcsRequested === true && gcsEnabled == null) {
+    return createMachineEffectBundle({
+      ...bundle,
+      completeness: 'partial',
+      unknownEffects: { categories: ['control', 'faults', 'memory'], reason: 'arm64-gcs-runtime-state-unresolved' },
+      metadata: {
+        ...bundle.metadata,
+        gcsCheck: 'runtime-state-unresolved',
+        gcsRequested: true,
+      },
+    }, options?.machineEffectsOptions);
+  }
+
+  if (gcsEnabled === true || (gcsRequested === true && gcsEnabled === true)) {
+    if (mnemonic === 'bl' || mnemonic === 'blr') {
+      const address = instruction?.address == null ? 0n : BigInt(instruction.address);
+      const linkAddress = address + 4n;
+      const gcsprVal = createTemporaryValue('gcspr_el0:read', createBitVectorValue(64));
+      const newGcsprVal = createTemporaryValue('gcspr_el0:next', createBitVectorValue(64));
+      const gcsOperations = [
+        ...bundle.operations,
+        createMachineOperation({
+          kind: 'register-read',
+          register: createRegisterValue('sys:gcspr_el0', 64, { view: 'GCSPR_EL0' }),
+          value: gcsprVal,
+          metadata: { architecture: 'arm64', purpose: 'gcs-pointer-read' },
+        }),
+        createMachineOperation({
+          kind: 'value',
+          opcode: 'sub',
+          inputs: [gcsprVal, createBitVectorValue(64, 8n)],
+          outputs: [newGcsprVal],
+          metadata: { purpose: 'gcs-pointer-decrement' },
+        }),
+        createMachineOperation({
+          kind: 'register-write',
+          register: createRegisterValue('sys:gcspr_el0', 64, { view: 'GCSPR_EL0' }),
+          value: newGcsprVal,
+          metadata: { architecture: 'arm64', purpose: 'gcs-pointer-write' },
+        }),
+        createMachineOperation({
+          kind: 'memory-write',
+          access: createMemoryAccess({
+            space: 'memory',
+            addressExpr: newGcsprVal,
+            widthBits: 64,
+            endian: 'little',
+          }),
+          value: createBitVectorValue(64, linkAddress),
+          metadata: { purpose: 'gcs-push-return-address' },
+        }),
+      ];
+      const gcsFaults = [
+        ...(bundle.possibleFaults || []),
+        { kind: 'data-abort', condition: { kind: 'gcs-data-abort' }, detail: { gcs: true, stage: 'push' } },
+      ];
+      return createMachineEffectBundle({
+        ...bundle,
+        operations: gcsOperations,
+        possibleFaults: gcsFaults,
+        metadata: {
+          ...bundle.metadata,
+          gcs: true,
+          gcsEffect: 'push',
+          gcsEnabled: true,
+        },
+      }, options?.machineEffectsOptions);
+    }
+
+    if (mnemonic === 'ret') {
+      const gcsprVal = createTemporaryValue('gcspr_el0:read', createBitVectorValue(64));
+      const poppedReturnAddr = createTemporaryValue('gcs:popped-return-address', createBitVectorValue(64));
+      const newGcsprVal = createTemporaryValue('gcspr_el0:next', createBitVectorValue(64));
+      const targetVal = bundle.operations.find((op) => op.kind === 'register-read' && op.register?.registerId === 'x30')?.value
+        ?? bundle.controlEffect?.target;
+      const gcsOperations = [
+        ...bundle.operations,
+        createMachineOperation({
+          kind: 'register-read',
+          register: createRegisterValue('sys:gcspr_el0', 64, { view: 'GCSPR_EL0' }),
+          value: gcsprVal,
+          metadata: { architecture: 'arm64', purpose: 'gcs-pointer-read' },
+        }),
+        createMachineOperation({
+          kind: 'memory-read',
+          access: createMemoryAccess({
+            space: 'memory',
+            addressExpr: gcsprVal,
+            widthBits: 64,
+            endian: 'little',
+          }),
+          value: poppedReturnAddr,
+          metadata: { purpose: 'gcs-pop-return-address' },
+        }),
+        createMachineOperation({
+          kind: 'value',
+          opcode: 'add',
+          inputs: [gcsprVal, createBitVectorValue(64, 8n)],
+          outputs: [newGcsprVal],
+          metadata: { purpose: 'gcs-pointer-increment' },
+        }),
+        createMachineOperation({
+          kind: 'register-write',
+          register: createRegisterValue('sys:gcspr_el0', 64, { view: 'GCSPR_EL0' }),
+          value: newGcsprVal,
+          metadata: { architecture: 'arm64', purpose: 'gcs-pointer-write' },
+        }),
+      ];
+      const gcsFaults = [
+        ...(bundle.possibleFaults || []),
+        { kind: 'data-abort', condition: { kind: 'gcs-data-abort' }, detail: { gcs: true, stage: 'pop' } },
+        { kind: 'gcs-mismatch-fault', condition: { kind: 'not-equal', left: poppedReturnAddr, right: targetVal }, detail: { gcs: true, reason: 'gcs-return-address-mismatch' } },
+      ];
+      return createMachineEffectBundle({
+        ...bundle,
+        operations: gcsOperations,
+        possibleFaults: gcsFaults,
+        metadata: {
+          ...bundle.metadata,
+          gcs: true,
+          gcsEffect: 'pop-check',
+          gcsEnabled: true,
+        },
+      }, options?.machineEffectsOptions);
+    }
+  }
+
+  return bundle;
+}
+
 export function liftArm64ControlEffects(instruction, options = {}) {
   const bundle = liftArm64ControlEffectsCore(instruction, options);
   if (bundle == null) return null;
@@ -382,5 +528,6 @@ export function liftArm64ControlEffects(instruction, options = {}) {
   // branch still resets BTYPE even when its concrete target cannot be reconstructed.
   const failureReason = String(bundle.unknownEffects?.reason || '');
   if (/(?:operand-shape-invalid|target-(?:misaligned|out-of-range)-encoding)$/.test(failureReason)) return bundle;
-  return decorateArm64BtypeEffects(instruction, options, bundle);
+  const withGcs = decorateArm64GcsEffects(instruction, options, bundle);
+  return decorateArm64BtypeEffects(instruction, options, withGcs);
 }

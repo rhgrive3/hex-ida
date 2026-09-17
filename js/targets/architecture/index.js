@@ -1,10 +1,12 @@
 import { assemble as assembleArm64 } from '../../patch.js';
-import { extendArm64WithArm64eEffects } from './arm64e/effects.js';
+import { extendArm64WithArm64eEffects, isArm64ePointerAuthenticationInstruction } from './arm64e/effects.js';
+import { isArm64eAuthenticatedLoadInstruction } from './arm64e/effects-memory.js';
 import { extendArm64eWithPacmEffects } from './arm64e/effects-pacm.js';
 import { arm64ePointerAuthenticationOperandShapeFailureBundle } from './arm64e/encoding.js';
 import { ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftArm64MachineEffects } from './arm64/effects/index.js';
 import { decorateArm64BtypeEffects } from './arm64/effects/btype.js';
 import { decorateArm64BtiGuardedPageEffects } from './arm64/effects/bti-guard-state.js';
+import { createMachineEffectBundle } from '../../semantics/effects/index.js';
 import { X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftX86MachineEffects } from './x86_64/effects/index.js';
 import { x86RegisterFile } from './x86_64/registers.js';
 import { riscv64IsStandardReturn } from './riscv64/control-flow.js';
@@ -123,10 +125,100 @@ const liftArm64eMachineEffects = (decoded, context = {}) => {
   return decorateArm64BtypeEffects(decoded, context, postState);
 };
 
+const liftArm64ArchitectureMachineEffects = (decoded, context = {}) => {
+  if (isArm64ePointerAuthenticationInstruction(decoded) || isArm64eAuthenticatedLoadInstruction(decoded)) {
+    const pacRequested = context.pacRequested ?? context.pacPolicy?.pacRequested ?? context.aarch64SecurityFeatures?.pacRequested ?? context.arm64GnuProperty?.pacRequested ?? context.arm64Bti?.pacRequested ?? context.image?.metadata?.arm64GnuProperty?.pacRequested ?? context.image?.metadata?.arm64Bti?.pacRequested ?? null;
+    const pacEnabled = context.pacEnabled ?? context.runtime?.pacEnabled ?? null;
+
+    if (pacEnabled === true || (pacRequested === true && pacEnabled !== false)) {
+      const arm64Context = {
+        ...context,
+        architectureId: 'arm64',
+        mode: decoded.mode || context.mode || 'a64',
+        arch: 'arm64',
+      };
+      const rawBundle = liftArm64eMachineEffects(decoded, arm64Context);
+      if (rawBundle == null) return null;
+      return createMachineEffectBundle({
+        ...rawBundle,
+        architectureId: 'arm64',
+        mode: decoded.mode || context.mode || 'a64',
+        metadata: {
+          ...rawBundle.metadata,
+          pauthFeatureExtension: true,
+          abi: context.abi || 'aapcs64',
+        },
+      }, context?.machineEffectsOptions);
+    }
+
+    if (pacEnabled === false || pacRequested === false) {
+      const mnemonic = typeof decoded?.mnemonic === 'string' ? decoded.mnemonic.toLowerCase() : '';
+      if (['paciasp', 'pacibsp', 'autiasp', 'autibsp', 'paciaz', 'pacibz', 'autiaz', 'autibz'].includes(mnemonic)) {
+        return createMachineEffectBundle({
+          instructionId: decoded.instructionId || context.instructionId || 'arm64:pauth:nop',
+          architectureId: 'arm64',
+          mode: decoded.mode || context.mode || 'a64',
+          operations: [],
+          controlEffect: { kind: 'fallthrough' },
+          possibleFaults: [],
+          origin: decoded.origin || context.origin || { instructionIds: [decoded.instructionId] },
+          completeness: 'exact',
+          statePreservation: { proven: true, reason: 'PAuth HINT instruction on system without PAC feature is an architectural NOP' },
+          metadata: {
+            family: 'arm64-pointer-authentication',
+            mnemonic,
+            pacFeature: 'absent',
+          },
+        }, context?.machineEffectsOptions);
+      }
+      return createMachineEffectBundle({
+        instructionId: decoded.instructionId || context.instructionId || 'arm64:pauth:undefined',
+        architectureId: 'arm64',
+        mode: decoded.mode || context.mode || 'a64',
+        operations: [],
+        controlEffect: { kind: 'trap', reason: 'undefined-instruction-exception' },
+        possibleFaults: [{ kind: 'undefined-instruction-exception' }],
+        origin: decoded.origin || context.origin || { instructionIds: [decoded.instructionId] },
+        completeness: 'partial',
+        unknownEffects: { categories: ['control', 'registers', 'faults'], reason: 'arm64-pac-feature-absent-undefined-instruction' },
+        metadata: {
+          family: 'arm64-pointer-authentication',
+          mnemonic,
+          pacFeature: 'absent',
+        },
+      }, context?.machineEffectsOptions);
+    }
+
+    // PAC runtime state is unresolved/unknown -> fail closed to partial
+    const mnemonic = typeof decoded?.mnemonic === 'string' ? decoded.mnemonic.toLowerCase() : '';
+    return createMachineEffectBundle({
+      instructionId: decoded.instructionId || context.instructionId || 'arm64:pauth:unresolved',
+      architectureId: 'arm64',
+      mode: decoded.mode || context.mode || 'a64',
+      operations: [],
+      controlEffect: { kind: 'unknown', reason: 'arm64-pac-runtime-state-unresolved' },
+      possibleFaults: [],
+      origin: decoded.origin || context.origin || { instructionIds: [decoded.instructionId] },
+      completeness: 'partial',
+      unknownEffects: { categories: ['control', 'registers'], reason: 'arm64-pac-runtime-state-unresolved' },
+      metadata: {
+        family: 'arm64-pointer-authentication',
+        mnemonic,
+        pacFeature: 'unresolved',
+      },
+    }, context?.machineEffectsOptions);
+  }
+
+  const bundle = liftArm64MachineEffects(decoded, context);
+  if (bundle == null) return null;
+  const postState = decorateArm64BtiGuardedPageEffects(decoded, bundle, context);
+  return decorateArm64BtypeEffects(decoded, context, postState);
+};
+
 export const ARM64_ARCHITECTURE = registerArchitecturePlugin({
   id:'arm64', semanticVersion:ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:4, fixedInstructionSize:4, viewerCompatible:true,
   modes:()=>Object.freeze(['a64']), registerFile:()=>ARM64_REGISTERS,
-  decodeProvider:'capstone/backend', liftExact:liftArm64MachineEffects, assemble:assembleArm64, classifyControlFlow:arm64ControlFlow,
+  decodeProvider:'capstone/backend', liftExact:liftArm64ArchitectureMachineEffects, assemble:assembleArm64, classifyControlFlow:arm64ControlFlow,
   directControlTarget:arm64DirectControlTarget, supportedInstructionEndianness:Object.freeze(['little']),
   // Phase 2 exposes exact low-level effects where implemented. Coverage is not
   // complete yet, so the proven legacy v1 path remains active and MachineEffects
