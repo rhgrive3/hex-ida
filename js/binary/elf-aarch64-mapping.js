@@ -82,10 +82,12 @@ export function applyAarch64MappingSymbols(image) {
       });
     }
   }
-  // Symbol/function discovery precedes this post-parse ABI overlay. Remove only
-  // starts the mapping symbols prove are data; ordinary symbols remain intact.
+  // Symbol/function discovery precedes this post-parse ABI overlay. Mapping data
+  // may invalidate guessed starts, but exact starts carry independent authority
+  // (symbols/exports/unwind/etc.) and must retain that provenance.
   if (image.dataInCode.length && Array.isArray(image.functions)) {
-    image.functions = image.functions.filter((seed) => seed?.address == null || !image.isDataInCode(seed.address));
+    image.functions = image.functions.filter((seed) =>
+      seed?.address == null || seed.exactFunctionStart === true || !image.isDataInCode(seed.address));
   }
   return image;
 }
