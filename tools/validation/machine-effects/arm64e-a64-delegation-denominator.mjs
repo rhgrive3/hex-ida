@@ -110,6 +110,10 @@ export function arm64BaselineDependencyStatus(inventory = readInventory()) {
 
   const families = arm64.effectRegistry?.families;
   if (!Array.isArray(families) || families.length === 0) fail('arm64e-delegation-arm64-effect-registry-missing');
+  // The unmatched-family fallback exists to return null and can never be exact.
+  // It stops blocking the delegated baseline only when the A64 decoder ownership
+  // denominator proves no valid in-profile encoding can reach it — the same
+  // negative proof the A2 denominator requires.
   const fallbackNegativeProven = decoder.enumerationStatus === 'exact'
     && (decoder.missingUnits || []).length === 0
     && arm64A64DecoderDenominatorFromLockedAudit({
