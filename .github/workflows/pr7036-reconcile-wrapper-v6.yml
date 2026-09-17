@@ -1,0 +1,77 @@
+name: PR7036 reconciliation trace v6
+on:
+  push:
+    branches: [sync/pr7036-main-20260917-v3]
+permissions:
+  contents: write
+jobs:
+  reconcile:
+    if: contains(github.event.head_commit.message, 'run PR7036 reconciliation trace v6')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 800
+      - name: Build and trace reconciler
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/x03-fixture-patch.py <<'PY'
+          from pathlib import Path
+          p = Path('tests/stage2/x03-rebuild-discovery-acceptance.test.mjs')
+          s = p.read_text()
+          anchor = "const testOracle = registerCanonicalIndependentOracleProvider(async ({ output }) => makeOracleResult(output));"
+          addition = anchor + '''
+          const x03ConservativeValidators = Object.freeze(Object.fromEntries(
+            ['relocations', 'branch-ranges', 'unwind', 'imports-exports', 'signature-consequence'].map((name) => [name, () => ({
+              ok: true,
+              format: 'elf',
+              architecture: architectureId,
+              loaderVersion: 'hex-loader:x03:v1',
+              sourceHash,
+              outputHash: materialized.outputHash,
+              validator: name,
+            })]),
+          ));'''
+          assert s.count(anchor) == 1, s.count(anchor)
+          s = s.replace(anchor, addition)
+          needle = "  independentOracle: testOracle,\n});"
+          replacement = "  independentOracle: testOracle,\n  validators: x03ConservativeValidators,\n});"
+          assert s.count(needle) >= 4, s.count(needle)
+          s = s.replace(needle, replacement, 4)
+          p.write_text(s)
+          PY
+          python3 - <<'PY' > /tmp/pr7036-reconcile.sh
+          from pathlib import Path
+          p = Path('.github/workflows/pr7036-reconcile-v3.yml')
+          lines = p.read_text().splitlines()
+          start = next(i for i, line in enumerate(lines) if line.strip() == '- name: Resolve and run focused acceptance')
+          run = next(i for i in range(start + 1, len(lines)) if lines[i].strip() == 'run: |')
+          end = next(i for i in range(run + 1, len(lines)) if lines[i].startswith('      - name: Upload focused result'))
+          body = [line[10:] if line.startswith('          ') else line for line in lines[run + 1:end]]
+          script = '\n'.join(body) + '\n'
+          marker = ': > /tmp/test-status.txt'
+          script = script.replace(marker, "python3 /tmp/x03-fixture-patch.py\ngit add tests/stage2/x03-rebuild-discovery-acceptance.test.mjs\n" + marker, 1)
+          old = "rm .github/workflows/pr7036-reconcile-v3.yml\ngit add -u .github/workflows/pr7036-reconcile-v3.yml"
+          new = "rm .github/workflows/pr7036-reconcile-v3.yml .github/workflows/pr7036-reconcile-wrapper-v4.yml .github/workflows/pr7036-reconcile-wrapper-v5.yml .github/workflows/pr7036-reconcile-wrapper-v6.yml\ngit add -u .github/workflows/pr7036-reconcile-v3.yml .github/workflows/pr7036-reconcile-wrapper-v4.yml .github/workflows/pr7036-reconcile-wrapper-v5.yml .github/workflows/pr7036-reconcile-wrapper-v6.yml"
+          script = script.replace(old, new, 1)
+          print(script, end='')
+          PY
+          set +e
+          bash -x /tmp/pr7036-reconcile.sh > /tmp/reconcile-trace.txt 2>&1
+          RC=$?
+          set -e
+          {
+            echo "reconcile_rc=$RC"
+            tail -n 80 /tmp/reconcile-trace.txt
+          } > /tmp/pr7036-wrapper-v6-result.txt
+          exit "$RC"
+      - name: Upload minimal trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr7036-wrapper-v6-result
+          path: /tmp/pr7036-wrapper-v6-result.txt
+          if-no-files-found: ignore
+          retention-days: 2
