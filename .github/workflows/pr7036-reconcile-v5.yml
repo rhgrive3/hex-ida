@@ -1,0 +1,37 @@
+name: PR7036 live-main reconcile v5
+on:
+  push:
+    branches:
+      - sync/pr7036-main-20260917-v5
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1000
+      - name: Inventory current-main conflicts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1000 origin f9806dc4653df9163e278dae1336407d8a87b6d6 >/dev/null 2>&1
+          set +e
+          git merge --no-commit --no-ff FETCH_HEAD >/dev/null 2>&1
+          rc=$?
+          set -e
+          git diff --name-only --diff-filter=U | sed '/^$/d' | sort > /tmp/conflicts.txt
+          {
+            echo "merge_rc=$rc"
+            echo "head=$(git rev-parse HEAD)"
+            echo "main=$(git rev-parse FETCH_HEAD)"
+            echo "conflict_count=$(wc -l < /tmp/conflicts.txt | tr -d ' ')"
+            cat /tmp/conflicts.txt
+          } > /tmp/pr7036-v5-conflicts.txt
+          git merge --abort >/dev/null 2>&1 || true
+      - name: Upload inventory
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr7036-v5-conflicts
+          path: /tmp/pr7036-v5-conflicts.txt
+          retention-days: 2
