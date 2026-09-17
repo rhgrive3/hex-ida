@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 800
-      - name: Build and trace reconciler
+      - name: Build clean reconciled tree
         shell: bash
         run: |
           set -euo pipefail
@@ -54,10 +54,6 @@ jobs:
           replacement = "  independentOracle: testOracle,\n  validators: x03ConservativeValidators,\n});"
           assert s.count(needle) >= 4, s.count(needle)
           s = s.replace(needle, replacement, 4)
-          check = "assert.equal(validValidation.status, 'valid');"
-          diagnostic = "if (validValidation.status !== 'valid') console.error('PR7036_X03_VALIDATION', JSON.stringify({ status: validValidation.status, requiredValidators: validValidation.requiredValidators, failures: (validValidation.failures ?? []).map((v) => ({ validator: v.validator, reason: v.reason, executed: v.executed })) }));\n" + check
-          assert s.count(check) == 1, s.count(check)
-          s = s.replace(check, diagnostic)
           p.write_text(s)
           PY
           python3 - <<'PY' > /tmp/pr7036-reconcile.sh
@@ -73,23 +69,29 @@ jobs:
           script = script.replace(marker, "python3 /tmp/x03-fixture-patch.py\ngit add tests/stage2/x03-rebuild-discovery-acceptance.test.mjs\n" + marker, 1)
           old = "rm .github/workflows/pr7036-reconcile-v3.yml\ngit add -u .github/workflows/pr7036-reconcile-v3.yml"
           new = "rm .github/workflows/pr7036-reconcile-v3.yml .github/workflows/pr7036-reconcile-wrapper-v4.yml .github/workflows/pr7036-reconcile-wrapper-v5.yml .github/workflows/pr7036-reconcile-wrapper-v6.yml\ngit add -u .github/workflows/pr7036-reconcile-v3.yml .github/workflows/pr7036-reconcile-wrapper-v4.yml .github/workflows/pr7036-reconcile-wrapper-v5.yml .github/workflows/pr7036-reconcile-wrapper-v6.yml"
+          assert script.count(old) == 1, script.count(old)
           script = script.replace(old, new, 1)
           print(script, end='')
           PY
           set +e
-          bash -x /tmp/pr7036-reconcile.sh > /tmp/reconcile-trace.txt 2>&1
+          bash /tmp/pr7036-reconcile.sh > /tmp/reconcile-run.txt 2>&1
           RC=$?
           set -e
           {
             echo "reconcile_rc=$RC"
-            tail -n 20 /tmp/reconcile-trace.txt
-            if [ -f pr7036-reconcile-v3-result.txt ]; then
-              echo '--- inner focused result ---'
-              tail -n 120 pr7036-reconcile-v3-result.txt
+            if git rev-parse HEAD^{tree} >/dev/null 2>&1; then
+              echo "local_commit=$(git rev-parse HEAD)"
+              echo "tree_sha=$(git rev-parse HEAD^{tree})"
+              echo "parents=$(git show -s --format=%P HEAD)"
             fi
+            if [ -f pr7036-reconcile-v3-result.txt ]; then
+              echo '--- focused result ---'
+              cat pr7036-reconcile-v3-result.txt
+            fi
+            tail -n 12 /tmp/reconcile-run.txt
           } > /tmp/pr7036-wrapper-v6-result.txt
           exit "$RC"
-      - name: Upload minimal trace
+      - name: Upload clean tree evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
