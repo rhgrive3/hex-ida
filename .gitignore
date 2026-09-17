@@ -45,3 +45,7 @@ tests/.accuracy-active-*.mjs
 /.env
 /.env.*
 !/.env.example
+
+# freebuff isolated HOME data (credentials live here). The ./freebuff-N
+# wrappers are tracked; the data dir is regenerable via npm run freebuff:setup.
+/.freebuff-homes/
