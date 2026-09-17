@@ -90,7 +90,7 @@ function filledArray({ opcode, formatByte, view, insnsStart, pc, image, operatio
       consumedValues:[], producedValues:[{ bits:32, type:REF, arrayType:descriptor, allocationSiteId:operationId }],
       locationReads:registers.map((index) => reg(index, 32, elementType)),
       locationWrites:[{ kind:'runtime', name:'result', bits:32, type:REF }],
-      memoryEffects:[], callEffects:[], controlEffects:[{ kind:'barrier', synchronization:'monitor', action:opcode === 0x1d ? 'enter' : 'exit' }],
+      memoryEffects:[], callEffects:[], controlEffects:[],
       possibleExceptions:element.category === 'object' ? ['java/lang/ArrayStoreException'] : [],
       completeness:'exact', unknownEffects:[],
       metadata:{ arrayType:descriptor, elementType:element.descriptor, allocationSiteId:operationId, elementCount:registers.length },
