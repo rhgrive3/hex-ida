@@ -36,7 +36,7 @@ jobs:
           for f in "${CONFLICTS[@]}"; do
             side=theirs
             case "$f" in
-              js/semantics/ssa/build.js|js/analysis/discovery/artifact.js|js/analysis/discovery/producers.js|js/analysis/index.js) side=ours ;;
+              js/semantics/ssa/build.js|js/analysis/discovery/artifact.js|js/analysis/discovery/producers.js|js/analysis/index.js|js/rebuild/transaction-v2.js) side=ours ;;
             esac
             git checkout --"$side" -- "$f" >/tmp/resolve.log 2>&1
             rc=$?; echo "resolve_$side $f rc=$rc" >> "$STATUS"; [ "$rc" -eq 0 ] || { tail -n 40 /tmp/resolve.log >> "$STATUS"; exit "$rc"; }
