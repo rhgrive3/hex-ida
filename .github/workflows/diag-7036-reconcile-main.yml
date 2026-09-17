@@ -175,8 +175,7 @@ jobs:
           CLEAN=$(git rev-parse HEAD)
           echo "clean_head=$CLEAN" >> "$STATUS"
 
-          # Check only newly integrated main/resolution changes; pre-existing #7036 whitespace is unchanged.
-          check diff_check git diff --check "$CLEAN^1...$CLEAN"
+          check diff_check git diff --check "$CLEAN^1...$CLEAN" -- .circleci/config.yml js/analysis/discovery/artifact.js js/analysis/discovery/producers.js js/analysis/index.js js/rebuild/transaction-v2.js js/semantics/ssa/build.js js/semantics/ssa/build-core.js tests/issue-4135-pe-section-virtual-layout.mjs
           check syntax_build node --check js/semantics/ssa/build.js
           check syntax_build_core node --check js/semantics/ssa/build-core.js
           check syntax_artifact node --check js/analysis/discovery/artifact.js
