@@ -20,5 +20,25 @@ for (const args of [
   );
 }
 
+// #9158: Semicolonless importScripts() must not bypass dependency collection or protected inlining
+import { parseImports, inlineImports } from '../scripts/build-userscript.mjs';
+
+assert.deepEqual(
+  parseImports("importScripts('./a.js');\nimportScripts('./b.js')\nimportScripts(\n  './c.js'\n)", 'worker.js'),
+  ['a.js', 'b.js', 'c.js'],
+  'parseImports must collect dependencies from both semicolon and semicolonless importScripts',
+);
+
+const mockSources = new Map([
+  ['worker.js', "const header = 1;\nimportScripts('./dep.js')\nconsole.log(header);"],
+  ['dep.js', 'const inlined = 42;'],
+]);
+const inlinedResult = inlineImports('worker.js', mockSources);
+assert.equal(
+  inlinedResult,
+  'const header = 1;\nconst inlined = 42;\nconsole.log(header);',
+  'inlineImports must replace semicolonless importScripts with inlined source',
+);
+
 // Keep the parser regression on a maintainer-owned head after generated synchronization.
 console.log('userscript importScripts literal guard: PASS');

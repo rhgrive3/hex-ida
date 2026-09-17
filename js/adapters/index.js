@@ -385,7 +385,7 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     this.cancelled = false; this.running = false; this.traceCursor = 0; this.branchCursor = 0; this.epoch++;
     this.initialRegisters = initialRegisters;
     this.lastResult = null;
-    return { launched:true, address, epoch:this.epoch, memory:memoryMap.snapshot(), capabilities:this.capabilities };
+    return { launched:true, address, epoch:this.epoch, memory:memoryMap.snapshot(), capabilities:this.capabilities, canonicalInput:sandbox.canonicalInput };
   }
   ensureSandbox() { if (!this.sandbox) throw new DebugAdapterError('not-launched', 'launch a function before using the local sandbox'); return this.sandbox; }
   async disconnect() {

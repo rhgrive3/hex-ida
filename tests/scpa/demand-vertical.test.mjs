@@ -196,8 +196,9 @@ test('actual loader fixup declaration joins a canonical load to native DispatchB
   } });
   const v = new DataView(f.data.buffer), base = 0xc00;
   v.setBigUint64(2112, 8192n, true); v.setUint32(base + 4, 28, true); v.setUint32(base + 28, 1, true);
-  v.setUint32(base + 32, 8, true); v.setUint32(base + 36, 24, true); v.setUint16(base + 40, 0x1000, true);
-  v.setUint16(base + 42, 2, true); v.setUint16(base + 56, 1, true); v.setUint16(base + 58, 0x800, true);
+  v.setUint32(base + 32, 8, true); v.setUint32(base + 36, 26, true); v.setUint16(base + 40, 0x1000, true);
+  v.setUint16(base + 42, 2, true); v.setUint16(base + 56, 2, true);
+  v.setUint16(base + 58, 0x800, true); v.setUint16(base + 60, 0xffff, true);
   image = { imageBase: 4096n, metadata: {}, warnings: [], segments: [{ address: 4096n, size: 8192n,
     fileOffset: 64n, fileSize: BigInt(f.data.length - 64) }], addressToOffset: address => address - 4096n + 64n };
   const parsed = parseChainedBindingSites(new ByteView(f.data), { offset: base, size: 0x80 }, image, []);

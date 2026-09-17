@@ -73,11 +73,33 @@ function oracleResult(output) {
   };
 }
 
+const conservativeValidators = Object.freeze(Object.fromEntries(
+  ['relocations', 'branch-ranges', 'unwind', 'imports-exports', 'signature-consequence'].map((name) => [name, () => ({
+    ok: true,
+    format: 'elf',
+    architecture: architectureId,
+    loaderVersion: 'loader:x03:test',
+    sourceHash,
+    outputHash: materialized.outputHash,
+    validator: name,
+  })]),
+));
+const makeLoaderReparse = (discoveryArtifact) => ({
+  ok: true,
+  format: 'elf',
+  architecture: architectureId,
+  loaderVersion: 'loader:x03:test',
+  sourceHash,
+  outputHash: materialized.outputHash,
+  discoveryArtifact,
+});
+
 const outputArtifact = artifactFor(sourceImage, materialized.outputHash, 'snapshot:x03:output');
 const valid = await validateRebuildTransaction(transaction, materialized, {
   original: source,
-  loaderReparse: () => ({ ok: true, discoveryArtifact: outputArtifact }),
+  loaderReparse: () => makeLoaderReparse(outputArtifact),
   independentOracle: ({ output }) => oracleResult(output),
+  validators: conservativeValidators,
 });
 assert.equal(valid.status, 'valid', JSON.stringify(valid.failures));
 assert.equal(valid.validators.find((item) => item.validator === 'loader-reparse').status, 'passed');
@@ -89,8 +111,9 @@ const lostImage = {
 const lostArtifact = artifactFor(lostImage, materialized.outputHash, 'snapshot:x03:lost');
 const lost = await validateRebuildTransaction(transaction, materialized, {
   original: source,
-  loaderReparse: () => ({ ok: true, discoveryArtifact: lostArtifact }),
+  loaderReparse: () => makeLoaderReparse(lostArtifact),
   independentOracle: ({ output }) => oracleResult(output),
+  validators: conservativeValidators,
 });
 assert.equal(lost.status, 'invalid');
 const lostLoader = lost.validators.find((item) => item.validator === 'loader-reparse');
@@ -110,8 +133,9 @@ const promotedImage = {
 const promotedArtifact = artifactFor(promotedImage, materialized.outputHash, 'snapshot:x03:promoted');
 const promoted = await validateRebuildTransaction(transaction, materialized, {
   original: source,
-  loaderReparse: () => ({ ok: true, discoveryArtifact: promotedArtifact }),
+  loaderReparse: () => makeLoaderReparse(promotedArtifact),
   independentOracle: ({ output }) => oracleResult(output),
+  validators: conservativeValidators,
 });
 assert.equal(promoted.status, 'invalid');
 const promotedLoader = promoted.validators.find((item) => item.validator === 'loader-reparse');
@@ -121,15 +145,17 @@ assert.ok(promotedLoader.detail.promotedCandidateIds.length > 0, 'heuristic/prob
 const staleArtifact = artifactFor(sourceImage, sourceHash, 'snapshot:x03:stale-output');
 const stale = await validateRebuildTransaction(transaction, materialized, {
   original: source,
-  loaderReparse: () => ({ ok: true, discoveryArtifact: staleArtifact }),
+  loaderReparse: () => makeLoaderReparse(staleArtifact),
   independentOracle: ({ output }) => oracleResult(output),
+  validators: conservativeValidators,
 });
 assert.equal(stale.status, 'invalid');
 assert.equal(stale.validators.find((item) => item.validator === 'loader-reparse').reason, 'discovery-reparse-output-hash-mismatch');
 
 const missingIndependent = await validateRebuildTransaction(transaction, materialized, {
   original: source,
-  loaderReparse: () => ({ ok: true, discoveryArtifact: outputArtifact }),
+  loaderReparse: () => makeLoaderReparse(outputArtifact),
+  validators: conservativeValidators,
 });
 assert.equal(missingIndependent.status, 'invalid');
 assert.equal(missingIndependent.validators.find((item) => item.validator === 'independent-differential').reason, 'required-validator-unavailable');

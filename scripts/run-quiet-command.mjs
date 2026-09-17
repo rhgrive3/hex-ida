@@ -92,6 +92,7 @@ export async function runQuietCommand({
   // 'finish' flushes writes but can precede descriptor close. NFS cleanup
   // must wait for 'close' so an open log cannot leave a transient .nfs entry.
   const logClosed = new Promise((resolve) => log.once('close', resolve));
+  const cleanupDirectory = () => fs.rmSync(directory, { recursive: true, force: true });
   let tail = Buffer.alloc(0);
   let logError = null;
   log.on('error', (error) => { logError = error; });
@@ -106,6 +107,7 @@ export async function runQuietCommand({
   } catch (error) {
     log.end();
     await logClosed;
+    cleanupDirectory();
     throw error;
   }
 
@@ -128,28 +130,34 @@ export async function runQuietCommand({
   log.end();
   await logClosed;
 
-  if (logError) throw logError;
+  if (logError) {
+    try { cleanupDirectory(); } catch {}
+    throw logError;
+  }
   const durationMs = Number(process.hrtime.bigint() - started) / 1e6;
   if (!status.error && status.code === 0) {
-    fs.rmSync(directory, { recursive: true, force: true });
+    cleanupDirectory();
     stdout.write(`${label}: PASS (${(durationMs / 1000).toFixed(1)}s)\n`);
     return Object.freeze({ ok: true, status: 0, signal: null, logPath: null, durationMs });
   }
 
+  const spawnFailure = Boolean(status.error);
+  if (spawnFailure) cleanupDirectory();
   const statusText = status.error
     ? `spawn error: ${status.error.code || status.error.message}`
     : (status.signal ? `signal ${status.signal}` : `exit ${status.code}`);
   stderr.write(`${label}: FAIL (${statusText}, ${(durationMs / 1000).toFixed(1)}s)\n`);
   const text = tail.toString('utf8').trim();
   if (text) stderr.write(`--- failure tail (max 64 KiB) ---\n${text}\n--- end failure tail ---\n`);
-  stderr.write(`Full log: ${logPath}\n`);
+  if (spawnFailure) stderr.write('Spawn failure log cleaned after diagnostic capture.\n');
+  else stderr.write(`Full log: ${logPath}\n`);
   stderr.write('Rerun with HEX_TEST_OUTPUT=verbose for live full output.\n');
   return Object.freeze({
     ok: false,
     status: status.code,
     signal: status.signal,
     error: status.error ?? null,
-    logPath,
+    logPath: spawnFailure ? null : logPath,
     durationMs,
   });
 }

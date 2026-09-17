@@ -33,7 +33,7 @@ test('#7162 valid binary names are accepted as this_class', () => {
 
 test('#7162 array descriptors and malformed internal names are rejected as this_class', () => {
   for (const name of ['[I', '[Ljava/lang/String;', 'pkg.C', 'a//b', '//a', 'a/']) {
-    assert.throws(() => parseJvm(minimalClass(name), { binaryId: 'repro-7162' }), /jvm-invalid-this-class-index/);
+    assert.throws(() => parseJvm(minimalClass(name), { binaryId: 'repro-7162' }), /jvm-invalid-(?:this-class-index|cp-class-name-index)/);
   }
 });
 

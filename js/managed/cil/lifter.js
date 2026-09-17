@@ -1,4 +1,6 @@
-import { createVMEffectFunction } from '../shared/vm-effects.js';
+import { createOriginSet } from '../../core/identity/origin.js';
+import { createVMOperationId } from '../shared/identity.js';
+import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
 import {
   createCilCallSignatureResolver,
   createCilCallStackEffect,
@@ -6,11 +8,9 @@ import {
   createCilMethodSignatureResolver,
 } from './call-signatures.js';
 import { liftCilMethod as liftCilMethodCore } from './lifter-core.js';
+import { isCilManagedFamilyInstruction, liftCilManagedFamilyInstruction } from './managed-family-overlay.js';
 
 const CALL_MNEMONICS = new Set(['call', 'callvirt', 'newobj']);
-// Native-size stack types (ECMA-335 I.12.1.1): `O`, `&`, `native int`. When
-// the image's pointer-width authority is known (32BITREQUIRED / PE32+), the
-// final public output carries it; unresolved widths stay unstated (#7775).
 const NATIVE_WIDTH_STACK_TYPES = new Set(['object-ref', 'native-int', 'managed-pointer']);
 
 function attachNativeWidth(value, nativePointerBits) {
@@ -28,6 +28,84 @@ function attachBundleNativeWidth(bundle, nativePointerBits) {
   };
 }
 
+function shiftControlEffect(effect, baseOffset) {
+  const shifted = { ...effect };
+  for (const key of ['targetOffset','falseTargetOffset','defaultTargetOffset']) if (Number.isSafeInteger(shifted[key])) shifted[key] += baseOffset;
+  if (Array.isArray(shifted.targetOffsets)) shifted.targetOffsets = shifted.targetOffsets.map((value) => Number.isSafeInteger(value) ? value + baseOffset : value);
+  return shifted;
+}
+
+function shiftBundle(bundle, baseOffset) {
+  if (baseOffset === 0) return bundle;
+  const metadata = Object.fromEntries(Object.entries(bundle.metadata || {}).map(([key, value]) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return [key, value];
+    return [key, {
+      ...value,
+      ...(Number.isSafeInteger(value.bytecodeOffset) ? { bytecodeOffset:value.bytecodeOffset + baseOffset } : {}),
+      ...(value.provenance && typeof value.provenance === 'object' ? {
+        provenance:{
+          ...value.provenance,
+          ...(Number.isSafeInteger(value.provenance.start) ? { start:value.provenance.start + baseOffset } : {}),
+          ...(Number.isSafeInteger(value.provenance.end) ? { end:value.provenance.end + baseOffset } : {}),
+        },
+      } : {}),
+    }];
+  }));
+  return { ...bundle, bytecodeOffset:bundle.bytecodeOffset + baseOffset, controlEffects:(bundle.controlEffects || []).map((effect) => shiftControlEffect(effect, baseOffset)), metadata };
+}
+
+function canonicalizeBundleIds(methodId, bundles, options) {
+  return bundles.map((bundle, index) => {
+    const operationId = createVMOperationId(methodId, bundle.bytecodeOffset, index + 1);
+    const origin = createOriginSet({ operationIds:[operationId], byteRanges:bundle.origin?.byteRanges || [] });
+    return createVMEffectBundle({ ...bundle, operationId, origin }, options);
+  });
+}
+
+function liftCilMethodWithManagedFamily(bodyIndex, cilImage, options, methodAuthority, nativePointerBits) {
+  const originalBody = cilImage?.methodBodies?.[bodyIndex];
+  if (!originalBody) return liftCilMethodCore(bodyIndex, cilImage, options, methodAuthority);
+  const bytecode = originalBody.bytecode;
+  const codeBase = originalBody.codeOffset ?? originalBody.headerOffset;
+  let baseOffset = 0;
+  const merged = [];
+  let template = null;
+  while (baseOffset < bytecode.length) {
+    const segmentBody = baseOffset === 0 ? originalBody : {
+      ...originalBody,
+      bytecode:bytecode.subarray(baseOffset),
+      codeOffset:codeBase + baseOffset,
+      headerOffset:(originalBody.headerOffset ?? codeBase) + baseOffset,
+      exceptionClauses:[],
+    };
+    const bodies = cilImage.methodBodies.slice();
+    bodies[bodyIndex] = segmentBody;
+    const segmentImage = baseOffset === 0 ? cilImage : { ...cilImage, methodBodies:bodies };
+    const segment = liftCilMethodCore(bodyIndex, segmentImage, options, methodAuthority);
+    template ||= segment;
+    const shifted = segment.bundles.map((bundle) => shiftBundle(bundle, baseOffset));
+    const last = shifted.at(-1);
+    const globalUnsupportedOffset = last?.bytecodeOffset;
+    if (last && isCilManagedFamilyInstruction(bytecode, globalUnsupportedOffset)) {
+      merged.push(...shifted.slice(0, -1));
+      const operationId = createVMOperationId(segment.methodId, globalUnsupportedOffset, merged.length + 1);
+      const lifted = liftCilManagedFamilyInstruction({
+        bytecode, offset:globalUnsupportedOffset, codeBase, cilImage, methodId:segment.methodId,
+        operationId, nativePointerBits, profileId:cilImage.vmSpecEdition, options,
+      });
+      merged.push(lifted.bundle);
+      baseOffset = lifted.end;
+      continue;
+    }
+    merged.push(...shifted);
+    break;
+  }
+  if (!template) return liftCilMethodCore(bodyIndex, cilImage, options, methodAuthority);
+  const bundles = canonicalizeBundleIds(template.methodId, merged, options);
+  const { bundles:_bundles, aggregateCompleteness:_aggregateCompleteness, ...rest } = template;
+  return createVMEffectFunction({ ...rest, bundles }, options);
+}
+
 function enrichCallBundle(bundle, resolveSignature, nativePointerBits = null) {
   if (!CALL_MNEMONICS.has(bundle?.mnemonic)) return bundle;
   const kind = bundle.mnemonic;
@@ -43,17 +121,9 @@ function enrichCallBundle(bundle, resolveSignature, nativePointerBits = null) {
       returnsValue:stackEffect.returnsValue,
       callTargetResolved:stackEffect.callTargetResolved,
       ...(stackEffect.callTargetResolved ? {} : { callTargetReason:stackEffect.callTargetReason }),
-    } : {
-      signatureReason:stackEffect.reason,
-    }),
+    } : { signatureReason:stackEffect.reason }),
   }));
-
-  // The stack effect replaces the core produced values when the signature
-  // resolves, so the native-width authority must be re-applied here — the
-  // constructed-object / call-result native-size values would otherwise lose
-  // it on the final public output (#7775).
   const producedValues = stackEffect.producedValues.map((value) => attachNativeWidth(value, nativePointerBits));
-
   if (stackEffect.complete) {
     const targetUnresolved = stackEffect.callTargetResolved === false;
     return {
@@ -63,44 +133,31 @@ function enrichCallBundle(bundle, resolveSignature, nativePointerBits = null) {
       callEffects,
       ...(targetUnresolved ? {
         completeness:bundle.completeness === 'unknown' ? 'unknown' : 'partial',
-        unknownEffects:[
-          ...(bundle.unknownEffects || []),
-          { category:'calls', reason:stackEffect.callTargetReason || 'cil-call-target-owner-external' },
-        ],
+        unknownEffects:[...(bundle.unknownEffects || []), { category:'calls', reason:stackEffect.callTargetReason || 'cil-call-target-owner-external' }],
       } : {}),
     };
   }
-
   return {
     ...bundle,
     consumedValues:stackEffect.consumedValues,
     producedValues,
     callEffects,
     completeness:bundle.completeness === 'unknown' ? 'unknown' : 'partial',
-    unknownEffects:[
-      ...(bundle.unknownEffects || []),
-      { category:'stack', reason:stackEffect.reason },
-    ],
+    unknownEffects:[...(bundle.unknownEffects || []), { category:'stack', reason:stackEffect.reason }],
   };
 }
 
 export function liftCilMethod(bodyIndex, cilImage, options = {}, methodAuthority = null) {
   const methodBody = cilImage?.methodBodies?.[bodyIndex];
-  // `CilFrontend.decodeMethod()` already resolved this body's MethodDef
-  // authority, so the lift reuses it instead of resolving the same signature a
-  // second time (#8791). An authority is only reusable when it names the very
-  // body it is applied to; a mismatched or absent authority resolves normally,
-  // so one method's signature can never be laundered into another method.
   const authority = methodAuthority != null && methodAuthority.bodyOffset === methodBody?.headerOffset
     ? methodAuthority
     : createCilMethodSignatureResolver(cilImage)(methodBody);
-  const lifted = liftCilMethodCore(bodyIndex, cilImage, options, authority);
-  const hasCalls = lifted.bundles.some((bundle) => CALL_MNEMONICS.has(bundle.mnemonic));
   const nativePointerBits = cilImage?.requires32Bit === true ? 32
     : cilImage?.requires64Bit === true ? 64
       : null;
+  const lifted = liftCilMethodWithManagedFamily(bodyIndex, cilImage, options, authority, nativePointerBits);
+  const hasCalls = lifted.bundles.some((bundle) => CALL_MNEMONICS.has(bundle.mnemonic));
   if (!hasCalls && nativePointerBits == null) return lifted;
-
   const resolveSignature = hasCalls ? createCilCallSignatureResolver(cilImage) : null;
   const bundles = lifted.bundles.map((bundle) => attachBundleNativeWidth(
     hasCalls ? enrichCallBundle(bundle, resolveSignature, nativePointerBits) : bundle,

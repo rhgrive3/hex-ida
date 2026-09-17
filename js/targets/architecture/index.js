@@ -15,7 +15,7 @@ import { ArchitecturePluginV2, registerArchitecturePlugin, architecturePluginV2,
 function arm64ControlFlow(instruction) {
   const rawMnemonic = instruction?.mnemonic;
   const op = typeof rawMnemonic === 'string' ? rawMnemonic.toLowerCase() : '';
-  if (/^ret(?:aa|ab)?$/.test(op)) return 'return';
+  if (/^(?:ret|retaa|retab|retaasppc|retabsppc|retaasppcr|retabsppcr)$/.test(op)) return 'return';
   if (/^(?:bl|blr|blraa|blrab|blraaz|blrabz)$/.test(op)) return 'call';
   if (/^(?:b|br|braa|brab|braaz|brabz)$/.test(op)) return 'branch';
   if (op === 'b.al' || op === 'b.nv') return 'branch';

@@ -9,10 +9,15 @@ const names=['','_undef','_common','_sect','_abs'];
 const offsets=[]; let str='';
 for(const n of names){offsets.push(str.length); str+=n+'\0';}
 const strBytes=new TextEncoder().encode(str);
-const symoff=56, nsyms=4, stroff=symoff+nsyms*16;
-const b=new Uint8Array(stroff+strBytes.length);
-u32(b,0,0xfeedfacf); u32(b,4,0x0100000c); u32(b,8,0); u32(b,12,2); u32(b,16,1); u32(b,20,24); u32(b,24,0); u32(b,28,0);
-u32(b,32,2); u32(b,36,24); u32(b,40,symoff); u32(b,44,nsyms); u32(b,48,stroff); u32(b,52,strBytes.length);
+const symoff=0x200, nsyms=4, stroff=symoff+nsyms*16;
+const b=new Uint8Array(Math.max(stroff+strBytes.length,0x400));
+u32(b,0,0xfeedfacf); u32(b,4,0x0100000c); u32(b,8,0); u32(b,12,2); u32(b,16,2); u32(b,20,176); u32(b,24,0); u32(b,28,0);
+u32(b,32,0x19); u32(b,36,152); b.set(new TextEncoder().encode('__TEXT'),40);
+u64(b,56,0x400n); u64(b,64,0x1000n); u64(b,72,0n); u64(b,80,0x400n);
+u32(b,88,7); u32(b,92,5); u32(b,96,1); u32(b,100,0);
+b.set(new TextEncoder().encode('__text'),104); b.set(new TextEncoder().encode('__TEXT'),120);
+u64(b,136,0x400n); u64(b,144,0x10n); u32(b,152,0); u32(b,156,2); u32(b,168,0x80000400);
+u32(b,184,2); u32(b,188,24); u32(b,192,symoff); u32(b,196,nsyms); u32(b,200,stroff); u32(b,204,strBytes.length);
 function sym(i,nameIndex,type,sect,value){const p=symoff+i*16;u32(b,p,offsets[nameIndex]);b[p+4]=type;b[p+5]=sect;u16(b,p+6,0);u64(b,p+8,value);}
 sym(0,1,0x01,0,0n);       // N_UNDF|N_EXT
 sym(1,2,0x01,0,0x20n);    // common: n_value is size

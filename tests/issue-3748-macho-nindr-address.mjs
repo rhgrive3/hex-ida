@@ -14,18 +14,29 @@ function build() {
   dv.setInt32(4, 0x0100000c, true);
   dv.setInt32(8, 0, true);
   u32(12, 2);
-  u32(16, 1);
-  u32(20, 24);
+  u32(16, 2);
+  u32(20, 176);
   u32(24, 0);
   u32(28, 0);
 
-  const symoff = 64;
+  // Supply the section ordinal required by N_SECT symbols. A bare symbol-table
+  // command has no section authority, so the parser must correctly discard a
+  // section symbol rather than inventing a VM mapping for it.
+  u32(32, 0x19); u32(36, 152);
+  put(40, '__TEXT');
+  u64(56, 0x400); u64(64, 0x1000); u64(72, 0); u64(80, 0x400);
+  u32(88, 7); u32(92, 5); u32(96, 1); u32(100, 0);
+  put(104, '__text'); put(120, '__TEXT');
+  u64(136, 0x400); u64(144, 0x10); u32(152, 0); u32(156, 2);
+  u32(168, 0x80000400);
+
+  const symoff = 0x200;
   const nsyms = 8;
   const stroff = symoff + nsyms * 16;
   const strsize = 52;
-  u32(32, 0x2); u32(36, 24);
-  u32(40, symoff); u32(44, nsyms);
-  u32(48, stroff); u32(52, strsize);
+  u32(184, 0x2); u32(188, 24);
+  u32(192, symoff); u32(196, nsyms);
+  u32(200, stroff); u32(204, strsize);
 
   put(stroff + 1, 'alias');
   put(stroff + 8, 'target');

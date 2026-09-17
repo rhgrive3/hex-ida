@@ -134,7 +134,7 @@ test('may-alias object store blocks false RMW evidence across p/q', () => {
   ok(!modern.some((u) => u.store?.row === 4 && u.kind === 'read-modify-write'), 'may-alias clobber must prevent false RMW proof');
 });
 
-test('proven stack storage remains distinct from an object field store', () => {
+test('entry-argument object store conservatively clobbers a potentially aliased stack slot', () => {
   const ir = buildIR(modelOf([
     'mov w8, #5',
     'str w8, [sp, #0x20]',
@@ -144,7 +144,9 @@ test('proven stack storage remains distinct from an object field store', () => {
     'ret',
   ]));
   const load = ir.instructions.find((x) => x.op === OP.LOAD && x.row === 4);
-  ok(load?.reachingStore?.row === 1, 'different proven storage classes must not destroy stack precision');
+  ok(!load?.reachingStore, 'entry-argument storage class must not mint false stack NoAlias');
+  ok(load?.memUse?.kind === 'clobber' && load.memUse.inst?.row === 3,
+    'potentially aliased entry-argument store must remain explicit clobber evidence');
 });
 
 test('overlapping partial store clobbers a wider field reaching store', () => {

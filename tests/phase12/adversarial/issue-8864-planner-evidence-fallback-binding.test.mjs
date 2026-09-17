@@ -13,6 +13,7 @@ import test from 'node:test';
 import { AIRuntime } from '../../../js/ai/runtime.js';
 import { EvidenceStore } from '../../../js/ai/evidence.js';
 import { InvestigationSessionStore } from '../../../js/ai/session-core/index.js';
+import { sealPersistedConfirmedEnvelope } from '../../../js/ai/session-core/persisted-confirmed.js';
 import { fallbackEvidence, presentAnswer, qualifyingEvidence, withPlanEvidenceBinding } from '../../../js/ai/control/runtime-support.js';
 
 function candidate({ address = 0x1000n, name = 'candidate_A', evidence = ['raw-source-1'], verification = null }) {
@@ -158,13 +159,9 @@ test('#8864: the session-global planner scan is gone from the fallback', () => {
   // A plan with no evidence at all gets no planner authority either.
   assert.deepEqual(fallbackEvidence(store, { evidence: [] }), []);
   // A turn with no planner result at all keeps the #5159 verified-session view.
-  const sessionStore = new InvestigationSessionStore();
-  store.restorePersistedConfirmed(sessionStore.register({
-    id: 'issue-8864-session',
-    confirmedFindings: [{
-      id: 'persisted-verified', kind: 'verification', status: 'verified', title: 'verified', sourceTool: 'fixture',
-    }],
-  }).confirmedFindings);
+  store.restorePersistedConfirmed(sealPersistedConfirmedEnvelope([{
+    id: 'persisted-verified', kind: 'verification', status: 'verified', title: 'verified', sourceTool: 'fixture',
+  }]));
   assert.deepEqual(fallbackEvidence(store, null).map((item) => item.id), ['persisted-verified']);
   // Qualifying authority is separate from exposure: a supported bound record may
   // be surfaced but never satisfies the gate.

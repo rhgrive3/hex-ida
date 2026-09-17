@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
-import { createReadStream, createWriteStream } from 'node:fs';
+import fs from 'node:fs';
 import { mkdir, rename, rm, stat } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { pipeline } from 'node:stream/promises';
+import path, { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { once } from 'node:events';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const manifest = JSON.parse(await (await import('node:fs/promises')).readFile(join(root, 'tests/fixtures/real-binaries.json'), 'utf8'));
@@ -12,25 +12,34 @@ const outputDir = join(root, 'tests/.real-fixtures');
 const args = process.argv.slice(2);
 const checkOnly = args.includes('--check');
 const requested = args.filter((arg) => arg !== '--check');
-const names = requested.length && !requested.includes('all') ? requested : Object.keys(manifest.fixtures);
 
-function fixture(name) {
+export function fixture(name) {
   const spec = manifest.fixtures[name];
   if (!spec) throw new Error(`unknown fixture: ${name}`);
   return spec;
 }
 
-async function digestFile(path) {
+export function selectedFixtureNames() {
+  // `all` widens the selected set, but it must not erase explicit selectors.
+  // Validate every explicit fixture name first so `all typo` cannot silently
+  // turn a misspelled targeted command into a successful all-fixture run (#9143).
+  for (const name of requested) {
+    if (name !== 'all') fixture(name);
+  }
+  return requested.length && !requested.includes('all') ? requested : Object.keys(manifest.fixtures);
+}
+
+export async function digestFile(path) {
   const hash = createHash('sha256');
   let size = 0;
-  for await (const chunk of createReadStream(path)) {
+  for await (const chunk of fs.createReadStream(path)) {
     size += chunk.length;
     hash.update(chunk);
   }
   return { size, sha256: hash.digest('hex') };
 }
 
-async function verify(name, path, spec) {
+export async function verify(name, path, spec) {
   let info;
   try { info = await stat(path); } catch { throw new Error(`${name}: fixture is missing at ${path}`); }
   if (!info.isFile()) throw new Error(`${name}: fixture path is not a file`);
@@ -40,7 +49,7 @@ async function verify(name, path, spec) {
   return digest;
 }
 
-async function fetchWithHttpsRedirects(initialUrl, maxRedirects = 10) {
+export async function fetchWithHttpsRedirects(initialUrl, maxRedirects = 10) {
   let currentUrl = initialUrl;
   let redirects = 0;
   while (true) {
@@ -60,7 +69,7 @@ async function fetchWithHttpsRedirects(initialUrl, maxRedirects = 10) {
   }
 }
 
-async function fetchFixture(name, spec) {
+export async function fetchFixture(name, spec) {
   const target = join(outputDir, spec.file);
   try {
     await verify(name, target, spec);
@@ -81,18 +90,21 @@ async function fetchFixture(name, spec) {
   if (!response.ok || !response.body) throw new Error(`${name}: download failed with HTTP ${response.status}`);
 
   const hash = createHash('sha256');
-  const output = createWriteStream(temp, { flags:'wx', mode:0o600 });
+  const output = fs.createWriteStream(temp, { flags:'wx', mode:0o600 });
+  let streamError = null;
+  output.on('error', (err) => { streamError = streamError || err; });
   let size = 0;
   try {
-    for await (const chunk of response.body) {
-      const bytes = Buffer.from(chunk);
-      size += bytes.length;
-      if (size > spec.size) throw new Error(`${name}: download exceeded pinned size`);
-      hash.update(bytes);
-      if (!output.write(bytes)) await once(output, 'drain');
+    async function* validateAndHash(source) {
+      for await (const chunk of source) {
+        const bytes = Buffer.from(chunk);
+        size += bytes.length;
+        if (size > spec.size) throw new Error(`${name}: download exceeded pinned size`);
+        hash.update(bytes);
+        yield bytes;
+      }
     }
-    output.end();
-    await once(output, 'finish');
+    await pipeline(validateAndHash(response.body), output);
     const sha256 = hash.digest('hex');
     if (size !== spec.size) throw new Error(`${name}: size mismatch (${size} != ${spec.size})`);
     if (sha256 !== spec.sha256) throw new Error(`${name}: SHA-256 mismatch`);
@@ -101,13 +113,16 @@ async function fetchFixture(name, spec) {
   } catch (error) {
     output.destroy();
     await rm(temp, { force:true });
-    throw error;
+    throw streamError || error;
   }
 }
 
-try {
-  for (const name of names) await fetchFixture(name, fixture(name));
-} catch (error) {
-  console.error(error && error.message ? error.message : String(error));
-  process.exitCode = 1;
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  try {
+    for (const name of selectedFixtureNames()) await fetchFixture(name, fixture(name));
+  } catch (error) {
+    console.error(error && error.message ? error.message : String(error));
+    process.exitCode = 1;
+  }
 }

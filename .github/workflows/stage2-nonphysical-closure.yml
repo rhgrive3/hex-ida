@@ -117,6 +117,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang-18 lld-18 llvm-18 lldb-18 qemu-user
 
+      - name: Verify MachineEffects native and historical prerequisites
+        if: steps.impact.outputs.required == 'true'
+        run: node tools/validation/machine-effects/prerequisites.mjs
+
       - name: Install dependencies
         if: steps.impact.outputs.required == 'true'
         run: npm ci --no-audit --no-fund

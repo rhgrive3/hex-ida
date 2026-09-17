@@ -75,6 +75,7 @@ jobs:
           const lanes = [
             {
               name: 'phase8',
+              machineEffectsPrereqs: 'false',
               coverageCommands: ['npm run phase8:test'],
               runCommands: ['npm run phase8:test'],
               frozenToolchain: 'false',
@@ -83,6 +84,7 @@ jobs:
             },
             {
               name: 'phase45',
+              machineEffectsPrereqs: 'false',
               coverageCommands: ['npm run phase4:test', 'npm run phase5:test'],
               runCommands: ['npm run phase4:test', 'npm run phase5:test'],
               frozenToolchain: 'true',
@@ -93,7 +95,8 @@ jobs:
               name: 'analysis-proof',
               coverageCommands: ['npm run invariants:test', 'npm run semantic-v2:test', 'npm run benchmark:baseline'],
               runCommands: ['npm run semantic-v2:test', 'npm run benchmark:baseline'],
-              frozenToolchain: 'false',
+              frozenToolchain: 'true',
+              machineEffectsPrereqs: 'true',
               runsInvariant: 'true',
               prepareGenerated: 'true',
             },
@@ -101,7 +104,8 @@ jobs:
               name: 'repo-regression',
               coverageCommands: [...coreContracts, 'npm run phase6:test', 'npm test'],
               runCommands: [...coreContracts, 'npm run phase6:test', 'npm test'],
-              frozenToolchain: 'false',
+              frozenToolchain: 'true',
+              machineEffectsPrereqs: 'true',
               runsInvariant: 'false',
               prepareGenerated: 'true',
             },
@@ -164,14 +168,18 @@ jobs:
         id: install
         run: npm ci --no-audit --no-fund
 
-      # Phase 5's real-byte verification corpus is intentionally pinned to
-      # Clang/LLD 18. Keep only the lane containing Phase 4/5 on that provider.
-      - name: Install the frozen Phase 5 toolchain
+      # Phase 5 and MachineEffects native-oracle proofs are intentionally pinned to
+      # LLVM/Clang 18. Any lane that can execute either contract must provision it.
+      - name: Install the frozen native proof toolchain
         if: matrix.frozenToolchain == 'true'
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y clang-18 lld-18 llvm-18
+
+      - name: Verify MachineEffects native and historical prerequisites
+        if: matrix.machineEffectsPrereqs == 'true'
+        run: node tools/validation/machine-effects/prerequisites.mjs
 
       - name: Prepare generated userscript for canonical Phase 5 component semantic check
         if: >-

@@ -354,7 +354,7 @@ withTempDir((temp) => {
   console.log("  ok 21 whole-command failure");
 }
 
-// 22. command-not-found stays diagnostic and is retained in the private full log
+// 22. command-not-found stays diagnostic without retaining a private spawn log
 {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hex-quiet-spawn-error-"));
   try {
@@ -377,12 +377,10 @@ withTempDir((temp) => {
     assert.match(stderr.text(), /agent-spawn: FAIL \(spawn error: ENOENT,/);
     assert.match(stderr.text(), /failure tail \(max 64 KiB\)/);
     assert.match(stderr.text(), /ENOENT/);
-    assert.match(stderr.text(), /Full log:/);
-    assert.ok(result.logPath && fs.existsSync(result.logPath));
-    assert.equal(fs.statSync(result.logPath).mode & 0o777, 0o600);
-    const full = fs.readFileSync(result.logPath, "utf8");
-    assert.match(full, /ENOENT/);
-    assert.match(full, /definitely-missing-command/);
+    assert.doesNotMatch(stderr.text(), /Full log:/);
+    assert.match(stderr.text(), /Spawn failure log cleaned after diagnostic capture/);
+    assert.equal(result.logPath, null);
+    assert.deepEqual(fs.readdirSync(tempRoot), []);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

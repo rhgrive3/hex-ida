@@ -101,6 +101,41 @@ test('#8936 issue batch uses an exact Phase 8 cross-lane route', () => {
   assert.ok(fallback.includes(branch), 'the GitHub fallback must route the #8936 subset');
 });
 
+test('#8702 root regression runner uses an exact Phase 8 cross-lane route', () => {
+  const branch = 'fix/issue-8702-canonical-root-regressions';
+  const owned = [
+    'js/decompiler/pretty/c.js',
+    'package.json',
+    'tests/phase8/ownership/cross-lane-routing.test.mjs',
+    'tools/validation/phase8/cross-lane-inventory.mjs',
+  ];
+  const foreign = CROSS_LANE_ROUTES[branch];
+  const inventory = [...owned, ...foreign];
+  assert.deepEqual(
+    validateCrossLaneInventory(branch, inventory),
+    [...owned].sort((a, b) => Buffer.from(a).compare(Buffer.from(b))),
+    'the #8702 route must return only the Phase 8-owned printer/routing subset',
+  );
+  assert.throws(
+    () => validateCrossLaneInventory(branch, [...inventory, 'js/ui/__undeclared_8702.js']),
+    /unexpected foreign paths|outside-lane|forbidden/,
+    'the #8702 route must reject an undeclared foreign path',
+  );
+  assert.throws(
+    () => validateCrossLaneInventory(`${branch}-similar`, inventory),
+    /no exact Phase 8 cross-lane route/,
+    'a similar branch name must not activate the #8702 route',
+  );
+  assert.throws(
+    () => validateCrossLaneInventory(branch, foreign),
+    /no Phase 8-owned paths/,
+    'the #8702 route must fail closed without Phase 8 evidence',
+  );
+  assert.ok(CONFIG.includes(branch), 'CircleCI must route the #8702 subset');
+  const fallback = readFileSync('.github/workflows/phase8-ownership.yml', 'utf8');
+  assert.ok(fallback.includes(branch), 'the GitHub fallback must route the #8702 subset');
+});
+
 test('Dependabot workflow group uses an exact Phase 8 cross-lane route', () => {
   const branch = "dependabot/github_actions/github-actions-436ea2ae3a";
   const owned = [

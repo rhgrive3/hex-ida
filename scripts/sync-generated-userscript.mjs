@@ -27,6 +27,7 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     fetchRemoteBranch();
     gitOk(['reset', '--hard', `refs/remotes/origin/${branch}`]);
   }
+  const attemptBase = gitRead(['rev-parse', `refs/remotes/origin/${branch}`]);
 
   if (rebuild) runOk('npm', ['run', 'userscript:build']);
 
@@ -57,7 +58,8 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
   gitOk(['add', '-A', '--', ...CANONICAL_GENERATED_OUTPUT_PATHS]);
   gitOk(['commit', '-m', 'chore: sync generated userscript']);
 
-  const push = run('git', ['push', 'origin', `HEAD:refs/heads/${branch}`], { allowFailure: true });
+  const pushArgs = ['push', 'origin', `HEAD:refs/heads/${branch}`];
+  const push = run('git', pushArgs, { allowFailure: true });
   if (push.status === 0) {
     fetchRemoteBranch();
     const remoteTip = gitRead(['rev-parse', `refs/remotes/origin/${branch}`]);
@@ -73,6 +75,15 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     break;
   }
 
+  const pushDetail = detail(push);
+  if (push.error) {
+    fail(`git ${pushArgs.join(' ')} failed to start: ${pushDetail}`);
+  }
+  fetchRemoteBranch();
+  const remoteTip = gitRead(['rev-parse', `refs/remotes/origin/${branch}`]);
+  if (remoteTip === attemptBase) {
+    fail(`git ${pushArgs.join(' ')} failed without a remote branch advance: ${pushDetail}`);
+  }
   if (attempt < maxAttempts) {
     console.log(`generated-userscript-sync: push raced with ${branch}; rebuilding latest tip (attempt ${attempt + 1}/${maxAttempts}).`);
   }

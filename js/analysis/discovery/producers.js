@@ -38,7 +38,11 @@ function loaderStartArray(value, code) {
   return value;
 }
 
-const VALIDATED_LOADER_SEED_SOURCES = new Set([
+// These source names are retained for older producers that predate the exact
+// authority marker. New validated loader producers must set
+// exactFunctionStart=true with their own high-confidence proof instead of
+// requiring another hand-maintained source-name entry here (#8837).
+const LEGACY_VALIDATED_LOADER_SEED_SOURCES = new Set([
   'function_starts',
   'exception',
   'dt-init',
@@ -78,11 +82,24 @@ function hasHighExactConfidence(start) {
     && confidence >= 0.9;
 }
 
+function hasValidatedExactEvidence(start) {
+  return typeof start?.functionStartEvidence === 'string'
+    && start.functionStartEvidence.trim().length > 0;
+}
+
 function isCanonicalLoaderSeed(start) {
   const sources = seedSources(start);
-  if ([...sources].some((source) => VALIDATED_LOADER_SEED_SOURCES.has(source))) return true;
-  if (start?.exactFunctionStart !== true) return false;
-  return [...sources].some((source) => EXPLICIT_EXACT_SEED_SOURCES.has(source)) && hasHighExactConfidence(start);
+  if ([...sources].some((source) => LEGACY_VALIDATED_LOADER_SEED_SOURCES.has(source))) return true;
+  // The exact marker is the source-independent authority contract. This lets
+  // a newly validated loader source reach discovery without silently drifting
+  // from a second source whitelist, while preserving the confidence floor.
+  if (start?.exactFunctionStart !== true || !hasHighExactConfidence(start)) return false;
+  // Symbol/IFUNC seeds predate the evidence field and remain compatible with
+  // their existing explicit exact contract. New source families must carry a
+  // non-empty validation proof so an arbitrary exact bit cannot mint loader
+  // authority (#8837).
+  return [...sources].some((source) => EXPLICIT_EXACT_SEED_SOURCES.has(source))
+    || hasValidatedExactEvidence(start);
 }
 
 function extentRegion(record, address) {
@@ -580,3 +597,4 @@ const CANONICAL_DISCOVERY_PRODUCERS = new WeakSet(GENERIC_PRODUCERS);
 export function isCanonicalDiscoveryProducer(producer) {
   return !!producer && CANONICAL_DISCOVERY_PRODUCERS.has(producer);
 }
+

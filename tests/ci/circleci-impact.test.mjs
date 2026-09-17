@@ -85,6 +85,28 @@ try {
   assert.equal(route(commitC, 'feature', 'main-and-branch', '^js/ai/'), 'false');
   assert.equal(route(commitD, 'feature', 'main-and-branch', '^js/ai/'), 'true');
 
+  // #9160: a force-pushed replacement is not proof that the old pipeline's
+  // changes are covered. The stale old head must route on its own merge-base
+  // diff when the remote replacement is a sibling rather than a descendant.
+  git(repo, 'checkout', '-B', 'rewritten-feature', 'main');
+  write(join(repo, 'js', 'ai', 'rewritten-old.js'), 'export const oldHeadOnly = true;\n');
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-m', 'E: gated change on old rewritten head');
+  const rewrittenOld = git(repo, 'rev-parse', 'HEAD');
+  git(repo, 'push', '-u', 'origin', 'rewritten-feature');
+
+  git(repo, 'checkout', '-B', 'rewritten-feature', 'main');
+  write(join(repo, 'docs', 'rewritten-replacement.md'), 'replacement docs only\n');
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-m', 'F: force-pushed docs-only replacement');
+  const rewrittenLatest = git(repo, 'rev-parse', 'HEAD');
+  git(repo, 'push', '--force', 'origin', 'rewritten-feature');
+  assert.notEqual(rewrittenOld, rewrittenLatest);
+  assert.equal(route(rewrittenOld, 'rewritten-feature', 'main-and-branch', '^js/ai/'), 'true',
+    'non-descendant remote replacement must not stale-suppress the old gated head');
+  assert.equal(route(rewrittenLatest, 'rewritten-feature', 'main-and-branch', '^js/ai/'), 'false',
+    'replacement docs-only head correctly skips the gated lane on its own diff');
+
   // A stale-head refresh failure must never turn into a false skip. With an
   // unresolvable branch name, routing falls through to the merge-base diff.
   assert.equal(route(commitC, 'missing-feature', 'main-and-branch', '^js/ai/'), 'true');

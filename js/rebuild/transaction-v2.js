@@ -45,6 +45,8 @@ function isCanonicalIndependentOracleProvider(provider) {
 
 const TRUSTED_ATOMIC_PUBLICATION_PROVIDERS = new WeakSet();
 const TRUSTED_ATOMIC_PUBLICATION_RECEIPTS = new WeakSet();
+const DISCOVERY_VALIDATOR = 'discovery-preservation';
+const ISSUED_DISCOVERY_TRANSACTIONS = new WeakMap();
 
 // Atomic publication is a proof boundary, so the promoter that reaches it must
 // be host-owned: only a registered trusted provider can mint a publication
@@ -673,23 +675,9 @@ export function createRebuildTransaction(input = {}) {
   const architecture = required(input.architecture, 'rebuild-v2-architecture-required').toLowerCase();
   const sourceHash = canonicalHash(input.sourceHash);
   const loaderVersion = required(input.loaderVersion, 'rebuild-v2-loader-version-required');
-  const rawExpectedOriginalState = input.expectedOriginalState || { sourceHash };
-  const directDiscoveryBinding = rawExpectedOriginalState?.discoveryBinding ?? null;
-  let discoveryBinding = null;
-  if (input.discoveryArtifact != null) {
-    discoveryBinding = discoveryArtifactForRebuild(input.discoveryArtifact, { binaryId: input.binaryId, sourceHash, architectureId: architecture });
-    if (directDiscoveryBinding != null && (!isFactoryIssuedDiscoveryRebuildBinding(directDiscoveryBinding) || directDiscoveryBinding.digest !== discoveryBinding.digest)) throw new TypeError('rebuild-v2-discovery-binding-mismatch');
-  } else if (directDiscoveryBinding != null) {
-    if (!isFactoryIssuedDiscoveryRebuildBinding(directDiscoveryBinding)) throw new TypeError('rebuild-v2-discovery-binding-untrusted');
-    if (directDiscoveryBinding.binding?.binaryId !== input.binaryId || directDiscoveryBinding.binding?.sourceHash !== sourceHash || directDiscoveryBinding.binding?.architectureId !== architecture) throw new TypeError('rebuild-v2-discovery-binding-mismatch');
-    discoveryBinding = directDiscoveryBinding;
-  }
-  if (input.discoveryRequired === true && discoveryBinding == null) throw new TypeError('rebuild-v2-discovery-binding-required');
-  const discoveryRequired = discoveryBinding != null;
-  const expectedOriginalState = optionalRecord(rawExpectedOriginalState, 'rebuild-v2-original-state-invalid');
+  const expectedOriginalState = optionalRecord(input.expectedOriginalState || { sourceHash }, 'rebuild-v2-original-state-invalid');
   if (expectedOriginalState.sourceHash != null && canonicalHash(expectedOriginalState.sourceHash) !== sourceHash) throw new TypeError('rebuild-v2-original-state-identity-mismatch');
   expectedOriginalState.sourceHash = sourceHash;
-  if (discoveryBinding != null) expectedOriginalState.discoveryBinding = discoveryBinding;
   const relocationBindings = input.relocationBindings ?? declaredImpact.relocationBindings ?? [];
   if (!Array.isArray(relocationBindings)) throw new TypeError('rebuild-v2-relocation-bindings-invalid');
   const sections = input.sections ?? declaredImpact.sections ?? [];
@@ -710,12 +698,56 @@ const impact = {
   sections: clone(sections),
   relocationBindings: clone(relocationBindings),
 };
-  // Discovery-bound rebuilds reuse X-01 independent differential authority.
-  const requireIndependentOracle = input.requireIndependentOracle === true || discoveryRequired;
+  const binaryId = required(input.binaryId, 'rebuild-v2-binary-id-required');
+  const additionalValidators = input.additionalValidators == null ? [] : input.additionalValidators;
+  if (!Array.isArray(additionalValidators)) throw new TypeError('rebuild-v2-additional-validators-invalid');
+  const directDiscoveryBinding = expectedOriginalState?.discoveryBinding ?? expectedOriginalState?.discovery ?? input.discoveryBinding ?? null;
+  const discoveryRequested = input.requireDiscoveryPreservation === true
+    || input.discoveryArtifact != null
+    || input.discoveryRequired === true
+    || directDiscoveryBinding != null
+    || additionalValidators.includes(DISCOVERY_VALIDATOR);
+  let discoveryBinding = null;
+  if (discoveryRequested) {
+    const expectedDiscovery = { binaryId, sourceHash, architectureId: architecture };
+    if (input.snapshotId != null) expectedDiscovery.snapshotId = required(input.snapshotId, 'rebuild-v2-discovery-snapshot-id-invalid');
+    if (input.discoveryArtifact != null) {
+      discoveryBinding = discoveryArtifactForRebuild(input.discoveryArtifact, expectedDiscovery);
+      if (directDiscoveryBinding != null && (!isFactoryIssuedDiscoveryRebuildBinding(directDiscoveryBinding) || directDiscoveryBinding.digest !== discoveryBinding.digest)) throw new TypeError('rebuild-v2-discovery-binding-mismatch');
+    } else if (input.discoveryBinding != null) {
+      if (!isFactoryIssuedDiscoveryRebuildBinding(input.discoveryBinding)) {
+        throw new TypeError('rebuild-v2-discovery-binding-unissued');
+      }
+      discoveryBinding = input.discoveryBinding;
+      for (const [key, expected] of Object.entries(expectedDiscovery)) {
+        if (discoveryBinding.binding?.[key] !== expected) throw new TypeError(`rebuild-v2-discovery-${key}-mismatch`);
+      }
+    } else if (expectedOriginalState?.discoveryBinding != null || expectedOriginalState?.discovery != null) {
+      const binding = expectedOriginalState?.discoveryBinding ?? expectedOriginalState?.discovery;
+      if (!isFactoryIssuedDiscoveryRebuildBinding(binding)) {
+        throw new TypeError('rebuild-v2-discovery-binding-untrusted');
+      }
+      discoveryBinding = binding;
+      for (const [key, expected] of Object.entries(expectedDiscovery)) {
+        if (discoveryBinding.binding?.[key] !== expected) throw new TypeError(`rebuild-v2-discovery-${key}-mismatch`);
+      }
+    } else if (input.discoveryRequired === true) {
+      throw new TypeError('rebuild-v2-discovery-binding-required');
+    }
+    if (discoveryBinding != null) {
+      expectedOriginalState.discovery = clone(discoveryBinding);
+      expectedOriginalState.discoveryBinding = discoveryBinding;
+    }
+  }
+  const effectiveAdditionalValidators = [...additionalValidators];
+  const isV1 = discoveryBinding && (discoveryBinding.schemaVersion === 'hex-discovery-rebuild-binding/v1' || input.discoveryRequired === true);
+  const isV2 = discoveryBinding && (discoveryBinding.schemaVersion === 'hex-discovery-rebuild-binding/v2' || input.requireDiscoveryPreservation === true || additionalValidators.includes(DISCOVERY_VALIDATOR));
+  const requireIndependentOracle = input.requireIndependentOracle === true || isV1 === true;
+  if (isV2 && !effectiveAdditionalValidators.includes(DISCOVERY_VALIDATOR)) effectiveAdditionalValidators.push(DISCOVERY_VALIDATOR);
   const transaction = {
     schemaVersion: REBUILD_TRANSACTION_SCHEMA,
     transactionId: null,
-    binaryId: required(input.binaryId, 'rebuild-v2-binary-id-required'),
+    binaryId,
     sourceHash,
     format,
     architecture,
@@ -725,14 +757,22 @@ const impact = {
     impact,
     relocationBindings: clone(relocationBindings),
     expectedOriginalState,
-    ...(discoveryRequired ? { discoveryRequired: true } : {}),
-    requiredValidators: requiredValidators(impact, input.additionalValidators || [], requireIndependentOracle),
+    ...(isV1 ? { discoveryRequired: true } : {}),
+    discovery: isV2 ? {
+      required: true,
+      artifactId: discoveryBinding.artifactId,
+      snapshotId: discoveryBinding.binding.snapshotId,
+      digest: discoveryBinding.digest,
+    } : null,
+    requiredValidators: requiredValidators(impact, effectiveAdditionalValidators, requireIndependentOracle),
     requireIndependentOracle,
     unresolvedRisks: sorted(input.unresolvedRisks),
     authority: 'L3-explicit-rebuild-proposal',
   };
   transaction.transactionId = `rebuild-transaction:${stableDigest(transaction)}`;
-  return deepFreeze(transaction);
+  const issued = deepFreeze(transaction);
+  if (discoveryBinding) ISSUED_DISCOVERY_TRANSACTIONS.set(issued, discoveryBinding);
+  return issued;
 }
 
 async function sourceBytes(source) {
@@ -770,12 +810,16 @@ function transactionIdentityValid(transaction) {
     if (!Array.isArray(transaction.impact?.sections)) return false;
     if (typeof transaction.impact.layoutMoving !== 'boolean' || typeof transaction.impact.relocations !== 'boolean' || typeof transaction.impact.branchRanges !== 'boolean' || typeof transaction.impact.unwind !== 'boolean' || typeof transaction.impact.importsExports !== 'boolean' || typeof transaction.impact.signature !== 'boolean') return false;
     if (transaction.expectedOriginalState?.sourceHash !== transaction.sourceHash) return false;
-    if (transaction.discoveryRequired != null && transaction.discoveryRequired !== true) return false;
-    const discoveryBinding = transaction.expectedOriginalState?.discoveryBinding ?? null;
-    if (transaction.discoveryRequired === true) {
-      if (!isFactoryIssuedDiscoveryRebuildBinding(discoveryBinding)) return false;
-      if (discoveryBinding.binding?.binaryId !== transaction.binaryId || discoveryBinding.binding?.sourceHash !== transaction.sourceHash || discoveryBinding.binding?.architectureId !== transaction.architecture) return false;
-    } else if (discoveryBinding != null) return false;
+    if (transaction.discovery?.required === true) {
+      const binding = ISSUED_DISCOVERY_TRANSACTIONS.get(transaction);
+      if (!isFactoryIssuedDiscoveryRebuildBinding(binding)) return false;
+      if (!transaction.requiredValidators.includes(DISCOVERY_VALIDATOR)) return false;
+      if (binding.binding?.binaryId !== transaction.binaryId
+          || binding.binding?.sourceHash !== transaction.sourceHash
+          || binding.binding?.architectureId !== transaction.architecture
+          || binding.digest !== transaction.discovery.digest
+          || transaction.expectedOriginalState?.discovery?.digest !== binding.digest) return false;
+    } else if (transaction.discovery != null || transaction.requiredValidators.includes(DISCOVERY_VALIDATOR)) return false;
     const expected = requiredValidators(transaction.impact, transaction.requiredValidators.filter((name) => ![
       'source-precondition', 'structure', 'loader-reparse', 'unchanged-regions', 'evidence',
       'layout', 'relocations', 'branch-ranges', 'unwind', 'imports-exports', 'signature-consequence', 'independent-differential',
@@ -1064,6 +1108,15 @@ export async function validateRebuildTransaction(transaction, materialized, opti
   builtins.set('structure', () => validatorResult('structure', true, structureMatches, 'output-length-inconsistent'));
   builtins.set('unchanged-regions', () => validatorResult('unchanged-regions', true, unchangedMatches, 'unchanged-region-differed'));
   builtins.set('evidence', () => validatorResult('evidence', true, evidenceComplete, 'operation-provenance-missing'));
+  let discoveryComparison = null;
+  if (transaction.discovery?.required === true) {
+    const sourceBinding = ISSUED_DISCOVERY_TRANSACTIONS.get(transaction);
+    discoveryComparison = verifyDiscoveryReparse(sourceBinding, options.discoveryArtifact, { expectedOutputHash: materialized.outputHash });
+    builtins.set(DISCOVERY_VALIDATOR, () => validatorResult(
+      DISCOVERY_VALIDATOR, true, discoveryComparison.ok === true,
+      discoveryComparison.reason || 'discovery-preservation-failed', discoveryComparison,
+    ));
+  }
 
   for (const name of transaction.requiredValidators) {
     if (builtins.has(name)) {
@@ -1096,6 +1149,12 @@ export async function validateRebuildTransaction(transaction, materialized, opti
     allRequiredExecuted: allExecuted,
     status: failures.length === 0 && allExecuted ? 'valid' : 'invalid',
     failures,
+    discovery: transaction.discovery?.required === true ? {
+      required: true,
+      sourceArtifactId: transaction.discovery.artifactId,
+      outputArtifactId: options.discoveryArtifact?.artifactId ?? null,
+      comparison: clone(discoveryComparison),
+    } : null,
     independentDifferential: independent ? (independent.status === 'passed' ? 'executed' : 'failed') : 'unavailable',
     independentOracleTrusted: transaction.requireIndependentOracle === true ? independentOracleTrusted : false,
   };
@@ -1115,6 +1174,13 @@ export async function publishRebuildTransaction(materialized, validation, option
     if (hashBytes(materialized.bytes) !== materialized.outputHash) return { status: 'rejected', reason: 'rebuild-v2-materialization-output-tampered' };
   } catch (error) {
     return { status: 'rejected', reason: 'rebuild-v2-materialization-output-invalid', detail: String(error?.message || error) };
+  }
+  const discoveryRequired = validation.requiredValidators.includes(DISCOVERY_VALIDATOR);
+  if (discoveryRequired) {
+    if (validation.discovery?.comparison?.ok !== true) return { status: 'rejected', reason: 'rebuild-v2-discovery-validation-not-green' };
+    if (!isCanonicalAtomicPublicationProvider(options.atomicPromote)) {
+      return { status: 'not-published', reason: 'rebuild-v2-canonical-atomic-publication-required', outputHash: materialized.outputHash };
+    }
   }
   if (typeof options.atomicPromote !== 'function') return { status: 'not-published', reason: 'rebuild-v2-atomic-promotion-required', outputHash: materialized.outputHash };
   try {

@@ -20,6 +20,7 @@ export const queryManagedRuntimeProvider = legacy.queryManagedRuntimeProvider;
 export const buildManagedTypeConstraintGraph = legacy.buildManagedTypeConstraintGraph;
 const UNREPRESENTABLE_EFFECT_REASON = 'managed-effect-shape-unrepresentable';
 const UNRESOLVED_MEMORY_WIDTH_REASON = 'managed-memory-width-unresolved';
+const UNREPRESENTED_POSSIBLE_EXCEPTION_REASON = 'managed-possible-exception-control-unrepresented';
 const UNREPRESENTABLE_EFFECT_FIELDS = Object.freeze([
   Object.freeze(['memoryEffects', 'memory']),
   Object.freeze(['callEffects', 'calls']),
@@ -50,6 +51,47 @@ function maskUnrepresentableEffects(value) {
       ...bundle,
       completeness: EXACT_BUNDLE_COMPLETENESS.has(bundle.completeness) ? 'partial' : bundle.completeness,
       unknownEffects: [...gaps, ...(bundle.unknownEffects ?? [])],
+    });
+  });
+  if (!changed) return value;
+  return deepFreeze({
+    ...value,
+    bundles,
+    aggregateCompleteness: value.aggregateCompleteness === 'unknown' ? 'unknown' : 'partial',
+  });
+}
+
+/*
+ * #8857 — possibleExceptions is producer authority for a conditional runtime
+ * transfer. Until that predicate has a canonical exceptional-control form, an
+ * exact bundle must not become a complete normal-only Semantic IR node. The
+ * one existing structural exception is the DEX receiver-null memory fault:
+ * bridge-lowering-v2 already turns receiverNullException into a canonical
+ * null-reference memory fault, so that authority is not downgraded twice.
+ */
+function possibleExceptionsAlreadyStructured(bundle) {
+  const possibleExceptions = Array.isArray(bundle?.possibleExceptions) ? bundle.possibleExceptions : [];
+  if (possibleExceptions.length === 0) return true;
+  const hasReceiverNullFault = (bundle.memoryEffects ?? []).some((effect) =>
+    effect?.space === 'field' && effect.receiverNullException === true);
+  return hasReceiverNullFault && possibleExceptions.every((exception) =>
+    exception && typeof exception === 'object' && !Array.isArray(exception) && exception.kind === 'null-reference');
+}
+
+function maskUnrepresentedPossibleExceptions(value) {
+  if (!value || !Array.isArray(value.bundles)) return value;
+  let changed = false;
+  const bundles = value.bundles.map((bundle) => {
+    const possibleExceptions = Array.isArray(bundle?.possibleExceptions) ? bundle.possibleExceptions : [];
+    if (possibleExceptions.length === 0 || possibleExceptionsAlreadyStructured(bundle)) return bundle;
+    changed = true;
+    const priorUnknowns = Array.isArray(bundle.unknownEffects) ? bundle.unknownEffects : [];
+    const hasReason = priorUnknowns.some((effect) => effect?.reason === UNREPRESENTED_POSSIBLE_EXCEPTION_REASON);
+    const gap = { category: 'exceptions', categories: ['exceptions'], reason: UNREPRESENTED_POSSIBLE_EXCEPTION_REASON };
+    return deepFreeze({
+      ...bundle,
+      completeness: EXACT_BUNDLE_COMPLETENESS.has(bundle.completeness) ? 'partial' : bundle.completeness,
+      unknownEffects: hasReason ? priorUnknowns : [gap, ...priorUnknowns],
     });
   });
   if (!changed) return value;
@@ -97,7 +139,8 @@ function maskUnprovenMemoryWidths(value) {
 export function lowerVMEffectsToSemanticIr(value, options = {}) {
   assertVMEffectFunctionBundleOwnership(value);
   const widthSafe = maskUnprovenMemoryWidths(value);
-  const representable = maskUnrepresentableEffects(widthSafe);
+  const exceptionSafe = maskUnrepresentedPossibleExceptions(widthSafe);
+  const representable = maskUnrepresentableEffects(exceptionSafe);
   const lowered = overlayJvmControlLowering(representable, overlayWasmSelect(representable, lowerCore(representable, options), options), options);
   const jvmLowered = overlayJvmObjectLowering(representable, lowered, options);
   const wasmLowered = overlayWasmNarrowLoadExtensions(representable, jvmLowered, options);
@@ -145,7 +188,20 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
   };
   let hasLanguageThrow = false;
   let hasUnboundFieldOrdering = false;
+  let hasPossibleExceptionAuthority = false;
+  let hasUnrepresentedPossibleExceptionAuthority = false;
   for (const node of semanticIr.nodes) {
+    const possibleExceptions = Array.isArray(node.metadata?.possibleExceptions) ? node.metadata.possibleExceptions : [];
+    for (const exception of possibleExceptions) {
+      hasPossibleExceptionAuthority = true;
+      const record = exception && typeof exception === 'object' && !Array.isArray(exception) ? exception : { value: exception };
+      const exceptionKind = typeof record.kind === 'string' && record.kind.length > 0 ? record.kind : 'managed-runtime-exception';
+      const condition = typeof record.condition === 'string' && record.condition.length > 0 ? record.condition : null;
+      const structurallyRepresented = node.memory?.faults?.some((fault) => fault?.kind === exceptionKind) === true;
+      if (!structurallyRepresented) hasUnrepresentedPossibleExceptionAuthority = true;
+      thrownExceptions.push({ kind: exceptionKind, nodeId: node.id, possible: true, condition, structurallyRepresented, details: record });
+      semanticFacts.push({ kind: 'managed-possible-exception', nodeId: node.id, exceptionKind, condition, structurallyRepresented, details: record });
+    }
     if (node.kind === 'call' && node.call) {
       const call = node.call, candidates = call.targetEntityIds || [];
       const dispatchKind=node.metadata?.dispatchKind||'unknown', targetUnresolved=node.metadata?.targetUnresolved===true;
@@ -189,7 +245,7 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
     if (categories.some((category) => SUMMARY_UNKNOWN_FUNCTION_MEMORY_CATEGORIES.has(category))) functionLevelUnknownEffects = true;
     if (categories.includes('calls') && unknownCallEffects.length === 0) { unknownEffectCalls = true; unknownCallEffects.push(createUnknownCallEffect({ callSiteId: methodId, reason: 'summary-incomplete', targetEntityIds: [], evidenceIds: [] })); }
   }
-  const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(semanticIr.completeness!=null&&semanticIr.completeness!=='complete'||unknownCallEffects.length>0||hasLanguageThrow||hasUnboundFieldOrdering||unknownEffectEvidence.size>0||functionLevelUnknownEffects||unknownEffectCalls)?'partial':'complete';
+  const hasExceptionEdges=cfg.blocks.some(b=>(b.successors||[]).some(s=>s.kind==='exception')), completeness=(semanticIr.completeness!=null&&semanticIr.completeness!=='complete'||unknownCallEffects.length>0||hasLanguageThrow||hasUnrepresentedPossibleExceptionAuthority||hasUnboundFieldOrdering||unknownEffectEvidence.size>0||functionLevelUnknownEffects||unknownEffectCalls)?'partial':'complete';
   if(unknownCallEffects.length>0)memoryWrites.push(createMemoryEffect({regionKind:'unknown',broad:true,addressSpaces:['memory'],source:'unknown-call-fallback',evidenceIds:unknownCallEffects.map(u=>u.callSiteId)}));
   if(unknownEffectEvidence.size>0||functionLevelUnknownEffects){
     const evidenceIds=[...unknownEffectEvidence];
@@ -205,7 +261,7 @@ export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
   // claim ('abi-rule': the direct dispatch was proven by this method's IR,
   // not by a callee summary), so record it at the boundary.
   const summaryDirectCalls=directCalls.map((call)=>createDirectCall({callSiteId:call.nodeId,targetEntityIds:[call.target],effectSource:'abi-rule'}));
-  const summary=createFunctionSummary({functionId:methodId,status,memoryReadRegions:memoryReads,memoryWriteRegions:memoryWrites,unknownCallEffects,directCalls:summaryDirectCalls,semanticFacts});
+  const summary=createFunctionSummary({functionId:methodId,status,memoryReadRegions:memoryReads,memoryWriteRegions:memoryWrites,unknownCallEffects,directCalls:summaryDirectCalls,mayThrow:(hasPossibleExceptionAuthority||thrownExceptions.length>0)?true:'unknown',semanticFacts});
   return deepFreeze({methodId,summary,directCalls,dynamicCalls,externalCalls,thrownExceptions,hasExceptionEdges,completeness});
 }
 export function analyzeManagedInterprocedural(methods, options={}){const methodMap=new Map();for(const method of methods){const summary=buildManagedMethodSummary(method,options);methodMap.set(summary.methodId,summary)}const roots=[...methodMap.keys()],successorsOf=id=>{const entry=methodMap.get(id);return entry?entry.directCalls.map(c=>c.target).filter(t=>methodMap.has(t)):[]};const{components,truncated}=condenseCallGraph(roots,successorsOf,options);return deepFreeze({components,truncated,summaries:methodMap})}

@@ -25,6 +25,7 @@ import { applyDebugTypesToGraph } from './debug/provider.js';
 import { DiscoveryProducerRegistry, fuseFunctionCandidates } from './discovery/fusion.js';
 import { GENERIC_PRODUCERS } from './discovery/producers.js';
 import {
+  createDiscoveryArtifact,
   discoveryArtifactForRebuild,
   functionDiscoveryArtifact,
   isFactoryIssuedDiscoveryArtifact,
@@ -268,11 +269,38 @@ export function functionCandidates({ input, architectureId = 'generic', producer
   for (const producer of GENERIC_PRODUCERS) registry.register(producer);
   for (const producer of producers) registry.register(producer);
   const collected = registry.collect(input, architectureId, options);
-  return fuseFunctionCandidates(collected.evidence, {
+  const fused = fuseFunctionCandidates(collected.evidence, {
     architectureId,
     ...options,
     producerStatus: { truncated: collected.truncated, stopReason: collected.stopReason },
   });
+  const canonicalProducerIds = new Set(GENERIC_PRODUCERS.map((producer) => producer.id));
+  const evidenceCounts = new Map();
+  for (const item of collected.evidence) {
+    evidenceCounts.set(item.producerId, (evidenceCounts.get(item.producerId) ?? 0) + 1);
+  }
+  const producerRuns = collected.producerIds.map((id) => ({
+    id,
+    version: '1.0.0',
+    completeness: collected.truncated ? 'partial' : 'complete',
+    stopReason: collected.truncated ? (collected.stopReason ?? 'evidence-missing') : null,
+    evidenceCount: evidenceCounts.get(id) ?? 0,
+    authorityClass: canonicalProducerIds.has(id) ? 'canonical' : 'external',
+  }));
+  const artifact = createDiscoveryArtifact({
+    evidence: collected.evidence,
+    candidates: fused.candidates,
+    status: fused.status,
+    producerRuns,
+    binding: {
+      binaryId: options.binaryId ?? null,
+      sourceHash: options.sourceHash ?? null,
+      snapshotId: options.snapshotId ?? null,
+      architectureId,
+    },
+    budget: options.artifactBudget ?? {},
+  });
+  return { ...fused, artifact };
 }
 
 import {
@@ -289,6 +317,7 @@ export {
   applyDebugTypesToGraph,
   applyLanguageMetadataTypesToGraph,
   languageMetadataFunctionEvidence,
+  createDiscoveryArtifact,
   functionDiscoveryArtifact,
   discoveryArtifactForRebuild,
   isFactoryIssuedDiscoveryArtifact,
