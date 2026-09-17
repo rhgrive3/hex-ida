@@ -6,6 +6,7 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 import { parseELF } from '../../../js/binary/elf.js';
+import { applyAarch64MappingSymbols } from '../../../js/binary/elf-aarch64-mapping.js';
 import { describeBinaryImage } from '../../../js/platform/describe.js';
 
 const ET_REL = 1;
@@ -55,10 +56,10 @@ function buildAarch64MappingElf() {
   bytes.set(shstr.bytes, shstrOff);
 
   const symbols = [
-    { name:0, info:0x00, value:0n, size:0n },       // $x
-    { name:1, info:0x00, value:4n, size:0n },       // $d
-    { name:2, info:0x00, value:8n, size:0n },       // $x.1
-    { name:3, info:0x12, value:0n, size:16n },      // global STT_FUNC foo
+    { name:0, info:0x00, value:0n, size:0n },
+    { name:1, info:0x00, value:4n, size:0n },
+    { name:2, info:0x00, value:8n, size:0n },
+    { name:3, info:0x12, value:0n, size:16n },
   ];
   for (let i = 0; i < symbols.length; i++) {
     const p = symOff + (i + 1) * 24;
@@ -124,6 +125,21 @@ test('#8255 AArch64 $x/$d mapping symbols publish section-scoped code/data autho
   assert.equal(image.isInstructionAllowed(foo.address), true);
   assert.equal(image.isInstructionAllowed(foo.address + 4n), false);
   assert.equal(image.isInstructionAllowed(foo.address + 8n), true);
+});
+
+test('#8255 mapping data removes guessed starts but preserves independently authoritative starts', () => {
+  const image = parseELF(buildAarch64MappingElf());
+  const foo = image.symbols.find((entry) => entry.name === 'foo');
+  const dataAddress = foo.address + 4n;
+  image.functions.push(
+    { address:dataAddress, source:'heuristic', confidence:0.5, exactFunctionStart:false },
+    { address:dataAddress, source:'symbol', confidence:0.995, exactFunctionStart:true },
+  );
+  applyAarch64MappingSymbols(image);
+  const starts = image.functions.filter((seed) => seed.address === dataAddress);
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0].source, 'symbol');
+  assert.equal(starts[0].exactFunctionStart, true);
 });
 
 test('#8255 platform regions carry mapping-data exclusions to the legacy ARM64 decoder', () => {
