@@ -89,6 +89,7 @@ const SPECIAL_PATHS = Object.freeze({
     'js/semantics/memory-access-provider.js',
     '.github/workflows/ghidra-differential.yml',
     '.github/workflows/x02-f47-ios-probe.yml',
+    '.github/workflows/x02-collector-fix.yml',
     'tools/validation/f47-ios-probe/Info.plist',
     'tools/validation/f47-ios-probe/main.m',
     '.github/workflows/x02-real-acceptance.yml',
