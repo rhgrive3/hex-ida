@@ -1,0 +1,73 @@
+name: diag-7036-ownership-47cb
+on:
+  push:
+    branches:
+      - diag/7036-ownership-47cb
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reproduce exact ownership first failure
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          STATUS=/tmp/diag-7036-47cb.txt
+          : > "$STATUS"
+          HEAD_SHA=47cb1a914d806f2c0b752b8cede2aae781366664
+          LOGICAL_BRANCH=feat/analysis-roadmap-v8-current-main-20260907
+          timeout 90s git fetch --no-tags origin main "$HEAD_SHA" >/tmp/fetch.log 2>&1
+          rc=$?
+          echo "fetch rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 50 /tmp/fetch.log >> "$STATUS"; exit "$rc"; fi
+          git checkout --detach "$HEAD_SHA" >/tmp/checkout.log 2>&1
+          rc=$?
+          echo "checkout rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 50 /tmp/checkout.log >> "$STATUS"; exit "$rc"; fi
+          BASE_SHA=$(git rev-parse refs/remotes/origin/main)
+          echo "base=$BASE_SHA" >> "$STATUS"
+          echo "head=$(git rev-parse HEAD)" >> "$STATUS"
+
+          fail() {
+            label="$1"; file="$2"; rc="$3"
+            echo "$label rc=$rc" >> "$STATUS"
+            echo "--- $label first failure tail ---" >> "$STATUS"
+            tail -n 80 "$file" >> "$STATUS"
+            exit "$rc"
+          }
+
+          timeout 120s node tools/validation/phase7-ownership.mjs --check-manifest >/tmp/p7-manifest.log 2>&1
+          rc=$?; [ "$rc" -eq 0 ] || fail phase7_manifest /tmp/p7-manifest.log "$rc"
+          echo 'phase7_manifest rc=0' >> "$STATUS"
+
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase7 --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" >/tmp/p7.json 2>/tmp/p7-gen.log
+          rc=$?; [ "$rc" -eq 0 ] || fail phase7_inventory /tmp/p7-gen.log "$rc"
+          echo "phase7_inventory rc=0 files=$(node -e 'const f=require("fs");console.log(JSON.parse(f.readFileSync("/tmp/p7.json","utf8")).length)')" >> "$STATUS"
+          timeout 120s node tools/validation/phase7-ownership.mjs --files-json "$(cat /tmp/p7.json)" >/tmp/p7-validate.log 2>&1
+          rc=$?; [ "$rc" -eq 0 ] || fail phase7_validate /tmp/p7-validate.log "$rc"
+          echo 'phase7_validate rc=0' >> "$STATUS"
+
+          timeout 120s node tools/validation/phase8-ownership.mjs --check-manifest >/tmp/p8-manifest.log 2>&1
+          rc=$?; [ "$rc" -eq 0 ] || fail phase8_manifest /tmp/p8-manifest.log "$rc"
+          echo 'phase8_manifest rc=0' >> "$STATUS"
+
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase8 --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" >/tmp/p8.json 2>/tmp/p8-gen.log
+          rc=$?; [ "$rc" -eq 0 ] || fail phase8_inventory /tmp/p8-gen.log "$rc"
+          echo "phase8_inventory rc=0 files=$(node -e 'const f=require("fs");console.log(JSON.parse(f.readFileSync("/tmp/p8.json","utf8")).length)')" >> "$STATUS"
+          timeout 120s node tools/validation/phase8-ownership.mjs --files-json "$(cat /tmp/p8.json)" >/tmp/p8-validate.log 2>&1
+          rc=$?; [ "$rc" -eq 0 ] || fail phase8_validate /tmp/p8-validate.log "$rc"
+          echo 'phase8_validate rc=0' >> "$STATUS"
+          echo 'ownership=green' >> "$STATUS"
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-7036-ownership-47cb
+          path: /tmp/diag-7036-47cb.txt
+          retention-days: 1
