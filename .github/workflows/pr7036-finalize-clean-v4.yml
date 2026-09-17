@@ -1,0 +1,194 @@
+name: PR7036 clean reconciliation v4
+on:
+  push:
+    branches: [sync/pr7036-main-20260918-v4]
+permissions:
+  contents: write
+jobs:
+  finalize:
+    if: contains(github.event.head_commit.message, 'finalize clean PR7036 reconciliation v4')
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 900
+      - name: Build and validate clean merge tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          RESULT="$PWD/pr7036-finalize-v4-result.txt"
+          : > "$RESULT"
+          trap 'rc=$?; echo "FAILED rc=$rc line=$LINENO" >> "$RESULT"; exit $rc' ERR
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          PR_HEAD=f8c8e281d940ab9d5f1b20d15398095f64cb50f7
+          MAIN_HEAD=15041f2f1187b7ee0affba7e30e1136d7bb51e74
+          STAGING_INPUT="$(git rev-parse HEAD)"
+          echo "staging_input=$STAGING_INPUT" >> "$RESULT"
+          echo "pr_head=$PR_HEAD" >> "$RESULT"
+          echo "main_head=$MAIN_HEAD" >> "$RESULT"
+
+          mkdir -p /tmp/pr7036-final/tests/stage2 /tmp/pr7036-final/js/analysis/discovery
+          git show "$STAGING_INPUT:js/analysis/discovery/supplemental-ambiguity.js" > /tmp/pr7036-final/js/analysis/discovery/supplemental-ambiguity.js
+          git show "$STAGING_INPUT:tests/stage2/x03-rebuild-discovery.test.mjs" > /tmp/pr7036-final/tests/stage2/x03-rebuild-discovery.test.mjs
+          git show "$STAGING_INPUT:tests/stage2/x03-rebuild-discovery-acceptance.test.mjs" > /tmp/pr7036-final/tests/stage2/x03-rebuild-discovery-acceptance.test.mjs
+
+          git fetch --no-tags --depth=900 origin "$PR_HEAD" "$MAIN_HEAD" >/dev/null 2>&1
+          git reset --hard "$PR_HEAD" >/dev/null
+          git clean -fd >/dev/null
+          set +e
+          git merge --no-commit --no-ff "$MAIN_HEAD" >/dev/null 2>&1
+          merge_rc=$?
+          set -e
+          conflicts="$(git diff --name-only --diff-filter=U | sed '/^$/d' | sort)"
+          conflict_count="$(printf '%s\n' "$conflicts" | sed '/^$/d' | wc -l | tr -d ' ')"
+          echo "merge_rc=$merge_rc" >> "$RESULT"
+          echo "conflict_count=$conflict_count" >> "$RESULT"
+          test "$merge_rc" -eq 1
+          test "$conflict_count" -eq 7
+
+          # Main owns the current v2 discovery/rebuild contracts and PE regression.
+          git checkout --theirs -- .circleci/config.yml js/analysis/discovery/artifact.js js/analysis/discovery/producers.js js/analysis/index.js js/rebuild/transaction-v2.js tests/issue-4135-pe-section-virtual-layout.mjs
+          # PR #7036 split the SSA implementation into build-core.js; retain the wrapper.
+          git checkout --ours -- js/semantics/ssa/build.js
+          # Non-conflicting parallel Mach-O additions otherwise redeclare LC_CODE_SIGNATURE.
+          git checkout "$MAIN_HEAD" -- js/binary/macho-core.js
+          git add .circleci/config.yml js/analysis/discovery/artifact.js js/analysis/discovery/producers.js js/analysis/index.js js/rebuild/transaction-v2.js js/semantics/ssa/build.js js/binary/macho-core.js tests/issue-4135-pe-section-virtual-layout.mjs
+
+          cp /tmp/pr7036-final/js/analysis/discovery/supplemental-ambiguity.js js/analysis/discovery/supplemental-ambiguity.js
+          cp /tmp/pr7036-final/tests/stage2/x03-rebuild-discovery.test.mjs tests/stage2/x03-rebuild-discovery.test.mjs
+          cp /tmp/pr7036-final/tests/stage2/x03-rebuild-discovery-acceptance.test.mjs tests/stage2/x03-rebuild-discovery-acceptance.test.mjs
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          # Port current-main loop-entry SSA semantics into PR #7036's split core.
+          p=Path('js/semantics/ssa/build-core.js')
+          s=p.read_text()
+          def repl(old,new,label):
+              global s
+              count=s.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: patch cardinality {count}')
+              s=s.replace(old,new)
+          repl("import { createSemanticSsaContract, SEMANTIC_SSA_DEFAULT_BUDGET } from './contract.js';",
+               "import {\n  analyzeSemanticSsaDominance,\n  createSemanticSsaContract,\n  semanticSsaPhiPredecessors,\n  semanticSsaVirtualEntryPredecessor,\n  SEMANTIC_SSA_DEFAULT_BUDGET,\n} from './contract.js';", 'ssa-import')
+          repl("  for (const variant of model.variants) definitionBlocks.get(variant.key).add('__entry_seed__');\n", "", 'ssa-entry-seed')
+          repl("    const defs = [...definitionBlocks.get(variant.key)].filter((id) => id !== '__entry_seed__').sort();\n    if (defs.length || reachable.has(dominance.reversePostOrder[0])) defs.unshift(dominance.reversePostOrder[0]);\n    const pending = new Set([...new Set(defs)]);",
+               "    const defs = [...definitionBlocks.get(variant.key)].sort();\n    const pending = new Set(defs);", 'ssa-def-blocks')
+          repl("        if (!reachable.has(frontierId) || frontierId === dominance.reversePostOrder[0]) continue;",
+               "        if (!reachable.has(frontierId)) continue;", 'ssa-frontier')
+          repl("  const entryBlock = cfg.blocks.find((block) => block.id === cfg.entryBlockId);\n  if (entryBlock.predecessors.length) fail('semantic-ssa-entry-has-predecessors');\n\n  const dominance = analyzeSemanticDominance(cfg, { signal: options.signal, budget: { maxWorkItems: limit(options, 'maxWorkItems') } });",
+               "  const entryBlock = cfg.blocks.find((block) => block.id === cfg.entryBlockId);\n\n  const dominance = analyzeSemanticSsaDominance(cfg, { signal: options.signal, budget: { maxWorkItems: limit(options, 'maxWorkItems') } });", 'ssa-dominance')
+          repl("  for (const variant of model.variants) {\n    const seed = seedDefinition(ir, cfg, variant, model.seedsByVariant.get(variant.key)[0] ?? null);\n    addDefinition(seed);\n    stacks.get(variant.key).push(seed.valueId);\n  }",
+               "  const seedValueByVariant = new Map();\n  for (const variant of model.variants) {\n    const seed = seedDefinition(ir, cfg, variant, model.seedsByVariant.get(variant.key)[0] ?? null);\n    addDefinition(seed);\n    stacks.get(variant.key).push(seed.valueId);\n    seedValueByVariant.set(variant.key, seed.valueId);\n  }", 'ssa-seed-map')
+          repl("  const addPhiIncoming = (phi, predecessorBlockId, valueId) => {\n    if (++phiLinkCount + uses.length > limit(options, 'maxLinks')) fail('semantic-ssa-budget-exceeded-maxLinks');\n    phi.incoming.push({ predecessorBlockId, valueId });\n  };\n\n  const renameReachable = (rootId) => {",
+               "  const addPhiIncoming = (phi, predecessorBlockId, valueId) => {\n    if (++phiLinkCount + uses.length > limit(options, 'maxLinks')) fail('semantic-ssa-budget-exceeded-maxLinks');\n    phi.incoming.push({ predecessorBlockId, valueId });\n  };\n\n  if (entryBlock.predecessors.length > 0) {\n    const virtualEntryPredecessor = semanticSsaVirtualEntryPredecessor(cfg);\n    const entryPhis = phiByBlock.get(cfg.entryBlockId);\n    for (const variantKey of [...entryPhis.keys()].sort()) {\n      const seedValueId = seedValueByVariant.get(variantKey);\n      if (!seedValueId) fail('semantic-ssa-missing-entry-phi-seed');\n      addPhiIncoming(entryPhis.get(variantKey), virtualEntryPredecessor, seedValueId);\n    }\n  }\n\n  const renameReachable = (rootId) => {", 'ssa-virtual-entry')
+          repl("    const expected = cfgBlocks.get(definition.blockId).predecessors;",
+               "    const expected = semanticSsaPhiPredecessors(cfg, definition.blockId);", 'ssa-phi-predecessors')
+          p.write_text(s)
+
+          # Keep main v2 discovery as authority and add only fail-closed ambiguity supplements.
+          p=Path('js/analysis/discovery/artifact.js')
+          s=p.read_text()
+          old="import { canonicalTypedDigest, canonicalTypedString } from './canonical-value.js';"
+          new=old+"\nimport { augmentDiscoveryPayload } from './supplemental-ambiguity.js';"
+          if s.count(old)!=1: raise SystemExit('artifact-import')
+          s=s.replace(old,new)
+          marker="function issueArtifact(payload) {\n  const artifact = deepFreeze({ artifactId: `discovery-artifact:${stableDigest(payload)}`, ...payload });\n  ISSUED_ARTIFACTS.add(artifact);\n  return artifact;\n}\n"
+          addition=marker+"\nexport function augmentDiscoveryArtifact(artifact, image = {}, options = {}) {\n  if (!artifactIdentityValid(artifact)) fail('discovery-artifact-augment-identity-invalid');\n  return issueArtifact(augmentDiscoveryPayload(artifact, image, options));\n}\n"
+          if s.count(marker)!=1: raise SystemExit('artifact-issuer')
+          p.write_text(s.replace(marker,addition))
+
+          p=Path('js/analysis/discovery/producers.js')
+          s=p.read_text()
+          if 'export function isCanonicalDiscoveryProducer' in s: raise SystemExit('producer-identity-already-present')
+          s += "\n// Canonical discovery authority is object identity, never a spoofable producer id.\nconst CANONICAL_DISCOVERY_PRODUCERS = new WeakSet(GENERIC_PRODUCERS);\n\nexport function isCanonicalDiscoveryProducer(producer) {\n  return !!producer && CANONICAL_DISCOVERY_PRODUCERS.has(producer);\n}\n"
+          p.write_text(s)
+
+          p=Path('js/analysis/index.js')
+          s=p.read_text()
+          old="import { GENERIC_PRODUCERS } from './discovery/producers.js';"
+          new="import { GENERIC_PRODUCERS, isCanonicalDiscoveryProducer } from './discovery/producers.js';"
+          if s.count(old)!=1: raise SystemExit('index-producer-import')
+          s=s.replace(old,new)
+          old="import { createDiscoveryArtifact } from './discovery/artifact.js';"
+          new="import { augmentDiscoveryArtifact, createDiscoveryArtifact } from './discovery/artifact.js';"
+          if s.count(old)!=1: raise SystemExit('index-artifact-import')
+          s=s.replace(old,new)
+          old="  const canonicalProducerIds = new Set(GENERIC_PRODUCERS.map((producer) => producer.id));"
+          new="  const applicableProducers = new Map(registry.for(architectureId).map((producer) => [producer.id, producer]));"
+          if s.count(old)!=1: raise SystemExit('index-producer-map')
+          s=s.replace(old,new)
+          old="    authorityClass: canonicalProducerIds.has(id) ? 'canonical' : 'external',"
+          new="    authorityClass: isCanonicalDiscoveryProducer(applicableProducers.get(id)) ? 'canonical' : 'external',"
+          if s.count(old)!=1: raise SystemExit('index-producer-authority')
+          s=s.replace(old,new)
+          old="  return { ...fused, artifact };\n}"
+          new="  const enrichedArtifact = augmentDiscoveryArtifact(artifact, input?.image ?? {}, { byteIntervals: options.byteIntervals ?? null });\n  return { ...fused, artifact: enrichedArtifact };\n}\n\nexport function functionDiscoveryArtifact(options = {}) {\n  return functionCandidates(options);\n}"
+          if s.count(old)!=1: raise SystemExit('index-return')
+          p.write_text(s.replace(old,new))
+
+          # Start from current main CircleCI, then restore PR #7036's exact Phase 8 roadmap routing.
+          p=Path('.circleci/config.yml')
+          s=p.read_text()
+          old="""      - run:\n          name: Detect Phase 8 ownership impact\n          command: |\n            set -euo pipefail\n            if [ \"${CIRCLE_BRANCH:-}\" = 'feat/scpa-functional-acceptance-20260912' ]; then\n              run_it=true"""
+          new="""      - run:\n          name: Detect Phase 8 ownership impact\n          command: |\n            set -euo pipefail\n            if [ \"${CIRCLE_BRANCH:-}\" = 'feat/analysis-roadmap-v8-current-main-20260907' ] || [ \"${CIRCLE_BRANCH:-}\" = 'integration-candidate/local-handover-20260914' ] || [ \"${CIRCLE_BRANCH:-}\" = 'codex/analysis-remaining-20260914' ]; then\n              run_it=true\n            elif [ \"${CIRCLE_BRANCH:-}\" = 'feat/scpa-functional-acceptance-20260912' ]; then\n              run_it=true"""
+          if s.count(old)!=1: raise SystemExit('circleci-phase8-detect')
+          s=s.replace(old,new)
+          old="""      - run:\n          name: Validate Phase 8 ownership\n          command: |\n            if [ \"$RUN_PHASE8_OWNERSHIP\" != 'true' ]; then exit 0; fi\n            set -euo pipefail\n            node tools/validation/phase8-ownership.mjs --check-manifest\n            if [ \"${CIRCLE_BRANCH:-}\" = 'feat/scpa-functional-acceptance-20260912' ]; then"""
+          new="""      - run:\n          name: Validate Phase 8 ownership\n          command: |\n            if [ \"$RUN_PHASE8_OWNERSHIP\" != 'true' ]; then exit 0; fi\n            set -euo pipefail\n            node tools/validation/phase8-ownership.mjs --check-manifest\n            if [ \"${CIRCLE_BRANCH:-}\" = 'feat/analysis-roadmap-v8-current-main-20260907' ] || [ \"${CIRCLE_BRANCH:-}\" = 'integration-candidate/local-handover-20260914' ] || [ \"${CIRCLE_BRANCH:-}\" = 'codex/analysis-remaining-20260914' ]; then\n              FILES_JSON=\"$(node tools/validation/analysis-roadmap/ownership.mjs \\\n                --branch \"$CIRCLE_BRANCH\" --phase phase8 \\\n                --base-sha \"$OWNERSHIP_BASE_SHA\" --head-sha \"$OWNERSHIP_HEAD_SHA\")\"\n              node tools/validation/phase8-ownership.mjs --files-json \"$FILES_JSON\"\n            elif [ \"${CIRCLE_BRANCH:-}\" = 'feat/scpa-functional-acceptance-20260912' ]; then"""
+          if s.count(old)!=1: raise SystemExit('circleci-phase8-validate')
+          p.write_text(s.replace(old,new))
+          PY
+
+          git add -A
+          test -z "$(git diff --name-only --diff-filter=U)"
+          node --check js/semantics/ssa/build-core.js
+          node --check js/analysis/discovery/supplemental-ambiguity.js
+          node --check js/analysis/discovery/artifact.js
+          node --check js/analysis/discovery/producers.js
+          node --check js/analysis/index.js
+
+          run_one() {
+            name="$1"; shift
+            echo "RUN $name" >> "$RESULT"
+            set +e
+            "$@" >/tmp/pr7036-test.out 2>&1
+            rc=$?
+            set -e
+            echo "RC $rc" >> "$RESULT"
+            if [ "$rc" -ne 0 ]; then
+              echo "FIRST_FAILURE $name" >> "$RESULT"
+              tail -n 80 /tmp/pr7036-test.out >> "$RESULT"
+              return "$rc"
+            fi
+          }
+          run_one circleci-impact node tests/ci/circleci-impact.test.mjs
+          run_one phase8-manifest node tools/validation/phase8-ownership.mjs --check-manifest
+          run_one focused node --test \
+            tests/phase7/discovery/t016-discovery-preservation.test.mjs \
+            tests/rebuild/t016-discovery-preservation.test.mjs \
+            tests/issue-4135-pe-section-virtual-layout.mjs \
+            tests/phase8/integration/proof-optimizer.test.mjs \
+            tests/phase8/substrate/proof-projection-origin.test.mjs \
+            tests/stage2/x03-rebuild-discovery.test.mjs \
+            tests/stage2/x03-rebuild-discovery-acceptance.test.mjs
+
+          git status --porcelain >> "$RESULT"
+          git commit -m 'merge(main): reconcile PR #7036 with current discovery and SSA contracts' >/dev/null
+          CLEAN_HEAD="$(git rev-parse HEAD)"
+          echo "clean_head=$CLEAN_HEAD" >> "$RESULT"
+          echo "parents=$(git show -s --format=%P HEAD)" >> "$RESULT"
+          echo "tree=$(git show -s --format=%T HEAD)" >> "$RESULT"
+          git push --force-with-lease="refs/heads/sync/pr7036-main-20260918-v4:$STAGING_INPUT" origin HEAD:refs/heads/sync/pr7036-main-20260918-v4 >/dev/null
+          echo 'FINALIZE_GREEN' >> "$RESULT"
+      - name: Upload finalization result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr7036-finalize-v4-result
+          path: pr7036-finalize-v4-result.txt
+          if-no-files-found: ignore
+          retention-days: 2
