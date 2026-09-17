@@ -38,7 +38,8 @@ test('#4384 counts the dropped-events marker against maxEvents', () => {
   assert.equal(batch.completeness, 'truncated');
   assert.equal(normalizer.queuedBytes, 0);
 
-  assert.ok(normalizer.push(input(1)), 'an event evicted for the marker must remain retryable');
+  assert.equal(normalizer.push(input(1)), null, 'an accepted occurrence remains replay-protected even if publication pressure evicts it');
+  assert.ok(normalizer.push(input(2)), 'an event dropped before acceptance remains retryable');
 });
 
 test('#4384 counts the final marker against the canonical UTF-8 byte budget', () => {
