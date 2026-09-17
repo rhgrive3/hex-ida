@@ -9,6 +9,21 @@ assert.equal(same.version, '2.0.41');
 assert.equal(same.changed, false);
 assert.equal(same.state.serial, 41);
 
+const sameUppercasePrevious = resolveUserscriptReleaseVersion(
+  { serial: 41, releaseIdentity: a.toUpperCase(), buildId: buildA.toUpperCase() },
+  { releaseIdentity: a, buildId: buildA },
+);
+assert.equal(sameUppercasePrevious.version, '2.0.41');
+assert.equal(sameUppercasePrevious.changed, false);
+assert.deepEqual(sameUppercasePrevious.state, { serial: 41, releaseIdentity: a, buildId: buildA });
+
+const sameMixedCasePrevious = resolveUserscriptReleaseVersion(
+  { serial: 41, releaseIdentity: `${'A'.repeat(32)}${'a'.repeat(32)}`, buildId: `${'1'.repeat(12)}${'A'.repeat(12)}` },
+  { releaseIdentity: a, buildId: `${'1'.repeat(12)}${'a'.repeat(12)}` },
+);
+assert.equal(sameMixedCasePrevious.changed, false);
+assert.equal(sameMixedCasePrevious.state.serial, 41);
+
 const runtimeChange = resolveUserscriptReleaseVersion(same.state, { releaseIdentity: b, buildId: buildB });
 assert.equal(runtimeChange.version, '2.0.42');
 assert.equal(runtimeChange.changed, true);
@@ -19,6 +34,8 @@ assert.equal(loaderOnlyChange.version, '2.0.43', 'loader/release identity change
 
 assert.throws(() => resolveUserscriptReleaseVersion({ serial: 0 }, { releaseIdentity: a, buildId: buildA }));
 assert.throws(() => resolveUserscriptReleaseVersion({ serial: 41, releaseIdentity: a, buildId: buildA }, { releaseIdentity: 'bad', buildId: buildA }));
+assert.throws(() => resolveUserscriptReleaseVersion({ serial: 41, releaseIdentity: 'bad', buildId: buildA }, { releaseIdentity: a, buildId: buildA }));
+assert.throws(() => resolveUserscriptReleaseVersion({ serial: 41, releaseIdentity: a, buildId: 'bad' }, { releaseIdentity: a, buildId: buildA }));
 
 const releaseState = JSON.parse(fs.readFileSync(new URL('../userscript/release-version.json', import.meta.url), 'utf8'));
 const template = fs.readFileSync(new URL('../userscript/hex.user.template.js', import.meta.url), 'utf8');
