@@ -12,6 +12,11 @@ function intrinsic(bundle) {
   return bundle.operations.find((operation) => operation.kind === 'intrinsic');
 }
 
+function hasRegisterRead(bundle, registerId) {
+  return bundle.operations.some((operation) => operation.kind === 'register-read'
+    && operation.register.registerId === registerId);
+}
+
 {
   const fields = [
     ['UAO', 1, 'sys:uao'],
@@ -47,13 +52,46 @@ function intrinsic(bundle) {
     mnemonic:'ldr',
     ops:[gp(0), { k:'mem', base:sp, disp:0n, mode:'offset' }],
   }, ctx('i-sp-load'));
-  assert.ok(effect.operations.some((operation) => operation.kind === 'register-read'
-    && operation.register.registerId === 'sys:spsel'));
+  assert.ok(hasRegisterRead(effect, 'sys:spsel'));
   const semantic = lowerMachineEffectBundleToSemanticIr(effect, {
     functionId:'issue-8598-sp', blockId:'entry', addressWidthBits:64,
   });
   assert.ok(semantic.nodes.some((node) => node.kind === 'state-read'
     && node.variable?.physicalIdentity?.registerId === 'sys:spsel'));
+}
+
+{
+  const alternateShapes = [
+    { operandsParsed:[other('SPSel'), imm(1)] },
+    { parsed:[other('SPSel'), imm(1)] },
+  ];
+  for (const [index, shape] of alternateShapes.entries()) {
+    const effect = liftArm64MachineEffects({
+      mnemonic:'msr',
+      ...shape,
+    }, ctx(`i-alt-spsel-${index}`));
+    assert.ok(intrinsic(effect).effectSummary.registersWritten.includes('sys:spsel'));
+  }
+}
+
+{
+  const nonSp = liftArm64MachineEffects({
+    mnemonic:'ldr',
+    ops:[gp(0), { k:'mem', base:gp(1), disp:0n, mode:'offset' }],
+  }, ctx('i-gp-load'));
+  assert.ok(!hasRegisterRead(nonSp, 'sys:spsel'));
+}
+
+{
+  const effect = liftArm64MachineEffects({
+    mnemonic:'svc',
+    ops:[imm(0)],
+  }, ctx('i-non-conservative'));
+  const summary = intrinsic(effect).effectSummary;
+  assert.ok(summary.registersRead.includes('sys:currentel'));
+  assert.ok(summary.registersWritten.includes('sys:currentel'));
+  assert.ok(!summary.registersRead.includes('sys:tpidr_el0'));
+  assert.ok(!summary.registersWritten.includes('sys:tpidr_el0'));
 }
 
 for (const [mnemonic, ops] of [
