@@ -1,0 +1,38 @@
+name: issue-5302-apply
+on:
+  push:
+    branches:
+      - fix/issue-5302-array-type-core-20260917
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply validated patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 2 --max-time 60 'https://sdmntprkoreacentral.oaiusercontent.com/files/00000000-bd54-8206-8d07-e94c1f96fa2a/raw?se=2026-09-17T20%3A36%3A53Z&sp=r&sv=2026-02-06&sr=b&scid=e3ef2a43-712f-5eaa-a06a-2df697a37957&skoid=fe2e0858-51c5-47e9-acb7-46ebb9a0f396&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-17T18%3A09%3A05Z&ske=2026-09-18T18%3A09%3A05Z&sks=b&skv=2026-02-06&sig=JCiZAa%2BUpgNO2ewOqSCl2YBg8b8RZrYzUyIgTrld1ts%3D' -o /tmp/issue-5302.patch
+          echo '369cd23ca932fda89ff47f72e20f8c81b7267f3d8b3e0bb9f3227d7c5d9c80b7  /tmp/issue-5302.patch' | sha256sum -c -
+          git apply --check /tmp/issue-5302.patch
+          git apply /tmp/issue-5302.patch
+      - name: Focused regression
+        run: timeout 120s node --test tests/phase11/dex/issue-5302-array-type-core.test.mjs
+      - name: Module boundaries
+        run: timeout 120s npm run module-boundaries:test --silent
+      - name: Syntax lint
+        run: timeout 120s npm run lint --silent
+      - name: Commit validated change
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .github/issue-5302-patch .github/workflows/issue-5302-apply.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add js/managed/dex/lifter.js js/managed/dex/validation-base.js js/managed/dex/array-type-effects.js js/managed/shared/bridge-dex-overlay-v2.js tests/phase11/dex/issue-5302-array-type-core.test.mjs
+          git add -A .github/issue-5302-patch .github/workflows/issue-5302-apply.yml
+          git commit -m 'fix(dex): implement array and type core VM effects (#5302)'
+          git push
