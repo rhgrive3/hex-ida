@@ -2,7 +2,13 @@ import { createValueId, deepFreeze, stableDigest, stableStringify } from '../../
 import { appendTransform, createOriginSet, createTransformRecord, mergeOriginSets } from '../../core/identity/origin.js';
 import { analyzeSemanticDominance, createSemanticCfg, deterministicTraversal } from '../cfg/index.js';
 import { createSemanticIrFunction } from '../ir/function.js';
-import { createSemanticSsaContract, SEMANTIC_SSA_DEFAULT_BUDGET } from './contract.js';
+import {
+  analyzeSemanticSsaDominance,
+  createSemanticSsaContract,
+  semanticSsaPhiPredecessors,
+  semanticSsaVirtualEntryPredecessor,
+  SEMANTIC_SSA_DEFAULT_BUDGET,
+} from './contract.js';
 
 export const SEMANTIC_SSA_BUILD_VERSION = '1.0.0';
 export const SEMANTIC_SSA_BUILD_DEFAULT_BUDGET = Object.freeze({
@@ -411,7 +417,6 @@ function collectModel(ir, options, tick) {
 function computePhiBlocks(model, dominance, reachable, options, tick) {
   const phiBlocks = new Map(model.variants.map((variant) => [variant.key, new Set()]));
   const definitionBlocks = new Map(model.variants.map((variant) => [variant.key, new Set()]));
-  for (const variant of model.variants) definitionBlocks.get(variant.key).add('__entry_seed__');
   for (const [blockId, events] of model.eventsByBlock) {
     tick();
     if (!reachable.has(blockId)) continue;
@@ -422,9 +427,8 @@ function computePhiBlocks(model, dominance, reachable, options, tick) {
   }
   for (const variant of model.variants) {
     tick();
-    const defs = [...definitionBlocks.get(variant.key)].filter((id) => id !== '__entry_seed__').sort();
-    if (defs.length || reachable.has(dominance.reversePostOrder[0])) defs.unshift(dominance.reversePostOrder[0]);
-    const pending = new Set([...new Set(defs)]);
+    const defs = [...definitionBlocks.get(variant.key)].sort();
+    const pending = new Set(defs);
     const queued = new Set(pending);
     while (pending.size) {
       tick();
@@ -432,7 +436,7 @@ function computePhiBlocks(model, dominance, reachable, options, tick) {
       pending.delete(blockId);
       for (const frontierId of dominance.dominanceFrontier[blockId] ?? []) {
         tick();
-        if (!reachable.has(frontierId) || frontierId === dominance.reversePostOrder[0]) continue;
+        if (!reachable.has(frontierId)) continue;
         const phis = phiBlocks.get(variant.key);
         if (phis.has(frontierId)) continue;
         phis.add(frontierId);
@@ -681,9 +685,8 @@ export function buildSemanticSsa(irInput, cfgInput, options = {}) {
   const cfgIds = cfg.blocks.map((block) => block.id).sort();
   if (stableStringify(irIds) !== stableStringify(cfgIds)) fail('semantic-ssa-block-set-mismatch');
   const entryBlock = cfg.blocks.find((block) => block.id === cfg.entryBlockId);
-  if (entryBlock.predecessors.length) fail('semantic-ssa-entry-has-predecessors');
 
-  const dominance = analyzeSemanticDominance(cfg, { signal: options.signal, budget: { maxWorkItems: limit(options, 'maxWorkItems') } });
+  const dominance = analyzeSemanticSsaDominance(cfg, { signal: options.signal, budget: { maxWorkItems: limit(options, 'maxWorkItems') } });
   const reachable = new Set(dominance.reachable);
   const model = collectModel(ir, options, tick);
   const phiBlocks = computePhiBlocks(model, dominance, reachable, options, tick);
@@ -758,10 +761,12 @@ export function buildSemanticSsa(irInput, cfgInput, options = {}) {
     }
   }
 
+  const seedValueByVariant = new Map();
   for (const variant of model.variants) {
     const seed = seedDefinition(ir, cfg, variant, model.seedsByVariant.get(variant.key)[0] ?? null);
     addDefinition(seed);
     stacks.get(variant.key).push(seed.valueId);
+    seedValueByVariant.set(variant.key, seed.valueId);
   }
 
   for (const variant of model.variants) {
@@ -784,6 +789,16 @@ export function buildSemanticSsa(irInput, cfgInput, options = {}) {
     if (++phiLinkCount + uses.length > limit(options, 'maxLinks')) fail('semantic-ssa-budget-exceeded-maxLinks');
     phi.incoming.push({ predecessorBlockId, valueId });
   };
+
+  if (entryBlock.predecessors.length > 0) {
+    const virtualEntryPredecessor = semanticSsaVirtualEntryPredecessor(cfg);
+    const entryPhis = phiByBlock.get(cfg.entryBlockId);
+    for (const variantKey of [...entryPhis.keys()].sort()) {
+      const seedValueId = seedValueByVariant.get(variantKey);
+      if (!seedValueId) fail('semantic-ssa-missing-entry-phi-seed');
+      addPhiIncoming(entryPhis.get(variantKey), virtualEntryPredecessor, seedValueId);
+    }
+  }
 
   const renameReachable = (rootId) => {
     const frames = [{ blockId: rootId, entered: false, childIndex: 0, pushed: [] }];
@@ -903,7 +918,7 @@ export function buildSemanticSsa(irInput, cfgInput, options = {}) {
   const finalizedByValue = new Map(finalizedDefinitions.map((definition) => [definition.valueId, definition]));
   for (const definition of finalizedDefinitions) {
     if (definition.kind !== 'phi') continue;
-    const expected = cfgBlocks.get(definition.blockId).predecessors;
+    const expected = semanticSsaPhiPredecessors(cfg, definition.blockId);
     const actual = definition.incoming.map((item) => item.predecessorBlockId).sort();
     if (stableStringify(expected) !== stableStringify(actual)) fail('semantic-ssa-phi-predecessor-set-incomplete');
     for (const incoming of definition.incoming) if (!finalizedByValue.has(incoming.valueId)) fail('semantic-ssa-dangling-phi-value-id');
