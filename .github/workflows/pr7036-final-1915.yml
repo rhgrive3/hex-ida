@@ -1,40 +1,38 @@
-name: PR7036 final 1915 merge-base diagnostic
+name: PR7036 final conflict inventory 1915b
 on:
   push:
     branches: [sync/pr7036-final-20260917-1915]
 jobs:
-  diagnose:
-    if: contains(github.event.head_commit.message, 'diagnose PR7036 final merge base 1915')
+  inventory:
+    if: contains(github.event.head_commit.message, 'inventory PR7036 final conflicts 1915b')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 900
-      - name: Emit minimal merge-base diagnostic
+      - name: Inventory conflicts
         shell: bash
         run: |
           set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git fetch --no-tags --depth=900 origin 4d68cb6bf67622f7f3887e821388a2788cbd34fc >/dev/null 2>&1
           set +e
-          mb=$(git merge-base HEAD FETCH_HEAD 2>/tmp/mb.err)
-          mb_rc=$?
-          git merge --no-commit --no-ff FETCH_HEAD >/tmp/merge.out 2>/tmp/merge.err
+          git merge --no-commit --no-ff FETCH_HEAD >/dev/null 2>/tmp/merge.err
           merge_rc=$?
           set -e
+          git diff --name-only --diff-filter=U | sed '/^$/d' | sort > pr7036-final-conflicts.txt
           {
-            echo "shallow=$(git rev-parse --is-shallow-repository)"
-            echo "head=$(git rev-parse HEAD)"
-            echo "main=$(git rev-parse FETCH_HEAD)"
-            echo "merge_base_rc=$mb_rc"
-            echo "merge_base=${mb:-none}"
             echo "merge_rc=$merge_rc"
-            echo "merge_base_error=$(head -n 3 /tmp/mb.err | tr '\n' ' ')"
-            echo "merge_error=$(head -n 5 /tmp/merge.err | tr '\n' ' ')"
-          } > pr7036-final-merge-base.txt
+            echo "merge_base=$(git merge-base HEAD FETCH_HEAD)"
+            echo "count=$(wc -l < pr7036-final-conflicts.txt | tr -d ' ')"
+            cat pr7036-final-conflicts.txt
+            if [ "$merge_rc" -gt 1 ]; then head -n 5 /tmp/merge.err; fi
+          } > pr7036-final-inventory.txt
           git merge --abort >/dev/null 2>&1 || true
       - uses: actions/upload-artifact@v4
         with:
-          name: pr7036-final-merge-base-1915
-          path: pr7036-final-merge-base.txt
+          name: pr7036-final-inventory-1915b
+          path: pr7036-final-inventory.txt
           retention-days: 2
