@@ -29,10 +29,63 @@ jobs:
           status=$?
           tail -n 80 /tmp/scpa.out > /tmp/first-failure.txt
           exit $status
-      - name: Upload first failure only
-        if: failure() && steps.focused.outcome == 'failure'
+      - name: Dump bounded projection neighborhood
+        if: always() && steps.focused.outcome == 'failure'
+        shell: bash
+        run: |
+          cat > tests/scpa/.stage-a-flow-diag.mjs <<'NODE'
+          import { captured, scope } from './native-owner-fixture.mjs';
+          import { ScopedAnalysisWork } from '../../js/core/budgets/scoped-work.js';
+          import { buildCanonicalQueryProjection } from '../../js/analysis/query/semantic/projection.js';
+          const f = scope();
+          const input = captured(0x4000n, [['str', 'x0, [sp]', 0xf90003e0], ['ldr', 'x2, [sp]', 0xf94003e2], ['ldr', 'x3, [x2]', 0xf9400043], ['ret', '', 0xd65f03c0]]);
+          const work = new ScopedAnalysisWork({ limits: { deadlineMs: 10000 } });
+          const replacer = (_k, v) => typeof v === 'bigint' ? `0x${v.toString(16)}` : v;
+          let projection;
+          try {
+            projection = await buildCanonicalQueryProjection(input.result.pipeline, { ...f, snapshotId: 'snap', work });
+            const ir = input.result.pipeline.semanticIr;
+            const store = ir.nodes.find(n => n.kind === 'store');
+            const loads = ir.nodes.filter(n => n.kind === 'load');
+            const sink = loads.at(-1);
+            const storeRef = projection.entityReference('semantic-ir', store.id);
+            const target = projection.entityReference('semantic-ir', sink.id);
+            const sourceEdge = projection.adjacent(storeRef, 'backward').map(id => projection.edge(id))
+              .find(e => e.kind === 'operation-input' && e.flowKinds?.includes('data'));
+            const addressEdge = projection.adjacent(target, 'backward').map(id => projection.edge(id))
+              .find(e => e.kind === 'operation-input' && e.flowKinds?.includes('address'));
+            console.log('IR_NODES');
+            for (const node of ir.nodes) console.log(JSON.stringify(node, replacer));
+            console.log('KEYS', JSON.stringify({ storeRef, source: sourceEdge?.from, target, addressUse: addressEdge?.from }));
+            const roots = [sourceEdge?.from, storeRef, projection.entityReference('semantic-ir', loads[0].id), addressEdge?.from, target].filter(Boolean);
+            const seen = new Set(); let frontier = [...roots]; let depth = 0; let emitted = 0;
+            while (frontier.length && depth < 5 && emitted < 60) {
+              const next = [];
+              for (const vertex of frontier) {
+                if (seen.has(vertex)) continue; seen.add(vertex);
+                for (const direction of ['forward','backward']) {
+                  for (const edgeId of projection.adjacent(vertex, direction)) {
+                    const e = projection.edge(edgeId);
+                    console.log('EDGE', depth, direction, JSON.stringify({ id:e.id, kind:e.kind, from:e.from, to:e.to, flowKinds:e.flowKinds, obligations:e.obligations }, replacer));
+                    emitted++; if (emitted >= 60) break;
+                    next.push(direction === 'forward' ? e.to : e.from);
+                  }
+                  if (emitted >= 60) break;
+                }
+                if (emitted >= 60) break;
+              }
+              frontier = next; depth++;
+            }
+          } finally { projection?.release(); work.dispose(); }
+          NODE
+          node tests/scpa/.stage-a-flow-diag.mjs > /tmp/projection-neighborhood.txt 2>&1
+          tail -n 100 /tmp/projection-neighborhood.txt > /tmp/projection-neighborhood-bounded.txt
+      - name: Upload bounded diagnostics
+        if: always() && steps.focused.outcome == 'failure'
         uses: actions/upload-artifact@v4
         with:
-          name: scpa-first-failure
-          path: /tmp/first-failure.txt
+          name: scpa-bounded-diagnostics
+          path: |
+            /tmp/first-failure.txt
+            /tmp/projection-neighborhood-bounded.txt
           retention-days: 1
