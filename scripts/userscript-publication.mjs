@@ -56,8 +56,6 @@ export async function publishUserscriptFiles(entries, { io = fs } = {}) {
       const record = { file, backup:`${file}.${randomUUID()}.backup`, temporary:null, backedUp:false, published:false };
       records.push(record);
       record.temporary = await stageFile(file, entry.content, io);
-      // Hard links preserve the originals without requiring another data write
-      // during rollback, when quota exhaustion may make even one byte fail.
       await io.link(file, record.backup); record.backedUp = true;
     }
     await syncDirectory(directory, io);
@@ -82,13 +80,15 @@ export async function publishUserscriptFiles(entries, { io = fs } = {}) {
   } finally {
     const cleanupErrors = [];
     const cleanup = async (operation, { ignoreMissing = false } = {}) => {
-      try { await operation(); }
+      try { await operation(); return true; }
       catch (error) {
         if (!(ignoreMissing && error?.code === 'ENOENT')) cleanupErrors.push(error);
+        return false;
       }
     };
 
-    await cleanup(() => lock.close());
+    const lockClosed = await cleanup(() => lock.close());
+    if (!lockClosed) retainRecovery = true;
     if (!retainRecovery) {
       for (const record of records) {
         if (record.temporary) await cleanup(() => io.unlink(record.temporary), { ignoreMissing:true });
