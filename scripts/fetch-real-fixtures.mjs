@@ -12,12 +12,21 @@ const outputDir = join(root, 'tests/.real-fixtures');
 const args = process.argv.slice(2);
 const checkOnly = args.includes('--check');
 const requested = args.filter((arg) => arg !== '--check');
-const names = requested.length && !requested.includes('all') ? requested : Object.keys(manifest.fixtures);
 
 function fixture(name) {
   const spec = manifest.fixtures[name];
   if (!spec) throw new Error(`unknown fixture: ${name}`);
   return spec;
+}
+
+function selectedFixtureNames() {
+  // `all` widens the selected set, but it must not erase explicit selectors.
+  // Validate every explicit fixture name first so `all typo` cannot silently
+  // turn a misspelled targeted command into a successful all-fixture run (#9143).
+  for (const name of requested) {
+    if (name !== 'all') fixture(name);
+  }
+  return requested.length && !requested.includes('all') ? requested : Object.keys(manifest.fixtures);
 }
 
 async function digestFile(path) {
@@ -106,7 +115,7 @@ async function fetchFixture(name, spec) {
 }
 
 try {
-  for (const name of names) await fetchFixture(name, fixture(name));
+  for (const name of selectedFixtureNames()) await fetchFixture(name, fixture(name));
 } catch (error) {
   console.error(error && error.message ? error.message : String(error));
   process.exitCode = 1;
