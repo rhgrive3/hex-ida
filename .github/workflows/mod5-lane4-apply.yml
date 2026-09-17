@@ -1,0 +1,51 @@
+name: mod5 lane4 apply
+
+on:
+  push:
+    branches:
+      - fix/mod5-lane4-5700-8353-8687-9143
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[mod5-applied]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Assemble and verify patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .github/mod5-lane4.patch.00 .github/mod5-lane4.patch.01 .github/mod5-lane4.patch.02 .github/mod5-lane4.patch.03 > /tmp/mod5.patch
+          if ! patch --dry-run --batch --forward -p1 < /tmp/mod5.patch > /tmp/patch-check.txt 2>&1; then
+            echo '### patch dry-run failed' >> "$GITHUB_STEP_SUMMARY"
+            head -40 /tmp/patch-check.txt >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          patch --batch --forward -p1 < /tmp/mod5.patch
+      - name: Focused validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 40s node tests/phase4/store/basic.test.mjs
+          timeout 40s node tests/phase4/store/issue-6206-duplicate-identity.test.mjs
+          timeout 40s node --test tests/phase12/integration/issue-8687-portable-session-verified-evidence-authority.test.mjs
+          timeout 40s node tests/phase7/foundation/issue-9143-fetch-real-fixtures-selection.test.mjs
+          timeout 40s node tests/machine-effects/issue-8353-arm64-pauth-lr-decode-return.test.mjs
+          timeout 40s node tests/machine-effects/issue-6117-arm64e-pauth-lr-second-modifier.test.mjs
+          timeout 40s node --test tests/phase6/browser/decode-worker.test.mjs
+      - name: Commit validated tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/mod5-lane4.patch.00 .github/mod5-lane4.patch.01 .github/mod5-lane4.patch.02 .github/mod5-lane4.patch.03 .github/workflows/mod5-lane4-apply.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'fix: resolve mod5 lane4 issues #5700 #8353 #8687 #9143 [mod5-applied]'
+          git push origin HEAD:${GITHUB_REF_NAME}
