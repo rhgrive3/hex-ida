@@ -48,6 +48,7 @@ export async function publishUserscriptFiles(entries, { io = fs } = {}) {
   const lock = await io.open(lockPath, 'wx');
   const records = [];
   let retainRecovery = false;
+  let primaryError = null;
   try {
     for (const [index, entry] of entries.entries()) {
       const file = paths[index];
@@ -55,8 +56,6 @@ export async function publishUserscriptFiles(entries, { io = fs } = {}) {
       const record = { file, backup:`${file}.${randomUUID()}.backup`, temporary:null, backedUp:false, published:false };
       records.push(record);
       record.temporary = await stageFile(file, entry.content, io);
-      // Hard links preserve the originals without requiring another data write
-      // during rollback, when quota exhaustion may make even one byte fail.
       await io.link(file, record.backup); record.backedUp = true;
     }
     await syncDirectory(directory, io);
@@ -76,17 +75,33 @@ export async function publishUserscriptFiles(entries, { io = fs } = {}) {
     }
     if (rollbackErrors.length) {
       retainRecovery = true;
-      throw new AggregateError([error, ...rollbackErrors], `userscript-publication-recovery-required:${lockPath}`);
-    }
-    throw error;
+      primaryError = new AggregateError([error, ...rollbackErrors], `userscript-publication-recovery-required:${lockPath}`);
+    } else primaryError = error;
   } finally {
-    await lock.close();
+    const cleanupErrors = [];
+    const cleanup = async (operation, { ignoreMissing = false } = {}) => {
+      try { await operation(); return true; }
+      catch (error) {
+        if (!(ignoreMissing && error?.code === 'ENOENT')) cleanupErrors.push(error);
+        return false;
+      }
+    };
+
+    const lockClosed = await cleanup(() => lock.close());
+    if (!lockClosed) retainRecovery = true;
     if (!retainRecovery) {
       for (const record of records) {
-        if (record.temporary) await io.unlink(record.temporary).catch(() => {});
-        if (record.backedUp) await io.unlink(record.backup).catch(() => {});
+        if (record.temporary) await cleanup(() => io.unlink(record.temporary), { ignoreMissing:true });
+        if (record.backedUp) await cleanup(() => io.unlink(record.backup), { ignoreMissing:true });
       }
-      await io.unlink(lockPath);
+      await cleanup(() => io.unlink(lockPath), { ignoreMissing:true });
     }
+
+    if (primaryError && cleanupErrors.length) {
+      throw new AggregateError([primaryError, ...cleanupErrors], `userscript-publication-cleanup-failed:${lockPath}`);
+    }
+    if (primaryError) throw primaryError;
+    if (cleanupErrors.length === 1) throw cleanupErrors[0];
+    if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, `userscript-publication-cleanup-failed:${lockPath}`);
   }
 }

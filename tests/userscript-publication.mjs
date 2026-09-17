@@ -19,8 +19,6 @@ async function originalPair(entries) {
 async function cleanDirectory(directory) { assert.deepEqual((await fs.readdir(directory)).sort(), ['loader', 'release']); }
 
 try {
-  // These failures happen after open('wx'), including a close error and a
-  // falsely successful short write. No failure may truncate the originals.
   for (const failure of ['write', 'sync', 'close', 'short-write', 'readback']) {
     const { directory, entries } = await fixture();
     let stageCount = 0;
@@ -75,6 +73,57 @@ try {
 
   {
     const { directory, entries } = await fixture();
+    const lockPath = path.join(directory, '.userscript-publication.lock');
+    let heldLock;
+    const io = { ...fs, async open(file, flags) {
+      const handle = await fs.open(file, flags);
+      if (file !== lockPath) return handle;
+      heldLock = handle;
+      return {
+        writeFile:(...args) => handle.writeFile(...args),
+        sync:(...args) => handle.sync(...args),
+        async close() { throw new Error('injected-lock-close-before-release'); },
+      };
+    } };
+    await assert.rejects(publishUserscriptFiles(entries, { io }), /injected-lock-close-before-release/);
+    for (const entry of entries) assert.equal(await fs.readFile(entry.path, 'utf8'), entry.content);
+    assert.ok((await fs.readdir(directory)).includes('.userscript-publication.lock'));
+    await assert.rejects(publishUserscriptFiles(entries), { code:'EEXIST' });
+    await heldLock.close();
+    await fs.unlink(lockPath);
+    for (const name of await fs.readdir(directory)) {
+      if (name.endsWith('.stage') || name.endsWith('.backup')) await fs.unlink(path.join(directory, name));
+    }
+    await cleanDirectory(directory);
+  }
+
+  {
+    const { directory, entries } = await fixture();
+    const lockPath = path.join(directory, '.userscript-publication.lock');
+    const stale = entries.map(entry => ({ ...entry, expected:Buffer.from('not the original') }));
+    const io = { ...fs, async open(file, flags) {
+      const handle = await fs.open(file, flags);
+      if (file !== lockPath) return handle;
+      return {
+        writeFile:(...args) => handle.writeFile(...args),
+        sync:(...args) => handle.sync(...args),
+        async close() { await handle.close(); throw new Error('injected-lock-close-failure'); },
+      };
+    } };
+    await assert.rejects(publishUserscriptFiles(stale, { io }), error => {
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.errors.length, 2);
+      assert.match(String(error.errors[0]), /stale-input/);
+      assert.match(String(error.errors[1]), /lock-close-failure/);
+      return true;
+    });
+    assert.ok((await fs.readdir(directory)).includes('.userscript-publication.lock'));
+    await fs.unlink(lockPath);
+    await originalPair(entries); await cleanDirectory(directory);
+  }
+
+  {
+    const { directory, entries } = await fixture();
     const stale = entries.map(entry => ({ ...entry, expected:Buffer.from('not the original') }));
     await assert.rejects(publishUserscriptFiles(stale), /stale-input/);
     await originalPair(entries); await cleanDirectory(directory);
@@ -94,8 +143,6 @@ try {
     await originalPair(entries); await cleanDirectory(directory);
   }
 
-  // The old builder wrote the serial before the runtime and truncated the
-  // committed loader in Promise.all. Keep publication after all dist writes.
   const build = await fs.readFile(new URL('../scripts/build-userscript.mjs', import.meta.url), 'utf8');
   assert.match(build, /writeFileVerified as writeFile, publishUserscriptFiles/);
   assert.ok(build.indexOf('await publishUserscriptFiles(') > build.indexOf("await writeFile(resolve(dist, 'runtime-manifest.json')"));
