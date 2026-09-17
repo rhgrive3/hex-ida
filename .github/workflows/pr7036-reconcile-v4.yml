@@ -4,7 +4,7 @@ on:
     branches: [sync/pr7036-main-20260918-v4]
 jobs:
   reconcile:
-    if: contains(github.event.head_commit.message, 'validate PR7036 reconciliation v4 with main macho authority')
+    if: contains(github.event.head_commit.message, 'validate PR7036 reconciliation v4 with v2 ambiguity bridge')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -54,9 +54,55 @@ jobs:
                "    const expected = semanticSsaPhiPredecessors(cfg, definition.blockId);")
           p.write_text(s)
           PY
-          git add js/semantics/ssa/build-core.js
+          python3 <<'PY'
+          from pathlib import Path
+
+          p=Path('js/analysis/discovery/artifact.js')
+          s=p.read_text()
+          old="import { canonicalTypedDigest, canonicalTypedString } from './canonical-value.js';"
+          new=old+"\nimport { augmentDiscoveryPayload } from './supplemental-ambiguity.js';"
+          if s.count(old)!=1: raise SystemExit('artifact import cardinality')
+          s=s.replace(old,new)
+          marker="function issueArtifact(payload) {\n  const artifact = deepFreeze({ artifactId: `discovery-artifact:${stableDigest(payload)}`, ...payload });\n  ISSUED_ARTIFACTS.add(artifact);\n  return artifact;\n}\n"
+          addition=marker+"\nexport function augmentDiscoveryArtifact(artifact, image = {}, options = {}) {\n  if (!artifactIdentityValid(artifact)) fail('discovery-artifact-augment-identity-invalid');\n  return issueArtifact(augmentDiscoveryPayload(artifact, image, options));\n}\n"
+          if s.count(marker)!=1: raise SystemExit('artifact issuer cardinality')
+          p.write_text(s.replace(marker,addition))
+
+          p=Path('js/analysis/discovery/producers.js')
+          s=p.read_text()
+          if 'export function isCanonicalDiscoveryProducer' not in s:
+              s += "\n// Object identity, not producer id text, carries canonical discovery authority.\nconst CANONICAL_DISCOVERY_PRODUCERS = new WeakSet(GENERIC_PRODUCERS);\n\nexport function isCanonicalDiscoveryProducer(producer) {\n  return !!producer && CANONICAL_DISCOVERY_PRODUCERS.has(producer);\n}\n"
+          p.write_text(s)
+
+          p=Path('js/analysis/index.js')
+          s=p.read_text()
+          old="import { GENERIC_PRODUCERS } from './discovery/producers.js';"
+          new="import { GENERIC_PRODUCERS, isCanonicalDiscoveryProducer } from './discovery/producers.js';"
+          if s.count(old)!=1: raise SystemExit('index producers import cardinality')
+          s=s.replace(old,new)
+          old="import { createDiscoveryArtifact } from './discovery/artifact.js';"
+          new="import { augmentDiscoveryArtifact, createDiscoveryArtifact } from './discovery/artifact.js';"
+          if s.count(old)!=1: raise SystemExit('index artifact import cardinality')
+          s=s.replace(old,new)
+          old="  const canonicalProducerIds = new Set(GENERIC_PRODUCERS.map((producer) => producer.id));"
+          new="  const applicableProducers = new Map(registry.for(architectureId).map((producer) => [producer.id, producer]));"
+          if s.count(old)!=1: raise SystemExit('index producer authority cardinality')
+          s=s.replace(old,new)
+          old="    authorityClass: canonicalProducerIds.has(id) ? 'canonical' : 'external',"
+          new="    authorityClass: isCanonicalDiscoveryProducer(applicableProducers.get(id)) ? 'canonical' : 'external',"
+          if s.count(old)!=1: raise SystemExit('index authority class cardinality')
+          s=s.replace(old,new)
+          old="  return { ...fused, artifact };\n}"
+          new="  const enrichedArtifact = augmentDiscoveryArtifact(artifact, input?.image ?? {}, { byteIntervals: options.byteIntervals ?? null });\n  return { ...fused, artifact: enrichedArtifact };\n}\n\nexport function functionDiscoveryArtifact(options = {}) {\n  return functionCandidates(options);\n}"
+          if s.count(old)!=1: raise SystemExit(f'index return cardinality {s.count(old)}')
+          p.write_text(s.replace(old,new))
+          PY
+          git add js/semantics/ssa/build-core.js js/analysis/discovery/artifact.js js/analysis/discovery/producers.js js/analysis/index.js js/analysis/discovery/supplemental-ambiguity.js
           test -z "$(git diff --name-only --diff-filter=U)"
           node --check js/semantics/ssa/build-core.js
+          node --check js/analysis/discovery/supplemental-ambiguity.js
+          node --check js/analysis/discovery/artifact.js
+          node --check js/analysis/index.js
           : > /tmp/result.txt
           run_one() {
             name="$1"; shift
