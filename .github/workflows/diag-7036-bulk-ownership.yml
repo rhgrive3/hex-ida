@@ -1,4 +1,4 @@
-name: diag-7036-bulk-ownership
+name: diag-7036-main-merge
 on:
   push:
     branches:
@@ -13,15 +13,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Reconcile missing roadmap ownership and validate
+      - name: Reconcile #7036 with current main
         shell: bash
         run: |
           set +e
           set -uo pipefail
-          STATUS=/tmp/diag-7036-bulk.txt
+          STATUS=/tmp/diag-7036-merge.txt
           : > "$STATUS"
           HEAD_SHA=f8c8e281d940ab9d5f1b20d15398095f64cb50f7
-          LOGICAL_BRANCH=feat/analysis-roadmap-v8-current-main-20260907
           timeout 90s git fetch --no-tags origin main "$HEAD_SHA" >/tmp/fetch.log 2>&1
           rc=$?
           echo "fetch rc=$rc" >> "$STATUS"
@@ -33,97 +32,31 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           BASE_SHA=$(git rev-parse refs/remotes/origin/main)
-          echo "base=$BASE_SHA" >> "$STATUS"
+          echo "main=$BASE_SHA" >> "$STATUS"
           echo "head=$HEAD_SHA" >> "$STATUS"
-
-          git -c core.quotePath=false diff --name-only --diff-filter=ACMR "$BASE_SHA...$HEAD_SHA" > /tmp/changed.txt
-          node - <<'NODE' > /tmp/missing.json
-          const fs = require('node:fs');
-          const manifest = JSON.parse(fs.readFileSync('tools/validation/analysis-roadmap/ownership.json','utf8'));
-          const assigned = new Set(Object.values(manifest.owners).flat());
-          const changed = fs.readFileSync('/tmp/changed.txt','utf8').split(/\r?\n/).filter(Boolean);
-          const missing = changed.filter((f) => !assigned.has(f));
-          process.stdout.write(JSON.stringify(missing));
-          NODE
-          node - <<'NODE' >> "$STATUS"
-          const fs=require('node:fs'); const a=JSON.parse(fs.readFileSync('/tmp/missing.json','utf8'));
-          console.log(`missing_count=${a.length}`); for (const f of a) console.log(`missing=${f}`);
-          NODE
-
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          missing = json.loads(Path('/tmp/missing.json').read_text())
-          if missing:
-              p = Path('tools/validation/analysis-roadmap/ownership.json')
-              s = p.read_text()
-              anchor = '    "integration": [\n'
-              if anchor not in s:
-                  raise SystemExit('ownership.json integration anchor missing')
-              insert = ''.join(f'      {json.dumps(f, ensure_ascii=False)},\n' for f in missing)
-              s = s.replace(anchor, anchor + insert, 1)
-              p.write_text(s)
-
-              p = Path('tools/validation/analysis-roadmap/ownership.mjs')
-              s = p.read_text()
-              anchor = '  integration: [\n'
-              if anchor not in s:
-                  raise SystemExit('ownership.mjs integration anchor missing')
-              insert = ''.join(f'    {json.dumps(f, ensure_ascii=False)},\n' for f in missing)
-              s = s.replace(anchor, anchor + insert, 1)
-              p.write_text(s)
-          PY
+          git merge --no-commit --no-ff refs/remotes/origin/main >/tmp/merge.log 2>&1
           rc=$?
-          echo "patch rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then exit "$rc"; fi
-
-          git diff --check >/tmp/diffcheck.log 2>&1
-          rc=$?; echo "diff_check rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/diffcheck.log >> "$STATUS"; exit "$rc"; fi
-
-          fail_tail() {
-            label="$1"; file="$2"; rc="$3"
-            echo "$label rc=$rc" >> "$STATUS"
-            echo '--- first failure ---' >> "$STATUS"
-            tail -n 80 "$file" >> "$STATUS"
+          echo "merge rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then
+            echo 'conflicts:' >> "$STATUS"
+            git -c core.quotePath=false diff --name-only --diff-filter=U >> "$STATUS"
+            echo "conflict_count=$(git diff --name-only --diff-filter=U | wc -l)" >> "$STATUS"
             exit "$rc"
-          }
-
-          timeout 120s node tools/validation/phase7-ownership.mjs --check-manifest >/tmp/p7m.log 2>&1
-          rc=$?; [ "$rc" -eq 0 ] || fail_tail phase7_manifest /tmp/p7m.log "$rc"
-          echo 'phase7_manifest rc=0' >> "$STATUS"
-          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase7 --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" >/tmp/p7.json 2>/tmp/p7i.log
-          rc=$?; [ "$rc" -eq 0 ] || fail_tail phase7_inventory /tmp/p7i.log "$rc"
-          echo 'phase7_inventory rc=0' >> "$STATUS"
-          P7=$(cat /tmp/p7.json)
-          timeout 120s node tools/validation/phase7-ownership.mjs --files-json "$P7" >/tmp/p7v.log 2>&1
-          rc=$?; [ "$rc" -eq 0 ] || fail_tail phase7_validate /tmp/p7v.log "$rc"
-          echo 'phase7_validate rc=0' >> "$STATUS"
-
-          timeout 120s node tools/validation/phase8-ownership.mjs --check-manifest >/tmp/p8m.log 2>&1
-          rc=$?; [ "$rc" -eq 0 ] || fail_tail phase8_manifest /tmp/p8m.log "$rc"
-          echo 'phase8_manifest rc=0' >> "$STATUS"
-          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase8 --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" >/tmp/p8.json 2>/tmp/p8i.log
-          rc=$?; [ "$rc" -eq 0 ] || fail_tail phase8_inventory /tmp/p8i.log "$rc"
-          echo 'phase8_inventory rc=0' >> "$STATUS"
-          P8=$(cat /tmp/p8.json)
-          timeout 120s node tools/validation/phase8-ownership.mjs --files-json "$P8" >/tmp/p8v.log 2>&1
-          rc=$?; [ "$rc" -eq 0 ] || fail_tail phase8_validate /tmp/p8v.log "$rc"
-          echo 'phase8_validate rc=0' >> "$STATUS"
-
-          git add tools/validation/analysis-roadmap/ownership.json tools/validation/analysis-roadmap/ownership.mjs
-          git commit -m 'fix(analysis): reconcile roadmap ownership inventory' >/tmp/commit.log 2>&1
-          rc=$?; echo "commit rc=$rc" >> "$STATUS"
+          fi
+          git commit -m 'Merge current main into #7036 candidate' >/tmp/commit.log 2>&1
+          rc=$?
+          echo "commit rc=$rc" >> "$STATUS"
           if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/commit.log >> "$STATUS"; exit "$rc"; fi
           CLEAN_HEAD=$(git rev-parse HEAD)
           echo "clean_head=$CLEAN_HEAD" >> "$STATUS"
-          git push --force origin HEAD:refs/heads/fix/7036-ownership-bulk-f8c8 >/tmp/push.log 2>&1
-          rc=$?; echo "push rc=$rc" >> "$STATUS"
+          git push --force origin HEAD:refs/heads/fix/7036-main-reconcile-f8c8 >/tmp/push.log 2>&1
+          rc=$?
+          echo "push rc=$rc" >> "$STATUS"
           if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/push.log >> "$STATUS"; exit "$rc"; fi
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: diag-7036-bulk-ownership
-          path: /tmp/diag-7036-bulk.txt
+          name: diag-7036-main-merge
+          path: /tmp/diag-7036-merge.txt
           retention-days: 1
