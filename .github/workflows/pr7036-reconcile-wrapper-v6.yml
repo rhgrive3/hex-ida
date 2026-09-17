@@ -40,6 +40,10 @@ jobs:
           replacement = "  independentOracle: testOracle,\n  validators: x03ConservativeValidators,\n});"
           assert s.count(needle) >= 4, s.count(needle)
           s = s.replace(needle, replacement, 4)
+          check = "assert.equal(validValidation.status, 'valid');"
+          diagnostic = "if (validValidation.status !== 'valid') console.error('PR7036_X03_VALIDATION', JSON.stringify({ status: validValidation.status, requiredValidators: validValidation.requiredValidators, failures: (validValidation.failures ?? []).map((v) => ({ validator: v.validator, reason: v.reason, executed: v.executed })) }));\n" + check
+          assert s.count(check) == 1, s.count(check)
+          s = s.replace(check, diagnostic)
           p.write_text(s)
           PY
           python3 - <<'PY' > /tmp/pr7036-reconcile.sh
@@ -64,7 +68,7 @@ jobs:
           set -e
           {
             echo "reconcile_rc=$RC"
-            tail -n 30 /tmp/reconcile-trace.txt
+            tail -n 20 /tmp/reconcile-trace.txt
             if [ -f pr7036-reconcile-v3-result.txt ]; then
               echo '--- inner focused result ---'
               tail -n 100 pr7036-reconcile-v3-result.txt
