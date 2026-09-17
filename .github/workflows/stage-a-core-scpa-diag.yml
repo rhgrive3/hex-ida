@@ -1,4 +1,4 @@
-name: Stage A core SCPA diagnostic
+name: Stage A SCPA fix verification
 
 on:
   push:
@@ -7,45 +7,21 @@ on:
 permissions:
   contents: read
 jobs:
-  focused:
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 3d6d2c875182d83461cd0842e8a7786ebce04ac1
+          ref: fix/stage-a-scpa-balanced-native-flow-20260918
           fetch-depth: 1
           persist-credentials: false
-      - run: npm ci --silent --no-audit --no-fund
-      - name: Inspect one SSA bridge
-        shell: bash
-        run: |
-          cat > tests/scpa/.stage-a-bridge-diag.mjs <<'NODE'
-          import { captured, scope } from './native-owner-fixture.mjs';
-          import { ScopedAnalysisWork } from '../../js/core/budgets/scoped-work.js';
-          import { buildCanonicalQueryProjection } from '../../js/analysis/query/semantic/projection.js';
-          const f=scope(), input=captured(0x4000n,[['str','x0, [sp]',0xf90003e0],['ldr','x2, [sp]',0xf94003e2],['ldr','x3, [x2]',0xf9400043],['ret','',0xd65f03c0]]);
-          const work=new ScopedAnalysisWork({limits:{deadlineMs:10000}}); let p;
-          try {
-            p=await buildCanonicalQueryProjection(input.result.pipeline,{...f,snapshotId:'snap',work});
-            const nodes=input.result.pipeline.semanticIr.nodes;
-            const firstLoad=nodes.filter(n=>n.kind==='load')[0];
-            const x2Write=nodes.find(n=>n.kind==='state-write'&&n.variable?.physicalIdentity?.registerId==='x2');
-            const loadRef=p.entityReference('semantic-ir',firstLoad.id), writeRef=p.entityReference('semantic-ir',x2Write.id);
-            const loadOut=p.adjacent(loadRef,'forward').map(id=>p.edge(id)).find(e=>e.kind==='operation-output');
-            const writeIn=p.adjacent(writeRef,'backward').map(id=>p.edge(id)).find(e=>e.kind==='operation-input');
-            const defRef=loadOut?.to, useRef=writeIn?.from;
-            const bridge=p.adjacent(defRef,'forward').map(id=>p.edge(id)).filter(e=>e.kind==='ssa-use-def');
-            const incomingUse=p.adjacent(useRef,'backward').map(id=>p.edge(id)).filter(e=>e.kind==='ssa-use-def');
-            const wantedUse=input.result.pipeline.ssa.uses.find(u=>u.sourceEntityId===x2Write.id&&u.proof?.sourceSemanticValueId===firstLoad.outputs[0]);
-            const wantedLink=input.result.pipeline.ssa.useDefLinks.find(l=>l.useId===wantedUse?.useId);
-            const wantedDef=input.result.pipeline.ssa.definitions.find(d=>d.definitionId===wantedLink?.definitionId);
-            console.log(JSON.stringify({firstLoadId:firstLoad.id,semanticValue:firstLoad.outputs[0],x2WriteId:x2Write.id,loadOut,writeIn,defRecord:p.record(defRef),useRecord:p.record(useRef),bridge,incomingUse,wantedUse,wantedLink,wantedDef},(_k,v)=>typeof v==='bigint'?`0x${v.toString(16)}`:v,2));
-          } finally {p?.release();work.dispose();}
-          NODE
-          node tests/scpa/.stage-a-bridge-diag.mjs > /tmp/bridge.txt 2>&1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/setup-node@v4
         with:
-          name: scpa-bridge
-          path: /tmp/bridge.txt
-          retention-days: 1
+          node-version: '22'
+          cache: npm
+      - run: npm ci --silent --no-audit --no-fund
+      - name: Focused SCPA regression
+        run: node --test tests/scpa/balanced-native-flow.test.mjs
+      - name: Core contract regression
+        run: npm run core:test
