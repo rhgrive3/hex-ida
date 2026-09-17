@@ -32,6 +32,10 @@ export function applyAarch64MappingSymbols(image) {
       markPartial(image, 'aarch64-mapping-symbol-range', `ELF AArch64 mapping symbol ${symbol.name} at 0x${address.toString(16)} is outside section ${section.index}`);
       continue;
     }
+    if (address % 4n !== 0n) {
+      markPartial(image, 'aarch64-mapping-symbol-alignment', `ELF AArch64 mapping symbol ${symbol.name} at 0x${address.toString(16)} is not 4-byte aligned`);
+      continue;
+    }
     mappings.push({ address, sectionIndex:section.index, kind, name:symbol.name, source:symbol.source });
   }
   mappings.sort((left, right) => left.sectionIndex - right.sectionIndex || (left.address < right.address ? -1 : left.address > right.address ? 1 : 0));
