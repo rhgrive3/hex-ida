@@ -36,6 +36,30 @@ for path in [
 ]:
     resolve_conflicts(path, 'theirs')
 
+# Selecting the current-main hunk leaves an older #7036 export group outside the
+# conflict. Remove only those legacy artifact exports from the prefix; retain the
+# current-main v2 export block and the independent layout export.
+p = Path('js/analysis/index.js')
+s = p.read_text()
+marker = "export {\n  discoveryArtifactForRebuild,"
+if s.count(marker) != 1:
+    raise SystemExit(f'current-main discovery export marker count={s.count(marker)}')
+prefix, suffix = s.split(marker, 1)
+for legacy_line in [
+    '  functionDiscoveryArtifact,\n',
+    '  discoveryArtifactForRebuild,\n',
+    '  isFactoryIssuedDiscoveryArtifact,\n',
+    '  isFactoryIssuedDiscoveryRebuildBinding,\n',
+    '  normalizeDiscoveryArtifactBudget,\n',
+    '  verifyDiscoveryReparse,\n',
+]:
+    prefix = prefix.replace(legacy_line, '', 1)
+s = prefix + marker + suffix
+layout_export = "export { queryDiscoveryLayout, restoreDiscoveryBytes, DISCOVERY_LAYOUT_SCHEMA, DISCOVERY_LAYOUT_LIMITS } from './discovery/layout.js';"
+if layout_export not in s:
+    s = s.rstrip() + '\n\n' + layout_export + '\n'
+p.write_text(s)
+
 # Keep both exact branch routing cases; the surrounding non-conflicting current-main
 # additions remain untouched.
 resolve_conflicts('.circleci/config.yml', 'both')
