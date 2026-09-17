@@ -1,4 +1,4 @@
-name: fix-7036-phase8-routing
+name: fix7036-phase8-routing
 on:
   push:
     branches:
@@ -6,113 +6,46 @@ on:
 permissions:
   contents: write
 jobs:
-  fix:
+  repair:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Patch and validate Phase 8 ownership routing
+      - name: Prepare routing patch
         shell: bash
         run: |
-          set +e
-          set -uo pipefail
-          STATUS=/tmp/fix-7036-phase8.txt
-          : > "$STATUS"
-          EXPECTED=4b805874c7f050cb7a2cace172c567e03b941d08
-          TARGET=feat/analysis-roadmap-v8-current-main-20260907
-          timeout 90s git fetch --no-tags origin main "$EXPECTED" >/tmp/fetch.log 2>&1
-          rc=$?
-          echo "fetch rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/fetch.log >> "$STATUS"; exit "$rc"; fi
-          git checkout --detach "$EXPECTED" >/tmp/checkout.log 2>&1
-          rc=$?
-          echo "checkout rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/checkout.log >> "$STATUS"; exit "$rc"; fi
+          set -euo pipefail
+          cp .github/diag/fix-7036-phase8-routing.py /tmp/fix7036.py
+          git fetch --no-tags origin main 4b805874c7f050cb7a2cace172c567e03b941d08
+          git checkout --detach 4b805874c7f050cb7a2cace172c567e03b941d08
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-
-          python3 - <<'PY' >/tmp/patch.log 2>&1
-          from pathlib import Path
-          p = Path('.circleci/config.yml')
-          s = p.read_text()
-          old_detect = '''            if [ "${CIRCLE_BRANCH:-}" = 'feat/analysis-roadmap-v8-current-main-20260907' ] || [ "${CIRCLE_BRANCH:-}" = 'integration-candidate/local-handover-20260914' ] || [ "${CIRCLE_BRANCH:-}" = 'codex/analysis-remaining-20260914' ]; then
-              FILES_JSON="$(node tools/validation/analysis-roadmap/ownership.mjs \\
-                --branch "$CIRCLE_BRANCH" --phase phase8 \\
-                --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA")"
-              node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"
-            elif [ "${CIRCLE_BRANCH:-}" = 'feat/scpa-functional-acceptance-20260912' ]; then
-'''
-          new_detect = '''            if [ "${CIRCLE_BRANCH:-}" = 'feat/analysis-roadmap-v8-current-main-20260907' ] || [ "${CIRCLE_BRANCH:-}" = 'integration-candidate/local-handover-20260914' ] || [ "${CIRCLE_BRANCH:-}" = 'codex/analysis-remaining-20260914' ]; then
-              run_it=true
-            elif [ "${CIRCLE_BRANCH:-}" = 'feat/scpa-functional-acceptance-20260912' ]; then
-'''
-          if old_detect not in s:
-              raise SystemExit('detect routing block not found exactly once')
-          s = s.replace(old_detect, new_detect, 1)
-
-          old_validate = '''            if [ "${CIRCLE_BRANCH:-}" = 'feat/scpa-functional-acceptance-20260912' ]; then
-'''
-          new_validate = '''            if [ "${CIRCLE_BRANCH:-}" = 'feat/analysis-roadmap-v8-current-main-20260907' ] || [ "${CIRCLE_BRANCH:-}" = 'integration-candidate/local-handover-20260914' ] || [ "${CIRCLE_BRANCH:-}" = 'codex/analysis-remaining-20260914' ]; then
-              FILES_JSON="$(node tools/validation/analysis-roadmap/ownership.mjs \\
-                --branch "$CIRCLE_BRANCH" --phase phase8 \\
-                --base-sha "$OWNERSHIP_BASE_SHA" --head-sha "$OWNERSHIP_HEAD_SHA")"
-              node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"
-            elif [ "${CIRCLE_BRANCH:-}" = 'feat/scpa-functional-acceptance-20260912' ]; then
-'''
-          marker = '          name: Validate Phase 8 ownership\n'
-          pos = s.find(marker)
-          if pos < 0:
-              raise SystemExit('validate marker missing')
-          before, tail = s[:pos], s[pos:]
-          if old_validate not in tail:
-              raise SystemExit('validate routing anchor missing')
-          tail = tail.replace(old_validate, new_validate, 1)
-          p.write_text(before + tail)
-          PY
-          rc=$?
-          echo "patch rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/patch.log >> "$STATUS"; exit "$rc"; fi
-
-          git diff --check >/tmp/diffcheck.log 2>&1
-          rc=$?; echo "diff_check rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/diffcheck.log >> "$STATUS"; exit "$rc"; fi
-
-          timeout 120s node tests/ci/circleci-impact.test.mjs >/tmp/impact.log 2>&1
-          rc=$?; echo "circleci_impact rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then tail -n 80 /tmp/impact.log >> "$STATUS"; exit "$rc"; fi
-
-          BASE_SHA=$(git rev-parse refs/remotes/origin/main)
-          timeout 120s node tools/validation/phase8-ownership.mjs --check-manifest >/tmp/p8manifest.log 2>&1
-          rc=$?; echo "phase8_manifest rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then tail -n 80 /tmp/p8manifest.log >> "$STATUS"; exit "$rc"; fi
-          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$TARGET" --phase phase8 --base-sha "$BASE_SHA" --head-sha "$EXPECTED" >/tmp/p8.json 2>/tmp/p8gen.log
-          rc=$?; echo "phase8_inventory rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then tail -n 80 /tmp/p8gen.log >> "$STATUS"; exit "$rc"; fi
-          timeout 120s node tools/validation/phase8-ownership.mjs --files-json "$(cat /tmp/p8.json)" >/tmp/p8validate.log 2>&1
-          rc=$?; echo "phase8_validate rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then tail -n 80 /tmp/p8validate.log >> "$STATUS"; exit "$rc"; fi
-
+          python3 /tmp/fix7036.py
+          git diff --check
           git add .circleci/config.yml
-          git commit -m 'fix(ci): restore Phase 8 roadmap ownership routing' >/tmp/commit.log 2>&1
-          rc=$?; echo "commit rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/commit.log >> "$STATUS"; exit "$rc"; fi
-          CLEAN=$(git rev-parse HEAD)
-          echo "clean_head=$CLEAN" >> "$STATUS"
+          git commit -m 'fix(ci): restore Phase 8 roadmap ownership routing'
+      - name: Validate CircleCI routing contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tests/ci/circleci-impact.test.mjs
+      - name: Validate Phase 8 ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_SHA=$(git rev-parse refs/remotes/origin/main)
+          HEAD_SHA=$(git rev-parse HEAD^)
+          node tools/validation/phase8-ownership.mjs --check-manifest
+          FILES_JSON=$(node tools/validation/analysis-roadmap/ownership.mjs --branch feat/analysis-roadmap-v8-current-main-20260907 --phase phase8 --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA")
+          node tools/validation/phase8-ownership.mjs --files-json "$FILES_JSON"
+      - name: Push clean fix to PR branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET=feat/analysis-roadmap-v8-current-main-20260907
+          EXPECTED=4b805874c7f050cb7a2cace172c567e03b941d08
           REMOTE=$(git ls-remote origin "refs/heads/$TARGET" | awk '{print $1}')
-          echo "remote_head=$REMOTE" >> "$STATUS"
-          if [ "$REMOTE" != "$EXPECTED" ]; then
-            echo 'target advanced; refusing stale push' >> "$STATUS"
-            exit 42
-          fi
-          timeout 90s git push origin "HEAD:$TARGET" >/tmp/push.log 2>&1
-          rc=$?; echo "push rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/push.log >> "$STATUS"; exit "$rc"; fi
-      - name: Upload result
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fix-7036-phase8-routing
-          path: /tmp/fix-7036-phase8.txt
-          retention-days: 1
+          test "$REMOTE" = "$EXPECTED"
+          git push origin "HEAD:$TARGET"
