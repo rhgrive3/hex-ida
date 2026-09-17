@@ -215,10 +215,14 @@ export function validateDescriptorRecord(record, descriptor) {
     mismatches.push('upstreamArtifactIds');
   }
   if (canonicalSerializeArtifactRecord(record.dependencyScope ?? null) !== canonicalSerializeArtifactRecord(descriptor.dependencyScope ?? null)) mismatches.push('dependencyScope');
+  if (canonicalSerializeArtifactRecord(record.originRefs ?? []) !== canonicalSerializeArtifactRecord(descriptor.originRefs ?? [])) mismatches.push('originRefs');
   if (mismatches.length) {
+    const provenanceOnly = mismatches.length === 1 && mismatches[0] === 'originRefs';
     throw new ArtifactCorruptionError(
-      'artifact-record-identity-mismatch',
-      'Artifact record does not match the requested canonical descriptor',
+      provenanceOnly ? 'artifact-record-provenance-mismatch' : 'artifact-record-identity-mismatch',
+      provenanceOnly
+        ? 'Artifact record provenance does not match the requested canonical descriptor'
+        : 'Artifact record does not match the requested canonical descriptor',
       { mismatches },
     );
   }
@@ -282,8 +286,10 @@ export function storageRecordIdentity(record) {
  * refuse to delete it (#6206).
  *
  * `creation` and `originRefs` are deliberately absent: creation metadata is
- * per-run bookkeeping and originRefs is non-key provenance, and both must keep
- * the CAS-duplicate semantics the store contract pins (tests/phase4/store).
+ * per-run bookkeeping and originRefs is non-key provenance. The backend may
+ * therefore identify equal-payload publications as the same CAS row, but the
+ * descriptor validation boundary still rejects an originRefs mismatch before
+ * returning that row to the caller (#5700).
  */
 const PUBLICATION_IDENTITY_KEYS = Object.freeze([
   'recordSchemaVersion',

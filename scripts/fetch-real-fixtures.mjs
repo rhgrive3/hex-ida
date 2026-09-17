@@ -12,7 +12,6 @@ const outputDir = join(root, 'tests/.real-fixtures');
 const args = process.argv.slice(2);
 const checkOnly = args.includes('--check');
 const requested = args.filter((arg) => arg !== '--check');
-const names = requested.length && !requested.includes('all') ? requested : Object.keys(manifest.fixtures);
 
 function fixture(name) {
   const spec = manifest.fixtures[name];
@@ -106,6 +105,10 @@ async function fetchFixture(name, spec) {
 }
 
 try {
+  // Explicit fixture names are always validated, even when `all` is present.
+  // Otherwise `all typo-name` silently widens into a full-fixture operation.
+  for (const name of requested) if (name !== 'all') fixture(name);
+  const names = requested.length && !requested.includes('all') ? requested : Object.keys(manifest.fixtures);
   for (const name of names) await fetchFixture(name, fixture(name));
 } catch (error) {
   console.error(error && error.message ? error.message : String(error));

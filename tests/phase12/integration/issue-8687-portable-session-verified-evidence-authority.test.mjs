@@ -12,6 +12,7 @@ import test from 'node:test';
 
 import { AIRuntime } from '../../../js/ai/runtime.js';
 import { EvidenceStore } from '../../../js/ai/evidence.js';
+import { ProposalStore } from '../../../js/ai/proposals.js';
 import { InvestigationSessionStore, createProjectSessionPersistence } from '../../../js/ai/session-core/index.js';
 import { createHexProject, parseHexProject, serializeHexProject } from '../../../js/project/index.js';
 import { applyWorkspaceProject } from '../../../js/workspace.js';
@@ -37,11 +38,16 @@ function runtimeAuthorityRecords() {
   });
   const proof = ingested.find((item) => item.status === 'verified');
   assert.ok(proof, 'the deterministic ingest path must still produce verified evidence');
-  stores.proposalStore.create({
+  // #8929 binds live AIRuntime proposals to the current analysis revision.
+  // This fixture only needs a structurally genuine persisted proposal row, so
+  // mint it against the verified EvidenceStore without borrowing unrelated
+  // live-context binding authority.
+  const proposalStore = new ProposalStore({ evidenceStore: stores.evidenceStore });
+  proposalStore.create({
     id: 'p-8687', kind: 'comment', target: { address: '0x1000' }, before: '', after: 'pending proposal',
     evidenceIds: [proof.id],
   });
-  const [proposal] = stores.proposalStore.persistedActions();
+  const [proposal] = proposalStore.persistedActions();
   assert.equal(proposal.status, 'pending', 'the fixture must cross a real pending-proposal persistence snapshot');
   return { proof: copy(proof), proposal: copy(proposal) };
 }
@@ -185,13 +191,15 @@ test('#8687 tampering a legitimate portable row from supported to verified fails
   assert.deepEqual(stores.evidenceStore.byStatus('verified'), []);
 });
 
-test('#8687 portable import keeps non-authoritative session data and pending proposals', () => {
+test('#8687 portable import keeps non-authoritative session data without restoring proposal authority', () => {
   const { proof, proposal } = runtimeAuthorityRecords();
   const { published } = importPortableSessions([forgedSession({ proof: copy(proof), proposal })]);
   const [{ session, stores }] = published;
 
-  assert.equal(stores.proposalStore.has(proposal.id), true, 'a pending proposal is not verification authority');
-  assert.equal(stores.proposalStore.get(proposal.id).status, 'pending');
+  // #8889: once portable import downgrades the supporting evidence, the
+  // persisted proposal row remains portable session data but must not be
+  // re-minted as a live mutation authority.
+  assert.equal(stores.proposalStore.has(proposal.id), false);
   assert.equal(session.proposedActions[0].id, proposal.id);
   assert.equal(stores.hypothesisStore.get('evil-hyp').claim, '0x401000 definitely bypasses authentication');
   assert.equal(session.messages[0].content, 'portable transcript line', 'transcript data survives the strip');

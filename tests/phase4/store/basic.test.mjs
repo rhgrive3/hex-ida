@@ -88,7 +88,9 @@ import { DelayedReadBackend, PersistentMemoryBackend, descriptor } from './suppo
   assert.deepEqual(reopened.payload, { reopened:true });
 }
 
-// Non-key provenance cannot become a second ArtifactId implementation.
+// Non-key provenance cannot become a second ArtifactId implementation, but a
+// caller asking for different originRefs must never receive the first writer's
+// provenance as a successful duplicate/hit (#5700).
 {
   const entries = new Map();
   const store = new ArtifactStore({ backend:new PersistentMemoryBackend({ entries }) });
@@ -96,9 +98,16 @@ import { DelayedReadBackend, PersistentMemoryBackend, descriptor } from './suppo
   const b = descriptor('canonical-id', { originRefs:['evidence_b'] });
   assert.equal(a.artifactId, b.artifactId);
   await store.publish(a, { value:'same-cas' });
-  const duplicate = await store.publish(b, { value:'same-cas' });
-  assert.equal(duplicate.duplicate, true);
-  assert.deepEqual(duplicate.record.originRefs, ['evidence_a']);
+  await assert.rejects(
+    () => store.publish(b, { value:'same-cas' }),
+    (error) => error.code === 'artifact-record-provenance-mismatch',
+  );
+  const incompatible = await store.get(b);
+  assert.equal(incompatible.status, 'incompatible');
+  assert.equal(incompatible.reason, 'artifact-record-provenance-mismatch');
+  const original = await store.get(a);
+  assert.equal(original.status, 'hit', 'a provenance mismatch must not delete the healthy first writer');
+  assert.deepEqual(original.record.originRefs, ['evidence_a']);
 }
 
 // Concurrent exact-ID operations cannot tear publication or reintroduce deleted data.

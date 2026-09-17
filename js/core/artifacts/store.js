@@ -26,6 +26,7 @@ const INCOMPATIBLE_CODES = new Set([
   'artifact-semantic-schema-mismatch',
   'artifact-id-mismatch',
   'artifact-record-identity-mismatch',
+  'artifact-record-provenance-mismatch',
   'artifact-storage-envelope-schema-mismatch',
 ]);
 const UPSTREAM_VALID = 'valid';
@@ -469,7 +470,13 @@ export class ArtifactStore {
     if (incompatible) this.metrics.incompatibilities++;
     else this.metrics.corruptions++;
     this.#hotCacheHooks.delete(artifactId);
-    await this.#deleteObservedArtifact(artifactId, record, payloadBytes);
+    // A canonical descriptor can legitimately share an artifactId with a row
+    // whose non-key originRefs differ. That is a request incompatibility, not
+    // proof that the stored row is corrupt; deleting the first writer here
+    // would let a later descriptor erase healthy provenance (#5700).
+    if (error.code !== 'artifact-record-provenance-mismatch') {
+      await this.#deleteObservedArtifact(artifactId, record, payloadBytes);
+    }
     return {
       status:incompatible ? 'incompatible' : 'corrupt',
       source,
