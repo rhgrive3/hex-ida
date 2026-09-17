@@ -1,6 +1,6 @@
 /** Credential-bearing requests are confined to an exact Worker origin. */
 export function createAuthTransport({ apiOrigin, fetchRef = globalThis.fetch?.bind(globalThis), manager = null, token = () => null, web = false, timeoutMs = 12000 } = {}) {
-  const allowed = new Set(['/api/auth/me', '/api/auth/csrf', '/api/auth/dev/authorize', '/api/auth/userscript/start', '/api/auth/userscript/poll', '/api/auth/userscript/complete', '/auth/logout']);
+  const allowed = new Set(['/api/auth/me', '/api/auth/csrf', '/api/auth/ai-capability', '/api/auth/dev/authorize', '/api/auth/userscript/start', '/api/auth/userscript/poll', '/api/auth/userscript/complete', '/auth/logout']);
   const base = new URL(apiOrigin);
   if (base.origin !== apiOrigin || (!['https:'].includes(base.protocol) && !(base.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(base.hostname)))) throw new Error('Invalid HEX auth origin.');
   return async function request(path, { method = 'GET', body, csrf = null, source = false, signal = null } = {}) {

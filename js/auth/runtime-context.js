@@ -1,5 +1,5 @@
 import { ANONYMOUS_IDENTITY } from './capabilities.js';
-const anonymous = Object.freeze({ getIdentity: () => ANONYMOUS_IDENTITY, refresh: async () => ANONYMOUS_IDENTITY, subscribe: () => () => {}, authorize: async () => { throw new Error('Dev authorization denied.'); } });
+const anonymous = Object.freeze({ getIdentity: () => ANONYMOUS_IDENTITY, refresh: async () => ANONYMOUS_IDENTITY, subscribe: () => () => {}, authorize: async () => { throw new Error('Dev authorization denied.'); }, aiCapability: async () => { throw new Error('AI authorization denied.'); } });
 let current = null;
 export function setAuthContext(context) {
   if (current && current !== context) current.close?.();
