@@ -124,7 +124,7 @@ export function isBranch(mn) {
   const b = (mn || '').toLowerCase();
   return BRANCH_IMM.has(b) || /^b\.[a-z]{2}$/.test(b) ||
     b === 'br' || b === 'blr' || b === 'ret' ||
-    /^(braa|brab|braaz|brabz|blraa|blrab|blraaz|blrabz|retaa|retab)$/.test(b);
+    /^(braa|brab|braaz|brabz|blraa|blrab|blraaz|blrabz|retaa|retab|retaasppc|retabsppc|retaasppcr|retabsppcr)$/.test(b);
 }
 
 export function isCall(mn) {
@@ -134,7 +134,7 @@ export function isCall(mn) {
 
 export function isReturn(mn) {
   const b = (mn || '').toLowerCase();
-  return b === 'ret' || b === 'retaa' || b === 'retab';
+  return b === 'ret' || b === 'retaa' || b === 'retab' || b === 'retaasppc' || b === 'retabsppc' || b === 'retaasppcr' || b === 'retabsppcr';
 }
 
 /* ────────────────────────────────────────────────────────────
@@ -151,9 +151,9 @@ cat('cmp cmn tst ccmp ccmn fcmp fcmpe', 'compare');
 cat('csel csinc csinv csneg cset csetm cinc cinv cneg', 'select');
 cat('ldr ldrb ldrh ldrsb ldrsh ldrsw ldur ldurb ldurh ldursb ldursh ldursw ldp ldpsw ldnp ldtr ldtrb ldtrh ldtrsb ldtrsh ldtrsw ldxr ldaxr ldxrb ldxrh ldaxrb ldaxrh ldxp ldaxp ldar ldarb ldarh ld1 ld2 ld3 ld4 prfm', 'load');
 cat('str strb strh stur sturb sturh stp stnp sttr sttrb sttrh stxr stlxr stxrb stxrh stlxrb stlxrh stxp stlxp stlr stlrb stlrh st1 st2 st3 st4', 'store');
-cat('b bl br blr ret cbz cbnz tbz tbnz braa brab braaz brabz blraa blrab blraaz blrabz retaa retab', 'flow');
+cat('b bl br blr ret cbz cbnz tbz tbnz braa brab braaz brabz blraa blrab blraaz blrabz retaa retab retaasppc retabsppc retaasppcr retabsppcr', 'flow');
 cat('adr adrp', 'address');
-cat('nop hint bti svc hvc smc brk hlt dmb dsb isb yield wfe wfi sev sevl mrs msr sys eret eretaa eretab clrex paciasp pacibsp pacia pacib pacda pacdb paciza pacizb pacdza pacdzb paciaz pacibz pacia1716 pacib1716 autiasp autibsp autia autib autda autdb autiza autizb autdza autdzb autiaz autibz autia1716 autib1716 xpaci xpacd xpaclri pacga dc ic tlbi', 'system');
+cat('nop hint bti svc hvc smc brk hlt dmb dsb isb yield wfe wfi sev sevl mrs msr sys eret eretaa eretab clrex paciasp pacibsp paciasppc pacibsppc pacia pacib pacda pacdb paciza pacizb pacdza pacdzb paciaz pacibz pacia1716 pacib1716 autiasp autibsp autia autib autda autdb autiza autizb autdza autdzb autiaz autibz autia1716 autib1716 xpaci xpacd xpaclri pacga dc ic tlbi', 'system');
 cat('fadd fsub fmul fdiv fneg fabs fsqrt fmadd fmsub fnmadd fcvt fcvtzs fcvtzu fcvtas fcvtau fcvtms fcvtmu fcvtns fcvtnu fcvtps fcvtpu scvtf ucvtf frinta frintm frintn frintp frintz fmax fmin fmaxnm fminnm', 'float');
 cat('movi mvni orr_v addv uaddlv tbl tbx zip1 zip2 uzp1 uzp2 trn1 trn2 ext rev64_v cmeq cmgt xtn sqxtn', 'simd');
 cat('casal cas casa casl swp swpa swpl swpal ldadd ldadda ldaddl ldaddal ldset ldclr ldeor', 'atomic');

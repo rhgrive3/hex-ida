@@ -7,15 +7,17 @@ const ARITY = Object.freeze(Object.fromEntries([
   // PACIAZ/PACIBZ/AUTIAZ/AUTIBZ are HINT-space zero-modifier forms with an
   // implicit X30 destination: zero operands is the only legal shape.
   ...['paciaz','pacibz','autiaz','autibz'].map((mnemonic) => [mnemonic, 0]),
-  ...['paciasp','pacibsp','pacia1716','pacib1716','autiasp','autibsp','autia1716','autib1716','xpaclri','retaa','retab','eretaa','eretab'].map((mnemonic) => [mnemonic, 0]),
+  ...['paciasp','pacibsp','pacia1716','pacib1716','autiasp','autibsp','autia1716','autib1716','xpaclri','retaa','retab','eretaa','eretab','paciasppc','pacibsppc'].map((mnemonic) => [mnemonic, 0]),
+  ...['retaasppc','retabsppc','retaasppcr','retabsppcr'].map((mnemonic) => [mnemonic, 1]),
   ['pacga', 3],
 ]));
 
-const CONTROL = new Set(['braa','brab','braaz','brabz','blraa','blrab','blraaz','blrabz','retaa','retab','eretaa','eretab']);
+const CONTROL = new Set(['braa','brab','braaz','brabz','blraa','blrab','blraaz','blrabz','retaa','retab','eretaa','eretab','retaasppc','retabsppc','retaasppcr','retabsppcr']);
 const POINTER_TRANSFORM_TWO = new Set(['pacia','pacib','pacda','pacdb','autia','autib','autda','autdb']);
 const POINTER_TRANSFORM_ONE = new Set(['paciza','pacizb','pacdza','pacdzb','autiza','autizb','autdza','autdzb','xpaci','xpacd']);
 const AUTHENTICATED_BRANCH_TWO = new Set(['braa','brab','blraa','blrab']);
 const AUTHENTICATED_BRANCH_ONE = new Set(['braaz','brabz','blraaz','blrabz']);
+const ENHANCED_RETURN_REGISTER = new Set(['retaasppcr','retabsppcr']);
 
 function mnemonicOf(decoded) {
   const raw = typeof decoded?.mnemonic === 'string' ? decoded.mnemonic : typeof decoded?.opcode === 'string' ? decoded.opcode : null;
@@ -97,6 +99,7 @@ function expectedRegisterClasses(mnemonic) {
   if (POINTER_TRANSFORM_ONE.has(mnemonic)) return ['x-or-zr'];
   if (AUTHENTICATED_BRANCH_TWO.has(mnemonic)) return ['x-or-zr','x-or-sp'];
   if (AUTHENTICATED_BRANCH_ONE.has(mnemonic)) return ['x-or-zr'];
+  if (ENHANCED_RETURN_REGISTER.has(mnemonic)) return ['x-or-zr'];
   if (mnemonic === 'pacga') return ['x-or-zr','x-or-zr','x-or-sp'];
   return [];
 }

@@ -8,7 +8,7 @@ import { ARM64E_PAC_ENCODING_FAMILIES } from '../../tools/validation/machine-eff
 const arities = arm64ePointerAuthenticationOperandArities();
 assert.deepEqual(Object.keys(arities).sort(), [...arm64ePointerAuthenticationMnemonics()].sort(), 'operand-arity registry must cover the production PAuth registry exactly');
 for (const family of ARM64E_PAC_ENCODING_FAMILIES) {
-  assert.equal(arities[family.mnemonic], family.fields.length, `${family.mnemonic}: production operand arity must match the finite encoding denominator`);
+  assert.equal(arities[family.mnemonic], family.fields.length, `${family.mnemonic}: production operand arity must match the finite v1 encoding denominator`);
 }
 
 let sequence = 0;
@@ -30,6 +30,7 @@ function operandNames(mnemonic, count) {
   if (count === 0) return [];
   if (mnemonic === 'pacga') return ['x0','x1','x2'];
   if (/^(?:bra|blra)/.test(mnemonic)) return ['x16','x17'].slice(0, count);
+  if (/^ret(?:aa|ab)sppc$/.test(mnemonic)) return ['0x10000'];
   return ['x0','x1','x2','x3'].slice(0, count);
 }
 
@@ -98,6 +99,8 @@ for (const [mnemonic, operands, operandIndex, expectedClass] of [
   ['blraaz', ['sp'], 0, 'x-or-zr'],
   ['blraa', ['sp','x1'], 0, 'x-or-zr'],
   ['pacga', ['x0','sp','x2'], 1, 'x-or-zr'],
+  ['retaasppcr', ['sp'], 0, 'x-or-zr'],
+  ['retabsppcr', ['sp'], 0, 'x-or-zr'],
   ['pacia', ['x0','xzr'], 1, 'x-or-sp'],
   ['braa', ['x16','xzr'], 1, 'x-or-sp'],
   ['pacga', ['x0','x1','xzr'], 2, 'x-or-sp'],
