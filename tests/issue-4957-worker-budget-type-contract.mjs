@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createFreshSymbol, createConnective } from '../js/symbolic/expr/factory.js';
+import { createBool, createFreshSymbol, createConnective } from '../js/symbolic/expr/factory.js';
 import { boolSort, BOOL_CONNECTIVE_OP } from '../js/symbolic/expr/kinds.js';
 import {
   createVerificationQuery,
@@ -61,6 +61,7 @@ class CapturingWorker {
           data: {
             type: 'solver-result',
             requestId: message.requestId,
+            token: message.token,
             result: createSolverResult({
               status: SOLVER_STATUS.UNSAT,
               backend: 'worker-4957',
@@ -82,6 +83,15 @@ function workerBackend(overrides = {}) {
     version: '1.0.0',
     workerFactory: () => new CapturingWorker(),
     ...overrides,
+  });
+}
+
+function unsatTransportQuery(targetEntity) {
+  return createVerificationQuery({
+    kind: VERIFICATION_QUERY_KIND.CONDITIONAL_EDGE_FEASIBILITY,
+    claimKind: CLAIM_KIND.EDGE_FEASIBLE,
+    targetEntity,
+    assertion: createBool(false),
   });
 }
 
@@ -196,10 +206,14 @@ test('#4957 validated budgets flow through the worker transport without weakenin
   const session = backend.createSession();
   assert.equal(session.options.maxConstraints, 77);
   assert.equal(session.options.maxBvWidth, DEFAULTS.maxBvWidth);
-  const result = await session.check({ queryHash: 'issue-4957-flow' });
+  const submittedQuery = unsatTransportQuery('issue-4957-flow');
+  const result = await session.check(submittedQuery);
   assert.equal(result.status, SOLVER_STATUS.UNSAT);
   assert.equal(result.lifecycle.publishable, true);
-  const sent = worker.messages.find((message) => message.type === 'solver-check').options;
+  assert.equal(result.queryHash, submittedQuery.queryHash);
+  const sentMessage = worker.messages.find((message) => message.type === 'solver-check');
+  assert.equal(sentMessage.query.queryHash, submittedQuery.queryHash);
+  const sent = sentMessage.options;
   assert.equal(sent.maxConstraints, 77);
   assert.equal(sent.maxExprNodes, 250);
   assert.equal(sent.maxBvWidth, DEFAULTS.maxBvWidth);

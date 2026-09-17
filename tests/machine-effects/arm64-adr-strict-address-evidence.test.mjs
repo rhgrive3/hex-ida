@@ -53,6 +53,8 @@ for (const [label, invalid] of [
   ['boolean target', true],
   ['object target', { value: 4096 }],
   ['malformed text target', '4096xyz'],
+  ['target below sign-extension domain', -(1n << 63n) - 1n],
+  ['target above unsigned address domain', 1n << 64n],
 ]) {
   assertClosed(liftArm64MachineEffects(adr('adr', invalid)), `ADR ${label}`);
   assertClosed(liftArm64MachineEffects(adr('adrp', invalid)), `ADRP ${label}`);
@@ -64,12 +66,22 @@ for (const [label, invalid] of [
 assertExact(liftArm64MachineEffects(adr('adr', 4096n, 0n, otherNumeric('#0x1000'))), 'ADR numeric other operand');
 assertClosed(liftArm64MachineEffects(adr('adr', [4096], 0n, otherNumeric('symbolic'))), 'ADR symbolic operand + array target');
 
+// An explicit valid target cannot erase contradictory numeric operand evidence.
+// Preserve the distinction between symbolic text and an out-of-domain number.
+for (const mnemonic of ['adr', 'adrp']) {
+  const decoded = adr(mnemonic, 4096n, 0n, otherNumeric(`#${(1n << 64n) + 4096n}`));
+  assertClosed(liftArm64MachineEffects(decoded), `${mnemonic} oversized numeric operand`);
+  assertClosed(liftArm64IntegerEffects(decoded), `${mnemonic} oversized numeric operand (integer family)`);
+}
+
 // Structured address evidence feeds the encoding-range authority and must obey
 // the same contract.
 for (const [label, address] of [
   ['array address', [0]],
   ['boolean address', true],
   ['object address', {}],
+  ['negative instruction address', -1n],
+  ['instruction address above 64-bit domain', 1n << 64n],
 ]) {
   assertClosed(liftArm64MachineEffects(adr('adr', 4096n, address)), `ADR ${label}`);
   assertClosed(liftArm64IntegerEffects(adr('adr', 4096n, address)), `ADR ${label} (integer family)`);

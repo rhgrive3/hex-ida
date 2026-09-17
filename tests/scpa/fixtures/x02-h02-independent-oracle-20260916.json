@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "hex-x02-h02-independent-oracle-evidence/v1",
+  "source": {
+    "workflowRunId": 35124413027,
+    "artifactId": 10458469080,
+    "artifactDigest": "sha256:3c1c46de539fce1640e26a254d281f63caac787c25d69bf34d30a15dfcd33c20",
+    "githubSha": "f165b0097f9f5bd859187332b7aae93d7b81a200"
+  },
+  "frozenMatrix": {
+    "sha256": "c95ea2ba89d072fe9110565072462d5efca496b72a66ff365d8b8d15a95274ad",
+    "rowId": "X02-H-02",
+    "historicalDisposition": "environment-excluded"
+  },
+  "oracle": {
+    "identity": "external:llvm-readobj",
+    "executable": "/usr/lib/llvm-18/bin/llvm-readobj",
+    "executableSha256": "8ed942a8c33f191480253ff7f236b7e49966c7441d12063d49dce9743aba9a6d",
+    "version": "Ubuntu LLVM version 18.1.3 Optimized build.",
+    "requiredVersion": "Ubuntu LLVM version 18.1.3"
+  },
+  "input": {
+    "path": "tests/phase12/rebuild/fixtures/vertical-macho-x86_64.o",
+    "sha256": "d4325809424c713392e932ca04a4f543ba420f40c61569500db6c767568f759d"
+  },
+  "result": {
+    "classification": "pass",
+    "observedStatus": "independent-reparse",
+    "format": "macho",
+    "architecture": "x86_64",
+    "rawFormat": "Mach-O 64-bit x86-64",
+    "rawArchitecture": "x86_64",
+    "sourceDigest": "bytes:f5f109d6678eaeb97b74914a99b7498e",
+    "outputDigest": "bytes:2e076c009a2fbc0fa20e137b6697be9c",
+    "oracleOutputDigest": "sha256:224c43f6affeb20d7c5e3d345b6fcc37443fcab663a14f34f2d0b3ee36f95365",
+    "independentOraclePassed": true,
+    "prior120": {
+      "tests": 120,
+      "pass": 120,
+      "fail": 0
+    }
+  }
+}

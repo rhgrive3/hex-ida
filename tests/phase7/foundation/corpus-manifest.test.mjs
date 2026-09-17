@@ -9,7 +9,7 @@ import {
   buildCorpusManifest,
   mandatoryArchitectureLanes,
 } from '../../../tools/validation/phase7/corpus-manifest.mjs';
-import { ALIAS_QUERIES, FIXTURE_IDS, MEMORY_LINK_QUERIES, buildFixture } from '../corpus/fixtures.mjs';
+import { ALIAS_QUERIES, ALIAS_QUERIES_V2, FIXTURE_IDS, MEMORY_LINK_QUERIES, buildFixture } from '../corpus/fixtures.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const FROZEN = path.join(ROOT, 'tests/phase7/corpus/manifest.json');
@@ -67,4 +67,12 @@ test('the manifest declares no silent exclusions', () => {
 test('the manifest covers every fixture in the corpus', () => {
   const manifest = buildCorpusManifest();
   assert.deepEqual([...manifest.fixtureIds].sort(), [...FIXTURE_IDS].sort());
+});
+
+test('frozen v2 manifest binds all 30 questions and the explicit truth erratum', () => {
+  const frozen = JSON.parse(fs.readFileSync(FROZEN, 'utf8'));
+  assert.deepEqual(frozen.aliasQueriesV2, ALIAS_QUERIES_V2);
+  assert.equal(frozen.aliasQueriesV2.length, 30);
+  assert.equal(frozen.corpusVersion, 2);
+  assert.equal(frozen.aliasTruthErratum.invalidatesPreviousEvidence, true);
 });

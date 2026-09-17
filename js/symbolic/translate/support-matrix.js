@@ -6,6 +6,9 @@
  * partial, and unsupported boundaries.
  */
 
+export { COMPLETENESS_STATUS, createCompleteness } from './completeness.js';
+
+import { scalarOperationSupported, scalarBitfieldSupported } from './scalar.js';
 import { OP, MK } from '../../ir-base.js';
 import {
   canonicalMemoryForwardingContextForLoad,
@@ -24,12 +27,6 @@ export const ASSUMPTION_TRUST = Object.freeze({
   USER_PRECONDITION: 'user-precondition',
   QUERY_SCOPE: 'query-scope',
   BOUNDED_UNROLL: 'bounded-unroll',
-});
-
-export const COMPLETENESS_STATUS = Object.freeze({
-  COMPLETE: 'complete',
-  PARTIAL: 'partial',
-  UNSUPPORTED: 'unsupported',
 });
 
 function requireAssumptionString(value, field) {
@@ -64,22 +61,6 @@ export function createAssumption({ id, kind, statement, source, originIds = [], 
   });
 }
 
-export function createCompleteness({
-  translation = COMPLETENESS_STATUS.COMPLETE,
-  controlFlow = COMPLETENESS_STATUS.COMPLETE,
-  memoryEffects = COMPLETENESS_STATUS.COMPLETE,
-  pathCoverage = COMPLETENESS_STATUS.COMPLETE,
-  queryScope = COMPLETENESS_STATUS.COMPLETE,
-} = {}) {
-  return Object.freeze({
-    translation,
-    controlFlow,
-    memoryEffects,
-    pathCoverage,
-    queryScope,
-  });
-}
-
 export function classifyOpSupport(op, inst = null) {
   if (!op) return TRANSLATION_STATUS.UNSUPPORTED;
 
@@ -89,29 +70,11 @@ export function classifyOpSupport(op, inst = null) {
     case OP.ADDR:
       return TRANSLATION_STATUS.EXACT;
 
-    case OP.BIN: {
-      const sub = inst?.sub || inst?.subOp || inst?.name;
-      const supportedBin = ['add', 'sub', 'mul', 'and', 'or', 'orr', 'xor', 'eor', 'shl', 'lshr', 'ashr', 'udiv', 'sdiv', 'urem', 'srem'];
-      /* #5202: a missing subOp/name is a semantic discriminator the source IR
-         never supplied. Defaulting it to ADD would invent exact semantics, so
-         a BIN instruction without one is unsupported. */
-      if (!sub) return TRANSLATION_STATUS.UNSUPPORTED;
-      if (supportedBin.includes(sub)) {
-        return TRANSLATION_STATUS.EXACT;
-      }
-      return TRANSLATION_STATUS.UNSUPPORTED;
-    }
-
-    case OP.UN: {
-      const sub = inst?.sub || inst?.subOp || inst?.name;
-      const supportedUn = ['not', 'neg'];
-      /* #5202: missing unary discriminator must not default to NOT. */
-      if (!sub) return TRANSLATION_STATUS.UNSUPPORTED;
-      if (supportedUn.includes(sub)) {
-        return TRANSLATION_STATUS.EXACT;
-      }
-      return TRANSLATION_STATUS.UNSUPPORTED;
-    }
+    case OP.BIN:
+    case OP.UN:
+      // This public classifier receives the opcode separately; callers need
+      // not repeat it inside the optional instruction descriptor (#5202).
+      return scalarOperationSupported(inst, op) ? TRANSLATION_STATUS.EXACT : TRANSLATION_STATUS.UNSUPPORTED;
 
     case OP.CMP:
       /* #5202: a comparison without cond/subOp has no ordering or equality
@@ -127,7 +90,7 @@ export function classifyOpSupport(op, inst = null) {
 
     case OP.BFX:
     case OP.BFI:
-      return TRANSLATION_STATUS.UNSUPPORTED;
+      return inst?.op===op && scalarBitfieldSupported(inst) ? TRANSLATION_STATUS.EXACT : TRANSLATION_STATUS.UNSUPPORTED;
 
     case OP.LOAD: {
       if (!inst?.loc) return TRANSLATION_STATUS.UNSUPPORTED;

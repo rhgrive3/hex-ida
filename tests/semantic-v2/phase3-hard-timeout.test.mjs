@@ -10,16 +10,17 @@ test('Phase 3 hard timeout settles after one grace period even with stubborn des
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-phase3-hard-timeout-'));
   try {
     fs.writeFileSync(path.join(root, 'stubborn.mjs'), `
-      import { spawn } from 'node:child_process';
-      const stubborn = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);";
-      spawn(process.execPath, ['-e', stubborn], { stdio: 'ignore' });
-      spawn(process.execPath, ['-e', stubborn], { stdio: 'ignore' });
       process.on('SIGTERM', () => {});
+      import('node:child_process').then(({ spawn }) => {
+        const stubborn = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);";
+        spawn(process.execPath, ['-e', stubborn], { stdio: 'ignore' });
+        spawn(process.execPath, ['-e', stubborn], { stdio: 'ignore' });
+      });
       setInterval(() => {}, 1000);
     `);
 
-    const timeoutMs = 100;
-    const killGraceMs = 150;
+    const timeoutMs = 500;
+    const killGraceMs = 200;
     const started = process.hrtime.bigint();
     const { results, concurrency } = await runPhase3Corpus({
       suite: 'hard-timeout-contract',

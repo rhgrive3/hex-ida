@@ -1,7 +1,36 @@
 import { ByteView } from './reader.js';
 
+const DYLD_SHARED_CACHE_ARCH_BITS = new Map([
+  ['i386', 32], ['x86_64', 64], ['x86_64h', 64],
+  ['armv7', 32], ['armv7s', 32], ['armv7k', 32],
+  ['arm64', 64], ['arm64e', 64], ['arm64_32', 32],
+]);
+
+export function decodeDyldSharedCacheMagic(input) {
+  let bytes;
+  try { bytes = input instanceof Uint8Array ? input : new Uint8Array(input.buffer || input, input.byteOffset || 0, input.byteLength); }
+  catch { return null; }
+  if (bytes.byteLength < 16) return null;
+  let raw = '';
+  for (let i = 0; i < 16; i++) {
+    const c = bytes[i];
+    if (c === 0) break;
+    if (c < 0x20 || c > 0x7e) return null;
+    raw += String.fromCharCode(c);
+  }
+  const match = /^dyld_v(\d+)\s+([A-Za-z0-9_]+)\s*$/.exec(raw);
+  if (!match) return null;
+  const version = Number(match[1]);
+  const arch = match[2];
+  const bits = DYLD_SHARED_CACHE_ARCH_BITS.get(arch);
+  if (!Number.isSafeInteger(version) || version < 0 || bits == null) return null;
+  return { format: 'dyld-shared-cache', arch, version, bits };
+}
+
 export function detectBinary(input, options = {}) {
   const r = new ByteView(input, { littleEndian: true });
+  const sharedCache = decodeDyldSharedCacheMagic(input);
+  if (sharedCache) return { format: sharedCache.format, arch: sharedCache.arch, version: sharedCache.version };
   if (r.length >= 4) {
     const b0 = r.u8(0), b1 = r.u8(1), b2 = r.u8(2), b3 = r.u8(3);
     if (b0 === 0x7f && b1 === 0x45 && b2 === 0x4c && b3 === 0x46) return { format: 'elf' };

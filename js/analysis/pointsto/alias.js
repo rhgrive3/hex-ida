@@ -24,21 +24,13 @@ function widthBytes(widthBits) {
   return BigInt(Math.ceil(bits / 8));
 }
 
-/**
- * The absolute byte interval a target provably occupies.
- *
- * The address-space modulus is a *pointer-width* fact and may only come from the
- * target's own proven `widthBits`. The alias query's `widthBitsLeft/Right` are
- * memory-access widths: using them to fill in a missing pointer width restores
- * address-space provenance that was never proven and mints a strong
- * `disjoint-global-interval` `NoAlias` from it (#8721, and the #4515 regression
- * this re-broke). An unproven width fails closed to `provenance-lost`.
- */
 function absoluteInterval(target, accessWidth) {
   const range = target?.offsetRange;
   if (target?.address == null || range?.min == null || range?.max == null) {
     return { interval: null, reason: null };
   }
+  // Access width describes the loaded/stored value, not the address domain.
+  // Missing pointer-width evidence cannot be reconstructed from it (#4515).
   const pointerWidth = target.widthBits;
   if (typeof pointerWidth !== 'number'
       || !Number.isSafeInteger(pointerWidth) || pointerWidth <= 0 || pointerWidth > 512) {

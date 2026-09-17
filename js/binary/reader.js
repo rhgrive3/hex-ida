@@ -165,16 +165,46 @@ export class ByteView {
       const span = this.bytes.subarray(startNumber, endNumber);
       const nul = span.indexOf(0);
       raw = nul < 0 ? span : span.subarray(0, nul);
+    } else if (typeof this.bytes.cachedSpan === 'function') {
+      // Sparse buffers can expose already-cached contiguous bytes directly.
+      // Scan those chunks in bulk, but preserve the historical one-byte cache
+      // miss so cstring CPU batching never widens deterministic source I/O.
+      const pieces = [];
+      let total = 0;
+      let p = start;
+      while (p < end) {
+        const span = this.bytes.cachedSpan(exposedOffset(p), exposedOffset(end));
+        if (!span?.byteLength) {
+          const one = this.bytes.subarray(exposedOffset(p), exposedOffset(p + 1n));
+          const nul = one.indexOf(0);
+          if (nul >= 0) break;
+          if (!one.byteLength) break;
+          pieces.push(one);
+          total += one.byteLength;
+          p += BigInt(one.byteLength);
+          continue;
+        }
+        const nul = span.indexOf(0);
+        const take = nul < 0 ? span.byteLength : nul;
+        if (take) {
+          pieces.push(span.subarray(0, take));
+          total += take;
+          p += BigInt(take);
+        }
+        if (nul >= 0) break;
+      }
+      if (!pieces.length) raw = new Uint8Array();
+      else if (pieces.length === 1) raw = pieces[0];
+      else {
+        raw = new Uint8Array(total);
+        let at = 0;
+        for (const piece of pieces) { raw.set(piece, at); at += piece.byteLength; }
+      }
     } else {
-      // A sparse backing must scan in bounded blocks. Calling u8() one byte
-      // at a time turns every uncached character into a separate source read.
-      // Scan strictly forward from the string start: rounding the cursor back
-      // to a read-ahead boundary would demand bytes before the string and
-      // fabricate budget failures for fully cached inputs (#8870).
+      // Generic sparse-like backings still get bounded bulk scans.
       const blockSize = Number.isSafeInteger(this.bytes.readAheadSize) && this.bytes.readAheadSize > 0
         ? this.bytes.readAheadSize
         : 64 * 1024;
-      const blockSizeBig = BigInt(blockSize);
       let p = start;
       raw = this.bytes.subarray(o, o);
       while (p < end) {
@@ -185,9 +215,9 @@ export class ByteView {
         } catch (error) {
           if (error?.code !== 'BINARY_SOURCE_RANGE_MISSING') throw error;
           const missing = typeof error.offset === 'bigint' ? error.offset : BigInt(error.offset ?? p);
-          if (missing > start) {
+          if (missing > p) {
             const cached = this.bytes.subarray(exposedOffset(p), exposedOffset(missing));
-            const cachedNul = cached.indexOf(0, Number(start - p));
+            const cachedNul = cached.indexOf(0);
             if (cachedNul >= 0) {
               raw = this.bytes.subarray(o, exposedOffset(p + BigInt(cachedNul)));
               break;
@@ -195,7 +225,7 @@ export class ByteView {
           }
           throw error;
         }
-        const nul = span.indexOf(0, Number(start - p));
+        const nul = span.indexOf(0);
         if (nul >= 0) {
           raw = this.bytes.subarray(o, exposedOffset(p + BigInt(nul)));
           break;

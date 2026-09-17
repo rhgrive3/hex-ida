@@ -5,7 +5,13 @@ import { createSemanticIrFunction } from '../../../js/semantics/ir/index.js';
 import { createSemanticCfg } from '../../../js/semantics/cfg/index.js';
 import { buildSemanticSsa } from '../../../js/semantics/ssa/index.js';
 import { buildMemorySsa, MEMORY_SSA_BUILD_VERSION } from '../../../js/semantics/memoryssa/index.js';
-import { classifySemanticMemoryRegion } from '../../../js/analysis/alias/regions-v2.js';
+import {
+  canonicalMemoryPointerRegionEvidence,
+  classifySemanticMemoryRegion,
+  deriveMemoryRegion,
+  genuineRenamedDefinitionRow,
+  genuineRenamedUseRow,
+} from '../../../js/analysis/alias/regions-v2.js';
 import { stableDigest } from '../../../js/core/identity/index.js';
 
 // The pointer-reload recovery trusts scalar SSA rename links to connect a
@@ -60,26 +66,44 @@ function buildIr({ withUnknownCall = true } = {}) {
     blocks: [{ id: BLOCK_ID, nodeIds: nodes.map((node) => node.id), origin: origin(BLOCK_ID) }],
     values,
     nodes,
-    // #8809 sync: #5239 turns a function-level missing state effect into a
-    // conservative clobber in SSA, so the SP-rooted precondition below needs a
-    // variant without the unresolved-call state unknown.
     completeness: withUnknownCall ? 'partial' : 'complete',
-    ...(withUnknownCall ? { unknowns: [{ reason: 'unresolved-call', categories: ['state'] }] } : {}),
+    ...(withUnknownCall ? { unknowns: [{ reason: 'unresolved-call', categories: ['state'], detail: { nodeId: 'node_call_unknown' } }] } : {}),
     origin: origin('function'),
   });
 }
 
-function buildContext({ withUnknownCall = true } = {}) {
-  const ir = buildIr({ withUnknownCall });
+function connectedReloadIr({ targetOffset = '32' } = {}) {
+  const raw = structuredClone(buildIr({ withUnknownCall: true }));
+  const callIndex = raw.nodes.findIndex((node) => node.id === 'node_call_unknown');
+  assert.notEqual(callIndex, -1);
+  raw.nodes[callIndex] = {
+    id: 'node_r0_write', kind: 'state-write', blockId: BLOCK_ID,
+    inputs: ['loaded'], outputs: [],
+    variable: { key: 'state:r0', kind: 'physical-state', scope: 'function' },
+    origin: origin('node_r0_write'),
+  };
+  raw.blocks[0].nodeIds = raw.blocks[0].nodeIds.map((id) => id === 'node_call_unknown' ? 'node_r0_write' : id);
+  raw.completeness = 'complete';
+  raw.unknowns = [];
+  const targetNode = raw.nodes.find((node) => node.id === 'node_target_offset');
+  const targetValue = raw.values.find((value) => value.id === 'target_offset');
+  targetNode.attributes.constant.value = targetOffset;
+  targetValue.metadata.constant.value = targetOffset;
+  return createSemanticIrFunction(raw);
+}
+
+function buildContext(target = buildIr(), options = {}) {
+  const ir = target && target.nodes ? target : buildIr(target);
   const cfg = createSemanticCfg({ functionId: FUNCTION_ID, entryBlockId: BLOCK_ID, blocks: [{ id: BLOCK_ID, successors: [] }] });
-  const ssa = buildSemanticSsa(ir, cfg);
+  const snapshotId = options.snapshotId ?? 'snapshot-4777';
+  const ssa = options.ssa ?? buildSemanticSsa(ir, cfg, { snapshotId });
   const semanticIrDigest = stableDigest(ir);
   const scalarSsaDigest = stableDigest(ssa);
   const identity = {
     binaryId: 'binary_4777',
     sliceId: 'slice_4777',
     functionId: FUNCTION_ID,
-    snapshotId: 'snapshot-4777',
+    snapshotId,
     semanticIrId: `ir-${semanticIrDigest}`,
     semanticIrContractVersion: ir.contractVersion,
     semanticIrDigest,
@@ -94,7 +118,7 @@ function buildContext({ withUnknownCall = true } = {}) {
     resolveRegion: (memory, context) => classifySemanticMemoryRegion(ir, context.node, { binaryId: 'binary_4777', ssa }),
     queryAlias: () => ({ relation: 'must', reasonCodes: [], evidenceIds: [] }),
     identity,
-    snapshotId: 'snapshot-4777',
+    snapshotId,
     canonicalIrIdentity: { functionId: FUNCTION_ID, semanticIrId: identity.semanticIrId, semanticIrContractVersion: ir.contractVersion, semanticIrDigest },
   });
   return { ir, ssa, memorySsa };
@@ -120,6 +144,40 @@ function forgedScalarSsa() {
   };
 }
 
+function metadataCompleteForgedScalarSsa() {
+  const variableIdentity = { key: 'state:r0', kind: 'physical-state', scope: 'function' };
+  const valueId = 'ssa-forged';
+  return {
+    uses: [{
+      useId: 'ssa_use_forged',
+      sourceEntityId: 'node_r0',
+      valueId,
+      blockId: BLOCK_ID,
+      proof: {
+        kind: 'renamed-use',
+        sourceSemanticValueId: 'r0',
+        sourceSemanticEntityId: 'node_r0',
+        variableIdentity,
+        transform: { ruleId: 'rename-use', proofKind: 'dominance-renaming' },
+      },
+    }],
+    definitions: [{
+      definitionId: `ssa_def_${stableDigest({ functionId: FUNCTION_ID, valueId })}`,
+      valueId,
+      blockId: BLOCK_ID,
+      sourceEntityId: 'node_load',
+      variableKey: 'state:r0',
+      proof: {
+        kind: 'renamed-definition',
+        sourceSemanticValueId: 'loaded',
+        sourceSemanticEntityId: 'node_load',
+        variableIdentity,
+        transform: { ruleId: 'rename-definition', proofKind: 'dominance-renaming' },
+      },
+    }],
+  };
+}
+
 function regionFor(ir, ssa, memorySsa) {
   return classifySemanticMemoryRegion(ir, 'node_store2', {
     binaryId: 'binary_4777',
@@ -139,6 +197,13 @@ test('a forged scalar rename row cannot mint a precise reload region (#4777)', (
     'forged rename rows must not mint a precise region for the unrelated access');
 });
 
+test('metadata-complete forged scalar rows cannot mint reload authority (#4777)', () => {
+  const { ir, memorySsa } = buildContext();
+  const forgedRegion = regionFor(ir, metadataCompleteForgedScalarSsa(), memorySsa);
+  assert.equal(forgedRegion?.kind, 'unknown',
+    'builder-shaped public metadata must not substitute for canonical scalar-SSA producer authority');
+});
+
 test('a genuine scalar chain still refines reload regions (#4777)', () => {
   // #8809 sync: canonical fixture without the function-level state unknown so
   // the exact SP root precondition is meaningful; #5239's conservative
@@ -150,5 +215,175 @@ test('a genuine scalar chain still refines reload regions (#4777)', () => {
   });
   assert.ok(slotRegion, 'the slot store must classify');
   assert.equal(slotRegion?.kind, 'rooted-offset',
-    'the genuine sp-relative slot access must keep a precise rooted region');
+    `the genuine sp-relative slot access must keep a precise rooted region: ${JSON.stringify(slotRegion)}`);
+});
+
+test('canonical scalar SSA remains required for a genuine pointer reload (#4777)', () => {
+  const ir = connectedReloadIr();
+  const { ssa, memorySsa } = buildContext(ir);
+  const region = regionFor(ir, ssa, memorySsa);
+  assert.equal(region?.kind, 'rooted-offset');
+  assert.equal(region?.offset, '32');
+});
+
+test('canonical scalar SSA is bound to the exact Semantic IR content (#4777)', () => {
+  const originalIr = connectedReloadIr({ targetOffset: '32' });
+  const stale = buildContext(originalIr);
+  const currentIr = connectedReloadIr({ targetOffset: '48' });
+  const current = buildContext(currentIr);
+
+  assert.equal(stableDigest(stale.ssa), stableDigest(current.ssa),
+    'the scalar rows intentionally stay byte-identical so the IR binding is what rejects staleness');
+  assert.equal(regionFor(currentIr, current.ssa, current.memorySsa)?.kind, 'rooted-offset');
+  assert.equal(regionFor(currentIr, stale.ssa, current.memorySsa)?.kind, 'unknown',
+    'SSA built from a different Semantic IR snapshot must not authorize reload refinement');
+});
+
+test('deriveMemoryRegion directly rejects metadata-complete forged scalar rows (#4777)', () => {
+  const { ir, memorySsa } = buildContext();
+  const targetNode = ir.nodes.find((node) => node.id === 'node_store2');
+  const forgedRegion = deriveMemoryRegion({
+    functionId: ir.functionId,
+    binaryId: 'binary_4777',
+    memory: targetNode.memory,
+    origin: targetNode.origin,
+    sourceEntityId: targetNode.id,
+    addressValueId: targetNode.memory.addressValueId,
+  }, null, {
+    binaryId: 'binary_4777',
+    canonicalMemorySsa: memorySsa,
+    ssa: metadataCompleteForgedScalarSsa(),
+  });
+  assert.equal(forgedRegion?.kind, 'unknown',
+    'deriveMemoryRegion must reject forged scalar rows directly without depending on wrapper options');
+});
+
+test('genuineRenamedUseRow and genuineRenamedDefinitionRow directly reject forged rows (#4777)', () => {
+  const { ir, ssa } = buildContext();
+  const forged = metadataCompleteForgedScalarSsa();
+  const addressRead = ir.nodes.find((n) => n.id === 'node_r0');
+  const blockIdByNode = new Map(ir.blocks.flatMap((b) => b.nodeIds.map((id) => [id, b.id])));
+  const nodesById = new Map(ir.nodes.map((n) => [n.id, n]));
+  const validBinding = { functionId: ir.functionId, semanticIrDigest: stableDigest(ir), snapshotId: 'snapshot-4777' };
+
+  assert.equal(
+    genuineRenamedUseRow(ir, forged.uses[0], addressRead, 'r0', blockIdByNode, { ssa, binding: validBinding }),
+    false,
+    'genuineRenamedUseRow must reject unbranded forged use row',
+  );
+
+  assert.equal(
+    genuineRenamedDefinitionRow(ir, forged.definitions[0], forged.uses[0], addressRead, 'loaded', nodesById, { ssa, binding: validBinding }),
+    false,
+    'genuineRenamedDefinitionRow must reject unbranded forged definition row',
+  );
+
+  // Missing ssa or binding
+  assert.equal(genuineRenamedUseRow(ir, forged.uses[0], addressRead, 'r0', blockIdByNode), false);
+  assert.equal(genuineRenamedDefinitionRow(ir, forged.definitions[0], forged.uses[0], addressRead, 'loaded', nodesById), false);
+});
+
+test('genuineRenamedUseRow and genuineRenamedDefinitionRow accept genuine rows and reject mismatched bindings (#4777)', () => {
+  const ir = connectedReloadIr();
+  const { ssa } = buildContext(ir);
+  const addressRead = ir.nodes.find((n) => n.id === 'node_r0');
+  const blockIdByNode = new Map(ir.blocks.flatMap((b) => b.nodeIds.map((id) => [id, b.id])));
+  const nodesById = new Map(ir.nodes.map((n) => [n.id, n]));
+  const genuineUse = ssa.uses.find((u) => u.sourceEntityId === 'node_r0');
+  const genuineDef = ssa.definitions.find((d) => d.variableKey === 'state:r0');
+  const validBinding = { functionId: ir.functionId, semanticIrDigest: stableDigest(ir), snapshotId: 'snapshot-4777' };
+
+  assert.ok(genuineUse, 'genuine use must exist');
+  assert.ok(genuineDef, 'genuine definition must exist');
+
+  // Genuine passes with valid binding
+  assert.equal(
+    genuineRenamedUseRow(ir, genuineUse, addressRead, 'r0', blockIdByNode, { ssa, binding: validBinding }),
+    true,
+    'genuineRenamedUseRow must accept genuine row with matching binding',
+  );
+  assert.equal(
+    genuineRenamedDefinitionRow(ir, genuineDef, genuineUse, addressRead, genuineDef.proof.sourceSemanticValueId, nodesById, { ssa, binding: validBinding }),
+    true,
+    'genuineRenamedDefinitionRow must accept genuine row with matching binding',
+  );
+
+  // Mismatched snapshotId
+  assert.equal(
+    genuineRenamedUseRow(ir, genuineUse, addressRead, 'r0', blockIdByNode, {
+      ssa, binding: { ...validBinding, snapshotId: 'mismatched-snapshot' },
+    }),
+    false,
+    'genuineRenamedUseRow must reject mismatched snapshotId',
+  );
+  assert.equal(
+    genuineRenamedDefinitionRow(ir, genuineDef, genuineUse, addressRead, genuineDef.proof.sourceSemanticValueId, nodesById, {
+      ssa, binding: { ...validBinding, snapshotId: 'mismatched-snapshot' },
+    }),
+    false,
+    'genuineRenamedDefinitionRow must reject mismatched snapshotId',
+  );
+
+  // Mismatched functionId
+  assert.equal(
+    genuineRenamedUseRow(ir, genuineUse, addressRead, 'r0', blockIdByNode, {
+      ssa, binding: { ...validBinding, functionId: 'other-function' },
+    }),
+    false,
+    'genuineRenamedUseRow must reject mismatched functionId',
+  );
+
+  // Mismatched semanticIrDigest
+  assert.equal(
+    genuineRenamedUseRow(ir, genuineUse, addressRead, 'r0', blockIdByNode, {
+      ssa, binding: { ...validBinding, semanticIrDigest: 'digest-mismatch' },
+    }),
+    false,
+    'genuineRenamedUseRow must reject mismatched semanticIrDigest',
+  );
+});
+
+test('canonicalMemoryPointerRegionEvidence rejects forged rows and mismatched snapshot bindings (#4777)', () => {
+  const { ir, ssa, memorySsa } = buildContext();
+  const targetNode = ir.nodes.find((n) => n.id === 'node_store2');
+
+  const forgedEvidence = canonicalMemoryPointerRegionEvidence(ir, targetNode, {
+    canonicalMemorySsa: memorySsa,
+    ssa: metadataCompleteForgedScalarSsa(),
+  });
+  assert.equal(forgedEvidence, null, 'forged scalar rows must yield null region evidence');
+
+  // Mismatched snapshot binding
+  const mismatchedMemorySsa = {
+    ...memorySsa,
+    snapshotId: 'other-snapshot',
+    identity: { ...memorySsa.identity, snapshotId: 'other-snapshot' },
+  };
+  const mismatchedEvidence = canonicalMemoryPointerRegionEvidence(ir, targetNode, {
+    canonicalMemorySsa: mismatchedMemorySsa,
+    ssa,
+  });
+  assert.equal(mismatchedEvidence, null, 'mismatched snapshot must reject');
+});
+
+test('pointer reload is rejected when scalar SSA has a different snapshot binding (#4777)', () => {
+  const ir = connectedReloadIr();
+  const context = buildContext(ir);
+  const cfg = createSemanticCfg({ functionId: FUNCTION_ID, entryBlockId: BLOCK_ID, blocks: [{ id: BLOCK_ID, successors: [] }] });
+  const differentSnapshotSsa = buildSemanticSsa(ir, cfg, { snapshotId: 'different-snapshot' });
+  const region = regionFor(ir, differentSnapshotSsa, context.memorySsa);
+  assert.equal(region?.kind, 'unknown',
+    'scalar SSA from a different snapshot must not authorize pointer reload refinement');
+});
+
+test('pointer reload is rejected when scalar SSA has a different function binding (#4777)', () => {
+  const ir = connectedReloadIr();
+  const context = buildContext(ir);
+  const otherFunctionId = 'function_4777_other';
+  const otherIr = { ...ir, functionId: otherFunctionId };
+  const cfg = createSemanticCfg({ functionId: otherFunctionId, entryBlockId: BLOCK_ID, blocks: [{ id: BLOCK_ID, successors: [] }] });
+  const differentFunctionSsa = buildSemanticSsa(otherIr, cfg, { snapshotId: 'snapshot-4777' });
+  const region = regionFor(ir, differentFunctionSsa, context.memorySsa);
+  assert.equal(region?.kind, 'unknown',
+    'scalar SSA from a different function must not authorize pointer reload refinement');
 });

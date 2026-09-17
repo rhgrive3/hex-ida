@@ -1,0 +1,73 @@
+{
+  "schema": "hex-x02-b06-runtime-dyld-evidence-snapshot/v1",
+  "capturedAt": "2026-09-16T16:55:19Z",
+  "source": {
+    "workflowRunId": 35124890143,
+    "headSha": "6a9277931c423a7a3cc1a7e0749c3dae313222ed",
+    "artifactId": 10459365113,
+    "artifactName": "x02-real-apple-acceptance-6a9277931c423a7a3cc1a7e0749c3dae313222ed",
+    "artifactDigest": "sha256:60b5053acac0ae56ffc645165759fdadfab476c5795d7431eb8851dc629b4713"
+  },
+  "collectorSchema": "hex-x02-apple-runtime-evidence/v1",
+  "appleEnvironment": {
+    "osProductVersion": "15.7.9",
+    "osBuildVersion": "24G830",
+    "machine": "arm64",
+    "xcodeVersion": "Xcode 16.4\nBuild version 16F6",
+    "clangVersion": "Apple clang version 17.0.0 (clang-1700.0.13.5)\nTarget: arm64-apple-darwin24.6.0\nThread model: posix\nInstalledDir: /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin",
+    "pointerAuthenticationFeature": "1"
+  },
+  "realDyldCache": {
+    "path": "/System/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e",
+    "size": 2712977408,
+    "sha256": "c88d3a9885614d4ee8be36f0e9a50ee09e640311ca0ea843bc67613933e00184",
+    "cacheUuid": "0517ae4831dc30868d85545fef4d70b7",
+    "sharedRegionStart": "0x180000000",
+    "sharedRegionSize": "0x12c684000",
+    "slideMappingIndex": 1,
+    "slideInfoVersion": 5,
+    "pageSize": 16384,
+    "selectedPages": [0, 677, 1314, 1955],
+    "sampledRebaseCount": 6077,
+    "authenticatedRebaseCount": 0,
+    "allSampleTargetsInDeclaredSharedRegion": true,
+    "boundedSample": true,
+    "exhaustiveCacheWalk": false,
+    "runtimeLoadMapObserved": true,
+    "runtimeSlideObserved": true,
+    "runtimeCacheUuid": "0517ae4831dc30868d85545fef4d70b7",
+    "runtimeCacheStart": "0x1980d8000",
+    "runtimeCacheSize": "0x12c684000",
+    "runtimeSlide": "0x180d8000",
+    "runtimeImageCount": 44,
+    "runtimeCacheImageCount": 43,
+    "runtimeSampleImages": [
+      {"header":"0x1a67b2000","slide":"0x180d8000","path":"/usr/lib/libSystem.B.dylib"},
+      {"header":"0x1a67ac000","slide":"0x180d8000","path":"/usr/lib/system/libcache.dylib"},
+      {"header":"0x1a6767000","slide":"0x180d8000","path":"/usr/lib/system/libcommonCrypto.dylib"},
+      {"header":"0x1a6792000","slide":"0x180d8000","path":"/usr/lib/system/libcompiler_rt.dylib"},
+      {"header":"0x1a6787000","slide":"0x180d8000","path":"/usr/lib/system/libcopyfile.dylib"},
+      {"header":"0x1982ab000","slide":"0x180d8000","path":"/usr/lib/system/libcorecrypto.dylib"},
+      {"header":"0x198392000","slide":"0x180d8000","path":"/usr/lib/system/libdispatch.dylib"},
+      {"header":"0x198552000","slide":"0x180d8000","path":"/usr/lib/system/libdyld.dylib"},
+      {"header":"0x1a67a2000","slide":"0x180d8000","path":"/usr/lib/system/libkeymgr.dylib"},
+      {"header":"0x1a674a000","slide":"0x180d8000","path":"/usr/lib/system/libmacho.dylib"},
+      {"header":"0x1a5b77000","slide":"0x180d8000","path":"/usr/lib/system/libquarantine.dylib"},
+      {"header":"0x1a679f000","slide":"0x180d8000","path":"/usr/lib/system/libremovefile.dylib"},
+      {"header":"0x19e549000","slide":"0x180d8000","path":"/usr/lib/system/libsystem_asl.dylib"},
+      {"header":"0x198240000","slide":"0x180d8000","path":"/usr/lib/system/libsystem_blocks.dylib"},
+      {"header":"0x1983dc000","slide":"0x180d8000","path":"/usr/lib/system/libsystem_c.dylib"},
+      {"header":"0x1a6796000","slide":"0x180d8000","path":"/usr/lib/system/libsystem_collections.dylib"}
+    ],
+    "runtimeImagesAllUseObservedSlide": true,
+    "runtimeDecodedRebaseCount": 6077,
+    "runtimeAddressDerivationVerified": true,
+    "allRuntimeSampleTargetsInRuntimeSharedRegion": true
+  },
+  "currentAcceptance": {
+    "X02-B-06": {
+      "classification": "pass",
+      "reason": "The pinned real dyld v5 cache UUID matches the observed process shared-cache UUID; the OS-derived runtime cache range and slide are captured; loaded cache images agree on that slide; and the production v5 decoder reproduces all 6,077 bounded sampled rebases at the derived runtime addresses inside the observed runtime shared-cache range."
+    }
+  }
+}

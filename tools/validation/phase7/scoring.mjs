@@ -14,7 +14,7 @@ import { reachingMemoryDefinition } from '../../../js/semantics/memoryssa/querie
 export const SCORING_ID = 'phase7.scoring';
 export const SCORING_VERSION = '1.0.0';
 export const TRUTH_GENERATOR_ID = 'phase7.corpus.declared-truth';
-export const TRUTH_GENERATOR_VERSION = '1.0.0';
+export const TRUTH_GENERATOR_VERSION = '2.0.0';
 
 /**
  * Scores one alias answerer against the frozen query set.
@@ -192,7 +192,7 @@ export function scoreAliasQueriesV2(answer, { queries = ALIAS_QUERIES_V2 } = {})
     scoringId: 'phase7.scoring.v2',
     scoringVersion: '2.0.0',
     truthGeneratorId: 'phase7.corpus.declared-truth.v2',
-    truthGeneratorVersion: '2.0.0',
+    truthGeneratorVersion: '3.0.0', // Corpus v2: incoming-frame truth erratum
     queryCount,
     exactAvailable,
     exactClaimed,

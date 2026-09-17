@@ -273,10 +273,11 @@ test('#4062 pin cache releases prior snapshots while preserving entries within t
   const app = basicApp(7);
   const service = new InvestigationService(app);
   let snapshotId = 'snapshot-A';
+  const strings = []; // Stable coverage identity within each snapshot (#5284).
   service.prepareGoal = async (goal) => ({
     snapshot:{ snapshotId },
     snapshotId,
-    strings:[],
+    strings,
     program:null,
     shapes:null,
     symbols:null,

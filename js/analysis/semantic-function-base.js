@@ -9,6 +9,7 @@ import {
 } from '../targets/abi/evidence.js';
 import { buildSemanticV2CompatibilityPipeline } from '../semantics/compat/index.js';
 import { decompileSemantic } from '../decompiler/semantic.js';
+import { enhanceSemanticDecompilation } from '../decompiler/pipeline.js';
 
 /**
  * Architecture-neutral function-level semantic analysis driver.
@@ -588,13 +589,10 @@ export function semanticAbiAdapter(abiPlugin, options = {}, internalOptions = {}
       }) === true;
     } catch { return false; }
   })();
-  const appleArm64ePlatforms = new Set([
-    'apple', 'darwin', 'macos', 'macosx', 'ios', 'ios-simulator', 'ipados',
-    'tvos', 'watchos', 'visionos',
-  ]);
+  // Share the registry's platform-qualified arm64e mapping, including its
+  // supported simulator profiles; a second platform list drifts independently.
   const arm64eProfileMatches = targetArchitectureText !== 'arm64e'
-    || (pluginId === 'darwin-arm64' && platformId != null
-      && appleArm64ePlatforms.has(String(platformId).trim().toLowerCase()));
+    || resolveABIPlugin({ architecture:targetArchitectureText, platform:platformId }) === plugin;
   const supported = !!plugin && registryRegistered && !!registryDigest
     && plugin.supported !== false && pluginId !== 'unknown'
     && !!semanticVersion && !!semanticIdentity && !!architectureId
@@ -1283,7 +1281,9 @@ function pipelineSnapshot(pipeline) {
   };
 }
 
-function decompilerSnapshot(result) {
+// Public presentation data only: never publish the private IR/context or its
+// executable observers through the structured-clone query boundary.
+export function decompilerSnapshot(result) {
   return {
     semantic:result.semantic === true,
     signature:result.signature,
@@ -1294,8 +1294,14 @@ function decompilerSnapshot(result) {
     warnings:result.warnings,
     labels:[...(result.labels || [])],
     coverage:result.coverage,
+    ...(result.renderProvenance ? { renderProvenance:result.renderProvenance } : {}),
     unknownInstructions:result.ctx?.unknownInstructions ?? 0,
   };
+}
+
+export function decompileSemanticProjection(model, options = {}) {
+  const result = decompileSemantic(model, options);
+  return result ? enhanceSemanticDecompilation(result, model, { ...options, renderProvenance:options.renderProvenance ?? true }) : result;
 }
 
 function addressWidthBitsFor(architecturePlugin) {
@@ -1349,9 +1355,10 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
     blocks,
     completeness: controlUnknowns.length ? 'partial' : 'complete',
     unknowns: controlUnknowns,
+    functionPrototype:input.functionPrototype ?? null,
     abiAdapter,
     machineEffectsContext:semanticMachineEffectsContext(input, endianness),
-  }, { signal:options.signal, abiAdapter });
+  }, { signal:options.signal, snapshotId:input.snapshotId ?? options.snapshotId, abiAdapter });
   abortIfRequested(options.signal);
   const decodedByInstructionId = new Map(pipeline.machineEffects.map((bundle, index) => [bundle.instructionId, orderedInstructions[index]]));
   const legacyRows = new Map();
@@ -1381,7 +1388,7 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
     }),
     switches:[],
   };
-  const decompiler = decompileSemantic(model, {
+  const decompiler = decompileSemanticProjection(model, {
     ir:pipeline.legacyV1,
     abiAdapter,
     decoderSemanticVersion,
@@ -1390,6 +1397,7 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
     addr:addressOf(orderedInstructions[0]),
     name:model.name,
     functionPrototype:input.functionPrototype ?? null,
+    shouldAbort:() => options.signal?.aborted === true,
   });
   if (!decompiler) throw new Error('semantic-function-shared-decompiler-produced-no-result');
   return Object.freeze({

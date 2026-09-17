@@ -21,6 +21,7 @@ import { buildSemanticSsa } from '../../../js/semantics/ssa/build.js';
 // changed with the summary. FM-15 dependency completeness violation.
 
 const base = (overrides = {}) => ({
+  budgetClass: 'interactive',
   kind: 'phase7.pointsto.local',
   binaryId: 'binary_1',
   functionId: 'function_caller',

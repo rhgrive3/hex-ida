@@ -7,13 +7,14 @@ import {
   createArchitecturalEvidenceFromArtifactRecord,
 } from '../../tools/validation/machine-effects/oracle-evidence-v2.mjs';
 import { validateFormalEvidenceArtifacts } from '../../tools/validation/machine-effects/generate-formal-evidence.mjs';
+import { assessProductionFormalEvidence } from '../../tools/validation/machine-effects/production-subject.mjs';
 
 const manifest = validateFormalEvidenceArtifacts(JSON.parse(fs.readFileSync(
   new URL('../../tools/validation/machine-effects/generated/formal-evidence-artifacts.json', import.meta.url),
   'utf8',
 )));
 
-test('pinned Isla and Sail artifacts authorize only their declared observables', () => {
+test('pinned Isla and Sail artifact contracts authorize only their declared observables', () => {
   assert.equal(manifest.identities.qemuAarch64.role, 'independent-concrete-execution');
   assert.equal(manifest.identities.qemuRiscv64.role, 'independent-concrete-execution');
   const records = manifest.records.filter((record) => record.kind === 'instruction-footprint');
@@ -25,6 +26,14 @@ test('pinned Isla and Sail artifacts authorize only their declared observables',
     assert.equal(result.exactAuthorized, true, record.id);
     assert.match(record.artifact.toolOutput, /QEMU-(AARCH64|RISCV64) exit-status:8/, record.id);
   }
+});
+
+test('pinned Sail trace agrees with the current production RV64 subject', () => {
+  const record = manifest.records.find(item => item.id === 'riscv64-rv64imc-add-concrete-trace');
+  const result = assessProductionFormalEvidence(record);
+  assert.equal(result.assessment.status, 'exact/equivalent', result.assessment.reason);
+  assert.equal(result.assessment.exactAuthorized, true);
+  assert.equal(result.observation.instructionCount, 3);
 });
 
 test('pinned herd artifacts classify five orderings without widening their litmus universe', () => {

@@ -137,7 +137,6 @@ const NO_DEST_MNEMONICS = new Set([
   'prfm', 'msr', 'drps', 'eret', 'eretaa', 'eretab',
   'rmif', 'setf8', 'setf16',
 ]);
-const ATOMIC_READ_WRITE_DEST_RE = /^cas(?:al|a|l)?(?:b|h)?$/;
 const EXCLUSIVE_STORE_RE = /^st(?:l)?x(?:r[bh]?|p)$/;
 const ATOMIC_PAIR_READ_WRITE_DEST_RE = /^casp(?:al|a|l)?$/;
 const OPAQUE_JUMP_RE = /^(?:br|braa|brab|braaz|brabz)$/;
@@ -177,7 +176,7 @@ function destIndex(mn) {
 
 function destinationIsRead(mn, index) {
   const b = mn.toLowerCase();
-  if (ATOMIC_READ_WRITE_DEST_RE.test(b)) return index === 0;
+  if (arm64ReadsDestination(b)) return index === 0;
   if (ATOMIC_PAIR_READ_WRITE_DEST_RE.test(b)) return index === 0 || index === 1;
   return index === 0 && arm64ReadsDestination(mn);
 }

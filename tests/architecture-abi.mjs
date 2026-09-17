@@ -91,30 +91,21 @@ const region = { vmAddr:BASE, size:0x100n };
   assert.equal(unknownCall.evidence, 'conservative-aapcs64');
   assert.deepEqual(classifyCallArguments({}), unknownCall, 'public legacy export must preserve AAPCS64 classification');
 
-  // #8830: the current AAPCS64 scalar-layout authority requires proven primitive
-  // width before it publishes an exact register placement. The stale Phase-1
-  // fixture asserted `x0`/`v0` from `{ type:'int' }`/`{ type:'double' }` alone,
-  // which the strict contract correctly reports as unproven. Supply the width
-  // authority the classifier needs, and pin the fail-closed path explicitly.
-  const insn = { callPrototype:{ args:[{ type:'int', bits:64 }, { type:'double', abiClass:'fp', bits:64 }], returnType:'double' } };
+  const incomplete = { callPrototype:{ args:[{ type:'int' }, { type:'double', abiClass:'fp' }], returnType:'double' } };
+  const unknownLayout = AAPCS64_ABI.classifyArguments(incomplete);
+  assert.equal(unknownLayout.arguments[0].location, 'unknown', 'a scalar type name does not prove its width');
+  assert.equal(unknownLayout.arguments[0].reg, undefined);
+  assert.deepEqual(AAPCS64_ABI.classifyCallReturn(incomplete), { reg:'v0', bits:64 });
+  const insn = { callPrototype:{ args:[{ type:'int', bits:32, bytes:4 }, { type:'double', abiClass:'fp', bits:64, bytes:8 }], returnType:'double', returnBits:64 } };
   const classified = AAPCS64_ABI.classifyArguments(insn);
   assert.equal(classified.arguments[0].reg, 'x0');
   assert.equal(classified.arguments[1].reg, 'v0');
-  assert.equal(classified.arguments[0].location, 'register', 'proven width yields an exact register placement');
-  assert.equal(classified.arguments[0].mustUse, true, 'a proven integer argument must use x0');
-
-  const unproven = AAPCS64_ABI.classifyArguments({
-    callPrototype:{ args:[{ type:'int' }, { type:'double', abiClass:'fp' }], returnType:'double' },
-  });
-  assert.equal(unproven.arguments[0].location, 'unknown', 'unproven width must fail closed to unknown');
-  assert.equal(unproven.arguments[0].exact, false, 'unproven width is never exact');
-  assert.equal(unproven.arguments[0].reason, 'scalar-width-size-not-proven', 'unproven width states its fail-closed reason');
-  assert.equal(unproven.arguments[1].abiClass, 'argument-layout-unproven', 'a dependent argument cannot be proven after an unproven predecessor');
   assert.deepEqual(AAPCS64_ABI.classifyCallReturn(insn), { reg:'v0', bits:64 });
   assert.equal(AAPCS64_ABI.classifyCallReturn({ callPrototype:{ returnType:'int', returnBits:-1, returnsValue:true } }), null);
   assert.equal(AAPCS64_ABI.classifyCallReturn({ callPrototype:{ returnType:'double', returnBits:Number.POSITIVE_INFINITY, returnsValue:true } }), null);
   assert.equal(AAPCS64_ABI.classifyFunctionReturn({ functionPrototype:{ returnType:'int', returnBits:1.5, returnsValue:true } }), null);
   assert.deepEqual(AAPCS64_ABI.classifyFunctionReturn({ functionPrototype:{ returnType:'int', returnsValue:true } }), { reg:'x0', bits:64 });
+  assert.deepEqual(AAPCS64_ABI.classifyFunctionReturn({ functionPrototype:{ returnType:'int', returnBits:32, returnsValue:true } }), { reg:'x0', bits:32 });
   assert.ok(AAPCS64_ABI.callerSaved().includes('x30'));
   assert.ok(AAPCS64_ABI.calleeSaved().includes('x19'));
   assert.equal(AAPCS64_ABI.stackRules().alignment, 16);

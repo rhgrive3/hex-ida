@@ -21,13 +21,56 @@
 
 import { stableDigest } from '../../core/identity/index.js';
 
-import { ANALYSIS_KEYS, PHASE8_CONTRACT_VERSION, snapshotCanonicalPassResult } from './contract.js';
+import { ANALYSIS_KEYS, PHASE8_CONTRACT_VERSION, snapshotCanonicalPassResult, createPassResult } from './contract.js';
+import { rewritePolicyFailure } from './rewrite-registry.js';
+// DCE registers after module initialization, avoiding a transaction/DCE import
+// cycle while preserving the exact descriptor and runner identities.
+let canonicalDceRunner = null;
+let canonicalDceDescriptor = null;
+export function registerDcePassRunner(runner, descriptor) {
+  if (typeof runner !== 'function' || descriptor?.id !== 'phase8.dce') {
+    throw new TypeError('phase8-dce-runner-invalid');
+  }
+  if (canonicalDceRunner != null && (canonicalDceRunner !== runner || canonicalDceDescriptor !== descriptor)) {
+    throw new TypeError('phase8-dce-runner-already-registered');
+  }
+  canonicalDceRunner = runner;
+  canonicalDceDescriptor = descriptor;
+}
+
+// The proof producer binds its private capabilities after this dependency-free
+// transaction module has initialized. Keeping this API injectable avoids a
+// module-evaluation cycle through the public transaction facade while leaving
+// one canonical state/commit engine and one proof authority.
+let phase8ProofApi = null;
+let phase8RegionProofApi = null;
+export function configurePhase8RegionProofApi(api) {
+  if (!api || typeof api !== 'object' || typeof api.REGION_ERASURE_PASS !== 'object'
+    || typeof api.regionAdmissionReason !== 'function' || typeof api.regionPublicationResult !== 'function') {
+    fail('phase8-region-proof-api-invalid');
+  }
+  if (phase8RegionProofApi) fail('phase8-region-proof-api-already-configured');
+  phase8RegionProofApi = Object.freeze({ ...api });
+}
+export function configurePhase8ProofApi(api) {
+  if (!api || typeof api !== 'object') fail('phase8-proof-api-required');
+  const required = ['PROOF_REWRITE_PASS', 'proofAdmissionReason', 'proofPublicationResult',
+    'attachValidatedRewriteMetadata', 'recomputeEquivalenceProofId', 'validatedRewriteMetadataFor',
+    'hasCanonicalEquivalenceAuthority'];
+  if (required.some((key) => typeof api[key] !== (key === 'PROOF_REWRITE_PASS' ? 'object' : 'function'))) {
+    fail('phase8-proof-api-invalid');
+  }
+  phase8ProofApi = Object.freeze({ ...api });
+}
 
 function fail(code) { throw new TypeError(code); }
 
 const ANALYSIS_SET = new Set(ANALYSIS_KEYS);
 const ANALYSIS_MUTATORS = new WeakMap();
 const ANALYSIS_LINEAGE = new WeakMap();
+const COMMITTED_PROOF_OVERLAYS = new WeakMap();
+const COMMITTED_REGION_OVERLAYS = new WeakMap();
+const COMMITTED_DCE_ARTIFACTS = new WeakMap();
 
 
 /**
@@ -98,6 +141,11 @@ export function forkAnalysisState(source) {
   const initial = {};
   for (const key of ANALYSIS_KEYS) if (versions[key] > 0) initial[key] = source.get(key);
   const working = createAnalysisState(initial, versions);
+  if (COMMITTED_PROOF_OVERLAYS.has(source)) {
+    COMMITTED_PROOF_OVERLAYS.set(working, COMMITTED_PROOF_OVERLAYS.get(source));
+  }
+  if (COMMITTED_DCE_ARTIFACTS.has(source)) COMMITTED_DCE_ARTIFACTS.set(working, COMMITTED_DCE_ARTIFACTS.get(source));
+  if (COMMITTED_REGION_OVERLAYS.has(source)) COMMITTED_REGION_OVERLAYS.set(working, COMMITTED_REGION_OVERLAYS.get(source));
   ANALYSIS_LINEAGE.set(working, Object.freeze({
     source,
     before: Object.freeze(Object.fromEntries(ANALYSIS_KEYS.map((key) => [key, versions[key]]))),
@@ -132,7 +180,35 @@ export function commitAnalysisState(target, working, before) {
       else targetMutators.write(key, last ? finalValue : null);
     }
   }
+  if (COMMITTED_PROOF_OVERLAYS.has(working)
+    && working.get('provedRewrites') === COMMITTED_PROOF_OVERLAYS.get(working)) {
+    COMMITTED_PROOF_OVERLAYS.set(target, COMMITTED_PROOF_OVERLAYS.get(working));
+  } else {
+    COMMITTED_PROOF_OVERLAYS.delete(target);
+  }
+  if (COMMITTED_DCE_ARTIFACTS.has(working) && working.get('deadCode') === COMMITTED_DCE_ARTIFACTS.get(working)) {
+    COMMITTED_DCE_ARTIFACTS.set(target, COMMITTED_DCE_ARTIFACTS.get(working));
+  } else COMMITTED_DCE_ARTIFACTS.delete(target);
+  if (COMMITTED_REGION_OVERLAYS.has(working) && working.get('provedRegions') === COMMITTED_REGION_OVERLAYS.get(working)) {
+    COMMITTED_REGION_OVERLAYS.set(target, COMMITTED_REGION_OVERLAYS.get(working));
+  } else COMMITTED_REGION_OVERLAYS.delete(target);
   return true;
+}
+
+/** Read-only proof authority for projection consumers. */
+export function committedProofOverlay(state) {
+  const overlay = COMMITTED_PROOF_OVERLAYS.get(state);
+  return overlay && ANALYSIS_MUTATORS.has(state) && state.get('provedRewrites') === overlay ? overlay : null;
+}
+
+export function committedRegionOverlay(state) {
+  const overlay = COMMITTED_REGION_OVERLAYS.get(state);
+  return overlay && ANALYSIS_MUTATORS.has(state) && state.get('provedRegions') === overlay ? overlay : null;
+}
+
+export function committedDceArtifact(state) {
+  const facts = COMMITTED_DCE_ARTIFACTS.get(state);
+  return facts && ANALYSIS_MUTATORS.has(state) && state.get('deadCode') === facts ? facts : null;
 }
 
 /**
@@ -155,6 +231,9 @@ function createStagingArea(descriptor) {
         staged.set(key, value);
       },
       staged: () => Object.freeze([...staged.keys()].sort()),
+      // Read-only view for the proof transaction adapter. Values are detached
+      // from the staging map so admission cannot mutate the commit surface.
+      stagedEntries: () => Object.freeze([...staged.entries()]),
     },
     take: () => staged,
   };
@@ -189,7 +268,7 @@ export function invalidationFor(descriptor, { changed }) {
  * `committed` is false nothing was written and no version moved: the state is
  * exactly what it was before the call.
  */
-export function runPassTransaction(state, pass, context = {}, budget = {}) {
+function runPassTransactionCore(state, pass, context = {}, budget = {}) {
   const descriptor = pass.descriptor;
   if (!descriptor || descriptor.contractVersion !== PHASE8_CONTRACT_VERSION) fail('phase8-transaction-descriptor-required');
 
@@ -224,24 +303,39 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
     return Object.freeze({ committed: false, result: null, invalidated: Object.freeze([]), staged: Object.freeze([]), stopReason: 'cancelled-mid-pass' });
   }
 
-  // Validate untrusted pass output before any later contract check can
-  // dereference it. This must remain before descriptor-identity validation.
-  const ownedResult = ownedPassResult(result, descriptor);
-  if (ownedResult == null) {
-    return Object.freeze({
-      committed: false, result: null, invalidated: Object.freeze([]), staged: Object.freeze([]),
-      stopReason: `malformed-result:${descriptor.id}`,
-    });
-  }
-  // From here onward every contract check and publication uses the same owned,
-  // immutable data snapshot. Caller-owned getters/proxies cannot validate one
-  // value and later substitute another at the commit boundary.
-  result = ownedResult;
-
+  const rawResult = result;
   const stagedWrites = take();
   const refuse = (stopReason) => Object.freeze({
     committed: false, result: null, invalidated: Object.freeze([]), staged: Object.freeze([]), stopReason,
   });
+
+  // Proof capabilities are object-identity authority and cannot survive a data
+  // snapshot. Validate them while private, then snapshot only a bounded audit
+  // projection for the public ledger. Other pass results stay on the generic
+  // untrusted PassResult snapshot path.
+  const proofPass = phase8ProofApi?.PROOF_REWRITE_PASS;
+  const regionPass = phase8RegionProofApi?.REGION_ERASURE_PASS;
+  if (descriptor === regionPass) {
+    const failure = phase8RegionProofApi.regionAdmissionReason(rawResult, stagedWrites, descriptor, context);
+    if (failure) return refuse(failure);
+    result = phase8RegionProofApi.regionPublicationResult(rawResult);
+    if (result == null) return refuse('region-proof-publication-invalid');
+  } else if (stagedWrites.has('provedRegions')) return refuse('region-proof-pass-mismatch');
+  if (descriptor === proofPass) {
+    const proofFailure = phase8ProofApi.proofAdmissionReason(rawResult, stagedWrites, descriptor, context);
+    if (proofFailure) return refuse(proofFailure);
+    result = phase8ProofApi.proofPublicationResult(rawResult);
+    if (result == null) return refuse('proof-publication-invalid');
+  }
+
+  // Validate untrusted pass output before any later contract check can
+  // dereference it. This must remain before descriptor-identity validation.
+  const ownedResult = ownedPassResult(result, descriptor);
+  if (ownedResult == null) return refuse(`malformed-result:${descriptor.id}`);
+  // From here onward every contract check and publication uses the same owned,
+  // immutable data snapshot. Caller-owned getters/proxies cannot validate one
+  // value and later substitute another at the commit boundary.
+  result = ownedResult;
   // A result may only exercise the descriptor authority of the pass that was
   // actually invoked. Otherwise mutation/invalidation uses one descriptor while
   // provenance and replay identity name another pass. Shape, ownership and the
@@ -251,6 +345,9 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
       || result.stage !== descriptor.stage) {
     return refuse(`result-descriptor-mismatch:${descriptor.id}`);
   }
+  const policyFailure = rewritePolicyFailure(descriptor,result,
+    {required:context.requireRewritePolicy === true,proofPass:descriptor === proofPass,regionPass:descriptor === regionPass});
+  if (policyFailure) return refuse(policyFailure);
   // A contract violation is refused the same way a cancellation is: nothing
   // commits and the caller gets a reason. Throwing here instead would turn a
   // withheld ledger into an uncaught exception at the vertical, which is a
@@ -273,6 +370,14 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
   // Last check immediately before the only mutation point.  A cancellation
   // that arrives while validating the staged result must not become a commit.
   if (aborted(budget)) return refuse('cancelled-before-commit');
+  if (descriptor === proofPass) {
+    const finalProofFailure = phase8ProofApi.proofAdmissionReason(rawResult, stagedWrites, descriptor, context);
+    if (finalProofFailure) return refuse(finalProofFailure);
+  }
+  if (descriptor === regionPass) {
+    const failure = phase8RegionProofApi.regionAdmissionReason(rawResult, stagedWrites, descriptor, context);
+    if (failure) return refuse(failure);
+  }
 
   // Commit. Nothing above this line touched authoritative state.
   const mutators = analysisMutators(state);
@@ -280,6 +385,17 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
   const actuallyInvalidated = [];
   for (const key of invalidated) if (mutators.drop(key)) actuallyInvalidated.push(key);
   for (const [key, value] of stagedWrites) mutators.write(key, value);
+  if (stagedWrites.has('deadCode')) {
+    if (descriptor === canonicalDceDescriptor && (pass.originalRun ?? pass.run) === canonicalDceRunner) COMMITTED_DCE_ARTIFACTS.set(state, stagedWrites.get('deadCode'));
+    else COMMITTED_DCE_ARTIFACTS.delete(state);
+  } else if (actuallyInvalidated.includes('deadCode')) COMMITTED_DCE_ARTIFACTS.delete(state);
+  if (stagedWrites.has('provedRewrites')) {
+    COMMITTED_PROOF_OVERLAYS.set(state, stagedWrites.get('provedRewrites'));
+  } else if (actuallyInvalidated.includes('provedRewrites')) {
+    COMMITTED_PROOF_OVERLAYS.delete(state);
+  }
+  if (stagedWrites.has('provedRegions')) COMMITTED_REGION_OVERLAYS.set(state, stagedWrites.get('provedRegions'));
+  else if (actuallyInvalidated.includes('provedRegions')) COMMITTED_REGION_OVERLAYS.delete(state);
 
   return Object.freeze({
     committed: true,
@@ -360,4 +476,97 @@ export function seedAnalysisState(ir, upstream = {}) {
     seed.origins = Object.freeze({ functionOrigin: ir.origin ?? null, values: ir.values ?? [] });
   }
   return createAnalysisState(seed);
+}
+
+// C4-04 rewrite admission is layered over the root transaction so the
+// existing private proof/DCE overlays and invalidation rules remain intact.
+class RewriteRefusal extends Error {
+  constructor(reason) { super(`phase8-c4-04-refusal:${reason}`); this.reason = reason; }
+}
+
+function admission(result, descriptor, metadata) {
+  const transforms = [];
+  const retainedIndexes = [];
+  const diagnostics = [];
+  for (let index = 0; index < result.transforms.length; index += 1) {
+    const transform = result.transforms[index];
+    const validation = transform.validation;
+    if (validation == null) {
+      if (transform.rewrite != null) throw new RewriteRefusal('rewrite-unvalidated');
+      transforms.push(transform); retainedIndexes.push(index); continue;
+    }
+    if (validation.validation === 'refuted') throw new RewriteRefusal('rewrite-refuted');
+    if (validation.validation === 'equivalent') {
+      if (metadata?.[index]?.equivalenceAuthority !== true
+        || !phase8ProofApi.hasCanonicalEquivalenceAuthority(metadata[index].authoritySource)) {
+        throw new RewriteRefusal('rewrite-equivalence-authority-missing');
+      }
+      const expected = phase8ProofApi.recomputeEquivalenceProofId(transform, descriptor);
+      if (validation.equivalenceProofId !== expected) throw new RewriteRefusal('rewrite-proof-id-mismatch');
+      transforms.push(transform); retainedIndexes.push(index); continue;
+    }
+    if (validation.validation === 'unknown' || validation.validation === 'unsupported') {
+      const reason = validation.reason ?? validation.validation;
+      diagnostics.push(Object.freeze({
+        severity:'warning', code:'phase8-rewrite-not-adopted',
+        message:`rewrite ${String(transform.kind)} was not adopted: ${String(reason)}`,
+        reason:String(reason),
+      }));
+      continue;
+    }
+    throw new RewriteRefusal('rewrite-validation-malformed');
+  }
+  return { transforms, retainedIndexes, diagnostics };
+}
+
+function coreResultOf(result, descriptor, admitted) {
+  const withheldCount = result.transforms.length - admitted.transforms.length;
+  if (withheldCount > 0 && result.produced.length > 0) {
+    throw new RewriteRefusal('withheld-rewrite-has-produced-artifacts');
+  }
+  const retainedChange = admitted.transforms.length > 0 || result.produced.length > 0;
+  return createPassResult({
+    descriptor,
+    status:retainedChange ? result.status : 'unchanged',
+    changed:retainedChange,
+    completeness:result.completeness,
+    transforms:admitted.transforms.map(({ kind, targets, proof, originRefs }) => ({ kind, targets, proof, originRefs })),
+    diagnostics:[...result.diagnostics, ...admitted.diagnostics],
+    invalidated:retainedChange ? result.invalidated : [],
+    produced:result.produced,
+    stopReason:result.stopReason,
+  });
+}
+
+/**
+ * Run the root atomic transaction with C4-04 metadata admission when a pass
+ * result carries the private validated-rewrite sidecar.
+ */
+export function runPassTransaction(state, pass, context = {}, budget = {}) {
+  let publishedMetadata = null;
+  let retainedIndexes = null;
+  const wrapped = {
+    descriptor:pass.descriptor,
+    run(passContext, passBudget, area) {
+      const raw = pass.run(passContext, passBudget, area);
+      const metadata = phase8ProofApi?.validatedRewriteMetadataFor(raw);
+      if (metadata == null) return raw;
+      const enriched = phase8ProofApi.attachValidatedRewriteMetadata(raw, metadata);
+      const admitted = admission(enriched, pass.descriptor, metadata);
+      publishedMetadata = metadata;
+      retainedIndexes = admitted.retainedIndexes;
+      return coreResultOf(enriched, pass.descriptor, admitted);
+    },
+    // Preserve identity checks for the root DCE overlay despite wrapping run().
+    originalRun:pass.run,
+  };
+  const outcome = runPassTransactionCore(state, wrapped, context, budget);
+  if (!outcome.committed && typeof outcome.stopReason === 'string' && outcome.stopReason.startsWith('failed:phase8-c4-04-refusal:')) {
+    const reason = outcome.stopReason.slice('failed:phase8-c4-04-refusal:'.length);
+    return Object.freeze({ ...outcome, stopReason:`${reason}:${pass.descriptor.id}` });
+  }
+  if (!outcome.committed || publishedMetadata == null || outcome.result == null) return outcome;
+  const retainedMetadata = retainedIndexes.map((index) => publishedMetadata[index]);
+  const result = phase8ProofApi.attachValidatedRewriteMetadata(outcome.result, retainedMetadata);
+  return Object.freeze({ ...outcome, result });
 }

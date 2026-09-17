@@ -306,12 +306,13 @@ test('#5851 a library-model-covered external call keeps its conservative treatme
   // summary: the site was never solved, so the local fallback must stay in
   // place and the boundary remains explicitly unresolved.
   const localA = callerWithFallback('A', 'ext');
-  const model = libraryModel('ext');
+  const model = libraryModel('ext', { snapshotId: completeStatus().snapshotId });
 
   const summary = solveInterproceduralSummaries({
     roots: ['A'],
     localSummaries: new Map([['A', localA]]),
     libraryModels: new Map([['ext', model]]),
+    snapshotId: completeStatus().snapshotId,
   }).summaries.get('A');
 
   const modelWrite = summary.memoryWriteRegions.find((effect) => effect.regionId === 'region_model');

@@ -288,7 +288,8 @@ function createStringEntry(app, key, initialOptions = {}) {
   const controller = new AbortController();
   const entry = {
     controller, waiters:0, settled:false, subscribers:new Set(), result:null, promise:null,
-    producerOptions:producerOptions(initialOptions), retryableIncomplete:false, epoch:epochOf(app), evictWhenSettled:false,
+    producerOptions:producerOptions(initialOptions), retryableIncomplete:false,
+    epoch:epochOf(app), evictWhenSettled:false,
   };
   const epoch = epochOf(app);
   entry.promise = (async () => {
@@ -391,12 +392,14 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
   const controller = new AbortController();
   const entry = {
     controller, waiters:0, settled:false, subscribers:new Set(), result:null, promise:null,
-    producerOptions:producerOptions(initialOptions), retryableIncomplete:false, epoch:epochOf(app), evictWhenSettled:false,
+    producerOptions:producerOptions(initialOptions), retryableIncomplete:false,
+    epoch:epochOf(app), evictWhenSettled:false,
   };
   const epoch = epochOf(app);
   const requestedSymbolsGeneration = symbolsGenerationOf(app);
   const initialCacheKey = programCacheKey(epoch, requestedSymbolsGeneration, key);
   let cacheKey = initialCacheKey;
+  let symbolsGenerationConflict = false;
   entry.promise = (async () => {
     const primary = regions.find((region) => region.section === '__text') || regions[0];
     const discovery = app.ensureFunctions?.(primary, {
@@ -416,11 +419,20 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     await discovery;
     throwIfAborted(controller.signal);
     if (epoch !== epochOf(app)) throw Object.assign(new Error('stale shared program'), { stale:true });
-    cacheKey = programCacheKey(epoch, symbolsGeneration, key);
-    if (cacheKey !== initialCacheKey) {
+    const nextCacheKey = programCacheKey(epoch, symbolsGeneration, key);
+    if (nextCacheKey !== initialCacheKey) {
       const live = mapFor(PROGRAM_ENTRIES, app);
-      if (live.get(initialCacheKey) === entry) live.delete(initialCacheKey);
-      if (!live.has(cacheKey)) live.set(cacheKey, entry);
+      const existing = live.get(nextCacheKey);
+      if (existing && existing !== entry) {
+        // A newer-generation producer has already claimed this key. Keep this
+        // producer on its original key so it can finish and reject at the
+        // publication boundary instead of publishing under newer symbols.
+        symbolsGenerationConflict = true;
+      } else {
+        if (live.get(initialCacheKey) === entry) live.delete(initialCacheKey);
+        cacheKey = nextCacheKey;
+        live.set(cacheKey, entry);
+      }
     }
     const scans = [], failures = [];
     const dataRangeUniverse = dataRanges(app);
@@ -460,7 +472,9 @@ function createProgramEntry(app, key, regions, initialOptions = {}) {
     if (app.symbols?.functionStartsComplete !== true) failures.push('function-discovery-incomplete');
     throwIfAborted(controller.signal);
     if (epoch !== epochOf(app)) throw Object.assign(new Error('stale shared program'), { stale:true });
-    if (symbolsGeneration !== symbolsGenerationOf(app)) throw Object.assign(new Error('stale shared program symbols'), { stale:true });
+    if (symbolsGenerationConflict || symbolsGeneration !== symbolsGenerationOf(app)) {
+      throw Object.assign(new Error('stale shared program symbols'), { stale:true });
+    }
     const merged = mergeProgramScans(scans, { regions, reasons:failures, limits:PROGRAM_MERGE_LIMITS });
     const program = new ProgramIndex(merged, app.symbols, primary);
     const stats = statsFor(program, counts, scannedRefs, entry.producerOptions, dataRangeUniverse.complete);

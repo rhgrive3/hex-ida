@@ -1,11 +1,20 @@
 import { stableDigest } from '../../core/identity/index.js';
-import { verifyBoundedEquivalence } from '../../symbolic/verify/equivalence.js';
-import { VERDICT, CLAIM_KIND } from '../../symbolic/verify/query.js';
+import { c4EquivalenceRewriteRegistryFailure } from './c4-equivalence-registry.js';
+
+// Keep the pass-validation schema dependency-free at module evaluation time.
+// The full verifier is loaded only when an adoption request is actually made;
+// importing its support matrix would otherwise recurse through phase8/index.js
+// before PROOF_REWRITE_PASS has been issued.
+const CLAIM_KIND = Object.freeze({ EQUIVALENT:'equivalent' });
+const VERDICT = Object.freeze({ PROVED:'proved', REFUTED:'refuted' });
 
 export const REWRITE_VALIDATION_VERIFIER = 'hex.symbolic.verify.bounded-equivalence';
+export const MEMORY_REWRITE_VALIDATION_VERIFIER = 'hex.symbolic.query.memory-equivalence';
+export const TERMINAL_EFFECT_REWRITE_VALIDATION_VERIFIER = 'hex.symbolic.query.terminal-effect-equivalence';
 export const REWRITE_VALIDATION_STATUSES = Object.freeze(['equivalent', 'refuted', 'unknown', 'unsupported']);
 
 const CANONICAL_EQUIVALENCE_AUTHORITIES = new WeakSet();
+const CANONICAL_EQUIVALENCE_CURRENTNESS = new WeakMap();
 
 function fail(code) { throw new TypeError(code); }
 
@@ -92,8 +101,10 @@ function rewriteBinding(rewrite, { beforeTarget = undefined, afterTarget = undef
  * and replay protection, never a capability that callers can self-mint.
  */
 export function hasCanonicalEquivalenceAuthority(validation) {
-  return !!validation && typeof validation === 'object'
-    && CANONICAL_EQUIVALENCE_AUTHORITIES.has(validation);
+  if (!validation || typeof validation !== 'object' || !CANONICAL_EQUIVALENCE_AUTHORITIES.has(validation)) return false;
+  const current = CANONICAL_EQUIVALENCE_CURRENTNESS.get(validation);
+  if (current == null) return true;
+  try { return current() === true; } catch { return false; }
 }
 
 /**
@@ -167,6 +178,7 @@ export async function validateRewriteAdoption({
   const rewritePayload = rewrite ?? Object.freeze({ before: beforeTarget, after: afterTarget });
   const binding = rewriteBinding(rewritePayload, { beforeTarget, afterTarget });
 
+  const { verifyBoundedEquivalence } = await import('../../symbolic/verify/equivalence.js');
   const outcome = await verifyBoundedEquivalence({
     beforeIr,
     afterIr,
@@ -222,6 +234,69 @@ export async function validateRewriteAdoption({
     verifier: REWRITE_VALIDATION_VERIFIER,
     solverStatus: outcome?.solverStatus ?? null,
   });
+}
+
+
+function validatedQueryRecord({ passId, passVersion, transformKind, targets, binding, verifierIdentity, outcome, isCurrent }) {
+  if (outcome?.verdict === 'proved' && outcome.eligible === true && typeof outcome.bindingDigest === 'string' && outcome.bindingDigest.length > 0) {
+    if (typeof isCurrent !== 'function' || isCurrent() !== true) {
+      return Object.freeze({ validation:'unknown', reason:'rewrite-proof-stale', verifier:verifierIdentity, solverStatus:null });
+    }
+    const equivalenceProofId = rewriteProofDigest({
+      passId, passVersion, transformKind, targets, ...binding,
+      verifierIdentity, verdict:'proved', claimKind:CLAIM_KIND.EQUIVALENT,
+      queryHash:outcome.bindingDigest,
+    });
+    const validation = Object.freeze({
+      validation:'equivalent', equivalenceProofId, verifier:verifierIdentity,
+      verdictSource:'unsat-difference', solverStatus:'unsat',
+      completeness:Object.freeze({ queryScope:'complete', declaredScope:outcome.scope?.kind ?? null,
+        effects:Object.freeze([...(outcome.scope?.effects ?? [])]) }),
+      queryHash:outcome.bindingDigest,
+    });
+    CANONICAL_EQUIVALENCE_AUTHORITIES.add(validation);
+    CANONICAL_EQUIVALENCE_CURRENTNESS.set(validation,isCurrent);
+    return validation;
+  }
+  if (outcome?.verdict === 'refuted') {
+    return Object.freeze({ validation:'refuted', reason:outcome.reason ?? 'rewrite-not-equivalent',
+      verifier:verifierIdentity, solverStatus:'sat',
+      counterexample:outcome.firstDivergence ? Object.freeze({ ...outcome.firstDivergence }) : null });
+  }
+  return Object.freeze({ validation:'unknown', reason:outcome?.reason ?? 'rewrite-validation-unknown',
+    verifier:verifierIdentity, solverStatus:null });
+}
+
+export async function validateMemoryRewriteAdoption({
+  passId, passVersion, transformKind, targets, rewrite = null, memoryRequest = null,
+} = {}) {
+  if (!passId || !passVersion || !transformKind) fail('phase8-rewrite-adoption-identity-required');
+  if (!Array.isArray(targets) || targets.length === 0) fail('phase8-rewrite-adoption-targets-required');
+  if (!memoryRequest || typeof memoryRequest !== 'object') fail('phase8-memory-rewrite-proof-request-required');
+  const registryFailure = c4EquivalenceRewriteRegistryFailure(transformKind, MEMORY_REWRITE_VALIDATION_VERIFIER);
+  if (registryFailure) fail(registryFailure);
+  const binding = rewriteBinding(rewrite);
+  const { queryMemoryEquivalence, isAdoptableMemoryEquivalence } = await import('../../symbolic/query/memory-equivalence.js');
+  const outcome = await queryMemoryEquivalence(memoryRequest);
+  return validatedQueryRecord({ passId, passVersion, transformKind, targets, binding,
+    verifierIdentity:MEMORY_REWRITE_VALIDATION_VERIFIER, outcome,
+    isCurrent:() => isAdoptableMemoryEquivalence(outcome,memoryRequest) });
+}
+
+export async function validateTerminalEffectRewriteAdoption({
+  passId, passVersion, transformKind, targets, rewrite = null, effectRequest = null,
+} = {}) {
+  if (!passId || !passVersion || !transformKind) fail('phase8-rewrite-adoption-identity-required');
+  if (!Array.isArray(targets) || targets.length === 0) fail('phase8-rewrite-adoption-targets-required');
+  if (!effectRequest || typeof effectRequest !== 'object') fail('phase8-terminal-effect-proof-request-required');
+  const registryFailure = c4EquivalenceRewriteRegistryFailure(transformKind, TERMINAL_EFFECT_REWRITE_VALIDATION_VERIFIER);
+  if (registryFailure) fail(registryFailure);
+  const binding = rewriteBinding(rewrite);
+  const { queryTerminalEffectEquivalence, isAdoptableTerminalEffectEquivalence } = await import('../../symbolic/query/terminal-effect-equivalence.js');
+  const outcome = await queryTerminalEffectEquivalence(effectRequest);
+  return validatedQueryRecord({ passId, passVersion, transformKind, targets, binding,
+    verifierIdentity:TERMINAL_EFFECT_REWRITE_VALIDATION_VERIFIER, outcome,
+    isCurrent:() => isAdoptableTerminalEffectEquivalence(outcome,effectRequest) });
 }
 
 /**

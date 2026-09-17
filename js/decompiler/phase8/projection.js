@@ -1,12 +1,268 @@
-import { beginScopedTransformCapture, finishScopedTransformCapture } from './scoped-transform-capture.js';
-import { expr, mapChildren, mergeSource, sourceOf } from '../ast/nodes.js';
+import { isProducerProjection, producerExpressionToken, readProducerInputExpressions, producerUsesProofOnlyRewrites } from '../pipeline.js';
+import { readExpressionHistoryConsumer, readStoreSpellingProducer, readInitialControlConsumer, readCallResultSpellingProducer,
+  expressionHistoryRecordCount, readCopiedConditionalRegions, readProjectionDataObserver } from '../pipeline-core.js';
+import { expressionOriginHistory } from '../rewrite/engine.js';
+import { readStackPhiHistoryConsumer } from '../passes/stack-phi-recovery.js';
+import { readStackReturnHistoryConsumer } from '../passes/stack-return-recovery.js';
+import { readLegacyStackHistoryConsumer } from '../passes/legacy-stack-recovery.js';
+import { PROJECTION_LIMITS } from './projection-origin.js';
+import { createProjectionIrObserver } from '../../core/identity/live-data.js';
+import { children, expr, mapChildren, mergeSource, sourceOf } from '../ast/nodes.js';
 import { expressionReadability, printExpression, printProgram } from '../pretty/c.js';
+import { readProvedRewrites, readProvedInputBindings } from './pass-validation.js';
+import { renderProofExpression, sameProofExpression } from './proof-expression.js';
 import {
   analysisIdentityMatches,
   canonicalAnalysisIdentity,
   isValidatedAnalysisIdentity,
 } from './analysis-identity.js';
-import { buildRenderProvenance } from './render-provenance.js';
+import { buildRenderProvenance, DEFAULT_RENDER_TRANSFORM_RECORDS } from './render-provenance.js';
+import { readDceResultProof } from './dce.js';
+import { normalizeCompatibilityLine } from '../switch.js';
+import { beginScopedTransformCapture, finishScopedTransformCapture } from './scoped-transform-capture.js';
+import { readProvedRegionErasure } from './region-erasure-pass.js';
+import {
+  readRegionErasureCondition,
+  readRegionErasureBody,
+  isRegionErasureBodyRequested,
+} from './conditional-region-erasure.js';
+import { sameMemoryIdentity } from '../../symbolic/memory/query-state.js';
+
+export const PHASE8_PROJECTION_VERSION = 4;
+
+const lineExpressionHistories = new WeakMap();
+const controlConsumerSources = new WeakMap();
+// One current snapshot per owned AST, never a chain of previous projections.
+// Ordinary result wrappers may retain this AST; copied/replaced AST data cannot
+// manufacture the private transition that carries the original consumers.
+const projectionHistories = new WeakMap();
+const projectedConditionalRegions = new WeakMap();
+const provedConditionConsumers = new WeakMap();
+
+/** Actual projection handoff only; neither condition equivalence nor erasure. */
+export function readProjectedConditionalRegions(program, ir) {
+  const entry = projectedConditionalRegions.get(program);
+  try { return entry?.ir === ir && entry.isCurrent() ? entry.history : null; }
+  catch { return null; }
+}
+
+function beginRegionProjection(result, opts) {
+  try {
+    const program = result.cAst, ir = result.ir;
+    const projected = readProjectedConditionalRegions(program, ir);
+    const prior = projectedConditionalRegions.get(program);
+    const hasPrior = projectionHistories.has(program) || result.phase8Projection != null || prior != null;
+    if (hasPrior && (!projected || prior.projection !== result.phase8Projection
+        || prior.semanticAst !== result.semanticAst || prior.rewriteProof !== result.rewriteProof)) return null;
+    const history = projected || readCopiedConditionalRegions(program, ir);
+    if (!history) return null;
+    const cap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
+    const requested = opts.phase8RegionCarrierBudget;
+    const nodes = cap(requested?.maxNodes, 10000), regions = cap(requested?.maxRegions, 256);
+    const references = cap(requested?.maxReferences, 40000), edges = cap(requested?.maxEdges, PROJECTION_LIMITS.edges);
+    if (!edges || program.body.length > nodes || history.regions.length > regions) return null;
+    const root = projected ? projectedConditionalRegions.get(program).root : { program, ir, history };
+    const inputObservation = observeProjectionData([program], opts.shouldAbort);
+    if (inputObservation.metrics.edges >= edges) return null;
+    const projection = result.phase8Projection, semanticAst = result.semanticAst, rewriteProof = result.rewriteProof;
+    const ownerCurrent = () => result.cAst === program && result.ir === ir && result.phase8Projection === projection
+      && result.semanticAst === semanticAst && result.rewriteProof === rewriteProof;
+    return { root, history, nodes, references, edges:edges - inputObservation.metrics.edges, inputObservation,
+      copies:new Map(), insertions:[], removals:new Map(), failed:false, ownerCurrent,
+      predecessorCurrent:() => ownerCurrent()
+        && (projected ? readProjectedConditionalRegions(program, ir)
+          : readCopiedConditionalRegions(program, ir)) === history };
+  } catch { return null; }
+}
+
+function projectedRegionCurrent(root, observation, opts) {
+  return () => !opts.shouldAbort?.()
+    && readCopiedConditionalRegions(root.program, root.ir) === root.history && observation.matches();
+}
+
+function recordRegionInsertion(copy, node, before, record) {
+  if (!copy || copy.failed) return;
+  if (copy.copies.size + copy.insertions.length >= copy.nodes) { copy.failed = true; return; }
+  // Called only at the real CSE insertion, with the actual new node and anchor.
+  copy.insertions.push(Object.freeze({ node, before, record }));
+}
+
+function recordRegionRemoval(copy, original, node, record) {
+  if (!copy || copy.failed) return;
+  if (!copy.copies.has(original) || copy.copies.get(original) !== node || copy.removals.has(original)) {
+    copy.failed = true;
+    return;
+  }
+  copy.removals.set(original, Object.freeze({ original, node, record }));
+}
+
+function prepareRegionProjection(copy, program, opts) {
+  if (!copy || copy.failed) return null;
+  try {
+    let remaining = copy.references;
+    const take = (count = 1) => { if ((remaining -= count) < 0) throw new Error('region-projection-reference-budget'); };
+    const mapped = node => {
+      take();
+      if (!copy.copies.has(node) || copy.removals.has(node)) throw new Error('region-projection-copy-missing');
+      return copy.copies.get(node);
+    };
+    const before = new Map();
+    for (const inserted of copy.insertions) {
+      take();
+      if (!before.has(inserted.before)) before.set(inserted.before, []);
+      before.get(inserted.before).push(inserted.node);
+    }
+    const span = nodes => Object.freeze(nodes.flatMap(node => {
+      if (copy.removals.has(node)) { take(); return []; }
+      const next = mapped(node), inserted = before.get(next) || [];
+      take(inserted.length);
+      return [...inserted, next];
+    }));
+    const regions = Object.freeze(copy.history.regions.map(region => Object.freeze({
+      original:region.original, record:region.record,
+      header:mapped(region.header), separator:region.separator === null ? null : mapped(region.separator),
+      close:mapped(region.close), nodes:span(region.nodes),
+      arms:Object.freeze(region.arms.map(arm => Object.freeze({ original:arm.original, role:arm.role, nodes:span(arm.nodes) }))),
+    })));
+    const insertions = Object.freeze([...(copy.history.insertions || []).map(item => Object.freeze({
+      node:mapped(item.node), before:mapped(item.before), record:item.record,
+    })), ...copy.insertions]);
+    // Verify completeness/order against the actual final body. This check does
+    // not infer a mapping: every pair, insertion and authorized removal was
+    // observed at its writer.
+    if (program.body.length > copy.nodes) return null;
+    const expectedBody = [];
+    for (const [original, next] of copy.copies) {
+      if (copy.removals.has(original)) continue;
+      const inserted = before.get(next) || [];
+      take(1 + inserted.length);
+      expectedBody.push(...inserted, next);
+    }
+    if (expectedBody.length !== program.body.length
+        || expectedBody.some((node, index) => program.body[index] !== node)) return null;
+    const positions = new Map(program.body.map((node, index) => [node, index]));
+    if (positions.size !== program.body.length || regions.some(region => {
+      const start = positions.get(region.header);
+      return start == null || region.nodes.some((node, index) => program.body[start + index] !== node)
+        || region.nodes.at(-1) !== region.close;
+    }) || insertions.some(item => !positions.has(item.node) || !positions.has(item.before))) return null;
+    const observation = observeProjectionData([program, insertions], opts.shouldAbort);
+    if (observation.metrics.edges > copy.edges) return null;
+    const history = Object.freeze({ version:1, scope:'original-to-projected-conditional-regions',
+      completeness:'complete', transformAuthorization:false, conditionValidation:'required', regions, insertions });
+    const root = copy.root;
+    // Flatten replay to the initial producer. The predecessor is revalidated
+    // at publication; future reads retain no chain of old output snapshots.
+    const isCurrent = projectedRegionCurrent(root, observation, opts);
+    return { ir:root.ir, root, history, isCurrent, observation };
+  } catch { return null; }
+}
+// Output snapshots retain every mutable field and exact immutable descriptor
+// reference. Data certification is not a producer token or a render binding.
+const observeProjectionData = (roots, shouldAbort = null) => createProjectionIrObserver().captureCertifiedData(roots, shouldAbort);
+function readProjectionHistory(result) {
+  const entry = projectionHistories.get(result.cAst);
+  if (!entry || entry.ir !== result.ir || entry.semanticAst !== result.semanticAst
+      || entry.body !== result.cAst.body || entry.conditions !== result.semanticAst.conditions
+      || entry.rewriteProof !== result.rewriteProof || entry.projection !== result.phase8Projection
+      || entry.producerDisposition !== result.expressionHistoryBinding
+      || !entry.observation.matches() || !entry.consumers.every(consumer => consumer.isCurrent())) return null;
+  return entry;
+}
+
+/** Actual condition descriptor copy history, paired with its original CBR.
+ * This is proposal lineage only; it does not certify the emitted predicate. */
+export function readProjectedConditionConsumer(result, branch) {
+  try {
+    const history = readProjectionHistory(result);
+    if (!history && (projectionHistories.has(result.cAst) || result.phase8Projection != null)) return null;
+    const consumers = history?.conditionConsumers ?? result.semanticAst.conditions.map(condition => readExpressionHistoryConsumer(condition, result.ir));
+    const matches = consumers.flatMap((consumer, index) => consumer?.instruction === branch
+      ? [{ consumer, condition:result.semanticAst.conditions[index] }] : []);
+    return matches.length === 1 ? Object.freeze(matches[0]) : null;
+  } catch { return null; }
+}
+
+/** Read an already committed predicate's actual header binding for idempotent
+ * optimizer requests. Public report fields or copied ASTs cannot issue it. */
+export function readProjectedProvedCondition(result, branch, identity) {
+  try {
+    const history = readProjectionHistory(result);
+    if (!history) return null;
+    const matches = history.expressions.flatMap((consumer, index) => {
+      const proof = provedConditionConsumers.get(consumer), control = controlConsumerSources.get(consumer);
+      const node = result.cAst.body[index];
+      return proof && control?.instruction === branch && sameMemoryIdentity(proof.identity, identity)
+        && node.text === proof.text && node.semantic?.expression === proof.expression ? [proof] : [];
+    });
+    return matches.length === 1 ? matches[0] : null;
+  } catch { return null; }
+}
+
+/** Exact initial control writer carried through this projection's real copies. */
+export function readProjectedRegionControl(result, branch, header, originalHeader) {
+  try {
+    const history = readProjectionHistory(result);
+    if (!history && (projectionHistories.has(result.cAst) || result.phase8Projection != null)) return null;
+    const indices = result.cAst.body.flatMap((node, index) => node === header ? [index] : []);
+    if (indices.length !== 1) return null;
+    const consumer = history ? history.expressions[indices[0]] : readExpressionHistoryConsumer(header.semantic, result.ir);
+    const control = controlConsumerSources.get(consumer) || readInitialControlConsumer(consumer);
+    if (!history && control?.node !== header) return null;
+    return control?.instruction === branch && control.line === originalHeader && consumer.isCurrent() && control.isCurrent()
+      ? control : null;
+  } catch { return null; }
+}
+
+function prepareProjectionHistory(result, expressions, conditions, records, opts, reasons, proofExpressions, dataObserver) {
+  const consumers = [...new Set([...expressions, ...conditions].filter(Boolean))];
+  const cap = (value, maximum) => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, maximum) : maximum;
+  const budget = opts.renderProvenanceBindingBudget;
+  if (consumers.length > cap(budget?.maxConsumers, 4096)) {
+    reasons.add('projection-history-budget');
+    return null;
+  }
+  try {
+    const observation = dataObserver.captureCertifiedData(
+      [result.cAst.body, result.semanticAst.conditions, result.rewriteProof, records], opts.shouldAbort);
+    if (observation.metrics.edges > cap(budget?.maxEdges, PROJECTION_LIMITS.edges)) {
+      reasons.add('projection-history-budget');
+      return null;
+    }
+    if (!consumers.every(consumer => consumer.isCurrent())) {
+      reasons.add('stale-projection-consumer');
+      return null;
+    }
+    return { ir:result.ir, semanticAst:result.semanticAst, body:result.cAst.body,
+      conditions:result.semanticAst.conditions, rewriteProof:result.rewriteProof,
+      producerDisposition:result.expressionHistoryBinding,
+      expressions:Object.freeze(expressions), conditionConsumers:Object.freeze(conditions),
+      consumers:Object.freeze(consumers), records, observation, proofExpressions, dataObserver };
+  } catch {
+    reasons.add('projection-history-observation-unavailable');
+    return null;
+  }
+}
+
+export function readLineExpressionHistory(line, ir) {
+  const entry = lineExpressionHistories.get(line);
+  return entry && entry.ir === ir && entry.consumers.every(consumer => consumer.isCurrent()) && entry.observation.matches()
+    ? entry.records : null;
+}
+
+// Carry only an already-current private binding through the fixed existing
+// compatibility spelling operation. Arbitrary edits cannot renew a binding.
+export function normalizeProjectedCompatibilityLine(line, ir) {
+  const current = readLineExpressionHistory(line, ir);
+  const entry = current ? lineExpressionHistories.get(line) : null;
+  const previousText = line?.text;
+  normalizeCompatibilityLine(line, ir);
+  if (!entry || previousText === line?.text || !entry.consumers.every(consumer => consumer.isCurrent())) return;
+  try {
+    const observation = observeProjectionData([line]);
+    lineExpressionHistories.set(line, { ...entry, observation });
+  } catch { /* The original invalid observation remains fail-closed. */ }
+}
 
 function integer(value) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
@@ -15,6 +271,24 @@ function integer(value) {
 function evidenceSource(source, reason) {
   const current = sourceOf(source);
   return { ...current, evidence:[...(current.evidence || []), { reason }] };
+}
+
+// The translator's actual before slice crosses only the committed private
+// binding. Never infer this lineage from names or unrelated uses/consumers.
+function provedSliceSource(root, binding, shouldAbort) {
+  if (!Array.isArray(binding.dependencies) || binding.dependencies.length > PROJECTION_LIMITS.nodes) return null;
+  const source = sourceOf(root), keys = ['addresses','rows','ir','ssaDefs','ssaUses'];
+  const seen = Object.fromEntries(keys.map(key => [key,new Set(source[key])]));
+  for (const value of binding.dependencies) {
+    if (shouldAbort?.()) return null;
+    const def = value.def;
+    const origin = sourceOf({address:def?.address,row:def?.row,ir:def?.id,ssaDef:value.id,
+      ssaUses:[...(def?.args ?? []).map(arg => arg.value?.id),def?.conditionValue?.id]});
+    for (const key of keys) for (const item of origin[key]) if (!seen[key].has(item)) {
+      seen[key].add(item); source[key].push(item);
+    }
+  }
+  return source;
 }
 
 function recordViewCollapse(records, { proof, outerBits, innerBits, sourceBits, source, kind = 'exact-view-collapse' }) {
@@ -35,6 +309,12 @@ function recordViewCollapse(records, { proof, outerBits, innerBits, sourceBits, 
   }));
 }
 
+/**
+ * HEX-C4-03: every rewrite must say which canonical entities it rewrote. The
+ * merged source of a collapse carries the union of consumed rows/ir/ssa refs,
+ * so the target set is derived from the same evidence the proof consumed —
+ * never from rendered text.
+ */
 function collectTargets(source, proof) {
   const targets = [];
   for (const ref of source.ir || []) targets.push(`ir:${ref}`);
@@ -177,9 +457,12 @@ function provenValueId(node, names) {
   return ids[0];
 }
 
-function transformExpression(root, names, records, memo = new Map()) {
+function transformExpression(root, names, records, memo = new Map(), replacements = new Map(), tokenOf = () => null, proofOnly = false) {
   if (!root || memo.has(root)) return memo.get(root) ?? root;
-  let mapped = mapChildren(root, (child) => transformExpression(child, names, records, memo));
+  const replacement = replacements.get(root) ?? replacements.get(tokenOf(root));
+  if (replacement) { memo.set(root,replacement); return replacement; }
+  let mapped = mapChildren(root, (child) => transformExpression(child, names, records, memo, replacements, tokenOf, proofOnly));
+  if (proofOnly) { memo.set(root,mapped); return mapped; }
   mapped = collapseExactNestedTruncation(mapped, records);
   mapped = collapseExactExtensionUnderTruncation(mapped, records);
   mapped = collapseExactRepeatedExtension(mapped, records);
@@ -211,7 +494,7 @@ function replaceCondition(text, keyword, expression) {
   const source = String(text || '');
   const marker = `${keyword} (`;
   const at = source.indexOf(marker);
-  if (at < 0) return source;
+  if (at < 0) return { text:source, replaced:false };
   const open = at + keyword.length + 1;
   let depth = 0;
   for (let index = open; index < source.length; index += 1) {
@@ -219,10 +502,10 @@ function replaceCondition(text, keyword, expression) {
     if (char === '(') depth += 1;
     else if (char === ')') {
       depth -= 1;
-      if (depth === 0) return `${source.slice(0, open + 1)}${expression}${source.slice(index)}`;
+      if (depth === 0) return { text:`${source.slice(0, open + 1)}${expression}${source.slice(index)}`, replaced:true };
     }
   }
-  return source;
+  return { text:source, replaced:false };
 }
 
 function conditionMap(semanticAst, transform) {
@@ -253,6 +536,84 @@ function refreshMetrics(result, semanticAst, printed, records) {
   };
 }
 
+// Render one shared computation only after both source values have crossed the
+// existing solver admission boundary. GVN names/hashes and expression text are
+// not equivalence authority. This initial adoption is local to one straight-line
+// block and immutable entry inputs; it never removes canonical instructions.
+function shareProvedScalars(result, bindings, consumers, records, shouldAbort, regionCopy) {
+  const body = result.cAst.body;
+  const ordered = result.ir.instructions ?? [];
+  if (body.length > 4096 || bindings.size > 32 || ordered.length > PROJECTION_LIMITS.nodes) return;
+  const instructions = new Map(ordered.map(inst => [inst.id, inst]));
+  if (instructions.size !== ordered.length) return;
+  const groups = [];
+  let remaining = PROJECTION_LIMITS.edges;
+  for (const [index, node] of body.entries()) {
+    if (--remaining < 0 || shouldAbort?.()) return;
+    const expression = node.semantic?.expression, binding = bindings.get(expression);
+    const instruction = instructions.get(node.semantic?.ir), consumer = consumers[index];
+    if (!binding?.entryInputs || !consumer?.isCurrent() || node.kind !== 'stmt'
+      || !['store', 'return'].includes(node.semantic?.op) || instruction?.block == null
+      || instruction.op !== (node.semantic.op === 'return' ? 'ret' : 'store') || expression?.signed !== false
+      || node.semantic.op === 'store' && !node.semantic.location?.text
+      || ![8, 16, 32, 64].includes(expression.bits) || ['var', 'const'].includes(expression.kind)) continue;
+    const found = groups.find(group => group.block === instruction.block && group.indent === node.indent
+      && sameProofExpression(group.binding.recipe, group.binding.inputs, binding.recipe, binding.inputs));
+    const item = { index, node, expression, consumer, instruction };
+    if (found) found.items.push(item);
+    else groups.push({ block:instruction.block, indent:node.indent, binding, items:[item] });
+  }
+  const plans = [];
+  let serial = 0;
+  for (const group of groups) {
+    if (--remaining < 0 || shouldAbort?.()) return;
+    if (group.items.length < 2) continue;
+    const first = group.items[0], last = group.items.at(-1);
+    // No branch, label, scope change or unrelated statement is crossed. The
+    // canonical instruction order must agree with the actual rendered order.
+    if (last.index - first.index + 1 !== group.items.length
+      || group.items.some((item, i) => i && result.ir.instructions.indexOf(item.instruction)
+        <= result.ir.instructions.indexOf(group.items[i - 1].instruction))) continue;
+    let name;
+    do {
+      if (--remaining < 0 || shouldAbort?.()) return;
+      name = `hex_cse_${serial++}`;
+    } while (body.some(node => new RegExp(`\\b${name}\\b`).test(node.text ?? '')));
+    const source = mergeSource(...group.items.map(item => item.expression.source));
+    const record = Object.freeze({ kind:'proved-scalar-cse',
+      proof:'identical admitted solver recipes and immutable entry inputs in one straight-line rendered block',
+      targets:Object.freeze(collectTargets(source, 'proved-scalar-cse')),
+      origin:Object.freeze({ addresses:Object.freeze([...source.addresses]), rows:Object.freeze([...source.rows]),
+        ir:Object.freeze([...source.ir]), ssaDefs:Object.freeze([...source.ssaDefs]), ssaUses:Object.freeze([...source.ssaUses]) }),
+      name, useCount:group.items.length, canonicalInstructionsRetained:true });
+    const expression = { ...first.expression, source };
+    const node = { kind:'stmt', indent:group.indent,
+      text:`uint${expression.bits}_t ${name} = ${printExpression(expression)};`, source,
+      semantic:{ op:'cse-binding', name, expression } };
+    const retained = [...new Set(group.items.flatMap(item => item.consumer.records))];
+    const consumer = Object.freeze({ ir:result.ir, expression,
+      records:Object.freeze([...retained, record]),
+      isCurrent:() => group.items.every(item => item.consumer.isCurrent()) });
+    plans.push({ group, name, source, record, node, consumer });
+  }
+  // All checks precede writes. The surrounding proof projection rechecks the
+  // source/plan and cancellation before publication, including after printing.
+  for (const plan of plans.sort((a, b) => b.group.items[0].index - a.group.items[0].index)) {
+    const { group, name, source, record, node, consumer } = plan;
+    for (const item of group.items) {
+      item.node.semantic.expression = expr.variable(name, item.expression.bits, false, source);
+      item.node.text = item.node.semantic.op === 'return' ? `return ${name};` : `${item.node.semantic.location.text} = ${name};`;
+      consumers[item.index] = Object.freeze({ ...item.consumer,
+        records:Object.freeze([...item.consumer.records, record]) });
+    }
+    body.splice(group.items[0].index, 0, node);
+    recordRegionInsertion(regionCopy, node, group.items[0].node, record);
+    consumers.splice(group.items[0].index, 0, consumer);
+    bindings.set(node.semantic.expression, group.binding);
+    records.push(record);
+  }
+}
+
 function boundAnalysisIdentity(result, analysis, supplied) {
   const canonical = canonicalAnalysisIdentity({ ir:result.ir, analysis });
   if (supplied == null) return canonical;
@@ -269,66 +630,573 @@ function boundAnalysisIdentity(result, analysis, supplied) {
  * high-level projection while retaining the union of the original source/evidence.
  * Refused or ambiguous facts remain unchanged.
  */
+// The canonical fixed point authorizes discarding a dead result, never the
+// observable CALL. Its RHS comes only from the actual initial emitter. Text
+// scanning below is a rejection guard for residual rendered references, not
+// positive liveness or expression authority.
+function deadCallResultPlans(result, analysis, consumers, shouldAbort) {
+  const body = result.cAst.body ?? [];
+  if (body.length > 4096 || shouldAbort?.()) return [];
+  const spellings = body.map(node => readCallResultSpellingProducer(node, result.ir));
+  if (!spellings.some(Boolean)) return [];
+  const proof = readDceResultProof(analysis, result.ir);
+  if (!proof) return [];
+  const dead = new Set(proof.facts.deadButObservable.map(row => row.valueId));
+  const values = new Set(result.ir.values), instructions = new Set(result.ir.instructions);
+  const plans = [];
+  for (const [index, spelling] of spellings.entries()) {
+    if (shouldAbort?.()) return [];
+    if (!spelling || spelling.consumer !== consumers[index]) continue;
+    const value = spelling.value, node = body[index];
+    if (!dead.has(value.id) || !values.has(value) || !instructions.has(value.def)
+        || value.def.op !== 'call' || value.def.dst !== value || node.kind !== 'stmt'
+        || node.semantic?.op !== 'call-render' || node.semantic.ir !== value.def.id
+        || !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(spelling.name)
+        || node.text !== `${spelling.name} = ${spelling.callText}`) continue;
+    plans.push({ index, spelling, proof });
+  }
+  const mentions = new Map(plans.map(plan => [plan.spelling.name, 0]));
+  let units = PROJECTION_LIMITS.expandedUnits, edges = PROJECTION_LIMITS.edges;
+  for (const node of body) {
+    if (shouldAbort?.() || typeof node.text !== 'string' || (units -= node.text.length) < 0) return [];
+    for (const match of node.text.matchAll(/[A-Za-z_$][A-Za-z0-9_$]*/g)) {
+      if (--edges < 0 || shouldAbort?.()) return [];
+      if (mentions.has(match[0])) mentions.set(match[0], mentions.get(match[0]) + 1);
+    }
+  }
+  return proof.isCurrent() ? plans.filter(plan => mentions.get(plan.spelling.name) === 1) : [];
+}
+
 export function applyPhase8Projection(result, analysis, opts = {}) {
   if (!result?.semantic || !result.semanticAst || !result.cAst || !analysis) return result;
-  const capture = beginScopedTransformCapture(result, opts.scopedTransformEvidence);
-  const records = [];
-  const names = inductionNames(analysis);
-  const transform = (expression) => transformExpression(expression, names, records);
+  const original = result;
+  const regionCopy = beginRegionProjection(result, opts);
+  const regionContext = { ir:result.ir, opts };
+  const regionPlan = opts.phase8RegionErasurePlan != null ? readProvedRegionErasure(analysis, regionContext) : null;
+  if (opts.phase8RegionErasurePlan != null && !regionPlan) return original;
+  const conditionRequested = opts.phase8RegionErasurePlan?.conditionPlanId != null;
+  const conditionProof = regionPlan ? readRegionErasureCondition(regionPlan, original, result.ir, opts.phase8ProofIdentity) : null;
+  // Conditional-predicate projection is a public, predicate-only operation.
+  // Keep the prepared region plan attached for condition freshness, but require
+  // an explicit private-packet hand-off (or a renderer-only opt-in) before
+  // consuming its independent body-erasure authority.
+  const bodyProjectionEnabled = opts.phase8RegionErasureBody === false ? false
+    : opts.phase8RegionErasureBody === true || isRegionErasureBodyRequested(opts.phase8RegionErasurePlan);
+  const bodyExpected = bodyProjectionEnabled && regionPlan?.bodyValidation === 'proved-no-phi-flat-stores';
+  const bodyProof = bodyProjectionEnabled && regionPlan
+    ? readRegionErasureBody(regionPlan, original, result.ir, opts.phase8ProofIdentity) : null;
+  const currentCondition = () => !opts.shouldAbort?.() && readProvedRegionErasure(analysis, regionContext) === regionPlan
+    && readRegionErasureCondition(regionPlan, original, original.ir, opts.phase8ProofIdentity) === conditionProof;
+  const currentBody = () => !bodyProof || !opts.shouldAbort?.()
+    && readProvedRegionErasure(analysis, regionContext) === regionPlan
+    && readRegionErasureBody(regionPlan, original, original.ir, opts.phase8ProofIdentity) === bodyProof
+    && bodyProof.sourceCurrent();
+  if (conditionRequested && (!regionCopy || !conditionProof || opts.phase8RewritePlan != null || !currentCondition()
+      || bodyExpected && (!bodyProof || !currentBody()))) return original;
+  const scopedCapture = beginScopedTransformCapture(result, opts.scopedTransformEvidence);
+  const renderOnly = regionPlan != null || opts.preserveInitialSpelling === true && opts.phase8RewritePlan == null;
+  const proofOnly = opts.phase8ProofOnlyRewrites === true || producerUsesProofOnlyRewrites(original);
+  const inherited = readProjectionHistory(original);
+  const historyReasons = new Set();
+  const hasPriorHistory = projectionHistories.has(original.cAst) || original.phase8Projection != null;
+  if (hasPriorHistory && !inherited) historyReasons.add('unavailable-prior-projection-history');
+  if (original.phase8Projection?.history?.completeness === 'incomplete') historyReasons.add('upstream-projection-history-incomplete');
+  // Capture before this owned projection transforms or clones the descriptors.
+  // Recovery supplies its own observed transition; it does not inherit the
+  // earlier consumer by source or expression similarity.
+  const expressionConsumers = inherited ? [...inherited.expressions]
+    : (result.cAst.body ?? []).map(node => hasPriorHistory ? null
+      : readStackReturnHistoryConsumer(node?.semantic, result.ir)
+        || readStackPhiHistoryConsumer(node?.semantic, result.ir)
+        || readLegacyStackHistoryConsumer(node?.semantic, result.ir) || readExpressionHistoryConsumer(node?.semantic, result.ir));
+  const storeSpellings = (result.cAst.body ?? []).map(node => hasPriorHistory ? null : readStoreSpellingProducer(node, result.ir));
+  const controlSources = expressionConsumers.map(consumer => consumer
+    ? controlConsumerSources.get(consumer) || readInitialControlConsumer(consumer) : null);
+  const conditionBindings = inherited ? [...inherited.conditionConsumers]
+    : (result.semanticAst.conditions ?? []).map(condition => hasPriorHistory ? null : readExpressionHistoryConsumer(condition, result.ir));
+  const conditionConsumers = new Map();
+  for (const [index, condition] of (result.semanticAst.conditions ?? []).entries()) {
+    if (condition.row == null) continue;
+    const row = Number(condition.row);
+    conditionConsumers.set(row, conditionConsumers.has(row) ? null : conditionBindings[index]);
+  }
+  const renderedConditions = new Map();
+  const proofRequested = opts.phase8RewritePlan != null;
+  const proofContext = {ir:result.ir,opts};
+  const provedInputs = proofRequested ? readProvedInputBindings(analysis,proofContext) : null;
+  const proved = provedInputs?.artifact ?? null;
+  const dcePlans = hasPriorHistory || renderOnly ? [] : deadCallResultPlans(result, analysis, expressionConsumers, opts.shouldAbort);
+  const currentDce = () => !opts.shouldAbort?.() && (!dcePlans.length || dcePlans[0].proof.isCurrent())
+    && dcePlans.every(plan => readCallResultSpellingProducer(original.cAst.body[plan.index], original.ir) === plan.spelling);
+  if (proofRequested) {
+    if (!isProducerProjection(original)) return original;
+    if (!proved && opts.phase8RewritePlan.entries.length) return original;
+  }
+  // Every expression projection writes its own descriptors. Mutating the
+  // observed predecessor would revoke its consumers even on an ordinary view
+  // update. Initial controls retain their existing exact text-write handoff;
+  // proof/DCE transactions isolate those nodes too for cancellation rollback.
+  result = {...result,semanticAst:{...result.semanticAst},cAst:{...result.cAst,
+    body:(result.cAst.body ?? []).map(node => {
+      const next = !regionCopy && !proofRequested && !dcePlans.length && node.semantic?.op === 'control-render'
+        ? node : {...node,semantic:node.semantic ? {...node.semantic} : node.semantic};
+      if (regionCopy && !regionCopy.failed) {
+        if (regionCopy.copies.has(node) || regionCopy.copies.size >= regionCopy.nodes) regionCopy.failed = true;
+        else regionCopy.copies.set(node, next);
+      }
+      return next;
+    })}};
+  for (const key of ['values','stores','outputs','conditions']) result.semanticAst[key] =
+    (original.semanticAst[key] ?? []).map(item=>({...item}));
+  const records = [], replacements = new Map(), memo = new Map(), proofExpressions = new Map(), proofRecords = new Map();
+  if (proved) {
+    const selectedReplacements = new Map();
+    const inputValues = [...new Set(provedInputs.bindings.flatMap(input => input.binding.inputs.map(input => input.value)))];
+    const renderedInputs = readProducerInputExpressions(original, inputValues);
+    if (!renderedInputs) return original;
+    const inputExpressions = new Map(renderedInputs.map(input => [input.value, input.expression]));
+    const byId = new Map();
+    for (const item of result.semanticAst.values ?? []) {
+      byId.set(item.valueId,byId.has(item.valueId)?null:item);
+    }
+    for (const entry of proved.entries) {
+      const inputBinding = provedInputs.bindings.find(input => input.entry === entry)?.binding;
+      if (!inputBinding || inputBinding.inputs.some(input => inputExpressions.get(input.value)?.bits !== input.bits)) return original;
+      const item = byId.get(entry.rawValueId), root = item?.expression;
+      if (!root || root.bits !== entry.bits || root.effect !== 'pure') continue;
+      if (entry.kind === 'solver-constant' && root.kind === 'const' && root.value === entry.value) continue;
+      const canonicalSource = provedSliceSource(root.source,inputBinding,opts.shouldAbort);
+      if (!canonicalSource) return original;
+      const source = evidenceSource(canonicalSource,`Phase 8 solver proof ${entry.queryHash}`);
+      const inputs = inputBinding.inputs.map(input => inputExpressions.get(input.value));
+      const token = producerExpressionToken(original,root);
+      if (token == null) continue;
+      // Shared observed roots must agree before replay/no-op handling too.
+      const selected = selectedReplacements.get(token);
+      if (selected && !sameProofExpression(selected.recipe,selected.inputs,entry.projection,inputs)) return original;
+      selectedReplacements.set(token,{recipe:entry.projection,inputs});
+      const prior = inherited?.proofExpressions?.get(root);
+      if (prior && sameProofExpression(prior.recipe,prior.inputs,entry.projection,inputs)) {
+        // Keep an actually published expression and its private recipe on replay;
+        // public proof IDs/text cannot manufacture this idempotence relation.
+        replacements.set(token,root); proofExpressions.set(root,prior); continue;
+      }
+      const recipeRoot = entry.projection.nodes[entry.projection.root];
+      if (recipeRoot.kind === 'fresh_symbol' && root === inputs[recipeRoot.input]) continue;
+      let replacement = renderProofExpression(entry.projection,inputs,opts.shouldAbort);
+      if (!replacement || replacement.bits !== entry.bits || replacement.effect !== 'pure') return original;
+      replacement = {...replacement,source:mergeSource(replacement.source,source)};
+      const previous = replacements.get(token);
+      if (previous) replacement = {...replacement,source:mergeSource(previous.source,replacement.source)};
+      if (entry.kind === 'solver-constant') replacement.signed = root.signed;
+      replacements.set(token,replacement);
+      proofExpressions.set(replacement,{recipe:entry.projection,inputs:Object.freeze(inputs),
+        entryInputs:inputBinding.inputs.every(input => input.value.kind === 'arg' && input.value.def == null)
+          && inputs.every(input => input.kind === 'var')});
+      const record = Object.freeze({kind:entry.kind,valueId:entry.valueId,
+        proof:'canonical eligible solver equivalence proof',targets:Object.freeze(collectTargets(source,entry.kind)),
+        queryHash:entry.queryHash,planId:proved.planId,beforeHash:entry.beforeHash,afterHash:entry.afterHash,
+        ...(entry.generatorAudit ? {generatorAudit:entry.generatorAudit} : {}),
+        origin:Object.freeze({addresses:Object.freeze([...source.addresses]),rows:Object.freeze([...source.rows]),
+          ir:Object.freeze([...source.ir]),ssaDefs:Object.freeze([...source.ssaDefs]),ssaUses:Object.freeze([...source.ssaUses])})});
+      records.push(record);
+      proofRecords.set(token,[...(proofRecords.get(token) ?? []),record]);
+    }
+  }
+  // A before-source union is not a rendered consumer edge. Bind solver records
+  // to owned expressions containing the actual replaced token, not to another
+  // statement that merely shares an input. Retain this relation through replay.
+  let proofConsumerEdges = PROJECTION_LIMITS.edges;
+  const boundConsumers = new Map();
+  const bindProofConsumer = (consumer, expression = null) => {
+    if (!proofRecords.size) return consumer;
+    const priorConsumer = consumer;
+    // A deferred ordinary rewrite has no history consumer yet. Its actual C
+    // node is still owned by the existing prepared producer. Use that same
+    // private observer, not a source-shaped substitute, for the first proof.
+    if (!consumer && expression && producerExpressionToken(original,expression) != null) {
+      consumer = Object.freeze({ir:original.ir,expression,records:Object.freeze([]),
+        isCurrent:() => isProducerProjection(original)});
+    }
+    if (!consumer) return null;
+    if (boundConsumers.has(consumer)) return boundConsumers.get(consumer);
+    const found = new Set(), seen = new Set(), pending = [consumer.expression];
+    while (pending.length) {
+      if (--proofConsumerEdges < 0 || opts.shouldAbort?.()) { historyReasons.add('proof-consumer-binding-budget'); return consumer; }
+      const node = pending.pop(); if (!node || seen.has(node)) continue; seen.add(node);
+      const token = producerExpressionToken(original,node);
+      for (const record of proofRecords.get(token) ?? []) found.add(record);
+      // Match transformExpression: an outer replacement wins before visiting
+      // its children. Inner proofs may change their own semantic value view,
+      // but must not claim this line when that output was never consumed here.
+      if (!replacements.has(token)) pending.push(...children(node));
+    }
+    const bound = found.size ? Object.freeze({...consumer,records:Object.freeze([...new Set([...consumer.records,...found])])}) : priorConsumer;
+    const control = controlConsumerSources.get(consumer) || readInitialControlConsumer(consumer);
+    if (control) controlConsumerSources.set(bound,control);
+    boundConsumers.set(consumer,bound);
+    return bound;
+  };
+  for (let index = 0; index < expressionConsumers.length; index++) {
+    const prior = expressionConsumers[index];
+    const next = bindProofConsumer(prior,original.cAst.body[index]?.semantic?.expression);
+    expressionConsumers[index] = next;
+    // Adding an owned proof record changes the consumer wrapper, not the
+    // observed store emitter. Carry only the already validated exact pair
+    // through this private transition; source/text similarity is insufficient.
+    const spelling = storeSpellings[index];
+    if (prior && next && next !== prior && spelling?.consumer === prior) {
+      storeSpellings[index] = Object.freeze({...spelling,consumer:next});
+    }
+  }
+  for (let index = 0; index < conditionBindings.length; index++) conditionBindings[index] = bindProofConsumer(
+    conditionBindings[index],original.semanticAst.conditions[index]?.expression);
+  conditionConsumers.clear();
+  for (const [index,condition] of (original.semanticAst.conditions ?? []).entries()) {
+    if (condition.row == null) continue;
+    const row = Number(condition.row);
+    conditionConsumers.set(row,conditionConsumers.has(row) ? null : conditionBindings[index]);
+  }
+  const names = renderOnly ? new Map() : inductionNames(analysis);
+  const transform = (expression) => {
+    // The default product route requests a map of the existing representation,
+    // not another expression normalization or DCE pass. Keep exact identity.
+    if (renderOnly) { memo.set(expression,expression); return expression; }
+    return transformExpression(expression, names, records, memo, replacements, node=>producerExpressionToken(original,node), proofOnly);
+  };
 
   for (const item of result.semanticAst.values || []) item.expression = transform(item.expression);
   for (const item of result.semanticAst.stores || []) if (item.expression) item.expression = transform(item.expression);
   for (const item of result.semanticAst.outputs || []) if (item.expression) item.expression = transform(item.expression);
   const conditions = conditionMap(result.semanticAst, transform);
 
-  for (const node of result.cAst.body || []) {
+  const spellingRecords = [], controlRecords = [], dceRecords = [], regionRemovalRecords = [];
+  const existingHistoryRecords = expressionHistoryRecordCount(result.rewriteProof, result.ir);
+  const spellingLimit = Number.isSafeInteger(opts.renderProvenanceBudget?.maxTransformRecords)
+    && opts.renderProvenanceBudget.maxTransformRecords >= 0
+    ? Math.min(opts.renderProvenanceBudget.maxTransformRecords, DEFAULT_RENDER_TRANSFORM_RECORDS) : DEFAULT_RENDER_TRANSFORM_RECORDS;
+  let controlHandoffEdges = Number.isSafeInteger(opts.renderProvenanceBindingBudget?.maxEdges)
+    ? Math.max(0, Math.min(PROJECTION_LIMITS.edges, opts.renderProvenanceBindingBudget.maxEdges)) : PROJECTION_LIMITS.edges;
+  const dceByIndex = new Map(dcePlans.map(plan => [plan.index, plan]));
+
+  if (bodyProof) {
+    if (!regionCopy || !currentBody() || bodyProof.nodes.length !== bodyProof.originalNodes.length
+        || !bodyProof.nodes.length || bodyProof.nodes.length > 256) return original;
+    const indexes = new Set(), entries = [];
+    const afterSource = mergeSource(bodyProof.header.source, conditionProof.expression.source);
+    for (const [ordinal, sourceNode] of bodyProof.nodes.entries()) {
+      const clone = regionCopy.copies.get(sourceNode);
+      const index = original.cAst.body.indexOf(sourceNode);
+      if (!clone || index < 0 || indexes.has(index) || result.cAst.body[index] !== clone
+          || sourceNode.kind !== 'stmt' || sourceNode.semantic?.op !== 'store'
+          || bodyProof.originalNodes[ordinal]?.kind !== 'stmt') return original;
+      indexes.add(index);
+      const beforeSource = sourceOf(sourceNode.source);
+      const record = Object.freeze({ rule:'erase-proved-unreachable-arm-store', phase:'phase8-render',
+        before:'control:unreachable-arm-store', after:'control:proved-live-arm-only',
+        evidence:Object.freeze({ kind:'canonical-unreachable-arm-proof', planId:bodyProof.planId,
+          queryHash:regionPlan.queryHash, liveQueryHash:regionPlan.liveQueryHash, domainQueryHash:regionPlan.domainQueryHash,
+          detail:'entry-path proof excludes this arm; no PHI/memory-PHI correspondence is inferred and canonical IR/CFG remain unchanged' }),
+        originHistory:expressionOriginHistory({ source:beforeSource }, { source:afterSource }),
+        renderedRemoval:Object.freeze({ scope:'pre-transform-render', operation:'remove', lineIndex:index, kind:sourceNode.kind }),
+      });
+      entries.push({ index, sourceNode, clone, record });
+    }
+    if (existingHistoryRecords + entries.length + 1 > spellingLimit) return original;
+    for (const entry of entries.sort((left, right) => right.index - left.index)) {
+      recordRegionRemoval(regionCopy, entry.sourceNode, entry.clone, entry.record);
+      if (regionCopy.failed) return original;
+      result.cAst.body.splice(entry.index, 1);
+      expressionConsumers.splice(entry.index, 1);
+      storeSpellings.splice(entry.index, 1);
+      controlSources.splice(entry.index, 1);
+      regionRemovalRecords.push(entry.record);
+    }
+    regionRemovalRecords.reverse();
+  }
+
+  let conditionWrites = 0;
+  for (const [index, node] of (result.cAst.body || []).entries()) {
+    const priorCondition = provedConditionConsumers.get(expressionConsumers[index]);
+    if (conditionProof && regionCopy.copies.get(conditionProof.header) === node) {
+      const control = controlSources[index], consumer = expressionConsumers[index];
+      if (!consumer || control !== conditionProof.control || !control.isCurrent() || !currentCondition() || !currentBody()
+          || existingHistoryRecords + controlRecords.length + regionRemovalRecords.length >= spellingLimit) return original;
+      const source = mergeSource(node.source, conditionProof.expression.source);
+      const record = Object.freeze({ rule:'project-proved-conditional-predicate', phase:'phase8-render',
+        before:'control:initial-predicate', after:'control:proved-predicate',
+        evidence:Object.freeze({ kind:'canonical-predicate-equivalence', queryHash:conditionProof.plan.queryHash,
+          planId:conditionProof.plan.planId, detail:regionRemovalRecords.length
+            ? 'independently proved predicate re-lowered by the canonical proof expression printer; separate private authority removes only the proved unreachable flat-store render body'
+            : 'independently proved predicate re-lowered by the canonical proof expression printer; no arm erasure' }),
+        originHistory:expressionOriginHistory({ source }, { source }) });
+      node.text = conditionProof.text;
+      node.semantic = { ...node.semantic, expression:conditionProof.expression };
+      const next = Object.freeze({ ...consumer, expression:conditionProof.expression,
+        records:Object.freeze([...new Set([...consumer.records, ...conditionProof.consumer.records, ...regionRemovalRecords, record])]),
+        isCurrent:() => control.isCurrent() && conditionProof.sourceCurrent() && currentBody() });
+      expressionConsumers[index] = next;
+      provedConditionConsumers.set(next, Object.freeze({ expression:conditionProof.expression, text:conditionProof.text,
+        identity:conditionProof.plan.identity, planId:conditionProof.plan.planId, queryHash:conditionProof.plan.queryHash }));
+      controlConsumerSources.set(next, control);
+      controlRecords.push(record); conditionWrites++;
+      continue;
+    }
+    if (priorCondition) {
+      if (node.semantic?.expression !== priorCondition.expression || node.text !== priorCondition.text) return original;
+      // Replays retain the original proof consumer, never chain older copies or
+      // replace this predicate using the generic row-based spelling path.
+      continue;
+    }
+    const dce = dceByIndex.get(index);
+    if (dce) {
+      // Whole-batch observations are rechecked before publication. Do not
+      // rewalk every other call's history for each isolated text write.
+      if (existingHistoryRecords + dceRecords.length >= spellingLimit || opts.shouldAbort?.()) return original;
+      const source = sourceOf(node.source), consumer = expressionConsumers[index];
+      const record = Object.freeze({ rule:'eliminate-dead-call-result', phase:'phase8-render', valueId:dce.spelling.value.id,
+        before:'call:result-assignment', after:'call:discarded-result',
+        evidence:Object.freeze({ kind:'canonical-dce-dead-result-call-retained',
+          detail:'committed fixed-point liveness; only the result binding is removed, with the exact observable call retained' }),
+        originHistory:expressionOriginHistory({ source }, { source }),
+        renderedRemoval:Object.freeze({ scope:'pre-transform-render', operation:'remove', lineIndex:index, kind:node.kind }),
+      });
+      node.text = dce.spelling.callText;
+      dceRecords.push(record);
+      expressionConsumers[index] = Object.freeze({ ...consumer, records:Object.freeze([...consumer.records, record]),
+        isCurrent:() => consumer.isCurrent() && dce.proof.isCurrent() });
+    }
     if (node?.semantic?.expression) {
-      node.semantic.expression = transform(node.semantic.expression);
+      const retainedBinding = node.semantic.op === 'cse-binding' && inherited?.proofExpressions.get(node.semantic.expression);
+      if (retainedBinding) {
+        memo.set(node.semantic.expression, node.semantic.expression);
+        proofExpressions.set(node.semantic.expression, retainedBinding);
+      } else node.semantic.expression = transform(node.semantic.expression);
       if (node.semantic.op === 'return') node.text = `return ${printExpression(node.semantic.expression)};`;
+      else if (node.semantic.op === 'cse-binding') node.text = `uint${node.semantic.expression.bits}_t ${node.semantic.name} = ${printExpression(node.semantic.expression)};`;
       else if (node.semantic.op === 'store' && node.semantic.location?.text) {
-        node.text = `${node.semantic.location.text} = ${printExpression(node.semantic.expression)};`;
+        const text = `${node.semantic.location.text} = ${printExpression(node.semantic.expression)};`;
+        const spelling = storeSpellings[index], consumer = expressionConsumers[index];
+        if (!hasPriorHistory && !spelling && consumer?.records.some(record => record.rule === 'render-compound-store')) {
+          historyReasons.add('unavailable-store-spelling-producer');
+        }
+        // The output descriptor may now be an owned copy. Recheck the actual
+        // incoming producer too: matching copied text cannot hide a late write
+        // to its original node during an analysis callback.
+        const spellingCurrent = spelling && spelling.consumer === consumer && spelling.text === node.text
+          && spelling.observation.matches();
+        if (spelling && !spellingCurrent) historyReasons.add('stale-store-spelling-producer');
+        // Ordinary presentation may retain the actual initial emitter only
+        // when projection did not replace its expression object. Equal text,
+        // copied descriptors and merely equivalent expressions are not enough.
+        const retainSpelling = renderOnly && (spellingCurrent && node.semantic.expression === consumer.expression
+          || inherited && node.semantic.expression === original.cAst.body[index]?.semantic?.expression);
+        if (spellingCurrent && node.text !== text && !retainSpelling) {
+          if (existingHistoryRecords + spellingRecords.length >= spellingLimit) historyReasons.add('store-spelling-history-budget');
+          else {
+            const source = mergeSource(node.source, consumer.expression?.source, node.semantic.expression.source);
+            const record = Object.freeze({ rule:'expand-projected-store-spelling', phase:'phase8-render', valueId:spelling.valueId,
+              before:`store:${spelling.form}`, after:'store:assignment',
+              evidence:Object.freeze({ kind:'observed-store-spelling-not-memory-equivalence',
+                detail:'actual owned C AST to projected assignment transition; no memory equivalence proof' }),
+              originHistory:expressionOriginHistory({ source }, { source }),
+            });
+            spellingRecords.push(record);
+            expressionConsumers[index] = Object.freeze({ ...consumer, records:Object.freeze([...consumer.records, record]) });
+          }
+        }
+        if (!retainSpelling) node.text = text;
       }
     }
     const rows = sourceOf(node.source).rows.map(Number);
     const candidates = [...new Set(rows.map((row) => conditions.get(row)).filter(Boolean))];
-    if (candidates.length === 1) {
-      const expression = printExpression(candidates[0]);
-      if (String(node.text || '').includes('if (')) node.text = replaceCondition(node.text, 'if', expression);
-      else if (String(node.text || '').includes('while (')) node.text = replaceCondition(node.text, 'while', expression);
+    // The structured emitter may invert a branch or reuse a post-store load.
+    // Render-only mapping must not replace that expression with the raw taken
+    // branch predicate. Ordinary projection retains the actual emitter's
+    // polarity while using current variable spellings. The private producer
+    // binding supplies inversion; caller metadata cannot grant it. The proved
+    // condition path above has its own polarity and equivalence binding.
+    if (!renderOnly && candidates.length === 1) {
+      const printed = printExpression(candidates[0]);
+      const expression = controlSources[index]?.conditionInverted ? `!(${printed})` : printed;
+      const keyword = String(node.text || '').includes('if (') ? 'if' : String(node.text || '').includes('while (') ? 'while' : null;
+      if (keyword) {
+        const beforeText = node.text, control = controlSources[index];
+        let priorControl = null;
+        if (control && expressionConsumers[index]?.isCurrent()) {
+          try {
+            if (controlHandoffEdges <= 0) throw new Error('initial-control-handoff-budget');
+            const captured = observeProjectionData([node]);
+            controlHandoffEdges -= captured.metrics.edges;
+            if (controlHandoffEdges < 0) throw new Error('initial-control-handoff-budget');
+            priorControl = captured;
+          }
+          catch { historyReasons.add('initial-control-handoff-unavailable'); }
+        }
+        const replacement = replaceCondition(node.text, keyword, expression);
+        // Only a condition actually printed by this owned replacement can
+        // supply a rendered edge. Ambiguous source rows remain unbound.
+        const consumers = [...new Set(rows.map(row => conditionConsumers.get(row)).filter(Boolean))];
+        if (replacement.replaced && consumers.length === 1) renderedConditions.set(node, consumers[0]);
+        node.text = replacement.text;
+        if (replacement.replaced && priorControl) {
+          // This exact owned text write is the only permitted difference.
+          // Keep the original emitter/IR check, refresh the output observation,
+          // and never accumulate a chain of old output snapshots on replay.
+          const writes = Object.freeze([Object.freeze({ object:node, key:'text', before:beforeText, after:replacement.text })]);
+          try {
+            const output = observeProjectionData([node], opts.shouldAbort);
+            controlHandoffEdges -= output.metrics.edges;
+            if (controlHandoffEdges < 0 || !priorControl.matchesThroughWrites(writes)
+                || !control.isCurrent() || !output.matches()) throw new Error('initial-control-handoff-unavailable');
+            const retained = expressionConsumers[index].records;
+            let record = null;
+            if (beforeText !== replacement.text) {
+              if (existingHistoryRecords + spellingRecords.length + controlRecords.length >= spellingLimit) throw new Error('initial-control-handoff-budget');
+              const source = mergeSource(node.source, candidates[0].source);
+              record = Object.freeze({ rule:'replace-initial-control-condition', phase:'phase8-render',
+                before:`control:${keyword}:initial-condition`, after:`control:${keyword}:canonical-condition`,
+                evidence:Object.freeze({ kind:'observed-control-render-not-cfg-equivalence', conditionInverted:control.conditionInverted,
+                  detail:'actual owned condition spelling replacement with retained branch polarity; not a new CFG/flag equivalence proof' }),
+                originHistory:expressionOriginHistory({ source }, { source }),
+              });
+              controlRecords.push(record);
+            }
+            const next = Object.freeze({ ...expressionConsumers[index], records:record ? Object.freeze([...retained, record]) : retained,
+              isCurrent:() => control.isCurrent() && priorControl.matchesThroughWrites(writes) && output.matches() });
+            expressionConsumers[index] = next; controlConsumerSources.set(next, control);
+          } catch { historyReasons.add('initial-control-handoff-unavailable'); }
+        }
+      }
     }
   }
 
+  if (conditionRequested && (conditionWrites !== 1 || !currentCondition() || !currentBody())) return original;
+
+  if (spellingRecords.length || controlRecords.length || dceRecords.length || regionRemovalRecords.length) result = { ...result,
+    rewriteProof:[...(result.rewriteProof || []), ...spellingRecords, ...controlRecords, ...dceRecords, ...regionRemovalRecords] };
+
+  if (proved && (!hasPriorHistory || inherited)) shareProvedScalars(result, proofExpressions, expressionConsumers, records, opts.shouldAbort, regionCopy);
+
+  if (regionRemovalRecords.length && !currentBody()) return original;
+  if (dceRecords.length && !currentDce()) return original;
+  if (proofRequested && (opts.shouldAbort?.() || !isProducerProjection(original) || proved && !readProvedRewrites(analysis,proofContext))) return original;
   const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
-  const lines = (result.cAst.body || []).map((node) => {
-    const expressionSource = node?.semantic?.expression ? sourceOf(node.semantic.expression.source) : null;
+  const lines = (result.cAst.body || []).map((node, index) => {
+    // HEX-C4-03: a rendered line is produced by its own node location AND by
+    // the rewritten semantic expression that now renders into it. The merged
+    // expression source carries the union of every consumed origin across the
+    // rewrite chain, which is exactly what reverse navigation must reach.
+    const expressionSource = node?.semantic?.expression
+      ? sourceOf(node.semantic.expression.source)
+      : null;
     const conditionSource = (() => {
+      if (renderOnly) return null;
       const rows = sourceOf(node.source).rows.map(Number);
       const candidates = [...new Set(rows.map((row) => conditions.get(row)).filter(Boolean))];
       return candidates.length === 1 ? sourceOf(candidates[0].source) : null;
     })();
     const sources = [node?.source, expressionSource, conditionSource].filter(Boolean);
     const source = sources.length === 1 ? sources[0] : mergeSource(...sources);
-    return {
-      kind:node.kind, indent:node.indent, text:node.text,
-      row:source.rows?.[0] ?? null, addr:source.addresses?.[0] ?? null, note:null, source,
+    const line = {
+      kind:node.kind,
+      indent:node.indent,
+      text:node.text,
+      row:source.rows?.[0] ?? null,
+      addr:source.addresses?.[0] ?? null,
+      note:null,
+      source,
     };
+    const consumers = [expressionConsumers[index], renderedConditions.get(node)].filter(Boolean);
+    if (consumers.length && consumers.every(consumer => consumer.isCurrent())) {
+      try {
+        const observation = observeProjectionData([line], opts.shouldAbort);
+        const records = Object.freeze([...new Set(consumers.flatMap(consumer => consumer.records))]);
+        lineExpressionHistories.set(line, { ir:result.ir, consumers, records, observation });
+      } catch { /* No inferred edge when the bounded observation is unavailable. */ }
+    }
+    return line;
   });
+  if (regionRemovalRecords.length && !currentBody()) return original;
+  if (proofRequested && (opts.shouldAbort?.() || !isProducerProjection(original) || proved && !readProvedRewrites(analysis,proofContext))) return original;
+  const retainedRecords = Object.freeze([...(inherited?.records ?? []), ...records]);
+  for (const [expression,binding] of inherited?.proofExpressions ?? []) {
+    if (memo.get(expression) === expression) proofExpressions.set(expression,binding);
+  }
+  const pendingHistory = prepareProjectionHistory(result, expressionConsumers, conditionBindings,
+    retainedRecords, opts, historyReasons, proofExpressions,
+    inherited?.dataObserver || readProjectionDataObserver(original.cAst) || createProjectionIrObserver());
+  const adoptedCse = records.some(record => record.kind === 'proved-scalar-cse');
+  const requiresCompleteHistory = adoptedCse || dceRecords.length > 0 || conditionWrites > 0 || regionRemovalRecords.length > 0;
+  if (requiresCompleteHistory && (!pendingHistory || historyReasons.size)) return original;
   const withLines = {
     ...result,
     lines,
     pseudocode:printed.text,
-    sourceMap:printed.mapping,
+    // Only this producer's current line binding may carry consumed histories
+    // into the printed span. Raw/copied rewrite metadata is not a source edge.
+    sourceMap:printed.mapping.map((entry, index) => {
+      const history = readLineExpressionHistory(lines[index], result.ir);
+      return history ? { ...entry, source:mergeSource(entry.source,
+        ...history.map(record => record.originHistory?.before).filter(Boolean)) } : entry;
+    }),
     metrics:refreshMetrics(result, result.semanticAst, printed, records),
     phase8Projection:Object.freeze({
-      version:1, transformCount:records.length, transforms:Object.freeze(records),
+      version:PHASE8_PROJECTION_VERSION,
+      transformCount:records.length,
+      transforms:Object.freeze(records),
       inductionNames:Object.freeze(Object.fromEntries(names)),
+      history:Object.freeze({ completeness:historyReasons.size ? 'incomplete' : 'complete',
+        reasons:Object.freeze([...historyReasons]), transformCount:retainedRecords.length, transforms:retainedRecords }),
     }),
   };
+  // HEX-C4-03: bidirectional render provenance. Caller-supplied identity may
+  // only be used when it is a validated wrapper that exactly matches the
+  // canonical identity derived from the current Semantic IR. Stale/plain
+  // overrides fall back to the canonical result instead of minting snapshot
+  // authority for a different IR.
   const resolvedIdentity = boundAnalysisIdentity(result, analysis, opts.analysisIdentity);
-  const renderProvenance = buildRenderProvenance({
-    result:withLines, snapshotId:resolvedIdentity?.identity?.snapshotId ?? null,
-    budget:opts.renderProvenanceBudget, shouldAbort:opts.shouldAbort,
+  let renderProvenance = buildRenderProvenance({
+    result:withLines,
+    snapshotId:resolvedIdentity?.identity?.snapshotId ?? null,
+    budget:opts.renderProvenanceBudget,
+    shouldAbort:opts.shouldAbort,
   });
-  const scopedTransforms = finishScopedTransformCapture(capture, withLines);
-  return { ...withLines, renderProvenance, ...(scopedTransforms ? { scopedTransforms } : {}) };
+  if (requiresCompleteHistory && renderProvenance.completeness !== 'complete') return original;
+  if (regionRemovalRecords.length && !currentBody()) return original;
+  if (dceRecords.length && !currentDce()) return original;
+  if (proofRequested && (opts.shouldAbort?.() || !isProducerProjection(original) || proved && !readProvedRewrites(analysis,proofContext))) return original;
+  const cancelled = opts.shouldAbort?.() === true;
+  const stillCurrent = pendingHistory && pendingHistory.observation.matches()
+    && pendingHistory.consumers.every(consumer => consumer.isCurrent());
+  if (requiresCompleteHistory && (cancelled || !stillCurrent)) return original;
+  if (cancelled) {
+    if (proofRequested) return original;
+    renderProvenance = buildRenderProvenance({ result:withLines, budget:opts.renderProvenanceBudget, shouldAbort:() => true });
+  } else if (pendingHistory && !stillCurrent) {
+    renderProvenance = Object.freeze({ ...renderProvenance, completeness:'incomplete',
+      reasons:Object.freeze([...new Set([...renderProvenance.reasons, 'stale-projection-history'])]) });
+  } else if (stillCurrent) {
+    projectionHistories.set(result.cAst, { ...pendingHistory, projection:withLines.phase8Projection });
+  }
+  const scopedTransforms = finishScopedTransformCapture(scopedCapture, withLines);
+  const regionHistory = prepareRegionProjection(regionCopy, result.cAst, opts);
+  // All external cancellation callbacks and the complete projection run before
+  // publication. A changed predecessor cannot be refreshed by copying it.
+  try {
+    if (conditionRequested && (!currentCondition() || !currentBody() || !regionHistory || !pendingHistory
+        || !pendingHistory.consumers.every(consumer => consumer.isCurrent())
+        || !pendingHistory.observation.matches() || !regionCopy.ownerCurrent()
+        || !regionCopy.inputObservation.matches() || !regionHistory.observation.matches())) return original;
+    if (regionHistory && regionHistory.isCurrent() && regionCopy.predecessorCurrent()
+        && regionCopy.ownerCurrent() && regionCopy.inputObservation.matches() && regionHistory.observation.matches()) {
+      projectedConditionalRegions.set(result.cAst, Object.freeze({ ...regionHistory,
+        projection:withLines.phase8Projection, semanticAst:withLines.semanticAst, rewriteProof:withLines.rewriteProof }));
+    } else if (conditionRequested) return original;
+  } catch { if (conditionRequested) return original; }
+  return {
+    ...withLines,
+    renderProvenance,
+    ...(scopedTransforms ? { scopedTransforms } : {}),
+  };
 }

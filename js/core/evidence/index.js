@@ -93,6 +93,44 @@ function enumValue(value, allowed, fallback, code) {
   return normalized;
 }
 
+// Evidence payloads are observational metadata rather than identity-bearing
+// authority fields. Normalize boxed primitive leaves there so compatibility
+// records such as `{ status: new String('verified') }` remain inspectable,
+// while the core identity serializer continues to reject boxed objects in
+// stale-state and approval identities.
+function normalizePayloadBoxedPrimitives(value, seen = new WeakSet()) {
+  if (value instanceof String) return String.prototype.valueOf.call(value);
+  if (value instanceof Number) return Number.prototype.valueOf.call(value);
+  if (value instanceof Boolean) return Boolean.prototype.valueOf.call(value);
+  if (value == null || typeof value !== 'object') return value;
+  if (seen.has(value)) return value;
+  if (Array.isArray(value)) {
+    seen.add(value);
+    const out = value.map(item => normalizePayloadBoxedPrimitives(item, seen));
+    seen.delete(value);
+    return out;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
+  seen.add(value);
+  const out = Object.create(prototype);
+  for (const key of Object.keys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+      Object.defineProperty(out, key, descriptor);
+      continue;
+    }
+    Object.defineProperty(out, key, {
+      value: normalizePayloadBoxedPrimitives(descriptor.value, seen),
+      enumerable: descriptor.enumerable,
+      configurable: descriptor.configurable,
+      writable: descriptor.writable,
+    });
+  }
+  seen.delete(value);
+  return out;
+}
+
 export function createEvidenceNode(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('evidence-invalid-node');
   const family = enumValue(input.family, EVIDENCE_NODE_FAMILIES, null, 'evidence-invalid-family');
@@ -107,7 +145,7 @@ export function createEvidenceNode(input = {}) {
     confidence: confidence(input.confidence),
     deterministic: input.deterministic === true,
     origin: createOriginSet(input.origin ?? {}),
-    payload: jsonSafe(input.payload ?? {}),
+    payload: jsonSafe(normalizePayloadBoxedPrimitives(input.payload ?? {})),
     createdAt: optionalString(input.createdAt, 'evidence-invalid-created-at'),
   };
   return deepFreeze(node);

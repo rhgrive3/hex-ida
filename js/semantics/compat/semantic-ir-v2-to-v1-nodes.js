@@ -189,6 +189,17 @@ function constForValue(valueId, context) {
   return producer?.kind === 'const' ? constantPayload(producer, machineType).value : null;
 }
 
+function sameComparisonOperand(leftId, rightId, context) {
+  if (leftId === rightId) return true;
+  const left = constForValue(leftId, context);
+  const right = constForValue(rightId, context);
+  // Lowering can emit the immediate separately for the result and flag DAGs.
+  // Distinct dynamic values are not equivalent merely because they render alike.
+  return left != null && right != null && left === right
+    && context.valuesById.get(leftId)?.bits === context.valuesById.get(rightId)?.bits
+    && Number.isInteger(context.valuesById.get(leftId)?.bits);
+}
+
 function comparisonCarrier(valueId, context, active = new Set()) {
   if (!valueId || active.has(valueId)) return null;
   active.add(valueId);
@@ -197,7 +208,31 @@ function comparisonCarrier(valueId, context, active = new Set()) {
   if (producer) {
     const direct = context.comparisonCarrierByNodeId.get(producer.id) ?? null;
     if (direct) result = { value: direct, compareNode: producer };
-    else if (producer.kind === 'state-read') {
+    else if (producer.kind === 'intrinsic'
+        && ['x86.flags.add', 'x86.flags.sub', 'x86.flags.cmp'].includes(producer.operator)
+        && producer.inputs?.length === 3 && producer.outputs?.length === 6
+        && operationMetadata(producer).carryInput === false
+        && operationMetadata(producer).semanticModel === 'intel-x86-add-sub-flags/v1') {
+      // Preserve the existing exact x86 non-carry display carrier, but follow
+      // only this flag producer's numeric result. Never search arbitrary old
+      // comparisons through opaque intrinsics, ADC/SBB, or conditional flags.
+      const numeric = context.producerByValueId.get(producer.inputs[2]);
+      const comparison = numeric && context.comparisonCarrierByNodeId.get(numeric.id);
+      const operation = producer.operator === 'x86.flags.add' ? 'add' : 'sub';
+      if (comparison && numeric.kind === 'binary' && numeric.operator === operation
+          && numeric.inputs?.length === 2
+          && sameComparisonOperand(numeric.inputs[0], producer.inputs[0], context)
+          && sameComparisonOperand(numeric.inputs[1], producer.inputs[1], context)
+          && producer.outputs.every(id => context.valuesById.get(id)?.bits === 1)) {
+        result = { value: comparison, compareNode: numeric };
+      }
+    } else if (producer.kind === 'select' || producer.kind === 'intrinsic'
+        && !['extract-bit','is-zero','not-bool','and-bool','or-bool','equal-bool'].includes(producer.operator)) {
+      // A conditional/opaque producer does not mean its incoming comparison.
+      // In particular, dynamic carry, CCMP fallback flags and FCCMP results
+      // must not borrow an older unconditional display CMP.
+      result = null;
+    } else if (producer.kind === 'state-read') {
       const use = context.stateProjection.readUseByNodeId.get(producer.id) ?? null;
       const reaching = use == null ? null : context.stateProjection.definitionByValueId.get(use.valueId) ?? null;
       const sourceValueId = reaching?.proof?.sourceSemanticValueId ?? null;
@@ -265,12 +300,25 @@ function clearPhysicalState(variable, context) {
   if (identity && context.physicalStateCurrent) context.physicalStateCurrent.delete(identity);
 }
 
-function addWithCarryOperands(node, context) {
-  if (node.operator !== 'add-with-carry' || (node.inputs || []).length < 3) return null;
+export function addWithCarryOperands(node, context) {
+  const intrinsic = node.intrinsic;
+  if (node.operator !== 'add-with-carry' || node.inputs?.length !== 3 || node.outputs?.length !== 3
+      || intrinsic?.inputs?.length !== 3 || intrinsic.outputs?.length !== 3
+      || intrinsic.inputs.some((id, index) => id !== node.inputs[index])
+      || intrinsic.outputs.some((id, index) => id !== node.outputs[index])
+      || intrinsic.determinism !== 'deterministic' || intrinsic.stateReads?.length !== 0
+      || intrinsic.stateWrites?.length !== 0 || intrinsic.controlEffects?.length !== 0
+      || intrinsic.memoryRead?.scope !== 'none' || intrinsic.memoryWrite?.scope !== 'none') return null;
   const metadata = operationMetadata(node);
   const subtract = metadata.subtract === true;
   const carry = constForValue(node.inputs[2], context);
-  if (carry !== (subtract ? 1n : 0n)) return null;
+  // An explicit constant carry of 0/1 uses the plain arithmetic form when
+  // matching the subtraction direction. A dynamic incoming NZCV.C value (or
+  // non-plain constant carry) is projected through the pure zero-extended carry
+  // sequence (exact-dynamic-add-with-carry-intrinsic). Any unmodelled or non-0/1
+  // constant fails closed.
+  if (carry != null && carry !== 0n && carry !== 1n) return null;
+  const plainArithmetic = carry != null && carry === (subtract ? 1n : 0n);
   let rhsId = node.inputs[1];
   if (subtract) {
     const rhsProducer = context.producerByValueId.get(rhsId) ?? null;
@@ -279,7 +327,15 @@ function addWithCarryOperands(node, context) {
   }
   const lhs = context.valuesById.get(node.inputs[0]) ?? null;
   const rhs = context.valuesById.get(rhsId) ?? null;
-  return lhs && rhs ? { lhs, rhs, subtract } : null;
+  const carryInput = context.valuesById.get(node.inputs[2]);
+  const canonicalRhs = context.valuesById.get(node.inputs[1]);
+  const result = context.valuesById.get(node.outputs[0]);
+  if (!lhs || !rhs || !result || !canonicalRhs || !Number.isSafeInteger(result.bits)
+      || result.bits < 1 || result.bits > 64 || canonicalRhs.bits !== result.bits
+      || lhs.bits !== rhs.bits || lhs.bits !== result.bits
+      || carryInput?.bits !== 1 || context.valuesById.get(node.outputs[1])?.bits !== 1
+      || context.valuesById.get(node.outputs[2])?.bits !== 1) return null;
+  return { lhs, rhs, canonicalRhs, carryInput, subtract, plainArithmetic };
 }
 
 function hasRegisterStateWriteForValue(valueId, context) {
@@ -372,6 +428,82 @@ function appendComparisonInstruction(node, context, inst, carrier, args, sub, ro
   return cmp;
 }
 
+// One typed derived-value writer for both the numeric carry input and the
+// secondary flag results. It preserves the canonical source/origin identity.
+function createAddWithCarryEmitter(node, context, width, instructions, compatSource = 'exact-add-with-carry-result') {
+  const temporary = (suffix) => {
+    const values = context.values;
+    const value = {
+      id: values.length, vid: values.length + 1, kind: 'def', reg: null, stateKey: null,
+      version: 0, bits: width, def: null, uses: [], const: null, range: null,
+      signed: null, nullable: null, type: null, label: `add-with-carry:${node.id}:${suffix}`,
+      semanticValueId: null, semanticSsaValueId: null, sourceEntityId: node.id,
+      machineType: { kind: 'bitvector', widthBits: width }, origin: node.origin,
+      compatDerived: 'add-with-carry-result',
+    };
+    values.push(value);
+    return value;
+  };
+  const emit = (suffix, op, sub, args, dst = temporary(suffix), extra = {}) => {
+    const inst = baseInstruction(node, context.blockIndex, context.row, context.options);
+    inst.semanticNodeId = `${node.id}:add-with-carry:${suffix}`;
+    inst.op = op; inst.sub = sub; inst.dst = dst; inst.bits = dst.bits;
+    attachArgs(inst, args);
+    inst.extra = { semanticNodeId: node.id, widthBits: dst.bits,
+      attributes: node.attributes || {}, completeness: node.completeness,
+      compatSource, ...extra };
+    dst.def = inst;
+    instructions.push(inst);
+    return dst;
+  };
+  return emit;
+}
+
+/** Expand the secondary results of the canonical add-with-carry intrinsic.
+ * The input on the right is the actual canonical addend (already inverted for
+ * subtraction), not a mnemonic-derived operand. For every incoming carry bit,
+ * carry-out is msb((a & b) | ((a | b) & ~sum)); signed overflow is
+ * msb(~(a ^ b) & (a ^ sum)). This is only a pure BV lowering, not an authority
+ * for state writes, conditional execution, exceptions, or transform adoption.
+ */
+function appendAddWithCarryResults(node, context, sum, outputs, instructions, represented) {
+  const [a, b] = node.inputs.map(id => context.valuesById.get(id));
+  const width = sum?.bits;
+  if (!sum || !a || !b || !Number.isInteger(width) || width < 1 || width > 64
+      || a.bits !== width || b.bits !== width || outputs[1]?.bits !== 1 || outputs[2]?.bits !== 1) return;
+  const needed = outputs.slice(1, 3).map(value => context.canonicalValueUseIds.has(value.semanticValueId));
+  for (let i = 0; i < 2; i++) {
+    if (needed[i]) continue;
+    // Retain the source identity, but do not execute work for a result with no
+    // canonical consumer. A later request for this omitted value is explicitly
+    // undefined in this projection, never a new unconstrained argument.
+    outputs[i + 1].kind = 'undef';
+    outputs[i + 1].compatOmitted = 'unused-add-with-carry-result';
+    represented.add(outputs[i + 1].semanticValueId);
+  }
+  if (!needed.some(Boolean)) return;
+  const emit = createAddWithCarryEmitter(node, context, width, instructions);
+  if (needed[0]) {
+    const both = emit('both', V1_OP.BIN, 'and', [a, b]);
+    const either = emit('either', V1_OP.BIN, 'or', [a, b]);
+    const invertedSum = emit('inverted-sum', V1_OP.UN, 'not', [sum]);
+    const propagated = emit('propagated', V1_OP.BIN, 'and', [either, invertedSum]);
+    const carries = emit('carries', V1_OP.BIN, 'or', [both, propagated]);
+    emit('carry-out', V1_OP.BFX, 'extract', [carries], outputs[1],
+      { lsb: width - 1, width: 1, signed: false, bitfieldKind: 'ubfx' });
+    represented.add(outputs[1].semanticValueId);
+  }
+  if (needed[1]) {
+    const signDifference = emit('sign-difference', V1_OP.BIN, 'xor', [a, b]);
+    const sameSigns = emit('same-signs', V1_OP.UN, 'not', [signDifference]);
+    const resultDifference = emit('result-difference', V1_OP.BIN, 'xor', [a, sum]);
+    const overflow = emit('overflow-bits', V1_OP.BIN, 'and', [sameSigns, resultDifference]);
+    emit('overflow', V1_OP.BFX, 'extract', [overflow], outputs[2],
+      { lsb: width - 1, width: 1, signed: false, bitfieldKind: 'ubfx' });
+    represented.add(outputs[2].semanticValueId);
+  }
+}
+
 export function projectNode(node, context) {
   const {
     blockIndex, row, valuesById, ir, nodeById, blockBySemanticId, options,
@@ -385,7 +517,7 @@ export function projectNode(node, context) {
   const opMeta = operationMetadata(node);
   const widthBits = primaryOutput?.bits ?? inputValues[0]?.bits ?? 64;
   const representedExtraValueIds = new Set();
-  const extraInstructions = [];
+  const extraInstructions = [], prefixInstructions = [];
   const setBasic = (op, sub = null, args = inputValues, destination = primaryOutput) => {
     inst.op = op; inst.sub = sub; inst.dst = destination;
     attachArgs(inst, args);
@@ -611,7 +743,7 @@ export function projectNode(node, context) {
       if (inst.addr.base && inst.addr.base !== addressValue) addUse(inst.addr.base, inst);
       if (inst.addr.index) addUse(inst.addr.index, inst);
       inst.extra = { semanticNodeId: node.id, size: bytesForBits(node.memory.widthBits), widthBits: node.memory.widthBits,
-        signed: attrs.signed === true || opMeta.signed === true, memoryAccess: node.memory, completeness: node.completeness,
+        signed: attrs.signed === true || opMeta.signed === true, memoryAccess: node.memory, completeness: node.completeness, attributes: attrs,
         addressPrecise: inst.addr.precise, addressOrigin: inst.addr.origin };
       break;
     }
@@ -631,7 +763,7 @@ export function projectNode(node, context) {
       if (inst.addr.base && inst.addr.base !== addressValue) addUse(inst.addr.base, inst);
       if (inst.addr.index) addUse(inst.addr.index, inst);
       inst.extra = { semanticNodeId: node.id, size: bytesForBits(node.memory.widthBits), widthBits: node.memory.widthBits,
-        memoryAccess: node.memory, completeness: node.completeness,
+        memoryAccess: node.memory, completeness: node.completeness, attributes: attrs,
         addressPrecise: inst.addr.precise, addressOrigin: inst.addr.origin };
       break;
     }
@@ -645,13 +777,20 @@ export function projectNode(node, context) {
       const targetValues = node.call.targetValueIds.map((id) => valuesById.get(id)).filter(Boolean);
       const directValue = targetValues.find((value) => value.const != null);
       const directTarget = directValue?.const ?? null;
+      const machineTarget = machineControl(node)?.target;
+      const symbolicTarget = machineTarget?.kind === 'symbolic-code-reference'
+        && typeof machineTarget.name === 'string'
+        && /^[A-Za-z_.$][A-Za-z0-9_.$@]{0,255}$/.test(machineTarget.name)
+        ? machineTarget.name : null;
       const abi = classifyCallWithAbi(node, ir, valuesById, options);
       inst.extra = {
+        attributes: attrs,
         semanticNodeId: node.id,
         target: directTarget,
+        ...(symbolicTarget ? { name:symbolicTarget, symbolicTarget } : {}),
         targetValueIds: node.call.targetValueIds.slice(),
         targetEntityIds: node.call.targetEntityIds.slice(),
-        indirect: directTarget == null,
+        indirect: directTarget == null && symbolicTarget == null,
         callArguments: abi.callArguments,
         stackArguments: abi.stackArguments,
         stackArgsUnknown: abi.stackArgsUnknown,
@@ -698,6 +837,14 @@ export function projectNode(node, context) {
     case 'return':
       setBasic(V1_OP.RET, null);
       inst.returnValueIds = node.inputs.slice();
+      if (node.metadata?.returnControlTarget) {
+        inst.extra.returnControlTarget = node.metadata.returnControlTarget;
+        if (node.metadata.returnControlTarget.state === 'resolved') {
+          inst.extra.returnControlTargetValueId = node.metadata.returnControlTarget.valueId;
+          inst.returnTargetValue = valuesById.get(node.metadata.returnControlTarget.valueId);
+          if (inst.returnTargetValue) addUse(inst.returnTargetValue, inst);
+        }
+      }
       break;
     case 'branch': {
       if (node.targets.length !== SEMANTIC_CONTROL_TARGET_COUNTS.branch || node.inputs.length !== 0) {
@@ -792,9 +939,26 @@ export function projectNode(node, context) {
       const carrier = comparisonCarrierByNodeId.get(node.id) ?? null;
       const addSub = intrinsicDeclaresSideEffects(node.intrinsic) ? null : addWithCarryOperands(node, context);
       if (addSub) {
-        const resultIsWritten = node.outputs?.[0] && hasRegisterStateWriteForValue(node.outputs[0], context);
+        const resultValueId = node.outputs?.[0] ?? null;
+        const resultIsWritten = resultValueId != null && hasRegisterStateWriteForValue(resultValueId, context);
+        const resultIsConsumed = resultValueId != null && context.ir.nodes.some((candidate) =>
+          candidate.id !== node.id && candidate.inputs?.includes(resultValueId));
         const args = [addSub.lhs, addSub.rhs];
-        if (carrier && !resultIsWritten) {
+        if (!addSub.plainArithmetic) {
+          // Exact a + canonical_addend + zero_extend(C). The subtraction
+          // addend is already complemented by canonical MachineEffects.
+          // Both pure prerequisites execute before the named numeric result.
+          const emit = createAddWithCarryEmitter(node, context, primaryOutput.bits,
+            prefixInstructions, 'exact-add-with-carry-input');
+          const wideCarry = emit('carry-input', V1_OP.MOV, 'zext', [addSub.carryInput], undefined,
+            { sourceBits:1, targetBits:primaryOutput.bits });
+          const partial = emit('partial-sum', V1_OP.BIN, 'add', [addSub.lhs, addSub.canonicalRhs]);
+          setBasic(V1_OP.BIN, 'add', [partial, wideCarry]);
+          inst.extra.compatSource = 'exact-dynamic-add-with-carry-intrinsic';
+        } else
+        // N/Z consumers still use the numeric result even when the ISA discards
+        // the destination register (CMP/CMN). A display carrier has another ID.
+        if (carrier && !resultIsWritten && !resultIsConsumed && outputValues.length < 3) {
           setBasic(V1_OP.CMP, addSub.subtract ? 'sub' : 'add', args, carrier);
           inst.bits = Math.max(1, ...args.map((value) => value.bits || 1));
           inst.extra.comparison = 'semantic-flag-result';
@@ -808,7 +972,8 @@ export function projectNode(node, context) {
             if (cmp) extraInstructions.push(cmp);
           }
         }
-        for (const value of outputValues) representedExtraValueIds.add(value.semanticValueId);
+        appendAddWithCarryResults(node, context, primaryOutput, outputValues,
+          extraInstructions, representedExtraValueIds);
       } else if (!deterministicIntrinsicProjection(node, context, inst, setBasic, primaryOutput, inputValues)) {
         setBasic(V1_OP.CLOBBER, null);
         inst.extra.intrinsic = node.intrinsic;
@@ -845,7 +1010,6 @@ export function projectNode(node, context) {
   const extras = [];
   for (const extraOutput of outputValues.slice(1)) {
     if (representedExtraValueIds.has(extraOutput.semanticValueId)) {
-      if (extraOutput.def == null && extraInstructions[0]) extraOutput.def = extraInstructions[0];
       continue;
     }
     const extra = defaultUnknownInstruction(node, blockIndex, row, options, {
@@ -863,5 +1027,5 @@ export function projectNode(node, context) {
     extraOutput.def = extra;
     extras.push(extra);
   }
-  return [inst, ...extraInstructions, ...extras];
+  return [...prefixInstructions, inst, ...extraInstructions, ...extras];
 }

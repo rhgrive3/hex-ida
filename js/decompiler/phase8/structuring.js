@@ -159,7 +159,7 @@ function terminatorOf(block) {
 export function classifyEdge(edge, context) {
   const { from, to } = edge;
   const kinds = edge.kinds ?? [edge.kind];
-  const { byIndex, loopsByHeader, innermostLoopOf, postDominates, ipdom } = context;
+  const { byIndex, loopsByHeader, innermostLoopOf, dispatcherLoopOf, postDominates, ipdom } = context;
 
   // 1. A kind this pass does not recognise makes the whole edge a constraint,
   //    even if another label on it looks ordinary. Folding an unwind edge into
@@ -170,6 +170,16 @@ export function classifyEdge(edge, context) {
     return {
       construct: 'constraint-edge',
       reason: `edge kind ${foreign.map((kind) => `"${kind}"`).join(', ')} is not ordinary structured control transfer, so the edge is preserved as a constraint on the enclosing region`,
+    };
+  }
+
+  const dispatcher = typeof dispatcherLoopOf === 'function'
+    ? (dispatcherLoopOf(from) ?? dispatcherLoopOf(to))
+    : null;
+  if (dispatcher != null) {
+    return {
+      construct: 'residual-goto',
+      reason: `switch-headed loop ${dispatcher.header} has multiple direct state arms returning to its header, so it is retained as explicit control flow rather than guessed as a structured loop`,
     };
   }
 
@@ -348,6 +358,38 @@ export function runStructuringPass(context = {}, budget = {}, area = null) {
   const loopsByHeader = new Map(loops.map((loop) => [loop.header, loop]));
   const nodeSets = new Map(loops.map((loop) => [loop.header, new Set(loop.nodes)]));
 
+  // A switch-headed natural loop whose distinct case blocks are all direct
+  // latches back to the same header is dispatcher-shaped control flow. It may
+  // be a flattened state machine, and this pass has no independent state-machine
+  // proof. Preserve every edge as a residual jump instead of minting a loop or
+  // switch region from the shape alone.
+  const dispatcherLoopHeaders = new Set();
+  for (const loop of loops) {
+    if (loop.classification !== 'natural') continue;
+    const nodes = nodeSets.get(loop.header);
+    const header = byIndex.get(loop.header);
+    if (!nodes || !header || terminatorOf(header)?.op !== 'switch') continue;
+    const internal = successorEdgesOf(header).filter((edge) => nodes.has(edge.to));
+    if (internal.length < 2 || internal.some((edge) => edge.to === loop.header)) continue;
+    const latches = new Set(loop.latches);
+    const allDirectLatches = internal.every((edge) => {
+      if (!latches.has(edge.to)) return false;
+      const armEdges = successorEdgesOf(byIndex.get(edge.to));
+      return armEdges.length === 1 && armEdges[0].to === loop.header
+        && armEdges[0].kinds.every((kind) => STRUCTURED_EDGE_KINDS.has(kind));
+    });
+    if (allDirectLatches) dispatcherLoopHeaders.add(loop.header);
+  }
+
+  const dispatcherLoopOf = (index) => {
+    let best = null;
+    for (const loop of loops) {
+      if (!dispatcherLoopHeaders.has(loop.header) || !nodeSets.get(loop.header).has(index)) continue;
+      if (best == null || loop.nodes.length < best.nodes.length) best = loop;
+    }
+    return best;
+  };
+
   const innermostLoopOf = (index) => {
     let best = null;
     for (const loop of loops) {
@@ -386,7 +428,7 @@ export function runStructuringPass(context = {}, budget = {}, area = null) {
     return candidates.sort((a, b) => a - b)[0];
   };
 
-  const accountingContext = { byIndex, blockOrder, loopsByHeader, innermostLoopOf, loopExitedBy, postDominates, ipdom, sharedPostDominator };
+  const accountingContext = { byIndex, blockOrder, loopsByHeader, innermostLoopOf, dispatcherLoopOf, loopExitedBy, postDominates, ipdom, sharedPostDominator };
   const edges = abortedNow() ? [] : accountEdges(accountingContext);
   const budgetExhausted = truncatedByLimit || abortedNow();
 
@@ -402,6 +444,7 @@ export function runStructuringPass(context = {}, budget = {}, area = null) {
   // whose shape was not established.
   const regions = [];
   for (const loop of loops) {
+    if (dispatcherLoopHeaders.has(loop.header)) continue;
     const exits = [...new Set(loop.exitEdges.map((edge) => edge.to))].sort((left, right) => left - right);
     regions.push(Object.freeze({
       kind: loop.classification === 'natural' ? 'loop' : 'irreducible',
@@ -422,6 +465,7 @@ export function runStructuringPass(context = {}, budget = {}, area = null) {
     const block = byIndex.get(index);
     const successors = successorEdgesOf(block);
     if (successors.length < 2) continue;
+    if (dispatcherLoopHeaders.has(index)) continue;
     if (loopsByHeader.has(index) && loopsByHeader.get(index).guardBlock === index) continue;
     const terminator = terminatorOf(block);
     const isSwitch = terminator?.op === 'switch' || successors.some((edge) => edge.kinds.includes('switch-case') || edge.kinds.includes('switch-default'));

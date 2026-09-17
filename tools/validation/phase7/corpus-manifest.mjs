@@ -17,7 +17,7 @@ import { stableDigest } from '../../../js/core/identity/index.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 import { currentSupportMatrix } from '../../../js/platform/capability-maturity.js';
-import { ALIAS_QUERIES, CORPUS_ID, CORPUS_VERSION, ESCAPE_QUERIES, FIXTURE_IDS, MEMORY_LINK_QUERIES } from '../../../tests/phase7/corpus/fixtures.mjs';
+import { ALIAS_QUERIES, ALIAS_QUERIES_V2, CORPUS_ID, CORPUS_VERSION, ESCAPE_QUERIES, FIXTURE_IDS, MEMORY_LINK_QUERIES } from '../../../tests/phase7/corpus/fixtures.mjs';
 import { SUMMARY_CORPUS_ID, SUMMARY_CORPUS_VERSION, SUMMARY_GRAPH_IDS, SUMMARY_QUERIES } from '../../../tests/phase7/corpus/summaries.mjs';
 import { TYPE_CASES, TYPE_CORPUS_ID, TYPE_CORPUS_VERSION } from '../../../tests/phase7/corpus/types.mjs';
 import { DISCOVERY_CASE_IDS, DISCOVERY_CORPUS_ID, DISCOVERY_CORPUS_VERSION, DISCOVERY_TRUTH } from '../../../tests/phase7/corpus/discovery.mjs';
@@ -106,6 +106,15 @@ export function buildCorpusManifest({ matrix = currentSupportMatrix() } = {}) {
       id: query.id, fixture: query.fixture, left: query.left, right: query.right,
       truth: query.truth, expectStrong: query.expectStrong === true,
     })),
+    // Bind the full v2 question set as well as the original baseline series.
+    aliasQueriesV2: ALIAS_QUERIES_V2.map(query => ({ ...query })),
+    aliasTruthErratum: {
+      id: 'c1-incoming-storage-20260915',
+      previousCorpusVersion: 1,
+      invalidatesPreviousEvidence: true,
+      correctedQueryIds: ['q-frame-non-escaping', 'v2-frame-non-escaping', 'v2-callee-ret', 'v2-tls-vs-stack'],
+      reason: 'Incoming addresses lack fresh-allocation or disjoint-storage preconditions.',
+    },
     memoryLinkQueries: MEMORY_LINK_QUERIES.map((query) => ({
       id: query.id, fixture: query.fixture, load: query.load, truth: query.truth,
       expectedStore: query.expectedStore ?? null,

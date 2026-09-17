@@ -1,0 +1,83 @@
+{
+  "schema": "hex-x02-real-apple-evidence-snapshot/v1",
+  "capturedAt": "2026-09-16T15:52:19Z",
+  "source": {
+    "workflowRunId": 35118158460,
+    "headSha": "54b3cda2843ba3127fc6d7f2d266748b9fe1d9d3",
+    "artifactId": 10457155516,
+    "artifactDigest": "sha256:7cb65af30cb10a6368a18c875d21a3883006e8164be91199280c4c4ae2cc6468"
+  },
+  "appleEnvironment": {
+    "osProductVersion": "15.7.9",
+    "osBuildVersion": "24G830",
+    "machine": "arm64",
+    "xcodeVersion": "Xcode 16.4\nBuild version 16F6",
+    "clangVersion": "Apple clang version 17.0.0 (clang-1700.0.13.5)\nTarget: arm64-apple-darwin24.6.0\nThread model: posix\nInstalledDir: /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin",
+    "pointerAuthenticationFeature": "1"
+  },
+  "signedMachO": {
+    "path": "/usr/bin/true",
+    "sha256": "501c66a6d1850f8cece66b1c33991969b66f29f003ba91675077672acb15ba5f",
+    "file": "/usr/bin/true: Mach-O universal binary with 2 architectures: [x86_64:Mach-O 64-bit executable x86_64] [arm64e:Mach-O 64-bit executable arm64e]",
+    "codesignStrictVerified": true,
+    "identifier": "com.apple.true",
+    "authorityChain": [
+      "Software Signing",
+      "Apple Code Signing Certification Authority",
+      "Apple Root CA"
+    ],
+    "signedTime": "2025-07-21T01:13:18Z"
+  },
+  "realDyldCache": {
+    "path": "/System/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e",
+    "size": 2712977408,
+    "sha256": "c88d3a9885614d4ee8be36f0e9a50ee09e640311ca0ea843bc67613933e00184",
+    "sharedRegionStart": "0x180000000",
+    "sharedRegionSize": "0x12c684000",
+    "slideMappingIndex": 1,
+    "slideInfoVersion": 5,
+    "pageSize": 16384,
+    "selectedPages": [0, 677, 1314, 1955],
+    "sampledRebaseCount": 6077,
+    "authenticatedRebaseCount": 0,
+    "allSampleTargetsInDeclaredSharedRegion": true,
+    "boundedSample": true,
+    "exhaustiveCacheWalk": false,
+    "runtimeLoadMapObserved": false,
+    "runtimeSlideObserved": false
+  },
+  "pacRuntime": {
+    "arm64": {
+      "compileExit": 0,
+      "runExit": 0,
+      "signal": null,
+      "pacInstructionObserved": true,
+      "authenticationInstructionObserved": true
+    },
+    "arm64e": {
+      "compileExit": 0,
+      "runExit": null,
+      "signal": "SIGSEGV",
+      "pacInstructionObserved": true,
+      "authenticationInstructionObserved": true
+    }
+  },
+  "currentAcceptance": {
+    "X02-G-09": {
+      "classification": "pass",
+      "reason": "Apple-signed universal Mach-O is SHA-pinned and passes strict trusted codesign validation with an Apple certificate chain."
+    },
+    "X02-B-06": {
+      "classification": "evidence-gap",
+      "reason": "Real dyld v5 cache/rebase metadata is now pinned, but an observed runtime load-map and OS-derived runtime slide are still absent."
+    },
+    "X02-A-08": {
+      "classification": "evidence-gap",
+      "reason": "One Apple OS/toolchain/runtime evidence point is pinned; the requirement is a cross-version/cross-toolchain corpus."
+    },
+    "X02-F-47": {
+      "classification": "environment-excluded",
+      "reason": "arm64 PAC instructions execute successfully on Apple Silicon, but the explicit arm64e probe terminates with SIGSEGV and therefore does not prove arm64e runtime authentication."
+    }
+  }
+}

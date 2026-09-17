@@ -153,7 +153,7 @@ const memorySsa = buildMemorySsa(canonicalIr, canonicalCfg, {
     evidenceIds: ['canonical-fixture-alias'],
     proof: {
       analyzerId: 'phase7.alias.solver',
-      analyzerVersion: '1.1.0',
+      analyzerVersion: '1.1.1',
       completeness: 'complete',
       stopReason: null,
     },
@@ -184,7 +184,7 @@ function fixtureAlias(relation, sourceEntityId, evidenceId, purpose = 'fixture-m
       evidenceIds: [evidenceId],
       proof: {
         analyzerId: 'phase7.alias.solver',
-        analyzerVersion: '1.1.0',
+        analyzerVersion: '1.1.1',
         completeness: 'complete',
         stopReason: null,
       },
@@ -324,7 +324,7 @@ const sameIdentityArtifact = buildMemorySsa(canonicalIr, canonicalCfg, {
     evidenceIds: ['canonical-fixture-alias'],
     proof: {
       analyzerId: 'phase7.alias.solver',
-      analyzerVersion: '1.1.0',
+      analyzerVersion: '1.1.1',
       completeness: 'complete',
       stopReason: null,
     },
@@ -681,7 +681,7 @@ const builtMemorySsa = buildMemorySsa(exactIr, exactCfg, {
     evidenceIds: ['canonical-fixture-alias'],
     proof: {
       analyzerId: 'phase7.alias.solver',
-      analyzerVersion: '1.1.0',
+      analyzerVersion: '1.1.1',
       completeness: 'complete',
       stopReason: null,
     },

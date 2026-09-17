@@ -1,0 +1,260 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { inventoryFromGit, loadManifest as loadPhase7, validateFiles as validatePhase7 } from '../phase7-ownership.mjs';
+import { loadManifest as loadPhase8, validateFiles as validatePhase8 } from '../phase8-ownership.mjs';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+export const BRANCH = 'feat/analysis-roadmap-v8-current-main-20260907';
+export const BRANCH_ALIAS = 'integration-candidate/local-handover-20260914';
+const CONTINUATION_BRANCH = 'codex/analysis-remaining-20260914';
+const ROUTED_BRANCHES = Object.freeze([BRANCH, BRANCH_ALIAS, CONTINUATION_BRANCH]);
+const SPECIAL_PATHS = Object.freeze({
+  semanticCompat: ['js/core/identity/live-data.js', 'js/core/identity/origin.js', 'tests/core-origin-canonical-reuse.test.mjs', 'js/ir-core.js', 'js/ir-base.js', 'js/decompiler/semantic.js', 'js/decompiler/semantic-views.js', 'js/semantics/compat/effect-obligations.js', 'js/semantics/compat/index.js', 'js/semantics/compat/legacy-value-ranges.js', 'js/semantics/compat/semantic-ir-v2-to-v1.js', 'js/semantics/compat/semantic-ir-v2-to-v1-core.js', 'js/semantics/compat/semantic-ir-v2-to-v1-finalize.js', 'js/semantics/compat/semantic-ir-v2-to-v1-memory.js', 'js/semantics/compat/semantic-ir-v2-to-v1-nodes.js'],
+  integration: [
+    "js/blocks-base.js", "tests/phase4/issue-3911-blocks-base-call-arg-provenance.test.mjs",
+    "js/arm64.js", "js/analyze.js", "docs/analysis-remaining-20260914.md",
+    "docs/解析ツール改善.md.txt",
+    "js/metadata/objc.js",
+    "js/targets/architecture/arm64/effects/common.js",
+    "js/targets/architecture/arm64/effects/integer.js",
+    "js/targets/architecture/x86_64/effects/integer.js",
+    "tests/machine-effects/x86-long64-integer-denominator.test.mjs",
+    "tests/arm64-direct-branch-target-alignment.test.mjs",
+    "tests/machine-effects/arm64-adr-strict-address-evidence.test.mjs",
+    "tests/machine-effects/arm64-literal-memory-encoding.test.mjs",
+    "docs/analysis-local-acceptance-audit.json",
+    "docs/analysis-local-handover.md",
+    "docs/解析ツール改善.md",
+    'js/expr.js',
+    'tests/semantic-v2/lowering-memory-control.test.mjs',
+    'tests/semantic-v2/phase3-hard-timeout.test.mjs',
+    "tests/semantic-v2/repair-v1-add-with-carry-def-use.test.mjs",
+    "tests/semantic-v2/issue-flags-nzcv-adcs-sbcs.test.mjs",
+    'js/semantics/ir/nodes.js',
+    'js/semantics/ir/function.js',
+    'js/semantics/ir/from-machine-effects.js',
+    'js/semantics/ir/normalize-effects.js',
+    'js/semantics/ssa/build.js',
+    'js/semantics/ssa/build-core.js',
+    'tests/semantic-v2/c4-return-control-target.test.mjs',
+    'tests/scpa/x02-apple-version-matrix.test.mjs',
+    'tests/scpa/fixtures/x02-apple-version-matrix.json',
+    'tests/scpa/fixtures/x02-apple-version-fixtures.mjs',
+    'tests/scpa/x02-prior120-apple-version-matrix.test.mjs',
+    'tests/scpa/fixtures/x02-prior120-apple-version-matrix.json',
+    'tests/scpa/fixtures/x02-prior120-apple-version-fixtures.mjs',
+    'tests/phase4/binary/issue-4358-elf-dynamic-xindex-common.test.mjs',
+    'js/binary/macho-core.js',
+    'js/swift.js',
+    'js/objc.js',
+    'js/metadata/swift.js',
+    'tests/scpa/portable-checker.test.mjs',
+    'tests/scpa/x02-declared-metadata-boundaries.test.mjs',
+    'tests/scpa/fixtures/x02-dyld-shared-cache.mjs',
+    'js/binary/detect.js',
+    'js/binary/dyld-shared-cache-core.js',
+    'js/binary/macho-indirect-symbols.js',
+    'js/binary/model.js',
+    'js/binary/reader.js',
+    'js/binary/source-reader.js',
+    'tests/universal-binary-benchmark.mjs',
+    'tests/universal-binary-source.mjs',
+    'tests/phase11/jvm/issue-8724-control-overlay-order.test.mjs',
+    'tests/architecture-abi.mjs',
+    'tests/issue-4135-pe-section-virtual-layout.mjs',
+    'tests/semantic-v2/issue-c2-01-byte-exact-forwarding.test.mjs',
+    'js/binary/dyld-shared-cache.js',
+    'js/binary/index.js',
+    'js/binary/source-loaders.js',
+    'js/binary/dyld-runtime.js',
+    'js/ui/dyld-runtime-navigation.js',
+    'js/ui/dyld-runtime-worker.js',
+    'js/ux.js',
+    'tests/scpa/x02-b06-browser-runtime-navigation.test.mjs',
+    'tests/phase4/binary/issue-7036-dyld-shared-cache-public-input.test.mjs',
+    'docs/analysis-x02-acceptance.md',
+    'docs/analysis-x02-b06-acceptance-20260917.md',
+    'tests/scpa/fixtures/x02-a08-versioned-apple-corpus-20260917.json',
+    'tests/scpa/fixtures/x02-b06-runtime-dyld-evidence-20260916.json',
+    'tests/scpa/fixtures/x02-h02-independent-oracle-20260916.json',
+    'tests/scpa/x02-b06-runtime-dyld-evidence.test.mjs',
+    'tests/scpa/x02-h02-pinned-evidence.test.mjs',
+    'tools/validation/x02-a08-provenance.mjs',
+    'docs/analysis-c1-acceptance.md',
+    'docs/analysis-c3-acceptance.md',
+    'js/targets/abi/aapcs64.js',
+    'js/targets/abi/darwin-arm64.js',
+    'js/semantics/memoryssa/proof-core.js',
+    'js/semantics/memory-access-provider.js',
+    '.github/workflows/ghidra-differential.yml',
+    '.github/workflows/x02-f47-ios-probe.yml',
+    '.github/workflows/x02-collector-fix.yml',
+    'tools/validation/f47-ios-probe/Info.plist',
+    'tools/validation/f47-ios-probe/main.m',
+    '.github/workflows/x02-real-acceptance.yml',
+    'js/binary/dyld-shared-cache-slide-v5.js',
+    'tests/phase4/binary/dyld-shared-cache-slide-v5-page-start.test.mjs',
+    'tests/scpa/x02-dyld-slide-info5.test.mjs',
+    'tools/validation/x02-apple-runtime-evidence.mjs',
+    'tests/scpa/fixtures/x02-real-apple-evidence-20260916.json',
+    'js/targets/architecture/arm64/memory-access-qualifiers.js',
+    'tests/semantic-v2/issue-4513-memoryssa-access-provider-completeness.test.mjs',
+    'js/targets/abi/evidence.js',
+    'js/targets/abi/riscv-lp64.js',
+    'tests/semantic-v2/issue-5862-alias-proof-issuer-relation-strict.test.mjs',
+    'tools/validation/phase9/release-evidence.schema.json', 'tools/validation/phase9/verify.mjs', 'js/rebuild/format-safe.js', 'js/rebuild/transaction-v2.js', 'tests/stage2/x03-rebuild-discovery.test.mjs', 'tests/stage2/x01-format-safe-rebuild-acceptance.test.mjs', 'tests/stage2/x03-rebuild-discovery-acceptance.test.mjs', 'tests/stage2/s2-01-runtime-identity-acceptance.test.mjs', 'tests/stage2/s2-02-recognition-collision-acceptance.test.mjs', 'tests/machine-effects/me-01-acceptance.test.mjs', 'tests/scpa/transform-native.test.mjs', 'js/backend.js', 'js/analysis/semantic-function-presentation-contract.js',
+    'js/targets/architecture/x86_64/semantic-function-contract.js', '.circleci/config.yml', '.github/workflows/phase7-ownership.yml', '.github/workflows/phase8-ownership.yml',
+    'scripts/build-userscript.mjs', 'scripts/userscript-publication.mjs',
+    'tests/userscript-publication.mjs', 'tests/userscript-release-version.mjs',
+    'tests/userscript-embed-child.mjs',
+    'tests/ci/final-head-admission-6570.test.mjs', 'tests/ci/final-head-admission-auto-reviewer-identity-6570.test.mjs',
+    'docs/symbolic-proof-optimizer-v8.md', 'docs/analysis-roadmap-v8-integration-checkpoint.md', 'js/decompile.js', 'js/decompile-base.js', 'js/controlflow.js',
+    'js/ui/decompiler-provenance.js', 'js/ui/product-base.js', 'css/components.css',
+    'js/ui/decompiler-provenance-sheet.js', 'js/tools-base.js',
+    'tests/issue-5498-eligibility-result-status-authority.mjs',
+    'tests/objc-metadata.mjs', 'tests/phase12/integration/c3-03-metadata-provider-acceptance.test.mjs', 'tests/issue-529-objc-integration.mjs',
+    'js/targets/architecture/arm64e/effects.js', 'tests/machine-effects/arm64e-retained-provider-union.test.mjs',
+    'js/targets/architecture/arm64/effects/memory.js', 'tests/machine-effects/arm64-literal-target-coherence.test.mjs',
+    'js/targets/architecture/arm64/effects/control.js', 'js/targets/architecture/arm64/effects/dispatcher.js',
+    'tests/machine-effects/a2-denominator-inventory.json',
+    'tests/machine-effects/arm64-a64-decoder-denominator.test.mjs',
+    'tests/machine-effects/arm64-control-flow.test.mjs',
+    'tests/machine-effects/arm64-direct-branch-operand-shape.test.mjs',
+    'tests/machine-effects/arm64-memory-addressing.test.mjs',
+    'tests/machine-effects/issue-957-bti-guarded-page.test.mjs',
+    'tests/machine-effects/phase2-release-gate.test.mjs',
+    'tools/validation/machine-effects/arm64-a64-decoder-denominator.mjs',
+    'tools/validation/machine-effects/ordering-undefined-matrix.mjs',
+    'tests/machine-effects/ordering-undefined-matrix.test.mjs',
+    'tools/validation/machine-effects/production-subject.mjs',
+    'tools/validation/machine-effects/minimize-mismatch.mjs',
+    'tools/validation/machine-effects/minimize-sequence-mismatch.mjs', 'tests/machine-effects/sequence-mismatch-minimization.test.mjs',
+    'tests/machine-effects/mismatch-minimization.test.mjs',
+    'tests/machine-effects/production-formal-subject.test.mjs',
+    'tests/machine-effects/generated-formal-evidence.test.mjs',
+    'docs/analysis-improvement-finding-ledger.md',
+    'specs/003-oracle-mask-matrix/spec.md', 'specs/003-oracle-mask-matrix/tasks.md',
+    'specs/003-oracle-mask-matrix/plan.md', 'specs/003-oracle-mask-matrix/research.md',
+    'specs/003-oracle-mask-matrix/data-model.md', 'specs/003-oracle-mask-matrix/quickstart.md',
+    'tests/machine-effects/arm64-direct-branch-coherence.test.mjs',
+    'tests/machine-effects/issue-5553-x86-move-extend-widths.test.mjs',
+    'tests/machine-effects/issue-5566-x86-setssbsy-routing.test.mjs',
+    'tests/machine-effects/issue-5563-iret-trusted-terminal-no-trap.test.mjs',
+    'tests/machine-effects/issue-6079-vblendmx-blend-category.test.mjs',
+    'tests/machine-effects/issue-5569-saveprevssp-trusted-terminal-implicit-memory.test.mjs',
+    'js/targets/architecture/riscv64/decoded-instruction.js',
+    'tests/machine-effects/issue-5999-riscv64-compressed-capability-conflict.test.mjs',
+    'tests/machine-effects/riscv64-retained-decoder-union.test.mjs',
+    'js/targets/architecture/index.js', 'js/targets/architecture/registry.js',
+    'js/targets/architecture/x86_64/capstone-structured.js',
+    'js/targets/architecture/x86_64/effects/common.js',
+    'js/targets/architecture/x86_64/effects/addressing.js',
+    'js/targets/architecture/x86_64/effects/index.js',
+    'js/targets/architecture/x86_64/effects/system.js',
+    'js/targets/architecture/x86_64/effects/trusted-decoder-terminal.js',
+    'tests/architecture-plugin-v2-hook-validation.test.mjs',
+    'tests/issue-4957-worker-budget-type-contract.mjs',
+    'tests/issue-4961-worker-request-id-identity.mjs',
+    'tests/machine-effects/phase2-integration.test.mjs',
+    'tests/machine-effects/x86-capstone-flag-domain.test.mjs',
+    'tests/machine-effects/x86-lahf-sahf.test.mjs',
+    'tests/machine-effects/helpers/lahf-sahf-oracle.mjs',
+    'tests/machine-effects/helpers/x86-browser-effects.mjs',
+    'tests/machine-effects/helpers/random-oracle.mjs',
+    'tests/machine-effects/x86-random.test.mjs',
+    'tests/machine-effects/x86-address-ir.test.mjs',
+    'tests/machine-effects/x86-long64-memory-denominator.test.mjs',
+    'tests/machine-effects/issue-6133-x87-terminal-family-authority.test.mjs',
+    'tests/machine-effects/issue-6133-x87-trusted-terminal-domain.test.mjs',
+    'tests/machine-effects/x86-long64-extended-state.test.mjs',
+    'tests/machine-effects/x86-long64-fp-denominator.test.mjs',
+    'tests/machine-effects/x86-long64-simd-denominator.test.mjs',
+    'tests/machine-effects/x86-long64-closure-matrix.test.mjs',
+    'tests/machine-effects/x86-closure-matrix-summary.test.mjs',
+    'tests/phase5/verification/viewer-artifact-cancel.test.mjs',
+    'tests/phase6/browser/wasm-decode.browser.mjs',
+    'tests/semantic-v2/integration-decoder-identity.test.mjs',
+    'tests/semantic-v2/integration-pipeline.test.mjs',
+    'js/semantics/memoryssa/build.js',
+    'tests/semantic-v2/memoryssa-cfg.test.mjs',
+    'tests/semantic-v2/issue-5414-5865-ssa-link-budget.test.mjs',
+    'tests/userscript-sandbox-browser-e2e.mjs',
+    'tools/validation/machine-effects/fixtures/move-extension-register-oracle.c',
+    'tools/validation/machine-effects/fixtures/x87-compare-flags-oracle.c',
+    'tools/validation/machine-effects/fixtures/lahf-sahf-oracle.c',
+    'tools/validation/machine-effects/fixtures/random-oracle.c',
+    'tools/validation/machine-effects/x86-long64-closure-matrix.mjs',
+    'tools/validation/analysis-roadmap/ownership.mjs', 'tools/validation/analysis-roadmap/ownership.json',
+    'js/core/evidence/index.js',
+    'userscript/hex.user.template.js', 'userscript/release-version.json'],
+});
+
+export function loadRoadmapManifest() {
+  return JSON.parse(fs.readFileSync(new URL('./ownership.json', import.meta.url), 'utf8'));
+}
+
+export function validateRoadmapManifest(manifest) {
+  if (manifest?.version !== 1 || manifest.branch !== BRANCH) throw new TypeError('invalid roadmap manifest identity');
+  const ownerNames = ['phase7', 'phase8', 'symbolic', 'semanticCompat', 'integration'];
+  if (!manifest.owners || Object.keys(manifest.owners).length !== ownerNames.length
+      || ownerNames.some(owner => !Object.hasOwn(manifest.owners, owner))) throw new TypeError('invalid roadmap owners');
+  const assignment = new Map();
+  for (const owner of ownerNames) {
+    const files = manifest.owners[owner];
+    if (!Array.isArray(files) || !files.length) throw new TypeError('empty roadmap owner');
+    for (const file of files) {
+      if (typeof file !== 'string' || !file || file.startsWith('/') || file.includes('\\')
+          || file.includes('\0') || /[*?\[\]]/.test(file) || file.split('/').some(part => !part || part === '.' || part === '..')) {
+        throw new TypeError('roadmap ownership requires exact repository paths');
+      }
+      if (assignment.has(file)) throw new TypeError(`duplicate roadmap owner: ${file}`);
+      if (owner === 'symbolic' && !file.startsWith('js/symbolic/') && !file.startsWith('tests/phase9/')) {
+        throw new TypeError(`outside symbolic owner: ${file}`);
+      }
+      if (SPECIAL_PATHS[owner] && !SPECIAL_PATHS[owner].includes(file)) throw new TypeError(`outside ${owner} owner: ${file}`);
+      assignment.set(file, owner);
+    }
+  }
+  for (const file of ['js/decompiler/semantic.js', 'js/decompiler/semantic-views.js']) {
+    if (assignment.get(file) !== 'semanticCompat') throw new TypeError(`committed view writer owner must be semanticCompat: ${file}`);
+  }
+  // The existing phase manifests remain authoritative for their own slices.
+  // Relabeling a frozen semantic contract as Phase 7/8 cannot bypass them.
+  for (const [owner, load, validate] of [['phase7', loadPhase7, validatePhase7], ['phase8', loadPhase8, validatePhase8]]) {
+    const result = validate(load(), manifest.owners[owner]);
+    if (!result.valid) throw new TypeError(`${owner} contract violations: ${JSON.stringify(result.violations)}`);
+  }
+  return assignment;
+}
+
+export function validateRoadmapInventory(branch, phase, files, manifest = loadRoadmapManifest()) {
+  if (!ROUTED_BRANCHES.includes(branch) || !['phase7', 'phase8'].includes(phase)) throw new TypeError('no exact roadmap integration route');
+  const assignment = validateRoadmapManifest(manifest);
+  if (!Array.isArray(files) || !files.length) throw new TypeError('empty roadmap inventory');
+  for (const file of files) if (!assignment.has(file)) throw new TypeError(`undeclared roadmap path: ${JSON.stringify(file)}`);
+  const selected = [...new Set(files.filter(file => assignment.get(file) === phase))].sort();
+  if (!selected.length) throw new TypeError(`no ${phase} changes in roadmap inventory`);
+  return selected;
+}
+
+export function runCli(argv = process.argv.slice(2), { root = ROOT, stdout = process.stdout, stderr = process.stderr } = {}) {
+  try {
+    const args = new Map();
+    for (let i = 0; i < argv.length; i += 2) {
+      if (!['--branch', '--phase', '--base-sha', '--head-sha'].includes(argv[i]) || args.has(argv[i])
+          || !argv[i + 1] || argv[i + 1].startsWith('--')) throw new TypeError('invalid roadmap inventory arguments');
+      args.set(argv[i], argv[i + 1]);
+    }
+    if (args.size !== 4) throw new TypeError('branch, phase, exact base and head are required');
+    const inventory = inventoryFromGit(root, args.get('--base-sha'), args.get('--head-sha'));
+    const selected = validateRoadmapInventory(args.get('--branch'), args.get('--phase'), inventory.files);
+    stdout.write(`${JSON.stringify(selected)}\n`);
+    return 0;
+  } catch (error) {
+    stderr.write(`roadmap ownership: ${error.message}\n`);
+    return 1;
+  }
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) process.exitCode = runCli();

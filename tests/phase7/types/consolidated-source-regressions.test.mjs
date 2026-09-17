@@ -69,13 +69,14 @@ test('#3470 dependency enumeration failure marks SCC condensation truncated', ()
   assert.equal(result.isRecursiveMap.get('A'), false);
 });
 
-test('#3470/#4535 an empty dependency enumeration is materialized once as a leaf', () => {
+test('#3470/#4535/#5271 an empty dependency enumeration is materialized once', () => {
   let calls = 0;
   const result = condenseTypeGraph(['A'], () => {
     calls += 1;
     return [];
   });
 
+  // #5271 caches self-edge membership during the bounded first traversal.
   assert.equal(calls, 1);
   assert.equal(result.cancelled, false);
   assert.equal(result.truncated, false);
