@@ -12,7 +12,16 @@ export function resolveUserscriptReleaseVersion(previous, { releaseIdentity, bui
   if (!IDENTITY.test(identity)) throw new Error('Userscript release identity must be SHA-256 hex.');
   if (!BUILD_ID.test(runtimeBuildId)) throw new Error('Userscript runtime buildId must be 24 lowercase hex characters.');
 
-  const unchanged = previous?.releaseIdentity === identity && previous?.buildId === runtimeBuildId;
+  const previousIdentity = typeof previous?.releaseIdentity === 'string'
+    ? previous.releaseIdentity.toLowerCase()
+    : '';
+  const previousBuildId = typeof previous?.buildId === 'string'
+    ? previous.buildId.toLowerCase()
+    : '';
+  if (!IDENTITY.test(previousIdentity)) throw new Error('Previous userscript release identity must be SHA-256 hex.');
+  if (!BUILD_ID.test(previousBuildId)) throw new Error('Previous userscript runtime buildId must be 24 hex characters.');
+
+  const unchanged = previousIdentity === identity && previousBuildId === runtimeBuildId;
   const nextSerial = unchanged ? serial : serial + 1;
   const state = Object.freeze({ serial: nextSerial, releaseIdentity: identity, buildId: runtimeBuildId });
   return Object.freeze({
