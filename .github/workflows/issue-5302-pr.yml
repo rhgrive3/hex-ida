@@ -18,29 +18,40 @@ jobs:
         with:
           ref: fix/issue-5302-array-type-core-20260917
       - name: Create PR
+        id: create
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "$(gh pr list --head fix/issue-5302-array-type-core-20260917 --base main --state open --json number --jq 'length')" = "0" ]; then
-            cat > /tmp/body.md <<'EOF'
+          cat > /tmp/body.md <<'EOF'
           ## Summary
-          - implement DEX monitor/check-cast/instance-of/array-length/new-array/filled-new-array(/range)/fill-array-data/aget*/aput* semantics
-          - add typed array memory bindings, element widths/extensions, null/bounds/store faults, allocation/result authority
-          - extend validator widths/references and implicit move-result producer handling
-          - preserve array/type semantics through Semantic IR lowering
+          - implement DEX array/type core semantics and validation
+          - preserve typed array memory/fault/result authority through Semantic IR
 
           ## Verification
-          - focused #5302 regression: 13/13 PASS
+          - #5302 focused: 13/13 PASS
           - module boundaries: PASS
-          - syntax/source lint: 4972 files PASS
-          - broader DEX suite: 118/129 PASS; remaining 11 failures reproduce unchanged on pristine main
-          - final PR diff is exactly the five intended files
+          - lint: 4972 files PASS
+          - broader DEX: no new failures vs pristine main
 
           Closes #5302
           EOF
-            gh pr create --base main --head fix/issue-5302-array-type-core-20260917 --title 'fix(dex): implement array/type core semantics (#5302)' --body-file /tmp/body.md
+          set +e
+          gh pr create --base main --head fix/issue-5302-array-type-core-20260917 --title 'fix(dex): implement array/type core semantics (#5302)' --body-file /tmp/body.md > /tmp/pr-out.txt 2>&1
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ]; then
+            head -n 20 /tmp/pr-out.txt > /tmp/pr-error.txt
+            exit "$code"
           fi
+      - name: Upload minimal failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-5302-pr-error
+          path: /tmp/pr-error.txt
+          retention-days: 1
       - name: Remove temporary workflow
+        if: success()
         run: |
           git rm .github/workflows/issue-5302-pr.yml
           git config user.name github-actions[bot]
