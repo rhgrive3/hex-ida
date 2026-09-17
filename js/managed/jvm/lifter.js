@@ -4,6 +4,7 @@ import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effec
 import { decodeJvmInstructionBoundary } from './instruction-boundary.js';
 import { liftJvmMethod as liftJvmMethodCore } from './lifter-core.js';
 import { applyJvmObjectIdentitySemantics } from './object-semantics.js';
+import { applyJvmArraySemantics } from './array-semantics.js';
 
 function firstMalformedBoundary(bytecode) {
   let pc = 0;
@@ -56,7 +57,8 @@ function applyBranchPredicateSemantics(lifted, options = {}) {
 }
 
 function finalizeJvmSemantics(lifted, jvmClass, method, options = {}) {
-  const objectAware = applyJvmObjectIdentitySemantics(lifted, jvmClass, options);
+  const arrayAware = applyJvmArraySemantics(lifted, jvmClass, method, options);
+  const objectAware = applyJvmObjectIdentitySemantics(arrayAware, jvmClass, options);
   return applySynchronizedMethodSemantics(applyBranchPredicateSemantics(objectAware, options), method, options);
 }
 

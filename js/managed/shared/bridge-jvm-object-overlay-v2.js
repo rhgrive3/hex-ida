@@ -176,15 +176,19 @@ export function overlayJvmObjectLowering(fn, lowered, options = {}) {
       continue;
     }
 
-    if (bundle.mnemonic === 'new') {
+    if (bundle.mnemonic === 'new'
+      || bundle.mnemonic === 'newarray'
+      || bundle.mnemonic === 'anewarray'
+      || bundle.mnemonic === 'multianewarray') {
       const produced = bundle.producedValues?.[0];
       const allocation = allocationMetadata(produced);
       if (!allocation) continue;
+      const isArrayAllocation = bundle.mnemonic !== 'new';
       changed = true;
       nodeReplacements.set(node.id, {
         ...node,
         kind: 'intrinsic',
-        operator: 'jvm-new',
+        operator: `jvm-${bundle.mnemonic}`,
         intrinsic: jvmAllocationIntrinsic(node),
         attributes: {
           ...node.attributes,
@@ -193,12 +197,14 @@ export function overlayJvmObjectLowering(fn, lowered, options = {}) {
           allocationId: allocation.allocationId,
           allocationState: allocation.allocationState,
           fresh: allocation.fresh,
+          ...(isArrayAllocation ? { allocationKind: 'array' } : {}),
         },
         metadata: {
           ...(node.metadata ?? {}),
           allocatedClass: allocation.allocatedClass,
           allocationId: allocation.allocationId,
           allocationState: allocation.allocationState,
+          ...(isArrayAllocation ? { allocationKind: 'array' } : {}),
         },
       });
       for (const outputId of node.outputs) {
