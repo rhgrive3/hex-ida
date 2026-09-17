@@ -34,6 +34,7 @@ import {
 import {
   ARM64E_PAC_DENOMINATOR_ID,
   ARM64E_PAC_ENCODING_FAMILIES,
+  ARM64E_PAUTH_LR_DEDICATED_MNEMONICS,
   classifyArm64ePacEncoding,
   validateArm64ePacDenominator,
 } from './arm64e-pac-denominator.mjs';
@@ -109,10 +110,6 @@ export function arm64BaselineDependencyStatus(inventory = readInventory()) {
 
   const families = arm64.effectRegistry?.families;
   if (!Array.isArray(families) || families.length === 0) fail('arm64e-delegation-arm64-effect-registry-missing');
-  // The unmatched-family fallback exists to return null and can never be exact.
-  // It stops blocking the delegated baseline only when the A64 decoder ownership
-  // denominator proves no valid in-profile encoding can reach it — the same
-  // negative proof the A2 denominator requires.
   const fallbackNegativeProven = decoder.enumerationStatus === 'exact'
     && (decoder.missingUnits || []).length === 0
     && arm64A64DecoderDenominatorFromLockedAudit({
@@ -138,7 +135,7 @@ function validatePacBoundary() {
   const pac = validateArm64ePacDenominator();
   const registry = [...arm64ePointerAuthenticationMnemonics()];
   const denominatorMnemonics = [...new Set(ARM64E_PAC_ENCODING_FAMILIES.map(({ mnemonic }) => mnemonic))];
-  if (!sameSet(registry, denominatorMnemonics)) fail('arm64e-delegation-pac-registry-drift');
+  if (!sameSet(registry, [...denominatorMnemonics, ...ARM64E_PAUTH_LR_DEDICATED_MNEMONICS])) fail('arm64e-delegation-pac-registry-drift');
   if (pac.denominatorId !== ARM64E_PAC_DENOMINATOR_ID) fail('arm64e-delegation-pac-denominator-identity-drift');
 
   let baselineCaseCount = 0;
