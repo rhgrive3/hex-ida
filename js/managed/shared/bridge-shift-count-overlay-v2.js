@@ -2,6 +2,7 @@ import { deepFreeze } from '../../core/identity/index.js';
 import { createSemanticIrFunction } from '../../semantics/ir/function.js';
 import { createSemanticNode, createSemanticValue } from '../../semantics/ir/nodes.js';
 import { buildSemanticSsa } from '../../semantics/ssa/build.js';
+import { overlayDexArrayLowering } from './bridge-dex-array-overlay-v2.js';
 
 const JVM_I32_SHIFTS = new Set(['ishl', 'ishr', 'iushr']);
 const WASM_I32_SHIFTS = new Set(['i32.shl', 'i32.shr_s', 'i32.shr_u']);
@@ -18,6 +19,7 @@ function requiresI32ShiftMask(frontendId, mnemonic) {
 // dynamic count is not later interpreted with host/target shift semantics
 // (#8999). Signedness of the shifted value remains solely in the shift opcode.
 export function overlayManagedI32ShiftCounts(fn, lowered, options = {}) {
+  if (fn?.frontendId === 'dex') return overlayDexArrayLowering(fn, lowered);
   if (fn?.frontendId !== 'jvm' && fn?.frontendId !== 'wasm') return lowered;
   const shiftEffects = new Map((fn.bundles ?? [])
     .filter((bundle) => requiresI32ShiftMask(fn.frontendId, bundle?.mnemonic))
