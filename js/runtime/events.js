@@ -20,6 +20,21 @@ export const RUNTIME_EVENT_KINDS = Object.freeze([
 
 const COMPLETENESS_RANK = Object.freeze({ unsupported: 0, truncated: 1, partial: 2, bounded: 3, complete: 4 });
 const UTF8_ENCODER = new TextEncoder();
+const STREAM_REORDER_WINDOW = 64;
+const STATE_CHANGING_RUNTIME_EVENT_KINDS = new Set([
+  'session-open', 'session-close',
+  'process-start', 'process-exit',
+  'thread-start', 'thread-exit',
+  'module-load', 'module-unload',
+  'paused', 'resumed',
+  'breakpoint-hit', 'watchpoint-hit',
+  'instrumentation-intervention', 'provider-error',
+]);
+const STREAM_REORDER_MASK = (1n << BigInt(STREAM_REORDER_WINDOW)) - 1n;
+
+function stateChangingRuntimeEvent(event) {
+  return STATE_CHANGING_RUNTIME_EVENT_KINDS.has(event?.kind);
+}
 
 
 function encodedByteLength(value) { return UTF8_ENCODER.encode(value).byteLength; }
@@ -480,6 +495,8 @@ export function createRuntimeEventBatch(input = {}) {
 export class RuntimeEventNormalizer {
   #queue = [];
   #seen = new Set();
+  #stickySeen = new Set();
+  #streamAuthority = new Map();
   #dropped = 0;
   #occurrence = 0;
   #requiresExplicitLegacyEpoch = false;
@@ -497,6 +514,52 @@ export class RuntimeEventNormalizer {
     this.maxBytes = safeInteger(options.maxBytes, 4 * 1024 * 1024, 'maxBytes', { min: 1024 });
     this.maxDedupeEntries = safeInteger(options.maxDedupeEntries, Math.max(8192, this.maxEvents * 2), 'maxDedupeEntries', { min: 16 });
     this.queuedBytes = 0;
+  }
+
+  #planStreamSequence(event) {
+    if (event.streamId == null || event.sequence == null) return null;
+    const key = `${event.sessionEpoch}:${event.streamId}`;
+    const current = this.#streamAuthority.get(key);
+    if (!current) {
+      if (this.#streamAuthority.size >= this.maxDedupeEntries) return Object.freeze({ accept:false, capacity:true });
+      return Object.freeze({
+        accept:true,
+        commit:() => this.#streamAuthority.set(key, { highWater:event.sequence, bitmap:1n }),
+      });
+    }
+
+    if (event.sequence > current.highWater) {
+      const distance = event.sequence - current.highWater;
+      const bitmap = distance >= STREAM_REORDER_WINDOW
+        ? 1n
+        : ((current.bitmap << BigInt(distance)) | 1n) & STREAM_REORDER_MASK;
+      return Object.freeze({
+        accept:true,
+        commit:() => {
+          current.highWater = event.sequence;
+          current.bitmap = bitmap;
+        },
+      });
+    }
+
+    const distance = current.highWater - event.sequence;
+    if (distance >= STREAM_REORDER_WINDOW) return Object.freeze({ accept:false, capacity:false });
+    const bit = 1n << BigInt(distance);
+    if ((current.bitmap & bit) !== 0n) return Object.freeze({ accept:false, capacity:false });
+    return Object.freeze({
+      accept:true,
+      commit:() => { current.bitmap |= bit; },
+    });
+  }
+
+  #makeSeenRoom() {
+    if (this.#seen.size < this.maxDedupeEntries) return true;
+    for (const candidate of this.#seen) {
+      if (this.#stickySeen.has(candidate)) continue;
+      this.#seen.delete(candidate);
+      return true;
+    }
+    return false;
   }
 
   push(input, options = {}) {
@@ -536,7 +599,12 @@ export class RuntimeEventNormalizer {
     const contextProviderId = required(this.context.providerId, 'runtime-provider-required', 'runtime event batch requires providerId');
     const contextEpoch = safeInteger(this.context.sessionEpoch, event.sessionEpoch, 'sessionEpoch', { min: 1 });
     if (event.runtimeSessionId !== contextRuntimeSessionId || event.providerId !== contextProviderId || event.sessionEpoch !== contextEpoch) return null;
-    const dedupe = dedupeIdentity(event);
+    const streamPlan = this.#planStreamSequence(event);
+    if (streamPlan && !streamPlan.accept) {
+      if (streamPlan.capacity) this.#dropped++;
+      return null;
+    }
+    const dedupe = streamPlan ? null : dedupeIdentity(event);
     const scoped = dedupe ? `${event.sessionEpoch}:${dedupe}` : null;
     if (scoped && this.#seen.has(scoped)) return null;
     const bytes = encodedByteLength(stableStringify(event));
@@ -545,12 +613,14 @@ export class RuntimeEventNormalizer {
       return null;
     }
     if (scoped) {
-      if (this.#seen.size >= this.maxDedupeEntries) {
-        const first = this.#seen.values().next().value;
-        if (first !== undefined) this.#seen.delete(first);
+      if (!this.#makeSeenRoom()) {
+        this.#dropped++;
+        return null;
       }
       this.#seen.add(scoped);
+      if (stateChangingRuntimeEvent(event)) this.#stickySeen.add(scoped);
     }
+    streamPlan?.commit();
     this.#queue.push(event);
     this.queuedBytes += bytes;
     return event;
@@ -579,10 +649,16 @@ export class RuntimeEventNormalizer {
           break;
         }
         if (events.length === 0) break;
-        const evicted = events.pop();
+        let evictIndex = -1;
+        for (let index = events.length - 1; index >= 0; index -= 1) {
+          if (!stateChangingRuntimeEvent(events[index])) {
+            evictIndex = index;
+            break;
+          }
+        }
+        if (evictIndex < 0) break;
+        const [evicted] = events.splice(evictIndex, 1);
         queuedBytes -= encodedByteLength(stableStringify(evicted));
-        const dedupe = dedupeIdentity(evicted);
-        if (dedupe) this.#seen.delete(`${evicted.sessionEpoch}:${dedupe}`);
         dropped++;
       }
     }
@@ -613,5 +689,7 @@ export class RuntimeEventNormalizer {
     this.queuedBytes = 0;
     this.#dropped = 0;
     this.#seen.clear();
+    this.#stickySeen.clear();
+    this.#streamAuthority.clear();
   }
 }
