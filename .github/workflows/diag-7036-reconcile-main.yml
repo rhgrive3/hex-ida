@@ -1,0 +1,61 @@
+name: diag-7036-reconcile-main
+on:
+  push:
+    branches:
+      - reconcile/7036-main-75eb8e78
+permissions:
+  contents: write
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reconcile current main
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          STATUS=/tmp/reconcile-7036.txt
+          : > "$STATUS"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          timeout 90s git fetch --no-tags origin main >/tmp/fetch.log 2>&1
+          rc=$?
+          echo "fetch rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/fetch.log >> "$STATUS"; exit "$rc"; fi
+          MAIN=$(git rev-parse refs/remotes/origin/main)
+          echo "main=$MAIN" >> "$STATUS"
+          echo "head_before=$(git rev-parse HEAD)" >> "$STATUS"
+          git merge --no-edit --no-ff refs/remotes/origin/main >/tmp/merge.log 2>&1
+          rc=$?
+          echo "merge rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then
+            echo 'conflicts:' >> "$STATUS"
+            git diff --name-only --diff-filter=U >> "$STATUS"
+            echo "conflict_count=$(git diff --name-only --diff-filter=U | wc -l)" >> "$STATUS"
+            exit "$rc"
+          fi
+          git rm .github/workflows/diag-7036-reconcile-main.yml >/tmp/rm.log 2>&1
+          rc=$?
+          echo "remove_diag rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 20 /tmp/rm.log >> "$STATUS"; exit "$rc"; fi
+          git commit --amend --no-edit >/tmp/amend.log 2>&1
+          rc=$?
+          echo "amend rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/amend.log >> "$STATUS"; exit "$rc"; fi
+          CLEAN=$(git rev-parse HEAD)
+          echo "clean_head=$CLEAN" >> "$STATUS"
+          git push origin HEAD:reconcile/7036-main-75eb8e78 >/tmp/push.log 2>&1
+          rc=$?
+          echo "push rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/push.log >> "$STATUS"; exit "$rc"; fi
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-7036-reconcile-main
+          path: /tmp/reconcile-7036.txt
+          retention-days: 1
