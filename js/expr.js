@@ -169,7 +169,7 @@ export function bin(op, a, b, bits) {
     if (op === 'mul' && cb === 0n) return ZERO;
     if (op === 'and' && cb === 0n) return ZERO;
     if ((op === 'sdiv' || op === 'udiv') && cb === 0n) return ZERO;
-    if ((op === 'smod' || op === 'umod') && cb === 0n) return null;
+    if ((op === 'smod' || op === 'umod' || op === 'srem' || op === 'urem') && cb === 0n) return null;
   }
   if (op === 'sub' && same(a, b)) return ZERO;
   if (op === 'xor' && same(a, b)) return ZERO;
@@ -271,7 +271,10 @@ function foldConst(op, a, b, w) {
       const lhs = BigInt.asUintN(w, a), rhs = BigInt.asUintN(w, b);
       return rhs === 0n ? 0n : lhs / rhs;
     }
-    case 'smod': return b === 0n ? null : a - truncDiv(a, b) * b;
+    case 'smod':
+    case 'srem': return b === 0n ? null : a - truncDiv(a, b) * b;
+    case 'umod':
+    case 'urem': return b === 0n ? null : a % b;
     default: return null;
   }
 }
@@ -1339,11 +1342,11 @@ function magicHigh(n) {
 const PREC = {
   min: 14, max: 14, umin: 14, umax: 14,
   or: 4, xor: 5, and: 6, shl: 8, shr: 8, sar: 8, ror: 8,
-  add: 9, sub: 9, fadd: 9, fsub: 9, mul: 10, fmul: 10, fdiv: 10, sdiv: 10, udiv: 10, smod: 10, umod: 10,
+  add: 9, sub: 9, fadd: 9, fsub: 9, mul: 10, fmul: 10, fdiv: 10, sdiv: 10, udiv: 10, smod: 10, umod: 10, srem: 10, urem: 10,
   smulh: 10, umulh: 10,
 };
 const SYM = {
-  add: '+', sub: '-', fadd: '+', fsub: '-', mul: '*', fmul: '*', fdiv: '/', sdiv: '/', udiv: '/', smod: '%', umod: '%',
+  add: '+', sub: '-', fadd: '+', fsub: '-', mul: '*', fmul: '*', fdiv: '/', sdiv: '/', udiv: '/', smod: '%', umod: '%', srem: '%', urem: '%',
   and: '&', or: '|', xor: '^', shl: '<<', shr: '>>', sar: '>>', ror: '>>>',
   smulh: '*hi', umulh: '*hi',
 };

@@ -180,6 +180,12 @@ export function createSemanticNode(input) {
     if (arity === 'input') fail('semantic-ir-node-input-arity');
     if (arity === 'output') fail('semantic-ir-node-output-arity');
   }
+  if (kind === 'binary') {
+    if (out.operator == null) fail('semantic-ir-invalid-operator');
+    if (out.completeness === 'complete' && (out.operator === 'div' || out.operator === 'rem' || out.operator === 'smod' || out.operator === 'umod')) {
+      fail('semantic-ir-invalid-operator');
+    }
+  }
   if (SEMANTIC_SETS.unknownOperations.has(kind) && out.unknown == null) fail('semantic-ir-unknown-detail-required');
   if (SEMANTIC_SETS.unknownOperations.has(kind) && out.completeness === 'complete') fail('semantic-ir-unknown-cannot-be-complete');
   // A node-local unknown payload is explicit evidence of an unresolved
