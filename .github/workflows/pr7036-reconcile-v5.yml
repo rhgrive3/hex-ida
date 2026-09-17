@@ -1,4 +1,4 @@
-name: PR7036 live-main reconcile v5c
+name: PR7036 live-main reconcile v5d
 on:
   push:
     branches:
@@ -34,6 +34,62 @@ jobs:
             git add -- "$f"
             echo "resolved-main $f" >> /tmp/result.txt
           done
+          # macho-core auto-merged two independent LC_CODE_SIGNATURE implementations.
+          # Keep current-main's newer signature authority and reapply only #7036's
+          # unique LC_BUILD_VERSION tool provenance extension.
+          git checkout "$MAIN" -- js/binary/macho-core.js
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('js/binary/macho-core.js')
+          s = p.read_text()
+          old_call = "      else if (cmd === LC_BUILD_VERSION && cmdsize >= 24) parseBuildVersion(r, p, cmdsize, image);"
+          new_call = """      else if (cmd === LC_BUILD_VERSION) {
+                if (cmdsize < 24) throw new Error(`invalid LC_BUILD_VERSION size ${cmdsize}`);
+                parseBuildVersion(r, p, cmdsize, image, metadataBudget);
+              }"""
+          if s.count(old_call) != 1:
+              raise SystemExit(f'build-version-call-match={s.count(old_call)}')
+          s = s.replace(old_call, new_call)
+          old_fn = """function parseBuildVersion(r, p, cmdsize, image) {
+            const ntools = r.u32(p + 20);
+            const required = 24 + ntools * 8;
+            if (!Number.isSafeInteger(required) || required > cmdsize) {
+              throw new Error(`invalid LC_BUILD_VERSION ntools ${ntools}; requires at least ${required} bytes, got ${cmdsize}`);
+            }
+            const platform = r.u32(p + 8);
+            const minos = r.u32(p + 12);
+            const sdk = r.u32(p + 16);
+            image.metadata.buildVersion = { platform, platformName: platformName(platform), minos: version32(minos), sdk: version32(sdk), source: 'LC_BUILD_VERSION' };
+            image.platform = platformName(platform) || image.platform;
+          }"""
+          new_fn = """function parseBuildVersion(r, p, cmdsize, image, budget) {
+            const ntools = r.u32(p + 20);
+            const required = 24 + ntools * 8;
+            if (!Number.isSafeInteger(required) || required > cmdsize) {
+              throw new Error(`invalid LC_BUILD_VERSION ntools ${ntools}; requires at least ${required} bytes, got ${cmdsize}`);
+            }
+            const platform = r.u32(p + 8);
+            const minos = r.u32(p + 12);
+            const sdk = r.u32(p + 16);
+            const tools = [];
+            for (let i = 0; i < ntools; i++) {
+              if (!budget.take({ records: 1, objects: 1, operations: 2, estimatedHeapBytes: 128 }, 'build-tool-version')) break;
+              const q = p + 24 + i * 8, rawVersion = r.u32(q + 4);
+              tools.push({ tool: r.u32(q), version: version32(rawVersion), rawVersion });
+            }
+            image.metadata.buildVersion = {
+              platform, platformName: platformName(platform), minos: version32(minos), sdk: version32(sdk), source: 'LC_BUILD_VERSION',
+              ntools, tools, toolsComplete: tools.length === ntools, provenanceVerified: false,
+            };
+            image.platform = platformName(platform) || image.platform;
+          }"""
+          if s.count(old_fn) != 1:
+              raise SystemExit(f'build-version-fn-match={s.count(old_fn)}')
+          s = s.replace(old_fn, new_fn)
+          p.write_text(s)
+          PY
+          git add js/binary/macho-core.js
+          echo "resolved-composed js/binary/macho-core.js" >> /tmp/result.txt
           unresolved=$(git diff --name-only --diff-filter=U | sed '/^$/d' | wc -l | tr -d ' ')
           echo "unresolved=$unresolved" >> /tmp/result.txt
           test "$unresolved" = 0
@@ -41,8 +97,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for f in js/analysis/discovery/artifact.js js/analysis/discovery/producers.js js/analysis/index.js js/rebuild/transaction-v2.js; do
-            node --check "$f" >/tmp/one.txt 2>&1 || { echo "syntax FAIL $f" >> /tmp/result.txt; tail -n 20 /tmp/one.txt >> /tmp/result.txt; exit 1; }
+          for f in js/analysis/discovery/artifact.js js/analysis/discovery/producers.js js/analysis/index.js js/rebuild/transaction-v2.js js/binary/macho-core.js; do
+            node --check "$f" >/tmp/one.txt 2>&1 || { echo "syntax FAIL $f" >> /tmp/result.txt; head -n 40 /tmp/one.txt >> /tmp/result.txt; exit 1; }
             echo "syntax PASS $f" >> /tmp/result.txt
           done
           run_one() {
@@ -53,7 +109,7 @@ jobs:
             set -e
             if [ "$rc" -eq 0 ]; then echo "PASS $name" >> /tmp/result.txt; return 0; fi
             echo "FAIL $name" >> /tmp/result.txt
-            grep -E 'not ok|error:|Error:|AssertionError|actual:|expected:|ERR_|reason|operator:' /tmp/one.txt | head -n 100 >> /tmp/result.txt || true
+            head -n 60 /tmp/one.txt >> /tmp/result.txt
             return "$rc"
           }
           run_one x03-artifact tests/phase7/discovery/x03-ambiguity-artifact.test.mjs
@@ -61,6 +117,8 @@ jobs:
           run_one t016-discovery tests/phase7/discovery/t016-discovery-preservation.test.mjs
           run_one t016-rebuild tests/rebuild/t016-discovery-preservation.test.mjs
           run_one pe4135 tests/issue-4135-pe-section-virtual-layout.mjs
+          run_one apple-signature tests/apple-code-signature-source-budget.test.mjs
+          run_one x02-a08 tests/scpa/x02-prior120-apple-version-matrix.test.mjs
           run_one proof-projection tests/phase8/substrate/proof-projection-origin.test.mjs
           run_one proof-optimizer tests/phase8/integration/proof-optimizer.test.mjs
       - name: Produce clean merge object
@@ -85,7 +143,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr7036-v5c-result
+          name: pr7036-v5d-result
           path: /tmp/result.txt
           if-no-files-found: ignore
           retention-days: 2
