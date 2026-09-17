@@ -35,13 +35,13 @@ test('#5302 aget/aput variants bind array base/index/value and storage widths', 
   }
 });
 
-test('#5302 filled-new-array publishes implicit result and range register sequence', () => {
+test('#5302 filled-new-array publishes implicit result and range register sequence without monitor effects', () => {
   let fn=lift([0x2024,3,0x0010,0x000c,0x000e]);
-  let b=first(fn); assert.equal(b.mnemonic,'filled-new-array'); assert.deepEqual(b.locationReads.map(r=>r.index),[0,1]);
+  let b=first(fn); assert.equal(b.mnemonic,'filled-new-array'); assert.deepEqual(b.locationReads.map(r=>r.index),[0,1]); assert.deepEqual(b.controlEffects,[]);
   const move=fn.bundles.find(x=>x.bytecodeOffset===6); assert.equal(move.mnemonic,'move-result-object'); assert.equal(move.completeness,'exact');
   const meta=captureDexValidationMetadata(0,dexMethod([0x2024,3,0x0010,0x000c,0x000e],{registers:8,types:['LTest;','[I','Ljava/lang/String;','[Ljava/lang/String;']}));
   const checked=validateDexMethod({...fn,metadata:{...fn.metadata,dexValidation:meta}}); assert.equal(checked.errors.some(e=>e.code==='dex-move-result-without-producer'),false);
-  fn=lift([0x0225,3,4,0x000c,0x000e],{registers:8}); b=first(fn); assert.equal(b.mnemonic,'filled-new-array/range'); assert.deepEqual(b.locationReads.map(r=>r.index),[4,5]);
+  fn=lift([0x0225,3,4,0x000c,0x000e],{registers:8}); b=first(fn); assert.equal(b.mnemonic,'filled-new-array/range'); assert.deepEqual(b.locationReads.map(r=>r.index),[4,5]); assert.deepEqual(b.controlEffects,[]);
 });
 
 test('#5302 fill-array-data validates payload identity/alignment and stays fail-closed as bulk summary', () => {
