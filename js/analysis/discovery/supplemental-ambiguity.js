@@ -190,7 +190,8 @@ function supplementalCollisions(artifact, supplementalIntervals, supplementalRef
 }
 
 export function augmentDiscoveryPayload(artifact, rawImage = {}, options = {}) {
-  const image = record(rawImage ?? {}, 'discovery-artifact-image-invalid');
+  const image = rawImage ?? {};
+  if (!image || typeof image !== 'object' || Array.isArray(image)) fail('discovery-artifact-image-invalid');
   const supplementalIntervals = dataIntervals(image, options.byteIntervals ?? null, artifact);
   const supplementalReferences = rawReferences(image, artifact);
   const intervalMap = new Map(artifact.intervalClaims.map((item) => [item.intervalId, item]));
