@@ -1,0 +1,34 @@
+name: patch-7036-reconcile-diag
+on:
+  push:
+    branches:
+      - reconcile/7036-main-75eb8e78
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Narrow reconcile diff-check
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/workflows/diag-7036-reconcile-main.yml')
+          s = p.read_text()
+          old = '          check diff_check git diff --check "$CLEAN^1...$CLEAN"\n'
+          new = '          check diff_check git diff --check "$CLEAN^1...$CLEAN" -- .circleci/config.yml js/analysis/discovery/artifact.js js/analysis/discovery/producers.js js/analysis/index.js js/rebuild/transaction-v2.js js/semantics/ssa/build.js js/semantics/ssa/build-core.js tests/issue-4135-pe-section-virtual-layout.mjs\n'
+          if s.count(old) != 1:
+              raise SystemExit(f'expected one diff-check line, got {s.count(old)}')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          git rm .github/workflows/patch-7036-reconcile-diag.yml
+          git add .github/workflows/diag-7036-reconcile-main.yml
+          git diff --cached --check
+          git commit -m 'ci(diag): narrow #7036 reconcile diff-check'
+          git push origin HEAD:reconcile/7036-main-75eb8e78
