@@ -84,12 +84,13 @@ function hasRegisterRead(bundle, registerId) {
 
 {
   const effect = liftArm64MachineEffects({
-    mnemonic:'svc',
-    ops:[imm(0)],
+    mnemonic:'msr',
+    ops:[other('SPSel'), imm(1)],
   }, ctx('i-non-conservative'));
   const summary = intrinsic(effect).effectSummary;
-  assert.ok(summary.registersRead.includes('sys:currentel'));
-  assert.ok(summary.registersWritten.includes('sys:currentel'));
+  assert.ok(summary.registersWritten.includes('sys:spsel'));
+  assert.ok(!summary.registersRead.includes('sys:currentel'));
+  assert.ok(!summary.registersWritten.includes('sys:currentel'));
   assert.ok(!summary.registersRead.includes('sys:tpidr_el0'));
   assert.ok(!summary.registersWritten.includes('sys:tpidr_el0'));
 }
