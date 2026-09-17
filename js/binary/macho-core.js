@@ -318,10 +318,32 @@ function validateMappedRange(label, address, size, fileOffset, fileSize, image) 
   return { vmEnd: address + size, fileEnd: fileOffset + fileSize };
 }
 
-function validateSectionRange(label, saddr, ssize, fileOffset, fileSize, seg, image, zeroFill) {
+function validateSectionRange(label, saddr, ssize, fileOffset, fileSize, seg, image, zeroFill, sflags = 0) {
   if (saddr < seg.address || saddr > seg.address + seg.size || ssize > seg.address + seg.size - saddr) throw new Error(`${label} VM range escapes parent segment`);
   if (!zeroFill) {
     if (fileOffset < seg.fileOffset || fileOffset > seg.fileOffset + seg.fileSize || fileSize > seg.fileOffset + seg.fileSize - fileOffset) throw new Error(`${label} file range escapes parent segment`);
+    // #8962 — Parent-segment byte provenance is authoritative for ordinary
+    // file-backed sections. A section in a file-backed parent segment must
+    // resolve each VM byte to the *same* file byte its parent maps at that
+    // virtual address; that is, its file offset must equal
+    // `seg.fileOffset + (saddr - seg.address)`. The independent containment
+    // check above allows a section to claim different file bytes for the same
+    // VM range. Because BinaryImage's narrower-mapping precedence (#970)
+    // legitimately prefers the section over the segment when both describe
+    // consistent bytes, a contradictory section silently redirects virtual
+    // reads (and therefore `LC_MAIN`) to a different file span. Fail closed on
+    // any such contradiction. Only S_REGULAR (SECTION_TYPE 0) sections are
+    // covered: other section types (thread-local, attributes, `S_ATTR_OFF`,
+    // and related) may legitimately not follow the ordinary file-backed
+    // layout. A zero-fileSize section has no file provenance to enforce.
+    if (seg.fileSize > 0n && fileSize > 0n && (sflags & 0xff) === 0) {
+      const expectedFileOffset = seg.fileOffset + (saddr - seg.address);
+      if (fileOffset !== expectedFileOffset) {
+        const error = new Error(`${label} file offset 0x${fileOffset.toString(16)} contradicts parent segment ${seg.name || '?'} byte provenance at VM 0x${saddr.toString(16)} (expected 0x${expectedFileOffset.toString(16)})`);
+        error.code = 'MACHO_SECTION_CONTRADICTS_PARENT_MAPPING';
+        throw error;
+      }
+    }
     validateMappedRange(label, saddr, ssize, fileOffset, fileSize, image);
   }
 }
@@ -404,7 +426,7 @@ function parseSegment64(r, p, cmdsize, image, order, sharedBudget = null) {
     const sflags = r.u32(q + 64);
     const zeroFill = (sflags & 0xff) === 1 || (sflags & 0xff) === 0x0c || (sflags & 0xff) === 0x12;
     const sectionFileOffset = BigInt(offset), sectionFileSize = zeroFill ? 0n : ssize;
-    validateSectionRange(`section ${sectname}`, saddr, ssize, sectionFileOffset, sectionFileSize, seg, image, zeroFill);
+    validateSectionRange(`section ${sectname}`, saddr, ssize, sectionFileOffset, sectionFileSize, seg, image, zeroFill, sflags);
     image.addSection({ name: sectname, segment: segname, address: saddr, size: ssize, fileOffset: sectionFileOffset, fileSize: sectionFileSize, perms: vmPerms(initprot), flags: sflags, index: image.sections.length + 1 });
   }
 }
@@ -442,7 +464,7 @@ function parseSegment32(r, p, cmdsize, image, order, sharedBudget = null) {
     const sflags = r.u32(q + 56);
     const zeroFill = (sflags & 0xff) === 1 || (sflags & 0xff) === 0x0c || (sflags & 0xff) === 0x12;
     const sectionFileOffset = BigInt(offset), sectionFileSize = zeroFill ? 0n : ssize;
-    validateSectionRange(`section ${sectname}`, saddr, ssize, sectionFileOffset, sectionFileSize, seg, image, zeroFill);
+    validateSectionRange(`section ${sectname}`, saddr, ssize, sectionFileOffset, sectionFileSize, seg, image, zeroFill, sflags);
     image.addSection({ name: sectname, segment: segname, address: saddr, size: ssize, fileOffset: sectionFileOffset, fileSize: sectionFileSize, perms: vmPerms(initprot), flags: sflags, index: image.sections.length + 1 });
   }
 }

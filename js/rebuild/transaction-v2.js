@@ -220,6 +220,26 @@ function relocationResultFailure(result) {
   return null;
 }
 
+function loaderReparseResultFailure(result, context) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return 'validator-loader-result-invalid';
+  const image = result.image;
+  const checks = [
+    [validatorIdentityValues(result, image, ['format'], 'format'), 'validator-format-identity-required', 'validator-format-invalid', 'validator-format-mismatch', context.transaction.format, (value) => value.toLowerCase()],
+    [validatorIdentityValues(result, image, ['architecture', 'arch'], 'arch'), 'validator-architecture-identity-required', 'validator-architecture-invalid', 'validator-architecture-mismatch', context.transaction.architecture, (value) => value.toLowerCase()],
+    [validatorIdentityValues(result, image, ['loaderVersion', 'parserVersion'], 'loaderVersion'), 'validator-loader-identity-required', 'validator-loader-identity-invalid', 'validator-loader-identity-mismatch', context.transaction.loaderVersion, (value) => value],
+    [validatorIdentityValues(result, image, ['outputHash', 'bytesHash'], 'outputHash'), 'validator-output-identity-required', 'validator-output-identity-invalid', 'validator-output-identity-mismatch', context.expectedOutputHash, (value) => value.toLowerCase()],
+  ];
+  for (const [values, missingReason, invalidReason, mismatchReason, expected, normalize] of checks) {
+    if (!values.length) return missingReason;
+    if (values.some((value) => typeof value !== 'string' || !value.trim())) return invalidReason;
+    if (values.some((value) => normalize(value) !== normalize(String(expected)))) return mismatchReason;
+  }
+  const sourceHashes = validatorIdentityValues(result, image, ['sourceHash', 'inputHash'], 'sourceHash');
+  if (sourceHashes.some((value) => typeof value !== 'string' || !value.trim())) return 'validator-source-identity-invalid';
+  if (sourceHashes.some((value) => value.toLowerCase() !== context.transaction.sourceHash)) return 'validator-source-identity-mismatch';
+  return null;
+}
+
 function independentOracleResultFailure(result, context) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return 'independent-oracle-result-invalid';
   if (result.schemaVersion !== INDEPENDENT_ORACLE_RESULT_SCHEMA) return 'independent-oracle-contract-invalid';
@@ -532,7 +552,11 @@ export function evaluateF6RebuildDenominator({ transaction, validation, publicat
   const loader = validation?.validators?.find((item) => item.validator === 'loader-reparse');
   add('loader-reparse', loader?.status === 'passed' ? 'closed' : 'blocking', loader?.status === 'passed' ? null : 'f6-loader-reparse-unproven', loader?.status === 'passed' ? 'production-loader-reparse' : null);
   const independent = validation?.validators?.find((item) => item.validator === 'independent-differential');
-  add('independent-differential-oracle', independent?.status === 'passed' && validation?.independentDifferential === 'executed' ? 'closed' : 'blocking', independent?.status === 'passed' && validation?.independentDifferential === 'executed' ? null : 'f6-independent-oracle-unproven', independent?.status === 'passed' ? 'independent-oracle-contract' : null);
+  // #8831 — this denominator unit is a release authority: an unregistered caller callback that only
+  // echoes the schema/digests/shape proves no independent implementation ran, so it may not close it.
+  const independentExecuted = independent?.status === 'passed' && validation?.independentDifferential === 'executed';
+  const independentProven = independentExecuted && validation?.independentOracleTrusted === true;
+  add('independent-differential-oracle', independentProven ? 'closed' : 'blocking', independentProven ? null : (independentExecuted ? 'f6-independent-oracle-provider-untrusted' : 'f6-independent-oracle-unproven'), independentProven ? 'trusted-independent-oracle-provider' : null);
 
   add('atomic-publication', publicationComplete ? 'closed' : 'blocking', publicationComplete ? null : 'f6-atomic-publication-unproven', publicationComplete ? 'transaction-v2-publication-identity' : null);
   add('real-fixture', proof.realFixture === true && proof.realFixtureEvidence === true ? 'closed' : 'blocking', proof.realFixture === true && proof.realFixtureEvidence === true ? null : 'f6-real-fixture-evidence-unproven', proof.realFixture === true && proof.realFixtureEvidence === true ? 'compiler-produced-fixture' : null);
@@ -575,6 +599,25 @@ function explicitBigInt(value, code) {
   if (typeof value === 'bigint') return value;
   if (typeof value === 'string' && value.trim()) return BigInt(value);
   throw new TypeError(code);
+}
+
+const FORMAT_SAFE_IMPACT_SCHEMA = 'hex-format-safe-rebuild/v1';
+
+function hasFormatSafeImpactProof(input, operations, expectedOriginalState) {
+  const additional = Array.isArray(input.additionalValidators) ? input.additionalValidators : [];
+  const safeState = expectedOriginalState?.formatSafe;
+  if (input.requireIndependentOracle !== true
+      || !additional.includes('format-invariants')
+      || !safeState || typeof safeState !== 'object' || Array.isArray(safeState)
+      || safeState.schema !== FORMAT_SAFE_IMPACT_SCHEMA
+      || typeof safeState.kind !== 'string' || !safeState.kind) return false;
+  return operations.length > 0 && operations.every((operation) => {
+    const provenance = operation?.provenance;
+    return provenance && typeof provenance === 'object' && !Array.isArray(provenance)
+      && provenance.source === 'format-safe-rebuild-adapter'
+      && provenance.schema === FORMAT_SAFE_IMPACT_SCHEMA
+      && provenance.mutationKind === safeState.kind;
+  });
 }
 
 function requiredValidators(impact, additional = [], requireIndependentOracle = false) {
@@ -634,30 +677,14 @@ export function createRebuildTransaction(input = {}) {
   const directDiscoveryBinding = rawExpectedOriginalState?.discoveryBinding ?? null;
   let discoveryBinding = null;
   if (input.discoveryArtifact != null) {
-    discoveryBinding = discoveryArtifactForRebuild(input.discoveryArtifact, {
-      binaryId: input.binaryId,
-      sourceHash,
-      architectureId: architecture,
-    });
-    if (directDiscoveryBinding != null
-        && (!isFactoryIssuedDiscoveryRebuildBinding(directDiscoveryBinding)
-          || directDiscoveryBinding.digest !== discoveryBinding.digest)) {
-      throw new TypeError('rebuild-v2-discovery-binding-mismatch');
-    }
+    discoveryBinding = discoveryArtifactForRebuild(input.discoveryArtifact, { binaryId: input.binaryId, sourceHash, architectureId: architecture });
+    if (directDiscoveryBinding != null && (!isFactoryIssuedDiscoveryRebuildBinding(directDiscoveryBinding) || directDiscoveryBinding.digest !== discoveryBinding.digest)) throw new TypeError('rebuild-v2-discovery-binding-mismatch');
   } else if (directDiscoveryBinding != null) {
-    if (!isFactoryIssuedDiscoveryRebuildBinding(directDiscoveryBinding)) {
-      throw new TypeError('rebuild-v2-discovery-binding-untrusted');
-    }
-    if (directDiscoveryBinding.binding?.binaryId !== input.binaryId
-        || directDiscoveryBinding.binding?.sourceHash !== sourceHash
-        || directDiscoveryBinding.binding?.architectureId !== architecture) {
-      throw new TypeError('rebuild-v2-discovery-binding-mismatch');
-    }
+    if (!isFactoryIssuedDiscoveryRebuildBinding(directDiscoveryBinding)) throw new TypeError('rebuild-v2-discovery-binding-untrusted');
+    if (directDiscoveryBinding.binding?.binaryId !== input.binaryId || directDiscoveryBinding.binding?.sourceHash !== sourceHash || directDiscoveryBinding.binding?.architectureId !== architecture) throw new TypeError('rebuild-v2-discovery-binding-mismatch');
     discoveryBinding = directDiscoveryBinding;
   }
-  if (input.discoveryRequired === true && discoveryBinding == null) {
-    throw new TypeError('rebuild-v2-discovery-binding-required');
-  }
+  if (input.discoveryRequired === true && discoveryBinding == null) throw new TypeError('rebuild-v2-discovery-binding-required');
   const discoveryRequired = discoveryBinding != null;
   const expectedOriginalState = optionalRecord(rawExpectedOriginalState, 'rebuild-v2-original-state-invalid');
   if (expectedOriginalState.sourceHash != null && canonicalHash(expectedOriginalState.sourceHash) !== sourceHash) throw new TypeError('rebuild-v2-original-state-identity-mismatch');
@@ -667,19 +694,23 @@ export function createRebuildTransaction(input = {}) {
   if (!Array.isArray(relocationBindings)) throw new TypeError('rebuild-v2-relocation-bindings-invalid');
   const sections = input.sections ?? declaredImpact.sections ?? [];
   if (!Array.isArray(sections)) throw new TypeError('rebuild-v2-sections-invalid');
-  const impact = {
-    layoutMoving: sizeDelta !== 0 || declaredImpact.layoutMoving === true,
-    relocations: declaredImpact.relocations === true || relocationBindings.length > 0,
-    branchRanges: declaredImpact.branchRanges === true,
-    unwind: declaredImpact.unwind === true,
-    importsExports: declaredImpact.importsExports === true,
-    signature: declaredImpact.signature === true,
-    sections: clone(sections),
-    relocationBindings: clone(relocationBindings),
-  };
-  // A discovery-bound rebuild may only publish through X-01's existing
-  // independent differential authority. X-03 adds evidence; it does not create
-  // a private self-oracle path.
+  // #5192: arbitrary generic byte patches have no loader-derived range
+// authority. Caller `false` declarations cannot prove a same-size edit
+// misses relocation, branch, unwind, import/export, or signature data.
+// Only the format-safe path may retain narrow impact, and only when it
+// carries its invariant validator plus the independent-oracle gate.
+const conservativeGenericImpact = !hasFormatSafeImpactProof(input, operations, expectedOriginalState);
+const impact = {
+  layoutMoving: sizeDelta !== 0 || declaredImpact.layoutMoving === true,
+  relocations: conservativeGenericImpact || declaredImpact.relocations === true || relocationBindings.length > 0,
+  branchRanges: conservativeGenericImpact || declaredImpact.branchRanges === true,
+  unwind: conservativeGenericImpact || declaredImpact.unwind === true,
+  importsExports: conservativeGenericImpact || declaredImpact.importsExports === true,
+  signature: conservativeGenericImpact || declaredImpact.signature === true,
+  sections: clone(sections),
+  relocationBindings: clone(relocationBindings),
+};
+  // Discovery-bound rebuilds reuse X-01 independent differential authority.
   const requireIndependentOracle = input.requireIndependentOracle === true || discoveryRequired;
   const transaction = {
     schemaVersion: REBUILD_TRANSACTION_SCHEMA,
@@ -709,6 +740,19 @@ async function sourceBytes(source) {
   return toBytes(source).slice();
 }
 
+// #8796: an admissible length is available from primitive source metadata
+// (typed views, ArrayBuffers, arrays, and a Blob's declared size) before any
+// whole-binary read, so an explicit output budget can be admitted before the
+// source is materialized and hashed.
+function declaredSourceLength(source) {
+  if (typeof Blob !== 'undefined' && source instanceof Blob) {
+    return Number.isSafeInteger(source.size) && source.size >= 0 ? source.size : null;
+  }
+  if (source instanceof Uint8Array || source instanceof ArrayBuffer || ArrayBuffer.isView(source)) return source.byteLength;
+  if (Array.isArray(source)) return source.length;
+  return null;
+}
+
 function transactionIdentityValid(transaction) {
   try {
     if (!transaction || transaction.schemaVersion !== REBUILD_TRANSACTION_SCHEMA) return false;
@@ -730,9 +774,7 @@ function transactionIdentityValid(transaction) {
     const discoveryBinding = transaction.expectedOriginalState?.discoveryBinding ?? null;
     if (transaction.discoveryRequired === true) {
       if (!isFactoryIssuedDiscoveryRebuildBinding(discoveryBinding)) return false;
-      if (discoveryBinding.binding?.binaryId !== transaction.binaryId
-          || discoveryBinding.binding?.sourceHash !== transaction.sourceHash
-          || discoveryBinding.binding?.architectureId !== transaction.architecture) return false;
+      if (discoveryBinding.binding?.binaryId !== transaction.binaryId || discoveryBinding.binding?.sourceHash !== transaction.sourceHash || discoveryBinding.binding?.architectureId !== transaction.architecture) return false;
     } else if (discoveryBinding != null) return false;
     const expected = requiredValidators(transaction.impact, transaction.requiredValidators.filter((name) => ![
       'source-precondition', 'structure', 'loader-reparse', 'unchanged-regions', 'evidence',
@@ -843,6 +885,22 @@ export async function materializeRebuildTransaction(transaction, source, options
   if (!transaction || transaction.schemaVersion !== REBUILD_TRANSACTION_SCHEMA) return { status: 'rejected', reason: 'rebuild-v2-transaction-schema-invalid' };
   if (!transactionIdentityValid(transaction)) return { status: 'rejected', reason: 'rebuild-v2-transaction-identity-invalid', transactionId: transaction.transactionId || null };
   if (options.signal?.aborted) return { status: 'cancelled', reason: 'rebuild-v2-cancelled-before-materialization', transactionId: transaction.transactionId };
+  // #8796: a caller-supplied output budget must be admitted before the source
+  // is read, hashed, and copied; otherwise the advertised resource budget
+  // cannot protect materialization admission. The implicit budget is derived
+  // from the source length itself, so only an explicit limit is evaluable here.
+  if (options.maxOutputBytes != null) {
+    let declaredLimit;
+    try { declaredLimit = positiveSafe(options.maxOutputBytes, 2_147_483_647, 2_147_483_647, 'rebuild-v2-max-output-budget-invalid'); }
+    catch { return { status: 'rejected', reason: 'rebuild-v2-max-output-budget-invalid' }; }
+    const declaredLength = declaredSourceLength(source);
+    if (declaredLength != null) {
+      const declaredFinal = declaredLength + transaction.sizeDelta;
+      if (!Number.isSafeInteger(declaredFinal) || declaredFinal < 0 || declaredFinal > declaredLimit) {
+        return { status: 'rejected', reason: 'rebuild-v2-output-budget-exceeded', finalLength: declaredFinal, maxOutputBytes: declaredLimit };
+      }
+    }
+  }
   let original;
   try { original = await sourceBytes(source); }
   catch (error) { return { status: 'rejected', reason: 'rebuild-v2-source-unavailable', detail: String(error?.message || error), transactionId: transaction.transactionId }; }
@@ -958,17 +1016,17 @@ async function executeExternal(name, fn, context) {
       return validatorResult(name, true, false, result?.reason || `validator-status-${result.status}`, result);
     }
     if (result.ok !== true && result.status !== 'passed' && result.status !== 'valid') return validatorResult(name, true, false, result?.reason || 'validator-rejected', result || null);
+    if (name === 'loader-reparse') {
+      const contractFailure = loaderReparseResultFailure(result, context);
+      if (contractFailure) return validatorResult(name, true, false, contractFailure, result);
+    }
     const identityFailure = formatIdentityMismatch(result, context.transaction, context.expectedOutputHash);
     if (identityFailure) return validatorResult(name, true, false, identityFailure, result);
     if (name === 'loader-reparse' && context.transaction.discoveryRequired) {
       const sourceBinding = context.transaction.expectedOriginalState?.discoveryBinding;
       const reparsedArtifact = result.discoveryArtifact ?? null;
-      const discoveryValidation = verifyDiscoveryReparse(sourceBinding, reparsedArtifact, {
-        expectedOutputHash: context.expectedOutputHash,
-      });
-      if (!discoveryValidation.ok) {
-        return validatorResult(name, true, false, discoveryValidation.reason, discoveryValidation);
-      }
+      const discoveryValidation = verifyDiscoveryReparse(sourceBinding, reparsedArtifact, { expectedOutputHash: context.expectedOutputHash });
+      if (!discoveryValidation.ok) return validatorResult(name, true, false, discoveryValidation.reason, discoveryValidation);
     }
     const relocationFailure = name === 'relocations' ? relocationResultFailure(result) : null;
     if (relocationFailure) return validatorResult(name, true, false, relocationFailure, result);
@@ -1000,7 +1058,7 @@ export async function validateRebuildTransaction(transaction, materialized, opti
   const operationRegionsMatch = mappingsMatchTransaction(transaction, materialized.mappings, materialized.sourceLength, materialized.outputLength)
     && operationRegionsMatchTransaction(transaction, materialized.bytes, materialized.mappings);
   const evidenceComplete = transaction.operations.every((operation) => operation.provenance && Object.keys(operation.provenance).length > 0);
-  const preservationRequiresTrustedProvider = ['elf-comment', 'pe-timestamp', 'macho-min-version'].includes(transaction.expectedOriginalState?.formatSafe?.kind);
+  const preservationRequiresTrustedProvider = transaction.expectedOriginalState?.formatSafe?.schema === FORMAT_SAFE_IMPACT_SCHEMA;
   const independentOracleTrusted = isCanonicalIndependentOracleProvider(options.independentOracle);
   builtins.set('source-precondition', () => validatorResult('source-precondition', true, sourceMatches, 'source-hash-mismatch'));
   builtins.set('structure', () => validatorResult('structure', true, structureMatches, 'output-length-inconsistent'));
@@ -1039,6 +1097,7 @@ export async function validateRebuildTransaction(transaction, materialized, opti
     status: failures.length === 0 && allExecuted ? 'valid' : 'invalid',
     failures,
     independentDifferential: independent ? (independent.status === 'passed' ? 'executed' : 'failed') : 'unavailable',
+    independentOracleTrusted: transaction.requireIndependentOracle === true ? independentOracleTrusted : false,
   };
   return deepFreeze({ ...validation, validationId: `rebuild-validation:${stableDigest(validation)}` });
 }

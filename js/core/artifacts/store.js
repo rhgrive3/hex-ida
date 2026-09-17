@@ -487,11 +487,16 @@ export class ArtifactStore {
     aborted(options.signal);
 
     let payloadBytes;
-    let stagedPayload;
+    let stagedPayload = null;
     let record;
     try {
       payloadBytes = encodeArtifactPayload(payload);
-      stagedPayload = decodeArtifactPayload(payloadBytes);
+      // #8738: the staged decode is ONLY consumed by `options.validate`. Decoding
+      // it unconditionally re-materialized the full payload object graph (a second
+      // per-byte boxed copy for typed-array results) on every publish, outside any
+      // budget. It was also behaviorally redundant: `decodeArtifactPayload` cannot
+      // fail on bytes this module just produced from canonical JSON.
+      if (typeof options.validate === 'function') stagedPayload = decodeArtifactPayload(payloadBytes);
       record = createArtifactRecord(descriptor, payloadBytes, {
         completeness:options.completeness ?? 'complete',
         creation:options.creation,

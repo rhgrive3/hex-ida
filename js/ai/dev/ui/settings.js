@@ -1,4 +1,4 @@
-import { AllowAllAdminProvider, readAdminIdentity } from '../auth/admin-provider.js';
+import { DenyAllAdminProvider, readAdminIdentity } from '../auth/admin-provider.js';
 import { AGENT_PROFILE, assertAgentProfile, availableAgentProfiles, canSelectAgentProfile } from '../policy/agent-profile.js';
 import { DEV_DECISION_POLICY, assertDevDecisionPolicy } from '../policy/decision-policy.js';
 import { createDevAnalysisScopeRequest, ANALYSIS_SCOPE_INITIALS } from '../run/analysis-scope.js';
@@ -6,22 +6,52 @@ import { createDevAnalysisScopeRequest, ANALYSIS_SCOPE_INITIALS } from '../run/a
 const STORAGE_KEY = 'hex.ai.dev.settings.v1';
 
 export class DevAgentUiSettings {
-  constructor({ authProvider = new AllowAllAdminProvider(), storage = defaultStorage(), key = STORAGE_KEY } = {}) {
+  constructor({ authProvider = new DenyAllAdminProvider(), storage = defaultStorage(), key = STORAGE_KEY } = {}) {
     this.authProvider = authProvider;
     this.identity = readAdminIdentity(authProvider);
     this.storage = storage;
     this.key = key;
     this.listeners = new Set();
     const saved = this.load();
-    this.agentProfile = saved.agentProfile || AGENT_PROFILE.STANDARD;
-    if (!canSelectAgentProfile(this.identity, this.agentProfile)) this.agentProfile = AGENT_PROFILE.STANDARD;
-    this.decisionPolicy = safePolicy(saved.decisionPolicy);
+    let profile = safeProfile(saved.agentProfile);
+    const lostDevPrivilege = profile === AGENT_PROFILE.DEV && !canSelectAgentProfile(this.identity, profile);
+    if (!canSelectAgentProfile(this.identity, profile)) profile = AGENT_PROFILE.STANDARD;
+    this.agentProfile = profile;
+    // #8854: `yolo` is authority-bearing only inside an authenticated Dev session. A persisted
+    // dev/yolo preference that can no longer be honoured (privilege lost / no trusted admin
+    // identity) is downgraded to Standard + the normal policy rather than silently retaining
+    // YOLO semantics.
+    this.decisionPolicy = lostDevPrivilege || !this.identity.capabilities.canUseDevYolo ? DEV_DECISION_POLICY.NORMAL : safePolicy(saved.decisionPolicy);
     this.analysisScope = safeScope(saved.analysisScope);
     this.lastRun = null;
+    this.unsubscribeAuth = authProvider.subscribe?.(() => this.refreshIdentity());
   }
 
-  profiles() { return availableAgentProfiles(this.identity); }
+  refreshIdentity({ notify = true } = {}) {
+    const next = readAdminIdentity(this.authProvider);
+    const canUseDev = next.capabilities.canUseDevAgent && canSelectAgentProfile(next, AGENT_PROFILE.DEV);
+    const wasDev = this.agentProfile === AGENT_PROFILE.DEV;
+    const wasYolo = this.decisionPolicy === DEV_DECISION_POLICY.YOLO;
+    const identityChanged = this.identity !== next;
+    const lostYoloPrivilege = !next.capabilities.canUseDevYolo && wasYolo;
+    const downgraded = (!canUseDev && wasDev) || lostYoloPrivilege;
+    this.identity = next;
+    if (downgraded) {
+      this.agentProfile = AGENT_PROFILE.STANDARD;
+      this.decisionPolicy = DEV_DECISION_POLICY.NORMAL;
+      this.persist();
+    }
+    if (notify && (identityChanged || downgraded)) this.emit();
+    return identityChanged || downgraded;
+  }
+
+  destroy() { this.unsubscribeAuth?.(); this.listeners.clear(); }
+  profiles() {
+    this.refreshIdentity();
+    return availableAgentProfiles(this.identity);
+  }
   setAgentProfile(profile) {
+    this.refreshIdentity();
     const next = assertAgentProfile(profile);
     if (!canSelectAgentProfile(this.identity, next)) throw new Error('Admin privileges are required for the Dev profile.');
     if (this.agentProfile === next) return false;
@@ -29,7 +59,11 @@ export class DevAgentUiSettings {
     this.persist(); this.emit(); return true;
   }
   setDecisionPolicy(policy) {
+    this.refreshIdentity();
     const next = assertDevDecisionPolicy(policy);
+    if (next === DEV_DECISION_POLICY.YOLO && (!this.identity.capabilities.canUseDevYolo || !canSelectAgentProfile(this.identity, AGENT_PROFILE.DEV))) {
+      throw new Error('Admin privileges are required for the YOLO policy.');
+    }
     if (this.decisionPolicy === next) return false;
     this.decisionPolicy = next;
     this.persist(); this.emit(); return true;
@@ -48,6 +82,7 @@ export class DevAgentUiSettings {
   setLastRun(run) { this.lastRun = run || null; this.emit(); }
   on(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   snapshot() {
+    this.refreshIdentity({ notify: false });
     return Object.freeze({
       identity: this.identity,
       agentProfile: this.agentProfile,
@@ -75,6 +110,7 @@ export class DevAgentUiSettings {
   }
 }
 
+function safeProfile(value) { try { return assertAgentProfile(value || AGENT_PROFILE.STANDARD); } catch { return AGENT_PROFILE.STANDARD; } }
 function safePolicy(value) { try { return assertDevDecisionPolicy(value || DEV_DECISION_POLICY.NORMAL); } catch { return DEV_DECISION_POLICY.NORMAL; } }
 function safeScope(value) { try { return value?.initial ? createDevAnalysisScopeRequest(value.initial) : createDevAnalysisScopeRequest(); } catch { return createDevAnalysisScopeRequest(); } }
 function defaultStorage() { try { return typeof localStorage === 'undefined' ? null : localStorage; } catch { return null; } }

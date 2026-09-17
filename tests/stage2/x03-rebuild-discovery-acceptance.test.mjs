@@ -199,6 +199,26 @@ function makeOracleResult(output) {
   };
 }
 const testOracle = registerCanonicalIndependentOracleProvider(async ({ output }) => makeOracleResult(output));
+const x03ConservativeValidators = Object.freeze(Object.fromEntries(
+  ['relocations', 'branch-ranges', 'unwind', 'imports-exports', 'signature-consequence'].map((name) => [name, () => ({
+    ok: true,
+    format: 'elf',
+    architecture: architectureId,
+    loaderVersion: 'hex-loader:x03:v1',
+    sourceHash,
+    outputHash: materialized.outputHash,
+    validator: name,
+  })]),
+));
+const x03LoaderReparseResult = (discoveryArtifact) => ({
+  ok: true,
+  format: 'elf',
+  architecture: architectureId,
+  loaderVersion: 'hex-loader:x03:v1',
+  sourceHash,
+  outputHash: materialized.outputHash,
+  discoveryArtifact,
+});
 
 // Honest output artifact (retaining all candidates, collisions, and references)
 const validOutputArtifact = functionDiscoveryArtifact({
@@ -211,8 +231,9 @@ const validOutputArtifact = functionDiscoveryArtifact({
 
 const validValidation = await validateRebuildTransaction(tx, materialized, {
   original: source,
-  loaderReparse: () => ({ ok: true, discoveryArtifact: validOutputArtifact }),
+  loaderReparse: () => x03LoaderReparseResult(validOutputArtifact),
   independentOracle: testOracle,
+  validators: x03ConservativeValidators,
 });
 assert.equal(validValidation.status, 'valid');
 
@@ -230,8 +251,9 @@ const strippedArtifact = functionDiscoveryArtifact({
 
 const strippedValidation = await validateRebuildTransaction(tx, materialized, {
   original: source,
-  loaderReparse: () => ({ ok: true, discoveryArtifact: strippedArtifact }),
+  loaderReparse: () => x03LoaderReparseResult(strippedArtifact),
   independentOracle: testOracle,
+  validators: x03ConservativeValidators,
 });
 assert.equal(strippedValidation.status, 'invalid');
 const strippedLoader = strippedValidation.validators.find((v) => v.validator === 'loader-reparse');
@@ -263,8 +285,9 @@ const promotedArtifact = functionDiscoveryArtifact({
 
 const promotedValidation = await validateRebuildTransaction(tx, materialized, {
   original: source,
-  loaderReparse: () => ({ ok: true, discoveryArtifact: promotedArtifact }),
+  loaderReparse: () => x03LoaderReparseResult(promotedArtifact),
   independentOracle: testOracle,
+  validators: x03ConservativeValidators,
 });
 assert.equal(promotedValidation.status, 'invalid');
 const promotedLoader = promotedValidation.validators.find((v) => v.validator === 'loader-reparse');
@@ -281,8 +304,9 @@ const staleArtifact = functionDiscoveryArtifact({
 }).artifact;
 const staleValidation = await validateRebuildTransaction(tx, materialized, {
   original: source,
-  loaderReparse: () => ({ ok: true, discoveryArtifact: staleArtifact }),
+  loaderReparse: () => x03LoaderReparseResult(staleArtifact),
   independentOracle: testOracle,
+  validators: x03ConservativeValidators,
 });
 assert.equal(staleValidation.status, 'invalid');
 assert.equal(staleValidation.validators.find((v) => v.validator === 'loader-reparse').reason, 'discovery-reparse-output-hash-mismatch');

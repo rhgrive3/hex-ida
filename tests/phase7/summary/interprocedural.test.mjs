@@ -158,7 +158,7 @@ test('an exhaustive indirect candidate propagates control facts exactly like a d
     localSummaries: new Map([['fn_dispatch_exact', directCaller], ['fn_target', callee]]),
   }).summaries.get('fn_dispatch_exact');
 
-  assert.equal(indirect.noreturn, true);
+  assert.equal(indirect.noreturn, 'unknown');
   assert.equal(indirect.mayThrow, true);
   assert.equal(indirect.noreturn, direct.noreturn);
   assert.equal(indirect.mayThrow, direct.mayThrow);
@@ -189,7 +189,7 @@ test('multiple exhaustive indirect candidates union their control facts', () => 
   }).summaries.get('fn_dispatch_exact');
 
   assert.equal(summary.status.completeness, 'complete');
-  assert.equal(summary.noreturn, true);
+  assert.equal(summary.noreturn, 'unknown');
   assert.equal(summary.mayThrow, true);
 });
 
@@ -232,6 +232,7 @@ test('indirect candidates retain nested unknown-call provenance and union all co
   });
   const unknown = createFunctionSummary({
     functionId: 'fn_unknown',
+    memoryReadRegions: [{ regionKind: 'unknown', broad: true, source: 'unknown-call-fallback' }],
     memoryWriteRegions: [{ regionKind: 'unknown', broad: true, source: 'unknown-call-fallback' }],
     unknownCallEffects: [{
       callSiteId: 'nested.call',

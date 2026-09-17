@@ -148,6 +148,36 @@ function directCompare(op, left, right, signed, bits, source, comparisonDomain =
   return left && right ? expr.compare(op, left, right, signed, source, { comparisonDomain }) : null;
 }
 
+const COMPARE_INVERSE = Object.freeze({ eq: 'ne', ne: 'eq', lt: 'ge', le: 'gt', gt: 'le', ge: 'lt' });
+
+// #8898 — the single domain-aware boolean negation of a decompiler compare,
+// shared by the exact-stack PHI and return recovery passes (they previously
+// duplicated the same integer total-order table and both dropped
+// `comparisonDomain`). The integer complements (`lt <-> ge`, `le <-> gt`, …)
+// are exact only in a total order; a floating-domain ordered predicate over
+// possibly-unordered operands (NaN) has no relational complement — both
+// `a < b` and `a >= b` are false — so only eq/ne may be rewritten as an
+// inverted compare. Anything else fails closed to an explicit `lnot`, and every
+// reconstruction preserves the original `comparisonDomain` so negation never
+// launders a floating compare into an integer one.
+export function invertBooleanCondition(condition) {
+  if (condition?.kind === 'compare' && COMPARE_INVERSE[condition.op]) {
+    const domain = condition.comparisonDomain;
+    const exactComplement = domain !== 'floating' || condition.op === 'eq' || condition.op === 'ne';
+    if (exactComplement) {
+      return expr.compare(
+        COMPARE_INVERSE[condition.op],
+        condition.left,
+        condition.right,
+        condition.compareSigned,
+        condition.source,
+        { comparisonDomain: domain },
+      );
+    }
+  }
+  return expr.unary('lnot', condition, 1, false, condition?.source);
+}
+
 function zero(bits, signed, source) {
   return expr.constant(0n, widthOf(bits), signed, source);
 }

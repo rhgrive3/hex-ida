@@ -12,7 +12,7 @@ const STRTAB_OFFSET = 0x118;
 const SHNDX_OFFSET = 0x140;
 const FUNCTION_OFFSET = 0x200;
 
-function buildExtendedCommonImage({ actualSection = true } = {}) {
+function buildExtendedCommonImage(companion = SHN_COMMON) {
   const bytes = new Uint8Array(0x300);
   const view = new DataView(bytes.buffer);
   const dynamic = [
@@ -35,7 +35,7 @@ function buildExtendedCommonImage({ actualSection = true } = {}) {
   view.setBigUint64(SYMTAB_OFFSET + 8, BASE + BigInt(FUNCTION_OFFSET), true);
   view.setBigUint64(SYMTAB_OFFSET + 16, 12n, true);
   bytes.set(new TextEncoder().encode('\0extended_fn\0'), STRTAB_OFFSET);
-  view.setUint32(SHNDX_OFFSET, SHN_COMMON, true);
+  view.setUint32(SHNDX_OFFSET, companion, true);
 
   const segment = {
     address: BASE,
@@ -45,9 +45,19 @@ function buildExtendedCommonImage({ actualSection = true } = {}) {
     perms: { read: true, write: false, execute: true },
   };
   const sections = new Array(SHN_COMMON + 1);
-  if (actualSection) sections[SHN_COMMON] = {
-    index: SHN_COMMON, name: '.text', address: BASE + BigInt(FUNCTION_OFFSET),
-    size: 12n, fileOffset: BigInt(FUNCTION_OFFSET), fileSize: 12n, perms: segment.perms,
+  sections[SHN_COMMON] = {
+    index: SHN_COMMON,
+    nameOffset: 1,
+    name: '.extended',
+    type: 1,
+    flags: 6n,
+    addr: BASE + BigInt(FUNCTION_OFFSET),
+    offset: BigInt(FUNCTION_OFFSET),
+    size: 64n,
+    link: 0,
+    info: 0,
+    addralign: 1n,
+    entsize: 0n,
   };
   const image = {
     bits: 64,
@@ -98,13 +108,15 @@ test('#4358 PT_DYNAMIC extended index numerically equal to SHN_COMMON remains se
   assert.equal(image.functions.find((entry) => entry.name === 'extended_fn')?.address, BASE + BigInt(FUNCTION_OFFSET));
 });
 
-test('#4358 an array hole cannot certify the same extended section index', () => {
-  const image = buildExtendedCommonImage({ actualSection: false });
+test('#4358 extended index without an actual section entry stays fail-closed', () => {
+  const image = buildExtendedCommonImage(0xfff5);
   const symbol = image.symbols.find((entry) => entry.name === 'extended_fn');
+
   assert.ok(symbol);
   assert.equal(symbol.defined, null);
   assert.equal(symbol.sectionIndex, null);
-  assert.equal(symbol.address, BASE + BigInt(FUNCTION_OFFSET)); // retained declaration, without defined/export authority
+  assert.equal(image.imports.length, 0);
   assert.equal(image.exports.length, 0);
   assert.equal(image.functions.length, 0);
+  assert.ok(image.warnings.some((warning) => warning.includes('out-of-range-section-index-65525')));
 });

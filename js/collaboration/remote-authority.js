@@ -477,6 +477,47 @@ export function createRemoteCollaborationEnvelope(input = {}) {
   return deepFreeze({ ...envelope, envelopeId: envelopeIdentity(envelope) });
 }
 
+// Independent-oracle behavior attestation (issue #8839). A genuine transport
+// verifier attests only proofs its own oracle issued, so it must reject every
+// fabricated, high-entropy probe — including the realistic attack shape (valid
+// self-attested flags plus an unrecognised proofIdentity). A trivially permissive
+// capability such as `() => true`, or one that merely echoes the `authenticated`
+// flag the gate already checks, returns true for a probe and therefore cannot
+// self-mint the trusted brand. A verifier that throws on a fabricated proof is
+// treated as a fail-closed rejection, matching gate.validate's `=== true` rule.
+const ATTESTATION_PROBE_SHAPES = Object.freeze([
+  (token) => Object.freeze({ authenticated: false, confidentiality: 'unverified', integrity: 'unverified', proofIdentity: token }),
+  (token) => Object.freeze({ authenticated: true, confidentiality: 'verified', integrity: 'verified', proofIdentity: token }),
+  (token) => Object.freeze({ authenticated: true, confidentiality: 'unverified', integrity: 'verified', proofIdentity: token }),
+  () => Object.freeze({ authenticated: true, confidentiality: 'verified', integrity: 'verified', proofIdentity: null }),
+  () => Object.freeze({ authenticated: true, confidentiality: 'verified', integrity: 'verified' }),
+]);
+
+function attestationProbeTokens(count) {
+  const tokens = [];
+  const crypto = globalThis.crypto;
+  for (let index = 0; index < count; index += 1) {
+    if (crypto && typeof crypto.randomUUID === 'function') tokens.push(crypto.randomUUID());
+    else tokens.push(`${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`);
+  }
+  return tokens;
+}
+
+function passesOracleBehaviorAttestation(verifyTransportProof) {
+  for (const token of attestationProbeTokens(2)) {
+    for (const shape of ATTESTATION_PROBE_SHAPES) {
+      let verdict;
+      try {
+        verdict = verifyTransportProof(shape(token));
+      } catch {
+        continue;
+      }
+      if (verdict === true) return false;
+    }
+  }
+  return true;
+}
+
 export function createRemoteTransportVerifier({ oracleIdentity, verifyTransportProof } = {}) {
   const identity = required(oracleIdentity, 'remote-gate-transport-verifier-identity-invalid');
   if (typeof verifyTransportProof !== 'function') throw new TypeError('remote-gate-transport-verifier-required');
@@ -484,7 +525,13 @@ export function createRemoteTransportVerifier({ oracleIdentity, verifyTransportP
     && TRUSTED_TRANSPORT_VERIFIER_IDENTITIES.get(verifyTransportProof) !== identity) {
     throw new TypeError('remote-gate-transport-verifier-identity-conflict');
   }
-  TRUSTED_TRANSPORT_VERIFIER_IDENTITIES.set(verifyTransportProof, identity);
+  // Only a capability that behaves like an independent oracle earns the trusted
+  // brand. A permissive caller function is still returned as a usable verifier
+  // (the gate keeps functioning) but is deliberately left unbranded, so
+  // remoteCollaborationSupport cannot be promoted through the public mint.
+  if (passesOracleBehaviorAttestation(verifyTransportProof)) {
+    TRUSTED_TRANSPORT_VERIFIER_IDENTITIES.set(verifyTransportProof, identity);
+  }
   return Object.freeze({ verifyTransportProof, transportVerifierIdentity: identity });
 }
 
@@ -504,8 +551,10 @@ export class RemoteCollaborationGate {
     this.supportedOperationSchemas = new Set(list(input.supportedOperationSchemas || [CHANGELOG_SCHEMA_VERSION]));
     this.maxBatch = positive(input.maxBatch, 256, 4096, 'remote-gate-max-batch-invalid');
     this.maxMessageBytes = positive(input.maxMessageBytes, 1024 * 1024, 32 * 1024 * 1024, 'remote-gate-max-message-invalid');
+    this.replayWindow = positive(input.replayWindow, 4096, 65536, 'remote-gate-replay-window-invalid');
     this.seenMessages = new Set();
     this.seenEnvelopeIds = new Set();
+    this.replayWindowOrder = [];
     this.lastSequenceByActor = new Map();
     this.verifyTransportProof = typeof input.verifyTransportProof === 'function' ? input.verifyTransportProof : null;
     this.transportVerifierIdentity = input.transportVerifierIdentity == null
@@ -586,6 +635,12 @@ export class RemoteCollaborationGate {
     if (!snap) return Object.freeze({ status: 'rejected', reason: 'remote-ingress-snapshot-required' });
     this.seenMessages.add(snap.messageId);
     this.seenEnvelopeIds.add(snap.envelopeId);
+    this.replayWindowOrder.push(Object.freeze({ messageId: snap.messageId, envelopeId: snap.envelopeId }));
+    while (this.replayWindowOrder.length > this.replayWindow) {
+      const oldest = this.replayWindowOrder.shift();
+      this.seenMessages.delete(oldest.messageId);
+      this.seenEnvelopeIds.delete(oldest.envelopeId);
+    }
     this.lastSequenceByActor.set(snap.actorIdentity, snap.sequence);
     return Object.freeze({ status: 'accepted', envelopeId: snap.envelopeId, operationCount: snap.operations.length });
   }
@@ -603,6 +658,7 @@ export class RemoteCollaborationGate {
       actors: Object.keys(this.allowedActors).sort(),
       revokedActors: [...this.revokedActors].sort(),
       seenMessageCount: this.seenMessages.size,
+      replayWindow: this.replayWindow,
       transportVerifierIdentity: this.transportVerifierIdentity,
     });
   }

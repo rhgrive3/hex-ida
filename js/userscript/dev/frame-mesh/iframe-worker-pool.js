@@ -2,6 +2,7 @@ import { ChatGPTDOMAdapter } from '../../chatgpt-adapter.js';
 import { WorkerChatController } from '../worker-host/worker-chat-controller.js';
 import { DedicatedWorkerCoordinator } from './dedicated-worker-coordinator.js';
 import { createTabNode, TAB_NODE_ROLE } from './tab-node.js';
+import { canonicalWorkerIdentity } from './worker-identity.js';
 
 export const DEV_WORKER_POOL_MAX = 6;
 export const WORKER_FRAME_HOST_ID = 'hex-dev-worker-frames';
@@ -124,8 +125,8 @@ export class IframeWorkerPool {
      Aborting cancels the wait alone: stop/release/discard stay with the caller
      that owns the lease. Internal to the host; not a public Worker tool. */
   async waitResult({ leaseId } = {}, { signal } = {}) {
-    const expectedLeaseId = String(leaseId || '');
-    const slot = this.requireLease(expectedLeaseId);
+    const slot = this.requireLease(leaseId);
+    const expectedLeaseId = slot.leaseId;
     const expected = { slot, index: slot.index, runId: slot.runId, workerId: slot.workerId };
     if (signal?.aborted) throw abortError(signal.reason);
     // Captured exactly once. A turn that finished before this call leaves
@@ -515,7 +516,12 @@ export class IframeWorkerPool {
   }
 
   requireLease(value) {
-    const id = String(value || '');
+    /* A lease token is ownership authority, so it is validated as a canonical
+       primitive identity before any lookup. A structured alias must never
+       collapse onto the lease it stringifies to. */
+    let id;
+    try { id = canonicalWorkerIdentity(value, 'leaseId'); }
+    catch { throw poolError('lease-missing', 'Worker pool lease is invalid or expired.'); }
     const index = this.leases.get(id);
     const slot = index ? this.slots.get(index) : null;
     if (!slot || slot.leaseId !== id) throw poolError('lease-missing', 'Worker pool lease is invalid or expired.');

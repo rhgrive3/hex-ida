@@ -51,6 +51,48 @@ export const SEMANTIC_CONTROL_TARGET_COUNTS = Object.freeze({
   'conditional-branch': 2,
 });
 
+export const SEMANTIC_NODE_DATA_ARITY = Object.freeze(Object.fromEntries(Object.entries({
+  const: { inputs: [0, 0], outputs: [1, 1] },
+  copy: { inputs: [1, 1], outputs: [1, 1] },
+  unary: { inputs: [1, 1], outputs: [1, 1] },
+  binary: { inputs: [2, 2], outputs: [1, 1] },
+  compare: { inputs: [2, 2], outputs: [1, 1] },
+  select: { inputs: [3, 3], outputs: [1, 1] },
+  zext: { inputs: [1, 1], outputs: [1, 1] },
+  sext: { inputs: [1, 1], outputs: [1, 1] },
+  trunc: { inputs: [1, 1], outputs: [1, 1] },
+  bitcast: { inputs: [1, 1], outputs: [1, 1] },
+  extract: { inputs: [1, 1], outputs: [1, 1] },
+  insert: { inputs: [2, 2], outputs: [1, 1] },
+  concat: { inputs: [2, null], outputs: [1, 1] },
+}).map(([kind, entry]) => [kind, Object.freeze({
+  inputs: Object.freeze(entry.inputs),
+  outputs: Object.freeze(entry.outputs),
+})])));
+
+export const SEMANTIC_INTRINSIC_OPERATOR_ARITY = Object.freeze({
+  'add-with-carry': Object.freeze({ inputs: Object.freeze([3, 3]), outputs: Object.freeze([0, null]) }),
+});
+
+export function dataArityContract(kind, operator) {
+  if (Object.hasOwn(SEMANTIC_NODE_DATA_ARITY, kind)) return SEMANTIC_NODE_DATA_ARITY[kind];
+  if (kind === 'intrinsic' && typeof operator === 'string'
+      && Object.hasOwn(SEMANTIC_INTRINSIC_OPERATOR_ARITY, operator.toLowerCase())) {
+    return SEMANTIC_INTRINSIC_OPERATOR_ARITY[operator.toLowerCase()];
+  }
+  return null;
+}
+
+function arityViolation(node, contract) {
+  const deficitOrSurplus = ([min, max], length) => {
+    if (length > (max == null ? Number.POSITIVE_INFINITY : max)) return true;
+    return length < min && node.completeness === 'complete';
+  };
+  if (deficitOrSurplus(contract.inputs, node.inputs.length)) return 'input';
+  if (deficitOrSurplus(contract.outputs, node.outputs.length)) return 'output';
+  return null;
+}
+
 export function createSemanticValue(input) {
   input = object(input, 'semantic-ir-invalid-value');
   assertAllowedKeys(input, new Set([
@@ -151,6 +193,12 @@ export function createSemanticNode(input) {
   if (kind === 'conditional-branch' && out.inputs.length !== 1) fail('semantic-ir-control-input-cardinality');
   if (Object.hasOwn(SEMANTIC_CONTROL_TARGET_COUNTS, kind) && out.targets.length !== SEMANTIC_CONTROL_TARGET_COUNTS[kind]) {
     fail('semantic-ir-control-target-cardinality');
+  }
+  const dataContract = dataArityContract(kind, out.operator);
+  if (dataContract) {
+    const arity = arityViolation(out, dataContract);
+    if (arity === 'input') fail('semantic-ir-node-input-arity');
+    if (arity === 'output') fail('semantic-ir-node-output-arity');
   }
   if (SEMANTIC_SETS.unknownOperations.has(kind) && out.unknown == null) fail('semantic-ir-unknown-detail-required');
   if (SEMANTIC_SETS.unknownOperations.has(kind) && out.completeness === 'complete') fail('semantic-ir-unknown-cannot-be-complete');

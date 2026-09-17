@@ -39,83 +39,82 @@ export function isSolverFailure(result) {
   return status !== SOLVER_STATUS.SAT && status !== SOLVER_STATUS.UNSAT;
 }
 
-function readonlyMap(entries) {
-  const target = new Map(entries);
-  Object.freeze(target);
-  let snapshot;
-  snapshot = new Proxy(target, {
-    get(map, property) {
-      if (property === 'valueOf') return () => snapshot;
-      if (property === 'set' || property === 'delete' || property === 'clear') {
-        return () => { throw new TypeError('SolverResult model is immutable and read-only'); };
-      }
-      if (property === 'forEach') {
-        return (callback, thisArg) => map.forEach((value, key) => callback.call(thisArg, value, key, snapshot));
-      }
-      const value = Reflect.get(map, property, map);
-      return typeof value === 'function' ? value.bind(map) : value;
-    },
-    set() { return false; },
-    defineProperty() { return false; },
-    deleteProperty() { return false; },
-  });
-  return Object.freeze(snapshot);
+const MODEL_IMMUTABLE = 'SolverResult model is an immutable published snapshot';
+
+class ImmutableSolverModelMap extends Map {
+  set() { throw new TypeError(MODEL_IMMUTABLE); }
+  delete() { throw new TypeError(MODEL_IMMUTABLE); }
+  clear() { throw new TypeError(MODEL_IMMUTABLE); }
 }
 
-function immutableSnapshot(value, path = new WeakSet(), depth = 0) {
-  if (value == null || typeof value !== 'object') return value;
-  if (depth > 256) throw new TypeError('createSolverResult: nested content exceeds immutable snapshot depth');
-  if (path.has(value)) throw new TypeError('createSolverResult: cyclic nested content');
-  path.add(value);
-  let snapshot;
-  if (value instanceof Map) {
-    snapshot = readonlyMap([...value].map(([key, child]) => [
-      immutableSnapshot(key, path, depth + 1),
-      immutableSnapshot(child, path, depth + 1),
-    ]));
-  } else if (value instanceof Set) {
-    snapshot = Object.freeze([...value].map((child) => immutableSnapshot(child, path, depth + 1)));
-  } else if (ArrayBuffer.isView(value)) {
-    snapshot = Object.freeze(Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)));
-  } else if (value instanceof ArrayBuffer) {
-    snapshot = Object.freeze(Array.from(new Uint8Array(value)));
-  } else if (value instanceof Date) {
-    snapshot = Object.freeze({ iso: value.toISOString() });
-  } else if (Array.isArray(value)) {
-    snapshot = Object.freeze(value.map((child) => immutableSnapshot(child, path, depth + 1)));
-  } else {
-    snapshot = {};
-    for (const key of Object.keys(value)) {
-      Object.defineProperty(snapshot, key, {
-        value: immutableSnapshot(value[key], path, depth + 1),
-        enumerable: true,
-        configurable: false,
-        writable: false,
-      });
-    }
-    Object.freeze(snapshot);
+function isPlainModelObject(value) {
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+const MAX_MODEL_DEPTH = 512;
+const MAX_MODEL_NODES = 200_000;
+
+class SolverModelLimitError extends Error {
+  constructor(code) {
+    super(`solver model exceeded ${code}`);
+    this.name = 'SolverModelLimitError';
+    this.limitCode = code;
   }
-  path.delete(value);
-  return snapshot;
 }
 
-/** Return a structured-clone-safe mutable envelope for Worker transport. */
-export function solverResultToTransport(result) {
-  const copy = (value, path = new WeakSet()) => {
-    if (value == null || typeof value !== 'object') return value;
-    if (path.has(value)) throw new TypeError('solverResultToTransport: cyclic content');
-    path.add(value);
-    let output;
-    if (value instanceof Map) output = new Map([...value].map(([key, child]) => [copy(key, path), copy(child, path)]));
-    else if (Array.isArray(value)) output = value.map((child) => copy(child, path));
-    else {
-      output = {};
-      for (const key of Object.keys(value)) output[key] = copy(value[key], path);
+function stackOverflowError(error) {
+  return error instanceof RangeError && /maximum call stack|stack size|call stack/i.test(String(error?.message));
+}
+
+function immutableModelValue(value, depth, counter, ancestors) {
+  if (value === null || typeof value !== 'object') return value;
+  if (depth > MAX_MODEL_DEPTH) throw new SolverModelLimitError('model-depth-limit');
+  counter.nodes += 1;
+  if (counter.nodes > MAX_MODEL_NODES) throw new SolverModelLimitError('model-node-limit');
+  if (ancestors.has(value)) throw new TypeError('provider-model-cycle');
+  ancestors.add(value);
+  try {
+    if (value instanceof Map) {
+      const copy = new ImmutableSolverModelMap();
+      for (const [key, entryValue] of value) {
+        if (key !== null && typeof key === 'object') throw new TypeError('provider-model-object-map-key');
+        Map.prototype.set.call(copy, key, immutableModelValue(entryValue, depth + 1, counter, ancestors));
+      }
+      return Object.freeze(copy);
     }
-    path.delete(value);
-    return output;
-  };
-  return copy(result);
+    if (Array.isArray(value)) {
+      const copy = [];
+      for (const element of value) copy.push(immutableModelValue(element, depth + 1, counter, ancestors));
+      return Object.freeze(copy);
+    }
+    if (isPlainModelObject(value)) {
+      const copy = {};
+      for (const key of Object.keys(value)) {
+        Object.defineProperty(copy, key, {
+          value: immutableModelValue(value[key], depth + 1, counter, ancestors),
+          enumerable: true,
+          writable: false,
+          configurable: false,
+        });
+      }
+      return Object.freeze(copy);
+    }
+    throw new TypeError('provider-model-unsupported-object');
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function normalizeSolverModel(model) {
+  try {
+    return { ok: true, value: immutableModelValue(model, 0, { nodes: 0 }, new WeakSet()) };
+  } catch (error) {
+    if (error instanceof SolverModelLimitError || stackOverflowError(error)) {
+      return { ok: false, reason: error instanceof SolverModelLimitError ? error.limitCode : 'model-stack-limit' };
+    }
+    throw error;
+  }
 }
 
 function requireIdentityString(value, field) {
@@ -155,11 +154,18 @@ export function createSolverResult({
   const normalizedBackendVersion = requireIdentityString(backendVersion, 'backendVersion');
   const normalizedQueryHash = requireQueryHash(queryHash);
 
-  // Model is only permitted when status is SAT. Snapshot it deeply so
-  // independent validation cannot be invalidated by post-publication mutation.
+  // Model is only permitted when status is SAT; publish an owned immutable snapshot (#3986).
+  // Provider-controlled model canonicalization is itself a bounded authority
+  // boundary (#8975): over-deep/over-wide models are RESOURCE_LIMIT, never SAT.
+  let modelLimitReason = null;
   let normalizedModel = null;
-  if (status === SOLVER_STATUS.SAT && model && (model instanceof Map || typeof model === 'object')) {
-    normalizedModel = immutableSnapshot(model);
+  if (status === SOLVER_STATUS.SAT && model && typeof model === 'object') {
+    const normalized = normalizeSolverModel(model);
+    if (normalized.ok) normalizedModel = normalized.value;
+    else {
+      modelLimitReason = normalized.reason;
+      status = SOLVER_STATUS.RESOURCE_LIMIT;
+    }
   }
 
   const normalizedLifecycle = Object.freeze({
@@ -167,22 +173,22 @@ export function createSolverResult({
     cancelled: lifecycle?.cancelled === true,
     stale: lifecycle?.stale === true,
     disposed: lifecycle?.disposed === true,
-    budgetExceeded: lifecycle?.budgetExceeded === true,
+    budgetExceeded: lifecycle?.budgetExceeded === true || modelLimitReason != null,
     late: lifecycle?.late === true,
-    publishable: (status === SOLVER_STATUS.SAT || status === SOLVER_STATUS.UNSAT) &&
-      lifecycle?.publishable !== false &&
+    publishable: lifecycle?.publishable !== false &&
       lifecycle?.timedOut !== true &&
       lifecycle?.cancelled !== true &&
       lifecycle?.stale !== true &&
       lifecycle?.disposed !== true &&
-      lifecycle?.budgetExceeded !== true,
+      lifecycle?.budgetExceeded !== true &&
+      modelLimitReason == null,
   });
 
   return Object.freeze({
     status,
     model: normalizedModel,
-    reason: reason ? String(reason) : null,
-    stats: immutableSnapshot({
+    reason: reason ? String(reason) : (modelLimitReason ? `provider-model-${modelLimitReason}` : null),
+    stats: Object.freeze({
       ...stats,
       solveTimeMs: Number(stats.solveTimeMs) || 0,
       nodesEvaluated: Number(stats.nodesEvaluated) || 0,

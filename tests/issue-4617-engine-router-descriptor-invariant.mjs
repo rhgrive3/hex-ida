@@ -101,7 +101,7 @@ function fixedOwn(target, key, value) {
     return { source: 'standard', mode: input.mode, thisIsEngine: this === standardEngine };
   });
   const devEngine = devStub();
-  const settings = { agentProfile: AGENT_PROFILE.STANDARD };
+  const settings = { agentProfile: AGENT_PROFILE.STANDARD, identity: { authenticated: true, admin: true, capabilities: { canUseDevAgent: true, canUseDevYolo: true } } };
   const routed = createAgentProfileEngine({ standardEngine, settings, devEngine });
 
   assert.equal((await routed.run({ mode: 'chat' })).source, 'standard');

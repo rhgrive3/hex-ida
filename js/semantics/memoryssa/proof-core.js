@@ -1,5 +1,4 @@
 import { jsonSafe, stableDigest } from '../../core/identity/index.js';
-import { canonicalMemoryAccessQualifiers } from '../memory-access-provider.js';
 
 /*
  * MemorySSA forwarding is allowed to consume only evidence emitted by the
@@ -17,7 +16,7 @@ export const CANONICAL_ALIAS_ISSUERS = Object.freeze(new Set([
 // incompatible provider answer as canonical merely by recomputing its digest.
 export const CANONICAL_ALIAS_ISSUER_VERSIONS = Object.freeze({
   'phase7.alias.a1-region': '1.0.0',
-  'phase7.alias.solver': '1.1.1',
+  'phase7.alias.solver': '1.1.0',
 });
 export const CANONICAL_ACCESS_ISSUER = 'semantic-memoryssa.access';
 export const CANONICAL_STORE_VALUE_ISSUER = 'semantic-memoryssa.store-operand';
@@ -25,20 +24,50 @@ export const CANONICAL_STORE_VALUE_ISSUER = 'semantic-memoryssa.store-operand';
 /**
  * Module-owned ordinary-access provider for the canonical Semantic IR path.
  *
- * Target adapters derive qualifiers from the current canonical descriptor.
- * This private wrapper owns proof authority; the adapter result alone is not
- * a proof. Callers cannot register or substitute a provider callback.
+ * The callback implementation itself is the capability. Callers may pass this
+ * exact function to MemorySSA, but cannot register or substitute their own
+ * callback. The provider derives every claim from producer-independent,
+ * architecture-neutral signals on the current descriptor: the presence of a
+ * canonical memory descriptor, the producer's own `bundleCompleteness === 'exact'`
+ * attestation, and the generic access qualifiers below. It intentionally does
+ * not branch on any architecture, ABI, family, or register/flag name — the
+ * concrete target capability stays with the architecture adapter that produced
+ * the machine-effects bundle, and this generic layer binds it to the exact
+ * module-owned issuer/version/source instead of re-deriving it from target data.
  */
 function canonicalSemanticAccessProvider(descriptor) {
-  const qualifiers = canonicalMemoryAccessQualifiers(descriptor);
-  if (!qualifiers) return null;
+  const memory = descriptor?.memory;
+  const machineEffects = descriptor?.node?.attributes?.machineEffects;
+  // Carried through as opaque evidence values only; never used to branch.
+  const architectureId = machineEffects?.architectureId;
+  const family = machineEffects?.bundleMetadata?.family;
+  const bundleCompleteness = machineEffects?.bundleCompleteness;
+  if (!memory || bundleCompleteness !== 'exact') return null;
+  if (typeof descriptor?.node?.id !== 'string' || descriptor.node.id.length === 0) return null;
+  if (typeof memory.widthBits !== 'number' || !Number.isSafeInteger(memory.widthBits)
+      || memory.widthBits <= 0 || memory.widthBits % 8 !== 0) return null;
+  if (typeof memory.endian !== 'string' || memory.endian.length === 0) return null;
+  if (memory.ordering != null && memory.ordering !== 'unknown') return null;
+  if (memory.atomic === true || memory.volatility === true) return null;
   return Object.freeze({
-    ...qualifiers,
     kind: 'canonical-memory-access-qualifiers',
     issuer: Object.freeze({
       type: 'canonical-memory-access-provider',
       id: CANONICAL_ACCESS_ISSUER,
       version: MEMORY_SSA_PROOF_VERSION,
+    }),
+    sourceEntityId: descriptor.node.id,
+    architectureId,
+    family,
+    widthBits: memory.widthBits,
+    endian: memory.endian,
+    volatility: false,
+    atomic: false,
+    ordering: 'unknown',
+    evidence: Object.freeze({
+      operationKind: machineEffects.operationKind ?? null,
+      machineFamily: family,
+      sourceMnemonic: machineEffects.bundleMetadata?.mnemonic ?? null,
     }),
   });
 }
@@ -52,6 +81,48 @@ export function isCanonicalAccessProvider(_provider) {
 
 function weakObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+const deeplyFrozenObjects = new WeakSet();
+const memorySsaDigestCache = new WeakMap();
+const accessBindingCache = new WeakMap();
+
+function isDeeplyFrozenPlainData(value, active = new WeakSet()) {
+  if (value == null || typeof value !== 'object') return true;
+  if (deeplyFrozenObjects.has(value)) return true;
+  if (active.has(value)) return false;
+  try {
+    const array = Array.isArray(value);
+    const prototype = Object.getPrototypeOf(value);
+    if (!array && prototype !== Object.prototype && prototype !== null) return false;
+    if (!Object.isFrozen(value)) return false;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    active.add(value);
+    for (const key of Reflect.ownKeys(descriptors)) {
+      const descriptor = descriptors[key];
+      if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')
+          || !isDeeplyFrozenPlainData(descriptor.value, active)) {
+        active.delete(value);
+        return false;
+      }
+    }
+    active.delete(value);
+    deeplyFrozenObjects.add(value);
+    return true;
+  } catch {
+    active.delete(value);
+    return false;
+  }
+}
+
+function isCacheablePlainRecord(value) {
+  if (value == null || typeof value !== 'object') return false;
+  try {
+    if (Array.isArray(value)) return false;
+  } catch {
+    return false;
+  }
+  return isDeeplyFrozenPlainData(value);
 }
 
 function withoutDigest(value, key = 'proofDigest') {
@@ -118,6 +189,13 @@ export function canonicalMemorySsaPayload(artifact) {
 }
 
 export function canonicalMemorySsaDigest(artifact) {
+  if (isCacheablePlainRecord(artifact)) {
+    const cached = memorySsaDigestCache.get(artifact);
+    if (cached !== undefined) return cached;
+    const digest = stableDigest(canonicalMemorySsaPayload(artifact));
+    memorySsaDigestCache.set(artifact, digest);
+    return digest;
+  }
   return stableDigest(canonicalMemorySsaPayload(artifact));
 }
 
@@ -130,27 +208,33 @@ export function canonicalMemorySsaDigest(artifact) {
  * so an IR-less serialized artifact cannot redirect one access merely by
  * re-signing the fields it is presenting.
  */
-export function canonicalAccessBinding({
-  memorySsaEntityId,
-  entityKind,
-  sourceEntityId,
-  nodeId,
-  regionId,
-  sourceKind,
-  role,
-  accessIndex,
-  order,
-  broad,
-  memory,
-  sequencing,
-  origin,
-  byteRange,
-  rangeProof,
-  accessProof,
-  aliasRelation,
-  aliasProof,
-  canonicalValue,
-}) {
+export function canonicalAccessBinding(access) {
+  const cacheable = isCacheablePlainRecord(access);
+  if (cacheable) {
+    const cached = accessBindingCache.get(access);
+    if (cached !== undefined) return cached;
+  }
+  const {
+    memorySsaEntityId,
+    entityKind,
+    sourceEntityId,
+    nodeId,
+    regionId,
+    sourceKind,
+    role,
+    accessIndex,
+    order,
+    broad,
+    memory,
+    sequencing,
+    origin,
+    byteRange,
+    rangeProof,
+    accessProof,
+    aliasRelation,
+    aliasProof,
+    canonicalValue,
+  } = access;
   const base = {
     memorySsaEntityId: String(memorySsaEntityId ?? ''),
     entityKind: String(entityKind ?? ''),
@@ -172,10 +256,14 @@ export function canonicalAccessBinding({
     aliasProofDigest: stableDigest(aliasProof ?? null),
     canonicalValueDigest: stableDigest(canonicalValue ?? null),
   };
-  return {
+  const binding = {
     ...base,
     bindingDigest: stableDigest(base),
   };
+  if (!cacheable) return binding;
+  const frozen = Object.freeze(binding);
+  accessBindingCache.set(access, frozen);
+  return frozen;
 }
 
 export function canonicalAccessBindingDigest(binding) {

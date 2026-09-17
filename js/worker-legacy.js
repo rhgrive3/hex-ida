@@ -458,23 +458,52 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
     };
   }
   const info = slice.info;
-  const base = slice.offset;
+  const base = BigInt(slice.offset ?? 0n);
+  // Production slices always carry the selected-slice size (readSlice() sets
+  // it from the fat arch entry or the whole file). Synthetic analyzeSlice
+  // callers that inject only `info` keep the legacy whole-file view.
+  const sliceSpanValue = slice.size ?? info.sliceSize ?? null;
+  const sliceSpan = sliceSpanValue == null ? null : BigInt(sliceSpanValue);
   let capped = false;
+  if (info.loadCommandStringsCapped) capped = true;
   let sym = null;
+  /**
+   * Slice-relative reader gate. Load-command file ranges name bytes inside the
+   * *selected* embedded Mach-O image, so a range that is not wholly inside
+   * `[0, slice.size)` must never be read from the outer container. Otherwise a
+   * fat slice can point its linkedit commands past its own end and import
+   * another slice's bytes as its own exact evidence (#8835). The subtraction
+   * form rejects `offset + length` integer wrap.
+   */
+  const sliceRelativeRange = (offset, length) => {
+    const rel = BigInt(offset);
+    const len = BigInt(length);
+    if (sliceSpan != null && (rel < 0n || len < 0n || rel > sliceSpan || len > sliceSpan - rel)) return null;
+    return base + rel;
+  };
 
   if (info.symtab && info.symtab.nsyms > 0) {
     const entry = info.is64 ? 16 : 12;
     let nsyms = info.symtab.nsyms;
     if (nsyms > SYMBOL_MAX) { nsyms = SYMBOL_MAX; capped = true; }
-    const symBuf = await readRange(base + BigInt(info.symtab.symoff), nsyms * entry);
     /* A string table beyond STRTAB_MAX is truncated below: symbols past the
      * clamp parse as '' and vanish from definedSymbols(). That budget cut is
      * an incompleteness the result must report, not hide (#5372). */
     if (info.symtab.strsize > STRTAB_MAX) capped = true;
     const strLen = Math.min(info.symtab.strsize, STRTAB_MAX);
-    const strBuf = await readRange(base + BigInt(info.symtab.stroff), strLen);
-    if (symBuf.length >= entry && strBuf.length) {
-      try { sym = MachO.parseSymbols(symBuf, strBuf, info.is64); } catch { sym = null; }
+    // Both tables are slice-relative: entries and the string bytes they name
+    // must live inside the selected slice (#8835).
+    const symStart = sliceRelativeRange(info.symtab.symoff, BigInt(nsyms) * BigInt(entry));
+    const strStart = sliceRelativeRange(info.symtab.stroff, strLen);
+    if (symStart == null || strStart == null) {
+      capped = true;
+    } else {
+      const symBuf = await readRange(symStart, nsyms * entry);
+      const strBuf = await readRange(strStart, strLen);
+      if (symBuf.length >= entry && strBuf.length) {
+        try { sym = MachO.parseSymbols(symBuf, strBuf, info.is64); } catch { sym = null; }
+        if (sym && sym.capped) capped = true;
+      }
     }
   }
 
@@ -483,17 +512,24 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
     for (const d of MachO.definedSymbols(sym)) entries.push({ addr: d.addr, name: d.name, kind: 0, ext: d.ext });
     if (info.dysymtab && info.dysymtab.nindirectsyms > 0) {
       const n = Math.min(info.dysymtab.nindirectsyms, SYMBOL_MAX);
-      const ind = await readRange(base + BigInt(info.dysymtab.indirectsymoff), n * 4);
-      if (ind.length >= 4) {
-        try {
-          const stubList = MachO.stubSymbols(info, ind, sym);
-          for (const s of stubList) {
-            entries.push({ addr: s.addr, name: s.name, kind: s.stub ? 1 : 2 });
-          }
-          // Indirect-symbol expansion hit its aggregate budget: symbol discovery
-          // is capped and must not be reported as complete (#8800).
-          if (stubList.truncated) capped = true;
-        } catch { /* 壊れていても他は返す */ }
+      const indStart = sliceRelativeRange(info.dysymtab.indirectsymoff, n * 4);
+      if (indStart == null) {
+        // The indirect-symbol table is not this slice's; never import foreign
+        // stub/GOT identities (#8835).
+        capped = true;
+      } else {
+        const ind = await readRange(indStart, n * 4);
+        if (ind.length >= 4) {
+          try {
+            const stubList = MachO.stubSymbols(info, ind, sym);
+            for (const s of stubList) {
+              entries.push({ addr: s.addr, name: s.name, kind: s.stub ? 1 : 2 });
+            }
+            // Indirect-symbol expansion hit its aggregate budget: symbol discovery
+            // is capped and must not be reported as complete (#8800).
+            if (stubList.truncated) capped = true;
+          } catch { /* 壊れていても他は返す */ }
+        }
       }
     }
   }
@@ -526,6 +562,7 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
   let funcs = new BigUint64Array(0);
   let functionStartsExact = false;
   let functionStartsPartialReason = null;
+  let functionStartsCapped = false;
   // Exact decoded starts (plus the Mach-O entry seed) are also the hard
   // control-flow roots for ADR/ADRP provenance in the worker scans.
   slice.functionStarts = [];
@@ -540,45 +577,68 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
   if (info.dataInCode && info.dataInCode.datasize > 0) {
     const declared = info.dataInCode.datasize;
     const diceClamped = declared > DATA_IN_CODE_MAX;
-    const diceBuf = await readRange(base + BigInt(info.dataInCode.dataoff),
-                                    Math.min(declared, DATA_IN_CODE_MAX));
+    const diceStart = sliceRelativeRange(info.dataInCode.dataoff, declared);
+    if (diceStart == null) {
+      // The declared exclusion table is not this slice's: we can no longer
+      // prove which ranges inside __text are data, so function starts must not
+      // be blessed as complete (#8835).
+      capped = true;
+      dataInCodeIncomplete = true;
+    } else {
+      const diceBuf = await readRange(diceStart, Math.min(declared, DATA_IN_CODE_MAX));
+      try {
+        const entries = MachO.parseDataInCode(diceBuf, info);
+        dataInCodeRanges = entries.map((e) => [e[0], e[1]]);
+        if (entries.truncated) dataInCodeIncomplete = true;
+      } catch { dataInCodeIncomplete = true; }
+    }
     if (diceClamped) dataInCodeIncomplete = true;
-    try {
-      const entries = MachO.parseDataInCode(diceBuf, info);
-      dataInCodeRanges = entries.map((e) => [e[0], e[1]]);
-      if (entries.truncated) dataInCodeIncomplete = true;
-    } catch { dataInCodeIncomplete = true; }
   }
 
   if (info.functionStarts && info.functionStarts.datasize > 0 && info.textVM != null) {
     const declared = info.functionStarts.datasize;
     const clampLimit = 8 * 1024 * 1024;
     const clamped = declared > clampLimit;
-    const buf = await readRange(base + BigInt(info.functionStarts.dataoff),
-                                Math.min(declared, clampLimit));
-    if (clamped) {
-      // #8822: a clamped prefix is not a complete ULEB stream. Even if the
-      // prefix's last byte happens to be a valid terminator, the suffix was
-      // never read, so the whole stream is not evidence. Never bless a prefix.
+    const startsStart = sliceRelativeRange(info.functionStarts.dataoff, declared);
+    if (startsStart == null) {
+      // #8835: the slice-relative payload is outside the selected slice. Its
+      // bytes belong to another image (or container padding), so nothing read
+      // from there may become exact function-boundary authority for this slice.
       capped = true;
-      functionStartsPartialReason = 'clamp-truncated';
+      functionStartsCapped = true;
+      functionStartsPartialReason = 'slice-out-of-range';
+    } else {
+      const buf = await readRange(startsStart, Math.min(declared, clampLimit));
+      if (clamped) {
+        // #8822: a clamped prefix is not a complete ULEB stream. Even if the
+        // prefix's last byte happens to be a valid terminator, the suffix was
+        // never read, so the whole stream is not evidence. Never bless a prefix.
+        capped = true;
+        functionStartsCapped = true;
+        functionStartsPartialReason = 'clamp-truncated';
+      }
+      try {
+        const list = MachO.parseFunctionStarts(buf, info.textVM,
+          { regions: slice.regions || [], architecture: info.architecture || 'arm64',
+            dataInCode: dataInCodeRanges, shouldCancel: () => cancelled(requestId) });
+        // Positive ULEB deltas make `list` strictly increasing. Insert the entry
+        // seed in place instead of copy + linear membership scan + full re-sort.
+        if (info.entry != null) {
+          let lo = 0, hi = list.length;
+          while (lo < hi) { const mid = (lo + hi) >>> 1; if (list[mid] < info.entry) lo = mid + 1; else hi = mid; }
+          if (list[lo] !== info.entry) list.splice(lo, 0, info.entry);
+        }
+        slice.functionStarts = list;
+        funcs = new BigUint64Array(list.length);
+        for (let i = 0; i < list.length; i++) funcs[i] = list[i];
+        functionStartsExact = !clamped && !dataInCodeIncomplete
+          && list.length > 0 && list.complete === true;
+        if (list.truncated) { functionStartsCapped = true; capped = true; }
+        if (!functionStartsExact && list.partialReason) functionStartsPartialReason = list.partialReason;
+        else if (!functionStartsExact && dataInCodeIncomplete && !functionStartsPartialReason)
+          functionStartsPartialReason = 'data-in-code-incomplete';
+      } catch { slice.functionStarts = []; funcs = new BigUint64Array(0); if (!functionStartsPartialReason) functionStartsPartialReason = 'parse-threw'; }
     }
-    try {
-      const list = MachO.parseFunctionStarts(buf, info.textVM,
-        { regions: slice.regions || [], architecture: info.architecture || 'arm64',
-          dataInCode: dataInCodeRanges });
-      const seeds = list.slice();
-      if (info.entry != null && !seeds.some((value) => value === info.entry)) seeds.push(info.entry);
-      seeds.sort((a,b)=>(a<b?-1:a>b?1:0));
-      slice.functionStarts = seeds;
-      funcs = new BigUint64Array(seeds.length);
-      for (let i = 0; i < seeds.length; i++) funcs[i] = seeds[i];
-      functionStartsExact = !clamped && !dataInCodeIncomplete
-        && list.length > 0 && list.complete === true;
-      if (!functionStartsExact && list.partialReason) functionStartsPartialReason = list.partialReason;
-      else if (!functionStartsExact && dataInCodeIncomplete && !functionStartsPartialReason)
-        functionStartsPartialReason = 'data-in-code-incomplete';
-    } catch { slice.functionStarts = []; funcs = new BigUint64Array(0); if (!functionStartsPartialReason) functionStartsPartialReason = 'parse-threw'; }
   }
 
   if ((!info.functionStarts || !info.functionStarts.datasize) && info.entry != null) {
@@ -610,7 +670,7 @@ async function analyzeSlice({ sliceIndex, id: requestId }) {
     allSeedsExact: funcs.length > 0,
     discoveryComplete: functionStartsExact,
     functionStartsExact,
-    functionDiscovery: { complete:functionStartsExact, capped:functionStartsPartialReason==='clamp-truncated',
+    functionDiscovery: { complete:functionStartsExact, capped:functionStartsPartialReason==='clamp-truncated'||functionStartsCapped,
       reasons:functionStartsExact ? [] : (functionStartsPartialReason
         ? ['no-complete-lc-function-starts', 'function-starts:' + functionStartsPartialReason]
         : ['no-complete-lc-function-starts']) },
@@ -692,9 +752,18 @@ function sanitizeStubPointer(v, base) {
 async function objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId) {
   const out = new Set();
   if (!slice) return out;
+  let truncationReason = null;
+  let work = 0;
+  const seenSpans = new Set();   // #8770: exact-duplicate file-backed spans scanned at most once
   const methodSections = (slice.regions || []).filter((r) => r.section === '__objc_methlist' && r.size > 0n);
   for (const r of methodSections) {
     if (r.size > 16n * 1024n * 1024n) continue;
+    const spanKey = `${r.fileOffset}:${r.size}`;
+    if (seenSpans.has(spanKey)) continue;
+    seenSpans.add(spanKey);
+    const entries = Number(r.size >> 2n);
+    if (work + entries > LEGACY_METADATA_WORK_MAX) { truncationReason = 'work-limit'; break; }
+    work += entries;
     let buf;
     try { buf = await readRange(r.fileOffset, Number(r.size)); }
     catch { continue; }
@@ -728,9 +797,14 @@ async function objcMethodImplementationStarts(slice, lo, hi, imageBase, requestI
       /* Dedicated method lists are packed consecutively/aligned. Skip the body
          we just validated so entry payload cannot be reinterpreted as a header. */
       p += bytes - 4;
+      /* #8770: observe cancellation with bounded latency inside a large section
+         rather than only after it completes. */
+      if ((p & 0x1fff) === 0 && cancelled(requestId)) { truncationReason = 'cancelled'; break; }
     }
-    if (cancelled(requestId)) return out;
+    if (truncationReason === 'cancelled') break;
+    if (cancelled(requestId)) { truncationReason = 'cancelled'; break; }
   }
+  if (truncationReason) { out.truncated = true; out.truncationReason = truncationReason; }
   return out;
 }
 
@@ -767,17 +841,32 @@ async function readMappedVM(slice, vm, len) {
 async function initializerFunctionStarts(slice, lo, hi, imageBase, requestId) {
   const out = new Set();
   if (!slice || imageBase == null) return out;
+  let truncationReason = null;
+  let work = 0;
+  const seenSpans = new Set();   // #8770: exact-duplicate file-backed spans scanned at most once
   for (const r of slice.regions || []) {
     if (r.section !== '__init_offsets' || r.size <= 0n || r.size > 4n * 1024n * 1024n) continue;
+    /* regionsFrom() preserves every valid section descriptor, so N descriptors
+       can alias one physical byte span. The Set only deduplicated output; each
+       alias still re-read and re-walked the whole span. Canonicalize the physical
+       span so byte-identical aliases cost one scan. */
+    const spanKey = `${r.fileOffset}:${r.size}`;
+    if (seenSpans.has(spanKey)) continue;
+    seenSpans.add(spanKey);
+    const entries = Number(r.size >> 2n);
+    if (work + entries > LEGACY_METADATA_WORK_MAX) { truncationReason = 'work-limit'; break; }
+    work += entries;
     let b;
     try { b = await readRange(r.fileOffset, Number(r.size)); } catch { continue; }
     const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
     for (let p = 0; p + 4 <= b.byteLength; p += 4) {
       const target = BigInt(imageBase) + BigInt(dv.getUint32(p, true));
       if (target >= lo && target < hi && !(target & 3n)) out.add(target);
+      if ((p & 0x1fff) === 0 && cancelled(requestId)) { truncationReason = 'cancelled'; break; }
     }
-    if (cancelled(requestId)) break;
+    if (cancelled(requestId)) { truncationReason = 'cancelled'; break; }
   }
+  if (truncationReason) { out.truncated = true; out.truncationReason = truncationReason; }
   return out;
 }
 
@@ -800,6 +889,13 @@ async function initializerFunctionStarts(slice, lo, hi, imageBase, requestId) {
  * distinct-descriptor parse and before each VTable walk (never after output
  * insertion), and exhaustion is reported as truncated/incomplete evidence. */
 const SWIFT_REFLECTION_WORK_MAX = 200_000;
+
+/* #8770: aggregate uint32-entry budget for the exact-metadata helpers that walk
+ * __init_offsets / __objc_methlist sections. The Swift helper above already
+ * bounded repeated-descriptor walks; the same accounting applies here so that
+ * repeated/partially-overlapping section descriptors around one small physical
+ * span cannot multiply total byte/entry work proportionally to their count. */
+const LEGACY_METADATA_WORK_MAX = 2_000_000;
 
 async function swiftReflectionFunctionStarts(slice, lo, hi, requestId) {
   const out = new Set();
@@ -957,6 +1053,8 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   let unwindMetadataReason = null;
   let swiftMetadataTruncated = false;
   let swiftMetadataReason = null;
+  let legacyMetadataTruncated = false;
+  let legacyMetadataReason = null;
   if (unwind && imageBase != null && unwind.size < BigInt(16 * 1024 * 1024)) {
     try {
       const buf = await readRange(unwind.fileOffset, Number(unwind.size));
@@ -975,15 +1073,19 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   /* Objective-C method-list IMPs are exact metadata evidence independent of
      LC_FUNCTION_STARTS. They are especially important for tiny accessors that
      are never reached by a direct BL. */
-  for (const a of await objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId)) {
+  const methodStarts = await objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId);
+  for (const a of methodStarts) {
     if (found.size >= cap) break;
     found.add(a);
   }
+  if (methodStarts.truncated) { legacyMetadataTruncated = true; legacyMetadataReason = 'objc-methodlist-' + (methodStarts.truncationReason || 'truncated'); }
 
-  for (const a of await initializerFunctionStarts(slice, lo, hi, imageBase, requestId)) {
+  const initStarts = await initializerFunctionStarts(slice, lo, hi, imageBase, requestId);
+  for (const a of initStarts) {
     if (found.size >= cap) break;
     found.add(a);
   }
+  if (initStarts.truncated) { legacyMetadataTruncated = true; legacyMetadataReason ||= 'legacy-init-' + (initStarts.truncationReason || 'truncated'); }
   const swiftStarts = await swiftReflectionFunctionStarts(slice, lo, hi, requestId);
   for (const a of swiftStarts) {
     if (found.size >= cap) break;
@@ -1402,8 +1504,8 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   const starts = new BigUint64Array(list.length);
   for (let i = 0; i < list.length; i++) starts[i] = list[i];
   const startCapHit = found.size >= cap;
-  const capped = startCapHit || candidateBudgetHit || unwindMetadataTruncated || swiftMetadataTruncated;
-  const truncationReason = candidateBudgetHit ? 'candidate-memory-budget' : startCapHit ? 'function-start-cap-reached' : unwindMetadataReason || swiftMetadataReason;
+  const capped = startCapHit || candidateBudgetHit || unwindMetadataTruncated || swiftMetadataTruncated || legacyMetadataTruncated;
+  const truncationReason = candidateBudgetHit ? 'candidate-memory-budget' : startCapHit ? 'function-start-cap-reached' : unwindMetadataReason || swiftMetadataReason || legacyMetadataReason;
   return {
     starts, cancelled: false, capped, truncated: capped, complete: !capped, cap, truncationReason,
     completeness: {

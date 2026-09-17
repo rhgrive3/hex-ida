@@ -1,5 +1,6 @@
 import { codedIndexSize, tableIndexSize, cilMetadataToken } from './metadata-layout.js';
 import { readCilMetadataBlob } from './call-signature-metadata.js';
+import { readInternedCilHeapString } from './metadata-string-cache.js';
 import { parseCilMethodSignature, parseCilPropertySignature, parseCilTypeSpecSignature, cilMethodSlotElementByte, cilPropertyTypeElementByte } from './call-signature-types.js';
 import { decodeCilCustomAttributeValue } from './custom-attribute-values.js';
 import { stableStringify } from '../../core/identity/index.js';
@@ -114,13 +115,7 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     // Preserve legacy minimal metadata with an absent optional heap and null names.
     if (value === 0) return null;
     if (!stringsStream || value >= stringsStream.size) fail('cil-definition-string-index-invalid');
-    const start = stringsStream.offset + value, end = stringsStream.offset + stringsStream.size;
-    let pos = start;
-    while (pos < end && bytes[pos] !== 0) pos++;
-    if (pos === end) fail('cil-definition-string-unterminated');
-    admission?.chargeStringBytes(pos - start);
-    try { return utf8.decode(bytes.subarray(start, pos)); }
-    catch { fail('cil-invalid-strings-utf8'); }
+    return readInternedCilHeapString(bytes, stringsStream, admission, value, utf8);
   };
   const requiredText = (value, code) => {
     const valueText = text(value);
@@ -554,16 +549,22 @@ export function readCilDefinitions(bytes, view, layout, stringsStream, blobStrea
     return { classToken: cilMetadataToken(2, classRid), interfaceToken };
   });
   const typeByToken = new Map(types.map(type => [type.token, type]));
+  // Duplicate detection is a per-class membership test, so it must not rescan
+  // the tokens already recorded for the class: a valid class listing many
+  // distinct interfaces is the normal case, and a linear `includes()` scan
+  // makes an ordinary InterfaceImpl table quadratic (#8956). Row order is
+  // still preserved in the published token list.
   const interfaceEdges = new Map();
   for (const row of interfaceImpls) {
     const owner = typeByToken.get(row.classToken);
     if (owner == null) fail('cil-interfaceimpl-class-invalid');
-    const list = interfaceEdges.get(row.classToken) ?? [];
-    if (list.includes(row.interfaceToken)) fail('cil-interfaceimpl-duplicate');
-    list.push(row.interfaceToken);
-    interfaceEdges.set(row.classToken, list);
+    let edge = interfaceEdges.get(row.classToken);
+    if (edge == null) interfaceEdges.set(row.classToken, edge = { tokens: [], seen: new Set() });
+    if (edge.seen.has(row.interfaceToken)) fail('cil-interfaceimpl-duplicate');
+    edge.seen.add(row.interfaceToken);
+    edge.tokens.push(row.interfaceToken);
   }
-  for (const type of types) type.interfaceTokens = Object.freeze(interfaceEdges.get(type.token) ?? []);
+  for (const type of types) type.interfaceTokens = Object.freeze(interfaceEdges.get(type.token)?.tokens ?? []);
 
   // II.22.27 MethodImpl: Class implements MethodDeclaration with MethodBody.
   // MethodBody/MethodDeclaration share the MethodDefOrRef coded index

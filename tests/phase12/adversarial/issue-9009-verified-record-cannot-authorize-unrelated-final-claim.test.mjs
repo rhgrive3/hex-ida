@@ -83,11 +83,17 @@ test('#9009: a matching deterministic claim binding keeps the intended terminal 
   assert.ok(result.answer.includes('Hex が確認できた根拠は'), 'confirmed prose stays available for bound proof');
 });
 
-test('#9009: an address-free claim keeps the #5159/#8864 explicit-citation contract', async () => {
-  const { turn } = runtimeFor({ answer: 'addCoins is the strongest indexed candidate.', goal: 'locate the coin writer' });
+test('#9009: an address-free provider claim cannot turn a selected verified record into claim authority', async () => {
+  const { runtime, verified, turn } = runtimeFor({ answer: 'addCoins definitely deletes every user account.', goal: 'explain what addCoins does' });
   const result = await turn();
-  assert.equal(result.confidence, 1, 'nothing proves an address-free claim unsupported');
-  assert.ok(result.answer.includes('Hex が確認できた根拠は'));
+  assert.deepEqual(result.evidence.map((item) => item.id), [verified.id],
+    'the authentic verified record remains attached as provenance');
+  assert.ok(result.confidence <= 0.5, `untyped provider prose must keep the no-authority cap, got ${result.confidence}`);
+  assert.ok(!result.answer.includes('Hex が確認できた根拠は'),
+    'address-free provider prose must not present record verification as claim verification');
+  const session = await runtime.sessionStore.get(result.sessionId);
+  assert.deepEqual(session.investigationMemory.confirmedFacts, [],
+    'unbound provider evidence must not be promoted into confirmedFacts for the arbitrary final claim');
 });
 
 test('#9009: partial coverage fails closed instead of averaging authority', async () => {

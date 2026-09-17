@@ -1,13 +1,16 @@
 // Issue #8923 regression: proposalBinding() must not String()-coerce structured
-// binary/project/runtime IDs into canonical binding authority.
+// binary/project/runtime IDs into canonical binding authority. The binding also
+// carries the canonical analysis revision (see #8929).
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { AIRuntime } from '../js/ai/runtime.js';
 
 function stubEvidence() {
+  const sourceBinding = 'test-evidence-binding';
   return {
-    get(id) { return id === 'ev-1' ? { id, status: 'verified' } : null; },
+    observationStore: { binding() { return { key: sourceBinding }; } },
+    get(id) { return id === 'ev-1' ? { id, status: 'verified', sourceBinding } : null; },
     has(id) { return id === 'ev-1'; },
   };
 }
@@ -19,7 +22,7 @@ test('#8923 structured IDs do not launder into canonical binding', () => {
     id: 'proposal-8923', kind: 'comment', target: { address: '0x1000' },
     before: null, after: 'x', evidenceIds: ['ev-1'],
   });
-  assert.deepEqual(proposal.binding, { binaryId: null, projectId: null, runtimeSessionId: null });
+  assert.deepEqual(proposal.binding, { binaryId: null, projectId: null, runtimeSessionId: null, analysisRevision: null });
 });
 
 test('#8923 array->primitive switch fails closed instead of applied', async () => {
@@ -49,7 +52,7 @@ test('#8923 canonical string IDs still reach applied', async () => {
     id: 'proposal-8923-valid', kind: 'comment', target: { address: '0x1000' },
     before: null, after: 'x', evidenceIds: ['ev-1'],
   });
-  assert.deepEqual(proposal.binding, { binaryId: 'bin-A', projectId: 'proj-A', runtimeSessionId: 'rt-A' });
+  assert.deepEqual(proposal.binding, { binaryId: 'bin-A', projectId: 'proj-A', runtimeSessionId: 'rt-A', analysisRevision: null });
   const { approvalToken } = runtime.proposalStore.approve(proposal.id);
   const result = await runtime.proposalStore.apply(proposal.id, {
     approvalToken, currentState: null, apply: async () => {},

@@ -6,14 +6,13 @@ import { readLegacyStackHistoryConsumer } from './legacy-stack-recovery.js';
 import { readExpressionHistoryConsumer } from '../pipeline-core.js';
 import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { printExpression, printProgram } from '../pretty/c.js';
-import { buildNZCVConditionExpression } from '../flag-semantics.js';
+import { buildNZCVConditionExpression, invertBooleanCondition } from '../flag-semantics.js';
 import {
   canonicalMemoryForwardingContextForLoad,
   isCanonicalExactMemoryForwarding,
 } from '../../semantics/memoryssa/queries.js';
 import { uniqueReachableMergePredecessorIndex } from './stack-join-arm-proof.js';
 
-const INVERSE = Object.freeze({ eq:'ne', ne:'eq', lt:'ge', le:'gt', gt:'le', ge:'lt' });
 const EXACT_VIEW_MOV_SUBS = new Set([null, 'copy', 'bitcast', 'trunc', 'zext']);
 
 const returnHistoryConsumers = new WeakMap();
@@ -87,10 +86,7 @@ function simplify(node, engine) {
 }
 
 function invert(node) {
-  if (node?.kind === 'compare' && INVERSE[node.op]) {
-    return expr.compare(INVERSE[node.op], node.left, node.right, node.compareSigned, node.source);
-  }
-  return expr.unary('lnot', node, 1, false, node?.source);
+  return invertBooleanCondition(node);
 }
 
 function sameRowArithmetic(ir, cmp) {

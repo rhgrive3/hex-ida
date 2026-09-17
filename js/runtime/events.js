@@ -169,6 +169,17 @@ function createRuntimeEventAdmission(maxBytes) {
         }
         return snapshot;
       }
+      // A bounded owned snapshot may only represent a genuine plain record.
+      // Objects whose semantic state lives in internal slots (direct
+      // SharedArrayBuffer, RegExp, Error, and other non-plain prototypes) have
+      // no enumerable-own-property view of that state, so copying them into
+      // `{}` would launder byte-/semantically-distinct payloads into one
+      // complete RuntimeEvent identity. Fail closed at the admission boundary
+      // rather than publishing an erased payload (#8989).
+      const proto = Object.getPrototypeOf(value);
+      if (proto !== Object.prototype && proto !== null) {
+        throw new DebugAdapterError('runtime-event-unsupported-value', 'runtime event payload contains an unsupported non-plain object value');
+      }
       if (!charge(2)) return reject();
       const snapshot = {};
       let index = 0;

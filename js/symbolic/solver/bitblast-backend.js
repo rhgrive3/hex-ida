@@ -20,7 +20,7 @@ import {
 import { validateSatModel } from '../verify/validate-model.js';
 import { validateVerificationQuery } from '../verify/query.js';
 import { PROOF_AUTHORITY, SolverBackend } from './backend.js';
-import { collectSymbols } from './exhaustive-backend.js';
+import { analyzeSolverExpressions } from './query-analysis.js';
 import { effectivePositiveSafeInteger, requirePositiveSafeInteger } from './limits.js';
 import { validateExactModelBindings } from './model-boundary.js';
 import { SOLVER_STATUS, createSolverResult } from './result.js';
@@ -49,11 +49,15 @@ class LimitError extends Error {
   }
 }
 
-function monotonicNow() { return globalThis.performance?.now?.() ?? Date.now(); }
+function monotonicNow() {
+  return typeof globalThis.performance?.now === 'function' ? globalThis.performance.now() : Date.now();
+}
 
 function deadlineFrom(options) {
-  const timeoutMs = Number(options.timeoutMs);
-  return Number.isFinite(timeoutMs) && timeoutMs > 0 ? monotonicNow() + timeoutMs : Infinity;
+  const timeoutMs = options?.timeoutMs;
+  return typeof timeoutMs === 'number' && Number.isSafeInteger(timeoutMs) && timeoutMs > 0
+    ? monotonicNow() + timeoutMs
+    : Infinity;
 }
 
 class CnfBuilder {
@@ -77,8 +81,9 @@ class CnfBuilder {
 
   newVariable() {
     this.guard();
-    if (this.variableCount >= this.limits.maxVariables) throw new LimitError('cnf-variable-budget-exceeded');
-    return ++this.variableCount;
+    this.variableCount++;
+    if (this.variableCount > this.limits.maxVariables) throw new LimitError('cnf-variable-budget-exceeded');
+    return this.variableCount;
   }
 
   addClause(literals) {
@@ -86,14 +91,15 @@ class CnfBuilder {
     const unique = [];
     const seen = new Set();
     for (const literal of literals) {
+      if (!Number.isSafeInteger(literal) || literal === 0) throw new LimitError('invalid-cnf-literal');
       if (seen.has(-literal)) return;
       if (!seen.has(literal)) {
         seen.add(literal);
         unique.push(literal);
       }
     }
-    if (this.clauses.length >= this.limits.maxClauses) throw new LimitError('cnf-clause-budget-exceeded');
     this.clauses.push(unique);
+    if (this.clauses.length > this.limits.maxClauses) throw new LimitError('cnf-clause-budget-exceeded');
   }
 
   constant(value) { return value ? this.trueLiteral : -this.trueLiteral; }
@@ -616,7 +622,7 @@ class BitBlastSolverSession extends SolverSession {
     if (constraints.length > limits.maxConstraints) {
       return createSolverResult({ ...resultBase, status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'constraint-budget-exceeded', lifecycle: { budgetExceeded: true, publishable: false } });
     }
-    const collected = collectSymbols(expressions, { maxExprNodes: limits.maxExprNodes, maxExprDepth: limits.maxExprDepth });
+    const collected = analyzeSolverExpressions(expressions, { maxExprNodes: limits.maxExprNodes, maxExprDepth: limits.maxExprDepth });
     if (collected.limitExceeded) {
       return createSolverResult({ ...resultBase, status: SOLVER_STATUS.RESOURCE_LIMIT, reason: 'expression-node-budget-exceeded', lifecycle: { budgetExceeded: true, publishable: false } });
     }

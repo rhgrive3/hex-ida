@@ -3,7 +3,7 @@ import { RewriteEngine, RewriteHistoryJournal, expressionOriginHistory } from '.
 import { captureRecoveryIrData, PROJECTION_LIMITS } from '../phase8/projection-origin.js';
 import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { printExpression, printProgram } from '../pretty/c.js';
-import { buildNZCVConditionExpression } from '../flag-semantics.js';
+import { buildNZCVConditionExpression, invertBooleanCondition } from '../flag-semantics.js';
 import { uniqueReachableMergePredecessorIndex } from './stack-join-arm-proof.js';
 
 // Only a successful recovery below can issue this presentation binding.
@@ -146,8 +146,6 @@ function simplify(expression, engine) {
   return engine.rewrite(expression).root;
 }
 
-const INVERT_OP = Object.freeze({ eq: 'ne', ne: 'eq', lt: 'ge', le: 'gt', gt: 'le', ge: 'lt' });
-
 function expressionOfValue(value, maps) {
   return value ? maps.values.get(value.id) || null : null;
 }
@@ -223,10 +221,7 @@ function repairedFlagComparison(flagsValue, cond, maps, ir) {
 }
 
 function invertCondition(condition) {
-  if (condition?.kind === 'compare' && INVERT_OP[condition.op]) {
-    return expr.compare(INVERT_OP[condition.op], condition.left, condition.right, condition.compareSigned, condition.source);
-  }
-  return expr.unary('lnot', condition, 1, false, condition?.source);
+  return invertBooleanCondition(condition);
 }
 
 function materializedFlagCondition(term, maps, ir) {

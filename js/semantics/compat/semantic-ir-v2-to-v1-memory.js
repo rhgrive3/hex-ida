@@ -290,7 +290,19 @@ function replaceLoadWithForwardedValue(source, forwardedValue, proof) {
   };
 }
 
-export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null, constantObserver = null) {
+function batchForwardingScope(options) {
+  const scope = {};
+  if (options == null || typeof options !== "object") return scope;
+  if (options.deadline != null) scope.deadline = options.deadline;
+  else if (options.deadlineAt != null) scope.deadline = options.deadlineAt;
+  else if (options.budget != null && typeof options.budget === "object" && options.budget.deadline != null) scope.deadline = options.budget.deadline;
+  else if (options.budget != null && typeof options.budget === "object" && options.budget.deadlineAt != null) scope.deadline = options.budget.deadlineAt;
+  if (options.signal != null && typeof options.signal === "object") scope.signal = options.signal;
+  return scope;
+}
+
+export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, canonicalIr = null, constantObserver = null, forwardingScopeOptions = null) {
+  const batchForwarding = batchForwardingScope(forwardingScopeOptions);
   const operandTransitions = [];
   propagateScalarConstants(projected, constantObserver);
   const regionById = new Map(memorySsa.regions.map((region) => [region.id, region]));
@@ -405,6 +417,7 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
         consumerId: CANONICAL_MEMORY_FORWARDING_CONSUMER,
         purpose: CANONICAL_MEMORY_FORWARDING_PURPOSE,
         ...(canonicalIr == null ? {} : { ir: canonicalIr }),
+        ...batchForwarding,
       });
       const useMetadata = metadataById.get(String(use.id)) ?? null;
       const currentContext = canonicalMemoryForwardingContext(fact, {

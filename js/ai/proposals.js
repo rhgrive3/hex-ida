@@ -36,13 +36,49 @@ const SUPPORTED_PROPOSAL_STATE_PROTOTYPES = new Set([
 ]);
 let proposalSequence = 1;
 
+// Pre-admission state budget (#8973). `create()` walks, structured-clones,
+// fingerprints, and persists the caller-controlled proposal state, and every one
+// of those stages expands a large binary container (typed array / DataView /
+// ArrayBuffer) into whole-buffer work: `rejectUnstableProposalState()` enumerates
+// every numeric index key, `canonicalIdentity()` builds a 2x-length hex string,
+// and persistence boxes every byte. A single 2 MiB `Uint8Array` therefore OOMs a
+// 128 MiB worker before a proposal can even be created or safely rejected, and
+// even 1 MiB peaks far above budget. Reject an oversized state at admission —
+// before any of those traversals run — using O(1) intrinsic `byteLength` and a
+// bounded structural walk so the check itself can never become the amplification.
+const PROPOSAL_STATE_MAX_BINARY_BYTES = 256 * 1024;
+const PROPOSAL_STATE_MAX_NODES = 250_000;
+const PROPOSAL_STATE_MAX_DEPTH = 128;
+
 export class ProposalStore {
-  constructor({ evidenceStore, binding = null } = {}) {
+  constructor({ evidenceStore, binding = null, currentEvidenceBinding = null } = {}) {
     this.evidenceStore = evidenceStore;
     this.binding = typeof binding === 'function' ? binding : null;
+    // Optional resolver for the *current* canonical analysis binding key. When
+    // present, a verified record's own `sourceBinding` must still be that key:
+    // evidence minted against an older analysis revision is not mutation
+    // authority for the current one (#8929). Adapters that expose no resolver
+    // keep the legacy status-only contract.
+    this.currentEvidenceBinding = typeof currentEvidenceBinding === 'function' ? currentEvidenceBinding : null;
     this.records = new Map();
     this.approvals = new Map();
     this.audit = [];
+  }
+
+  /**
+   * A `verified` record is only authority while the binding that produced it is
+   * still current. The record's provenance is already carried as
+   * `sourceBinding`; once the analysis revision (or binary/project/runtime
+   * binding) moves on, that record must not authorize a new proposal. Records
+   * with missing/invalid provenance fail closed whenever a current-binding resolver is configured.
+   */
+  evidenceBindingIsCurrent(record) {
+    if (!this.currentEvidenceBinding) return true;
+    const bound = record?.sourceBinding;
+    if (typeof bound !== 'string' || !bound) return false;
+    let current;
+    try { current = this.currentEvidenceBinding(); } catch { return false; }
+    return typeof current === 'string' && current.length > 0 && current === bound;
   }
 
   create(input = {}) {
@@ -70,11 +106,11 @@ export class ProposalStore {
     // status is protected by deterministic-verifier authority. When the store
     // exposes records, require that authority-bearing status and retain only
     // verified IDs. Minimal injected authority adapters that intentionally
-    // expose only has() keep their existing predicate contract.
+    // expose only has() keep their existing predicate contract. Shared with the
+    // persisted-restore path so the two admission boundaries cannot drift.
     const evidenceIds = Array.from(new Set((input.evidenceIds || []).filter((id) => {
       if (typeof id !== 'string') return false;
-      if (typeof this.evidenceStore?.get === 'function') return this.evidenceStore.get(id)?.status === 'verified';
-      return this.evidenceStore?.has?.(id) === true;
+      return hasDeterministicEvidenceAuthority(this.evidenceStore, id, (record) => this.evidenceBindingIsCurrent(record));
     })));
     if (!evidenceIds.length) throw new AIError('invalid_tool_call', 'A proposal requires deterministic evidence.');
     let id;
@@ -92,6 +128,10 @@ export class ProposalStore {
     // revision/payload TOCTOU, this preserves the explicit symbol-key fail
     // closed check below because structuredClone intentionally omits symbols.
     const before = input.before;
+    // #8973: bound the caller-controlled state at admission, before the safety
+    // preflight, the structured clone, the fingerprint, or persistence can each
+    // expand a large binary container into whole-buffer work and OOM the worker.
+    admitBoundedProposalState([input.target, before, input.after]);
     rejectUnstableProposalState(before);
     const executionPayload = snapshotProposalPayload(input, before);
     // Uint8Array is an accepted wire representation of patch bytes, but the
@@ -348,6 +388,26 @@ function requireProposalRecord(store, id) {
   return value;
 }
 
+// The single deterministic-evidence authority predicate, shared by fresh
+// `create()` admission and persisted-restore admission (#8889) so a proposal
+// cannot regain mutation authority through a boundary weaker than the one that
+// originally authorized it. The product EvidenceStore protects `verified`
+// status behind deterministic-verifier authority and exposes `get()`; minimal
+// injected adapters that intentionally expose only `has()` keep their existing
+// existence contract.
+// A `verified` record is authority only when it still belongs to the current
+// analysis binding. `bindingIsCurrent` is optional so minimal injected adapters
+// (and adapters without a revision resolver) keep the legacy status contract.
+function hasDeterministicEvidenceAuthority(evidenceStore, id, bindingIsCurrent = null) {
+  if (typeof evidenceStore?.get === 'function') {
+    const record = evidenceStore.get(id);
+    if (record?.status !== 'verified') return false;
+    if (typeof bindingIsCurrent === 'function' && !bindingIsCurrent(record)) return false;
+    return true;
+  }
+  return evidenceStore?.has?.(id) === true;
+}
+
 function restoredPendingRecord(store, persisted) {
   if (!persisted || typeof persisted !== 'object' || Array.isArray(persisted)) return null;
   if (persisted.status !== 'pending') return null;
@@ -366,7 +426,12 @@ function restoredPendingRecord(store, persisted) {
   const evidenceIds = Array.from(new Set(Array.isArray(persisted.evidenceIds)
     ? persisted.evidenceIds.filter((value) => typeof value === 'string' && value)
     : []));
-  if (!evidenceIds.length || !evidenceIds.every((value) => store.evidenceStore?.has(value))) return null;
+  // Persisted restore must not be a weaker admission boundary than fresh
+  // creation. Existence is not authority: an untrusted JSON round-trip
+  // downgrades deterministic evidence to `supported`, and the proposal may only
+  // regain live mutation authority if its evidence still resolves to the same
+  // deterministic `verified` predicate `create()` requires (#8889).
+  if (!evidenceIds.length || !evidenceIds.every((value) => hasDeterministicEvidenceAuthority(store.evidenceStore, value, (record) => store.evidenceBindingIsCurrent(record)))) return null;
   let binding;
   let payload;
   try {
@@ -565,6 +630,56 @@ function snapshotProposalPayload(value, stableBefore = value.before) {
 // mutable accessor twice while preparing an approval. Capture the top-level
 // before value once in create(), then reject unsupported nested accessors and
 // symbol keys without invoking them.
+function admitBoundedProposalState(values) {
+  let binaryBytes = 0;
+  let nodes = 0;
+  const seen = new WeakSet();
+  const spendNode = () => {
+    nodes += 1;
+    if (nodes > PROPOSAL_STATE_MAX_NODES) {
+      throw new AIError('tool_failed',
+        'Proposal state exceeds the admitted snapshot work budget and cannot be snapshotted or fingerprinted safely.');
+    }
+  };
+  const visit = (value, depth) => {
+    if (value === null || typeof value !== 'object') return;
+    if (depth > PROPOSAL_STATE_MAX_DEPTH) {
+      throw new AIError('tool_failed',
+        'Proposal state is nested beyond the admitted snapshot depth and cannot be snapshotted safely.');
+    }
+    spendNode();
+    if (seen.has(value)) return;
+    seen.add(value);
+    const binary = intrinsicBinaryContainer(value);
+    if (binary) {
+      binaryBytes += binary.byteLength || 0;
+      if (binaryBytes > PROPOSAL_STATE_MAX_BINARY_BYTES) {
+        throw new AIError('tool_failed',
+          'Proposal state binary payload exceeds the admitted size budget and cannot be snapshotted or fingerprinted safely.');
+      }
+      return;
+    }
+    if (value instanceof Map) {
+      for (const [key, item] of value) { visit(key, depth + 1); visit(item, depth + 1); }
+      return;
+    }
+    if (value instanceof Set) {
+      for (const item of value) visit(item, depth + 1);
+      return;
+    }
+    if (Array.isArray(value)) {
+      // Bounded by length before touching any element; never materializes keys.
+      if (nodes + value.length > PROPOSAL_STATE_MAX_NODES) spendNode();
+      for (let i = 0; i < value.length; i += 1) { spendNode(); visit(value[i], depth + 1); }
+      return;
+    }
+    const keys = Object.keys(value);
+    if (nodes + keys.length > PROPOSAL_STATE_MAX_NODES) spendNode();
+    for (const key of keys) { spendNode(); visit(value[key], depth + 1); }
+  };
+  for (const value of values) visit(value, 0);
+}
+
 function rejectUnstableProposalState(value, seen = new Set()) {
   if (value === null || typeof value !== 'object') return;
   if (seen.has(value)) return;

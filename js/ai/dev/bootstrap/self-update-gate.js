@@ -19,6 +19,10 @@ export const DEV_SELF_UPDATE_HISTORY_KIND = 'runtime-activation-required';
 const COMMIT = /^[0-9a-f]{40}$/;
 const BUILD_ID = /^[0-9a-f]{24}$/;
 
+const ACTIVATION_ARGUMENT_KEYS = Object.freeze([
+  'expectedCommit', 'expectedBuildId', 'expectedUserscriptVersion', 'capabilities', 'reason', 'requireReinitialization',
+]);
+
 /* Reading the active identity and withdrawing a wrong expectation are how the
    gate is satisfied or corrected, and winding an in-flight Worker down is
    cleanup rather than a capability proof. None of them may ever be gated. */
@@ -52,10 +56,21 @@ export class DevSelfUpdateGate {
   get activeIdentity() { return this.#active; }
 
   /* Arm the gate for a source change that is merged but not yet running. */
-  requireActivation({ expectedCommit, expectedBuildId, expectedUserscriptVersion = null, capabilities = [], reason = null, requireReinitialization = false, clear = false } = {}) {
+  requireActivation(args = {}) {
+    if (!args || typeof args !== 'object' || Array.isArray(args)) {
+      throw new TypeError('Dev self-update gate: activation arguments must be a plain object.');
+    }
+    for (const key of Object.keys(args)) {
+      if (!ACTIVATION_ARGUMENT_KEYS.includes(key)) {
+        throw new TypeError(`dev-self-update-gate-unexpected-argument-field:${String(key).slice(0, 64)}`);
+      }
+    }
+    const {
+      expectedCommit, expectedBuildId, expectedUserscriptVersion = null,
+      capabilities = [], reason = null, requireReinitialization = false,
+    } = args;
     /* A mistyped expectation must not be able to brick the Dev tool surface
        for the rest of the page session, so the declaring side can withdraw it. */
-    if (clear === true) return this.clear(reason);
     /* Every throwing normalization runs before any state commit: a rejected
        activation must leave the gate exactly as it was. */
     const expected = Object.freeze({
@@ -130,6 +145,10 @@ export class DevSelfUpdateGate {
       mismatches: Object.freeze([...this.#mismatches]),
       gatedCapabilities: Object.freeze([...this.#capabilities]),
     });
+  }
+
+  clearActivationExpectation(reason = null) {
+    return this.clear(reason);
   }
 
   clear(reason = null) {

@@ -23,7 +23,6 @@ export class SolverBackend {
     proofAuthority = PROOF_AUTHORITY.NONE,
     isRemote = false,
     isWasm = false,
-    requiresCanonicalQueryIdentity = false,
   }) {
     if (typeof id !== 'string' || !id || typeof version !== 'string' || !version) {
       throw new TypeError('SolverBackend: id and version must be non-empty strings');
@@ -42,10 +41,13 @@ export class SolverBackend {
     this.proofAuthority = proofAuthority;
     this.isRemote = isRemote ?? false;
     this.isWasm = isWasm ?? false;
-    this.requiresCanonicalQueryIdentity = requiresCanonicalQueryIdentity === true;
     BACKEND_INSTANCES.add(this);
   }
 
+  /**
+   * Capabilities which participate in the immutable capability fingerprint.
+   * Subclasses should override this method rather than capabilities().
+   */
   baseCapabilities() {
     return {
       supportedSorts: ['bool', 'bv'],

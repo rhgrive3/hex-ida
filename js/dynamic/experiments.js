@@ -57,6 +57,12 @@ function normalizeInteger(value, bits, signed) {
   return n;
 }
 
+function fieldWidthBits(raw) {
+  if (raw == null) return 64;
+  if (typeof raw !== 'number' || !Number.isSafeInteger(raw) || raw < 8 || raw > 64 || raw % 8 !== 0) return null;
+  return raw;
+}
+
 // Machine-integer boundary for caller-provided experiment values: an unsafe
 // number has already been rounded by IEEE-754 at the call site, so freezing it
 // into a BigInt would publish silently wrong machine values (#5724). Such
@@ -129,15 +135,28 @@ export function compileExperiment(hypothesis, options = {}) {
   const argIndex = integerInRange(hypothesis.argumentIndex, 1, 0, 31, 'argumentIndex');
   if (fieldOffset != null && argIndex === 0) throw new DebugAdapterError('invalid-hypothesis', 'argumentIndex 0 conflicts with objectBase for field experiments');
   const pointerInput = hypothesis.argumentKind === 'pointer' || hypothesis.pointer === true;
-  const inputs = options.inputs || generateDifferentialInputs({ bits:fieldSize <= 4 ? 32 : 64, signed, boundary:hypothesis.boundary ?? hypothesis.clampMin ?? hypothesis.clampMax, pointer:pointerInput, limit:options.limit ?? 12 });
+  const customInputs = options.inputs != null;
+  if (customInputs && !Array.isArray(options.inputs)) throw new DebugAdapterError('invalid-experiment-input', 'options.inputs must be an array');
+  const inputs = customInputs ? options.inputs : generateDifferentialInputs({ bits:fieldSize <= 4 ? 32 : 64, signed, boundary:hypothesis.boundary ?? hypothesis.clampMin ?? hypothesis.clampMax, pointer:pointerInput, limit:options.limit ?? 12 });
   const cases = [];
-  for (const item of inputs) {
-    if (item.kind !== 'scalar' && !(pointerInput && item.kind === 'pointer')) continue;
-    const args = Array.from({length:Math.max(argIndex + 1, 2)}, () => 0n); args[0] = objectBase; args[argIndex] = BigInt(item.value);
-    const expected = item.kind === 'scalar' && fieldOffset != null ? relationExpected(hypothesis, initial, item.value, fieldBits, signed) : null;
+  const inputIds = new Set();
+  for (let inputIndex = 0; inputIndex < inputs.length; inputIndex++) {
+    const item = inputs[inputIndex];
+    if (item == null || typeof item !== 'object' || Array.isArray(item)) throw new DebugAdapterError('invalid-experiment-input', `options.inputs[${inputIndex}] must be an object`);
+    if (item.kind !== 'scalar' && !(pointerInput && item.kind === 'pointer')) {
+      if (customInputs) throw new DebugAdapterError('invalid-experiment-input', `options.inputs[${inputIndex}].kind is not valid for this experiment`);
+      continue;
+    }
+    if (typeof item.id !== 'string' || item.id.trim() === '') throw new DebugAdapterError('invalid-experiment-input', `options.inputs[${inputIndex}].id must be a non-empty string`);
+    if (inputIds.has(item.id)) throw new DebugAdapterError('invalid-experiment-input', `duplicate experiment input id: ${item.id}`);
+    inputIds.add(item.id);
+    const value = strictMachineInteger(item.value);
+    if (value == null) throw new DebugAdapterError('invalid-experiment-input', 'experiment input value must be a machine integer (exact BigInt, safe number, or integer string)');
+    const args = Array.from({length:Math.max(argIndex + 1, 2)}, () => 0n); args[0] = objectBase; args[argIndex] = value;
+    const expected = item.kind === 'scalar' && fieldOffset != null ? relationExpected(hypothesis, initial, value, fieldBits, signed) : null;
     cases.push({
       id:`${hypothesisId ?? 'hypothesis'}:${item.id}`,
-      input:{ arguments:args, scalar:BigInt(item.value) },
+      input:{ arguments:args, scalar:value },
       initialState:{ objectBase, fields:fieldOffset == null ? [] : [{ offset:fieldOffset, size:fieldSize, value:initial }] },
       watch:fieldOffset == null ? [] : [{ name:hypothesis.fieldName || null, offset:fieldOffset, size:fieldSize }],
       expected: expected == null ? null : { field:{ offset:fieldOffset, value:expected, bits:fieldBits, signed } },
@@ -156,11 +175,11 @@ export function compileExperiment(hypothesis, options = {}) {
 
 function observedFieldValue(observation, offset) {
   const after = (observation && observation.memoryAfter) || [];
-  const final = after.find((f) => f && f.offset != null && BigInt(f.offset) === offset);
+  const final = after.find((f) => f && f.offset != null && strictMachineInteger(f.offset) === offset);
   if (final && final.value != null) return { observed:true, value:final.value, source:'final-state', size:final.size };
   const deltas = (observation && observation.memoryDelta) || [];
   let touched = null;
-  for (const delta of deltas) if (delta && delta.offset != null && BigInt(delta.offset) === offset && delta.after != null) touched=delta;
+  for (const delta of deltas) if (delta && delta.offset != null && strictMachineInteger(delta.offset) === offset && delta.after != null) touched=delta;
   if (touched) return { observed:true, value:touched.after, source:'delta-final', size:touched.size };
   return { observed:false, value:null, source:null, size:null };
 }
@@ -171,10 +190,11 @@ export function compareExpected(caseSpec, observation) {
   const stop = observation && observation.stop && observation.stop.kind;
   if (stop === 'fault' || stop === 'exception' || stop === 'timeout' || stop === 'unsupported' || stop === 'cancelled') return { status:'unsupported', reason:`execution-${stop}` };
   if (expected.field) {
+    const bits = fieldWidthBits(expected.field.bits);
+    if (bits == null) return { status:'inconclusive', reason:'invalid-expected-field-bits', expected:expected.field.value };
     const offset = BigInt(expected.field.offset);
     const actual = observedFieldValue(observation, offset);
     if (!actual.observed) return { status:'inconclusive', reason:'expected-field-final-state-not-observed', expected:expected.field.value };
-    const bits = Number(expected.field.bits || 64);
     // #5578: the observation width is part of the field contract —
     // compileExperiment() watches exactly fieldBits/8 bytes. An under-width,
     // over-width, or unknown-width observation must never produce the strong

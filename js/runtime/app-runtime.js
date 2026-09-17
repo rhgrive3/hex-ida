@@ -89,6 +89,19 @@ function validContentHash(value) {
   return typeof value === 'string' && value.trim() !== '' ? value : null;
 }
 
+// Binary authority for a runtime session must never be the platform content
+// hash, which `js/platform/hash.js` deliberately publishes as an FNV-1a 64-bit
+// cache key (`fnv1a64:<size>:<hex>`). `js/analysis/binary-identity-digest.js`
+// already states that this identity contract is never weakened to accept that
+// shape; the runtime/evidence wiring has to apply the same rule instead of
+// promoting a non-collision-resistant cache key to a binary identity (#8964).
+const FNV_CACHE_KEY_PATTERN = /^fnv1a64:/i;
+function binaryAuthorityHash(value) {
+  const text = validContentHash(value);
+  if (text === null) return null;
+  return FNV_CACHE_KEY_PATTERN.test(text) ? null : text;
+}
+
 function scalarSourceValue(value) {
   if (value == null) return null;
   if (typeof value === 'bigint') return `${value}n`;
@@ -175,16 +188,32 @@ function staleRuntimeSourceError() {
 async function binaryHashOf(app, binding) {
   const info = binding.fileToken;
   const backend = binding.backend;
-  const ensureContentHash = typeof backend?.ensureContentHash === 'function' ? backend.ensureContentHash : null;
-  for (const candidate of [info?.hash, info?.sha256, binding.projectHash, backend?.contentHash]) {
-    const existing=validContentHash(candidate);
-    if(existing) return existing;
+  // Strong witnesses first. `info.hash` and `backend.contentHash` are the
+  // platform FNV-1a cache-key spelling, so they can never outrank an explicit
+  // SHA-256 digest; a weak value must not shadow an exact identity.
+  for (const candidate of [info?.sha256, info?.binaryId, backend?.binaryId, info?.hash, binding.projectHash, backend?.contentHash]) {
+    const existing = binaryAuthorityHash(candidate);
+    if (existing) return existing;
   }
+  const ensureBinaryId = typeof backend?.ensureBinaryId === 'function' ? backend.ensureBinaryId : null;
+  if (ensureBinaryId) {
+    try {
+      const binaryId = await Reflect.apply(ensureBinaryId, backend, []);
+      if (!sourceBindingIsCurrent(app, binding)) throw staleRuntimeSourceError();
+      const strong = binaryAuthorityHash(binaryId);
+      if (strong) return strong;
+    } catch (error) {
+      if (!sourceBindingIsCurrent(app, binding)) throw staleRuntimeSourceError();
+    }
+  }
+  const ensureContentHash = typeof backend?.ensureContentHash === 'function' ? backend.ensureContentHash : null;
   if (ensureContentHash) {
     try {
       const hash = await Reflect.apply(ensureContentHash, backend, []);
       if (!sourceBindingIsCurrent(app, binding)) throw staleRuntimeSourceError();
-      return validContentHash(hash);
+      // A backend whose content hash is only an FNV cache key has no binary
+      // authority here; staying unresolved is explicit, laundering it is not.
+      return binaryAuthorityHash(hash);
     } catch (error) {
       if (!sourceBindingIsCurrent(app, binding)) throw staleRuntimeSourceError();
       return null;

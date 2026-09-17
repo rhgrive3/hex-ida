@@ -696,7 +696,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   const constantObserver = { records:[], expected:new WeakSet(), unavailable:new WeakSet() };
   const stateObserver = { records:[], expected:new WeakSet(), unavailable:new WeakSet() };
   const memoryTransitions = memorySsa
-    ? attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir, constantObserver) : null;
+    ? attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById, ir, constantObserver, options) : null;
   if (!memorySsa) attachFallbackMemory(projected);
 
   for (const inst of projected.instructions) {

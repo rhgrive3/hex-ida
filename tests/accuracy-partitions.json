@@ -1,0 +1,39 @@
+{
+  "core": [
+    "sections",
+    "funcs",
+    "funcs-guess",
+    "disasm",
+    "kinds",
+    "calls",
+    "refs",
+    "imports",
+    "objc",
+    "selstub",
+    "strings",
+    "xrefs",
+    "funcname",
+    "selffield",
+    "role",
+    "apimeaning",
+    "summary",
+    "expr",
+    "formula"
+  ],
+  "pinpoint": [
+    "pinpoint",
+    "pinpoint-partial"
+  ],
+  "pseudoc-0": [
+    "pseudoc"
+  ],
+  "pseudoc-1": [
+    "pseudoc"
+  ],
+  "pseudoc-2": [
+    "pseudoc"
+  ],
+  "pseudoc-3": [
+    "pseudoc"
+  ]
+}

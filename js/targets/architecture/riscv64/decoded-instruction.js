@@ -52,6 +52,7 @@ const UINT8_ARRAY_BYTE_LENGTH_GETTER = Object.getOwnPropertyDescriptor(
   'byteLength',
 )?.get;
 
+
 function isUint8ArrayView(value) {
   if (value instanceof Uint8Array) return true;
   if (!ArrayBuffer.isView(value)) return false;
@@ -154,9 +155,6 @@ export function createRiscv64DecodedInstruction(input = {}) {
     architecture: 'riscv64',
     mode,
     instructionAlignment,
-    // Identity/provenance fields are typed strings, not display text: a
-    // structured value must not launder into a canonical-looking id through
-    // String() coercion (#5990).
     ...(input.isaIdentity == null ? {} : { isaIdentity: strictToken(input.isaIdentity, 'riscv64-decoded-instruction-invalid-isa-identity') }),
     ...(input.isaEvidence == null ? {} : { isaEvidence: strictToken(input.isaEvidence, 'riscv64-decoded-instruction-invalid-isa-evidence') }),
     ...(compressedInstructions == null ? {} : { compressedInstructions }),

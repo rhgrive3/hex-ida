@@ -20,3 +20,12 @@ export function pseudocSamples(functionStarts) {
   }
   return stride(cands, 120);
 }
+
+
+export function pseudocShardSamples(functionStarts, shardIndex, shardCount) {
+  if (!Number.isSafeInteger(shardCount) || shardCount <= 0
+      || !Number.isSafeInteger(shardIndex) || shardIndex < 0 || shardIndex >= shardCount) {
+    throw new RangeError(`invalid pseudoc shard ${shardIndex}/${shardCount}`);
+  }
+  return pseudocSamples(functionStarts).filter((_, index) => index % shardCount === shardIndex);
+}

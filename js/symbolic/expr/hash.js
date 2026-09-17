@@ -13,7 +13,6 @@ import {
   sortToString,
   sameSort,
 } from './kinds.js';
-import { ownDataEntries, inspectCanonicalData } from './data-boundary.js';
 import { canonicalizeObject } from './serialize.js';
 
 const hashCache = new WeakMap();
@@ -83,7 +82,7 @@ export function computeStructuralHash(node) {
       break;
 
     case EXPR_KIND.CAST:
-      canonicalRep = `CAST:${node.op}:${sortStr}:${node.targetWidth}(${computeStructuralHash(node.arg)})`;
+      canonicalRep = `CAST:${node.op}:${sortStr}(${computeStructuralHash(node.arg)})`;
       break;
 
     default:
@@ -109,56 +108,63 @@ function childExpressions(node) {
   }
 }
 
-function boundedAcyclicValue(value) {
-  return inspectCanonicalData([value], {maxNodes:4096, maxEdges:16384, maxExpansion:16384}).ok;
-}
-
-function checkExpressionData(node, maxNodes) {
-  ownDataEntries(node, 64); ownDataEntries(node.sort, 4);
-  if (!Object.values(EXPR_KIND).includes(node.kind) || sortToString(node.sort) === 'UnknownSort') throw new TypeError('unsupported-expression-kind-or-sort');
-  for (const key of ['kind', 'op', 'symbolId', 'name', 'reason']) {
-    if (node[key] != null && (typeof node[key] !== 'string' || node[key].length > 4096)) throw new TypeError('invalid-expression-string');
+function boundedAcyclicValue(value, maxNodes = 4096, maxDepth = 64) {
+  if (value == null || typeof value !== 'object') return true;
+  const colors = new WeakMap();
+  let count = 0;
+  const stack = [{ value, entered: false, children: null, index: 0, depth: 1 }];
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    if (!frame.entered) {
+      if (colors.get(frame.value) === 1 || frame.depth > maxDepth || ++count > maxNodes) return false;
+      if (colors.get(frame.value) === 2) { stack.pop(); continue; }
+      colors.set(frame.value, 1);
+      if (ArrayBuffer.isView(frame.value) || frame.value instanceof ArrayBuffer || frame.value instanceof Date) {
+        frame.children = [];
+      } else {
+        try {
+          const descriptors = Object.getOwnPropertyDescriptors(frame.value);
+          const keys = Reflect.ownKeys(descriptors);
+          const children = [];
+          for (const key of keys) {
+            if (typeof key === 'symbol') return false;
+            const descriptor = descriptors[key];
+            if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) return false;
+            if (descriptor.enumerable) children.push(descriptor.value);
+          }
+          frame.children = children;
+        } catch {
+          return false;
+        }
+      }
+      frame.entered = true;
+    }
+    if (frame.index < frame.children.length) {
+      const child = frame.children[frame.index++];
+      if (child != null && typeof child === 'object') {
+        if (colors.get(child) === 1) return false;
+        if (colors.get(child) !== 2) stack.push({ value: child, entered: false, children: null, index: 0, depth: frame.depth + 1 });
+      }
+      continue;
+    }
+    colors.set(frame.value, 2);
+    stack.pop();
   }
-  for (const key of ['high','low','targetWidth']) if (node[key] != null && !Number.isSafeInteger(node[key])) throw new TypeError('invalid-expression-width');
-  if (node.kind === EXPR_KIND.FRESH_SYMBOL && (typeof node.name !== 'string' || !node.name || node.symbolId === '')) throw new TypeError('invalid-symbol-identity');
-  if (node.kind === EXPR_KIND.CONST && typeof node.value !== (node.sort.kind === 'bool' ? 'boolean' : 'bigint')) throw new TypeError('noncanonical-expression-constant');
-  if (node.kind === EXPR_KIND.CONNECTIVE) {
-    if (!Array.isArray(node.args)) throw new TypeError('expression-arity-budget-exceeded');
-    // A wide CONNECTIVE is admissible exactly as far as the caller's own node
-    // budget admits its members: every argument is charged against `maxNodes`
-    // by the traversal below, so the fence must be that budget rather than a
-    // fixed arity that rejects an in-budget wide fanout before its budget can
-    // ever be observed (#5163).
-    if (node.args.length > maxNodes) throw new TypeError('expression-node-budget-exceeded');
-    ownDataEntries(node.args, node.args.length);
-  }
+  return true;
 }
 
 /**
  * Call-local, iterative structural hashing for untrusted/structured-cloned
  * expression DAGs. It never consults the module cache and stops at maxNodes.
  */
-export function computeStructuralHashesBounded(roots, options = {}) {
-  try { return computeStructuralHashesData(roots, options); }
-  catch (error) {
-    // A budget-shaped rejection is a resource limit, not a malformed query:
-    // callers must be able to answer RESOURCE_LIMIT so the caller's own budget
-    // remains observable (#5163).
-    const reason = error.message || 'malformed-expression-data';
-    return Object.freeze({ ok: false, reason, nodeCount: 0, limitExceeded: /(?:^|-)budget-exceeded$/.test(reason) });
-  }
-}
-
-function computeStructuralHashesData(roots, { maxNodes = 100000 } = {}) {
+export function computeStructuralHashesBounded(roots, { maxNodes = 100000 } = {}) {
   if (typeof maxNodes !== 'number' || !Number.isSafeInteger(maxNodes) || maxNodes <= 0) {
     return Object.freeze({ ok: false, reason: 'invalid-expression-node-budget', nodeCount: 0 });
   }
   if (!Array.isArray(roots)) return Object.freeze({ ok: false, reason: 'malformed-expression-roots', nodeCount: 0 });
 
-  ownDataEntries(roots, maxNodes);
   const colors = new WeakMap();
   const hashes = new WeakMap();
-  const symbolBindings = new Map();
   let nodeCount = 0;
   let traversalCount = 0;
   for (const root of roots) {
@@ -179,7 +185,6 @@ function computeStructuralHashesData(roots, { maxNodes = 100000 } = {}) {
         if (nodeCount > maxNodes) {
           return Object.freeze({ ok: false, reason: 'expression-node-budget-exceeded', nodeCount, limitExceeded: true });
         }
-        checkExpressionData(frame.node, maxNodes);
         frame.children = childExpressions(frame.node);
         frame.entered = true;
       }
@@ -204,7 +209,6 @@ function computeStructuralHashesData(roots, { maxNodes = 100000 } = {}) {
           canonicalRep = `CONST:${sortStr}:${typeof node.value === 'bigint' ? `0x${node.value.toString(16)}` : String(node.value)}`;
           break;
         case EXPR_KIND.FRESH_SYMBOL:
-          symbolBindings.set(`${node.symbolId ?? node.name}:${node.name}`, Object.freeze({ id: node.symbolId ?? node.name, name: node.name, sort: sortStr }));
           canonicalRep = `SYM:${sortStr}:${node.symbolId ?? node.name}`;
           break;
         case EXPR_KIND.UNKNOWN_SEMANTIC:
@@ -219,7 +223,7 @@ function computeStructuralHashesData(roots, { maxNodes = 100000 } = {}) {
         case EXPR_KIND.ITE: canonicalRep = `ITE:${sortStr}(${childHashes.join(',')})`; break;
         case EXPR_KIND.EXTRACT: canonicalRep = `EXTRACT:${sortStr}[${node.high}:${node.low}](${childHashes[0]})`; break;
         case EXPR_KIND.CONCAT: canonicalRep = `CONCAT:${sortStr}(${childHashes.join(',')})`; break;
-        case EXPR_KIND.CAST: canonicalRep = `CAST:${node.op}:${sortStr}:${node.targetWidth}(${childHashes[0]})`; break;
+        case EXPR_KIND.CAST: canonicalRep = `CAST:${node.op}:${sortStr}(${childHashes[0]})`; break;
         default: canonicalRep = `GENERIC:${node.kind}:${sortStr}`;
       }
       hashes.set(node, sha256Hex(canonicalRep));
@@ -227,7 +231,7 @@ function computeStructuralHashesData(roots, { maxNodes = 100000 } = {}) {
       stack.pop();
     }
   }
-  return Object.freeze({ ok: true, hashes: Object.freeze(roots.map((root) => hashes.get(root))), nodeCount, traversalCount, symbolBindings: Object.freeze([...symbolBindings.values()].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))) });
+  return Object.freeze({ ok: true, hashes: Object.freeze(roots.map((root) => hashes.get(root))), nodeCount, traversalCount });
 }
 
 export function structuralEquals(a, b) {

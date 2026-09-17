@@ -104,9 +104,6 @@ export class AnalysisCache {
   #validRecord(record, hash, artifactId) {
     if (!record || record.schemaVersion !== this.schemaVersion) return false;
     if (artifactId) {
-      // Canonical artifact identity binds the binary, but derived analysis is
-      // still version/settings-sensitive. Do not let the artifact route bypass
-      // the same semantic cache identity enforced by the legacy route (#197).
       return record.canonicalArtifactId === artifactId
         && record.analysisIdentity === this.analysisIdentity
         && (!hash || record.binaryHash === hash);
@@ -143,23 +140,10 @@ export class AnalysisCache {
       await this.#deleteObservedCorruptRecord(key, record);
       return null;
     }
-    if (!this.#validRecord(record, binaryHash, artifactId)) {
-      return null;
-    }
+    if (!this.#validRecord(record, binaryHash, artifactId)) return null;
     return structuredCloneSafe(record.data);
   }
 
-  /**
-   * Conditional cleanup for a corrupt record observed by get() (#5934).
-   *
-   * The read and the cleanup are separate transactions, and IndexedDB starts
-   * overlapping transactions in creation order — so an unconditional delete
-   * could run after a concurrent put() had already replaced the record and
-   * erase the fresh, valid entry. This cleanup re-reads the key inside its
-   * own readwrite transaction (atomic with the delete) and deletes only when
-   * the record it observed is still the one stored. Memory backends compare
-   * record identity for the same guarantee.
-   */
   async #deleteObservedCorruptRecord(key, observed) {
     if (this.memory) {
       if (this.memory.get(key) === observed) this.memory.delete(key);
@@ -343,19 +327,50 @@ function transactionMutationPromise(transaction, request) {
   return Promise.all([requestPromise(request), completion]).then(() => undefined);
 }
 
-function fallbackClone(value, seen = new WeakMap()) {
-  if (value == null || typeof value !== 'object') return value;
-  if (seen.has(value)) return seen.get(value);
-  if (value instanceof Date) return new Date(value.getTime());
-  if (value instanceof ArrayBuffer) return value.slice(0);
-  if (ArrayBuffer.isView(value)) {
-    if (value instanceof DataView) return new DataView(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
-    return value.slice ? value.slice() : new value.constructor(value);
-  }
-  if (value instanceof Map) { const out = new Map(); seen.set(value, out); for (const [k, v] of value) out.set(fallbackClone(k, seen), fallbackClone(v, seen)); return out; }
-  if (value instanceof Set) { const out = new Set(); seen.set(value, out); for (const v of value) out.add(fallbackClone(v, seen)); return out; }
-  if (Array.isArray(value)) { const out = []; seen.set(value, out); for (const v of value) out.push(fallbackClone(v, seen)); return out; }
-  const out = {}; seen.set(value, out); for (const [k, v] of Object.entries(value)) Object.defineProperty(out, k, { value:fallbackClone(v, seen), enumerable:true, configurable:true, writable:true }); return out;
+function isSharedArrayBuffer(value) {
+  return typeof SharedArrayBuffer !== 'undefined' && value instanceof SharedArrayBuffer;
 }
 
-function structuredCloneSafe(value) { if (typeof structuredClone === 'function') return structuredClone(value); return fallbackClone(value); }
+function ownedArrayBufferCopy(buffer) {
+  const copy = new ArrayBuffer(buffer.byteLength);
+  new Uint8Array(copy).set(new Uint8Array(buffer));
+  return copy;
+}
+
+function fallbackClone(value, seen = new WeakMap(), sharedBuffers = new WeakMap()) {
+  if (value == null || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value);
+  if (value instanceof Date) { const out = new Date(value.getTime()); seen.set(value, out); return out; }
+  if (isSharedArrayBuffer(value)) { const owned = ownedArrayBufferCopy(value); seen.set(value, owned); sharedBuffers.set(value, owned); return owned; }
+  if (value instanceof ArrayBuffer) { const out = value.slice(0); seen.set(value, out); return out; }
+  if (ArrayBuffer.isView(value)) {
+    const sourceBuffer = value.buffer;
+    const backing = isSharedArrayBuffer(sourceBuffer) ? (sharedBuffers.get(sourceBuffer) || ownedArrayBufferCopy(sourceBuffer)) : fallbackClone(sourceBuffer, seen, sharedBuffers);
+    if (isSharedArrayBuffer(sourceBuffer)) sharedBuffers.set(sourceBuffer, backing);
+    const out = value instanceof DataView ? new DataView(backing, value.byteOffset, value.byteLength) : new value.constructor(backing, value.byteOffset, value.length);
+    seen.set(value, out);
+    return out;
+  }
+  if (value instanceof Map) { const out = new Map(); seen.set(value, out); for (const [k, v] of value) out.set(fallbackClone(k, seen, sharedBuffers), fallbackClone(v, seen, sharedBuffers)); return out; }
+  if (value instanceof Set) { const out = new Set(); seen.set(value, out); for (const v of value) out.add(fallbackClone(v, seen, sharedBuffers)); return out; }
+  if (Array.isArray(value)) { const out = []; seen.set(value, out); for (const v of value) out.push(fallbackClone(v, seen, sharedBuffers)); return out; }
+  const out = {}; seen.set(value, out); for (const [k, v] of Object.entries(value)) Object.defineProperty(out, k, { value:fallbackClone(v, seen, sharedBuffers), enumerable:true, configurable:true, writable:true }); return out;
+}
+
+function containsSharedBuffer(value, seen = new WeakSet()) {
+  if (value == null || typeof value !== 'object') return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (isSharedArrayBuffer(value)) return true;
+  if (ArrayBuffer.isView(value)) return isSharedArrayBuffer(value.buffer);
+  if (value instanceof Map) { for (const [k, v] of value) if (containsSharedBuffer(k, seen) || containsSharedBuffer(v, seen)) return true; return false; }
+  if (value instanceof Set) { for (const v of value) if (containsSharedBuffer(v, seen)) return true; return false; }
+  if (Array.isArray(value)) { for (const v of value) if (containsSharedBuffer(v, seen)) return true; return false; }
+  for (const k of Object.keys(value)) if (containsSharedBuffer(value[k], seen)) return true;
+  return false;
+}
+
+function structuredCloneSafe(value) {
+  if (typeof structuredClone === 'function' && !containsSharedBuffer(value)) return structuredClone(value);
+  return fallbackClone(value);
+}

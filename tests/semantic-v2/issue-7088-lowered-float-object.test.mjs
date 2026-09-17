@@ -17,8 +17,8 @@ function projectLoweredConstants(values) {
     mode: 'test',
     operations: [createMachineOperation({
       kind: 'value',
-      id: 'fadd',
-      opcode: 'fadd',
+      id: 'float-probe',
+      opcode: 'float-const-probe',
       inputs: values,
       outputs: [createTemporaryValue('result', values[0])],
     })],

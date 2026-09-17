@@ -32,7 +32,7 @@ import { cfgGraph, callGraph, renderGraph, graphLegend } from './graphview.js';
 import { inferTypes, recoverStruct, TypeStore, structToC, BASIC_TYPES, typeJa } from './types.js';
 import { readableName, shortName, isMangled, findCxxClasses, readVtable, rttiPointerContextForSlice } from './rtti.js';
 import { importList, importsByFramework, exportList, findGlobals } from './linkage.js';
-import { assemble, suggestPatches, parseHexBytes, hexOf, validatePatchRange } from './patch.js';
+import { assemble, suggestPatches, parseHexBytes, hexOf, validatePatchRange, instructionPatchArchitectureSupported } from './patch.js';
 import { runScript, SAMPLES, makeEmulator } from './script.js';
 import { EXAMPLE_PLUGIN, MAX_PLUGIN_SOURCE_BYTES } from './plugins.js';
 import { parseMetadataAuto, looksLikeUnity, bindMethodAddresses, MAX_IL2CPP_METADATA_BYTES } from './il2cpp.js';
@@ -1139,6 +1139,22 @@ export function showNotes(app) {
    パッチ
    ══════════════════════════════════════════════════════════ */
 
+function instructionPatchCapability(app) {
+  const architecture = String(app?.store?.get?.('architecture') || '').toLowerCase();
+  const supported = instructionPatchArchitectureSupported(architecture);
+  return {
+    architecture, supported,
+    reason:supported ? null : `このCPU（${architecture || '不明'}）の命令パッチはまだ未対応です。`,
+  };
+}
+
+function patchRegionForAddress(app, addr) {
+  const hasOwnerResolver = typeof app?.executableRegionFor === 'function' || typeof app?.regionForAddress === 'function';
+  const owner = app?.executableRegionFor?.(addr) ?? app?.regionForAddress?.(addr) ?? null;
+  if (owner) return owner.exec === false ? null : owner;
+  return hasOwnerResolver ? null : app?.codeRegion?.() ?? null;
+}
+
 export function showPatches(app) {
   const sheet = new Sheet('パッチ');
   sheet.body.append(el('div', 'hint',
@@ -1168,17 +1184,22 @@ export function showPatches(app) {
     body.append(l);
 
     const chips = el('div', 'chips');
-    chips.append(button('アドレスを指定して書き換える', 'chip', () => {
-      const sh = new Sheet('場所を指定');
-      const a = input('0x100004000');
-      sh.body.append(para('書き換えたい命令のアドレスを入れてください。'), field(a, '進む', async () => {
-        let addr;
-        try { addr = BigInt(a.value.trim()); } catch { toast('アドレスの形が違います'); return; }
-        sh.close();
-        const insn = await instructionAt(app, addr);
-        showPatchEditor(app, addr, insn);
+    const capability = instructionPatchCapability(app);
+    if (capability.supported) {
+      chips.append(button('アドレスを指定して書き換える', 'chip', () => {
+        const sh = new Sheet('場所を指定');
+        const a = input('0x100004000');
+        sh.body.append(para('書き換えたい命令のアドレスを入れてください。'), field(a, '進む', async () => {
+          let addr;
+          try { addr = BigInt(a.value.trim()); } catch { toast('アドレスの形が違います'); return; }
+          sh.close();
+          const insn = await instructionAt(app, addr);
+          showPatchEditor(app, addr, insn);
+        }));
       }));
-    }));
+    } else {
+      body.append(noteBox(capability.reason));
+    }
     if (items.length) {
       chips.append(button('書き換えたファイルを保存', 'chip strong', () => savePatched(app)));
       chips.append(button('全部取り消す', 'chip danger', () => { app.patches.clear(); render(); }));
@@ -1191,7 +1212,8 @@ export function showPatches(app) {
 }
 
 async function instructionAt(app, addr) {
-  const region = app.codeRegion();
+  if (!instructionPatchCapability(app).supported) return null;
+  const region = patchRegionForAddress(app, addr);
   if (!region) return null;
   const file = app.store.get('file');
   if (validatePatchRange(region, addr, 4, file && file.size, true).error) return null;
@@ -1213,13 +1235,13 @@ async function instructionAt(app, addr) {
 
 export async function showPatchEditor(app, addr, insnArg) {
   const sheet = new Sheet('命令を書き換える');
-  const arch = String(app.store.get('architecture') || '').toLowerCase();
-  if (arch && arch !== 'arm64' && arch !== 'arm64e') {
-    sheet.body.append(noteBox(`パッチ機能（ARM64アセンブラ）はこのアーキテクチャ（${arch}）では未対応です。`));
+  const capability = instructionPatchCapability(app);
+  if (!capability.supported) {
+    sheet.body.append(noteBox(capability.reason));
     return;
   }
   const insn = insnArg || await instructionAt(app, addr);
-  const region = (app.regionForAddress ? app.regionForAddress(addr) : null) || app.codeRegion();
+  const region = patchRegionForAddress(app, addr);
   if (!region) { sheet.body.append(noteBox('コードのセクションが見つかりません。')); return; }
   const file = app.store.get('file');
   const range = validatePatchRange(region, addr, 4, file && file.size, true);

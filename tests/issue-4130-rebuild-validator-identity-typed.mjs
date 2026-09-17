@@ -11,10 +11,22 @@ import { stableDigest } from '../js/core/identity/index.js';
 // before it can bind to the transaction/output identity. The old String()
 // coercion let 1-element arrays (and other structured values) alias the
 // canonical identity, so a malformed validator result passed the identity
-// gate. Omission stays allowed; an explicit malformed value fails closed.
+// gate. Explicit malformed values still fail closed behind the stricter
+// loader-reparse proof contract.
 
 const source = Uint8Array.of(1, 2, 3, 4);
 const digest = (bytes) => `bytes:${stableDigest(Array.from(bytes))}`;
+
+function completeLoaderProof(result, transaction, materialized) {
+  const proof = { ...result };
+  const image = result?.image && typeof result.image === 'object' && !Array.isArray(result.image) ? result.image : null;
+  const own = (object, field) => !!object && Object.prototype.hasOwnProperty.call(object, field);
+  if (!own(proof, 'format') && !own(image, 'format')) proof.format = transaction.format;
+  if (!own(proof, 'architecture') && !own(proof, 'arch') && !own(image, 'arch')) proof.architecture = transaction.architecture;
+  if (!own(proof, 'loaderVersion') && !own(proof, 'parserVersion') && !own(image, 'loaderVersion')) proof.loaderVersion = transaction.loaderVersion;
+  if (!own(proof, 'outputHash') && !own(proof, 'bytesHash') && !own(image, 'outputHash')) proof.outputHash = materialized.outputHash;
+  return proof;
+}
 
 async function runValidator(resultFn) {
   const transaction = createRebuildTransaction({
@@ -31,7 +43,7 @@ async function runValidator(resultFn) {
   assert.equal(materialized.status, 'materialized');
   const validation = await validateRebuildTransaction(transaction, materialized, {
     original: source,
-    loaderReparse: (context) => resultFn(context, transaction, materialized),
+    loaderReparse: (context) => completeLoaderProof(resultFn(context, transaction, materialized), transaction, materialized),
     validators: Object.fromEntries(
       ['layout', 'relocations', 'branch-ranges', 'unwind', 'imports-exports', 'signature-consequence']
         .map((name) => [name, () => ({ ok: true })]),
@@ -98,8 +110,8 @@ for (const [label, impl, expectedReason] of structured) {
   assert.equal(validation.status, 'invalid', `${label}: malformed identity must invalidate the validation`);
 }
 
-// Genuine omission still permits alias/image lookup; primitive-string
-// comparison and precedence keep their existing behavior.
+// Alias/image identities remain accepted when consistent. Every supplied
+// identity must agree; a conflicting fallback cannot hide behind a good primary.
 for (const [fields, imageField, expected, reason] of identities) {
   for (const field of fields) {
     const { validation } = await runValidator((_ctx, t, m) => ({ ok:true, [field]:expected(t, m) }));
@@ -109,14 +121,15 @@ for (const [fields, imageField, expected, reason] of identities) {
   assert.equal(validation.status, 'valid', `${imageField}: valid image fallback must pass`);
   const mismatch = await runValidator(() => ({ ok:true, [fields[0]]:'wrong-identity' }));
   assert.equal(loaderResult(mismatch.validation).reason, reason.replace(/invalid$/, 'mismatch'));
-  const precedence = await runValidator((_ctx, t, m) => ({
-    ok:true, [fields[0]]:expected(t, m), image:{[imageField]:'unused-fallback'},
+  const conflictingFallback = await runValidator((_ctx, t, m) => ({
+    ok:true, [fields[0]]:expected(t, m), image:{[imageField]:'conflicting-fallback'},
   }));
-  assert.equal(precedence.validation.status, 'valid', 'valid primary identity keeps precedence');
+  assert.equal(loaderResult(conflictingFallback.validation).reason, reason.replace(/invalid$/, 'mismatch'), 'conflicting fallback identity must fail closed');
+  assert.equal(conflictingFallback.validation.status, 'invalid', 'all supplied loader identities must agree');
 }
 
-// Acceptance 3/5: valid primitive string identities and explicit omission keep
-// their existing semantics.
+// Acceptance 3/5: valid primitive-string identities still pass. The fixture
+// supplies the loader identity now required by the stricter reparse contract.
 {
   const { materialized, validation } = await runValidator((ctx, t, m) => ({
     ok: true,
@@ -142,8 +155,8 @@ for (const [fields, imageField, expected, reason] of identities) {
 }
 {
   const { validation } = await runValidator(() => ({ ok: true }));
-  assert.equal(loaderResult(validation).status, 'passed', 'omitted identity fields stay allowed');
-  assert.equal(validation.status, 'valid', 'omitted identity must not regress to invalid');
+  assert.equal(loaderResult(validation).status, 'passed', 'fixture defaults must satisfy the current loader proof contract');
+  assert.equal(validation.status, 'valid', 'typed-identity coverage must execute behind the loader proof gate');
 }
 
 console.log('issue-4130 external validator identity fields are typed before binding: ok');

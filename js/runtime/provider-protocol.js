@@ -1,5 +1,5 @@
 import { DebugAdapterError, boundedInteger } from '../debug/adapter.js';
-import { decodeWireValue, encodeWireValue } from '../debug/remote-protocol.js';
+import { assertWireBytesAtMost, decodeWireValue, encodeWireValue } from '../debug/remote-protocol.js';
 import { RUNTIME_FACETS } from './provider.js';
 import { createRuntimeEventBatch } from './events.js';
 
@@ -98,6 +98,9 @@ function requestSignal(value) {
 
 export function validateProviderPacket(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new DebugAdapterError('malformed-provider-data', 'provider packet must be an object');
+  // #8654: count the exact encoded wire bytes before encode/decode materialize
+  // the graph; limit+1 rejects immediately without changing the 1 MiB cap.
+  assertWireBytesAtMost(input, MAX_PACKET_BYTES, 'resource-limit', 'runtime provider packet exceeds 1 MiB');
   const packet = decodeWireValue(encodeWireValue(input));
   if (packet.protocol !== RUNTIME_PROVIDER_PROTOCOL) throw new DebugAdapterError('protocol-mismatch', 'invalid runtime provider protocol identity');
   if (packet.version !== RUNTIME_PROVIDER_PROTOCOL_VERSION) throw new DebugAdapterError('protocol-mismatch', `unsupported runtime provider protocol version: ${packet.version}`);

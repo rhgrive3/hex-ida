@@ -3,7 +3,7 @@ import { dexTypeInfo } from './descriptor.js';
 import { dexFieldEffects } from './field-effects.js';
 import { decodeDexExceptionTable } from './exception-table.js';
 import { dexDefinitionCodeError, dexMethodDefinitions } from './method-definitions.js';
-import { decodeDexInstructionBoundary } from './instruction-boundary.js';
+import { decodeDexInstructionBoundary, decodeDexSwitchTargets } from './instruction-boundary.js';
 import { createManagedMethodId, createVMOperationId } from '../shared/identity.js';
 import { createVMEffectBundle, createVMEffectFunction } from '../shared/vm-effects.js';
 
@@ -24,7 +24,7 @@ export function liftDexMethod(methodIdx,image,options={}){
  const registersSize=view.getUint16(codeOff,true),outsSize=view.getUint16(codeOff+4,true),triesSize=view.getUint16(codeOff+6,true),insnsSize=view.getUint32(codeOff+12,true),insnsStart=codeOff+16;
  if(insnsStart+insnsSize*2>raw.length)return unavailable(methodIdx,image,'dex-truncated-instructions',options);
  const boundaries=new Set(),controlEntries=new Set();
- for(let at=0;at<insnsSize;){let bd;try{bd=decodeDexInstructionBoundary(view,insnsStart,at,insnsSize)}catch(error){return unavailable(methodIdx,image,error?.message??'dex-invalid-instruction-boundary',options)}if(bd.kind==='instruction'){boundaries.add(at*2);const op=bd.opcode,word=view.getUint16(insnsStart+at*2,true),fmt=word>>>8;if(op===0x28)controlEntries.add((at+(fmt>=128?fmt-256:fmt))*2);else if(op===0x29||(op>=0x32&&op<=0x3d))controlEntries.add((at+view.getInt16(insnsStart+(at+1)*2,true))*2);else if(op===0x2a)controlEntries.add((at+view.getInt32(insnsStart+(at+1)*2,true))*2)}at+=bd.length;if(bd.stop)break}
+ for(let at=0;at<insnsSize;){let bd;try{bd=decodeDexInstructionBoundary(view,insnsStart,at,insnsSize)}catch(error){return unavailable(methodIdx,image,error?.message??'dex-invalid-instruction-boundary',options)}if(bd.kind==='instruction'){boundaries.add(at*2);const op=bd.opcode,word=view.getUint16(insnsStart+at*2,true),fmt=word>>>8;if(op===0x28)controlEntries.add((at+(fmt>=128?fmt-256:fmt))*2);else if(op===0x29||(op>=0x32&&op<=0x3d))controlEntries.add((at+view.getInt16(insnsStart+(at+1)*2,true))*2);else if(op===0x2a)controlEntries.add((at+view.getInt32(insnsStart+(at+1)*2,true))*2);else if(op===0x2b||op===0x2c){controlEntries.add((at+3)*2);try{for(const t of decodeDexSwitchTargets(view,insnsStart,insnsSize,at,at+view.getInt32(insnsStart+(at+1)*2,true),op===0x2b))controlEntries.add(t)}catch{}}}at+=bd.length;if(bd.stop)break}
  let exceptionRegions=[],handlerOffsets=new Set(),exceptionFailure=null;try{const ex=decodeDexExceptionTable(raw,{methodId:base.methodId,insnsStart,insnsSize,triesSize,types:image.types,boundaries});exceptionRegions=ex.regions;handlerOffsets=ex.handlerOffsets}catch(error){exceptionFailure=error?.message??'dex-invalid-exception-table'}
  let pendingResult=null;const bundles=[];
  for(const original of base.bundles){let b={...original},failure=registersSize<view.getUint16(codeOff+2,true)?'dex-register-file-size-invalid':null,nextResult=null;const byteOff=b.bytecodeOffset,pc=byteOff/2,word=view.getUint16(insnsStart+byteOff,true),op=word&255,fmt=word>>>8;let bd;try{bd=decodeDexInstructionBoundary(view,insnsStart,pc,insnsSize)}catch(error){bundles.push(partial(b,error?.message??'dex-invalid-instruction-boundary'));pendingResult=null;continue}const len=bd.length;

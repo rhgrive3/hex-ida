@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { AllowAllAdminProvider } from '../../js/ai/dev/auth/admin-provider.js';
 import { createHash } from 'node:crypto';
 import { DevSupervisorEngineV0 } from '../../js/ai/dev/supervisor/dev-supervisor-engine-v0.js';
 import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
@@ -93,7 +94,7 @@ function testGateUnit() {
 
 function testAdminSurfaceExposesIdentity() {
   assert.equal(DEV_ADMIN_TOOL.RUNTIME_IDENTITY, DEV_RUNTIME_IDENTITY_TOOL);
-  const supervisor = new DevSupervisorV0({
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
     workerClient: { enabled: true, runtimeIdentity: async () => ({ commit: OLD_COMMIT, buildId: OLD_BUILD }) },
     idFactory: (kind) => `${kind}-identity`,
     now: () => '2026-08-18T00:00:00.000Z',
@@ -102,7 +103,7 @@ function testAdminSurfaceExposesIdentity() {
 }
 
 function testPromptTeachesTheGate() {
-  const supervisor = new DevSupervisorV0({
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
     workerClient: { enabled: true, runtimeIdentity: async () => ({}) },
     idFactory: (kind) => `${kind}-prompt`,
     now: () => '2026-08-18T00:00:00.000Z',
@@ -188,7 +189,7 @@ async function testBootstrapReloadArmsTheSameGate() {
   const loader = new DevExtensionLoader({ sha256 });
   await loader.stage(DEV_BOOTSTRAP_EXTENSION);
   const engine = new DevSupervisorEngineV0({
-    supervisor: new DevSupervisorV0({ workerTools: { toolNames: [], has: () => false } }),
+    supervisor: new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(), workerTools: { toolNames: [], has: () => false } }),
     settings: { decisionPolicy: 'normal', lastRun: null, setLastRun() {} },
     bridge: null,
     extensionLoader: loader,
@@ -240,7 +241,7 @@ function testWithdrawingAWrongExpectation() {
   const gate = new DevSelfUpdateGate();
   gate.requireActivation({ expectedCommit: NEW_COMMIT, expectedBuildId: NEW_BUILD, reason: 'typo' });
   assert.equal(gate.blocks('chatgpt.page.snapshot'), true);
-  const cleared = gate.requireActivation({ clear: true, reason: 'withdrew a wrong expectation' });
+  const cleared = gate.clearActivationExpectation('withdrew a wrong expectation');
   assert.equal(cleared.state, DEV_SELF_UPDATE_STATE.IDLE);
   assert.equal(cleared.reason, 'withdrew a wrong expectation');
   assert.equal(gate.blocks('chatgpt.page.snapshot'), false);
@@ -249,7 +250,7 @@ function testWithdrawingAWrongExpectation() {
 /* The stale parent build predates the dev.runtime.identity RPC method, so the
    engine must still be able to read and report the active identity. */
 async function testIdentityToolWorksWithoutParentSupport() {
-  const supervisor = new DevSupervisorV0({
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
     workerClient: { enabled: true, skillRun: async () => ({ ran: true }) },
     idFactory: (kind) => `${kind}-fallback`,
     now: () => '2026-08-18T00:00:00.000Z',
@@ -278,7 +279,7 @@ function createHarness({ client, decisions, onDecision }) {
   let sequence = 0;
   const prompts = [];
   const sessionKeys = [];
-  const supervisor = new DevSupervisorV0({
+  const supervisor = new DevSupervisorV0({ adminAuthProvider: new AllowAllAdminProvider(),
     workerClient: client,
     idFactory: (kind) => `${kind}-${++sequence}`,
     now: () => '2026-08-18T00:00:00.000Z',

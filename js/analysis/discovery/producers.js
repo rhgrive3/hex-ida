@@ -48,6 +48,20 @@ const VALIDATED_LOADER_SEED_SOURCES = new Set([
 ]);
 const EXPLICIT_EXACT_SEED_SOURCES = new Set(['symbol', 'ifunc-resolver']);
 
+// #8846: an authoritative start carries the same exactness threshold the start
+// itself uses; a body whose confidence is below it, or that the model flagged
+// as inferred / a `next-function-start` guess, must not inherit start authority.
+const EXACT_EXTENT_MIN_CONFIDENCE = 0.9;
+
+function extentIsInferred(start) {
+  if (start?.extentInferred === true) return true;
+  if (start?.extentSource === 'next-function-start') return true;
+  const confidence = start?.extentConfidence;
+  return typeof confidence === 'number'
+    && Number.isFinite(confidence)
+    && confidence < EXACT_EXTENT_MIN_CONFIDENCE;
+}
+
 function seedSources(start) {
   return new Set([
     start?.source,
@@ -124,6 +138,29 @@ export const loaderProducer = Object.freeze({
       const sources = seedSources(start);
       const sourceEvidenceIds = [...sources].sort().map((source) => `loader:source:${source}:${address}`);
       const region = extentRegion(start, address);
+      // #8846: keep the exact start authoritative, but do not let it carry an
+      // inferred body as hard region authority. A `next-function-start` /
+      // low-confidence / explicitly-inferred extent is published as a separate
+      // corroborating extent item so `fuseExtent` can only mint `exact` from a
+      // genuinely validated extent source (unwind/exception/etc.), never from
+      // the start alone.
+      if (region && extentIsInferred(start)) {
+        out.push(evidence('loader-function-start', {
+          start: address,
+          name: start.name ?? null,
+          regions: [],
+          confidence: start.confidence ?? null,
+          evidenceIds: [`loader:start:${address}`, ...sourceEvidenceIds],
+        }));
+        out.push(evidence('loader-function-extent', {
+          start: address,
+          regions: [region],
+          extentRole: 'complete',
+          confidence: start.extentConfidence ?? start.confidence ?? null,
+          evidenceIds: [`loader:extent:${address}:${start.extentSource ?? 'inferred'}`, ...sourceEvidenceIds],
+        }));
+        continue;
+      }
       out.push(evidence('loader-function-start', {
         start: address,
         name: start.name ?? null,
@@ -289,12 +326,65 @@ export const callGraphProducer = Object.freeze({
   },
 });
 
-/** Debug-provider symbols, already gated by identity at the provider boundary. */
+const DEBUG_EXACT_START_MIN_INSTRUCTION_BYTES = 4n;
+
+function debugFunctionStartBytes(input, sizeBytesRaw) {
+  const minimum = input?.minimumInstructionBytes;
+  let span = DEBUG_EXACT_START_MIN_INSTRUCTION_BYTES;
+  if (minimum !== undefined) {
+    if (!Number.isSafeInteger(minimum) || minimum < 1 || minimum > 64) return null;
+    span = BigInt(minimum);
+  }
+  let extent = 0n;
+  if (sizeBytesRaw != null) {
+    if (!Number.isSafeInteger(sizeBytesRaw) || sizeBytesRaw < 0) return null;
+    extent = BigInt(sizeBytesRaw);
+  }
+  return { span, extent };
+}
+
+/**
+ * A debug identity match proves which build a companion describes; it proves
+ * nothing about whether one claimed address denotes code in this binary. So
+ * `exact` debug evidence becomes an authoritative start only after the target
+ * image itself proves the claim: the *canonical* mapping owner for the address
+ * — the narrowest section/segment `resolveVirtualMapping` selects, not merely
+ * an enclosing segment — is executable, the ISA minimum instruction span is
+ * contiguous file-backed bytes (never a zero-fill tail), and a claimed extent
+ * is validated separately against the same executable file-backed run
+ * (#8833). A missing or unusable target is absence of proof, and absence of
+ * proof never mints authority.
+ */
+function debugFunctionStartIsProvableCode(input, startString, sizeBytesRaw) {
+  const image = input?.image;
+  if (!image || typeof image !== 'object' || Array.isArray(image)) return false;
+  if (typeof image.segmentAt !== 'function' || typeof image.resolveVirtualMapping !== 'function') return false;
+  const bytes = debugFunctionStartBytes(input, sizeBytesRaw);
+  if (bytes === null) return false;
+  const start = BigInt(startString);
+  const segment = image.segmentAt(start);
+  if (!segment || segment.perms?.execute !== true) return false;
+  const mapping = image.resolveVirtualMapping(start);
+  if (!mapping || mapping.kind !== 'file') return false;
+  if (mapping.mapping?.perms?.execute !== true) return false;
+  const available = mapping.available;
+  const required = bytes.span > bytes.extent ? bytes.span : bytes.extent;
+  if (typeof available !== 'bigint' || available < required) return false;
+  if (bytes.extent > 0n) {
+    const segmentEnd = BigInt(segment.address) + BigInt(segment.size);
+    if (start + bytes.extent > segmentEnd) return false;
+    if (image.segmentAt(start + bytes.extent - 1n) !== segment) return false;
+    const endMapping = image.resolveVirtualMapping(start + bytes.extent - 1n);
+    if (!endMapping || endMapping.kind !== 'file' || endMapping.mapping !== mapping.mapping) return false;
+  }
+  return true;
+}
+
 export function createDebugEvidenceProducer(debugEvidence) {
   return Object.freeze({
     id: 'discovery.debug',
     architectureId: null,
-    produce() {
+    produce(input) {
       // A debug record only validates its address as a non-empty string, so a
       // single malformed symbol must degrade to "no start / no region" and be
       // filtered like any other unusable row — it must never abort the whole
@@ -311,12 +401,17 @@ export function createDebugEvidenceProducer(debugEvidence) {
         }
         // `debugFunctionEvidence()` has already applied the provider identity
         // and partial-coverage gate. Only its canonical `exact` token may keep
-        // the authoritative debug-symbol kind; every other representation is
-        // a weak fact. Select the authority-bearing kind before canonical
-        // evidence construction so `String()` coercion cannot turn a boxed or
-        // structured value into an authority token (#4050).
+        // the authoritative debug-symbol kind, and only after the target image
+        // proves the claimed address is executable, file-backed code — an
+        // identity match on its own is not address authority (#4050, #8833).
+        // Every other representation is a weak fact. Select the authority-
+        // bearing kind before canonical evidence construction so `String()`
+        // coercion cannot turn a boxed or structured value into an authority
+        // token (#4050).
         const rawConfidence = item?.confidence;
-        const exact = rawConfidence === 'exact';
+        const exact = rawConfidence === 'exact'
+          && start != null
+          && debugFunctionStartIsProvableCode(input, start, item.sizeBytes ?? null);
         const confidence = typeof rawConfidence === 'string' ? rawConfidence : null;
         return evidence(exact ? 'debug-symbol' : 'debug-symbol-heuristic', {
           start,

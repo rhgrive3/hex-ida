@@ -13,14 +13,133 @@ const OBJC_PROTOCOL_LANE = 'fix/objc-protocol-class-properties-3979';
 const ANALYSIS_BATCH_LANE = 'fix/analysis-batch-20260907-l62';
 const INTEGRATION_BATCH_LANE = 'dev-agent-hardening/integration/issue-batch-20260909';
 const MAIN_GATE_BATCH_LANE = 'fix/main-gate-recovery-20260913';
+const CONSOLIDATED_OWNER3_LANE = 'consolidated-owner3';
 const ANALYSIS_QUERY_BATCH_LANE = 'fix/batch-4075-owner12';
 const ACTIONS_GROUP_LANE = 'dependabot/github_actions/github-actions-436ea2ae3a';
+const LANE13_BATCH02_LANE = 'codex/issue-campaign-20260914-lane-13-batch-02';
 
-// This is an exact, short-lived integration route for #6975. The PR carries a
-// Phase 7 production-path regression alongside the ABI/Phase 6 owner slice.
-// Foreign paths are enumerated so adding an unrelated file cannot silently
-// turn this into a general Phase 7 ownership exemption.
+// Exact foreign inventories for intentionally cross-owner Phase 7 integrations.
+// Each route fails closed on any undeclared foreign path before projecting the
+// Phase 7-owned subset into the canonical ownership validator.
 export const CROSS_LANE_ROUTES = Object.freeze({
+  // PR #8671: reviewed benchmark/auth union plus its ownership routing.
+  "integration-candidate/benchmark-auth-20260914": Object.freeze([
+    ".circleci/config.yml",
+    ".gitignore",
+    "benchmarks/public/README.md",
+    "docs/DISCORD_AUTH_IMPLEMENTATION_VERIFICATION.md",
+    "docs/DISCORD_AUTH_LOCAL_SETUP.md",
+    "docs/PUBLIC_COMPETITOR_BENCHMARK.md",
+    "docs/chatgpt-userscript.md",
+    "js/ai/dev/auth/admin-provider.js",
+    "js/ai/dev/policy/agent-profile.js",
+    "js/ai/dev/ui/engine-router.js",
+    "js/ai/dev/ui/settings.js",
+    "js/ai/ui/assistant.js",
+    "js/auth/admin-app.js",
+    "js/auth/assistant-host.js",
+    "js/auth/capabilities.js",
+    "js/auth/client.js",
+    "js/auth/extension-loader.js",
+    "js/auth/privileged/child-entry.js",
+    "js/auth/privileged/parent-entry.js",
+    "js/auth/rpc.js",
+    "js/auth/runtime-context.js",
+    "js/auth/runtime.js",
+    "js/auth/server/admin-site.js",
+    "js/auth/server/oauth.js",
+    "js/auth/server/primitives.js",
+    "js/auth/server/repository.js",
+    "js/auth/server/router.js",
+    "js/auth/transport.js",
+    "js/auth/userscript-login.js",
+    "js/userscript/dev/bootstrap-host.js",
+    "js/userscript/dev/parent-rpc.js",
+    "js/userscript/embed-child.js",
+    "js/userscript/entry.js",
+    "js/userscript/loader.js",
+    "js/userscript/protected-entry.js",
+    "migrations/auth/0001_auth.sql",
+    "scripts/auth-build-policy.mjs",
+    "scripts/build-userscript.mjs",
+    "scripts/deploy-production.mjs",
+    "scripts/userscript-publication.mjs",
+    "scripts/validate-auth-config.mjs",
+    "tests/ai-ui-dev-profile.mjs",
+    "tests/auth/browser-dom.mjs",
+    "tests/auth/browser.mjs",
+    "tests/auth/build-acceptance.mjs",
+    "tests/auth/build-policy.test.mjs",
+    "tests/auth/client.test.mjs",
+    "tests/auth/deploy-production.test.mjs",
+    "tests/auth/server.test.mjs",
+    "tests/auth/sqlite-d1.mjs",
+    "tests/auth/worker-entry-harness.mjs",
+    "tests/auth/worker-entry-routing.test.mjs",
+    "tests/dev-agent/issue-5154-human-blocking-true-only.mjs",
+    "tests/dev-agent/issue-5162-human-resume-per-conversation.mjs",
+    "tests/dev-agent/round1-foundation.mjs",
+    "tests/dev-agent/round2-single-tab-supervisor.mjs",
+    "tests/dev-agent/round4-bootstrap-gate.mjs",
+    "tests/dev-agent/supervisor-conversation-continuity.mjs",
+    "tests/dev-agent/supervisor-progress-budget.mjs",
+    "tests/dev-agent/supervisor-prompt-modes.mjs",
+    "tests/issue-4614-progress-budget-repeated-observation.mjs",
+    "tests/issue-4617-engine-router-descriptor-invariant.mjs",
+    "tests/issue-6200-dev-supervisor-wait-events.mjs",
+    "tests/issue-6210-progress-budget-concurrent-runs.mjs",
+    "tests/phase12/adversarial/issue-4599-dev-supervisor-wait-events.test.mjs",
+    "tests/phase9/integration/dev-supervisor-progress-window-6210.test.mjs",
+    "tests/public-benchmark/ida-parser.test.mjs",
+    "tests/public-benchmark/manifest.test.mjs",
+    "tests/public-benchmark/normalization.test.mjs",
+    "tests/public-benchmark/path-containment.test.mjs",
+    "tests/public-benchmark/prepare.test.mjs",
+    "tests/public-benchmark/product-cli.test.mjs",
+    "tests/public-benchmark/product-path.test.mjs",
+    "tests/public-benchmark/runner-hardening.test.mjs",
+    "tests/public-benchmark/smoke.test.mjs",
+    "tests/userscript-embed-child.mjs",
+    "tests/userscript-host.mjs",
+    "tests/userscript-publication.mjs",
+    "tools/validation/public-benchmark/compare.mjs",
+    "tools/validation/public-benchmark/ida-parser.mjs",
+    "tools/validation/public-benchmark/manifest.mjs",
+    "tools/validation/public-benchmark/metrics.mjs",
+    "tools/validation/public-benchmark/node-worker-entry.mjs",
+    "tools/validation/public-benchmark/node-worker.mjs",
+    "tools/validation/public-benchmark/normalize.mjs",
+    "tools/validation/public-benchmark/outcome.mjs",
+    "tools/validation/public-benchmark/prepare.mjs",
+    "tools/validation/public-benchmark/product-host.mjs",
+    "tools/validation/public-benchmark/report.mjs",
+    "tools/validation/public-benchmark/run-case.mjs",
+    "tools/validation/public-benchmark/run.mjs",
+    "tools/validation/public-benchmark/subject.mjs",
+    "worker-entry.js",
+    "wrangler.jsonc"
+  ]),
+  [CONSOLIDATED_OWNER3_LANE]: Object.freeze([
+    '.circleci/config.yml',
+    'js/dynamic/experiments.js',
+    'js/managed/shared/bridge-v2.js',
+    'js/managed/shared/bridge.js',
+    'tests/issue-4772-unknown-call-broad-read.mjs',
+    'tests/issue-6249-unknown-target-dedupe.mjs',
+    'tests/phase10/issue-4310-compile-experiment-input-coercion.test.mjs',
+    'tests/phase10/issue-4312-observed-offset-coercion.test.mjs',
+    'tests/phase10/issue-4313-compare-expected-bits-coercion.test.mjs',
+  ]),
+  [LANE13_BATCH02_LANE]: Object.freeze([
+    '.circleci/config.yml',
+    'js/phase12/package-envelope.js',
+    'js/query/causal.js',
+    'js/recognition/bounded-matching.js',
+    'js/recognition/match-budget.js',
+    'tests/phase10/recognition/issue-8914-matcher-candidate-admission.test.mjs',
+    'tests/phase12/provider/issue-8760-provider-output-admission-order.test.mjs',
+    'tools/validation/phase12/denominator-inventory.json',
+  ]),
   "codex/consolidate-arm64-repairs-20260913": Object.freeze([
     ".circleci/config.yml",
     ".github/workflows/_phase-release-validation.yml",
@@ -664,6 +783,18 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     "tests/phase8/abi/hex-c3-02-boundaries.test.mjs",
     "tests/phase8/ownership/cross-lane-routing.test.mjs",
     "tools/validation/phase8/cross-lane-inventory.mjs",
+  ]),
+  // PR #9006 (lane-02 batch-04) pairs the Phase 7 discovery producers.js fix
+  // (#8833) with test-only fixture synchronization for Phase 4 (#8813) and
+  // Phase 6 (#8719) owned files. Phase 7 validates only its owned subset;
+  // every foreign path is enumerated so this route cannot become a general
+  // Phase 7 ownership exemption.
+  "codex/issue-campaign-20260914-lane-02-batch-04": Object.freeze([
+    ".circleci/config.yml",
+    "tests/phase4/binary/issue-4358-elf-dynamic-xindex-common.test.mjs",
+    "tests/phase4/issue-3630-elf-dynamic-section-authority.test.mjs",
+    "tests/phase6/generic-core/issues-889-897.test.mjs",
+    "tests/phase6/generic-core/issues-907-909-910-913.test.mjs",
   ]),
 });
 

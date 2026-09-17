@@ -43,7 +43,7 @@ const METHODS = new Set(DEV_PARENT_RPC_METHODS);
 const MAX_DEPTH = 32;
 const REQUEST_ID = /^devrpc_[a-f0-9]{32}$/;
 
-export function createDevWorkerParentRpc({ port, runtime } = {}) {
+export function createDevWorkerParentRpc({ port, runtime, authorize = null } = {}) {
   if (!usablePort(port)) throw new TypeError('Dev Worker parent RPC requires a MessagePort.');
   if (!runtime || typeof runtime !== 'object') throw new TypeError('Dev Worker parent RPC requires a runtime.');
 
@@ -70,6 +70,8 @@ export function createDevWorkerParentRpc({ port, runtime } = {}) {
     const controller = new AbortController();
     active.set(message.id, controller);
     try {
+      if (authorize) await authorize();
+      if (closed || controller.signal.aborted) throw rpcError('auth-denied', 'Dev authorization revoked.');
       const result = await dispatch(
         runtime,
         message.method,
