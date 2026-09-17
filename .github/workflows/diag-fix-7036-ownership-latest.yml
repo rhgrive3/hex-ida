@@ -1,0 +1,63 @@
+name: diag-fix-7036-ownership-latest
+on:
+  push:
+    branches:
+      - fix/7036-ownership-latest-20260917
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch and validate ownership
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          STATUS=/tmp/fix7036-latest.txt
+          : > "$STATUS"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          timeout 90s git fetch --no-tags origin main >/tmp/fetch.log 2>&1
+          rc=$?; echo "fetch rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 40 /tmp/fetch.log >> "$STATUS"; exit $rc; }
+          python3 - <<'PY'
+          from pathlib import Path
+          specs = [
+            ('tools/validation/analysis-roadmap/ownership.mjs', "    '.github/workflows/x02-f47-ios-probe.yml',\n", "    '.github/workflows/x02-collector-fix.yml',\n"),
+            ('tools/validation/analysis-roadmap/ownership.json', '      ".github/workflows/x02-f47-ios-probe.yml",\n', '      ".github/workflows/x02-collector-fix.yml",\n'),
+          ]
+          for name, anchor, add in specs:
+              p=Path(name); s=p.read_text()
+              if add not in s:
+                  if anchor not in s: raise SystemExit(f'anchor missing: {name}')
+                  p.write_text(s.replace(anchor, anchor+add, 1))
+          PY
+          rc=$?; echo "patch rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || exit $rc
+          git rm .github/workflows/diag-fix-7036-ownership-latest.yml >/tmp/rm.log 2>&1
+          git add tools/validation/analysis-roadmap/ownership.mjs tools/validation/analysis-roadmap/ownership.json
+          git diff --cached --check >/tmp/diffcheck.log 2>&1
+          rc=$?; echo "diffcheck rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 40 /tmp/diffcheck.log >> "$STATUS"; exit $rc; }
+          git commit -m 'fix(analysis): register X-02 collector ownership' >/tmp/commit.log 2>&1
+          rc=$?; echo "commit rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 40 /tmp/commit.log >> "$STATUS"; exit $rc; }
+          CLEAN=$(git rev-parse HEAD); BASE=$(git rev-parse refs/remotes/origin/main); BR=feat/analysis-roadmap-v8-current-main-20260907
+          echo "clean=$CLEAN" >> "$STATUS"; echo "base=$BASE" >> "$STATUS"
+          runcheck() { label="$1"; shift; timeout 150s "$@" >/tmp/check.log 2>&1; rc=$?; echo "$label rc=$rc" >> "$STATUS"; if [ $rc -ne 0 ]; then tail -n 80 /tmp/check.log >> "$STATUS"; exit $rc; fi; }
+          runcheck p7_manifest node tools/validation/phase7-ownership.mjs --check-manifest
+          P7=$(timeout 150s node tools/validation/analysis-roadmap/ownership.mjs --branch "$BR" --phase phase7 --base-sha "$BASE" --head-sha "$CLEAN" 2>/tmp/check.log); rc=$?; echo "p7_inventory rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 80 /tmp/check.log >> "$STATUS"; exit $rc; }
+          runcheck p7_validate node tools/validation/phase7-ownership.mjs --files-json "$P7"
+          runcheck p8_manifest node tools/validation/phase8-ownership.mjs --check-manifest
+          P8=$(timeout 150s node tools/validation/analysis-roadmap/ownership.mjs --branch "$BR" --phase phase8 --base-sha "$BASE" --head-sha "$CLEAN" 2>/tmp/check.log); rc=$?; echo "p8_inventory rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 80 /tmp/check.log >> "$STATUS"; exit $rc; }
+          runcheck p8_validate node tools/validation/phase8-ownership.mjs --files-json "$P8"
+          git push origin HEAD:fix/7036-ownership-latest-20260917 >/tmp/push.log 2>&1
+          rc=$?; echo "push rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 40 /tmp/push.log >> "$STATUS"; exit $rc; }
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fix7036-latest
+          path: /tmp/fix7036-latest.txt
+          retention-days: 1
