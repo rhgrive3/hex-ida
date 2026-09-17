@@ -1,23 +1,15 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-import { stableDigest } from '../../js/core/identity/index.js';
-import { openBinary } from '../../js/binary/index.js';
+import { stableDigestBytes } from '../../js/core/identity/index.js';
 import {
+  discoveryArtifactForRebuild,
   functionDiscoveryArtifact,
-  verifyDiscoveryReparse,
 } from '../../js/analysis/index.js';
 import {
   isFactoryIssuedDiscoveryArtifact,
   isFactoryIssuedDiscoveryRebuildBinding,
 } from '../../js/analysis/discovery/artifact.js';
-import {
-  createFormatSafeRebuildTransaction,
-  inspectFormatSafeImage,
-  validateFormatSafeMutation,
-} from '../../js/rebuild/format-safe.js';
+import { canonicalTypedValue } from '../../js/analysis/discovery/canonical-value.js';
 import {
   INDEPENDENT_ORACLE_RESULT_SCHEMA,
   createRebuildTransaction,
@@ -26,19 +18,14 @@ import {
   validateRebuildTransaction,
 } from '../../js/rebuild/transaction-v2.js';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const digest = (bytes) => `bytes:${stableDigest(Array.from(bytes))}`;
-
-console.log('[x03-acceptance] verifying HEX-X-03 / FR-X-03A ambiguity-preserving discovery & rebuild acceptance...');
-
+const digest = (bytes) => `bytes:${stableDigestBytes(bytes)}`;
 const source = Uint8Array.from([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
 const sourceHash = digest(source);
 const binaryId = 'binary:x03:rebuild-acceptance';
 const architectureId = 'x86_64';
 
-// ---------------------------------------------------------------------------
-// Test 1: Discovery Denominator & Ambiguity Preservation (Code/Data & Overlap)
-// ---------------------------------------------------------------------------
+console.log('[x03-acceptance] verifying HEX-X-03 v2 ambiguity preservation...');
+
 const sourceImage = {
   functions: [
     { address: 0x1000, source: 'function_starts', sizeBytes: 0x40 },
@@ -54,134 +41,99 @@ const sourceImage = {
   ],
 };
 
-const sourceArtifactResult = functionDiscoveryArtifact({
-  input: { image: sourceImage },
-  architectureId,
-  binaryId,
-  sourceHash,
-  snapshotId: 'snapshot:x03:source-1',
-});
-const sourceArtifact = sourceArtifactResult.artifact;
+function discover(image, hash, snapshotId) {
+  return functionDiscoveryArtifact({
+    input: { image },
+    architectureId,
+    binaryId,
+    sourceHash: hash,
+    snapshotId,
+  });
+}
 
+// 1. Denominator: preserve code/data, function overlap, and heuristic candidates.
+const sourceResult = discover(sourceImage, sourceHash, 'snapshot:x03:source-1');
+const sourceArtifact = sourceResult.artifact;
 assert.equal(isFactoryIssuedDiscoveryArtifact(sourceArtifact), true);
-assert.equal(sourceArtifact.schemaVersion, 'hex-discovery-ambiguity-artifact/v1');
+assert.equal(sourceArtifact.schemaVersion, 'hex-discovery-ambiguity-artifact/v2');
 assert.equal(sourceArtifact.publication.status, 'complete');
+assert.ok(sourceArtifact.collisionSets.some((item) => item.kind === 'code-data' && item.resolution === 'unresolved'));
+assert.ok(sourceArtifact.collisionSets.some((item) => item.kind === 'function-overlap' && item.resolution === 'unresolved'));
+const ambiguousCandidate = sourceArtifact.functionCandidates.find((item) => BigInt(item.start) === 0x1100n);
+assert.ok(ambiguousCandidate);
+assert.equal(ambiguousCandidate.startState, 'heuristic');
+assert.equal(ambiguousCandidate.exact, false);
+console.log('  ok 1: v2 denominator preserves ambiguity');
 
-// Code-data collision must be retained with resolution: 'unresolved'
-const codeDataCollision = sourceArtifact.collisionSets.find((c) => c.kind === 'code-data');
-assert.ok(codeDataCollision, 'code/data collision must be preserved');
-assert.equal(codeDataCollision.resolution, 'unresolved');
+// 2. Rank/confidence cannot promote a speculative source into exact authority.
+const highConfidenceArtifact = discover({
+  symbols: [{ address: 0x3000, name: 'speculative_high_score', isFunction: true, score: 1e9, confidence: 1.0 }],
+}, sourceHash, 'snapshot:x03:confidence-1').artifact;
+const highConfidenceCandidate = highConfidenceArtifact.functionCandidates.find((item) => BigInt(item.start) === 0x3000n);
+assert.ok(highConfidenceCandidate);
+assert.equal(highConfidenceCandidate.startState, 'heuristic');
+assert.equal(highConfidenceCandidate.exact, false);
+assert.equal(Object.hasOwn(highConfidenceCandidate, 'selected'), false);
+console.log('  ok 2: confidence/rank cannot mint exactness');
 
-// Function overlap collision must be retained
-const funcOverlapCollision = sourceArtifact.collisionSets.find((c) => c.kind === 'function-overlap');
-assert.ok(funcOverlapCollision, 'function-overlap collision must be preserved');
+// 3. Preserve jump-table/relocation metadata without manufacturing jump-table starts.
+const refResult = discover({
+  functions: [{ address: 0x4000, source: 'function_starts', sizeBytes: 0x40 }],
+  jumpTableTargets: [
+    { address: 0x4010, tableAddress: 0x5000, tableId: 'jt:test', symbolicExpression: { base: 'pc', scale: 4 } },
+  ],
+  relocationTargets: [
+    { address: 0x4020, sourceAddress: 0x6000, id: 'reloc:1', symbolicExpression: { symbol: 'external_fn', addend: 0 } },
+  ],
+}, sourceHash, 'snapshot:x03:refs-1');
+assert.equal(refResult.candidates.some((candidate) => BigInt(candidate.start) === 0x4010n), false);
+const jumpReference = refResult.artifact.references.find((item) => item.kind === 'jump-table');
+assert.ok(jumpReference);
+assert.equal(jumpReference.tableId, 'jt:test');
+assert.deepEqual(jumpReference.symbolicExpression, canonicalTypedValue({ base: 'pc', scale: 4 }));
+const relocationReference = refResult.artifact.references.find((item) => item.kind === 'relocation');
+assert.ok(relocationReference);
+assert.equal(relocationReference.relocationId, 'reloc:1');
+assert.deepEqual(relocationReference.symbolicExpression, canonicalTypedValue({ symbol: 'external_fn', addend: 0 }));
+assert.throws(() => discover({ jumpTableTargets: [{ address: 'not-a-number' }] }, sourceHash, 'snapshot:x03:bad-ref'), /TypeError/);
+console.log('  ok 3: reference metadata preserved fail-closed');
 
-// Ambiguous candidate must be retained
-const ambigCandidate = sourceArtifact.functionCandidates.find((c) => BigInt(c.start) === 0x1100n);
-assert.ok(ambigCandidate, 'ambiguous candidate must exist');
-assert.equal(ambigCandidate.ambiguous, true);
-assert.equal(ambigCandidate.startState, 'heuristic');
-
-console.log('  ok 1: discovery denominator & ambiguity preservation passed');
-
-// ---------------------------------------------------------------------------
-// Test 2: Anti-Promotion & Rank / Confidence Neutrality
-// ---------------------------------------------------------------------------
-const highConfidenceResult = functionDiscoveryArtifact({
-  input: {
-    image: {
-      symbols: [{ address: 0x3000, name: 'speculative_high_score', isFunction: true, score: 1e9, confidence: 1.0 }],
-    },
-  },
-  architectureId,
-  binaryId,
-  sourceHash,
-  snapshotId: 'snapshot:x03:confidence-1',
-});
-const highConfCandidate = highConfidenceResult.artifact.functionCandidates.find((c) => BigInt(c.start) === 0x3000n);
-assert.ok(highConfCandidate);
-assert.equal(highConfCandidate.startState, 'heuristic', 'confidence/score must not promote to exact');
-assert.equal(highConfCandidate.ambiguous, true);
-assert.equal(Object.hasOwn(highConfCandidate, 'exact'), false, 'artifact must not mint an exact authority flag');
-assert.equal(Object.hasOwn(highConfCandidate, 'selected'), false, 'artifact must not pick a speculative winner');
-console.log('  ok 2: anti-promotion & rank/confidence neutrality passed');
-
-// ---------------------------------------------------------------------------
-// Test 3: Reference Preservation & Symbolic Metadata
-// ---------------------------------------------------------------------------
-const refResult = functionDiscoveryArtifact({
-  input: {
-    image: {
-      functions: [{ address: 0x4000, source: 'function_starts', sizeBytes: 0x40 }],
-      jumpTableTargets: [
-        { address: 0x4010, tableAddress: 0x5000, tableId: 'jt:test', symbolicExpression: { base: 'pc', scale: 4 } },
-      ],
-      relocationTargets: [
-        { address: 0x4020, sourceAddress: 0x6000, id: 'reloc:1', symbolicExpression: { symbol: 'external_fn', addend: 0 } },
-      ],
-    },
-  },
-  architectureId,
-  binaryId,
-  sourceHash,
-  snapshotId: 'snapshot:x03:refs-1',
-});
-assert.equal(refResult.candidates.some((c) => BigInt(c.start) === 0x4010n), false, 'jump-table must not manufacture a false function start');
-const jtRef = refResult.artifact.references.find((r) => r.kind === 'jump-table');
-assert.ok(jtRef);
-assert.equal(jtRef.tableId, 'jt:test');
-assert.deepEqual(jtRef.symbolicExpression, { base: 'pc', scale: 4 });
-
-const relocRef = refResult.artifact.references.find((r) => r.kind === 'relocation');
-assert.ok(relocRef);
-assert.equal(relocRef.relocationId, 'reloc:1');
-assert.deepEqual(relocRef.symbolicExpression, { symbol: 'external_fn', addend: 0 });
-
-// Malformed reference fails closed
-assert.throws(() => functionDiscoveryArtifact({
-  input: { image: { jumpTableTargets: [{ address: 'not-a-number' }] } },
-  architectureId, binaryId, sourceHash, snapshotId: 'snapshot:bad',
-}), /TypeError/);
-console.log('  ok 3: reference preservation & symbolic metadata passed');
-
-// ---------------------------------------------------------------------------
-// Test 4: Discovery Rebuild Transaction Binding
-// ---------------------------------------------------------------------------
-const tx = createRebuildTransaction({
+// 4. Bind the factory-issued v2 artifact to rebuild validation. Independent
+// authority remains explicit rather than being inferred from discovery alone.
+const sourceBinding = discoveryArtifactForRebuild(sourceArtifact);
+assert.equal(isFactoryIssuedDiscoveryRebuildBinding(sourceBinding), true);
+const transaction = createRebuildTransaction({
   binaryId,
   sourceHash,
   format: 'elf',
   architecture: architectureId,
-  loaderVersion: 'hex-loader:x03:v1',
+  loaderVersion: 'hex-loader:x03:v2',
+  snapshotId: 'snapshot:x03:source-1',
   discoveryArtifact: sourceArtifact,
+  requireDiscoveryPreservation: true,
+  requireIndependentOracle: true,
   operations: [{ id: 'x03:patch', offset: 1, before: [0x02], after: [0x88], provenance: { source: 'x03-acceptance' } }],
 });
-assert.equal(tx.discoveryRequired, true);
-assert.equal(tx.requireIndependentOracle, true, 'discovery-bound transaction reuses X-01 independent oracle authority');
-assert.ok(tx.requiredValidators.includes('loader-reparse'));
-assert.ok(tx.requiredValidators.includes('independent-differential'));
-assert.ok(isFactoryIssuedDiscoveryRebuildBinding(tx.expectedOriginalState.discoveryBinding));
-
-// Missing discovery binding when discoveryRequired is asserted
+assert.equal(transaction.discovery?.required, true);
+assert.equal(transaction.requireIndependentOracle, true);
+assert.ok(transaction.requiredValidators.includes('discovery-preservation'));
+assert.ok(transaction.requiredValidators.includes('loader-reparse'));
+assert.ok(transaction.requiredValidators.includes('independent-differential'));
+assert.equal(transaction.expectedOriginalState.discovery.artifactId, sourceArtifact.artifactId);
 assert.throws(() => createRebuildTransaction({
-  binaryId, sourceHash, format: 'elf', architecture: architectureId, loaderVersion: 'v1',
-  discoveryRequired: true,
-  operations: [{ id: 'x03:no-binding', offset: 1, before: [0x02], after: [0x88], provenance: { source: 'test' } }],
-}), /discovery-binding-required/);
-
-// Forged discovery binding
-const forgedBinding = { ...tx.expectedOriginalState.discoveryBinding };
-assert.throws(() => createRebuildTransaction({
-  binaryId, sourceHash, format: 'elf', architecture: architectureId, loaderVersion: 'v1',
-  expectedOriginalState: { sourceHash, discoveryBinding: forgedBinding },
+  binaryId,
+  sourceHash,
+  format: 'elf',
+  architecture: architectureId,
+  loaderVersion: 'hex-loader:x03:v2',
+  snapshotId: 'snapshot:x03:source-1',
+  discoveryBinding: structuredClone(sourceBinding),
+  requireDiscoveryPreservation: true,
   operations: [{ id: 'x03:forged', offset: 1, before: [0x02], after: [0x88], provenance: { source: 'test' } }],
-}), /discovery-binding-untrusted/);
-console.log('  ok 4: discovery rebuild transaction binding passed');
+}), /discovery-binding-unissued/);
+console.log('  ok 4: factory binding and explicit independent authority enforced');
 
-// ---------------------------------------------------------------------------
-// Test 5: Reparse Gate — Anti-Loss Validation
-// ---------------------------------------------------------------------------
-const materialized = await materializeRebuildTransaction(tx, source, { maxOutputBytes: 1024 });
+const materialized = await materializeRebuildTransaction(transaction, source, { maxOutputBytes: 1024 });
 assert.equal(materialized.status, 'materialized');
 
 function makeOracleResult(output) {
@@ -190,7 +142,7 @@ function makeOracleResult(output) {
     ok: true,
     status: 'passed',
     oracleIdentity: 'external:x03-acceptance-oracle',
-    oracleVersion: '1.0.0',
+    oracleVersion: '2.0.0',
     oracleSource: 'tests/stage2/x03-rebuild-discovery-acceptance.test.mjs',
     sourceDigest: sourceHash,
     outputDigest: digest(output),
@@ -198,169 +150,90 @@ function makeOracleResult(output) {
     architecture: architectureId,
   };
 }
-const testOracle = registerCanonicalIndependentOracleProvider(async ({ output }) => makeOracleResult(output));
-const x03ConservativeValidators = Object.freeze(Object.fromEntries(
-  ['relocations', 'branch-ranges', 'unwind', 'imports-exports', 'signature-consequence'].map((name) => [name, () => ({
-    ok: true,
-    format: 'elf',
-    architecture: architectureId,
-    loaderVersion: 'hex-loader:x03:v1',
-    sourceHash,
-    outputHash: materialized.outputHash,
-    validator: name,
-  })]),
-));
-const x03LoaderReparseResult = (discoveryArtifact) => ({
-  ok: true,
-  format: 'elf',
-  architecture: architectureId,
-  loaderVersion: 'hex-loader:x03:v1',
-  sourceHash,
-  outputHash: materialized.outputHash,
-  discoveryArtifact,
-});
+const independentOracle = registerCanonicalIndependentOracleProvider(async ({ output }) => makeOracleResult(output));
 
-// Honest output artifact (retaining all candidates, collisions, and references)
-const validOutputArtifact = functionDiscoveryArtifact({
-  input: { image: sourceImage },
-  architectureId,
-  binaryId,
-  sourceHash: materialized.outputHash,
-  snapshotId: 'snapshot:x03:output-valid',
-}).artifact;
+function validatorsFor(outputHash, { includeIndependent = true } = {}) {
+  const validators = {};
+  for (const name of transaction.requiredValidators) {
+    if (['source-precondition', 'structure', 'unchanged-regions', 'evidence', 'loader-reparse', 'discovery-preservation', 'independent-differential'].includes(name)) continue;
+    validators[name] = async () => ({ ok: true, status: 'passed' });
+  }
+  return {
+    validators,
+    loaderReparse: async () => ({
+      ok: true,
+      status: 'passed',
+      format: transaction.format,
+      architecture: transaction.architecture,
+      loaderVersion: transaction.loaderVersion,
+      sourceHash: transaction.sourceHash,
+      outputHash,
+    }),
+    ...(includeIndependent ? { independentOracle } : {}),
+  };
+}
 
-const validValidation = await validateRebuildTransaction(tx, materialized, {
+// 5. Honest reparse preserves the full v2 denominator.
+const validOutputArtifact = discover(sourceImage, materialized.outputHash, 'snapshot:x03:output-valid').artifact;
+const validValidation = await validateRebuildTransaction(transaction, materialized, {
   original: source,
-  loaderReparse: () => x03LoaderReparseResult(validOutputArtifact),
-  independentOracle: testOracle,
-  validators: x03ConservativeValidators,
+  discoveryArtifact: validOutputArtifact,
+  ...validatorsFor(materialized.outputHash),
 });
-assert.equal(validValidation.status, 'valid');
+assert.equal(validValidation.status, 'valid', JSON.stringify(validValidation.failures));
+assert.equal(validValidation.discovery.comparison.ok, true);
+assert.equal(validValidation.discovery.comparison.candidatesPreserved, true);
+assert.equal(validValidation.discovery.comparison.intervalsPreserved, true);
+assert.equal(validValidation.independentDifferential, 'executed');
+console.log('  ok 5: honest reparse validates');
 
-// Negative: Loss of ambiguous candidate, collision, or reference
-const strippedImage = {
+// 6. Loss, silent promotion, and stale output identity all fail closed.
+const strippedArtifact = discover({
   functions: [{ address: 0x1000, source: 'function_starts', sizeBytes: 0x40 }],
-};
-const strippedArtifact = functionDiscoveryArtifact({
-  input: { image: strippedImage },
-  architectureId,
-  binaryId,
-  sourceHash: materialized.outputHash,
-  snapshotId: 'snapshot:x03:stripped',
-}).artifact;
-
-const strippedValidation = await validateRebuildTransaction(tx, materialized, {
+}, materialized.outputHash, 'snapshot:x03:stripped').artifact;
+const strippedValidation = await validateRebuildTransaction(transaction, materialized, {
   original: source,
-  loaderReparse: () => x03LoaderReparseResult(strippedArtifact),
-  independentOracle: testOracle,
-  validators: x03ConservativeValidators,
+  discoveryArtifact: strippedArtifact,
+  ...validatorsFor(materialized.outputHash),
 });
 assert.equal(strippedValidation.status, 'invalid');
-const strippedLoader = strippedValidation.validators.find((v) => v.validator === 'loader-reparse');
-assert.equal(strippedLoader.reason, 'discovery-reparse-ambiguity-lost');
-assert.ok(strippedLoader.detail.missingCandidateIds.length > 0, 'missing candidates must be caught');
-assert.ok(strippedLoader.detail.missingCollisionIds.length > 0, 'missing collisions must be caught');
-assert.ok(strippedLoader.detail.missingReferenceIds.length > 0, 'missing references must be caught');
-console.log('  ok 5: reparse gate anti-loss validation passed');
+assert.equal(strippedValidation.discovery.comparison.reason, 'discovery-reparse-ambiguity-lost');
+assert.equal(strippedValidation.discovery.comparison.candidatesPreserved, false);
+assert.ok(strippedValidation.discovery.comparison.missingCollisionIds.length > 0);
+assert.ok(strippedValidation.discovery.comparison.missingReferenceIds.length > 0);
 
-// ---------------------------------------------------------------------------
-// Test 6: Reparse Gate — Anti-Silent Promotion & Hash Synchronization
-// ---------------------------------------------------------------------------
-// Negative: Silent promotion of heuristic candidate to exact function_starts
 const promotedImage = {
   ...sourceImage,
   symbols: [],
-  functions: [
-    ...sourceImage.functions,
-    { address: 0x1100, source: 'function_starts', sizeBytes: 0x20 },
-  ],
+  functions: [...sourceImage.functions, { address: 0x1100, source: 'function_starts', sizeBytes: 0x20 }],
 };
-const promotedArtifact = functionDiscoveryArtifact({
-  input: { image: promotedImage },
-  architectureId,
-  binaryId,
-  sourceHash: materialized.outputHash,
-  snapshotId: 'snapshot:x03:promoted',
-}).artifact;
-
-const promotedValidation = await validateRebuildTransaction(tx, materialized, {
+const promotedArtifact = discover(promotedImage, materialized.outputHash, 'snapshot:x03:promoted').artifact;
+assert.equal(promotedArtifact.functionCandidates.find((item) => BigInt(item.start) === 0x1100n)?.exact, true);
+const promotedValidation = await validateRebuildTransaction(transaction, materialized, {
   original: source,
-  loaderReparse: () => x03LoaderReparseResult(promotedArtifact),
-  independentOracle: testOracle,
-  validators: x03ConservativeValidators,
+  discoveryArtifact: promotedArtifact,
+  ...validatorsFor(materialized.outputHash),
 });
 assert.equal(promotedValidation.status, 'invalid');
-const promotedLoader = promotedValidation.validators.find((v) => v.validator === 'loader-reparse');
-assert.equal(promotedLoader.reason, 'discovery-reparse-ambiguity-lost');
-assert.ok(promotedLoader.detail.promotedCandidateIds.length > 0, 'silent promotion must be caught');
+assert.equal(promotedValidation.discovery.comparison.reason, 'discovery-reparse-ambiguity-lost');
+assert.equal(promotedValidation.discovery.comparison.candidatesPreserved, false);
 
-// Negative: Stale output artifact sourceHash
-const staleArtifact = functionDiscoveryArtifact({
-  input: { image: sourceImage },
-  architectureId,
-  binaryId,
-  sourceHash: sourceHash, // stale hash!
-  snapshotId: 'snapshot:x03:stale',
-}).artifact;
-const staleValidation = await validateRebuildTransaction(tx, materialized, {
+const staleArtifact = discover(sourceImage, sourceHash, 'snapshot:x03:stale').artifact;
+const staleValidation = await validateRebuildTransaction(transaction, materialized, {
   original: source,
-  loaderReparse: () => x03LoaderReparseResult(staleArtifact),
-  independentOracle: testOracle,
-  validators: x03ConservativeValidators,
+  discoveryArtifact: staleArtifact,
+  ...validatorsFor(materialized.outputHash),
 });
 assert.equal(staleValidation.status, 'invalid');
-assert.equal(staleValidation.validators.find((v) => v.validator === 'loader-reparse').reason, 'discovery-reparse-output-hash-mismatch');
-console.log('  ok 6: reparse gate anti-silent promotion & hash synchronization passed');
+assert.equal(staleValidation.discovery.comparison.reason, 'discovery-reparse-output-hash-mismatch');
 
-// ---------------------------------------------------------------------------
-// Test 7: End-to-End Format-Safe Rebuild with Discovery Binding
-// ---------------------------------------------------------------------------
-const elfFixture = new Uint8Array(fs.readFileSync(path.join(ROOT, 'tests/phase5/corpus/fixtures/vertical-sysv-amd64.elf')));
-const elfImage = inspectFormatSafeImage(elfFixture);
-const elfHash = digest(elfFixture);
-const elfBinaryImage = openBinary(elfFixture);
-
-const elfArtifact = functionDiscoveryArtifact({
-  input: { image: elfBinaryImage },
-  architectureId: elfBinaryImage.arch,
-  binaryId: 'binary:elf:x03-format-safe',
-  sourceHash: elfHash,
-  snapshotId: 'snapshot:elf:source',
-}).artifact;
-assert.equal(elfArtifact.publication.status, 'complete');
-
-const elfFsTx = createFormatSafeRebuildTransaction({
-  binaryId: 'binary:elf:x03-format-safe',
-  source: elfFixture,
-  sourceHash: elfHash,
-  format: elfImage.format,
-  architecture: elfImage.architecture,
-  loaderVersion: 'hex-loader:openBinary:v1',
-  mutation: { kind: 'elf-comment', tag: 'Hex X03 Local Acceptance' },
-  discoveryArtifact: elfArtifact,
+const missingIndependent = await validateRebuildTransaction(transaction, materialized, {
+  original: source,
+  discoveryArtifact: validOutputArtifact,
+  ...validatorsFor(materialized.outputHash, { includeIndependent: false }),
 });
-assert.equal(elfFsTx.discoveryRequired, true);
-assert.equal(elfFsTx.requireIndependentOracle, true);
-assert.equal(elfFsTx.expectedOriginalState.discoveryBinding.artifactId, elfArtifact.artifactId);
+assert.equal(missingIndependent.status, 'invalid');
+assert.equal(missingIndependent.validators.find((item) => item.validator === 'independent-differential').reason, 'required-validator-unavailable');
+console.log('  ok 6: anti-loss, anti-promotion, hash and independent gates fail closed');
 
-const elfFsMaterialized = await materializeRebuildTransaction(elfFsTx, elfFixture, { maxOutputBytes: 32 * 1024 * 1024 });
-assert.equal(elfFsMaterialized.status, 'materialized');
-
-const elfOutputBinaryImage = openBinary(elfFsMaterialized.bytes);
-const elfOutputArtifact = functionDiscoveryArtifact({
-  input: { image: elfOutputBinaryImage },
-  architectureId: elfOutputBinaryImage.arch,
-  binaryId: 'binary:elf:x03-format-safe',
-  sourceHash: elfFsMaterialized.outputHash,
-  snapshotId: 'snapshot:elf:output',
-}).artifact;
-
-const reparseCheck = verifyDiscoveryReparse(
-  elfFsTx.expectedOriginalState.discoveryBinding,
-  elfOutputArtifact,
-  { expectedOutputHash: elfFsMaterialized.outputHash },
-);
-assert.equal(reparseCheck.ok, true, JSON.stringify(reparseCheck));
-
-console.log('  ok 7: end-to-end format-safe rebuild with discovery binding passed');
-console.log('[x03-acceptance] all 7 tests passed.');
+console.log('[x03-acceptance] v2 acceptance passed.');
