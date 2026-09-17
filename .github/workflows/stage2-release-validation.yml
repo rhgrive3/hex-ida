@@ -74,6 +74,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang-18 lld-18 llvm-18 lldb-18 qemu-user
+      - name: Verify MachineEffects native and historical prerequisites
+        id: machine_effects_prereqs
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: node tools/validation/machine-effects/prerequisites.mjs
       - name: Install exact PR head dependencies
         id: head_install
         if: ${{ !cancelled() }}
@@ -135,6 +140,7 @@ jobs:
           HEAD_CHECKOUT: ${{ steps.head_checkout.outcome }}
           NODE_SETUP: ${{ steps.node_setup.outcome }}
           PROVIDERS: ${{ steps.providers.outcome }}
+          MACHINE_EFFECTS_PREREQS: ${{ steps.machine_effects_prereqs.outcome }}
           HEAD_INSTALL: ${{ steps.head_install.outcome }}
           HEAD_IDENTITY: ${{ steps.head_identity.outcome }}
           HEAD_VERIFY: ${{ steps.head_verify.outcome }}
@@ -145,7 +151,7 @@ jobs:
         run: |
           set -euo pipefail
           failed=0
-          for name in HEAD_CHECKOUT NODE_SETUP PROVIDERS HEAD_INSTALL HEAD_IDENTITY HEAD_VERIFY MERGE_CHECKOUT MERGE_IDENTITY MERGE_INSTALL MERGE_VERIFY; do
+          for name in HEAD_CHECKOUT NODE_SETUP PROVIDERS MACHINE_EFFECTS_PREREQS HEAD_INSTALL HEAD_IDENTITY HEAD_VERIFY MERGE_CHECKOUT MERGE_IDENTITY MERGE_INSTALL MERGE_VERIFY; do
             outcome="${!name}"
             if [[ "$outcome" != "success" ]]; then
               echo "$name=$outcome" >&2
@@ -171,6 +177,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang-18 lld-18 llvm-18 lldb-18 qemu-user
+      - name: Verify MachineEffects native and historical prerequisites
+        run: node tools/validation/machine-effects/prerequisites.mjs
       - run: npm ci --no-audit --no-fund
       - name: Verify exact Stage 2 product
         shell: bash
