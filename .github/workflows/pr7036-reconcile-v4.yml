@@ -1,0 +1,37 @@
+name: PR7036 current-main conflict inventory v4
+on:
+  push:
+    branches: [sync/pr7036-main-20260918-v4]
+jobs:
+  inventory:
+    if: contains(github.event.head_commit.message, 'inventory PR7036 current-main conflicts v4')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 900
+      - name: Inventory conflicts only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=900 origin f5ee21b23fb85ebeeb19115b8c9c9365cfbd2dcf >/dev/null 2>&1
+          set +e
+          git merge --no-commit --no-ff FETCH_HEAD >/dev/null 2>&1
+          rc=$?
+          set -e
+          git diff --name-only --diff-filter=U | sed '/^$/d' | sort > /tmp/conflicts.txt
+          {
+            echo "head=$(git rev-parse HEAD)"
+            echo "main=$(git rev-parse FETCH_HEAD)"
+            echo "merge_rc=$rc"
+            echo "conflict_count=$(wc -l < /tmp/conflicts.txt | tr -d ' ')"
+            cat /tmp/conflicts.txt
+          } > pr7036-current-main-conflicts-v4.txt
+          git merge --abort || true
+      - name: Upload inventory
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr7036-current-main-conflicts-v4
+          path: pr7036-current-main-conflicts-v4.txt
+          retention-days: 2
