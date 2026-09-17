@@ -75,6 +75,56 @@ try {
 
   {
     const { directory, entries } = await fixture();
+    const io = { ...fs, async open(file, flags) {
+      const handle = await fs.open(file, flags);
+      if (!file.endsWith('.userscript-publication.lock')) return handle;
+      return {
+        writeFile:(...args) => handle.writeFile(...args),
+        sync:(...args) => handle.sync(...args),
+        async close() { await handle.close(); throw new Error('injected-lock-close-failure'); },
+      };
+    } };
+    await assert.rejects(publishUserscriptFiles(entries, { io }), /injected-lock-close-failure/);
+    for (const entry of entries) assert.equal(await fs.readFile(entry.path, 'utf8'), entry.content);
+    await cleanDirectory(directory);
+
+    const nextEntries = entries.map(entry => ({ ...entry, expected:Buffer.from(entry.content), content:`next ${path.basename(entry.path)}` }));
+    await publishUserscriptFiles(nextEntries);
+    for (const entry of nextEntries) assert.equal(await fs.readFile(entry.path, 'utf8'), entry.content);
+    await cleanDirectory(directory);
+  }
+
+  {
+    const { directory, entries } = await fixture();
+    const lockPath = path.join(directory, '.userscript-publication.lock');
+    const io = { ...fs,
+      async open(file, flags) {
+        const handle = await fs.open(file, flags);
+        if (file !== lockPath) return handle;
+        return {
+          writeFile:(...args) => handle.writeFile(...args),
+          sync:(...args) => handle.sync(...args),
+          async close() { await handle.close(); throw new Error('injected-lock-close-failure'); },
+        };
+      },
+      async unlink(file) {
+        if (file === lockPath) throw new Error('injected-lock-unlink-failure');
+        return fs.unlink(file);
+      },
+    };
+    await assert.rejects(publishUserscriptFiles(entries, { io }), error => {
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.errors.length, 2);
+      assert.match(String(error.errors[0]), /lock-close-failure/);
+      assert.match(String(error.errors[1]), /lock-unlink-failure/);
+      return true;
+    });
+    await fs.unlink(lockPath);
+    await cleanDirectory(directory);
+  }
+
+  {
+    const { directory, entries } = await fixture();
     const stale = entries.map(entry => ({ ...entry, expected:Buffer.from('not the original') }));
     await assert.rejects(publishUserscriptFiles(stale), /stale-input/);
     await originalPair(entries); await cleanDirectory(directory);
