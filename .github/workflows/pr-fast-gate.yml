@@ -46,6 +46,8 @@ jobs:
         run: npm run core:test
       - name: CI development-mode contract
         run: node tests/ci-development-mode.mjs
+      - name: MachineEffects prerequisite contract
+        run: node tests/ci/issue-8299-machine-effects-prerequisites.test.mjs
 
       - name: Final-head admission unit contract
         run: |
