@@ -1,4 +1,4 @@
-name: PR7036 live main T016 focused v4b
+name: PR7036 live main T016 focused v4c
 on:
   push:
     branches:
@@ -15,24 +15,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          : > /tmp/status.txt
           git fetch --no-tags --depth=500 origin fce9076a8c396953146152435a61bb0d4897261d >/dev/null 2>&1
           set +e
           git merge --no-commit --no-ff FETCH_HEAD >/dev/null 2>&1
-          echo $? > /tmp/merge-rc.txt
+          rc=$?
           set -e
+          echo "merge_rc=$rc" >> /tmp/status.txt
           git diff --name-only --diff-filter=U | sed '/^$/d' | sort > /tmp/conflicts.txt
-          test "$(wc -l < /tmp/conflicts.txt | tr -d ' ')" = 5
-          for f in js/analysis/discovery/artifact.js js/analysis/discovery/producers.js js/analysis/index.js js/rebuild/transaction-v2.js tests/issue-4135-pe-section-virtual-layout.mjs; do
-            grep -Fx "$f" /tmp/conflicts.txt >/dev/null
-            git checkout --theirs -- "$f"
-            git add -- "$f"
-          done
-          test -z "$(git diff --name-only --diff-filter=U)"
+          echo "conflict_count=$(wc -l < /tmp/conflicts.txt | tr -d ' ')" >> /tmp/status.txt
+          sed 's/^/conflict /' /tmp/conflicts.txt >> /tmp/status.txt
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            if git checkout --theirs -- "$f" && git add -- "$f"; then
+              echo "resolved-main $f" >> /tmp/status.txt
+            else
+              echo "resolve-fail $f" >> /tmp/status.txt
+              exit 1
+            fi
+          done < /tmp/conflicts.txt
+          unresolved=$(git diff --name-only --diff-filter=U | sed '/^$/d' | wc -l | tr -d ' ')
+          echo "unresolved=$unresolved" >> /tmp/status.txt
+          test "$unresolved" = 0
       - name: Focused tests
         shell: bash
         run: |
           set -euo pipefail
-          : > /tmp/status.txt
           for f in js/analysis/discovery/artifact.js js/analysis/discovery/producers.js js/analysis/index.js js/rebuild/transaction-v2.js; do
             node --check "$f" >/tmp/one.txt 2>&1 || { echo "syntax FAIL $f" >> /tmp/status.txt; tail -n 20 /tmp/one.txt >> /tmp/status.txt; exit 1; }
             echo "syntax PASS $f" >> /tmp/status.txt
