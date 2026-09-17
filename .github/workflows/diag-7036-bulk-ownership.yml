@@ -1,4 +1,4 @@
-name: diag-7036-main-merge
+name: diag-7036-main-side-resolution
 on:
   push:
     branches:
@@ -8,26 +8,25 @@ permissions:
 jobs:
   reconcile:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Reconcile #7036 with current main
+      - name: Resolve conflicts to current main and run focused proofs
         shell: bash
         run: |
           set +e
           set -uo pipefail
-          STATUS=/tmp/diag-7036-merge.txt
+          STATUS=/tmp/diag-7036-resolve.txt
           : > "$STATUS"
           HEAD_SHA=f8c8e281d940ab9d5f1b20d15398095f64cb50f7
+          LOGICAL_BRANCH=feat/analysis-roadmap-v8-current-main-20260907
           timeout 90s git fetch --no-tags origin main "$HEAD_SHA" >/tmp/fetch.log 2>&1
-          rc=$?
-          echo "fetch rc=$rc" >> "$STATUS"
+          rc=$?; echo "fetch rc=$rc" >> "$STATUS"
           if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/fetch.log >> "$STATUS"; exit "$rc"; fi
           git checkout --detach "$HEAD_SHA" >/tmp/checkout.log 2>&1
-          rc=$?
-          echo "checkout rc=$rc" >> "$STATUS"
+          rc=$?; echo "checkout rc=$rc" >> "$STATUS"
           if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/checkout.log >> "$STATUS"; exit "$rc"; fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -35,28 +34,67 @@ jobs:
           echo "main=$BASE_SHA" >> "$STATUS"
           echo "head=$HEAD_SHA" >> "$STATUS"
           git merge --no-commit --no-ff refs/remotes/origin/main >/tmp/merge.log 2>&1
-          rc=$?
-          echo "merge rc=$rc" >> "$STATUS"
-          if [ "$rc" -ne 0 ]; then
-            echo 'conflicts:' >> "$STATUS"
-            git -c core.quotePath=false diff --name-only --diff-filter=U >> "$STATUS"
-            echo "conflict_count=$(git diff --name-only --diff-filter=U | wc -l)" >> "$STATUS"
-            exit "$rc"
-          fi
+          merge_rc=$?
+          echo "merge rc=$merge_rc" >> "$STATUS"
+          if [ "$merge_rc" -eq 0 ]; then echo 'unexpected_clean_merge=true' >> "$STATUS"; fi
+          mapfile -t CONFLICTS < <(git -c core.quotePath=false diff --name-only --diff-filter=U)
+          echo "conflict_count=${#CONFLICTS[@]}" >> "$STATUS"
+          printf 'conflict=%s\n' "${CONFLICTS[@]}" >> "$STATUS"
+          for f in "${CONFLICTS[@]}"; do
+            git checkout --theirs -- "$f" >/tmp/resolve.log 2>&1
+            rc=$?
+            echo "resolve_main $f rc=$rc" >> "$STATUS"
+            if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/resolve.log >> "$STATUS"; exit "$rc"; fi
+            git add "$f"
+          done
+          remaining=$(git diff --name-only --diff-filter=U | wc -l)
+          echo "remaining_conflicts=$remaining" >> "$STATUS"
+          if [ "$remaining" -ne 0 ]; then exit 1; fi
           git commit -m 'Merge current main into #7036 candidate' >/tmp/commit.log 2>&1
-          rc=$?
-          echo "commit rc=$rc" >> "$STATUS"
+          rc=$?; echo "merge_commit rc=$rc" >> "$STATUS"
           if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/commit.log >> "$STATUS"; exit "$rc"; fi
-          CLEAN_HEAD=$(git rev-parse HEAD)
-          echo "clean_head=$CLEAN_HEAD" >> "$STATUS"
+          CANDIDATE=$(git rev-parse HEAD)
+          echo "candidate=$CANDIDATE" >> "$STATUS"
+
+          check() {
+            label="$1"; shift
+            timeout 180s "$@" >/tmp/check.out 2>&1
+            rc=$?
+            echo "$label rc=$rc" >> "$STATUS"
+            if [ "$rc" -ne 0 ]; then
+              echo '--- first failure ---' >> "$STATUS"
+              tail -n 100 /tmp/check.out >> "$STATUS"
+              exit "$rc"
+            fi
+          }
+
+          check x03_artifact node tests/phase7/discovery/x03-ambiguity-artifact.test.mjs
+          check analysis_entrypoint node tests/phase7/integration/analysis-entrypoint-dependencies.test.mjs
+          check x03_rebuild node tests/stage2/x03-rebuild-discovery.test.mjs
+          check x03_rebuild_acceptance node tests/stage2/x03-rebuild-discovery-acceptance.test.mjs
+          check scalar_root node tests/phase7/alias/issue-4777-forged-scalar-ssa-rename.test.mjs
+          check memoryssa_cfg node tests/semantic-v2/memoryssa-cfg.test.mjs
+          check pe_virtual_layout node tests/issue-4135-pe-section-virtual-layout.mjs
+          check phase7_manifest node tools/validation/phase7-ownership.mjs --check-manifest
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase7 --base-sha "$BASE_SHA" --head-sha "$CANDIDATE" >/tmp/p7.json 2>/tmp/p7i.log
+          rc=$?; echo "phase7_inventory rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then echo '--- first failure ---' >> "$STATUS"; tail -n 100 /tmp/p7i.log >> "$STATUS"; exit "$rc"; fi
+          P7=$(cat /tmp/p7.json)
+          check phase7_validate node tools/validation/phase7-ownership.mjs --files-json "$P7"
+          check phase8_manifest node tools/validation/phase8-ownership.mjs --check-manifest
+          timeout 120s node tools/validation/analysis-roadmap/ownership.mjs --branch "$LOGICAL_BRANCH" --phase phase8 --base-sha "$BASE_SHA" --head-sha "$CANDIDATE" >/tmp/p8.json 2>/tmp/p8i.log
+          rc=$?; echo "phase8_inventory rc=$rc" >> "$STATUS"
+          if [ "$rc" -ne 0 ]; then echo '--- first failure ---' >> "$STATUS"; tail -n 100 /tmp/p8i.log >> "$STATUS"; exit "$rc"; fi
+          P8=$(cat /tmp/p8.json)
+          check phase8_validate node tools/validation/phase8-ownership.mjs --files-json "$P8"
+
           git push --force origin HEAD:refs/heads/fix/7036-main-reconcile-f8c8 >/tmp/push.log 2>&1
-          rc=$?
-          echo "push rc=$rc" >> "$STATUS"
+          rc=$?; echo "push rc=$rc" >> "$STATUS"
           if [ "$rc" -ne 0 ]; then tail -n 40 /tmp/push.log >> "$STATUS"; exit "$rc"; fi
       - name: Upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: diag-7036-main-merge
-          path: /tmp/diag-7036-merge.txt
+          name: diag-7036-main-side-resolution
+          path: /tmp/diag-7036-resolve.txt
           retention-days: 1
