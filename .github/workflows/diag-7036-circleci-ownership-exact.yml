@@ -1,0 +1,49 @@
+name: diag-7036-circleci-ownership-exact
+on:
+  push:
+    branches:
+      - diag/7036-circleci-ownership-exact-20260917
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reproduce CircleCI ownership jobs
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          STATUS=/tmp/diag7036-circleci.txt
+          : > "$STATUS"
+          TARGET=dd66f5575af69aab0f15d9a6a911949ae3e0866b
+          export CIRCLE_BRANCH=feat/analysis-roadmap-v8-current-main-20260907
+          timeout 90s git fetch --no-tags origin main "$TARGET" >/tmp/fetch.log 2>&1
+          rc=$?; echo "fetch rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 60 /tmp/fetch.log >> "$STATUS"; exit $rc; }
+          git checkout --detach "$TARGET" >/tmp/co.log 2>&1
+          rc=$?; echo "checkout rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 60 /tmp/co.log >> "$STATUS"; exit $rc; }
+          BASE=$(git rev-parse refs/remotes/origin/main); HEAD=$(git rev-parse HEAD)
+          echo "base=$BASE" >> "$STATUS"; echo "head=$HEAD" >> "$STATUS"
+          runcheck() { label="$1"; shift; timeout 150s "$@" >/tmp/check.log 2>&1; rc=$?; echo "$label rc=$rc" >> "$STATUS"; if [ $rc -ne 0 ]; then tail -n 100 /tmp/check.log >> "$STATUS"; exit $rc; fi; }
+          P7RE='^(js/analysis/|js/semantics/compat/index\.js$|tests/phase7/|tools/validation/phase7/|tools/validation/phase7-ownership\.mjs$|tools/validation/phase-ownership/phase7\.json$|reports/phase7/|\.github/workflows/phase7-ownership\.yml$|tools/validation/phase5-ownership\.mjs$|tools/validation/scpa-integration-ownership\.mjs$|tools/validation/phase-ownership/scpa-integration\.json$|tests/ci/scpa-integration-ownership\.test\.mjs$)'
+          runcheck p7_detect bash scripts/ci/circleci-impact.sh pr-only "$P7RE"
+          runcheck p7_manifest node tools/validation/phase7-ownership.mjs --check-manifest
+          P7=$(timeout 150s node tools/validation/analysis-roadmap/ownership.mjs --branch "$CIRCLE_BRANCH" --phase phase7 --base-sha "$BASE" --head-sha "$HEAD" 2>/tmp/check.log); rc=$?; echo "p7_inventory rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 100 /tmp/check.log >> "$STATUS"; exit $rc; }
+          runcheck p7_validate node tools/validation/phase7-ownership.mjs --files-json "$P7"
+          P8RE='^(js/decompiler/|tests/phase8/|tools/validation/phase8/|tools/validation/phase8-ownership\.mjs$|tools/validation/phase-ownership/phase8\.json$|reports/phase8/|docs/PHASE8_CHECKPOINT\.md$|docs/PHASE8_HANDOFF\.md$|\.github/workflows/phase8-ownership\.yml$|\.github/workflows/phase8-release-validation\.yml$|tools/validation/phase5-ownership\.mjs$|tools/validation/scpa-integration-ownership\.mjs$|tools/validation/phase-ownership/scpa-integration\.json$|tests/ci/scpa-integration-ownership\.test\.mjs$)'
+          runcheck p8_detect bash scripts/ci/circleci-impact.sh pr-only "$P8RE"
+          runcheck p8_manifest node tools/validation/phase8-ownership.mjs --check-manifest
+          P8=$(timeout 150s node tools/validation/analysis-roadmap/ownership.mjs --branch "$CIRCLE_BRANCH" --phase phase8 --base-sha "$BASE" --head-sha "$HEAD" 2>/tmp/check.log); rc=$?; echo "p8_inventory rc=$rc" >> "$STATUS"; [ $rc -eq 0 ] || { tail -n 100 /tmp/check.log >> "$STATUS"; exit $rc; }
+          runcheck p8_validate node tools/validation/phase8-ownership.mjs --files-json "$P8"
+          echo 'all=pass' >> "$STATUS"
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag7036-circleci
+          path: /tmp/diag7036-circleci.txt
+          retention-days: 1
