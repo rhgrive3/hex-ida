@@ -223,11 +223,32 @@ lack an `STT_FUNC` symbol, an entrypoint role, an FDE, and any `bl`/`b` referenc
 divergences are (i) an unmodelled linker stub plus a silent completeness signal, (ii) and (iii)
 deliberately narrow boundary rules that disagree with IDA's inference convention.
 
-## 5. Artifacts
+## 5. Fix-candidate revision (report-only review pass, post-dates §1-§4)
+
+This section is **additive**: the traces, cluster assignments and confidence levels above are
+unchanged, and the 172-row classification data was not re-derived. A later report-only review
+revised only the *production fix candidates*:
+
+| original candidate | disposition | reason (summary) |
+| --- | --- | --- |
+| A1 "0 starts in a non-empty executable region ⇒ `complete=false`" | **withdrawn** → A1′ coverage accounting | 640/640 executable regions contain bytes no `STT_FUNC` extent covers; the rule measures symbol provenance, not code, and silently redefines `complete` from a truncation claim into a coverage claim |
+| A2 "first instruction of any executable region ⇒ generic seed" | **withdrawn** → A2′ PLT-structural stub start | region boundary ≠ function boundary; "+1 per binary" is a count target, and IDA's own object there is `sub_6D0() { JUMPOUT(0); }` while IDA models none of the import thunks |
+| B1 "discovery reads the interprocedural noreturn summary" | **removed from candidates** → B1a downstream refinement (design-gated) | phase cycle: the summary is built from the entity/call-graph model that is built from discovery's start set (`js/app.js:829` before the program scan, `js/analysis/index.js:290`) |
+| C1 "publish ELF relocation targets" | **kept, narrowed** to corroboration-only | an `R_AARCH64_RELATIVE` addend also denotes jump-table bases, case bodies and data addresses; Hex is *right* in `1/1_clang_O2/O3/Os` precisely because the symbol layer outranks it |
+
+Cluster A's *confirmed observation* is unchanged — the `.plt` omission is silent
+(`functionStartsComplete = true`, `functionDiscovery.reasons = []`). Only its remedy moved from
+"change `complete`" to "report unclassified executable bytes".
+
+Full analysis, measurements, and revised fixtures: **`03-fix-candidate-review.md`** (evidence in
+`exec-region-and-plt-evidence.json`).
+
+## 6. Artifacts
 
 | file | contents |
 | --- | --- |
-| `root-cause-clusters.json` | machine-readable per-cluster trace, source anchors, intentionality, fix surface |
-| `scripts/first-divergence-probe.mjs` | focused read-only stage-by-stage probe (reuses the repository's own product host) |
+| `root-cause-clusters.json` | machine-readable per-cluster trace, source anchors, intentionality, fix surface, and the `fixCandidateReview` block |
+| `03-fix-candidate-review.md`, `exec-region-and-plt-evidence.json` | fix-candidate review (executable-region taxonomy, ELF PLT model, cycle analysis) |
+| `scripts/first-divergence-probe.mjs`, `scripts/exec-region-and-plt-evidence.mjs` | focused read-only stage-by-stage probe (reuses the repository's own product host) and the ELF evidence probe |
 | `01-classification.md`, `classification.json` | Phase 2 evidence classification |
 | `00-baseline.md`, `ida-only-functions.json` | Phase 1 baseline |
