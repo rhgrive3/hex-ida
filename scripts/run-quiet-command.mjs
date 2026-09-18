@@ -67,6 +67,7 @@ export async function runQuietCommand({
   stderr = process.stderr,
   spawnImpl = spawn,
   tempRoot = os.tmpdir(),
+  createLogStream = (filePath) => fs.createWriteStream(filePath, { flags: 'wx', mode: 0o600 }),
 } = {}) {
   if (!label || !command) throw new TypeError('label and command are required');
   const selectedMode = String(env.HEX_TEST_OUTPUT ?? '').trim().toLowerCase();
@@ -88,16 +89,47 @@ export async function runQuietCommand({
 
   const directory = fs.mkdtempSync(path.join(tempRoot, `hex-${safeLabel(label)}-`));
   const logPath = path.join(directory, 'full.log');
-  const log = fs.createWriteStream(logPath, { flags: 'wx', mode: 0o600 });
+  const log = createLogStream(logPath);
   // 'finish' flushes writes but can precede descriptor close. NFS cleanup
   // must wait for 'close' so an open log cannot leave a transient .nfs entry.
   const logClosed = new Promise((resolve) => log.once('close', resolve));
   const cleanupDirectory = () => fs.rmSync(directory, { recursive: true, force: true });
   let tail = Buffer.alloc(0);
   let logError = null;
-  log.on('error', (error) => { logError = error; });
-
   let child;
+
+  let backpressured = false;
+  const sources = new Set();
+
+  const pauseSources = () => {
+    if (backpressured) return;
+    backpressured = true;
+    for (const source of sources) {
+      if (typeof source.pause === 'function') {
+        try { source.pause(); } catch {}
+      }
+    }
+  };
+
+  const resumeSources = () => {
+    if (!backpressured) return;
+    backpressured = false;
+    for (const source of sources) {
+      if (typeof source.resume === 'function') {
+        try { source.resume(); } catch {}
+      }
+    }
+  };
+
+  log.on('drain', resumeSources);
+  log.on('error', (error) => {
+    logError = error;
+    resumeSources();
+    if (child && child.exitCode === null && child.signalCode === null) {
+      try { child.kill(); } catch {}
+    }
+  });
+
   try {
     child = spawnImpl(commandForPlatform(command), args, {
       cwd,
@@ -105,17 +137,27 @@ export async function runQuietCommand({
       stdio: ['inherit', 'pipe', 'pipe'],
     });
   } catch (error) {
-    log.end();
-    await logClosed;
+    try { log.end(); } catch {}
+    try { await logClosed; } catch {}
     cleanupDirectory();
     throw error;
+  }
+
+  if (child.stdout) sources.add(child.stdout);
+  if (child.stderr) sources.add(child.stderr);
+  for (const source of sources) {
+    source.once('end', () => sources.delete(source));
+    source.once('close', () => sources.delete(source));
   }
 
   const capture = (source, prefix) => {
     source?.on('data', (chunk) => {
       const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      log.write(bytes);
+      const accepted = log.write(bytes);
       tail = appendTail(tail, Buffer.concat([Buffer.from(prefix), bytes]));
+      if (!accepted) {
+        pauseSources();
+      }
     });
   };
   capture(child.stdout, '');
@@ -125,10 +167,10 @@ export async function runQuietCommand({
   if (status.error) {
     const diagnostic = Buffer.from(`${status.error.stack || status.error}\n`);
     tail = appendTail(tail, diagnostic);
-    log.write(diagnostic);
+    try { log.write(diagnostic); } catch {}
   }
-  log.end();
-  await logClosed;
+  try { log.end(); } catch {}
+  try { await logClosed; } catch {}
 
   if (logError) {
     try { cleanupDirectory(); } catch {}
