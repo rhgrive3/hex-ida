@@ -61,10 +61,10 @@
           "column": 15,
           "message": "‘global_12FD8’ undeclared (first use in this function)"
         },
-        "firstErrorRaw": "/mnt/workspace/hex-ida/reports/investigations/codefuse-functionality/per-case/sources/1_1_clang_Os_g.codefuse-preprocessed.c:21:15: error: ‘global_12FD8’ undeclared (first use in this function)",
-        "stderrBytes": 30351
+        "firstErrorRaw": "reports/investigations/codefuse-functionality/per-case/sources/1_1_clang_Os_g.codefuse-preprocessed.c:21:15: error: ‘global_12FD8’ undeclared (first use in this function)",
+        "stderrBytes": 33419
       },
-      "durationMs": 35.538243,
+      "durationMs": 35.899178,
       "reason": null,
       "input": "codefuse-preprocessed"
     },
@@ -81,10 +81,10 @@
           "column": 18,
           "message": "‘global_12FD8’ undeclared (first use in this function)"
         },
-        "firstErrorRaw": "/mnt/workspace/hex-ida/reports/investigations/codefuse-functionality/per-case/sources/1_1_clang_Os_g.raw-function-text.c:4:18: error: ‘global_12FD8’ undeclared (first use in this function)",
-        "stderrBytes": 28985
+        "firstErrorRaw": "reports/investigations/codefuse-functionality/per-case/sources/1_1_clang_Os_g.raw-function-text.c:4:18: error: ‘global_12FD8’ undeclared (first use in this function)",
+        "stderrBytes": 32053
       },
-      "durationMs": 34.737515,
+      "durationMs": 32.889845,
       "reason": null,
       "input": "raw-function-text"
     }

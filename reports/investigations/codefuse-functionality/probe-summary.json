@@ -1,6 +1,6 @@
 {
   "schema": "hex-codefuse-functionality-probe-summary/v1",
-  "generatedAt": "2026-09-18T17:46:03.626Z",
+  "generatedAt": "2026-09-18T18:03:13.110Z",
   "upstream": {
     "repository": "https://github.com/codefuse-ai/CodeFuse-DeBench",
     "pinnedCommit": "c956988f8e16c85eafd4f7fd91b27feaa86bcb2b",
@@ -23,8 +23,9 @@
     }
   },
   "identity": {
-    "headSha": "d324dda5f5a1df0a031d9093dbfda045a7bb77d1",
-    "originMainSha": "843942c4998b1507a351de5bf8988d92be4ca6d0",
+    "headSha": "8cbd9bf0b020925a24c91caa35a9f875eab8e21a",
+    "originMainSha": "37042c9e5e521183055a5cfd363ea0b8019978cb",
+    "worktreeDirty": false,
     "benchmarkManifest": "benchmarks/public/codefuse-arm64/manifest.json",
     "benchmarkManifestSha256": "de5d7726ef6bb18649a0b8cc5e4d261e01873eb7ae2c5734d203fed7c8eef992",
     "benchmarkCaseTotal": 160
