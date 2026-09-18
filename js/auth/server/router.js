@@ -1,6 +1,7 @@
 import { HEX_ROLES, identityForUser } from '../capabilities.js';
 import { CHATGPT_ORIGINS } from '../../userscript/request-origin-policy.js';
 import { AuthRepository } from './repository.js';
+import { mintAICapability } from './ai-capability.js';
 import { ADMIN_HTML, ADMIN_CSS } from './admin-site.js';
 import { authorizationUrl, completionPage, fetchDiscordIdentity, oauthConfig } from './oauth.js';
 import { AuthError, SESSION_COOKIE, OAUTH_COOKIE, SESSION_TTL_MS, TRANSACTION_TTL_MS, PROOF_TTL_MS, SECRET_RE, cookie, cookieValue, discordId, equalHash, hash, headers, json, objectShape, randomSecret, readJson, requireMethod, requireSameOrigin, secret } from './primitives.js';
@@ -10,7 +11,7 @@ const ADMIN_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; conn
 export function isAuthRoute(path) {
   return path === '/auth' || path.startsWith('/auth/') || path === '/admin' || path.startsWith('/admin/') || path === '/api/auth' || path.startsWith('/api/auth/') || path === '/api/admin' || path.startsWith('/api/admin/') || path === '/_privileged' || path.startsWith('/_privileged/');
 }
-export function createAuthHandler({ privileged = null, fetchRef = (...args) => fetch(...args), now = Date.now, discordTimeoutMs = 8000 } = {}) {
+export function createAuthHandler({ privileged = null, aiCapability = null, fetchRef = (...args) => fetch(...args), now = Date.now, discordTimeoutMs = 8000 } = {}) {
   return async function handleAuthRequest(request, env) {
     const url = new URL(request.url), path = url.pathname;
     if (!isAuthRoute(path)) return null;
@@ -92,6 +93,19 @@ export function createAuthHandler({ privileged = null, fetchRef = (...args) => f
       } else if (path === '/api/auth/me') {
         requireMethod(request, ['GET']);
         response = json((await authenticate()).identity);
+      } else if (path === '/api/auth/ai-capability') {
+        requireMethod(request, ['POST']);
+        const auth = await authenticate();
+        await validateMutation(request, auth);
+        objectShape(await readJson(request), []);
+        if (!aiCapability?.signingKey || !aiCapability?.buildId) throw new AuthError('ai-capability-unavailable', 503);
+        response = json(await mintAICapability({
+          signingKey: aiCapability.signingKey,
+          buildId: aiCapability.buildId,
+          subject: auth.tokenHash,
+          sessionExpiresAt: auth.expiresAt,
+          now: now(),
+        }));
       } else if (path === '/api/auth/csrf') {
         requireMethod(request, ['GET']);
         const auth = await authenticate();
@@ -180,7 +194,7 @@ async function readSession(request, repo) {
   if (!token || !SECRET_RE.test(token)) throw new AuthError('unauthenticated', 401);
   const tokenHash = await hash(token), row = await repo.session(tokenHash, kind), identity = identityForUser(row, repo.ownerId);
   if (!identity.authenticated) throw new AuthError('unauthenticated', 401);
-  return { kind, tokenHash, identity, csrfHash: row.csrf_hash };
+  return { kind, tokenHash, identity, csrfHash: row.csrf_hash, expiresAt: row.expires_at };
 }
 async function validateMutation(request, auth) {
   if (auth.kind !== 'web') return;

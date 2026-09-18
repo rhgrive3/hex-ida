@@ -83,16 +83,28 @@ function managedRightShiftOperatorForNode(node, frontendId, mnemonic) {
   return node.operator;
 }
 
-const MANAGED_DIV_REM_OPERATORS = new Set(['sdiv', 'udiv', 'smod', 'umod']);
+const MANAGED_DIV_REM_OPERATORS = new Set(['sdiv', 'udiv', 'smod', 'umod', 'srem', 'urem']);
 
 function managedDivisionRemainderOperator(frontendId, mnemonic) {
   const frontend = typeof frontendId === 'string' ? frontendId.trim().toLowerCase() : '';
   const text = typeof mnemonic === 'string' ? mnemonic.trim().toLowerCase() : '';
-  if (frontend !== 'wasm') return null;
-  if (/^i(?:32|64)\.div_u$/.test(text)) return 'udiv';
-  if (/^i(?:32|64)\.div_s$/.test(text)) return 'sdiv';
-  if (/^i(?:32|64)\.rem_u$/.test(text)) return 'umod';
-  if (/^i(?:32|64)\.rem_s$/.test(text)) return 'smod';
+  if (frontend === 'wasm') {
+    if (/^i(?:32|64)\.div_u$/.test(text)) return 'udiv';
+    if (/^i(?:32|64)\.div_s$/.test(text)) return 'sdiv';
+    if (/^i(?:32|64)\.rem_u$/.test(text)) return 'urem';
+    if (/^i(?:32|64)\.rem_s$/.test(text)) return 'srem';
+  } else if (frontend === 'jvm') {
+    if (text === 'idiv' || text === 'ldiv') return 'sdiv';
+    if (text === 'irem' || text === 'lrem') return 'srem';
+  } else if (frontend === 'dex') {
+    if (text.startsWith('div-int') || text.startsWith('div-long')) return 'sdiv';
+    if (text.startsWith('rem-int') || text.startsWith('rem-long')) return 'srem';
+  } else if (frontend === 'cil') {
+    if (text === 'div.un') return 'udiv';
+    if (text === 'div') return 'sdiv';
+    if (text === 'rem.un') return 'urem';
+    if (text === 'rem') return 'srem';
+  }
   return null;
 }
 
@@ -103,11 +115,18 @@ function managedDivisionRemainderOperatorForNode(node, frontendId, mnemonic) {
     return (mnemonicOperator === 'sdiv' || mnemonicOperator === 'udiv') ? mnemonicOperator : null;
   }
   if (node.operator === 'rem') {
-    return (mnemonicOperator === 'smod' || mnemonicOperator === 'umod') ? mnemonicOperator : null;
+    return (mnemonicOperator === 'srem' || mnemonicOperator === 'urem') ? mnemonicOperator : null;
   }
-  if (!MANAGED_DIV_REM_OPERATORS.has(node.operator)) return null;
-  if (mnemonicOperator && mnemonicOperator !== node.operator) return null;
-  return node.operator;
+  if (node.operator === 'sdiv' || node.operator === 'udiv' || node.operator === 'srem' || node.operator === 'urem') {
+    if (mnemonicOperator && mnemonicOperator !== node.operator) return null;
+    return node.operator;
+  }
+  if (node.operator === 'smod' || node.operator === 'umod') {
+    const canonical = node.operator === 'smod' ? 'srem' : 'urem';
+    if (mnemonicOperator && mnemonicOperator !== canonical) return null;
+    return canonical;
+  }
+  return null;
 }
 
 const MANAGED_COMPARE_OPERATORS = new Map([
@@ -1147,8 +1166,8 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
       const right = n.inputs[1] ? buildValueExpr(n.inputs[1]) : expr.constant(0n, bits);
       const mn = (n.metadata?.mnemonic || '').toLowerCase();
       let normalizedOp = 'add';
-      const wasmDivRem = frontendId === 'wasm' && (mn.includes('div') || mn.includes('rem'));
-      if (wasmDivRem || MANAGED_DIV_REM_OPERATORS.has(n.operator)) {
+      const isDivRem = (mn.includes('div') || mn.includes('rem') || mn.includes('mod') || MANAGED_DIV_REM_OPERATORS.has(n.operator));
+      if (isDivRem) {
         const divRemOp = managedDivisionRemainderOperatorForNode(n, frontendId, mn);
         res = divRemOp
           ? expr.binary(divRemOp, left, right, bits)
@@ -1158,7 +1177,7 @@ export function decompileManagedMethod(loweredOrFunction, options = {}) {
         if (mn.includes('sub')) normalizedOp = 'sub';
         else if (mn.includes('mul')) normalizedOp = 'mul';
         else if (mn.includes('div')) normalizedOp = 'sdiv';
-        else if (mn.includes('rem') || mn.includes('mod')) normalizedOp = 'smod';
+        else if (mn.includes('rem') || mn.includes('mod')) normalizedOp = 'srem';
         else if (mn.includes('and')) normalizedOp = 'and';
         else if (mn.includes('xor')) normalizedOp = 'xor';
         else if (mn.includes('or')) normalizedOp = 'or';

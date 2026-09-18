@@ -16,6 +16,6 @@ assert.equal(failClosedChecks.length, 2, 'bootstrap and protected-runtime fetch 
 assert.match(workerEntry, /runtimePreflight\(request\.headers\.get\('origin'\), url\.origin\)/);
 assert.match(workerEntry, /runtimeAssetPreflight\(origin, url\.origin\)/);
 assert.doesNotMatch(workerEntry, /if \(origin && origin !== url\.origin && !CHATGPT_ORIGINS\.has\(origin\)\)/);
-assert.match(workerEntry, /if \(request\.method === 'OPTIONS'\) return apiPreflight\(origin\);\n      return withApiCors/, 'privileged GM API transport must remain unchanged');
+assert.match(workerEntry, /if \(request\.method === 'OPTIONS'\) return apiPreflight\(origin\);\n      if \(isProviderSpendPath\(url\.pathname\)\) \{[\s\S]*?if \(!authorized\) return withApiCors\([\s\S]*?\n      \}\n      return withApiCors\(await worker\.fetch/, 'generic API CORS must remain intact around provider-spend authorization');
 
 console.log('userscript worker origin policy: ok');

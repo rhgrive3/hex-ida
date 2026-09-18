@@ -20,7 +20,10 @@ const toolBase = read('js/tools-base.js');
 const navigation = read('js/ui/panels/navigation.js');
 const functionPanel = read('js/ui/panels/function-analysis.js');
 const panels = read('js/panels.js');
-const emuSource = read('js/emu.js');
+// The public module now composes the reviewed implementation with the
+// range-gated heap compatibility guard; inspect the implementation module for
+// the #2551 run/abort contract while importing the public facade below.
+const emuSource = read('js/emu-base.js');
 
 // #2511: one query per address/direction and active draw cancellation.
 const callGraph = between(tools, 'export async function buildQueryCallGraph', 'export async function showDebugger');

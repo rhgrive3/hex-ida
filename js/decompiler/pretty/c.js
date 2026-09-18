@@ -1,7 +1,7 @@
 import { effectOf } from '../ast/nodes.js';
 
-const PREC = { select: 2, oror: 3, andand: 4, or: 5, xor: 6, and: 7, eq: 8, ne: 8, lt: 9, le: 9, gt: 9, ge: 9, shl: 10, lshr: 10, ashr: 10, add: 11, sub: 11, mul: 12, sdiv: 12, udiv: 12, smod: 12, umod: 12, unary: 13, primary: 15 };
-const OP_TEXT = { add: '+', sub: '-', mul: '*', and: '&', or: '|', xor: '^', shl: '<<', lshr: '>>', ashr: '>>', sdiv: '/', udiv: '/', smod: '%', umod: '%', eq: '==', ne: '!=', lt: '<', le: '<=', gt: '>', ge: '>=' };
+const PREC = { select: 2, oror: 3, andand: 4, or: 5, xor: 6, and: 7, eq: 8, ne: 8, lt: 9, le: 9, gt: 9, ge: 9, shl: 10, lshr: 10, ashr: 10, add: 11, sub: 11, mul: 12, sdiv: 12, udiv: 12, smod: 12, umod: 12, srem: 12, urem: 12, unary: 13, primary: 15 };
+const OP_TEXT = { add: '+', sub: '-', mul: '*', and: '&', or: '|', xor: '^', shl: '<<', lshr: '>>', ashr: '>>', sdiv: '/', udiv: '/', smod: '%', umod: '%', srem: '%', urem: '%', eq: '==', ne: '!=', lt: '<', le: '<=', gt: '>', ge: '>=' };
 
 export function integerText(v, bits = 64, signed = null) {
   const n = BigInt(v);
@@ -117,18 +117,23 @@ function hasIntegerView(n, bits, signed) {
   return Number(n?.bits || 0) === Number(bits) && n?.signed === signed;
 }
 
-function printIntegerView(n, bits, signed, parentPrec, opts) {
+function printIntegerView(n, bits, signed, parentPrec, opts, forceCast = false) {
   // Recovered AST signedness is the declaration/view contract available to the
   // C printer.  Omit a site cast only when it already proves the exact same
   // width and signedness; otherwise make the machine view explicit locally.
   if (hasIntegerView(n, bits, signed)) return printExpression(n, parentPrec, opts);
-  // A literal already states its own value; a cast on it adds no signedness
-  // information and only costs readability (#861/#862 need the *variable* view).
-  if (n?.kind === 'const') return integerText(n.value, bits, signed);
+  if (n?.kind === 'const') {
+    const valText = integerText(n.value, bits, signed);
+    if (forceCast) {
+      const type = `${signed ? 'int' : 'uint'}${bits}_t`;
+      return `(${type})${valText}`;
+    }
+    return valText;
+  }
   const text = printExpression(n, PREC.unary, opts);
   // A literal already states its own value; a cast on it adds no signedness
   // information and only costs readability (#861/#862 need the *variable* view).
-  if (/^-?(?:0[xX][0-9A-Fa-f]+|\d+)$/.test(text)) return text;
+  if (!forceCast && /^-?(?:0[xX][0-9A-Fa-f]+|\d+)$/.test(text)) return text;
   const type = `${signed ? 'int' : 'uint'}${bits}_t`;
   return `(${type})${text}`;
 }
@@ -157,9 +162,11 @@ function signedBinaryOperands(n, p, opts) {
       return [printIntegerView(n.left, bits, false, p, opts), printExpression(n.right, p + 1, opts)];
     case 'ashr':
       return [printIntegerView(n.left, bits, true, p, opts), printExpression(n.right, p + 1, opts)];
-    case 'udiv': case 'umod':
+    case 'udiv':
+      return [printIntegerView(n.left, bits, false, p, opts, true), printIntegerView(n.right, bits, false, p + 1, opts, false)];
+    case 'umod': case 'urem':
       return [printIntegerView(n.left, bits, false, p, opts), printIntegerView(n.right, bits, false, p + 1, opts)];
-    case 'sdiv': case 'smod':
+    case 'sdiv': case 'smod': case 'srem':
       return [printIntegerView(n.left, bits, true, p, opts), printIntegerView(n.right, bits, true, p + 1, opts)];
     default:
       return null;
@@ -209,7 +216,7 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
       const p = PREC[n.op] || 11;
       const semanticOperands = signedBinaryOperands(n, p, opts);
       const left = semanticOperands?.[0] ?? printExpression(n.left, p, opts);
-      const right = semanticOperands?.[1] ?? printExpression(n.right, p + (['sub','sdiv','udiv','smod','umod','shl','lshr','ashr'].includes(n.op) ? 1 : 0), opts);
+      const right = semanticOperands?.[1] ?? printExpression(n.right, p + (['sub','sdiv','udiv','smod','umod','srem','urem','shl','lshr','ashr'].includes(n.op) ? 1 : 0), opts);
       return wrap(`${left} ${OP_TEXT[n.op] || n.op} ${right}`, p, parentPrec);
     }
     case 'select': {

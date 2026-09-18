@@ -118,6 +118,17 @@ try {
   }
 
   const mainSha = sh(origin, ['rev-parse', 'main']);
+
+  // Issue #9192: unknown CLI arguments must fail non-zero before inspecting/mutating state
+  for (const badArgs of [['--rebuid'], ['foo'], ['--rebuild', '--typo']]) {
+    const badResult = runSync('release', badArgs);
+    assert.equal(badResult.status, 1, `unknown CLI args ${JSON.stringify(badArgs)} must exit non-zero`);
+    assert.match(badResult.stderr, /unrecognized argument:/, `unknown CLI args ${JSON.stringify(badArgs)} must report unrecognized argument`);
+    const badToken = badArgs.find((a) => a !== '--rebuild');
+    assert.match(badResult.stderr, new RegExp(badToken), `diagnostic must mention bad token ${badToken}`);
+    assert.equal(sh(work, ['status', '--porcelain', '--untracked-files=all']), '', 'bad CLI args must not mutate worktree or trigger build');
+  }
+
   let result = runSync('main', ['--rebuild']);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /context not permitted/);

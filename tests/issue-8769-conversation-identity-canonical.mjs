@@ -66,7 +66,7 @@ assert.equal(toStringCalls, 0, 'rejection must not invoke attacker-controlled to
         id: 'project-1',
         findings: {
           investigationSessions: [{
-            id: 'session-A', conversationId: 'A', binaryId: 'fixture:0', projectId: null,
+            id: 'session-A', conversationId: 'A', binaryId: 'fixture:0', projectId: 'project-1',
             investigationMemory: { goal: 'A only', confirmedFacts: [], activeHypotheses: [] },
             messages: [{ role: 'user', content: 'A question' }],
           }],

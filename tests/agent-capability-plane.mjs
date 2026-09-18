@@ -101,7 +101,7 @@ function fakeApp() {
   return {
     file: new Blob([bytes]), patches: new PatchSet(),
     backend: { readAt: async (address, length) => ({ found: true, bytes: bytes.slice(Number(BigInt(address) - 4096n), Number(BigInt(address) - 4096n) + length) }) },
-    store: { get: (key) => key === 'regions' ? [{ vmAddr: 4096n, fileOffset: 0n, size: 8n, exec: true }] : key === 'fileInfo' ? { size: 8 } : null },
+    store: { get: (key) => key === 'architecture' ? 'arm64' : key === 'regions' ? [{ vmAddr: 4096n, fileOffset: 0n, size: 8n, exec: true }] : key === 'fileInfo' ? { size: 8 } : null },
     notes: {
       structs: [], dirty: false, save: () => true,
       setName: (address, value) => names.set(String(address), value), nameOf: (address) => names.get(String(address)) || null,

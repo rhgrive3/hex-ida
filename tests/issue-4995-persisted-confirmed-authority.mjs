@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { EvidenceStore } from '../js/ai/evidence.js';
 import { AIRuntime } from '../js/ai/runtime.js';
-import { InvestigationSessionStore, createInvestigationSession } from '../js/ai/session-core/index.js';
+import {
+  InvestigationSessionStore,
+  createInvestigationSession,
+  createProjectSessionPersistence,
+} from '../js/ai/session-core/index.js';
+import { sealPersistedConfirmedEnvelope } from '../js/ai/session-core/persisted-confirmed.js';
 import * as publicAiApi from '../js/ai/index.js';
 
 function fabricatedRecord(overrides = {}) {
@@ -43,30 +48,38 @@ function fabricatedRecord(overrides = {}) {
 
 // (3) Records restored through the trusted persistence loader keep verified authority.
 {
-  const store = new InvestigationSessionStore();
-  const owned = store.register({ id: 'persisted-a', confirmedFindings: [fabricatedRecord()] });
+  const project = {
+    findings: {
+      investigationSessions: [{
+        id: 'persisted-a',
+        binaryId: 'bin-1',
+        confirmedFindings: [fabricatedRecord()],
+      }],
+    },
+  };
+  const store = new InvestigationSessionStore({ persistence: createProjectSessionPersistence(project) });
+  const owned = await store.get('persisted-a');
   const restored = new EvidenceStore().restorePersistedConfirmed(owned.confirmedFindings);
   assert.equal(restored.get('forged-1').status, 'verified');
 
-  const serialized = JSON.parse(JSON.stringify(owned));
-  const reloadStore = new InvestigationSessionStore({
-    persistence: {
-      async load(id) { return id === serialized.id ? serialized : null; },
-      async save() {},
-      async delete() {},
-    },
-  });
-  const loaded = await reloadStore.get(serialized.id);
+  const serializedProject = JSON.parse(JSON.stringify(project));
+  const reloadStore = new InvestigationSessionStore({ persistence: createProjectSessionPersistence(serializedProject) });
+  const loaded = await reloadStore.get(owned.id);
   const reloaded = new EvidenceStore().restorePersistedConfirmed(loaded.confirmedFindings);
   assert.equal(reloaded.get('forged-1').status, 'verified');
 
-  const updated = await store.update(owned.id, { confirmedFindings: [fabricatedRecord({ id: 'forged-3', title: 'third' })] });
+  const updated = await store.update(owned.id, {
+    confirmedFindings: sealPersistedConfirmedEnvelope([fabricatedRecord({ id: 'forged-3', title: 'third' })]),
+  });
   const upserted = new EvidenceStore().restorePersistedConfirmed(updated.confirmedFindings);
   assert.equal(upserted.get('forged-3').status, 'verified');
 
-  const runtime = new AIRuntime({ planner: false });
-  const stores = runtime.storesFor(owned, 'bin-1');
-  assert.equal(stores.evidenceStore.get('forged-1').status, 'verified');
+  const runtime = new AIRuntime({ context: { binaryId: 'bin-1' }, planner: false });
+  const stores = runtime.storesFor(updated, 'bin-1');
+  assert.equal(stores.evidenceStore.get('forged-3').status, 'verified');
+  const reloadedRuntime = new AIRuntime({ context: { binaryId: 'bin-1' }, planner: false });
+  const reloadedStores = reloadedRuntime.storesFor(loaded, 'bin-1');
+  assert.equal(reloadedStores.evidenceStore.get('forged-1').status, 'verified');
 }
 
 // (4) Forged/tampered persisted envelopes fail closed.
@@ -80,7 +93,10 @@ function fabricatedRecord(overrides = {}) {
   tampered.restorePersistedConfirmed(tamperedHost.confirmedFindings);
   assert.equal(tampered.get('ev-doc').status, 'supported');
 
-  const owned = new InvestigationSessionStore().register({ id: 'persisted-c', confirmedFindings: [fabricatedRecord({ id: 'forged-4' })] });
+  const owned = new InvestigationSessionStore().register({
+    id: 'persisted-c',
+    confirmedFindings: sealPersistedConfirmedEnvelope([fabricatedRecord({ id: 'forged-4' })]),
+  });
   const rewrapped = [...owned.confirmedFindings, fabricatedRecord({ id: 'forged-5', title: 'injected' })];
   const injected = new EvidenceStore();
   injected.restorePersistedConfirmed(rewrapped);
@@ -94,7 +110,10 @@ function fabricatedRecord(overrides = {}) {
 
 // (5) Existing immutability semantics of verified records are retained.
 {
-  const owned = new InvestigationSessionStore().register({ id: 'persisted-d', confirmedFindings: [fabricatedRecord({ id: 'keep-1' })] });
+  const owned = new InvestigationSessionStore().register({
+    id: 'persisted-d',
+    confirmedFindings: sealPersistedConfirmedEnvelope([fabricatedRecord({ id: 'keep-1' })]),
+  });
   const keepStore = new EvidenceStore();
   keepStore.restorePersistedConfirmed(owned.confirmedFindings);
   const verifiedRecord = keepStore.get('keep-1');

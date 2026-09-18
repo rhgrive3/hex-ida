@@ -536,7 +536,7 @@ export class PlatformPluginRegistry {
         safeArgs[safeArgs.length - 1] = withInvocationSignal(safeArgs.at(-1), invocationController.signal);
       }
       const invocation = Promise.resolve().then(() => {
-        if (invocationController.signal.aborted) throw invocationController.signal.reason || invocationAbortError(signal?.reason);
+        if (invocationController.signal.aborted) throw invocationController.signal.reason ?? invocationAbortError(signal?.reason);
         return fn(safeContext, ...safeArgs);
       });
       const value = await settleWithin(invocation, timeoutMs, signal, invocationController);

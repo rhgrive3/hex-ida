@@ -8,6 +8,7 @@ export async function requestJSON(url, body, {
   timeoutMs = DEFAULT_TIMEOUT_MS,
   maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES,
   fetchImpl = globalThis.fetch,
+  headers = null,
 } = {}) {
   if (typeof fetchImpl !== 'function') throw new AIError('provider_error', 'Fetch is unavailable.');
   const external = normalizeExternalSignal(signal);
@@ -48,8 +49,12 @@ export async function requestJSON(url, body, {
     if (controller.signal.aborted) {
       throw externalAborted ? externalAbortError(externalAbortReason) : new AIError('cancelled', 'AI investigation was cancelled.');
     }
+    const requestHeaders = new Headers({ 'content-type': 'application/json', accept: 'application/json' });
+    if (headers) new Headers(headers).forEach((value, key) => requestHeaders.set(key, value));
+    requestHeaders.set('content-type', 'application/json');
+    requestHeaders.set('accept', 'application/json');
     const response = await fetchImpl(url, {
-      method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' },
+      method: 'POST', headers: requestHeaders,
       body: JSON.stringify(body), signal: controller.signal,
     });
     if (externalAborted) throw externalAbortError(externalAbortReason);

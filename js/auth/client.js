@@ -78,6 +78,7 @@ export function createSessionClient({ apiOrigin, privilegedManifest, manager = n
       return refresh();
     },
     refresh,
+    aiCapability: () => mutation('/api/auth/ai-capability', {}),
     async authorize(policy = 'normal') {
       if (closed || !['normal', 'yolo'].includes(policy) || !privilegedManifest?.buildId) throw new Error('Dev authorization denied.');
       const latest = await readAuthority(() => mutation('/api/auth/dev/authorize', { buildId: privilegedManifest.buildId, policy }));

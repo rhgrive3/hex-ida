@@ -1,0 +1,101 @@
+// Regression guard for ./freebuff-1..8.
+//
+// Failure mode being prevented: the wrappers used to be untracked files
+// pointing at HOME dirs outside the workspace (/mnt/workspace/.freebuff-homes,
+// /tmp). Untracked files inside the repo are wiped by repo sync/clean, so the
+// commands broke with no machine-readable signal — twice, the second time
+// taking even the staged restoration with it.
+//
+// Enforced contract:
+//   1. freebuff-1..8 exist at the repo root, are executable, set an isolated
+//      HOME under /mnt/workspace/.dev-state, and cd to the repo root at
+//      launch. HOME must be outside both the repo (git clean/reset reach)
+//      and the launch cwd: freebuff shows its "Select project directory"
+//      picker on startup iff HOME is inside cwd — never /tmp, never the repo.
+//   2. Every wrapper delegates HOME preparation to scripts/freebuff-setup.mjs
+//      (single source of truth — `npm run freebuff:setup` restores them, with
+//      an off-repo mirror at /mnt/workspace/.dev-state/freebuff-restore/).
+//   3. The data dir lives outside git; the wrappers themselves must be
+//      tracked (so cleanup cannot silently drop them).
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const NUMS = ['1', '2', '3', '4', '5', '6', '7', '8'];
+const failures = [];
+function check(cond, message) {
+  if (!cond) failures.push(message);
+}
+
+const gitignore = fs.readFileSync(path.join(root, '.gitignore'), 'utf8');
+check(gitignore.includes('/.freebuff-homes/'), '.gitignore must ignore /.freebuff-homes/ (credential data)');
+check(
+  fs.existsSync(path.join(root, 'scripts', 'freebuff-setup.mjs')),
+  'scripts/freebuff-setup.mjs must exist (wrapper source of truth)',
+);
+
+for (const n of NUMS) {
+  const name = `freebuff-${n}`;
+  const p = path.join(root, name);
+  let stat = null;
+  try {
+    stat = fs.statSync(p);
+  } catch {
+    check(false, `${name}: missing at repo root (run npm run freebuff:setup)`);
+    continue;
+  }
+  check(stat.isFile(), `${name}: not a regular file`);
+  check((stat.mode & 0o111) !== 0, `${name}: not executable`);
+  const text = fs.readFileSync(p, 'utf8');
+  check(text.startsWith('#!/usr/bin/env bash'), `${name}: must have bash shebang`);
+  check(text.includes(`N="${n}"`), `${name}: must pin N="${n}"`);
+  check(
+    text.includes('.dev-state/freebuff-homes/$N/home'),
+    `${name}: must set HOME to isolated .dev-state/freebuff-homes/$N/home`,
+  );
+  check(text.includes('export HOME='), `${name}: must export HOME`);
+  check(text.includes('cd "$REPO"'), `${name}: must start in the repo root at launch`);
+  check(text.includes('scripts/freebuff-setup.mjs'), `${name}: must delegate to scripts/freebuff-setup.mjs`);
+  check(text.includes('.tools/npm/bin/freebuff'), `${name}: must exec the repo-local launcher`);
+  check(!text.includes('/tmp/'), `${name}: must not reference /tmp (does not survive restart)`);
+  check(
+    !text.includes('HOME="$REPO') && !text.includes("HOME='$REPO"),
+    `${name}: HOME must not live under the repo (git reach + startup picker)`,
+  );
+}
+
+// Wrappers must be tracked, data must not be: query git directly so a future
+// .gitignore/.git/info/exclude edit that hides the wrappers fails loudly.
+for (const n of NUMS) {
+  try {
+    const tracked = execFileSync('git', ['ls-files', '--', `freebuff-${n}`], { cwd: root, encoding: 'utf8' }).trim();
+    check(tracked === `freebuff-${n}`, `freebuff-${n} must be git-tracked (untracked wrappers are lost by cleanup)`);
+  } catch (error) {
+    check(false, `git ls-files failed: ${error.message}`);
+  }
+}
+try {
+  // Trailing slash: the data dir may not exist; without it git treats the
+  // path as a file and dir-only patterns never match.
+  execFileSync('git', ['check-ignore', '-q', '.freebuff-homes/'], { cwd: root, stdio: 'pipe' });
+  // exit 0 => ignored, as required
+} catch {
+  check(false, '.freebuff-homes must be git-ignored (credentials must never be committed)');
+}
+
+const setupSrc = fs.readFileSync(path.join(root, 'scripts', 'freebuff-setup.mjs'), 'utf8');
+check(setupSrc.includes('LEGACY_ROOT'), 'setup must migrate the legacy outside-workspace path');
+check(setupSrc.includes('freebuff@latest'), 'setup must reinstall the launcher when missing');
+check(setupSrc.includes('MIRROR_ROOT'), 'setup must maintain the off-repo mirror');
+check(setupSrc.includes('showProjectPicker'), 'setup must document the HOME-under-cwd picker gate');
+check(setupSrc.includes('SHARED_BIN'), 'setup must share one binary copy across HOMEs');
+check(setupSrc.includes('symlinkSync'), 'setup must link (not re-download) missing per-HOME binaries');
+
+if (failures.length) {
+  for (const f of failures) process.stderr.write(`FAIL: ${f}\n`);
+  process.exit(1);
+}
+process.stdout.write(`freebuff wrappers: ${NUMS.length} wrappers ok\n`);

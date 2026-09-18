@@ -1091,3 +1091,46 @@ for (const file of ['.circleci/config.yml', '.github/workflows/phase7-ownership.
   assert.match(workflow, /tools\/validation\/phase7\/cross-lane-inventory\.mjs/);
 }
 console.log('phase7 PR #9006 cross-lane ownership routing: PASS');
+
+
+const agyIssueFollowupBranch = 'codex/agy-issue-followup-20260918';
+const agyIssueFollowupOwnedFiles = [
+  '.github/workflows/phase7-ownership.yml',
+  'js/analysis/scoped-memory-transform-projection.js',
+  'package.json',
+  'tests/phase7/ownership/cross-lane-routing.test.mjs',
+  'tools/validation/phase7/cross-lane-inventory.mjs',
+];
+const agyIssueFollowupForeignFiles = CROSS_LANE_ROUTES[agyIssueFollowupBranch];
+const agyIssueFollowupInventory = [...agyIssueFollowupOwnedFiles, ...agyIssueFollowupForeignFiles];
+assert.deepEqual(
+  validateCrossLaneInventory(agyIssueFollowupBranch, agyIssueFollowupInventory),
+  [...agyIssueFollowupOwnedFiles].sort((left, right) => Buffer.from(left).compare(Buffer.from(right))),
+  'the agy issue follow-up route must return only the exact Phase 7 analysis subset',
+);
+assert.deepEqual(
+  [...agyIssueFollowupForeignFiles].sort(),
+  agyIssueFollowupInventory.filter((file) => !agyIssueFollowupOwnedFiles.includes(file)).sort(),
+  'the agy issue follow-up route must enumerate every foreign path exactly once',
+);
+assert.throws(
+  () => validateCrossLaneInventory(agyIssueFollowupBranch, [...agyIssueFollowupInventory, 'js/ui/__undeclared_agy.js']),
+  /unexpected foreign paths/,
+  'the agy issue follow-up route must reject an undeclared foreign path',
+);
+assert.throws(
+  () => validateCrossLaneInventory(`${agyIssueFollowupBranch}-similar`, agyIssueFollowupInventory),
+  /no exact Phase 7 cross-lane route/,
+  'a similar agy branch name must not activate the exact route',
+);
+assert.throws(
+  () => validateCrossLaneInventory(agyIssueFollowupBranch, agyIssueFollowupForeignFiles),
+  /no Phase 7-owned paths/,
+  'the agy route must fail closed without Phase 7 evidence',
+);
+for (const file of ['.circleci/config.yml', '.github/workflows/phase7-ownership.yml']) {
+  const workflow = readFileSync(file, 'utf8');
+  assert.ok(workflow.includes(agyIssueFollowupBranch), 'the agy workflow route must be wired');
+  assert.match(workflow, /tools\/validation\/phase7\/cross-lane-inventory\.mjs/);
+}
+console.log('phase7 agy issue follow-up cross-lane ownership routing: PASS');

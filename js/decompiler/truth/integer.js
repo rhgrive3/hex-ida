@@ -98,11 +98,13 @@ export function evalBinary(op, av, bv, bits = 64, signed = null) {
       return u(n / d, bits);
     }
     case 'udiv': return b === 0n ? null : u(a / b, bits);
-    case 'smod': {
+    case 'smod':
+    case 'srem': {
       const d = s(b, bits); if (d === 0n) return null;
       return u(s(a, bits) % d, bits);
     }
-    case 'umod': return b === 0n ? null : u(a % b, bits);
+    case 'umod':
+    case 'urem': return b === 0n ? null : u(a % b, bits);
     case 'eq': return a === b ? 1n : 0n;
     case 'ne': return a !== b ? 1n : 0n;
     case 'lt': return (signed === false ? a < b : s(a, bits) < s(b, bits)) ? 1n : 0n;

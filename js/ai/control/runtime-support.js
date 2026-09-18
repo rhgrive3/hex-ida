@@ -91,7 +91,7 @@ export function assertLiveBindingsUnchanged(local, snapshot) {
     ? sameStrongIdentity(live, expectedLive, local)
     : !liveStrong && !expectedStrong && (sameId || sameLegacy(live.legacyId, expectedLegacy));
   if (!same) throw new AIError('scope_violation', 'The binary changed while this AI turn was running; refusing to mix workbench states.');
-  const liveProject = firstBinding(local.projectId, local.project?.id, local.project?.binaryHash);
+  const liveProject = firstBinding(local.projectId, local.project?.id);
   if (!sameNullableBinding(liveProject, snapshot.projectIdentity)) {
     throw new AIError('scope_violation', 'The project changed while this AI turn was running; refusing to mix workbench states.');
   }

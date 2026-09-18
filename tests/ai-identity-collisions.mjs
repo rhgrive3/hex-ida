@@ -11,6 +11,7 @@
 import assert from 'node:assert/strict';
 import { EvidenceStore } from '../js/ai/evidence.js';
 import { ProposalStore } from '../js/ai/proposals.js';
+import { sealPersistedConfirmedEnvelope } from '../js/ai/session-core/persisted-confirmed.js';
 
 console.log('Testing AI identity collisions...');
 
@@ -65,7 +66,9 @@ console.log('  ok 1 evidence ids no longer collide (#1302)');
 /* ── #1299 fingerprint は型を保つ ──────────────────────────── */
 
 function proposalFor(before) {
-  const evidence = new EvidenceStore([{ id: 'ev_fixed', kind: 'read', status: 'unknown', title: 'fixed' }]);
+  const evidence = new EvidenceStore().restorePersistedConfirmed(sealPersistedConfirmedEnvelope([
+    { id: 'ev_fixed', kind: 'read', status: 'verified', title: 'fixed' },
+  ]));
   const store = new ProposalStore({ evidenceStore: evidence });
   const proposal = store.create({
     kind: 'rename', target: { at: '0x1000' }, before, after: 'renamed',
@@ -127,7 +130,9 @@ console.log('  ok 2 proposal fingerprints preserve value type (#1299)');
 /* ── binding 側の guard も同じ encoding を使う ───────────────── */
 
 {
-  const evidence = new EvidenceStore([{ id: 'ev_b', kind: 'read', status: 'unknown', title: 'b' }]);
+  const evidence = new EvidenceStore().restorePersistedConfirmed(sealPersistedConfirmedEnvelope([
+    { id: 'ev_b', kind: 'read', status: 'verified', title: 'b' },
+  ]));
   let binding = 1n;
   const store = new ProposalStore({ evidenceStore: evidence, binding: () => binding });
   const proposal = store.create({
@@ -147,7 +152,9 @@ console.log('  ok 3 binding revision guard uses the same encoding (#1299)');
 /* ── 循環参照は今までどおり明示的に失敗する ─────────────────── */
 
 {
-  const evidence = new EvidenceStore([{ id: 'ev_c', kind: 'read', status: 'unknown', title: 'c' }]);
+  const evidence = new EvidenceStore().restorePersistedConfirmed(sealPersistedConfirmedEnvelope([
+    { id: 'ev_c', kind: 'read', status: 'verified', title: 'c' },
+  ]));
   const store = new ProposalStore({ evidenceStore: evidence });
   const cyclic = {};
   cyclic.self = cyclic;

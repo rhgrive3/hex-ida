@@ -663,7 +663,7 @@ export function findABIPlugin({ id = null, architecture = null, platform = null,
     // the plugin must still match the target architecture (with the
     // established arm64e->arm64 exception) and any given platform.
     const arch = canonicalId(architecture);
-    if (arch && explicit.architectureId !== arch && !(arch === 'arm64e' && explicit.architectureId === 'arm64')) {
+    if (arch && explicit.architectureId !== arch && !(arch === 'arm64e' && explicit.architectureId === 'arm64') && !(arch === 'arm64ec' && explicit.architectureId === 'arm64')) {
       return abiPlugin('unknown');
     }
     const platformId = canonicalId(platform);
@@ -696,7 +696,7 @@ export function findABIPlugin({ id = null, architecture = null, platform = null,
   if (!arch || (!platformId && !callingConvention)) return abiPlugin('unknown');
   for (const plugin of ABI_PLUGINS.values()) {
     if (!plugin.supported || plugin.id === 'unknown') continue;
-    if (arch && plugin.architectureId !== arch && !(arch === 'arm64e' && plugin.architectureId === 'arm64')) continue;
+    if (arch && plugin.architectureId !== arch && !(arch === 'arm64e' && plugin.architectureId === 'arm64') && !(arch === 'arm64ec' && plugin.architectureId === 'arm64')) continue;
     let matches = false;
     try { matches = plugin.platformPredicate({ architecture:arch, platform:platformId }); } catch { matches = false; }
     if (!matches) continue;

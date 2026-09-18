@@ -9,6 +9,7 @@ import { buildObjcRuntimeModel, buildObjcRuntimeIndex } from '../objc.js';
 
 export const OBJC_PROVIDER_ID = 'metadata.objc';
 export const OBJC_PROVIDER_VERSION = '1.1.1';
+const PROBE_GENERATIONS = new WeakMap();
 
 function sectionName(section) {
   for (const key of ['section', 'name', 'sectname']) {
@@ -24,7 +25,6 @@ function sectionRange(section) {
 }
 
 export class ObjcMetadataProvider extends LanguageMetadataProvider {
-  #probeGeneration = 0;
   constructor({
     readAt = null,
     sections = [],
@@ -42,10 +42,12 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
     this.options = options;
     this.cachedModel = null;
     this.cachedIndex = null;
+    PROBE_GENERATIONS.set(this, 0);
   }
 
   async probe() {
-    const generation = ++this.#probeGeneration;
+    const generation = (PROBE_GENERATIONS.get(this) ?? 0) + 1;
+    PROBE_GENERATIONS.set(this, generation);
     // An absent, aborted or superseded scan must not publish previous records.
     this.cachedModel = null;
     this.cachedIndex = null;
@@ -190,7 +192,7 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
       this.options.pointerFormat,
       this.options
     );
-    if (!model || this.options.signal?.aborted || generation !== this.#probeGeneration) {
+    if (!model || this.options.signal?.aborted || generation !== PROBE_GENERATIONS.get(this)) {
       return createLanguageMetadataResult({
         providerId: this.id,
         providerVersion: this.version,
@@ -430,5 +432,6 @@ export async function probeCanonicalObjcMetadata(options = {}) {
   provider.options = options.options ?? {};
   provider.cachedModel = null;
   provider.cachedIndex = null;
+  PROBE_GENERATIONS.set(provider, 0);
   return APPLY_OBJC_PROBE(CANONICAL_OBJC_PROBE, provider, []);
 }

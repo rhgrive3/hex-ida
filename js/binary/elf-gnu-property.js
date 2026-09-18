@@ -394,6 +394,15 @@ export function attachAarch64GnuPropertyEvidence(image, input, options = {}) {
   const property = parseAarch64GnuProperty(input, options);
   image.metadata = image.metadata || {};
   image.metadata.arm64Bti = property;
+  image.metadata.arm64GnuProperty = property;
+  image.metadata.aarch64SecurityFeatures = Object.freeze({
+    btiRequested: property.btiRequested,
+    pacRequested: property.pacRequested,
+    gcsRequested: property.gcsRequested,
+    featureBits: property.featureBits,
+    loaderPolicy: property.loaderPolicy,
+    evidence: property.evidence,
+  });
   for (const warning of property.warnings || []) image.warnings?.push?.(`AArch64 GNU property: ${warning}`);
   return image;
 }

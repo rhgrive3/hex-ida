@@ -245,6 +245,7 @@ export function executableELFRange(image, address, size = 0n, sectionIndex = nul
 
 export function elfInstructionTargetRejection(image, address) {
   const instructionBytes = image?.arch === 'arm64' ? 4n : 1n;
+  if (typeof image?.isDataInCode === 'function' && image.isDataInCode(address)) return 'inside an authoritative data-in-code interval';
   if (!executableELFRange(image, address, 0n)) return 'outside a canonical executable mapping';
   const alignmentRejection = elfInstructionStartAlignmentRejection(image, address);
   if (alignmentRejection) return alignmentRejection;

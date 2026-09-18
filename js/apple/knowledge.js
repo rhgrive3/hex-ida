@@ -56,8 +56,8 @@ export const APPLE_KNOWLEDGE_FORMAT_MATRIX = deepFreeze({
     pointerFormats: [1, 2, 3, 4, 5, 6, 7, 9, 10, 12],
     authenticatedPointerFormats: [1, 7, 9, 10, 12],
   },
-  swift: { providerId: 'metadata.swift', providerVersions: ['1.0.0'], abiFamilies: ['swift-5'] },
-  objc: { providerId: 'metadata.objc', providerVersions: ['1.0.0'], runtimeFamilies: ['objc-2.0'] },
+  swift: { providerId: 'metadata.swift', providerVersions: [SWIFT_PROVIDER_VERSION], abiFamilies: ['swift-5'] },
+  objc: { providerId: 'metadata.objc', providerVersions: [OBJC_PROVIDER_VERSION], runtimeFamilies: ['objc-2.0'] },
   codeSigning: {
     superBlobMagics: [CSMAGIC_EMBEDDED_SIGNATURE, CSMAGIC_DETACHED_SIGNATURE],
     codeDirectoryVersions: [...CODE_DIRECTORY_VERSIONS],
@@ -815,8 +815,8 @@ export function buildAppleKnowledge({ image = null, binaryIdentity = null, slice
   const cells = {
     dyldCache: cacheCell,
     chainedFixups: chainedCell,
-    swift: languageCell(swift, 'metadata.swift', '1.0.0', binding, identityAuthoritative, image),
-    objc: languageCell(objc, 'metadata.objc', '1.0.0', binding, identityAuthoritative, image),
+    swift: languageCell(swift, SWIFT_PROVIDER_ID, SWIFT_PROVIDER_VERSION, binding, identityAuthoritative, image),
+    objc: languageCell(objc, OBJC_PROVIDER_ID, OBJC_PROVIDER_VERSION, binding, identityAuthoritative, image),
     pointerAuthentication: pacCell,
     codeSigning: signingCell,
   };

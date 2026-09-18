@@ -136,6 +136,43 @@ test('#8702 root regression runner uses an exact Phase 8 cross-lane route', () =
   assert.ok(fallback.includes(branch), 'the GitHub fallback must route the #8702 subset');
 });
 
+test('agy issue follow-up uses an exact Phase 8 cross-lane route', () => {
+  const branch = 'codex/agy-issue-followup-20260918';
+  const owned = [
+    '.github/workflows/phase8-ownership.yml',
+    'js/decompiler/pretty/c.js',
+    'js/decompiler/truth/integer.js',
+    'package.json',
+    'tests/phase8/ownership/cross-lane-routing.test.mjs',
+    'tools/validation/phase8/cross-lane-inventory.mjs',
+  ];
+  const foreign = CROSS_LANE_ROUTES[branch];
+  const inventory = [...owned, ...foreign];
+  assert.deepEqual(
+    validateCrossLaneInventory(branch, inventory),
+    [...owned].sort((a, b) => Buffer.from(a).compare(Buffer.from(b))),
+    'the agy follow-up route must return only the Phase 8-owned subset',
+  );
+  assert.throws(
+    () => validateCrossLaneInventory(branch, [...inventory, 'js/ui/__undeclared_agy.js']),
+    /unexpected foreign paths|outside-lane|forbidden/,
+    'the agy follow-up route must reject an undeclared foreign path',
+  );
+  assert.throws(
+    () => validateCrossLaneInventory(`${branch}-similar`, inventory),
+    /no exact Phase 8 cross-lane route/,
+    'a similar branch name must not activate the agy route',
+  );
+  assert.throws(
+    () => validateCrossLaneInventory(branch, foreign),
+    /no Phase 8-owned paths/,
+    'the agy route must fail closed without Phase 8 evidence',
+  );
+  assert.ok(CONFIG.includes(branch), 'CircleCI must route the agy subset');
+  const fallback = readFileSync('.github/workflows/phase8-ownership.yml', 'utf8');
+  assert.ok(fallback.includes(branch), 'the GitHub fallback must route the agy subset');
+});
+
 test('Dependabot workflow group uses an exact Phase 8 cross-lane route', () => {
   const branch = "dependabot/github_actions/github-actions-436ea2ae3a";
   const owned = [

@@ -38,6 +38,51 @@ assert.throws(() => resolveUserscriptReleaseVersion({ serial: 41, releaseIdentit
 assert.throws(() => resolveUserscriptReleaseVersion({ serial: 41, releaseIdentity: 'bad', buildId: buildA }, { releaseIdentity: a, buildId: buildA }));
 assert.throws(() => resolveUserscriptReleaseVersion({ serial: 41, releaseIdentity: a, buildId: 'bad' }, { releaseIdentity: a, buildId: buildA }));
 
+// #9182: terminal serial unchanged must be resolved, while increment exhausts
+const terminalUnchanged = resolveUserscriptReleaseVersion(
+  { serial: 9_999_999_999, releaseIdentity: a, buildId: buildA },
+  { releaseIdentity: a, buildId: buildA },
+);
+assert.equal(terminalUnchanged.changed, false);
+assert.equal(terminalUnchanged.version, '2.0.9999999999');
+assert.equal(terminalUnchanged.state.serial, 9_999_999_999);
+
+// #9182: terminal serial with changed identity must throw exhaustion error
+assert.throws(
+  () => resolveUserscriptReleaseVersion(
+    { serial: 9_999_999_999, releaseIdentity: a, buildId: buildA },
+    { releaseIdentity: b, buildId: buildA },
+  ),
+  /exhausted/,
+);
+
+// #9182: terminal serial with changed buildId must throw exhaustion error
+assert.throws(
+  () => resolveUserscriptReleaseVersion(
+    { serial: 9_999_999_999, releaseIdentity: a, buildId: buildA },
+    { releaseIdentity: a, buildId: buildB },
+  ),
+  /exhausted/,
+);
+
+// #9182: serial 9_999_999_998 can still transition to terminal serial
+const penultimate = resolveUserscriptReleaseVersion(
+  { serial: 9_999_999_998, releaseIdentity: a, buildId: buildA },
+  { releaseIdentity: b, buildId: buildB },
+);
+assert.equal(penultimate.changed, true);
+assert.equal(penultimate.version, '2.0.9999999999');
+assert.equal(penultimate.state.serial, 9_999_999_999);
+
+// #9182: serial beyond terminal is invalid
+assert.throws(
+  () => resolveUserscriptReleaseVersion(
+    { serial: 10_000_000_000, releaseIdentity: a, buildId: buildA },
+    { releaseIdentity: a, buildId: buildA },
+  ),
+  /invalid or exhausted/,
+);
+
 const releaseState = JSON.parse(fs.readFileSync(new URL('../userscript/release-version.json', import.meta.url), 'utf8'));
 const template = fs.readFileSync(new URL('../userscript/hex.user.template.js', import.meta.url), 'utf8');
 const version = /^\/\/ @version\s+(\S+)/m.exec(template)?.[1];

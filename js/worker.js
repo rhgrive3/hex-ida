@@ -13,3 +13,5 @@ importScripts('./worker-function-provenance-fix.js');
 importScripts('./worker-loop-provenance-fix.js');
 /* #2117: extend the loop-entry prepass to unconditional direct B back-edges. */
 importScripts('./worker-loop-unconditional-fix.js');
+/* #8255: apply authoritative ELF AArch64 mapping-data exclusions last. */
+importScripts('./worker-data-in-code-fix.js');

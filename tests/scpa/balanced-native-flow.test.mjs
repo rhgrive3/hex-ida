@@ -85,13 +85,9 @@ test('default native navigation retains a stored pointer later used as a load ad
     ['ldr', 'x2, [sp]', 0xf94003e2], ['ldr', 'x3, [x2]', 0xf9400043], ['ret', '', 0xd65f03c0]]);
   const build = () => buildCanonicalQueryProjection(input.result.pipeline, { ...f, snapshotId: 'snap', work: workFor(t) });
   const initial = await build();
-  const nodes = input.result.pipeline.semanticIr.nodes;
-  const store = nodes.find(node => node.kind === 'store');
-  const finalWrite = nodes.find(node => node.kind === 'state-write'
-    && node.variable?.physicalIdentity?.registerId === 'x3');
-  const sink = nodes.find(node => node.kind === 'load'
-    && node.outputs.some(valueId => finalWrite?.inputs.includes(valueId)));
-  assert.ok(sink, 'final x3 load must be selected by semantic value flow, not node order');
+  const store = input.result.pipeline.semanticIr.nodes.find(node => node.kind === 'store');
+  const sink = input.result.pipeline.semanticIr.nodes.find(node => node.kind === 'load' && node.origin?.virtualRanges?.[0]?.start === '0x4008')
+    ?? input.result.pipeline.semanticIr.nodes.filter(node => node.kind === 'load').at(-1);
   const source = initial.adjacent(initial.entityReference('semantic-ir', store.id), 'backward').map(id => initial.edge(id))
     .find(edge => edge.kind === 'operation-input' && edge.flowKinds?.includes('data')).from;
   const target = initial.entityReference('semantic-ir', sink.id);

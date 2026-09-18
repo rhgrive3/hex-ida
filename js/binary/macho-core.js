@@ -44,6 +44,15 @@ function strictUnsignedBigInt(value) {
   return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
 }
 
+function malformedDeclaredCodeSignature(reason, details = {}) {
+  return {
+    source: 'LC_CODE_SIGNATURE',
+    complete: false,
+    cryptographicVerification: false,
+    ...malformedAppleCodeSignature(reason, details),
+  };
+}
+
 function metadataMappingSnapshot(mapping) {
   return {
     name: mapping.name,
@@ -279,6 +288,7 @@ function parseThin(bytes, opts) {
   const dyldInfos = [];
   let loadCommandScanComplete = true;
   let processedLoadCommands = 0;
+  let codeSignatureDeclarationCount = 0;
   let p = headerSize;
   const poisonSignatureDiscovery = (reason, commandOffset = p) => {
     loadCommandScanComplete = false;
@@ -293,9 +303,13 @@ function parseThin(bytes, opts) {
     if (p + 8 > commandEnd) { poisonSignatureDiscovery('load-command-truncated'); image.warnings.push(`truncated load command ${i}`); break; }
     const cmd = r.u32(p);
     const cmdsize = r.u32(p + 4);
+    if (cmd === LC_CODE_SIGNATURE) {
+      codeSignatureDeclarationCount++;
+      image.metadata.signatureState = 'code-signature-present';
+    }
     if (cmdsize < 8 || p + cmdsize > commandEnd) {
       if (cmd === LC_CODE_SIGNATURE) {
-        image.metadata.codeSignature = malformedAppleCodeSignature('load-command-size-invalid', {
+        image.metadata.codeSignature = malformedDeclaredCodeSignature('load-command-size-invalid', {
           provenance: { commandOffset: BigInt(image.fileOffset) + BigInt(p), dataOffset: null, dataSize: null },
         });
       }
@@ -333,14 +347,34 @@ function parseThin(bytes, opts) {
         parseLegacyVersionMin(r, p, cmd, image);
       }
       else if (cmd === LC_CODE_SIGNATURE) {
-        if (cmdsize !== 16) {
-          image.metadata.codeSignature = malformedAppleCodeSignature('load-command-size-invalid', {
+        if (codeSignatureDeclarationCount > 1) {
+          image.metadata.codeSignature = malformedDeclaredCodeSignature('duplicate-code-signature-command', {
+            provenance: { commandOffset: BigInt(image.fileOffset) + BigInt(p), dataOffset: null, dataSize: null },
+          });
+          linkeditData.codeSignature = null;
+          loadCommandScanComplete = false;
+          markMachOMetadataPartial(image, 'duplicate-code-signature-command');
+          image.warnings.push('duplicate LC_CODE_SIGNATURE declaration; signature structure is malformed');
+        } else if (cmdsize !== 16) {
+          image.metadata.codeSignature = malformedDeclaredCodeSignature('load-command-size-invalid', {
             provenance: { commandOffset: BigInt(image.fileOffset) + BigInt(p), dataOffset: null, dataSize: null },
           });
           loadCommandScanComplete = false;
           markMachOMetadataPartial(image, 'code-signature-command-malformed');
           image.warnings.push(`invalid LC_CODE_SIGNATURE size ${cmdsize}; signature structure is malformed`);
-        } else linkeditData.codeSignature = { ...dataCommand(r, p), commandOffset: p };
+        } else {
+          const declaration = dataCommand(r, p);
+          const rangeValid = declaration.size > 0 && BigInt(declaration.offset) + BigInt(declaration.size) <= r.lengthBigInt;
+          image.metadata.codeSignature = {
+            source: 'LC_CODE_SIGNATURE', complete: rangeValid, cryptographicVerification: false,
+            offset: declaration.offset, size: declaration.size, rangeValid,
+          };
+          if (!rangeValid) {
+            loadCommandScanComplete = false;
+            markMachOMetadataPartial(image, 'code-signature-range-invalid');
+            image.warnings.push('LC_CODE_SIGNATURE data range is empty or exceeds file');
+          } else linkeditData.codeSignature = { ...declaration, commandOffset: p };
+        }
       }
       else if (cmd === LC_FUNCTION_STARTS) {
         requireExactCommandSize(cmdsize, 16, 'LC_FUNCTION_STARTS');
@@ -365,22 +399,6 @@ function parseThin(bytes, opts) {
       else if (cmd === LC_BUILD_VERSION) {
         if (cmdsize < 24) throw new Error(`invalid LC_BUILD_VERSION size ${cmdsize}`);
         parseBuildVersion(r, p, cmdsize, image, metadataBudget);
-      }
-      else if (cmd === LC_CODE_SIGNATURE) {
-        // Presence is a load-command declaration, never cryptographic proof.
-        image.metadata.signatureState = 'code-signature-present';
-        if (image.metadata.codeSignature) {
-          image.metadata.codeSignature.complete = false;
-          throw new Error('duplicate LC_CODE_SIGNATURE');
-        }
-        image.metadata.codeSignature = { source: 'LC_CODE_SIGNATURE', complete: false, cryptographicVerification: false };
-        requireExactCommandSize(cmdsize, 16, 'LC_CODE_SIGNATURE');
-        const declaration = dataCommand(r, p);
-        Object.assign(image.metadata.codeSignature, declaration);
-        const rangeValid = declaration.size > 0 && BigInt(declaration.offset) + BigInt(declaration.size) <= r.lengthBigInt;
-        image.metadata.codeSignature.rangeValid = rangeValid;
-        if (!rangeValid) throw new Error('LC_CODE_SIGNATURE data range is empty or exceeds file');
-        image.metadata.codeSignature.complete = true;
       }
       else if (cmd === LC_ENCRYPTION_INFO || cmd === LC_ENCRYPTION_INFO_64) {
         // encryption_info_command is 20 bytes; the 64-bit variant adds a pad
@@ -419,15 +437,22 @@ function parseThin(bytes, opts) {
   image.imageBase = text ? text.address : 0n;
 
   if (linkeditData.codeSignature) {
-    image.metadata.codeSignature = parseAppleCodeSignature(r.bytes, {
+    const parsedCodeSignature = parseAppleCodeSignature(r.bytes, {
       dataOffset: linkeditData.codeSignature.offset,
       dataSize: linkeditData.codeSignature.size,
       commandOffset: BigInt(image.fileOffset) + BigInt(linkeditData.codeSignature.commandOffset),
       containerOffset: image.fileOffset,
     });
-    if (image.metadata.codeSignature.status !== 'structurally-valid') {
+    image.metadata.codeSignatureStructure = parsedCodeSignature;
+    // A declaration remains useful when its payload is opaque. Recognized
+    // valid/malformed structures retain the richer Apple parser result, while
+    // an unsupported magic value leaves the declaration DTO intact.
+    if (parsedCodeSignature.status !== 'unsupported') {
+      image.metadata.codeSignature = parsedCodeSignature;
+    }
+    if (parsedCodeSignature.status !== 'structurally-valid' && parsedCodeSignature.status !== 'unsupported') {
       markMachOMetadataPartial(image, 'code-signature-structure-incomplete');
-      image.warnings.push(`code signature structure is ${image.metadata.codeSignature.status}; validity remains unknown`);
+      image.warnings.push(`code signature structure is ${parsedCodeSignature.status}; validity remains unknown`);
     }
   }
 
@@ -540,7 +565,7 @@ function parseThin(bytes, opts) {
     contentMatches,
     get machoMetadata() { return authoritySnapshot(issued.metadata.machoMetadata); },
     get codeSignatureCommandsComplete() { return issued.metadata.codeSignatureCommandsComplete === true; },
-    get codeSignature() { return issued.metadata.codeSignature ?? null; },
+    get codeSignature() { return issued.metadata.codeSignatureStructure ?? issued.metadata.codeSignature ?? null; },
     get chainedFixups() { return authoritySnapshot(issued.metadata.chainedFixups); },
     chainedSites: deepFreeze(chainedPointerSites(issued)),
     dyldCache: opts.dyldCache ?? null,
