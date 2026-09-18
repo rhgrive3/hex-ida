@@ -19,7 +19,7 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = '/mnt/workspace/hex-agent-e';
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const REPORT_DIR = path.join(ROOT, 'reports/investigations/function-discovery');
 const SUMMARY = path.join(ROOT, 'reports/public-benchmark/summary.json');
 const MANIFEST = path.join(ROOT, 'benchmarks/public/codefuse-arm64/manifest.json');
@@ -156,10 +156,18 @@ for (const c of cases) {
 idOnly: {
   const aggregate = summary.comparison?.aggregate ?? {};
   const denominator = aggregate.denominator ?? null;
+  const unionDerived = idaTotal + hexTotal - matched;
+  const mismatches = [];
+  if (denominator !== unionDerived) mismatches.push(`denominator aggregate=${denominator} recomputed=${unionDerived}`);
+  if (aggregate.ida !== idaTotal) mismatches.push(`ida aggregate=${aggregate.ida} recomputed=${idaTotal}`);
+  if (aggregate.hex !== hexTotal) mismatches.push(`hex aggregate=${aggregate.hex} recomputed=${hexTotal}`);
+  if (aggregate.matched !== matched) mismatches.push(`matched aggregate=${aggregate.matched} recomputed=${matched}`);
+  if (mismatches.length) throw new Error(`comparison aggregate mismatch: ${mismatches.join('; ')}`);
+
   const recomputed = {
     cases: cases.length,
     denominator,
-    denominatorMatchesAggregate: denominator === aggregate.denominator,
+    denominatorMatchesAggregate: unionDerived === aggregate.denominator,
     idaPresentTotal: idaTotal,
     hexPresentTotal: hexTotal,
     aggregateIda: aggregate.ida ?? null,
@@ -170,7 +178,7 @@ idOnly: {
     hexOnlyCount: hexOnly.length,
     idaOnlyFromAggregate: (aggregate.ida ?? 0) - (aggregate.matched ?? 0),
     hexOnlyFromAggregate: (aggregate.hex ?? 0) - (aggregate.matched ?? 0),
-    unionDerived: idaTotal + hexTotal - matched,
+    unionDerived,
     denominatorFrozen: summary.denominatorFrozen ?? null,
     scope: summary.comparison?.scope ?? null,
   };

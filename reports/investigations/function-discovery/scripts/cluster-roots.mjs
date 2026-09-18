@@ -10,8 +10,10 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const REPORT_DIR = '/mnt/workspace/hex-agent-e/reports/investigations/function-discovery';
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+const REPORT_DIR = path.join(ROOT, 'reports/investigations/function-discovery');
 const classification = JSON.parse(fs.readFileSync(path.join(REPORT_DIR, 'classification.json'), 'utf8'));
 
 const byCluster = new Map();
@@ -233,7 +235,7 @@ const doc = {
 const tmp = path.join(REPORT_DIR, `.root-cause-clusters.json.tmp-${process.pid}`);
 fs.writeFileSync(tmp, JSON.stringify(doc, null, 2) + '\n');
 const recheck = JSON.parse(fs.readFileSync(tmp, 'utf8'));
-if (recheck.clusters.length === 0) throw new Error('empty clusters');
+if (Object.keys(recheck.clusters).length === 0) throw new Error('empty clusters');
 const summed = Object.values(recheck.clusters).reduce((n, c) => n + c.count, 0);
 if (summed !== recheck.totals.classifiedRows) {
   throw new Error(`cluster row sum ${summed} != classified rows ${recheck.totals.classifiedRows}`);

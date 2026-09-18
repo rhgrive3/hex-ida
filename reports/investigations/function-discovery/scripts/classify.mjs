@@ -14,9 +14,10 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 
-const ROOT = '/mnt/workspace/hex-agent-e';
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const REPORT_DIR = path.join(ROOT, 'reports/investigations/function-discovery');
 const BENCH = path.join(ROOT, 'benchmarks/public/codefuse-arm64');
 const MANIFEST = JSON.parse(fs.readFileSync(path.join(BENCH, 'manifest.json'), 'utf8'));
