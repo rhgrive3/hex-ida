@@ -17,11 +17,11 @@ jobs:
         run: |
           set -euo pipefail
           curl --fail --location --silent --show-error --max-time 60 \
-            -o /tmp/coderabbit-second-fix.patch.gz \
-            https://raw.githubusercontent.com/rhgrive3/hex-ida/tmp-arm64-dt-init-fini-window-stage/tmp/arm64-dt-window/coderabbit-second-fix.patch.gz
-          gzip -t /tmp/coderabbit-second-fix.patch.gz
-          gzip -dc /tmp/coderabbit-second-fix.patch.gz > /tmp/coderabbit-second-fix.patch
-          test -s /tmp/coderabbit-second-fix.patch
+            -o /tmp/coderabbit-arm64-scope.patch.gz \
+            https://raw.githubusercontent.com/rhgrive3/hex-ida/tmp-arm64-dt-init-fini-window-stage/tmp/arm64-dt-window/coderabbit-arm64-scope.patch.gz
+          gzip -t /tmp/coderabbit-arm64-scope.patch.gz
+          gzip -dc /tmp/coderabbit-arm64-scope.patch.gz > /tmp/coderabbit-arm64-scope.patch
+          test -s /tmp/coderabbit-arm64-scope.patch
       - name: Checkout target PR branch
         uses: actions/checkout@v4
         with:
@@ -31,14 +31,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "3bcc3ecf62b979a087f0138a8506747ef979fad6"
+          test "$(git rev-parse HEAD)" = "0f2dadb6203342a0324c22a6de14b8f2046855e6"
       - name: Apply review fix
         shell: bash
         run: |
           set -euo pipefail
           git config user.name OpenAI
           git config user.email noreply@openai.com
-          git am /tmp/coderabbit-second-fix.patch
+          git am /tmp/coderabbit-arm64-scope.patch
           git diff --check HEAD^ HEAD
       - name: Run focused regression
         shell: bash
