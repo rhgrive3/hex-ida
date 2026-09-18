@@ -8,13 +8,13 @@ const ACC_ABSTRACT = 0x0400;
 // instructions make verifier completeness partial instead of being guessed.
 function width(op) {
   if (op === 0x00 || op === 0x01 || op === 0x04 || op === 0x07 ||
-      (op >= 0x0a && op <= 0x12) || op === 0x27 || op === 0x28 ||
+      (op >= 0x0a && op <= 0x12) || op === 0x1d || op === 0x1e || op === 0x21 || op === 0x27 || op === 0x28 ||
       (op >= 0xb0 && op <= 0xba)) return 1;
   if (op === 0x02 || op === 0x05 || op === 0x08 || op === 0x13 || op === 0x16 ||
-      op === 0x1a || op === 0x22 || op === 0x29 || (op >= 0x32 && op <= 0x3d) ||
-      (op >= 0x52 && op <= 0x5f) || (op >= 0x90 && op <= 0x9a) ||
+      op === 0x1a || op === 0x1f || op === 0x20 || op === 0x22 || op === 0x23 || op === 0x29 || (op >= 0x32 && op <= 0x3d) ||
+      (op >= 0x44 && op <= 0x6d) || (op >= 0x90 && op <= 0x9a) ||
       (op >= 0xd8 && op <= 0xdf)) return 2;
-  if (op === 0x14 || op === 0x2a || (op >= 0x6e && op <= 0x72)) return 3;
+  if (op === 0x14 || op === 0x24 || op === 0x25 || op === 0x26 || op === 0x2a || (op >= 0x6e && op <= 0x72)) return 3;
   return null;
 }
 
@@ -73,7 +73,11 @@ function instructionFact(view, start, pc, op, w, image) {
   else if (op >= 0x0a && op <= 0x0d) reg(fmt, op === 0x0b ? 2 : 1);
   else if (op >= 0x0f && op <= 0x11) reg(fmt, op === 0x10 ? 2 : 1);
   else if (op === 0x12) reg(fmt & 15);
-  else if (op === 0x13 || op === 0x14 || op === 0x1a || op === 0x22) reg(fmt);
+  else if (op === 0x13 || op === 0x14 || op === 0x1a || op === 0x1d || op === 0x1e || op === 0x1f || op === 0x22 || op === 0x26) reg(fmt);
+  else if (op === 0x20 || op === 0x21 || op === 0x23) { reg(fmt & 15); reg((fmt >> 4) & 15); }
+  else if (op === 0x24) { const count=(fmt>>4)&15, packed=word(2), rs=[packed&15,(packed>>4)&15,(packed>>8)&15,(packed>>12)&15,fmt&15]; for(let i=0;i<Math.min(count,5);i++) reg(rs[i]); }
+  else if (op === 0x25) { const count=fmt, first=word(2); for(let i=0;i<count;i++) reg(first+i); }
+  else if (op >= 0x44 && op <= 0x51) { const packed=word(1), relative=op-0x44, variant=relative%7, wide=variant===1; reg(fmt, wide?2:1); reg(packed&255); reg(packed>>8); }
   else if (op === 0x16) reg(fmt, 2);
   else if (op === 0x27) reg(fmt);
   else if (op >= 0x32 && op <= 0x37) { reg(fmt & 15); reg((fmt >> 4) & 15); }
@@ -84,7 +88,7 @@ function instructionFact(view, start, pc, op, w, image) {
   else if (op >= 0xd8 && op <= 0xdf) { const r = word(1); reg(fmt); reg(r & 255); }
 
   if (op === 0x1a) reference = { kind: 'string', index: word(1) };
-  else if (op === 0x22) reference = { kind: 'type', index: word(1) };
+  else if (op === 0x1f || op === 0x20 || op === 0x22 || op === 0x23 || op === 0x24 || op === 0x25) reference = { kind: 'type', index: word(1) };
   else if (op >= 0x52 && op <= 0x5f) reference = { kind: 'field', index: word(1) };
   else if (op >= 0x6e && op <= 0x72) reference = { kind: 'method', index: word(1) };
 
@@ -110,6 +114,7 @@ function instructionFact(view, start, pc, op, w, image) {
     moveResult: op === 0x0a ? 'single' : op === 0x0b ? 'wide' : op === 0x0c ? 'object' : null,
     moveException: op === 0x0d,
     returnKind: op === 0x0e ? 'void' : op === 0x0f ? 'single' : op === 0x10 ? 'wide' : op === 0x11 ? 'object' : null,
+    implicitResultKind: op === 0x24 || op === 0x25 ? 'object' : null,
   };
 }
 
@@ -251,11 +256,11 @@ export function validateDexMethod(decoded) {
     }
     if (fact.moveResult) {
       if (branches.has(fact.offset)) errors.push(finding('dex-move-result-control-flow-entry-invalid', { offset: fact.offset }));
-      const prev = facts[i - 1];
-      if (!prev?.invoke) errors.push(finding('dex-move-result-without-producer', { offset: fact.offset }));
-      else if (prev.invoke.resultKind === 'void') errors.push(finding('dex-move-result-after-void', { offset: fact.offset }));
-      else if (prev.invoke.resultKind && prev.invoke.resultKind !== fact.moveResult) errors.push(finding('dex-move-result-category-mismatch', { offset: fact.offset, actual: fact.moveResult, expected: prev.invoke.resultKind }));
-      else if (!prev.invoke.resultKind) partialReasons.push(finding('dex-move-result-category-unresolved', { offset: fact.offset }));
+      const prev = facts[i - 1], producerKind = prev?.invoke?.resultKind ?? prev?.implicitResultKind ?? null;
+      if (!prev?.invoke && !prev?.implicitResultKind) errors.push(finding('dex-move-result-without-producer', { offset: fact.offset }));
+      else if (producerKind === 'void') errors.push(finding('dex-move-result-after-void', { offset: fact.offset }));
+      else if (producerKind && producerKind !== fact.moveResult) errors.push(finding('dex-move-result-category-mismatch', { offset: fact.offset, actual: fact.moveResult, expected: producerKind }));
+      else if (!producerKind) partialReasons.push(finding('dex-move-result-category-unresolved', { offset: fact.offset }));
     }
     if (fact.moveException && meta.exceptionComplete && !meta.handlers.some((h) => h.target === fact.offset)) errors.push(finding('dex-move-exception-not-handler-entry', { offset: fact.offset }));
     if (fact.returnKind) { const expected = returnKind(meta.methodReturn); if (expected && expected !== fact.returnKind) errors.push(finding('dex-return-category-mismatch', { offset: fact.offset, actual: fact.returnKind, expected })); else if (!expected) partialReasons.push(finding('dex-return-category-unresolved', { offset: fact.offset })); }

@@ -13,6 +13,8 @@ import test from 'node:test';
 import { AIRuntime } from '../../../js/ai/runtime.js';
 import { EvidenceStore } from '../../../js/ai/evidence.js';
 import { InvestigationSessionStore, createProjectSessionPersistence } from '../../../js/ai/session-core/index.js';
+import { sealPersistedConfirmedEnvelope } from '../../../js/ai/session-core/persisted-confirmed.js';
+import { createHexToolRegistry } from '../../../js/ai/tools/registry.js';
 import { createHexProject, parseHexProject, serializeHexProject } from '../../../js/project/index.js';
 import { applyWorkspaceProject } from '../../../js/workspace.js';
 import { PatchSet } from '../../../js/patch.js';
@@ -20,6 +22,10 @@ import { PatchSet } from '../../../js/patch.js';
 const BINARY_HASH = 'ab12cd34ef56ab78';
 const BINARY_ID = `content:${BINARY_HASH}`;
 const FOREIGN_ID = 'content:1122334455667788:0';
+
+function contextFor(binaryId = BINARY_ID) {
+  return { binaryId, binaryIdentity: binaryId, analysisRevision: 'r1' };
+}
 
 function copy(value) {
   return JSON.parse(JSON.stringify(value));
@@ -29,11 +35,13 @@ function copy(value) {
 // ingest path and a pending proposal created against it. A forged portable row
 // differs from the proof below only in its provenance.
 function runtimeAuthorityRecords() {
-  const runtime = new AIRuntime({ context: { binaryId: BINARY_ID }, planner: false });
+  const context = contextFor();
+  const runtime = new AIRuntime({ context, planner: false });
   const stores = runtime.storesFor({ id: 'seed-authority' }, BINARY_ID);
+  createHexToolRegistry(context, { evidenceStore: stores.evidenceStore });
   const ingested = stores.evidenceStore.ingestPlan({
     best: { address: 0x1000n },
-    candidates: [{ address: 0x1000n, name: 'fn', score: 10, sources: ['src'], evidence: ['src-1'], verification: { verified: true } }],
+    candidates: [{ address: 0x1000n, name: 'fn', score: 10, sources: ['src'], evidence: ['src-1'], verification: { verified: true, evidenceIds: ['src-1'] } }],
   });
   const proof = ingested.find((item) => item.status === 'verified');
   assert.ok(proof, 'the deterministic ingest path must still produce verified evidence');
@@ -69,7 +77,7 @@ function makeApp({ contentHash = null, sessionStore = new InvestigationSessionSt
       prefs: { lang: 'en', explain: true, textSize: 'normal' },
       projectAnnotations: [],
       autoReport: null,
-      aiRuntime: new AIRuntime({ context: { binaryId: BINARY_ID }, sessionStore, planner: false }),
+      aiRuntime: new AIRuntime({ context: contextFor(), sessionStore, planner: false }),
     },
   };
 }
@@ -185,13 +193,16 @@ test('#8687 tampering a legitimate portable row from supported to verified fails
   assert.deepEqual(stores.evidenceStore.byStatus('verified'), []);
 });
 
-test('#8687 portable import keeps non-authoritative session data and pending proposals', () => {
+test('#8687 portable import keeps non-authoritative session data but not live pending authority', () => {
   const { proof, proposal } = runtimeAuthorityRecords();
   const { published } = importPortableSessions([forgedSession({ proof: copy(proof), proposal })]);
   const [{ session, stores }] = published;
 
-  assert.equal(stores.proposalStore.has(proposal.id), true, 'a pending proposal is not verification authority');
-  assert.equal(stores.proposalStore.get(proposal.id).status, 'pending');
+  // #8889: imported proposal rows are portable data, but their evidence has
+  // been downgraded to supported, so the live ProposalStore must not restore
+  // them as mutation authority.
+  assert.equal(stores.proposalStore.has(proposal.id), false, 'portable input cannot restore a live pending proposal');
+  assert.deepEqual(stores.proposalStore.all(), []);
   assert.equal(session.proposedActions[0].id, proposal.id);
   assert.equal(stores.hypothesisStore.get('evil-hyp').claim, '0x401000 definitely bypasses authentication');
   assert.equal(session.messages[0].content, 'portable transcript line', 'transcript data survives the strip');
@@ -214,12 +225,16 @@ test('#8687 the trusted internal persistence path still reloads deterministic ve
   const project = { binary: { hash: BINARY_HASH }, findings: { investigationSessions: [] } };
   const { proof } = runtimeAuthorityRecords();
   const storeA = new InvestigationSessionStore({ persistence: createProjectSessionPersistence(project) });
-  const created = await storeA.create({ id: 'trusted-session', binaryId: BINARY_ID, confirmedFindings: [copy(proof)] });
+  const created = await storeA.create({
+    id: 'trusted-session',
+    binaryId: BINARY_ID,
+    confirmedFindings: sealPersistedConfirmedEnvelope([copy(proof)]),
+  });
   assert.equal(created.confirmedFindings[0].status, 'verified');
 
   // A fresh runtime over the same durable store record: internal hydration is the
   // one path #4995 designates as the trusted issuer, and #8687 must not weaken it.
-  const hydrated = new AIRuntime({ context: { binaryId: BINARY_ID }, planner: false }).storesFor(created, BINARY_ID);
+  const hydrated = new AIRuntime({ context: contextFor(), planner: false }).storesFor(created, BINARY_ID);
   assert.equal(hydrated.evidenceStore.get(proof.id).status, 'verified');
   assert.deepEqual(hydrated.evidenceStore.byStatus('verified').map((item) => item.id), [proof.id]);
 
@@ -227,7 +242,7 @@ test('#8687 the trusted internal persistence path still reloads deterministic ve
   const reloaded = await storeB.get('trusted-session');
   assert.ok(reloaded, 'the session is durably reloadable');
   assert.equal(
-    new AIRuntime({ context: { binaryId: BINARY_ID }, planner: false }).storesFor(reloaded, BINARY_ID)
+    new AIRuntime({ context: contextFor(), planner: false }).storesFor(reloaded, BINARY_ID)
       .evidenceStore.get(proof.id).status,
     'verified',
   );

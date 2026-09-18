@@ -27,7 +27,7 @@ function instructionId(value) {
 // profile; every other architecture must emit its own identity.
 function compatibleArchitectureIds(plugin) {
   const id = identity(plugin.id);
-  return id === 'arm64e' ? new Set(['arm64', 'arm64e']) : new Set([id]);
+  return (id === 'arm64e' || id === 'arm64ec') ? new Set(['arm64', id]) : new Set([id]);
 }
 
 function compatibleModes(plugin) {

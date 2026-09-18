@@ -4,6 +4,7 @@
  * /api/gemini だけで、関数レポートから必要な根拠だけを上限付きで抜き出す。
  */
 import { stepText } from './comprehend.js';
+import { getAuthContext } from './auth/runtime-context.js';
 
 const MAX_ASSEMBLY_LINES = 360;
 const MAX_PSEUDOCODE_LINES = 32;
@@ -62,9 +63,14 @@ export async function streamGemini(payload, handlers, signal) {
 }
 
 async function streamGeminiAttempt(payload, handlers, signal) {
+  const headers = { 'content-type': 'application/json' };
+  try {
+    const grant = await getAuthContext()?.auth?.aiCapability?.();
+    if (typeof grant?.capability === 'string') headers['x-hex-ai-capability'] = grant.capability;
+  } catch { /* server will reject provider spend when no grant is available */ }
   const response = await fetch('/api/gemini', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers,
     body: JSON.stringify(payload),
     signal,
   });

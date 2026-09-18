@@ -1,4 +1,5 @@
 import { functionSeed } from './model.js';
+import { parseCHPELoadConfig } from './pe-chpe.js';
 
 export const PE_METADATA_LIMITS = Object.freeze({
   inputBytes: 64 * 1024 * 1024,
@@ -813,4 +814,5 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
     suppressedGuardCFFunctions,
     exportSuppressedGuardCFFunctions,
   };
+  parseCHPELoadConfig(r, off, declared, image, budget, mappedFileRangeForRva, mappedFileSpanForRva);
 }

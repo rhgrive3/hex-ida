@@ -29,6 +29,22 @@ const FULL_ENVIRONMENT_SYSTEM_STATE = Object.freeze([
   'sys:cntfrq_el0',
 ]);
 
+const PSTATE_IMMEDIATE_STATE = new Map([
+  ['uao', 'sys:uao'],
+  ['pan', 'sys:pan'],
+  ['spsel', 'sys:spsel'],
+  ['ssbs', 'sys:ssbs'],
+  ['dit', 'sys:dit'],
+  ['tco', 'sys:tco'],
+  ['daifset', 'sys:daif'],
+  ['daifclr', 'sys:daif'],
+  ['allint', 'sys:allint'],
+  ['pm', 'sys:pm'],
+  ['svcrsm', 'sys:svcr'],
+  ['svcrza', 'sys:svcr'],
+  ['svcrsmza', 'sys:svcr'],
+]);
+
 function instructionOperands(instruction) {
   if (Array.isArray(instruction?.ops)) return instruction.ops;
   if (Array.isArray(instruction?.operandsParsed)) return instruction.operandsParsed;
@@ -69,10 +85,13 @@ function decorateArm64SystemStateIdentity(instruction, bundle, context = {}) {
 
   if (mnemonic === 'msr' && operands.length === 2 && operands[1]?.k === 'imm') {
     const field = operandText(operands[0]);
-    if (field === 'daifset' || field === 'daifclr') {
-      const replace = new Map([[`sys:${field}`, 'sys:daif']]);
+    const stateId = PSTATE_IMMEDIATE_STATE.get(field);
+    if (stateId) {
+      const replace = new Map([[`sys:${field}`, stateId]]);
       operations = operations.map((operation) => rewriteIntrinsicRegisters(operation, {
-        reads:['sys:daif'], writes:['sys:daif'], replace,
+        reads:field === 'daifset' || field === 'daifclr' ? [stateId] : [],
+        writes:[stateId],
+        replace,
       }));
       changed = true;
     }

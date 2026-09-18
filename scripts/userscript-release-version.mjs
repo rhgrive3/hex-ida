@@ -4,7 +4,7 @@ const BUILD_ID = /^[a-f0-9]{24}$/;
 
 export function resolveUserscriptReleaseVersion(previous, { releaseIdentity, buildId } = {}) {
   const serial = Number(previous?.serial);
-  if (!Number.isSafeInteger(serial) || serial < 1 || serial >= 9_999_999_999) {
+  if (!Number.isSafeInteger(serial) || serial < 1 || serial > 9_999_999_999) {
     throw new Error('Userscript release serial is invalid or exhausted.');
   }
   const identity = String(releaseIdentity || '').toLowerCase();
@@ -22,6 +22,9 @@ export function resolveUserscriptReleaseVersion(previous, { releaseIdentity, bui
   if (!BUILD_ID.test(previousBuildId)) throw new Error('Previous userscript runtime buildId must be 24 hex characters.');
 
   const unchanged = previousIdentity === identity && previousBuildId === runtimeBuildId;
+  if (!unchanged && serial >= 9_999_999_999) {
+    throw new Error('Userscript release serial is invalid or exhausted.');
+  }
   const nextSerial = unchanged ? serial : serial + 1;
   const state = Object.freeze({ serial: nextSerial, releaseIdentity: identity, buildId: runtimeBuildId });
   return Object.freeze({

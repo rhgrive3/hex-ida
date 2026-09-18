@@ -32,7 +32,8 @@ export function parseJsonc(text) {
     } else if (char === '/' && next === '*') {
       const end = source.indexOf('*/', index + 2);
       if (end < 0) throw new SyntaxError('Invalid JSONC: unterminated block comment.');
-      stripped += ' '.repeat(Math.max(1, end + 2 - index));
+      const comment = source.slice(index, end + 2);
+      stripped += comment.replace(/[^\r\n]/g, ' ');
       index = end + 1;
     } else {
       stripped += char;
@@ -60,7 +61,10 @@ export function parseJsonc(text) {
     if (char === ',') {
       let lookahead = index + 1;
       while (/\s/.test(stripped[lookahead] ?? '')) lookahead += 1;
-      if (stripped[lookahead] === '}' || stripped[lookahead] === ']') continue;
+      if (stripped[lookahead] === '}' || stripped[lookahead] === ']') {
+        withoutTrailingCommas += ' ';
+        continue;
+      }
     }
     withoutTrailingCommas += char;
   }

@@ -14,8 +14,13 @@ import test from 'node:test';
 import { AIRuntime } from '../../../js/ai/runtime.js';
 import { InvestigationSessionStore } from '../../../js/ai/session-core/index.js';
 import { sealPersistedConfirmedEnvelope } from '../../../js/ai/session-core/persisted-confirmed.js';
+import { createHexToolRegistry } from '../../../js/ai/tools/registry.js';
 
 const BINARY = 'bin-4590';
+
+function contextFor(binaryId = BINARY) {
+  return { binaryId, binaryIdentity: binaryId, analysisRevision: 'r1' };
+}
 
 function copy(value) {
   return JSON.parse(JSON.stringify(value));
@@ -33,12 +38,17 @@ function trustedCarrier(persisted) {
 
 async function seededPersistence(binaryId = BINARY) {
   const sessionStore = new InvestigationSessionStore();
-  const runtime = new AIRuntime({ context: { binaryId }, sessionStore, planner: false });
+  const context = contextFor(binaryId);
+  const runtime = new AIRuntime({ context, sessionStore, planner: false });
   const session = await sessionStore.create({ id: 's-4590', binaryId });
   const stores = runtime.storesFor(session, binaryId);
+  // Proposal admission is bound to the same ObservationStore that mints
+  // runtime evidence. Attach the production registry before ingesting the
+  // fixture so its sourceBinding is current (#8889).
+  createHexToolRegistry(context, { evidenceStore: stores.evidenceStore });
   const ingested = stores.evidenceStore.ingestPlan({
     best: { address: 0x1000n },
-    candidates: [{ address: 0x1000n, name: 'fn', score: 10, sources: ['src'], evidence: ['src-1'], verification: { verified: true } }],
+    candidates: [{ address: 0x1000n, name: 'fn', score: 10, sources: ['src'], evidence: ['src-1'], verification: { verified: true, evidenceIds: ['src-1'] } }],
   });
   const proof = ingested.find((item) => item.status === 'verified');
   stores.hypothesisStore.upsert({ id: 'h-4590', claim: 'claim', status: 'open', supportEvidenceIds: [proof.id] });
@@ -53,7 +63,7 @@ async function seededPersistence(binaryId = BINARY) {
   const updated = await sessionStore.update(session.id, {
     effectiveScope: 'auto',
     hypotheses: stores.hypothesisStore.all(),
-    confirmedFindings: stores.evidenceStore.byStatus('verified'),
+    confirmedFindings: sealPersistedConfirmedEnvelope(stores.evidenceStore.byStatus('verified')),
     proposedActions: stores.proposalStore.all(),
   });
   const approval = stores.proposalStore.approve('p-4590');
@@ -69,7 +79,7 @@ async function seededPersistence(binaryId = BINARY) {
 }
 
 function resumed(session, binaryId = BINARY) {
-  return new AIRuntime({ context: { binaryId }, planner: false }).storesFor(session, binaryId);
+  return new AIRuntime({ context: contextFor(binaryId), planner: false }).storesFor(session, binaryId);
 }
 
 test('#4590 pending proposal persists through a trusted rebuild and stays reviewable', async () => {

@@ -842,7 +842,10 @@ console.log('\nAll integrated issue tests PASS!');
     buf.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0], 0);
     dv.setUint16(16, 2, true); dv.setUint16(18, 62, true);
     dv.setBigUint64(40, BigInt(shOff), true);
-    dv.setUint16(52, ehsize, true); dv.setUint16(56, 4, true);
+    // This fixture has no program-header table; keep e_phnum consistent with
+    // e_phoff so the #4096 header-presence guard does not reject it before the
+    // section-backed string-table regression is reached.
+    dv.setUint16(52, ehsize, true); dv.setUint16(56, 0, true);
     dv.setUint16(58, shentsize, true); dv.setUint16(60, 3, true);
 
     const writeSh = (i, name, type, offset, size, link, entsize) => {

@@ -7,14 +7,14 @@ import { AuthRepository } from '../../js/auth/server/repository.js';
 
 // Execute the actual Worker module graph. Only Cloudflare's host base class and
 // generated build bytes are fixtures; routing/auth/SQL are production modules.
-const root = new URL('../../', import.meta.url), buildId = 'a'.repeat(24) + '.' + 'b'.repeat(24);
+const root = new URL('../../', import.meta.url), buildId = 'a'.repeat(24) + '.' + 'b'.repeat(24), signingKey = Buffer.alloc(32, 7).toString('base64url');
 const context = vm.createContext({ Request, Response, Headers, URL, URLSearchParams, TextEncoder, TextDecoder, AbortController, AbortSignal, crypto: webcrypto, console, setTimeout, clearTimeout, setInterval, clearInterval, atob, btoa, performance, structuredClone });
 const cache = new Map();
 async function moduleFor(id) {
   if (cache.has(id)) return cache.get(id);
   let source;
   if (id === 'cloudflare:workers') source = 'export class DurableObject { constructor() {} }';
-  else if (id.endsWith('/.runtime-build/runtime-secrets.js')) source = `export const RUNTIME_BUILD={manifest:{buildId:${JSON.stringify('a'.repeat(24))},privileged:{buildId:${JSON.stringify(buildId)}}}};`;
+  else if (id.endsWith('/.runtime-build/runtime-secrets.js')) source = `export const RUNTIME_BUILD={manifest:{buildId:${JSON.stringify('a'.repeat(24))},privileged:{buildId:${JSON.stringify(buildId)}}},signingKey:${JSON.stringify(signingKey)}};`;
   else if (id.endsWith('/.runtime-build/privileged-assets.js')) source = `export const PRIVILEGED_BUILD=${JSON.stringify({ buildId, parentSource: '/* private parent */', childSource: '/* private child */', adminSource: '/* private admin */' })};`;
   else source = await readFile(new URL(id), 'utf8');
   const module = new vm.SourceTextModule(source, { context, identifier: id, initializeImportMeta(meta) { meta.url = id; } });
@@ -46,6 +46,27 @@ try {
     for (const path of ['/admin/', '/admin/app.js', '/api/admin/users', `/_privileged/dev/${buildId}/parent.js`, `/_privileged/dev/${buildId}/child.js`]) assert.equal((await get(path, token)).status, 403, `${role} ${path}`);
   }
   await repo.loginUser({ id: owner, username: 'Owner' }); const token = await repo.issueSession(owner, 'userscript');
+  let quotaLookups = 0;
+  env.GEMINI_API_KEY = 'server-only-fixture';
+  env.AI_QUOTA = { getByName() { quotaLookups++; throw new Error('quota must not be reached by rejected authorization'); } };
+  const aiRequest = (path, headers = {}, body = '{}') => worker.fetch(new Request('https://hex.test' + path, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body }), env, {});
+  assert.equal((await aiRequest('/api/ai/turn')).status, 401, 'missing AI capability must fail before worker dispatch');
+  assert.equal((await aiRequest('/api/ai/turn', { origin: 'https://chatgpt.com' })).status, 401, 'allowed CORS origin is not authorization');
+  assert.equal((await aiRequest('/api/ai/turn', { 'x-hex-session': 'attacker-session' })).status, 401, 'client session id is not authorization');
+  assert.equal((await aiRequest('/api/gemini')).status, 401, 'legacy provider-spend route uses the same gate');
+  assert.equal(quotaLookups, 0, 'rejected requests must not acquire distributed quota');
+  const capResponse = await worker.fetch(new Request('https://hex.test/api/auth/ai-capability', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: '{}' }), env, {});
+  assert.equal(capResponse.status, 200);
+  const cap = await capResponse.json();
+  // Use a deterministically malformed JSON value so the assertion checks only
+  // that capability admission reaches worker validation, not which missing
+  // field the normalizer reports first.
+  const admitted = await aiRequest('/api/ai/turn', { 'x-hex-ai-capability': cap.capability }, 'null');
+  assert.equal(admitted.status, 400, 'valid capability passes admission and reaches request validation');
+  assert.equal(quotaLookups, 0, 'invalid AI payload still fails before quota after successful auth');
+  const preflight = await worker.fetch(new Request('https://hex.test/api/ai/turn', { method: 'OPTIONS', headers: { origin: 'https://chatgpt.com', 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type,x-hex-ai-capability' } }), env, {});
+  assert.equal(preflight.status, 204);
+  assert.match(preflight.headers.get('access-control-allow-headers') || '', /X-Hex-AI-Capability/i);
   const privateChild = await get(`/_privileged/dev/${buildId}/child.js`, token);
   assert.equal(await privateChild.text(), '/* private child */');
   assert.equal(privateChild.headers.get('cross-origin-resource-policy'), 'same-origin');

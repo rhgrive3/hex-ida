@@ -131,9 +131,26 @@ function stripPortableVerificationAuthority(project) {
   return { ...project, findings: { ...project.findings, investigationSessions: stripped } };
 }
 
+export function mintProjectId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `proj_${crypto.randomUUID()}`;
+  }
+  return `proj_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export function createHexProject(input = {}) {
   const now = new Date().toISOString();
+  if (input.id != null && (typeof input.id !== 'string' || !input.id.trim())) {
+    throw new ProjectFormatError('project id must be a non-empty string');
+  }
+  if (input.projectId != null && (typeof input.projectId !== 'string' || !input.projectId.trim())) {
+    throw new ProjectFormatError('project id must be a non-empty string');
+  }
+  const id = (typeof input.id === 'string' && input.id.trim())
+    || (typeof input.projectId === 'string' && input.projectId.trim())
+    || mintProjectId();
   const project = {
+    id,
     format: 'hexproj', version: HEX_PROJECT_VERSION,
     createdAt: input.createdAt || now, updatedAt: now,
     binary: { hash: input.binaryHash || input.binary?.hash || null, metadata: input.binaryMetadata || input.binary?.metadata || null, embedded: false },
@@ -390,7 +407,11 @@ export function parseHexProject(input) {
     }
     throw error;
   }
-  return stripPortableVerificationAuthority(normalizeHexProjectV1(migrated));
+  const normalized = normalizeHexProjectV1(migrated);
+  if (!normalized.id) {
+    normalized.id = mintProjectId();
+  }
+  return stripPortableVerificationAuthority(normalized);
 }
 
 export function tryParseHexProject(input) { try { return { ok: true, project: parseHexProject(input) }; } catch (error) { return { ok: false, error: error?.message || String(error), code: error?.code || 'HEX_PROJECT_INVALID' }; } }
@@ -411,10 +432,21 @@ export function normalizeHexProjectV1(project) {
   if (!project.binary || typeof project.binary !== 'object' || Array.isArray(project.binary)) throw new ProjectFormatError('project binary metadata is missing');
   if (project.binary.embedded) throw new ProjectFormatError('embedded binaries are not accepted by this project version');
 
+  if (project.id != null && (typeof project.id !== 'string' || !project.id.trim())) {
+    throw new ProjectFormatError('project id must be a non-empty string');
+  }
+  if (project.projectId != null && (typeof project.projectId !== 'string' || !project.projectId.trim())) {
+    throw new ProjectFormatError('project id must be a non-empty string');
+  }
+  const id = (typeof project.id === 'string' && project.id.trim())
+    || (typeof project.projectId === 'string' && project.projectId.trim())
+    || null;
+
   const createdAt = project.createdAt || new Date(0).toISOString();
   const updatedAt = project.updatedAt || createdAt;
 
   const normalized = {
+    ...(id ? { id } : {}),
     format: 'hexproj',
     version: HEX_PROJECT_VERSION,
     createdAt,

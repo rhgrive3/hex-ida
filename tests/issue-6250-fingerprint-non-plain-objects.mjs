@@ -12,15 +12,13 @@
 import assert from 'node:assert/strict';
 import { EvidenceStore } from '../js/ai/evidence.js';
 import { ProposalStore } from '../js/ai/proposals.js';
-import { InvestigationSessionStore } from '../js/ai/session-core/index.js';
-// #4999/#4995: verified authority is minted only by the trusted persisted-confirmed
-// loader; a raw ingest with a self-declared status/verifier flag is not enough.
+import { sealPersistedConfirmedEnvelope } from '../js/ai/session-core/persisted-confirmed.js';
+// #4999/#4995: this test carrier represents a record that has crossed the
+// private trusted persistence boundary rather than a raw session row.
 function verifiedEvidence(id, title) {
-  const session = new InvestigationSessionStore().register({
-    id: `fixture-session-${id}`,
-    confirmedFindings: [{ id, kind: 'read', status: 'verified', sourceTool: 'fixture', title }],
-  });
-  return new EvidenceStore().restorePersistedConfirmed(session.confirmedFindings);
+  return new EvidenceStore().restorePersistedConfirmed(sealPersistedConfirmedEnvelope([{
+    id, kind: 'read', status: 'verified', sourceTool: 'fixture', title,
+  }]));
 }
 
 function storeWith() {

@@ -167,8 +167,8 @@ export function architectureCapability(image, engine = {}) {
   const architecture = canonicalArchitectureId(image?.arch || 'unknown');
   const adapter = architectureAdapter(architecture);
   const target = architecturePluginV2(architecture);
-  const engineSupported = ownTruthy(engine, architecture) || (architecture === 'arm64e' && ownTruthy(engine, 'arm64'));
-  const legacyArm64Analysis = (architecture === 'arm64' || architecture === 'arm64e') && engineSupported;
+  const engineSupported = ownTruthy(engine, architecture) || ((architecture === 'arm64e' || architecture === 'arm64ec') && ownTruthy(engine, 'arm64'));
+  const legacyArm64Analysis = (architecture === 'arm64' || architecture === 'arm64e' || architecture === 'arm64ec') && engineSupported;
   const semanticCapability = target?.capabilities?.semanticAnalysis || 'unsupported';
   const arm64Analysis = legacyArm64Analysis && semanticCapability !== 'unsupported';
   const emulationSupported = ownTruthy(engine?.emulation, architecture);

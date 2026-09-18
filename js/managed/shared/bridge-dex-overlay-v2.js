@@ -188,10 +188,71 @@ function repairDexFieldMemory(fn, lowered) {
   return {...lowered,semanticIr,ssa:buildSemanticSsa(semanticIr,lowered.cfg)};
 }
 
+
+
+function repairDexArrayMemory(fn, lowered) {
+  const bound=new Map();
+  for(const b of fn.bundles){const m=b.memoryEffects?.[0];if(m?.bindingVersion===2)bound.set(b.operationId,{bundle:b,memory:m})}
+  if(!bound.size)return lowered;
+  const old=lowered.semanticIr,values=[...old.values],valueById=new Map(values.map(v=>[v.id,v]));
+  const replacement=new Map(),before=new Map(),after=new Map();
+  const NO=Object.freeze([]),readsByEffect=new Map(),writesByEffect=new Map();
+  for(const n of old.nodes){const ids=n.sourceEffectIds;if(!ids)continue;const target=n.kind==='state-read'?readsByEffect:n.kind==='state-write'?writesByEffect:null;if(!target)continue;for(const id of ids){let list=target.get(id);if(!list)target.set(id,list=[]);list.push(n)}}
+  const makeValue=(id,machineType,nodeId,origin,metadata=null)=>{const v={id,kind:'definition',machineType,definitionNodeId:nodeId,sourceEntityId:null,variableKey:null,origin,...(metadata?{metadata}:{})};values.push(v);valueById.set(id,v);return v};
+  for(const node of old.nodes){
+    if(!['load','store'].includes(node.kind))continue;
+    const effectId=node.sourceEffectIds?.find(id=>bound.has(id));if(!effectId)continue;
+    const {memory,bundle}=bound.get(effectId),reads=readsByEffect.get(effectId)??NO,getRead=i=>reads[i]?.outputs?.[0];
+    const base=getRead(memory.arrayReadIndex),index=memory.indexReadIndex==null?null:getRead(memory.indexReadIndex);
+    if(!base)continue;
+    const addressNodeId=`${node.id}:array-address`,addressValueId=`${addressNodeId}:value`,addressInputs=[base,index].filter(Boolean);
+    makeValue(addressValueId,{kind:'address',widthBits:32,addressSpace:'array-element'},addressNodeId,node.origin);
+    const addressNode={id:addressNodeId,kind:'intrinsic',blockId:node.blockId,inputs:addressInputs,outputs:[addressValueId],operator:'managed.dex.array-element-address',variable:null,memory:null,call:null,intrinsic:{inputs:addressInputs,outputs:[addressValueId],stateReads:[],stateWrites:[],memoryRead:{scope:'none'},memoryWrite:{scope:'none'},controlEffects:[],determinism:'input-dependent',symbolicDetail:'summary-only'},targets:[],attributes:{variant:memory.variant??null,elementWidth:memory.elementWidth??memory.byteWidth,elementCount:memory.elementCount??1,bulk:memory.bulk===true},unknown:null,completeness:'complete',sourceEffectIds:[effectId],origin:node.origin};
+    const extras=[addressNode];
+    const faults=[...(memory.receiverNullException===true?[{kind:'null-reference',condition:{valueId:base},detail:{exceptionType:'java/lang/NullPointerException',receiver:true}}]:[]),...(memory.boundsException===true&&index?[{kind:'array-bounds',condition:{valueId:index},detail:{exceptionType:'java/lang/ArrayIndexOutOfBoundsException'}}]:[])];const mem={...node.memory,addressSpace:'array-element',addressExpr:{valueId:addressValueId},widthBits:(memory.byteWidth||4)*8,faults};
+    let updated={...node,memory:mem};
+    if(memory.isWrite){
+      let stored=memory.valueReadIndex==null?null:getRead(memory.valueReadIndex);
+      if(stored&&memory.valueBits>memory.byteWidth*8){const id=`${node.id}:array-truncate`,out=`${id}:value`;makeValue(out,{kind:'bitvector',widthBits:memory.byteWidth*8},id,node.origin);extras.push({id,kind:'trunc',blockId:node.blockId,inputs:[stored],outputs:[out],operator:null,variable:null,memory:null,call:null,intrinsic:null,targets:[],attributes:{fromBits:memory.valueBits,toBits:memory.byteWidth*8},unknown:null,completeness:'complete',sourceEffectIds:[effectId],origin:node.origin});stored=out}
+      if(!stored&&memory.bulk===true){const id=`${node.id}:array-payload`,out=`${id}:value`;makeValue(out,{kind:'bitvector',widthBits:memory.byteWidth*8},id,node.origin,{payloadOffset:String(memory.payloadOffset??0),elementCount:String(memory.elementCount??0)});extras.push({id,kind:'intrinsic',blockId:node.blockId,inputs:[],outputs:[out],operator:'managed.dex.fill-array-data-payload',variable:null,memory:null,call:null,intrinsic:{inputs:[],outputs:[out],stateReads:[],stateWrites:[],memoryRead:{scope:'none'},memoryWrite:{scope:'none'},controlEffects:[],determinism:'deterministic',symbolicDetail:'summary-only'},targets:[],attributes:{payloadOffset:memory.payloadOffset??null,elementCount:memory.elementCount??0,elementWidth:memory.elementWidth??memory.byteWidth},unknown:node.unknown,completeness:node.completeness,sourceEffectIds:[effectId],origin:node.origin});stored=out}
+      updated={...updated,inputs:stored?[addressValueId,stored]:[addressValueId]};
+    }else{
+      updated={...updated,inputs:[addressValueId]};
+      if(memory.extension){const id=`${node.id}:array-extend`,out=`${id}:value`,kind=memory.extension==='sign'?'sext':'zext';makeValue(out,memory.valueType,id,node.origin);const ext={id,kind,blockId:node.blockId,inputs:[node.outputs[0]],outputs:[out],operator:null,variable:null,memory:null,call:null,intrinsic:null,targets:[],attributes:{fromBits:memory.byteWidth*8,toBits:memory.valueBits},unknown:null,completeness:'complete',sourceEffectIds:[effectId],origin:node.origin};after.set(node.id,[ext]);for(const w of writesByEffect.get(effectId)??NO){if(w.inputs?.[0]===node.outputs[0])replacement.set(w.id,{...w,inputs:[out]})}}
+    }
+    before.set(node.id,extras);replacement.set(node.id,updated);
+  }
+  const nodes=[];for(const n of old.nodes){nodes.push(...(before.get(n.id)??[]));nodes.push(replacement.get(n.id)??n);nodes.push(...(after.get(n.id)??[]))}
+  const byBlock=new Map();for(const n of nodes){if(!byBlock.has(n.blockId))byBlock.set(n.blockId,[]);byBlock.get(n.blockId).push(n.id)}
+  const blocks=old.blocks.map(b=>({...b,nodeIds:byBlock.get(b.id)??[]}));
+  const semanticIr={...old,blocks,nodes,values};
+  return {...lowered,semanticIr,ssa:buildSemanticSsa(semanticIr,lowered.cfg)};
+}
+
+const DEX_SPECIAL_INTRINSICS=new Set(['new-array','filled-new-array','filled-new-array/range','array-length','check-cast','instance-of']);
+function repairDexArrayTypeNodes(fn, lowered) {
+  const bundles=new Map((fn.bundles??[]).map(b=>[b.operationId,b]));
+  let changed=false;
+  const nodes=lowered.semanticIr.nodes.map(node=>{
+    const effectId=node.sourceEffectIds?.find(id=>bundles.has(id)),bundle=effectId?bundles.get(effectId):null,mn=bundle?.mnemonic;
+    if(!bundle||(!DEX_SPECIAL_INTRINSICS.has(mn)&&mn!=='monitor-enter'&&mn!=='monitor-exit'))return node;
+    if(node.kind==='state-read'||node.kind==='state-write'||node.kind==='load'||node.kind==='store')return node;
+    changed=true;
+    if(mn==='monitor-enter'||mn==='monitor-exit')return {...node,kind:'barrier',operator:null,attributes:{...(node.attributes??{}),synchronization:mn,type:'monitor'},metadata:{...(node.metadata??{}),dexMetadata:bundle.metadata??{}}};
+    const operator=`managed.dex.${mn.replaceAll('/','-')}`;
+    return {...node,kind:'intrinsic',operator,intrinsic:{inputs:[...(node.inputs??[])],outputs:[...(node.outputs??[])],stateReads:[],stateWrites:[],memoryRead:{scope:'none'},memoryWrite:(mn==='new-array'||mn.startsWith('filled-new-array'))?{scope:'all',addressSpaces:['managed-heap']}:{scope:'none'},controlEffects:[],determinism:'input-dependent',symbolicDetail:'summary-only'},attributes:{...(node.attributes??{}),...(bundle.metadata??{})},metadata:{...(node.metadata??{}),dexMetadata:bundle.metadata??{}}};
+  });
+  if(!changed)return lowered;
+  const semanticIr={...lowered.semanticIr,nodes};
+  return {...lowered,semanticIr,ssa:buildSemanticSsa(semanticIr,lowered.cfg)};
+}
+
 export function overlayDexLowering(fn, lowered) {
   if(fn?.frontendId!=='dex')return lowered;
   let out=repairDexControlSemantics(fn,lowered);
   out=splitDexExceptionBlocks(fn,out);
   out=repairDexFieldMemory(fn,out);
+  out=repairDexArrayMemory(fn,out);
+  out=repairDexArrayTypeNodes(fn,out);
   return deepFreeze(out);
 }

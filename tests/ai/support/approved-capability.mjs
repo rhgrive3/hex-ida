@@ -1,6 +1,6 @@
 import { EvidenceStore } from '../../../js/ai/evidence.js';
 import { ProposalStore, proposalArguments } from '../../../js/ai/proposals.js';
-import { InvestigationSessionStore } from '../../../js/ai/session-core/index.js';
+import { sealPersistedConfirmedEnvelope } from '../../../js/ai/session-core/persisted-confirmed.js';
 
 const kinds = {
   'annotation.rename': 'rename',
@@ -16,13 +16,14 @@ const kinds = {
 export async function executeApprovedCapability(executor, capability, args) {
   const kind = kinds[capability];
   if (!kind) throw new Error(`No proposal kind for ${capability}`);
-  // #4999/#4995: verified proposal evidence must come from the trusted
-  // persisted-confirmed loader, not a self-declared raw ingest.
-  const session = new InvestigationSessionStore().register({
-    id: 'fixture-session-approved-capability',
-    confirmedFindings: [{ id: 'fixture-evidence', kind: 'read', status: 'verified', sourceTool: 'fixture' }],
-  });
-  const evidenceStore = new EvidenceStore().restorePersistedConfirmed(session.confirmedFindings);
+  // #4999/#4995: this test carrier represents a record that has crossed the
+  // private trusted persistence boundary. A raw `status: 'verified'` record is
+  // deliberately not sufficient after #8687 closed session normalization.
+  const evidenceStore = new EvidenceStore().restorePersistedConfirmed(
+    sealPersistedConfirmedEnvelope([{
+      id: 'fixture-evidence', kind: 'read', status: 'verified', sourceTool: 'fixture',
+    }]),
+  );
   const store = new ProposalStore({ evidenceStore });
   const target = { ...args };
   const before = kind === 'patch' ? args.before : null;
