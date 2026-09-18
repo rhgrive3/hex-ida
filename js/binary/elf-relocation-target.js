@@ -107,3 +107,105 @@ export function relocationFieldWidth(machine, type, bits) {
   }
   return undefined;
 }
+
+const AARCH64_ABSOLUTE_POINTER_RELOCATIONS = new Set([
+  257,  // R_AARCH64_ABS64
+  1025, // R_AARCH64_GLOB_DAT
+  1026, // R_AARCH64_JUMP_SLOT
+]);
+const R_AARCH64_RELATIVE = 1027;
+
+function relocationBigInt(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'string' && value.trim() !== '') {
+    try { return BigInt(value); } catch { return null; }
+  }
+  return null;
+}
+
+function relocationSymbolIndexes(symbols) {
+  const byTableAndIndex = new Map();
+  const dynamicByIndex = new Map();
+  for (const symbol of symbols || []) {
+    if (!symbol || symbol.index == null) continue;
+    const index = Number(symbol.index);
+    if (!Number.isSafeInteger(index) || index < 0) continue;
+    if (symbol.tableIndex != null) byTableAndIndex.set(`${symbol.tableIndex}:${index}`, symbol);
+    if (symbol.source === 'dynsym' || symbol.source === 'PT_DYNAMIC') dynamicByIndex.set(index, symbol);
+  }
+  return { byTableAndIndex, dynamicByIndex };
+}
+
+function symbolForRelocation(relocation, indexes) {
+  const index = Number(relocation?.symbolIndex);
+  if (!Number.isSafeInteger(index) || index < 0) return null;
+  if (relocation?.symbolTableIndex != null) {
+    return indexes.byTableAndIndex.get(`${relocation.symbolTableIndex}:${index}`) ?? null;
+  }
+  return indexes.dynamicByIndex.get(index) ?? null;
+}
+
+function mappedRelocationTarget(image, address) {
+  if (address == null || address < 0n) return false;
+  return image?.segmentAt?.(address) != null || image?.sectionAt?.(address) != null;
+}
+
+/**
+ * Publish statically-resolved ELF relocation *reference targets* for generic
+ * discovery. These are evidence only: this function never creates a function
+ * seed and callers must not treat an entry as start authority.
+ *
+ * C1 is intentionally narrow. AAELF64 RELATIVE records expose B + A; in the
+ * BinaryImage address domain B is the image load bias, so A is the canonical
+ * target VA. ABS64/GLOB_DAT/JUMP_SLOT are published only when their referenced
+ * symbol is already defined in this image. Runtime-resolved IFUNC/IRELATIVE,
+ * TLS and instruction relocations are not guessed here.
+ */
+export function publishELFRelocationTargets(image) {
+  if (!image || Number(image?.metadata?.machine) !== EM_AARCH64 || image.bits !== 64) {
+    if (image && !Array.isArray(image.relocationTargets)) image.relocationTargets = [];
+    return image?.relocationTargets ?? [];
+  }
+  const relocations = Array.isArray(image.relocations) ? image.relocations : [];
+  const indexes = relocationSymbolIndexes(Array.isArray(image.symbols) ? image.symbols : []);
+  const out = [];
+  for (let index = 0; index < relocations.length; index += 1) {
+    const relocation = relocations[index];
+    const type = Number(relocation?.type);
+    const symbolIndex = Number(relocation?.symbolIndex ?? 0);
+    let target = null;
+    let symbol = null;
+    const addend = relocationBigInt(relocation?.addend);
+
+    if (type === R_AARCH64_RELATIVE && symbolIndex === 0 && addend != null) {
+      target = addend;
+    } else if (AARCH64_ABSOLUTE_POINTER_RELOCATIONS.has(type) && symbolIndex > 0) {
+      symbol = symbolForRelocation(relocation, indexes);
+      const symbolAddress = relocationBigInt(symbol?.address);
+      if (symbol?.defined !== true || symbolAddress == null) continue;
+      target = symbolAddress + (addend ?? 0n);
+    } else {
+      continue;
+    }
+
+    if (!mappedRelocationTarget(image, target)) continue;
+    const sourceAddress = relocationBigInt(relocation?.address);
+    if (sourceAddress == null || sourceAddress < 0n) continue;
+    out.push({
+      address: target,
+      sourceAddress,
+      id: `elf-relocation:${relocation.source ?? 'unknown'}:${index}:${sourceAddress.toString(16)}`,
+      provenance: 'elf-relocation-target',
+      relocationType: type,
+      relocationSource: relocation.source ?? null,
+      symbol: symbol?.name ?? relocation?.symbol ?? null,
+      addend,
+    });
+  }
+  out.sort((left, right) => left.sourceAddress < right.sourceAddress ? -1
+    : left.sourceAddress > right.sourceAddress ? 1
+      : left.address < right.address ? -1 : left.address > right.address ? 1 : left.relocationType - right.relocationType);
+  image.relocationTargets = out;
+  return out;
+}

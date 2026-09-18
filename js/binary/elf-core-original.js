@@ -4,7 +4,7 @@ import { parseEhFrameHeader } from './elf-unwind.js';
 import { parseProgramDynamic } from './elf-dynamic.js';
 import { createELFMetadataBudget, markELFMetadataPartial } from './elf-budget.js';
 import { elfExactFunctionStartRejection, elfFunctionExtentRejection, elfInstructionStartAlignmentRejection, elfInstructionTargetRejection, elfLoaderEntrySectionAnalysisWindow, elfSectionFileSpanConsistentWithLoads, executableELFRange } from './elf-mapping.js';
-import { relocationFieldWidth } from './elf-relocation-target.js';
+import { publishELFRelocationTargets, relocationFieldWidth } from './elf-relocation-target.js';
 import { isRiscvMappingSymbolRecord, parseRiscvAttributes, parseRiscvMappingSymbol } from './riscv-isa.js';
 
 const ET_REL = 1;
@@ -232,6 +232,7 @@ export function parseELF(input, options = {}) {
     sectionDynamicPresent: hasDynamic,
   });
   if (!dynsymAuthoritative) reconcileDynamicSymbolFallbackEvidence(image);
+  publishELFRelocationTargets(image);
   if (!metadataBudget.stopped) validateSectionRiscvVariantCcTag(image, rawSections);
   let ehFrameHdr = rawSections.find((s) => s.name === '.eh_frame_hdr') || null;
   if (!ehFrameHdr) {
