@@ -144,26 +144,30 @@ test('BinaryImage exact extents feed coverage without changing loader completene
 });
 
 
-test('demand discovery completion aggregation preserves additive coverage evidence', async () => {
+test('demand discovery publishes coverage without changing completion or adding starts', async () => {
+  const bytes = new Uint8Array(16);
+  for (let offset = 0; offset < bytes.length; offset += 4) putWord(bytes, offset, RET);
   const region = { id:'text', exec:true, vmAddr:BASE, size:16n };
-  const coverage = {
-    executableBytes:16,
-    attributedBytes:0,
-    unclassified:[{ start:BASE, end:BASE + 16n, class:'unknown' }],
-  };
   const app = {
     backend:{
       gen:1,
       binaryId:'coverage-fixture',
       guessFunctions:async () => ({ starts:[], complete:true, discoveryComplete:true }),
+      readAt:async (address, length) => ({
+        found:true,
+        bytes:bytes.slice(Number(address - BASE), Number(address - BASE) + Number(length)),
+      }),
     },
     analysisEpoch:1,
     projectRevision:0,
+    store:{ get:(key) => key === 'architecture' ? 'arm64' : (key === 'sliceIndex' ? -1 : null) },
     symbols:{
       gen:1,
+      funcs:new BigUint64Array(0),
+      funcEnds:new BigUint64Array(0),
       functionCount:0,
       functionStartsComplete:false,
-      functionDiscovery:{ complete:false, capped:false, reasons:['platform-function-seeds-not-exhaustive'], coverage },
+      functionDiscovery:{ complete:false, capped:false, reasons:['platform-function-seeds-not-exhaustive'] },
       addFunctions() { throw new Error('coverage fixture must not add starts'); },
     },
     programRegions:() => [region],
@@ -173,6 +177,10 @@ test('demand discovery completion aggregation preserves additive coverage eviden
 
   await app.ensureFunctions(region);
   assert.equal(app.symbols.functionDiscovery.complete, true, 'producer completion keeps its existing meaning');
-  assert.equal(app.symbols.functionDiscovery.coverage, coverage, 'coverage survives completion metadata aggregation');
+  assert.deepEqual(app.symbols.functionDiscovery.coverage, {
+    executableBytes:16,
+    attributedBytes:0,
+    unclassified:[{ start:BASE, end:BASE + 16n, class:'unknown' }],
+  });
   assert.equal(app.symbols.functionCount, 0, 'coverage evidence must not manufacture a function start');
 });

@@ -806,8 +806,7 @@ export class App {
       remainingBytes-=size;
     }
     const complete=results.length===targets.length && results.every((x)=>x.complete===true);
-    const coverage=sym.functionDiscovery?.coverage;
-    sym.functionDiscovery={complete,attempted:true,regionSetKey,regions:results,reasons:[...new Set(reasons)],capped:results.some((x)=>x.capped),...(coverage?{coverage}:{})};
+    sym.functionDiscovery={complete,attempted:true,regionSetKey,regions:results,reasons:[...new Set(reasons)],capped:results.some((x)=>x.capped)};
     sym.functionStartsComplete=complete;
     sym.functionStartsCapped=sym.functionDiscovery.capped || reasons.some((x)=>x.includes('budget'));
     this.viewer.setSymbols(sym);

@@ -4,6 +4,7 @@ import { createBinaryIdFromDigest } from '../core/identity/index.js';
 import { canonicalContentDigest } from './binary-identity-digest.js';
 import { ProgramIndex, mergeProgramScans, PROGRAM_MERGE_LIMITS } from '../program.js';
 import { foldShapes } from '../shapes.js';
+import { executableByteCoverage } from './discovery/executable-coverage.js';
 
 const RUNTIME_VERSION = 'demand-driven-analysis/v1';
 const MAX_PAGE = 5000;
@@ -564,11 +565,21 @@ function installCancellableFunctionDiscovery(app) {
           abortIfNeeded(producerController.signal);
           if (epoch !== demandAnalysisEpoch(app) || artifact !== demandArtifactIdentity(app)) throw Object.assign(new Error('stale function discovery'), { stale:true });
           const complete = results.length === unique.length && results.every((item) => item.complete === true);
-          const coverage = symbols.functionDiscovery?.coverage;
+          const coverage = await executableByteCoverage({
+            regions:unique,
+            functions:symbols.funcs,
+            functionEnds:symbols.funcEnds,
+            architecture:architectureOf(app),
+            signal:producerController.signal,
+            readBytes:async (address, size) => {
+              if (typeof app.backend.readAt !== 'function') return null;
+              const read = await waitForSearchRequest(app.backend.readAt(address, Number(size), false), producerController.signal);
+              return read?.found === true && read.bytes instanceof Uint8Array ? read.bytes : null;
+            },
+          });
           symbols.functionDiscovery = {
             complete, attempted:true, regionSetKey, discoveryKey, regions:results,
-            reasons:[...new Set(reasons)], capped:results.some((item) => item.capped),
-            ...(coverage ? { coverage } : {}),
+            reasons:[...new Set(reasons)], capped:results.some((item) => item.capped), coverage,
           };
           symbols.functionStartsComplete = complete;
           symbols.functionStartsCapped = symbols.functionDiscovery.capped || reasons.some((reason) => reason.includes('budget'));

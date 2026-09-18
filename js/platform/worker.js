@@ -1,6 +1,6 @@
 import { asByteSource, detectBinary, openBinarySource, parseMachOSource } from '../binary/index.js';
 import { CachedByteSource } from '../bytesource/cached.js';
-import { describeBinaryImage, regionsForImage } from './describe.js';
+import { describeBinaryImage } from './describe.js';
 import { fingerprintVendors } from '../knowledge/index.js';
 import { hashByteSource } from './hash.js';
 import { compileBytePattern } from './byte-search.js';
@@ -9,7 +9,6 @@ import { analysisFromBinaryImage, emptyAnalysis } from './analysis-result.js';
 import { analyzeDecodedSemanticFunction } from '../targets/architecture/x86_64/semantic-function.js';
 import { analyzeSemanticFunction } from '../analysis/semantic-function.js';
 import { resolveMachOPointer } from '../binary/macho-dyld.js';
-import { attachExecutableCoverage, executableByteCoverage } from '../analysis/discovery/executable-coverage.js';
 
 const ROW_BYTES = 4;
 const CHUNK_ROWS = 1024;
@@ -338,18 +337,7 @@ async function analyzeImage(msg, signal) {
     if (!selected) return emptyAnalysis();
   }
   if (signal.aborted) throw new Error('Analysis cancelled');
-  const result = analysisFromBinaryImage(selected);
-  const coverage = await executableByteCoverage({
-    regions:regionsForImage(selected),
-    functions:result.funcs,
-    functionEnds:result.funcEnds,
-    architecture:selected.arch,
-    endian:selected.endian,
-    signal,
-    readBytes:(address, size) => selected.readVirtualAsync(address, size),
-  });
-  result.functionDiscovery = attachExecutableCoverage(result.functionDiscovery, coverage);
-  return result;
+  return analysisFromBinaryImage(selected);
 }
 
 function genericFunctionSeeds() {

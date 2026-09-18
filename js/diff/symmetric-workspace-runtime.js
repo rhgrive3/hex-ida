@@ -147,7 +147,6 @@ async function discoverBaselineFunctions(baseline, { signal = null, onProgress =
     remainingBytes -= size;
   }
   const complete = results.length === regions.length && results.every((row) => row.complete === true);
-  const coverage = symbols.functionDiscovery?.coverage;
   symbols.functionDiscovery = {
     complete,
     attempted:true,
@@ -155,7 +154,6 @@ async function discoverBaselineFunctions(baseline, { signal = null, onProgress =
     regions:results,
     reasons:[...new Set(reasons)],
     capped:results.some((row) => row.capped),
-    ...(coverage ? { coverage } : {}),
   };
   symbols.functionStartsComplete = complete;
   symbols.functionStartsCapped = symbols.functionDiscovery.capped || reasons.some((reason) => reason.includes('budget'));
