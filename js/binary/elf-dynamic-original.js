@@ -2,7 +2,7 @@ import { functionSeed } from './model.js';
 import { createDynamicSymbolBudget } from './dynamic-symbol-budget.js';
 import { createRelocationBudget } from './relocation-budget.js';
 import { collectAndroidPackedRelocations, collectRelrRelocations, parseDynamicSymbolVersions } from './elf-extended.js';
-import { elfExactFunctionStartRejection, elfFunctionExtentRejection, elfInstructionStartAlignmentRejection, elfInstructionTargetRejection, elfLoaderEntrySectionAnalysisWindow, mappedELFFileRangeForVa, mappedELFFileSpanForVa } from './elf-mapping.js';
+import { elfExactFunctionStartRejection, elfFunctionExtentRejection, elfInstructionStartAlignmentRejection, elfInstructionTargetRejection, elfLoaderEntrySectionAnalysisWindow, executableELFRange, mappedELFFileRangeForVa, mappedELFFileSpanForVa } from './elf-mapping.js';
 import { relocationFieldWidth } from './elf-relocation-target.js';
 
 const ET_REL = 1;
@@ -10,6 +10,7 @@ const PT_DYNAMIC = 2;
 const DT_NULL = 0n;
 const DT_NEEDED = 1n;
 const DT_PLTRELSZ = 2n;
+const DT_PLTGOT = 3n;
 const DT_HASH = 4n;
 const DT_STRTAB = 5n;
 const DT_SYMTAB = 6n;
@@ -37,6 +38,21 @@ const DT_RELENT = 19n;
 const DT_PLTREL = 20n;
 const DT_JMPREL = 23n;
 const DT_GNU_HASH = 0x6ffffef5n;
+const EM_AARCH64 = 183;
+const R_AARCH64_JUMP_SLOT = 1026;
+const AAELF64_PLT_RESOLVER_BYTES = 32n;
+const AAELF64_PLT_THUNK_BYTES = 16n;
+const AAELF64_PLT_RELA_BYTES = 24n;
+
+const AARCH64_STP_X16_X30_PRE = 0xa9bf7bf0;
+const AARCH64_ADRP_MASK = 0x9f000000;
+const AARCH64_ADRP = 0x90000000;
+const AARCH64_LDR_X_UNSIGNED_MASK = 0xffc00000;
+const AARCH64_LDR_X_UNSIGNED = 0xf9400000;
+const AARCH64_ADD_X_IMM_MASK = 0xff800000;
+const AARCH64_ADD_X_IMM = 0x91000000;
+const AARCH64_BR_MASK = 0xfffffc1f;
+const AARCH64_BR = 0xd61f0000;
 
 export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   // parseELF's public cancellation contract must reach the PT_DYNAMIC path:
@@ -334,6 +350,7 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   image.metadata.programDynamicSymbolBudget = symbolBudget.snapshot();
   if (opts.relocations !== false) attachDynamicRelocations(image, relocs, symbols);
   checkRiscvVariantCcTag(image, tags, relocs, symbols);
+  attachAarch64StructuralPltResolver(r, tags, image, bits, relocs, !relocationBudget.stopped);
 
   image.metadata.programDynamic = {
     entries: ordered.length,
@@ -352,6 +369,157 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
     hasGnuHash: one(DT_GNU_HASH) != null,
   };
   return { parsed: true, tags, symbols: symbols.length, relocations: relocs.length };
+}
+
+function singletonDynamicTag(tags, tag) {
+  const values = tags?.get(tag);
+  return Array.isArray(values) && values.length === 1 ? values[0] : null;
+}
+
+function decodeAarch64AdrpPageDelta(word) {
+  const immlo = BigInt((word >>> 29) & 0x3);
+  const immhi = BigInt((word >>> 5) & 0x7ffff);
+  let imm = (immhi << 2n) | immlo;
+  if ((imm & 0x100000n) !== 0n) imm -= 0x200000n;
+  return imm << 12n;
+}
+
+function decodeAarch64PltTail(r, image, address) {
+  if (!executableELFRange(image, address, 16n)) return null;
+  const span = mappedELFFileSpanForVa(image, address, 16n);
+  if (!span) return null;
+  const w0 = r.u32(span.start);
+  const w1 = r.u32(span.start + 4);
+  const w2 = r.u32(span.start + 8);
+  const w3 = r.u32(span.start + 12);
+  if (((w0 & AARCH64_ADRP_MASK) >>> 0) !== AARCH64_ADRP || (w0 & 0x1f) !== 16) return null;
+  if (((w1 & AARCH64_LDR_X_UNSIGNED_MASK) >>> 0) !== AARCH64_LDR_X_UNSIGNED
+    || ((w1 >>> 5) & 0x1f) !== 16 || (w1 & 0x1f) !== 17) return null;
+  if (((w2 & AARCH64_ADD_X_IMM_MASK) >>> 0) !== AARCH64_ADD_X_IMM
+    || ((w2 >>> 5) & 0x1f) !== 16 || (w2 & 0x1f) !== 16) return null;
+  if (((w3 & AARCH64_BR_MASK) >>> 0) !== AARCH64_BR || ((w3 >>> 5) & 0x1f) !== 17) return null;
+
+  const page = (address & ~0xfffn) + decodeAarch64AdrpPageDelta(w0);
+  const ldrOffset = BigInt((w1 >>> 10) & 0xfff) * 8n;
+  const shift = ((w2 >>> 22) & 1) === 1 ? 12n : 0n;
+  const addOffset = BigInt((w2 >>> 10) & 0xfff) << shift;
+  return { gotSlot: page + ldrOffset, addTarget: page + addOffset };
+}
+
+function decodeAarch64PltResolver(r, image, address) {
+  if (!executableELFRange(image, address, 20n)) return null;
+  const span = mappedELFFileSpanForVa(image, address, 20n);
+  if (!span || r.u32(span.start) !== AARCH64_STP_X16_X30_PRE) return null;
+  return decodeAarch64PltTail(r, image, address + 4n);
+}
+
+function dynamicAarch64JumpSlots(tags, image, bits, relocs, relocationDecodeComplete) {
+  if (!relocationDecodeComplete || bits !== 64 || Number(image?.metadata?.machine) !== EM_AARCH64 || image?.endian !== 'little') return null;
+  const dtPltgot = singletonDynamicTag(tags, DT_PLTGOT);
+  const dtJmprel = singletonDynamicTag(tags, DT_JMPREL);
+  const dtPltrelsz = singletonDynamicTag(tags, DT_PLTRELSZ);
+  const dtPltrel = singletonDynamicTag(tags, DT_PLTREL);
+  if (dtPltgot == null || dtJmprel == null || dtPltrelsz == null || dtPltrel !== DT_RELA) return null;
+  if (dtPltrelsz <= 0n || dtPltrelsz % AAELF64_PLT_RELA_BYTES !== 0n) return null;
+  const countBig = dtPltrelsz / AAELF64_PLT_RELA_BYTES;
+  if (countBig <= 0n || countBig > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  const span = mappedELFFileSpanForVa(image, dtJmprel, dtPltrelsz);
+  if (!span) return null;
+
+  // Reuse the budgeted PT_DYNAMIC relocation decode rather than independently
+  // walking an attacker-controlled table a second time. Physical record offsets
+  // keep this valid even when DT_RELA aliases DT_JMPREL and the collector has
+  // already deduplicated the record under a different source label.
+  const byRecordOffset = new Map();
+  const spanStart = BigInt(span.start);
+  const spanEnd = spanStart + dtPltrelsz;
+  for (const rel of relocs || []) {
+    if (rel?.recordEncoding !== 'RELA' || rel.recordFileOffset == null) continue;
+    const recordOffset = BigInt(rel.recordFileOffset);
+    if (recordOffset < spanStart || recordOffset >= spanEnd) continue;
+    const key = recordOffset.toString();
+    if (byRecordOffset.has(key)) return null;
+    byRecordOffset.set(key, rel);
+  }
+
+  const jumpSlots = [];
+  const seen = new Set();
+  const count = Number(countBig);
+  for (let i = 0; i < count; i++) {
+    const recordOffset = spanStart + AAELF64_PLT_RELA_BYTES * BigInt(i);
+    const rel = byRecordOffset.get(recordOffset.toString());
+    if (!rel || Number(rel.type) !== R_AARCH64_JUMP_SLOT) return null;
+    const offset = BigInt(rel.address);
+    const key = offset.toString();
+    if (seen.has(key)) return null;
+    seen.add(key);
+    jumpSlots.push(offset);
+  }
+  return { dtPltgot, jumpSlots };
+}
+
+function findAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocationDecodeComplete) {
+  const dynamic = dynamicAarch64JumpSlots(tags, image, bits, relocs, relocationDecodeComplete);
+  if (!dynamic) return null;
+  const expectedBytes = AAELF64_PLT_RESOLVER_BYTES
+    + AAELF64_PLT_THUNK_BYTES * BigInt(dynamic.jumpSlots.length);
+  const jumpSlotSet = new Set(dynamic.jumpSlots.map((address) => address.toString()));
+  const matches = new Map();
+
+  // PT_LOAD is the runtime authority. We inspect every aligned address in its
+  // file-backed executable span, rather than promoting the segment/section
+  // boundary itself to a function start.
+  for (const segment of image.segments || []) {
+    if (segment?.source !== 'PT_LOAD' || segment?.perms?.execute !== true) continue;
+    const fileSize = BigInt(segment.fileSize ?? 0n);
+    if (fileSize < expectedBytes || fileSize > BigInt(Number.MAX_SAFE_INTEGER)) continue;
+    const fileOffset = BigInt(segment.fileOffset ?? 0n);
+    if (fileOffset > BigInt(Number.MAX_SAFE_INTEGER)) continue;
+    const firstDelta = (4n - (BigInt(segment.address) & 3n)) & 3n;
+    const first = Number(fileOffset + firstDelta);
+    const fileEnd = Number(fileOffset + fileSize);
+    const needed = Number(expectedBytes);
+    for (let p = first; p + needed <= fileEnd; p += 4) {
+      if (r.u32(p) !== AARCH64_STP_X16_X30_PRE) continue;
+      const address = BigInt(segment.address) + BigInt(p - Number(fileOffset));
+      if (!executableELFRange(image, address, expectedBytes)
+        || !mappedELFFileSpanForVa(image, address, expectedBytes)) continue;
+      const resolver = decodeAarch64PltResolver(r, image, address);
+      if (!resolver || resolver.gotSlot !== dynamic.dtPltgot + 16n
+        || resolver.addTarget !== resolver.gotSlot
+        || jumpSlotSet.has(resolver.gotSlot.toString())) continue;
+
+      let complete = true;
+      for (let i = 0; i < dynamic.jumpSlots.length; i++) {
+        const thunkAddress = address + AAELF64_PLT_RESOLVER_BYTES
+          + AAELF64_PLT_THUNK_BYTES * BigInt(i);
+        const thunk = decodeAarch64PltTail(r, image, thunkAddress);
+        if (!thunk || thunk.gotSlot !== thunk.addTarget || thunk.gotSlot !== dynamic.jumpSlots[i]) {
+          complete = false;
+          break;
+        }
+      }
+      if (complete) matches.set(address.toString(), address);
+      if (matches.size > 1) return null;
+    }
+  }
+  return matches.size === 1 ? matches.values().next().value : null;
+}
+
+function attachAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocationDecodeComplete) {
+  const address = findAarch64StructuralPltResolver(r, tags, image, bits, relocs, relocationDecodeComplete);
+  if (address == null) return;
+  image.functions.push(functionSeed(address, {
+    source: 'elf-plt-structure',
+    confidence: 0.65,
+    kind: 'stub',
+    exactFunctionStart: false,
+    functionStartEvidence: 'AAELF64 PLT resolver matched from DT_PLTGOT, DT_JMPREL, ordered R_AARCH64_JUMP_SLOT GOT slots, and resolver/thunk instruction structure',
+  }));
+  image.metadata.aarch64PltResolver = {
+    address,
+    source: 'elf-plt-structure',
+  };
 }
 
 function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, tags, versions = new Map(), budget = null) {
