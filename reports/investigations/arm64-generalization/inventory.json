@@ -1,0 +1,648 @@
+{
+  "schema": "arm64-generalization-inventory/v1",
+  "audit": "independent ARM64 generalization coverage audit",
+  "generatedAt": "2026-09-18",
+  "repo": "/mnt/workspace/hex-ida",
+  "worktree": "/mnt/workspace/hex-agent-h",
+  "branch": "investigate/arm64-generalization",
+  "baseSha": "05c93a1c92b34f4876060bd858e4393557d02dd4",
+  "investigationOnly": true,
+  "productionCodeOrExistingTestsModified": false,
+  "codefuseRole": "external comparison target only; never used as a fixture-design oracle in this audit",
+  "method": {
+    "discovery": [
+      "git ls-files filtered by arm64|aarch64 (576 tracked paths)",
+      "per-directory arm64/aarch64 content grep over tests/**",
+      "direct reading of each evidence class to determine WHAT is asserted, not only where the file lives"
+    ],
+    "assertionClassVocabulary": {
+      "unit-decoder-encoding": "asserts decoder/encoder bit-field domains, operand shapes, mnemonic ownership on synthetic or enumerated words",
+      "unit-effect-classification": "asserts machine-effect registry families (flags/memory/control/...) for an instruction form",
+      "unit-abi-classification": "asserts ABI argument/return classification and register/stack allocation without executing a program",
+      "synthetic-loader-parse": "asserts ELF/Mach-O/PE parser invariants on hand-built byte fixtures emitted inside the test",
+      "owned-binary-end-to-end": "asserts product behaviour over an owned source -> toolchain -> binary artifact whose sha256 is pinned",
+      "compiler-truth-semantic": "asserts decompiled semantics against an independently evaluated source-level expected expression for real compiler output",
+      "frozen-corpus-semantic": "asserts semantic-path/provenance/hard-zero counters over a frozen multi-architecture corpus",
+      "presentation-only": "asserts rendered text/labels/UI formatting, not semantics",
+      "provenance-identity-contract": "asserts identity/schema/fail-closed contracts that are architecture-independent or lightly ARM64-typed"
+    },
+    "gateVocabulary": {
+      "check": "reachable from `npm run check` (the repository gate)",
+      "test": "reachable from `npm test` which is itself called by check",
+      "workflow-only": "executed by a GitHub workflow, not by the local canonical gate",
+      "manual": "requires an explicit operator command or an external artifact"
+    }
+  },
+  "totals": {
+    "trackedPathsMentioningArm64OrAarch64": 576,
+    "testsTrackedFiles": 4245,
+    "testsTestMjsFiles": 2748,
+    "machineEffectsTestFiles": 239,
+    "machineEffectsArm64NamedTestFiles": 119,
+    "phase4BinaryTestFiles": 197,
+    "phase4BinaryFilesReferencingArm64": 42,
+    "scpaFilesReferencingArm64": 65,
+    "competitiveArm64Cases": 12,
+    "competitiveArm64Recipes": 6,
+    "codefuseArm64Cases": 160,
+    "phase8CorpusCases": 135,
+    "phase8CorpusArm64Cases": 45,
+    "phase6CorpusArchitecture": "riscv64 only",
+    "phase5CorpusArchitecture": "x86_64 (SysV amd64) only"
+  },
+  "evidence": [
+    {
+      "id": "E01",
+      "area": "ARM64 A64 decoder denominator",
+      "paths": [
+        "tests/machine-effects/arm64-a64-decoder-denominator.test.mjs",
+        "tools/validation/machine-effects/arm64-a64-decoder-denominator.mjs"
+      ],
+      "assertionClass": "unit-decoder-encoding",
+      "gate": "check",
+      "whatIsAsserted": "A frozen candidate word corpus (376,186 candidate words / 375,875 unique, candidateSha256 bound in the locked inventory) is re-decoded through the deployed Capstone ARM64 session; every valid in-profile encoding must be owned by exactly one canonical effect family, and the fallback/unmatched-family path must be proven unreachable by a negative proof. Scope-shrink and corpus-shrink guards reject a smaller corpus.",
+      "arm64Role": "decoder ownership denominator for arm64:a64",
+      "generalizationValue": "high for decode coverage; it proves nothing about decompiler end-to-end recovery"
+    },
+    {
+      "id": "E02",
+      "area": "ARM64 A64 effect-family denominators",
+      "paths": [
+        "tests/machine-effects/arm64-a64-control-denominator.test.mjs",
+        "tests/machine-effects/arm64-a64-flags-denominator.test.mjs",
+        "tests/machine-effects/arm64-a64-integer-denominator.test.mjs",
+        "tests/machine-effects/arm64-a64-fp-denominator.test.mjs",
+        "tests/machine-effects/arm64-a64-memory-denominator.test.mjs",
+        "tests/machine-effects/arm64-a64-simd-denominator.test.mjs",
+        "tests/machine-effects/arm64-a64-system-denominator.test.mjs",
+        "tools/validation/machine-effects/arm64-a64-*-denominator.mjs"
+      ],
+      "assertionClass": "unit-effect-classification",
+      "gate": "check",
+      "whatIsAsserted": "Finite enumerated encoding families per family. Example: the integer denominator asserts encodingFamilyCount=39, encodingCaseCount=68,901, mnemonicCount=83, and equality between the mnemonic denominator and the shipped ARM64_INTEGER_EFFECT_MNEMONICS registry, decoded one batch at a time through Capstone and classified by the production lifter.",
+      "arm64Role": "effect-registry ownership per family",
+      "generalizationValue": "high for instruction semantics ownership; synthetic encoding enumeration, not compiled-source behaviour"
+    },
+    {
+      "id": "E03",
+      "area": "ARM64e (PAC/BTI) denominators and effects",
+      "paths": [
+        "tests/machine-effects/arm64e-pac-denominator.test.mjs",
+        "tests/machine-effects/arm64e-a64-delegation-denominator.test.mjs",
+        "tests/machine-effects/arm64e-*.test.mjs",
+        "tests/phase6/effects/arm64e-pac-bti-policy-authority.test.mjs",
+        "tests/phase10/targets/issue-8775-arm64e-feat-bti-unknown-fail-closed.test.mjs"
+      ],
+      "assertionClass": "unit-effect-classification",
+      "gate": "check",
+      "whatIsAsserted": "PAuth/authenticated-load/eretaa-eretab effects, BTI landing-pad policy, implicit-x30 modifiers, strict register identity, and architecture/ABI pairing fail-closed for arm64e.",
+      "arm64Role": "arm64e-specific semantics and pair rejection",
+      "generalizationValue": "medium; arm64e is retained as a supplementary lane in most corpora"
+    },
+    {
+      "id": "E04",
+      "area": "ARM64 operand-shape / encoding validation units",
+      "paths": [
+        "tests/machine-effects/arm64-*.test.mjs (119 arm64-named files, excluding the denominators above)"
+      ],
+      "assertionClass": "unit-decoder-encoding",
+      "gate": "check",
+      "whatIsAsserted": "Per-mnemonic-family operand and modifier domains: addsub immediate, MOV/MOVZ/MOVN aliases, ADRP/ADR operand shape, bitfield, logical structured encoding, multiply/divide, scalar immediate modifiers, width/shift validation, SIMD lane and modifier encodings, prefetch/PRFM register offsets, system/barrier selectors, trap imm16, TBZ bit domains, btype rename state.",
+      "arm64Role": "fine-grained instruction contract surface",
+      "generalizationValue": "high breadth, low end-to-end depth"
+    },
+    {
+      "id": "E05",
+      "area": "ARM64 issue-specific regression tests in machine-effects",
+      "paths": [
+        "tests/machine-effects/issue-3770-arm64-drps-control-flow.test.mjs",
+        "tests/machine-effects/issue-4151-arm64-wfi-wfe-trap.test.mjs",
+        "tests/machine-effects/issue-4178-arm64-alignment-faults.test.mjs",
+        "tests/machine-effects/issue-4201-arm64-fp-advsimd-access-traps.test.mjs",
+        "tests/machine-effects/issue-5687-arm64-abs-no-nzcv.test.mjs",
+        "tests/machine-effects/issue-8332-arm64e-pacm-state.test.mjs",
+        "tests/machine-effects/issue-8603-arm64-atomic-zr-acquire.test.mjs",
+        "tests/machine-effects/issue-8607-arm64-ldar-zr-acquire.test.mjs",
+        "tests/machine-effects/issue-8353-arm64-pauth-lr-decode-return.test.mjs"
+      ],
+      "assertionClass": "unit-effect-classification",
+      "gate": "check",
+      "whatIsAsserted": "Each file pins one externally reported ARM64 defect (fault modelling, NZCV absence, exclusive/acquire forms, PAC state) at the effect-registry boundary.",
+      "arm64Role": "historical defect regressions",
+      "generalizationValue": "high for the specific defect class; these are exact executable regressions, not generalizations"
+    },
+    {
+      "id": "E06",
+      "area": "AArch64 formal / memory-model evidence",
+      "paths": [
+        "tests/machine-effects/fixtures/formal-source/aarch64-relaxed.litmus",
+        "tests/machine-effects/fixtures/formal-source/aarch64-acquire.litmus",
+        "tests/machine-effects/fixtures/formal-source/aarch64-release.litmus",
+        "tools/validation/machine-effects/oracle-evidence-v2.mjs",
+        "tools/validation/machine-effects/generated/formal-evidence-artifacts.json"
+      ],
+      "assertionClass": "unit-effect-classification",
+      "gate": "check",
+      "whatIsAsserted": "Claim-local permitted/forbidden outcome sets for a declared litmus universe; explicitly not absolute ISA truth.",
+      "arm64Role": "memory-ordering evidence",
+      "generalizationValue": "medium; bounded to declared litmus programs"
+    },
+    {
+      "id": "E07",
+      "area": "Phase 8 frozen decompiler-quality corpus (ARM64 lane)",
+      "paths": [
+        "tests/phase8/corpus/functions.json",
+        "tests/phase8/corpus/sources/quality.c",
+        "tools/validation/phase8/build-corpus.mjs",
+        "tools/validation/phase8/decompile-corpus.mjs",
+        "tests/phase8/provenance/arm64-expanded-semantic-denominator.test.mjs"
+      ],
+      "assertionClass": "frozen-corpus-semantic",
+      "gate": "check (phase8:test); phase8:verify is manual/workflow",
+      "whatIsAsserted": "135 cases = 3 architectures x 15 source functions x {O0,O1,O2}. For the 45 ARM64 cases the decompiler must take the shared semantic path, emit AST + source map, carry complete expression-history/phase8-projection/render provenance, and must not regress the frozen pre-Phase-8 baseline. 10 named ARM64 cases are expanded into a representative end-to-end denominator.",
+      "arm64Role": "the primary decompiler end-to-end corpus for ARM64",
+      "generalizationValue": "high but structurally limited: the ARM64 lane representation is `assembly` text, parsed by tests/tools with js/arm64.js parseOperands before entering the public decompile() facade, whereas the x86_64 and riscv64 lanes freeze `machine-bytes` from a final ELF link and are decoded by the shipped Capstone artifact. No ARM64 lane exercises loader -> capstone -> decoded-instruction -> semantic pipeline."
+    },
+    {
+      "id": "E08",
+      "area": "Phase 8 frozen hard-zero counters and verifier",
+      "paths": [
+        "tools/validation/phase8/metrics.mjs",
+        "tools/validation/phase8/verify.mjs",
+        "tests/phase8/verifier/*.test.mjs"
+      ],
+      "assertionClass": "frozen-corpus-semantic",
+      "gate": "check for the metric/verifier contract tests; verify.mjs is a separate exact-SHA command",
+      "whatIsAsserted": "Hard-zero counters compared against a frozen pre-Phase-8 baseline: semanticMismatchCount, provenanceLossCount, unknownSafetyRegressionCount, renderProvenanceLossCount, renderProvenanceUnboundCount. Determinism is proved by two independent in-process corpus runs sharing one time budget (MEASUREMENT_TIME_BUDGET_MS = 20000).",
+      "arm64Role": "false-green prevention for the corpus",
+      "generalizationValue": "high; this is the strongest existing hard-zero-counter pattern in the repository and is reusable for a new suite"
+    },
+    {
+      "id": "E09",
+      "area": "compiler-truth: real multi-language, multi-optimization ARM64 semantic truth",
+      "paths": [
+        "tests/compiler-truth/run.mjs",
+        "tests/compiler-truth/run-core.mjs",
+        "tests/compiler-truth/extended.mjs",
+        "tests/compiler-truth/language-matrix.mjs",
+        "tests/compiler-truth/sources/{scalars.c,scalars.cpp,scalars.m,scalars.swift,extended.c}",
+        "tests/compiler-truth/expected.json"
+      ],
+      "assertionClass": "compiler-truth-semantic",
+      "gate": "manual / workflow-only (referenced only by .github/workflows/ghidra-differential.yml; not in npm test nor npm run check)",
+      "whatIsAsserted": "Real clang/clang++/swiftc output for targets aarch64-unknown-linux-gnu and arm64-apple-ios13.0 across -O0..-Oz. The suite parses compiler assembly into a model, runs the product decompiler through a guarded deterministic boundary, then evaluates the recovered return expression over a boundary value set ([0,1,-1,2,-2,0x7fffffff,0x80000000,0xffffffff,0x12345678]) and compares against an independently computed expected value.",
+      "arm64Role": "the only existing real-compiler ARM64 semantic oracle with language and optimization matrix coverage",
+      "generalizationValue": "very high in design; currently outside the canonical gate and still assembly-text based rather than linked-binary based"
+    },
+    {
+      "id": "E10",
+      "area": "SCPA owned ARM64 assembled-ELF end-to-end fixtures",
+      "paths": [
+        "tests/scpa/fixtures/threaded-integer.{s,elf,json}",
+        "tests/scpa/fixtures/threaded-call-memory.{s,elf,json,build.py}",
+        "tests/scpa/fixtures/dispatch-table.{s,elf,json,build.py}",
+        "tests/scpa/threaded-native-fixture.mjs",
+        "tests/scpa/threaded-native-acceptance.test.mjs"
+      ],
+      "assertionClass": "owned-binary-end-to-end",
+      "gate": "check (reachable: npm test -> core:test -> scpa:test)",
+      "whatIsAsserted": "Owned AArch64 assembly source is assembled and linked into a real ELF with a pinned sha256 for both source and binary plus a recorded rebuild command. The test then runs the actual ELF parser, the deployed Capstone WASM decoder, an actual worker thread, the opt-in scoped ARM64 producer, and the public QueryAPI; it asserts function extents, demand-query publication, integer-fragment/range-proof nodes, replay integrity and byte binding, and invalidation on symbol revision or binary epoch change.",
+      "arm64Role": "the only loader+decoder+analysis end-to-end ARM64 path exercised today",
+      "generalizationValue": "high structural value (real binary, pinned provenance, explicit non-claims) but it is hand-written assembly, 3 fixtures, and it does not assert decompiler source semantics"
+    },
+    {
+      "id": "E11",
+      "area": "Phase 4 binary loader tests touching ARM64",
+      "paths": [
+        "tests/phase4/binary/issue-3615-macho-arm64-32-indirect-pointer-width.test.mjs",
+        "tests/phase4/binary/issue-4162-pe-arm64-xdata-handler-rva.test.mjs",
+        "tests/phase4/binary/issue-4228-macho-arm64_32-thread-entry.test.mjs",
+        "tests/phase4/binary/issue-4255-eh-frame-aarch64-augmentations.test.mjs",
+        "tests/phase4/binary/issue-3673-pe-arm64-reloc-whitelist.test.mjs",
+        "tests/phase4/binary/issue-8610-macho-fat-arm64-32-default.test.mjs",
+        "tests/phase4/binary/issue-3632-... (42 files reference arm64/aarch64)"
+      ],
+      "assertionClass": "synthetic-loader-parse",
+      "gate": "check",
+      "whatIsAsserted": "ELF64 / Mach-O (incl. arm64_32, fat, chained fixups, unwind xdata) / PE32+ ARM64 container invariants: pointer widths, indirect symbol pointer sizes, load-command ranges, page alignment, section virtual layout, relocation whitelists, function-start discovery. Fixtures are almost entirely constructed in-test with DataView byte writers; exactly 1 of the 197 phase4/binary files reads a checked-in binary fixture.",
+      "arm64Role": "format-layer ARM64 correctness",
+      "generalizationValue": "high breadth at the parser boundary; no real-vendor ARM64 binary is parsed by this suite"
+    },
+    {
+      "id": "E12",
+      "area": "Public CodeFuse ARM64 benchmark (external comparison target)",
+      "paths": [
+        "benchmarks/public/codefuse-arm64/manifest.json",
+        "benchmarks/public/codefuse-arm64/inputs/*.bin (160)",
+        "benchmarks/public/codefuse-arm64/reference/**/*.c (160, IDA Pro 9.1 / Hex-Rays)",
+        "tools/validation/public-benchmark/*.mjs",
+        "tests/public-benchmark/*.test.mjs"
+      ],
+      "assertionClass": "external-oracle-comparison",
+      "gate": "manual (npm run benchmark:public) and pr-fast-gate; tests/public-benchmark tests run in npm test",
+      "whatIsAsserted": "160 frozen ARM64 cases = 8 programs x {clang,gcc} x {O0,O1,O2,O3,Os} x {debug,no-debug}; the published reference is an IDA Pro artifact, so the suite is a similarity/normalization comparison, not an independent semantic oracle.",
+      "arm64Role": "external scoreboard",
+      "generalizationValue": "must NOT be used as a fixture-design oracle: its reference outputs and exact case set are the overfitting target this audit exists to prevent"
+    },
+    {
+      "id": "E13",
+      "area": "tests/competitive-arm64 manifest gate",
+      "paths": [
+        "tests/competitive-arm64/manifest/post-b.json",
+        "tests/competitive-arm64/manifest/sources/{c.c,cpp.cpp,objc.m,swift.swift,rust.rs,go.go}",
+        "tools/competitive-arm64/manifest.mjs",
+        "tools/competitive-arm64/trials.mjs",
+        "tools/competitive-arm64/source-oracle.mjs"
+      ],
+      "assertionClass": "provenance-identity-contract",
+      "gate": "manual (npm run scpa:manifest)",
+      "whatIsAsserted": "12 named cases across 6 language recipes (C/C++/ObjC/Swift/Rust/Go) with source sha256 pinning, closed 6-language/12-case set, 28 metrics, 2 toolchain slots. The runner is an offline source-and-denominator gate: it re-verifies source hashes, checks a wrong-oracle sentinel is rejected, and reports every cell UNMEASURED with victoryEstablished=false, binaryTwinsVerified=false, nativeCompetitorsRun=false.",
+      "arm64Role": "the existing language-recipe foundation that a new suite must reuse rather than duplicate",
+      "generalizationValue": "high for provenance discipline and language breadth; zero executed measurement today"
+    },
+    {
+      "id": "E14",
+      "area": "AAPCS64 / Darwin ABI classification suites",
+      "paths": [
+        "tests/phase6/abi/aapcs64-scalar-provenance.test.mjs",
+        "tests/phase6/abi/issue-{4939,4942,4974,4979,5552,5598,5603,5605,5607,5636,5703,5716,5971,5988,6012,6015,6033,7348,8366,8428,8527}-*.test.mjs",
+        "tests/phase8/abi/{c3-combined-acceptance,hex-c3-02-boundaries,hex-c3-02-profile-matrix}.test.mjs",
+        "tests/semantic-v2/aapcs64-argument-classification.test.mjs",
+        "tests/issue-6035-aapcs64-indirect-size.mjs",
+        "tests/issue-6040-padded-return-indirect.mjs",
+        "tests/issue-6041-darwin-vararg-stack.mjs"
+      ],
+      "assertionClass": "unit-abi-classification",
+      "gate": "check",
+      "whatIsAsserted": "Argument/return classification and placement: wide integral register pairs, stack natural alignment, return width authority, v8-v15 clobber, HFA/HVA handling, Darwin compact stack slots, long double, variadic word slots, ILP32/arm64_32 pointer widths, indirect (sret) returns, entry-bank prototypes, required profile matrix.",
+      "arm64Role": "ABI layer",
+      "generalizationValue": "high coverage of the classification rules; the classification is asserted as a unit, almost never against a real compiled call site"
+    },
+    {
+      "id": "E15",
+      "area": "Phase 7 alias/memory corpus and discovery lanes",
+      "paths": [
+        "tests/phase7/corpus/manifest.json",
+        "tests/phase7/crossarch/metamorphic.test.mjs",
+        "tests/phase7/discovery/*arm64/len/arch*",
+        "tests/phase7/analysis-query/issue-4969-arm64-producer-unaligned-start.test.mjs"
+      ],
+      "assertionClass": "frozen-corpus-semantic",
+      "gate": "check",
+      "whatIsAsserted": "19 named alias/memory fixtures declared across mandatory lanes arm64/riscv64/x86_64 with format lanes elf/macho/pe, with explicit truth values per pointer-pair query (no / may-or-weaker / must) and an expectStrong flag separating strong answers from soundness.",
+      "arm64Role": "alias/memory analysis across ELF/Mach-O/PE",
+      "generalizationValue": "high for the alias dimension; the arm64 lane shares the frozen fixture shape with the other architectures"
+    },
+    {
+      "id": "E16",
+      "area": "Phase 4/10/12 ARM64 semantic and runtime regressions",
+      "paths": [
+        "tests/phase4/issue-3592-3601-3602-3702-3877-arm64-operand-contract.test.mjs",
+        "tests/phase4/issue-8406-arm64-32-vtable-pointer-width.test.mjs",
+        "tests/phase4/issue-8713-arm64-structure-lane-access-size.test.mjs",
+        "tests/phase4/issue-8780-arm64-structure-extent-no-eight-byte-fallback.test.mjs",
+        "tests/phase4/issue-8781-arm64-atomic-rmw-semantic-block.test.mjs",
+        "tests/phase10/regressions/issue-8600-arm64-pc-wrap.test.mjs",
+        "tests/phase12/adversarial/issue-4971-arm64-pointer-mask.test.mjs",
+        "tests/phase12/integration/issue-8280-objc-arm64-32-pointer-width.test.mjs"
+      ],
+      "assertionClass": "unit-decoder-encoding",
+      "gate": "check",
+      "whatIsAsserted": "ARM64 structure lane access sizes, atomic RMW semantic blocks, pointer masks, arm64_32 pointer widths, vtable pointer width, PC wrap on branch targets.",
+      "arm64Role": "structure/semantic coupling defects",
+      "generalizationValue": "high for the specific invariants; these are exact regressions, not holdouts"
+    },
+    {
+      "id": "E17",
+      "area": "Standalone root ARM64 regression files",
+      "paths": [
+        "tests/arm64-presentation-compat.mjs",
+        "tests/issue-5818-legacy-arm64-proof.mjs",
+        "tests/issue-5841-arm64-direct-target-authority.mjs",
+        "tests/issue-3900-arm64-ldtr-sttr-family.mjs",
+        "tests/issue-4272-arm64-stack-sp-fp-alias.mjs",
+        "tests/ui-arm64-negative-hex-display.test.mjs",
+        "tests/unlinked-arm64-closure.mjs",
+        "tests/issues-814-816-arm64-memory.mjs",
+        "tests/arm64-adr-adrp-encoding-domain.test.mjs",
+        "tests/arm64-direct-branch-target-alignment.test.mjs",
+        "tests/issue-8600-arm64-pc-wrap.test.mjs",
+        "tests/issue-3684-arm64-mte-tag-instructions.mjs",
+        "tests/issue-4027-arm64-global-address-wrap.mjs",
+        "tests/issue-5818-legacy-arm64-proof.mjs"
+      ],
+      "assertionClass": "unit-decoder-encoding",
+      "gate": "test",
+      "whatIsAsserted": "Mixed: operand/encoding domains (ADR/ADRP, direct branch target alignment), LDTR/STTR family, SP/FP aliasing, MTE tag instructions, address wraparound, negative hex display presentation, and legacy ARM64 proof surfaces.",
+      "arm64Role": "root-level ARM64 contract regressions",
+      "generalizationValue": "medium; unit-level with no corpus"
+    },
+    {
+      "id": "E18",
+      "area": "semantic-v2 machine-effects / ARM64 lowering contracts",
+      "paths": [
+        "tests/semantic-v2/aapcs64-argument-classification.test.mjs",
+        "tests/semantic-v2/issue-4853-arm64-fmov-bitpattern-authority.test.mjs",
+        "tests/semantic-v2/issues-2093-2120-arm64-compat.test.mjs",
+        "tests/semantic-v2/issue-flags-nzcv-adcs-sbcs.test.mjs",
+        "tests/semantic-v2/issue-5825-machine-effects-v1-control-target.test.mjs",
+        "tests/semantic-v2/architecture-neutrality-gate.test.mjs",
+        "tests/semantic-v2/issue-8740-memoryssa-access-provider-architecture-neutrality.test.mjs"
+      ],
+      "assertionClass": "unit-effect-classification",
+      "gate": "check",
+      "whatIsAsserted": "Semantic IR lowering of ARM64 machine effects, NZCV/ADC/SBC flag preservation, FMOV bit patterns, control-target cardinality, and architecture neutrality of the shared IR.",
+      "arm64Role": "middle-end contract for ARM64 effects",
+      "generalizationValue": "medium; architecture-neutral by design, so it deliberately does not add ARM64-specific generalization"
+    },
+    {
+      "id": "E19",
+      "area": "Real large ARM64 binaries (fetched, opt-in)",
+      "paths": [
+        "tests/fixtures/real-binaries.json",
+        "tests/large-fixtures.json",
+        "tests/battlecats (placeholder)",
+        "tests/TsumTsum (placeholder)",
+        "tests/YWP (placeholder)",
+        "scripts/fetch-real-fixtures.mjs",
+        "tests/universal-binary*.mjs",
+        "tests/accuracy*.mjs"
+      ],
+      "assertionClass": "external-artifact (opt-in)",
+      "gate": "manual (npm run fixtures:large / npm run accuracy)",
+      "whatIsAsserted": "Three sha256-pinned multi-megabyte binaries (28/46/63 MB, iOS game images) are parsed, audited, benchmarked and scored by the accuracy harness with a python oracle. The artifacts are absent from the repository (each path holds a 62-69 byte placeholder), so none of this runs in the canonical gate.",
+      "arm64Role": "the only large real-world ARM64 Mach-O corpus",
+      "generalizationValue": "very high in principle; unexecuted in every normal gate and therefore not a regression"
+    },
+    {
+      "id": "E20",
+      "area": "Language/format metadata suites with ARM64 fixtures",
+      "paths": [
+        "tests/metadata-apple*.mjs",
+        "tests/issue-4926-objc-partial-coverage-method-authority.mjs",
+        "tests/issue-2377-swift-vtable-autoproject.mjs",
+        "tests/issue-2378-swift-witness-autoproject.mjs",
+        "tests/issue-3715-rust-v0-impl-disambiguator.mjs",
+        "tests/metadata-go.test.mjs",
+        "tests/issue-5347-go-rtype-nameoff.test.mjs",
+        "tests/issue-6035-aapcs64-indirect-size.mjs"
+      ],
+      "assertionClass": "unit-abi-classification",
+      "gate": "test (metadata:test inside integration:test)",
+      "whatIsAsserted": "ObjC class/metaclass/protocol metadata, Swift vtable/witness-table/generic metadata, Rust v0 symbol mangling, Go rtype/pclntab/ABI metadata, with ARM64 pointer-width variants.",
+      "arm64Role": "language metadata on ARM64 containers",
+      "generalizationValue": "high per-language; metadata presence is asserted, not decompiled source semantics"
+    },
+    {
+      "id": "E21",
+      "area": "Locked A2 denominator (cross-architecture truth gate)",
+      "paths": [
+        "tests/machine-effects/a2-denominator.test.mjs",
+        "tests/machine-effects/a2-denominator-inventory.json",
+        "tools/validation/machine-effects/a2-denominator.mjs",
+        "tests/stage1/a2-machine-effects-coverage.test.mjs"
+      ],
+      "assertionClass": "provenance-identity-contract",
+      "gate": "check",
+      "whatIsAsserted": "A locked inventory over 4 profiles (arm64:a64, arm64e:a64+pac, x86_64:long-64, riscv64:rv64imc) with fullIsaCoverageIncluded=false, explicitDecoderGapCount=0 and blockingGapCount=0 as terminality conditions. It explicitly rejects any claim of full-ISA coverage.",
+      "arm64Role": "the terminality contract for ARM64 effect coverage",
+      "generalizationValue": "high as a false-green guard: it forbids equating registry ownership with full ISA or with product semantics"
+    }
+  ],
+  "dimensionMap": [
+    {
+      "dimension": "instruction family",
+      "evidence": ["E01", "E02", "E04", "E05", "E16", "E21"],
+      "strongestClass": "unit-effect-classification",
+      "endToEndEvidence": [],
+      "note": "Instruction-family ownership is exhaustively enumerated (376k candidate words; 68,901 integer encoding cases) but entirely at the decoder/effect-registry boundary."
+    },
+    {
+      "dimension": "CFG shape",
+      "evidence": ["E07", "E15", "E16"],
+      "strongestClass": "frozen-corpus-semantic",
+      "endToEndEvidence": ["E07 (assembly-text ARM64 lane)"]
+    },
+    {
+      "dimension": "direct/indirect control",
+      "evidence": ["E02", "E03", "E17", "E18"],
+      "strongestClass": "unit-effect-classification",
+      "endToEndEvidence": []
+    },
+    {
+      "dimension": "irreducible flow",
+      "evidence": ["E07"],
+      "strongestClass": "frozen-corpus-semantic",
+      "endToEndEvidence": ["E07"]
+    },
+    {
+      "dimension": "loop shape",
+      "evidence": ["E07", "E10"],
+      "strongestClass": "frozen-corpus-semantic",
+      "endToEndEvidence": ["E07 (loop_counted_sum, loop_decrement_step, loop_early_exit, loop_nested)", "E10 (scpa loop-native-fragment / loop-invariant)"]
+    },
+    {
+      "dimension": "jump table",
+      "evidence": ["E07", "E10", "E12"],
+      "strongestClass": "frozen-corpus-semantic",
+      "endToEndEvidence": ["E07 (structure_switch)", "E10 (dispatch-table.elf)"]
+    },
+    {
+      "dimension": "stack/local recovery",
+      "evidence": ["E07", "E14", "E16", "E08"],
+      "strongestClass": "frozen-corpus-semantic",
+      "endToEndEvidence": ["E07"]
+    },
+    {
+      "dimension": "pointer arithmetic",
+      "evidence": ["E10", "E15", "E16"],
+      "strongestClass": "owned-binary-end-to-end",
+      "endToEndEvidence": ["E10"]
+    },
+    {
+      "dimension": "alias/unknown memory",
+      "evidence": ["E15", "E07"],
+      "strongestClass": "frozen-corpus-semantic",
+      "endToEndEvidence": ["E15 (arm64 lane within a shared fixture shape)"]
+    },
+    {
+      "dimension": "integer width",
+      "evidence": ["E02", "E04", "E09", "E14"],
+      "strongestClass": "compiler-truth-semantic",
+      "endToEndEvidence": ["E09"]
+    },
+    {
+      "dimension": "FP",
+      "evidence": ["E02", "E04", "E05", "E18"],
+      "strongestClass": "unit-effect-classification",
+      "endToEndEvidence": []
+    },
+    {
+      "dimension": "SIMD",
+      "evidence": ["E02", "E04"],
+      "strongestClass": "unit-effect-classification",
+      "endToEndEvidence": []
+    },
+    {
+      "dimension": "atomics",
+      "evidence": ["E02", "E05", "E06", "E16"],
+      "strongestClass": "unit-effect-classification",
+      "endToEndEvidence": []
+    },
+    {
+      "dimension": "ABI argument passing",
+      "evidence": ["E14", "E18", "E20", "E10"],
+      "strongestClass": "unit-abi-classification",
+      "endToEndEvidence": []
+    },
+    {
+      "dimension": "ABI return",
+      "evidence": ["E14", "E18"],
+      "strongestClass": "unit-abi-classification",
+      "endToEndEvidence": []
+    },
+    {
+      "dimension": "aggregate return/pass",
+      "evidence": ["E14"],
+      "strongestClass": "unit-abi-classification",
+      "endToEndEvidence": []
+    },
+    {
+      "dimension": "varargs",
+      "evidence": ["E14", "E17"],
+      "strongestClass": "unit-abi-classification",
+      "endToEndEvidence": []
+    },
+    {
+      "dimension": "tail calls",
+      "evidence": ["E07", "E03"],
+      "strongestClass": "frozen-corpus-semantic",
+      "endToEndEvidence": ["E07 (implicit-ret predecessor contract)"]
+    },
+    {
+      "dimension": "thunk",
+      "evidence": ["E10", "E11", "E16"],
+      "strongestClass": "owned-binary-end-to-end",
+      "endToEndEvidence": ["E10 (dispatch-table stubs)"]
+    },
+    {
+      "dimension": "exception/unwind",
+      "evidence": ["E11", "E14"],
+      "strongestClass": "synthetic-loader-parse",
+      "endToEndEvidence": []
+    },
+    {
+      "dimension": "C++",
+      "evidence": ["E09", "E13", "E20"],
+      "strongestClass": "compiler-truth-semantic",
+      "endToEndEvidence": ["E09 (scalars.cpp)"]
+    },
+    {
+      "dimension": "ObjC",
+      "evidence": ["E09", "E13", "E20", "E16"],
+      "strongestClass": "compiler-truth-semantic",
+      "endToEndEvidence": ["E09 (scalars.m)"]
+    },
+    {
+      "dimension": "Swift",
+      "evidence": ["E09", "E13", "E20", "E03"],
+      "strongestClass": "compiler-truth-semantic",
+      "endToEndEvidence": ["E09 (scalars.swift)"]
+    },
+    {
+      "dimension": "Rust",
+      "evidence": ["E13", "E20"],
+      "strongestClass": "provenance-identity-contract",
+      "endToEndEvidence": []
+    },
+    {
+      "dimension": "Go",
+      "evidence": ["E13", "E20"],
+      "strongestClass": "provenance-identity-contract",
+      "endToEndEvidence": []
+    },
+    {
+      "dimension": "ELF",
+      "evidence": ["E10", "E11", "E15", "E19"],
+      "strongestClass": "owned-binary-end-to-end",
+      "endToEndEvidence": ["E10 (AArch64 ELF, sha256-pinned)"]
+    },
+    {
+      "dimension": "Mach-O",
+      "evidence": ["E11", "E15", "E19", "E20", "E09"],
+      "strongestClass": "synthetic-loader-parse",
+      "endToEndEvidence": ["E09 (arm64-apple-ios13.0 assembly only, no container)"]
+    },
+    {
+      "dimension": "PE",
+      "evidence": ["E11", "E15"],
+      "strongestClass": "synthetic-loader-parse",
+      "endToEndEvidence": []
+    },
+    {
+      "dimension": "stripped/debug",
+      "evidence": ["E12", "E13", "E07"],
+      "strongestClass": "provenance-identity-contract",
+      "endToEndEvidence": ["E12 (debug/no-debug twins, IDA-referenced, external only)"]
+    },
+    {
+      "dimension": "clang/gcc",
+      "evidence": ["E12", "E09", "E13", "E07"],
+      "strongestClass": "compiler-truth-semantic",
+      "endToEndEvidence": ["E09 (clang/clang++/swiftc only)"]
+    },
+    {
+      "dimension": "optimization level",
+      "evidence": ["E09", "E07", "E12"],
+      "strongestClass": "compiler-truth-semantic",
+      "endToEndEvidence": ["E09 (-O0..-Oz)", "E07 (-O0/-O1/-O2)"]
+    },
+    {
+      "dimension": "symbol aliases/mapping symbols",
+      "evidence": ["E11", "E13", "E07"],
+      "strongestClass": "synthetic-loader-parse",
+      "endToEndEvidence": []
+    },
+    {
+      "dimension": "large/pathological function",
+      "evidence": ["E19", "E07"],
+      "strongestClass": "external-artifact (opt-in)",
+      "endToEndEvidence": []
+    },
+    {
+      "dimension": "deterministic resource bounds",
+      "evidence": ["E07", "E08", "E10", "E21"],
+      "strongestClass": "frozen-corpus-semantic",
+      "endToEndEvidence": ["E07/E08 (determinism across two runs, shared time budget)", "E10 (deadline/call limits, abort paths)"]
+    }
+  ],
+  "gateReachability": {
+    "inNpmCheck": [
+      "tests/machine-effects (effects:test, 239 files incl. all ARM64 denominators)",
+      "tests/semantic-v2",
+      "tests/phase4..phase12 runners",
+      "npm test tree (which itself reaches tests/scpa/run.mjs via core:test -> scpa:test, and the standalone arm64 regression files listed in npm test)",
+      "tests/benchmark-baseline.mjs"
+    ],
+    "inNpmTestOnly": [
+      "tests/arm64-presentation-compat.mjs",
+      "tests/issue-3900-arm64-ldtr-sttr-family.mjs",
+      "tests/issue-4272-arm64-stack-sp-fp-alias.mjs",
+      "tests/issue-5818-legacy-arm64-proof.mjs",
+      "tests/issue-5841-arm64-direct-target-authority.mjs"
+    ],
+    "notInCanonicalGate": [
+      "tests/compiler-truth/run.mjs (real multi-language ARM64 semantic truth)",
+      "tools/validation/phase8/verify.mjs (frozen-corpus exact-SHA verifier)",
+      "npm run accuracy (large real ARM64 Mach-O scoring)",
+      "npm run binary:test umbrella",
+      "tests/competitive-arm64 manifest gate (npm run scpa:manifest)",
+      "npm run benchmark:public (CodeFuse)"
+    ]
+  },
+  "constraintsObserved": [
+    "No production code and no existing test file was modified by this audit.",
+    "CodeFuse reference outputs, binary hashes, case names, function names and addresses were read only to size the external target; none were copied into any proposed fixture shape in this stage.",
+    "Existing 12-case / 6-recipe competitive-arm64 manifest is treated as an asset to reuse and extend, never to replace."
+  ]
+}
