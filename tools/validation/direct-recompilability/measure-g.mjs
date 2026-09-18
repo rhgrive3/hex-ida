@@ -8,7 +8,7 @@
  *     decompiled function pseudocode (reuses tools/validation/public-benchmark);
  *  2. reconstruct one C translation unit from non-null pseudocode bodies
  *     (same rule as the investigation baseline: join in function order);
- *  3. `clang -fsyntax-only` then `clang -O0` link check with per-stage timeout.
+ *  3. `clang -fsyntax-only` then `clang -O0 -c` object check with per-stage timeout.
  *
  * Case verdicts use the harness contract states (PASS | FAIL | TIMEOUT |
  * CRASH | NOT_RUN). Subject TIMEOUT/CRASH propagate; clang-stage timeouts are
@@ -51,10 +51,11 @@ export function reconstructSource(functions) {
   return `${bodies.join('\n')}\n`;
 }
 
-function runClang({ clang, sourceFile, mode, timeoutMs, spawnRunner = spawnSync }) {
+export function runClang({ clang, sourceFile, mode, timeoutMs, spawnRunner = spawnSync }) {
+  const outputFile = path.join(os.tmpdir(), `hex-g-${mode}-${process.pid}-${Date.now()}.out`);
   const args = mode === 'syntax'
     ? ['-std=gnu11', '-fsyntax-only', '-ferror-limit=0', sourceFile]
-    : ['-std=gnu11', '-O0', '-ferror-limit=0', sourceFile, '-o', path.join(os.tmpdir(), `hex-g-link-${process.pid}-${Date.now()}.out`)];
+    : ['-std=gnu11', '-O0', '-ferror-limit=0', '-c', sourceFile, '-o', outputFile];
   try {
     const result = spawnRunner(clang, args, { encoding: 'utf8', timeout: timeoutMs });
     if (result.error?.code === 'ETIMEDOUT') return { ok: false, timedOut: true, diagnostics: '' };
