@@ -24,7 +24,7 @@ jobs:
           ref: 1122837fd0644ff2c0996b3dbfc9fa021303d2c8
           fetch-depth: 1
           path: work
-      - name: Apply verified production fix and publish branch
+      - name: Apply verified production fix
         shell: bash
         run: |
           set -euo pipefail
@@ -35,4 +35,15 @@ jobs:
           git am /tmp/fix.patch
           test "$(git rev-parse HEAD^)" = "1122837fd0644ff2c0996b3dbfc9fa021303d2c8"
           test "$(git rev-parse HEAD^{tree})" = "f6f65ef10e63512207b1ed112fc49ddece2bc9c8"
-          git push origin HEAD:refs/heads/fix/arm64-dt-init-fini-analysis-window
+      - name: Run focused regression
+        working-directory: work
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 180s node --test tests/issue-9203-elf-loader-entry-analysis-window.mjs tests/issue-2409-function-extent-boundary.mjs
+      - name: Publish target branch
+        working-directory: work
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push --no-verify origin HEAD:refs/heads/fix/arm64-dt-init-fini-analysis-window
