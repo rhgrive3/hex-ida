@@ -456,6 +456,7 @@ export const CROSS_LANE_ROUTES = Object.freeze({
   "codex/agy-issue-followup-20260918": Object.freeze([
     ".circleci/config.yml",
     ".github/workflows/final-head-admission.yml",
+    ".github/workflows/phase7-ownership.yml",
     ".github/workflows/pr-fast-gate.yml",
     ".gitignore",
     "freebuff-1",
@@ -546,9 +547,11 @@ export const CROSS_LANE_ROUTES = Object.freeze({
     "tests/phase12/integration/issue-8687-portable-session-verified-evidence-authority.test.mjs",
     "tests/phase4/binary/issue-8184-pe-arm64ec-chpe-codemap.test.mjs",
     "tests/phase4/binary/issue-8255-aarch64-elf-mapping-symbols.test.mjs",
+    "tests/phase7/ownership/cross-lane-routing.test.mjs",
     "tests/scpa/balanced-native-flow.test.mjs",
     "tests/userscript-origin-policy.mjs",
     "tests/userscript-release-version.mjs",
+    "tools/validation/phase7/cross-lane-inventory.mjs",
     "worker-entry.js",
   ]),
 });
