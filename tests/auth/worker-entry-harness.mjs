@@ -58,7 +58,10 @@ try {
   const capResponse = await worker.fetch(new Request('https://hex.test/api/auth/ai-capability', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: '{}' }), env, {});
   assert.equal(capResponse.status, 200);
   const cap = await capResponse.json();
-  const admitted = await aiRequest('/api/ai/turn', { 'x-hex-ai-capability': cap.capability });
+  // Use a deterministically malformed JSON value so the assertion checks only
+  // that capability admission reaches worker validation, not which missing
+  // field the normalizer reports first.
+  const admitted = await aiRequest('/api/ai/turn', { 'x-hex-ai-capability': cap.capability }, 'null');
   assert.equal(admitted.status, 400, 'valid capability passes admission and reaches request validation');
   assert.equal(quotaLookups, 0, 'invalid AI payload still fails before quota after successful auth');
   const preflight = await worker.fetch(new Request('https://hex.test/api/ai/turn', { method: 'OPTIONS', headers: { origin: 'https://chatgpt.com', 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type,x-hex-ai-capability' } }), env, {});

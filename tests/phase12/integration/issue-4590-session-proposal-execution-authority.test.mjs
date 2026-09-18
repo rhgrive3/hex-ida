@@ -2,15 +2,29 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AIRuntime } from '../../../js/ai/runtime.js';
 import { InvestigationSessionStore } from '../../../js/ai/session-core/index.js';
+import { sealPersistedConfirmedEnvelope } from '../../../js/ai/session-core/persisted-confirmed.js';
+import { createHexToolRegistry } from '../../../js/ai/tools/registry.js';
 
 const BINARY = 'bin-4590-exact';
+
+function contextFor(binaryId = BINARY) {
+  return { binaryId, binaryIdentity: binaryId, analysisRevision: 'r1' };
+}
 
 function memoryPersistence() {
   const rows = new Map();
   return {
     rows,
     async save(session) { rows.set(session.id, structuredClone(session)); },
-    async load(id) { return rows.has(id) ? structuredClone(rows.get(id)) : null; },
+    async load(id) {
+      if (!rows.has(id)) return null;
+      const row = structuredClone(rows.get(id));
+      // This adapter models the trusted internal session store. Structured
+      // cloning drops the private envelope, so the adapter re-issues it at its
+      // load boundary just like createProjectSessionPersistence (#8687).
+      if (Array.isArray(row.confirmedFindings)) sealPersistedConfirmedEnvelope(row.confirmedFindings);
+      return row;
+    },
     async delete(id) { rows.delete(id); },
   };
 }
@@ -24,12 +38,14 @@ function deepValue(depth) {
 test('#4590 reload preserves exact proposal execution authority beyond display limits', async () => {
   const persistence = memoryPersistence();
   const sessionStore = new InvestigationSessionStore({ persistence });
-  const runtime = new AIRuntime({ context: { binaryId: BINARY }, sessionStore, planner: false });
+  const context = contextFor();
+  const runtime = new AIRuntime({ context, sessionStore, planner: false });
   const session = await sessionStore.create({ id: 's-4590-exact', binaryId: BINARY });
   const stores = runtime.storesFor(session, BINARY);
+  createHexToolRegistry(context, { evidenceStore: stores.evidenceStore });
   const evidence = stores.evidenceStore.ingestPlan({
     best: { address: 0x1000n },
-    candidates: [{ address: 0x1000n, name: 'fn', score: 10, sources: ['src'], evidence: ['src-1'], verification: { verified: true } }],
+    candidates: [{ address: 0x1000n, name: 'fn', score: 10, sources: ['src'], evidence: ['src-1'], verification: { verified: true, evidenceIds: ['src-1'] } }],
   }).find((item) => item.status === 'verified');
   assert.ok(evidence?.id);
 
@@ -53,7 +69,7 @@ test('#4590 reload preserves exact proposal execution authority beyond display l
   assert.equal(displayBefore, '[truncated]');
 
   const updated = await sessionStore.update(session.id, {
-    confirmedFindings: stores.evidenceStore.byStatus('verified'),
+    confirmedFindings: sealPersistedConfirmedEnvelope(stores.evidenceStore.byStatus('verified')),
     proposedActions: stores.proposalStore.persistedActions(),
   });
   assert.equal(updated.proposedActions.length, 1);
@@ -62,7 +78,7 @@ test('#4590 reload preserves exact proposal execution authority beyond display l
 
   const reloadedStore = new InvestigationSessionStore({ persistence });
   const reloadedSession = await reloadedStore.get(session.id);
-  const resumedRuntime = new AIRuntime({ context: { binaryId: BINARY }, sessionStore: reloadedStore, planner: false });
+  const resumedRuntime = new AIRuntime({ context: contextFor(), sessionStore: reloadedStore, planner: false });
   const resumed = resumedRuntime.storesFor(reloadedSession, BINARY);
   assert.equal(resumed.proposalStore.has(created.id), true);
   const afterReload = resumed.proposalStore.executionView(created.id);
@@ -84,12 +100,14 @@ test('#4590 reload preserves exact proposal execution authority beyond display l
 test('#4590 exact restore rejects target/after authority tampering', async () => {
   const persistence = memoryPersistence();
   const sessionStore = new InvestigationSessionStore({ persistence });
-  const runtime = new AIRuntime({ context: { binaryId: BINARY }, sessionStore, planner: false });
+  const context = contextFor();
+  const runtime = new AIRuntime({ context, sessionStore, planner: false });
   const session = await sessionStore.create({ id: 's-4590-tamper', binaryId: BINARY });
   const stores = runtime.storesFor(session, BINARY);
+  createHexToolRegistry(context, { evidenceStore: stores.evidenceStore });
   const evidence = stores.evidenceStore.ingestPlan({
     best: { address: 0x1000n },
-    candidates: [{ address: 0x1000n, name: 'fn', score: 10, sources: ['src'], evidence: ['src-1'], verification: { verified: true } }],
+    candidates: [{ address: 0x1000n, name: 'fn', score: 10, sources: ['src'], evidence: ['src-1'], verification: { verified: true, evidenceIds: ['src-1'] } }],
   }).find((item) => item.status === 'verified');
   stores.proposalStore.create({ id: 'p-4590-tamper', kind: 'comment', target: { address: '0x1000' }, before: '', after: 'exact', evidenceIds: [evidence.id] });
   const persisted = stores.proposalStore.persistedActions()[0];
@@ -103,7 +121,7 @@ test('#4590 exact restore rejects target/after authority tampering', async () =>
     const row = structuredClone(persisted);
     mutate(row);
     const candidate = { id: `candidate-${Math.random()}`, binaryId: BINARY, confirmedFindings, proposedActions: [row] };
-    const candidateRuntime = new AIRuntime({ context: { binaryId: BINARY }, planner: false });
+    const candidateRuntime = new AIRuntime({ context: contextFor(), planner: false });
     assert.equal(candidateRuntime.storesFor(candidate, BINARY).proposalStore.has('p-4590-tamper'), false);
   }
 });

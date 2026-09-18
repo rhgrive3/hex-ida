@@ -29,7 +29,7 @@ assert.equal(calls[0].provider, 'chatgpt-web'); assert.equal(calls[0].model, 'ch
 // session of a different conversation; the exact match is authoritative (#6011).
 {
   const persisted = [{
-    id: 'session-A', conversationId: 'conv-A', binaryId: 'fixture:0', projectId: null,
+    id: 'session-A', conversationId: 'conv-A', binaryId: 'fixture:0', projectId: 'project-1',
     investigationMemory: { goal: 'A only', confirmedFacts: [], activeHypotheses: [] },
     messages: [{ role: 'user', content: 'A question' }],
   }];

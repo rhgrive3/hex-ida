@@ -661,6 +661,50 @@ export class BinaryImage {
     return lookupMapping(this._mappingLookups.segments, a);
   }
 
+  archAt(address) {
+    if (this.metadata?.hybrid || this.metadata?.isHybrid) {
+      if (!Array.isArray(this.chpeCodeMap) || this.chpeCodeMap.length === 0) {
+        return null;
+      }
+      let addr = null;
+      if (typeof address === 'bigint') {
+        addr = address;
+      } else if (typeof address === 'number' && Number.isSafeInteger(address)) {
+        addr = BigInt(address);
+      } else if (typeof address === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(address.trim())) {
+        addr = BigInt(address.trim());
+      }
+      if (addr === null || addr < 0n) return null;
+
+      let rva = null;
+      let va = null;
+      if (this.imageBase > 0n && addr >= this.imageBase) {
+        va = addr;
+        const delta = addr - this.imageBase;
+        if (delta <= 0xffffffffn) rva = Number(delta);
+      } else if (addr <= 0xffffffffn) {
+        rva = Number(addr);
+        va = this.imageBase + addr;
+      }
+
+      for (const entry of this.chpeCodeMap) {
+        if (!entry) continue;
+        if (rva !== null && entry.startRva != null && entry.endRva != null) {
+          if (rva >= entry.startRva && rva < entry.endRva) {
+            return entry.arch;
+          }
+        }
+        if (va !== null && entry.startAddress != null && entry.endAddress != null) {
+          if (va >= entry.startAddress && va < entry.endAddress) {
+            return entry.arch;
+          }
+        }
+      }
+      return null;
+    }
+    return this.arch;
+  }
+
   _virtualMappingAt(address) {
     const a = strictBigIntOrNull(address);
     if (a === null || a < 0n) return null;
@@ -996,6 +1040,14 @@ export class BinaryImage {
     this.exports.sort(byAddr);
     this.relocations.sort(byAddr);
     this.functions = mergeFunctionSeeds(this.functions, { sections:this.sections, segments:this.segments });
+    if ((this.metadata?.hybrid || this.metadata?.isHybrid) && Array.isArray(this.functions)) {
+      for (const f of this.functions) {
+        if (f && f.address != null && !f.arch) {
+          const a = this.archAt(f.address);
+          if (a) f.arch = a;
+        }
+      }
+    }
     this.imports = dedupeImports(this.imports);
     this.libraries = [...new Set(this.libraries.filter(Boolean))];
     this._finalized = true;
@@ -1078,6 +1130,7 @@ export function functionSeed(address, opts = {}) {
     extentInherited: !!opts.extentInherited,
     callingConvention: opts.callingConvention || null,
     abiMetadata: opts.abiMetadata == null ? null : { ...opts.abiMetadata },
+    arch: opts.arch || null,
   };
 }
 
@@ -1151,6 +1204,7 @@ export function mergeFunctionSeeds(input, context = {}) {
     if (!best.functionStartEvidence) best.functionStartEvidence = other.functionStartEvidence || null;
     if (!best.callingConvention && other.callingConvention) best.callingConvention = other.callingConvention;
     if (!best.abiMetadata && other.abiMetadata) best.abiMetadata = { ...other.abiMetadata };
+    if (!best.arch && other.arch) best.arch = other.arch;
     let inheritedExtent = false;
     const bestHasExtent = best.size != null || best.end != null;
     const otherHasExtent = other.size != null || other.end != null;

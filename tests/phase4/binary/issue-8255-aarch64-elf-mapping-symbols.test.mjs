@@ -6,6 +6,7 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 import { parseELF } from '../../../js/binary/elf.js';
+import { applyAarch64MappingSymbols } from '../../../js/binary/elf-aarch64-mapping.js';
 import { describeBinaryImage } from '../../../js/platform/describe.js';
 
 const ET_REL = 1;
@@ -125,7 +126,6 @@ test('#8255 AArch64 $x/$d mapping symbols publish section-scoped code/data autho
   assert.equal(image.isInstructionAllowed(foo.address + 4n), false);
   assert.equal(image.isInstructionAllowed(foo.address + 8n), true);
 });
-
 test('#8255 platform regions carry mapping-data exclusions to the legacy ARM64 decoder', () => {
   const image = parseELF(buildAarch64MappingElf());
   const foo = image.symbols.find((entry) => entry.name === 'foo');
@@ -196,4 +196,21 @@ test('#8255 raw program scan suppresses BL-shaped data while preserving the no-m
   const mapped = await scanFakeCall({ dataInterval:true });
   assert.equal(mapped.callCount, 0, '$d interval must not publish a fake call edge');
   assert.equal(mapped.kinds[1], 0, '$d interval is classified as non-instruction/OTHER evidence');
+});
+
+test('#8255 authoritative function seed inside $d is preserved while heuristic seed is suppressed', () => {
+  const image = parseELF(buildAarch64MappingElf());
+  assert.equal(image.dataInCode.length, 1);
+  const dataAddr = image.dataInCode[0].address;
+  assert.ok(image.isDataInCode(dataAddr));
+
+  image.functions.push({ address: dataAddr, source: 'symbol', exactFunctionStart: true, authoritative: true });
+  image.functions.push({ address: dataAddr, source: 'heuristic', exactFunctionStart: false });
+
+  applyAarch64MappingSymbols(image);
+
+  const retained = image.functions.filter((s) => s.address === dataAddr);
+  assert.equal(retained.length, 1, 'authoritative seed must be retained');
+  assert.equal(retained[0].source, 'symbol');
+  assert.equal(retained[0].exactFunctionStart, true);
 });

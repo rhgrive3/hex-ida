@@ -1,5 +1,6 @@
 import { functionSeed } from './model.js';
 import { parseSafeSEHLoadConfig } from './pe-safeseh.js';
+import { parseCHPELoadConfig } from './pe-chpe.js';
 import { parseArmntExceptionFunctions } from './pe-armnt-exception.js';
 import {
   createPEMetadataBudget,
@@ -76,10 +77,24 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
     );
   };
 
+  const parseCHPE = () => {
+    if (!head) return;
+    parseCHPELoadConfig(
+      r,
+      head.start,
+      Math.min(internalSize, dir.size),
+      image,
+      budget,
+      mappedFileRangeForRva,
+      mappedFileSpanForRva,
+    );
+  };
+
   const sectionAt = image.sectionAt;
   if (typeof sectionAt !== 'function') {
     const result = parseLoadConfigCore(r, dir, image, budget);
     parseSafeSEH();
+    parseCHPE();
     return result;
   }
 
@@ -114,6 +129,7 @@ export function parseLoadConfig(r, dir, image, sharedBudget = null) {
 
   const result = parseLoadConfigCore(r, dir, loadConfigImage, budget);
   parseSafeSEH();
+  parseCHPE();
   return result;
 }
 

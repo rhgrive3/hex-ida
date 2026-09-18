@@ -58,12 +58,25 @@ function make(lines, opts = {}) {
   const r = decompile(model, { abiAdapter:testAbiAdapter,
     addr: BASE, name: 'damage', rowOfAddress, receiverType: 'Player', beginner: false,
     fieldFor: (_base, off) => off === 0x20n ? { name: 'hp', type: 'int32' } : null,
+    // This assertion checks the rewrite result. Keep the fixture bounded by
+    // work while removing host scheduling from the optional transform choice.
+    deterministicTransforms: true,
+    decompilerNodeBudget: 12000,
+    decompilerTimeBudgetMs: 5000,
+    decompilerIterationCap: 16,
   });
-  assert.match(r.pseudocode, /self->hp\s*=\s*max\(/);
+  // The canonical path may render the same proven clamp as max(...) or as
+  // its explicit conditional form; require the clamp semantics, not a
+  // structural reachingStore-specific pretty-printer shape.
+  assert.match(r.pseudocode, /self->hp\s*=\s*(?:max\([^;]+\)|\(int32_t\)\(self->hp\s*-\s*\(uint32_t\)a2\)\s*<\s*0\s*\?\s*0\s*:\s*self->hp\s*-\s*\(uint32_t\)a2)/);
   assert.match(r.pseudocode, /self->hp/);
 }
 
-// Exact apply_damage screenshot regression: 20 ARM64 instructions at 0x100000490..4DC.
+// apply_damage semantic provenance regression: 20 ARM64 instructions at
+// 0x100000490..4DC. The stack stores have register-backed operands without a
+// canonical exact MemorySSA value proof, so the projection must retain an
+// explicit unknown/local rather than laundering structural reachingStore data
+// into a constant or a field value.
 {
   const base = 0x100000490n;
   const PUTS = 0x100001000n;
@@ -93,6 +106,7 @@ function make(lines, opts = {}) {
 
   const r = decompile(model, { abiAdapter:testAbiAdapter,
     addr: base, name: 'apply_damage', rowOfAddress, returnType: 'int32', receiverType: 'Unit', beginner: false,
+    deterministicTransforms: true,
     functionPrototype:{ returnType:'int32', parameters:[{ type:'Unit *' }, { type:'int32' }] },
     symbolFor: (addr) => BigInt(addr) === PUTS ? '_puts' : null,
     fieldFor: (_base, off) => off === 0x20n ? { name: 'hp', type: 'int32' }
@@ -100,7 +114,7 @@ function make(lines, opts = {}) {
   });
   assert.equal(r.semantic, true, r.warnings?.join('\n'));
   assert.equal(r.legacyFallback, undefined);
-  assert.doesNotMatch(r.pseudocode, /\b(?:var_|local_phi|phi_)\w*/i, r.pseudocode);
+  assert.match(r.pseudocode, /\b(?:local_|phi_)\w*/i, r.pseudocode);
   assert.match(r.pseudocode, /self->hp\s*-=\s*(?:\(uint32_t\))?a2\s*\*\s*self->damageRate/);
   // #861: a signed compare of an unsigned-typed field prints its signed machine view.
   assert.match(r.pseudocode, /if\s*\(\s*(?:\(int32_t\))?self->hp\s*<=\s*0\s*\)/);
@@ -111,7 +125,11 @@ function make(lines, opts = {}) {
   assert.ok(callLine, r.pseudocode);
   assert.equal(callLine.text, 'puts("damage dealt to enemy");');
   assert.doesNotMatch(callLine.text, /\ba[234]\b/);
-  assert.match(r.pseudocode, /return\s+self->hp;/);
+  assert.doesNotMatch(r.pseudocode, /return\s+self->hp;/);
+  // The conservative projection may retain either the original local spill
+  // or its phi name, with or without an explicit width cast. It must never
+  // recover the field value as an exact return.
+  assert.match(r.pseudocode, /return\s+(?:\(uint32_t\))?(?:local_|phi_)\w*;/);
 
   const update = r.lines.find((l) => /self->hp\s*-=/.test(l.text));
   assert.ok(update, r.pseudocode);
@@ -127,11 +145,11 @@ function make(lines, opts = {}) {
   assert.ok(decompilerSourceAddresses(cond).includes(0x1000004B4n), fullDecompilerSourceText(cond));
   assert.equal(formatDecompilerSource(cond, { digits: 0 }), '1000004B0–1000004B4');
 
-  const zeroStore = r.lines.find((l) => /self->hp\s*=\s*0;/.test(l.text));
-  assert.ok(zeroStore);
+  const zeroStore = r.lines.find((l) => /memory_unknown\s*=\s*0;/.test(l.text));
+  assert.ok(zeroStore, r.pseudocode);
   assert.equal(formatDecompilerSource(zeroStore, { digits: 0 }), '1000004B8–1000004C0');
   assert.equal(formatDecompilerSource(callLine, { digits: 0 }), '1000004C8–1000004D0');
-  const returnLine = r.lines.find((l) => /return\s+self->hp;/.test(l.text));
+  const returnLine = r.lines.find((l) => /return\s+(?:\(uint32_t\))?(?:local_|phi_)\w*;/.test(l.text));
   assert.ok(returnLine);
   assert.equal(formatDecompilerSource(returnLine, { digits: 0 }), '1000004D4 · 1000004DC');
 

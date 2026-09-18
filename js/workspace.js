@@ -142,7 +142,11 @@ export function snapshotWorkspace(app, identity){
     || (Array.isArray(app?.investigationSessions) ? app.investigationSessions : (Array.isArray(app?.project?.findings?.investigationSessions) ? app.project.findings.investigationSessions : []));
   const activeSessions = Array.isArray(allSessions)
     ? allSessions.filter((session) => {
-        if (session?.binaryId != null && identity?.hash && !sessionMatchesBinaryHash(session.binaryId, identity.hash)) return false;
+        // A bound session must never be exported without a matching live
+        // binary identity. Otherwise a caller that invokes snapshotWorkspace
+        // before ProductWorkspace.bind() can leak a prior binary's session
+        // into the next project (#5652).
+        if (session?.binaryId != null && (!identity?.hash || !sessionMatchesBinaryHash(session.binaryId, identity.hash))) return false;
         if (session?.projectId != null && currentProjectId != null && session.projectId !== currentProjectId) return false;
         return true;
       })

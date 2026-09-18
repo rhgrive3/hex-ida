@@ -140,8 +140,9 @@ export function describeBinaryImage(image, options = {}) {
     cpu: image.arch || 'unknown',
     cpuSub: image.metadata?.subtypeName || (image.metadata?.subtypeBase == null ? 'all' : String(image.metadata.subtypeBase)),
     is64: image.bits === 64,
-    isArm64: image.arch === 'arm64' || image.arch === 'arm64e',
+    isArm64: image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64ec',
     isArm64e: image.arch === 'arm64e',
+    isArm64ec: image.arch === 'arm64ec',
     textVM: (regions.find((r) => r.exec)?.vmAddr ?? image.imageBase ?? 0n),
     /* Parser evidence is the encryption authority: cryptid != 0 marks an
        encrypted (App Store FairPlay) image. Images without encryption

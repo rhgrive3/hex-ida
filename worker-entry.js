@@ -107,9 +107,20 @@ export default {
       if (request.method === 'OPTIONS') return apiPreflight(origin);
       if (isProviderSpendPath(url.pathname)) {
         const capability = request.headers.get(AI_CAPABILITY_HEADER);
+        let subject = null;
+        const authHeader = request.headers.get('authorization');
+        if (authHeader) {
+          const match = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(authHeader);
+          if (match) {
+            const raw = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(match[1])));
+            let hex = ''; for (let i = 0; i < raw.length; i++) hex += raw[i].toString(16).padStart(2, '0');
+            subject = hex;
+          }
+        }
         const authorized = AI_CAPABILITY_SIGNING_KEY && await verifyAICapability(capability, {
           signingKey: AI_CAPABILITY_SIGNING_KEY,
           buildId: RUNTIME_BUILD.manifest.buildId,
+          subject,
         });
         if (!authorized) return withApiCors(json({ error: { code: 'unauthorized', message: 'A valid Hex AI capability is required.' } }, 401), origin);
       }

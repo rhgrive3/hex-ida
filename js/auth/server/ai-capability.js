@@ -28,7 +28,7 @@ export async function mintAICapability({ signingKey, buildId, subject, now = Dat
   return { capability: `${encoded}.${encodeBase64URL(signature)}`, expiresAt: expiresAt * 1000 };
 }
 
-export async function verifyAICapability(value, { signingKey, buildId, now = Date.now() } = {}) {
+export async function verifyAICapability(value, { signingKey, buildId, now = Date.now(), subject = null } = {}) {
   const key = normalizeKey(signingKey);
   if (!key || !BUILD_ID.test(String(buildId || '')) || typeof value !== 'string' || value.length > 2048) return null;
   const parts = value.split('.');
@@ -43,6 +43,14 @@ export async function verifyAICapability(value, { signingKey, buildId, now = Dat
     if (payload?.v !== 1 || payload.aud !== AI_CAPABILITY_AUDIENCE || payload.bid !== buildId) return null;
     if (!/^[A-Za-z0-9_-]{22}$/.test(String(payload.sid || '')) || typeof payload.jti !== 'string' || payload.jti.length < 16 || payload.jti.length > 64) return null;
     if (!Number.isSafeInteger(payload.iat) || !Number.isSafeInteger(payload.exp) || payload.exp <= nowSeconds || payload.iat > nowSeconds + 5 || payload.exp - payload.iat > Math.ceil(AI_CAPABILITY_TTL_MS / 1000)) return null;
+    if (subject != null) {
+      if (typeof subject !== 'string' || !SUBJECT.test(subject)) return null;
+      const expectedBinding = encodeBase64URL((await hmac(`session:${subject}`, key)).slice(0, 16));
+      let diff = 0;
+      if (payload.sid.length !== expectedBinding.length) return null;
+      for (let i = 0; i < payload.sid.length; i++) diff |= payload.sid.charCodeAt(i) ^ expectedBinding.charCodeAt(i);
+      if (diff !== 0) return null;
+    }
     return payload;
   } catch { return null; }
 }

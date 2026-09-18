@@ -234,6 +234,14 @@ export const ARM64E_ARCHITECTURE = registerArchitecturePlugin({
   capabilities:{ decode:'external', exactEffects:'partial', semanticAnalysis:'legacy-v1-partial' },
 });
 
+export const ARM64EC_ARCHITECTURE = registerArchitecturePlugin({
+  id:'arm64ec', semanticVersion:ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:4, fixedInstructionSize:4, viewerCompatible:true,
+  modes:()=>Object.freeze(['a64','arm64ec']), registerFile:()=>ARM64_REGISTERS,
+  decodeProvider:'capstone/backend', liftExact:liftArm64ArchitectureMachineEffects, assemble:assembleArm64, classifyControlFlow:arm64ControlFlow,
+  directControlTarget:arm64DirectControlTarget, supportedInstructionEndianness:Object.freeze(['little']),
+  capabilities:{ decode:'external', exactEffects:'partial', semanticAnalysis:'legacy-v1' },
+});
+
 export const X86_64_ARCHITECTURE = registerArchitecturePlugin({
   id:'x86_64', semanticVersion:X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:1, fixedInstructionSize:null, viewerCompatible:false,
   modes:()=>Object.freeze(['long-64']), registerFile:x86RegisterFile,

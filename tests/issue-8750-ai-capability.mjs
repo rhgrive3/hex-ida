@@ -18,6 +18,8 @@ assert.equal(verified?.aud, 'hex-ai-provider');
 assert.equal(verified?.bid, buildId);
 assert.match(verified?.sid || '', /^[A-Za-z0-9_-]{22}$/);
 assert.notEqual(verified?.sid, subject, 'capability must not expose the long-lived session token hash');
+assert.ok(await verifyAICapability(grant.capability, { signingKey: key, buildId, now: now + 1000, subject }), 'matching session subject must verify');
+assert.equal(await verifyAICapability(grant.capability, { signingKey: key, buildId, now: now + 1000, subject: 'd'.repeat(64) }), null, 'different session subject must fail');
 assert.equal(await verifyAICapability(grant.capability, { signingKey: key, buildId: `${'d'.repeat(24)}.${'e'.repeat(24)}`, now: now + 1000 }), null, 'wrong build must fail');
 assert.equal(await verifyAICapability(grant.capability, { signingKey: key, buildId, now: now + AI_CAPABILITY_TTL_MS + 1000 }), null, 'expired grant must fail');
 assert.equal(await verifyAICapability(grant.capability.slice(0, -1) + (grant.capability.endsWith('A') ? 'B' : 'A'), { signingKey: key, buildId, now: now + 1000 }), null, 'tampering must fail');

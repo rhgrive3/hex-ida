@@ -86,7 +86,8 @@ test('default native navigation retains a stored pointer later used as a load ad
   const build = () => buildCanonicalQueryProjection(input.result.pipeline, { ...f, snapshotId: 'snap', work: workFor(t) });
   const initial = await build();
   const store = input.result.pipeline.semanticIr.nodes.find(node => node.kind === 'store');
-  const sink = input.result.pipeline.semanticIr.nodes.filter(node => node.kind === 'load').at(-1);
+  const sink = input.result.pipeline.semanticIr.nodes.find(node => node.kind === 'load' && node.origin?.virtualRanges?.[0]?.start === '0x4008')
+    ?? input.result.pipeline.semanticIr.nodes.filter(node => node.kind === 'load').at(-1);
   const source = initial.adjacent(initial.entityReference('semantic-ir', store.id), 'backward').map(id => initial.edge(id))
     .find(edge => edge.kind === 'operation-input' && edge.flowKinds?.includes('data')).from;
   const target = initial.entityReference('semantic-ir', sink.id);

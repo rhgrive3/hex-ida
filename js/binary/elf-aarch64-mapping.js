@@ -83,9 +83,15 @@ export function applyAarch64MappingSymbols(image) {
     }
   }
   // Symbol/function discovery precedes this post-parse ABI overlay. Remove only
-  // starts the mapping symbols prove are data; ordinary symbols remain intact.
+  // untrusted/heuristic starts the mapping symbols prove are data; authoritative
+  // function records (e.g. exact starts, symbol/relocation-backed, entrypoint) remain intact.
   if (image.dataInCode.length && Array.isArray(image.functions)) {
-    image.functions = image.functions.filter((seed) => seed?.address == null || !image.isDataInCode(seed.address));
+    image.functions = image.functions.filter((seed) => {
+      if (seed?.address == null || !image.isDataInCode(seed.address)) return true;
+      if (seed.exactFunctionStart === true || seed.authoritative === true) return true;
+      if (seed.source === 'symbol' || seed.source === 'export' || seed.source === 'entrypoint' || seed.source === 'ifunc-resolver') return true;
+      return false;
+    });
   }
   return image;
 }
