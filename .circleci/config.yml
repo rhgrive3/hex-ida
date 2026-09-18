@@ -169,9 +169,9 @@ jobs:
                 # PR #9203 combines the reviewed architecture invariant work with
                 # the Phase 7 query DTO repair. The exact helper rejects every
                 # undeclared foreign path before validating the Phase 7 slice.
-                FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \\
-                  --branch "$CIRCLE_BRANCH" \\
-                  --base-sha "$OWNERSHIP_BASE_SHA" \\
+                FILES_JSON="$(node tools/validation/phase7/cross-lane-inventory.mjs \
+                  --branch "$CIRCLE_BRANCH" \
+                  --base-sha "$OWNERSHIP_BASE_SHA" \
                   --head-sha "$OWNERSHIP_HEAD_SHA")"
                 node tools/validation/phase7-ownership.mjs --files-json "$FILES_JSON"
                 ;;
