@@ -30,6 +30,15 @@ function architectureOf(app) {
   const architecture = value.trim().toLowerCase();
   return architecture || 'unknown';
 }
+function endiannessOf(app) {
+  const candidates = [storeValue(app, 'capability')?.endianness];
+  try { candidates.push(app?.currentSlice?.()?.info?.endian); } catch { /* optional UI slice metadata */ }
+  candidates.push(app?.backend?.platformInfo?.productDescriptor?.formatMetadata?.endian);
+  for (const value of candidates) {
+    if (value === 'little' || value === 'big') return value;
+  }
+  return undefined;
+}
 function abortError(signal, message = 'Analysis query aborted') {
   if (signal?.reason instanceof Error) return signal.reason;
   const error = new Error(message); error.name = 'AbortError'; return error;
@@ -570,6 +579,7 @@ function installCancellableFunctionDiscovery(app) {
             functions:symbols.funcs,
             functionEnds:symbols.funcEnds,
             architecture:architectureOf(app),
+            endian:endiannessOf(app),
             signal:producerController.signal,
             readBytes:async (address, size) => {
               if (typeof app.backend.readAt !== 'function') return null;

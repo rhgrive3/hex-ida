@@ -35,8 +35,15 @@ function executableRanges(regions) {
     if (region?.exec !== true) continue;
     const start = asNonNegativeBigInt(region.vmAddr ?? region.address ?? region.start);
     const size = asNonNegativeBigInt(region.size);
-    if (start == null || size == null || size <= 0n) continue;
-    ranges.push({ start, end:start + size });
+    if (start == null || size == null || size <= 0n || region.zerofill === true) continue;
+    let fileBackedSize = size;
+    if (Object.prototype.hasOwnProperty.call(region, 'fileSize')) {
+      const explicitFileSize = asNonNegativeBigInt(region.fileSize);
+      if (explicitFileSize == null) continue;
+      if (explicitFileSize < fileBackedSize) fileBackedSize = explicitFileSize;
+    }
+    if (fileBackedSize <= 0n) continue;
+    ranges.push({ start, end:start + fileBackedSize });
   }
   return mergeRanges(ranges);
 }
