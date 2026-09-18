@@ -17,11 +17,11 @@ jobs:
         run: |
           set -euo pipefail
           curl --fail --location --silent --show-error --max-time 60 \
-            -o /tmp/coderabbit-fix.patch.gz \
-            https://raw.githubusercontent.com/rhgrive3/hex-ida/tmp-arm64-dt-init-fini-window-stage/tmp/arm64-dt-window/coderabbit-fix.patch.gz
-          gzip -t /tmp/coderabbit-fix.patch.gz
-          gzip -dc /tmp/coderabbit-fix.patch.gz > /tmp/coderabbit-fix.patch
-          test -s /tmp/coderabbit-fix.patch
+            -o /tmp/coderabbit-second-fix.patch.gz \
+            https://raw.githubusercontent.com/rhgrive3/hex-ida/tmp-arm64-dt-init-fini-window-stage/tmp/arm64-dt-window/coderabbit-second-fix.patch.gz
+          gzip -t /tmp/coderabbit-second-fix.patch.gz
+          gzip -dc /tmp/coderabbit-second-fix.patch.gz > /tmp/coderabbit-second-fix.patch
+          test -s /tmp/coderabbit-second-fix.patch
       - name: Checkout target PR branch
         uses: actions/checkout@v4
         with:
@@ -31,20 +31,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "4f19c0b8106503487475af15e95fd87b6420ecd1"
+          test "$(git rev-parse HEAD)" = "3bcc3ecf62b979a087f0138a8506747ef979fad6"
       - name: Apply review fix
         shell: bash
         run: |
           set -euo pipefail
           git config user.name OpenAI
           git config user.email noreply@openai.com
-          git am /tmp/coderabbit-fix.patch
+          git am /tmp/coderabbit-second-fix.patch
           git diff --check HEAD^ HEAD
       - name: Run focused regression
         shell: bash
         run: |
           set -euo pipefail
-          timeout 180s node --test tests/issue-9203-elf-loader-entry-analysis-window.mjs tests/issue-2409-function-extent-boundary.mjs
+          timeout 180s node --test tests/issue-9203-elf-loader-entry-analysis-window.mjs tests/issue-2409-function-extent-boundary.mjs tests/phase4/binary/issue-7611-overlapping-ptload-authority.test.mjs tests/phase4/binary/issue-7611-elf-section-ptload-relation.test.mjs
       - name: Run ownership and query focused checks
         shell: bash
         run: |
