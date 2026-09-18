@@ -193,10 +193,18 @@ export function elfLoaderEntrySectionAnalysisWindow(image, address) {
     if (section.address !== start) return false;
     if (section.perms?.execute !== true || section.perms?.read !== true) return false;
     if (!sectionHasMappedAddress(section)) return false;
-    let size, fileSize;
-    try { size = BigInt(section.size); fileSize = BigInt(section.fileSize); } catch { return false; }
-    if (size <= 0n || fileSize < size) return false;
-    return mappedELFFileSpanForVa(image, start, size) != null;
+    let size, fileSize, fileOffset;
+    try {
+      size = BigInt(section.size);
+      fileSize = BigInt(section.fileSize);
+      fileOffset = BigInt(section.fileOffset);
+    } catch { return false; }
+    if (size <= 0n || fileSize < size || fileOffset < 0n) return false;
+    // Prove the section header's own VA -> file relation against every
+    // overlapping PT_LOAD, not merely that the VA bytes are file-backed by
+    // some load. A conflicting section offset or overlapping owner therefore
+    // fails closed instead of authorizing a decode window over unrelated bytes.
+    return elfSectionFileSpanConsistentWithLoads(image, start, size, fileOffset, false);
   });
   // Ambiguous section ownership is not sufficient authority for a loader window.
   if (candidates.length !== 1) return null;

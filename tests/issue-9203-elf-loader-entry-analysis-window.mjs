@@ -4,6 +4,7 @@ import { analysisFromBinaryImage } from '../js/platform/analysis-result.js';
 import { SymbolIndex } from '../js/symbols.js';
 import { App } from '../js/app.js';
 import { createAppAnalysisQueryAdapter } from '../js/analysis/query/app-adapter.js';
+import { elfLoaderEntrySectionAnalysisWindow } from '../js/binary/elf-mapping.js';
 
 const u32 = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff];
 const u64 = (v) => [...u32(Number(BigInt(v) & 0xffffffffn)), ...u32(Number((BigInt(v) >> 32n) & 0xffffffffn))];
@@ -229,6 +230,35 @@ for (const [label, options] of [
   assert.equal(appRange(symbols).ok, false, `${label}: unproven extent must remain unavailable`);
 }
 
+
+
+const loaderSection = {
+  index:1,
+  source:'section-header',
+  address:TEXT_VA,
+  size:0x40n,
+  fileOffset:0x100n,
+  fileSize:0x40n,
+  flags:0x6n,
+  perms:{ read:true, write:false, execute:true },
+};
+const loaderSegment = {
+  source:'PT_LOAD',
+  address:TEXT_VA,
+  size:0x100n,
+  fileOffset:0x100n,
+  fileSize:0x100n,
+  perms:{ read:true, write:false, execute:true },
+};
+assert.equal(elfLoaderEntrySectionAnalysisWindow({ metadata:{ type:3 }, sections:[
+  { ...loaderSection, fileOffset:0x900n },
+], segments:[loaderSegment] }, TEXT_VA), null,
+'mismatched section/PT_LOAD file offsets must fail closed');
+assert.equal(elfLoaderEntrySectionAnalysisWindow({ metadata:{ type:3 }, sections:[loaderSection], segments:[
+  loaderSegment,
+  { ...loaderSegment, fileOffset:0x200n },
+] }, TEXT_VA), null,
+'conflicting overlapping PT_LOAD file provenance must fail closed');
 
 const forgedImage = {
   format:'elf',
