@@ -244,7 +244,20 @@ function rangeFor(app, id) {
   if (!fn) return { ok:false, reason:'function-symbol-missing' };
   const region = executableRegion(app, fn.start);
   if (!region) return { ok:false, reason:'function-start-not-executable', function:fn };
-  if (fn.end == null) return { ok:false, reason:'function-end-unproven', function:fn, region };
+  if (fn.end == null) {
+    const loaderWindow = app?.symbols?.functionAnalysisWindow?.(fn.start) ?? null;
+    const windowEnd = loaderWindow?.end ?? null;
+    const regionEnd = BigInt(region.vmAddr) + BigInt(region.size);
+    if (windowEnd == null || windowEnd <= fn.start || windowEnd > regionEnd) {
+      return { ok:false, reason:'function-end-unproven', function:fn, region };
+    }
+    return {
+      ok:true, start:BigInt(fn.start), end:BigInt(windowEnd), region, function:fn,
+      complete:false, reason:'function-end-unproven',
+      provenance:'elf-loader-contract+section-analysis-window',
+      analysisWindow:loaderWindow,
+    };
+  }
   const regionEnd = BigInt(region.vmAddr) + BigInt(region.size);
   let end = BigInt(fn.end);
   if (end <= fn.start) return { ok:false, reason:'invalid-function-range', function:fn, region };
@@ -1037,8 +1050,13 @@ export function createAppAnalysisQueryAdapter(app) {
         if (value != null) return publish(value);
       }
       const result = await loadFunction(id, options);
+      const functionCompleteness = result?.value?.completeness;
+      const functionStatus = {
+        reason:result?.status?.reason ?? functionCompleteness?.reason ?? null,
+        ...(functionCompleteness?.provenance != null ? { provenance:functionCompleteness.provenance } : {}),
+      };
       if (result?.value?.decompiler) {
-        return publish(result.value.decompiler, result.status?.completeness);
+        return publish(result.value.decompiler, result.status?.completeness, functionStatus);
       }
       if (!result?.value?.model) return unsupported(id, 'decompiler-projection-unavailable');
       const address = addressOf(id) ?? result.value.startAddr ?? result.value.startAddress;
@@ -1046,7 +1064,7 @@ export function createAppAnalysisQueryAdapter(app) {
         name:address == null ? null : app?.symbols?.nameAt?.(address),
         addr:address,
       });
-      return publish(projection, result.status?.completeness);
+      return publish(projection, result.status?.completeness, functionStatus);
     },
 
     async translationUnit(_snapshot, ids, options = {}) {

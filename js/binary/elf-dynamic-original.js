@@ -2,7 +2,7 @@ import { functionSeed } from './model.js';
 import { createDynamicSymbolBudget } from './dynamic-symbol-budget.js';
 import { createRelocationBudget } from './relocation-budget.js';
 import { collectAndroidPackedRelocations, collectRelrRelocations, parseDynamicSymbolVersions } from './elf-extended.js';
-import { elfExactFunctionStartRejection, elfFunctionExtentRejection, elfInstructionStartAlignmentRejection, elfInstructionTargetRejection, mappedELFFileRangeForVa, mappedELFFileSpanForVa } from './elf-mapping.js';
+import { elfExactFunctionStartRejection, elfFunctionExtentRejection, elfInstructionStartAlignmentRejection, elfInstructionTargetRejection, elfLoaderEntrySectionAnalysisWindow, mappedELFFileRangeForVa, mappedELFFileSpanForVa } from './elf-mapping.js';
 import { relocationFieldWidth } from './elf-relocation-target.js';
 
 const ET_REL = 1;
@@ -19,6 +19,7 @@ const DT_RELAENT = 9n;
 const DT_STRSZ = 10n;
 const DT_SYMENT = 11n;
 const DT_INIT = 12n;
+const DT_FINI = 13n;
 const DT_SONAME = 14n;
 const DT_SYMTAB_SHNDX = 34n;
 const DT_SYMTABSZ = 39n;
@@ -236,21 +237,27 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
     if (name) image.metadata.soname = name;
   }
 
-  const dtInitVa = one(DT_INIT);
-  if (dtInitVa != null && dtInitVa !== 0n && Number(image?.metadata?.type) !== ET_REL) {
-    const rejection = elfInstructionTargetRejection(image, dtInitVa);
-    if (rejection == null) {
-      image.functions.push(functionSeed(dtInitVa, {
-        source: 'dt-init',
-        confidence: 0.9,
-        exactFunctionStart: true,
-        functionStartEvidence: 'ELF PT_DYNAMIC DT_INIT loader-invoked initializer in validated executable mapping with file-backed instruction bytes',
-      }));
-      image.metadata.dtInit = { address: dtInitVa, source: 'PT_DYNAMIC' };
-    } else {
-      markDynamicPartial(image, `DT_INIT 0x${dtInitVa.toString(16)} ${rejection}`);
+  const recordLoaderEntry = (tag, tagName, source) => {
+    const address = one(tag);
+    if (address == null || address === 0n || Number(image?.metadata?.type) === ET_REL) return;
+    const rejection = elfInstructionTargetRejection(image, address);
+    if (rejection != null) {
+      markDynamicPartial(image, `${tagName} 0x${address.toString(16)} ${rejection}`);
+      return;
     }
-  }
+    const analysisWindow = elfLoaderEntrySectionAnalysisWindow(image, address);
+    image.functions.push(functionSeed(address, {
+      source,
+      confidence: 0.9,
+      exactFunctionStart: true,
+      functionStartEvidence: `ELF PT_DYNAMIC ${tagName} loader-invoked runtime entry in validated executable mapping with file-backed instruction bytes`,
+      loaderEntryContract: tagName,
+      analysisWindow,
+    }));
+    image.metadata[tagName === 'DT_INIT' ? 'dtInit' : 'dtFini'] = { address, source: 'PT_DYNAMIC' };
+  };
+  recordLoaderEntry(DT_INIT, 'DT_INIT', 'dt-init');
+  recordLoaderEntry(DT_FINI, 'DT_FINI', 'dt-fini');
 
   const relocationBudget = createRelocationBudget({
     signal,

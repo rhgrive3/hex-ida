@@ -1106,6 +1106,31 @@ const EXACT_FUNCTION_START_SOURCES = new Set([
   'tls-callback', 'guard-cf', 'constructor',
 ]);
 
+const ELF_LOADER_ENTRY_CONTRACTS = new Set(['DT_INIT', 'DT_FINI']);
+
+function normalizedLoaderEntryContracts(value, sourceEvidence = []) {
+  const raw = Array.isArray(value) ? value : value == null ? [] : [value];
+  const sources = new Set((Array.isArray(sourceEvidence) ? sourceEvidence : [sourceEvidence])
+    .filter((item) => typeof item === 'string'));
+  return [...new Set(raw.filter((item) => ELF_LOADER_ENTRY_CONTRACTS.has(item)))]
+    .filter((item) => item === 'DT_INIT' ? sources.has('dt-init') : sources.has('dt-fini'))
+    .sort();
+}
+
+function normalizedLoaderAnalysisWindow(raw, address, contracts) {
+  if (!raw || typeof raw !== 'object' || !contracts.length) return null;
+  if (raw.kind !== 'elf-loader-entry-section') return null;
+  const start = strictBigIntOrNull(raw.start);
+  const end = strictBigIntOrNull(raw.end);
+  if (start === null || end === null || start !== address || end <= start) return null;
+  const sectionIndex = raw.sectionIndex == null ? null : Number(raw.sectionIndex);
+  if (sectionIndex != null && (!Number.isSafeInteger(sectionIndex) || sectionIndex < 0)) return null;
+  const provenance = typeof raw.provenance === 'string' && raw.provenance.trim()
+    ? raw.provenance.trim()
+    : 'ELF loader entry section analysis window';
+  return { kind:'elf-loader-entry-section', start, end, sectionIndex, provenance };
+}
+
 export function functionSeed(address, opts = {}) {
   const canonicalAddress = strictBigIntOrNull(address);
   if (canonicalAddress === null) throw new TypeError('function-seed-address-must-be-exact-integer');
@@ -1116,6 +1141,8 @@ export function functionSeed(address, opts = {}) {
   const source = opts.source || 'heuristic';
   const confidence = finiteConfidence(opts.confidence, 0.5);
   const hasExtent = size != null || end != null;
+  const loaderEntryContracts = normalizedLoaderEntryContracts(opts.loaderEntryContracts ?? opts.loaderEntryContract, source);
+  const analysisWindow = normalizedLoaderAnalysisWindow(opts.analysisWindow, canonicalAddress, loaderEntryContracts);
   return {
     address: canonicalAddress, size, end, name: opts.name || null,
     source, confidence, kind: opts.kind || 'function',
@@ -1124,6 +1151,8 @@ export function functionSeed(address, opts = {}) {
       ? (opts.exactFunctionStart === true || EXACT_FUNCTION_START_SOURCES.has(source) ? confidence : null)
       : finiteConfidence(opts.exactFunctionStartConfidence, 0),
     functionStartEvidence: opts.functionStartEvidence || null,
+    loaderEntryContracts,
+    analysisWindow,
     extentSource: opts.extentSource || (hasExtent ? source : null),
     extentConfidence: opts.extentConfidence == null ? (hasExtent ? confidence : null)
       : finiteConfidence(opts.extentConfidence, 0.5),
@@ -1182,6 +1211,8 @@ export function mergeFunctionSeeds(input, context = {}) {
     // fractional, unsafe, and malformed extents are not promoted through
     // BigInt() coercion. Drop that seed at the canonical boundary (#5891).
     if ((f0.size != null && size === null) || (f0.end != null && end === null)) continue;
+    const loaderEntryContracts = normalizedLoaderEntryContracts(f0.loaderEntryContracts ?? f0.loaderEntryContract, [f0.source, ...(Array.isArray(f0.sources) ? f0.sources : [])]);
+    const analysisWindow = normalizedLoaderAnalysisWindow(f0.analysisWindow, address, loaderEntryContracts);
     const f = {
       ...f0,
       address,
@@ -1189,6 +1220,8 @@ export function mergeFunctionSeeds(input, context = {}) {
       end,
       confidence,
       exactFunctionStartConfidence,
+      loaderEntryContracts,
+      analysisWindow,
       extentConfidence: f0.extentConfidence == null ? null : finiteConfidence(f0.extentConfidence, 0.5),
     };
     if ((f.size != null || f.end != null) && !f.extentSource) f.extentSource = f.source || 'unknown';
@@ -1205,6 +1238,18 @@ export function mergeFunctionSeeds(input, context = {}) {
     if (!best.callingConvention && other.callingConvention) best.callingConvention = other.callingConvention;
     if (!best.abiMetadata && other.abiMetadata) best.abiMetadata = { ...other.abiMetadata };
     if (!best.arch && other.arch) best.arch = other.arch;
+    best.loaderEntryContracts = [...new Set([
+      ...(prev.loaderEntryContracts || []),
+      ...(f.loaderEntryContracts || []),
+    ])].filter((item) => ELF_LOADER_ENTRY_CONTRACTS.has(item)).sort();
+    const bestWindow = normalizedLoaderAnalysisWindow(best.analysisWindow, best.address, best.loaderEntryContracts);
+    const otherWindow = normalizedLoaderAnalysisWindow(other.analysisWindow, best.address, best.loaderEntryContracts);
+    if (bestWindow && otherWindow && (bestWindow.end !== otherWindow.end || bestWindow.sectionIndex !== otherWindow.sectionIndex)) {
+      best.analysisWindow = null;
+      best.analysisWindowConflict = true;
+    } else {
+      best.analysisWindow = bestWindow || otherWindow || null;
+    }
     let inheritedExtent = false;
     const bestHasExtent = best.size != null || best.end != null;
     const otherHasExtent = other.size != null || other.end != null;

@@ -46,6 +46,7 @@ const LEGACY_VALIDATED_LOADER_SEED_SOURCES = new Set([
   'function_starts',
   'exception',
   'dt-init',
+  'dt-fini',
   'tls-callback',
   'guard-cf',
   'unwind',
