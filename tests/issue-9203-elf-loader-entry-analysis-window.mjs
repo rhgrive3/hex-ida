@@ -211,6 +211,38 @@ for (const [tag, contract, functionName] of [
   assert.equal(probe.result.value[0]?.mnemonic, 'ret');
 }
 
+// The section end is only a ceiling: a nearer independently known function
+// start must stop the loader-entry analysis window before it can cross into the
+// next function.
+const crossingSymbols = new SymbolIndex({
+  funcs:new BigUint64Array([TEXT_VA, TEXT_VA + 0x10n]),
+  funcEnds:new BigUint64Array([0n, 0n]),
+  functionProvenance:[
+    {
+      source:'dt-init', confidence:0.9, confirmed:true,
+      loaderEntryContracts:['DT_INIT'],
+      analysisWindow:{
+        kind:'elf-loader-entry-section',
+        start:TEXT_VA,
+        end:TEXT_VA + 0x40n,
+        sectionIndex:1,
+        provenance:'ELF loader entry at canonical executable file-backed section start',
+      },
+    },
+    { source:'symbol', confidence:1, confirmed:true },
+  ],
+});
+crossingSymbols.setFunctionRegions([{ id:'exec', vmAddr:TEXT_VA, size:0x100n, exec:true }], false);
+assert.equal(crossingSymbols.functionAnalysisWindow(TEXT_VA)?.end, TEXT_VA + 0x10n,
+  'loader analysis window must clamp to a nearer known function start');
+assert.equal(crossingSymbols.functionWindowBound(TEXT_VA), TEXT_VA + 0x10n,
+  'loader privilege must not widen the generic function window past the next function');
+assert.equal(appRange(crossingSymbols).end, TEXT_VA + 0x10n,
+  'App validated range must stop before the next function');
+const crossingProbe = await adapterRangeProbe(crossingSymbols);
+assert.equal(crossingProbe.requestedLength, 0x10,
+  'query adapter must not decode across a nearer known function start');
+
 const ordinary = indexed(parseELF(buildElf64({ includeLoaderTag:false, functionName:'ordinary' })));
 assert.equal(ordinary.symbols.functionAt(TEXT_VA)?.end, null);
 assert.equal(ordinary.symbols.functionWindowBound(TEXT_VA), null, 'ordinary executable section start must not receive loader fallback');
@@ -261,6 +293,34 @@ assert.equal(elfLoaderEntrySectionAnalysisWindow({ metadata:{ type:3 }, sections
   { ...loaderSegment, fileOffset:0x200n },
 ] }, TEXT_VA), null,
 'conflicting overlapping PT_LOAD file provenance must fail closed');
+
+const selfDeclaredLoaderImage = {
+  format:'elf',
+  arch:'arm64',
+  // Canonical executable/file-backed section evidence exists, but there is no
+  // DT_INIT/DT_FINI metadata from either dynamic-table parser.
+  metadata:{ type:3, functionDiscovery:{ complete:true } },
+  sections:[loaderSection],
+  segments:[loaderSegment],
+  symbols:[], exports:[], imports:[],
+  functions:[{
+    address:TEXT_VA,
+    source:'dt-init',
+    sources:['dt-init'],
+    confidence:0.9,
+    exactFunctionStart:true,
+    loaderEntryContracts:['DT_INIT'],
+  }],
+};
+const selfDeclaredAnalysis = analysisFromBinaryImage(selfDeclaredLoaderImage);
+assert.equal(selfDeclaredAnalysis.functionProvenance[0]?.loaderEntryContracts?.length ?? 0, 0,
+  'self-declared dt-init source without parsed loader metadata must not retain loader privilege');
+assert.equal(selfDeclaredAnalysis.functionProvenance[0]?.analysisWindow ?? null, null,
+  'canonical section backing alone must not turn a forged dt-init label into a loader window');
+const selfDeclaredSymbols = new SymbolIndex(selfDeclaredAnalysis);
+selfDeclaredSymbols.setFunctionRegions([{ id:'exec', vmAddr:TEXT_VA, size:0x100n, exec:true }], false);
+assert.equal(selfDeclaredSymbols.functionAnalysisWindow(TEXT_VA), null,
+  'DT_INIT/DT_FINI privilege must require parsed dynamic-table metadata');
 
 const forgedImage = {
   format:'elf',
