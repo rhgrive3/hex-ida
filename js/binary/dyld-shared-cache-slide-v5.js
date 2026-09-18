@@ -84,7 +84,7 @@ function decodeRecord(mapping, pageOffset, raw, info, slide, mappings, targetRan
 function initialOffset(info, page) {
   const start = info.starts[page];
   if (start === PAGE_ATTR_NO_REBASE) return null;
-  return start;
+  return start * 8;
 }
 
 export function walkSlideInfo5Sync(bytes, mapping, info, slide, mappings, maxRecords, targetRange = null) {

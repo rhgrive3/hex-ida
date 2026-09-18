@@ -85,7 +85,9 @@ function captureCanonicalMemoryTransformsImpl(pipeline, decompiler, { worldId, s
   const steps = [];
   for (const load of pipeline.legacyV1.instructions) {
     tick(work);
-    if (load.op !== 'load' || !load.memoryForwarding) continue;
+    const isCanonicalLoad = load.op === 'load'
+      || (load.op === 'mov' && load.sub === 'memory-forward' && load.extra?.originalMemoryOp === 'load');
+    if (!isCanonicalLoad || !load.memoryForwarding) continue;
     const fact = load.memoryForwarding;
     work.charge('workUnits', mssa.definitions.length + mssa.uses.length + mssa.accessMetadata.length + decompiler.cAst.body.length);
     work.checkpoint();
