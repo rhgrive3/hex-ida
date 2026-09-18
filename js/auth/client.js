@@ -2,6 +2,8 @@ import { ANONYMOUS_IDENTITY, safeIdentity } from './capabilities.js';
 import { createAuthTransport } from './transport.js';
 const STORAGE_KEY = 'hex.auth.userscript.session.v1';
 const SECRET = /^[A-Za-z0-9_-]{43}$/;
+const PRIVATE_STORAGE_TIMEOUT_MS = 5000;
+const PRIVATE_STORAGE_MUTATIONS = new WeakMap();
 
 /** Synchronous reads for existing controls; refresh/authorization are async. */
 export class SessionAdminAuthProvider {
@@ -103,7 +105,7 @@ export function createSessionClient({ apiOrigin, privilegedManifest, manager = n
       // Clamp the local lifecycle immediately, including during a slow revoke.
       invalidate();
       try { await mutation('/auth/logout', {}); }
-      finally { bearer = null; invalidate(); if (!web && manager?.deleteValue) await privateStorage(() => manager.deleteValue(STORAGE_KEY)); }
+      finally { bearer = null; invalidate(); if (!web && manager?.deleteValue) await privateStorageMutation(manager, () => manager.deleteValue(STORAGE_KEY)).done; }
     },
     // Parent-only pairing API. It is never exposed through the child RPC.
     startPairing: (openerOrigin, signal) => request('/api/auth/userscript/start', { method: 'POST', body: { openerOrigin }, signal }),
@@ -114,15 +116,27 @@ export function createSessionClient({ apiOrigin, privilegedManifest, manager = n
       const result = await request('/api/auth/userscript/complete', { method: 'POST', body: { transactionId, pollSecret, completionProof }, signal });
       if (typeof result?.token !== 'string' || !SECRET.test(result.token)) throw new Error('Invalid HEX session.');
       if (closed || signal?.aborted || current !== epoch) throw new Error('Login was cancelled.');
-      bearer = result.token;
-      try { await privateStorage(() => manager.setValue(STORAGE_KEY, bearer)); }
+      const token = result.token;
+      bearer = token;
+      const persistence = privateStorageMutation(manager, () => manager.setValue(STORAGE_KEY, token));
+      try { await persistence.done; }
       catch {
-        try { await mutation('/auth/logout', {}); } finally { bearer = null; invalidate(); }
+        // A timed-out GM write keeps running.  Cleanup is ordered behind that
+        // physical write, but only while this pairing still owns the newest
+        // storage generation.  A newer pairing must never be deleted by an
+        // older failure path.
+        try { if (bearer === token) await mutation('/auth/logout', {}); }
+        finally {
+          if (bearer === token) { bearer = null; invalidate(); }
+          try { await privateStorageCleanup(manager, persistence.generation, () => manager.deleteValue(STORAGE_KEY)); } catch {}
+        }
         throw new Error('Unable to save the private HEX session.');
       }
       if (closed || signal?.aborted || current !== epoch) {
-        // Cancellation during asynchronous GM storage must not survive reload.
-        await privateStorage(() => manager.deleteValue(STORAGE_KEY)); bearer = null; invalidate();
+        // Cancellation during asynchronous GM storage must not survive reload,
+        // unless a newer lifecycle generation already owns the same storage.
+        try { await privateStorageCleanup(manager, persistence.generation, () => manager.deleteValue(STORAGE_KEY)); }
+        finally { if (bearer === token) { bearer = null; invalidate(); } }
         throw new Error('Login was cancelled.');
       }
       await refresh();
@@ -131,9 +145,31 @@ export function createSessionClient({ apiOrigin, privilegedManifest, manager = n
   });
   return client;
 }
+function privateStorageMutation(manager, operation) {
+  let state = PRIVATE_STORAGE_MUTATIONS.get(manager);
+  if (!state) {
+    state = { generation: 0, tail: Promise.resolve() };
+    PRIVATE_STORAGE_MUTATIONS.set(manager, state);
+  }
+  const generation = ++state.generation;
+  const actual = state.tail.then(
+    () => Promise.resolve().then(operation),
+    () => Promise.resolve().then(operation),
+  );
+  // Caller timeouts do not release ordering authority: a late physical GM
+  // mutation must settle before any newer mutation against the same manager.
+  state.tail = actual.then(() => {}, () => {});
+  return { generation, done: privateStorage(() => actual) };
+}
+async function privateStorageCleanup(manager, generation, operation) {
+  const state = PRIVATE_STORAGE_MUTATIONS.get(manager);
+  if (!state || state.generation !== generation) return false;
+  await privateStorageMutation(manager, operation).done;
+  return true;
+}
 async function privateStorage(operation) {
   let timer;
-  try { return await Promise.race([Promise.resolve().then(operation), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Private storage timed out.')), 5000); })]); }
+  try { return await Promise.race([Promise.resolve().then(operation), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Private storage timed out.')), PRIVATE_STORAGE_TIMEOUT_MS); })]); }
   finally { clearTimeout(timer); }
 }
 export async function verifySource(source, expected) {
