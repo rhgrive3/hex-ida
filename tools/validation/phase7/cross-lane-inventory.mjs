@@ -912,6 +912,12 @@ export const CROSS_LANE_ROUTES = Object.freeze({
   // query projection slice; every A/C/D/E/G/H path is enumerated so the route
   // fails closed if the integration grows unexpectedly.
   "integration/arch-defects-progress-20260918": Object.freeze([
+    "reports/investigations/unsupported-semantics/00-baseline.md",
+    "reports/investigations/unsupported-semantics/01-binary-semantics.md",
+    "reports/investigations/unsupported-semantics/02-first-divergence.md",
+    "reports/investigations/unsupported-semantics/README.md",
+    "reports/investigations/unsupported-semantics/semantics.json",
+    "reports/investigations/unsupported-semantics/unsupported-functions.json",
     ".circleci/config.yml",
     ".github/workflows/ghidra-differential.yml",
     "js/architecture/compat/ir-core-arm64-aapcs64-v1.js",
