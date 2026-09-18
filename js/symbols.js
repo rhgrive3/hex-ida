@@ -368,6 +368,12 @@ export class SymbolIndex {
     let start, end;
     try { start = BigInt(window.start); end = BigInt(window.end); } catch { return null; }
     if (start !== addr || end <= start) return null;
+    // A loader section end is only a ceiling. A nearer independently known
+    // function start remains the stronger local boundary, so loader privilege
+    // can never widen analysis across another function start.
+    const containmentBound = this._containmentBound(i);
+    if (containmentBound != null && containmentBound < end) end = containmentBound;
+    if (end <= start) return null;
     const sectionIndex = window.sectionIndex == null ? null : Number(window.sectionIndex);
     if (sectionIndex != null && (!Number.isSafeInteger(sectionIndex) || sectionIndex < 0)) return null;
     if (this.functionRegions.length) {
